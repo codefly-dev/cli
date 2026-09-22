@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
 )
@@ -38,7 +39,7 @@ func renderModuleBundle(
 	ctx context.Context,
 	workspace *resources.Workspace,
 	module *resources.Module,
-	environment *resources.Environment,
+	environment *environments.Environment,
 	destination string,
 	graph []InventoryUnit,
 ) error {
@@ -147,15 +148,15 @@ type transportNeutralModuleWorkspace struct {
 }
 
 type transportNeutralWorkspaceEnvironment struct {
-	Name                 string                                         `yaml:"name"`
-	Description          string                                         `yaml:"description,omitempty"`
-	NamingScope          string                                         `yaml:"naming-scope,omitempty"`
-	Fixture              string                                         `yaml:"fixture,omitempty"`
-	ConfigurationProfile string                                         `yaml:"configuration-profile,omitempty"`
-	Cluster              *transportNeutralModuleCluster                 `yaml:"cluster,omitempty"`
-	Namespace            string                                         `yaml:"namespace,omitempty"`
-	Ingress              []resources.EnvironmentIngressRoute            `yaml:"ingress,omitempty"`
-	ManagedServices      map[string]resources.EnvironmentManagedService `yaml:"managed-services,omitempty"`
+	Name                 string                                            `yaml:"name"`
+	Description          string                                            `yaml:"description,omitempty"`
+	NamingScope          string                                            `yaml:"naming-scope,omitempty"`
+	Fixture              string                                            `yaml:"fixture,omitempty"`
+	ConfigurationProfile string                                            `yaml:"configuration-profile,omitempty"`
+	Cluster              *transportNeutralModuleCluster                    `yaml:"cluster,omitempty"`
+	Namespace            string                                            `yaml:"namespace,omitempty"`
+	Ingress              []environments.EnvironmentIngressRoute            `yaml:"ingress,omitempty"`
+	ManagedServices      map[string]environments.EnvironmentManagedService `yaml:"managed-services,omitempty"`
 }
 
 type transportNeutralModuleCluster struct {
@@ -163,11 +164,15 @@ type transportNeutralModuleCluster struct {
 }
 
 func encodeTransportNeutralModuleWorkspace(workspace *resources.Workspace) ([]byte, error) {
+	declared, err := environments.FromWorkspace(workspace)
+	if err != nil {
+		return nil, err
+	}
 	input := transportNeutralModuleWorkspace{
 		Name:         workspace.Name,
 		Environments: make([]transportNeutralWorkspaceEnvironment, 0, len(workspace.Environments)),
 	}
-	for _, environment := range workspace.Environments {
+	for _, environment := range declared {
 		if environment == nil {
 			return nil, fmt.Errorf("workspace contains an empty environment")
 		}
@@ -226,7 +231,7 @@ func transportNeutralModuleEnvironment(stage string) ([]string, error) {
 func loadSelectedModuleBundle(
 	root string,
 	module string,
-	environment *resources.Environment,
+	environment *environments.Environment,
 	graph []InventoryUnit,
 ) (moduleBundle, moduleBundleEnvironment, error) {
 	data, err := os.ReadFile(filepath.Join(root, "bundle.json"))
@@ -371,7 +376,7 @@ func validateTransportNeutralModuleBundle(root string) error {
 // caller records it as an unrendered managed unit.
 func retainManagedBundle(
 	root, service, environment, namespace string,
-	secretRefs []resources.EnvironmentManagedSecretReference,
+	secretRefs []environments.EnvironmentManagedSecretReference,
 ) (bool, error) {
 	var jobs []map[string]any
 	err := walkRegularFiles(root, func(path, relative string, _ os.FileInfo) error {

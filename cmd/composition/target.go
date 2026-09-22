@@ -2,9 +2,9 @@ package composition
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/codefly-dev/cli/pkg/deployments"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 )
@@ -24,9 +24,9 @@ func newTargetCommand(workspace *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			env := current.FindEnvironment(args[0])
-			if env == nil {
-				return fmt.Errorf("environment %q is not declared in %s", args[0], resources.WorkspaceConfigurationName)
+			env, err := environments.Select(current, args[0])
+			if err != nil {
+				return err
 			}
 			var inspected *deployments.KubernetesTargetInspection
 			if cmd.Flags().Changed("expected-identity") {

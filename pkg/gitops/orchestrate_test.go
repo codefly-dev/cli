@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -98,15 +99,15 @@ func TestModuleRenderRootsRejectCycle(t *testing.T) {
 // kind, including a nil cluster. Auth is empty here (managed registries
 // authenticate out-of-band), so no credential helper is invoked.
 func TestPrepareSnapshotRegistryIgnoresClusterKind(t *testing.T) {
-	registry := &resources.EnvironmentRegistry{URL: "registry.example.com/team"}
-	for _, cluster := range []*resources.EnvironmentCluster{
+	registry := &environments.EnvironmentRegistry{URL: "registry.example.com/team"}
+	for _, cluster := range []*environments.EnvironmentCluster{
 		{Kind: "k3d"},
 		{Kind: "eks"},
 		{Kind: "aks"},
 		{Kind: ""},
 		nil,
 	} {
-		env := &resources.Environment{Name: "snap", Cluster: cluster, Registry: registry}
+		env := &environments.Environment{Name: "snap", Cluster: cluster, Registry: registry}
 		if err := prepareSnapshotRegistry(context.Background(), env); err != nil {
 			t.Fatalf("cluster %+v: %v", cluster, err)
 		}
@@ -114,9 +115,9 @@ func TestPrepareSnapshotRegistryIgnoresClusterKind(t *testing.T) {
 }
 
 func TestPrepareSnapshotRegistryRequiresRegistryURL(t *testing.T) {
-	for _, env := range []*resources.Environment{
+	for _, env := range []*environments.Environment{
 		{Name: "snap"},
-		{Name: "snap", Registry: &resources.EnvironmentRegistry{URL: "   "}},
+		{Name: "snap", Registry: &environments.EnvironmentRegistry{URL: "   "}},
 	} {
 		if err := prepareSnapshotRegistry(context.Background(), env); err == nil {
 			t.Fatalf("registry %+v was accepted without a URL", env.Registry)
@@ -164,7 +165,7 @@ name: infra
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := workspace.FindEnvironment("prod")
+	env := selectedEnvironment(t, workspace, "prod")
 	if env == nil {
 		t.Fatal("prod environment did not load")
 	}
@@ -246,7 +247,7 @@ contracts:
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := workspace.FindEnvironment("prod")
+	env := selectedEnvironment(t, workspace, "prod")
 	if env == nil {
 		t.Fatal("prod environment did not load")
 	}

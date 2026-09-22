@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/stretchr/testify/require"
 )
 
@@ -19,7 +19,7 @@ import (
 // "bootstrapped" versus "healthy" actually mean.
 type completionQualification struct {
 	t          *testing.T
-	env        *resources.Environment
+	env        *environments.Environment
 	target     VerifiedKubernetesTarget
 	namespace  string
 	kubeconfig string
@@ -51,10 +51,10 @@ func requireDisposableK3d(t *testing.T) completionQualification {
 	namespace := "completion"
 	runQualificationCommand(t, "kubectl", "--kubeconfig", kubeconfig, "create", "namespace", namespace)
 
-	env := &resources.Environment{
+	env := &environments.Environment{
 		Name:      "local",
 		Namespace: namespace,
-		Cluster: &resources.EnvironmentCluster{
+		Cluster: &environments.EnvironmentCluster{
 			Kind:       "k3d",
 			Kubeconfig: kubeconfig,
 			Context:    "k3d-" + cluster,

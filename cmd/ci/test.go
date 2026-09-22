@@ -7,6 +7,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/resources"
@@ -37,7 +38,7 @@ func testFlowOwner(flow *orchestration.Flow) flowStopper {
 	return flow
 }
 
-func testEnvironment(workspace *resources.Workspace, disposable bool) (*resources.Environment, error) {
+func testEnvironment(workspace *resources.Workspace, disposable bool) (*environments.Environment, error) {
 	env, err := orchestration.SelectEnvironment(workspace, orchestration.LocalEnvironmentName)
 	if err != nil {
 		return nil, err

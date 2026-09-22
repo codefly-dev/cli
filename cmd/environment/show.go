@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
-	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -17,7 +17,7 @@ var showCmd = &cobra.Command{
 	Short:        "Print the resolved environment as YAML (or --json)",
 	Args:         cobra.ExactArgs(1),
 	SilenceUsage: true,
-	RunE: func(_ *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 
@@ -25,9 +25,9 @@ var showCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("load workspace: %w", err)
 		}
-		env := workspace.FindEnvironment(args[0])
-		if env == nil {
-			return fmt.Errorf("environment %q is not declared in %s", args[0], resources.WorkspaceConfigurationName)
+		env, err := environments.Select(workspace, args[0])
+		if err != nil {
+			return err
 		}
 
 		var out []byte
@@ -39,9 +39,9 @@ var showCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		fmt.Print(string(out))
+		cmd.Print(string(out))
 		if showJSON {
-			fmt.Println()
+			cmd.Println()
 		}
 		return nil
 	},

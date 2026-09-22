@@ -8,6 +8,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/deployments"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
@@ -129,7 +130,7 @@ var ModuleCmd = &cobra.Command{
 // deployOneService runs a one-shot deploy Flow for a single service.
 // Mirrors initDeployService in service.go but inline-built so the
 // module loop can iterate without goroutine indirection.
-func deployOneService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, name string, env *resources.Environment, deploymentManager deployments.Manager) error {
+func deployOneService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, name string, env *environments.Environment, deploymentManager deployments.Manager) error {
 	w := wool.Get(ctx).In("deployModule.deployOneService", wool.NameField(name))
 
 	service, err := module.LoadServiceFromName(ctx, name)
@@ -172,7 +173,7 @@ func deployOneService(ctx context.Context, workspace *resources.Workspace, modul
 // for the module-level overlay matching the env. Silently no-ops when
 // the module hasn't scaffolded module/deployment/kustomize/ yet —
 // services-only modules are valid.
-func applyModuleKustomize(ctx context.Context, module *resources.Module, env *resources.Environment, manager *deployments.LocalApplyManager) error {
+func applyModuleKustomize(ctx context.Context, module *resources.Module, env *environments.Environment, manager *deployments.LocalApplyManager) error {
 	w := wool.Get(ctx).In("applyModuleKustomize", wool.NameField(module.Name))
 
 	dir := path.Join(module.Dir(), "deployment", "kustomize", "overlays", env.Name)

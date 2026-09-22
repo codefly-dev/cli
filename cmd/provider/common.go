@@ -7,10 +7,10 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	hostprovider "github.com/codefly-dev/cli/pkg/provider"
 	"github.com/codefly-dev/core/provider/configuration"
-	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 )
 
@@ -55,7 +55,7 @@ func jsonOf(cmd *cobra.Command) bool {
 // session is the loaded workspace context a provider command operates on.
 type session struct {
 	ctx      context.Context
-	env      *resources.Environment
+	env      *environments.Environment
 	document *hostprovider.Document
 	result   *hostprovider.Result
 	jsonOut  bool

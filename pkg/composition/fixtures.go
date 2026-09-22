@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	corecomposition "github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
@@ -195,7 +196,7 @@ func ValidateFixtureSelection(ctx context.Context, workspace *resources.Workspac
 // control plane's test entry. Resolving and verifying were previously paired by
 // hand at each call site, so only the one that happened to be covered was ever
 // exercised by a test.
-func ResolveFixtureSelection(ctx context.Context, workspace *resources.Workspace, env *resources.Environment, override string) (string, error) {
+func ResolveFixtureSelection(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, override string) (string, error) {
 	selected := orchestration.SelectedFixture(env, override)
 	if err := ValidateFixtureSelection(ctx, workspace, selected); err != nil {
 		return "", err

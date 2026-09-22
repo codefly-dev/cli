@@ -9,17 +9,18 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/builder"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 )
 
-func RenderModule(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *resources.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
+func RenderModule(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
 	return renderModuleTree(ctx, workspace, module, env, project, sink, true)
 }
 
-func RenderModuleSnapshot(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *resources.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
+func RenderModuleSnapshot(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
 	return renderModuleTree(ctx, workspace, module, env, project, sink, false)
 }
 
@@ -27,7 +28,7 @@ func renderModuleTree(
 	ctx context.Context,
 	workspace *resources.Workspace,
 	module *resources.Module,
-	env *resources.Environment,
+	env *environments.Environment,
 	project string,
 	sink orchestration.OutputSink,
 	includeBootstrap bool,
@@ -35,7 +36,7 @@ func renderModuleTree(
 	if err := selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
 		return RenderResult{}, err
 	}
-	if err := workspace.ValidateEnvironments(ctx); err != nil {
+	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
 		return RenderResult{}, err
 	}
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", module.Name)
@@ -43,8 +44,10 @@ func renderModuleTree(
 	gitopsPath := ""
 	if env.Gitops != nil {
 		gitopsPath = env.Gitops.Path
-	} else if workspace.Gitops != nil {
-		gitopsPath = workspace.Gitops.Path
+	} else if defaults, err := environments.WorkspaceGitops(workspace); err != nil {
+		return RenderResult{}, err
+	} else if defaults != nil {
+		gitopsPath = defaults.Path
 	}
 	if gitopsPath != "" {
 		ownedPath = filepath.ToSlash(filepath.Join(gitopsPath, ownedPath))
@@ -266,8 +269,8 @@ func copyEnvironmentBootstrap(source, environment, destination string) error {
 	return nil
 }
 
-func RenderService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *resources.Environment, project string, standAlone bool, sink orchestration.OutputSink) (RenderResult, error) {
-	if err := workspace.ValidateEnvironments(ctx); err != nil {
+func RenderService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *environments.Environment, project string, standAlone bool, sink orchestration.OutputSink) (RenderResult, error) {
+	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
 		return RenderResult{}, err
 	}
 	serviceDir, _ := unitDirectory(UnitKindService)
@@ -304,60 +307,8 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 		); err != nil {
 			return err
 		}
-		if err := projectRenderedServiceSecrets(stage, env); err != nil {
-			return err
-		}
-		if err := projectRenderedServiceAutoscale(stage, env, graph); err != nil {
-			return err
-		}
-		return projectRenderedManagedIdentity(ctx, stage, env, graph)
+		return projectRenderedServiceConfiguration(ctx, stage, env, graph)
 	})
-}
-
-// projectRenderedServiceSecrets projects the environment's service secret store
-// onto every service tree a single-service render produced — the origin service
-// and any in-graph dependencies it pulled in — so per-service promotion closes the
-// same secret-<service> gap as a full module render.
-func projectRenderedServiceSecrets(stage string, env *resources.Environment) error {
-	if env.ServiceSecrets == nil {
-		return nil
-	}
-	modulesRoot := filepath.Join(stage, "modules")
-	modules, err := os.ReadDir(modulesRoot)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	for _, moduleEntry := range modules {
-		if !moduleEntry.IsDir() {
-			continue
-		}
-		servicesRoot := filepath.Join(modulesRoot, moduleEntry.Name(), serviceUnitDir)
-		serviceEntries, err := os.ReadDir(servicesRoot)
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		for _, serviceEntry := range serviceEntries {
-			if !serviceEntry.IsDir() {
-				continue
-			}
-			if _, err := projectServiceSecrets(
-				filepath.Join(servicesRoot, serviceEntry.Name()),
-				serviceEntry.Name(),
-				env.Name,
-				env.Namespace,
-				env.ServiceSecrets,
-			); err != nil {
-				return fmt.Errorf("project service %s secrets: %w", serviceEntry.Name(), err)
-			}
-		}
-	}
-	return nil
 }
 
 func serviceRenderDestinations(root string) func(*resources.Module, *resources.Service) string {
@@ -371,7 +322,7 @@ func serviceRenderDestinations(root string) func(*resources.Module, *resources.S
 // declares an auth method, logs in so `docker push` can resolve the immutable
 // snapshot digest. Managed registries authenticate out-of-band and declare no
 // auth, so login is skipped. Runs once per render rather than per service.
-func prepareSnapshotRegistry(ctx context.Context, env *resources.Environment) error {
+func prepareSnapshotRegistry(ctx context.Context, env *environments.Environment) error {
 	if env.Registry == nil || strings.TrimSpace(env.Registry.URL) == "" {
 		return fmt.Errorf("environment %s must declare registry.url for an immutable GitOps snapshot", env.Name)
 	}
@@ -389,7 +340,7 @@ func renderServiceFlow(
 	workspace *resources.Workspace,
 	module *resources.Module,
 	service *resources.Service,
-	env *resources.Environment,
+	env *environments.Environment,
 	standAlone bool,
 	sink orchestration.OutputSink,
 	destination func(*resources.Module, *resources.Service) string,

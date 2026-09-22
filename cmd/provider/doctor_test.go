@@ -4,15 +4,15 @@ import (
 	"context"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	hostprovider "github.com/codefly-dev/cli/pkg/provider"
-	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
 
 func doctorSession(doc *hostprovider.Document) *session {
 	return &session{
 		ctx:      context.Background(),
-		env:      &resources.Environment{Name: "local"},
+		env:      &environments.Environment{Name: "local"},
 		document: doc,
 		result:   hostprovider.NewResult("doctor", "local"),
 	}

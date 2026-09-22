@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -102,17 +103,17 @@ func TestInitDeployServiceRejectsRemoteDirectApplyBeforeStartingFlow(t *testing.
 	envInput = "production"
 	dryRun = false
 	renderOnly = false
-	workspace := &resources.Workspace{
-		Name: "deploy-env",
-		Environments: []*resources.Environment{{
-			Name: "production",
-			Cluster: &resources.EnvironmentCluster{
-				Kind:       "eks",
-				Kubeconfig: "/does/not/exist",
-				Context:    "k3d-production",
-			},
-		}},
+	deployment := &environments.Environment{
+		Name: "production",
+		Cluster: &environments.EnvironmentCluster{
+			Kind:       "eks",
+			Kubeconfig: "/does/not/exist",
+			Context:    "k3d-production",
+		},
 	}
+	resource, err := deployment.Resource()
+	require.NoError(t, err)
+	workspace := &resources.Workspace{Name: "deploy-env", Environments: []*resources.Environment{resource}}
 	service := &resources.Service{Name: "gateway"}
 	service.WithModule("web")
 

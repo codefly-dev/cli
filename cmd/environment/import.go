@@ -11,6 +11,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli/yamledit"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
 	"github.com/pmezard/go-difflib/difflib"
@@ -21,7 +22,13 @@ import (
 // provenanceMarker is the stable substring identifying the import provenance
 // comment. A re-import replaces the line carrying it instead of stacking a
 // second one.
-const provenanceMarker = "imported from cell contract"
+const provenanceMarker = "imported from coordinate contract"
+
+// legacyProvenanceMarker is the spelling stamped before codefly/coordinate/v1.
+// It is not a substring of the current marker, so a re-import over a workspace
+// written by an older CLI has to match it explicitly or it would leave the stale
+// line beside the new one.
+const legacyProvenanceMarker = "imported from cell contract"
 
 var (
 	importNamespace string
@@ -29,29 +36,30 @@ var (
 )
 
 var importCmd = &cobra.Command{
-	Use:   "import <env> --cell-contract <file|->",
-	Short: "Import explicit environment declarations from a codefly/cell/v2 contract",
-	Long: `Import a codefly/cell/v2 descriptor into workspace.codefly.yaml.
+	Use:   "import <env> --coordinate-contract <file|->",
+	Short: "Import explicit environment declarations from a codefly/coordinate/v1 contract",
+	Long: `Import a codefly/coordinate/v1 descriptor into workspace.codefly.yaml.
 The producer supplies Codefly environment declarations with resolved endpoints,
 secret references and delivery paths. The requested environment and namespace
 must match the declaration; import never retargets a contract.
 
-  codefly environment import production --cell-contract cell.json
+  codefly environment import production --coordinate-contract coordinate.json
 
 Declared fields replace their named values. Omitted fields and unrelated map
-entries are preserved, comments included. Read from stdin with --cell-contract -.`,
+entries are preserved, comments included. Read from stdin with
+--coordinate-contract -.`,
 	Args:         cobra.ExactArgs(1),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 
-		contractPath, err := cmd.Flags().GetString("cell-contract")
+		contractPath, contractFlagName, err := contractFlag(cmd)
 		if err != nil {
 			return err
 		}
 		if contractPath == "" {
-			return fmt.Errorf("--cell-contract is required")
+			return fmt.Errorf("--%s is required", contractFlagName)
 		}
 		data, err := readContract(cmd.InOrStdin(), contractPath)
 		if err != nil {
@@ -82,10 +90,37 @@ entries are preserved, comments included. Read from stdin with --cell-contract -
 			return nil
 		}
 		if PostImportValidate != nil {
-			PostImportValidate(ctx, opts.dir, opts.envName)
+			return PostImportValidate(ctx, opts.dir, opts.envName)
 		}
 		return nil
 	},
+}
+
+// contractFlag returns the descriptor location from --coordinate-contract, or
+// from the superseded --cell-contract spelling still accepted for one release.
+// It also reports which spelling it read, so a caller rejecting an empty value
+// names the flag the operator actually passed.
+func contractFlag(cmd *cobra.Command) (path string, flag string, err error) {
+	if cmd.Flags().Changed("cell-contract") {
+		if cmd.Flags().Changed("coordinate-contract") {
+			return "", "", fmt.Errorf("--cell-contract is the former spelling of --coordinate-contract; pass only one")
+		}
+		path, err = cmd.Flags().GetString("cell-contract")
+		return path, "cell-contract", err
+	}
+	path, err = cmd.Flags().GetString("coordinate-contract")
+	return path, "coordinate-contract", err
+}
+
+// labelled renders an optional identifier as a leading-space suffix. The
+// coordinate is an optional provenance label, so a contract that omits it would
+// otherwise leave a dangling subject in the message and in the comment this
+// stamps into workspace.codefly.yaml.
+func labelled(coordinate string) string {
+	if coordinate == "" {
+		return ""
+	}
+	return " " + coordinate
 }
 
 // readContract returns the descriptor bytes from path, or from stdin when path
@@ -108,7 +143,7 @@ type importOptions struct {
 	stdout       io.Writer
 }
 
-// runImport parses the cell contract, merges its owned fields into the named
+// runImport parses the contract, merges its owned fields into the named
 // environment of workspace.codefly.yaml, and either writes the file or, under
 // --dry-run, prints its unified diff and writes nothing.
 //
@@ -120,10 +155,15 @@ type importOptions struct {
 // entire file — an unreviewable diff, and the exact failure that would hide a
 // wrong egress CIDR in the noise.)
 func runImport(ctx context.Context, opts *importOptions) error {
-	contract, err := resources.ParseCellContract(opts.contractData)
+	contract, err := environments.ParseCoordinateContract(opts.contractData)
 	if err != nil {
 		return err
 	}
+	_, declaration, err := yamledit.Document(opts.contractData)
+	if err != nil {
+		return err
+	}
+	declaredEnvironment := yamledit.MapValue(declaration, "environment")
 
 	file := filepath.Join(opts.dir, resources.WorkspaceConfigurationName)
 	original, err := os.ReadFile(file)
@@ -136,24 +176,25 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		return fmt.Errorf("cannot parse %s: %w", resources.WorkspaceConfigurationName, err)
 	}
 
-	workspaceName := ""
-	if n := yamledit.MapValue(root, "name"); n != nil {
-		workspaceName = n.Value
-	}
-
 	envs := yamledit.MapValue(root, "environments")
 	envNode := findExistingEnvironment(envs, opts.envName)
 
-	namespace := resolveNamespace(opts, envNode, workspaceName)
+	namespace := contract.Environment.Namespace
+	if opts.namespaceSet {
+		namespace = opts.namespace
+	}
 	env, err := contract.ToEnvironment(opts.envName, namespace)
 	if err != nil {
 		return err
+	}
+	if existing := yamledit.MapValue(envNode, "namespace"); yamledit.MapValue(declaredEnvironment, "namespace") != nil && existing != nil && existing.Value != "" && existing.Value != env.Namespace {
+		return fmt.Errorf("environment %q already targets namespace %q, not %q; reconcile its existing identity, secrets and delivery declarations before importing a different target", opts.envName, existing.Value, env.Namespace)
 	}
 
 	var updated []byte
 	if envNode == nil {
 		// New environment: serialize ToEnvironment's result whole, so a field
-		// core maps from the contract is carried through without this consumer
+		// the parser maps from the contract is carried through without this consumer
 		// maintaining a parallel allowlist of the fields to copy.
 		item, eerr := yamledit.Encode(env)
 		if eerr != nil {
@@ -167,11 +208,7 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		// EndLine after the edit would under-count and strand the original's
 		// trailing lines.
 		endLine := yamledit.EndLine(envNode)
-		_, declaration, decodeErr := yamledit.Document(opts.contractData)
-		if decodeErr != nil {
-			return decodeErr
-		}
-		applyContractFields(envNode, yamledit.MapValue(declaration, "environment"))
+		applyContractFields(envNode, declaredEnvironment)
 		stampProvenance(envNode, contract, opts)
 		updated, err = spliceEnvironment(original, envNode, endLine)
 	}
@@ -179,6 +216,13 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		return err
 	}
 
+	merged, err := resources.LoadFromBytes[resources.Workspace](updated)
+	if err != nil {
+		return err
+	}
+	if _, err := environments.FromWorkspace(merged); err != nil {
+		return fmt.Errorf("merged environment declarations: %w", err)
+	}
 	if opts.dryRun {
 		diff, derr := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
 			A:        difflib.SplitLines(string(original)),
@@ -197,8 +241,8 @@ func runImport(ctx context.Context, opts *importOptions) error {
 	if err := shared.WriteFileAtomic(ctx, file, updated, 0o600); err != nil {
 		return fmt.Errorf("cannot write %s: %w", resources.WorkspaceConfigurationName, err)
 	}
-	fmt.Fprintf(opts.stdout, "Imported cell contract %s (%s) into environment %q of %s.\n",
-		contract.Cell, contract.Coordinate, opts.envName, resources.WorkspaceConfigurationName)
+	fmt.Fprintf(opts.stdout, "Imported coordinate contract%s into environment %q of %s.\n",
+		labelled(contract.Coordinate), opts.envName, resources.WorkspaceConfigurationName)
 	return nil
 }
 
@@ -215,20 +259,6 @@ func findExistingEnvironment(envs *yaml.Node, name string) *yaml.Node {
 		}
 	}
 	return nil
-}
-
-// resolveNamespace picks the deploy namespace: the --namespace flag, else the
-// existing environment's namespace, else the workspace name.
-func resolveNamespace(opts *importOptions, envNode *yaml.Node, workspaceName string) string {
-	if opts.namespaceSet {
-		return opts.namespace
-	}
-	if envNode != nil {
-		if n := yamledit.MapValue(envNode, "namespace"); n != nil && n.Value != "" {
-			return n.Value
-		}
-	}
-	return workspaceName
 }
 
 // spliceEnvironment re-renders only envNode and replaces the exact lines it
@@ -369,6 +399,9 @@ func applyContractFields(target, declaration *yaml.Node) {
 	for i := 0; i+1 < len(declaration.Content); i += 2 {
 		key, value := declaration.Content[i].Value, declaration.Content[i+1]
 		current := yamledit.MapValue(target, key)
+		if current != nil && current.Kind == yaml.ScalarNode && value.Kind == yaml.ScalarNode && current.Tag == value.Tag && current.Value == value.Value {
+			continue
+		}
 		if value.Kind == yaml.MappingNode && len(value.Content) > 0 && current != nil && current.Kind == yaml.MappingNode {
 			applyContractFields(current, value)
 			continue
@@ -379,13 +412,15 @@ func applyContractFields(target, declaration *yaml.Node) {
 
 // stampProvenance writes (or, on re-import, replaces) the provenance comment
 // above the environment item, keeping any operator comment lines around it.
-func stampProvenance(envNode *yaml.Node, contract *resources.CellContract, opts *importOptions) {
-	line := fmt.Sprintf("# %s %s (%s) on %s; re-run: codefly environment import %s --cell-contract …",
-		provenanceMarker, contract.Cell, contract.Coordinate, opts.now.Format(time.RFC3339), opts.envName)
+func stampProvenance(envNode *yaml.Node, contract *environments.CoordinateContract, opts *importOptions) {
+	line := fmt.Sprintf("# %s%s on %s; re-run: codefly environment import %s --coordinate-contract …",
+		provenanceMarker, labelled(contract.Coordinate), opts.now.Format(time.RFC3339), opts.envName)
 
 	kept := make([]string, 0)
 	for _, existing := range strings.Split(envNode.HeadComment, "\n") {
-		if existing == "" || strings.Contains(existing, provenanceMarker) {
+		if existing == "" ||
+			strings.Contains(existing, provenanceMarker) ||
+			strings.Contains(existing, legacyProvenanceMarker) {
 			continue
 		}
 		kept = append(kept, existing)
@@ -394,7 +429,9 @@ func stampProvenance(envNode *yaml.Node, contract *resources.CellContract, opts 
 }
 
 func init() {
-	importCmd.Flags().String("cell-contract", "", "Path to a codefly/cell/v2 descriptor, or - for stdin")
-	importCmd.Flags().StringVar(&importNamespace, "namespace", "", "Kubernetes namespace to deploy into (default: existing namespace, else workspace name)")
+	importCmd.Flags().String("coordinate-contract", "", "Path to a codefly/coordinate/v1 descriptor, or - for stdin")
+	importCmd.Flags().String("cell-contract", "", "Former spelling of --coordinate-contract")
+	_ = importCmd.Flags().MarkDeprecated("cell-contract", "use --coordinate-contract")
+	importCmd.Flags().StringVar(&importNamespace, "namespace", "", "Assert the namespace declared by the producer")
 	importCmd.Flags().BoolVar(&importDryRun, "dry-run", false, "Print the unified diff of workspace.codefly.yaml and write nothing")
 }

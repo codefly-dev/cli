@@ -62,7 +62,7 @@ func loadedWorkspaceManager(t *testing.T, loader staticWorkspaceLoader) *configu
 	manager, err := configurations.NewManager(ctx, workspace)
 	require.NoError(t, err)
 	manager.WithLoader(loader)
-	require.NoError(t, manager.Load(ctx, env))
+	require.NoError(t, manager.Load(ctx, env.Runtime()))
 	return manager
 }
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/deployments"
+	"github.com/codefly-dev/cli/pkg/environments"
 	coreservices "github.com/codefly-dev/core/agents/services"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
@@ -215,7 +216,7 @@ func withContainerReachableAsPublic(ctx context.Context, mappings []*basev0.Netw
 	return out
 }
 
-func kubernetesValidationTarget(ctx context.Context, environment *resources.Environment) (string, string, error) {
+func kubernetesValidationTarget(ctx context.Context, environment *environments.Environment) (string, string, error) {
 	if environment == nil || environment.Cluster == nil {
 		return "", "", fmt.Errorf("environment must declare a Kubernetes cluster")
 	}

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -28,9 +29,9 @@ func TestLocalApplyRefusesUnboundSelectionBeforeEffects(t *testing.T) {
 func TestVerifyLocalK3dTargetRejectsRemoteKindsBeforeInspectingKubeconfig(t *testing.T) {
 	for _, kind := range []string{"eks", "gke", "aks", "external"} {
 		t.Run(kind, func(t *testing.T) {
-			env := &resources.Environment{
+			env := &environments.Environment{
 				Name: "production",
-				Cluster: &resources.EnvironmentCluster{
+				Cluster: &environments.EnvironmentCluster{
 					Kind:       kind,
 					Kubeconfig: filepath.Join(t.TempDir(), "config"),
 					Context:    "k3d-production",
@@ -577,7 +578,7 @@ func (h kubernetesCommandHarness) read() string {
 	return string(data)
 }
 
-func (h kubernetesCommandHarness) verifiedEnvironment() *resources.Environment {
+func (h kubernetesCommandHarness) verifiedEnvironment() *environments.Environment {
 	h.t.Helper()
 	config := kubeconfigDocument("k3d-dev", "k3d-dev", "k3d-dev", "https://127.0.0.1:6443")
 	h.writeSelected(config)
@@ -585,10 +586,10 @@ func (h kubernetesCommandHarness) verifiedEnvironment() *resources.Environment {
 	return h.environment("k3d-dev")
 }
 
-func (h kubernetesCommandHarness) environment(contextName string) *resources.Environment {
-	return &resources.Environment{
+func (h kubernetesCommandHarness) environment(contextName string) *environments.Environment {
+	return &environments.Environment{
 		Name: "local",
-		Cluster: &resources.EnvironmentCluster{
+		Cluster: &environments.EnvironmentCluster{
 			Kind:       "k3d",
 			Kubeconfig: h.kubeconfig,
 			Context:    contextName,

@@ -8,15 +8,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
 	"sigs.k8s.io/kustomize/api/krusty"
 	"sigs.k8s.io/kustomize/kyaml/filesys"
 )
 
-func workosSecretReferences() []resources.EnvironmentManagedSecretReference {
-	store := resources.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod", Kind: "ClusterSecretStore"}
-	return []resources.EnvironmentManagedSecretReference{
+func workosSecretReferences() []environments.EnvironmentManagedSecretReference {
+	store := environments.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod", Kind: "ClusterSecretStore"}
+	return []environments.EnvironmentManagedSecretReference{
 		{Name: "client-id", RemoteKey: "workos/client-id", SecretStore: store},
 		{Name: "api-key", RemoteKey: "workos/api-key", SecretStore: store},
 	}
@@ -54,8 +55,8 @@ func TestManagedSecretProjectionRendersExternalSecret(t *testing.T) {
 // alongside remoteRef.key, so a managed service backed by a store of structured
 // documents resolves the field inside the remote entry.
 func TestManagedSecretProjectionCarriesProperty(t *testing.T) {
-	store := resources.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"}
-	refs := []resources.EnvironmentManagedSecretReference{
+	store := environments.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"}
+	refs := []environments.EnvironmentManagedSecretReference{
 		{Name: "store-connection", RemoteKey: "lodestar-accounts", Property: "store_read_write_connection", SecretStore: store},
 	}
 	projection, err := managedSecretProjection("store", "lodestar", refs)
@@ -106,38 +107,38 @@ func TestManagedSecretProjectionEmptyReferencesRenderNothing(t *testing.T) {
 }
 
 func TestManagedSecretProjectionRejectsInvalidDeclarations(t *testing.T) {
-	store := resources.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod", Kind: "ClusterSecretStore"}
+	store := environments.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod", Kind: "ClusterSecretStore"}
 	tests := []struct {
 		name      string
 		namespace string
-		refs      []resources.EnvironmentManagedSecretReference
+		refs      []environments.EnvironmentManagedSecretReference
 	}{
 		{
 			name:      "missing namespace",
 			namespace: "",
-			refs:      []resources.EnvironmentManagedSecretReference{{Name: "api-key", RemoteKey: "workos/api-key", SecretStore: store}},
+			refs:      []environments.EnvironmentManagedSecretReference{{Name: "api-key", RemoteKey: "workos/api-key", SecretStore: store}},
 		},
 		{
 			name:      "missing remote key",
 			namespace: "payments",
-			refs:      []resources.EnvironmentManagedSecretReference{{Name: "api-key", SecretStore: store}},
+			refs:      []environments.EnvironmentManagedSecretReference{{Name: "api-key", SecretStore: store}},
 		},
 		{
 			name:      "incomplete store",
 			namespace: "payments",
-			refs:      []resources.EnvironmentManagedSecretReference{{Name: "api-key", RemoteKey: "workos/api-key", SecretStore: resources.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod"}}},
+			refs:      []environments.EnvironmentManagedSecretReference{{Name: "api-key", RemoteKey: "workos/api-key", SecretStore: environments.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod"}}},
 		},
 		{
 			name:      "backend type mistaken for store kind",
 			namespace: "payments",
-			refs:      []resources.EnvironmentManagedSecretReference{{Name: "api-key", RemoteKey: "workos/api-key", SecretStore: resources.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod", Kind: "azure-keyvault"}}},
+			refs:      []environments.EnvironmentManagedSecretReference{{Name: "api-key", RemoteKey: "workos/api-key", SecretStore: environments.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod", Kind: "azure-keyvault"}}},
 		},
 		{
 			name:      "diverging stores",
 			namespace: "payments",
-			refs: []resources.EnvironmentManagedSecretReference{
+			refs: []environments.EnvironmentManagedSecretReference{
 				{Name: "api-key", RemoteKey: "workos/api-key", SecretStore: store},
-				{Name: "client-id", RemoteKey: "workos/client-id", SecretStore: resources.EnvironmentSecretStoreReference{Name: "other", Kind: "SecretStore"}},
+				{Name: "client-id", RemoteKey: "workos/client-id", SecretStore: environments.EnvironmentSecretStoreReference{Name: "other", Kind: "SecretStore"}},
 			},
 		},
 	}
@@ -212,11 +213,11 @@ func TestRetainManagedBundleRemovesTreeWithoutJobsOrSecrets(t *testing.T) {
 	}
 }
 
-func azureServiceSecrets() *resources.EnvironmentServiceSecrets {
-	return &resources.EnvironmentServiceSecrets{
-		SecretStore: resources.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod", Kind: "ClusterSecretStore"},
-		Services: map[string]resources.EnvironmentServiceSecretMapping{
-			"accounts": {RemoteKeys: map[string]resources.EnvironmentSecretRemoteRef{"workos-client-secret": {Key: "workos/prod/client-secret"}}},
+func azureServiceSecrets() *environments.EnvironmentServiceSecrets {
+	return &environments.EnvironmentServiceSecrets{
+		SecretStore: environments.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod", Kind: "ClusterSecretStore"},
+		Services: map[string]environments.EnvironmentServiceSecretMapping{
+			"accounts": {RemoteKeys: map[string]environments.EnvironmentSecretRemoteRef{"workos-client-secret": {Key: "workos/prod/client-secret"}}},
 		},
 	}
 }
@@ -257,10 +258,10 @@ func TestServiceSecretProjectionRendersNothingWithoutStoreOrKeys(t *testing.T) {
 }
 
 func TestServiceSecretProjectionHonorsPerServiceStore(t *testing.T) {
-	secrets := &resources.EnvironmentServiceSecrets{
-		SecretStore: resources.EnvironmentSecretStoreReference{Name: "env-default", Kind: "ClusterSecretStore"},
-		Services: map[string]resources.EnvironmentServiceSecretMapping{
-			"accounts": {SecretStore: &resources.EnvironmentSecretStoreReference{Name: "accounts-vault", Kind: "SecretStore"}},
+	secrets := &environments.EnvironmentServiceSecrets{
+		SecretStore: environments.EnvironmentSecretStoreReference{Name: "env-default", Kind: "ClusterSecretStore"},
+		Services: map[string]environments.EnvironmentServiceSecretMapping{
+			"accounts": {SecretStore: &environments.EnvironmentSecretStoreReference{Name: "accounts-vault", Kind: "SecretStore"}},
 		},
 	}
 	projection, err := serviceSecretProjection("accounts", "payments", secrets, []string{"api-key"})
@@ -282,8 +283,8 @@ func TestServiceSecretProjectionHonorsPerServiceStore(t *testing.T) {
 }
 
 func TestServiceSecretProjectionRejectsInvalidStore(t *testing.T) {
-	backendKind := &resources.EnvironmentServiceSecrets{
-		SecretStore: resources.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod", Kind: "azure-keyvault"},
+	backendKind := &environments.EnvironmentServiceSecrets{
+		SecretStore: environments.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod", Kind: "azure-keyvault"},
 	}
 	if _, err := serviceSecretProjection("accounts", "payments", backendKind, []string{"api-key"}); err == nil {
 		t.Fatal("expected error for backend-type store kind")
@@ -294,10 +295,10 @@ func TestServiceSecretProjectionRejectsInvalidStore(t *testing.T) {
 	}
 }
 
-func cellServiceSecrets(mapping resources.EnvironmentServiceSecretMapping) *resources.EnvironmentServiceSecrets {
-	return &resources.EnvironmentServiceSecrets{
-		SecretStore: resources.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"},
-		Services:    map[string]resources.EnvironmentServiceSecretMapping{"accounts": mapping},
+func cellServiceSecrets(mapping environments.EnvironmentServiceSecretMapping) *environments.EnvironmentServiceSecrets {
+	return &environments.EnvironmentServiceSecrets{
+		SecretStore: environments.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"},
+		Services:    map[string]environments.EnvironmentServiceSecretMapping{"accounts": mapping},
 	}
 }
 
@@ -306,8 +307,8 @@ func cellServiceSecrets(mapping resources.EnvironmentServiceSecretMapping) *reso
 // addressed — the shape infra-base maintains by hand today.
 func TestServiceSecretProjectionUsesProperty(t *testing.T) {
 	const key = "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDENTITY__IDENTITY_CLIENT_SECRET"
-	secrets := cellServiceSecrets(resources.EnvironmentServiceSecretMapping{
-		RemoteKeys: map[string]resources.EnvironmentSecretRemoteRef{
+	secrets := cellServiceSecrets(environments.EnvironmentServiceSecretMapping{
+		RemoteKeys: map[string]environments.EnvironmentSecretRemoteRef{
 			key: {Key: "lodestar-identity", Property: "client_secret"},
 		},
 	})
@@ -330,8 +331,8 @@ func TestServiceSecretProjectionUsesProperty(t *testing.T) {
 // A remote key with no property (the scalar declaration form) renders only key,
 // leaving property absent so a store of bare scalars is addressed unchanged.
 func TestServiceSecretProjectionScalarFormStillWorks(t *testing.T) {
-	secrets := cellServiceSecrets(resources.EnvironmentServiceSecretMapping{
-		RemoteKeys: map[string]resources.EnvironmentSecretRemoteRef{"K": {Key: "some-key"}},
+	secrets := cellServiceSecrets(environments.EnvironmentServiceSecretMapping{
+		RemoteKeys: map[string]environments.EnvironmentSecretRemoteRef{"K": {Key: "some-key"}},
 	})
 	projection, err := serviceSecretProjection("accounts", "lodestar", secrets, []string{"K"})
 	if err != nil {
@@ -352,8 +353,8 @@ func TestServiceSecretProjectionScalarFormStillWorks(t *testing.T) {
 // A defaults template applies to every key not listed in RemoteKeys, with
 // "{service}" and "{key}" substituted in both key and property.
 func TestServiceSecretProjectionDefaultsTemplate(t *testing.T) {
-	secrets := cellServiceSecrets(resources.EnvironmentServiceSecretMapping{
-		Defaults: &resources.EnvironmentSecretRemoteRef{Key: "lodestar-{service}", Property: "{key}"},
+	secrets := cellServiceSecrets(environments.EnvironmentServiceSecretMapping{
+		Defaults: &environments.EnvironmentSecretRemoteRef{Key: "lodestar-{service}", Property: "{key}"},
 	})
 	projection, err := serviceSecretProjection("accounts", "lodestar", secrets, []string{"K"})
 	if err != nil {
@@ -373,8 +374,8 @@ func TestRenderAcceptsExternalSecretWithProperty(t *testing.T) {
 		clientSecret = "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDENTITY__IDENTITY_CLIENT_SECRET"
 		gatewayToken = "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__INTERNAL_AUTH__CODEFLY_GATEWAY_TOKEN"
 	)
-	secrets := cellServiceSecrets(resources.EnvironmentServiceSecretMapping{
-		RemoteKeys: map[string]resources.EnvironmentSecretRemoteRef{
+	secrets := cellServiceSecrets(environments.EnvironmentServiceSecretMapping{
+		RemoteKeys: map[string]environments.EnvironmentSecretRemoteRef{
 			clientSecret: {Key: "lodestar-identity", Property: "client_secret"},
 			gatewayToken: {Key: "lodestar-internal-auth", Property: "gateway_token"},
 		},
@@ -472,13 +473,13 @@ func TestServiceSecretProjectionReproducesInfraBaseAccounts(t *testing.T) {
 
 	// The only hand-authored input: the lodestar-side declaration mapping each
 	// rendered secret key to its remote {key, property}.
-	remoteKeys := make(map[string]resources.EnvironmentSecretRemoteRef, len(golden))
+	remoteKeys := make(map[string]environments.EnvironmentSecretRemoteRef, len(golden))
 	keys := make([]string, 0, len(golden))
 	for _, entry := range golden {
-		remoteKeys[entry.SecretKey] = resources.EnvironmentSecretRemoteRef{Key: entry.RemoteRef.Key, Property: entry.RemoteRef.Property}
+		remoteKeys[entry.SecretKey] = environments.EnvironmentSecretRemoteRef{Key: entry.RemoteRef.Key, Property: entry.RemoteRef.Property}
 		keys = append(keys, entry.SecretKey)
 	}
-	secrets := cellServiceSecrets(resources.EnvironmentServiceSecretMapping{RemoteKeys: remoteKeys})
+	secrets := cellServiceSecrets(environments.EnvironmentServiceSecretMapping{RemoteKeys: remoteKeys})
 
 	root := filepath.Join(t.TempDir(), "accounts")
 	writeServiceTreeReferencingKeys(t, root, "prod", "lodestar", "accounts", keys)
@@ -534,6 +535,8 @@ spec:
         - name: accounts
           image: registry.example.com/accounts@sha256:` + strings.Repeat("a", 64) + `
           env:
+            - name: CODEFLY__SERVICE
+              value: accounts
             - name: WORKOS_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -680,7 +683,7 @@ agent:
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := workspace.FindEnvironment("prod")
+	env := selectedEnvironment(t, workspace, "prod")
 	if env == nil {
 		t.Fatal("prod environment did not load")
 	}
@@ -721,8 +724,12 @@ func TestProjectRenderedServiceSecretsCoversEveryServiceTree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &resources.Environment{Name: "production", Namespace: "payments", ServiceSecrets: azureServiceSecrets()}
-	if err := projectRenderedServiceSecrets(stage, env); err != nil {
+	env := &environments.Environment{Name: "production", Namespace: "payments", ServiceSecrets: azureServiceSecrets()}
+	graph := map[string]*resources.Service{
+		resources.ServiceUnique("identity", "accounts"): {Name: "accounts"},
+		resources.ServiceUnique("identity", "web"):      {Name: "web"},
+	}
+	if err := projectRenderedServiceConfiguration(t.Context(), stage, env, graph); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(accounts, "overlays", "production", "external-secret.yaml")); err != nil {
@@ -736,8 +743,9 @@ func TestProjectRenderedServiceSecretsCoversEveryServiceTree(t *testing.T) {
 func TestProjectRenderedServiceSecretsNoOpWithoutDeclaration(t *testing.T) {
 	stage := t.TempDir()
 	writeServiceTree(t, filepath.Join(stage, "modules", "identity", "services", "accounts"), "production")
-	env := &resources.Environment{Name: "production", Namespace: "payments"}
-	if err := projectRenderedServiceSecrets(stage, env); err != nil {
+	env := &environments.Environment{Name: "production", Namespace: "payments"}
+	graph := map[string]*resources.Service{resources.ServiceUnique("identity", "accounts"): {Name: "accounts"}}
+	if err := projectRenderedServiceConfiguration(t.Context(), stage, env, graph); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(stage, "modules", "identity", "services", "accounts", "overlays", "production", "external-secret.yaml")); !os.IsNotExist(err) {

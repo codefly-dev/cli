@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sync"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -106,7 +106,7 @@ func TestSelectEnvironmentUndeclaredLocalKeepsLegacyDefault(t *testing.T) {
 
 	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
 	require.NoError(t, err)
-	require.Equal(t, resources.LocalEnvironment(), env)
+	require.Equal(t, environments.LocalEnvironment(), env)
 }
 
 func TestSelectEnvironmentDeclaredNonLocalIsSelectedExactly(t *testing.T) {
@@ -114,7 +114,9 @@ func TestSelectEnvironmentDeclaredNonLocalIsSelectedExactly(t *testing.T) {
 
 	env, err := SelectEnvironment(workspace, "staging")
 	require.NoError(t, err)
-	require.Equal(t, workspace.FindEnvironment("staging"), env)
+	declared, err := environments.FromRuntime(workspace.FindEnvironment("staging"))
+	require.NoError(t, err)
+	require.Equal(t, declared, env)
 	require.NotSame(t, workspace.FindEnvironment("staging"), env)
 }
 
@@ -142,11 +144,12 @@ func TestSelectEnvironmentOverridesDoNotMutateWorkspace(t *testing.T) {
 	env.ServiceSecrets.SecretStore.Name = "other-default"
 	apiSecrets := env.ServiceSecrets.Services["api"]
 	apiSecrets.SecretStore.Name = "other-api"
-	apiSecrets.RemoteKeys["TOKEN"] = resources.EnvironmentSecretRemoteRef{Key: "other/token"}
+	apiSecrets.RemoteKeys["TOKEN"] = environments.EnvironmentSecretRemoteRef{Key: "other/token"}
 	env.ServiceSecrets.Services["api"] = apiSecrets
 	env.Secrets[0].Account = "other-account"
 
-	declared := workspace.FindEnvironment(LocalEnvironmentName)
+	declared, err := environments.FromRuntime(workspace.FindEnvironment(LocalEnvironmentName))
+	require.NoError(t, err)
 	require.Equal(t, "from-yaml", declared.NamingScope)
 	require.Equal(t, "apps", declared.Namespace)
 	require.Equal(t, "~/.kube/k3d.yaml", declared.Cluster.Kubeconfig)
@@ -188,95 +191,6 @@ func TestSelectEnvironmentConcurrentOverridesDoNotContaminate(t *testing.T) {
 	declared := workspace.FindEnvironment(LocalEnvironmentName)
 	require.Equal(t, "from-yaml", declared.NamingScope)
 	require.Equal(t, "acme-dev", declared.Secrets[0].Account)
-}
-
-// cloneEnvironment is correct by enumeration, not by construction: it must
-// name every non-value field of resources.Environment. This canary fails the
-// moment core grows the struct with a field the clone would silently share,
-// which would quietly reintroduce cross-flow contamination.
-func TestCloneEnvironmentCoversEveryEnvironmentField(t *testing.T) {
-	deepCopied := map[string]bool{
-		"Cluster": true, "Registry": true, "Gitops": true, "Ingress": true,
-		"ManagedServices": true, "ServiceSecrets": true, "Secrets": true,
-		"ResourceQuota": true, "Dns": true,
-	}
-	typ := reflect.TypeOf(resources.Environment{})
-	for i := 0; i < typ.NumField(); i++ {
-		field := typ.Field(i)
-		if deepCopied[field.Name] {
-			continue
-		}
-		switch field.Type.Kind() {
-		case reflect.Bool, reflect.String,
-			reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
-			reflect.Float32, reflect.Float64:
-			// Value kinds are copied by the struct assignment.
-		default:
-			t.Errorf("resources.Environment.%s (%s) is shared, not copied, by cloneEnvironment — extend the clone before concurrent flows can contaminate each other", field.Name, field.Type)
-		}
-	}
-}
-
-func TestCloneEnvironmentIsolatesResourceQuota(t *testing.T) {
-	original := &resources.Environment{
-		Name: "staging",
-		ResourceQuota: &resources.EnvironmentResourceQuota{
-			Requests: &resources.EnvironmentResourceList{CPU: "4", Memory: "8Gi"},
-			Limits:   &resources.EnvironmentResourceList{CPU: "8", Memory: "16Gi"},
-			Pods:     "50",
-			DefaultContainer: &resources.EnvironmentContainerResources{
-				Requests: &resources.EnvironmentResourceList{CPU: "100m", Memory: "128Mi"},
-				Limits:   &resources.EnvironmentResourceList{CPU: "500m", Memory: "512Mi"},
-			},
-		},
-	}
-	clone := cloneEnvironment(original)
-
-	require.NotSame(t, original.ResourceQuota, clone.ResourceQuota)
-	require.NotSame(t, original.ResourceQuota.Requests, clone.ResourceQuota.Requests)
-	require.NotSame(t, original.ResourceQuota.Limits, clone.ResourceQuota.Limits)
-	require.NotSame(t, original.ResourceQuota.DefaultContainer, clone.ResourceQuota.DefaultContainer)
-	require.NotSame(t, original.ResourceQuota.DefaultContainer.Requests, clone.ResourceQuota.DefaultContainer.Requests)
-	require.NotSame(t, original.ResourceQuota.DefaultContainer.Limits, clone.ResourceQuota.DefaultContainer.Limits)
-
-	// Mutating the clone must not contaminate the original a concurrent flow holds.
-	clone.ResourceQuota.Requests.CPU = "99"
-	clone.ResourceQuota.DefaultContainer.Limits.Memory = "1Gi"
-	require.Equal(t, "4", original.ResourceQuota.Requests.CPU)
-	require.Equal(t, "512Mi", original.ResourceQuota.DefaultContainer.Limits.Memory)
-}
-
-func TestCloneEnvironmentIsolatesDns(t *testing.T) {
-	original := &resources.Environment{
-		Name: "azure",
-		Dns:  &resources.EnvironmentDNS{AppHostSuffix: "staging.eastus2.azure.example.com"},
-	}
-	clone := cloneEnvironment(original)
-
-	require.NotSame(t, original.Dns, clone.Dns)
-	require.Equal(t, original.Dns.AppHostSuffix, clone.Dns.AppHostSuffix)
-
-	// Mutating the clone must not contaminate the original a concurrent flow holds.
-	clone.Dns.AppHostSuffix = "other.example.com"
-	require.Equal(t, "staging.eastus2.azure.example.com", original.Dns.AppHostSuffix)
-}
-
-func TestCloneEnvironmentIsolatesManagedServiceIdentity(t *testing.T) {
-	original := &resources.Environment{ManagedServices: map[string]resources.EnvironmentManagedService{
-		"endpoint": {Identity: &resources.EnvironmentWorkloadIdentity{
-			Principal: "owner", Annotations: map[string]string{"identity": "owner"}, Labels: map[string]string{"enabled": "true"},
-		}},
-	}}
-	clone := cloneEnvironment(original)
-	identity := clone.ManagedServices["endpoint"].Identity
-	identity.Principal = "another"
-	identity.Annotations["identity"] = "another"
-	identity.Labels["enabled"] = "false"
-	want := original.ManagedServices["endpoint"].Identity
-	require.Equal(t, "owner", want.Principal)
-	require.Equal(t, "owner", want.Annotations["identity"])
-	require.Equal(t, "true", want.Labels["enabled"])
 }
 
 func TestSelectEnvironmentIsEquivalentAcrossFlows(t *testing.T) {
@@ -355,7 +269,7 @@ endpoints:
 }
 
 func TestSelectedFixturePrefersOverrideThenEnvironment(t *testing.T) {
-	declared := &resources.Environment{Fixture: "dev-admin"}
+	declared := &environments.Environment{Fixture: "dev-admin"}
 
 	// The common case: an environment declares its fixture, so neither
 	// `codefly run service` nor `codefly test service` needs --fixture.
@@ -366,7 +280,7 @@ func TestSelectedFixturePrefersOverrideThenEnvironment(t *testing.T) {
 
 	// An environment that deliberately omits a fixture keeps loading its real
 	// provider configuration instead of silently falling back to one.
-	require.Empty(t, SelectedFixture(&resources.Environment{}, ""))
-	require.Equal(t, "custom", SelectedFixture(&resources.Environment{}, "custom"))
+	require.Empty(t, SelectedFixture(&environments.Environment{}, ""))
+	require.Equal(t, "custom", SelectedFixture(&environments.Environment{}, "custom"))
 	require.Empty(t, SelectedFixture(nil, ""))
 }

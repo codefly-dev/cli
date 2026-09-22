@@ -7,8 +7,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
-
 	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/manager"
 	coreservices "github.com/codefly-dev/core/agents/services"
@@ -34,7 +34,7 @@ import (
 // from one another.
 type SolutionRenderRequest struct {
 	Workspace   *resources.Workspace
-	Environment *resources.Environment
+	Environment *environments.Environment
 	// Agent is the resolved codefly:solution executor that packages and renders
 	// the solution's anatomy.
 	Agent *resources.Agent
@@ -59,7 +59,7 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 	if err := selectionguard.RejectUnboundExecution(req.Workspace.Dir(), req.Source); err != nil {
 		return RenderResult{}, err
 	}
-	if err := req.Workspace.ValidateEnvironments(ctx); err != nil {
+	if err := environments.ValidateWorkspace(ctx, req.Workspace); err != nil {
 		return RenderResult{}, err
 	}
 	env := req.Environment
@@ -72,8 +72,10 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 	gitopsPath := ""
 	if env.Gitops != nil {
 		gitopsPath = env.Gitops.Path
-	} else if req.Workspace.Gitops != nil {
-		gitopsPath = req.Workspace.Gitops.Path
+	} else if defaults, err := environments.WorkspaceGitops(req.Workspace); err != nil {
+		return RenderResult{}, err
+	} else if defaults != nil {
+		gitopsPath = defaults.Path
 	}
 	if gitopsPath != "" {
 		ownedPath = filepath.ToSlash(filepath.Join(gitopsPath, ownedPath))

@@ -1,6 +1,6 @@
 // Package routing renders a service's public surface into Kubernetes edge
 // routing manifests. The CLI already carries ingress *intent*
-// (resources.EnvironmentIngressRoute); this package turns that intent, plus
+// (environments.EnvironmentIngressRoute); this package turns that intent, plus
 // the deterministic in-cluster backend contract, into concrete routes that a
 // solution's rendered output can install and uninstall as one unit.
 //

@@ -1,0 +1,28 @@
+name: scalar-workspace
+description: &account 00123
+gitops:
+  repo-url: https://github.com/example/deployments.git
+  branch: *account
+environments:
+  - name: staging
+    namespace: product
+    service-config:
+      services:
+        api:
+          values:
+            ACCOUNT: *account
+            DATE: 2026-09-21
+            EXPONENT: 1e3
+    service-secrets:
+      secret-store:
+        name: credentials
+        kind: ClusterSecretStore
+      services:
+        api:
+          remote-keys:
+            PASSWORD: *account
+    service-identity:
+      default:
+        principal: application
+        annotations:
+          identity.example/account: *account

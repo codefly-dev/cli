@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"gopkg.in/yaml.v3"
 )
 
@@ -223,7 +223,7 @@ func ownedResources(manifests, namespace string) ([]ownedResource, error) {
 // completionObserver watches the resources one applied tree owns on the exact
 // verified target, re-verifying that target on every sweep.
 type completionObserver struct {
-	env    *resources.Environment
+	env    *environments.Environment
 	target *VerifiedKubernetesTarget
 }
 

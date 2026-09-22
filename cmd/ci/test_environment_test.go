@@ -1,13 +1,15 @@
 package ci
 
 import (
-	"github.com/codefly-dev/core/resources"
 	"testing"
+
+	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/core/resources"
 )
 
 func TestDisposableTestEnvironmentCannotReuseFixtureState(t *testing.T) {
-	declared := &resources.Environment{Name: "local", NamingScope: "retained-fixture", Fixture: "controlled"}
-	workspace := &resources.Workspace{Environments: []*resources.Environment{declared}}
+	declared := &environments.Environment{Name: "local", NamingScope: "retained-fixture", Fixture: "controlled"}
+	workspace := &resources.Workspace{Environments: []*resources.Environment{declared.Runtime()}}
 	first, err := testEnvironment(workspace, true)
 	if err != nil {
 		t.Fatal(err)
@@ -16,7 +18,7 @@ func TestDisposableTestEnvironmentCannotReuseFixtureState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, env := range []*resources.Environment{first, second} {
+	for _, env := range []*environments.Environment{first, second} {
 		if env.NamingScope == "" || env.NamingScope == declared.NamingScope {
 			t.Fatalf("disposable flow could reach retained fixture: %q", env.NamingScope)
 		}

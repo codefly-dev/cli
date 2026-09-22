@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/composition"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
@@ -27,7 +28,7 @@ import (
 // made every driver discard parameters it had no use for.
 type flowTarget struct {
 	workspace *resources.Workspace
-	env       *resources.Environment
+	env       *environments.Environment
 	module    *resources.Module
 	service   *resources.Service
 }

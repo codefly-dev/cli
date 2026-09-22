@@ -291,7 +291,7 @@ func initializeRuntime(ctx context.Context, session *AgentSession) error {
 	}
 	mappings, err := networkManager.GenerateNetworkMappings(
 		ctx,
-		descriptor.environment,
+		descriptor.environment.Runtime(),
 		descriptor.workspace,
 		resourceIdentity,
 		loadResponse.GetEndpoints(),

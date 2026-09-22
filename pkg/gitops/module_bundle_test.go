@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
 )
@@ -13,24 +14,19 @@ import (
 func TestTransportNeutralModuleWorkspaceRemovesGitOpsAuthority(t *testing.T) {
 	workspace := &resources.Workspace{
 		Name: "workspace",
-		Gitops: &resources.WorkspaceGitops{
-			RepoURL: "https://github.com/codefly-dev/manifests.git",
-			Path:    "environments",
-			Branch:  "main",
-		},
-		Environments: []*resources.Environment{{
+		Environments: []*resources.Environment{resourceEnvironment(t, &environments.Environment{
 			Name:      "production",
 			Namespace: "payments",
-			Cluster: &resources.EnvironmentCluster{
+			Cluster: &environments.EnvironmentCluster{
 				Kind:       "eks",
 				Kubeconfig: "/host/kubeconfig",
 				Context:    "production-admin",
 			},
-			Registry: &resources.EnvironmentRegistry{
+			Registry: &environments.EnvironmentRegistry{
 				URL:  "621829027644.dkr.ecr.eu-west-1.amazonaws.com/payments",
 				Auth: "ecr",
 			},
-			Gitops: &resources.EnvironmentGitops{
+			Gitops: &environments.EnvironmentGitops{
 				RepoURL:      "https://github.com/codefly-dev/manifests.git",
 				FetchRepoURL: "ssh://git@github.com/codefly-dev/manifests.git",
 				Path:         "environments",
@@ -40,8 +36,12 @@ func TestTransportNeutralModuleWorkspaceRemovesGitOpsAuthority(t *testing.T) {
 				Kind:    "1password",
 				Account: "private-account",
 			}},
-		}},
+		})},
 	}
+	setWorkspaceGitops(t, workspace, &environments.EnvironmentGitops{
+		RepoURL: "https://github.com/codefly-dev/manifests.git",
+		Path:    "environments", Branch: "main",
+	})
 	sanitized, err := encodeTransportNeutralModuleWorkspace(workspace)
 	if err != nil {
 		t.Fatal(err)

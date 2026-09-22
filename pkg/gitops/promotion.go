@@ -3,6 +3,7 @@ package gitops
 import (
 	"context"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
@@ -18,7 +19,7 @@ type ProduceRequest struct {
 	Workspace   *resources.Workspace
 	Module      *resources.Module
 	Service     *resources.Service // nil renders the whole module
-	Environment *resources.Environment
+	Environment *environments.Environment
 	AppProject  string
 	// StandAlone renders a single service without its dependencies. It applies
 	// only when Service is set and is ignored for a whole-module render.

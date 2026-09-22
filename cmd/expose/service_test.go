@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/routing"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
@@ -105,8 +106,8 @@ func TestExposedEndpointsSelectsRoutablePublicEndpointsWithHostsAndPrefix(t *tes
 			{Name: "raw", API: standards.TCP, Visibility: resources.VisibilityPublic},
 		},
 	}
-	env := &resources.Environment{
-		Ingress: []resources.EnvironmentIngressRoute{
+	env := &environments.Environment{
+		Ingress: []environments.EnvironmentIngressRoute{
 			{Service: "accounts", Hosts: []string{"api.acme.dev"}},
 		},
 	}
@@ -136,8 +137,8 @@ func TestExposedEndpointsSelectsRoutablePublicEndpointsWithHostsAndPrefix(t *tes
 // endpoint; a service-wide route (empty Endpoint) applies to all. Matching
 // works by bare name or module/service unique.
 func TestIngressHostsHonorsEndpointBindingAndUniqueForm(t *testing.T) {
-	env := &resources.Environment{
-		Ingress: []resources.EnvironmentIngressRoute{
+	env := &environments.Environment{
+		Ingress: []environments.EnvironmentIngressRoute{
 			{Service: "accounts", Endpoint: "grpc", Hosts: []string{"grpc.acme.dev"}},
 			{Service: "platform/accounts", Endpoint: "rest", Hosts: []string{"rest.acme.dev"}},
 			{Service: "accounts", Hosts: []string{"all.acme.dev", "all.acme.dev"}},

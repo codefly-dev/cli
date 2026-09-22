@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/cli/pkg/environments"
 )
 
 // KubernetesTargetBinding contains no credentials or local configuration paths.
@@ -41,7 +41,7 @@ var targetNamespaceName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 // InspectLocalKubernetesTarget reads the real API through a verified kubeconfig
 // snapshot. Namespace is explicit, not a fallback to the context's default.
-func InspectLocalKubernetesTarget(ctx context.Context, env *resources.Environment) (*KubernetesTargetInspection, error) {
+func InspectLocalKubernetesTarget(ctx context.Context, env *environments.Environment) (*KubernetesTargetInspection, error) {
 	if env == nil || len(env.Namespace) > 63 || !targetNamespaceName.MatchString(env.Namespace) {
 		return nil, errors.New("target inspection requires an explicit valid environment namespace")
 	}
@@ -85,7 +85,7 @@ func InspectLocalKubernetesTarget(ctx context.Context, env *resources.Environmen
 
 // RecheckLocalKubernetesTarget takes the independently retained binding digest,
 // not a candidate's assertions about where its outputs may be deployed.
-func RecheckLocalKubernetesTarget(ctx context.Context, env *resources.Environment, expected string) (*KubernetesTargetInspection, error) {
+func RecheckLocalKubernetesTarget(ctx context.Context, env *environments.Environment, expected string) (*KubernetesTargetInspection, error) {
 	hexDigest, ok := strings.CutPrefix(expected, "sha256:")
 	digest, err := hex.DecodeString(hexDigest)
 	if !ok || err != nil || len(digest) != sha256.Size || hexDigest != strings.ToLower(hexDigest) {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/conformance/conformancetest"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -54,20 +55,25 @@ gitops:
 	if err := os.WriteFile(workspaceConfiguration, []byte(updated), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	workspace.Environments = append(workspace.Environments, &resources.Environment{
+	workspace.Environments = append(workspace.Environments, resourceEnvironment(t, &environments.Environment{
 		Name:    "aws",
-		Cluster: &resources.EnvironmentCluster{Kind: "eks"},
-		ManagedServices: map[string]resources.EnvironmentManagedService{
+		Cluster: &environments.EnvironmentCluster{Kind: "eks"},
+		ManagedServices: map[string]environments.EnvironmentManagedService{
 			"cache":          {},
 			"object-storage": {},
 			"store":          {},
 			"vault":          {},
 		},
-	})
+	}))
 	renderMindShapedFixture(t, workspace.Dir(), "aws")
 	configureSSHSigning(t)
 	repository := "https://github.com/codefly-test/manifests.git"
-	workspace.Gitops.RepoURL = repository
+	gitopsDefaults, err := environments.WorkspaceGitops(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitopsDefaults.RepoURL = repository
+	setWorkspaceGitops(t, workspace, gitopsDefaults)
 	t.Setenv("GIT_CONFIG_COUNT", "4")
 	t.Setenv("GIT_CONFIG_KEY_3", "url.file://"+remote+".insteadOf")
 	t.Setenv("GIT_CONFIG_VALUE_3", repository)
@@ -286,7 +292,7 @@ func TestLocalK3dDisposableSolutionQualification(t *testing.T) {
 	installFakeSolutionExecutor(t, &fakeSolutionExecutor{})
 	remote := createBareRepository(t)
 	workspace := loadSolutionWorkspace(t, remote)
-	env := workspace.FindEnvironment("local")
+	env := selectedEnvironment(t, workspace, "local")
 	if env == nil {
 		t.Fatal("environment local not found")
 	}

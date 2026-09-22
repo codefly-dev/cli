@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,12 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
+	"github.com/spf13/cobra"
 )
 
 const fixtureContract = `{
-  "schema": "codefly/cell/v2",
-  "cell": "hosted-eastus2",
+  "schema": "codefly/coordinate/v1",
   "coordinate": "hosted-eastus2",
   "environment": {
     "name": "azure",
@@ -65,13 +67,31 @@ func doImport(t *testing.T, dir string, opts importOptions) string {
 	return out.String()
 }
 
-func loadWorkspace(t *testing.T, dir string) *resources.Workspace {
+type importedWorkspace struct {
+	*resources.Workspace
+	t *testing.T
+}
+
+func (ws *importedWorkspace) FindEnvironment(name string) *environments.Environment {
+	ws.t.Helper()
+	resource := ws.Workspace.FindEnvironment(name)
+	if resource == nil {
+		return nil
+	}
+	env, err := environments.FromRuntime(resource)
+	if err != nil {
+		ws.t.Fatal(err)
+	}
+	return env
+}
+
+func loadWorkspace(t *testing.T, dir string) *importedWorkspace {
 	t.Helper()
 	ws, err := resources.LoadWorkspaceFromDir(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("load workspace: %v", err)
 	}
-	return ws
+	return &importedWorkspace{Workspace: ws, t: t}
 }
 
 func readFile(t *testing.T, path string) string {
@@ -108,6 +128,55 @@ func TestImportCreatesEnvironment(t *testing.T) {
 	}
 	if env.Gitops == nil || env.Gitops.Path != "workloads/hosted/staging/acme" {
 		t.Fatalf("gitops path = %+v, want workloads/hosted/staging/acme", env.Gitops)
+	}
+}
+
+func TestImportActualInfraBaseOutput(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "pkg", "environments", "testdata", "coordinates", "infra-base-lodestar.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := writeWorkspace(t, "name: product\nlayout: modules\n")
+	doImport(t, dir, importOptions{envName: "staging", contractData: data})
+	env := loadWorkspace(t, dir).FindEnvironment("staging")
+	if env.Namespace != "lodestar" {
+		t.Fatalf("namespace = %q", env.Namespace)
+	}
+	contract, err := environments.ParseCoordinateContract(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(contract.Environment.ServiceConfig, env.ServiceConfig) {
+		t.Fatal("import changed producer values")
+	}
+	before := readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName))
+	doImport(t, dir, importOptions{envName: "staging", contractData: data})
+	if after := readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName)); before != after {
+		t.Fatalf("re-import changed the document:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestImportRefusesNamespaceChangeWithoutWriting(t *testing.T) {
+	for _, dryRun := range []bool{false, true} {
+		dir := writeWorkspace(t, "name: acme\nlayout: modules\nenvironments:\n  - name: azure\n    namespace: existing\n    service-identity:\n      default:\n        principal: existing-principal\n")
+		path := filepath.Join(dir, resources.WorkspaceConfigurationName)
+		before := readFile(t, path)
+		err := runImport(t.Context(), &importOptions{dir: dir, envName: "azure", contractData: []byte(fixtureContract), stdout: io.Discard, dryRun: dryRun})
+		if err == nil || !strings.Contains(err.Error(), "already targets namespace") {
+			t.Fatalf("error = %v", err)
+		}
+		if after := readFile(t, path); after != before {
+			t.Fatal("refused import changed workspace")
+		}
+	}
+}
+
+func TestImportPreservesOmittedNamespace(t *testing.T) {
+	dir := writeWorkspace(t, "name: acme\nlayout: modules\nenvironments:\n  - name: azure\n    namespace: existing\n")
+	doImport(t, dir, importOptions{contractData: []byte(`{"schema":"codefly/coordinate/v1","environment":{"name":"azure","configuration-profile":"staging"}}`)})
+	env := loadWorkspace(t, dir).FindEnvironment("azure")
+	if env.Namespace != "existing" || env.ConfigurationProfile != "staging" {
+		t.Fatalf("import lost existing target or incoming profile: %+v", env)
 	}
 }
 
@@ -196,9 +265,10 @@ func TestImportPreservesOperatorFields(t *testing.T) {
 func TestImportRejectsRemovedContractsWithoutWriting(t *testing.T) {
 	for name, contract := range map[string]string{
 		"legacy inventory":   `{"schema":"codefly/cell/v1","databases":[{"engine":"postgres"}]}`,
+		"superseded cell/v2": `{"schema":"codefly/cell/v2","cell":"hosted-eastus2","environment":{"name":"azure","namespace":"acme"}}`,
 		"transport":          strings.Replace(fixtureContract, `"port": 5432,`, `"port": 5432,"transport":{"mode":"proxy"},`, 1),
 		"audit sinks":        strings.Replace(fixtureContract, `"name": "azure",`, `"name": "azure","audit-sinks":[{"name":"audit"}],`, 1),
-		"unknown capability": strings.Replace(fixtureContract, `"cell": "hosted-eastus2",`, `"cell": "hosted-eastus2","requires_capabilities":["managed-identity-transport"],`, 1),
+		"unknown capability": strings.Replace(fixtureContract, `"coordinate": "hosted-eastus2",`, `"coordinate": "hosted-eastus2","requires_capabilities":["managed-identity-transport"],`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := writeWorkspace(t, existingAzureWorkspace)
@@ -222,13 +292,13 @@ func TestImportRejectsWrongSchema(t *testing.T) {
 	opts := importOptions{
 		dir:          dir,
 		envName:      "azure",
-		contractData: []byte(`{"schema": "obin-infra/cell-contract/v1", "cell": "x"}`),
+		contractData: []byte(`{"schema": "obin-infra/cell-contract/v1", "coordinate": "x"}`),
 		now:          time.Now(),
 		stdout:       &bytes.Buffer{},
 	}
 	err := runImport(context.Background(), &opts)
-	if err == nil || !strings.Contains(err.Error(), "unsupported cell-contract schema") {
-		t.Fatalf("err = %v, want unsupported cell-contract schema", err)
+	if err == nil || !strings.Contains(err.Error(), "unsupported coordinate-contract schema") {
+		t.Fatalf("err = %v, want unsupported coordinate-contract schema", err)
 	}
 }
 
@@ -250,7 +320,7 @@ func TestImportRejectsRetargetingWithoutWriting(t *testing.T) {
 
 func TestImportCarriesGenericFieldsIntoExistingEnvironment(t *testing.T) {
 	dir := writeWorkspace(t, existingAzureWorkspace)
-	contract := `{"schema":"codefly/cell/v2","environment":{
+	contract := `{"schema":"codefly/coordinate/v1","environment":{
 	  "name":"azure","namespace":"acme","configuration-profile":"staging",
 	  "managed-services":{"store":{
 	    "kind":"external","external-name":"endpoint.example","port":8443,
@@ -300,6 +370,117 @@ func TestImportRestampsProvenanceComment(t *testing.T) {
 	content := readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName))
 	if n := strings.Count(content, provenanceMarker); n != 1 {
 		t.Fatalf("provenance comment count = %d, want 1\n%s", n, content)
+	}
+}
+
+func TestImportCarriesResolvedServiceValues(t *testing.T) {
+	dir := writeWorkspace(t, existingAzureWorkspace)
+	contract := `{"schema":"codefly/coordinate/v1","coordinate":"hosted-eastus2","environment":{
+	  "name":"azure","namespace":"acme",
+	  "service-config":{"services":{"frontend":{"values":{"region":"eastus2"}}}}
+	}}`
+	doImport(t, dir, importOptions{contractData: []byte(contract)})
+
+	ws := loadWorkspace(t, dir)
+	env := ws.FindEnvironment("azure")
+	if env == nil {
+		t.Fatal("azure environment missing after import")
+	}
+	if env.ServiceConfig == nil {
+		t.Fatal("service-config dropped on import")
+	}
+	got := env.ServiceConfig.Services["frontend"].Values
+	if want := map[string]string{"region": "eastus2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("resolved values = %v, want %v", got, want)
+	}
+}
+
+// The coordinate is an optional provenance label, so an omitted one must not
+// leave a dangling subject in the comment this persists to workspace.codefly.yaml.
+func TestImportOmitsAnAbsentCoordinateFromProvenance(t *testing.T) {
+	dir := writeWorkspace(t, "name: acme\nlayout: modules\n")
+	contract := `{"schema":"codefly/coordinate/v1","environment":{"name":"azure","namespace":"acme"}}`
+
+	out := doImport(t, dir, importOptions{contractData: []byte(contract)})
+
+	if strings.Contains(out, "contract  into") {
+		t.Errorf("stdout has a dangling subject: %q", out)
+	}
+	content := readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName))
+	for _, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, provenanceMarker+"  ") {
+			t.Errorf("provenance comment has a dangling subject: %q", line)
+		}
+	}
+}
+
+func TestImportReplacesLegacyProvenanceComment(t *testing.T) {
+	stamped := "name: acme\nlayout: modules\nenvironments:\n" +
+		"    # " + legacyProvenanceMarker + " hosted-eastus2 (hosted-eastus2) on 2026-09-05T12:00:00Z; re-run: codefly environment import azure --cell-contract …\n" +
+		"    - name: azure\n      namespace: acme\n"
+	dir := writeWorkspace(t, stamped)
+
+	doImport(t, dir, importOptions{})
+
+	content := readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName))
+	if strings.Contains(content, legacyProvenanceMarker) {
+		t.Fatalf("pre-coordinate/v1 provenance comment survived re-import\n%s", content)
+	}
+	if n := strings.Count(content, provenanceMarker); n != 1 {
+		t.Fatalf("provenance comment count = %d, want 1\n%s", n, content)
+	}
+}
+
+func TestImportAcceptsFormerContractFlagSpelling(t *testing.T) {
+	if importCmd.Flags().Lookup("coordinate-contract") == nil {
+		t.Fatal("--coordinate-contract is not registered")
+	}
+	former := importCmd.Flags().Lookup("cell-contract")
+	if former == nil {
+		t.Fatal("--cell-contract is not registered")
+	}
+	if former.Deprecated == "" {
+		t.Fatal("--cell-contract is not marked deprecated")
+	}
+
+	for name, tc := range map[string]struct {
+		args     []string
+		want     string
+		wantFlag string
+		wantErr  bool
+	}{
+		"current":         {args: []string{"--coordinate-contract", "c.json"}, want: "c.json", wantFlag: "coordinate-contract"},
+		"former spelling": {args: []string{"--cell-contract", "c.json"}, want: "c.json", wantFlag: "cell-contract"},
+		"neither":         {args: nil, want: "", wantFlag: "coordinate-contract"},
+		// An explicitly empty former spelling must not be reported against the
+		// flag the operator did not pass.
+		"empty former spelling": {args: []string{"--cell-contract", ""}, want: "", wantFlag: "cell-contract"},
+		"both":                  {args: []string{"--coordinate-contract", "a.json", "--cell-contract", "b.json"}, wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := &cobra.Command{}
+			cmd.Flags().String("coordinate-contract", "", "")
+			cmd.Flags().String("cell-contract", "", "")
+			if err := cmd.Flags().Parse(tc.args); err != nil {
+				t.Fatal(err)
+			}
+			got, flag, err := contractFlag(cmd)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("passing both spellings accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("contractFlag path = %q, want %q", got, tc.want)
+			}
+			if flag != tc.wantFlag {
+				t.Fatalf("contractFlag reported --%s, want --%s", flag, tc.wantFlag)
+			}
+		})
 	}
 }
 
@@ -445,7 +626,7 @@ environments:
 
 // TestImportPreservesClusterKubeconfig is the regression test for the finding
 // that importing replaced the cluster node wholesale, dropping the operator's
-// kubeconfig path — a local fact the cell contract never carries. kind/context
+// kubeconfig path — a local fact the coordinate contract never carries. kind/context
 // must update; kubeconfig must survive.
 func TestImportPreservesClusterKubeconfig(t *testing.T) {
 	src := `name: acme
@@ -562,13 +743,66 @@ environments:
       description: staging
 `
 	dir := writeWorkspace(t, src)
-	doImport(t, dir, importOptions{}) // no --namespace: defaults to workspace name "acme"
+	doImport(t, dir, importOptions{}) // no --namespace: use the contract's "acme"
 	ws := loadWorkspace(t, dir)
 	env := ws.FindEnvironment("azure")
 	if env.Namespace != "acme" {
-		t.Errorf("namespace = %q, want the resolved workspace name acme", env.Namespace)
+		t.Errorf("namespace = %q, want the producer's declared namespace acme", env.Namespace)
 	}
 	if !strings.HasSuffix(env.Gitops.Path, "/"+env.Namespace) {
 		t.Errorf("gitops.path %q does not agree with namespace %q", env.Gitops.Path, env.Namespace)
+	}
+}
+
+// executeImport runs the cobra command rather than runImport, so the test sees
+// the command's exit status — the thing a CI step gates on.
+func executeImport(t *testing.T, dir string, args ...string) error {
+	t.Helper()
+	contract := filepath.Join(dir, "cell.json")
+	if err := os.WriteFile(contract, []byte(fixtureContract), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	importNamespace = ""
+	importDryRun = false
+	Cmd.SetArgs(append([]string{"import", "azure", "--cell-contract", contract}, args...))
+	Cmd.SetOut(io.Discard)
+	Cmd.SetErr(io.Discard)
+	t.Cleanup(func() { Cmd.SetArgs(nil) })
+	return Cmd.Execute()
+}
+
+func stubPostImportValidate(t *testing.T, result error) *int {
+	t.Helper()
+	calls := 0
+	PostImportValidate = func(context.Context, string, string) error {
+		calls++
+		return result
+	}
+	t.Cleanup(func() { PostImportValidate = nil })
+	return &calls
+}
+
+func TestImportFailsWhenPostValidationRefusesWorkspace(t *testing.T) {
+	dir := writeWorkspace(t, "name: acme\nlayout: modules\n")
+	stubPostImportValidate(t, errors.New("workspace is not ready"))
+
+	if err := executeImport(t, dir); err == nil {
+		t.Fatal("import exited without error although post-import validation refused the workspace")
+	}
+	if loadWorkspace(t, dir).FindEnvironment("azure") == nil {
+		t.Fatal("import failed without writing the environment the validation was run against")
+	}
+}
+
+func TestImportDryRunSkipsPostValidation(t *testing.T) {
+	dir := writeWorkspace(t, "name: acme\nlayout: modules\n")
+	calls := stubPostImportValidate(t, errors.New("workspace is not ready"))
+
+	if err := executeImport(t, dir, "--dry-run"); err != nil {
+		t.Fatalf("dry-run returned error: %v", err)
+	}
+	if *calls != 0 {
+		t.Fatalf("dry-run ran post-import validation %d time(s)", *calls)
 	}
 }

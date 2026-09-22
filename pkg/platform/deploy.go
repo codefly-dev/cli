@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/deployments"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -23,12 +24,12 @@ type Deployment struct {
 }
 
 type DeploymentManager struct {
-	env         *resources.Environment
+	env         *environments.Environment
 	workspace   *resources.Workspace
 	deployments []Deployment
 }
 
-func NewDeploymentManager(ctx context.Context, workspace *resources.Workspace, env *resources.Environment) *DeploymentManager {
+func NewDeploymentManager(_ context.Context, workspace *resources.Workspace, env *environments.Environment) *DeploymentManager {
 	return &DeploymentManager{workspace: workspace, env: env}
 }
 

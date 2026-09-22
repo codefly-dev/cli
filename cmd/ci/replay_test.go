@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/codefly-dev/core/resources"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/codefly-dev/core/resources"
 )
 
 func TestReplayPreservesSelectionAndRejectsAlterations(t *testing.T) {

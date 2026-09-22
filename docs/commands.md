@@ -946,27 +946,30 @@ the next step) to link the generated library into the entry service locally.
 Declare and inspect the deploy environments in `workspace.codefly.yaml`.
 
 ```bash
-codefly environment import <env> --cell-contract <file|-> [--namespace <ns>] [--dry-run]
+codefly environment import <env> --coordinate-contract <file|-> [--namespace <ns>] [--dry-run]
 codefly environment show <env> [--json]
 ```
 
 #### `codefly environment import`
 
-Import a producer-independent `codefly/cell/v2` descriptor whose `environment`
+Import a producer-independent `codefly/coordinate/v1` descriptor whose `environment`
 contains Codefly's environment fields. Producers supply resolved endpoints,
 ports, secret references, runtime identities and delivery paths. The CLI does
 not interpret a provider's infrastructure inventory or infer service aliases.
 
 ```bash
-codefly environment import production --cell-contract cell.json --dry-run
-codefly environment import production --cell-contract cell.json
+codefly environment import production --coordinate-contract coordinate.json --dry-run
+codefly environment import production --coordinate-contract coordinate.json
 ```
 
 The requested environment and namespace must match the descriptor. The namespace
-defaults to the environment's existing namespace or the workspace name; select
-another declared target with `--namespace`. This flag does not rewrite the
-contract's delivery paths or secret references. Legacy v1 descriptors are rejected;
-their producers must emit explicit v2 declarations.
+comes from the producer declaration; `--namespace` asserts that declared target.
+Re-import refuses to change an existing namespace while retaining its identity,
+secrets and delivery declarations. This flag does not rewrite the
+contract's delivery paths or secret references. The superseded `codefly/cell/v1`
+and `codefly/cell/v2` descriptors are rejected; their producers must emit explicit
+`codefly/coordinate/v1` declarations. `--cell-contract` remains accepted as the
+former spelling of `--coordinate-contract` for one release.
 
 Declared fields replace their exact named values. Maps merge by explicit key;
 omitted fields and unrelated entries remain intact. Explicit empty maps, empty
@@ -975,9 +978,11 @@ There is no special `store` alias, single-database limit, default secret path or
 ignored producer extension. Unknown fields and capabilities fail validation.
 
 An import re-serializes only the selected environment item. Surrounding workspace
-bytes remain unchanged; a provenance comment records the cell, coordinate and
+bytes remain unchanged; a provenance comment records the coordinate and
 import time. `--dry-run` prints the diff without writing. After a write, workspace
-readiness validation runs for the selected environment.
+readiness validation runs for the selected environment; when it reports the
+workspace is not ready, the command prints the diagnostics and exits non-zero.
+The merged file is still written, so the diagnostics can be read against it.
 
 #### `codefly environment show`
 
@@ -1084,7 +1089,7 @@ codefly login
 ### `codefly publish library <name>`
 
 Publish a workspace library's language exports (`codefly add library`) to the durable stores configured under the workspace's `libraries.publish` block — a GitHub repository tagged at the version for `go`/`python`, an npm-compatible registry for `typescript`. Published versions are immutable: an identical retry adopts the existing version, while different bytes require a version bump.
-A publish never creates a repository on its own. Pass `--create-missing-repository` to let it, and the repository is **private** unless you also pass `--public-repository` (which requires `--create-missing-repository`: an existing repository's visibility is never changed by a publish). Both are deliberate: a generated client's bindings carry every message in its contract, not only the services its facade exposes, so a public repository discloses a module's whole surface. Where a library may be published, and whether that destination is public, is an infrastructure fact — prefer taking it from the platform's cell contract over hardcoding it.
+A publish never creates a repository on its own. Pass `--create-missing-repository` to let it, and the repository is **private** unless you also pass `--public-repository` (which requires `--create-missing-repository`: an existing repository's visibility is never changed by a publish). Both are deliberate: a generated client's bindings carry every message in its contract, not only the services its facade exposes, so a public repository discloses a module's whole surface. Where a library may be published, and whether that destination is public, is an infrastructure fact — prefer taking it from the platform's coordinate contract over hardcoding it.
 
 `--create-missing-repository` needs a GitHub credential with repository-creation scope (`GITHUB_TOKEN`, or `gh auth login`); without one the publish fails naming what is missing rather than silently skipping the creation. When the repository it publishes into is private, the reported install hint carries `GOPRIVATE` for the owner's namespace, because a bare `go get` resolves through the public module proxy and cannot see a private repository. If the repository already exists and is public while a private one was requested, the publish proceeds and warns: its visibility is not a publish's to rewrite.
 

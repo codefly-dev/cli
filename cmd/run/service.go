@@ -18,6 +18,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/engine"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/processgroup"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
@@ -782,7 +783,7 @@ func resolveDockerHost(ctx context.Context) (contextName, endpoint string) {
 // this invocation's copy only — never to the shared declaration.
 // An explicitly passed empty --naming-scope clears a declared scope; an
 // absent flag keeps it.
-func runEnvironment(workspace *resources.Workspace) (*resources.Environment, error) {
+func runEnvironment(workspace *resources.Workspace) (*environments.Environment, error) {
 	env, err := orchestration.SelectEnvironment(workspace, environmentName)
 	if err != nil {
 		return nil, err
@@ -798,7 +799,7 @@ func runEnvironment(workspace *resources.Workspace) (*resources.Environment, err
 // flag: an environment declares the fixture its runtime uses, so a workspace
 // naming one in workspace.codefly.yaml runs with the flag unset, and a typo
 // there reaches the stack exactly as an unverified flag would.
-func runFixture(ctx context.Context, workspace *resources.Workspace, env *resources.Environment) (string, error) {
+func runFixture(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (string, error) {
 	return composition.ResolveFixtureSelection(ctx, workspace, env, fixture)
 }
 
@@ -1016,7 +1017,7 @@ func parseRemote(workspace *resources.Workspace, remotes []string) ([]*orchestra
 			return nil, err
 		}
 		// Need to check if we know this environment
-		env := &resources.Environment{Name: tokens[1]}
+		env := &environments.Environment{Name: tokens[1]}
 		out = append(out, &orchestration.Remote{ServiceWithModule: serviceWithModule, Environment: env})
 	}
 	return out, nil

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	corecomposition "github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
 )
@@ -452,7 +453,7 @@ func TestResolveFixtureSelectionPrefersTheOverride(t *testing.T) {
 	workspace := composedWorkspace(t, composedModule{name: "saas", manifest: fixturePackageManifest})
 
 	selected, err := ResolveFixtureSelection(context.Background(), workspace,
-		&resources.Environment{Fixture: "staging-seed"}, "dev-admin")
+		&environments.Environment{Fixture: "staging-seed"}, "dev-admin")
 	if err != nil {
 		t.Fatalf("the override was refused: %v", err)
 	}
@@ -465,7 +466,7 @@ func TestResolveFixtureSelectionFallsBackToTheEnvironment(t *testing.T) {
 	workspace := composedWorkspace(t, composedModule{name: "saas", manifest: fixturePackageManifest})
 
 	selected, err := ResolveFixtureSelection(context.Background(), workspace,
-		&resources.Environment{Fixture: "dev-admin"}, "")
+		&environments.Environment{Fixture: "dev-admin"}, "")
 	if err != nil {
 		t.Fatalf("the environment's declaration was refused: %v", err)
 	}
@@ -480,7 +481,7 @@ func TestResolveFixtureSelectionVerifiesTheResolvedValue(t *testing.T) {
 	workspace := composedWorkspace(t, composedModule{name: "saas", manifest: fixturePackageManifest})
 
 	if _, err := ResolveFixtureSelection(context.Background(), workspace,
-		&resources.Environment{Fixture: "dev-admn"}, ""); err == nil {
+		&environments.Environment{Fixture: "dev-admn"}, ""); err == nil {
 		t.Fatal("an environment-declared typo reached the run unverified")
 	}
 }

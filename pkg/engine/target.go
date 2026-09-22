@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/sourceworkspace"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
@@ -36,7 +37,7 @@ type serviceDescriptor struct {
 	module      *resources.Module
 	service     *resources.Service
 	identity    *basev0.ServiceIdentity
-	environment *resources.Environment
+	environment *environments.Environment
 	cleanup     func() error
 }
 
@@ -155,7 +156,7 @@ func resolveServiceDescriptor(ctx context.Context, target ServiceTarget) (*servi
 	if err != nil {
 		return nil, fmt.Errorf("resolve service path relative to workspace: %w", err)
 	}
-	environment := resources.LocalEnvironment()
+	environment := environments.LocalEnvironment()
 	identity := &basev0.ServiceIdentity{
 		Name:                service.Name,
 		Version:             service.Version,
@@ -188,7 +189,7 @@ func prepareSourceDescriptor(ctx context.Context, target ServiceTarget) (*servic
 		_ = prepared.Close()
 		return nil, fmt.Errorf("resolve prepared source path: %w", err)
 	}
-	environment := resources.LocalEnvironment()
+	environment := environments.LocalEnvironment()
 	return &serviceDescriptor{
 		target:    target,
 		workspace: prepared.Workspace,

@@ -13,17 +13,17 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
-	"github.com/codefly-dev/core/resources"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/wool"
 	gopsnet "github.com/shirou/gopsutil/v3/net"
 	"github.com/shirou/gopsutil/v3/process"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 /*
@@ -91,7 +91,7 @@ type Runner struct {
 	outputEnv string
 
 	// Running remote
-	remoteEnvironment *resources.Environment
+	remoteEnvironment *environments.Environment
 
 	// testRequest carries CLI-provided test filtering / suite / extra-args
 	// to the agent's Test RPC. Set by Flow only on the origin runner in
@@ -320,7 +320,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
 	}
-	networkMappings, err := runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env, runner.world.Workspace, runner.instance.Identity, runner.endpoints, runtimeContext)
+	networkMappings, err := runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env.Runtime(), runner.world.Workspace, runner.instance.Identity, runner.endpoints, runtimeContext)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
@@ -579,7 +579,7 @@ func (runner *Runner) InitRemote(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
 	}
-	networkMappings, err := runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env, runner.world.Workspace, runner.instance.Identity, runner.endpoints, runtimeContext)
+	networkMappings, err := runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env.Runtime(), runner.world.Workspace, runner.instance.Identity, runner.endpoints, runtimeContext)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
 	}
@@ -1330,7 +1330,7 @@ func (runner *Runner) WithOutputEnv(path string) {
 	runner.outputEnv = path
 }
 
-func (runner *Runner) WithRemote(environment *resources.Environment) {
+func (runner *Runner) WithRemote(environment *environments.Environment) {
 	runner.remoteEnvironment = environment
 }
 

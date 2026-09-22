@@ -1,0 +1,11 @@
+{
+  "schema": "codefly/cell/v1",
+  "cell": "hosted-eastus2",
+  "coordinate": "hosted/azure/eastus2/US/staging",
+  "cluster": { "kind": "aks", "context": "obinh-eus2-aks", "private_api": true },
+  "dns": { "app_host_suffix": "staging.eastus2.azure.obin.obin.ai" },
+  "registries": [ { "kind": "acr", "url": "obinheus2acr.azurecr.io", "public": false } ],
+  "databases": [ { "engine": "postgres", "kind": "azure-postgres-flexible", "name": "platform", "fqdn": "obinh-eus2-platform.postgres.database.azure.com", "egress_cidrs": ["10.20.11.0/28"], "database_names": ["unleash", "users"] } ],
+  "secret_stores": [ { "kind": "ClusterSecretStore", "name": "azure-keyvault" } ],
+  "gitops": { "repo": "https://github.com/obin-ai/obin-fleet.git", "workloads_path_prefix": "workloads/hosted/staging" }
+}

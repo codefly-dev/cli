@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/composition"
+	"github.com/codefly-dev/cli/pkg/environments"
 	hostprovider "github.com/codefly-dev/cli/pkg/provider"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -418,7 +419,7 @@ func overlayDirective(overlay *resources.LocalOverlay, module string) *resources
 	return overlay.Resolve[module]
 }
 
-func checkEnvironment(ws *resources.Workspace, name string, report *workspaceReadinessReport) *resources.Environment {
+func checkEnvironment(ws *resources.Workspace, name string, report *workspaceReadinessReport) *environments.Environment {
 	env := ws.FindEnvironment(name)
 	if env == nil {
 		var declared []string
@@ -444,7 +445,12 @@ func checkEnvironment(ws *resources.Workspace, name string, report *workspaceRea
 	} else {
 		report.add("", "environment", "ok", fmt.Sprintf("%s (implicit — not declared in %s)", env.Name, resources.WorkspaceConfigurationName), "")
 	}
-	return env
+	deployment, err := environments.FromRuntime(env)
+	if err != nil {
+		report.add(codeEnvironmentNotFound, "environment", "fail", err.Error(), "correct the environment declarations")
+		return nil
+	}
+	return deployment
 }
 
 // checkProviderBindings validates external provider bindings declared for the
@@ -454,7 +460,7 @@ func checkEnvironment(ws *resources.Workspace, name string, report *workspaceRea
 // agent or reaches the network. A missing document is fine — providers are
 // opt-in; an unknown-schema document is reported so an old CLI does not silently
 // ignore newer bindings.
-func checkProviderBindings(ctx context.Context, ws *resources.Workspace, env *resources.Environment, report *workspaceReadinessReport) {
+func checkProviderBindings(ctx context.Context, ws *resources.Workspace, env *environments.Environment, report *workspaceReadinessReport) {
 	doc, present, err := hostprovider.LoadDocument(ws.Dir())
 	if err != nil {
 		code := hostprovider.CodeBindingsUnreadable
@@ -487,8 +493,8 @@ func checkProviderBindings(ctx context.Context, ws *resources.Workspace, env *re
 // and their executables. It returns the usable resolvers by scheme plus the
 // schemes whose backend is declared but unusable (executable missing) — those
 // are already reported, so reference resolution skips them silently.
-func checkSecretProviders(env *resources.Environment, report *workspaceReadinessReport) (map[string]configurations.SecretResolver, map[string]bool) {
-	resolvers, err := configurations.ResolversFromEnvironment(env)
+func checkSecretProviders(env *environments.Environment, report *workspaceReadinessReport) (map[string]configurations.SecretResolver, map[string]bool) {
+	resolvers, err := configurations.ResolversFromEnvironment(env.Runtime())
 	if err != nil {
 		report.add(codeProviderNotConfigured, "secret providers", "fail",
 			err.Error(),
@@ -586,7 +592,7 @@ type scopedConfiguration struct {
 // without ever creating directories (core's reader would mkdir a missing
 // configurations/<env>; the doctor reports it instead). It returns the
 // configurations whose secret values are in scope for reference resolution.
-func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env *resources.Environment, serviceScoped bool, scope []*resources.Service, requiredBy map[string][]string, report *workspaceReadinessReport) []scopedConfiguration {
+func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env *environments.Environment, serviceScoped bool, scope []*resources.Service, requiredBy map[string][]string, report *workspaceReadinessReport) []scopedConfiguration {
 	required := make([]string, 0, len(requiredBy))
 	for name := range requiredBy {
 		required = append(required, name)
@@ -712,7 +718,7 @@ func loadConfigurationDir(ctx context.Context, dir, label, relDir string, report
 // through the environment's configured backend, in memory, and discards the
 // values immediately. This is the behavior being diagnosed: a locked or
 // unavailable provider must fail here, not halfway through `codefly run`.
-func checkSecretReferences(ctx context.Context, env *resources.Environment, resolvers map[string]configurations.SecretResolver, unavailable map[string]bool, toResolve []scopedConfiguration, report *workspaceReadinessReport) {
+func checkSecretReferences(ctx context.Context, env *environments.Environment, resolvers map[string]configurations.SecretResolver, unavailable map[string]bool, toResolve []scopedConfiguration, report *workspaceReadinessReport) {
 	failuresBefore := len(report.Checks)
 	resolved, plaintext := 0, 0
 	attempted := make(map[string]bool)
@@ -807,7 +813,7 @@ func checkSecretReferences(ctx context.Context, env *resources.Environment, reso
 	}
 }
 
-func accountHint(env *resources.Environment) string {
+func accountHint(env *environments.Environment) string {
 	for _, provider := range env.Secrets {
 		if provider.Account != "" {
 			return fmt.Sprintf(" (account %q)", provider.Account)

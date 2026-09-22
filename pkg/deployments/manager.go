@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -144,7 +145,7 @@ func KubernetesOutputProfile(manager Manager) builderv0.KubernetesOutputProfile 
 func NewLocalApplyManager(
 	ctx context.Context,
 	workspace *resources.Workspace,
-	env *resources.Environment,
+	env *environments.Environment,
 	completion CompletionCondition,
 ) (*LocalApplyManager, error) {
 	if !completion.Stage.AtLeast(StageApplied) {
@@ -173,7 +174,7 @@ func NewLocalApplyManager(
 
 type LocalApplyManager struct {
 	Workspace  *resources.Workspace
-	Env        *resources.Environment
+	Env        *environments.Environment
 	target     VerifiedKubernetesTarget
 	completion CompletionCondition
 	budget     observationBudget
@@ -390,11 +391,11 @@ func (l *LocalApplyManager) Evidence() DeploymentEvidence {
 
 type RenderManager struct {
 	Workspace *resources.Workspace
-	Env       *resources.Environment
+	Env       *environments.Environment
 	evidence  evidenceRecorder
 }
 
-func NewRenderManager(workspace *resources.Workspace, env *resources.Environment) *RenderManager {
+func NewRenderManager(workspace *resources.Workspace, env *environments.Environment) *RenderManager {
 	return &RenderManager{
 		Workspace: workspace,
 		Env:       env,

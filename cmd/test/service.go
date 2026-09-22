@@ -11,6 +11,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/run"
 	"github.com/codefly-dev/cli/pkg/cli"
 	clicomposition "github.com/codefly-dev/cli/pkg/composition"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
@@ -201,7 +202,7 @@ func resolveTestPins(ctx context.Context) error {
 // the run path: the workspace declaration wins, and --naming-scope applies to
 // this invocation's copy only — never to the shared declaration. An explicitly
 // empty scope clears a declared one; an absent flag keeps it.
-func testEnvironment(workspace *resources.Workspace) (*resources.Environment, error) {
+func testEnvironment(workspace *resources.Workspace) (*environments.Environment, error) {
 	env, err := orchestration.SelectEnvironment(workspace, environmentName)
 	if err != nil {
 		return nil, err
