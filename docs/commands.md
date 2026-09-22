@@ -1208,7 +1208,14 @@ enforcing backend, a toolbox release must be qualified on a host that has one â€
 stage fails rather than qualifying the artifact unconfined. A declared permission the running binary does not serve, an
 operation naming a tool it does not advertise, a refusal the host served, a
 refusal that reached the plugin, or a session that does not release its process
-fails the stage.
+fails the stage. A declared permission is read with Core's own matcher, so a
+wildcard ceiling such as `git.*` is qualified the way catalog admission reads
+it.
+
+Every fixture must declare at least one operation the host serves **and** at
+least one it refuses: a release qualified only on its success path has not
+shown that its permission boundary does anything. One tool cannot be both, since
+the policy decision point is keyed by tool rather than by operation name.
 
 Provider agents declare `conformance.mode: provider-requests` and a fixture
 naming the requests their `provider.codefly.yaml` packages:
@@ -1232,12 +1239,19 @@ operations:
       account_id: acct_0001
 ```
 
-CI composes each declared operation into the exact request the host would plan
-and runs it through the real provider broker with an exhausted request budget,
-so the descriptor packaging, digest binding, credential-purpose binding and
-read-only rule are all admitted without contacting the provider's upstream API.
-Each operation is additionally probed with a tampered descriptor digest, and a
-mutating one in a read-only context; both must be refused.
+CI composes each declared operation into the request the host would plan for it
+and runs it through the real provider broker, delivering from a sealed cassette
+rather than the network. Every admission check a live call makes therefore runs:
+descriptor packaging and digest, the read-only rule, the budget, origin
+admission, request binding (method, remote-id path parameters, query and body
+allowlists, ownership binding), checkpoint ordering, credential injection and
+the byte budget â€” with no request to the provider's upstream API. A declared
+operation carrying a field its descriptor does not allow fails here, as it would
+at runtime. Each operation is additionally probed with a tampered descriptor
+digest, and a mutating one in a read-only context; both must be refused. The
+idempotency key and response-policy digest are host-owned constants: the
+protocol requires them to be present and stable, not to match a value only a
+live coordinator can compute.
 
 Both declarations are required even when a run passes `--skip-conformance`: a
 release with no suite to run has nothing to waive.

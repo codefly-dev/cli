@@ -262,6 +262,11 @@ func closeToolboxSession(ctx context.Context, opened *session.ToolboxSession, au
 // Core proves every advertised tool is covered by the reviewed permission
 // ceiling; this proves the reviewed ceiling claims no authority the release
 // does not actually serve, and that every declared operation names a live tool.
+//
+// A declaration is read with Core's own matcher, not by string equality: the
+// manifest may declare a wildcard ceiling such as "git.*", which catalog
+// admission expands over the advertised tools. Comparing literals would reject
+// every toolbox that uses the wildcard form Core documents.
 func assertToolboxCatalogIsExact(manifest *resources.Toolbox, advertised []string, fixture toolboxConformanceFixture) error {
 	serving := map[string]bool{}
 	for _, name := range advertised {
@@ -269,7 +274,7 @@ func assertToolboxCatalogIsExact(manifest *resources.Toolbox, advertised []strin
 	}
 	unserved := []string{}
 	for _, declaration := range manifest.Permissions.All() {
-		if !serving[declaration.Action] {
+		if !declarationCoversAdvertisedTool(declaration, advertised) {
 			unserved = append(unserved, declaration.Action)
 		}
 	}
@@ -285,6 +290,19 @@ func assertToolboxCatalogIsExact(manifest *resources.Toolbox, advertised []strin
 		}
 	}
 	return nil
+}
+
+// declarationCoversAdvertisedTool asks Core whether this one declaration covers
+// at least one advertised tool, so wildcard and exact ceilings are read exactly
+// as catalog admission reads them.
+func declarationCoversAdvertisedTool(declaration policy.PermissionDeclaration, advertised []string) bool {
+	single := policy.PermissionPolicy{Required: []policy.PermissionDeclaration{declaration}}
+	for _, tool := range advertised {
+		if single.DeclaresAction(tool) {
+			return true
+		}
+	}
+	return false
 }
 
 // assertHostEnforcesSandbox refuses to qualify a toolbox on a host that cannot
@@ -316,6 +334,25 @@ func assertToolboxTargetsCandidate(manifest *resources.Toolbox, agent *agentYAML
 	return nil
 }
 
+// assertJSONArguments rejects an argument the tool protocol cannot carry, at
+// declaration time and naming the key. YAML resolves an unquoted date to a
+// timestamp rather than a string, so `since: 2024-01-01` would otherwise fail
+// mid-run with an opaque "invalid type: time.Time".
+func assertJSONArguments(fixture string, operation toolboxConformanceOperation) error {
+	if _, err := structpb.NewStruct(operation.Arguments); err == nil {
+		return nil
+	}
+	for key, value := range operation.Arguments {
+		if _, err := structpb.NewValue(value); err != nil {
+			return fmt.Errorf(
+				"toolbox conformance fixture %q operation %q argument %q is %T, which is not JSON data: %w (quote the value to declare it as a string)",
+				fixture, operation.Name, key, value, err)
+		}
+	}
+	_, err := structpb.NewStruct(operation.Arguments)
+	return fmt.Errorf("toolbox conformance fixture %q operation %q has arguments that are not JSON data: %w", fixture, operation.Name, err)
+}
+
 func loadToolboxConformanceFixture(agentDir, fixture string) (toolboxConformanceFixture, error) {
 	path := fixture
 	if !filepath.IsAbs(path) {
@@ -331,6 +368,11 @@ func loadToolboxConformanceFixture(agentDir, fixture string) (toolboxConformance
 	}
 	refusals := 0
 	names := map[string]bool{}
+	// The policy decision point sees a tool name, never an operation name, so a
+	// tool cannot be both served and refused in one run: the decision for one
+	// declaration would silently apply to the other.
+	stance := map[string]bool{}
+	stanceTaken := map[string]bool{}
 	for index, operation := range declared.Operations {
 		if strings.TrimSpace(operation.Name) == "" || strings.TrimSpace(operation.Tool) == "" {
 			return toolboxConformanceFixture{}, fmt.Errorf("toolbox conformance fixture %q operation %d requires a name and a tool", fixture, index)
@@ -339,6 +381,16 @@ func loadToolboxConformanceFixture(agentDir, fixture string) (toolboxConformance
 			return toolboxConformanceFixture{}, fmt.Errorf("toolbox conformance fixture %q repeats operation %q", fixture, operation.Name)
 		}
 		names[operation.Name] = true
+		if stanceTaken[operation.Tool] && stance[operation.Tool] != operation.Denied {
+			return toolboxConformanceFixture{}, fmt.Errorf(
+				"toolbox conformance fixture %q declares tool %q both served and refused; host policy decides per tool, not per operation",
+				fixture, operation.Tool)
+		}
+		stanceTaken[operation.Tool] = true
+		stance[operation.Tool] = operation.Denied
+		if err := assertJSONArguments(fixture, operation); err != nil {
+			return toolboxConformanceFixture{}, err
+		}
 		if operation.Denied {
 			refusals++
 		}

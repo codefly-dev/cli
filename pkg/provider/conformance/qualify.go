@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/codefly-dev/core/network/urlguard"
 	"github.com/codefly-dev/core/provider/broker"
 	"github.com/codefly-dev/core/provider/canonical"
+	"github.com/codefly-dev/core/provider/cassette"
 	"github.com/codefly-dev/core/provider/credentials"
 	"github.com/codefly-dev/core/provider/manifest"
 	"github.com/codefly-dev/core/provider/responsepolicy"
@@ -68,13 +70,18 @@ const EvidenceVersion = 1
 // Qualify runs every owner-declared operation through the real host broker and
 // records what the host admitted.
 //
-// Each probe runs against an exhausted request budget. The broker checks the
-// budget only after it has validated the plan action, bound the planned-request
-// digest, confirmed the descriptor is packaged with a matching descriptor
-// digest, matched the declared credential purposes against the minted handles,
-// and applied the read-only rule — so a budget refusal is proof that everything
-// upstream of the network admitted the request, obtained without contacting the
-// provider's upstream API.
+// Each operation is composed into the request the host would plan for it and
+// executed against a sealed cassette: the broker performs every admission check
+// it performs for a live call — plan validation, descriptor packaging and
+// digest, the read-only rule, the budget, origin admission, request binding,
+// checkpoint ordering, credential injection and the byte budget — and then
+// serves the response from the cassette instead of the network, so the
+// provider's upstream API is never contacted.
+//
+// Two fields are host-owned rather than reproduced from a live planner: the
+// idempotency key and the response-policy digest, which the protocol requires
+// to be present and stable but does not tie to a value only the coordinator
+// can compute.
 func Qualify(ctx context.Context, providerManifest *manifest.Manifest, declared Declaration) (*Evidence, error) {
 	if err := assertOriginRulesAdmitTheirDefaults(providerManifest); err != nil {
 		return nil, err
@@ -133,6 +140,7 @@ type operationProbe struct {
 	planned          *providerv0.PlannedRequest
 	vault            *credentials.Vault
 	urlOrigin        urlguard.Origin
+	remoteID         string
 }
 
 func newOperationProbe(providerManifest *manifest.Manifest, operation Operation) (*operationProbe, error) {
@@ -163,6 +171,10 @@ func newOperationProbe(providerManifest *manifest.Manifest, operation Operation)
 	if err != nil {
 		return nil, fmt.Errorf("provider conformance operation %q: %w", operation.Name, err)
 	}
+	remoteID, err := declaredRemoteID(descriptor, operation)
+	if err != nil {
+		return nil, fmt.Errorf("provider conformance operation %q: %w", operation.Name, err)
+	}
 	planned := &providerv0.PlannedRequest{
 		RequestDescriptorId:     descriptor.ID,
 		RequestDescriptorDigest: descriptorDigest,
@@ -179,7 +191,7 @@ func newOperationProbe(providerManifest *manifest.Manifest, operation Operation)
 	if err != nil {
 		return nil, fmt.Errorf("provider conformance operation %q: %w", operation.Name, err)
 	}
-	if err := canonical.ValidatePlanAction(planAction(descriptor, bound)); err != nil {
+	if err := canonical.ValidatePlanAction(planAction(descriptor, remoteID, bound)); err != nil {
 		return nil, fmt.Errorf("provider conformance operation %q: %w", operation.Name, err)
 	}
 	return &operationProbe{
@@ -191,7 +203,32 @@ func newOperationProbe(providerManifest *manifest.Manifest, operation Operation)
 		planned:          bound,
 		vault:            credentials.NewVault(),
 		urlOrigin:        urlOrigin,
+		remoteID:         remoteID,
 	}, nil
+}
+
+// declaredRemoteID is the resource identity the action binds. The host requires
+// every remote-id path parameter and every ownership body field to equal it, so
+// it is read from what the owner declared rather than invented: an operation
+// that declares none is planned against a harness-owned identity.
+func declaredRemoteID(descriptor *manifest.RequestDescriptor, operation Operation) (string, error) {
+	if len(descriptor.RemoteIDParameters) > 0 {
+		name := descriptor.RemoteIDParameters[0]
+		value, ok := operation.PathParameters[name]
+		if !ok {
+			return "", fmt.Errorf("request %q binds path parameter %q, which the operation does not declare", descriptor.ID, name)
+		}
+		return value, nil
+	}
+	if len(descriptor.OwnershipBodyFields) > 0 {
+		name := descriptor.OwnershipBodyFields[0]
+		value, ok := operation.Body[name]
+		if !ok {
+			return "", fmt.Errorf("request %q binds ownership body field %q, which the operation does not declare", descriptor.ID, name)
+		}
+		return value, nil
+	}
+	return qualificationRemoteID, nil
 }
 
 const (
@@ -203,65 +240,104 @@ const (
 	qualificationPlanID         = "provider-conformance-plan"
 )
 
-// assertAdmitted proves the host admits this exact request up to the point
-// where bytes would leave, and no further.
+// assertAdmitted proves the host admits this exact request through every check
+// it performs before bytes leave — plan validation, descriptor packaging and
+// digest, the read-only rule, the budget, origin admission, request binding
+// (method, remote-id path parameters, query and body allowlists, ownership
+// binding), checkpoint ordering, credential injection and the byte budget —
+// and then serves it from a sealed cassette instead of the network.
+//
+// The admitted request must succeed outright. An earlier probe stopped at an
+// exhausted budget, which sits ahead of request binding, so an operation
+// declaring a field its descriptor forbids was reported as admitted while the
+// host would refuse it at runtime.
 func (p *operationProbe) assertAdmitted(ctx context.Context) error {
-	_, err := p.execute(ctx, p.planned, false)
-	if err == nil {
-		return fmt.Errorf("provider conformance operation %q: an exhausted budget still delivered a request", p.operation.Name)
+	response, err := p.execute(ctx, p.planned, false)
+	if err != nil {
+		return fmt.Errorf("provider conformance operation %q: host refused the declared request: %w", p.operation.Name, err)
 	}
-	if !strings.Contains(err.Error(), "budget") {
-		return fmt.Errorf("provider conformance operation %q: host refused before the budget: %w", p.operation.Name, err)
+	if response == nil {
+		return fmt.Errorf("provider conformance operation %q: host admitted the request without a response", p.operation.Name)
 	}
 	return nil
 }
 
-// assertNegativePaths proves the host refuses what it must. Every operation is
-// probed with a tampered descriptor digest; a mutating one is additionally
-// probed in a read-only context, which must be refused before the budget.
+// assertNegativePaths proves the host refuses what it must. Each probe changes
+// exactly one thing about a request assertAdmitted has already shown the host
+// accepts, so a refusal is attributable to that change and needs no reading of
+// the refusal text.
 func (p *operationProbe) assertNegativePaths(ctx context.Context) (string, error) {
 	tampered, err := tamperedDescriptorDigest(p.planned)
 	if err != nil {
 		return "", fmt.Errorf("provider conformance operation %q: %w", p.operation.Name, err)
 	}
-	if _, err := p.execute(ctx, tampered, false); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
-		return "", fmt.Errorf("provider conformance operation %q: a tampered descriptor digest was not refused: %v", p.operation.Name, err)
+	if _, err := p.execute(ctx, tampered, false); err == nil {
+		return "", fmt.Errorf("provider conformance operation %q: a tampered descriptor digest was admitted", p.operation.Name)
 	}
+	readOnlyResponse, readOnlyErr := p.execute(ctx, p.planned, true)
 	if p.descriptor.ReadOnly {
-		if _, err := p.execute(ctx, p.planned, true); err == nil || !strings.Contains(err.Error(), "budget") {
-			return "", fmt.Errorf("provider conformance operation %q: a read-only context refused a read-only request: %v", p.operation.Name, err)
+		if readOnlyErr != nil {
+			return "", fmt.Errorf("provider conformance operation %q: a read-only context refused a read-only request: %w", p.operation.Name, readOnlyErr)
+		}
+		if readOnlyResponse == nil {
+			return "", fmt.Errorf("provider conformance operation %q: a read-only context returned no response", p.operation.Name)
 		}
 		return "descriptor-digest", nil
 	}
-	if _, err := p.execute(ctx, p.planned, true); err == nil || !strings.Contains(err.Error(), "read-only") {
-		return "", fmt.Errorf("provider conformance operation %q: a read-only context admitted a mutating request: %v", p.operation.Name, err)
+	if readOnlyErr == nil {
+		return "", fmt.Errorf("provider conformance operation %q: a read-only context admitted a mutating request", p.operation.Name)
 	}
 	return "descriptor-digest,read-only", nil
 }
 
+// sealedCassette seals one synthetic, secret-free response for exactly this
+// request. Replay is enforcement-identical to live delivery but performs no
+// network I/O, so the whole admission path runs against a provider's declared
+// origin without contacting it.
+func (p *operationProbe) sealedCassette(planned *providerv0.PlannedRequest) (*cassette.Cassette, error) {
+	recorder := cassette.New(cassette.ModeRecord, p.providerManifest.Agent.Version)
+	if err := recorder.Record(
+		cassette.NewKey(planned, p.origin),
+		http.StatusOK, nil,
+		&providerv0.ExecuteRequestResponse{},
+	); err != nil {
+		return nil, fmt.Errorf("seal conformance response: %w", err)
+	}
+	sealed, err := recorder.Marshal()
+	if err != nil {
+		return nil, fmt.Errorf("seal conformance response: %w", err)
+	}
+	return cassette.Load(sealed, p.providerManifest.Agent.Version)
+}
+
 // execute composes the complete host-side call and runs it through the real
-// broker. The session may deliver no request at all: qualification reads the
-// admission decisions the broker reaches before the budget, and a provider's
-// own upstream API is never contacted.
+// broker, delivering from a sealed cassette. Replay never touches the network,
+// so a provider's own upstream API is never contacted.
 func (p *operationProbe) execute(ctx context.Context, planned *providerv0.PlannedRequest, readOnly bool) (*providerv0.ExecuteRequestResponse, error) {
 	budget := &providerv0.RequestBudget{
-		RequestCount:  0,
+		RequestCount:  1,
 		RequestBytes:  p.descriptor.RequestByteBudget,
 		ResponseBytes: p.descriptor.ResponseByteBudget,
 	}
-	action := planAction(p.descriptor, planned)
+	sealed, err := p.sealedCassette(planned)
+	if err != nil {
+		return nil, err
+	}
 	session, err := broker.New(broker.Config{
 		Manifest:    p.providerManifest,
-		Action:      action,
+		Action:      planAction(p.descriptor, p.remoteID, planned),
 		Binding:     qualificationBinding(),
 		Budget:      budget,
 		ReadOnly:    readOnly,
 		Vault:       p.vault,
 		Sink:        &discardingSink{},
 		Checkpoints: qualificationCheckpoint{},
+		Cassette:    sealed,
 	})
+	// A session that could not be composed is a harness fault, never evidence
+	// about the provider: keep it distinguishable from an admission refusal.
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("compose broker session: %w", err)
 	}
 	handles := make([]*providerv0.CredentialHandle, 0, len(planned.GetCredentialPurposes()))
 	for _, purpose := range planned.GetCredentialPurposes() {
@@ -321,12 +397,12 @@ func assertOriginRulesAdmitTheirDefaults(providerManifest *manifest.Manifest) er
 // planAction is the single-action plan the harness admits the request under.
 // The broker binds a request to its action by digest, so each probe carries the
 // exact request it executes.
-func planAction(descriptor *manifest.RequestDescriptor, planned *providerv0.PlannedRequest) *providerv0.PlanAction {
+func planAction(descriptor *manifest.RequestDescriptor, remoteID string, planned *providerv0.PlannedRequest) *providerv0.PlanAction {
 	return &providerv0.PlanAction{
 		ActionId:            qualificationActionID,
 		Type:                providerv0.ActionType_ACTION_TYPE_CREATE,
 		ResourceType:        descriptor.ResourceType,
-		ProspectiveRemoteId: qualificationRemoteID,
+		ProspectiveRemoteId: remoteID,
 		Ownership:           providerv0.Ownership_OWNERSHIP_OWNED,
 		Requests:            []*providerv0.PlannedRequest{planned},
 	}
@@ -451,7 +527,10 @@ func publicValues(declared map[string]string) map[string]*providerv0.PublicValue
 }
 
 // responsePolicyDigest binds the planned request to the response schema the
-// descriptor selects, the same way a planning host does.
+// descriptor selects. The value is host-owned and stable per schema rather than
+// derived from the filter the broker builds, because that derivation is not
+// exported; the protocol only requires the field to be a digest, and the
+// broker checks it against the sealed response rather than recomputing it.
 func responsePolicyDigest(descriptor *manifest.RequestDescriptor) string {
 	return digestOf("response-policy:" + descriptor.ResponseSchema)
 }

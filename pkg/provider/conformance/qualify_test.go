@@ -58,6 +58,65 @@ func TestQualifyAdmitsDeclaredOperationsWithoutDelivery(t *testing.T) {
 	assertNoPoison(t, encoded)
 }
 
+// TestQualifyRefusesFieldsTheDescriptorForbids is the regression this probe
+// exists for. The host binds a request only from descriptor-allowed fields, and
+// that binding runs after the request budget — so a probe that stopped at an
+// exhausted budget reported these operations as admitted while the host would
+// refuse every one of them at runtime.
+func TestQualifyRefusesFieldsTheDescriptorForbids(t *testing.T) {
+	// account.create allows body [name, enabled]; account.observe binds the
+	// account_id path parameter and allows query [expand].
+	for _, test := range []struct {
+		name      string
+		operation Operation
+		want      string
+	}{
+		{
+			name:      "undeclared body field",
+			operation: Operation{Name: "create", Request: "account.create", Body: map[string]string{"name": "subject", "smuggled": "x"}},
+			want:      "body field",
+		},
+		{
+			name:      "undeclared query field",
+			operation: Operation{Name: "observe", Request: "account.observe", PathParameters: map[string]string{"account_id": "acct_0001"}, Query: map[string]string{"smuggled": "x"}},
+			want:      "query field",
+		},
+		{
+			name:      "path parameter that is not the planned remote id",
+			operation: Operation{Name: "observe", Request: "account.observe", PathParameters: map[string]string{"account_id": "acct_0001", "extra": "acct_0002"}},
+			want:      "path parameters do not match descriptor",
+		},
+		{
+			name:      "missing the bound path parameter",
+			operation: Operation{Name: "observe", Request: "account.observe"},
+			want:      "which the operation does not declare",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := Qualify(context.Background(), referenceManifest(t), Declaration{Operations: []Operation{test.operation}})
+			require.Error(t, err, "an operation the host would refuse was qualified")
+			require.ErrorContains(t, err, test.want)
+		})
+	}
+}
+
+// TestQualifyReachesDeliveryWithoutNetwork proves the admitted probe runs the
+// whole path and is served from the sealed cassette: a dialer that fails if
+// touched proves no request left the host.
+func TestQualifyReachesDeliveryWithoutNetwork(t *testing.T) {
+	fixture := NewFixture()
+	t.Cleanup(fixture.Close)
+
+	evidence, err := Qualify(context.Background(), referenceManifest(t), Declaration{
+		Operations: []Operation{
+			{Name: "create", Request: "account.create", Body: map[string]string{"name": "subject"}},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, evidence.Operations, 1)
+	require.Equal(t, 0, fixture.RequestCount(), "qualification contacted an upstream API")
+}
+
 // TestQualifyFailsClosedOnAnUndeclaredRequest proves an operation naming a
 // request the release does not package is a qualification failure, not a skip.
 func TestQualifyFailsClosedOnAnUndeclaredRequest(t *testing.T) {

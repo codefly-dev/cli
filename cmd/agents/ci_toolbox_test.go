@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/core/policy"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/sandbox"
 	"github.com/codefly-dev/core/toolbox/conformance"
@@ -101,7 +102,10 @@ func probeSandboxAppliesLoopbackPolicy() error {
 	if err != nil {
 		return err
 	}
-	command := exec.Command("true")
+	// bwrap binds /usr among the standard system mounts, so the probe must name
+	// a binary inside them: a PATH lookup could resolve somewhere unbound and
+	// fail the probe on a host that can in fact confine the toolbox.
+	command := exec.Command("/usr/bin/true")
 	if err := confined.WithNetwork(sandbox.NetworkLoopback).Wrap(command); err != nil {
 		return err
 	}
@@ -242,6 +246,12 @@ func TestToolboxConformanceFixtureFailsClosed(t *testing.T) {
 		{"only refusals", "operations:\n  - name: a\n    tool: t.a\n    denied: true\n", "no operation the host must serve"},
 		{"unnamed", "operations:\n  - tool: t.a\n", "requires a name and a tool"},
 		{"repeated", "operations:\n  - name: a\n    tool: t.a\n  - name: a\n    tool: t.b\n    denied: true\n", "repeats operation"},
+		// The decider is keyed by tool, so one tool cannot be both served and
+		// refused: the refusal would silently deny the served operation too.
+		{"tool both served and refused", "operations:\n  - name: a\n    tool: t.a\n  - name: b\n    tool: t.a\n    denied: true\n", "both served and refused"},
+		// YAML resolves an unquoted date to a timestamp, which the tool protocol
+		// cannot carry; it must be named at declaration time, not mid-run.
+		{"timestamp argument", "operations:\n  - name: a\n    tool: t.a\n    arguments:\n      since: 2024-01-01\n  - name: b\n    tool: t.b\n    denied: true\n", "argument \"since\" is time.Time"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -252,6 +262,42 @@ func TestToolboxConformanceFixtureFailsClosed(t *testing.T) {
 			require.ErrorContains(t, err, test.want)
 		})
 	}
+}
+
+// TestToolboxCatalogReadsCeilingWithCoreSemantics proves the exactness check
+// agrees with Core's catalog admission. Core matches a declared action against
+// advertised tools with wildcard semantics, so a manifest declaring "git.*"
+// is admissible; comparing literals rejected every such release.
+func TestToolboxCatalogReadsCeilingWithCoreSemantics(t *testing.T) {
+	advertised := []string{"git.status", "git.commit"}
+	fixture := toolboxConformanceFixture{Operations: []toolboxConformanceOperation{
+		{Name: "read", Tool: "git.status"},
+		{Name: "refused", Tool: "git.commit", Denied: true},
+	}}
+	ceiling := func(actions ...string) *resources.Toolbox {
+		declarations := make([]policy.PermissionDeclaration, 0, len(actions))
+		for _, action := range actions {
+			declarations = append(declarations, policy.PermissionDeclaration{Action: action, Reason: "qualified"})
+		}
+		return &resources.Toolbox{Permissions: policy.PermissionPolicy{Required: declarations}}
+	}
+
+	for _, accepted := range [][]string{
+		{"git.status", "git.commit"},
+		{"git.*"},
+		{"*"},
+	} {
+		manifest := ceiling(accepted...)
+		// Core admits this ceiling, so qualification must too.
+		require.NoError(t, manifest.ValidateToolCatalog(advertised...), "core rejected %v", accepted)
+		require.NoError(t, assertToolboxCatalogIsExact(manifest, advertised, fixture), "ceiling %v", accepted)
+	}
+
+	// A declaration matching no advertised tool is still authority the release
+	// does not serve, wildcard or not.
+	err := assertToolboxCatalogIsExact(ceiling("git.*", "docker.*"), advertised, fixture)
+	require.ErrorContains(t, err, "declares authority the release does not serve")
+	require.ErrorContains(t, err, "docker.*")
 }
 
 // TestToolboxConformanceRefusesAnUnconfinedHost proves qualification refuses a
