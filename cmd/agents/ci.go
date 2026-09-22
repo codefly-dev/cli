@@ -46,7 +46,24 @@ const (
 	conformanceModeAttachSource    = "attach-existing-source"
 	conformanceModeRunnableCreate  = "runnable-create"
 	conformanceModeRunnablePackage = "runnable-package"
+	// conformanceModeToolboxSession launches the built toolbox through Core's
+	// toolbox session — its own sandbox and permission ceiling, a host-owned
+	// principal and policy decision point — and runs the owner-declared
+	// operations against the live catalog.
+	conformanceModeToolboxSession = "toolbox-session"
+	// conformanceModeProviderRequests composes each owner-declared operation
+	// into the exact request the host would plan and runs it through the real
+	// provider broker.
+	conformanceModeProviderRequests = "provider-requests"
 )
+
+// kindConformanceModes is the conformance mode each non-service agent kind
+// owns. A kind absent from this table has no suite wired in and must waive
+// conformance explicitly.
+var kindConformanceModes = map[string]string{
+	string(resources.ToolboxAgent):  conformanceModeToolboxSession,
+	string(resources.ProviderAgent): conformanceModeProviderRequests,
+}
 
 var AgentCICmd = &cobra.Command{
 	Use:   "ci",
@@ -502,20 +519,27 @@ func loadAgentCIManifest(dir string, skipConformance bool) (agentYAML, error) {
 		return manifest, nil
 	}
 	if manifest.Kind != serviceAgentKind {
-		// Non-service kinds build and audit through the same pipeline as
-		// services, but agent CI has no conformance suite wired in for them
-		// yet, so they must acknowledge the gap with --skip-conformance.
-		// (Providers have a standalone suite in pkg/provider/conformance that
-		// is not yet reachable from here.)
-		switch manifest.Kind {
-		case string(resources.ModuleAgent), string(resources.ToolboxAgent), string(resources.ProviderAgent):
-			if !skipConformance {
-				return agentYAML{}, fmt.Errorf("%s CI requires --skip-conformance until conformance is wired into agent CI for this kind", manifest.Kind)
+		if required, owned := kindConformanceModes[manifest.Kind]; owned {
+			// The declaration is required whether or not this run waives
+			// conformance: a release that ships no fixture has nothing to
+			// qualify, and a waiver must stay a waiver of a real suite.
+			if conformanceMode(manifest) != required {
+				return agentYAML{}, fmt.Errorf("%s CI requires conformance.mode: %s", manifest.Kind, required)
+			}
+			if strings.TrimSpace(manifest.Conformance.Fixture) == "" {
+				return agentYAML{}, fmt.Errorf("%s conformance requires conformance.fixture naming the owner-declared operations", required)
 			}
 			return manifest, nil
-		default:
-			return agentYAML{}, fmt.Errorf("agent CI supports codefly:service, codefly:module, codefly:toolbox, codefly:provider, codefly:runnable; got %s", manifest.Kind)
 		}
+		// A module agent ships no runtime surface to exercise, so it has no
+		// conformance suite and must acknowledge that with --skip-conformance.
+		if manifest.Kind == string(resources.ModuleAgent) {
+			if !skipConformance {
+				return agentYAML{}, fmt.Errorf("%s CI requires --skip-conformance: a module agent has no runtime conformance suite", manifest.Kind)
+			}
+			return manifest, nil
+		}
+		return agentYAML{}, fmt.Errorf("agent CI supports codefly:service, codefly:module, codefly:toolbox, codefly:provider, codefly:runnable; got %s", manifest.Kind)
 	}
 	mode := conformanceMode(manifest)
 	switch mode {
@@ -673,8 +697,13 @@ func snapshotAgentWorktree(ctx context.Context, dir string) (agentWorktreeSnapsh
 }
 
 func runAgentConformance(ctx context.Context, temporary, agentHome, agentDir string, manifest agentYAML) ([]byte, string, error) {
-	if manifest.Kind == string(resources.RunnableAgent) {
+	switch manifest.Kind {
+	case string(resources.RunnableAgent):
 		return runRunnableConformance(ctx, temporary, agentHome, &manifest)
+	case string(resources.ToolboxAgent):
+		return runToolboxConformance(ctx, temporary, agentDir, &manifest)
+	case string(resources.ProviderAgent):
+		return runProviderConformance(ctx, temporary, agentDir, &manifest)
 	}
 	if conformanceMode(manifest) == conformanceModeAttachSource {
 		return runAttachSourceConformance(ctx, temporary, agentHome, agentDir, manifest)

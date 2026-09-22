@@ -1230,6 +1230,90 @@ archive and descriptor verification. No language name selects a mode. Publishing
 a Runnable never passes `--skip-conformance`; source-only generation is not
 evidence of native packaging or invocation support.
 
+Toolbox agents declare `conformance.mode: toolbox-session` and a fixture naming
+the operations the host must serve and the one it must refuse:
+
+```yaml
+conformance:
+  mode: toolbox-session
+  fixture: ./conformance/operations.yaml
+```
+
+```yaml
+# conformance/operations.yaml
+operations:
+  - name: describe-identity
+    tool: git.status            # a tool toolbox.codefly.yaml declares
+    arguments:
+      path: .
+  - name: refused-write
+    tool: git.commit
+    denied: true                # the host policy must refuse this one
+```
+
+CI launches the installed artifact through Core's toolbox session under the
+sandbox and permission ceiling its own `toolbox.codefly.yaml` declares. The host
+owns the principal, the policy decision point and the session scope; the owner
+owns the operations. Because production admission requires a non-empty sandbox
+declaration, and Core refuses to launch a sandbox-declaring plugin with no
+enforcing backend, a toolbox release must be qualified on a host that has one —
+`bwrap` on Linux, `sandbox-exec` (built in) on macOS. On a host without it the
+stage fails rather than qualifying the artifact unconfined. A declared permission the running binary does not serve, an
+operation naming a tool it does not advertise, a refusal the host served, a
+refusal that reached the plugin, or a session that does not release its process
+fails the stage. A declared permission is read with Core's own matcher, so a
+wildcard ceiling such as `git.*` is qualified the way catalog admission reads
+it.
+
+Every fixture must declare at least one operation the host serves **and** at
+least one it refuses: a release qualified only on its success path has not
+shown that its permission boundary does anything. One tool cannot be both, since
+the policy decision point is keyed by tool rather than by operation name.
+
+Provider agents declare `conformance.mode: provider-requests` and a fixture
+naming the requests their `provider.codefly.yaml` packages:
+
+```yaml
+conformance:
+  mode: provider-requests
+  fixture: ./conformance/operations.yaml
+```
+
+```yaml
+# conformance/operations.yaml
+operations:
+  - name: create-account
+    request: account.create     # a request descriptor the manifest packages
+    body:
+      name: conformance
+  - name: observe-account
+    request: account.observe
+    path_parameters:
+      account_id: acct_0001
+```
+
+CI first starts the built provider through the agent loader and holds the
+runtime catalog it advertises to the reviewed manifest: a release that does not
+start, does not serve the provider protocol, or implements requests and resource
+actions its manifest does not package fails before any operation runs.
+
+CI then composes each declared operation into the request the host would plan for it
+and runs it through the real provider broker, delivering from a sealed cassette
+rather than the network. Every admission check a live call makes therefore runs:
+descriptor packaging and digest, the read-only rule, the budget, origin
+admission, request binding (method, remote-id path parameters, query and body
+allowlists, ownership binding), checkpoint ordering, credential injection and
+the byte budget — with no request to the provider's upstream API. A declared
+operation carrying a field its descriptor does not allow fails here, as it would
+at runtime. Each operation is additionally probed with a tampered descriptor
+digest, and a mutating one in a read-only context; both must be refused. The
+idempotency key and response-policy digest are host-owned constants: the
+protocol requires them to be present and stable, not to match a value only a
+live coordinator can compute.
+
+Both declarations are required even when a run passes `--skip-conformance`: a
+release with no suite to run has nothing to waive.
+
 ```bash
 codefly agent ci
 codefly agent ci --format json --output .artifacts/codefly-agent

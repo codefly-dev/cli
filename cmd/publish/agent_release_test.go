@@ -131,11 +131,12 @@ func TestMissingLoaderPlatforms(t *testing.T) {
 
 func TestModuleAndProviderSelectSourceTagGateWithoutLoaderAssets(t *testing.T) {
 	for _, tc := range []struct {
-		kind, name string
-		nativeOnly bool
+		kind, name      string
+		nativeOnly      bool
+		skipConformance bool
 	}{
-		{"codefly:module", "saas-starter", true},
-		{"codefly:provider", "stripe", false},
+		{"codefly:module", "saas-starter", true, true},
+		{"codefly:provider", "stripe", false, false},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			dir := t.TempDir()
@@ -150,6 +151,8 @@ func TestModuleAndProviderSelectSourceTagGateWithoutLoaderAssets(t *testing.T) {
 			require.True(t, ok, "%s must publish a source tag, not loader assets", tc.kind)
 			require.Equal(t, tc.nativeOnly, releaser.nativeOnly,
 				"module builds native-only; provider builds every platform to catch linux-only breaks")
+			require.Equal(t, tc.skipConformance, releaser.skipConformance,
+				"only a kind with no runtime surface waives conformance; a provider release is qualified")
 		})
 	}
 }
@@ -167,7 +170,7 @@ func TestLoaderAssetGateSelectsRegistrationAndConformance(t *testing.T) {
 		skipConformance bool
 	}{
 		{"codefly:service", resources.ServiceAgent, false},
-		{"codefly:toolbox", resources.ToolboxAgent, true},
+		{"codefly:toolbox", resources.ToolboxAgent, false},
 		{"codefly:runnable", resources.RunnableAgent, false},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
