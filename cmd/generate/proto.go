@@ -166,8 +166,10 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 
 	// The input and path filters are absolute because a custom template may
 	// live outside the proto directory.
-	args := []string{"generate", containerProto, "--template", filepath.Base(templatePath)}
-	args = append(args, protoGenerationPathArgs(containerProto, true)...)
+	pathArgs := protoGenerationPathArgs(containerProto, true)
+	args := make([]string, 0, 4+len(pathArgs))
+	args = append(args, "generate", containerProto, "--template", filepath.Base(templatePath))
+	args = append(args, pathArgs...)
 	proc, err = runner.NewProcess("buf", args...)
 	if err != nil {
 		return w.Wrapf(err, "cannot create process")
