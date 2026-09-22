@@ -17,6 +17,7 @@ import (
 const (
 	publicationCLI      = "cli"
 	publicationWorkflow = "workflow"
+	checkSuccess        = "success"
 )
 
 type agentPublication struct {
@@ -59,7 +60,7 @@ func workflowReleaseReady(runs []*github.WorkflowRun, head, tag string) (bool, e
 	if selected == nil || selected.GetStatus() != "completed" {
 		return false, nil
 	}
-	if selected.GetConclusion() != "success" {
+	if selected.GetConclusion() != checkSuccess {
 		return false, fmt.Errorf("release workflow %s concluded %s", selected.GetHTMLURL(), selected.GetConclusion())
 	}
 	return true, nil

@@ -159,6 +159,13 @@ func (l *pullRequestLanding) merge(ctx context.Context, number int, tag string) 
 		state := pr.GetMergeableState()
 		switch state {
 		case "clean", "unstable", "has_hooks":
+			ready, checksErr := l.checksReady(ctx, pr.GetHead().GetSHA())
+			if checksErr != nil {
+				return fmt.Errorf("release pull request #%d: %w", number, checksErr)
+			}
+			if !ready {
+				break
+			}
 			result, _, err := l.client.PullRequests.Merge(ctx, l.owner, l.repo, number, "", &github.PullRequestOptions{
 				MergeMethod: "squash",
 				CommitTitle: releaseCommitSubject(tag),
@@ -189,16 +196,8 @@ func (l *pullRequestLanding) merge(ctx context.Context, number int, tag string) 
 				return fmt.Errorf("update release pull request #%d onto main: %w", number, err)
 			}
 		case "blocked":
-			failed, checksErr := l.failedChecks(ctx, pr.GetHead().GetSHA())
-			switch {
-			case checksErr != nil:
-				// Keep waiting — an unreadable check list is not a red one —
-				// but say so, or a rate-limited API looks identical to CI that
-				// is merely slow and the whole budget burns unexplained.
-				fmt.Printf("==> warning: cannot read the checks on #%d, still waiting: %v\n", number, checksErr)
-			case len(failed) > 0:
-				return fmt.Errorf("release pull request #%d is red (%s); fix main's CI and publish again",
-					number, strings.Join(failed, ", "))
+			if _, checksErr := l.checksReady(ctx, pr.GetHead().GetSHA()); checksErr != nil {
+				return fmt.Errorf("release pull request #%d: %w", number, checksErr)
 			}
 		}
 		select {
@@ -209,21 +208,79 @@ func (l *pullRequestLanding) merge(ctx context.Context, number int, tag string) 
 	}
 }
 
-// failedChecks names the check runs on sha that have concluded badly, so a red
-// release pull request fails at once instead of burning the whole wait budget.
-func (l *pullRequestLanding) failedChecks(ctx context.Context, sha string) ([]string, error) {
-	runs, _, err := l.client.Checks.ListCheckRunsForRef(ctx, l.owner, l.repo, sha, nil)
+// checksReady requires positive success, not merely permission to merge.
+// An unreadable or absent check list never authorizes release publication.
+func (l *pullRequestLanding) checksReady(ctx context.Context, sha string) (bool, error) {
+	ready, failed, err := l.readChecks(ctx, sha)
 	if err != nil {
-		return nil, fmt.Errorf("list check runs for %s: %w", sha, err)
+		fmt.Printf("==> warning: cannot read checks for %s, still waiting: %v\n", sha, err)
+		return false, nil
 	}
+	if len(failed) > 0 {
+		return false, fmt.Errorf("is red (%s); fix CI and publish again", strings.Join(failed, ", "))
+	}
+	return ready, nil
+}
+
+func (l *pullRequestLanding) readChecks(ctx context.Context, sha string) (bool, []string, error) {
+	options := &github.ListCheckRunsOptions{Filter: github.Ptr("latest"), ListOptions: github.ListOptions{PerPage: 100}}
 	var failed []string
-	for _, run := range runs.CheckRuns {
-		switch run.GetConclusion() {
-		case "failure", "timed_out", "action_required", "stale":
-			failed = append(failed, run.GetName())
+	pending, succeeded := false, false
+	for {
+		runs, response, err := l.client.Checks.ListCheckRunsForRef(ctx, l.owner, l.repo, sha, options)
+		if err != nil {
+			return false, nil, err
+		}
+		for _, run := range runs.CheckRuns {
+			if run.GetStatus() != "completed" {
+				pending = true
+				continue
+			}
+			switch run.GetConclusion() {
+			case checkSuccess:
+				succeeded = true
+			case "skipped", "neutral":
+			default:
+				failed = append(failed, run.GetName())
+			}
+		}
+		if response.NextPage == 0 {
+			break
+		}
+		options.Page = response.NextPage
+	}
+	status, _, err := l.client.Repositories.GetCombinedStatus(ctx, l.owner, l.repo, sha, &github.ListOptions{PerPage: 100})
+	if err != nil {
+		return false, nil, err
+	}
+	if status.GetTotalCount() > 0 {
+		switch status.GetState() {
+		case checkSuccess:
+			succeeded = true
+		case "pending":
+			pending = true
+		default:
+			failed = append(failed, "commit status "+status.GetState())
 		}
 	}
-	return failed, nil
+	return succeeded && !pending && len(failed) == 0, failed, nil
+}
+
+func (l *pullRequestLanding) waitForChecks(ctx context.Context, sha string) error {
+	for {
+		ready, err := l.checksReady(ctx, sha)
+		if err != nil {
+			return err
+		}
+		if ready {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("commit %s has no completed successful CI: %w", sha, ctx.Err())
+		case <-time.After(l.poll):
+		}
+	}
 }
 
 // confirmMerged asks whether the pull request is merged, on a context detached
