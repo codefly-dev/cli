@@ -3,9 +3,11 @@ package agents
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
@@ -76,14 +78,37 @@ conformance:
 `
 
 // requireEnforcingSandbox skips a test that must launch the toolbox, on a host
-// with no enforcing sandbox backend. Qualification deliberately refuses such a
-// host (assertHostEnforcesSandbox), so the launch cannot be exercised there;
-// the refusal itself is covered by TestToolboxConformanceRefusesAnUnconfinedHost.
+// that cannot confine it. Qualification deliberately refuses such a host, so
+// the launch cannot be exercised there; the refusal itself is covered by
+// TestToolboxConformanceRefusesAnUnconfinedHost.
 func requireEnforcingSandbox(t *testing.T) {
 	t.Helper()
 	if err := assertHostEnforcesSandbox(); err != nil {
-		t.Skipf("host cannot apply a declared toolbox sandbox: %v", err)
+		t.Skipf("host has no enforcing sandbox backend: %v", err)
 	}
+	if err := probeSandboxAppliesLoopbackPolicy(); err != nil {
+		t.Skipf("host has a sandbox backend it cannot apply: %v", err)
+	}
+}
+
+// probeSandboxAppliesLoopbackPolicy confines a trivial command under the
+// loopback network policy every toolbox runs with. An installed backend is not
+// the same as a usable one: a restricted CI container can carry bwrap yet be
+// unable to configure an isolated loopback interface. Probing the policy
+// directly keeps that environment limit from reading as a harness regression.
+func probeSandboxAppliesLoopbackPolicy() error {
+	confined, err := sandbox.New()
+	if err != nil {
+		return err
+	}
+	command := exec.Command("true")
+	if err := confined.WithNetwork(sandbox.NetworkLoopback).Wrap(command); err != nil {
+		return err
+	}
+	if output, err := command.CombinedOutput(); err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 // installToolboxFixture stages an agent repository whose built artifact is the
