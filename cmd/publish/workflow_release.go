@@ -95,6 +95,17 @@ func (r *agentReleaser) waitForWorkflowRelease(ctx context.Context, client *gith
 		case <-ticker.C:
 		}
 	}
+	if err := r.verifyWorkflowRelease(ctx, client, owner, repo, tag); err != nil {
+		return err
+	}
+	return verifyReleaseAssets(ctx, r.reg, r.publisher, r.name, strings.TrimPrefix(tag, "v"), r.assets)
+}
+
+// verifyWorkflowRelease confirms the release the owner workflow published
+// carries every locally qualified loader archive, with the bytes GitHub
+// recorded for it. The workflow is the sole publisher of those assets, so
+// every call here reads: nothing is created, replaced or deleted.
+func (r *agentReleaser) verifyWorkflowRelease(ctx context.Context, client *github.Client, owner, repo, tag string) error {
 	release, _, err := client.Repositories.GetReleaseByTag(ctx, owner, repo, tag)
 	if err != nil {
 		return fmt.Errorf("read workflow-published release: %w", err)
@@ -127,7 +138,7 @@ func (r *agentReleaser) waitForWorkflowRelease(ctx context.Context, client *gith
 			}
 		}
 	}
-	return verifyReleaseAssets(ctx, r.reg, r.publisher, r.name, strings.TrimPrefix(tag, "v"), r.assets)
+	return nil
 }
 
 func verifyPublishedAsset(stream io.Reader, asset *github.ReleaseAsset) error {

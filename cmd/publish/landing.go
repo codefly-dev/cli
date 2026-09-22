@@ -222,6 +222,12 @@ func (l *pullRequestLanding) checksReady(ctx context.Context, sha string) (bool,
 	return ready, nil
 }
 
+// dependabotApp posts a check run on every commit for its own dependency
+// update job. That run reports whether Dependabot could resolve the manifest —
+// an upstream tag it cannot fetch fails it — not whether CI admitted the
+// commit, so it is never the verdict a release waits on.
+const dependabotApp = "dependabot"
+
 func (l *pullRequestLanding) readChecks(ctx context.Context, sha string) (bool, []string, error) {
 	options := &github.ListCheckRunsOptions{Filter: github.Ptr("latest"), ListOptions: github.ListOptions{PerPage: 100}}
 	var failed []string
@@ -232,6 +238,9 @@ func (l *pullRequestLanding) readChecks(ctx context.Context, sha string) (bool, 
 			return false, nil, err
 		}
 		for _, run := range runs.CheckRuns {
+			if run.GetApp().GetSlug() == dependabotApp {
+				continue
+			}
 			if run.GetStatus() != "completed" {
 				pending = true
 				continue
