@@ -175,6 +175,31 @@ func (h *WorkspaceHost) Source() *Source {
 	return h.source
 }
 
+// SourceAt returns source behavior rooted at one exact directory inside this
+// host. Parser-derived behavior is scoped to the code-unit root it is asked
+// about, so it cannot borrow the host-wide root: an index or an import
+// inventory taken from a parent directory would answer about a different tree.
+//
+// The caller owns the returned Source and must Close it. Roots arrive from
+// request payloads, so a host-held cache keyed by them would grow for the life
+// of a long-running gateway; construction only resolves the root, while every
+// operation served here walks the tree anyway.
+func (h *WorkspaceHost) SourceAt(root string) (*Source, error) {
+	if h == nil {
+		return nil, fmt.Errorf("workspace host is closed")
+	}
+	target, err := normalizeTarget(h.root, ServiceTarget{Root: root})
+	if err != nil {
+		return nil, err
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.closed {
+		return nil, fmt.Errorf("workspace host is closed")
+	}
+	return newSource(target.Root), nil
+}
+
 // Flows returns the registry of orchestration flows owned by this host.
 func (h *WorkspaceHost) Flows() *FlowManager {
 	if h == nil {

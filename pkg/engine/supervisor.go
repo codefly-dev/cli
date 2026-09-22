@@ -15,7 +15,6 @@ import (
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
-	toolingv0 "github.com/codefly-dev/core/generated/go/codefly/services/tooling/v0"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"google.golang.org/grpc/connectivity"
@@ -58,7 +57,6 @@ type AgentSession struct {
 	agentAPI   agentv0.AgentClient
 	builder    builderv0.BuilderClient
 	runtime    runtimev0.RuntimeClient
-	tooling    toolingv0.ToolingClient
 	builderMu  sync.Mutex
 	builderOK  bool
 	runtimeMu  sync.Mutex
@@ -182,7 +180,6 @@ func (s *AgentSupervisor) acquire(ctx context.Context, target ServiceTarget) (*A
 		agentAPI:   agentv0.NewAgentClient(connection.GRPCConn()),
 		builder:    builderv0.NewBuilderClient(connection.GRPCConn()),
 		runtime:    runtimev0.NewRuntimeClient(connection.GRPCConn()),
-		tooling:    toolingv0.NewToolingClient(connection.GRPCConn()),
 	}
 	s.mu.Lock()
 	if s.closed {

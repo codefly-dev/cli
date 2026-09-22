@@ -48,7 +48,6 @@ import (
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
-	toolingv0 "github.com/codefly-dev/core/generated/go/codefly/services/tooling/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 	"github.com/codefly-dev/core/grpcconfig"
 	githubtoolbox "github.com/codefly-dev/core/toolbox/github"
@@ -172,13 +171,18 @@ type Server struct {
 
 	executionRecorder   ExecutionRecorder
 	executionDispatcher ExecutionDispatcher
+
+	// resolvedSourceRoot is the agent's source tree, resolved once at
+	// construction. A declaration edited afterwards can only make it stale, and
+	// a stale root fails the prepared-mutation preview check loudly rather than
+	// writing somewhere unverified.
+	resolvedSourceRoot string
 }
 
 // serviceExecution is the transport-independent behavior consumed by the
 // Gateway adapter. engine.Service is the production implementation.
 type serviceExecution interface {
 	ExecuteCode(context.Context, *codev0.CodeRequest) (*codev0.CodeResponse, error)
-	GetSemanticIndex(context.Context, *toolingv0.GetSemanticIndexRequest) (*toolingv0.GetSemanticIndexResponse, error)
 	Build(context.Context, *runtimev0.BuildRequest) (*runtimev0.BuildResponse, error)
 	Test(context.Context, *runtimev0.TestRequest) (*runtimev0.TestResponse, error)
 	Lint(context.Context, *runtimev0.LintRequest) (*runtimev0.LintResponse, error)
@@ -262,6 +266,7 @@ func NewServer(cfg Config) (*Server, error) {
 		terminals:           newTerminalManager(),
 		executionRecorder:   cfg.ExecutionRecorder,
 		executionDispatcher: cfg.ExecutionDispatcher,
+		resolvedSourceRoot:  engine.AgentSourceRoot(context.Background(), cfg.WorkDir),
 	}
 
 	path := filepath.Join(cfg.WorkDir, "mind.yaml")
@@ -512,8 +517,22 @@ func pluginToAgentName(plugin string) string {
 	return plugin + ":latest"
 }
 
-// serviceRoot returns the absolute path to the service source tree.
+// serviceRoot returns the absolute path to the service directory. It is the
+// basis for VCS, terminal and code-unit paths, which are addressed relative to
+// the checkout rather than to whatever subtree holds the source.
 func (s *Server) serviceRoot() string {
+	return s.cfg.WorkDir
+}
+
+// sourceRoot returns the tree the service's agent resolves as its source root.
+// A service declaration moves it below the service directory with `source-dir`,
+// and the gateway now performs parser-derived work itself, so both sides must
+// agree on which tree they read and write. Disagreeing means previewing an edit
+// against one file and writing it to another of the same name.
+func (s *Server) sourceRoot() string {
+	if s.resolvedSourceRoot != "" {
+		return s.resolvedSourceRoot
+	}
 	return s.cfg.WorkDir
 }
 
@@ -530,8 +549,10 @@ func (s *Server) controlScope() control.ServiceScope {
 	return control.ServiceScopeAt(name, s.serviceRoot())
 }
 
+// fileOps reads and writes project bytes, so it is rooted where the agent's
+// source lives rather than at the service directory.
 func (s *Server) fileOps() codecore.FileOperation {
-	return codecore.NewFileOps(codecore.LocalVFS{}, s.serviceRoot())
+	return codecore.NewFileOps(codecore.LocalVFS{}, s.sourceRoot())
 }
 
 func (s *Server) validateService(service string) error {
@@ -1144,8 +1165,10 @@ func (s *Server) ApplySymbolPatch(ctx context.Context, req *gatewayv1.ApplySymbo
 		attempt, _, beginErr := s.beginGovernedExecution(ctx, executionrecorder.BeginInput{
 			OperationKind:        "code.apply-symbol-patch",
 			OperationInputSHA256: operationInputSHA256,
-			Assurance:            executionv1.ExecutionAssurance_EXECUTION_ASSURANCE_PLUGIN_EXECUTED,
-			Target:               executionTarget(s.executionService(req.GetService())),
+			// Typed symbol mutation is resolved and written by the engine, not
+			// returned by a plugin, so the receipt must not claim plugin proof.
+			Assurance: executionv1.ExecutionAssurance_EXECUTION_ASSURANCE_GATEWAY_EXECUTED,
+			Target:    executionTarget(s.executionService(req.GetService())),
 			Resources: []*executionv1.ExecutionResourceV1{
 				pathExecutionResource(rel, beforeSHA256, "", false),
 			},
@@ -1164,12 +1187,12 @@ func (s *Server) ApplySymbolPatch(ctx context.Context, req *gatewayv1.ApplySymbo
 	return gatewaySymbolPatchResponse(raw), nil
 }
 
+// executeSymbolPatch resolves the declaration in the engine rather than in the
+// owning agent. Typed symbol mutation is the one Code operation that genuinely
+// needs a parser — DeclarationSpans and ValidateSyntax — which is exactly why
+// it belongs in the single binary that carries the analyzer.
 func (s *Server) executeSymbolPatch(ctx context.Context, req *gatewayv1.ApplySymbolPatchRequest, rel string) (*codev0.CodeResponse, error) {
-	execute := s.proxyExecute
-	if s.mindYAML == nil {
-		execute = s.sourceExecute
-	}
-	return execute(ctx, &codev0.CodeRequest{Operation: &codev0.CodeRequest_ApplySymbolPatch{ApplySymbolPatch: &codev0.ApplySymbolPatchRequest{
+	return s.rootedSourceExecute(ctx, s.sourceRoot(), &codev0.CodeRequest{Operation: &codev0.CodeRequest_ApplySymbolPatch{ApplySymbolPatch: &codev0.ApplySymbolPatchRequest{
 		File: rel, QualifiedName: req.GetQualifiedName(), ExpectedDeclarationSha256: req.GetExpectedDeclarationSha256(),
 		NewSource: req.GetNewSource(), FixMode: req.GetFixMode(), DryRun: req.GetDryRun(),
 	}}})
@@ -1195,7 +1218,7 @@ func gatewaySymbolPatchResponse(raw *codev0.CodeResponse) *gatewayv1.ApplySymbol
 
 func (s *Server) applySymbolPatchWithReceipt(ctx context.Context, req *gatewayv1.ApplySymbolPatchRequest, rel, beforeSHA256 string, attempt *executionrecorder.Attempt) (*gatewayv1.ApplySymbolPatchResponse, error) {
 	effectStarted := time.Now()
-	raw, err := s.proxyExecute(ctx, &codev0.CodeRequest{Operation: &codev0.CodeRequest_ApplySymbolPatch{ApplySymbolPatch: &codev0.ApplySymbolPatchRequest{
+	raw, err := s.rootedSourceExecute(ctx, s.sourceRoot(), &codev0.CodeRequest{Operation: &codev0.CodeRequest_ApplySymbolPatch{ApplySymbolPatch: &codev0.ApplySymbolPatchRequest{
 		File: rel, QualifiedName: req.GetQualifiedName(), ExpectedDeclarationSha256: req.GetExpectedDeclarationSha256(),
 		NewSource: req.GetNewSource(), FixMode: req.GetFixMode(), DryRun: false,
 	}}})
@@ -1502,8 +1525,27 @@ func (s *Server) GetProjectInfo(ctx context.Context, req *gatewayv1.GetProjectIn
 	for _, d := range pi.GetDependencies() {
 		deps = append(deps, &gatewayv1.Dependency{Name: d.Name, Version: d.Version, Direct: d.Direct})
 	}
-	sourceFiles := make([]*gatewayv1.SourceFileInfo, 0, len(pi.GetSourceFiles()))
-	for _, file := range pi.GetSourceFiles() {
+	inventory := pi.GetSourceFiles()
+	inventoryFailure := failures.Clone(resp.GetFailure())
+	if pi.GetSourceFilesOmitted() {
+		root := s.sourceRoot()
+		if inspected != nil {
+			root = inspected.root
+		}
+		taken, takeErr := s.takeSourceImports(ctx, root, pi.GetLanguage())
+		if takeErr != nil && inventoryFailure == nil {
+			// The agent's dependencies, packages and hashes are real evidence
+			// and survive; only the inventory is missing, and the failure says
+			// so rather than presenting an empty one as complete. An agent that
+			// reported its own failure keeps it: that describes its whole
+			// answer, and either failure already tells a caller not to read the
+			// empty inventory as authoritative.
+			inventoryFailure = gatewayProjectInfoFailure(takeErr)
+		}
+		inventory = taken
+	}
+	sourceFiles := make([]*gatewayv1.SourceFileInfo, 0, len(inventory))
+	for _, file := range inventory {
 		filePath := file.GetPath()
 		if inspected != nil {
 			filePath = rebaseCodeUnitFile(inspected.path, filePath)
@@ -1520,7 +1562,7 @@ func (s *Server) GetProjectInfo(ctx context.Context, req *gatewayv1.GetProjectIn
 	response := &gatewayv1.GetProjectInfoResponse{
 		Module: pi.GetModule(), Language: pi.GetLanguage(), LanguageVersion: pi.GetLanguageVersion(),
 		Packages: pkgs, Dependencies: deps, FileHashes: fileHashes, SourceFiles: sourceFiles,
-		Failure: failures.Clone(resp.GetFailure()),
+		Failure: inventoryFailure,
 	}
 	if inspected != nil {
 		response.CodeUnit = &gatewayv1.CodeUnitTarget{Id: inspected.id, Path: inspected.path}
@@ -1528,9 +1570,27 @@ func (s *Server) GetProjectInfo(ctx context.Context, req *gatewayv1.GetProjectIn
 	return response, nil
 }
 
-// GetSemanticIndex binds one exact code-unit root and invokes the selected
-// production agent's Tooling service. The Gateway only rebases locations; it
-// never chooses a parser or interprets project syntax.
+// takeSourceImports produces the per-file import inventory an analyzer-free
+// agent declined. An empty inventory without that flag is authoritative — the
+// unit genuinely has no source files — so only a declined one is refilled here.
+func (s *Server) takeSourceImports(ctx context.Context, root, language string) ([]*codev0.SourceFileInfo, error) {
+	source, err := s.boundSource(root)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = source.Close() }()
+	return source.SourceImports(ctx, language)
+}
+
+// GetSemanticIndex binds one exact code-unit root and takes the projection in
+// the engine, which carries the source-semantics analyzer. Routing it to the
+// owning agent instead would make every language agent link the tree-sitter
+// CGO stack to answer an operation none of them implements.
+//
+// A source_agents entry for the unit therefore selects nothing here: the
+// projection is language-neutral and the analyzer is the same one every agent
+// would have installed. The entry still selects the agent for operations an
+// agent actually owns.
 func (s *Server) GetSemanticIndex(ctx context.Context, req *gatewayv1.GetSemanticIndexRequest) (*gatewayv1.GetSemanticIndexResponse, error) {
 	requestedService := ""
 	if req != nil {
@@ -1548,24 +1608,44 @@ func (s *Server) GetSemanticIndex(ctx context.Context, req *gatewayv1.GetSemanti
 	}
 	target := targets[0]
 	inspected := &gatewayv1.CodeUnitTarget{Id: target.id, Path: target.path}
-	service, err := s.serviceBehaviorForCodeUnit(ctx, target, "")
+	response, err := s.rootedSourceExecute(ctx, target.root, &codev0.CodeRequest{
+		Operation: &codev0.CodeRequest_GetSemanticIndex{GetSemanticIndex: &codev0.GetSemanticIndexRequest{}},
+	})
 	if err != nil {
 		return &gatewayv1.GetSemanticIndexResponse{CodeUnit: inspected, Failure: gatewaySemanticIndexFailure(err)}, nil
 	}
-	response, err := service.GetSemanticIndex(ctx, &toolingv0.GetSemanticIndexRequest{})
-	if err != nil {
-		return &gatewayv1.GetSemanticIndexResponse{CodeUnit: inspected, Failure: gatewaySemanticIndexFailure(err)}, nil
-	}
-	if response.GetIndex() == nil {
+	index := response.GetGetSemanticIndex()
+	if index == nil {
 		return &gatewayv1.GetSemanticIndexResponse{
 			CodeUnit: inspected,
-			Failure:  failures.Ensure(response.GetFailure(), basev0.FailureCode_FAILURE_CODE_INTERNAL, "gateway.get-semantic-index", "agent returned no semantic index"),
+			Failure:  failures.Ensure(response.GetFailure(), basev0.FailureCode_FAILURE_CODE_INTERNAL, "gateway.get-semantic-index", "source behavior returned no semantic index"),
 		}, nil
 	}
 	return &gatewayv1.GetSemanticIndexResponse{
-		Index:   rebaseCodeUnitSemanticIndex(target.path, response.GetIndex()),
+		Index:   rebaseCodeUnitSemanticIndex(target.path, index),
 		Failure: failures.Clone(response.GetFailure()), CodeUnit: inspected,
 	}, nil
+}
+
+// rootedSourceExecute runs a Code request against the engine source bound to an
+// exact root, so a parser-derived answer describes that tree and no other. The
+// host-wide behavior of sourceExecute can sit above the root in question.
+func (s *Server) rootedSourceExecute(ctx context.Context, root string, request *codev0.CodeRequest) (*codev0.CodeResponse, error) {
+	source, err := s.boundSource(root)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = source.Close() }()
+	return source.ExecuteCode(ctx, request)
+}
+
+// boundSource binds engine source behavior to an exact root. The caller owns
+// the result and closes it.
+func (s *Server) boundSource(root string) (*engine.Source, error) {
+	if s.host == nil {
+		return nil, fmt.Errorf("workspace source behavior is unavailable")
+	}
+	return s.host.SourceAt(root)
 }
 
 // GetSourceManifest invokes the language-neutral rooted Code behavior so every

@@ -114,9 +114,10 @@ func (s *Server) ConfigureMutationAuthority(_ context.Context, req *gatewayv1.Co
 	return &gatewayv1.ConfigureMutationAuthorityResponse{AuthorityId: authorityID, WorkspaceId: workspaceID}, nil
 }
 
-// PrepareMutation resolves one typed text or symbol edit through the real
-// language agent in dry-run mode. The resulting bytes and hashes are sealed
-// into an immutable protobuf; no write occurs in this RPC.
+// PrepareMutation resolves one typed text or symbol edit in dry-run mode: a
+// text edit through the real language agent, a symbol patch through the engine
+// that owns the parser. The resulting bytes and hashes are sealed into an
+// immutable protobuf; no write occurs in this RPC.
 func (s *Server) PrepareMutation(ctx context.Context, req *gatewayv1.PrepareMutationRequest) (*gatewayv1.PrepareMutationResponse, error) {
 	if req == nil {
 		return prepareFailure("prepare mutation request is required"), nil
@@ -303,7 +304,11 @@ func (s *Server) ApplyPreparedMutation(ctx context.Context, req *gatewayv1.Apply
 		if !ok || contentSHA256(after) != file.GetAfterSha256() || uint64(len(after)) != file.GetAfterSizeBytes() {
 			return applyPreparedFailure(fmt.Sprintf("prepared bytes for %q are unavailable or corrupted", file.GetPath())), nil
 		}
-		response, err := s.proxyExecute(ctx, &codev0.CodeRequest{Operation: &codev0.CodeRequest_WriteFile{WriteFile: &codev0.WriteFileRequest{
+		// The prepared bytes were previewed, hashed and re-verified against the
+		// agent's source tree, so they are written to that same tree. Writing
+		// anywhere else puts bytes derived from one file on top of another of
+		// the same name.
+		response, err := s.rootedSourceExecute(ctx, s.sourceRoot(), &codev0.CodeRequest{Operation: &codev0.CodeRequest_WriteFile{WriteFile: &codev0.WriteFileRequest{
 			Path: file.GetPath(), Content: string(after),
 		}}})
 		if err != nil || response.GetWriteFile() == nil || !response.GetWriteFile().GetSuccess() {
