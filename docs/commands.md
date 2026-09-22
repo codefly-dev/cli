@@ -800,6 +800,11 @@ the directive is then rewritten to the `path:` it produced, with a
 [receipt](#resolution-receipts) keyed `<module>/<service>` recording the request
 it answered.
 
+A per-service override the CLI materialized for a module you later remove from
+`workspace.codefly.yaml` is collected with that module; one you wrote yourself
+is left in place, and `doctor` lists it again the moment the module is composed
+back.
+
 `codefly doctor workspace` reports `service_override_active` for each override
 in effect (they are invisible in committed config, so the healthy ones are
 listed too), `service_override_unresolved` when the directory is missing or the
