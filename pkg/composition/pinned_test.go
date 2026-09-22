@@ -387,10 +387,10 @@ func TestResolutionModeFor(t *testing.T) {
 			want:      ResolutionModeGit,
 		},
 		{
-			name:      "pinned revokes a recorded opt-in",
+			name:      "pinned revokes a recorded opt-out",
 			directive: &resources.ModuleResolveDirective{Pinned: true},
 			recorded:  &ResolutionReceipt{Mode: ResolutionModeGit},
-			want:      ResolutionModeVerified,
+			want:      ResolutionModeOverlayVerified,
 		},
 		{
 			name:      "cache-shaped path is not by itself an opt-in",
@@ -440,7 +440,33 @@ func TestResolutionModeFor(t *testing.T) {
 			name:      "an overlay pinned directive overrides the declaration on this machine",
 			directive: &resources.ModuleResolveDirective{Pinned: true},
 			declared:  WorkspaceResolutionGit,
-			want:      ResolutionModeVerified,
+			want:      ResolutionModeOverlayVerified,
+		},
+		{
+			// `run` must replace `pinned: true` with the path it produced, so
+			// without the receipt carrying the opt-in the declaration would take
+			// the module back on the very next run and the override would last
+			// exactly one successful run.
+			name:      "the overlay opt-in survives the path the CLI wrote for it",
+			directive: &resources.ModuleResolveDirective{Path: cacheShapedPath},
+			recorded:  &ResolutionReceipt{Mode: ResolutionModeOverlayVerified, Path: cacheShapedPath},
+			declared:  WorkspaceResolutionGit,
+			want:      ResolutionModeOverlayVerified,
+		},
+		{
+			// A module that merely happens to be verified is not an opt-in, so
+			// adding the declaration does move it onto the clone.
+			name:      "a defaulted verified receipt does not outrank a new declaration",
+			directive: &resources.ModuleResolveDirective{Path: cacheShapedPath},
+			recorded:  &ResolutionReceipt{Mode: ResolutionModeVerified, Path: cacheShapedPath},
+			declared:  WorkspaceResolutionGit,
+			want:      ResolutionModeDeclaredGit,
+		},
+		{
+			name:      "an overlay git directive revokes a recorded opt-in",
+			directive: &resources.ModuleResolveDirective{Git: true},
+			recorded:  &ResolutionReceipt{Mode: ResolutionModeOverlayVerified},
+			want:      ResolutionModeGit,
 		},
 		{
 			name:      "an overlay git directive outranks the declaration and is recorded as its own mode",
@@ -457,8 +483,8 @@ func TestResolutionModeFor(t *testing.T) {
 	}
 }
 
-// The side-parse is the only thing standing between a committed `resolution:`
-// key and core's non-strict yaml, which drops what it does not know.
+// The side-parse is the only thing standing between the committed declaration
+// and core's non-strict yaml, which drops what it does not know.
 func TestLoadModuleResolutions(t *testing.T) {
 	write := func(t *testing.T, body string) string {
 		t.Helper()
@@ -468,11 +494,12 @@ func TestLoadModuleResolutions(t *testing.T) {
 	}
 
 	declared, err := LoadModuleResolutions(write(t, `name: platform
+module-resolution:
+    saas: git
 modules:
     - name: saas
       source: owner/saas
       version: "0.0.68"
-      resolution: git
 `))
 	require.NoError(t, err)
 	require.Equal(t, map[string]WorkspaceResolution{"saas": WorkspaceResolutionGit}, declared)
@@ -491,13 +518,67 @@ modules:
 	require.Nil(t, missing)
 
 	_, err = LoadModuleResolutions(write(t, `name: platform
+module-resolution:
+    saas: worktree
 modules:
     - name: saas
       source: owner/saas
-      resolution: worktree
 `))
-	require.ErrorContains(t, err, "saas", "an unsupported value must name the module it was written on")
+	require.ErrorContains(t, err, "saas", "an unsupported value must name the module it was declared for")
 	require.ErrorContains(t, err, "worktree")
+
+	// A top-level map can name a module that does not exist — a typo surface the
+	// per-entry spelling did not have. Ignored, the declaration would resolve
+	// nothing and the module would fail verified, somewhere else entirely.
+	_, err = LoadModuleResolutions(write(t, `name: platform
+module-resolution:
+    sass: git
+modules:
+    - name: saas
+      source: owner/saas
+`))
+	require.ErrorContains(t, err, "sass", "a declaration for an uncomposed module must be refused by name")
+
+	// The per-entry spelling is what core silently drops on its next write to
+	// this file, so it must never appear to work.
+	_, err = LoadModuleResolutions(write(t, `name: platform
+modules:
+    - name: saas
+      source: owner/saas
+      resolution: git
+`))
+	require.ErrorContains(t, err, "saas")
+	require.ErrorContains(t, err, ModuleResolutionKey, "the error must name the key that does survive a write")
+}
+
+// The reason the declaration is a top-level key and not a per-module one: core
+// carries unknown top-level keys through a load-and-save on Workspace.Extensions
+// and has no such map on ModuleReference. `codefly add module` saves the
+// workspace, so a per-module key would be deleted from every *other* module in
+// the file by an unrelated command, and the developer would commit that
+// deletion. This is that round trip, through core itself.
+func TestCommittedResolutionSurvivesAWorkspaceSave(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, resources.WorkspaceConfigurationName), []byte(`name: platform
+layout: modules
+module-resolution:
+    saas: git
+modules:
+    - name: saas
+      source: owner/saas
+      version: "0.0.68"
+`), 0o600))
+
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, dir)
+	require.NoError(t, err)
+	// What `codefly add module` does to the file when it composes another module.
+	require.NoError(t, workspace.Save(ctx))
+
+	declared, err := LoadModuleResolutions(dir)
+	require.NoError(t, err)
+	require.Equal(t, map[string]WorkspaceResolution{"saas": WorkspaceResolutionGit}, declared,
+		"a declaration that does not survive a write to the file it lives in is not committed")
 }
 
 func TestResolutionRecordRoundTrip(t *testing.T) {

@@ -250,7 +250,7 @@ func TestDoctorWorkspaceModuleTrustGitDirectiveIsReported(t *testing.T) {
 // clone checked.
 func TestDoctorWorkspaceCommittedGitResolutionIsReportedNotFlagged(t *testing.T) {
 	dir := writeTestWorkspace(t, map[string]string{
-		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n      resolution: git\n",
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodule-resolution:\n    saas: git\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
 	})
 	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
 	requireNoCode(t, report, codeModuleTrustMissing)
@@ -264,7 +264,7 @@ func TestDoctorWorkspaceCommittedGitResolutionIsReportedNotFlagged(t *testing.T)
 	// declaration with the clone's path: the committed key is still what says so,
 	// and an unverified module is a warning, never a readiness failure.
 	materialized := writeTestWorkspace(t, map[string]string{
-		"workspace.codefly.yaml":         "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n      resolution: git\n",
+		"workspace.codefly.yaml":         "name: solution\nlayout: modules\nmodule-resolution:\n    saas: git\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
 		"codefly.local.yaml":             "resolve:\n    saas:\n        path: clone\n",
 		composition.ResolutionRecordName: "resolved:\n    saas:\n        source: owner/saas\n        requested: \"0.1.0\"\n        mode: declared-git\n        version: v0.1.0\n        path: clone\n",
 		"clone/module.codefly.yaml":      "name: saas\n",
@@ -294,17 +294,30 @@ func TestDoctorWorkspaceDroppedGitResolutionIsFlaggedAgain(t *testing.T) {
 	requireCode(t, report, codeModuleTrustMissing, "fail")
 }
 
-// An unsupported `resolution:` value is a manifest error, not a key to ignore:
+// An unsupported resolution value is a manifest error, not a key to ignore:
 // ignored, it would read as "this module resolves verified" and send the reader
 // to fix module-trust for a package that does not exist.
 func TestDoctorWorkspaceUnknownResolutionIsReported(t *testing.T) {
 	dir := writeTestWorkspace(t, map[string]string{
-		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n      resolution: worktree\n",
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodule-resolution:\n    saas: worktree\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
 	})
 	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
 	diag := requireCode(t, report, codeWorkspaceInvalid, "fail")
 	if !strings.Contains(diag.Message, "worktree") {
 		t.Fatalf("the diagnostic must name the unsupported value: %+v", diag)
+	}
+}
+
+// The per-entry `resolution:` spelling is the one core drops on its next write
+// to this file, so doctor must refuse it rather than let it look like it works.
+func TestDoctorWorkspacePerModuleResolutionKeyIsRefused(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n      resolution: git\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	diag := requireCode(t, report, codeWorkspaceInvalid, "fail")
+	if !strings.Contains(diag.Message, "module-resolution") {
+		t.Fatalf("the diagnostic must name the key that survives a write: %+v", diag)
 	}
 }
 

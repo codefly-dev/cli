@@ -421,15 +421,16 @@ func TestWithOverlayLockExcludesAConcurrentWriter(t *testing.T) {
 // `module/` the way initServiceModuleRepo lays them out.
 func writeDeclaredGitServiceWorkspace(t *testing.T, dir, source, version string) {
 	t.Helper()
-	manifest := "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: " + source +
-		"\n      module: module\n      version: " + version + "\n      resolution: git\n"
+	manifest := "name: solution\nlayout: modules\n" + ModuleResolutionKey + ":\n    saas: git\n" +
+		"modules:\n    - name: saas\n      source: " + source +
+		"\n      module: module\n      version: " + version + "\n"
 	if err := os.WriteFile(filepath.Join(dir, resources.WorkspaceConfigurationName), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
 
 // A per-service override never resolves differently from the module it belongs
-// to, and a committed `resolution: git` is a statement about the whole module —
+// to, and a committed git declaration is a statement about the whole module —
 // including the part an override replaces. So the override's own `version:` is
 // pulled from the clone too, and the rest of the module stays on the
 // declaration. This workspace declares no module-trust, so a service silently

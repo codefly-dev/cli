@@ -438,7 +438,7 @@ func sortedServiceNames(services map[string]*resources.ServiceResolveDirective) 
 // unverified clone, because after `run` has replaced `git: true` with the
 // resolved path the overlay no longer says so on its own.
 //
-// The workspace's own committed `resolution: git` is the third way a module can
+// The workspace's own committed `module-resolution` entry is the third way a module can
 // be opted out, and the only one that survives in a fresh checkout. It is
 // reported twice on purpose: `module_resolution_git` states the declaration and
 // how to leave it, `module_unverified` states the consequence, which is the same
@@ -486,8 +486,8 @@ func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *work
 		checkModuleMaterialization(ref, directive, receipt, mode, report)
 		if mode == composition.ResolutionModeDeclaredGit {
 			report.add(codeModuleResolutionGit, "resolution of "+ref.Name, "ok",
-				fmt.Sprintf("module %q declares resolution: git in %s: it resolves by cloning %s at its %s tag, unverified by declaration", ref.Name, resources.WorkspaceConfigurationName, ref.Source, moduleVersionLabel(ref)),
-				fmt.Sprintf("once %s publishes a signed module package, add module-trust.repositories/signers for %q and drop its resolution: git — nothing else about the entry changes", ref.Source, ref.Name))
+				fmt.Sprintf("module %q is declared %s: git in %s: it resolves by cloning %s at its %s tag, unverified by declaration", ref.Name, composition.ModuleResolutionKey, resources.WorkspaceConfigurationName, ref.Source, moduleVersionLabel(ref)),
+				fmt.Sprintf("once %s publishes a signed module package, add module-trust.repositories/signers for %q and drop it from %s — nothing else about the entry changes", ref.Source, ref.Name, composition.ModuleResolutionKey))
 		}
 		if mode.Unverified() {
 			report.add(codeModuleUnverified, "module-trust for "+ref.Name, "warn",
@@ -509,7 +509,7 @@ func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *work
 // wrote when it consumed the directive.
 func unverifiedRemediation(name string, mode composition.ResolutionMode) string {
 	if mode == composition.ResolutionModeDeclaredGit {
-		return fmt.Sprintf("add module-trust.repositories/signers for %q to %s and drop its resolution: git to resolve it verified", name, resources.WorkspaceConfigurationName)
+		return fmt.Sprintf("add module-trust.repositories/signers for %q to %s and drop %q from its %s block to resolve it verified", name, resources.WorkspaceConfigurationName, name, composition.ModuleResolutionKey)
 	}
 	return fmt.Sprintf("add module-trust.repositories/signers for %q to %s and drop it from %s to resolve it verified", name, resources.WorkspaceConfigurationName, composition.ResolutionRecordName)
 }

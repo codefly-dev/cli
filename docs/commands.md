@@ -738,39 +738,53 @@ module to verified resolution.
 The overlay is machine-local, so it cannot answer the case where a module has
 no signed package *for anyone*: every checkout of the workspace would need the
 same opt-out written by hand, which is the per-machine step committed identity
-exists to remove. A module entry declares it instead:
+exists to remove. A top-level `module-resolution` block declares it instead,
+keyed by module name:
 
 ```yaml
+module-resolution:
+    saas: git
+
 modules:
     - name: saas
       source: codefly-dev/module-saas-starter
       version: "0.0.68"
-      resolution: git
 ```
 
-`resolution: git` — the only value the key takes today — means: resolve
-`source` at `version` by cloning its git tag, **unverified by declaration**.
+`git` — the only value the key takes today — means: resolve that module's
+`source` at its `version` by cloning its git tag, **unverified by declaration**.
 Nothing is signature- or digest-checked; the workspace is stating in committed,
 reviewable config that it accepts that for this module, rather than each
 developer accepting it again on their own machine. `run` prints `unverified git
 clone for <name> (declared in workspace.codefly.yaml)` when it materializes one,
 and `codefly doctor workspace` reports it with the informational
 `module_resolution_git` diagnostic beside the standing `module_unverified`
-warning — writing the opt-out down does not make the clone checked. Any other
-value is an error naming the module, never an ignored key.
+warning — writing the opt-out down does not make the clone checked.
+
+Three things are errors naming the module, never ignored keys: any value other
+than `git`; a name no composed module answers to; and writing `resolution: git`
+on the module entry itself. The last is refused because the entry is the one
+place the declaration cannot survive — a workspace carries unknown *top-level*
+keys through a save (that is also how `module-trust` survives one), but a module
+entry does not, so `codefly add module` would silently delete a per-entry
+declaration from every other module in the file and you would commit that
+deletion inside an unrelated change.
 
 Precedence is unchanged: an overlay `resolve.<name>` entry still wins on the
 machine that has one, so `path`/`worktree` keep pointing at a checkout you are
-editing and `pinned: true` still tests verified resolution locally. With no
-overlay entry, the declaration behaves exactly as `git: true` would — the same
-cache, the same [receipt](#resolution-receipts) (recorded as mode
-`declared-git`), and the same rewrite of the overlay to the materialized
-`path:`.
+editing and `pinned: true` still tests verified resolution locally. Because
+`run` must replace the directive with the path it produced, an overlay choice is
+carried forward on its [receipt](#resolution-receipts) — `git` for the opt-out,
+`overlay-verified` for the opt-in — and outranks the declaration until you
+revoke it with the opposite directive or drop the module from the record. With
+no overlay entry at all, the declaration behaves exactly as `git: true` would:
+the same cache, the same receipt (recorded as mode `declared-git`), and the same
+rewrite of the overlay to the materialized `path:`.
 
 Leaving it is one edit. Once the producer publishes a signed module package and
-`module-trust` names its repository and signer, **drop the `resolution:` line**:
-the module returns to verified resolution on the next run, with nothing else
-about the entry changed and no stale record to clean up.
+`module-trust` names its repository and signer, **drop the module from
+`module-resolution`**: it returns to verified resolution on the next run, with
+nothing else about the entry changed and no stale record to clean up.
 
 #### Overriding one service of a composed module
 
@@ -835,7 +849,8 @@ service saas/accounts resolves to /Users/me/… (overlay services.accounts.path,
 
 A `version:` override is materialized by `run` exactly as a pinned module is —
 same `module-trust` requirement, and the same escapes from it: `resolve.<module>.git:
-true`, or the module's committed [`resolution: git`](#committed-git-resolution).
+true`, or the module's committed [`module-resolution`
+entry](#committed-git-resolution).
 An override never resolves differently from the module it belongs to, so
 overriding one service of a declared-git module pulls that service's version
 from the clone too, and leaves the rest of the module on the declaration. The
@@ -900,8 +915,12 @@ reserved subdirectory rather than sharing the browsable tree. A value that is
 not usable as a root is an error rather than an ignored setting: falling back
 silently would put the modules somewhere other than where you said, and you
 would go looking where you asked. Resolution receipts record the path the module
-actually landed at, so moving the root re-materializes rather than stranding
-anything.
+actually landed at and `run` checks it against the root in force now, so moving
+the root — or deleting the cache — re-materializes on the next run of any shape
+rather than leaving a module pointed at where it used to be. A root you
+configure is yours, not the CLI's: a checkout of your own inside it keeps its
+`resolve.<name>.path`, because there `run` treats only the path on a receipt as
+its own output.
 
 #### Resolution receipts
 
@@ -910,7 +929,9 @@ Everything `run` materializes is recorded as a receipt in
 receipt binds the request it answered — canonical source, module subpath,
 requested version or constraint — to what that request resolved to: the
 materialization mode (`verified`, `git` for the overlay opt-out, or
-`declared-git` for the committed `resolution: git`), the exact resolved version,
+`declared-git` for the committed `module-resolution` entry, and
+`overlay-verified` for a `pinned: true` the CLI has consumed), the exact
+resolved version,
 the path, and for a verified package its artifact digest and commit.
 
 ```yaml
@@ -930,10 +951,10 @@ manages. An overlay `path:` matching a receipt is one `run` wrote and may
 refresh; one that does not is you editing the module in place, and `run` never
 touches it. It is also what keeps a module on its git opt-out after the
 directive has been replaced by a path, and what lets `codefly doctor
-workspace` report the module as unverified. A committed `resolution: git` is
-the exception: it is recorded as `declared-git` but never read back to decide
-the mode, because the workspace manifest still says it — and stops saying it the
-moment the key is dropped.
+workspace` report the module as unverified. A committed `module-resolution`
+entry is the exception: it is recorded as `declared-git` but never read back to
+decide the mode, because the workspace manifest still says it — and stops saying
+it the moment the key is dropped.
 
 Because the receipt names the request, a materialization can be checked
 against the request being made *now*. When a module's requested version (or

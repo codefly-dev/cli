@@ -17,8 +17,9 @@ import (
 // this on every machine.
 func writeSolutionWorkspaceWithResolution(t *testing.T, dir, source, version, resolution string) {
 	t.Helper()
-	manifest := "name: wiki\nlayout: modules\nmodules:\n    - name: saas\n      source: " + source +
-		"\n      version: " + version + "\n      resolution: " + resolution + "\n"
+	manifest := "name: wiki\nlayout: modules\n" + ModuleResolutionKey + ":\n    saas: " + resolution +
+		"\nmodules:\n    - name: saas\n      source: " + source +
+		"\n      version: " + version + "\n"
 	if err := os.WriteFile(filepath.Join(dir, resources.WorkspaceConfigurationName), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +27,7 @@ func writeSolutionWorkspaceWithResolution(t *testing.T, dir, source, version, re
 
 // A workspace repository that contains nothing but workspace.codefly.yaml must
 // be able to boot a module whose producer publishes no signed package, with no
-// per-machine overlay step. The committed `resolution: git` is what says so, and
+// per-machine overlay step. The committed declaration is what says so, and
 // what `run` must act on exactly as it acts on the overlay opt-out.
 func TestMaterializePinnedModulesHonorsCommittedGitResolution(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
@@ -78,7 +79,7 @@ func TestMaterializePinnedModulesHonorsCommittedGitResolution(t *testing.T) {
 	}
 }
 
-// Dropping `resolution: git` once the producer publishes a package is meant to
+// Dropping the declaration once the producer publishes a package is meant to
 // be the whole edit. The receipt still records a clone, so if the receipt were
 // consulted ahead of the (now absent) declaration the module would silently keep
 // cloning forever; here the workspace declares no module-trust either, so the
@@ -152,7 +153,7 @@ func TestMaterializePinnedModulesOverlayOverridesTheDeclaration(t *testing.T) {
 }
 
 // A malformed declaration fails the whole materialization rather than resolving
-// the module the default way: `resolution: gti` must not read as "the producer
+// the module the default way: `saas: gti` must not read as "the producer
 // publishes a signed package".
 func TestMaterializePinnedModulesRejectsUnknownResolution(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
@@ -248,5 +249,163 @@ func TestMaterializePinnedModulesUsesTheConfiguredCacheRoot(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(workspaceDir, ".codefly", "cache")); !os.IsNotExist(err) {
 		t.Fatalf("a configured cache root must leave no module bytes in the workspace: %v", err)
+	}
+}
+
+// A configured cache root is a directory the developer chose and may already
+// keep their own checkouts in — the docs suggest pointing it at exactly such a
+// tree. Containment in it is therefore not proof the CLI wrote a path, and
+// reading it as proof let `run` overwrite a hand-written `resolve.<name>.path`
+// aimed at a module they were editing. Ownership there rests on the receipt.
+func TestMaterializePinnedModulesLeavesAUserCheckoutInsideTheConfiguredRoot(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	vendors := filepath.Join(t.TempDir(), "vendors")
+	t.Setenv(ModuleCacheEnv, vendors)
+	source := initModuleRepo(t, "", "v0.0.1")
+	ctx := context.Background()
+
+	userCheckout := filepath.Join(vendors, "my-saas-checkout")
+	if err := os.MkdirAll(userCheckout, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	workspaceDir := t.TempDir()
+	writeSolutionWorkspaceWithResolution(t, workspaceDir, source, "v0.0.1", "git")
+	if err := resources.SaveLocalOverlay(ctx, workspaceDir, &resources.LocalOverlay{
+		Resolve: map[string]*resources.ModuleResolveDirective{"saas": {Path: userCheckout}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	workspace := &resources.Workspace{
+		Name:    "wiki",
+		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "v0.0.1"}},
+	}
+	workspace.WithDir(workspaceDir)
+
+	if err := MaterializePinnedModules(ctx, workspace); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	overlay, err := resources.LoadLocalOverlay(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := overlay.Resolve["saas"].Path; got != userCheckout {
+		t.Fatalf("the checkout the user is editing was replaced by %q; a root they chose is not proof of CLI ownership", got)
+	}
+}
+
+// Under the *default* roots — which hold nothing but CLI output — containment
+// must still establish ownership, or a pre-receipt materialization could never
+// be reclaimed.
+func TestMaterializePinnedModulesStillOwnsPathsUnderTheDefaultRoot(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	source := initModuleRepo(t, "", "v0.0.1")
+	ctx := context.Background()
+
+	workspaceDir := t.TempDir()
+	writeSolutionWorkspaceWithResolution(t, workspaceDir, source, "v0.0.1", "git")
+	// A materialization from before receipts existed: a cache path, no receipt.
+	orphan := filepath.Join(mustCacheRoot(t), filepath.FromSlash(source), "v0.0.0")
+	if err := os.MkdirAll(orphan, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := resources.SaveLocalOverlay(ctx, workspaceDir, &resources.LocalOverlay{
+		Resolve: map[string]*resources.ModuleResolveDirective{"saas": {Path: orphan}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	workspace := &resources.Workspace{
+		Name:    "wiki",
+		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "v0.0.1"}},
+	}
+	workspace.WithDir(workspaceDir)
+
+	if err := MaterializePinnedModules(ctx, workspace); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	overlay, err := resources.LoadLocalOverlay(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := overlay.Resolve["saas"].Path; got == orphan {
+		t.Fatal("a path under a CLI-owned root must still be reclaimed without a receipt")
+	}
+}
+
+// Moving the cache root must move the modules. Every run-shaped entry point goes
+// through EnsurePinnedModules — only `run solution` re-resolves unconditionally
+// — so a receipt that answers the request from the *previous* root would leave
+// `run service` reporting success while handing core a directory that has moved
+// or, once the old root is deleted, is not there at all.
+func TestEnsurePinnedModulesRematerializesWhenTheCacheRootMoves(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	rootA := filepath.Join(t.TempDir(), "A")
+	t.Setenv(ModuleCacheEnv, rootA)
+	source := initModuleRepo(t, "", "v0.0.1")
+	ctx := context.Background()
+
+	workspaceDir := t.TempDir()
+	writeSolutionWorkspaceWithResolution(t, workspaceDir, source, "v0.0.1", "git")
+	workspace := &resources.Workspace{
+		Name:    "wiki",
+		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "v0.0.1"}},
+	}
+	workspace.WithDir(workspaceDir)
+	if err := MaterializePinnedModules(ctx, workspace); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+
+	rootB := filepath.Join(t.TempDir(), "B")
+	t.Setenv(ModuleCacheEnv, rootB)
+	if err := os.RemoveAll(rootA); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := EnsurePinnedModules(ctx, workspace); err != nil {
+		t.Fatalf("a moved cache root must re-materialize, not fail: %v", err)
+	}
+	overlay, err := resources.LoadLocalOverlay(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := overlay.Resolve["saas"].Path
+	if !underDir(rootB, got) {
+		t.Fatalf("module still resolves to %q, outside the root in force now", got)
+	}
+	if _, err := os.Stat(got); err != nil {
+		t.Fatalf("the overlay names a materialization that is not there: %v", err)
+	}
+}
+
+// The same gate covers a cache that was deleted without the root moving: the
+// receipt still answers the request, but what it names is gone.
+func TestEnsurePinnedModulesRematerializesWhenTheCacheIsDeleted(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	source := initModuleRepo(t, "", "v0.0.1")
+	ctx := context.Background()
+
+	workspaceDir := t.TempDir()
+	writeSolutionWorkspaceWithResolution(t, workspaceDir, source, "v0.0.1", "git")
+	workspace := &resources.Workspace{
+		Name:    "wiki",
+		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "v0.0.1"}},
+	}
+	workspace.WithDir(workspaceDir)
+	if err := MaterializePinnedModules(ctx, workspace); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if err := os.RemoveAll(mustCacheRoot(t)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := EnsurePinnedModules(ctx, workspace); err != nil {
+		t.Fatalf("a deleted cache must re-materialize, not fail: %v", err)
+	}
+	overlay, err := resources.LoadLocalOverlay(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(overlay.Resolve["saas"].Path); err != nil {
+		t.Fatalf("the overlay names a materialization that is not there: %v", err)
 	}
 }
