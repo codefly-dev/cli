@@ -149,7 +149,7 @@ type EnvironmentManagedService struct {
 
 // EnvironmentWorkloadIdentity is the runtime principal a workload authenticates
 // as, and the platform's own means of attaching it. Annotations land on the
-// workload's ServiceAccount and Labels on its pod template, verbatim: a cell
+// workload's ServiceAccount and Labels on its pod template, verbatim: an environment
 // declares whatever its identity webhook keys off and codefly stamps it without
 // interpreting the keys.
 type EnvironmentWorkloadIdentity struct {
@@ -652,7 +652,7 @@ type Environment struct {
 
 	// ResourceQuota, when set, renders a ResourceQuota (and an optional
 	// LimitRange of container defaults) into this environment's namespace so one
-	// workspace sharing a cell cannot starve another. Absent, no quota is
+	// workspace sharing an environment cannot starve another. Absent, no quota is
 	// rendered and the namespace stays uncapped. CLI-side; not serialized to
 	// proto.
 	ResourceQuota *EnvironmentResourceQuota `yaml:"resource-quota,omitempty"`
@@ -666,7 +666,7 @@ type Environment struct {
 // EnvironmentDNS is the environment's DNS contract.
 type EnvironmentDNS struct {
 	// AppHostSuffix is the public host suffix an app's external endpoints hang
-	// off of in this cell (e.g. "staging.eastus2.azure.example.com"). Empty means
+	// off of in this environment (e.g. "staging.eastus2.azure.example.com"). Empty means
 	// no declared suffix, so external hosts fall back to a local dns.codefly.yaml.
 	AppHostSuffix string `yaml:"app-host-suffix,omitempty"`
 }
@@ -675,7 +675,7 @@ type EnvironmentDNS struct {
 // reachable at in this environment, or "" when no app host suffix is declared.
 // The label is "<service>-<module>" (the service-module subdomain convention,
 // see shared.ToDNSCase) so services sharing a name across modules do not collide
-// under one cell suffix; the suffix already scopes the cell/environment.
+// under one host suffix; the suffix already scopes the environment.
 func (env *Environment) AppHost(service *resources.ServiceIdentity) string {
 	if env == nil || env.DNS == nil || env.DNS.AppHostSuffix == "" || service == nil {
 		return ""

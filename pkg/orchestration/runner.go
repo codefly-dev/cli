@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/core/agents/contract"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
@@ -288,6 +289,14 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		}
 		return nil, w.Wrapf(err, "cannot get dependencies endpoints")
 	}
+	dependenciesNetworkMappings, err := runner.world.SharedState.GetDependenciesNetworkMappings(cfgCtx, runner.instance.Service)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot get initialized dependency network mappings")
+	}
+	if runner.testRequest != nil && !runner.serviceRunningForTest && len(dependenciesNetworkMappings) > 0 &&
+		!slices.Contains(runner.instance.Info.GetContract().GetCapabilities(), contract.RuntimeInitDependencyMappings) {
+		return nil, w.NewError("dependency-only tests require agent capability %s to consume accepted addresses at Init", contract.RuntimeInitDependencyMappings)
+	}
 
 	conf, err := runner.world.ConfigurationManager.GetServiceConfiguration(cfgCtx, runner.instance.Identity)
 	if err != nil {
@@ -338,14 +347,15 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	// every dependency and never the service the suite is about. Start still
 	// carries both, and the agent takes the first non-empty.
 	req := &runtimev0.InitRequest{
-		RuntimeContext:             runtimeContext,
-		ProposedNetworkMappings:    networkMappings,
-		DependenciesEndpoints:      dependenciesEndpoints,
-		Configuration:              conf,
-		WorkspaceConfigurations:    workspaceConfigurations,
-		DependenciesConfigurations: dependenciesConfigurations,
-		Fixture:                    runner.fixture,
-		Overrides:                  runner.runtimeOverrides(),
+		RuntimeContext:              runtimeContext,
+		ProposedNetworkMappings:     networkMappings,
+		DependenciesEndpoints:       dependenciesEndpoints,
+		DependenciesNetworkMappings: dependenciesNetworkMappings,
+		Configuration:               conf,
+		WorkspaceConfigurations:     workspaceConfigurations,
+		DependenciesConfigurations:  dependenciesConfigurations,
+		Fixture:                     runner.fixture,
+		Overrides:                   runner.runtimeOverrides(),
 	}
 	err = resources.Validate(req)
 	if err != nil {

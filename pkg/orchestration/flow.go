@@ -2223,12 +2223,12 @@ func (flow *Flow) WithRemotes(services []*Remote) {
 
 // WithRunProfile applies an already-resolved run profile (the canonical,
 // validated exclusions produced by resources.Workspace.ResolveRunProfile) to a
-// run flow. Profiles only trim local run composition, so this rejects any other
+// run or test flow. Profiles only trim local runtime composition, so this rejects any other
 // flow mode. The excluded dependency references are canonical module/service
 // uniques, matching what architecture.ExcludeServices keys on.
 func (flow *Flow) WithRunProfile(profile resources.RunProfile) error {
-	if flow == nil || flow.world == nil || flow.world.Mode != RunMode {
-		return fmt.Errorf("run profiles can only be applied to run flows")
+	if flow == nil || flow.world == nil || (flow.world.Mode != RunMode && flow.world.Mode != TestMode) {
+		return fmt.Errorf("run profiles can only be applied to run or test flows")
 	}
 	flow.excludedDependencyServices = append([]string(nil), profile.ExcludeDependencies...)
 	flow.world.excludedWorkspaceConfigurations = make(map[string]bool, len(profile.ExcludeWorkspaceConfigurations))
