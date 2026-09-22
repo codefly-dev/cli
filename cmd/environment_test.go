@@ -8,9 +8,8 @@ import (
 	"testing"
 )
 
-const localCellContract = `{
-  "schema": "codefly/cell/v2",
-  "cell": "hosted-eastus2",
+const localCoordinateContract = `{
+  "schema": "codefly/coordinate/v1",
   "coordinate": "hosted-eastus2",
   "environment": {
     "name": "local",
@@ -21,12 +20,12 @@ const localCellContract = `{
 
 func runEnvironmentImport(t *testing.T, dir string) (string, error) {
 	t.Helper()
-	contract := filepath.Join(t.TempDir(), "cell.json")
-	if err := os.WriteFile(contract, []byte(localCellContract), 0o644); err != nil {
+	contract := filepath.Join(t.TempDir(), "coordinate.json")
+	if err := os.WriteFile(contract, []byte(localCoordinateContract), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Chdir(dir)
-	RootCmd.SetArgs([]string{"environment", "import", "local", "--cell-contract", contract})
+	RootCmd.SetArgs([]string{"environment", "import", "local", "--coordinate-contract", contract})
 	defer RootCmd.SetArgs(nil)
 	return captureStdout(t, func() error {
 		return RootCmd.ExecuteContext(context.Background())

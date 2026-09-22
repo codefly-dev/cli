@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -20,7 +21,7 @@ func KustomizeDir(ctx context.Context, workspace *resources.Workspace, module *r
 	return path.Join(workspace.Dir(), "deployments", "modules", module.Name, "services", service.Name)
 }
 
-func KustomizeDirForEnv(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *resources.Environment) string {
+func KustomizeDirForEnv(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *environments.Environment) string {
 	return path.Join(KustomizeDir(ctx, workspace, module, service), "overlays", env.Name)
 }
 

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -23,7 +24,7 @@ import (
 
 func TestCompositionTargetRequiresExplicitScopeAndRetainedIdentity(t *testing.T) {
 	for _, namespace := range []string{"", "--all-namespaces", "A", "../default", strings.Repeat("a", 64)} {
-		result, err := InspectLocalKubernetesTarget(t.Context(), &resources.Environment{Namespace: namespace})
+		result, err := InspectLocalKubernetesTarget(t.Context(), &environments.Environment{Namespace: namespace})
 		require.ErrorContains(t, err, "explicit valid environment namespace")
 		require.Nil(t, result)
 		_, err = readActiveNamespaceUID(t.Context(), nil, nil, namespace)
@@ -39,10 +40,10 @@ func TestCompositionTargetRequiresExplicitScopeAndRetainedIdentity(t *testing.T)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	result, err = InspectLocalKubernetesTarget(ctx, &resources.Environment{Namespace: "explicit"})
+	result, err = InspectLocalKubernetesTarget(ctx, &environments.Environment{Namespace: "explicit"})
 	require.ErrorIs(t, err, context.Canceled)
 	require.Nil(t, result)
-	result, err = InspectLocalKubernetesTarget(t.Context(), &resources.Environment{Namespace: "explicit", Cluster: &resources.EnvironmentCluster{Kind: "remote"}})
+	result, err = InspectLocalKubernetesTarget(t.Context(), &environments.Environment{Namespace: "explicit", Cluster: &environments.EnvironmentCluster{Kind: "remote"}})
 	require.ErrorContains(t, err, "exact local k3d target")
 	require.Nil(t, result)
 }
@@ -101,7 +102,9 @@ func TestDisposableK3dCompositionTargetIdentity(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, initial.Binding, checked.Binding)
 	workspace := t.TempDir()
-	configuration, err := yaml.Marshal(&resources.Workspace{Name: "live-target", Layout: "modules", Environments: []*resources.Environment{q.env}})
+	resource, err := q.env.Resource()
+	require.NoError(t, err)
+	configuration, err := yaml.Marshal(&resources.Workspace{Name: "live-target", Layout: "modules", Environments: []*resources.Environment{resource}})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(workspace, resources.WorkspaceConfigurationName), configuration, 0o600))
 	command := exec.CommandContext(ctx, "go", "run", "../../cmd/codefly", "composition", "--workspace", workspace,

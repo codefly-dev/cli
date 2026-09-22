@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"gopkg.in/yaml.v3"
 )
 
@@ -69,7 +69,7 @@ func CloudProfileForKind(kind string) (CloudProfile, bool) {
 // path. It returns an empty path for cluster kinds that need no cloud component,
 // and an error for an unrecognized cluster kind so a typo cannot silently ship
 // storage-neutral manifests to a managed cloud.
-func RenderCloudComponent(root string, env *resources.Environment) (string, error) {
+func RenderCloudComponent(root string, env *environments.Environment) (string, error) {
 	if env.Cluster == nil || env.Cluster.Kind == "" {
 		return "", fmt.Errorf("environment %q requires an explicit cluster kind to render a cloud component", env.Name)
 	}

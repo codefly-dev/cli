@@ -1,9 +1,10 @@
 package build
 
 import (
+	"testing"
+
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
-	"testing"
 )
 
 func TestBuildCommandsExposeCachePolicy(t *testing.T) {

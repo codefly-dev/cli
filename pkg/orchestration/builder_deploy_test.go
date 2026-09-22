@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/deployments"
+	"github.com/codefly-dev/cli/pkg/environments"
 	coreservices "github.com/codefly-dev/core/agents/services"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
@@ -223,26 +224,26 @@ func TestPromotableDeploymentInputsPreserveWorkspaceConfigurationAndExtractSecre
 func TestKubernetesOutputProfileReservesEphemeralForDirectLocalApply(t *testing.T) {
 	require.Equal(t,
 		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
-		kubernetesOutputProfile(&World{Env: resources.LocalEnvironment()}),
+		kubernetesOutputProfile(&World{Env: environments.LocalEnvironment()}),
 	)
 	require.Equal(t,
 		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
 		kubernetesOutputProfile(&World{
-			Env:           resources.LocalEnvironment(),
+			Env:           environments.LocalEnvironment(),
 			RemoteManager: &deployments.LocalApplyManager{},
 		}),
 	)
 	require.Equal(t,
 		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
-		kubernetesOutputProfile(&World{Env: &resources.Environment{
+		kubernetesOutputProfile(&World{Env: &environments.Environment{
 			Name:    "aws",
-			Cluster: &resources.EnvironmentCluster{Kind: "eks"},
+			Cluster: &environments.EnvironmentCluster{Kind: "eks"},
 		}}),
 	)
 	require.Equal(t,
 		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
 		kubernetesOutputProfile(&World{
-			Env:                     resources.LocalEnvironment(),
+			Env:                     environments.LocalEnvironment(),
 			KubernetesOutputProfile: builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
 		}),
 	)

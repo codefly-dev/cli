@@ -18,12 +18,12 @@ import (
 	"strings"
 
 	"github.com/Masterminds/semver/v3"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gh"
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/google/go-github/v89/github"
-	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -1547,7 +1547,11 @@ func resolveGitops(workspace *resources.Workspace, environment string, local boo
 		return nil, "", "", "", fmt.Errorf("workspace is required")
 	}
 	var config repositoryConfig
-	for _, candidate := range workspace.Environments {
+	declared, err := environments.FromWorkspace(workspace)
+	if err != nil {
+		return nil, "", "", "", err
+	}
+	for _, candidate := range declared {
 		if candidate.Name != environment || candidate.Gitops == nil {
 			continue
 		}
@@ -1559,12 +1563,16 @@ func resolveGitops(workspace *resources.Workspace, environment string, local boo
 		}
 		break
 	}
-	if config.RepoURL == "" && workspace.Gitops != nil {
+	defaults, err := environments.WorkspaceGitops(workspace)
+	if err != nil {
+		return nil, "", "", "", err
+	}
+	if config.RepoURL == "" && defaults != nil {
 		config = repositoryConfig{
-			RepoURL:      workspace.Gitops.RepoURL,
-			FetchRepoURL: workspaceFetchRepository(workspace),
-			Path:         workspace.Gitops.Path,
-			Branch:       workspace.Gitops.Branch,
+			RepoURL:      defaults.RepoURL,
+			FetchRepoURL: defaults.FetchRepoURL,
+			Path:         defaults.Path,
+			Branch:       defaults.Branch,
 		}
 	}
 	if config.RepoURL == "" {
@@ -1602,22 +1610,6 @@ func localFetchRemoteHost(workspace *resources.Workspace, request *PublishReques
 		return "", fmt.Errorf("derive local fetch remote identity: %w", err)
 	}
 	return remote.Spec.DNSName, nil
-}
-
-func workspaceFetchRepository(workspace *resources.Workspace) string {
-	data, err := os.ReadFile(filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName))
-	if err != nil {
-		return ""
-	}
-	var document struct {
-		Gitops struct {
-			FetchRepoURL string `yaml:"fetch-repo-url"`
-		} `yaml:"gitops"`
-	}
-	if err := yaml.Unmarshal(data, &document); err != nil {
-		return ""
-	}
-	return document.Gitops.FetchRepoURL
 }
 
 func validateRepositoryURL(raw string, local bool) (string, error) {

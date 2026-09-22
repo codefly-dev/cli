@@ -1,0 +1,19 @@
+{
+  "schema": "codefly/coordinate/v1",
+  "coordinate": "hosted/gcp/us-east1/US/staging",
+  "environment": {
+    "name": "staging",
+    "namespace": "lodestar",
+    "service-config": {
+      "services": {
+        "accounts": {
+          "values": {
+            "DATABASE_INSTANCE": "gke-test-luka:us-east1:obint-use1b-platform",
+            "DATABASE_READER_USER": "obint-use1b-db-accounts-reader@gke-test-luka.iam",
+            "DATABASE_WRITER_USER": "obint-use1b-db-accounts-writer@gke-test-luka.iam"
+          }
+        }
+      }
+    }
+  }
+}

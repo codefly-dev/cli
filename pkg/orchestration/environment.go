@@ -1,9 +1,7 @@
 package orchestration
 
 import (
-	"fmt"
-	"maps"
-
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -13,19 +11,15 @@ const LocalEnvironmentName = "local"
 
 // SelectEnvironment is the canonical environment-selection path for
 // workspace-bound flows. It honors the workspace's declared environment when
-// present (FindEnvironment keeps the legacy synthetic "local" default for
+// present (CLI selection keeps the synthetic "local" default for
 // workspaces that never declared one) and fails — before any agent is
 // spawned — when a non-local environment is requested but not declared.
 //
 // The returned Environment is a deep copy: invocation-scoped overrides such
 // as --naming-scope must not leak into the declaration shared by concurrent
 // flows over the same Workspace.
-func SelectEnvironment(workspace *resources.Workspace, name string) (*resources.Environment, error) {
-	env := workspace.FindEnvironment(name)
-	if env == nil {
-		return nil, fmt.Errorf("workspace %q does not declare environment %q in %s", workspace.Name, name, resources.WorkspaceConfigurationName)
-	}
-	return cloneEnvironment(env), nil
+func SelectEnvironment(workspace *resources.Workspace, name string) (*environments.Environment, error) {
+	return environments.Select(workspace, name)
 }
 
 // SelectedFixture resolves the fixture a workspace-bound flow runs with. An
@@ -33,7 +27,7 @@ func SelectEnvironment(workspace *resources.Workspace, name string) (*resources.
 // `codefly run service` / `codefly test service` needs no --fixture at all.
 // An explicit override always wins, and an environment that deliberately
 // omits a fixture — because it loads a real provider — resolves to none.
-func SelectedFixture(environment *resources.Environment, override string) string {
+func SelectedFixture(environment *environments.Environment, override string) string {
 	if override != "" {
 		return override
 	}
@@ -41,111 +35,4 @@ func SelectedFixture(environment *resources.Environment, override string) string
 		return ""
 	}
 	return environment.Fixture
-}
-
-func cloneEnvironment(env *resources.Environment) *resources.Environment {
-	clone := *env
-	if env.Cluster != nil {
-		cluster := *env.Cluster
-		clone.Cluster = &cluster
-	}
-	if env.Registry != nil {
-		registry := *env.Registry
-		clone.Registry = &registry
-	}
-	if env.Gitops != nil {
-		gitops := *env.Gitops
-		clone.Gitops = &gitops
-	}
-	if env.Dns != nil {
-		dns := *env.Dns
-		clone.Dns = &dns
-	}
-	if len(env.Ingress) > 0 {
-		clone.Ingress = append([]resources.EnvironmentIngressRoute(nil), env.Ingress...)
-		for i := range clone.Ingress {
-			clone.Ingress[i].Hosts = append([]string(nil), env.Ingress[i].Hosts...)
-		}
-	}
-	// Maps here are guarded on nil, not length: an explicitly empty map (a
-	// workspace declaring "managed-services: {}" decodes to one) is still a
-	// shared header, and the first flow to add an entry contaminates the other.
-	if env.ManagedServices != nil {
-		clone.ManagedServices = make(map[string]resources.EnvironmentManagedService, len(env.ManagedServices))
-		for name, managed := range env.ManagedServices {
-			managed.EgressCIDRs = append([]string(nil), managed.EgressCIDRs...)
-			managed.SecretReferences = append([]resources.EnvironmentManagedSecretReference(nil), managed.SecretReferences...)
-			if managed.Identity != nil {
-				identity := *managed.Identity
-				identity.Annotations = maps.Clone(identity.Annotations)
-				identity.Labels = maps.Clone(identity.Labels)
-				managed.Identity = &identity
-			}
-			clone.ManagedServices[name] = managed
-		}
-	}
-	if env.ServiceSecrets != nil {
-		serviceSecrets := *env.ServiceSecrets
-		if env.ServiceSecrets.Services != nil {
-			serviceSecrets.Services = make(map[string]resources.EnvironmentServiceSecretMapping, len(env.ServiceSecrets.Services))
-			for name, mapping := range env.ServiceSecrets.Services {
-				if mapping.SecretStore != nil {
-					secretStore := *mapping.SecretStore
-					mapping.SecretStore = &secretStore
-				}
-				if mapping.RemoteKeys != nil {
-					remoteKeys := make(map[string]resources.EnvironmentSecretRemoteRef, len(mapping.RemoteKeys))
-					for key, remote := range mapping.RemoteKeys {
-						remoteKeys[key] = remote
-					}
-					mapping.RemoteKeys = remoteKeys
-				}
-				if mapping.Defaults != nil {
-					defaults := *mapping.Defaults
-					mapping.Defaults = &defaults
-				}
-				serviceSecrets.Services[name] = mapping
-			}
-		}
-		clone.ServiceSecrets = &serviceSecrets
-	}
-	if env.ServiceConfig != nil {
-		serviceConfig := *env.ServiceConfig
-		if env.ServiceConfig.Services != nil {
-			serviceConfig.Services = make(map[string]resources.EnvironmentServiceConfigMapping, len(env.ServiceConfig.Services))
-			for name, mapping := range env.ServiceConfig.Services {
-				mapping.Values = maps.Clone(mapping.Values)
-				serviceConfig.Services[name] = mapping
-			}
-		}
-		clone.ServiceConfig = &serviceConfig
-	}
-	if len(env.Secrets) > 0 {
-		clone.Secrets = make([]*resources.EnvironmentSecretProvider, len(env.Secrets))
-		for i, provider := range env.Secrets {
-			p := *provider
-			clone.Secrets[i] = &p
-		}
-	}
-	if env.ResourceQuota != nil {
-		quota := *env.ResourceQuota
-		quota.Requests = cloneResourceList(env.ResourceQuota.Requests)
-		quota.Limits = cloneResourceList(env.ResourceQuota.Limits)
-		if env.ResourceQuota.DefaultContainer != nil {
-			defaults := *env.ResourceQuota.DefaultContainer
-			defaults.Requests = cloneResourceList(env.ResourceQuota.DefaultContainer.Requests)
-			defaults.Limits = cloneResourceList(env.ResourceQuota.DefaultContainer.Limits)
-			quota.DefaultContainer = &defaults
-		}
-		clone.ResourceQuota = &quota
-	}
-	return &clone
-}
-
-func cloneResourceList(list *resources.EnvironmentResourceList) *resources.EnvironmentResourceList {
-	if list == nil {
-		return nil
-	}
-	copied := *list
-	return &copied
 }

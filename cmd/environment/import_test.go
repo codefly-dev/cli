@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 )
@@ -66,13 +67,31 @@ func doImport(t *testing.T, dir string, opts importOptions) string {
 	return out.String()
 }
 
-func loadWorkspace(t *testing.T, dir string) *resources.Workspace {
+type importedWorkspace struct {
+	*resources.Workspace
+	t *testing.T
+}
+
+func (ws *importedWorkspace) FindEnvironment(name string) *environments.Environment {
+	ws.t.Helper()
+	resource := ws.Workspace.FindEnvironment(name)
+	if resource == nil {
+		return nil
+	}
+	env, err := environments.FromRuntime(resource)
+	if err != nil {
+		ws.t.Fatal(err)
+	}
+	return env
+}
+
+func loadWorkspace(t *testing.T, dir string) *importedWorkspace {
 	t.Helper()
 	ws, err := resources.LoadWorkspaceFromDir(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("load workspace: %v", err)
 	}
-	return ws
+	return &importedWorkspace{Workspace: ws, t: t}
 }
 
 func readFile(t *testing.T, path string) string {
@@ -109,6 +128,55 @@ func TestImportCreatesEnvironment(t *testing.T) {
 	}
 	if env.Gitops == nil || env.Gitops.Path != "workloads/hosted/staging/acme" {
 		t.Fatalf("gitops path = %+v, want workloads/hosted/staging/acme", env.Gitops)
+	}
+}
+
+func TestImportActualInfraBaseOutput(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "pkg", "environments", "testdata", "coordinates", "infra-base-lodestar.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := writeWorkspace(t, "name: product\nlayout: modules\n")
+	doImport(t, dir, importOptions{envName: "staging", contractData: data})
+	env := loadWorkspace(t, dir).FindEnvironment("staging")
+	if env.Namespace != "lodestar" {
+		t.Fatalf("namespace = %q", env.Namespace)
+	}
+	contract, err := environments.ParseCoordinateContract(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(contract.Environment.ServiceConfig, env.ServiceConfig) {
+		t.Fatal("import changed producer values")
+	}
+	before := readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName))
+	doImport(t, dir, importOptions{envName: "staging", contractData: data})
+	if after := readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName)); before != after {
+		t.Fatalf("re-import changed the document:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestImportRefusesNamespaceChangeWithoutWriting(t *testing.T) {
+	for _, dryRun := range []bool{false, true} {
+		dir := writeWorkspace(t, "name: acme\nlayout: modules\nenvironments:\n  - name: azure\n    namespace: existing\n    service-identity:\n      default:\n        principal: existing-principal\n")
+		path := filepath.Join(dir, resources.WorkspaceConfigurationName)
+		before := readFile(t, path)
+		err := runImport(t.Context(), &importOptions{dir: dir, envName: "azure", contractData: []byte(fixtureContract), stdout: io.Discard, dryRun: dryRun})
+		if err == nil || !strings.Contains(err.Error(), "already targets namespace") {
+			t.Fatalf("error = %v", err)
+		}
+		if after := readFile(t, path); after != before {
+			t.Fatal("refused import changed workspace")
+		}
+	}
+}
+
+func TestImportPreservesOmittedNamespace(t *testing.T) {
+	dir := writeWorkspace(t, "name: acme\nlayout: modules\nenvironments:\n  - name: azure\n    namespace: existing\n")
+	doImport(t, dir, importOptions{contractData: []byte(`{"schema":"codefly/coordinate/v1","environment":{"name":"azure","configuration-profile":"staging"}}`)})
+	env := loadWorkspace(t, dir).FindEnvironment("azure")
+	if env.Namespace != "existing" || env.ConfigurationProfile != "staging" {
+		t.Fatalf("import lost existing target or incoming profile: %+v", env)
 	}
 }
 
@@ -675,11 +743,11 @@ environments:
       description: staging
 `
 	dir := writeWorkspace(t, src)
-	doImport(t, dir, importOptions{}) // no --namespace: defaults to workspace name "acme"
+	doImport(t, dir, importOptions{}) // no --namespace: use the contract's "acme"
 	ws := loadWorkspace(t, dir)
 	env := ws.FindEnvironment("azure")
 	if env.Namespace != "acme" {
-		t.Errorf("namespace = %q, want the resolved workspace name acme", env.Namespace)
+		t.Errorf("namespace = %q, want the producer's declared namespace acme", env.Namespace)
 	}
 	if !strings.HasSuffix(env.Gitops.Path, "/"+env.Namespace) {
 		t.Errorf("gitops.path %q does not agree with namespace %q", env.Gitops.Path, env.Namespace)

@@ -963,8 +963,9 @@ codefly environment import production --coordinate-contract coordinate.json
 ```
 
 The requested environment and namespace must match the descriptor. The namespace
-defaults to the environment's existing namespace or the workspace name; select
-another declared target with `--namespace`. This flag does not rewrite the
+comes from the producer declaration; `--namespace` asserts that declared target.
+Re-import refuses to change an existing namespace while retaining its identity,
+secrets and delivery declarations. This flag does not rewrite the
 contract's delivery paths or secret references. The superseded `codefly/cell/v1`
 and `codefly/cell/v2` descriptors are rejected; their producers must emit explicit
 `codefly/coordinate/v1` declarations. `--cell-contract` remains accepted as the
@@ -977,7 +978,7 @@ There is no special `store` alias, single-database limit, default secret path or
 ignored producer extension. Unknown fields and capabilities fail validation.
 
 An import re-serializes only the selected environment item. Surrounding workspace
-bytes remain unchanged; a provenance comment records the cell, coordinate and
+bytes remain unchanged; a provenance comment records the coordinate and
 import time. `--dry-run` prints the diff without writing. After a write, workspace
 readiness validation runs for the selected environment; when it reports the
 workspace is not ready, the command prints the diagnostics and exits non-zero.

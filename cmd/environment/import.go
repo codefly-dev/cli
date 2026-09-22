@@ -11,6 +11,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli/yamledit"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
 	"github.com/pmezard/go-difflib/difflib"
@@ -154,10 +155,15 @@ type importOptions struct {
 // entire file — an unreviewable diff, and the exact failure that would hide a
 // wrong egress CIDR in the noise.)
 func runImport(ctx context.Context, opts *importOptions) error {
-	contract, err := resources.ParseCoordinateContract(opts.contractData)
+	contract, err := environments.ParseCoordinateContract(opts.contractData)
 	if err != nil {
 		return err
 	}
+	_, declaration, err := yamledit.Document(opts.contractData)
+	if err != nil {
+		return err
+	}
+	declaredEnvironment := yamledit.MapValue(declaration, "environment")
 
 	file := filepath.Join(opts.dir, resources.WorkspaceConfigurationName)
 	original, err := os.ReadFile(file)
@@ -170,24 +176,25 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		return fmt.Errorf("cannot parse %s: %w", resources.WorkspaceConfigurationName, err)
 	}
 
-	workspaceName := ""
-	if n := yamledit.MapValue(root, "name"); n != nil {
-		workspaceName = n.Value
-	}
-
 	envs := yamledit.MapValue(root, "environments")
 	envNode := findExistingEnvironment(envs, opts.envName)
 
-	namespace := resolveNamespace(opts, envNode, workspaceName)
+	namespace := contract.Environment.Namespace
+	if opts.namespaceSet {
+		namespace = opts.namespace
+	}
 	env, err := contract.ToEnvironment(opts.envName, namespace)
 	if err != nil {
 		return err
+	}
+	if existing := yamledit.MapValue(envNode, "namespace"); yamledit.MapValue(declaredEnvironment, "namespace") != nil && existing != nil && existing.Value != "" && existing.Value != env.Namespace {
+		return fmt.Errorf("environment %q already targets namespace %q, not %q; reconcile its existing identity, secrets and delivery declarations before importing a different target", opts.envName, existing.Value, env.Namespace)
 	}
 
 	var updated []byte
 	if envNode == nil {
 		// New environment: serialize ToEnvironment's result whole, so a field
-		// core maps from the contract is carried through without this consumer
+		// the parser maps from the contract is carried through without this consumer
 		// maintaining a parallel allowlist of the fields to copy.
 		item, eerr := yamledit.Encode(env)
 		if eerr != nil {
@@ -201,11 +208,7 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		// EndLine after the edit would under-count and strand the original's
 		// trailing lines.
 		endLine := yamledit.EndLine(envNode)
-		_, declaration, decodeErr := yamledit.Document(opts.contractData)
-		if decodeErr != nil {
-			return decodeErr
-		}
-		applyContractFields(envNode, yamledit.MapValue(declaration, "environment"))
+		applyContractFields(envNode, declaredEnvironment)
 		stampProvenance(envNode, contract, opts)
 		updated, err = spliceEnvironment(original, envNode, endLine)
 	}
@@ -213,6 +216,13 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		return err
 	}
 
+	merged, err := resources.LoadFromBytes[resources.Workspace](updated)
+	if err != nil {
+		return err
+	}
+	if _, err := environments.FromWorkspace(merged); err != nil {
+		return fmt.Errorf("merged environment declarations: %w", err)
+	}
 	if opts.dryRun {
 		diff, derr := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
 			A:        difflib.SplitLines(string(original)),
@@ -249,20 +259,6 @@ func findExistingEnvironment(envs *yaml.Node, name string) *yaml.Node {
 		}
 	}
 	return nil
-}
-
-// resolveNamespace picks the deploy namespace: the --namespace flag, else the
-// existing environment's namespace, else the workspace name.
-func resolveNamespace(opts *importOptions, envNode *yaml.Node, workspaceName string) string {
-	if opts.namespaceSet {
-		return opts.namespace
-	}
-	if envNode != nil {
-		if n := yamledit.MapValue(envNode, "namespace"); n != nil && n.Value != "" {
-			return n.Value
-		}
-	}
-	return workspaceName
 }
 
 // spliceEnvironment re-renders only envNode and replaces the exact lines it
@@ -403,6 +399,9 @@ func applyContractFields(target, declaration *yaml.Node) {
 	for i := 0; i+1 < len(declaration.Content); i += 2 {
 		key, value := declaration.Content[i].Value, declaration.Content[i+1]
 		current := yamledit.MapValue(target, key)
+		if current != nil && current.Kind == yaml.ScalarNode && value.Kind == yaml.ScalarNode && current.Tag == value.Tag && current.Value == value.Value {
+			continue
+		}
 		if value.Kind == yaml.MappingNode && len(value.Content) > 0 && current != nil && current.Kind == yaml.MappingNode {
 			applyContractFields(current, value)
 			continue
@@ -413,7 +412,7 @@ func applyContractFields(target, declaration *yaml.Node) {
 
 // stampProvenance writes (or, on re-import, replaces) the provenance comment
 // above the environment item, keeping any operator comment lines around it.
-func stampProvenance(envNode *yaml.Node, contract *resources.CoordinateContract, opts *importOptions) {
+func stampProvenance(envNode *yaml.Node, contract *environments.CoordinateContract, opts *importOptions) {
 	line := fmt.Sprintf("# %s%s on %s; re-run: codefly environment import %s --coordinate-contract …",
 		provenanceMarker, labelled(contract.Coordinate), opts.now.Format(time.RFC3339), opts.envName)
 
@@ -433,6 +432,6 @@ func init() {
 	importCmd.Flags().String("coordinate-contract", "", "Path to a codefly/coordinate/v1 descriptor, or - for stdin")
 	importCmd.Flags().String("cell-contract", "", "Former spelling of --coordinate-contract")
 	_ = importCmd.Flags().MarkDeprecated("cell-contract", "use --coordinate-contract")
-	importCmd.Flags().StringVar(&importNamespace, "namespace", "", "Kubernetes namespace to deploy into (default: existing namespace, else workspace name)")
+	importCmd.Flags().StringVar(&importNamespace, "namespace", "", "Assert the namespace declared by the producer")
 	importCmd.Flags().BoolVar(&importDryRun, "dry-run", false, "Print the unified diff of workspace.codefly.yaml and write nothing")
 }

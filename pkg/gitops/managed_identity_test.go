@@ -7,18 +7,19 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 	"sigs.k8s.io/kustomize/api/krusty"
 	"sigs.k8s.io/kustomize/kyaml/filesys"
 )
 
-func managedIdentityService() resources.EnvironmentManagedService {
-	return resources.EnvironmentManagedService{
+func managedIdentityService() environments.EnvironmentManagedService {
+	return environments.EnvironmentManagedService{
 		Kind:         "external",
 		ExternalName: "10.20.11.7",
 		Port:         5432,
 		EgressCIDRs:  []string{"10.20.11.0/28"},
-		Identity: &resources.EnvironmentWorkloadIdentity{
+		Identity: &environments.EnvironmentWorkloadIdentity{
 			Kind:        "gcp-service-account",
 			Principal:   "platform-db@obinh.iam.gserviceaccount.com",
 			Annotations: map[string]string{"iam.gke.io/gcp-service-account": "platform-db@obinh.iam.gserviceaccount.com"},
@@ -68,11 +69,11 @@ func writeConsumerTree(t *testing.T, root, environment, namespace, service, endp
 	}
 }
 
-func consumerEnvironment(managed resources.EnvironmentManagedService) *resources.Environment {
-	return &resources.Environment{
+func consumerEnvironment(managed environments.EnvironmentManagedService) *environments.Environment {
+	return &environments.Environment{
 		Name:            "production",
 		Namespace:       "payments",
-		ManagedServices: map[string]resources.EnvironmentManagedService{"store": managed},
+		ManagedServices: map[string]environments.EnvironmentManagedService{"store": managed},
 	}
 }
 
@@ -164,7 +165,7 @@ func TestProjectManagedIdentityRefusesConflictingIdentities(t *testing.T) {
 	writeConsumerTree(t, root, "production", "payments", "accounts", "store.payments.svc:5432")
 
 	warehouse := managedIdentityService()
-	warehouse.Identity = &resources.EnvironmentWorkloadIdentity{Principal: "warehouse@obinh.iam.gserviceaccount.com"}
+	warehouse.Identity = &environments.EnvironmentWorkloadIdentity{Principal: "warehouse@obinh.iam.gserviceaccount.com"}
 	env := consumerEnvironment(managedIdentityService())
 	env.ManagedServices["warehouse"] = warehouse
 
@@ -209,7 +210,7 @@ func TestProjectManagedIdentityLeavesAbsentIdentityAlone(t *testing.T) {
 	writeConsumerTree(t, root, "production", "payments", "accounts", "store.payments.svc:5432")
 	before := readTree(t, root)
 
-	legacy := resources.EnvironmentManagedService{
+	legacy := environments.EnvironmentManagedService{
 		Kind:         "external",
 		ExternalName: "p.postgres.database.azure.com",
 		EgressCIDRs:  []string{"10.20.11.0/28"},

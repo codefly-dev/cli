@@ -9,6 +9,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/routing"
 	"github.com/codefly-dev/core/network"
@@ -101,7 +102,7 @@ Examples:
 // in-cluster ports, the ingress hosts bound to each endpoint, and (for gRPC)
 // the proto-package prefix. TCP and unsupported endpoints are skipped — the
 // edge cannot HTTP/gRPC-route them.
-func exposedEndpoints(ctx context.Context, module string, service *resources.Service, env *resources.Environment, hostOverride []string, prefix string) []routing.ExposedEndpoint {
+func exposedEndpoints(ctx context.Context, module string, service *resources.Service, env *environments.Environment, hostOverride []string, prefix string) []routing.ExposedEndpoint {
 	ports := inClusterPorts(ctx, module, service.Name, service.Endpoints)
 	var endpoints []routing.ExposedEndpoint
 	for _, ep := range service.Endpoints {
@@ -142,7 +143,7 @@ func resolveAPI(ep *resources.Endpoint) string {
 }
 
 // inClusterPorts resolves each endpoint's in-cluster Service port with the same
-// rule as core network.RemoteManager.GenerateNetworkMappings: the canonical
+// rule as core remotenetwork.RemoteManager.GenerateNetworkMappings: the canonical
 // owner of a per-API port keeps standards.Port; every other endpoint (a named
 // sibling, or a second API that hashes to the same canonical port) gets a
 // stable endpoint-specific port. Using standards.Port for all of them would
@@ -204,7 +205,7 @@ func inClusterPorts(ctx context.Context, module, service string, endpoints []*re
 // module/service unique) and either names this endpoint or is service-wide
 // (empty Endpoint). The per-endpoint Endpoint field is honored so a host meant
 // for one endpoint is not applied to another.
-func ingressHosts(env *resources.Environment, module, service, endpoint string) []string {
+func ingressHosts(env *environments.Environment, module, service, endpoint string) []string {
 	unique := resources.ServiceUnique(module, service)
 	var hosts []string
 	seen := make(map[string]struct{})

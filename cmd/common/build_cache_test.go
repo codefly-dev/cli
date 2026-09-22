@@ -1,9 +1,10 @@
 package common
 
 import (
+	"testing"
+
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
-	"testing"
 )
 
 func TestBuildCacheFlagsValidateAndPreserveReadOnlyPolicy(t *testing.T) {

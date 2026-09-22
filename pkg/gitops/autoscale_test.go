@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 	"sigs.k8s.io/kustomize/api/krusty"
 	"sigs.k8s.io/kustomize/kyaml/filesys"
@@ -112,11 +113,11 @@ func TestProjectRenderedServiceAutoscaleUsesLoadedGraph(t *testing.T) {
 	plain := filepath.Join(stage, "modules", "web", "services", "orphan")
 	writeServiceTree(t, plain, "production")
 
-	env := &resources.Environment{Name: "production", Namespace: "payments"}
+	env := &environments.Environment{Name: "production", Namespace: "payments"}
 	graph := map[string]*resources.Service{
-		resources.ServiceUnique("web", "accounts"): {Autoscale: &resources.ServiceAutoscale{Min: 2, Max: 6, TargetCPU: 70}},
+		resources.ServiceUnique("web", "accounts"): {Name: "accounts", Autoscale: &resources.ServiceAutoscale{Min: 2, Max: 6, TargetCPU: 70}},
 	}
-	if err := projectRenderedServiceAutoscale(stage, env, graph); err != nil {
+	if err := projectRenderedServiceConfiguration(t.Context(), stage, env, graph); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(scaled, "overlays", "production", hpaFile)); err != nil {

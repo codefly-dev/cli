@@ -262,7 +262,7 @@ func gatewayRunner(t *testing.T, runtime *agentservices.RuntimeAgent) (*Runner, 
 	require.NoError(t, err)
 	configurationManager, err := configurations.NewManager(ctx, workspace)
 	require.NoError(t, err)
-	require.NoError(t, configurationManager.Load(ctx, env))
+	require.NoError(t, configurationManager.Load(ctx, env.Runtime()))
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
 	require.NoError(t, err)
 	sharedState, err := NewStateManager(ctx, configurationManager, dependencies)
@@ -324,7 +324,7 @@ func TestInitPublishesTheAgentAcceptedPortsEverywhere(t *testing.T) {
 	outputEnv := filepath.Join(t.TempDir(), "runtime.env")
 	runner.outputEnv = outputEnv
 
-	proposed, err := world.LocalNetworkManager.GenerateNetworkMappings(ctx, world.Env, world.Workspace, runner.instance.Identity, runner.endpoints, resources.NewRuntimeContextNative())
+	proposed, err := world.LocalNetworkManager.GenerateNetworkMappings(ctx, world.Env.Runtime(), world.Workspace, runner.instance.Identity, runner.endpoints, resources.NewRuntimeContextNative())
 	require.NoError(t, err)
 	proposedREST := nativeAddressFor(t, proposed, "rest")
 
@@ -440,7 +440,7 @@ func TestInitRejectsInvalidAgentMappingsWithoutPublishing(t *testing.T) {
 
 			// No port-reservation leak: the endpoints are still allocatable to
 			// this runner, on the same ports.
-			retry, err := world.LocalNetworkManager.GenerateNetworkMappings(ctx, world.Env, world.Workspace, runner.instance.Identity, runner.endpoints, resources.NewRuntimeContextNative())
+			retry, err := world.LocalNetworkManager.GenerateNetworkMappings(ctx, world.Env.Runtime(), world.Workspace, runner.instance.Identity, runner.endpoints, resources.NewRuntimeContextNative())
 			require.NoError(t, err)
 			for name, port := range map[string]uint16{"rest": reserved["web/gateway/rest"], "grpc": reserved["web/gateway/grpc"]} {
 				require.Equal(t, fmt.Sprintf("localhost:%d", port), hostOfNativeInstance(t, retry, name))

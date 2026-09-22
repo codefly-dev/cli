@@ -1,0 +1,138 @@
+# Producer Configuration Contract
+
+Codefly defines the configuration contract. Infrastructure producers, including
+infra-base, emit it. The CLI does not translate a producer's resource
+inventory, database engine conventions, proxy mode, or credential naming scheme.
+
+`environments.CoordinateContract` schema `codefly/coordinate/v1` wraps the existing
+`environments.Environment` model under `environment`. JSON keys inside that object
+are exactly the workspace YAML keys. The CLI owns this deployment document; it projects runtime context into Core. Core does not parse the coordinate contract.
+`coordinate` is an optional opaque provenance label; the document is named for
+its subject, and "cell" is not a word the model has.
+
+There is one spelling. A document naming itself `codefly/cell/v1` or
+`codefly/cell/v2` is refused: under a strict parser the alternative to an error
+is a silent guess, and a permanent fallback is how a retired word outlives every
+decision to retire it.
+
+Examples accepted by the CLI are in `../pkg/environments/testdata/coordinates/managed-identity.json`
+and `../pkg/environments/testdata/coordinates/password-auth.json`. They are contract fixtures,
+not claims that a particular infrastructure producer already emits this format.
+
+Producers must supply:
+
+- The selected environment name and namespace. Import refuses a different target
+  rather than reusing credentials or delivery paths resolved for another target.
+- Each managed service under its explicit service key, with its endpoint and port.
+  Multiple services are supported without assigning the first one to `store`.
+- Explicit secret references, including the target Secret name, remote key,
+  optional property and secret store. No declaration means no reference is added;
+  it does not assert that the service is passwordless.
+- Any workload identity principal and opaque annotation/label attachments.
+  Identities and secret references can coexist. The CLI does not infer an auth mode.
+  There are two homes, for two questions. A managed service's `identity` is
+  reachable only through a managed service the workload consumes; what a workload
+  authenticates as regardless of that goes under `service-identity`, keyed the way
+  `service-config` and `service-secrets` are — an environment-wide `default` plus
+  the services that differ. A per-service entry replaces the default outright: an
+  override is total, and must restate the annotations and labels it still needs.
+  A principal whose platform attachment is missing authenticates as nothing, so an
+  override that carries only a principal is a declaration that cannot work where
+  the identity webhook keys off a label. Unknown keys in either block are refused
+  rather than dropped: a mistyped `services` would otherwise leave a valid
+  `default` standing and silently collapse every override onto it.
+- Any application secret mappings through the existing `service-secrets` model.
+- Any resolved non-secret values through `service-config`, keyed by consuming
+  service and then by the exact key the service reads. The producer resolves the
+  value; The CLI carries it verbatim and derives none of it. A declared service with
+  nothing to inject, or a value that resolved to empty, is refused at load.
+
+Values and secret references are two blocks, not one dictionary of either-or
+entries: a resolved value belongs in `service-config`, a reference in
+`service-secrets`. One service declaring the same key in both is refused rather
+than resolved — both render an entry of that name into one container, where one
+silently overwrites the other. The refusal compares explicit `remote-keys`; a
+`defaults` template covers whichever of a service's own keys are declared
+secret, which the environment block alone cannot see.
+- Resolved delivery repository, branch and path when declaring a GitOps target.
+  The CLI neither appends the namespace nor chooses a branch.
+
+Local configuration can declare `configuration-profile` and `secrets` without a
+cluster or registry. Import is configuration admission, not deployment approval:
+CLI still validates the selected operation, service graph and deployment target.
+Local secret resolution and deployed secret projection remain separate consumers
+of the existing configuration model; secret values do not belong in descriptors.
+
+Unknown fields and required capabilities are rejected. A producer declaring an
+identity on a managed service uses
+`requires_capabilities: ["managed-service-identity"]`; one declaring a consuming
+service's own identity uses `["service-identity"]`.
+Proxy containers, image choices and loopback routing are not part of this contract.
+
+## Configuration and secret injection
+
+Injecting a workload's configuration and secrets needs four declarations and no
+others: the target (`name`, `namespace`, `cluster.context`), resolved values
+under `service-config`, secret references under `service-secrets`, and a workload
+identity under `service-identity`.
+`../pkg/environments/testdata/coordinates/config-injection.json` is that whole shape.
+
+The fourth is why `service-identity` exists rather than being read off a managed
+service. A descriptor for this flow declares no `managed-services`, so an
+identity carried there would be unreachable: the consumer renders no
+ServiceAccount, the pod keeps the namespace default, and the ExternalSecret that
+did render cannot authenticate to the store. Nothing fails at import or at
+render, and the first signal is in-cluster. `Environment.WorkloadIdentity(service)`
+resolves the per-service entry or the default; composing that with a managed
+service's own identity belongs to the consumer, which knows which services
+consume what — an `Environment` does not.
+
+A producer emitting for this path populates nothing else. `managed-services`,
+`registry`, `ingress`, `resource-quota` and `dns` serve other flows and are
+correctly absent here; a producer's own inventory — database engines, store
+isolation tiers, cloud and location, operator cluster access — has no home in
+this contract by design, and a non-secret value does not become one by being
+routed through a secret store to find somewhere to live.
+
+## Migration
+
+Retired `codefly/cell/v1` is rejected, not converted. Its database-to-`store` translation,
+`password_auth` inference, manufactured `secret-store`/`<namespace>/store` handoff
+and implicit delivery paths are removed. The producer must emit the resolved
+Codefly environment directly, and the CLI import fixtures must move with it.
+No compatibility shim reads infra-base's private format. Producers and CLI must
+qualify against the CLI-owned coordinate contract before release.
+
+Workload identity projection validates a staged manifest tree and atomically
+exchanges it with the destination on Linux and macOS. Cancellation before the
+exchange leaves the destination unchanged; after publication the complete tree
+is committed. Filesystems without atomic directory exchange fail without a
+per-file publication fallback. Existing file and directory permissions survive.
+
+## Ownership
+
+The strict parser and deployment declarations live in `pkg/environments`. Core
+owns generic runtime configuration and secrets, not this document. Kubernetes
+identity attachments, ingress, quotas and cloud deployment policy belong here.
+The spelling `codefly/coordinate/v1` and existing producer fields are unchanged.
+
+`service-config.values` entries are injected under their exact environment names
+into the container named for the consuming service. Explicit `service-secrets`
+keys render both a container `secretKeyRef` and an ExternalSecret reference.
+Neither secrets nor configuration are implicitly copied to sidecars. Rendering
+refuses a declaration that cannot bind to a service container, and a literal
+configuration value cannot replace a rendered secret reference.
+
+## Qualification limits
+
+The actual infra-base fixture and its provenance are under
+`pkg/environments/testdata/coordinates`. Its current Lodestar output contains
+three public configuration values but no identity, secret references or delivery
+target. [Infra-base #1116](https://github.com/obin-ai/infra-base/issues/1116) owns
+that missing producer handoff; Azure bindings remain tracked in infra-base #1099.
+Rendering those values is not proof that the application consumes them.
+
+Nested JSON strings are preserved verbatim, but Core's structured-data runtime
+bridge and the Go SDK's nested document API are not implemented by this change.
+They are tracked in [Core #620](https://github.com/codefly-dev/core/issues/620)
+and [SDK-Go #34](https://github.com/codefly-dev/sdk-go/issues/34).

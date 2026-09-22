@@ -7,6 +7,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
@@ -73,7 +74,7 @@ var ModuleCmd = &cobra.Command{
 	},
 }
 
-func buildOneService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, name string, env *resources.Environment) error {
+func buildOneService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, name string, env *environments.Environment) error {
 	w := wool.Get(ctx).In("buildModule.buildOneService", wool.NameField(name))
 
 	service, err := module.LoadServiceFromName(ctx, name)

@@ -15,7 +15,9 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/cli/pkg/dockerstart"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
+	"github.com/codefly-dev/cli/pkg/remotenetwork"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -177,7 +179,7 @@ func MapValues[K comparable, V any](m map[K]V) []V {
 }
 
 type World struct {
-	Env  *resources.Environment
+	Env  *environments.Environment
 	Mode Mode
 
 	// containerRecoveryIdentity is the ownership acknowledgement every agent
@@ -222,7 +224,7 @@ type World struct {
 	SharedState *StateManager
 
 	LocalNetworkManager  *network.RuntimeManager
-	RemoteNetworkManager *network.RemoteManager
+	RemoteNetworkManager *remotenetwork.RemoteManager
 
 	ConfigurationManager *configurations.Manager
 
@@ -263,7 +265,7 @@ func (f FlowFailure) Error() string {
 	return fmt.Sprintf("%s: %s", f.Service, f.Message)
 }
 
-func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *resources.Environment, mode Mode, opts ...FlowOption) (*Flow, error) {
+func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *environments.Environment, mode Mode, opts ...FlowOption) (*Flow, error) {
 	w := wool.Get(ctx).In("NewFlow")
 
 	options := &flowOptions{}
@@ -330,7 +332,7 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
-	world.RemoteNetworkManager, err = network.NewRemoteManager(ctx, configurationManager)
+	world.RemoteNetworkManager, err = remotenetwork.NewRemoteManager(ctx, configurationManager)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -603,7 +605,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 		return w.Wrap(err)
 	}
 
-	err = flow.ConfigurationManager.Load(ctx, flow.world.Env)
+	err = flow.ConfigurationManager.Load(ctx, flow.world.Env.Runtime())
 	if err != nil {
 		return w.Wrap(err)
 	}
@@ -2156,8 +2158,8 @@ func (flow *Flow) dependencyWorkspace() *resources.Workspace {
 }
 
 // Environment returns the environment this flow runs against — the same
-// object handed to the configuration manager and serialized to every agent.
-func (flow *Flow) Environment() *resources.Environment {
+// runtime projection is handed to the configuration manager and agents.
+func (flow *Flow) Environment() *environments.Environment {
 	if flow == nil || flow.world == nil {
 		return nil
 	}
@@ -2212,7 +2214,7 @@ func (flow *Flow) exportsExcludedOriginEnvironment() bool {
 
 type Remote struct {
 	*resources.ServiceWithModule
-	*resources.Environment
+	*environments.Environment
 }
 
 func (flow *Flow) WithRemotes(services []*Remote) {

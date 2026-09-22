@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
@@ -60,7 +61,7 @@ func TestRunEnvironmentUndeclaredLocalKeepsLegacyDefault(t *testing.T) {
 
 	env, err := runEnvironment(workspace)
 	require.NoError(t, err)
-	require.Equal(t, resources.LocalEnvironment(), env)
+	require.Equal(t, environments.LocalEnvironment(), env)
 }
 
 func TestRunEnvironmentExplicitEmptyNamingScopeClearsDeclaredScope(t *testing.T) {

@@ -6,19 +6,19 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"sigs.k8s.io/kustomize/api/krusty"
 	"sigs.k8s.io/kustomize/kyaml/filesys"
 )
 
-func fullResourceQuota() *resources.EnvironmentResourceQuota {
-	return &resources.EnvironmentResourceQuota{
-		Requests: &resources.EnvironmentResourceList{CPU: "4", Memory: "8Gi"},
-		Limits:   &resources.EnvironmentResourceList{CPU: "8", Memory: "16Gi"},
+func fullResourceQuota() *environments.EnvironmentResourceQuota {
+	return &environments.EnvironmentResourceQuota{
+		Requests: &environments.EnvironmentResourceList{CPU: "4", Memory: "8Gi"},
+		Limits:   &environments.EnvironmentResourceList{CPU: "8", Memory: "16Gi"},
 		Pods:     "50",
-		DefaultContainer: &resources.EnvironmentContainerResources{
-			Requests: &resources.EnvironmentResourceList{CPU: "100m", Memory: "128Mi"},
-			Limits:   &resources.EnvironmentResourceList{CPU: "500m", Memory: "512Mi"},
+		DefaultContainer: &environments.EnvironmentContainerResources{
+			Requests: &environments.EnvironmentResourceList{CPU: "100m", Memory: "128Mi"},
+			Limits:   &environments.EnvironmentResourceList{CPU: "500m", Memory: "512Mi"},
 		},
 	}
 }
@@ -46,9 +46,9 @@ func TestResourceQuotaManifestRendersHardCaps(t *testing.T) {
 }
 
 func TestResourceQuotaManifestNilWithoutHardCaps(t *testing.T) {
-	onlyDefaults := &resources.EnvironmentResourceQuota{
-		DefaultContainer: &resources.EnvironmentContainerResources{
-			Requests: &resources.EnvironmentResourceList{CPU: "100m"},
+	onlyDefaults := &environments.EnvironmentResourceQuota{
+		DefaultContainer: &environments.EnvironmentContainerResources{
+			Requests: &environments.EnvironmentResourceList{CPU: "100m"},
 		},
 	}
 	if manifest := resourceQuotaManifest("lodestar", onlyDefaults); manifest != nil {
@@ -68,7 +68,7 @@ func TestLimitRangeManifest(t *testing.T) {
 	if item.Default["cpu"] != "500m" || item.DefaultRequest["memory"] != "128Mi" {
 		t.Fatalf("limit range defaults = %+v", item)
 	}
-	if manifest := limitRangeManifest("lodestar", &resources.EnvironmentResourceQuota{Pods: "10"}); manifest != nil {
+	if manifest := limitRangeManifest("lodestar", &environments.EnvironmentResourceQuota{Pods: "10"}); manifest != nil {
 		t.Fatalf("quota without container defaults rendered a LimitRange: %+v", manifest)
 	}
 }

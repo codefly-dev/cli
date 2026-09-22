@@ -5,6 +5,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/runners/recoveryscope"
@@ -77,7 +78,7 @@ func (flow *Flow) projectContainerRecovery() (dockerrun.ContainerRecoveryScope, 
 // Ownership is refused rather than defaulted when either input is missing:
 // resolving from a partial context would project a DIFFERENT durable identity
 // rather than none, and containers labeled with it match no later sweep.
-func ContainerRecoveryScopeFor(workspace *resources.Workspace, env *resources.Environment) (dockerrun.ContainerRecoveryScope, error) {
+func ContainerRecoveryScopeFor(workspace *resources.Workspace, env *environments.Environment) (dockerrun.ContainerRecoveryScope, error) {
 	if workspace == nil {
 		return dockerrun.ContainerRecoveryScope{}, fmt.Errorf("container recovery requires a workspace")
 	}

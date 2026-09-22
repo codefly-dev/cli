@@ -1,0 +1,42 @@
+{
+  "schema": "codefly/coordinate/v1",
+  "requires_capabilities": ["service-identity"],
+  "environment": {
+    "name": "staging",
+    "namespace": "product",
+    "cluster": {"kind": "external", "context": "shared-test"},
+    "service-config": {
+      "services": {
+        "api": {
+          "values": {
+            "DATABASE_HOST": "product-staging.database.example",
+            "DATABASE_PORT": "6432"
+          }
+        },
+        "worker": {
+          "values": {"DATABASE_HOST": "product-staging.database.example"}
+        }
+      }
+    },
+    "service-secrets": {
+      "secret-store": {"name": "app-secrets", "kind": "SecretStore"},
+      "services": {
+        "api": {"remote-keys": {"DATABASE_PASSWORD": {"key": "product/api", "property": "password"}}}
+      }
+    },
+    "service-identity": {
+      "default": {
+        "principal": "product-staging-workload",
+        "annotations": {"identity.example/principal": "product-staging-workload"},
+        "labels": {"identity.example/enabled": "true"}
+      },
+      "services": {
+        "worker": {
+          "principal": "product-staging-worker",
+          "annotations": {"identity.example/principal": "product-staging-worker"},
+          "labels": {"identity.example/enabled": "true"}
+        }
+      }
+    }
+  }
+}

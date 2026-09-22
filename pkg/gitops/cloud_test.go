@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 	"sigs.k8s.io/kustomize/api/krusty"
@@ -41,9 +41,9 @@ func TestRenderCloudComponentSkipsLocalClusters(t *testing.T) {
 	for _, kind := range []string{"k3d", "kind", "minikube", "external"} {
 		t.Run(kind, func(t *testing.T) {
 			root := t.TempDir()
-			relative, err := RenderCloudComponent(root, &resources.Environment{
+			relative, err := RenderCloudComponent(root, &environments.Environment{
 				Name:    "local",
-				Cluster: &resources.EnvironmentCluster{Kind: kind},
+				Cluster: &environments.EnvironmentCluster{Kind: kind},
 			})
 			require.NoError(t, err)
 			require.Empty(t, relative)
@@ -58,9 +58,9 @@ func TestRenderCloudComponentRejectsUnknownKind(t *testing.T) {
 	// ship storage-neutral manifests to a managed cloud.
 	for _, kind := range []string{"EKS", "aws", "gcp", "azure"} {
 		root := t.TempDir()
-		_, err := RenderCloudComponent(root, &resources.Environment{
+		_, err := RenderCloudComponent(root, &environments.Environment{
 			Name:    "cloud",
-			Cluster: &resources.EnvironmentCluster{Kind: kind},
+			Cluster: &environments.EnvironmentCluster{Kind: kind},
 		})
 		require.Error(t, err, "kind %q", kind)
 	}
@@ -68,11 +68,11 @@ func TestRenderCloudComponentRejectsUnknownKind(t *testing.T) {
 
 func TestRenderCloudComponentRequiresClusterKind(t *testing.T) {
 	root := t.TempDir()
-	_, err := RenderCloudComponent(root, &resources.Environment{Name: "aws"})
+	_, err := RenderCloudComponent(root, &environments.Environment{Name: "aws"})
 	require.Error(t, err)
-	_, err = RenderCloudComponent(root, &resources.Environment{
+	_, err = RenderCloudComponent(root, &environments.Environment{
 		Name:    "aws",
-		Cluster: &resources.EnvironmentCluster{},
+		Cluster: &environments.EnvironmentCluster{},
 	})
 	require.Error(t, err)
 }
@@ -83,9 +83,9 @@ func TestRenderCloudComponentAppliesStorageClass(t *testing.T) {
 			profile, _ := CloudProfileForKind(kind)
 			root := writeCloudFixture(t)
 
-			relative, err := RenderCloudComponent(root, &resources.Environment{
+			relative, err := RenderCloudComponent(root, &environments.Environment{
 				Name:    "cloud",
-				Cluster: &resources.EnvironmentCluster{Kind: kind},
+				Cluster: &environments.EnvironmentCluster{Kind: kind},
 			})
 			require.NoError(t, err)
 			require.Equal(t, filepath.ToSlash(filepath.Join("components", "cloud", kind)), relative)
@@ -136,9 +136,9 @@ func TestRenderCloudComponentPatchesPVCMountedByStatefulSet(t *testing.T) {
 		},
 	})
 
-	relative, err := RenderCloudComponent(root, &resources.Environment{
+	relative, err := RenderCloudComponent(root, &environments.Environment{
 		Name:    "cloud",
-		Cluster: &resources.EnvironmentCluster{Kind: "eks"},
+		Cluster: &environments.EnvironmentCluster{Kind: "eks"},
 	})
 	require.NoError(t, err)
 

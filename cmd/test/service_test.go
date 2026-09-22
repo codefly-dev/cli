@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
-	"github.com/codefly-dev/core/resources"
 )
 
 func TestServiceCommandReturnsErrors(t *testing.T) {
@@ -68,7 +68,7 @@ func TestStopNilFlowIsSafe(t *testing.T) {
 }
 
 func TestSelectedTestFixtureUsesEnvironmentAndAllowsOverride(t *testing.T) {
-	environment := &resources.Environment{Fixture: "dev-admin"}
+	environment := &environments.Environment{Fixture: "dev-admin"}
 	if got := orchestration.SelectedFixture(environment, ""); got != "dev-admin" {
 		t.Fatalf("selected fixture = %q, want environment fixture", got)
 	}

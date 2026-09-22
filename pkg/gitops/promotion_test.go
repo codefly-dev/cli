@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -25,7 +26,7 @@ func TestCoordinatorForwardsProduceRequestUnchanged(t *testing.T) {
 	workspace := &resources.Workspace{}
 	module := &resources.Module{Name: "payments"}
 	service := &resources.Service{Name: "api"}
-	env := &resources.Environment{Name: "local"}
+	env := &environments.Environment{Name: "local"}
 
 	producer := &recordingProducer{}
 	coordinator := &Coordinator{Producer: producer}
@@ -55,12 +56,16 @@ type fakeManifestProducer struct {
 }
 
 func (f fakeManifestProducer) Produce(ctx context.Context, request ProduceRequest) (RenderResult, error) {
+	defaults, err := environments.WorkspaceGitops(request.Workspace)
+	if err != nil {
+		return RenderResult{}, err
+	}
 	destination := filepath.Join(request.Workspace.Dir(), "deployments", "modules", f.module)
 	return RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination, Module: f.module, Environment: f.environment,
 		AppProject: f.appProject, Promotable: true,
 		OwnedPath: filepath.ToSlash(filepath.Join(
-			request.Workspace.Gitops.Path, "deployments", "modules", f.module,
+			defaults.Path, "deployments", "modules", f.module,
 		)),
 		Units: promotableServiceGraph(f.module, f.services),
 	}, func(_ context.Context, stage string) error {

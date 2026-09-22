@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/wool"
 	"gopkg.in/yaml.v3"
 )
@@ -58,7 +58,7 @@ type kubeconfigView struct {
 // Legacy fallback: if env.Name == "aws" and nothing above resolves, we
 // keep the historical hardcoded EKS path so existing dev setups don't
 // break before workspace YAMLs declare environments.
-func GetK8sConfig(ctx context.Context, env *resources.Environment) (string, error) {
+func GetK8sConfig(ctx context.Context, env *environments.Environment) (string, error) {
 	w := wool.Get(ctx).In("GetK8sClient")
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -88,12 +88,12 @@ func GetK8sConfig(ctx context.Context, env *resources.Environment) (string, erro
 	return path.Join(home, ".kube/config"), nil
 }
 
-func VerifyLocalK3dTarget(ctx context.Context, env *resources.Environment) (VerifiedKubernetesTarget, error) {
+func VerifyLocalK3dTarget(ctx context.Context, env *environments.Environment) (VerifiedKubernetesTarget, error) {
 	target, _, err := verifyLocalK3dTarget(ctx, env)
 	return target, err
 }
 
-func verifyLocalK3dTarget(ctx context.Context, env *resources.Environment) (VerifiedKubernetesTarget, []byte, error) {
+func verifyLocalK3dTarget(ctx context.Context, env *environments.Environment) (VerifiedKubernetesTarget, []byte, error) {
 	if env == nil || env.Cluster == nil || env.Cluster.Kind != "k3d" {
 		envName := ""
 		kind := ""
@@ -188,12 +188,12 @@ func verifyLocalK3dTarget(ctx context.Context, env *resources.Environment) (Veri
 	}, snapshot, nil
 }
 
-func VerifyLocalK3dTargetUnchanged(ctx context.Context, env *resources.Environment, planned *VerifiedKubernetesTarget) error {
+func VerifyLocalK3dTargetUnchanged(ctx context.Context, env *environments.Environment, planned *VerifiedKubernetesTarget) error {
 	_, err := verifiedKubeconfigSnapshot(ctx, env, planned)
 	return err
 }
 
-func verifiedKubeconfigSnapshot(ctx context.Context, env *resources.Environment, planned *VerifiedKubernetesTarget) ([]byte, error) {
+func verifiedKubeconfigSnapshot(ctx context.Context, env *environments.Environment, planned *VerifiedKubernetesTarget) ([]byte, error) {
 	current, snapshot, err := verifyLocalK3dTarget(ctx, env)
 	if err != nil {
 		return nil, err
@@ -341,7 +341,7 @@ func kubectlApply(ctx context.Context, target *VerifiedKubernetesTarget, kubecon
 	return nil
 }
 
-func KubernetesApply(ctx context.Context, env *resources.Environment, target *VerifiedKubernetesTarget, sources ...string) error {
+func KubernetesApply(ctx context.Context, env *environments.Environment, target *VerifiedKubernetesTarget, sources ...string) error {
 	w := wool.Get(ctx).In("KubernetesApply")
 	for _, r := range sources {
 		snapshot, err := verifiedKubeconfigSnapshot(ctx, env, target)

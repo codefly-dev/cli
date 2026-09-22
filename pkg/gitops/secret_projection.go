@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"gopkg.in/yaml.v3"
 )
 
@@ -85,7 +85,7 @@ type externalSecretRemote struct {
 // Every reference of one managed service must resolve through the same store: an
 // ExternalSecret owns a single target Secret, so mixing stores would silently
 // drop all but one store's keys.
-func managedSecretProjection(service, namespace string, refs []resources.EnvironmentManagedSecretReference) (*externalSecret, error) {
+func managedSecretProjection(service, namespace string, refs []environments.EnvironmentManagedSecretReference) (*externalSecret, error) {
 	if len(refs) == 0 {
 		return nil, nil
 	}
@@ -113,7 +113,7 @@ func managedSecretProjection(service, namespace string, refs []resources.Environ
 // service's keys are exactly the ones its promotable manifests already reference
 // via non-optional secretKeyRefs, discovered from the rendered tree. Each key
 // resolves to the store path "<service>/<key>" unless the environment overrides it.
-func serviceSecretProjection(service, namespace string, secrets *resources.EnvironmentServiceSecrets, keys []string) (*externalSecret, error) {
+func serviceSecretProjection(service, namespace string, secrets *environments.EnvironmentServiceSecrets, keys []string) (*externalSecret, error) {
 	if secrets == nil || len(keys) == 0 {
 		return nil, nil
 	}
@@ -141,7 +141,7 @@ func serviceSecretProjection(service, namespace string, secrets *resources.Envir
 // substituted) applies; else the key falls back to the "<service>/<key>" store
 // path. Property rides along in the first two cases so a store of structured
 // documents can name the field inside the remote entry.
-func resolveRemoteRef(service, key string, mapping resources.EnvironmentServiceSecretMapping) externalSecretRemote {
+func resolveRemoteRef(service, key string, mapping environments.EnvironmentServiceSecretMapping) externalSecretRemote {
 	if remote, ok := mapping.RemoteKeys[key]; ok {
 		return externalSecretRemote{Key: remote.Key, Property: remote.Property}
 	}
@@ -160,7 +160,7 @@ func resolveRemoteRef(service, key string, mapping resources.EnvironmentServiceS
 // same store-kind guard. An environment declaration naming a backend type
 // ("azure-keyvault") instead of SecretStore/ClusterSecretStore renders a manifest
 // that passes codefly's checks but is rejected by ESO admission, so it fails here.
-func externalSecretProjection(service, namespace string, store resources.EnvironmentSecretStoreReference, data []externalSecretData) (*externalSecret, error) {
+func externalSecretProjection(service, namespace string, store environments.EnvironmentSecretStoreReference, data []externalSecretData) (*externalSecret, error) {
 	if namespace == "" {
 		return nil, fmt.Errorf("service %q declares secret references but its environment has no namespace", service)
 	}
@@ -191,7 +191,7 @@ func externalSecretProjection(service, namespace string, store resources.Environ
 // reference from secret-<service>, so the projection covers precisely what the
 // Secret must hold. It is a no-op — reporting false — when the environment declares
 // no service secret store or the service references no such Secret.
-func projectServiceSecrets(serviceRoot, service, environment, namespace string, secrets *resources.EnvironmentServiceSecrets) (bool, error) {
+func projectServiceSecrets(serviceRoot, service, environment, namespace string, secrets *environments.EnvironmentServiceSecrets) (bool, error) {
 	if secrets == nil {
 		return false, nil
 	}

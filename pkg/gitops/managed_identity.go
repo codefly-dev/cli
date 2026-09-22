@@ -9,11 +9,15 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	coreservices "github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/resources"
 )
 
-func projectServiceConfiguration(ctx context.Context, root string, service *resources.Service, env *resources.Environment) error {
+func projectServiceConfiguration(ctx context.Context, root string, service *resources.Service, env *environments.Environment) error {
+	if err := projectConfigurationValues(ctx, root, service.Name, env); err != nil {
+		return fmt.Errorf("project service %s configuration: %w", service.Name, err)
+	}
 	if _, err := projectServiceSecrets(root, service.Name, env.Name, env.Namespace, env.ServiceSecrets); err != nil {
 		return fmt.Errorf("project service %s secrets: %w", service.Name, err)
 	}
@@ -23,7 +27,7 @@ func projectServiceConfiguration(ctx context.Context, root string, service *reso
 	if err := projectManagedIdentity(ctx, root, service, env); err != nil {
 		return fmt.Errorf("project service %s managed identity: %w", service.Name, err)
 	}
-	return nil
+	return validateProjectedConfiguration(root, service, env)
 }
 
 // projectManagedIdentity applies only the declared runtime identity. Endpoint
@@ -32,17 +36,24 @@ func projectManagedIdentity(
 	ctx context.Context,
 	serviceRoot string,
 	service *resources.Service,
-	env *resources.Environment,
+	env *environments.Environment,
 ) error {
-	consumed := consumedManagedServices(service, env)
-	if len(consumed) == 0 {
-		return nil
+	if err := env.Validate(); err != nil {
+		return err
 	}
+	consumed := consumedManagedServices(service, env)
 	identity, err := soleWorkloadIdentity(service.Name, consumed, env)
 	if err != nil {
 		return err
 	}
-	return coreservices.ProjectWorkloadIdentity(ctx, filepath.Join(serviceRoot, "base"), env.Namespace, service.Name, identity)
+	if identity == nil {
+		return nil
+	}
+	overlay := &coreservices.PodTemplateOverlay{}
+	if err := overlay.AttachServiceAccount(&coreservices.WorkloadServiceAccount{Annotations: identity.Annotations}, identity.Labels); err != nil {
+		return err
+	}
+	return coreservices.ProjectServiceAccount(ctx, filepath.Join(serviceRoot, "base"), env.Namespace, service.Name, overlay)
 }
 
 // consumedManagedServices returns, in a stable order, the environment's managed
@@ -50,7 +61,7 @@ func projectManagedIdentity(
 // build or schema edge on a database is read by the toolchain that generates
 // code, not by the workload, so stamping its identity onto the pod would
 // authenticate a container that never opens the connection.
-func consumedManagedServices(service *resources.Service, env *resources.Environment) []string {
+func consumedManagedServices(service *resources.Service, env *environments.Environment) []string {
 	var consumed []string
 	for name := range env.ManagedServices {
 		dependency := managedDependency(service, name)
@@ -72,14 +83,14 @@ func managedDependency(service *resources.Service, managed string) *resources.Se
 	return nil
 }
 
-// soleWorkloadIdentity returns the one runtime identity a service's managed
-// dependencies declare. A pod runs under a single ServiceAccount, so two managed
+// soleWorkloadIdentity combines a service's own identity with those its managed
+// dependencies declare. A pod runs under a single ServiceAccount, so two
 // endpoints naming different principals have no rendering: whichever was stamped
 // last would win and the other endpoint would refuse the workload at runtime
 // with nothing in the deploy to show for it. Several endpoints reached as the
 // same principal are one identity and render as one.
-func soleWorkloadIdentity(service string, consumed []string, env *resources.Environment) (*resources.EnvironmentWorkloadIdentity, error) {
-	var identity *resources.EnvironmentWorkloadIdentity
+func soleWorkloadIdentity(service string, consumed []string, env *environments.Environment) (*environments.EnvironmentWorkloadIdentity, error) {
+	identity := env.WorkloadIdentity(service)
 	var declaring []string
 	for _, name := range consumed {
 		declared := env.ManagedServices[name].Identity
@@ -96,15 +107,12 @@ func soleWorkloadIdentity(service string, consumed []string, env *resources.Envi
 	return identity, nil
 }
 
-func projectRenderedManagedIdentity(
+func projectRenderedServiceConfiguration(
 	ctx context.Context,
 	stage string,
-	env *resources.Environment,
+	env *environments.Environment,
 	graph map[string]*resources.Service,
 ) error {
-	if len(env.ManagedServices) == 0 {
-		return nil
-	}
 	modulesRoot := filepath.Join(stage, "modules")
 	moduleEntries, err := os.ReadDir(modulesRoot)
 	if os.IsNotExist(err) {
@@ -133,13 +141,13 @@ func projectRenderedManagedIdentity(
 			if service == nil {
 				continue
 			}
-			if err := projectManagedIdentity(
+			if err := projectServiceConfiguration(
 				ctx,
 				filepath.Join(servicesRoot, serviceEntry.Name()),
 				service,
 				env,
 			); err != nil {
-				return fmt.Errorf("project service %s managed identity: %w", serviceEntry.Name(), err)
+				return fmt.Errorf("project service %s configuration: %w", serviceEntry.Name(), err)
 			}
 		}
 	}

@@ -169,7 +169,7 @@ func TestNewFlowInSnapshotModeIsValueFreeAndPromotable(t *testing.T) {
 	flow.ConfigurationManager.WithLoader(staticConfigurationLoader{
 		confs: []*basev0.Configuration{declaredSecretConfiguration()},
 	})
-	require.NoError(t, flow.ConfigurationManager.Load(context.Background(), flow.world.Env))
+	require.NoError(t, flow.ConfigurationManager.Load(context.Background(), flow.world.Env.Runtime()))
 }
 
 // Every other mode keeps the real resolution contract: no snapshot resolver and
@@ -185,6 +185,6 @@ func TestNewFlowOutsideSnapshotModeDoesNotRegisterTheResolver(t *testing.T) {
 		confs: []*basev0.Configuration{declaredSecretConfiguration()},
 	})
 	require.ErrorContains(t,
-		flow.ConfigurationManager.Load(context.Background(), flow.world.Env),
+		flow.ConfigurationManager.Load(context.Background(), flow.world.Env.Runtime()),
 		"requires a backend that is not configured")
 }

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
@@ -1275,10 +1276,10 @@ func TestRemotePublishRequiresSafeGitHubRepository(t *testing.T) {
 func TestPlanPublishRejectsLocalQualificationForRemoteEnvironment(t *testing.T) {
 	remote := createBareRepository(t)
 	workspace := loadGitopsWorkspace(t, remote)
-	workspace.Environments = append(workspace.Environments, &resources.Environment{
+	workspace.Environments = append(workspace.Environments, resourceEnvironment(t, &environments.Environment{
 		Name:    "aws",
-		Cluster: &resources.EnvironmentCluster{Kind: "eks"},
-	})
+		Cluster: &environments.EnvironmentCluster{Kind: "eks"},
+	}))
 	renderPublishFixture(t, workspace.Dir(), "payments", "aws", "api")
 
 	_, err := PlanPublish(context.Background(), workspace, &PublishRequest{

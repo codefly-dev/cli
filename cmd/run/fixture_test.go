@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	corecomposition "github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
@@ -65,7 +66,7 @@ func TestRunFixtureRejectsATypoDeclaredByTheEnvironment(t *testing.T) {
 	useRunFixtureFlag(t, "")
 	workspace := composedFixtureWorkspace(t)
 
-	_, err := runFixture(context.Background(), workspace, &resources.Environment{Fixture: "dev-admn"})
+	_, err := runFixture(context.Background(), workspace, &environments.Environment{Fixture: "dev-admn"})
 	require.Error(t, err, "an environment-declared typo reached the run unverified")
 	require.Contains(t, err.Error(), "dev-admin", "the error does not name the available fixture")
 }
@@ -74,7 +75,7 @@ func TestRunFixtureAcceptsAFixtureDeclaredByTheEnvironment(t *testing.T) {
 	useRunFixtureFlag(t, "")
 	workspace := composedFixtureWorkspace(t)
 
-	selected, err := runFixture(context.Background(), workspace, &resources.Environment{Fixture: "dev-admin"})
+	selected, err := runFixture(context.Background(), workspace, &environments.Environment{Fixture: "dev-admin"})
 	require.NoError(t, err)
 	require.Equal(t, "dev-admin", selected)
 }
@@ -83,7 +84,7 @@ func TestRunFixtureRejectsATypoPassedAsTheFlag(t *testing.T) {
 	useRunFixtureFlag(t, "dev-admn")
 	workspace := composedFixtureWorkspace(t)
 
-	_, err := runFixture(context.Background(), workspace, &resources.Environment{})
+	_, err := runFixture(context.Background(), workspace, &environments.Environment{})
 	require.Error(t, err)
 }
 
@@ -92,7 +93,7 @@ func TestRunFixtureVerifiesTheOverrideRatherThanTheDeclaration(t *testing.T) {
 	useRunFixtureFlag(t, "dev-admin")
 	workspace := composedFixtureWorkspace(t)
 
-	selected, err := runFixture(context.Background(), workspace, &resources.Environment{Fixture: "dev-admn"})
+	selected, err := runFixture(context.Background(), workspace, &environments.Environment{Fixture: "dev-admn"})
 	require.NoError(t, err, "the overridden declaration was verified instead of the override")
 	require.Equal(t, "dev-admin", selected)
 }
@@ -101,7 +102,7 @@ func TestRunFixtureIgnoresAnUnsetSelection(t *testing.T) {
 	useRunFixtureFlag(t, "")
 	workspace := composedFixtureWorkspace(t)
 
-	selected, err := runFixture(context.Background(), workspace, &resources.Environment{})
+	selected, err := runFixture(context.Background(), workspace, &environments.Environment{})
 	require.NoError(t, err)
 	require.Empty(t, selected)
 }

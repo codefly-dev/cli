@@ -209,21 +209,24 @@ func (a ResourceAmount) scale(factor int) ResourceAmount {
 // podSpec returns the PodSpec for the pod-template-bearing kinds render emits,
 // reporting whether the manifest carries one at all.
 func podSpec(item manifest) (map[string]any, bool) {
+	spec := mapField(podTemplate(item), "spec")
+	return spec, spec != nil
+}
+
+func podTemplate(item manifest) map[string]any {
 	spec := mapField(item.value, "spec")
 	if spec == nil {
-		return nil, false
+		return nil
 	}
 	switch item.kind {
 	case kindPod:
-		return spec, true
+		return item.value
 	case kindDeployment, kindStatefulSet, kindDaemonSet, kindReplicaSet, kindJob:
-		podSpec := mapField(mapField(spec, "template"), "spec")
-		return podSpec, podSpec != nil
+		return mapField(spec, "template")
 	case kindCronJob:
-		podSpec := mapField(mapField(mapField(mapField(spec, "jobTemplate"), "spec"), "template"), "spec")
-		return podSpec, podSpec != nil
+		return mapField(mapField(mapField(spec, "jobTemplate"), "spec"), "template")
 	default:
-		return nil, false
+		return nil
 	}
 }
 

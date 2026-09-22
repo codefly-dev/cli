@@ -3,6 +3,7 @@ package orchestration
 import (
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -13,7 +14,7 @@ func TestRunnerRuntimeOverridesCarryAuthoritativeNamingScope(t *testing.T) {
 		resources.NamingScopePrefix: "caller-must-not-override-runtime-identity",
 	}
 	runner := &Runner{
-		world:     &World{Env: &resources.Environment{NamingScope: "stable"}},
+		world:     &World{Env: &environments.Environment{NamingScope: "stable"}},
 		overrides: input,
 	}
 
@@ -30,6 +31,6 @@ func TestRunnerRuntimeOverridesCarryAuthoritativeNamingScope(t *testing.T) {
 }
 
 func TestRunnerRuntimeOverridesOmitUnselectedNamingScope(t *testing.T) {
-	runner := &Runner{world: &World{Env: &resources.Environment{}}}
+	runner := &Runner{world: &World{Env: &environments.Environment{}}}
 	require.Empty(t, runner.runtimeOverrides())
 }

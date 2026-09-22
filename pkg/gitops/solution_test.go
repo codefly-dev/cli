@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	solutionv0 "github.com/codefly-dev/core/generated/go/codefly/services/solution/v0"
@@ -14,7 +15,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
-	"strings"
 )
 
 // fakeSolutionExecutor is an in-process codefly:solution executor: Package
@@ -131,7 +131,7 @@ func TestRenderSolutionDrivesExecutorToPromotableOwnedTree(t *testing.T) {
 	installFakeSolutionExecutor(t, fake)
 
 	workspace := loadSolutionWorkspace(t, "/tmp/hello.git")
-	env := workspace.FindEnvironment("local")
+	env := selectedEnvironment(t, workspace, "local")
 	if env == nil {
 		t.Fatal("environment local not found")
 	}
@@ -207,7 +207,7 @@ func TestRenderSolutionDrivesExecutorToPromotableOwnedTree(t *testing.T) {
 // ArgoCD applies the Namespace — a late, opaque error far from the deploy command.
 func TestRenderSolutionRejectsInvalidNamespace(t *testing.T) {
 	workspace := loadSolutionWorkspace(t, "/tmp/hello.git")
-	env := workspace.FindEnvironment("local")
+	env := selectedEnvironment(t, workspace, "local")
 	agent := &resources.Agent{
 		Kind: resources.SolutionAgent, Publisher: "codefly.dev", Name: "hello-solution", Version: "0.0.1",
 	}
@@ -229,7 +229,7 @@ func TestRenderSolutionRejectsInvalidNamespace(t *testing.T) {
 // cascade-delete the platform. Isolation from the host is a hard invariant.
 func TestRenderSolutionRejectsHostNamespaceCollision(t *testing.T) {
 	workspace := loadSolutionWorkspace(t, "/tmp/hello.git")
-	env := workspace.FindEnvironment("local") // env namespace is "hello"
+	env := selectedEnvironment(t, workspace, "local") // env namespace is "hello"
 	agent := &resources.Agent{
 		Kind: resources.SolutionAgent, Publisher: "codefly.dev", Name: "hello-solution", Version: "0.0.1",
 	}
@@ -275,7 +275,7 @@ func TestLocalGitopsPublishSolutionGeneratesBootstrap(t *testing.T) {
 	installFakeSolutionExecutor(t, &fakeSolutionExecutor{})
 	remote := createBareRepository(t)
 	workspace := loadSolutionWorkspace(t, remote)
-	env := workspace.FindEnvironment("local")
+	env := selectedEnvironment(t, workspace, "local")
 	if env == nil {
 		t.Fatal("environment local not found")
 	}

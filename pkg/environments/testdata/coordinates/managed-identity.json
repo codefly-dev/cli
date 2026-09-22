@@ -1,0 +1,21 @@
+{
+  "schema": "codefly/coordinate/v1",
+  "requires_capabilities": ["managed-service-identity"],
+  "environment": {
+    "name": "staging",
+    "namespace": "product",
+    "managed-services": {
+      "accounts": {
+        "kind": "external",
+        "external-name": "accounts.example",
+        "port": 8443,
+        "egress-cidrs": ["192.0.2.0/24"],
+        "identity": {
+          "principal": "accounts-client",
+          "annotations": {"identity.example/principal": "accounts-client"},
+          "labels": {"identity.example/enabled": "true"}
+        }
+      }
+    }
+  }
+}

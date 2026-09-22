@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"gopkg.in/yaml.v3"
 )
 
@@ -60,7 +60,7 @@ type limitRangeItem struct {
 // compute from an environment's declared resource-quota. It returns nil when the
 // declaration sets no hard cap (only a LimitRange of container defaults), so the
 // caller emits a LimitRange without an empty, ownership-claiming ResourceQuota.
-func resourceQuotaManifest(namespace string, quota *resources.EnvironmentResourceQuota) *resourceQuota {
+func resourceQuotaManifest(namespace string, quota *environments.EnvironmentResourceQuota) *resourceQuota {
 	hard := map[string]string{}
 	if quota.Requests != nil {
 		putQuantity(hard, "requests.cpu", quota.Requests.CPU)
@@ -86,7 +86,7 @@ func resourceQuotaManifest(namespace string, quota *resources.EnvironmentResourc
 // namespace default requests/limits, so a pod that omits them still receives
 // values and counts against the ResourceQuota instead of being rejected. It
 // returns nil when the declaration carries no container defaults.
-func limitRangeManifest(namespace string, quota *resources.EnvironmentResourceQuota) *limitRange {
+func limitRangeManifest(namespace string, quota *environments.EnvironmentResourceQuota) *limitRange {
 	defaults := quota.DefaultContainer
 	if defaults == nil {
 		return nil
@@ -109,7 +109,7 @@ func limitRangeManifest(namespace string, quota *resources.EnvironmentResourceQu
 	}
 }
 
-func resourceMap(list *resources.EnvironmentResourceList) map[string]string {
+func resourceMap(list *environments.EnvironmentResourceList) map[string]string {
 	values := map[string]string{}
 	putQuantity(values, "cpu", list.CPU)
 	putQuantity(values, "memory", list.Memory)
@@ -131,7 +131,7 @@ func putQuantity(target map[string]string, key, value string) {
 // that declares the namespace. It is a no-op — reporting false — when the
 // environment declares no resource-quota. Because the caps are namespace-scoped
 // they must resolve to a namespace, so an environment without one is an error.
-func projectResourceQuota(bootstrapRoot, environment, namespace string, quota *resources.EnvironmentResourceQuota) (bool, error) {
+func projectResourceQuota(bootstrapRoot, environment, namespace string, quota *environments.EnvironmentResourceQuota) (bool, error) {
 	if quota == nil {
 		return false, nil
 	}
