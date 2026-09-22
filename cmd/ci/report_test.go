@@ -227,8 +227,7 @@ func TestCIReportRecordsWorkspaceTaskAndTypedEvidence(t *testing.T) {
 		{Service: "management/worker"},
 	}}
 	reporter := fixedCIReporter(t, plan)
-	if err := runReportedWorkspacePhase(context.Background(), reporter, workspace, "verify", func(ctx context.Context) error {
-		recordCIReportIntegrity(ctx, CIReportIntegrity{GuardedModules: 1, Modules: []CIReportIntegrityModule{{Module: "management", Omitted: map[string]int{}, Allowed: []CIReportIntegrityDivergence{}, Missing: []string{}, Modified: []string{}}}})
+	if err := runReportedWorkspacePhase(context.Background(), reporter, workspace, "sync-drift", func(_ context.Context) error {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -250,15 +249,12 @@ func TestCIReportRecordsWorkspaceTaskAndTypedEvidence(t *testing.T) {
 	reporter.finishTask(id, nil)
 
 	report := reporter.Finalize(nil)
-	if got, want := report.Phases, []string{"verify", "audit"}; !reflect.DeepEqual(got, want) {
+	if got, want := report.Phases, []string{"sync-drift", "audit"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("phases = %v, want %v", got, want)
 	}
 	workspaceTask := report.Tasks[0]
-	if workspaceTask.ID != "verify:workspace" || workspaceTask.Scope != "workspace" || workspaceTask.Resource != workspace.Name || workspaceTask.Service != "" {
+	if workspaceTask.ID != "sync-drift:workspace" || workspaceTask.Scope != "workspace" || workspaceTask.Resource != workspace.Name || workspaceTask.Service != "" {
 		t.Fatalf("workspace task = %#v", workspaceTask)
-	}
-	if workspaceTask.Integrity == nil || workspaceTask.Integrity.GuardedModules != 1 {
-		t.Fatalf("workspace integrity evidence = %#v", workspaceTask.Integrity)
 	}
 	serviceTask := report.Tasks[1]
 	if serviceTask.Scope != "service" || serviceTask.Resource != "management/worker" {

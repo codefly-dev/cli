@@ -83,7 +83,6 @@ type ciResultRecord struct {
 type ciResultEvidence struct {
 	Audit     *CIReportAudit     `json:"audit,omitempty"`
 	Drift     *CIReportDrift     `json:"drift,omitempty"`
-	Integrity *CIReportIntegrity `json:"integrity,omitempty"`
 	Artifacts []CIReportArtifact `json:"artifacts"`
 }
 
@@ -470,7 +469,6 @@ func (reuse *ciResultReuse) record(task *CIReportTask) (*ciResultRecord, map[str
 		Evidence: ciResultEvidence{
 			Audit:     task.Audit,
 			Drift:     task.Drift,
-			Integrity: task.Integrity,
 			Artifacts: artifacts,
 		},
 	}

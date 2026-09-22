@@ -692,7 +692,6 @@ type legacyResultArtifact struct {
 type legacyResultEvidence struct {
 	Audit     *CIReportAudit         `json:"audit,omitempty"`
 	Drift     *CIReportDrift         `json:"drift,omitempty"`
-	Integrity *CIReportIntegrity     `json:"integrity,omitempty"`
 	Artifacts []legacyResultArtifact `json:"artifacts"`
 }
 
@@ -736,7 +735,6 @@ func writeLegacyReuseRecord(t *testing.T, store string, record *ciResultRecord) 
 		Evidence: legacyResultEvidence{
 			Audit:     record.Evidence.Audit,
 			Drift:     record.Evidence.Drift,
-			Integrity: record.Evidence.Integrity,
 			Artifacts: []legacyResultArtifact{},
 		},
 	}
@@ -811,7 +809,7 @@ func TestVerifiedReuseNeverReplacesWorkspaceVerification(t *testing.T) {
 			t.Fatal(err)
 		}
 		reporter.reuse = newReuseTestEngine(t, workspace, store, "runner@sha256:aaa", reuseTestReference)
-		err = runReportedWorkspacePhase(context.Background(), reporter, workspace, ciPhaseVerify, func(context.Context) error {
+		err = runReportedWorkspacePhase(context.Background(), reporter, workspace, "sync-drift", func(context.Context) error {
 			executions++
 			return nil
 		})

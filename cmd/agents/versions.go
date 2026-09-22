@@ -640,12 +640,9 @@ func renderSummaries(summaries []agentSummary) {
 	}
 }
 
-// behindCell renders the drift column: "-" when the pin is current, otherwise
-// the count so a stale pin reads at a glance.
+// behindCell renders the drift column. Zero is a measured result, not a
+// missing one, so it prints as 0 rather than the empty-cell dash.
 func behindCell(behind int) string {
-	if behind == 0 {
-		return "-"
-	}
 	return fmt.Sprintf("%d", behind)
 }
 

@@ -163,7 +163,7 @@ func TestAgentConformanceGateIsolatesPortSpacePerRun(t *testing.T) {
 
 func TestConformanceBaselineRecordsAllInitialOwnership(t *testing.T) {
 	dir := t.TempDir()
-	paths := []string{"modules/app/services/subject/main.go", "modules/app/tools/base-manifest.json", "workspace.codefly.yaml"}
+	paths := []string{"modules/app/module.codefly.yaml", "modules/app/services/subject/main.go", "workspace.codefly.yaml"}
 	for _, path := range paths {
 		target := filepath.Join(dir, filepath.FromSlash(path))
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {

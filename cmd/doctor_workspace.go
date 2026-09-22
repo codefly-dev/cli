@@ -221,7 +221,7 @@ func checkReferencedModules(ctx context.Context, ws *resources.Workspace, report
 		if _, err := resources.LoadModuleFromDir(ctx, resolved); err != nil {
 			report.add(codeModuleReferenceUnresolved, "referenced module "+ref.Name, "fail",
 				fmt.Sprintf("referenced module %q does not resolve at %s: %v", ref.Name, resolved, err),
-				fmt.Sprintf("fix the `path:` of module %q in %s, or vendor it with `codefly sync module`", ref.Name, resources.WorkspaceConfigurationName))
+				fmt.Sprintf("fix the `path:` of module %q in %s, or drop the override so it resolves as its pinned module package", ref.Name, resources.WorkspaceConfigurationName))
 			continue
 		}
 		report.add("", "referenced module "+ref.Name, "ok", fmt.Sprintf("%s → %s", ref.Name, resolved), "")

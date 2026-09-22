@@ -13,9 +13,6 @@ import (
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/shared"
 	"gopkg.in/yaml.v3"
-
-	"github.com/codefly-dev/cli/pkg/cli"
-	"github.com/codefly-dev/cli/pkg/integrity"
 )
 
 // agentUpdate records a resolved agent version bump for reporting.
@@ -29,22 +26,12 @@ type agentUpdate struct {
 // a service's selection. Operation and functional qualification remain separate.
 // It uses a surgical, text-preserving edit of the single agent.version token and
 // never reserializes resources.Service, so unmodeled keys, comments, and
-// formatting survive byte-for-byte. It refuses to touch files carrying a
-// "Code generated ... DO NOT EDIT" marker, pointing at the source to edit
-// instead. Returns nil when nothing changed.
+// formatting survive byte-for-byte. Returns nil when nothing changed.
 func updateServiceAgent(ctx context.Context, svc *resources.Service) (*agentUpdate, error) {
 	file := filepath.Join(svc.Dir(), resources.ServiceConfigurationName)
 	content, err := os.ReadFile(file)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read %s: %w", file, err)
-	}
-	if source, generated := integrity.GeneratedFileMarker(content); generated {
-		if source != "" {
-			cli.Warning("Skipping generated file %s; edit its source (%s) and regenerate instead", file, source)
-		} else {
-			cli.Warning("Skipping generated file %s carrying a DO NOT EDIT marker", file)
-		}
-		return nil, nil
 	}
 	from := svc.Agent.Version
 	candidate := *svc.Agent

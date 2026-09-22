@@ -95,7 +95,6 @@ type CIReportTask struct {
 	Cache            CICacheIdentity    `json:"cache"`
 	Audit            *CIReportAudit     `json:"audit,omitempty"`
 	Drift            *CIReportDrift     `json:"drift,omitempty"`
-	Integrity        *CIReportIntegrity `json:"integrity,omitempty"`
 	Artifacts        []CIReportArtifact `json:"artifacts,omitempty"`
 	Status           string             `json:"status"`
 	StatusReason     string             `json:"status_reason,omitempty"`
@@ -120,27 +119,6 @@ type CIReportAudit struct {
 
 type CIReportDrift struct {
 	ChangedFiles []string `json:"changed_files"`
-}
-
-type CIReportIntegrity struct {
-	GuardedModules int                       `json:"guarded_modules"`
-	FailedModules  int                       `json:"failed_modules"`
-	Modules        []CIReportIntegrityModule `json:"modules"`
-}
-
-type CIReportIntegrityModule struct {
-	Module   string                        `json:"module"`
-	Files    int                           `json:"files"`
-	Omitted  map[string]int                `json:"omitted"`
-	Allowed  []CIReportIntegrityDivergence `json:"allowed"`
-	Missing  []string                      `json:"missing"`
-	Modified []string                      `json:"modified"`
-	Error    string                        `json:"error,omitempty"`
-}
-
-type CIReportIntegrityDivergence struct {
-	Path   string `json:"path"`
-	Reason string `json:"reason"`
 }
 
 // CIReportArtifact names one piece of evidence a task produced. Subject states
@@ -270,19 +248,6 @@ func recordCIReportSkip(ctx context.Context, reason string) {
 	task.reporter.markSkipped(task.id, reason)
 }
 
-func recordCIReportIntegrity(ctx context.Context, integrity CIReportIntegrity) {
-	task, ok := ctx.Value(ciReportTaskContextKey{}).(ciReportTaskContext)
-	if !ok || task.reporter == nil {
-		return
-	}
-	task.reporter.mu.Lock()
-	defer task.reporter.mu.Unlock()
-	if reportTask, found := task.reporter.task(task.id); found {
-		copy := cloneCIReportIntegrity(integrity)
-		reportTask.Integrity = &copy
-	}
-}
-
 func recordCIReportArtifact(ctx context.Context, artifact CIReportArtifact) {
 	task, ok := ctx.Value(ciReportTaskContextKey{}).(ciReportTaskContext)
 	if !ok || task.reporter == nil {
@@ -344,7 +309,6 @@ func newCIReporter(plan *Plan, command, version string, now reportClock) (*CIRep
 
 func clonePlan(plan *Plan) Plan {
 	cloned := *plan
-	cloned.IntegrityInputs = append([]IntegrityInput(nil), plan.IntegrityInputs...)
 	cloned.ChangedFiles = cloneStrings(plan.ChangedFiles)
 	cloned.Services = make([]PlannedService, len(plan.Services))
 	for index, service := range plan.Services {
@@ -680,27 +644,7 @@ func cloneCIReport(report CIReport) CIReport {
 		if task.Drift != nil {
 			cloned.Tasks[index].Drift = &CIReportDrift{ChangedFiles: cloneStrings(task.Drift.ChangedFiles)}
 		}
-		if task.Integrity != nil {
-			integrity := cloneCIReportIntegrity(*task.Integrity)
-			cloned.Tasks[index].Integrity = &integrity
-		}
 		cloned.Tasks[index].Artifacts = cloneCIReportArtifacts(task.Artifacts)
-	}
-	return cloned
-}
-
-func cloneCIReportIntegrity(integrity CIReportIntegrity) CIReportIntegrity {
-	cloned := integrity
-	cloned.Modules = make([]CIReportIntegrityModule, len(integrity.Modules))
-	for index, module := range integrity.Modules {
-		cloned.Modules[index] = module
-		cloned.Modules[index].Omitted = make(map[string]int, len(module.Omitted))
-		for service, count := range module.Omitted {
-			cloned.Modules[index].Omitted[service] = count
-		}
-		cloned.Modules[index].Allowed = append([]CIReportIntegrityDivergence{}, module.Allowed...)
-		cloned.Modules[index].Missing = cloneStrings(module.Missing)
-		cloned.Modules[index].Modified = cloneStrings(module.Modified)
 	}
 	return cloned
 }
@@ -892,7 +836,6 @@ func (reporter *CIReporter) attemptReuse(id string) bool {
 	task.DurationMS = reportDurationMS(task.StartedAt, now)
 	task.Audit = record.Evidence.Audit
 	task.Drift = record.Evidence.Drift
-	task.Integrity = record.Evidence.Integrity
 	task.Artifacts = normalizedCIReportArtifacts(record.Evidence.Artifacts)
 	task.Cache.Status = cacheStatusHit
 	task.Cache.Reuse = &CacheReuse{

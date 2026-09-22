@@ -551,13 +551,6 @@ codefly add application web                                    # Add an applicat
 codefly add application-dependency web --dependency=backend    # Add an application dependency
 ```
 
-Module-agent scaffolds record their immutable template repository, tag, and
-commit in `tools/base-source.json`. Scaffolds that include a base manifest must
-match the source's service code or add fails without leaving a partial module
-behind. Inventory-only scaffolds may omit the base manifest and service code;
-their first `sync module` treats the missing manifest as an empty base and
-populates the pinned source without rerunning the agent.
-
 #### Product-Owned Selections and Approval
 
 `codefly composition` selects nested released components, inspects differences and
@@ -616,10 +609,8 @@ into a deployment adapter.
 #### Module composition
 
 `add module --source <path>` and `add module --worktree <owner/repo>@<ref>`
-compose an out-of-repo module **without vendoring a copy** — the composition
-mode for multi-repo solutions (a solution repo booting the host and runtime
-modules it does not own). It is distinct from `sync module`, which vendors a
-hash-pinned base.
+compose an out-of-repo module — the composition mode for multi-repo solutions
+(a solution repo booting the host and runtime modules it does not own).
 
 Composition splits **identity** (what to compose, portable) from **location**
 (where it lives on this machine):
@@ -836,66 +827,8 @@ Synchronize service configurations with dependencies.
 ```bash
 codefly sync service api                # Sync a service with its dependencies
 codefly sync library-dependencies       # Sync library dependencies
-codefly sync module saas                # Preview the first or next pinned base update
-codefly sync module saas --apply        # Apply the pinned base update
-codefly sync module saas --restore-code # Restore missing module-owned service code
 codefly sync solution-sdk --language python --apply-dependencies  # Aggregate api.consumes into one solution SDK
 ```
-
-For agent-backed modules, run `codefly add module --agent ...` before the first
-sync so the agent can generate consumer-owned module and service inventory.
-`sync module --create` initializes and populates only the manifest-owned base;
-it does not run a module agent or generate that consumer inventory.
-
-An `--apply` also refreshes each composed service's generated
-`service.codefly.yaml` from the pinned source. These per-service manifests are
-generated overlays (`# Code generated ... DO NOT EDIT`) that the base manifest
-does not track, so without this their agent pins would drift stale against the
-synced module version; the dry-run lists the manifests it would rewrite. Only
-manifests still carrying the generated marker are refreshed — a service manifest
-you have taken over as hand-authored product content (no marker) is left
-untouched, the same ownership boundary `codefly update` honors.
-
-The same apply refreshes the generated `interface` block of the module's own
-`module.codefly.yaml` from the pinned source. That file is generated from
-`deployment/topology.bindings.codefly.yaml`, a base-owned file the sync updates,
-so a base release that adds an interface endpoint would otherwise leave the
-module declaring a contract its own bindings contradict — and the base's
-composition gate then fails in the consumer. Unlike a service manifest it is not
-copied wholesale: only the `interface` block is rewritten, so the consumer's own
-`name`, `description`, added `services`, comments, and formatting are kept
-byte-for-byte. It is refreshed only while both sides still carry the generated
-marker, and the dry-run says when it would be rewritten.
-
-An `--apply` that leaves a service's lockfile out of sync with the pinned base's
-dependencies regenerates it (`npm install --package-lock-only`), so the synced
-workspace stays installable with `npm ci` (for example in a render's frontend
-Dockerfile) instead of failing on a lockfile that still names the old
-dependencies. Regeneration is driven by on-disk drift, not by whether this run
-rewrote the `package.json`: a base sync commits its manifest last, so if an
-earlier run applied the `package.json` but its lockfile regeneration was
-interrupted, the next `sync module --apply` still heals the lockfile. It runs
-last, after the deterministic base update and manifest refresh, so a network
-failure never robs those. Only a directory that already carries a
-`package-lock.json` (or `npm-shrinkwrap.json`) is regenerated — a service
-without one is not an `npm ci` workflow — and the dry-run lists the lockfiles it
-would rewrite. When a lockfile is genuinely adrift and `npm` is not installed,
-the apply fails with the exact `npm install --package-lock-only` commands to run.
-
-`sync module <name> --restore-code` restores only absent service files listed
-by the pinned base manifest. Existing base files and consumer-owned overlays
-are not changed. A legacy scaffold with neither a source lock nor a recorded
-agent can bootstrap the lock during repair by providing its original immutable
-source explicitly:
-
-```bash
-codefly sync module saas --restore-code \
-  --source https://github.com/codefly-dev/module-saas-starter.git \
-  --to v0.0.36 --subdir module
-```
-
-The source must match the service-code hashes already owned by the target base
-manifest; a newer or locally modified source is rejected.
 
 #### sync solution-sdk
 
@@ -1550,23 +1483,8 @@ All selection flags are provider-neutral. Use `--all` for an explicit full
 workspace run. CI providers should invoke `codefly ci run`; language commands
 and service matrices belong to Codefly agents, not provider configuration.
 
-Plans report a module's exact `tools/base-manifest.json` path in
-`integrity_inputs`, with its owner, required `verify` phase, and reason. This
-hash and ownership index does not select service test/build tasks; the underlying
-source changes still do. `ci run` always includes verification for these inputs,
-even with zero affected services or an explicit `--phase` list, and a changed
-manifest that has been removed fails verification. `--all` preserves these
-integrity obligations. Unknown change bounds or failed Git discovery block the
-integrity gate even when all services are selected; supply valid change bounds
-rather than relying on full service selection to replace integrity evidence.
-
-Changed manifests are also compared with `--base` (local working-tree runs
-default to `HEAD`; CI requires an explicit base). The baseline must be available
-in the Git checkout. Dropping an entry while its file remains fails: base sync
-would otherwise lose ownership of that file. Remove retired files with their
-entries, or retain their recorded base hashes and declare intentional local
-divergences in `tools/base-integrity-allow.json`. Other tools, JSON, contracts,
-and configuration retain normal dependency-aware selection.
+Tools, JSON, contracts, and configuration retain normal dependency-aware
+selection.
 
 Affected-service phase commands accept `--jobs` (`0` selects an automatic value
 capped at four) and `--fail-fast`. Selected dependency prerequisites remain
@@ -1660,10 +1578,8 @@ artifact digest. Providers must not invent keys or infer a hit.
 ### `codefly doctor`
 
 Run host-level health checks (Docker, codefly home, installed agents, disk,
-manifest-owned module service code, process limits, daemon state, stray agents,
-stale sockets) and print actionable fixes. Exits non-zero if any hard check
-fails. Missing module service code names the corresponding
-`codefly sync module <name> --restore-code` repair command.
+process limits, daemon state, stray agents, stale sockets) and print actionable
+fixes. Exits non-zero if any hard check fails.
 
 ### `codefly doctor workspace`
 

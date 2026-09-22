@@ -70,12 +70,11 @@ The first provider-neutral vertical slice is operational:
 - static lint/compile flows initialize only the validation target. Dependency
   changes still select dependents as targets, but databases, caches, and other
   runtime prerequisites are not started for static work;
-- `codefly ci run` is the single gate and executes `verify`, non-mutating
-  `sync-drift`, `lint`, `compile`, `test`, `audit`, `sbom`, and deployable
-  `build` in order. `--phase` supports focused debugging;
-- `verify` is a workspace-scoped task backed by the canonical base-integrity
-  verifier. `sync-drift` initializes dependency builders for endpoint context
-  but dispatches dry-run Sync only to the validation target; dependencies are
+- `codefly ci run` is the single gate and executes non-mutating `sync-drift`,
+  `lint`, `compile`, `test`, `audit`, `sbom`, and deployable `build` in order.
+  `--phase` supports focused debugging;
+- `sync-drift` initializes dependency builders for endpoint context but
+  dispatches dry-run Sync only to the validation target; dependencies are
   never synchronized as an accidental side effect;
 - every executable CI command writes an atomic, schema-versioned
   `.codefly/ci/report.json` by default. The report retains the affected plan,
@@ -609,9 +608,9 @@ Report schema version 2 contains:
   `failed_prerequisite`, `fail_fast`, and cancellation reason codes;
 - task/run timestamps, elapsed milliseconds, deterministic summary counts,
   blocked prerequisite identities, and retained errors;
-- workspace/service scope and resource identity, exact base-integrity and
-  generated-drift file lists, audit severity/outdated counts, and produced
-  artifact subjects, media types, paths, and SHA-256 digests;
+- workspace/service scope and resource identity, exact generated-drift file
+  lists, audit severity/outdated counts, and produced artifact subjects, media
+  types, paths, and SHA-256 digests;
 - the cache identity schema, canonical SHA-256 key, detailed input digests,
   current cache status, and any limitation that prevents safe reuse.
 

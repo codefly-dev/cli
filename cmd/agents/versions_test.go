@@ -292,8 +292,8 @@ func TestArchivedRepoReportsNoDrift(t *testing.T) {
 }
 
 func TestBehindCell(t *testing.T) {
-	if got := behindCell(0); got != "-" {
-		t.Fatalf("behindCell(0) = %q, want -", got)
+	if got := behindCell(0); got != "0" {
+		t.Fatalf("behindCell(0) = %q, want 0", got)
 	}
 	if got := behindCell(3); got != "3" {
 		t.Fatalf("behindCell(3) = %q, want 3", got)
