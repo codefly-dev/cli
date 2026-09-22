@@ -593,6 +593,10 @@ func (r *agentReleaser) afterPush(ctx context.Context, newTag string) error {
 	if r.publication.Owner == publicationWorkflow {
 		return r.waitForWorkflowRelease(ctx, client, owner, repo, newTag)
 	}
+	// The tag is live: a deadline that expired while CI ran must not abort the
+	// upload half-done, nor report a release that shipped as failed.
+	ctx, cancel := postPublicationContext(ctx)
+	defer cancel()
 	if err := createAndUploadRelease(ctx, client, owner, repo, newTag, r.assets); err != nil {
 		return err
 	}

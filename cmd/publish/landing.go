@@ -18,6 +18,12 @@ import (
 // commit, so it is never the verdict a release waits on.
 const dependabotApp = "dependabot"
 
+// githubActionsApp renders this fleet's CI. A failing check from any other app
+// is the shape that wedged publish before Dependabot's was excluded, so the
+// failure names its producer and the next one is diagnosable from the error
+// rather than from an API dig.
+const githubActionsApp = "github-actions"
+
 // Landing gets a release commit, and the tag naming it, from the local
 // checkout onto origin. It is the only part of the release flow that differs
 // between a repo whose main accepts a direct push and one whose main admits
@@ -250,7 +256,11 @@ func (l *pullRequestLanding) readChecks(ctx context.Context, sha string) (bool, 
 				succeeded = true
 			case "skipped", "neutral":
 			default:
-				failed = append(failed, run.GetName())
+				name := run.GetName()
+				if slug := run.GetApp().GetSlug(); slug != "" && slug != githubActionsApp {
+					name = fmt.Sprintf("%s (%s)", name, slug)
+				}
+				failed = append(failed, name)
 			}
 		}
 		if response.NextPage == 0 {

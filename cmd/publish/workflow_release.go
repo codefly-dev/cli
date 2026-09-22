@@ -1,6 +1,8 @@
 package publish
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -116,9 +118,9 @@ func postPublicationContext(ctx context.Context) (context.Context, context.Cance
 }
 
 // verifyWorkflowRelease confirms the release the owner workflow published
-// carries every loader archive, with the bytes GitHub recorded for it. The
-// workflow is the sole publisher of those assets, so every call here reads:
-// nothing is created, replaced or deleted.
+// carries every loader archive, and that each one is the build the workflow
+// made. The workflow is the sole publisher of those assets, so every call here
+// reads: nothing is created, replaced or deleted.
 //
 // The archive is the contract — core's downloader fetches exactly that name.
 // Whether a workflow also publishes an SBOM beside it, and under what name, is
@@ -136,17 +138,21 @@ func verifyWorkflowRelease(ctx context.Context, client *github.Client, owner, re
 	for _, asset := range release.Assets {
 		assets[asset.GetName()] = asset
 	}
+	checksums, err := publishedChecksums(ctx, client, owner, repo, tag, assets)
+	if err != nil {
+		return err
+	}
 	for _, candidate := range staged {
 		archiveName := filepath.Base(candidate.archivePath)
-		archive := assets[archiveName]
-		if archive == nil {
+		archive, ok := assets[archiveName]
+		if !ok {
 			return fmt.Errorf("workflow release %s is missing loader archive %s", tag, archiveName)
 		}
-		if err := downloadAndVerifyAsset(ctx, client, owner, repo, archive); err != nil {
+		if err := verifyPublishedRelease(ctx, client, owner, repo, archive, checksums); err != nil {
 			return err
 		}
 		if sbom, ok := assets[archiveName+".sbom.json"]; ok {
-			if err := downloadAndVerifyAsset(ctx, client, owner, repo, sbom); err != nil {
+			if err := verifyPublishedRelease(ctx, client, owner, repo, sbom, checksums); err != nil {
 				return err
 			}
 		}
@@ -154,16 +160,79 @@ func verifyWorkflowRelease(ctx context.Context, client *github.Client, owner, re
 	return nil
 }
 
-// downloadAndVerifyAsset re-reads a freshly published asset before giving up.
-// GitHub can take a moment to serve an asset it has just accepted, and the tag
-// naming this release is already live, so a transient read must not be reported
-// as a failed publication. A verdict on the asset's own metadata or bytes
-// cannot change on a re-read and is returned immediately.
-func downloadAndVerifyAsset(ctx context.Context, client *github.Client, owner, repo string, asset *github.ReleaseAsset) error {
+// verifyPublishedRelease establishes one asset three ways: the digest the
+// workflow computed from its own build output, the digest GitHub recorded when
+// it accepted the upload, and the bytes GitHub actually serves. Comparing the
+// served bytes to GitHub's own record alone would only show GitHub agreeing
+// with itself; the checksums file is the independent producer that makes the
+// comparison mean something. Core's downloader verifies nothing at install
+// time, so this is the only place in the chain the bytes are ever checked.
+func verifyPublishedRelease(ctx context.Context, client *github.Client, owner, repo string, asset *github.ReleaseAsset, checksums map[string]string) error {
+	built, ok := checksums[asset.GetName()]
+	if !ok {
+		return fmt.Errorf("%w: %s is absent from the checksums the workflow published", errAssetVerdict, asset.GetName())
+	}
+	if recorded := asset.GetDigest(); recorded != "sha256:"+built {
+		return fmt.Errorf("%w: %s was built as sha256:%s but the release records %s",
+			errAssetVerdict, asset.GetName(), built, recorded)
+	}
+	return retryTransientRead(ctx, func() error {
+		return readPublishedAsset(ctx, client, owner, repo, asset, nil)
+	})
+}
+
+// publishedChecksums reads the digest list the release workflow computed from
+// its own build output before uploading anything. It is required: without it
+// the release carries no digest source independent of GitHub's own record, and
+// nothing downstream ever checks these archives again.
+func publishedChecksums(ctx context.Context, client *github.Client, owner, repo, tag string, assets map[string]*github.ReleaseAsset) (map[string]string, error) {
+	var found *github.ReleaseAsset
+	for name, asset := range assets {
+		if !strings.HasSuffix(name, "checksums.txt") {
+			continue
+		}
+		if found != nil {
+			return nil, fmt.Errorf("workflow release %s publishes more than one checksums file (%s, %s); which one records the archives is ambiguous",
+				tag, found.GetName(), name)
+		}
+		found = asset
+	}
+	if found == nil {
+		return nil, fmt.Errorf("workflow release %s publishes no checksums file, so its loader archives have no digest source independent of GitHub's own record (GoReleaser emits one unless `checksum: disable: true`)", tag)
+	}
+	var raw bytes.Buffer
+	if err := retryTransientRead(ctx, func() error {
+		raw.Reset()
+		return readPublishedAsset(ctx, client, owner, repo, found, &raw)
+	}); err != nil {
+		return nil, err
+	}
+	return parseChecksums(raw.Bytes()), nil
+}
+
+// parseChecksums reads `<hex>  <name>` lines. The leading `*` of sha256sum's
+// binary mode is stripped so a workflow that emits it still resolves by name.
+func parseChecksums(raw []byte) map[string]string {
+	checksums := map[string]string{}
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	for scanner.Scan() {
+		if fields := strings.Fields(scanner.Text()); len(fields) == 2 {
+			checksums[strings.TrimPrefix(fields[1], "*")] = fields[0]
+		}
+	}
+	return checksums
+}
+
+// retryTransientRead re-runs read while it fails for a reason a re-read could
+// change. GitHub can take a moment to serve an asset it has just accepted, and
+// the tag naming this release is already live, so a transient read must not be
+// reported as a failed publication. A verdict on the asset's own metadata or
+// bytes cannot change and is returned at once.
+func retryTransientRead(ctx context.Context, read func() error) error {
 	const attempts = 5
 	var lastErr error
 	for attempt := range attempts {
-		err := readPublishedAsset(ctx, client, owner, repo, asset)
+		err := read()
 		if err == nil {
 			return nil
 		}
@@ -183,12 +252,19 @@ func downloadAndVerifyAsset(ctx context.Context, client *github.Client, owner, r
 	return lastErr
 }
 
-func readPublishedAsset(ctx context.Context, client *github.Client, owner, repo string, asset *github.ReleaseAsset) error {
+// readPublishedAsset downloads an asset, confirming it matches the size and
+// digest GitHub recorded. A non-nil capture also receives the bytes, for the
+// small checksums file whose content is needed rather than just its integrity.
+func readPublishedAsset(ctx context.Context, client *github.Client, owner, repo string, asset *github.ReleaseAsset, capture io.Writer) error {
 	stream, _, err := client.Repositories.DownloadReleaseAsset(ctx, owner, repo, asset.GetID(), http.DefaultClient)
 	if err != nil {
 		return fmt.Errorf("download published asset %s: %w", asset.GetName(), err)
 	}
-	err = verifyPublishedAsset(stream, asset)
+	var source io.Reader = stream
+	if capture != nil {
+		source = io.TeeReader(stream, capture)
+	}
+	err = verifyPublishedAsset(source, asset)
 	closeErr := stream.Close()
 	if err != nil {
 		return err

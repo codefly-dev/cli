@@ -78,6 +78,12 @@ func TestPublishedAssetMustMatchActualBytes(t *testing.T) {
 	require.ErrorContains(t, verifyPublishedAsset(strings.NewReader(payload), asset), "no verifiable")
 }
 
+const (
+	testArchive   = "service-go_0.0.16_linux_amd64.tar.gz"
+	testSBOM      = testArchive + ".sbom.json"
+	testChecksums = "service-go_0.0.16_checksums.txt"
+)
+
 // publishedRelease serves the release an owner workflow published, the way
 // GitHub serves it: the tag lookup, then a redirect per asset to the host that
 // actually holds the bytes. Any request that is not a read fails the test,
@@ -90,30 +96,85 @@ type publishedRelease struct {
 	payloads map[string]string // asset name -> bytes the workflow published
 	digests  map[string]string // asset name -> digest GitHub recorded for it
 
+	// checksumDigests overrides what the checksums file lists for an asset, and
+	// omitFromChecksums leaves it out, standing in for a release whose recorded
+	// assets are not the ones the workflow built.
+	checksumDigests   map[string]string
+	omitFromChecksums map[string]bool
+	omitChecksums     bool
+	secondChecksums   bool
+
 	// beforeTagResponse runs before the release lookup is answered, so a test
 	// can spend the caller's publish budget midway through verification.
 	beforeTagResponse func()
-	// transientFailures is how many asset lookups answer 500  before serving bytes.
-	transientFailures int
-	assetLookups      int
-	blobReads         int // reads served from the storage host behind the redirect
+	// transient is how many initial lookups of an asset answer 500.
+	transient map[string]int
+
+	mu      sync.Mutex
+	lookups map[string]int // asset name -> API lookups served
+	blobs   int            // reads served from the storage host behind the redirect
 }
 
 func recordedDigests(payloads map[string]string) map[string]string {
 	digests := map[string]string{}
 	for name, payload := range payloads {
-		digests[name] = fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(payload)))
+		digests[name] = digestOf(payload)
 	}
 	return digests
 }
 
-func (p *publishedRelease) client() *github.Client {
-	p.t.Helper()
-	names := make([]string, 0, len(p.payloads))
-	for name := range p.payloads {
+func digestOf(payload string) string {
+	return fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(payload)))
+}
+
+func publishedBy(t *testing.T, payloads map[string]string) *publishedRelease {
+	return &publishedRelease{t: t, tag: "v0.0.16", payloads: payloads, digests: recordedDigests(payloads)}
+}
+
+func sortedNames(payloads map[string]string) []string {
+	names := make([]string, 0, len(payloads))
+	for name := range payloads {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	return names
+}
+
+// withChecksums appends the digest list a release workflow computes from its own
+// build output, which is the record GitHub's own is cross-checked against.
+func (p *publishedRelease) withChecksums() *publishedRelease {
+	if p.omitChecksums {
+		return p
+	}
+	body := func() string {
+		var out strings.Builder
+		for _, name := range sortedNames(p.payloads) {
+			if p.omitFromChecksums[name] {
+				continue
+			}
+			hex := strings.TrimPrefix(p.digests[name], "sha256:")
+			if override, ok := p.checksumDigests[name]; ok {
+				hex = override
+			}
+			fmt.Fprintf(&out, "%s  %s\n", hex, name)
+		}
+		return out.String()
+	}
+	first := body()
+	p.payloads[testChecksums] = first
+	p.digests[testChecksums] = digestOf(first)
+	if p.secondChecksums {
+		second := body()
+		p.payloads["extra_checksums.txt"] = second
+		p.digests["extra_checksums.txt"] = digestOf(second)
+	}
+	return p
+}
+
+func (p *publishedRelease) client() *github.Client {
+	p.t.Helper()
+	p.lookups = map[string]int{}
+	names := sortedNames(p.payloads)
 	byID := map[string]string{}
 	entries := make([]string, 0, len(names))
 	for i, name := range names {
@@ -125,7 +186,6 @@ func (p *publishedRelease) client() *github.Client {
 	const repoPath = "/repos/codefly-dev/service-go/releases/"
 	const blobPath = "/release-assets/"
 
-	var mu sync.Mutex
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(p.t, http.MethodGet, r.Method,
 			"publish must not write to a workflow-owned release: %s %s", r.Method, r.URL.Path)
@@ -137,26 +197,27 @@ func (p *publishedRelease) client() *github.Client {
 			fmt.Fprintf(w, `{"id":42,"tag_name":%q,"draft":%t,"assets":[%s]}`,
 				p.tag, p.draft, strings.Join(entries, ","))
 		case strings.HasPrefix(r.URL.Path, repoPath+"assets/"):
-			mu.Lock()
-			p.assetLookups++
-			transient := p.assetLookups <= p.transientFailures
-			mu.Unlock()
+			id := strings.TrimPrefix(r.URL.Path, repoPath+"assets/")
+			p.mu.Lock()
+			p.lookups[byID[id]]++
+			transient := p.lookups[byID[id]] <= p.transient[byID[id]]
+			p.mu.Unlock()
 			if transient {
 				http.Error(w, `{"message":"unavailable"}`, http.StatusInternalServerError)
 				return
 			}
-			// GitHub never serves asset bytes from the API host; it redirects
-			// to the storage host, which is the path production takes.
-			http.Redirect(w, r, blobPath+strings.TrimPrefix(r.URL.Path, repoPath+"assets/"), http.StatusFound)
+			// GitHub never serves asset bytes from the API host; it redirects to
+			// the storage host, which is the path production takes.
+			http.Redirect(w, r, blobPath+id, http.StatusFound)
 		case strings.HasPrefix(r.URL.Path, blobPath):
 			name, ok := byID[strings.TrimPrefix(r.URL.Path, blobPath)]
 			if !ok {
 				http.Error(w, "no such asset", http.StatusNotFound)
 				return
 			}
-			mu.Lock()
-			p.blobReads++
-			mu.Unlock()
+			p.mu.Lock()
+			p.blobs++
+			p.mu.Unlock()
 			fmt.Fprint(w, p.payloads[name])
 		default:
 			http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
@@ -169,56 +230,112 @@ func (p *publishedRelease) client() *github.Client {
 	return client
 }
 
+func (p *publishedRelease) verify(staged []loaderAsset) error {
+	return verifyWorkflowRelease(p.t.Context(), p.client(), "codefly-dev", "service-go", p.tag, staged)
+}
+
 func TestVerifyWorkflowReleaseReadsPublishedAssetsWithoutWriting(t *testing.T) {
-	const archive = "service-go_0.0.16_linux_amd64.tar.gz"
-	const sbom = archive + ".sbom.json"
 	published := func() map[string]string {
-		return map[string]string{archive: "archive bytes", sbom: "sbom bytes"}
+		return map[string]string{testArchive: "archive bytes", testSBOM: "sbom bytes"}
 	}
+	const foreign = "a build nobody published"
 
 	for _, tc := range []struct {
-		name     string
-		draft    bool
-		payloads map[string]string
-		tamper   func(digests map[string]string)
-		wantErr  string
+		name    string
+		release func(t *testing.T) *publishedRelease
+		wantErr string
 	}{
-		{name: "archive and sbom", payloads: published()},
 		{
-			name:     "archive alone, workflow publishes no sbom",
-			payloads: map[string]string{archive: "archive bytes"},
+			name:    "archive and sbom",
+			release: func(t *testing.T) *publishedRelease { return publishedBy(t, published()).withChecksums() },
 		},
 		{
-			name:     "archive absent",
-			payloads: map[string]string{sbom: "sbom bytes"},
-			wantErr:  "missing loader archive " + archive,
-		},
-		{name: "draft", draft: true, payloads: published(), wantErr: "workflow did not publish release"},
-		{
-			name:     "archive bytes differ from recorded digest",
-			payloads: published(),
-			tamper:   func(digests map[string]string) { digests[archive] = digests[sbom] },
-			wantErr:  archive + " does not match its recorded size and digest",
+			name: "archive alone, workflow publishes no sbom",
+			release: func(t *testing.T) *publishedRelease {
+				return publishedBy(t, map[string]string{testArchive: "archive bytes"}).withChecksums()
+			},
 		},
 		{
-			name:     "sbom bytes differ from recorded digest",
-			payloads: published(),
-			tamper:   func(digests map[string]string) { digests[sbom] = digests[archive] },
-			wantErr:  sbom + " does not match its recorded size and digest",
+			name: "archive absent",
+			release: func(t *testing.T) *publishedRelease {
+				return publishedBy(t, map[string]string{testSBOM: "sbom bytes"}).withChecksums()
+			},
+			wantErr: "missing loader archive " + testArchive,
+		},
+		{
+			name: "draft",
+			release: func(t *testing.T) *publishedRelease {
+				r := publishedBy(t, published()).withChecksums()
+				r.draft = true
+				return r
+			},
+			wantErr: "workflow did not publish release",
+		},
+		{
+			name: "no checksums file",
+			release: func(t *testing.T) *publishedRelease {
+				r := publishedBy(t, published())
+				r.omitChecksums = true
+				return r.withChecksums()
+			},
+			wantErr: "publishes no checksums file",
+		},
+		{
+			name: "two checksums files",
+			release: func(t *testing.T) *publishedRelease {
+				r := publishedBy(t, published())
+				r.secondChecksums = true
+				return r.withChecksums()
+			},
+			wantErr: "more than one checksums file",
+		},
+		{
+			name: "archive absent from the checksums the workflow built",
+			release: func(t *testing.T) *publishedRelease {
+				r := publishedBy(t, published())
+				r.omitFromChecksums = map[string]bool{testArchive: true}
+				return r.withChecksums()
+			},
+			wantErr: testArchive + " is absent from the checksums",
+		},
+		{
+			name: "release records a digest the workflow did not build",
+			release: func(t *testing.T) *publishedRelease {
+				r := publishedBy(t, published())
+				r.checksumDigests = map[string]string{
+					testArchive: strings.TrimPrefix(digestOf(foreign), "sha256:"),
+				}
+				return r.withChecksums()
+			},
+			wantErr: "but the release records",
+		},
+		{
+			name: "served archive bytes match neither record",
+			release: func(t *testing.T) *publishedRelease {
+				r := publishedBy(t, published())
+				r.digests[testArchive] = digestOf(foreign)
+				return r.withChecksums()
+			},
+			wantErr: testArchive + " does not match its recorded size and digest",
+		},
+		{
+			name: "served sbom bytes match neither record",
+			release: func(t *testing.T) *publishedRelease {
+				r := publishedBy(t, published())
+				r.digests[testSBOM] = digestOf(foreign)
+				return r.withChecksums()
+			},
+			wantErr: testSBOM + " does not match its recorded size and digest",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			digests := recordedDigests(tc.payloads)
-			if tc.tamper != nil {
-				tc.tamper(digests)
-			}
-			release := &publishedRelease{t: t, tag: "v0.0.16", draft: tc.draft, payloads: tc.payloads, digests: digests}
+			release := tc.release(t)
 
-			err := verifyWorkflowRelease(t.Context(), release.client(), "codefly-dev", "service-go", "v0.0.16", stageAssets(t, archive))
+			err := release.verify(stageAssets(t, testArchive))
 
 			if tc.wantErr == "" {
 				require.NoError(t, err)
-				require.Positive(t, release.blobReads,
+				require.Positive(t, release.blobs,
 					"asset bytes must be read from the storage host GitHub redirects to, not the API host")
 				return
 			}
@@ -227,59 +344,76 @@ func TestVerifyWorkflowReleaseReadsPublishedAssetsWithoutWriting(t *testing.T) {
 	}
 }
 
-// The tag is live and the workflow has published by the time verification
-// runs, so a transient read of a just-accepted asset must not be reported as a
-// failed publication.
+// The tag is live and the workflow has published by the time verification runs,
+// so a transient read of a just-accepted asset must not be reported as a failed
+// publication.
 func TestVerifyWorkflowReleaseRetriesATransientAssetRead(t *testing.T) {
-	const archive = "service-go_0.0.16_linux_amd64.tar.gz"
-	payloads := map[string]string{archive: "archive bytes"}
-	release := &publishedRelease{
-		t: t, tag: "v0.0.16", payloads: payloads, digests: recordedDigests(payloads),
-		transientFailures: 2,
-	}
+	release := publishedBy(t, map[string]string{testArchive: "archive bytes"}).withChecksums()
+	release.transient = map[string]int{testArchive: 2, testChecksums: 1}
 
-	require.NoError(t, verifyWorkflowRelease(t.Context(), release.client(), "codefly-dev", "service-go", "v0.0.16", stageAssets(t, archive)))
-	require.Equal(t, 3, release.assetLookups, "the first two reads failed and must have been retried")
+	require.NoError(t, release.verify(stageAssets(t, testArchive)))
+	require.Equal(t, 3, release.lookups[testArchive], "the first two archive reads failed and must have been retried")
+	require.Equal(t, 2, release.lookups[testChecksums], "the first checksums read failed and must have been retried")
 }
 
 // A wrong digest is a verdict on the bytes themselves: re-reading cannot change
 // it, and retrying would re-download every archive for nothing.
 func TestVerifyWorkflowReleaseDoesNotRetryAVerdictOnTheBytes(t *testing.T) {
-	const archive = "service-go_0.0.16_linux_amd64.tar.gz"
-	payloads := map[string]string{archive: "archive bytes"}
-	digests := recordedDigests(payloads)
-	digests[archive] = fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("some other build")))
-	release := &publishedRelease{t: t, tag: "v0.0.16", payloads: payloads, digests: digests}
+	release := publishedBy(t, map[string]string{testArchive: "archive bytes"})
+	foreign := digestOf("a build nobody published")
+	release.digests[testArchive] = foreign
+	release.checksumDigests = map[string]string{testArchive: strings.TrimPrefix(foreign, "sha256:")}
+	release.withChecksums()
 
-	err := verifyWorkflowRelease(t.Context(), release.client(), "codefly-dev", "service-go", "v0.0.16", stageAssets(t, archive))
+	err := release.verify(stageAssets(t, testArchive))
 
 	require.ErrorIs(t, err, errAssetVerdict)
-	require.Equal(t, 1, release.assetLookups, "a verdict on the bytes must not be re-read")
+	require.Equal(t, 1, release.lookups[testArchive], "a verdict on the bytes must not be re-read")
+}
+
+// A digest that already disagrees with the workflow's own record settles the
+// question before any archive is fetched.
+func TestVerifyWorkflowReleaseRejectsAMismatchWithoutDownloadingTheArchive(t *testing.T) {
+	release := publishedBy(t, map[string]string{testArchive: "archive bytes"})
+	release.checksumDigests = map[string]string{
+		testArchive: strings.TrimPrefix(digestOf("a build nobody published"), "sha256:"),
+	}
+	release.withChecksums()
+
+	err := release.verify(stageAssets(t, testArchive))
+
+	require.ErrorIs(t, err, errAssetVerdict)
+	require.Zero(t, release.lookups[testArchive], "the archive need not be downloaded to settle a digest mismatch")
 }
 
 // Verification runs after the tag is live, so the budget the workflow wait
 // consumed must not decide whether a release that shipped is reported as
 // published.
 func TestPostPublicationVerificationOutlivesTheSpentPublishBudget(t *testing.T) {
-	const archive = "service-go_0.0.16_linux_amd64.tar.gz"
-	payloads := map[string]string{archive: "archive bytes"}
 	spent, exhaust := context.WithCancel(t.Context())
-	release := &publishedRelease{
-		t: t, tag: "v0.0.16", payloads: payloads, digests: recordedDigests(payloads),
-		beforeTagResponse: func() {
-			exhaust()
-			<-spent.Done()
-		},
+	release := publishedBy(t, map[string]string{testArchive: "archive bytes"}).withChecksums()
+	release.beforeTagResponse = func() {
+		exhaust()
+		<-spent.Done()
 	}
 	client := release.client()
 
 	ctx, cancel := postPublicationContext(spent)
 	defer cancel()
-	err := verifyWorkflowRelease(ctx, client, "codefly-dev", "service-go", "v0.0.16", stageAssets(t, archive))
+	err := verifyWorkflowRelease(ctx, client, "codefly-dev", "service-go", "v0.0.16", stageAssets(t, testArchive))
 
 	require.NoError(t, err)
 	require.ErrorIs(t, spent.Err(), context.Canceled, "the publish budget must be spent by the time verification finishes")
 	deadline, ok := ctx.Deadline()
 	require.True(t, ok)
 	require.Greater(t, time.Until(deadline), time.Minute, "verification needs a budget sized to download every archive")
+}
+
+func TestParseChecksumsReadsBothSha256sumForms(t *testing.T) {
+	raw := "aaaa  text-mode.tar.gz\nbbbb *binary-mode.tar.gz\n\ngarbage\ncccc  extra  fields\n"
+
+	require.Equal(t, map[string]string{
+		"text-mode.tar.gz":   "aaaa",
+		"binary-mode.tar.gz": "bbbb",
+	}, parseChecksums([]byte(raw)))
 }

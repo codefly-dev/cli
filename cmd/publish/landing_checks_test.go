@@ -93,3 +93,29 @@ func TestReleaseChecksIgnoreDependabotUpdateJob(t *testing.T) {
 		require.True(t, ready, dependabot)
 	}
 }
+
+func TestReleaseChecksNameTheAppBehindAnUnexpectedFailure(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/owner/repo/commits/head/check-runs", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"total_count":3,"check_runs":[
+			{"name":"race","status":"completed","conclusion":"success","app":{"slug":"github-actions"}},
+			{"name":"coverage","status":"completed","conclusion":"failure","app":{"slug":"github-actions"}},
+			{"name":"preview","status":"completed","conclusion":"failure","app":{"slug":"some-deploy-bot"}}
+		]}`)
+	})
+	mux.HandleFunc("/repos/owner/repo/commits/head/status", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"total_count":0}`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	base := server.URL + "/"
+	client, err := github.NewClient(github.WithURLs(&base, &base))
+	require.NoError(t, err)
+	landing := &pullRequestLanding{client: client, owner: "owner", repo: "repo"}
+
+	_, failed, err := landing.readChecks(t.Context(), "head")
+
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"coverage", "preview (some-deploy-bot)"}, failed,
+		"CI failures read as bare names; anything else names the app that posted it")
+}
