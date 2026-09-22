@@ -48,7 +48,7 @@ var RunCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err = refuseServiceOverrides(ctx, workspace, allowServiceOverrides, "codefly ci run"); err != nil {
+		if err = refuseServiceOverrides(ctx, workspace, runAllowServiceOverrides, "codefly ci run"); err != nil {
 			return err
 		}
 		if err := common.WithSilenceE(ctx, workspace, silent); err != nil {
@@ -231,7 +231,7 @@ func init() {
 	runSelection.Bind(RunCmd)
 	RunCmd.Flags().StringSliceVar(&runPhases, "phase", nil, "CI phase to run (repeatable or comma-separated; default: full Codefly gate)")
 	RunCmd.Flags().StringSliceVar(&silent, "silent", []string{}, "Silent services")
-	RunCmd.Flags().BoolVar(&allowServiceOverrides, "allow-service-overrides", false, "Run against the machine-local per-service overrides in "+resources.LocalOverlayConfigurationName+" instead of refusing")
+	RunCmd.Flags().BoolVar(&runAllowServiceOverrides, "allow-service-overrides", false, "Run against the machine-local per-service overrides in "+resources.LocalOverlayConfigurationName+" instead of refusing")
 	RunCmd.Flags().StringVar(&runtimeContext, "runtime-context", "free", "Runtime context for validation and tests")
 	RunCmd.Flags().StringSliceVar(&testSuites, "suite", nil, "Named test suite to run during the test phase (repeatable; default: each agent's advertised default)")
 	RunCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, "Allocate OS-probed ephemeral ports so this CI run's port space cannot collide with another run on the host")

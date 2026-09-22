@@ -108,6 +108,42 @@ func TestOverrideServiceStoresAnAbsolutePath(t *testing.T) {
 	}
 }
 
+// The overlay records machine-local absolute paths, so the command that creates
+// it must also keep it out of git — otherwise the next `git add -A` commits a
+// path that is meaningless on every other machine.
+func TestOverrideServiceGitignoresTheOverlayItCreates(t *testing.T) {
+	root := overrideWorkspace(t)
+	checkout := t.TempDir()
+	writeOverrideFile(t, filepath.Join(checkout, "service.codefly.yaml"),
+		"kind: service\nname: gateway\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.0.1\n  publisher: codefly.ai\n")
+
+	servicePath = checkout
+	if err := runOverrideService(nil, []string{"saas/gateway"}); err != nil {
+		t.Fatalf("override: %v", err)
+	}
+
+	ignore, err := os.ReadFile(filepath.Join(root, ".gitignore"))
+	if err != nil {
+		t.Fatalf("no .gitignore written beside the overlay: %v", err)
+	}
+	if !strings.Contains(string(ignore), resources.LocalOverlayConfigurationName) {
+		t.Fatalf(".gitignore does not ignore the overlay: %q", ignore)
+	}
+}
+
+// Clearing an override that is not there changed nothing, so it must not bring
+// a codefly.local.yaml into existence.
+func TestOverrideServiceClearWritesNothingWhenThereIsNoOverride(t *testing.T) {
+	root := overrideWorkspace(t)
+	serviceClear = true
+	if err := runOverrideService(nil, []string{"saas/gateway"}); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, resources.LocalOverlayConfigurationName)); !os.IsNotExist(err) {
+		t.Fatalf("a no-op clear created an overlay file (stat err = %v)", err)
+	}
+}
+
 // An override that does not resolve is not written: the overlay every later
 // command reads is left exactly as it was found.
 func TestOverrideServiceDoesNotLeaveAnUnresolvableOverrideBehind(t *testing.T) {

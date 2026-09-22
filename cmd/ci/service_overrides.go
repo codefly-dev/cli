@@ -9,6 +9,12 @@ import (
 	"github.com/codefly-dev/core/resources"
 )
 
+// runAllowServiceOverrides and planAllowServiceOverrides back the
+// --allow-service-overrides flag of `ci run` and `ci plan`. They are separate
+// variables, like every other paired flag in this package: one shared variable
+// would carry a plan's opt-in into a run performed in the same process.
+var runAllowServiceOverrides bool
+
 // refuseServiceOverrides stops a CI command whose workspace has machine-local
 // per-service overrides in effect, unless the caller says they are intended.
 //

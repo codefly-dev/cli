@@ -2,10 +2,12 @@ package composition
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codefly-dev/core/resources"
 )
@@ -307,5 +309,109 @@ func TestPruneStaleReceiptsKeepsRequestedServiceOverrides(t *testing.T) {
 	}
 	if _, ok := receipts["gone"]; ok {
 		t.Fatal("a removed module's receipt survived")
+	}
+}
+
+// A module dropped from committed config takes its CLI-written service
+// materializations with it, but not the overrides the user wrote: removing and
+// re-adding a module must not quietly discard an override they set up.
+func TestPruneStalePinnedEntriesCollectsOnlyMachineWrittenServiceOverrides(t *testing.T) {
+	cacheRoot := t.TempDir()
+	machine := filepath.Join(cacheRoot, "saas", "services", "gateway")
+	mine := filepath.Join(t.TempDir(), "my-telemetry")
+	resolve := map[string]*resources.ModuleResolveDirective{
+		"gone": {
+			Path: filepath.Join(cacheRoot, "saas"),
+			Services: map[string]*resources.ServiceResolveDirective{
+				"gateway":   {Path: machine},
+				"telemetry": {Path: mine},
+			},
+		},
+	}
+	receipts := map[string]*ResolutionReceipt{
+		"gone":         {Path: filepath.Join(cacheRoot, "saas")},
+		"gone/gateway": {Service: "gateway", Path: machine},
+	}
+
+	if !pruneStalePinnedEntries(resolve, nil, receipts, cacheRoot) {
+		t.Fatal("pruneStalePinnedEntries reported no change")
+	}
+	entry := resolve["gone"]
+	if entry == nil {
+		t.Fatal("the user's own service override was deleted with the module")
+	}
+	if entry.Path != "" {
+		t.Fatalf("the module's machine-written path survived: %s", entry.Path)
+	}
+	if _, ok := entry.Services["gateway"]; ok {
+		t.Fatal("a machine-written service override survived its removed module")
+	}
+	if entry.Services["telemetry"].Path != mine {
+		t.Fatalf("the user's service override was not preserved: %+v", entry.Services)
+	}
+}
+
+// With nothing user-written left on it, the entry goes entirely rather than
+// being left selecting nothing — core rejects such an entry outright.
+func TestPruneStalePinnedEntriesRemovesAnEntryLeftSelectingNothing(t *testing.T) {
+	cacheRoot := t.TempDir()
+	resolve := map[string]*resources.ModuleResolveDirective{
+		"gone": {
+			Path:     filepath.Join(cacheRoot, "saas"),
+			Services: map[string]*resources.ServiceResolveDirective{"gateway": {Path: filepath.Join(cacheRoot, "saas", "services", "gateway")}},
+		},
+	}
+	if !pruneStalePinnedEntries(resolve, nil, map[string]*ResolutionReceipt{}, cacheRoot) {
+		t.Fatal("pruneStalePinnedEntries reported no change")
+	}
+	if _, ok := resolve["gone"]; ok {
+		t.Fatalf("an entry selecting nothing was left behind: %+v", resolve["gone"])
+	}
+}
+
+// A services-only entry the user wrote for a module that is no longer composed
+// is left alone: it is their data, and it is inert until the module returns.
+func TestPruneStalePinnedEntriesKeepsAUserServicesOnlyEntry(t *testing.T) {
+	mine := t.TempDir()
+	resolve := map[string]*resources.ModuleResolveDirective{
+		"gone": {Services: map[string]*resources.ServiceResolveDirective{"gateway": {Path: mine}}},
+	}
+	if pruneStalePinnedEntries(resolve, nil, map[string]*ResolutionReceipt{}, t.TempDir()) {
+		t.Fatal("pruneStalePinnedEntries touched a user-written entry")
+	}
+	if resolve["gone"].Services["gateway"].Path != mine {
+		t.Fatal("the user's services-only entry was modified")
+	}
+}
+
+// Every writer of the overlay must take the same lock: each one saves the whole
+// file, so an unsynchronized second writer silently drops whatever the first
+// had just added. `codefly override service` edits the overlay through
+// WithOverlayLock for exactly this reason.
+func TestWithOverlayLockExcludesAConcurrentWriter(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	dir := t.TempDir()
+	previous := overlayLockTimeout
+	overlayLockTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { overlayLockTimeout = previous })
+
+	held := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		_ = WithOverlayLock(dir, func() error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	<-held
+
+	err := WithOverlayLock(dir, func() error {
+		t.Error("entered the overlay critical section while another writer held it")
+		return nil
+	})
+	close(release)
+	if !errors.Is(err, ErrLockTimeout) {
+		t.Fatalf("a concurrent overlay writer was not excluded: %v", err)
 	}
 }

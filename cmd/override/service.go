@@ -40,7 +40,9 @@ name, same agent name, and at least the endpoints the module declares. Its agent
 version may differ — running a service at a different agent version is a reason
 to override it.
 
-For a flat (single-module) workspace, use ` + "`codefly run service --service-path`" + ` instead.`,
+This works on every workspace layout. On a flat (single-module) workspace the
+module name is the workspace's own name, and ` + "`codefly run service --service-path`" + `
+remains the per-run spelling for the service you are launching.`,
 	Example: `  # Run saas/accounts from a local checkout
   codefly override service saas/accounts --path ~/module-saas-starter/module/services/accounts
 
@@ -98,7 +100,19 @@ func runOverrideService(_ *cobra.Command, args []string) error {
 	if dir := composition.NearestOverlayDir(workspace.Dir()); dir != "" {
 		writeDir = dir
 	}
-	overlay, err := resources.LoadLocalOverlay(ctx, workspace.Dir())
+	// Load, mutate and save is one critical section. Every writer saves the whole
+	// file, so a concurrent `codefly run` materializing pinned modules would
+	// otherwise save its own snapshot over this edit, or lose its materialized
+	// paths to it — whichever landed second would win the entire map.
+	return composition.WithOverlayLock(writeDir, func() error {
+		return editServiceOverride(ctx, workspace.Dir(), writeDir, module, service, directive)
+	})
+}
+
+// editServiceOverride performs the overlay's read-decide-write cycle, holding
+// the overlay lock.
+func editServiceOverride(ctx context.Context, workspaceDir, writeDir, module, service string, directive *resources.ServiceResolveDirective) error {
+	overlay, err := resources.LoadLocalOverlay(ctx, workspaceDir)
 	if err != nil {
 		return fmt.Errorf("cannot load local overlay: %w", err)
 	}
@@ -110,9 +124,16 @@ func runOverrideService(_ *cobra.Command, args []string) error {
 	}
 
 	if serviceClear {
+		if entry := overlay.Resolve[module]; entry == nil || entry.Services[service] == nil {
+			// Nothing to clear. Saving anyway would create a codefly.local.yaml —
+			// and, on a workspace that had none, a stray untracked file — for a
+			// command that changed nothing.
+			cli.Header(2, "Service <%s/%s> has no override.", module, service)
+			return nil
+		}
 		composition.ClearServiceOverride(overlay, module, service)
-		if err := resources.SaveLocalOverlay(ctx, writeDir, overlay); err != nil {
-			return fmt.Errorf("cannot save local overlay: %w", err)
+		if err = saveOverlay(ctx, writeDir, overlay); err != nil {
+			return err
 		}
 		cli.Header(2, "Service <%s/%s> is back to the module's own copy.", module, service)
 		return nil
@@ -127,11 +148,11 @@ func runOverrideService(_ *cobra.Command, args []string) error {
 		entry.Services = map[string]*resources.ServiceResolveDirective{}
 	}
 	entry.Services[service] = directive
-	if err := resources.SaveLocalOverlay(ctx, writeDir, overlay); err != nil {
-		return fmt.Errorf("cannot save local overlay: %w", err)
+	if err = saveOverlay(ctx, writeDir, overlay); err != nil {
+		return err
 	}
 
-	reportErr := reportOverride(ctx, workspace.Dir(), module, service)
+	reportErr := reportOverride(ctx, workspaceDir, module, service)
 	if reportErr == nil {
 		return nil
 	}
@@ -140,10 +161,25 @@ func runOverrideService(_ *cobra.Command, args []string) error {
 	// workspace until someone found and cleared it. Either the command leaves a
 	// working override or it leaves what it found.
 	composition.ClearServiceOverride(overlay, module, service)
-	if err := resources.SaveLocalOverlay(ctx, writeDir, overlay); err != nil {
+	if err = saveOverlay(ctx, writeDir, overlay); err != nil {
 		return errors.Join(reportErr, fmt.Errorf("cannot roll back local overlay: %w", err))
 	}
 	return reportErr
+}
+
+// saveOverlay writes the overlay and keeps it out of git. The overlay records
+// machine-local absolute paths, so a workspace holding one without the ignore
+// rule hands it to the next `git add -A`. The rule is (re)asserted on every
+// save rather than only on creation, because an overlay this command did not
+// create may never have been ignored either.
+func saveOverlay(ctx context.Context, writeDir string, overlay *resources.LocalOverlay) error {
+	if err := resources.SaveLocalOverlay(ctx, writeDir, overlay); err != nil {
+		return fmt.Errorf("cannot save local overlay: %w", err)
+	}
+	if err := composition.EnsureOverlayIgnored(writeDir); err != nil {
+		return fmt.Errorf("cannot gitignore %s: %w", resources.LocalOverlayConfigurationName, err)
+	}
+	return nil
 }
 
 // reportOverride prints where the override just written actually lands, by

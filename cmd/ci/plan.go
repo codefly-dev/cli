@@ -23,10 +23,7 @@ var (
 	planSuites         []string
 	planRuntimeContext string
 
-	// allowServiceOverrides is shared by plan and run: both make a claim about
-	// the committed workspace, and both are wrong in the same way when a
-	// machine-local service override silently changes what they describe.
-	allowServiceOverrides bool
+	planAllowServiceOverrides bool
 )
 
 // PlanCmd exposes Codefly's provider-neutral changed/affected service plan.
@@ -47,7 +44,7 @@ var PlanCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if err = refuseServiceOverrides(ctx, workspace, allowServiceOverrides, "codefly ci plan"); err != nil {
+		if err = refuseServiceOverrides(ctx, workspace, planAllowServiceOverrides, "codefly ci plan"); err != nil {
 			return err
 		}
 
@@ -101,7 +98,7 @@ func init() {
 	PlanCmd.Flags().StringSliceVar(&planChangedFiles, "changed-file", nil, "Changed path supplied by the CI provider (repeatable; bypasses Git discovery)")
 	PlanCmd.Flags().BoolVar(&planAll, "all", false, "Select every service explicitly")
 	PlanCmd.Flags().StringVar(&planFormat, "format", "text", "Output format: text or json")
-	PlanCmd.Flags().BoolVar(&allowServiceOverrides, "allow-service-overrides", false, "Plan against the machine-local per-service overrides in "+resources.LocalOverlayConfigurationName+" instead of refusing")
+	PlanCmd.Flags().BoolVar(&planAllowServiceOverrides, "allow-service-overrides", false, "Plan against the machine-local per-service overrides in "+resources.LocalOverlayConfigurationName+" instead of refusing")
 }
 
 func firstNonEmpty(values ...string) string {

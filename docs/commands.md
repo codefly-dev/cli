@@ -121,7 +121,7 @@ codefly run service api
 codefly run service lastlogin-go/backend wiki/backend   # One graph, shared host started once
 codefly run service api --standalone              # Run without dependencies
 codefly run service api --runtime-context nix     # Use nix runtime context
-codefly run service api --service-path ./my-svc   # Override service path (flat workspaces)
+codefly run service api --service-path ./my-svc   # Override service path for this run
 codefly run service api --fixture seed            # Use a named fixture
 codefly run service api --remote backend/db:staging  # Use remote dependency
 codefly run service api --output-env .env         # Write the full owner-only SDK/runtime env
@@ -141,7 +141,7 @@ codefly run service api --cli-server --open       # Run headless with the local 
 | `--exclude-root` | Start dependencies only, skip the target service; when the root owns `--output-env`, compose its SDK environment without loading its agent or process |
 | `--profile` | Select a named run profile from `workspace.codefly.yaml` |
 | `--exclude-dependency` | Exclude optional dependency services from this run. Repeatable; accepts `module/service` or an unambiguous service name. |
-| `--service-path` | Override the path to the service directory. Flat (single-module) workspaces only — for a composed module, see [Overriding one service of a composed module](#overriding-one-service-of-a-composed-module) |
+| `--service-path` | Override the path to the service directory, for this run only and for the service being launched. To override a service durably, on any layout, see [Overriding one service of a composed module](#overriding-one-service-of-a-composed-module) |
 | `--runtime-context` | Runtime context (`native`, `nix`, `container`, or `free`; `free` picks each agent's first advertised backend) |
 | `--fixture` | Named fixture for test data |
 | `--remote` | Use a remote service instead of local (format: `module/service:environment`) |
@@ -815,8 +815,21 @@ of identity and trust, and a committed per-service pin would fragment it and
 bypass `module-trust`; the only committed spelling stays the module's own
 `services[].path`.
 
-For a flat (single-module) workspace use
-[`codefly run service --service-path`](#codefly-run-service-name) instead.
+This works on **every workspace layout**. On a flat (single-module) workspace the
+module name is the workspace's own name:
+
+```yaml
+# workspace.codefly.yaml declares `name: solution`, `layout: flat`
+resolve:
+    solution:
+        services:
+            api:
+                path: /Users/me/api-checkout
+```
+
+[`codefly run service --service-path`](#codefly-run-service-name) remains the
+per-run spelling for the one service you are launching; an overlay entry is
+durable and applies to every service, on any layout.
 
 #### Resolution receipts
 

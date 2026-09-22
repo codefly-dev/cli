@@ -29,6 +29,22 @@ func overlayLockPath(writeDir string) string {
 	return filepath.Join(resources.CodeflyHomeDir(), "locks", fmt.Sprintf("%x.overlay.lock", sha256.Sum256([]byte(filepath.Clean(writeDir)))))
 }
 
+// WithOverlayLock runs fn holding the cross-process lock that guards the
+// overlay under writeDir. Every read-decide-write cycle over codefly.local.yaml
+// must run inside it: each writer saves the whole file, so two unsynchronized
+// cycles lose whichever update landed first.
+func WithOverlayLock(writeDir string, fn func() error) error {
+	return WithFileLock(overlayLockPath(writeDir), overlayLockTimeout, fn)
+}
+
+// EnsureOverlayIgnored keeps codefly.local.yaml out of git. Every writer of the
+// overlay calls it: the file records machine-local absolute paths, so a
+// workspace that gains one without the ignore rule offers it to the next
+// `git add -A`.
+func EnsureOverlayIgnored(dir string) error {
+	return ensureIgnored(dir, resources.LocalOverlayConfigurationName)
+}
+
 // MaterializePinnedModules pulls every composed module that resolves to a pinned
 // artifact into the local module cache and points the overlay core loads at that
 // cache directory. Core classifies a `source@version` reference as pinned but
@@ -483,15 +499,44 @@ func pruneStalePinnedEntries(resolve map[string]*resources.ModuleResolveDirectiv
 	}
 	changed := false
 	for name, directive := range resolve {
-		if present[name] || directive == nil || directive.Path == "" {
+		if present[name] || directive == nil {
 			continue
 		}
-		if directive.Path == receipts[name].ResolvedPath() || underAnyDir(cacheRoots, directive.Path) {
+		// Per-service materializations the CLI wrote are collected with their
+		// module. Overrides the USER wrote are left alone: they are machine-local
+		// intent, and silently deleting them would mean removing and re-adding a
+		// module quietly discards an override they set up. A surviving one is
+		// reported by doctor's service_override_active the moment the module is
+		// composed again, so it never comes back unseen.
+		for _, service := range sortedKeys(directive.Services) {
+			serviceDirective := directive.Services[service]
+			if serviceDirective.Path == "" {
+				continue
+			}
+			if !serviceManaged(serviceDirective, receipts[serviceReceiptKey(name, service)].ResolvedPath(), cacheRoots...) {
+				continue
+			}
+			delete(directive.Services, service)
+			changed = true
+		}
+		if directive.Path != "" && (directive.Path == receipts[name].ResolvedPath() || underAnyDir(cacheRoots, directive.Path)) {
+			// The module's own materialization is machine output and goes. The entry
+			// itself survives only if user directives are still on it.
+			directive.Path = ""
+			changed = true
+		}
+		if selectsNothing(directive) {
 			delete(resolve, name)
 			changed = true
 		}
 	}
 	return changed
+}
+
+// selectsNothing reports whether an overlay entry has nothing left to say. Core
+// rejects such an entry, so one must never be left behind in the file.
+func selectsNothing(directive *resources.ModuleResolveDirective) bool {
+	return directive.Path == "" && directive.Worktree == "" && !directive.Pinned && !directive.Git && len(directive.Services) == 0
 }
 
 // pinnedManaged reports whether the CLI should resolve ref by pulling its pinned
@@ -930,7 +975,7 @@ func ClearServiceOverride(overlay *resources.LocalOverlay, module, service strin
 		return
 	}
 	delete(directive.Services, service)
-	if len(directive.Services) == 0 && directive.Path == "" && directive.Worktree == "" && !directive.Pinned && !directive.Git {
+	if selectsNothing(directive) {
 		delete(overlay.Resolve, module)
 	}
 }
