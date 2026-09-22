@@ -1019,6 +1019,59 @@ Authenticate with the codefly platform.
 codefly login
 ```
 
+### `codefly publish [patch|minor|major|beta]`
+
+Release the repository in the current directory: bump its manifest version, land
+the bump on `main` through a release pull request, then tag the commit `main`
+ends up carrying and push the tag. One flow for every codefly-dev repository; the
+mode is detected from the manifest present (`agent.codefly.yaml` → agent,
+`version/info.codefly.yaml` → core, `pkg/cli/info.yaml` → cli,
+`info.codefly.yaml` → standalone module).
+
+```bash
+codefly publish              # patch bump
+codefly publish minor
+codefly publish --dry-run    # show the plan, change nothing
+```
+
+Pre-flight is strict and aborts with no side effects: clean tree, on `main`, in
+sync with `origin/main`, target tag free locally and remotely. Nothing is ever
+pushed with `--force`. A service-agent repository additionally runs release-grade
+agent CI against the bumped version, then creates the GitHub release, uploads the
+loader archives and SBOMs, and verifies each resolves through the install URL.
+A module-agent repository publishes only the immutable Git tag. If the release
+pull request merged but the tag push failed, re-run: the untagged release commit
+is recognised and finished rather than bumped again.
+
+Releasing does not update what the repository *pins*. Move a dependency first —
+`codefly agent deps --dir <agent> --pin vX.Y.Z` for an agent's Core pin,
+`go get github.com/codefly-dev/core@vX.Y.Z && go mod tidy` in the CLI — commit
+that on `main`, and then publish. See
+[docs/runbooks/release-the-fleet.md](runbooks/release-the-fleet.md) for the order.
+
+### `codefly publish all [patch|minor|major]`
+
+Discover every git repository under the workspace that carries a codefly
+manifest and run the same flow on each, in dependency order: core → cli →
+standalone modules → agents.
+
+```bash
+codefly publish all              # patch-bump every repository
+codefly publish all --dry-run    # print the full plan, change nothing
+codefly publish all --root DIR   # workspace root (default: nearest go.work, else cwd)
+```
+
+The run is atomic at the pre-flight boundary: every repository is validated
+first and any failure aborts before a single tag is pushed. Publication then
+proceeds sequentially and stops at the first real failure, reporting what already
+shipped. It sweeps *every* manifest-bearing repository under the root — use
+per-repository `codefly publish` when only some of the fleet should move.
+
+### `codefly publish re-tag`
+
+Move the current manifest tag to `HEAD` without rewriting `main`. For a release
+whose tag landed on the wrong commit; it never force-pushes `main`.
+
 ### `codefly publish library <name>`
 
 Publish a workspace library's language exports (`codefly add library`) to the durable stores configured under the workspace's `libraries.publish` block — a GitHub repository tagged at the version for `go`/`python`, an npm-compatible registry for `typescript`. Published versions are immutable: an identical retry adopts the existing version, while different bytes require a version bump.
