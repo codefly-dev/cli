@@ -134,9 +134,8 @@ func RunServiceWithOptions(
 		}
 	}()
 
-	// Static validation needs the target's source and toolchain, not live
-	// databases, caches, or application dependencies.
-	flow.WithStandAlone(true)
+	// Runtime.Init consumes declared dependency configuration even when the
+	// terminal operation is lint or compile. Initialize that closure first.
 	flow.WithRuntimeContext(runtimeContext)
 	flow.WithTemporaryPorts(options.Disposable)
 	if err := flow.InitManagers(ctx); err != nil {

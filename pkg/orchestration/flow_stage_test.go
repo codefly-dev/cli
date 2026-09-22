@@ -46,7 +46,7 @@ func TestTestFlowUsesRuntimeStageAcrossMixedCycle(t *testing.T) {
 	if _, err := dependencies.OrderTo(ctx, "web/frontend"); err == nil {
 		t.Fatal("fixture must have a union cycle")
 	}
-	for _, mode := range []Mode{RunMode, TestMode, SyncMode, DeployMode} {
+	for _, mode := range []Mode{RunMode, TestMode, SyncMode, DeployMode, LintMode, CompileMode} {
 		t.Run(string(mode), func(t *testing.T) {
 			flow := &Flow{world: &World{Mode: mode, Dependencies: dependencies}}
 			if err := flow.selectDependencyStage(); err != nil {
