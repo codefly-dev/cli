@@ -5,6 +5,13 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  # The merge queue builds each entry on a `gh-readonly-queue/main/...` branch
+  # and fires `merge_group`, not `pull_request`. Without this trigger the five
+  # required gates below never report on a queued entry, and every PR is
+  # ejected when `check_response_timeout_minutes` expires. `lint` stays
+  # pull-request-only on purpose: only-new-issues has no diff baseline in a
+  # merge group, and it is not a required context.
+  merge_group:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

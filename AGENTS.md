@@ -60,6 +60,7 @@ new runbook (and its skill) whenever you do a multi-step operational task a seco
 - **Go standards** (formatting, linting) → [docs/go.md](docs/go.md)
 
 ### Shipping
+- **Merge a batch of PRs** (merge queue, `merge_group` trigger, ruleset) → [docs/runbooks/merge-queue.md](docs/runbooks/merge-queue.md)
 - **Cut a release** (`codefly publish` → GoReleaser → Homebrew cask) → [docs/runbooks/cut-a-release.md](docs/runbooks/cut-a-release.md)
 - **Release affected agents** (only for required agent changes, never an unchanged Core protocol) → [docs/runbooks/release-the-fleet.md](docs/runbooks/release-the-fleet.md)
 - **How releases & self-update work** → [docs/cli-updates.md](docs/cli-updates.md)
