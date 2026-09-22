@@ -47,6 +47,9 @@ authorization; they are not permission to merge or publish automatically.
    the selected dependency change; unmatched or duplicate selections fail. The
    command updates root/base locks and regenerates factory locks atomically,
    restoring them all if any standalone build fails.
+   `codefly publish all` runs this same flow over every manifest-bearing repository
+   under the workspace root in dependency order (core → cli → modules → agents); it
+   still does not move pins, and it sweeps every repository it finds.
    `codefly publish` works for every agent kind — service, module, toolbox,
    provider (cli#433). It aborts untouched if pre-flight or CI fails.
 4. **Consumers** — qualify the selected artifact against the actual operation,
