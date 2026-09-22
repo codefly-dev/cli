@@ -230,14 +230,20 @@ func TestBuildPublicationCommandUsesPreparedAuthorityWithRealRegistry(t *testing
 		"publish-build", built.EvidenceFile, write("inputs.json", files), write("signers.json", map[string]map[string]string{"team/module": {"signer": "packager", "keyFile": signingKey}}),
 		"--expected-selection", built.SelectionIdentity, "--expected-build", built.Identity, "--repository", endpoint + "/team/app", "--output", options.Destination}
 	command := exec.CommandContext(t.Context(), "go", arguments...)
-	command.Env = append(os.Environ(), "GOWORK=off", "CODEFLY_SILENT=true", "SSL_CERT_FILE="+certificate)
-	output, err := command.CombinedOutput()
-	require.NoError(t, err, string(output))
+	command.Env = append(os.Environ(), "GOWORK=off", "SSL_CERT_FILE="+certificate)
+	// stdout carries the result and nothing else; narration is read separately
+	// so an interleaved line fails as itself instead of as invalid JSON.
+	var narration bytes.Buffer
+	command.Stderr = &narration
+	output, err := command.Output()
+	require.NoError(t, err, "%s\n%s", output, narration.String())
 	var published PublishedBuild
-	require.NoError(t, json.Unmarshal(output, &published), string(output))
+	require.NoError(t, json.Unmarshal(output, &published), "%s", output)
 	require.Len(t, published.Inputs.Derived, 2)
 	require.FileExists(t, options.Destination)
-	require.NotContains(t, string(output), base64.StdEncoding.EncodeToString(options.Signers["team/module"].Key))
+	secret := base64.StdEncoding.EncodeToString(options.Signers["team/module"].Key)
+	require.NotContains(t, string(output), secret)
+	require.NotContains(t, narration.String(), secret)
 }
 
 // Observe actual successful registry reads without substituting any response.

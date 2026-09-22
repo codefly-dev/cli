@@ -1,6 +1,7 @@
 package deployments
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -109,9 +110,11 @@ func TestDisposableK3dCompositionTargetIdentity(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(workspace, resources.WorkspaceConfigurationName), configuration, 0o600))
 	command := exec.CommandContext(ctx, "go", "run", "../../cmd/codefly", "composition", "--workspace", workspace,
 		"inspect-local-target", q.env.Name, "--expected-identity", initial.Identity)
-	command.Env = append(os.Environ(), "GOWORK=off", "CODEFLY_SILENT=true")
-	output, err := command.CombinedOutput()
-	require.NoError(t, err, "%s", output)
+	command.Env = append(os.Environ(), "GOWORK=off")
+	var narration bytes.Buffer
+	command.Stderr = &narration
+	output, err := command.Output()
+	require.NoError(t, err, "%s\n%s", output, narration.String())
 	var cliInspection KubernetesTargetInspection
 	require.NoError(t, json.Unmarshal(output, &cliInspection), "%s", output)
 	require.Equal(t, initial.Identity, cliInspection.Identity, "real CLI command must use the same live target binding")
