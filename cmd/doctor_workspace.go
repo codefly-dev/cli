@@ -48,6 +48,7 @@ const (
 	codeModuleReferenceUnresolved  = "module_reference_unresolved"
 	codeModuleTrustMissing         = "module_trust_missing"
 	codeModuleUnverified           = "module_unverified"
+	codeModuleResolutionGit        = "module_resolution_git"
 	codeModuleResolutionStale      = "module_resolution_stale"
 	codeModuleCheckoutVersionDrift = "module_checkout_version_drift"
 	codeServiceOverrideActive      = "service_override_active"
@@ -436,10 +437,24 @@ func sortedServiceNames(services map[string]*resources.ServiceResolveDirective) 
 // An opted-out module is not silently skipped: it is reported as consuming an
 // unverified clone, because after `run` has replaced `git: true` with the
 // resolved path the overlay no longer says so on its own.
+//
+// The workspace's own committed `resolution: git` is the third way a module can
+// be opted out, and the only one that survives in a fresh checkout. It is
+// reported twice on purpose: `module_resolution_git` states the declaration and
+// how to leave it, `module_unverified` states the consequence, which is the same
+// consequence however the clone was selected and must not read as milder
+// because the workspace wrote it down.
 func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *workspaceReadinessReport) {
 	if _, _, err := composition.LoadModuleTrust(ws.Dir()); err != nil {
 		report.add(codeModuleTrustMissing, "module-trust", "fail",
 			fmt.Sprintf("cannot read module-trust from %s: %v", resources.WorkspaceConfigurationName, err),
+			fmt.Sprintf("fix %s in %s", resources.WorkspaceConfigurationName, ws.Dir()))
+		return
+	}
+	declared, err := composition.LoadModuleResolutions(ws.Dir())
+	if err != nil {
+		report.add(codeWorkspaceInvalid, "module resolution", "fail",
+			fmt.Sprintf("cannot read module resolution from %s: %v", resources.WorkspaceConfigurationName, err),
 			fmt.Sprintf("fix %s in %s", resources.WorkspaceConfigurationName, ws.Dir()))
 		return
 	}
@@ -467,12 +482,17 @@ func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *work
 		}
 		directive := overlayDirective(overlay, ref.Name)
 		receipt := receipts[ref.Name]
-		mode := composition.ResolutionModeFor(directive, receipt)
+		mode := composition.ResolutionModeFor(directive, receipt, declared[ref.Name])
 		checkModuleMaterialization(ref, directive, receipt, mode, report)
-		if mode == composition.ResolutionModeGit {
+		if mode == composition.ResolutionModeDeclaredGit {
+			report.add(codeModuleResolutionGit, "resolution of "+ref.Name, "ok",
+				fmt.Sprintf("module %q declares resolution: git in %s: it resolves by cloning %s at its %s tag, unverified by declaration", ref.Name, resources.WorkspaceConfigurationName, ref.Source, moduleVersionLabel(ref)),
+				fmt.Sprintf("once %s publishes a signed module package, add module-trust.repositories/signers for %q and drop its resolution: git — nothing else about the entry changes", ref.Source, ref.Name))
+		}
+		if mode.Unverified() {
 			report.add(codeModuleUnverified, "module-trust for "+ref.Name, "warn",
 				fmt.Sprintf("module %q resolves through the unverified git clone: nothing about it is signature- or digest-checked", ref.Name),
-				fmt.Sprintf("add module-trust.repositories/signers for %q to %s and drop it from %s to resolve it verified", ref.Name, resources.WorkspaceConfigurationName, composition.ResolutionRecordName))
+				unverifiedRemediation(ref.Name, mode))
 			continue
 		}
 		if err := composition.CheckModuleTrustCoverage(ws.Dir(), ref); err != nil {
@@ -481,6 +501,26 @@ func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *work
 				fmt.Sprintf("add module-trust.repositories/signers for %q to %s, or set resolve.%s.git: true in %s to use the unverified git clone", ref.Name, resources.WorkspaceConfigurationName, ref.Name, resources.LocalOverlayConfigurationName))
 		}
 	}
+}
+
+// unverifiedRemediation names the file the opt-out actually lives in, so the
+// advice is something the reader can act on: a declaration is dropped from the
+// committed workspace manifest, a machine-local opt-out from the record `run`
+// wrote when it consumed the directive.
+func unverifiedRemediation(name string, mode composition.ResolutionMode) string {
+	if mode == composition.ResolutionModeDeclaredGit {
+		return fmt.Sprintf("add module-trust.repositories/signers for %q to %s and drop its resolution: git to resolve it verified", name, resources.WorkspaceConfigurationName)
+	}
+	return fmt.Sprintf("add module-trust.repositories/signers for %q to %s and drop it from %s to resolve it verified", name, resources.WorkspaceConfigurationName, composition.ResolutionRecordName)
+}
+
+// moduleVersionLabel names the version a reference requests, spelling an absent
+// one as what it means rather than as nothing.
+func moduleVersionLabel(ref *resources.ModuleReference) string {
+	if strings.TrimSpace(ref.Version) == "" {
+		return "latest"
+	}
+	return ref.Version
 }
 
 // checkModuleMaterialization reports an overlay entry that still points at a

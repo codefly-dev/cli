@@ -67,7 +67,10 @@ func ResolvePinnedModule(ctx context.Context, workspaceDir string, ref *resource
 	if err != nil {
 		return nil, err
 	}
-	materializer := corecomposition.NewMaterializer(workspaceDir)
+	materializer, err := newModuleMaterializer(workspaceDir)
+	if err != nil {
+		return nil, err
+	}
 	indexRoot := resolvedIndexRoot()
 
 	if exactVersion, ok := exactPinnedVersion(ref.Version); ok {
@@ -163,6 +166,25 @@ func loadTrustAndIdentity(workspaceDir string, ref *resources.ModuleReference) (
 // materializer's own cache) so a moved tag already caught by one workspace or
 // git worktree is remembered when a *different* one resolves the same
 // package version for the first time, instead of trusting it fresh.
+// newModuleMaterializer builds the core Materializer with its cache root taken
+// from the same function the rest of the CLI asks, so a configured
+// ModuleCacheEnv moves the verified packages and the paths pinnedManaged
+// recognizes as CLI-managed together. Going through NewMaterializer keeps core's
+// archive limits rather than restating them here.
+func newModuleMaterializer(workspaceDir string) (*corecomposition.Materializer, error) {
+	root, err := verifiedPinnedModuleCacheRoot(workspaceDir)
+	if err != nil {
+		return nil, err
+	}
+	materializer := corecomposition.NewMaterializer(workspaceDir)
+	materializer.Root = root
+	return materializer, nil
+}
+
+// resolvedIndexRoot stays under CODEFLY_HOME even when ModuleCacheEnv moves the
+// cache: it is not cache content but the machine's memory of which commit a
+// (package, version) pair verified to, and keeping it in one place is what lets
+// a moved tag caught under one cache root still be caught under another.
 func resolvedIndexRoot() string {
 	return filepath.Join(resources.CodeflyHomeDir(), "modules")
 }
@@ -552,9 +574,75 @@ type rawModuleTrust struct {
 type rawWorkspaceModuleTrustProbe struct {
 	ModuleTrust *rawModuleTrust `yaml:"module-trust"`
 	Modules     []struct {
-		Name    string `yaml:"name"`
-		Package string `yaml:"package"`
+		Name       string `yaml:"name"`
+		Package    string `yaml:"package"`
+		Resolution string `yaml:"resolution"`
 	} `yaml:"modules"`
+}
+
+// loadWorkspaceProbe reads workspace.codefly.yaml and side-parses the keys core
+// does not carry. It returns (nil, nil) when the file does not exist — a
+// workspace assembled in memory (or one being created) declares none of them,
+// which is not an error.
+func loadWorkspaceProbe(workspaceDir string) (*rawWorkspaceModuleTrustProbe, error) {
+	data, err := readSelectionMetadata(context.Background(), filepath.Join(workspaceDir, resources.WorkspaceConfigurationName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read %s: %w", resources.WorkspaceConfigurationName, err)
+	}
+	var probe rawWorkspaceModuleTrustProbe
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", resources.WorkspaceConfigurationName, err)
+	}
+	return &probe, nil
+}
+
+// WorkspaceResolution is a module entry's committed `resolution:` value: how the
+// workspace itself — not a machine-local overlay — says that module is to be
+// resolved. An absent value is the empty string and means today's default, the
+// producer's verified module package.
+type WorkspaceResolution string
+
+// WorkspaceResolutionGit is the one value a module entry may declare today:
+// resolve `source` at `version` by cloning its git tag, unverified by
+// declaration. It exists because most producers publish no signed module
+// package yet, and a workspace must be able to say so in committed config —
+// otherwise every machine needs the same `codefly.local.yaml` opt-out written
+// by hand, which is exactly the per-machine step committed identity removes.
+const WorkspaceResolutionGit WorkspaceResolution = "git"
+
+// LoadModuleResolutions side-parses workspace.codefly.yaml for the per-module
+// `resolution:` key, the way LoadModuleTrust side-parses `module-trust`. It
+// returns (nil, nil) when no module declares one — the common case — so a
+// caller can index the result without checking.
+//
+// A value other than `git` is an error naming the module rather than a silently
+// ignored key: the whole point of the declaration is to change how the module is
+// resolved, so a typo that fell through to verified resolution would be read as
+// "the producer publishes a package" and fail much later, somewhere else.
+func LoadModuleResolutions(workspaceDir string) (map[string]WorkspaceResolution, error) {
+	probe, err := loadWorkspaceProbe(workspaceDir)
+	if err != nil || probe == nil {
+		return nil, err
+	}
+	var resolutions map[string]WorkspaceResolution
+	for _, module := range probe.Modules {
+		declared := strings.TrimSpace(module.Resolution)
+		if declared == "" {
+			continue
+		}
+		if WorkspaceResolution(declared) != WorkspaceResolutionGit {
+			return nil, fmt.Errorf("module %q declares resolution: %q in %s; the only supported value is %q",
+				module.Name, module.Resolution, resources.WorkspaceConfigurationName, WorkspaceResolutionGit)
+		}
+		if resolutions == nil {
+			resolutions = map[string]WorkspaceResolution{}
+		}
+		resolutions[module.Name] = WorkspaceResolutionGit
+	}
+	return resolutions, nil
 }
 
 // LoadModuleTrust side-parses workspace.codefly.yaml for its `module-trust`
@@ -565,16 +653,12 @@ type rawWorkspaceModuleTrustProbe struct {
 // producer's `provenance.Repository` for VerifyRelease's strict comparison to
 // succeed — both sides of that comparison flow from this same normalized map.
 func LoadModuleTrust(workspaceDir string) (*corecomposition.TrustPolicy, map[string]string, error) {
-	data, err := readSelectionMetadata(context.Background(), filepath.Join(workspaceDir, resources.WorkspaceConfigurationName))
+	probe, err := loadWorkspaceProbe(workspaceDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil, nil
-		}
-		return nil, nil, fmt.Errorf("read %s: %w", resources.WorkspaceConfigurationName, err)
+		return nil, nil, err
 	}
-	var probe rawWorkspaceModuleTrustProbe
-	if err := yaml.Unmarshal(data, &probe); err != nil {
-		return nil, nil, fmt.Errorf("parse %s: %w", resources.WorkspaceConfigurationName, err)
+	if probe == nil {
+		return nil, nil, nil
 	}
 	overrides := map[string]string{}
 	for _, module := range probe.Modules {
@@ -677,7 +761,21 @@ const (
 	// ResolutionModeGit: cloned from the module's source at a tag under the
 	// `resolve.<name>.git: true` opt-out; nothing about it is verified.
 	ResolutionModeGit ResolutionMode = "git"
+	// ResolutionModeDeclaredGit: the same clone, selected by the module's
+	// committed `resolution: git` rather than by a machine-local overlay. It is
+	// a mode of its own precisely so the receipt records *who* asked: a mode
+	// recorded as `git` keeps a module on the clone after `run` has replaced the
+	// overlay directive that said so with a path, which is right for the overlay
+	// (nothing else still says it) and wrong for a declaration (the workspace
+	// still says it, and stops saying it the moment the key is dropped).
+	ResolutionModeDeclaredGit ResolutionMode = "declared-git"
 )
+
+// Unverified reports whether mode materializes the module by cloning its source
+// — nothing signature- or digest-checked — however that clone was selected.
+func (mode ResolutionMode) Unverified() bool {
+	return mode == ResolutionModeGit || mode == ResolutionModeDeclaredGit
+}
 
 // ResolutionReceipt is one materialization: the request it answered, and what
 // that request resolved to.
@@ -795,33 +893,38 @@ func SaveResolutionReceipts(ctx context.Context, dir string, receipts map[string
 	return shared.WriteFileAtomic(ctx, filepath.Join(dir, ResolutionRecordName), data, 0o600)
 }
 
-// gitResolutionFor decides whether a module resolves through the unverified git
-// clone or the verified module package. An explicit directive is the user
-// speaking now, so it wins: `git: true` opts in, `pinned: true` revokes a
-// previous opt-in (without it the recorded choice would be sticky, and a user
-// who set up module-trust could never get verified resolution back). Otherwise —
-// a bare reference, or the clone path the CLI wrote in place of `git: true` —
-// the mode on the recorded receipt stands.
+// ResolutionModeFor decides how a module is materialized, expressed as the mode
+// a receipt records — so a caller comparing a receipt against the current
+// request and a caller choosing how to materialize cannot drift apart. `run`
+// and `doctor workspace` must answer it identically, or doctor reports a module
+// as needing module-trust that run resolves by cloning; sharing the predicate is
+// what keeps them in step.
 //
-// `run` and `doctor workspace` must answer this identically, or doctor reports a
-// module as needing module-trust that run resolves by cloning; sharing the
-// predicate is what keeps them in step.
-func gitResolutionFor(directive *resources.ModuleResolveDirective, receipt *ResolutionReceipt) bool {
-	if directive != nil && directive.Git {
-		return true
-	}
-	if directive != nil && directive.Pinned {
-		return false
-	}
-	return receipt != nil && receipt.Mode == ResolutionModeGit
-}
-
-// ResolutionModeFor is gitResolutionFor's answer expressed as the mode a
-// receipt records, so a caller comparing a receipt against the current request
-// and a caller choosing how to materialize cannot drift apart.
-func ResolutionModeFor(directive *resources.ModuleResolveDirective, receipt *ResolutionReceipt) ResolutionMode {
-	if gitResolutionFor(directive, receipt) {
+// The precedence is machine-local first, committed second, remembered last:
+//
+//  1. An overlay directive is the user speaking on this machine now, so it wins:
+//     `git: true` opts out of verification, `pinned: true` revokes a previous
+//     opt-out (without it the recorded choice would be sticky, and a user who
+//     set up module-trust could never get verified resolution back).
+//  2. A committed `resolution: git` declares the opt-out for every machine. It
+//     outranks the receipt rather than falling in behind it, so dropping the key
+//     once the producer publishes a package returns the module to verified
+//     resolution with no other edit — a receipt that still said `declared-git`
+//     would otherwise keep cloning a module the workspace no longer asks to.
+//  3. Otherwise the receipt stands. That is what keeps an overlay `git: true`
+//     in force after `run` has replaced it with the clone's path: the overlay no
+//     longer says so, and nothing else does either.
+func ResolutionModeFor(directive *resources.ModuleResolveDirective, receipt *ResolutionReceipt, declared WorkspaceResolution) ResolutionMode {
+	switch {
+	case directive != nil && directive.Git:
 		return ResolutionModeGit
+	case directive != nil && directive.Pinned:
+		return ResolutionModeVerified
+	case declared == WorkspaceResolutionGit:
+		return ResolutionModeDeclaredGit
+	case receipt != nil && receipt.Mode == ResolutionModeGit:
+		return ResolutionModeGit
+	default:
+		return ResolutionModeVerified
 	}
-	return ResolutionModeVerified
 }

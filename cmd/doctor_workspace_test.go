@@ -242,6 +242,72 @@ func TestDoctorWorkspaceModuleTrustGitDirectiveIsReported(t *testing.T) {
 	requireCode(t, report, codeModuleUnverified, "warn")
 }
 
+// A module the workspace itself declares as git-resolved must not be reported
+// as a module-trust failure: `run` resolves it by cloning, and doctor that says
+// otherwise sends the reader to add trust for a package the producer does not
+// publish. The declaration is reported informationally instead, and the
+// unverified warning still stands — writing the opt-out down does not make the
+// clone checked.
+func TestDoctorWorkspaceCommittedGitResolutionIsReportedNotFlagged(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n      resolution: git\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	requireNoCode(t, report, codeModuleTrustMissing)
+	diag := requireCode(t, report, codeModuleResolutionGit, "ok")
+	if !strings.Contains(diag.Message, "saas") || !strings.Contains(diag.Message, "unverified") {
+		t.Fatalf("the diagnostic must name the module and what it costs: %+v", diag)
+	}
+	requireCode(t, report, codeModuleUnverified, "warn")
+
+	// The same reading once `run` has materialized it and replaced the workspace's
+	// declaration with the clone's path: the committed key is still what says so,
+	// and an unverified module is a warning, never a readiness failure.
+	materialized := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":         "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n      resolution: git\n",
+		"codefly.local.yaml":             "resolve:\n    saas:\n        path: clone\n",
+		composition.ResolutionRecordName: "resolved:\n    saas:\n        source: owner/saas\n        requested: \"0.1.0\"\n        mode: declared-git\n        version: v0.1.0\n        path: clone\n",
+		"clone/module.codefly.yaml":      "name: saas\n",
+	})
+	report = runReadiness(t, workspaceReadinessOptions{dir: materialized})
+	requireNoCode(t, report, codeModuleTrustMissing)
+	requireNoCode(t, report, codeModuleResolutionStale)
+	requireCode(t, report, codeModuleResolutionGit, "ok")
+	if report.Status != readinessStatusReady {
+		t.Fatalf("a declared git resolution is not a readiness failure: %q", report.Status)
+	}
+}
+
+// Dropping the declaration is the whole edit that moves a module to verified
+// resolution, so doctor must stop reporting it the moment the key is gone —
+// even though `run` has already written a `declared-git` receipt beside it.
+func TestDoctorWorkspaceDroppedGitResolutionIsFlaggedAgain(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":         "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+		"codefly.local.yaml":             "resolve:\n    saas:\n        path: clone\n",
+		composition.ResolutionRecordName: "resolved:\n    saas:\n        source: owner/saas\n        requested: \"0.1.0\"\n        mode: declared-git\n        version: v0.1.0\n        path: clone\n",
+		"clone/module.codefly.yaml":      "name: saas\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	requireNoCode(t, report, codeModuleResolutionGit)
+	requireNoCode(t, report, codeModuleUnverified)
+	requireCode(t, report, codeModuleTrustMissing, "fail")
+}
+
+// An unsupported `resolution:` value is a manifest error, not a key to ignore:
+// ignored, it would read as "this module resolves verified" and send the reader
+// to fix module-trust for a package that does not exist.
+func TestDoctorWorkspaceUnknownResolutionIsReported(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n      resolution: worktree\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	diag := requireCode(t, report, codeWorkspaceInvalid, "fail")
+	if !strings.Contains(diag.Message, "worktree") {
+		t.Fatalf("the diagnostic must name the unsupported value: %+v", diag)
+	}
+}
+
 // A malformed record must be named, not read as "nothing is opted out" — that
 // silently turns an unverified module into a module-trust failure and hides the
 // real problem.

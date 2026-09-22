@@ -415,3 +415,75 @@ func TestWithOverlayLockExcludesAConcurrentWriter(t *testing.T) {
 		t.Fatalf("a concurrent overlay writer was not excluded: %v", err)
 	}
 }
+
+// writeDeclaredGitServiceWorkspace writes the committed manifest for a module
+// composed by identity and declared git-resolved, with its services under
+// `module/` the way initServiceModuleRepo lays them out.
+func writeDeclaredGitServiceWorkspace(t *testing.T, dir, source, version string) {
+	t.Helper()
+	manifest := "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: " + source +
+		"\n      module: module\n      version: " + version + "\n      resolution: git\n"
+	if err := os.WriteFile(filepath.Join(dir, resources.WorkspaceConfigurationName), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A per-service override never resolves differently from the module it belongs
+// to, and a committed `resolution: git` is a statement about the whole module —
+// including the part an override replaces. So the override's own `version:` is
+// pulled from the clone too, and the rest of the module stays on the
+// declaration. This workspace declares no module-trust, so a service silently
+// falling back to verified resolution fails outright rather than merely
+// differing: the assertion is that neither half does.
+func TestMaterializeServiceOverrideOfADeclaredGitModuleStaysOnTheClone(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	source := initServiceModuleRepo(t, "gateway", "v0.0.1", "v0.0.2")
+	dir := t.TempDir()
+	writeDeclaredGitServiceWorkspace(t, dir, source, "v0.0.1")
+	// The overlay carries the override and nothing else: where the module
+	// resolves from is committed config's business, not this machine's.
+	workspace := serviceOverrideWorkspace(t, dir, source, "v0.0.1",
+		"resolve:\n  saas:\n    services:\n      gateway:\n        version: v0.0.2\n")
+
+	if err := MaterializePinnedModules(context.Background(), workspace); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+
+	overlay, err := resources.LoadLocalOverlay(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("load overlay: %v", err)
+	}
+	entry := overlay.Resolve["saas"]
+	if entry == nil || entry.Path == "" {
+		t.Fatalf("the module itself must still be materialized from its declaration: %+v", entry)
+	}
+	if !underDir(mustCacheRoot(t), entry.Path) {
+		t.Fatalf("module landed at %q, outside the clone cache", entry.Path)
+	}
+	override := entry.Services["gateway"]
+	if override == nil || override.Version != "" || override.Path == "" {
+		t.Fatalf("service override was not rewritten to a path: %+v", override)
+	}
+	if override.Path == filepath.Join(entry.Path, "services", "gateway") {
+		t.Fatalf("the override resolved inside the module's own v0.0.1 checkout: %s", override.Path)
+	}
+	if _, err := os.Stat(filepath.Join(override.Path, resources.ServiceConfigurationName)); err != nil {
+		t.Fatalf("materialized service dir has no manifest: %v", err)
+	}
+
+	receipts, err := LoadResolutionReceipts(dir)
+	if err != nil {
+		t.Fatalf("load receipts: %v", err)
+	}
+	if got := receipts["saas"].Mode; got != ResolutionModeDeclaredGit {
+		t.Fatalf("module receipt mode = %q, want %q", got, ResolutionModeDeclaredGit)
+	}
+	if got := receipts["saas/gateway"].Mode; got != ResolutionModeDeclaredGit {
+		t.Fatalf("service receipt mode = %q, want %q — an override must not resolve differently from its module", got, ResolutionModeDeclaredGit)
+	}
+
+	// Steady state: both halves answer the request they were materialized for.
+	if err := EnsurePinnedModules(context.Background(), workspace); err != nil {
+		t.Fatalf("a materialized declaration and its override must answer their own requests: %v", err)
+	}
+}

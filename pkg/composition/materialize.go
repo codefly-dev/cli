@@ -121,8 +121,22 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 	if err != nil {
 		return fmt.Errorf("cannot load %s: %w", ResolutionRecordName, err)
 	}
-	cacheRoot := pinnedModuleCacheRoot()
-	verifiedCacheRoot := verifiedPinnedModuleCacheRoot(workspace.Dir())
+	cacheRoot, err := pinnedModuleCacheRoot()
+	if err != nil {
+		return err
+	}
+	verifiedCacheRoot, err := verifiedPinnedModuleCacheRoot(workspace.Dir())
+	if err != nil {
+		return err
+	}
+	// How the workspace itself says each module resolves. Read once here rather
+	// than per module: it is one side-parse of workspace.codefly.yaml, and a
+	// malformed `resolution:` must fail the whole materialization rather than
+	// resolve some modules and not others.
+	declared, err := LoadModuleResolutions(workspace.Dir())
+	if err != nil {
+		return err
+	}
 	changed := false
 	recorded := false
 	var unresolved []error
@@ -132,8 +146,7 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 		if !pinnedManaged(ref, directive, receipt.ResolvedPath(), cacheRoot, verifiedCacheRoot) {
 			continue
 		}
-		mode := ResolutionModeFor(directive, receipt)
-		gitFallback := mode == ResolutionModeGit
+		mode := ResolutionModeFor(directive, receipt, declared[ref.Name])
 		if receipt != nil && receipt.Mode != mode {
 			// The user changed how this module is materialized — an explicit
 			// `pinned: true` revoking a git opt-out, or a `git: true` opting out
@@ -143,7 +156,7 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 			delete(receipts, ref.Name)
 			recorded = true
 		}
-		resolved, err := materializeModule(ctx, workspace.Dir(), ref, cacheRoot, gitFallback)
+		resolved, err := materializeModule(ctx, workspace.Dir(), ref, cacheRoot, mode)
 		if err != nil {
 			if directive == nil || directive.Path == "" {
 				// Nothing was materialized for this module, so nothing stale can be
@@ -153,18 +166,21 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 			}
 			unresolved = append(unresolved, staleResolutionError(ref, receipt, directive.Path, err))
 			// The overlay is left naming a strategy rather than a location, so the
-			// module is unresolved instead of resolved-to-the-previous-answer. The
-			// git opt-out is restored rather than dropped: without it the module
-			// would silently return to verified resolution on the next run.
-			// Service overrides survive: they are the user's own intent about
-			// individual services, independent of where the module resolves, and
-			// dropping them here would silently discard an edit that is still valid.
-			// An entry left carrying only services is a valid overlay entry.
-			replacement := &resources.ModuleResolveDirective{Git: gitFallback}
+			// module is unresolved instead of resolved-to-the-previous-answer. An
+			// overlay git opt-out is restored rather than dropped: without it the
+			// module would silently return to verified resolution on the next run.
+			// A committed `resolution: git` needs no such restoration — it is not in
+			// this file, and writing it here would forge a machine-local opt-out the
+			// user never asked for and would have to delete by hand.
+			// Service overrides survive either way: they are the user's own intent
+			// about individual services, independent of where the module resolves,
+			// and dropping them here would silently discard an edit that is still
+			// valid. An entry left carrying only services is a valid overlay entry.
+			replacement := &resources.ModuleResolveDirective{Git: mode == ResolutionModeGit}
 			if directive != nil {
 				replacement.Services = directive.Services
 			}
-			if gitFallback || len(replacement.Services) > 0 {
+			if replacement.Git || len(replacement.Services) > 0 {
 				overlay.Resolve[ref.Name] = replacement
 			} else {
 				delete(overlay.Resolve, ref.Name)
@@ -207,7 +223,7 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 			changed = true
 		}
 	}
-	serviceChanged, serviceRecorded, serviceUnresolved := materializeServiceOverrides(ctx, workspace.Dir(), workspace.Modules, overlay, receipts, cacheRoot, verifiedCacheRoot)
+	serviceChanged, serviceRecorded, serviceUnresolved := materializeServiceOverrides(ctx, workspace.Dir(), workspace.Modules, overlay, receipts, declared, cacheRoot, verifiedCacheRoot)
 	changed = changed || serviceChanged
 	recorded = recorded || serviceRecorded
 	unresolved = append(unresolved, serviceUnresolved...)
@@ -347,8 +363,18 @@ func pinnedRequestsAnswered(ctx context.Context, workspace *resources.Workspace)
 	if err != nil {
 		return false, fmt.Errorf("cannot load %s: %w", ResolutionRecordName, err)
 	}
-	cacheRoot := pinnedModuleCacheRoot()
-	verifiedCacheRoot := verifiedPinnedModuleCacheRoot(workspace.Dir())
+	cacheRoot, err := pinnedModuleCacheRoot()
+	if err != nil {
+		return false, err
+	}
+	verifiedCacheRoot, err := verifiedPinnedModuleCacheRoot(workspace.Dir())
+	if err != nil {
+		return false, err
+	}
+	declared, err := LoadModuleResolutions(workspace.Dir())
+	if err != nil {
+		return false, err
+	}
 	for _, ref := range workspace.Modules {
 		var directive *resources.ModuleResolveDirective
 		if overlay != nil {
@@ -361,7 +387,7 @@ func pinnedRequestsAnswered(ctx context.Context, workspace *resources.Workspace)
 		if directive == nil || directive.Path == "" || directive.Path != receipt.ResolvedPath() {
 			return false, nil
 		}
-		if !receipt.Answers(ref, ResolutionModeFor(directive, receipt)) {
+		if !receipt.Answers(ref, ResolutionModeFor(directive, receipt, declared[ref.Name])) {
 			return false, nil
 		}
 	}
@@ -373,7 +399,7 @@ func pinnedRequestsAnswered(ctx context.Context, workspace *resources.Workspace)
 		if directive == nil {
 			continue
 		}
-		moduleMode := ResolutionModeFor(directive, receipts[ref.Name])
+		moduleMode := ResolutionModeFor(directive, receipts[ref.Name], declared[ref.Name])
 		for service, serviceDirective := range directive.Services {
 			receipt := receipts[serviceReceiptKey(ref.Name, service)]
 			if !serviceManaged(serviceDirective, receipt.ResolvedPath(), cacheRoot, verifiedCacheRoot) {
@@ -459,12 +485,18 @@ type materialization struct {
 }
 
 // materializeModule resolves ref to a materialization: through the verified
-// module package (ResolvePinnedModule) by default, or through the
-// unverified git clone when the workspace has opted this module out via
-// `resolve.<name>.git: true`.
-func materializeModule(ctx context.Context, workspaceDir string, ref *resources.ModuleReference, cacheRoot string, gitFallback bool) (*materialization, error) {
-	if gitFallback {
-		cli.Warning("unverified git clone for %s", ref.Name)
+// module package (ResolvePinnedModule) by default, or through the unverified
+// git clone when mode says this module is opted out — by the machine-local
+// `resolve.<name>.git: true`, or by the workspace's own committed
+// `resolution: git`. The warning names which, because the two are undone in
+// different files.
+func materializeModule(ctx context.Context, workspaceDir string, ref *resources.ModuleReference, cacheRoot string, mode ResolutionMode) (*materialization, error) {
+	if mode.Unverified() {
+		if mode == ResolutionModeDeclaredGit {
+			cli.Warning("unverified git clone for %s (declared in %s)", ref.Name, resources.WorkspaceConfigurationName)
+		} else {
+			cli.Warning("unverified git clone for %s", ref.Name)
+		}
 		dir, tag, err := ensurePinnedArtifact(ctx, ref, cacheRoot)
 		if err != nil {
 			return nil, err
@@ -478,13 +510,22 @@ func materializeModule(ctx context.Context, workspaceDir string, ref *resources.
 	return &materialization{dir: resolved.Dir, version: resolved.Version, digest: resolved.Digest, commit: resolved.Commit}, nil
 }
 
-// verifiedPinnedModuleCacheRoot is the workspace-scoped, content-addressed
-// module cache NewMaterializer(workspaceDir) writes into. Cache
-// roots are workspace-scoped (a workspace-relative digest tree), while the
-// git-clone fallback's cache root is process-global (pinnedModuleCacheRoot);
-// both are recognized when deciding whether an overlay path is CLI-managed.
-func verifiedPinnedModuleCacheRoot(workspaceDir string) string {
-	return filepath.Join(workspaceDir, ".codefly", "cache", "modules")
+// verifiedPinnedModuleCacheRoot is the content-addressed module cache the core
+// Materializer writes into. By default it is workspace-scoped — the digest tree
+// NewMaterializer(workspaceDir) picks — while the git-clone cache root is
+// process-global (pinnedModuleCacheRoot); both are recognized when deciding
+// whether an overlay path is CLI-managed. A configured ModuleCacheEnv moves it
+// beside the clones, under the one reserved subdirectory, so a workspace
+// repository holds no module bytes at all.
+func verifiedPinnedModuleCacheRoot(workspaceDir string) (string, error) {
+	configured, err := configuredModuleCacheRoot()
+	if err != nil {
+		return "", err
+	}
+	if configured != "" {
+		return filepath.Join(configured, verifiedPackageCacheDirName), nil
+	}
+	return filepath.Join(workspaceDir, ".codefly", "cache", "modules"), nil
 }
 
 // pruneStalePinnedEntries drops auto-managed cache entries whose module is no
@@ -549,6 +590,12 @@ func selectsNothing(directive *resources.ModuleResolveDirective) bool {
 // alone. recordedPath is matched exactly rather than by cache-root prefix, so a
 // moved CODEFLY_HOME does not turn a materialization the CLI wrote into a
 // directory it refuses to touch.
+//
+// A module whose committed entry declares `resolution: git` needs no case of its
+// own: the declaration lives in workspace.codefly.yaml, so the overlay entry is
+// either absent (managed) or the path the CLI wrote in answer to it (managed by
+// receipt), and pruneStalePinnedEntries keeps reclaiming that path when the
+// module stops being composed.
 func pinnedManaged(ref *resources.ModuleReference, directive *resources.ModuleResolveDirective, recordedPath string, cacheRoots ...string) bool {
 	if ref.Source == "" || ref.PathOverride != nil {
 		return false
@@ -560,7 +607,13 @@ func pinnedManaged(ref *resources.ModuleReference, directive *resources.ModuleRe
 		return false
 	}
 	if directive.Path == "" {
-		return false
+		// The entry selects no location for the module itself: it carries only
+		// service overrides, which select services rather than the module. Core
+		// classifies such a reference as pinned and defers to the CLI to resolve
+		// it, so the module is still the CLI's to materialize — "exactly as if the
+		// entry were absent". Reading it as a user override instead left the
+		// module unmaterialized and the run unable to load it.
+		return len(directive.Services) > 0
 	}
 	return directive.Path == recordedPath || underAnyDir(cacheRoots, directive.Path)
 }
@@ -785,8 +838,58 @@ func gitCommand(ctx context.Context, args ...string) *exec.Cmd {
 	return cmd
 }
 
-func pinnedModuleCacheRoot() string {
-	return filepath.Join(resources.CodeflyHomeDir(), "modules")
+// ModuleCacheEnv relocates the module cache — both the git-clone cache and the
+// verified-package cache — to a directory the developer chooses, so the modules
+// a workspace composes can be browsed (and deleted) where they expect them
+// rather than inside CODEFLY_HOME and inside the workspace respectively. It
+// must name an absolute path; a leading "~" is expanded.
+const ModuleCacheEnv = "CODEFLY_MODULE_CACHE"
+
+// verifiedPackageCacheDirName is the subdirectory of a configured cache root
+// that holds verified module packages. Those are content-addressed by digest
+// (that addressing is what makes a cache hit checkable against what was
+// verified), so they cannot share the browsable <owner>/<repo>/<version> tree
+// the git clones occupy; keeping them under one reserved name is what lets both
+// live under the single root the developer configured.
+const verifiedPackageCacheDirName = ".packages"
+
+// configuredModuleCacheRoot returns the root named by ModuleCacheEnv, or "" when
+// it is unset. A value that is not usable as a root is an error rather than an
+// ignored setting: silently falling back would put the modules somewhere other
+// than where the developer said, and they would look for them where they asked.
+func configuredModuleCacheRoot() (string, error) {
+	raw := strings.TrimSpace(os.Getenv(ModuleCacheEnv))
+	if raw == "" {
+		return "", nil
+	}
+	expanded := raw
+	if raw == "~" || strings.HasPrefix(raw, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("%s is %q but the home directory cannot be resolved: %w", ModuleCacheEnv, raw, err)
+		}
+		expanded = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(raw, "~"), "/"))
+	}
+	if !filepath.IsAbs(expanded) {
+		return "", fmt.Errorf("%s must be an absolute path (or start with ~), got %q", ModuleCacheEnv, raw)
+	}
+	return filepath.Clean(expanded), nil
+}
+
+// pinnedModuleCacheRoot is the root of the git-clone cache: the configured root
+// when there is one, otherwise the process-global default. Under either, a
+// module lands at <root>/<owner>/<repo>/<tag>/ plus its optional module
+// subpath, which is the layout a developer pointing ModuleCacheEnv at their own
+// vendor directory browses.
+func pinnedModuleCacheRoot() (string, error) {
+	configured, err := configuredModuleCacheRoot()
+	if err != nil {
+		return "", err
+	}
+	if configured != "" {
+		return configured, nil
+	}
+	return filepath.Join(resources.CodeflyHomeDir(), "modules"), nil
 }
 
 // underDir reports whether path is dir itself or nested inside it.
@@ -893,7 +996,7 @@ func serviceModuleRequest(ref *resources.ModuleReference, version string) *resou
 // A service version is the same trust decision a module version is — same
 // package, same `module-trust` requirement, same `git: true` escape — so it goes
 // through materializeModule rather than a route of its own.
-func materializeServiceOverrides(ctx context.Context, workspaceDir string, modules []*resources.ModuleReference, overlay *resources.LocalOverlay, receipts map[string]*ResolutionReceipt, cacheRoot, verifiedCacheRoot string) (bool, bool, []error) {
+func materializeServiceOverrides(ctx context.Context, workspaceDir string, modules []*resources.ModuleReference, overlay *resources.LocalOverlay, receipts map[string]*ResolutionReceipt, declared map[string]WorkspaceResolution, cacheRoot, verifiedCacheRoot string) (bool, bool, []error) {
 	var changed, recorded bool
 	var unresolved []error
 	for _, ref := range modules {
@@ -901,7 +1004,7 @@ func materializeServiceOverrides(ctx context.Context, workspaceDir string, modul
 		if directive == nil {
 			continue
 		}
-		moduleMode := ResolutionModeFor(directive, receipts[ref.Name])
+		moduleMode := ResolutionModeFor(directive, receipts[ref.Name], declared[ref.Name])
 		for _, service := range sortedKeys(directive.Services) {
 			serviceDirective := directive.Services[service]
 			key := serviceReceiptKey(ref.Name, service)
@@ -915,7 +1018,7 @@ func materializeServiceOverrides(ctx context.Context, workspaceDir string, modul
 					service, ref.Name, requestedVersionLabel(request.Version)))
 				continue
 			}
-			resolved, err := materializeModule(ctx, workspaceDir, request, cacheRoot, moduleMode == ResolutionModeGit)
+			resolved, err := materializeModule(ctx, workspaceDir, request, cacheRoot, moduleMode)
 			if err != nil {
 				// A service's request lives only on its receipt — the directive that
 				// carried it was replaced by the path it produced — so a previous
