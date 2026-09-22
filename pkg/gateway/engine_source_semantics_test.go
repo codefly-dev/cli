@@ -8,9 +8,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codefly-dev/cli/pkg/internal/protocoltest"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 )
@@ -217,5 +219,135 @@ func TestGatewaySymbolPatchNeverReachesTheAgent(t *testing.T) {
 	}
 	if agentSawOperation(t, root, "applySymbolPatch") {
 		t.Fatalf("symbol patch was routed to the agent: %+v", protocoltest.Calls(t, root))
+	}
+}
+
+// A prepared mutation is previewed, hashed and re-verified against the tree
+// under serviceRoot(). The write must land in that same tree: routing it to the
+// agent instead targets whatever root the agent resolved, so a declared
+// source-dir would put bytes derived from one file on top of a different one —
+// and the preview/authoritative hash check at prepare time can no longer catch
+// it, because both sides of that comparison now read the gateway's tree.
+func TestPreparedMutationWritesToTheVerifiedTreeNotTheAgent(t *testing.T) {
+	server, privateKey, root := newPreparedMutationGateway(t)
+	path := filepath.Join(root, "pkg", "service.go")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := "package service\n\nfunc Value() int { return 1 }\n"
+	declaration := "func Value() int { return 1 }"
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	preparedResponse, err := server.PrepareMutation(t.Context(), &gatewayv1.PrepareMutationRequest{
+		Service: "app", WorkspaceVersion: "workspace-verified-tree-v1",
+		Mutation: &gatewayv1.PrepareMutationRequest_SymbolPatch{SymbolPatch: &gatewayv1.PrepareSymbolPatchMutation{
+			File: "pkg/service.go", SymbolId: "symbol-service-value", QualifiedName: "service.Value",
+			ExpectedDeclarationSha256: contentSHA256([]byte(declaration)),
+			NewSource:                 "func Value() int { return 2 }", FixMode: basev0.FixMode_FIX_MODE_NONE,
+		}},
+	})
+	if err != nil || !preparedResponse.GetSuccess() {
+		t.Fatalf("prepare symbol mutation: response=%+v err=%v", preparedResponse, err)
+	}
+	prepared := preparedResponse.GetPrepared()
+
+	permit := signPreparedMutationPermit(t, privateKey, prepared, time.Now().UTC().Add(-time.Second), time.Minute)
+	applied, err := server.ApplyPreparedMutation(t.Context(), &gatewayv1.ApplyPreparedMutationRequest{
+		Service: "app", PreparationId: prepared.GetPreparationId(),
+		MutationDigest: prepared.GetMutationDigest(), MutationPermit: permit,
+	})
+	if err != nil || !applied.GetSuccess() {
+		t.Fatalf("apply prepared symbol mutation: response=%+v err=%v", applied, err)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != "package service\n\nfunc Value() int { return 2 }\n" {
+		t.Fatalf("prepared bytes did not land in the verified tree: content=%q err=%v", after, err)
+	}
+	if agentSawOperation(t, root, "writeFile") {
+		t.Fatalf("prepared write was routed to the agent, whose root need not be the verified tree: %+v", protocoltest.Calls(t, root))
+	}
+}
+
+// The engine resolves and writes a typed symbol patch, so its receipt must not
+// claim a plugin returned the effect. GATEWAY_EXECUTED and PLUGIN_EXECUTED are
+// distinct provenance claims and the receipt is persisted and signed.
+func TestSymbolPatchReceiptRecordsGatewayExecution(t *testing.T) {
+	server, _, root := newPreparedMutationGateway(t)
+	path := filepath.Join(root, "pkg", "service.go")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	declaration := "func Value() int { return 1 }"
+	if err := os.WriteFile(path, []byte("package service\n\n"+declaration+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixture := enableGovernedGateway(t, server, "operation-symbol-patch-1")
+
+	response, err := server.ApplySymbolPatch(fixture.ctx, &gatewayv1.ApplySymbolPatchRequest{
+		Service: "app", File: "pkg/service.go", QualifiedName: "service.Value",
+		ExpectedDeclarationSha256: contentSHA256([]byte(declaration)),
+		NewSource:                 "func Value() int { return 2 }",
+	})
+	if err != nil || !response.GetSuccess() {
+		t.Fatalf("apply symbol patch: response=%+v err=%v", response, err)
+	}
+	pending, err := fixture.journal.Pending(t.Context(), 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) == 0 {
+		t.Fatal("symbol patch recorded no execution receipt")
+	}
+	started := pending[0].Attestation.GetReceipt()
+	if started.GetOperationKind() != "code.apply-symbol-patch" {
+		t.Fatalf("receipt operation kind = %q", started.GetOperationKind())
+	}
+	if started.GetAssurance() != executionv1.ExecutionAssurance_EXECUTION_ASSURANCE_GATEWAY_EXECUTED {
+		t.Fatalf("receipt assurance = %s, want GATEWAY_EXECUTED for an engine-performed effect", started.GetAssurance())
+	}
+}
+
+// Malformed source must degrade the engine-computed index rather than fail it:
+// the parseable files still yield symbols and the unparseable one is reported
+// as an issue. This is the coverage the agent-routed path used to carry.
+func TestGatewaySemanticIndexDegradesOnMalformedSource(t *testing.T) {
+	server, root := newSourceSemanticsGateway(t)
+	writeCodeUnitFixture(t, root, "go.mod", "module shop\n\ngo 1.25\n")
+	writeCodeUnitFixture(t, root, "total.go", "package shop\n\nfunc Total() int { return 1 }\n")
+	writeCodeUnitFixture(t, root, "broken.go", "package shop\n\nfunc Broken( {\n")
+
+	response, err := server.GetSemanticIndex(t.Context(), &gatewayv1.GetSemanticIndexRequest{
+		Service: "app", CodeUnit: &gatewayv1.CodeUnitTarget{Id: "shop", Path: "."},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.GetFailure() != nil {
+		t.Fatalf("malformed source failed the whole index instead of degrading it: %+v", response.GetFailure())
+	}
+	index := response.GetIndex()
+	if index.GetState() != basev0.SemanticIndexState_SEMANTIC_INDEX_STATE_DEGRADED {
+		t.Fatalf("semantic state = %s, want DEGRADED (issues=%+v)", index.GetState(), index.GetIssues())
+	}
+	brokenReported := false
+	for _, issue := range index.GetIssues() {
+		if issue.GetPath() == "broken.go" {
+			brokenReported = true
+		}
+	}
+	if !brokenReported {
+		t.Fatalf("degraded index did not report broken.go: %+v", index.GetIssues())
+	}
+	healthy := false
+	for _, symbol := range index.GetSymbols() {
+		if symbol.GetName() == "Total" {
+			healthy = true
+		}
+	}
+	if !healthy {
+		t.Fatalf("degraded index dropped the parseable file's symbols: %+v", index.GetSymbols())
 	}
 }

@@ -1142,8 +1142,10 @@ func (s *Server) ApplySymbolPatch(ctx context.Context, req *gatewayv1.ApplySymbo
 		attempt, _, beginErr := s.beginGovernedExecution(ctx, executionrecorder.BeginInput{
 			OperationKind:        "code.apply-symbol-patch",
 			OperationInputSHA256: operationInputSHA256,
-			Assurance:            executionv1.ExecutionAssurance_EXECUTION_ASSURANCE_PLUGIN_EXECUTED,
-			Target:               executionTarget(s.executionService(req.GetService())),
+			// Typed symbol mutation is resolved and written by the engine, not
+			// returned by a plugin, so the receipt must not claim plugin proof.
+			Assurance: executionv1.ExecutionAssurance_EXECUTION_ASSURANCE_GATEWAY_EXECUTED,
+			Target:    executionTarget(s.executionService(req.GetService())),
 			Resources: []*executionv1.ExecutionResourceV1{
 				pathExecutionResource(rel, beforeSHA256, "", false),
 			},
@@ -1508,10 +1510,13 @@ func (s *Server) GetProjectInfo(ctx context.Context, req *gatewayv1.GetProjectIn
 			root = inspected.root
 		}
 		taken, takeErr := s.takeSourceImports(ctx, root, pi.GetLanguage())
-		if takeErr != nil {
+		if takeErr != nil && inventoryFailure == nil {
 			// The agent's dependencies, packages and hashes are real evidence
 			// and survive; only the inventory is missing, and the failure says
-			// so rather than presenting an empty one as complete.
+			// so rather than presenting an empty one as complete. An agent that
+			// reported its own failure keeps it: that describes its whole
+			// answer, and either failure already tells a caller not to read the
+			// empty inventory as authoritative.
 			inventoryFailure = gatewayProjectInfoFailure(takeErr)
 		}
 		inventory = taken
@@ -1553,6 +1558,7 @@ func (s *Server) takeSourceImports(ctx context.Context, root, language string) (
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = source.Close() }()
 	return source.SourceImports(ctx, language)
 }
 
@@ -1607,6 +1613,7 @@ func (s *Server) rootedSourceExecute(ctx context.Context, root string, request *
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = source.Close() }()
 	return source.ExecuteCode(ctx, request)
 }
 
