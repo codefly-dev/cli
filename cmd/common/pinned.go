@@ -21,7 +21,17 @@ func ResolvePinnedModulesForRun(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return composition.EnsurePinnedModules(ctx, workspace)
+	if err = composition.EnsurePinnedModules(ctx, workspace); err != nil {
+		return err
+	}
+	// Reported after materialization, so a service overridden to a version is
+	// announced at the directory it was pulled to rather than as an unresolved
+	// coordinate. The workspace is reloaded because materialization is what
+	// writes those directories into the overlay this one was loaded against.
+	if reloaded, err := LoadWorkspace(ctx); err == nil {
+		composition.ReportServiceOverrides(ctx, reloaded)
+	}
+	return nil
 }
 
 // LoadWorkspaceWithPinnedModules is ResolvePinnedModulesForRun for callers that

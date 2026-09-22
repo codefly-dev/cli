@@ -140,8 +140,16 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 			// module is unresolved instead of resolved-to-the-previous-answer. The
 			// git opt-out is restored rather than dropped: without it the module
 			// would silently return to verified resolution on the next run.
-			if gitFallback {
-				overlay.Resolve[ref.Name] = &resources.ModuleResolveDirective{Git: true}
+			// Service overrides survive: they are the user's own intent about
+			// individual services, independent of where the module resolves, and
+			// dropping them here would silently discard an edit that is still valid.
+			// An entry left carrying only services is a valid overlay entry.
+			replacement := &resources.ModuleResolveDirective{Git: gitFallback}
+			if directive != nil {
+				replacement.Services = directive.Services
+			}
+			if gitFallback || len(replacement.Services) > 0 {
+				overlay.Resolve[ref.Name] = replacement
 			} else {
 				delete(overlay.Resolve, ref.Name)
 			}
@@ -167,21 +175,30 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 		// requires an overlay entry to select exactly one of
 		// path/worktree/pinned/git, so leaving the original `git: true` next to
 		// the path it produced would make the entry un-loadable on the next run.
-		entry := resources.ModuleResolveDirective{Path: resolved.dir}
-		if directive == nil || *directive != entry {
+		// Service overrides are carried across: they select services, not the
+		// module, and the rewrite is only about how the module resolves.
+		entry := &resources.ModuleResolveDirective{Path: resolved.dir}
+		if directive != nil {
+			entry.Services = directive.Services
+		}
+		if !selectsOnlyPath(directive, resolved.dir) {
 			if directive != nil && directive.Git {
 				// The user wrote this entry by hand; say that it is being consumed
 				// rather than let them discover the rewrite as a surprise diff.
 				cli.Info("module <%s> resolves to its git clone at %s; `git: true` is now recorded in %s", ref.Name, resolved.dir, ResolutionRecordName)
 			}
-			overlay.Resolve[ref.Name] = &entry
+			overlay.Resolve[ref.Name] = entry
 			changed = true
 		}
 	}
+	serviceChanged, serviceRecorded, serviceUnresolved := materializeServiceOverrides(ctx, workspace.Dir(), workspace.Modules, overlay, receipts, cacheRoot, verifiedCacheRoot)
+	changed = changed || serviceChanged
+	recorded = recorded || serviceRecorded
+	unresolved = append(unresolved, serviceUnresolved...)
 	if pruneStalePinnedEntries(overlay.Resolve, workspace.Modules, receipts, cacheRoot, verifiedCacheRoot) {
 		changed = true
 	}
-	if pruneStaleReceipts(receipts, workspace.Modules) {
+	if pruneStaleReceipts(receipts, workspace.Modules, requestedServiceOverrides(workspace.Modules, overlay)) {
 		recorded = true
 	}
 	// The record is written before the overlay, and both under the same lock: a
@@ -332,6 +349,34 @@ func pinnedRequestsAnswered(ctx context.Context, workspace *resources.Workspace)
 			return false, nil
 		}
 	}
+	if overlay == nil {
+		return true, nil
+	}
+	for _, ref := range workspace.Modules {
+		directive := overlay.Resolve[ref.Name]
+		if directive == nil {
+			continue
+		}
+		moduleMode := ResolutionModeFor(directive, receipts[ref.Name])
+		for service, serviceDirective := range directive.Services {
+			receipt := receipts[serviceReceiptKey(ref.Name, service)]
+			if !serviceManaged(serviceDirective, receipt.ResolvedPath(), cacheRoot, verifiedCacheRoot) {
+				continue
+			}
+			// A directive still naming a version has not been materialized into a
+			// path yet, whatever a receipt records.
+			if serviceDirective.Version != "" || serviceDirective.Path != receipt.ResolvedPath() {
+				return false, nil
+			}
+			// The request itself lives only on the receipt, so there is no second
+			// copy to compare it against. What can still have moved underneath it
+			// is the module identity the package was pulled from, and the mode it
+			// was pulled in.
+			if receipt.Source != ref.Source || receipt.Module != ref.Module || receipt.Mode != moduleMode {
+				return false, nil
+			}
+		}
+	}
 	return true, nil
 }
 
@@ -345,6 +390,14 @@ func requestedVersionLabel(version string) string {
 		return latestVersion
 	}
 	return version
+}
+
+// selectsOnlyPath reports whether the directive already names exactly the
+// materialized path and nothing else, so a steady-state run rewrites nothing.
+// Service overrides are ignored: they ride alongside the module selector rather
+// than being one, so an entry that carries them is still "only path".
+func selectsOnlyPath(directive *resources.ModuleResolveDirective, path string) bool {
+	return directive != nil && directive.Path == path && directive.Worktree == "" && !directive.Pinned && !directive.Git
 }
 
 // updateReceipt stores the receipt for name, reporting whether it differs from
@@ -361,10 +414,13 @@ func updateReceipt(receipts map[string]*ResolutionReceipt, name string, receipt 
 // pruneStaleReceipts drops receipts for modules that are no longer composed, so
 // a removed dependency does not silently re-enter unverified resolution if it is
 // composed again later. Reports whether it changed the map.
-func pruneStaleReceipts(receipts map[string]*ResolutionReceipt, modules []*resources.ModuleReference) bool {
-	present := make(map[string]bool, len(modules))
+func pruneStaleReceipts(receipts map[string]*ResolutionReceipt, modules []*resources.ModuleReference, serviceOverrides map[string]bool) bool {
+	present := make(map[string]bool, len(modules)+len(serviceOverrides))
 	for _, ref := range modules {
 		present[ref.Name] = true
+	}
+	for key := range serviceOverrides {
+		present[key] = true
 	}
 	changed := false
 	for name := range receipts {
@@ -738,4 +794,241 @@ func ensureIgnored(dir, name string) error {
 	defer f.Close()
 	_, err = f.WriteString(prefix + name + "\n")
 	return err
+}
+
+// serviceReceiptKey is how a per-service materialization is recorded: the module
+// it belongs to and the service inside it, so two modules overriding the same
+// service name never collide in the sidecar.
+func serviceReceiptKey(module, service string) string {
+	return module + "/" + service
+}
+
+// serviceManaged reports whether the CLI should materialize this service
+// override. It mirrors pinnedManaged: a `version:` directive names a strategy
+// rather than a location and is always managed; a `path:` is managed only when
+// the CLI itself wrote it (the path on that service's receipt, or one under a
+// cache root). A `worktree:` or a path the user wrote is left alone.
+func serviceManaged(directive *resources.ServiceResolveDirective, recordedPath string, cacheRoots ...string) bool {
+	if directive.Version != "" {
+		return true
+	}
+	if directive.Worktree != "" || directive.Path == "" {
+		return false
+	}
+	return directive.Path == recordedPath || underAnyDir(cacheRoots, directive.Path)
+}
+
+// serviceRequest is the version this override is asking for. A `version:`
+// directive states it; once materialization has replaced that directive with the
+// path it produced, the receipt is the only record of it, so the request is read
+// back from there.
+func serviceRequest(directive *resources.ServiceResolveDirective, receipt *ResolutionReceipt) string {
+	if directive.Version != "" {
+		return directive.Version
+	}
+	if receipt != nil {
+		return receipt.Requested
+	}
+	return ""
+}
+
+// serviceModuleRequest is the module reference the service's package is pulled
+// at: the module's own identity, at the version the override asks for. The
+// service is a slice of the module package, so pulling it is pulling that
+// package — same source, same module subpath, same trust policy.
+func serviceModuleRequest(ref *resources.ModuleReference, version string) *resources.ModuleReference {
+	request := *ref
+	request.Version = version
+	return &request
+}
+
+// materializeServiceOverrides pulls the module package behind every
+// `services.<svc>.version` directive and rewrites the directive to the service
+// directory inside it, exactly as a pinned module entry is rewritten to a path.
+// A service version is the same trust decision a module version is — same
+// package, same `module-trust` requirement, same `git: true` escape — so it goes
+// through materializeModule rather than a route of its own.
+func materializeServiceOverrides(ctx context.Context, workspaceDir string, modules []*resources.ModuleReference, overlay *resources.LocalOverlay, receipts map[string]*ResolutionReceipt, cacheRoot, verifiedCacheRoot string) (bool, bool, []error) {
+	var changed, recorded bool
+	var unresolved []error
+	for _, ref := range modules {
+		directive := overlay.Resolve[ref.Name]
+		if directive == nil {
+			continue
+		}
+		moduleMode := ResolutionModeFor(directive, receipts[ref.Name])
+		for _, service := range sortedKeys(directive.Services) {
+			serviceDirective := directive.Services[service]
+			key := serviceReceiptKey(ref.Name, service)
+			receipt := receipts[key]
+			if !serviceManaged(serviceDirective, receipt.ResolvedPath(), cacheRoot, verifiedCacheRoot) {
+				continue
+			}
+			request := serviceModuleRequest(ref, serviceRequest(serviceDirective, receipt))
+			if request.Source == "" {
+				unresolved = append(unresolved, fmt.Errorf("service override <%s> of module <%s> asks for version %s, but the module is composed without a source to pull it from",
+					service, ref.Name, requestedVersionLabel(request.Version)))
+				continue
+			}
+			resolved, err := materializeModule(ctx, workspaceDir, request, cacheRoot, moduleMode == ResolutionModeGit)
+			if err != nil {
+				// A service's request lives only on its receipt — the directive that
+				// carried it was replaced by the path it produced — so a previous
+				// materialization is looked for there as well as in the overlay.
+				previous := serviceDirective.Path
+				if previous == "" {
+					previous = receipt.ResolvedPath()
+				}
+				if previous == "" {
+					// Nothing was ever materialized for this override, so nothing stale
+					// is selected: leave it for core to report if the run loads it.
+					cli.Warning("cannot pull version %s of service <%s> for module <%s>: %v", requestedVersionLabel(request.Version), service, ref.Name, err)
+					continue
+				}
+				// That materialization answered the old request, not this one, and
+				// running it is how a failed bump keeps silently shipping the version
+				// before it. Only a path the overlay actually selects is dropped: a
+				// `version:` the user just wrote is their request, not stale output,
+				// and it selects no directory to begin with. Dropping the override
+				// also retires its receipt below, which is safe here in a way it is
+				// not for a module: the override is gone from the overlay entirely,
+				// so no path is left selected for that receipt to prove ownership of.
+				dropped := serviceDirective.Path != ""
+				if dropped {
+					ClearServiceOverride(overlay, ref.Name, service)
+					changed = true
+				}
+				unresolved = append(unresolved, staleServiceResolutionError(ref.Name, service, request.Version, receipt, previous, dropped, err))
+				continue
+			}
+			serviceDir := filepath.Join(resolved.dir, "services", service)
+			if updateReceipt(receipts, key, &ResolutionReceipt{
+				Source: ref.Source, Module: ref.Module, Service: service, Requested: request.Version,
+				Mode: moduleMode, Version: resolved.version, Path: serviceDir,
+				Digest: resolved.digest, Commit: resolved.commit,
+			}) {
+				recorded = true
+			}
+			// Core admits exactly one of path/worktree/version per service entry, so
+			// the resolved location replaces the version that selected it.
+			if serviceDirective.Path != serviceDir || serviceDirective.Version != "" {
+				directive.Services[service] = &resources.ServiceResolveDirective{Path: serviceDir}
+				changed = true
+			}
+		}
+	}
+	return changed, recorded, unresolved
+}
+
+// ClearServiceOverride removes one service override, and the module entry with
+// it when nothing is left for that entry to select. Core rejects an entry that
+// selects nothing, so leaving an emptied one behind would make the whole overlay
+// un-loadable.
+func ClearServiceOverride(overlay *resources.LocalOverlay, module, service string) {
+	directive := overlay.Resolve[module]
+	if directive == nil {
+		return
+	}
+	delete(directive.Services, service)
+	if len(directive.Services) == 0 && directive.Path == "" && directive.Worktree == "" && !directive.Pinned && !directive.Git {
+		delete(overlay.Resolve, module)
+	}
+}
+
+// staleServiceResolutionError reports that a service override cannot be resolved
+// as requested while a previous materialization is still selected. Like its
+// module counterpart it names both sides, because the whole failure is that the
+// path being dropped answers a different request than the one made now.
+func staleServiceResolutionError(module, service, requested string, receipt *ResolutionReceipt, path string, dropped bool, err error) error {
+	outcome := "is not what this request resolves to"
+	if dropped {
+		outcome = "has been dropped from " + resources.LocalOverlayConfigurationName
+	}
+	return fmt.Errorf("service <%s> of module <%s>: cannot resolve requested version %s: %w; its previously %s no longer answers that request and %s",
+		service, module, requestedVersionLabel(requested), err, previousMaterializationLabel(receipt, path), outcome)
+}
+
+// sortedKeys orders a map's keys so materialization, and the overlay it writes,
+// are the same on every run.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// requestedServiceOverrides lists the receipt keys the overlay currently asks
+// for, so receipts for overrides the user has removed are pruned with the same
+// rule that prunes receipts for modules no longer composed.
+func requestedServiceOverrides(modules []*resources.ModuleReference, overlay *resources.LocalOverlay) map[string]bool {
+	requested := make(map[string]bool)
+	for _, ref := range modules {
+		directive := overlay.Resolve[ref.Name]
+		if directive == nil {
+			continue
+		}
+		for service := range directive.Services {
+			requested[serviceReceiptKey(ref.Name, service)] = true
+		}
+	}
+	return requested
+}
+
+// ReportServiceOverrides announces, once per overridden service, where that
+// service actually comes from on this run. A service silently running from
+// somewhere other than the module that composed it is the failure mode this
+// exists to prevent, so it is said out loud at the moment the run starts.
+//
+// It never fails a run: core's load-time guard is what refuses an override that
+// does not hold up, and a module this cannot report on is one that run is about
+// to load and report on properly anyway.
+func ReportServiceOverrides(ctx context.Context, workspace *resources.Workspace) {
+	for _, ref := range workspace.Modules {
+		resolution, err := workspace.ResolveModule(ctx, ref)
+		if err != nil || len(resolution.Services) == 0 {
+			continue
+		}
+		mod, err := workspace.LoadModuleFromReference(ctx, ref)
+		if err != nil {
+			continue
+		}
+		// The module loaded straight from its directory carries no overrides, so
+		// it is the only way back to the copy the module itself composed.
+		declared, declaredErr := resources.LoadModuleFromDir(ctx, resolution.Dir)
+		for _, service := range sortedKeys(resolution.Services) {
+			overridden, err := mod.LoadServiceFromName(ctx, service)
+			if err != nil {
+				continue
+			}
+			agents := overrideAgentLabel(ctx, declared, declaredErr, service, overridden)
+			cli.Info("service %s/%s resolves to %s (overlay services.%s.%s%s)",
+				ref.Name, service, overridden.Dir(), service, overrideSpelling(resolution.Services[service].Kind), agents)
+		}
+	}
+}
+
+// overrideSpelling names the overlay key that selected this resolution, so the
+// line points at the directive to edit rather than only at its outcome.
+func overrideSpelling(kind resources.ResolutionKind) string {
+	if kind == resources.ResolutionPinned {
+		return "version"
+	}
+	return string(kind)
+}
+
+// overrideAgentLabel reports the agent the service now runs against the one the
+// module declares, when they differ. Running a service at a different agent
+// version is a legitimate reason to override it, so this is reported rather
+// than refused — but never silently.
+func overrideAgentLabel(ctx context.Context, declaredModule *resources.Module, declaredErr error, service string, overridden *resources.Service) string {
+	if declaredErr != nil || overridden.Agent == nil {
+		return ""
+	}
+	declared, err := declaredModule.LoadServiceFromName(ctx, service)
+	if err != nil || declared.Agent == nil || declared.Agent.Version == overridden.Agent.Version {
+		return ""
+	}
+	return fmt.Sprintf(", agent %s %s vs module %s", overridden.Agent.Name, overridden.Agent.Version, declared.Agent.Version)
 }

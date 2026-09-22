@@ -121,7 +121,7 @@ codefly run service api
 codefly run service lastlogin-go/backend wiki/backend   # One graph, shared host started once
 codefly run service api --standalone              # Run without dependencies
 codefly run service api --runtime-context nix     # Use nix runtime context
-codefly run service api --service-path ./my-svc   # Override service path
+codefly run service api --service-path ./my-svc   # Override service path (flat workspaces)
 codefly run service api --fixture seed            # Use a named fixture
 codefly run service api --remote backend/db:staging  # Use remote dependency
 codefly run service api --output-env .env         # Write the full owner-only SDK/runtime env
@@ -141,7 +141,7 @@ codefly run service api --cli-server --open       # Run headless with the local 
 | `--exclude-root` | Start dependencies only, skip the target service; when the root owns `--output-env`, compose its SDK environment without loading its agent or process |
 | `--profile` | Select a named run profile from `workspace.codefly.yaml` |
 | `--exclude-dependency` | Exclude optional dependency services from this run. Repeatable; accepts `module/service` or an unambiguous service name. |
-| `--service-path` | Override the path to the service directory |
+| `--service-path` | Override the path to the service directory. Flat (single-module) workspaces only — for a composed module, see [Overriding one service of a composed module](#overriding-one-service-of-a-composed-module) |
 | `--runtime-context` | Runtime context (`native`, `nix`, `container`, or `free`; `free` picks each agent's first advertised backend) |
 | `--fixture` | Named fixture for test data |
 | `--remote` | Use a remote service instead of local (format: `module/service:environment`) |
@@ -630,6 +630,9 @@ identity, so the same committed config resolves on every worktree and in CI.
 `codefly doctor workspace` flags an unresolved reference with the
 `module_reference_unresolved` diagnostic.
 
+To move a *single service* of a composed module rather than the whole module,
+see [Overriding one service of a composed module](#overriding-one-service-of-a-composed-module).
+
 A composition that **vendors** its sources — a git submodule per module, which
 is how it gets a reviewable, reproducible pin — states both on one entry:
 `source` + `version` records which module this is, and `path` points it at the
@@ -730,6 +733,91 @@ clone's `path:` once it materializes the module, and says so when it does.
 Setting `resolve.<name>.pinned: true` revokes the opt-out and returns the
 module to verified resolution.
 
+#### Overriding one service of a composed module
+
+Sometimes the module is right and one service inside it is not: you want the
+downstream solution to boot exactly as composed, except that `saas/accounts`
+comes from the checkout you are editing, or from another published version.
+
+`resolve.<module>.services.<service>` in `codefly.local.yaml` says so. Like
+every overlay directive it is gitignored and machine-local — committed config
+keeps naming the module as a whole, and only your machine runs the service from
+somewhere else:
+
+```yaml
+resolve:
+    saas:
+        services:
+            accounts:
+                path: /Users/me/module-saas-starter/module/services/accounts
+            auth-gateway:
+                worktree: codefly-dev/module-saas-starter@feat/gateway-x
+            telemetry:
+                version: "0.0.66"
+```
+
+Each entry selects exactly one of:
+
+| Key | Resolves to |
+|-----|-------------|
+| `path` | that directory (absolute, or relative to the overlay file) |
+| `worktree` | `<owner/repo>@<ref>`, matched against your local checkouts exactly as a module `worktree:` is, then `<checkout>/<module>/services/<service>` |
+| `version` | the module package at that version, pulled under `module-trust` like any pinned module, then its `services/<service>` |
+
+The entry is orthogonal to the module directive. An entry carrying **only**
+`services` is valid, and the module itself keeps resolving from committed
+config exactly as if the entry were absent — so overriding one service never
+implies pinning or relocating the module. Per service the precedence is overlay
+`services.<svc>` → the module's own committed `services[].path` → the
+`services/<name>` default.
+
+`codefly override service` writes these entries for you, but the YAML is the
+interface: hand-editing `codefly.local.yaml` is equally supported and is what
+the resolver actually reads.
+
+```bash
+codefly override service saas/accounts --path ~/module-saas-starter/module/services/accounts
+codefly override service saas/auth-gateway --worktree codefly-dev/module-saas-starter@feat/gateway-x
+codefly override service saas/telemetry --version 0.0.66
+codefly override service saas/accounts --clear   # back to the module's own copy
+```
+
+**The override must be the same service the module composed.** The module's
+other services and its `interface` bind to the composed service's name, agent
+and endpoints, so the directory is refused at load unless its
+`service.codefly.yaml` declares the same `name`, the same `agent.name`, and at
+least the endpoints the module declares (more is fine). The agent *version* may
+differ — running a service at a different agent version is a reason to override
+it — and is reported rather than refused. `run` announces each override once:
+
+```
+service saas/accounts resolves to /Users/me/… (overlay services.accounts.path, agent go-grpc 0.1.44 vs module 0.1.43)
+```
+
+A `version:` override is materialized by `run` exactly as a pinned module is —
+same `module-trust` requirement, same `resolve.<module>.git: true` escape — and
+the directive is then rewritten to the `path:` it produced, with a
+[receipt](#resolution-receipts) keyed `<module>/<service>` recording the request
+it answered.
+
+`codefly doctor workspace` reports `service_override_active` for each override
+in effect (they are invisible in committed config, so the healthy ones are
+listed too), `service_override_unresolved` when the directory is missing or the
+module declares no such service, and `service_override_contract_drift` when the
+directory is not the same service. `codefly ci plan` and `codefly ci run`
+**refuse** to run while any service override is in effect, because a CI plan is
+a claim about the committed workspace; pass `--allow-service-overrides` to plan
+against them deliberately, in which case each override's tree is part of the
+cache identity like any other service directory.
+
+There is deliberately no *committed* per-service version. The module is the unit
+of identity and trust, and a committed per-service pin would fragment it and
+bypass `module-trust`; the only committed spelling stays the module's own
+`services[].path`.
+
+For a flat (single-module) workspace use
+[`codefly run service --service-path`](#codefly-run-service-name) instead.
+
 #### Resolution receipts
 
 Everything `run` materializes is recorded as a receipt in
@@ -800,6 +888,32 @@ contract and handler before building. See [Runnables](runnable.md).
 | Flag | Description |
 |------|-------------|
 | `--agent` | Agent type (required). Examples: `go-grpc`, `python-grpc`, `nextjs`, `krakend` |
+
+### `codefly override service <module>/<service>`
+
+Run one service of a composed module from somewhere else on this machine,
+leaving the rest of the module — and every committed file — untouched. It edits
+the gitignored `codefly.local.yaml` overlay and nothing else.
+
+```bash
+codefly override service saas/accounts --path ~/module-saas-starter/module/services/accounts
+codefly override service saas/auth-gateway --worktree codefly-dev/module-saas-starter@feat/gateway-x
+codefly override service saas/telemetry --version 0.0.66
+codefly override service saas/accounts --clear
+```
+
+| Flag | Description |
+|------|-------------|
+| `--path` | Directory holding the service |
+| `--worktree` | `<owner/repo>@<ref>` of a local checkout to take the service from |
+| `--version` | Module package version to take the service from |
+| `--clear` | Remove the override and go back to the module's own copy |
+
+Exactly one is required. The command prints what the override resolved to, so a
+`--worktree` matching no local checkout fails here rather than at the next run.
+See [Overriding one service of a composed module](#overriding-one-service-of-a-composed-module)
+for the overlay schema, the contract the override must satisfy, and the
+`doctor`/`ci` behaviour.
 
 ### `codefly delete`
 
