@@ -63,7 +63,7 @@ For service-agent repos (agent.codefly.yaml) publish also, in order:
 Requires the gh CLI to be authenticated.
 
 Module-agent repos run source/build/audit CI and publish the immutable Git tag
-consumed by codefly sync module; they do not publish service-loader assets.
+their module package is built from; they do not publish service-loader assets.
 
 Examples:
   codefly publish              # patch bump

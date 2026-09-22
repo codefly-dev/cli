@@ -40,7 +40,8 @@ const (
 	// ModeAgent — service-agent or module-agent repo. Bumps
 	// agent.codefly.yaml. Service agents run release-grade CI and upload
 	// loader-compatible release assets. Module agents run source/build/audit
-	// CI and publish an immutable source tag for `codefly sync module`.
+	// CI and publish the immutable source tag their module package is built
+	// from.
 	ModeAgent Mode = "agent"
 	// ModeCoreModule — the codefly core repo. Bumps version/info.codefly.yaml.
 	ModeCoreModule Mode = "core-module"

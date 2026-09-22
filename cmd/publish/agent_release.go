@@ -602,7 +602,7 @@ func (r *agentReleaser) afterPush(ctx context.Context, newTag string) error {
 // sourceTagReleaser publishes an immutable source release: it runs
 // source/build/audit CI against the bumped tree and then lets the Engine push
 // the signed Git tag, uploading no release assets. Used by module agents
-// (source-only, consumed by `codefly sync module`) and provider agents
+// (source-only; the tag their module package is built from) and provider agents
 // (verified artifacts built from the tagged source). Modules build native-only
 // because nothing consumes a module binary; providers are runtime agents whose
 // consumers build the tagged source for linux, so they build every platform to
