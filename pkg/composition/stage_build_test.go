@@ -158,11 +158,13 @@ func TestStageBuildCommandRunsRealSelectedBuilder(t *testing.T) {
 		"--workspace", registry.workspace, "--product", session.Root, "--identity-key", keyPath,
 		"--render-requests", paths["render"], "--build-requests", paths["build"],
 		"stage-build", "--output-parent", options.OutputParent, "--sandbox", "none", "--without-principal")
-	command.Env = append(os.Environ(), "GOWORK=off", "CODEFLY_SILENT=true")
-	data, err := command.CombinedOutput()
-	require.NoError(t, err, string(data))
+	command.Env = append(os.Environ(), "GOWORK=off")
+	var narration bytes.Buffer
+	command.Stderr = &narration
+	data, err := command.Output()
+	require.NoError(t, err, "%s\n%s", data, narration.String())
 	var result StagedBuild
-	require.NoError(t, json.Unmarshal(data, &result), string(data))
+	require.NoError(t, json.Unmarshal(data, &result), "%s", data)
 	require.Len(t, result.Executions, 2)
 	require.FileExists(t, result.EvidenceFile)
 }

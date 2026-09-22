@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -116,6 +117,34 @@ func SuppressOutput() {
 // TUI has exited and the command needs to print a final report.
 func RestoreOutput() {
 	cliLogger.setSuppressed(false)
+}
+
+// ProtectResultStream keeps narration and log records off stdout for the
+// duration of a command whose stdout IS its result — the composition verbs
+// encode JSON there, and one interleaved line makes that result unparseable
+// for `| jq` and for anything reading it back. Diagnostics go to stderr
+// instead of being dropped, so a failure is still visible.
+//
+// It is a no-op when something already owns the stream (pkg/mcp installs the
+// same guard for JSON-RPC), so a nested call cannot hand stdout back early.
+func ProtectResultStream() func() {
+	if cliLogger.isSuppressed() {
+		return func() {}
+	}
+	SetOutputSink(func(_ wool.Loglevel, message string) { fmt.Fprintln(os.Stderr, message) })
+	SuppressOutput()
+	var undo sync.Once
+	return func() {
+		undo.Do(func() {
+			RestoreOutput()
+			SetOutputSink(nil)
+		})
+	}
+}
+
+// OutputSuppressed reports whether narration is currently held off stdout.
+func OutputSuppressed() bool {
+	return cliLogger.isSuppressed()
 }
 
 func (logger *Logger) setSuppressed(suppressed bool) {

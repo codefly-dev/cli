@@ -1,10 +1,14 @@
 package composition
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,16 +24,83 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
+type renderExecutor struct {
+	data []byte
+	path string
+}
+
+// The executor lives outside TMPDIR, which fixtures redirect at a per-test
+// directory they delete on cleanup, and is built from the environment as the
+// process received it: fixtures install an httptest CA over SSL_CERT_FILE
+// before they ask for it, which would reach a module fetch.
+var (
+	renderExecutorDirectory   string
+	renderExecutorEnvironment []string
+	renderExecutorBuilds      atomic.Int64
+)
+
+func TestMain(m *testing.M) {
+	renderExecutorEnvironment = append(os.Environ(), "GOWORK=off")
+	code := m.Run()
+	if renderExecutorDirectory != "" {
+		_ = os.RemoveAll(renderExecutorDirectory)
+	}
+	os.Exit(code)
+}
+
+// Nearly every fixture here needs this executable, and the `go build` that
+// produces it cost more than every assertion in the package combined when each
+// test ran its own, so the whole test binary shares one build. The directory
+// is created on demand rather than in TestMain because this package re-execs
+// its own test binary, and those children exit without reaching any cleanup.
+var buildRenderExecutor = sync.OnceValues(func() (renderExecutor, error) {
+	renderExecutorBuilds.Add(1)
+	directory, err := os.MkdirTemp("/tmp", "cli-renderexecutor-")
+	if err != nil {
+		return renderExecutor{}, err
+	}
+	renderExecutorDirectory = directory
+	binary := filepath.Join(directory, "renderer")
+	command := exec.Command("go", "build", "-o", binary, "./testdata/renderexecutor")
+	command.Env = renderExecutorEnvironment
+	if output, buildErr := command.CombinedOutput(); buildErr != nil {
+		return renderExecutor{}, fmt.Errorf("%w: %s", buildErr, output)
+	}
+	// Read-only: fixtures that reach for the path only execute it, and one
+	// that wrote through it would now be writing every other fixture's copy.
+	if err = os.Chmod(binary, 0o500); err != nil {
+		return renderExecutor{}, err
+	}
+	data, err := os.ReadFile(binary)
+	if err != nil {
+		return renderExecutor{}, err
+	}
+	return renderExecutor{data: data, path: binary}, nil
+})
+
+// The bytes are cloned because the shared build is handed to every fixture,
+// and this package's drift tests patch the artifacts they are given.
 func executionBinary(t *testing.T) ([]byte, string) {
 	t.Helper()
-	binary := filepath.Join(t.TempDir(), "renderer")
-	command := exec.CommandContext(t.Context(), "go", "build", "-o", binary, "./testdata/renderexecutor")
-	command.Env = append(os.Environ(), "GOWORK=off")
-	output, err := command.CombinedOutput()
-	require.NoError(t, err, "%s", output)
-	data, err := os.ReadFile(binary)
+	executor, err := buildRenderExecutor()
 	require.NoError(t, err)
-	return data, binary
+	return bytes.Clone(executor.data), executor.path
+}
+
+func TestRenderExecutorIsCompiledOncePerRun(t *testing.T) {
+	first, path := executionBinary(t)
+	_, repeated := executionBinary(t)
+	require.Equal(t, path, repeated)
+	require.Equal(t, int64(1), renderExecutorBuilds.Load(), "every fixture must share one compilation")
+
+	unpatched := first[0]
+	first[0]++
+	next, _ := executionBinary(t)
+	require.Equal(t, unpatched, next[0], "a fixture that patches its copy must not reach the next one")
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Zero(t, info.Mode().Perm()&0o200, "the shared executable must not be writable")
 }
 
 func executionClient(t *testing.T, binary, capability string) *services.BuilderAgent {

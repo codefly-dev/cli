@@ -8,6 +8,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/cli"
 	selection "github.com/codefly-dev/cli/pkg/composition"
 	core "github.com/codefly-dev/core/composition"
 	updatev0 "github.com/codefly-dev/core/generated/go/codefly/update/v0"
@@ -57,6 +58,7 @@ func NewCommand() *cobra.Command {
 	}
 	add := func(use, short string, args cobra.PositionalArgs, run func(*cobra.Command, *selection.SelectionSession, []string) (any, error)) *cobra.Command {
 		child := &cobra.Command{Use: use, Short: short, Args: args, RunE: func(cmd *cobra.Command, args []string) error {
+			defer cli.ProtectResultStream()()
 			current, err := session()
 			if err != nil {
 				return err

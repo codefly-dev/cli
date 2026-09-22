@@ -3,6 +3,7 @@ package composition
 import (
 	"encoding/json"
 
+	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
@@ -20,6 +21,7 @@ func newTargetCommand(workspace *string) *cobra.Command {
 		Example: "codefly composition --workspace . inspect-local-target local",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			defer cli.ProtectResultStream()()
 			current, err := resources.LoadWorkspaceFromDir(cmd.Context(), *workspace)
 			if err != nil {
 				return err
