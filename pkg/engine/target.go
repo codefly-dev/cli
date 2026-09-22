@@ -238,3 +238,55 @@ func parentResourceDir(start, configurationName string) (string, error) {
 		current = parent
 	}
 }
+
+// AgentSourceRoot reports the tree an agent bound to root will treat as its
+// source. Callers that perform source work themselves — the Gateway resolves
+// symbol patches and import inventories in-process — must address the same
+// tree the agent does, or they preview one file and write another of the same
+// name.
+//
+// It mirrors the two decisions that place an agent's root. First, a service is
+// only bound from its real declaration when a workspace and a service
+// configuration exist above root; otherwise resolveServiceDescriptor prepares
+// an ephemeral source workspace whose attachment resolves back to root, and any
+// source-dir beside root is not the one the agent reads. Second, the agent
+// reads the declaration beside its own work directory only, so a declaration
+// further up the tree does not move it (see core agents/services.
+// ResolveSourceLocation).
+func AgentSourceRoot(ctx context.Context, root string) string {
+	absolute, err := filepath.Abs(root)
+	if err != nil {
+		return root
+	}
+	absolute = filepath.Clean(absolute)
+	if _, workspaceErr := parentResourceDir(absolute, resources.WorkspaceConfigurationName); workspaceErr != nil {
+		return absolute
+	}
+	if _, serviceErr := parentResourceDir(absolute, resources.ServiceConfigurationName); serviceErr != nil {
+		return absolute
+	}
+	if info, statErr := os.Stat(filepath.Join(absolute, resources.ServiceConfigurationName)); statErr != nil || info.IsDir() {
+		return absolute
+	}
+	declaration, err := resources.LoadServiceFromDir(ctx, absolute)
+	if err != nil || declaration == nil {
+		return absolute
+	}
+	configured, _ := declaration.Spec["source-dir"].(string)
+	configured = strings.TrimSpace(configured)
+	if configured == "" {
+		return absolute
+	}
+	configured = filepath.FromSlash(configured)
+	// Core refuses a source-dir that leaves the service directory, so a
+	// rejected value leaves the agent at its work directory rather than
+	// somewhere outside it.
+	if !filepath.IsLocal(configured) {
+		return absolute
+	}
+	location := filepath.Clean(filepath.Join(absolute, configured))
+	if physical, evalErr := filepath.EvalSymlinks(location); evalErr == nil {
+		return physical
+	}
+	return location
+}

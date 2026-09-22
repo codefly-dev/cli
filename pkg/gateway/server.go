@@ -171,6 +171,12 @@ type Server struct {
 
 	executionRecorder   ExecutionRecorder
 	executionDispatcher ExecutionDispatcher
+
+	// resolvedSourceRoot is the agent's source tree, resolved once at
+	// construction. A declaration edited afterwards can only make it stale, and
+	// a stale root fails the prepared-mutation preview check loudly rather than
+	// writing somewhere unverified.
+	resolvedSourceRoot string
 }
 
 // serviceExecution is the transport-independent behavior consumed by the
@@ -260,6 +266,7 @@ func NewServer(cfg Config) (*Server, error) {
 		terminals:           newTerminalManager(),
 		executionRecorder:   cfg.ExecutionRecorder,
 		executionDispatcher: cfg.ExecutionDispatcher,
+		resolvedSourceRoot:  engine.AgentSourceRoot(context.Background(), cfg.WorkDir),
 	}
 
 	path := filepath.Join(cfg.WorkDir, "mind.yaml")
@@ -510,8 +517,22 @@ func pluginToAgentName(plugin string) string {
 	return plugin + ":latest"
 }
 
-// serviceRoot returns the absolute path to the service source tree.
+// serviceRoot returns the absolute path to the service directory. It is the
+// basis for VCS, terminal and code-unit paths, which are addressed relative to
+// the checkout rather than to whatever subtree holds the source.
 func (s *Server) serviceRoot() string {
+	return s.cfg.WorkDir
+}
+
+// sourceRoot returns the tree the service's agent resolves as its source root.
+// A service declaration moves it below the service directory with `source-dir`,
+// and the gateway now performs parser-derived work itself, so both sides must
+// agree on which tree they read and write. Disagreeing means previewing an edit
+// against one file and writing it to another of the same name.
+func (s *Server) sourceRoot() string {
+	if s.resolvedSourceRoot != "" {
+		return s.resolvedSourceRoot
+	}
 	return s.cfg.WorkDir
 }
 
@@ -528,8 +549,10 @@ func (s *Server) controlScope() control.ServiceScope {
 	return control.ServiceScopeAt(name, s.serviceRoot())
 }
 
+// fileOps reads and writes project bytes, so it is rooted where the agent's
+// source lives rather than at the service directory.
 func (s *Server) fileOps() codecore.FileOperation {
-	return codecore.NewFileOps(codecore.LocalVFS{}, s.serviceRoot())
+	return codecore.NewFileOps(codecore.LocalVFS{}, s.sourceRoot())
 }
 
 func (s *Server) validateService(service string) error {
@@ -1169,7 +1192,7 @@ func (s *Server) ApplySymbolPatch(ctx context.Context, req *gatewayv1.ApplySymbo
 // needs a parser — DeclarationSpans and ValidateSyntax — which is exactly why
 // it belongs in the single binary that carries the analyzer.
 func (s *Server) executeSymbolPatch(ctx context.Context, req *gatewayv1.ApplySymbolPatchRequest, rel string) (*codev0.CodeResponse, error) {
-	return s.rootedSourceExecute(ctx, s.serviceRoot(), &codev0.CodeRequest{Operation: &codev0.CodeRequest_ApplySymbolPatch{ApplySymbolPatch: &codev0.ApplySymbolPatchRequest{
+	return s.rootedSourceExecute(ctx, s.sourceRoot(), &codev0.CodeRequest{Operation: &codev0.CodeRequest_ApplySymbolPatch{ApplySymbolPatch: &codev0.ApplySymbolPatchRequest{
 		File: rel, QualifiedName: req.GetQualifiedName(), ExpectedDeclarationSha256: req.GetExpectedDeclarationSha256(),
 		NewSource: req.GetNewSource(), FixMode: req.GetFixMode(), DryRun: req.GetDryRun(),
 	}}})
@@ -1195,7 +1218,7 @@ func gatewaySymbolPatchResponse(raw *codev0.CodeResponse) *gatewayv1.ApplySymbol
 
 func (s *Server) applySymbolPatchWithReceipt(ctx context.Context, req *gatewayv1.ApplySymbolPatchRequest, rel, beforeSHA256 string, attempt *executionrecorder.Attempt) (*gatewayv1.ApplySymbolPatchResponse, error) {
 	effectStarted := time.Now()
-	raw, err := s.rootedSourceExecute(ctx, s.serviceRoot(), &codev0.CodeRequest{Operation: &codev0.CodeRequest_ApplySymbolPatch{ApplySymbolPatch: &codev0.ApplySymbolPatchRequest{
+	raw, err := s.rootedSourceExecute(ctx, s.sourceRoot(), &codev0.CodeRequest{Operation: &codev0.CodeRequest_ApplySymbolPatch{ApplySymbolPatch: &codev0.ApplySymbolPatchRequest{
 		File: rel, QualifiedName: req.GetQualifiedName(), ExpectedDeclarationSha256: req.GetExpectedDeclarationSha256(),
 		NewSource: req.GetNewSource(), FixMode: req.GetFixMode(), DryRun: false,
 	}}})
@@ -1505,7 +1528,7 @@ func (s *Server) GetProjectInfo(ctx context.Context, req *gatewayv1.GetProjectIn
 	inventory := pi.GetSourceFiles()
 	inventoryFailure := failures.Clone(resp.GetFailure())
 	if pi.GetSourceFilesOmitted() {
-		root := s.serviceRoot()
+		root := s.sourceRoot()
 		if inspected != nil {
 			root = inspected.root
 		}
@@ -1551,10 +1574,7 @@ func (s *Server) GetProjectInfo(ctx context.Context, req *gatewayv1.GetProjectIn
 // agent declined. An empty inventory without that flag is authoritative — the
 // unit genuinely has no source files — so only a declined one is refilled here.
 func (s *Server) takeSourceImports(ctx context.Context, root, language string) ([]*codev0.SourceFileInfo, error) {
-	if s.host == nil {
-		return nil, fmt.Errorf("workspace source behavior is unavailable")
-	}
-	source, err := s.host.SourceAt(root)
+	source, err := s.boundSource(root)
 	if err != nil {
 		return nil, err
 	}
@@ -1566,6 +1586,11 @@ func (s *Server) takeSourceImports(ctx context.Context, root, language string) (
 // the engine, which carries the source-semantics analyzer. Routing it to the
 // owning agent instead would make every language agent link the tree-sitter
 // CGO stack to answer an operation none of them implements.
+//
+// A source_agents entry for the unit therefore selects nothing here: the
+// projection is language-neutral and the analyzer is the same one every agent
+// would have installed. The entry still selects the agent for operations an
+// agent actually owns.
 func (s *Server) GetSemanticIndex(ctx context.Context, req *gatewayv1.GetSemanticIndexRequest) (*gatewayv1.GetSemanticIndexResponse, error) {
 	requestedService := ""
 	if req != nil {
@@ -1606,15 +1631,21 @@ func (s *Server) GetSemanticIndex(ctx context.Context, req *gatewayv1.GetSemanti
 // exact root, so a parser-derived answer describes that tree and no other. The
 // host-wide behavior of sourceExecute can sit above the root in question.
 func (s *Server) rootedSourceExecute(ctx context.Context, root string, request *codev0.CodeRequest) (*codev0.CodeResponse, error) {
-	if s.host == nil {
-		return nil, fmt.Errorf("workspace source behavior is unavailable")
-	}
-	source, err := s.host.SourceAt(root)
+	source, err := s.boundSource(root)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = source.Close() }()
 	return source.ExecuteCode(ctx, request)
+}
+
+// boundSource binds engine source behavior to an exact root. The caller owns
+// the result and closes it.
+func (s *Server) boundSource(root string) (*engine.Source, error) {
+	if s.host == nil {
+		return nil, fmt.Errorf("workspace source behavior is unavailable")
+	}
+	return s.host.SourceAt(root)
 }
 
 // GetSourceManifest invokes the language-neutral rooted Code behavior so every

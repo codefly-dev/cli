@@ -305,11 +305,10 @@ func (s *Server) ApplyPreparedMutation(ctx context.Context, req *gatewayv1.Apply
 			return applyPreparedFailure(fmt.Sprintf("prepared bytes for %q are unavailable or corrupted", file.GetPath())), nil
 		}
 		// The prepared bytes were previewed, hashed and re-verified against the
-		// tree under serviceRoot(), so they must be written to that same tree.
-		// Routing this write through the agent instead would target whatever
-		// root the agent resolved (a declared source-dir moves it), writing
-		// bytes derived from one file over a different one.
-		response, err := s.rootedSourceExecute(ctx, s.serviceRoot(), &codev0.CodeRequest{Operation: &codev0.CodeRequest_WriteFile{WriteFile: &codev0.WriteFileRequest{
+		// agent's source tree, so they are written to that same tree. Writing
+		// anywhere else puts bytes derived from one file on top of another of
+		// the same name.
+		response, err := s.rootedSourceExecute(ctx, s.sourceRoot(), &codev0.CodeRequest{Operation: &codev0.CodeRequest_WriteFile{WriteFile: &codev0.WriteFileRequest{
 			Path: file.GetPath(), Content: string(after),
 		}}})
 		if err != nil || response.GetWriteFile() == nil || !response.GetWriteFile().GetSuccess() {

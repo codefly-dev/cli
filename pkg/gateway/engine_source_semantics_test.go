@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
@@ -10,11 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/internal/protocoltest"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
+	"github.com/google/uuid"
 )
 
 // newSourceSemanticsGateway binds a gateway to one peer-backed service so the
@@ -349,5 +353,127 @@ func TestGatewaySemanticIndexDegradesOnMalformedSource(t *testing.T) {
 	}
 	if !healthy {
 		t.Fatalf("degraded index dropped the parseable file's symbols: %+v", index.GetSymbols())
+	}
+}
+
+// newSourceDirGateway builds a gateway whose service declares source-dir, with
+// a byte-identical shadow of the target file at the service root. The shadow is
+// what makes the bug silent: hash-and-size checks cannot tell the two apart, so
+// only the path that is actually written distinguishes right from wrong.
+func newSourceDirGateway(t *testing.T, relative, content string) (*Server, string) {
+	t.Helper()
+	root := t.TempDir()
+	writeCodeUnitFixture(t, root, "workspace.codefly.yaml", "name: shop\nlayout: flat\n")
+	writeCodeUnitFixture(t, root, "service.codefly.yaml", "name: app\nversion: 0.0.1\nspec:\n  source-dir: src\n")
+	writeCodeUnitFixture(t, root, "mind.yaml", "service: app\nplugin: generic-go\n")
+	writeCodeUnitFixture(t, root, filepath.Join("src", relative), content)
+	writeCodeUnitFixture(t, root, relative, content)
+
+	server, err := NewServer(Config{WorkDir: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	return server, root
+}
+
+// The gateway resolves symbol patches itself, so it must address the tree the
+// agent calls its source. With source-dir set, patching the service-root copy
+// leaves the compiled source untouched while reporting success.
+func TestSymbolPatchTargetsTheAgentSourceRootNotTheServiceRoot(t *testing.T) {
+	declaration := "func Value() int { return 1 }"
+	body := "package service\n\n" + declaration + "\n"
+	server, root := newSourceDirGateway(t, filepath.Join("pkg", "service.go"), body)
+
+	response, err := server.ApplySymbolPatch(t.Context(), &gatewayv1.ApplySymbolPatchRequest{
+		Service: "app", File: "pkg/service.go", QualifiedName: "service.Value",
+		ExpectedDeclarationSha256: contentSHA256([]byte(declaration)),
+		NewSource:                 "func Value() int { return 2 }",
+	})
+	if err != nil || !response.GetSuccess() {
+		t.Fatalf("apply symbol patch: response=%+v err=%v", response, err)
+	}
+
+	patched, err := os.ReadFile(filepath.Join(root, "src", "pkg", "service.go"))
+	if err != nil || !strings.Contains(string(patched), "return 2") {
+		t.Fatalf("agent source tree was not patched: content=%q err=%v", patched, err)
+	}
+	shadow, err := os.ReadFile(filepath.Join(root, "pkg", "service.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(shadow) != body {
+		t.Fatalf("the service-root shadow was patched instead of the agent's source: %q", shadow)
+	}
+}
+
+// The same root has to govern prepared mutations end to end: preview, the
+// authoritative re-read, and the write. A prepared symbol patch must move the
+// agent's source and leave the identical shadow alone.
+func TestPreparedMutationTargetsTheAgentSourceRoot(t *testing.T) {
+	declaration := "func Value() int { return 1 }"
+	body := "package service\n\n" + declaration + "\n"
+	server, root := newSourceDirGateway(t, filepath.Join("pkg", "service.go"), body)
+
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.ConfigureMutationAuthority(t.Context(), &gatewayv1.ConfigureMutationAuthorityRequest{
+		AuthorityId: "coordinator-key-v1", WorkspaceId: "workspace-" + uuid.NewString(), Ed25519PublicKey: publicKey,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	preparedResponse, err := server.PrepareMutation(t.Context(), &gatewayv1.PrepareMutationRequest{
+		Service: "app", WorkspaceVersion: "workspace-source-dir-v1",
+		Mutation: &gatewayv1.PrepareMutationRequest_SymbolPatch{SymbolPatch: &gatewayv1.PrepareSymbolPatchMutation{
+			File: "pkg/service.go", SymbolId: "symbol-service-value", QualifiedName: "service.Value",
+			ExpectedDeclarationSha256: contentSHA256([]byte(declaration)),
+			NewSource:                 "func Value() int { return 2 }", FixMode: basev0.FixMode_FIX_MODE_NONE,
+		}},
+	})
+	if err != nil || !preparedResponse.GetSuccess() {
+		t.Fatalf("prepare symbol mutation: response=%+v err=%v", preparedResponse, err)
+	}
+	prepared := preparedResponse.GetPrepared()
+	permit := signPreparedMutationPermit(t, privateKey, prepared, time.Now().UTC().Add(-time.Second), time.Minute)
+	applied, err := server.ApplyPreparedMutation(t.Context(), &gatewayv1.ApplyPreparedMutationRequest{
+		Service: "app", PreparationId: prepared.GetPreparationId(),
+		MutationDigest: prepared.GetMutationDigest(), MutationPermit: permit,
+	})
+	if err != nil || !applied.GetSuccess() {
+		t.Fatalf("apply prepared mutation: response=%+v err=%v", applied, err)
+	}
+
+	patched, err := os.ReadFile(filepath.Join(root, "src", "pkg", "service.go"))
+	if err != nil || !strings.Contains(string(patched), "return 2") {
+		t.Fatalf("agent source tree was not written: content=%q err=%v", patched, err)
+	}
+	shadow, err := os.ReadFile(filepath.Join(root, "pkg", "service.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(shadow) != body {
+		t.Fatalf("prepared bytes landed on the service-root shadow: %q", shadow)
+	}
+}
+
+// An ephemeral source workspace is bound when no workspace configuration
+// encloses the root, and its attachment resolves back to that root — so a
+// source-dir beside it is not the declaration the agent reads, and honouring it
+// would move the gateway off the agent's tree instead of onto it.
+func TestAgentSourceRootIgnoresSourceDirWithoutAnEnclosingWorkspace(t *testing.T) {
+	root := t.TempDir()
+	writeCodeUnitFixture(t, root, "service.codefly.yaml", "name: app\nversion: 0.0.1\nspec:\n  source-dir: src\n")
+	writeCodeUnitFixture(t, root, filepath.Join("src", "keep.go"), "package keep\n")
+
+	resolved := engine.AgentSourceRoot(t.Context(), root)
+	physical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != physical && resolved != root {
+		t.Fatalf("source root = %q, want the service root %q when no workspace encloses it", resolved, root)
 	}
 }
