@@ -136,6 +136,11 @@ func writeAgentCICandidate(t *testing.T, root, home string, peerBytes []byte, se
 		require.NoError(t, os.MkdirAll(filepath.Dir(installed), 0o700))
 		require.NoError(t, os.WriteFile(installed, peerBytes, 0o700))
 	}
+	if selection == "older" {
+		// A newer unusable sibling: re-resolving to latest instead of honoring
+		// the explicit predecessor would load these bytes and fail.
+		require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(installed), "packager__2.0.0"), []byte("not the selected executable"), 0o700))
+	}
 	if selection == "latest" {
 		require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(installed), "packager__2.0.0"), peerBytes, 0o700))
 	}
@@ -194,6 +199,9 @@ func TestAgentCIAuditStage(t *testing.T) {
 			require.Equal(t, testPath, auditPath, "audit must reuse the validated and packaging selection")
 			require.Equal(t, selected, filepath.Base(auditPath))
 			require.NotContains(t, auditPath, home)
+			require.NoFileExists(t, auditPath, "the private selection must be destroyed once CI succeeds")
+			require.NoFileExists(t, filepath.Join(home, "agents", "services", "example.test", "candidate__9.0.0"),
+				"isolation must keep the packaged candidate out of the user's installation")
 		})
 	}
 	t.Run("gates on actionable vulnerabilities", func(t *testing.T) {
