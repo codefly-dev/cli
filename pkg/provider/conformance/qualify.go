@@ -49,6 +49,7 @@ type Evidence struct {
 	Provider       string              `json:"provider"`
 	Version        string              `json:"version"`
 	ManifestDigest string              `json:"manifest_digest"`
+	CatalogDigest  string              `json:"catalog_digest,omitempty"`
 	Operations     []OperationEvidence `json:"operations"`
 }
 

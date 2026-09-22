@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -33,12 +34,33 @@ const providerFixtureOperations = `operations:
       account_id: acct_0001
 `
 
+// installProviderFixture stages an agent repository whose built artifact is a
+// test-only provider peer, installed into an isolated Codefly home exactly
+// where agent CI's build stage installs a candidate.
+func installProviderFixture(t *testing.T, agentDir string) {
+	t.Helper()
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	identity := &resources.Agent{
+		Kind:      resources.ProviderAgent,
+		Publisher: "codefly.dev",
+		Name:      "conformance",
+		Version:   "1.0.0",
+	}
+	target, err := identity.Path(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(target), 0o755))
+	build := exec.Command("go", "build", "-o", target, "./testdata/providerfixture")
+	output, err := build.CombinedOutput()
+	require.NoError(t, err, "build provider fixture: %s", output)
+}
+
 func stageProviderCandidate(t *testing.T, operations string) (string, *agentYAML) {
 	t.Helper()
 	agentDir := t.TempDir()
 	writeFile(t, filepath.Join(agentDir, providerManifestName), referenceProviderManifest(t))
 	require.NoError(t, os.MkdirAll(filepath.Join(agentDir, "conformance"), 0o755))
 	writeFile(t, filepath.Join(agentDir, "conformance", "operations.yaml"), operations)
+	installProviderFixture(t, agentDir)
 	candidate := &agentYAML{
 		Publisher:   "codefly.dev",
 		Kind:        string(resources.ProviderAgent),
@@ -63,10 +85,25 @@ func TestProviderConformanceQualifiesDeclaredOperations(t *testing.T) {
 	require.Equal(t, "conformance", evidence.Provider)
 	require.Len(t, evidence.Operations, 2)
 	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, evidence.ManifestDigest)
+	// The catalog digest can only come from the started provider process.
+	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, evidence.CatalogDigest)
 
 	persisted, err := os.ReadFile(filepath.Join(conformanceDir, agentCIReportFilename))
 	require.NoError(t, err)
 	require.JSONEq(t, string(payload), string(persisted))
+}
+
+// TestProviderConformanceRejectsABinaryThatDoesNotImplementItsManifest is why
+// the stage starts the artifact at all: a manifest alone cannot show that the
+// shipped binary serves the contract it was reviewed on. The fixture advertises
+// a resource action the manifest does not package, which qualification refuses.
+func TestProviderConformanceRejectsABinaryThatDoesNotImplementItsManifest(t *testing.T) {
+	agentDir, candidate := stageProviderCandidate(t, providerFixtureOperations)
+	t.Setenv("CODEFLY_PROVIDER_FIXTURE_UNDECLARED_RESOURCE", "1")
+
+	_, _, err := runProviderConformance(context.Background(), t.TempDir(), agentDir, candidate)
+	require.ErrorContains(t, err, "does not implement its reviewed manifest")
+	require.ErrorContains(t, err, "undeclared")
 }
 
 // TestProviderConformanceRejectsAManifestTargetingAnotherRelease proves

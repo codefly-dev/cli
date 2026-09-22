@@ -9,7 +9,11 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/provider/conformance"
+	"github.com/codefly-dev/core/agents/manager"
+	providerv0 "github.com/codefly-dev/core/generated/go/codefly/services/provider/v0"
+	"github.com/codefly-dev/core/provider/artifact"
 	"github.com/codefly-dev/core/provider/manifest"
+	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
 )
 
@@ -31,10 +35,15 @@ func runProviderConformance(ctx context.Context, temporary, agentDir string, age
 	if err != nil {
 		return nil, "", err
 	}
+	catalog, runErr := exerciseProviderArtifact(ctx, temporary, agentDir, agent)
+	if runErr != nil {
+		return nil, conformanceDir, runErr
+	}
 	evidence, runErr := conformance.Qualify(ctx, providerManifest, declared)
 	if runErr != nil {
 		return nil, conformanceDir, runErr
 	}
+	evidence.CatalogDigest = catalog.GetDigest()
 	payload, err := json.MarshalIndent(evidence, "", "  ")
 	if err != nil {
 		return nil, conformanceDir, err
@@ -47,6 +56,105 @@ func runProviderConformance(ctx context.Context, temporary, agentDir string, age
 		return nil, conformanceDir, err
 	}
 	return payload, conformanceDir, nil
+}
+
+// exerciseProviderArtifact starts the built provider and holds its advertised
+// runtime catalog to the reviewed manifest. This is the half a manifest can
+// never establish: that the release actually starts, serves the provider
+// protocol, and implements the requests and resource types it was reviewed on.
+//
+// The artifact envelope the loader requires is assembled here from the built
+// binary and the shipped manifest. Its digests are derived from those same
+// bytes, so the envelope is not itself evidence — the runtime catalog is.
+func exerciseProviderArtifact(
+	ctx context.Context,
+	temporary, agentDir string,
+	agent *agentYAML,
+) (*providerv0.RuntimeCatalog, error) {
+	identity := &resources.Agent{
+		Kind:      resources.ProviderAgent,
+		Publisher: agent.Publisher,
+		Name:      agent.Name,
+		Version:   agent.Version,
+	}
+	verified, err := installProviderArtifact(ctx, temporary, agentDir, identity)
+	if err != nil {
+		return nil, err
+	}
+	connection, err := manager.Load(ctx, identity,
+		// Providers carry no launch layer that applies their manifest sandbox,
+		// so the loader is composed the way Core composes it for a provider.
+		manager.WithoutSandbox(),
+		manager.WithoutPrincipal(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("provider conformance: start the built provider: %w", err)
+	}
+	defer connection.Close()
+
+	information, err := providerv0.NewProviderClient(connection.GRPCConn()).
+		GetProviderInformation(ctx, &providerv0.GetProviderInformationRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("provider conformance: read the provider advertisement: %w", err)
+	}
+	if _, err := verified.AdmitRuntimeCatalog(information.GetCatalog()); err != nil {
+		return nil, fmt.Errorf("provider conformance: the running provider does not implement its reviewed manifest: %w", err)
+	}
+	return information.GetCatalog(), nil
+}
+
+// installProviderArtifact writes the binary, manifest and descriptor layout the
+// provider loader verifies before it will start a provider.
+func installProviderArtifact(
+	ctx context.Context,
+	temporary, agentDir string,
+	identity *resources.Agent,
+) (*artifact.Verified, error) {
+	target, err := identity.Path(ctx)
+	if err != nil {
+		return nil, err
+	}
+	binary, err := os.ReadFile(target)
+	if err != nil {
+		return nil, fmt.Errorf("read the built provider: %w", err)
+	}
+	registration, err := resources.AgentKindRegistrationFor(resources.ProviderAgent)
+	if err != nil {
+		return nil, err
+	}
+	// The descriptor must cover exactly the manifest bytes the release ships,
+	// not a re-serialization of the parsed form.
+	manifestBytes, err := os.ReadFile(filepath.Join(agentDir, providerManifestName))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", providerManifestName, err)
+	}
+	layout := filepath.Join(temporary, "provider-artifact")
+	if mkdirErr := os.MkdirAll(layout, 0o755); mkdirErr != nil {
+		return nil, mkdirErr
+	}
+	executable := registration.ExecutableName(identity.Name)
+	descriptor, err := artifact.BuildDescriptor(executable, binary, manifestBytes)
+	if err != nil {
+		return nil, fmt.Errorf("describe the built provider: %w", err)
+	}
+	descriptorBytes, err := artifact.MarshalDescriptor(descriptor)
+	if err != nil {
+		return nil, err
+	}
+	for path, payload := range map[string][]byte{
+		filepath.Join(layout, executable):                  binary,
+		filepath.Join(layout, manifest.FileName):           manifestBytes,
+		filepath.Join(layout, artifact.DescriptorFileName): descriptorBytes,
+	} {
+		mode := os.FileMode(0o644)
+		if filepath.Base(path) == executable {
+			mode = 0o755
+		}
+		if err := atomicWrite(path, payload, mode); err != nil {
+			return nil, err
+		}
+	}
+	return artifact.InstallLayout(layout, target, identity)
 }
 
 // loadProviderManifest reads the shipped manifest through the host parser and

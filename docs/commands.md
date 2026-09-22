@@ -1239,7 +1239,12 @@ operations:
       account_id: acct_0001
 ```
 
-CI composes each declared operation into the request the host would plan for it
+CI first starts the built provider through the agent loader and holds the
+runtime catalog it advertises to the reviewed manifest: a release that does not
+start, does not serve the provider protocol, or implements requests and resource
+actions its manifest does not package fails before any operation runs.
+
+CI then composes each declared operation into the request the host would plan for it
 and runs it through the real provider broker, delivering from a sealed cassette
 rather than the network. Every admission check a live call makes therefore runs:
 descriptor packaging and digest, the read-only rule, the budget, origin
