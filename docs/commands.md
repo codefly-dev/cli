@@ -1201,7 +1201,11 @@ operations:
 CI launches the installed artifact through Core's toolbox session under the
 sandbox and permission ceiling its own `toolbox.codefly.yaml` declares. The host
 owns the principal, the policy decision point and the session scope; the owner
-owns the operations. A declared permission the running binary does not serve, an
+owns the operations. Because production admission requires a non-empty sandbox
+declaration, and Core refuses to launch a sandbox-declaring plugin with no
+enforcing backend, a toolbox release must be qualified on a host that has one —
+`bwrap` on Linux, `sandbox-exec` (built in) on macOS. On a host without it the
+stage fails rather than qualifying the artifact unconfined. A declared permission the running binary does not serve, an
 operation naming a tool it does not advertise, a refusal the host served, a
 refusal that reached the plugin, or a session that does not release its process
 fails the stage.

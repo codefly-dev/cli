@@ -78,6 +78,15 @@ jobs:
         if: matrix.gate == 'bootstrap-audit' || matrix.gate == 'control-integration'
         uses: ./.github/actions/install
 
+      # Toolbox conformance launches a real plugin under the sandbox its
+      # manifest declares, and Core refuses to launch a sandbox-declaring
+      # plugin with no enforcing backend. bwrap is that backend on Linux and is
+      # not preinstalled, so without it cmd/agents' real-process toolbox test
+      # would skip and prove nothing.
+      - name: Install sandbox backend
+        if: matrix.gate == 'coverage' || matrix.gate == 'race'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
       - name: Install Dependencies
         run: go mod download
 

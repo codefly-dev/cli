@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/runners/sandbox"
 	"github.com/codefly-dev/core/toolbox/conformance"
 	"github.com/codefly-dev/core/toolbox/session"
 	"github.com/stretchr/testify/require"
@@ -74,6 +75,17 @@ conformance:
   fixture: conformance/operations.yaml
 `
 
+// requireEnforcingSandbox skips a test that must launch the toolbox, on a host
+// with no enforcing sandbox backend. Qualification deliberately refuses such a
+// host (assertHostEnforcesSandbox), so the launch cannot be exercised there;
+// the refusal itself is covered by TestToolboxConformanceRefusesAnUnconfinedHost.
+func requireEnforcingSandbox(t *testing.T) {
+	t.Helper()
+	if err := assertHostEnforcesSandbox(); err != nil {
+		t.Skipf("host cannot apply a declared toolbox sandbox: %v", err)
+	}
+}
+
 // installToolboxFixture stages an agent repository whose built artifact is the
 // Core conformance toolbox, installed into an isolated Codefly home exactly
 // where agent CI's build stage installs a candidate.
@@ -117,6 +129,7 @@ func toolboxCandidate() *agentYAML {
 // own declared sandbox and permission ceiling, serves every operation the owner
 // declared, is refused the one the host policy denies, and releases its process.
 func TestToolboxConformanceQualifiesTheInstalledRelease(t *testing.T) {
+	requireEnforcingSandbox(t)
 	agentDir := installToolboxFixture(t, toolboxFixtureOperations)
 
 	payload, conformanceDir, err := runToolboxConformance(context.Background(), t.TempDir(), agentDir, toolboxCandidate())
@@ -148,6 +161,7 @@ func TestToolboxConformanceQualifiesTheInstalledRelease(t *testing.T) {
 // TestToolboxConformanceFailsWhenTheDeclaredCeilingIsWiderThanTheRelease proves
 // the reviewed manifest cannot claim authority the artifact does not serve.
 func TestToolboxConformanceFailsWhenTheDeclaredCeilingIsWiderThanTheRelease(t *testing.T) {
+	requireEnforcingSandbox(t)
 	agentDir := installToolboxFixture(t, toolboxFixtureOperations)
 	manifestPath := filepath.Join(agentDir, resources.ToolboxConfigurationName)
 	writeFile(t, manifestPath, toolboxFixtureManifest+
@@ -213,6 +227,19 @@ func TestToolboxConformanceFixtureFailsClosed(t *testing.T) {
 			require.ErrorContains(t, err, test.want)
 		})
 	}
+}
+
+// TestToolboxConformanceRefusesAnUnconfinedHost proves qualification refuses a
+// host that cannot apply the declared sandbox rather than launching the toolbox
+// unconfined and reporting it as qualified.
+func TestToolboxConformanceRefusesAnUnconfinedHost(t *testing.T) {
+	err := assertHostEnforcesSandbox()
+	if enforcing, newErr := sandbox.New(); newErr == nil && enforcing.Backend() != sandbox.BackendNative {
+		require.NoError(t, err, "an enforcing backend must satisfy the precondition")
+		return
+	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "toolbox conformance")
 }
 
 // TestToolboxConformanceRejectsAManifestTargetingAnotherRelease proves the

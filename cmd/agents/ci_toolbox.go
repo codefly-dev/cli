@@ -13,6 +13,7 @@ import (
 
 	"github.com/codefly-dev/core/policy"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/runners/sandbox"
 	"github.com/codefly-dev/core/toolbox/launch"
 	"github.com/codefly-dev/core/toolbox/session"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -115,6 +116,9 @@ func runToolboxConformance(ctx context.Context, temporary, agentDir string, agen
 	}
 	if targetErr := assertToolboxTargetsCandidate(manifest, agent); targetErr != nil {
 		return nil, "", targetErr
+	}
+	if sandboxErr := assertHostEnforcesSandbox(); sandboxErr != nil {
+		return nil, "", sandboxErr
 	}
 	workspace := filepath.Join(conformanceDir, "workspace")
 	if mkdirErr := os.MkdirAll(workspace, 0o755); mkdirErr != nil {
@@ -279,6 +283,24 @@ func assertToolboxCatalogIsExact(manifest *resources.Toolbox, advertised []strin
 			return fmt.Errorf("toolbox conformance operation %q names tool %q, which the release does not advertise",
 				operation.Name, operation.Tool)
 		}
+	}
+	return nil
+}
+
+// assertHostEnforcesSandbox refuses to qualify a toolbox on a host that cannot
+// confine it. Production admission requires a non-empty sandbox declaration, so
+// every toolbox reaching here declares one, and Core refuses to launch a
+// sandbox-declaring plugin with no enforcing backend. Checking first turns that
+// into a statement of what the release host is missing rather than a failure
+// deep inside launch — and never into a quietly unconfined qualification.
+func assertHostEnforcesSandbox() error {
+	enforcing, err := sandbox.New()
+	if err != nil {
+		return fmt.Errorf("toolbox conformance: this host cannot enforce the declared sandbox: %w", err)
+	}
+	if enforcing.Backend() == sandbox.BackendNative {
+		return fmt.Errorf("toolbox conformance: this host has no enforcing sandbox backend (%s); a toolbox release must be qualified where its declared sandbox is applied",
+			enforcing.Backend())
 	}
 	return nil
 }
