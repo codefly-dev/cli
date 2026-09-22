@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/composition"
+	"github.com/codefly-dev/core/resources"
 )
 
 const testWorkspaceYAML = `name: demo
@@ -1204,4 +1205,185 @@ func TestDoctorWorkspaceFlagsARelativeOverlayPathAheadOfItsTag(t *testing.T) {
 	// checkout, not the mere presence of a relative directive.
 	git("checkout", "--quiet", "v0.0.62")
 	requireNoCode(t, runReadiness(t, workspaceReadinessOptions{dir: dir}), codeModuleCheckoutVersionDrift)
+}
+
+// serviceOverrideWorkspace lays out a solution composing a module by path with
+// one service, plus an overlay overriding that service to overrideDir.
+func serviceOverrideWorkspace(t *testing.T, overrideDir string) string {
+	t.Helper()
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":                             "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      path: modules/saas\n",
+		"modules/saas/module.codefly.yaml":                   "kind: module\nname: saas\nservices:\n  - name: gateway\n",
+		"modules/saas/services/gateway/service.codefly.yaml": "kind: service\nname: gateway\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.0.1\n  publisher: codefly.ai\nendpoints:\n  - name: public-api\n    visibility: public\n",
+		resources.LocalOverlayConfigurationName:              "resolve:\n  saas:\n    services:\n      gateway:\n        path: " + overrideDir + "\n",
+	})
+	return dir
+}
+
+func writeOverrideService(t *testing.T, manifest string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, resources.ServiceConfigurationName), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// A healthy override is still reported: it is invisible in committed config, so
+// listing it is the only way anyone sees that a service is not running from the
+// module that composed it.
+func TestDoctorWorkspaceReportsAnActiveServiceOverride(t *testing.T) {
+	override := writeOverrideService(t, "kind: service\nname: gateway\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 9.9.9\n  publisher: codefly.ai\nendpoints:\n  - name: public-api\n    visibility: public\n")
+	report := runReadiness(t, workspaceReadinessOptions{dir: serviceOverrideWorkspace(t, override)})
+
+	diag := requireCode(t, report, codeServiceOverrideActive, "ok")
+	if !strings.Contains(diag.Message, "gateway") || !strings.Contains(diag.Message, override) {
+		t.Fatalf("diagnostic should name the service and where it resolves: %+v", diag)
+	}
+	if report.Status != readinessStatusReady {
+		t.Fatalf("a healthy override made the workspace not ready: %s", reportJSON(t, report))
+	}
+}
+
+func TestDoctorWorkspaceFlagsAMissingServiceOverrideDirectory(t *testing.T) {
+	report := runReadiness(t, workspaceReadinessOptions{dir: serviceOverrideWorkspace(t, "/nonexistent/gateway")})
+
+	diag := requireCode(t, report, codeServiceOverrideUnresolved, "fail")
+	if !strings.Contains(diag.Message, "/nonexistent/gateway") {
+		t.Fatalf("diagnostic should name the missing directory: %+v", diag)
+	}
+	if report.Status != readinessStatusNotReady {
+		t.Fatalf("status = %q, want not_ready", report.Status)
+	}
+}
+
+// The same check the load performs, so doctor cannot pass an override the next
+// run refuses.
+func TestDoctorWorkspaceFlagsServiceOverrideContractDrift(t *testing.T) {
+	override := writeOverrideService(t, "kind: service\nname: gateway\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: python-grpc\n  version: 0.0.1\n  publisher: codefly.ai\nendpoints:\n  - name: public-api\n    visibility: public\n")
+	report := runReadiness(t, workspaceReadinessOptions{dir: serviceOverrideWorkspace(t, override)})
+
+	diag := requireCode(t, report, codeServiceOverrideDrift, "fail")
+	for _, want := range []string{"python-grpc", "go-grpc"} {
+		if !strings.Contains(diag.Message, want) {
+			t.Errorf("diagnostic should name both agents, missing %q: %+v", want, diag)
+		}
+	}
+}
+
+func TestDoctorWorkspaceFlagsAnOverrideOfAnUndeclaredService(t *testing.T) {
+	overrideDir := writeOverrideService(t, "kind: service\nname: gatway\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.0.1\n  publisher: codefly.ai\n")
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":                             "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      path: modules/saas\n",
+		"modules/saas/module.codefly.yaml":                   "kind: module\nname: saas\nservices:\n  - name: gateway\n",
+		"modules/saas/services/gateway/service.codefly.yaml": "kind: service\nname: gateway\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.0.1\n  publisher: codefly.ai\n",
+		resources.LocalOverlayConfigurationName:              "resolve:\n  saas:\n    services:\n      gatway:\n        path: " + overrideDir + "\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+
+	diag := requireCode(t, report, codeServiceOverrideUnresolved, "fail")
+	if !strings.Contains(diag.Message, "gatway") {
+		t.Fatalf("diagnostic should name the service asked for: %+v", diag)
+	}
+}
+
+// No overlay, no overrides: the diagnostic must not appear at all, so it stays
+// a signal rather than noise on every workspace.
+func TestDoctorWorkspaceReportsNoServiceOverridesWhenThereAreNone(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":                             "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      path: modules/saas\n",
+		"modules/saas/module.codefly.yaml":                   "kind: module\nname: saas\nservices:\n  - name: gateway\n",
+		"modules/saas/services/gateway/service.codefly.yaml": "kind: service\nname: gateway\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.0.1\n  publisher: codefly.ai\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	requireNoCode(t, report, codeServiceOverrideActive)
+	requireNoCode(t, report, codeServiceOverrideUnresolved)
+	requireNoCode(t, report, codeServiceOverrideDrift)
+}
+
+// A service taken from a checkout is compared against the version its module
+// pins, exactly as a vendored module pin is: the override decides what runs, so
+// a checkout that has moved away from the pinned version runs something the
+// workspace does not declare. The worktree resolver matches checkouts by origin
+// remote under a github-<org>-<repo>/<branch> container, so the fixture is that
+// layout rather than a bare directory.
+func TestDoctorWorkspaceFlagsServiceOverrideWorktreeAheadOfThePinnedVersion(t *testing.T) {
+	container := t.TempDir()
+	solution := filepath.Join(container, "github-acme-solution", "main")
+	gatewayManifest := "kind: service\nname: gateway\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.0.1\n  publisher: codefly.ai\nendpoints:\n  - name: public-api\n    visibility: public\n"
+	for path, content := range map[string]string{
+		"workspace.codefly.yaml":                             "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: acme/host\n      version: \"0.0.62\"\n      path: modules/saas\n",
+		"modules/saas/module.codefly.yaml":                   "kind: module\nname: saas\nservices:\n  - name: gateway\n",
+		"modules/saas/services/gateway/service.codefly.yaml": gatewayManifest,
+		resources.LocalOverlayConfigurationName:              "resolve:\n  saas:\n    services:\n      gateway:\n        worktree: acme/host@main\n",
+	} {
+		full := filepath.Join(solution, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The producing checkout, tagged v0.0.62 and then moved past it.
+	host := filepath.Join(container, "github-acme-host", "main")
+	serviceDir := filepath.Join(host, "services", "gateway")
+	if err := os.MkdirAll(serviceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(host, "module.codefly.yaml"), []byte("kind: module\nname: saas\nservices:\n  - name: gateway\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(serviceDir, resources.ServiceConfigurationName), []byte(gatewayManifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) {
+		t.Helper()
+		command := exec.Command("git", args...)
+		command.Dir = host
+		if out, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	git("init", "--quiet", "-b", "main")
+	git("config", "user.email", "doctor@example.invalid")
+	git("config", "user.name", "Doctor Test")
+	git("remote", "add", "origin", "git@github.com:acme/host.git")
+	git("add", "-A")
+	git("-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "released")
+	git("-c", "tag.gpgSign=false", "tag", "v0.0.62")
+	git("-c", "commit.gpgsign=false", "commit", "--quiet", "--allow-empty", "-m", "past")
+
+	report := runReadiness(t, workspaceReadinessOptions{dir: solution})
+
+	requireCode(t, report, codeServiceOverrideActive, "ok")
+	diag := requireCode(t, report, codeModuleCheckoutVersionDrift, "warn")
+	for _, want := range []string{"gateway", "0.0.62", "v0.0.62-1-g"} {
+		if !strings.Contains(diag.Message, want) {
+			t.Fatalf("diagnostic should name the service, the pin and the checkout: %+v", diag)
+		}
+	}
+	// Developing against a checkout ahead of its tag is normal; it has to be
+	// visible without making the workspace unusable.
+	if report.Status != readinessStatusReady {
+		t.Fatalf("status = %q, want ready: %s", report.Status, reportJSON(t, report))
+	}
+}
+
+// A module that is not on disk yet — pinned, awaiting materialization — has no
+// composed copy to check an override against. The override is still active, and
+// reporting nothing about it would hide it entirely.
+func TestDoctorWorkspaceReportsAnOverrideOnAnUnmaterializedModule(t *testing.T) {
+	override := writeOverrideService(t, "kind: service\nname: gateway\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.0.1\n  publisher: codefly.ai\n")
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":                "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: acme/host\n      version: \"0.0.62\"\n",
+		resources.LocalOverlayConfigurationName: "resolve:\n  saas:\n    services:\n      gateway:\n        path: " + override + "\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+
+	diag := requireCode(t, report, codeServiceOverrideActive, "ok")
+	if !strings.Contains(diag.Message, "not materialized") || !strings.Contains(diag.Message, override) {
+		t.Fatalf("diagnostic should say the override is active but uncheckable: %+v", diag)
+	}
 }

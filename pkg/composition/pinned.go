@@ -682,8 +682,14 @@ const (
 // ResolutionReceipt is one materialization: the request it answered, and what
 // that request resolved to.
 type ResolutionReceipt struct {
-	Source    string         `yaml:"source"`
-	Module    string         `yaml:"module,omitempty"`
+	Source string `yaml:"source"`
+	Module string `yaml:"module,omitempty"`
+	// Service names the single service this materialization was pulled for,
+	// empty for a whole-module one. A service receipt is keyed "<module>/<service>"
+	// and records the request the OVERLAY made, because the overlay directive that
+	// asked for it is replaced by the path it produced — unlike a module, whose
+	// request also lives in committed config.
+	Service   string         `yaml:"service,omitempty"`
 	Requested string         `yaml:"requested"`
 	Mode      ResolutionMode `yaml:"mode"`
 	Version   string         `yaml:"version"`

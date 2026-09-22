@@ -50,6 +50,9 @@ const (
 	codeModuleUnverified           = "module_unverified"
 	codeModuleResolutionStale      = "module_resolution_stale"
 	codeModuleCheckoutVersionDrift = "module_checkout_version_drift"
+	codeServiceOverrideActive      = "service_override_active"
+	codeServiceOverrideUnresolved  = "service_override_unresolved"
+	codeServiceOverrideDrift       = "service_override_contract_drift"
 	codeTimeout                    = "timeout"
 )
 
@@ -123,6 +126,7 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	checkReferencedModules(ctx, ws, report)
 	checkVendoredPins(ctx, ws, report)
 	checkModuleTrust(ctx, ws, report)
+	checkServiceOverrides(ctx, ws, report)
 
 	env := checkEnvironment(ws, opts.env, report)
 	if env == nil {
@@ -305,6 +309,114 @@ func checkVendoredPinVersion(ctx context.Context, workspaceRoot func() (string, 
 	report.add(codeModuleCheckoutVersionDrift, "vendored pin "+ref.Name, "warn",
 		fmt.Sprintf("module %q pins %s at version %s, but its checkout %s is %s: the pin resolves to the checkout, so the declared version is not what runs", ref.Name, ref.Source, ref.Version, checkoutRoot, description.Raw),
 		fmt.Sprintf("check out %s in %s, or update the `version:` of module %q in %s to what the checkout holds", ref.Version, checkoutRoot, ref.Name, resources.WorkspaceConfigurationName))
+}
+
+// checkServiceOverrides reports every per-service override the machine-local
+// overlay declares. An override is invisible in committed config by design, so
+// the active ones are listed even when they are healthy: a service quietly
+// running from somewhere other than the module that composed it is the state
+// this is here to make visible.
+func checkServiceOverrides(ctx context.Context, ws *resources.Workspace, report *workspaceReadinessReport) {
+	// An unreadable overlay is reported by checkModuleTrust, which owns the file.
+	overlay, err := resources.LoadLocalOverlay(ctx, ws.Dir())
+	if err != nil || overlay == nil {
+		return
+	}
+	for _, ref := range ws.Modules {
+		directive := overlayDirective(overlay, ref.Name)
+		if directive == nil || len(directive.Services) == 0 {
+			continue
+		}
+		resolution, err := ws.ResolveModule(ctx, ref)
+		if err != nil {
+			report.add(codeServiceOverrideUnresolved, "service overrides for "+ref.Name, "fail",
+				fmt.Sprintf("the service overrides on module %q do not resolve: %v", ref.Name, err),
+				fmt.Sprintf("fix resolve.%s.services in %s, or drop the entry with `codefly override service <module>/<service> --clear`", ref.Name, resources.LocalOverlayConfigurationName))
+			continue
+		}
+		// Loaded straight from its directory, so it is the module as it declares
+		// itself — the copy an override has to hold up against.
+		declared, declaredErr := resources.LoadModuleFromDir(ctx, resolution.Dir)
+		for _, service := range sortedServiceNames(directive.Services) {
+			checkServiceOverride(ctx, ref, service, resolution.Services[service], declared, declaredErr, report)
+		}
+	}
+}
+
+func checkServiceOverride(ctx context.Context, ref *resources.ModuleReference, service string, resolved *resources.ServiceResolution, declared *resources.Module, declaredErr error, report *workspaceReadinessReport) {
+	name := fmt.Sprintf("service override %s/%s", ref.Name, service)
+	if resolved.Kind == resources.ResolutionPinned {
+		report.add(codeServiceOverrideActive, name, "ok",
+			fmt.Sprintf("service %q of module %q comes from module package %s at version %s; the next run materializes it", service, ref.Name, resolved.Source, resolved.Version),
+			"")
+		return
+	}
+	if !dirExists(resolved.Dir) {
+		report.add(codeServiceOverrideUnresolved, name, "fail",
+			fmt.Sprintf("service %q of module %q is overridden to %s, which does not exist", service, ref.Name, resolved.Dir),
+			fmt.Sprintf("point resolve.%s.services.%s at a directory that holds the service, or drop it with `codefly override service %s/%s --clear`", ref.Name, service, ref.Name, service))
+		return
+	}
+	if declaredErr != nil {
+		// The module itself is not on disk yet — pinned, or unresolved — so there
+		// is no composed copy to check the override against. It is still active,
+		// and saying so beats reporting nothing about it at all.
+		report.add(codeServiceOverrideActive, name, "ok",
+			fmt.Sprintf("service %q of module %q runs from %s (%s override); module %q is not materialized, so the override could not be checked against the service it composes", service, ref.Name, resolved.Dir, resolved.Kind, ref.Name),
+			"")
+		return
+	}
+	declaredRef, err := declared.GetServiceReferences(service)
+	if err != nil || declaredRef == nil {
+		report.add(codeServiceOverrideUnresolved, name, "fail",
+			fmt.Sprintf("module %q declares no service %q to override", ref.Name, service),
+			fmt.Sprintf("remove resolve.%s.services.%s from %s", ref.Name, service, resources.LocalOverlayConfigurationName))
+		return
+	}
+	// The same check the load performs, so doctor cannot pass an override the
+	// next run refuses — or refuse one it accepts.
+	if err := resources.CheckServiceOverrideContract(ctx, declared, declaredRef, resolved.Dir); err != nil {
+		report.add(codeServiceOverrideDrift, name, "fail",
+			err.Error(),
+			fmt.Sprintf("make the service at %s match what module %q composes, or drop the override with `codefly override service %s/%s --clear`", resolved.Dir, ref.Name, ref.Name, service))
+		return
+	}
+	report.add(codeServiceOverrideActive, name, "ok",
+		fmt.Sprintf("service %q of module %q runs from %s (%s override)", service, ref.Name, resolved.Dir, resolved.Kind),
+		"")
+	checkServiceOverrideDrift(ctx, ref, service, resolved, report)
+}
+
+// checkServiceOverrideDrift compares a service taken from a checkout against the
+// version its module pins, the same way a vendored module pin is compared: the
+// override decides what runs, so a checkout that has moved away from the pinned
+// version is running something the workspace does not declare.
+func checkServiceOverrideDrift(ctx context.Context, ref *resources.ModuleReference, service string, resolved *resources.ServiceResolution, report *workspaceReadinessReport) {
+	if resolved.Kind != resources.ResolutionWorktree || ref.Version == "" {
+		return
+	}
+	checkoutRoot, ok := composition.CheckoutRoot(ctx, resolved.Dir)
+	if !ok {
+		return
+	}
+	description, ok := composition.DescribeCheckout(ctx, resolved.Dir)
+	if !ok || description.SatisfiesVersion(ref.Version) {
+		return
+	}
+	report.add(codeModuleCheckoutVersionDrift, fmt.Sprintf("service override %s/%s", ref.Name, service), "warn",
+		fmt.Sprintf("module %q pins %s at version %s, but service %q is taken from checkout %s, which is %s: the override decides what runs, so the declared version is not what runs", ref.Name, ref.Source, ref.Version, service, checkoutRoot, description.Raw),
+		fmt.Sprintf("check out %s in %s, or drop the override with `codefly override service %s/%s --clear`", ref.Version, checkoutRoot, ref.Name, service))
+}
+
+// sortedServiceNames orders the overridden service names so a report lists them
+// the same way on every run.
+func sortedServiceNames(services map[string]*resources.ServiceResolveDirective) []string {
+	names := make([]string, 0, len(services))
+	for name := range services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // checkModuleTrust reports every module pinned by `source@version` that a run
@@ -969,6 +1081,8 @@ With --json, a versioned report is printed to stdout:
 Stable diagnostic codes: workspace_not_found, workspace_invalid,
 environment_not_found, service_not_found, module_reference_unresolved,
 module_trust_missing, module_checkout_version_drift,
+service_override_active, service_override_unresolved,
+service_override_contract_drift,
 configuration_directory_missing, configuration_missing,
 configuration_invalid, configuration_duplicate, provider_not_configured,
 provider_executable_missing, provider_authentication_required,

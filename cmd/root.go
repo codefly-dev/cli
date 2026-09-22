@@ -227,6 +227,7 @@ func init() {
 	// New, Add, Update and Sync
 	RootCmd.AddCommand(InitCmd)
 	RootCmd.AddCommand(AddCmd)
+	RootCmd.AddCommand(OverrideCmd)
 	RootCmd.AddCommand(UpdateCmd)
 	RootCmd.AddCommand(SyncCmd)
 
