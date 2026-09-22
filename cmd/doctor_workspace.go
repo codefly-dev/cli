@@ -555,11 +555,7 @@ func receiptRequestLabel(receipt *composition.ResolutionReceipt) string {
 }
 
 func moduleRequestLabel(ref *resources.ModuleReference, mode composition.ResolutionMode) string {
-	version := ref.Version
-	if version == "" {
-		version = "latest"
-	}
-	return fmt.Sprintf("%s (%s)", version, mode)
+	return fmt.Sprintf("%s (%s)", moduleVersionLabel(ref), mode)
 }
 
 // overlayDirective returns module's overlay entry, or nil when there is no
