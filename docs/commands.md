@@ -979,7 +979,9 @@ ignored producer extension. Unknown fields and capabilities fail validation.
 An import re-serializes only the selected environment item. Surrounding workspace
 bytes remain unchanged; a provenance comment records the cell, coordinate and
 import time. `--dry-run` prints the diff without writing. After a write, workspace
-readiness validation runs for the selected environment.
+readiness validation runs for the selected environment; when it reports the
+workspace is not ready, the command prints the diagnostics and exits non-zero.
+The merged file is still written, so the diagnostics can be read against it.
 
 #### `codefly environment show`
 
