@@ -62,9 +62,12 @@ func TestCoverageBudgetPreservesQualificationAndTimeoutDiagnostics(t *testing.T)
 			}
 		}
 		// The package alarm is what produces a stack trace, so it has to
-		// expire while the runner is still listening — and still leave room
-		// for compilation and the gates that run after the suite.
-		if packageBudget < 3*time.Minute || jobBudget-packageBudget < 3*time.Minute {
+		// expire while the runner is still listening. The job budget it has
+		// to fit inside is spent before the alarm ever starts counting:
+		// checkout, toolchain, a cache restore and `go mod download`, then
+		// compilation, which reached 2m07s on the cold cache of run
+		// 35685320191. The reserve covers all of it, not compilation alone.
+		if packageBudget < 3*time.Minute || jobBudget-packageBudget < 4*time.Minute {
 			t.Fatalf("coverage budgets do not fit measured tests and diagnostic headroom: package=%s job=%s", packageBudget, jobBudget)
 		}
 		for _, flag := range []string{"./...", "-v", "-failfast", "-coverprofile=cover.out", "-covermode=atomic", "-coverpkg=./..."} {

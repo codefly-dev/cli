@@ -90,7 +90,7 @@ jobs:
         if: matrix.gate == 'coverage'
         env:
           CODEFLY_COMPOSITION_OCI_QUALIFY: "1"
-        run: go test -failfast -v -timeout=5m ./... -coverprofile=cover.out -covermode=atomic -coverpkg=./...
+        run: go test -failfast -v -timeout=4m ./... -coverprofile=cover.out -covermode=atomic -coverpkg=./...
 
       - name: Check test coverage
         if: matrix.gate == 'coverage'

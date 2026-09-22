@@ -1,6 +1,7 @@
 package composition
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -65,6 +66,11 @@ var buildRenderExecutor = sync.OnceValues(func() (renderExecutor, error) {
 	if output, buildErr := command.CombinedOutput(); buildErr != nil {
 		return renderExecutor{}, fmt.Errorf("%w: %s", buildErr, output)
 	}
+	// Read-only: fixtures that reach for the path only execute it, and one
+	// that wrote through it would now be writing every other fixture's copy.
+	if err = os.Chmod(binary, 0o500); err != nil {
+		return renderExecutor{}, err
+	}
 	data, err := os.ReadFile(binary)
 	if err != nil {
 		return renderExecutor{}, err
@@ -72,18 +78,29 @@ var buildRenderExecutor = sync.OnceValues(func() (renderExecutor, error) {
 	return renderExecutor{data: data, path: binary}, nil
 })
 
+// The bytes are cloned because the shared build is handed to every fixture,
+// and this package's drift tests patch the artifacts they are given.
 func executionBinary(t *testing.T) ([]byte, string) {
 	t.Helper()
 	executor, err := buildRenderExecutor()
 	require.NoError(t, err)
-	return executor.data, executor.path
+	return bytes.Clone(executor.data), executor.path
 }
 
 func TestRenderExecutorIsCompiledOncePerRun(t *testing.T) {
-	_, first := executionBinary(t)
-	_, second := executionBinary(t)
-	require.Equal(t, first, second)
+	first, path := executionBinary(t)
+	_, repeated := executionBinary(t)
+	require.Equal(t, path, repeated)
 	require.Equal(t, int64(1), renderExecutorBuilds.Load(), "every fixture must share one compilation")
+
+	unpatched := first[0]
+	first[0]++
+	next, _ := executionBinary(t)
+	require.Equal(t, unpatched, next[0], "a fixture that patches its copy must not reach the next one")
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Zero(t, info.Mode().Perm()&0o200, "the shared executable must not be writable")
 }
 
 func executionClient(t *testing.T, binary, capability string) *services.BuilderAgent {
