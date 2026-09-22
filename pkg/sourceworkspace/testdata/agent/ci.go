@@ -62,14 +62,27 @@ func (*discoveryBuilder) Package(_ context.Context, req *builderv0.PackageReques
 	}, nil
 }
 
+// TEST_SOURCE_AUDIT_VULNERABLE reports one actionable HIGH finding so release
+// gating can be exercised; otherwise the source audits clean.
 func (*discoveryBuilder) Audit(context.Context, *builderv0.AuditRequest) (*builderv0.AuditResponse, error) {
 	if err := recordCI("Builder.Audit"); err != nil {
 		return nil, err
 	}
-	return &builderv0.AuditResponse{
+	response := &builderv0.AuditResponse{
 		State: &builderv0.AuditStatus{State: builderv0.AuditStatus_CLEAN},
 		Tool:  "test-source-auditor",
-	}, nil
+	}
+	if os.Getenv("TEST_SOURCE_AUDIT_VULNERABLE") != "" {
+		response.State = &builderv0.AuditStatus{State: builderv0.AuditStatus_FINDINGS}
+		response.Findings = []*builderv0.AuditFinding{{
+			Id:             "TEST-SOURCE-VULN-1",
+			Severity:       builderv0.AuditFinding_HIGH,
+			Package:        "example.test/vulnerable",
+			CurrentVersion: "1.0.0",
+			FixedVersion:   "1.0.1",
+		}}
+	}
+	return response, nil
 }
 
 type ciRuntime struct {
