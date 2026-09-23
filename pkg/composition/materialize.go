@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Masterminds/semver"
@@ -711,11 +712,13 @@ func ensurePinnedArtifact(ctx context.Context, ref *resources.ModuleReference, c
 // immutable tag rather than a moved branch, then promotes it to checkout. A
 // concurrent run that populated checkout first wins; this one discards its clone.
 func clonePinnedArtifact(ctx context.Context, url, tag, cacheRoot, checkout string, ref *resources.ModuleReference) error {
-	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
+	staging := filepath.Join(cacheRoot, stagingCacheDirName)
+	if err := os.MkdirAll(staging, 0o755); err != nil {
 		return fmt.Errorf("create module cache: %w", err)
 	}
+	warnIfCacheRootIsVersioned(cacheRoot)
 	sweepStalePulls(cacheRoot)
-	tmp, err := os.MkdirTemp(cacheRoot, ".pull-*")
+	tmp, err := os.MkdirTemp(staging, "pull-*")
 	if err != nil {
 		return fmt.Errorf("create clone directory: %w", err)
 	}
@@ -868,12 +871,20 @@ func highestSemverTag(tags []string, constraint *semver.Constraints) string {
 // cleanup in clonePinnedArtifact never ran). The one-hour floor keeps the sweep
 // from ever touching a concurrent run's in-progress clone.
 func sweepStalePulls(cacheRoot string) {
-	entries, err := os.ReadDir(cacheRoot)
+	// The reserved staging directory, and the top level for `.pull-*` trees left
+	// by a version that staged there — otherwise those would never be reclaimed
+	// by anything, having stopped being written but not stopped existing.
+	sweepStaleDir(filepath.Join(cacheRoot, stagingCacheDirName), "pull-")
+	sweepStaleDir(cacheRoot, ".pull-")
+}
+
+func sweepStaleDir(dir, prefix string) {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), ".pull-") {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
 			continue
 		}
 		info, err := entry.Info()
@@ -881,8 +892,57 @@ func sweepStalePulls(cacheRoot string) {
 			continue
 		}
 		if time.Since(info.ModTime()) > time.Hour {
-			_ = os.RemoveAll(filepath.Join(cacheRoot, entry.Name()))
+			_ = os.RemoveAll(filepath.Join(dir, entry.Name()))
 		}
+	}
+}
+
+// versionedRootWarned keeps the advisory below to once per root per process: a
+// run that pulls ten modules has one thing to say, not ten.
+var versionedRootWarned sync.Map
+
+// warnIfCacheRootIsVersioned says so when a *configured* cache root sits inside a
+// git work tree, because everything written there is regenerable machine output
+// that will show up as untracked files in someone's repository — and a cache
+// large enough to matter is easy to commit by accident.
+//
+// It warns rather than writing a .gitignore. The CLI cannot write one correctly:
+// a configured root may legitimately hold the developer's own module checkouts
+// (that is what keeps their `resolve.<name>.path` intact, see moduleCacheRoots),
+// so the blanket `*` that would cover the cache would also hide their work. Only
+// the developer knows their repository's layout, so the advisory names the two
+// directories the CLI owns and leaves the decision with them.
+func warnIfCacheRootIsVersioned(cacheRoot string) {
+	configured, err := configuredModuleCacheRoot()
+	if err != nil || configured == "" || configured != cacheRoot {
+		return
+	}
+	repository := gitWorkTreeContaining(cacheRoot)
+	if repository == "" {
+		return
+	}
+	if _, seen := versionedRootWarned.LoadOrStore(cacheRoot, true); seen {
+		return
+	}
+	cli.Warning("%s points at %s, inside the git repository at %s: cached modules will show up as untracked files; ignore %s/ and %s/ there, or point %s outside the repository",
+		ModuleCacheEnv, cacheRoot, repository, stagingCacheDirName, verifiedPackageCacheDirName, ModuleCacheEnv)
+}
+
+// gitWorkTreeContaining returns the root of the git work tree dir lies in, or ""
+// when it lies in none. It walks up looking for a `.git` entry instead of forking
+// git, so it costs a few stats, needs no git on PATH, and answers for a directory
+// that does not exist yet.
+func gitWorkTreeContaining(dir string) string {
+	current := filepath.Clean(dir)
+	for {
+		if _, err := os.Stat(filepath.Join(current, ".git")); err == nil {
+			return current
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return ""
+		}
+		current = parent
 	}
 }
 
@@ -911,6 +971,14 @@ const ModuleCacheEnv = "CODEFLY_MODULE_CACHE"
 // the git clones occupy; keeping them under one reserved name is what lets both
 // live under the single root the developer configured.
 const verifiedPackageCacheDirName = ".packages"
+
+// stagingCacheDirName is the subdirectory of a cache root that holds in-flight
+// clones. They live under one reserved name rather than as `.pull-*` siblings of
+// the `<owner>/<repo>/<tag>` trees so that the browsable layout stays browsable,
+// and so a developer who points the cache into a repository has two names to
+// ignore rather than an unbounded set. It must stay on the same filesystem as
+// the checkouts it is promoted into, which being under the same root guarantees.
+const stagingCacheDirName = ".staging"
 
 // configuredModuleCacheRoot returns the root named by ModuleCacheEnv, or "" when
 // it is unset. A value that is not usable as a root is an error rather than an

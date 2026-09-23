@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codefly-dev/core/resources"
 )
@@ -407,5 +408,151 @@ func TestEnsurePinnedModulesRematerializesWhenTheCacheIsDeleted(t *testing.T) {
 	}
 	if _, err := os.Stat(overlay.Resolve["saas"].Path); err != nil {
 		t.Fatalf("the overlay names a materialization that is not there: %v", err)
+	}
+}
+
+// Adding the committed declaration to a module already on an overlay clone must
+// not re-pull it. Both modes clone the same tag to the same path, so a mode flip
+// there is pure churn: it invalidates the receipt, and on a cache miss would
+// re-clone for a byte-identical result. The receipt's overlay-selected mode is
+// consulted ahead of the declaration precisely so this does not happen, and this
+// is what would catch that ordering being reversed.
+func TestMaterializePinnedModulesDeclarationDoesNotChurnAnOverlayClone(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	source := initModuleRepo(t, "", "v0.0.1")
+	ctx := context.Background()
+
+	workspaceDir := t.TempDir()
+	writeSolutionWorkspace(t, workspaceDir, source, "v0.0.1")
+	writeGitFallbackOverlay(t, workspaceDir, "saas")
+	workspace := &resources.Workspace{
+		Name:    "wiki",
+		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "v0.0.1"}},
+	}
+	workspace.WithDir(workspaceDir)
+	if err := MaterializePinnedModules(ctx, workspace); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	before, err := LoadResolutionReceipts(workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before["saas"].Mode != ResolutionModeGit {
+		t.Fatalf("receipt mode = %q, want the overlay opt-out", before["saas"].Mode)
+	}
+
+	// The workspace now writes the opt-out down for everyone.
+	writeSolutionWorkspaceWithResolution(t, workspaceDir, source, "v0.0.1", "git")
+
+	answered, err := pinnedRequestsAnswered(ctx, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !answered {
+		t.Fatal("the module is already on the clone the declaration asks for; re-materializing it is churn")
+	}
+	after, err := LoadResolutionReceipts(workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after["saas"].Path != before["saas"].Path {
+		t.Fatalf("the materialization moved from %q to %q", before["saas"].Path, after["saas"].Path)
+	}
+}
+
+// In-flight clones stage under one reserved directory rather than as `.pull-*`
+// siblings of the module trees, so the browsable layout a configured root exists
+// for stays browsable — and a developer who must ignore the CLI's output has a
+// bounded set of names to ignore.
+func TestCloneStagesUnderTheReservedDirectory(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	vendors := filepath.Join(t.TempDir(), "vendors")
+	t.Setenv(ModuleCacheEnv, vendors)
+	source := initModuleRepo(t, "", "v0.0.1")
+	ctx := context.Background()
+
+	workspaceDir := t.TempDir()
+	writeSolutionWorkspaceWithResolution(t, workspaceDir, source, "v0.0.1", "git")
+	workspace := &resources.Workspace{
+		Name:    "wiki",
+		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Version: "v0.0.1"}},
+	}
+	workspace.WithDir(workspaceDir)
+	if err := MaterializePinnedModules(ctx, workspace); err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(vendors, stagingCacheDirName)); err != nil {
+		t.Fatalf("clones did not stage under the reserved directory: %v", err)
+	}
+	entries, err := os.ReadDir(vendors)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".pull-") {
+			t.Fatalf("a staging directory was left beside the module trees: %q", entry.Name())
+		}
+	}
+	// Everything the CLI owns under a configured root is one of the two reserved
+	// names; the rest of the tree is the browsable layout the root exists for.
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") &&
+			entry.Name() != stagingCacheDirName && entry.Name() != verifiedPackageCacheDirName {
+			t.Fatalf("an unexpected reserved entry appeared in the browsable tree: %q", entry.Name())
+		}
+	}
+}
+
+// A stale staging directory is reclaimed wherever a previous version left it —
+// under the reserved directory, and at the top level where `.pull-*` used to go.
+// Litter that stopped being written but did not stop existing is still litter.
+func TestSweepStalePullsReclaimsBothLayouts(t *testing.T) {
+	root := t.TempDir()
+	old := filepath.Join(root, ".pull-abc")
+	current := filepath.Join(root, stagingCacheDirName, "pull-def")
+	fresh := filepath.Join(root, stagingCacheDirName, "pull-ghi")
+	for _, dir := range []string{old, current, fresh} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stale := time.Now().Add(-2 * time.Hour)
+	for _, dir := range []string{old, current} {
+		if err := os.Chtimes(dir, stale, stale); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sweepStalePulls(root)
+
+	for _, dir := range []string{old, current} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Fatalf("stale staging directory %q was not reclaimed", dir)
+		}
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("a staging directory still in use was reclaimed: %v", err)
+	}
+}
+
+// The CLI cannot write a .gitignore for a configured root without hiding the
+// developer's own checkouts inside it, so it says so instead. The detection is
+// what has to be right: it must find the enclosing repository from a directory
+// that does not exist yet, and must not claim one that is not there.
+func TestGitWorkTreeContaining(t *testing.T) {
+	repository := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repository, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(repository, "vendors", "modules")
+	if got := gitWorkTreeContaining(nested); got != repository {
+		t.Fatalf("gitWorkTreeContaining(%q) = %q, want %q — the root is named before it exists", nested, got, repository)
+	}
+	if got := gitWorkTreeContaining(repository); got != repository {
+		t.Fatalf("the work tree root itself must resolve to itself, got %q", got)
+	}
+	if got := gitWorkTreeContaining(t.TempDir()); got != "" {
+		t.Fatalf("a directory in no repository must resolve to nothing, got %q", got)
 	}
 }

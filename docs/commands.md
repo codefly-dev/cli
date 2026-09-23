@@ -979,6 +979,16 @@ configure is yours, not the CLI's: a checkout of your own inside it keeps its
 `resolve.<name>.path`, because there `run` treats only the path on a receipt as
 its own output.
 
+Two names under the root are reserved for the CLI: `.packages/` holds the
+digest-addressed verified packages, and `.staging/` holds in-flight clones being
+promoted. Everything else is the browsable `<owner>/<repo>/<tag>/` layout. If you
+point the root inside a git repository, `run` says so once — cached modules are
+regenerable machine output and will otherwise sit there as untracked files. It
+does not write a `.gitignore` for you: a root you configure may also hold module
+checkouts of your own, and the blanket rule that would cover the cache would hide
+those too. Ignore the two reserved names, or point the root outside the
+repository.
+
 #### Resolution receipts
 
 Everything `run` materializes is recorded as a receipt in
