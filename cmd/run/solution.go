@@ -65,29 +65,23 @@ var SolutionCmd = &cobra.Command{
 }
 
 // ResolveSolutionEntry finds the solution root and returns its
-// "<module>/<service-entry>" unique. The root is the workspace's own module —
-// the one referenced by `path: .` (equivalently, whose name matches the
-// workspace). Composed dependency modules (e.g. the saas host) may declare their
-// own service-entry, but those are dependencies, not the solution root, so they
-// must not be treated as competing roots.
+// "<module>/<service-entry>" unique. The root is the module declaring a
+// service-entry that no other entry-declaring module depends on: a composed
+// host (e.g. the saas host) declares an entry of its own, but the solution's
+// entry depends on it — through its services' dependencies or its manifest's
+// api.consumes — which makes the host a dependency, not a competing root. That
+// holds whether the solution is the workspace's own module or one composed by
+// source and version beside the host, so a product composition that composes
+// both runs the solution without naming it.
 //
-// When no self-root module is identifiable, fall back to scanning for a single
-// module that declares a service-entry. Composed modules that fail to resolve
-// (e.g. a pinned coordinate with no local checkout yet) are not the local root,
-// so their load errors are collected and only surfaced if no entry is found.
+// When more than one entry is left — nothing depends on either — the
+// workspace's own module (`path: .`, or the one named like the workspace) is
+// the root, being what the workspace is for. Composed modules that fail to
+// resolve (e.g. a pinned coordinate with no local checkout yet) are not the
+// root, so their load errors are collected and only surfaced if no entry is
+// found.
 func ResolveSolutionEntry(ctx context.Context, workspace *resources.Workspace) (string, error) {
-	if root := solutionrun.RootRef(workspace); root != nil {
-		mod, err := workspace.LoadModuleFromReference(ctx, root)
-		if err != nil {
-			return "", fmt.Errorf("cannot load solution root module <%s>: %w", root.Name, err)
-		}
-		if mod.ServiceEntry == "" {
-			return "", fmt.Errorf("solution root module <%s> declares no service-entry", mod.Name)
-		}
-		return mod.Name + "/" + mod.ServiceEntry, nil
-	}
-
-	var entries []string
+	var entries []*resources.Module
 	var loadErrs []error
 	for _, ref := range workspace.Modules {
 		mod, err := workspace.LoadModuleFromReference(ctx, ref)
@@ -96,20 +90,41 @@ func ResolveSolutionEntry(ctx context.Context, workspace *resources.Workspace) (
 			continue
 		}
 		if mod.ServiceEntry != "" {
-			entries = append(entries, mod.Name+"/"+mod.ServiceEntry)
+			entries = append(entries, mod)
 		}
 	}
-	switch len(entries) {
-	case 1:
-		return entries[0], nil
-	case 0:
+	if len(entries) == 0 {
 		if len(loadErrs) > 0 {
 			return "", fmt.Errorf("no solution root in workspace <%s>: no resolvable module declares a service-entry (some modules failed to resolve: %w)", workspace.Name, errors.Join(loadErrs...))
 		}
 		return "", fmt.Errorf("no solution root in workspace <%s>: no module declares a service-entry", workspace.Name)
-	default:
-		return "", fmt.Errorf("ambiguous solution root in workspace <%s>: multiple modules declare a service-entry (%s); run `codefly run service <module/service>` explicitly", workspace.Name, strings.Join(entries, ", "))
 	}
+	roots := solutionrun.SolutionRoots(ctx, workspace, entries)
+	if len(roots) == 0 {
+		// Every entry depends on another: a cycle leaves nothing to prefer on
+		// dependency grounds, so the tie-breaker below decides among them all.
+		roots = entries
+	}
+	if len(roots) == 1 {
+		return entryUnique(roots[0]), nil
+	}
+	if self := solutionrun.RootRef(workspace); self != nil {
+		for _, root := range roots {
+			if root.Name == self.Name {
+				return entryUnique(root), nil
+			}
+		}
+	}
+	uniques := make([]string, 0, len(roots))
+	for _, root := range roots {
+		uniques = append(uniques, entryUnique(root))
+	}
+	return "", fmt.Errorf("ambiguous solution root in workspace <%s>: multiple modules declare a service-entry and none depends on another (%s); run `codefly run service <module/service>` explicitly", workspace.Name, strings.Join(uniques, ", "))
+}
+
+// entryUnique is the "<module>/<service-entry>" unique of a module's entry.
+func entryUnique(mod *resources.Module) string {
+	return resources.ServiceUnique(mod.Name, mod.ServiceEntry)
 }
 
 func init() {

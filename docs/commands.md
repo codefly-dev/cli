@@ -200,8 +200,32 @@ codefly run solution --env local --headless  # Headless (CI, MCP, pipes)
 The composed modules resolve through the [module resolver](#module-composition):
 committed identity (`source` + `version`) plus a gitignored `codefly.local.yaml`
 overlay, so the identical command runs in CI (everything pinned, no sibling
-checkouts) and against your local worktrees. It errors clearly when no module —
-or more than one — declares a `service-entry`.
+checkouts) and against your local worktrees.
+
+The root is the module declaring a `service-entry` that no other
+entry-declaring module depends on. A composed host declares an entry of its own
+(the module a browser reaches first), but a solution's entry depends on the host
+— through its services' `service-dependencies`, transitively, or through its
+manifest's `api.consumes` — which makes the host a dependency, not a competing
+root. That holds whether the solution is the workspace's own module or one
+composed by `source` + `version` beside the host, so a product composition that
+composes both runs the solution without naming it. When more than one entry is
+left with nothing depending on it, the workspace's own module (`path: .`, or the
+one named like the workspace) is the root; it errors clearly when no module
+declares a `service-entry`, or when several do and none depends on another.
+
+A solution entry — the `service-entry` of a module shipping a
+`solution.codefly.yaml` — boots with what the composition would otherwise have
+to hand-set, derived from that manifest wherever the module is (the workspace
+root, or the cache checkout of a composed one): `CODEFLY__API_CONSUMES` and a
+per-run registration secret for every facade prefix it consumes, and the
+solution's own `CODEFLY__SOLUTION_REGISTRATION_SECRET`, minted per run and
+declared to the host's `federation` group as `<module>:sha256hex` under
+`SOLUTION_REGISTRATION_SECRETS` beside the module keys. The identity a solution
+registers under is its module name. The run does not invent endpoints: the host
+addresses the entry resolves (the gateway's `rest`, the frontend's `http`) are
+the `service-dependencies` its `service.codefly.yaml` declares, and an address it
+does not declare is not injected.
 
 The fixture this run uses is resolved against the composed packages' manifests
 before anything boots, so a typo fails at load naming the fixtures that do exist
@@ -533,6 +557,29 @@ CODEFLY_GITOPS_K3D_QUALIFY=1 \
   go test ./pkg/gitops -run TestLocalK3dDisposableGitQualification -v -count=1
 CODEFLY_GITOPS_K3D_QUALIFY=1 \
   go test ./pkg/gitops -run TestLocalFetchRemoteLifecycle -v -count=1
+```
+
+### `codefly deploy solution [name]`
+
+Drive a `codefly:solution` executor: package a solution source into an OCI
+artifact and render its manifests into the owned gitops tree, in the solution's
+own namespace.
+
+```bash
+codefly deploy solution lastlogin --env production \
+  --agent codefly.dev:solution-generic:0.0.1 \
+  --source ./solutions/lastlogin --reference ghcr.io/example/lastlogin:0.0.1
+```
+
+No `codefly:solution` executor is published today, so this command cannot
+obtain one for any `--agent`, and it says so: when the executor cannot be
+resolved or loaded it fails naming the step and the cause, and points at the
+render path a composed solution actually takes. A solution composed into a
+workspace by `source` + `version` is a module — its services run on service
+agents — and renders like one:
+
+```bash
+codefly deploy gitops render lastlogin --env production
 ```
 
 ### `codefly deploy init`

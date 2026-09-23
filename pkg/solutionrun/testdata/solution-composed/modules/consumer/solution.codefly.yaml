@@ -1,0 +1,20 @@
+schema_version: codefly.solution-manifest/v0
+protocol_version: codefly.solution/v0
+agent:
+  kind: codefly:solution
+  publisher: codefly.dev
+  name: consumer
+  version: 0.1.0
+api:
+  exposes:
+    - id: http
+      protocol: http
+  consumes:
+    - id: accounts
+      protocol: connect
+      module: host
+      service: accounts
+      endpoint: connect
+      as: accounts
+lifecycle:
+  render: true

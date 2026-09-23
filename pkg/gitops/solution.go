@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -205,17 +206,31 @@ type solutionExecutor interface {
 	Render(context.Context, solution.Ceiling, *solutionv0.RenderRequest, ...grpc.CallOption) (*solutionv0.RenderResponse, error)
 }
 
+// ErrSolutionExecutorUnavailable marks a render that never reached an executor:
+// the codefly:solution agent named could not be resolved or loaded. It is a
+// distinct failure from an executor that ran and refused, because the way out
+// is different — no codefly:solution executor is published today, and a
+// solution composed into a workspace by source and version is a module the
+// gitops render path already handles through its service agents.
+var ErrSolutionExecutorUnavailable = errors.New("no codefly:solution executor is available")
+
+// solutionExecutorUnavailable names the step that failed to obtain the executor
+// and keeps its cause, under the sentinel a caller can point the operator from.
+func solutionExecutorUnavailable(step string, agent *resources.Agent, cause error) error {
+	return fmt.Errorf("%w: %s solution agent %s: %w", ErrSolutionExecutorUnavailable, step, agent.Identifier(), cause)
+}
+
 // connectSolutionExecutor resolves and loads the codefly:solution executor,
 // returning a ceiling-enforcing client and a release function that tears the
 // agent connection down. It is a package variable so tests can substitute an
 // in-process executor.
 var connectSolutionExecutor = func(ctx context.Context, workDir string, agent *resources.Agent) (solutionExecutor, func(), error) {
 	if _, err := manager.ResolveLatest(ctx, agent); err != nil {
-		return nil, nil, fmt.Errorf("resolve solution agent %s: %w", agent.Name, err)
+		return nil, nil, solutionExecutorUnavailable("resolve", agent, err)
 	}
 	conn, err := manager.Load(ctx, agent, manager.WithWorkDir(workDir), manager.WithoutSandbox(), manager.WithoutPrincipal())
 	if err != nil {
-		return nil, nil, fmt.Errorf("load solution agent %s: %w", agent.Name, err)
+		return nil, nil, solutionExecutorUnavailable("load", agent, err)
 	}
 	client, err := admittedSolutionExecutor(ctx, conn)
 	if err != nil {

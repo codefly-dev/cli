@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -320,5 +321,42 @@ func TestLocalGitopsPublishSolutionGeneratesBootstrap(t *testing.T) {
 	}
 	if strings.Contains(project, "namespace: hello") {
 		t.Fatalf("generated AppProject leaks the shared host namespace:\n%s", project)
+	}
+}
+
+// An executor the CLI could not resolve or load is a different failure from one
+// that ran and refused: the sentinel survives the render's own wrapping so the
+// command can name the way out, and the step and cause survive with it.
+func TestRenderSolutionReportsAnUnavailableExecutorUnderTheSentinel(t *testing.T) {
+	agent := &resources.Agent{
+		Kind: resources.SolutionAgent, Publisher: "codefly.dev", Name: "hello-solution", Version: "0.0.1",
+	}
+	cause := errors.New("no release 0.0.1")
+	previous := connectSolutionExecutor
+	connectSolutionExecutor = func(context.Context, string, *resources.Agent) (solutionExecutor, func(), error) {
+		return nil, nil, solutionExecutorUnavailable("resolve", agent, cause)
+	}
+	t.Cleanup(func() { connectSolutionExecutor = previous })
+
+	workspace := loadSolutionWorkspace(t, "/tmp/hello.git")
+	_, err := RenderSolution(context.Background(), &SolutionRenderRequest{
+		Workspace:   workspace,
+		Environment: selectedEnvironment(t, workspace, "local"),
+		Agent:       agent,
+		Name:        "lastlogin-go",
+		Source:      filepath.Join(workspace.Dir(), "solution-src"),
+		Reference:   "ghcr.io/codefly-dev/hello-solution:0.0.1",
+		AppProject:  "hello",
+	})
+	if !errors.Is(err, ErrSolutionExecutorUnavailable) {
+		t.Fatalf("RenderSolution did not report the executor as unavailable: %v", err)
+	}
+	if !errors.Is(err, cause) {
+		t.Errorf("the cause was lost: %v", err)
+	}
+	for _, want := range []string{"resolve solution agent", agent.Identifier()} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not say %q", err, want)
+		}
 	}
 }

@@ -29,6 +29,12 @@ import (
 // RootRef returns the workspace's own module reference — the `path: .`
 // self module (or, failing an explicit path, the module whose name matches the
 // workspace) — or nil if none is present.
+//
+// It is a tie-breaker, not a gate: a solution composed into a workspace by
+// source and version is never the workspace's own module, yet it runs — and
+// federates — exactly like one checked out at the root. What a run derives is
+// therefore located by the module (see entryManifest); RootRef only decides
+// between solution roots that nothing else tells apart (see SolutionRoots).
 func RootRef(workspace *resources.Workspace) *resources.ModuleReference {
 	for _, ref := range workspace.Modules {
 		if ref.PathOverride != nil && *ref.PathOverride == "." {
@@ -43,34 +49,35 @@ func RootRef(workspace *resources.Workspace) *resources.ModuleReference {
 	return nil
 }
 
-// entryConsumes returns the solution's api.consumes projection when
-// service is the solution root's own service-entry, along with the
-// CODEFLY__API_CONSUMES value carrying it. The solution runtime reads that
-// variable to register each consumed module's upstream with the gateway, so
-// without it every consumed route stays unrouted.
+// entryManifest returns the solution manifest of the module whose service-entry
+// is service, or nil when service is not that entry or the module ships no
+// manifest. The manifest sits beside the module manifest, in the module's own
+// directory — the workspace root for a `path: .` module, a cache checkout for one
+// composed by source and version. Locating it by the module rather than by the
+// workspace is what lets a composed solution derive the same run inputs as a
+// root one: gated on the workspace's own module, a composed solution booted with
+// no projection and no credential, and its registration was refused by the host
+// it was composed against.
 //
-// The manifest at the workspace root describes the workspace's own module, so
-// the injection is gated on service belonging to that module: when no self-root
-// module exists, entry resolution falls back to scanning composed modules,
-// and pairing this manifest with a composed module's service would bind one
-// solution's consumes to another's backend.
-func entryConsumes(workspace *resources.Workspace, module *resources.Module, service *resources.Service) ([]manifest.ConsumedAPI, string, error) {
-	root := RootRef(workspace)
-	if root == nil || module == nil || service == nil {
-		return nil, "", nil
+// The gate on service being the module's entry is still what keeps one
+// solution's manifest off another module's backend: the manifest describes the
+// module it sits in, and only that module's entry runs it.
+func entryManifest(module *resources.Module, service *resources.Service) (*manifest.Manifest, error) {
+	if module == nil || service == nil || module.ServiceEntry == "" || module.ServiceEntry != service.Name {
+		return nil, nil
 	}
-	if root.Name != module.Name || module.ServiceEntry != service.Name {
-		return nil, "", nil
+	return moduleManifest(module)
+}
+
+// moduleManifest returns the solution manifest a module ships, or nil when it
+// ships none. A module with no directory — one constructed rather than loaded —
+// has nowhere to ship it, so it is read as having none rather than as a relative
+// path against the working directory.
+func moduleManifest(module *resources.Module) (*manifest.Manifest, error) {
+	if module.Dir() == "" {
+		return nil, nil
 	}
-	solutionManifest, err := loadManifestForRun(workspace.Dir())
-	if err != nil || solutionManifest == nil {
-		return nil, "", err
-	}
-	consumed := solutionManifest.ConsumedAPIs()
-	if len(consumed) == 0 {
-		return nil, "", nil
-	}
-	return consumed, solutionManifest.ConsumedAPIsEnvValue(), nil
+	return loadManifestForRun(module.Dir())
 }
 
 // loadManifestForRun decodes the solution manifest leniently: running a
@@ -78,9 +85,9 @@ func entryConsumes(workspace *resources.Workspace, module *resources.Module, ser
 // field from a newer core — or tripping a schema rule unrelated to federation —
 // must not make the solution unrunnable. manifest.Load's strict KnownFields and
 // full Validate remain the gate for `sync` and `package`, which do consume the
-// whole schema. Returns nil when the workspace has no manifest.
-func loadManifestForRun(workspaceDir string) (*manifest.Manifest, error) {
-	data, err := os.ReadFile(filepath.Join(workspaceDir, manifest.FileName))
+// whole schema. Returns nil when the directory has no manifest.
+func loadManifestForRun(moduleDir string) (*manifest.Manifest, error) {
+	data, err := os.ReadFile(filepath.Join(moduleDir, manifest.FileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -97,12 +104,19 @@ func loadManifestForRun(workspaceDir string) (*manifest.Manifest, error) {
 	return &solutionManifest, nil
 }
 
-// facadePrefixPattern is the shape the registrar requires of a routing identity,
+// registrationIdentityPattern is the shape the registrar requires of every
+// identity it declares a digest for — a facade prefix and a solution id alike —
 // mirrored here so a run fails on the manifest rather than at the registrar's
-// startup. facadePrefixMaxLength bounds it to one DNS label.
-var facadePrefixPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`)
+// startup. registrationIdentityMaxLength bounds it to one DNS label.
+var registrationIdentityPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`)
 
-const facadePrefixMaxLength = 63
+const registrationIdentityMaxLength = 63
+
+// isRegistrationIdentity reports whether the registrar would accept identity in
+// a `identity:sha256hex` declaration.
+func isRegistrationIdentity(identity string) bool {
+	return registrationIdentityPattern.MatchString(identity) && len(identity) <= registrationIdentityMaxLength
+}
 
 // validateConsumedBindings rejects a partially bound api.consumes entry, a facade
 // prefix claimed twice, and a prefix that is not a routing label. The lenient
@@ -143,8 +157,8 @@ func validateConsumedBindings(consumes []manifest.APIDeclaration) error {
 		if declaration.As == "" {
 			continue
 		}
-		if !facadePrefixPattern.MatchString(declaration.As) || len(declaration.As) > facadePrefixMaxLength {
-			return fmt.Errorf("%s: api.consumes entry %q claims the facade prefix %q; a prefix is one routing label: lowercase letters, digits and dashes, starting and ending alphanumeric, at most %d characters", manifest.FileName, declaration.ID, declaration.As, facadePrefixMaxLength)
+		if !isRegistrationIdentity(declaration.As) {
+			return fmt.Errorf("%s: api.consumes entry %q claims the facade prefix %q; a prefix is one routing label: lowercase letters, digits and dashes, starting and ending alphanumeric, at most %d characters", manifest.FileName, declaration.ID, declaration.As, registrationIdentityMaxLength)
 		}
 		if first, duplicate := seenAs[declaration.As]; duplicate {
 			return fmt.Errorf("%s: api.consumes entries %q and %q both claim the facade prefix %q; one prefix is one identity", manifest.FileName, first, declaration.ID, declaration.As)
@@ -224,6 +238,24 @@ const (
 	// hex-encoded, so a secret can never contain the "," or ":" that separate
 	// entries on either side of the exchange.
 	moduleRegistrationSecretBytes = 32
+
+	// solutionRegistrationSecretsKey carries, in the same `id:sha256hex`
+	// encoding, the digests of the secrets solutions register with. The host
+	// declares it apart from the module keys on purpose: a solution registers a
+	// frontend remote that executes in the host origin with the viewer's
+	// credentials, strictly more authority than federating a REST prefix, so
+	// neither credential may stand in for the other. The registrar reads this key
+	// on every exchange rather than at startup, so a solution mounting against a
+	// host already serving is admitted without restarting it.
+	// #nosec G101 -- a configuration key name, not a credential
+	solutionRegistrationSecretsKey = "SOLUTION_REGISTRATION_SECRETS"
+	// solutionRegistrationSecretEnvironmentVariable carries the plaintext twin to
+	// the solution's entry service. The solution runtimes read it as an explicit
+	// override of the `solution-registration/SECRET` workspace secret, which is
+	// the declared carrier for a deployed solution; a run mints the secret per
+	// process and has no store to declare it in, so the override is its carrier.
+	// #nosec G101 -- an environment variable name, not a credential
+	solutionRegistrationSecretEnvironmentVariable = "CODEFLY__SOLUTION_REGISTRATION_SECRET"
 )
 
 // moduleRegistrationSecrets is one run's provisioning: the secrets each federated
@@ -494,49 +526,78 @@ type Note struct {
 	Message string
 }
 
-// DerivedRunInputs resolves the solution-federation injections for the
-// service being run: the CODEFLY__API_CONSUMES projection, and the registration
-// secrets that let the consuming backend prove which module it is. Every run
-// path derives them here so `run service <entry>`, `run solution` and the
-// control plane inject identically, and it reports what it sent through Notes:
-// the values ride Start overrides, which each service agent chooses to honor,
-// so an operator debugging dead federation must be able to see that the CLI
-// supplied them before suspecting the manifest.
+// DerivedRunInputs resolves the solution injections for the service being run,
+// when it is the service-entry of a module shipping a solution manifest: the
+// CODEFLY__API_CONSUMES projection, the registration secrets that let the
+// consuming backend prove which module it is, and the registration secret the
+// solution itself registers with the host under. Every run path derives them
+// here so `run service <entry>`, `run solution` and the control plane inject
+// identically, and it reports what it sent through Notes: the values ride Start
+// overrides, which each service agent chooses to honor, so an operator debugging
+// dead federation must be able to see that the CLI supplied them before
+// suspecting the manifest.
+//
+// Nothing here depends on the module being the workspace's own: a solution
+// composed by source and version derives the same inputs from the manifest in
+// its cache checkout.
 func DerivedRunInputs(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, serviceName string) (RunInputs, error) {
-	consumed, value, err := entryConsumes(workspace, module, service)
+	solutionManifest, err := entryManifest(module, service)
 	if err != nil {
 		return RunInputs{}, err
 	}
-	if len(consumed) == 0 {
+	if solutionManifest == nil {
 		return RunInputs{}, nil
 	}
-	ids := make([]string, 0, len(consumed))
-	for i := range consumed {
-		ids = append(ids, consumed[i].ID)
-	}
-	notes := []Note{{Message: fmt.Sprintf("injecting %s into %s: %s",
-		manifest.APIConsumesEnvironmentVariable, serviceName, strings.Join(ids, ", "))}}
-	overrides := map[string]map[string]string{
-		serviceName: {manifest.APIConsumesEnvironmentVariable: value},
+	var notes []Note
+	overrides := map[string]map[string]string{serviceName: {}}
+	consumed := solutionManifest.ConsumedAPIs()
+	if len(consumed) > 0 {
+		ids := make([]string, 0, len(consumed))
+		for i := range consumed {
+			ids = append(ids, consumed[i].ID)
+		}
+		overrides[serviceName][manifest.APIConsumesEnvironmentVariable] = solutionManifest.ConsumedAPIsEnvValue()
+		notes = append(notes, Note{Message: fmt.Sprintf("injecting %s into %s: %s",
+			manifest.APIConsumesEnvironmentVariable, serviceName, strings.Join(ids, ", "))})
 	}
 
 	provisioned := provisionModuleRegistrationSecrets(consumed)
-	if provisioned == nil {
-		return RunInputs{Overrides: overrides, Notes: notes}, nil
-	}
-
 	registrars := federationRegistrars(ctx, workspace)
 	if len(registrars) == 0 {
 		// Without a registrar holding the digests, nothing can authorize a mint.
 		// Hand the backend a secret anyway and it spends every heartbeat on an
 		// exchange that cannot succeed; withholding it lets the runtime skip the
-		// module with the accurate "no registration secret provisioned" line
+		// exchange with the accurate "no registration secret provisioned" line
 		// instead. That is a composition gap, not a reason to refuse to run, so
 		// say so and boot: the solution still serves its own routes.
+		withheld := []string{"solution " + module.Name + " cannot register"}
+		if provisioned != nil {
+			withheld = append(withheld, fmt.Sprintf("consumed modules (%s) cannot federate", strings.Join(provisioned.prefixes, ", ")))
+		}
 		notes = append(notes, Note{Warning: true, Message: fmt.Sprintf(
-			"no service declares the %q workspace configuration: consumed modules (%s) cannot federate",
-			federationConfigurationGroup, strings.Join(provisioned.prefixes, ", "))})
-		return RunInputs{Overrides: overrides, Notes: notes}, nil
+			"no service declares the %q workspace configuration: %s",
+			federationConfigurationGroup, strings.Join(withheld, "; "))})
+		return RunInputs{Overrides: mergeOverrides(overrides), Notes: notes}, nil
+	}
+	declared := map[string]string{}
+
+	// The solution's own credential: the host admits a solution's gateway upstream
+	// and its frontend remote only against the digest declared for the id it
+	// registers under, which is the module's name. Minted per run, like the
+	// module secrets, so nothing written to disk can register in the next run.
+	solutionSecret, solutionNotes := provisionSolutionRegistrationSecret(module.Name, serviceName, registrars)
+	notes = append(notes, solutionNotes...)
+	if solutionSecret != "" {
+		overrides[serviceName][solutionRegistrationSecretEnvironmentVariable] = solutionSecret
+		declared[solutionRegistrationSecretsKey] = module.Name + ":" + moduleSecretDigest(solutionSecret)
+	}
+
+	if provisioned == nil {
+		return RunInputs{
+			Overrides:               mergeOverrides(overrides),
+			Notes:                   notes,
+			WorkspaceConfigurations: federationDeclaration(declared),
+		}, nil
 	}
 	overrides[serviceName][moduleRegistrationSecretsEnvironmentVariable] = provisioned.registrationSecrets()
 	notes = append(notes, Note{Message: fmt.Sprintf(
@@ -564,25 +625,114 @@ func DerivedRunInputs(ctx context.Context, workspace *resources.Workspace, modul
 			"no %s provisioned for %s: those modules cannot obtain a work context, so their module-facing workers will idle",
 			moduleIdentitySecretEnvironmentVariable, strings.Join(injection.unresolved, "; "))})
 	}
+	declared[moduleRegistrationSecretsKey] = provisioned.registrationDigests()
+	declared[moduleIdentitySecretsKey] = provisioned.identityDigests()
 	return RunInputs{
-		Overrides: mergeOverrides(overrides, injection.overrides),
-		Notes:     notes,
-		WorkspaceConfigurations: map[string]map[string]string{
-			federationConfigurationGroup: {
-				moduleRegistrationSecretsKey: provisioned.registrationDigests(),
-				moduleIdentitySecretsKey:     provisioned.identityDigests(),
-			},
-		},
+		Overrides:               mergeOverrides(overrides, injection.overrides),
+		Notes:                   notes,
+		WorkspaceConfigurations: federationDeclaration(declared),
 	}, nil
+}
+
+// federationDeclaration wraps the digests a run declares into the federation
+// group, or nil when it declares none, so a run that provisioned nothing sets no
+// configuration at all.
+func federationDeclaration(declared map[string]string) map[string]map[string]string {
+	if len(declared) == 0 {
+		return nil
+	}
+	return map[string]map[string]string{federationConfigurationGroup: declared}
+}
+
+// provisionSolutionRegistrationSecret mints the secret the solution named id
+// registers with, and says what it did. It returns no secret, with a warning,
+// when the registrar could not hold a digest for id — the registrar refuses a
+// malformed declaration at startup, so declaring one would take the whole host
+// down with a message blaming a credential — and when the solution's own module
+// is the registrar: that module holds the digests and injecting the preimage
+// beside them dissolves the separation the digest carrier exists to create.
+func provisionSolutionRegistrationSecret(id, serviceName string, registrars []string) (string, []Note) {
+	if slices.Contains(registrarModules(registrars), id) {
+		return "", []Note{{Message: fmt.Sprintf(
+			"module %s declares the %q group and holds the digests: it admits solutions rather than registers as one", id, federationConfigurationGroup)}}
+	}
+	if !isRegistrationIdentity(id) {
+		return "", []Note{{Warning: true, Message: fmt.Sprintf(
+			"no %s provisioned: the module name %q is not an identity the registrar accepts (lowercase letters, digits and dashes, starting and ending alphanumeric, at most %d characters), so solution %s cannot register",
+			solutionRegistrationSecretEnvironmentVariable, id, registrationIdentityMaxLength, id)}}
+	}
+	secret := mintModuleSecret()
+	return secret, []Note{{Message: fmt.Sprintf(
+		"provisioned %s for solution %s into %s, its digest into %s",
+		solutionRegistrationSecretEnvironmentVariable, id, serviceName, strings.Join(registrars, ", "))}}
+}
+
+// Merge layers the inputs derived for one root of a run over those derived for
+// another. Overrides merge key by key, later winning, exactly as mergeOverrides
+// does. The workspace configuration values merge differently: every value this
+// package declares is a comma-separated list of `identity:sha256hex` entries,
+// and two solution roots in one run each declare their own — the second must
+// join the first, not replace it, or only the last-named solution can register.
+// Notes keep their order across roots.
+func Merge(base, layer RunInputs) RunInputs {
+	merged := RunInputs{
+		Overrides: mergeOverrides(base.Overrides, layer.Overrides),
+		Notes:     append(append([]Note{}, base.Notes...), layer.Notes...),
+	}
+	if len(base.WorkspaceConfigurations) == 0 && len(layer.WorkspaceConfigurations) == 0 {
+		return merged
+	}
+	merged.WorkspaceConfigurations = make(map[string]map[string]string)
+	for _, source := range []map[string]map[string]string{base.WorkspaceConfigurations, layer.WorkspaceConfigurations} {
+		for group, values := range source {
+			if merged.WorkspaceConfigurations[group] == nil {
+				merged.WorkspaceConfigurations[group] = make(map[string]string, len(values))
+			}
+			for key, value := range values {
+				merged.WorkspaceConfigurations[group][key] = joinDeclarations(merged.WorkspaceConfigurations[group][key], value)
+			}
+		}
+	}
+	return merged
+}
+
+// joinDeclarations appends the `identity:value` entries of layer to those of
+// base, keeping the first declaration of an identity. The registrar refuses a
+// declaration naming one identity twice — and boots nothing when it does — so
+// two roots claiming one identity must not produce a duplicate; the first named
+// root keeps it, as it did when the later value simply replaced the earlier one.
+func joinDeclarations(base, layer string) string {
+	if base == "" {
+		return layer
+	}
+	entries := strings.Split(base, ",")
+	for _, entry := range strings.Split(layer, ",") {
+		if entry == "" {
+			continue
+		}
+		identity, _, _ := strings.Cut(entry, ":")
+		if slices.ContainsFunc(entries, func(existing string) bool {
+			declared, _, _ := strings.Cut(existing, ":")
+			return declared == identity
+		}) {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	return strings.Join(entries, ",")
 }
 
 // mergeOverrides layers per-service override maps, later layers winning key by
 // key. Returns nil when nothing is set, so a flow with no overrides is
-// indistinguishable from one that never had any.
+// indistinguishable from one that never had any; a service that received no
+// value is likewise left out rather than listed with nothing.
 func mergeOverrides(layers ...map[string]map[string]string) map[string]map[string]string {
 	merged := make(map[string]map[string]string)
 	for _, layer := range layers {
 		for service, values := range layer {
+			if len(values) == 0 {
+				continue
+			}
 			if merged[service] == nil {
 				merged[service] = make(map[string]string, len(values))
 			}
