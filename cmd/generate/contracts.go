@@ -183,8 +183,12 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 		// is. A connect endpoint on a service with no proto therefore has no
 		// machine-readable contract and is skipped like http/tcp, instead of
 		// failing the whole export when the descriptor build has nothing to
-		// compile. grpc and rest always carry a contract, so a missing proto
-		// there stays a hard error (surfaced by writeProtobufContract).
+		// compile. A rest endpoint is the same shape: an interface may export it
+		// so composed modules can reach it (a gateway's REST surface, say)
+		// without the service carrying an OpenAPI document, and such an export
+		// is reachability, not a contract — skipped, never a failure. grpc
+		// always carries a contract, so a missing proto there stays a hard
+		// error (surfaced by writeProtobufContract).
 		serviceHasProto, _ := shared.FileExists(ctx, filepath.Join(service.Dir(), "proto", "buf.yaml"))
 
 		var carriers []*basev0.Endpoint
@@ -194,6 +198,8 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 				cli.Info("endpoint %s/%s (api %s) has no contract; skipped", serviceName, endpoint.Name, endpoint.Api)
 			case endpoint.Api == standards.CONNECT && !serviceHasProto:
 				cli.Info("endpoint %s/%s (api connect) has no proto; skipped", serviceName, endpoint.Name)
+			case endpoint.Api == standards.REST && restWithoutOpenAPI(ctx, endpoint):
+				cli.Info("endpoint %s/%s (api rest) has no OpenAPI document; exported for reachability only, skipped", serviceName, endpoint.Name)
 			default:
 				carriers = append(carriers, endpoint)
 			}
@@ -274,6 +280,14 @@ func resolvePackageIdentity(module *resources.Module) (string, string, *composit
 		return "", "", nil, err
 	}
 	return manifest.ID, manifest.Version, manifest, nil
+}
+
+// restWithoutOpenAPI reports whether a rest endpoint carries no OpenAPI
+// document to export: either core attached no REST details to it or the
+// document is empty.
+func restWithoutOpenAPI(ctx context.Context, endpoint *basev0.Endpoint) bool {
+	rest := resources.IsRest(ctx, endpoint)
+	return rest == nil || len(rest.Openapi) == 0
 }
 
 // endpointCarriesContract reports whether an endpoint's API can be exported as
