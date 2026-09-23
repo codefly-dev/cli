@@ -114,7 +114,7 @@ func TestProjectManagedIdentityProjectsWithoutRewritingEndpoints(t *testing.T) {
 	writeConsumerTree(t, root, "production", "payments", "accounts", "store.payments.svc:5432")
 
 	if err := projectManagedIdentity(
-		context.Background(), root, storeConsumer("accounts"), consumerEnvironment(managedIdentityService()),
+		context.Background(), root, storeConsumer("accounts"), consumerEnvironment(managedIdentityService()), "payments",
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestProjectManagedIdentityRefusesConflictingIdentities(t *testing.T) {
 	service := storeConsumer("accounts")
 	service.ServiceDependencies = append(service.ServiceDependencies, &resources.ServiceDependency{Name: "warehouse"})
 
-	err := projectManagedIdentity(context.Background(), root, service, env)
+	err := projectManagedIdentity(context.Background(), root, service, env, env.Namespace)
 	if err == nil || !strings.Contains(err.Error(), "authenticates as one") {
 		t.Fatalf("err = %v, want a refusal naming the conflict", err)
 	}
@@ -182,7 +182,7 @@ func TestProjectManagedIdentityRefusesConflictingIdentities(t *testing.T) {
 	// as one rather than being refused.
 	sameIdentity := managedIdentityService()
 	env.ManagedServices["warehouse"] = sameIdentity
-	if err = projectManagedIdentity(context.Background(), root, service, env); err != nil {
+	if err = projectManagedIdentity(context.Background(), root, service, env, env.Namespace); err != nil {
 		t.Fatalf("two endpoints with one principal were refused: %v", err)
 	}
 }
@@ -196,7 +196,7 @@ func TestProjectManagedIdentityLeavesNonConsumersAlone(t *testing.T) {
 	before := readTree(t, root)
 
 	if err := projectManagedIdentity(
-		context.Background(), root, &resources.Service{Name: "frontend"}, consumerEnvironment(managedIdentityService()),
+		context.Background(), root, &resources.Service{Name: "frontend"}, consumerEnvironment(managedIdentityService()), "payments",
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestProjectManagedIdentityLeavesAbsentIdentityAlone(t *testing.T) {
 		EgressCIDRs:  []string{"10.20.11.0/28"},
 	}
 	if err := projectManagedIdentity(
-		context.Background(), root, storeConsumer("accounts"), consumerEnvironment(legacy),
+		context.Background(), root, storeConsumer("accounts"), consumerEnvironment(legacy), "payments",
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestProjectManagedIdentityIgnoresBuildOnlyEdge(t *testing.T) {
 		ServiceDependencies: []*resources.ServiceDependency{{Name: "store", Kind: resources.DependencyKindBuild}},
 	}
 	if err := projectManagedIdentity(
-		context.Background(), root, service, consumerEnvironment(managedIdentityService()),
+		context.Background(), root, service, consumerEnvironment(managedIdentityService()), "payments",
 	); err != nil {
 		t.Fatal(err)
 	}

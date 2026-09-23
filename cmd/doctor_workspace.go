@@ -48,7 +48,9 @@ const (
 	codeModuleReferenceUnresolved  = "module_reference_unresolved"
 	codeModuleTrustMissing         = "module_trust_missing"
 	codeModuleUnverified           = "module_unverified"
+	codeModuleResolutionGit        = "module_resolution_git"
 	codeModuleResolutionStale      = "module_resolution_stale"
+	codeModuleNotMaterialized      = "module_not_materialized"
 	codeModuleCheckoutVersionDrift = "module_checkout_version_drift"
 	codeServiceOverrideActive      = "service_override_active"
 	codeServiceOverrideUnresolved  = "service_override_unresolved"
@@ -127,6 +129,7 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	checkVendoredPins(ctx, ws, report)
 	checkModuleTrust(ctx, ws, report)
 	checkServiceOverrides(ctx, ws, report)
+	materialized := checkModulesMaterialized(ctx, ws, report)
 
 	env := checkEnvironment(ws, opts.env, report)
 	if env == nil {
@@ -136,6 +139,15 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	checkProviderBindings(ctx, ws, env, report)
 
 	resolvers, unavailable := checkSecretProviders(env, report)
+
+	// Everything from here loads the workspace's services, which core refuses
+	// for a composed module nobody has materialized on this machine. The
+	// diagnostic above already names each such module and the command that
+	// pulls it; relaying core's refusal on top would report the same condition
+	// a second time, worded as a manifest error.
+	if !materialized {
+		return report
+	}
 
 	scope, requiredBy := checkScope(ctx, ws, opts.service, report)
 	if scope == nil {
@@ -436,10 +448,24 @@ func sortedServiceNames(services map[string]*resources.ServiceResolveDirective) 
 // An opted-out module is not silently skipped: it is reported as consuming an
 // unverified clone, because after `run` has replaced `git: true` with the
 // resolved path the overlay no longer says so on its own.
+//
+// The workspace's own committed `module-resolution` entry is the third way a module can
+// be opted out, and the only one that survives in a fresh checkout. It is
+// reported twice on purpose: `module_resolution_git` states the declaration and
+// how to leave it, `module_unverified` states the consequence, which is the same
+// consequence however the clone was selected and must not read as milder
+// because the workspace wrote it down.
 func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *workspaceReadinessReport) {
 	if _, _, err := composition.LoadModuleTrust(ws.Dir()); err != nil {
 		report.add(codeModuleTrustMissing, "module-trust", "fail",
 			fmt.Sprintf("cannot read module-trust from %s: %v", resources.WorkspaceConfigurationName, err),
+			fmt.Sprintf("fix %s in %s", resources.WorkspaceConfigurationName, ws.Dir()))
+		return
+	}
+	declared, err := composition.LoadModuleResolutions(ws.Dir())
+	if err != nil {
+		report.add(codeWorkspaceInvalid, "module resolution", "fail",
+			fmt.Sprintf("cannot read module resolution from %s: %v", resources.WorkspaceConfigurationName, err),
 			fmt.Sprintf("fix %s in %s", resources.WorkspaceConfigurationName, ws.Dir()))
 		return
 	}
@@ -467,12 +493,17 @@ func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *work
 		}
 		directive := overlayDirective(overlay, ref.Name)
 		receipt := receipts[ref.Name]
-		mode := composition.ResolutionModeFor(directive, receipt)
+		mode := composition.ResolutionModeFor(directive, receipt, declared[ref.Name])
 		checkModuleMaterialization(ref, directive, receipt, mode, report)
-		if mode == composition.ResolutionModeGit {
+		if mode == composition.ResolutionModeDeclaredGit {
+			report.add(codeModuleResolutionGit, "resolution of "+ref.Name, "ok",
+				fmt.Sprintf("module %q is declared %s: git in %s: it resolves by cloning %s at its %s tag, unverified by declaration", ref.Name, composition.ModuleResolutionKey, resources.WorkspaceConfigurationName, ref.Source, moduleVersionLabel(ref)),
+				fmt.Sprintf("once %s publishes a signed module package, add module-trust.repositories/signers for %q and drop it from %s — nothing else about the entry changes", ref.Source, ref.Name, composition.ModuleResolutionKey))
+		}
+		if mode.Unverified() {
 			report.add(codeModuleUnverified, "module-trust for "+ref.Name, "warn",
 				fmt.Sprintf("module %q resolves through the unverified git clone: nothing about it is signature- or digest-checked", ref.Name),
-				fmt.Sprintf("add module-trust.repositories/signers for %q to %s and drop it from %s to resolve it verified", ref.Name, resources.WorkspaceConfigurationName, composition.ResolutionRecordName))
+				unverifiedRemediation(ref.Name, mode))
 			continue
 		}
 		if err := composition.CheckModuleTrustCoverage(ws.Dir(), ref); err != nil {
@@ -481,6 +512,54 @@ func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *work
 				fmt.Sprintf("add module-trust.repositories/signers for %q to %s, or set resolve.%s.git: true in %s to use the unverified git clone", ref.Name, resources.WorkspaceConfigurationName, ref.Name, resources.LocalOverlayConfigurationName))
 		}
 	}
+}
+
+// checkModulesMaterialized reports every composed pinned module that no
+// materializing command has pulled onto this machine yet, and returns whether
+// the service-scoped checks can run at all. The doctor never writes, so it
+// cannot materialize the module itself the way `run`, `deploy gitops render`
+// or `ci` would; what it can do is say exactly that, with the command that
+// does, instead of relaying core's "pinned modules are pulled by the CLI, not
+// loadable as a local checkout" out of the service load. A materialization the
+// overlay still selects but which is gone from disk is the same condition with
+// a different cause, and is named with the path that vanished.
+func checkModulesMaterialized(ctx context.Context, ws *resources.Workspace, report *workspaceReadinessReport) bool {
+	missing, err := composition.UnmaterializedModules(ctx, ws)
+	if err != nil {
+		// The files this reads are owned and reported by checkModuleTrust; a
+		// second diagnostic for the same unreadable file adds nothing.
+		return true
+	}
+	for _, module := range missing {
+		message := fmt.Sprintf("module %q is declared but not materialized yet: nothing has pulled it into the module cache on this machine, so its services cannot be loaded", module.Name)
+		if module.MissingPath != "" {
+			message = fmt.Sprintf("module %q is declared but not materialized yet: %s selects %s for it, and that directory is gone or empty", module.Name, resources.LocalOverlayConfigurationName, module.MissingPath)
+		}
+		report.add(codeModuleNotMaterialized, "materialization of "+module.Name, "fail",
+			message,
+			fmt.Sprintf("run `codefly run service <service>` or `codefly deploy gitops render <module> --env <env>` once: either materializes every declared module and records it in %s, which doctor never writes; the service-scoped checks are skipped until then", resources.LocalOverlayConfigurationName))
+	}
+	return len(missing) == 0
+}
+
+// unverifiedRemediation names the file the opt-out actually lives in, so the
+// advice is something the reader can act on: a declaration is dropped from the
+// committed workspace manifest, a machine-local opt-out from the record `run`
+// wrote when it consumed the directive.
+func unverifiedRemediation(name string, mode composition.ResolutionMode) string {
+	if mode == composition.ResolutionModeDeclaredGit {
+		return fmt.Sprintf("add module-trust.repositories/signers for %q to %s and drop %q from its %s block to resolve it verified", name, resources.WorkspaceConfigurationName, name, composition.ModuleResolutionKey)
+	}
+	return fmt.Sprintf("add module-trust.repositories/signers for %q to %s and drop it from %s to resolve it verified", name, resources.WorkspaceConfigurationName, composition.ResolutionRecordName)
+}
+
+// moduleVersionLabel names the version a reference requests, spelling an absent
+// one as what it means rather than as nothing.
+func moduleVersionLabel(ref *resources.ModuleReference) string {
+	if strings.TrimSpace(ref.Version) == "" {
+		return "latest"
+	}
+	return ref.Version
 }
 
 // checkModuleMaterialization reports an overlay entry that still points at a
@@ -515,11 +594,7 @@ func receiptRequestLabel(receipt *composition.ResolutionReceipt) string {
 }
 
 func moduleRequestLabel(ref *resources.ModuleReference, mode composition.ResolutionMode) string {
-	version := ref.Version
-	if version == "" {
-		version = "latest"
-	}
-	return fmt.Sprintf("%s (%s)", version, mode)
+	return fmt.Sprintf("%s (%s)", moduleVersionLabel(ref), mode)
 }
 
 // overlayDirective returns module's overlay entry, or nil when there is no
@@ -696,14 +771,19 @@ func serviceUnique(svc *resources.Service) string {
 }
 
 type scopedConfiguration struct {
-	origin string // "workspace" or the service unique
+	origin string // "workspace", "module <name>", or the service unique
 	info   *basev0.ConfigurationInformation
 }
 
-// checkConfigurationSources discovers configuration files for the environment
-// without ever creating directories (core's reader would mkdir a missing
-// configurations/<env>; the doctor reports it instead). It returns the
-// configurations whose secret values are in scope for reference resolution.
+// checkConfigurationSources discovers the configurations the environment
+// provides, exactly as a run provisions them: the workspace's own
+// configurations/<profile>/* composed with the ones each composed module ships
+// in its tree — through core's configurations.ReadWorkspaceConfigurations, the
+// one definition of that rule, so the doctor cannot disagree with `run` — and
+// then the per-service directories. It never creates a directory: a missing
+// workspace directory is a failure only for the groups no composed module
+// provides. It returns the configurations whose secret values are in scope for
+// reference resolution.
 func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env *environments.Environment, serviceScoped bool, scope []*resources.Service, requiredBy map[string][]string, report *workspaceReadinessReport) []scopedConfiguration {
 	required := make([]string, 0, len(requiredBy))
 	for name := range requiredBy {
@@ -713,41 +793,88 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 
 	var toResolve []scopedConfiguration
 
-	wsCfgDir := filepath.Join(ws.Dir(), "configurations", env.Name)
-	relCfgDir := filepath.Join("configurations", env.Name)
-	wsInfos, loaded := loadConfigurationDir(ctx, wsCfgDir, "workspace", relCfgDir, report)
-	switch {
-	case loaded && wsInfos == nil && !dirExists(wsCfgDir):
-		if len(required) > 0 {
-			report.add(codeConfigurationDirMissing, "workspace configurations", "fail",
-				fmt.Sprintf("%s does not exist but %d workspace configuration(s) are required: %s", relCfgDir, len(required), strings.Join(required, ", ")),
-				fmt.Sprintf("create %s/ and add the required configuration files — fresh worktrees do not carry ignored *.secret.env files; copy the reference files from your primary checkout (secret values stay in the provider)", relCfgDir))
-		} else {
-			report.add("", "workspace configurations", "ok", fmt.Sprintf("none present under %s (none required)", relCfgDir), "")
-		}
-	case loaded:
-		if len(wsInfos) == 0 {
-			report.add("", "workspace configurations", "ok", fmt.Sprintf("none under %s", relCfgDir), "")
-		} else {
-			report.add("", "workspace configurations", "ok",
-				fmt.Sprintf("%d configuration(s) under %s: %s", len(wsInfos), relCfgDir, infoNames(wsInfos)), "")
-		}
-		byName := make(map[string]*basev0.ConfigurationInformation)
-		for _, info := range wsInfos {
+	// The profile, not the environment name, selects the directory — the same
+	// choice core makes when the run loads.
+	runtimeEnv := env.Runtime()
+	profile, err := runtimeEnv.ConfigurationProfileName()
+	if err != nil {
+		report.add(codeEnvironmentNotFound, "environment", "fail",
+			fmt.Sprintf("environment %q selects an invalid configuration profile: %v", env.Name, err),
+			fmt.Sprintf("fix `configuration-profile` of environment %q in %s", env.Name, resources.WorkspaceConfigurationName))
+		return nil
+	}
+	wsCfgDir := filepath.Join(ws.Dir(), "configurations", profile)
+	relCfgDir := filepath.Join("configurations", profile)
+
+	if provided := loadWorkspaceConfigurations(ctx, ws, runtimeEnv, relCfgDir, report); provided != nil {
+		byName := make(map[string]*basev0.ConfigurationInformation, len(provided.Infos))
+		var own, composed []*basev0.ConfigurationInformation
+		for _, info := range provided.Infos {
 			byName[info.Name] = info
+			if _, ok := provided.ComposedBy[info.Name]; ok {
+				composed = append(composed, info)
+			} else {
+				own = append(own, info)
+			}
+		}
+		// Only what nobody provides — a name no module ships, or one two modules
+		// disagree on — is what the workspace directory would have to hold; a
+		// module-shipped group is satisfied without it, exactly as in a run.
+		var unprovided []string
+		for _, name := range required {
+			if _, ok := byName[name]; !ok {
+				unprovided = append(unprovided, name)
+			}
+		}
+		switch {
+		case !dirExists(wsCfgDir) && len(unprovided) > 0:
+			report.add(codeConfigurationDirMissing, "workspace configurations", "fail",
+				fmt.Sprintf("%s does not exist and %d required workspace configuration(s) are provided by no composed module: %s", relCfgDir, len(unprovided), strings.Join(unprovided, ", ")),
+				fmt.Sprintf("create %s/ and add the required configuration files — fresh worktrees do not carry ignored *.secret.env files; copy the reference files from your primary checkout (secret values stay in the provider)", relCfgDir))
+		case !dirExists(wsCfgDir) && len(required) > 0:
+			report.add("", "workspace configurations", "ok",
+				fmt.Sprintf("none present under %s (all %d required configuration(s) are provided by composed modules)", relCfgDir, len(required)), "")
+		case !dirExists(wsCfgDir):
+			report.add("", "workspace configurations", "ok", fmt.Sprintf("none present under %s (none required)", relCfgDir), "")
+		case len(own) == 0:
+			report.add("", "workspace configurations", "ok", fmt.Sprintf("none under %s", relCfgDir), "")
+		default:
+			report.add("", "workspace configurations", "ok",
+				fmt.Sprintf("%d configuration(s) under %s: %s", len(own), relCfgDir, infoNames(own)), "")
+		}
+		if len(composed) > 0 {
+			report.add("", "composed module configurations", "ok",
+				fmt.Sprintf("%d configuration(s) shipped by composed modules: %s", len(composed), providedNames(composed, provided.ComposedBy)), "")
 		}
 		for _, name := range required {
+			requiredByList := strings.Join(requiredBy[name], ", ")
+			if conflict, ok := provided.Ambiguous[name]; ok {
+				report.add(codeConfigurationDuplicate, "workspace configurations", "fail",
+					fmt.Sprintf("required workspace configuration %q is ambiguous (required by %s): %v", name, requiredByList, conflict),
+					fmt.Sprintf("add %s/%s.env to this workspace: its own definition overrides every composed module's", relCfgDir, name))
+				continue
+			}
 			info, ok := byName[name]
 			if !ok {
 				report.add(codeConfigurationMissing, "workspace configurations", "fail",
-					fmt.Sprintf("required workspace configuration %q not found under %s (required by %s)", name, relCfgDir, strings.Join(requiredBy[name], ", ")),
+					fmt.Sprintf("required workspace configuration %q is neither under %s nor shipped by a composed module (required by %s)", name, relCfgDir, requiredByList),
 					fmt.Sprintf("add %s/%s.env (or %s.secret.env holding provider references)", relCfgDir, name, name))
 				continue
 			}
+			module, fromModule := provided.ComposedBy[name]
 			if len(info.ConfigurationValues) == 0 && info.Data == nil {
+				where, remedy := "exists under "+relCfgDir, fmt.Sprintf("populate the %s files for %q with the required keys", relCfgDir, name)
+				if fromModule {
+					where = fmt.Sprintf("is shipped by composed module %q", module)
+					remedy = fmt.Sprintf("add %s/%s.env with the required keys: the workspace's own definition overrides the module's", relCfgDir, name)
+				}
 				report.add(codeConfigurationMissing, "workspace configurations", "fail",
-					fmt.Sprintf("workspace configuration %q exists under %s but defines no values (required by %s)", name, relCfgDir, strings.Join(requiredBy[name], ", ")),
-					fmt.Sprintf("populate the %s files for %q with the required keys", relCfgDir, name))
+					fmt.Sprintf("workspace configuration %q %s but defines no values (required by %s)", name, where, requiredByList), remedy)
+				continue
+			}
+			if fromModule {
+				report.add("", "workspace configuration "+name, "ok",
+					fmt.Sprintf("provided by composed module %q (required by %s)", module, requiredByList), "")
 			}
 		}
 		if serviceScoped {
@@ -755,23 +882,23 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 			// workspace configurations must not be touched.
 			for _, name := range required {
 				if info, ok := byName[name]; ok {
-					toResolve = append(toResolve, scopedConfiguration{origin: "workspace", info: info})
+					toResolve = append(toResolve, scopedConfiguration{origin: workspaceConfigurationOrigin(name, provided.ComposedBy), info: info})
 				}
 			}
 		} else {
-			for _, info := range wsInfos {
-				toResolve = append(toResolve, scopedConfiguration{origin: "workspace", info: info})
+			for _, info := range provided.Infos {
+				toResolve = append(toResolve, scopedConfiguration{origin: workspaceConfigurationOrigin(info.Name, provided.ComposedBy), info: info})
 			}
 		}
 	}
 
 	serviceConfigurations := 0
 	for _, svc := range scope {
-		svcCfgDir := filepath.Join(svc.Dir(), "configurations", env.Name)
+		svcCfgDir := filepath.Join(svc.Dir(), "configurations", profile)
 		label := fmt.Sprintf("service %s", serviceUnique(svc))
-		relSvcDir := filepath.Join(svc.Name, "configurations", env.Name)
+		relSvcDir := filepath.Join(svc.Name, "configurations", profile)
 		if !dirExists(svcCfgDir) {
-			if others := otherEnvironmentDirs(filepath.Join(svc.Dir(), "configurations"), env.Name); len(others) > 0 {
+			if others := otherEnvironmentDirs(filepath.Join(svc.Dir(), "configurations"), profile); len(others) > 0 {
 				report.add(codeConfigurationDirMissing, "service configurations", "warn",
 					fmt.Sprintf("%s has configurations for %s but none for environment %q", label, strings.Join(others, ", "), env.Name),
 					fmt.Sprintf("create %s/ if this service needs configuration in %q", relSvcDir, env.Name))
@@ -791,6 +918,53 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 		report.add("", "service configurations", "ok", fmt.Sprintf("%d configuration(s) across %d service(s)", serviceConfigurations, len(scope)), "")
 	}
 	return toResolve
+}
+
+// loadWorkspaceConfigurations reads what the environment's profile provides to
+// the workspace through the same core read a run provisions from — which never
+// creates the workspace directory; its absence is judged by the caller. A tree
+// that cannot be read, in the workspace's own directory or in a composed
+// module's, is reported and returns nil. Duplicate keys within one
+// configuration are flagged as for a service directory.
+func loadWorkspaceConfigurations(ctx context.Context, ws *resources.Workspace, env *resources.Environment, relCfgDir string, report *workspaceReadinessReport) *configurations.WorkspaceConfigurations {
+	provided, err := configurations.ReadWorkspaceConfigurations(ctx, ws, env)
+	if err != nil {
+		code := codeConfigurationInvalid
+		if errors.Is(err, configurations.ErrConfigurationConflict) {
+			code = codeConfigurationDuplicate
+		}
+		report.add(code, "workspace configurations", "fail",
+			fmt.Sprintf("cannot load workspace configurations from %s and the composed modules: %v", relCfgDir, err),
+			fmt.Sprintf("fix the configuration files under %s, or the ones the named composed module ships", relCfgDir))
+		return nil
+	}
+	sort.SliceStable(provided.Infos, func(i, j int) bool { return provided.Infos[i].Name < provided.Infos[j].Name })
+	for _, info := range provided.Infos {
+		where := relCfgDir
+		if module, ok := provided.ComposedBy[info.Name]; ok {
+			where = fmt.Sprintf("composed module %q", module)
+		}
+		reportDuplicateKeys(info, "workspace", where, report)
+	}
+	return provided
+}
+
+// workspaceConfigurationOrigin labels where a workspace configuration in scope
+// for secret resolution came from.
+func workspaceConfigurationOrigin(name string, composedBy map[string]string) string {
+	if module, ok := composedBy[name]; ok {
+		return "module " + module
+	}
+	return "workspace"
+}
+
+// providedNames lists composed configurations with the module shipping each.
+func providedNames(infos []*basev0.ConfigurationInformation, composedBy map[string]string) string {
+	names := make([]string, 0, len(infos))
+	for _, info := range infos {
+		names = append(names, fmt.Sprintf("%s (%s)", info.Name, composedBy[info.Name]))
+	}
+	return strings.Join(names, ", ")
 }
 
 // loadConfigurationDir reads one configurations/<env> directory read-only.
@@ -813,17 +987,23 @@ func loadConfigurationDir(ctx context.Context, dir, label, relDir string, report
 	}
 	sort.Slice(infos, func(i, j int) bool { return infos[i].Name < infos[j].Name })
 	for _, info := range infos {
-		seen := make(map[string]bool)
-		for _, value := range info.ConfigurationValues {
-			if seen[value.Key] {
-				report.add(codeConfigurationDuplicate, label+" configurations", "fail",
-					fmt.Sprintf("configuration %q under %s defines key %s more than once", info.Name, relDir, value.Key),
-					fmt.Sprintf("keep a single definition of %s across the %q files", value.Key, info.Name))
-			}
-			seen[value.Key] = true
-		}
+		reportDuplicateKeys(info, label, relDir, report)
 	}
 	return infos, true
+}
+
+// reportDuplicateKeys flags a key one configuration defines more than once
+// across its files.
+func reportDuplicateKeys(info *basev0.ConfigurationInformation, label, relDir string, report *workspaceReadinessReport) {
+	seen := make(map[string]bool)
+	for _, value := range info.ConfigurationValues {
+		if seen[value.Key] {
+			report.add(codeConfigurationDuplicate, label+" configurations", "fail",
+				fmt.Sprintf("configuration %q under %s defines key %s more than once", info.Name, relDir, value.Key),
+				fmt.Sprintf("keep a single definition of %s across the %q files", value.Key, info.Name))
+		}
+		seen[value.Key] = true
+	}
 }
 
 // checkSecretReferences resolves every secret provider reference in scope

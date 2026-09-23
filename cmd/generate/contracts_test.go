@@ -270,6 +270,52 @@ func TestGenerateContractsSkipsConnectWithoutProto(t *testing.T) {
 // other agent-backed qualification tests (see docs/commands.md
 // "CODEFLY_GITOPS_K3D_QUALIFY").
 
+func TestGenerateContractsSkipsRestWithoutOpenAPI(t *testing.T) {
+	ctx := context.Background()
+	root, _ := saveFixtureWorkspace(t, ctx, "billing",
+		&resources.ModuleInterface{
+			Endpoints: []*resources.InterfaceEndpoint{
+				{Service: "api", Endpoint: "rest", Visibility: resources.VisibilityPublic},
+			},
+		},
+		&resources.Service{
+			Name:    "api",
+			Version: "0.0.1",
+			Endpoints: []*resources.Endpoint{
+				{Name: "rest", API: "rest", Visibility: resources.VisibilityPublic},
+			},
+		},
+	)
+
+	t.Chdir(root)
+	resetContractsFlags(t)
+	contractsFormat = "json"
+
+	out, err := captureStdout(t, func() error {
+		return ContractsCmd.RunE(ContractsCmd, []string{"billing"})
+	})
+	if err != nil {
+		t.Fatalf("RunE: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "api rest) has no OpenAPI document; exported for reachability only, skipped") {
+		t.Fatalf("output missing rest skip notice:\n%s", out)
+	}
+
+	var catalog composition.APIContractCatalog
+	decoder := json.NewDecoder(strings.NewReader(out[strings.Index(out, "{"):]))
+	if err := decoder.Decode(&catalog); err != nil {
+		t.Fatalf("cannot parse catalog JSON: %v\noutput:\n%s", err, out)
+	}
+	if len(catalog.Endpoints) != 0 {
+		t.Fatalf("catalog.Endpoints = %+v, want none", catalog.Endpoints)
+	}
+}
+
+// The tests below scaffold a real go-grpc service and run buf inside the
+// proto companion, so they need Docker and network access. Gated like the
+// other agent-backed qualification tests (see docs/commands.md
+// "CODEFLY_GITOPS_K3D_QUALIFY").
+
 func buildCodeflyBinary(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "codefly")

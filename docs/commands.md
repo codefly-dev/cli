@@ -200,8 +200,32 @@ codefly run solution --env local --headless  # Headless (CI, MCP, pipes)
 The composed modules resolve through the [module resolver](#module-composition):
 committed identity (`source` + `version`) plus a gitignored `codefly.local.yaml`
 overlay, so the identical command runs in CI (everything pinned, no sibling
-checkouts) and against your local worktrees. It errors clearly when no module —
-or more than one — declares a `service-entry`.
+checkouts) and against your local worktrees.
+
+The root is the module declaring a `service-entry` that no other
+entry-declaring module depends on. A composed host declares an entry of its own
+(the module a browser reaches first), but a solution's entry depends on the host
+— through its services' `service-dependencies`, transitively, or through its
+manifest's `api.consumes` — which makes the host a dependency, not a competing
+root. That holds whether the solution is the workspace's own module or one
+composed by `source` + `version` beside the host, so a product composition that
+composes both runs the solution without naming it. When more than one entry is
+left with nothing depending on it, the workspace's own module (`path: .`, or the
+one named like the workspace) is the root; it errors clearly when no module
+declares a `service-entry`, or when several do and none depends on another.
+
+A solution entry — the `service-entry` of a module shipping a
+`solution.codefly.yaml` — boots with what the composition would otherwise have
+to hand-set, derived from that manifest wherever the module is (the workspace
+root, or the cache checkout of a composed one): `CODEFLY__API_CONSUMES` and a
+per-run registration secret for every facade prefix it consumes, and the
+solution's own `CODEFLY__SOLUTION_REGISTRATION_SECRET`, minted per run and
+declared to the host's `federation` group as `<module>:sha256hex` under
+`SOLUTION_REGISTRATION_SECRETS` beside the module keys. The identity a solution
+registers under is its module name. The run does not invent endpoints: the host
+addresses the entry resolves (the gateway's `rest`, the frontend's `http`) are
+the `service-dependencies` its `service.codefly.yaml` declares, and an address it
+does not declare is not injected.
 
 The fixture this run uses is resolved against the composed packages' manifests
 before anything boots, so a typo fails at load naming the fixtures that do exist
@@ -305,7 +329,9 @@ platform (`linux/amd64`) and build env exactly as a module render does, and on
 success prints the pushed image's immutable digest (`Image digest sha256:…`).
 Pass `--stand-alone` to build only the named service. To run the amd64 build on a
 native/remote builder instead of local QEMU emulation, point it at a preexisting
-docker buildx builder with `--builder <name>`:
+docker buildx builder with `--builder <name>`. A service importing a private Go
+module builds with the host's `GOPRIVATE` and netrc, see [Private Go modules in
+image builds](#private-go-modules-in-image-builds):
 
 ```bash
 codefly build service front --env production --push --stand-alone --builder amd64-remote
@@ -421,6 +447,16 @@ codefly deploy gitops rollback payments --env production \
   --to-revision <previous-reviewed-commit>
 ```
 
+`render` is a function of the workspace and needs no cluster: by default no
+service's manifests are sent to a Kubernetes API. Pass `--validate-cluster` to
+also dry-run each rendered service server-side (`kubectl apply --server-side
+--dry-run=server`) against the environment's declared `cluster.context` — the
+environment must then declare one, and the namespace the manifests bind to must
+already exist in that cluster: the rendered Argo Application does not create it
+(`CreateNamespace=false`), so when it is missing the dry-run is skipped for that
+service with a message naming the namespace and context rather than failing the
+render. A cluster that cannot be reached is an error.
+
 The workspace declares the destination repository, owned path, and Argo target
 branch:
 
@@ -523,6 +559,29 @@ CODEFLY_GITOPS_K3D_QUALIFY=1 \
   go test ./pkg/gitops -run TestLocalK3dDisposableGitQualification -v -count=1
 CODEFLY_GITOPS_K3D_QUALIFY=1 \
   go test ./pkg/gitops -run TestLocalFetchRemoteLifecycle -v -count=1
+```
+
+### `codefly deploy solution [name]`
+
+Drive a `codefly:solution` executor: package a solution source into an OCI
+artifact and render its manifests into the owned gitops tree, in the solution's
+own namespace.
+
+```bash
+codefly deploy solution lastlogin --env production \
+  --agent codefly.dev:solution-generic:0.0.1 \
+  --source ./solutions/lastlogin --reference ghcr.io/example/lastlogin:0.0.1
+```
+
+No `codefly:solution` executor is published today, so this command cannot
+obtain one for any `--agent`, and it says so: when the executor cannot be
+resolved or loaded it fails naming the step and the cause, and points at the
+render path a composed solution actually takes. A solution composed into a
+workspace by `source` + `version` is a module — its services run on service
+agents — and renders like one:
+
+```bash
+codefly deploy gitops render lastlogin --env production
 ```
 
 ### `codefly deploy init`
@@ -733,6 +792,60 @@ clone's `path:` once it materializes the module, and says so when it does.
 Setting `resolve.<name>.pinned: true` revokes the opt-out and returns the
 module to verified resolution.
 
+##### Committed git resolution
+
+The overlay is machine-local, so it cannot answer the case where a module has
+no signed package *for anyone*: every checkout of the workspace would need the
+same opt-out written by hand, which is the per-machine step committed identity
+exists to remove. A top-level `module-resolution` block declares it instead,
+keyed by module name:
+
+```yaml
+module-resolution:
+    saas: git
+
+modules:
+    - name: saas
+      source: codefly-dev/module-saas-starter
+      version: "0.0.68"
+```
+
+`git` — the only value the key takes today — means: resolve that module's
+`source` at its `version` by cloning its git tag, **unverified by declaration**.
+Nothing is signature- or digest-checked; the workspace is stating in committed,
+reviewable config that it accepts that for this module, rather than each
+developer accepting it again on their own machine. Every [command that
+materializes](#which-commands-materialize) prints `unverified git clone for
+<name> (declared in workspace.codefly.yaml)` when it materializes one, and
+`codefly doctor workspace` reports it with the informational
+`module_resolution_git` diagnostic beside the standing `module_unverified`
+warning — writing the opt-out down does not make the clone checked.
+
+Three things are errors naming the module, never ignored keys: any value other
+than `git`; a name no composed module answers to; and writing `resolution: git`
+on the module entry itself. The last is refused because the entry is the one
+place the declaration cannot survive — a workspace carries unknown *top-level*
+keys through a save (that is also how `module-trust` survives one), but a module
+entry does not, so `codefly add module` would silently delete a per-entry
+declaration from every other module in the file and you would commit that
+deletion inside an unrelated change.
+
+Precedence is unchanged: an overlay `resolve.<name>` entry still wins on the
+machine that has one, so `path`/`worktree` keep pointing at a checkout you are
+editing and `pinned: true` still tests verified resolution locally. Because
+`run` must replace the directive with the path it produced, an overlay choice is
+carried forward on its [receipt](#resolution-receipts) — `git` for the opt-out,
+`overlay-verified` for the opt-in — and outranks the declaration until you
+revoke it with the opposite directive or drop the module from the record. With
+no overlay entry at all, the declaration behaves exactly as `git: true` would:
+the same cache, the same receipt (recorded as mode `declared-git`), and the same
+rewrite of the overlay to the materialized `path:`.
+
+Leaving it is one edit. Once the producer publishes a signed module package and
+`module-trust` names its repository and signer, **drop the module from
+`module-resolution`**: it returns to verified resolution on the next run, with
+nothing else about the entry changed and no stale record to clean up.
+
 #### Overriding one service of a composed module
 
 Sometimes the module is right and one service inside it is not: you want the
@@ -795,8 +908,13 @@ service saas/accounts resolves to /Users/me/… (overlay services.accounts.path,
 ```
 
 A `version:` override is materialized by `run` exactly as a pinned module is —
-same `module-trust` requirement, same `resolve.<module>.git: true` escape — and
-the directive is then rewritten to the `path:` it produced, with a
+same `module-trust` requirement, and the same escapes from it: `resolve.<module>.git:
+true`, or the module's committed [`module-resolution`
+entry](#committed-git-resolution).
+An override never resolves differently from the module it belongs to, so
+overriding one service of a declared-git module pulls that service's version
+from the clone too, and leaves the rest of the module on the declaration. The
+directive is then rewritten to the `path:` it produced, with a
 [receipt](#resolution-receipts) keyed `<module>/<service>` recording the request
 it answered.
 
@@ -835,15 +953,92 @@ resolve:
 [`codefly run service --service-path`](#codefly-run-service-name) remains the
 per-run spelling for the one service you are launching; an overlay entry is
 durable and applies to every service, on any layout.
+#### Which commands materialize
+
+Materialization — pulling a composed pinned module into the module cache,
+recording its [receipt](#resolution-receipts), pointing the overlay's
+`resolve.<name>.path` at the result and gitignoring both files — is not a
+`run`-only step. Every command that loads composed modules in order to act on
+them materializes first, through one entry point, so a fresh checkout of a
+workspace composed by identity works for each of them with no prior run:
+
+- `run service`, `run job`, `run command`, `run solution` (which alone
+  re-resolves a floating reference forward), and the dependency stacks the SDK
+  spawns;
+- `test service`, `test solution`, `test composition`;
+- `deploy gitops render`, `snapshot`, `plan`, `publish`, `observe`, `rollback`,
+  `deploy module` and `deploy service` — a CI render always starts from a fresh
+  checkout, so it materializes exactly as `run` does;
+- every `ci` verb (`plan`, `build`, `test`, `run`, `validate`, `push`,
+  `deploy`);
+- `generate client`, `sync solution-sdk` and the fixture listing, which read a
+  composed module's tree.
+
+All of them share the fast path: once a receipt answers the request the
+workspace makes, a later command compares and pulls nothing, takes no lock and
+rewrites no file, so a render after a run, or a second render, costs nothing.
+All of them print the same `unverified git clone for <name>` warning when the
+clone is unverified, and write the same overlay, receipt and `.gitignore`
+entries.
+
+The one command that reads composed modules and **never writes** is `codefly
+doctor workspace`. When a declared module is not materialized on the machine it
+reports `module_not_materialized` — "module X is declared but not materialized
+yet" — with the commands that materialize it as the remediation, and skips the
+service-scoped checks it cannot perform, rather than relaying core's refusal to
+load the module as if the manifests were broken.
+
+#### The module cache
+
+`CODEFLY_MODULE_CACHE` names the directory composed modules are cached in. It
+must be an absolute path; a leading `~` is expanded. Both caches follow it, so a
+workspace repository that composes everything by identity holds no module bytes
+at all:
+
+| | default | under `CODEFLY_MODULE_CACHE=<root>` |
+| --- | --- | --- |
+| git clone | `<CODEFLY_HOME>/modules/<owner>/<repo>/<tag>/` | `<root>/<owner>/<repo>/<tag>/` |
+| verified package | `<workspace>/.codefly/cache/modules/<digest>/` | `<root>/.packages/<digest>/` |
+
+A module's optional `module:` subpath is joined after that, so with
+`CODEFLY_MODULE_CACHE=~/development/vendors` a module composed as
+`codefly-dev/module-saas-starter` at `0.0.68` is browsable at
+`~/development/vendors/codefly-dev/module-saas-starter/v0.0.68/`. A verified
+package stays addressed by digest under either root — that addressing is what
+makes every cache hit checkable against what was verified — so it keeps its own
+reserved subdirectory rather than sharing the browsable tree. A value that is
+not usable as a root is an error rather than an ignored setting: falling back
+silently would put the modules somewhere other than where you said, and you
+would go looking where you asked. Resolution receipts record the path the module
+actually landed at and every materializing command checks it against the root in
+force now, so moving the root — or deleting the cache — re-materializes on the
+next materializing command of any shape rather than leaving a module pointed at
+where it used to be. A root you configure is yours, not the CLI's: a checkout of
+your own inside it keeps its `resolve.<name>.path`, because there the CLI treats
+only the path on a receipt as its own output.
+
+Two names under the root are reserved for the CLI: `.packages/` holds the
+digest-addressed verified packages, and `.staging/` holds in-flight clones being
+promoted. Everything else is the browsable `<owner>/<repo>/<tag>/` layout. If you
+point the root inside a git repository, `run` says so once — cached modules are
+regenerable machine output and will otherwise sit there as untracked files. It
+does not write a `.gitignore` for you: a root you configure may also hold module
+checkouts of your own, and the blanket rule that would cover the cache would hide
+those too. Ignore the two reserved names, or point the root outside the
+repository.
 
 #### Resolution receipts
 
-Everything `run` materializes is recorded as a receipt in
+Everything the CLI materializes — by any of the [commands that
+do](#which-commands-materialize) — is recorded as a receipt in
 `codefly.local.resolved.yaml` beside the overlay (gitignored like it). A
 receipt binds the request it answered — canonical source, module subpath,
 requested version or constraint — to what that request resolved to: the
-materialization mode (`verified` or `git`), the exact resolved version, the
-path, and for a verified package its artifact digest and commit.
+materialization mode (`verified`, `git` for the overlay opt-out, or
+`declared-git` for the committed `module-resolution` entry, and
+`overlay-verified` for a `pinned: true` the CLI has consumed), the exact
+resolved version,
+the path, and for a verified package its artifact digest and commit.
 
 ```yaml
 resolved:
@@ -862,7 +1057,10 @@ manages. An overlay `path:` matching a receipt is one `run` wrote and may
 refresh; one that does not is you editing the module in place, and `run` never
 touches it. It is also what keeps a module on its git opt-out after the
 directive has been replaced by a path, and what lets `codefly doctor
-workspace` report the module as unverified.
+workspace` report the module as unverified. A committed `module-resolution`
+entry is the exception: it is recorded as `declared-git` but never read back to
+decide the mode, because the workspace manifest still says it — and stops saying
+it the moment the key is dropped.
 
 Because the receipt names the request, a materialization can be checked
 against the request being made *now*. When a module's requested version (or
@@ -1118,13 +1316,14 @@ A package that cannot be read, and a name two packages both declare, are reporte
 as problems *after* the listing, and the command exits non-zero. The listing is
 not suppressed: a collision is what you run this command to diagnose, so it names
 what each package declares rather than withholding the data needed to act on it.
-Unlike the run path, this command reads the workspace without materializing
-pinned modules into the overlay, so it never writes `codefly.local.yaml` or
-`.gitignore`. It does resolve each composed module in order to read its manifest,
-which materializes a pinned module into the content-addressed cache and fetches
-it when absent — so this is not a purely offline command the first time a pinned
-package is seen. A module that cannot be resolved is reported as a problem, not
-silently dropped from the listing.
+This command resolves each composed module in order to read its manifest, and
+[materializes](#which-commands-materialize) a pinned module exactly as the run
+path does when it is not materialized yet — into the module cache, with the
+receipt and overlay entry written and gitignored — so this is not a purely
+offline command the first time a pinned module is seen, and it writes
+`codefly.local.yaml` on that first sight like every other materializing command.
+A module that cannot be resolved is reported as a problem, not silently dropped
+from the listing.
 
 A name two packages declare *differently* is a collision. Identical declarations
 of one name — what a package composed under two module references produces — name
@@ -1544,6 +1743,12 @@ the service's proto sources; REST endpoints get their OpenAPI document
 skipped. When the module has a `module.package.codefly.yaml`, its
 `services[*].api-contracts` are updated to match.
 
+An exported endpoint that carries no machine-readable contract is skipped with a
+notice, never a failure: `http` and `tcp` endpoints, a `connect` endpoint on a
+service with no proto, and a `rest` endpoint with no OpenAPI document. An
+interface may export such an endpoint so composed modules can reach it (a
+gateway's REST surface, say); that export is reachability, not a contract.
+
 Run it before `module-package build`; the package carries the result. `--check`
 is the CI drift gate.
 
@@ -1869,15 +2074,28 @@ codefly doctor workspace --timeout 10s         # bound secret-provider resolutio
 What it checks, in order:
 
 1. Workspace discovery and manifest validity (never migrates or rewrites files).
-2. The requested environment resolves through the workspace declaration
+2. Every composed pinned module is materialized on this machine. The doctor
+   never writes, so it cannot pull one; a module no materializing command has
+   pulled yet fails with `module_not_materialized` naming the module and the
+   commands that materialize it (see [which commands
+   materialize](#which-commands-materialize)), and the service-scoped checks
+   below are skipped rather than reported as core's refusal to load it.
+3. The requested environment resolves through the workspace declaration
    (`local` is implicit when undeclared).
-3. Declared secret backends are supported and their executables are on PATH
+4. Declared secret backends are supported and their executables are on PATH
    (`op` for 1Password).
-4. `configurations/<env>` exists when services declare
-   `workspace-configuration-dependencies`, and required configurations exist
-   and define values. The directory is never created.
-5. Per-service `configurations/<env>` files parse; duplicates are flagged.
-6. Secret provider references (`op://…`) resolve in memory through the
+5. Every workspace configuration group services declare under
+   `workspace-configuration-dependencies` is provided and defines values.
+   The doctor reads exactly what a run provisions: the workspace's own
+   `configurations/<profile>/*` composed with the groups each composed module
+   ships in its own tree, so a module-shipped group counts as satisfied and the
+   check names the module providing it. The workspace's own file wins over a
+   module's; a group two modules define differently is reported as ambiguous
+   (`configuration_duplicate`, naming both providers) until the workspace
+   declares it. A missing `configurations/<profile>` directory fails only for
+   the groups no composed module provides. The directory is never created.
+6. Per-service `configurations/<env>` files parse; duplicates are flagged.
+7. Secret provider references (`op://…`) resolve in memory through the
    configured backend; resolved values are discarded immediately. Plaintext
    values shaped like unsupported reference schemes are flagged.
 
@@ -1900,7 +2118,8 @@ message, remediation?}]}`. Output never contains configuration values, raw
 `configuration_invalid`, `configuration_duplicate`, `provider_not_configured`,
 `provider_executable_missing`, `provider_authentication_required`,
 `provider_resolution_failed`, `plaintext_not_allowed`,
-`reference_scheme_unknown`, `timeout`. Automation should match on codes, never
+`reference_scheme_unknown`, `module_not_materialized`, `timeout`. Automation
+should match on codes, never
 on message prose; renaming or removing a code bumps `schema_version`.
 
 ### `codefly version`
@@ -2015,6 +2234,50 @@ in-agent image builds must acknowledge cache execution or fail explicitly. Pushe
 BuildKit progress reports cache hits, transfer sizes and import/export durations
 when available; image-build wall time is logged and CI reporting retains the
 operation's total duration. Provider workflows continue invoking Codefly.
+
+### Private Go modules in image builds
+
+A Go service that imports a module the public proxy does not serve — a private
+repository — needs two things at `go mod download` inside the image build that a
+host-side `go build` gets from the shell: the module paths to fetch directly and
+a credential. Every image build the CLI runs (`codefly build service`, `codefly
+build module`, `codefly ci build`, the build phase of `codefly ci run`, and a
+module render such as `codefly deploy gitops render`) takes both from the host
+environment, exactly as the go tool does on the host:
+
+- `GOPRIVATE` is passed as the `GOPRIVATE` build argument, which the agent's
+  Dockerfile declares as `ARG GOPRIVATE` before its dependency download. It is
+  taken verbatim; a recipe that declares `GOPRIVATE` in its own build arguments
+  keeps its value.
+- The credential is a [netrc](https://go.dev/doc/faq#git_https) file mounted as
+  the BuildKit secret `netrc` at `/root/.netrc` for the dependency download only.
+  It is the first of `CODEFLY_BUILD_NETRC` (explicit; the build fails up front if
+  the file is missing), `NETRC` (the go tool's own override) and `~/.netrc`. A
+  secret is mounted for one `RUN` and never becomes a build argument, an `ENV`, a
+  layer or a cache entry, so the token is absent from the image and from the
+  registry build cache.
+
+Neither is declared in a manifest: whether a module path is private is a
+property of how the building machine reaches it (the same service builds
+through an authenticated `GOPROXY` with neither), and the committed recipe
+archive stays free of one machine's environment. When neither is set the build
+is unchanged, so a consumer rebuilding a vendored recipe by hand adds the same
+two flags: `--build-arg GOPRIVATE=… --secret id=netrc,src=…`.
+
+```sh
+# A developer whose `go build` already reaches the private module.
+GOPRIVATE=github.com/example-org/* codefly build service api
+
+# A CI job: write the netrc from the job token; git credential helpers set up
+# on the runner (e.g. `gh auth setup-git`) are not visible inside BuildKit.
+printf 'machine github.com login x-access-token password %s\n' "$GITHUB_TOKEN" > "$RUNNER_TEMP/netrc"
+export GOPRIVATE=github.com/example-org/* CODEFLY_BUILD_NETRC="$RUNNER_TEMP/netrc"
+codefly ci run --phase build
+```
+
+Only agents whose recipe declares the mount and the argument use them
+(`go-grpc` recipes newer than 0.1.44); an older recipe ignores the secret and reports the
+build argument as unconsumed.
 
 ### Startup container cleanup ownership
 

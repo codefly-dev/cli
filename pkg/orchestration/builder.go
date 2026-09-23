@@ -246,6 +246,20 @@ func (b *Builder) dockerBuildContext(ctx context.Context) (*builderv0.DockerBuil
 	return dockerContext, nil
 }
 
+// buildRecipeRoot resolves where this service's build recipe is emitted and
+// archived (see the package-level buildRecipeRoot).
+func (b *Builder) buildRecipeRoot() (string, error) {
+	workspaceDir := ""
+	if b.world != nil && b.world.Workspace != nil {
+		workspaceDir = b.world.Workspace.Dir()
+	}
+	module, service := "", ""
+	if b.instance.Identity != nil {
+		module, service = b.instance.Identity.Module, b.instance.Identity.Name
+	}
+	return buildRecipeRoot(workspaceDir, module, service, b.instance.Service.Dir())
+}
+
 func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance))
 	w.Debug("Build")
@@ -258,7 +272,11 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot create build context")
 	}
 
-	outputDir, err := buildRecipeOutputDirectory(b.instance.Service.Dir())
+	recipeRoot, err := b.buildRecipeRoot()
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot resolve build output root")
+	}
+	outputDir, err := buildRecipeOutputDirectory(recipeRoot)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot prepare build recipe directory")
 	}
@@ -332,7 +350,7 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 
 	// Record the durable recipe only after the build succeeded, so the committed
 	// archive never advertises a recipe that failed verification or never built.
-	if err = recordBuildRecipe(ctx, b.instance.Service, plan); err != nil {
+	if err = recordBuildRecipe(ctx, b.instance.Service, recipeRoot, plan); err != nil {
 		return nil, w.Wrapf(err, "cannot record build recipe")
 	}
 

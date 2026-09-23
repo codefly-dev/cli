@@ -68,7 +68,7 @@ func runManagedCommand(argv []string) (returnErr error) {
 	// The preflight below identifies the current service by loading the
 	// workspace's own, and the nested `run service` the SDK spawns loads the
 	// whole graph: both need composed pinned modules materialized first.
-	if err := common.ResolvePinnedModulesForRun(ctx); err != nil {
+	if err := common.ResolvePinnedModules(ctx); err != nil {
 		return fmt.Errorf("resolve composed modules for managed command: %w", err)
 	}
 

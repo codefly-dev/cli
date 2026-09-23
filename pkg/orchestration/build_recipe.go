@@ -114,15 +114,17 @@ func durableBuildArgs(args map[string]string) map[string]string {
 }
 
 // recordBuildRecipe copies a service's freshly generated builder/ recipe into a
-// durable, version-tagged archive committed alongside the service. The live
-// builder/ tree is transient — gitignored and hash-excluded from composed
-// modules, and re-rendered per machine — so without this archive the reproducible
-// build recipe is lost the moment the working tree is discarded. The archive
-// preserves the recipe per producing agent version so a consumer can inspect and
-// rebuild the exact recipe that shipped an image.
-func recordBuildRecipe(ctx context.Context, service *resources.Service, plan *builderv0.DockerBuildPlan) error {
+// durable, version-tagged archive beside it under root (see buildRecipeRoot:
+// the service directory for an authored service, the workspace's .codefly/build
+// scratch for a CLI-materialized one). The live builder/ tree is what the
+// producing agent last emitted: a module tracks builder/Dockerfile, so it is
+// neither gitignored nor excluded from a composed module's tree digest, and it
+// is re-rendered per agent version. The archive preserves the recipe per
+// producing agent version so a consumer can inspect and rebuild the exact recipe
+// that shipped an image even after the live tree moved on.
+func recordBuildRecipe(ctx context.Context, service *resources.Service, root string, plan *builderv0.DockerBuildPlan) error {
 	w := wool.Get(ctx).In("recordBuildRecipe", wool.NameField(service.Name))
-	source := filepath.Join(service.Dir(), buildRecipeSourceDir)
+	source := filepath.Join(root, buildRecipeSourceDir)
 	info, err := os.Stat(source)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -137,7 +139,7 @@ func recordBuildRecipe(ctx context.Context, service *resources.Service, plan *bu
 	if version == "" || version != filepath.Base(version) || version == "." || version == ".." {
 		return w.NewError("service %s has an agent version %q that is not a safe recipe archive name", service.Name, version)
 	}
-	destination := filepath.Join(service.Dir(), buildRecipeArchiveDir, version)
+	destination := filepath.Join(root, buildRecipeArchiveDir, version)
 	if err = os.RemoveAll(destination); err != nil {
 		return w.Wrapf(err, "cannot reset recipe archive")
 	}

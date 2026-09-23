@@ -62,7 +62,7 @@ func resolveRunPins(ctx context.Context) error {
 	if pinsAlreadyResolved {
 		return nil
 	}
-	return common.ResolvePinnedModulesForRun(ctx)
+	return common.ResolvePinnedModules(ctx)
 }
 
 func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
@@ -688,10 +688,11 @@ func loadCoRoots(ctx context.Context, workspace *resources.Workspace, args []str
 	return uniques, roots, nil
 }
 
-// derivedInputsForRoots resolves the solution-federation injections for every
-// root of the run and merges them. Only the workspace's own service-entry
-// derives anything, so deriving per root is what keeps the result independent
-// of the order the roots were named in.
+// derivedInputsForRoots resolves the solution injections for every root of the
+// run and merges them. Every root that is a solution's service-entry derives
+// its own — two solutions named as co-roots each declare a registration digest
+// to the same host — so the merge is solutionrun's, which joins declarations
+// instead of letting the last-named root replace the first's.
 func derivedInputsForRoots(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, serviceName string, coRoots []*rootService) (solutionrun.RunInputs, error) {
 	merged, err := solutionrun.DerivedRunInputs(ctx, workspace, module, service, serviceName)
 	if err != nil {
@@ -702,9 +703,7 @@ func derivedInputsForRoots(ctx context.Context, workspace *resources.Workspace, 
 		if err != nil {
 			return solutionrun.RunInputs{}, err
 		}
-		merged.Overrides = mergeOverrides(merged.Overrides, derived.Overrides)
-		merged.WorkspaceConfigurations = mergeOverrides(merged.WorkspaceConfigurations, derived.WorkspaceConfigurations)
-		merged.Notes = append(merged.Notes, derived.Notes...)
+		merged = solutionrun.Merge(merged, derived)
 	}
 	return merged, nil
 }

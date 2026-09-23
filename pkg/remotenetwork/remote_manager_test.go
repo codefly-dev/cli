@@ -339,21 +339,65 @@ func TestRemoteManagerExternalHostPrefersDeclaredDNS(t *testing.T) {
 	}
 }
 
-func TestRemoteManagerExternalHostFailsWithoutSuffixOrDNS(t *testing.T) {
-	// Neither a declared DNS entry nor an app host suffix: nothing to route to,
-	// so the original hard failure stands.
-	rm, err := NewRemoteManager(context.Background(), erroringDNSManager{})
-	if err != nil {
-		t.Fatal(err)
+// assertInClusterMapping checks that a mapping resolves both public and
+// container access to the synthesized in-cluster Service address.
+func assertInClusterMapping(t *testing.T, mappings []*basev0.NetworkMapping, host string, port uint32) {
+	t.Helper()
+	require.Len(t, mappings, 1)
+	require.Len(t, mappings[0].Instances, 2, "want public and container instances")
+	for _, access := range []*basev0.NetworkAccess{
+		resources.NewPublicNetworkAccess(),
+		resources.NewContainerNetworkAccess(),
+	} {
+		instance := resources.FilterNetworkInstance(context.Background(), mappings[0].Instances, access)
+		require.NotNil(t, instance, "missing %q access instance", access.GetKind())
+		require.Equal(t, host, instance.GetHostname(), "%s hostname", access.GetKind())
+		require.Equal(t, port, instance.GetPort(), "%s port", access.GetKind())
 	}
-	environment := &environments.Environment{Name: "azure", Namespace: "platform"}
+}
+
+func TestRemoteManagerSynthesizesInClusterAddressForRenderedExternalWithoutDNS(t *testing.T) {
+	// Neither a declared DNS entry nor an app host suffix, but the service is
+	// one this render emits as an in-cluster workload: its ClusterIP Service is
+	// the address that exists, so the mapping falls through to the synthesized
+	// in-cluster form instead of failing the render on a missing public host.
+	for name, manager := range map[string]corenetwork.DNSManager{
+		"nil-miss": remoteDNSManager{},
+		"err-miss": erroringDNSManager{},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rm, err := NewRemoteManager(context.Background(), manager)
+			require.NoError(t, err)
+			environment := &environments.Environment{Name: "azure", Namespace: "platform"}
+			workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
+			service := &resources.ServiceIdentity{Module: "users", Name: "accounts"}
+			endpoint := &basev0.Endpoint{Module: "users", Service: "accounts", Name: "api", Api: standards.REST, Location: resources.LocationExternal}
+
+			mappings, err := rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint})
+			require.NoError(t, err)
+			assertInClusterMapping(t, mappings, "accounts.platform.svc.cluster.local", uint32(standards.Port(standards.REST)))
+		})
+	}
+}
+
+func TestRemoteManagerManagedServiceExternalFailsWithoutSuffixOrDNS(t *testing.T) {
+	// A managed service is not rendered as an in-cluster workload — its bundle
+	// is bootstrap-only — so there is no ClusterIP to fall back on. With neither
+	// a declared DNS entry nor an app host suffix, nothing exists to route to and
+	// the hard failure stands.
+	rm, err := NewRemoteManager(context.Background(), erroringDNSManager{})
+	require.NoError(t, err)
+	environment := &environments.Environment{
+		Name:            "azure",
+		Namespace:       "platform",
+		ManagedServices: map[string]environments.EnvironmentManagedService{"accounts": {Kind: "external", ExternalName: "accounts.example.internal"}},
+	}
 	workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
 	service := &resources.ServiceIdentity{Module: "users", Name: "accounts"}
 	endpoint := &basev0.Endpoint{Module: "users", Service: "accounts", Name: "api", Api: standards.REST, Location: resources.LocationExternal}
 
-	if _, err := rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint}); err == nil {
-		t.Fatal("expected a failure when no DNS and no app host suffix are declared")
-	}
+	_, err = rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint})
+	require.Error(t, err, "expected a failure when a managed service declares no DNS and no app host suffix")
 }
 
 func TestRemoteManagerDerivesGRPCExternalHost(t *testing.T) {
@@ -387,25 +431,110 @@ func TestRemoteManagerDerivesGRPCExternalHost(t *testing.T) {
 	}
 }
 
-func TestRemoteManagerDoesNotDeriveTCPExternalHost(t *testing.T) {
-	// A raw TCP external (e.g. a managed database) has no public app-edge host —
-	// deriving one would emit a bogus, non-resolving TLS host. The suffix must be
-	// ignored for TCP, so the endpoint still requires a declared DNS entry and,
-	// absent one, the original hard failure stands.
+func TestRemoteManagerRenderedTCPExternalSynthesizesInClusterAddressNotAppEdgeHost(t *testing.T) {
+	// A raw TCP external (a postgres agent scaffolds its tcp endpoint with the
+	// deprecated `visibility: external`) has no public app-edge host: deriving one
+	// from the suffix would emit a bogus, non-resolving TLS host. The suffix must
+	// be ignored for TCP. The service is still rendered in-cluster by this flow,
+	// so the mapping is the synthesized ClusterIP Service on the canonical port —
+	// not a failure, and not the app-edge host.
 	rm, err := NewRemoteManager(context.Background(), erroringDNSManager{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	environment := &environments.Environment{
 		Name:      "azure",
 		Namespace: "platform",
 		DNS:       &environments.EnvironmentDNS{AppHostSuffix: "staging.eastus2.azure.example.com"},
 	}
 	workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
-	service := &resources.ServiceIdentity{Module: "users", Name: "accounts"}
-	endpoint := &basev0.Endpoint{Module: "users", Service: "accounts", Name: "tcp", Api: standards.TCP, Location: resources.LocationExternal}
+	service := &resources.ServiceIdentity{Module: "saas", Name: "store"}
+	endpoint := &basev0.Endpoint{Module: "saas", Service: "store", Name: "tcp", Api: standards.TCP, Location: resources.LocationExternal}
 
-	if _, err := rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint}); err == nil {
-		t.Fatal("expected a failure: a TCP external must not derive an app-edge host from the suffix")
+	mappings, err := rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint})
+	require.NoError(t, err)
+	assertInClusterMapping(t, mappings, "store.platform.svc.cluster.local", uint32(standards.Port(standards.TCP)))
+	for _, instance := range mappings[0].Instances {
+		require.NotContains(t, instance.GetHostname(), "staging.eastus2.azure.example.com", "a TCP external must not derive an app-edge host from the suffix")
 	}
+}
+
+func TestRemoteManagerManagedTCPExternalStillRequiresDeclaredDNS(t *testing.T) {
+	// The managed-database case the TCP rule exists for: the environment declares
+	// the service as managed, so the render emits no in-cluster workload and the
+	// endpoint still requires a declared DNS entry — absent one, the hard failure
+	// stands even though an app host suffix is declared.
+	rm, err := NewRemoteManager(context.Background(), erroringDNSManager{})
+	require.NoError(t, err)
+	environment := &environments.Environment{
+		Name:            "azure",
+		Namespace:       "platform",
+		DNS:             &environments.EnvironmentDNS{AppHostSuffix: "staging.eastus2.azure.example.com"},
+		ManagedServices: map[string]environments.EnvironmentManagedService{"store": {Kind: "postgres", ExternalName: "store.example.internal", Port: 5432}},
+	}
+	workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
+	service := &resources.ServiceIdentity{Module: "saas", Name: "store"}
+	endpoint := &basev0.Endpoint{Module: "saas", Service: "store", Name: "tcp", Api: standards.TCP, Location: resources.LocationExternal}
+
+	_, err = rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint})
+	require.Error(t, err, "expected a failure: a managed TCP external must not derive an app-edge host or an in-cluster address")
+}
+
+func TestRemoteManagerRenderedExternalWithoutDNSSharesCanonicalPortAllocation(t *testing.T) {
+	// An external endpoint that falls through to the in-cluster form competes for
+	// the canonical port like any internal endpoint: a sibling of the same API
+	// must not collide with it.
+	rm, err := NewRemoteManager(context.Background(), erroringDNSManager{})
+	require.NoError(t, err)
+	environment := &environments.Environment{Name: "azure", Namespace: "platform"}
+	workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
+	service := &resources.ServiceIdentity{Module: "saas", Name: "accounts"}
+	endpoints := []*basev0.Endpoint{
+		{Module: "saas", Service: "accounts", Name: "grpc", Api: standards.GRPC, Location: resources.LocationExternal},
+		{Module: "saas", Service: "accounts", Name: "usage", Api: standards.GRPC},
+	}
+
+	mappings, err := rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, endpoints)
+	require.NoError(t, err)
+	require.Len(t, mappings, 2)
+	require.Equal(t, uint32(standards.Port(standards.GRPC)), mappings[0].Instances[0].GetPort())
+	require.NotEqual(t, mappings[0].Instances[0].GetPort(), mappings[1].Instances[0].GetPort())
+}
+
+// A workspace composing several modules gives each module its own namespace,
+// "<namespace>-<module>", and the address synthesized for a service names the
+// namespace of the module that owns it — so a consumer in module A is handed
+// "store.<ns>-B.svc.cluster.local" for a provider in module B, never its own.
+func TestRemoteManagerScopesNamespacePerModuleWhenWorkspaceComposesSeveral(t *testing.T) {
+	manager, err := NewRemoteManager(context.Background(), remoteDNSManager{})
+	require.NoError(t, err)
+	environment := &environments.Environment{Name: "staging", Namespace: "platform"}
+	workspace := &resources.Workspace{
+		Name:   "acme",
+		Layout: resources.LayoutKindModules,
+		Modules: []*resources.ModuleReference{
+			{Name: "saas"}, {Name: "documents"}, {Name: "runtime"},
+		},
+	}
+
+	for module, want := range map[string]string{
+		"saas":      "platform-saas",
+		"documents": "platform-documents",
+		"runtime":   "platform-runtime",
+	} {
+		namespace, err := manager.GetNamespace(context.Background(), environment, workspace, &resources.ServiceIdentity{Module: module, Name: "store"})
+		require.NoError(t, err)
+		require.Equal(t, want, namespace, "module %s", module)
+	}
+
+	// The provider's own mappings — the ones its consumers are handed.
+	provider := &resources.ServiceIdentity{Module: "documents", Name: "store"}
+	endpoint := &basev0.Endpoint{Module: "documents", Service: "store", Name: "grpc", Api: standards.GRPC}
+	mappings, err := manager.GenerateNetworkMappings(context.Background(), environment, workspace, provider, []*basev0.Endpoint{endpoint})
+	require.NoError(t, err)
+	assertInClusterMapping(t, mappings, "store.platform-documents.svc.cluster.local", uint32(standards.Port(standards.GRPC)))
+
+	// A single-module workspace keeps the environment namespace as is.
+	single := &resources.Workspace{Name: "acme", Layout: resources.LayoutKindModules, Modules: []*resources.ModuleReference{{Name: "saas"}}}
+	namespace, err := manager.GetNamespace(context.Background(), environment, single, provider)
+	require.NoError(t, err)
+	require.Equal(t, "platform", namespace)
 }

@@ -2,6 +2,9 @@ package orchestration
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/deployments"
@@ -386,4 +389,138 @@ func validKubernetesDeploymentOutput(profile builderv0.KubernetesOutputProfile) 
 			},
 		},
 	}
+}
+
+const promotableProfile = builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1
+
+// clusterValidationWorld is a promotable-render World whose environment is a
+// local k3d cluster with an explicit context and kubeconfig — the shape that
+// used to trigger a server-side dry-run unconditionally.
+func clusterValidationWorld(t *testing.T, validate bool, probe NamespaceProbe) *World {
+	t.Helper()
+	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
+	require.NoError(t, os.WriteFile(kubeconfig, []byte("apiVersion: v1\nkind: Config\n"), 0o600))
+	return &World{
+		Env: &environments.Environment{
+			Name:    "local",
+			Cluster: &environments.EnvironmentCluster{Kind: "k3d", Context: "k3d-local", Kubeconfig: kubeconfig},
+		},
+		ValidateCluster: validate,
+		NamespaceProbe:  probe,
+	}
+}
+
+func TestClusterValidationIsOptInForARender(t *testing.T) {
+	// A render is a function of the workspace and needs no cluster: without the
+	// opt-in, a k3d environment — with or without a declared cluster.context —
+	// requests no server-side dry-run and resolves no validation target, so a
+	// missing cluster.context is not an error.
+	probed := false
+	probe := func(context.Context, string, string, string) (bool, error) {
+		probed = true
+		return true, nil
+	}
+	for name, world := range map[string]*World{
+		"k3d-with-context": clusterValidationWorld(t, false, probe),
+		"legacy-local-without-cluster": {
+			Env:            environments.LocalEnvironment(),
+			NamespaceProbe: probe,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.True(t, world.Env.IsK3d(), "fixture must be the k3d shape that used to force the dry-run")
+			validation, err := resolveClusterValidation(context.Background(), world, promotableProfile, "platform-example")
+			require.NoError(t, err)
+			require.False(t, validation.Enabled())
+			require.Empty(t, validation.Skipped)
+			require.Empty(t, validation.Kubeconfig)
+			require.False(t, probed, "an opted-out render must not touch the cluster")
+		})
+	}
+}
+
+func TestClusterValidationResolvesTargetWhenOptedIn(t *testing.T) {
+	var seen []string
+	world := clusterValidationWorld(t, true, func(_ context.Context, kubeconfig, kubeContext, namespace string) (bool, error) {
+		seen = []string{kubeconfig, kubeContext, namespace}
+		return true, nil
+	})
+	validation, err := resolveClusterValidation(context.Background(), world, promotableProfile, "platform-example")
+	require.NoError(t, err)
+	require.True(t, validation.Enabled())
+	require.Empty(t, validation.Skipped)
+	require.Equal(t, "k3d-local", validation.Context)
+	require.True(t, filepath.IsAbs(validation.Kubeconfig))
+	require.Equal(t, world.Env.Cluster.Kubeconfig, validation.Kubeconfig)
+	require.Equal(t, []string{validation.Kubeconfig, "k3d-local", "platform-example"}, seen)
+}
+
+func TestClusterValidationSkipsWithReasonWhenNamespaceIsMissing(t *testing.T) {
+	// Core binds the dry-run to --namespace <ns>; a server-side dry-run of
+	// namespaced objects fails on a namespace that does not exist, and the
+	// rendered Argo Application does not create it. The opted-in validation is
+	// skipped with a reason naming both the namespace and the context, rather
+	// than failing the render on `namespaces "<ns>" not found`.
+	world := clusterValidationWorld(t, true, func(context.Context, string, string, string) (bool, error) {
+		return false, nil
+	})
+	validation, err := resolveClusterValidation(context.Background(), world, promotableProfile, "platform-example")
+	require.NoError(t, err)
+	require.False(t, validation.Enabled())
+	require.Empty(t, validation.Kubeconfig)
+	require.Contains(t, validation.Skipped, `namespace "platform-example" does not exist in context "k3d-local"`)
+	require.Contains(t, validation.Skipped, "CreateNamespace=false")
+}
+
+func TestClusterValidationOptInStillDemandsAClusterContext(t *testing.T) {
+	// The opt-in keeps the original contract: a dry-run needs an explicit
+	// cluster.context, and a probe that cannot reach the cluster is an error the
+	// user asked to see, never a silent skip.
+	world := &World{
+		Env:             &environments.Environment{Name: "local", Cluster: &environments.EnvironmentCluster{Kind: "k3d"}},
+		ValidateCluster: true,
+	}
+	_, err := resolveClusterValidation(context.Background(), world, promotableProfile, "platform-example")
+	require.ErrorContains(t, err, `environment "local" must declare cluster.context`)
+
+	unreachable := errors.New("dial tcp: connection refused")
+	world = clusterValidationWorld(t, true, func(context.Context, string, string, string) (bool, error) {
+		return false, unreachable
+	})
+	_, err = resolveClusterValidation(context.Background(), world, promotableProfile, "platform-example")
+	require.ErrorIs(t, err, unreachable)
+	require.ErrorContains(t, err, `namespace "platform-example" in context "k3d-local"`)
+}
+
+func TestClusterValidationNeverReachesADirectApplyProfile(t *testing.T) {
+	// A direct apply renders the ephemeral profile; the opt-in is a render
+	// concern and must not leak a dry-run into that path.
+	probed := false
+	world := clusterValidationWorld(t, true, func(context.Context, string, string, string) (bool, error) {
+		probed = true
+		return true, nil
+	})
+	validation, err := resolveClusterValidation(
+		context.Background(), world,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1,
+		"platform-example",
+	)
+	require.NoError(t, err)
+	require.False(t, validation.Enabled())
+	require.False(t, probed)
+}
+
+func TestNamespaceProbeResultDistinguishesMissingFromUnreachable(t *testing.T) {
+	exists, err := namespaceProbeResult([]byte("namespace/platform-example\n"), nil)
+	require.NoError(t, err)
+	require.True(t, exists)
+
+	exit := errors.New("exit status 1")
+	exists, err = namespaceProbeResult([]byte(`Error from server (NotFound): namespaces "platform-example" not found`), exit)
+	require.NoError(t, err)
+	require.False(t, exists)
+
+	_, err = namespaceProbeResult([]byte("The connection to the server 127.0.0.1:6443 was refused"), exit)
+	require.ErrorIs(t, err, exit)
+	require.ErrorContains(t, err, "was refused")
 }

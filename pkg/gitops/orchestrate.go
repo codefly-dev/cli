@@ -17,11 +17,11 @@ import (
 )
 
 func RenderModule(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
-	return renderModuleTree(ctx, workspace, module, env, project, sink, true)
+	return renderModuleTree(ctx, workspace, module, env, project, sink, true, false)
 }
 
 func RenderModuleSnapshot(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
-	return renderModuleTree(ctx, workspace, module, env, project, sink, false)
+	return renderModuleTree(ctx, workspace, module, env, project, sink, false, false)
 }
 
 func renderModuleTree(
@@ -32,6 +32,7 @@ func renderModuleTree(
 	project string,
 	sink orchestration.OutputSink,
 	includeBootstrap bool,
+	validateCluster bool,
 ) (RenderResult, error) {
 	if err := selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
 		return RenderResult{}, err
@@ -52,11 +53,16 @@ func renderModuleTree(
 	if gitopsPath != "" {
 		ownedPath = filepath.ToSlash(filepath.Join(gitopsPath, ownedPath))
 	}
+	// The module's namespace, not the environment's: a workspace composing
+	// several modules gives each its own, and the render record, the Argo
+	// destinations derived from it, the quota and the secret projections all
+	// take it from here.
+	scope := moduleScope(env, workspace, module.Name)
 	options := &RenderOptions{
 		Destination: destination,
 		Module:      module.Name,
 		Environment: env.Name,
-		Namespace:   env.Namespace,
+		Namespace:   scope.Namespace,
 		AppProject:  project,
 		Promotable:  true,
 		OwnedPath:   ownedPath,
@@ -101,6 +107,7 @@ func renderModuleTree(
 				service,
 				env,
 				false,
+				validateCluster,
 				sink,
 				func(_ *resources.Module, rendered *resources.Service) string {
 					serviceDir, _ := unitDirectory(UnitKindService)
@@ -131,7 +138,7 @@ func renderModuleTree(
 					filepath.Join(stage, unitDir, service.Name),
 					service.Name,
 					env.Name,
-					env.Namespace,
+					scope.Namespace,
 					managedService.SecretReferences,
 				)
 				if bundleErr != nil {
@@ -153,6 +160,7 @@ func renderModuleTree(
 					filepath.Join(stage, unitDir, service.Name),
 					service,
 					env,
+					scope,
 				); projectErr != nil {
 					return projectErr
 				}
@@ -188,7 +196,7 @@ func renderModuleTree(
 		if err := copyEnvironmentBootstrap(static, env.Name, bootstrap); err != nil {
 			return fmt.Errorf("copy module environment bootstrap: %w", err)
 		}
-		if _, err := projectResourceQuota(bootstrap, env.Name, env.Namespace, env.ResourceQuota); err != nil {
+		if _, err := projectResourceQuota(bootstrap, env.Name, scope.Namespace, env.ResourceQuota); err != nil {
 			return fmt.Errorf("project module namespace resource quota: %w", err)
 		}
 		return nil
@@ -270,6 +278,10 @@ func copyEnvironmentBootstrap(source, environment, destination string) error {
 }
 
 func RenderService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *environments.Environment, project string, standAlone bool, sink orchestration.OutputSink) (RenderResult, error) {
+	return renderService(ctx, workspace, module, service, env, project, standAlone, false, sink)
+}
+
+func renderService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *environments.Environment, project string, standAlone, validateCluster bool, sink orchestration.OutputSink) (RenderResult, error) {
 	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
 		return RenderResult{}, err
 	}
@@ -284,7 +296,7 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 		Module:      module.Name,
 		Unit:        service.Name,
 		Environment: env.Name,
-		Namespace:   env.Namespace,
+		Namespace:   env.ModuleNamespace(workspace, module.Name),
 		AppProject:  project,
 		Promotable:  true,
 		Package:     pkg,
@@ -300,6 +312,7 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 			service,
 			env,
 			standAlone,
+			validateCluster,
 			sink,
 			serviceRenderDestinations(stage),
 			nil,
@@ -307,7 +320,8 @@ func RenderService(ctx context.Context, workspace *resources.Workspace, module *
 		); err != nil {
 			return err
 		}
-		return projectRenderedServiceConfiguration(ctx, stage, env, graph)
+		return projectRenderedServiceConfiguration(ctx, stage, workspace, env, graph)
+
 	})
 }
 
@@ -342,6 +356,7 @@ func renderServiceFlow(
 	service *resources.Service,
 	env *environments.Environment,
 	standAlone bool,
+	validateCluster bool,
 	sink orchestration.OutputSink,
 	destination func(*resources.Module, *resources.Service) string,
 	record func(map[string]*builderv0.DeploymentOutput),
@@ -359,6 +374,7 @@ func renderServiceFlow(
 		flow.WithOutputSink(sink)
 	}
 	flow.WithStandAlone(standAlone)
+	flow.WithClusterValidation(validateCluster)
 	defer func() {
 		if stopErr := flow.Stop(); result == nil && stopErr != nil {
 			result = stopErr

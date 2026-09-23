@@ -37,3 +37,15 @@ func setWorkspaceGitops(t *testing.T, workspace *resources.Workspace, gitops *en
 	}
 	workspace.Extensions["gitops"] = resources.YAMLValue{Node: node}
 }
+
+// singleModuleWorkspace is the workspace the projection tests run in: it
+// composes one module, so every unit binds to the environment's own namespace.
+func singleModuleWorkspace() *resources.Workspace {
+	return &resources.Workspace{Name: "platform", Layout: resources.LayoutKindModules}
+}
+
+// scopeOf is the unit scope a single-module workspace gives a service of the
+// environment: the environment's namespace, unchanged.
+func scopeOf(env *environments.Environment) unitScope {
+	return moduleScope(env, singleModuleWorkspace(), "product")
+}

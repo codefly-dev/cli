@@ -105,7 +105,7 @@ func TestCachedBuildxArgsMatchExecutedPlatformsAndPreserveOutputIdentity(t *test
 	recipe := &builderv0.DockerBuildRecipe{Name: "app", Image: "ghcr.io/org/app:v1", Platforms: []string{"linux/amd64", "linux/arm64"}, Target: "runtime", BuildArgs: map[string]string{"PUBLIC": "value"}}
 	cache := &builderv0.BuildCacheOptions{Backend: "registry", Scope: "workspace/service/app", Imports: []string{"ghcr.io/org/cache"}, Exports: []string{"ghcr.io/org/cache"}}
 	for _, push := range []bool{false, true} {
-		args, err := cachedBuildxArgs(recipe, "/staged/Dockerfile", "/staged/context", push, push, "/tmp/metadata", "remote", cache)
+		args, err := cachedBuildxArgs(recipe, "/staged/Dockerfile", "/staged/context", push, push, "/tmp/metadata", "remote", cache, privateModuleBuild{})
 		require.NoError(t, err)
 		require.Equal(t, "/staged/context", args[len(args)-1])
 		require.Contains(t, args, "--metadata-file")
@@ -133,11 +133,11 @@ func TestCachedBuildxArgsMatchExecutedPlatformsAndPreserveOutputIdentity(t *test
 		}
 	}
 	cache.Exports = nil
-	args, err := cachedBuildxArgs(recipe, "/staged/Dockerfile", "/staged/context", false, false, "", "", cache)
+	args, err := cachedBuildxArgs(recipe, "/staged/Dockerfile", "/staged/context", false, false, "", "", cache, privateModuleBuild{})
 	require.NoError(t, err)
 	require.NotContains(t, args, "--cache-to")
 	cache.Backend = "unsupported"
-	_, err = cachedBuildxArgs(recipe, "/staged/Dockerfile", "/staged/context", false, false, "", "", cache)
+	_, err = cachedBuildxArgs(recipe, "/staged/Dockerfile", "/staged/context", false, false, "", "", cache, privateModuleBuild{})
 	require.ErrorContains(t, err, "unsupported")
 }
 

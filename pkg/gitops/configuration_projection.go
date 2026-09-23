@@ -164,7 +164,7 @@ func bindContainerConfiguration(container map[string]any, service string, keys [
 
 // Check the selected overlay, not just the base we modified: a patch can remove
 // the workload or override its configuration after projection.
-func validateProjectedConfiguration(root string, service *resources.Service, env *environments.Environment) error {
+func validateProjectedConfiguration(root string, service *resources.Service, env *environments.Environment, scope unitScope) error {
 	values := map[string]string{}
 	if env.ServiceConfig != nil {
 		values = env.ServiceConfig.Services[service.Name].Values
@@ -177,7 +177,7 @@ func validateProjectedConfiguration(root string, service *resources.Service, env
 	if err != nil {
 		return err
 	}
-	expectedSecret, err := expectedServiceSecret(root, service.Name, env)
+	expectedSecret, err := expectedServiceSecret(root, scope, service.Name, env)
 	if err != nil {
 		return err
 	}
@@ -240,7 +240,7 @@ func validateProjectedConfiguration(root string, service *resources.Service, env
 	return nil
 }
 
-func expectedServiceSecret(root, service string, env *environments.Environment) (*externalSecret, error) {
+func expectedServiceSecret(root string, scope unitScope, service string, env *environments.Environment) (*externalSecret, error) {
 	if env.ServiceSecrets == nil {
 		return nil, nil
 	}
@@ -248,7 +248,7 @@ func expectedServiceSecret(root, service string, env *environments.Environment) 
 	if err != nil {
 		return nil, err
 	}
-	return serviceSecretProjection(service, env.Namespace, env.ServiceSecrets, keys)
+	return serviceSecretProjection(scope, service, env.ServiceSecrets, keys)
 }
 
 func effectiveConfiguration(root, environment string) ([]manifest, error) {

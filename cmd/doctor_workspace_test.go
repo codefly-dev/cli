@@ -242,6 +242,145 @@ func TestDoctorWorkspaceModuleTrustGitDirectiveIsReported(t *testing.T) {
 	requireCode(t, report, codeModuleUnverified, "warn")
 }
 
+// A module the workspace itself declares as git-resolved must not be reported
+// as a module-trust failure: `run` resolves it by cloning, and doctor that says
+// otherwise sends the reader to add trust for a package the producer does not
+// publish. The declaration is reported informationally instead, and the
+// unverified warning still stands — writing the opt-out down does not make the
+// clone checked.
+func TestDoctorWorkspaceCommittedGitResolutionIsReportedNotFlagged(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodule-resolution:\n    saas: git\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	requireNoCode(t, report, codeModuleTrustMissing)
+	diag := requireCode(t, report, codeModuleResolutionGit, "ok")
+	if !strings.Contains(diag.Message, "saas") || !strings.Contains(diag.Message, "unverified") {
+		t.Fatalf("the diagnostic must name the module and what it costs: %+v", diag)
+	}
+	requireCode(t, report, codeModuleUnverified, "warn")
+
+	// The same reading once `run` has materialized it and replaced the workspace's
+	// declaration with the clone's path: the committed key is still what says so,
+	// and an unverified module is a warning, never a readiness failure.
+	materialized := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":         "name: solution\nlayout: modules\nmodule-resolution:\n    saas: git\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+		"codefly.local.yaml":             "resolve:\n    saas:\n        path: clone\n",
+		composition.ResolutionRecordName: "resolved:\n    saas:\n        source: owner/saas\n        requested: \"0.1.0\"\n        mode: declared-git\n        version: v0.1.0\n        path: clone\n",
+		"clone/module.codefly.yaml":      "name: saas\n",
+	})
+	report = runReadiness(t, workspaceReadinessOptions{dir: materialized})
+	requireNoCode(t, report, codeModuleTrustMissing)
+	requireNoCode(t, report, codeModuleResolutionStale)
+	requireCode(t, report, codeModuleResolutionGit, "ok")
+	if report.Status != readinessStatusReady {
+		t.Fatalf("a declared git resolution is not a readiness failure: %q", report.Status)
+	}
+}
+
+// Dropping the declaration is the whole edit that moves a module to verified
+// resolution, so doctor must stop reporting it the moment the key is gone —
+// even though `run` has already written a `declared-git` receipt beside it.
+func TestDoctorWorkspaceDroppedGitResolutionIsFlaggedAgain(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":         "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+		"codefly.local.yaml":             "resolve:\n    saas:\n        path: clone\n",
+		composition.ResolutionRecordName: "resolved:\n    saas:\n        source: owner/saas\n        requested: \"0.1.0\"\n        mode: declared-git\n        version: v0.1.0\n        path: clone\n",
+		"clone/module.codefly.yaml":      "name: saas\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	requireNoCode(t, report, codeModuleResolutionGit)
+	requireNoCode(t, report, codeModuleUnverified)
+	requireCode(t, report, codeModuleTrustMissing, "fail")
+}
+
+// A fresh checkout of a workspace whose module is composed by source+version has
+// no overlay yet, and the doctor never writes one. It must say exactly that —
+// which module, and which commands materialize it — and skip the service-scoped
+// checks it cannot perform, rather than relay core's "pinned modules are pulled
+// by the CLI, not loadable as a local checkout" out of the service load as if
+// the manifests were broken.
+func TestDoctorWorkspaceReportsAModuleNotYetMaterialized(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodule-resolution:\n    saas: git\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	diag := requireCode(t, report, codeModuleNotMaterialized, "fail")
+	if !strings.Contains(diag.Message, `module "saas" is declared but not materialized yet`) {
+		t.Fatalf("diagnostic should say precisely what is missing: %+v", diag)
+	}
+	for _, want := range []string{"codefly run", "codefly deploy gitops render"} {
+		if !strings.Contains(diag.Remediation, want) {
+			t.Fatalf("remediation should name %s: %+v", want, diag)
+		}
+	}
+	for _, check := range report.Checks {
+		if strings.Contains(check.Message, "not loadable as a local checkout") {
+			t.Fatalf("core's refusal must not be relayed as a diagnostic: %+v", check)
+		}
+		if check.Name == "services" {
+			t.Fatalf("the service-scoped checks must be skipped, got %+v", check)
+		}
+	}
+	if report.Status != readinessStatusNotReady {
+		t.Fatalf("status = %q, want not_ready", report.Status)
+	}
+
+	// The same reading when the overlay selects a materialization that has since
+	// been deleted: the module is declared, was materialized, and is not now.
+	gone := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":         "name: solution\nlayout: modules\nmodule-resolution:\n    saas: git\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+		"codefly.local.yaml":             "resolve:\n    saas:\n        path: clone\n",
+		composition.ResolutionRecordName: "resolved:\n    saas:\n        source: owner/saas\n        requested: \"0.1.0\"\n        mode: declared-git\n        version: v0.1.0\n        path: clone\n",
+	})
+	report = runReadiness(t, workspaceReadinessOptions{dir: gone})
+	diag = requireCode(t, report, codeModuleNotMaterialized, "fail")
+	if !strings.Contains(diag.Message, filepath.Join(gone, "clone")) {
+		t.Fatalf("diagnostic should name the vanished materialization: %+v", diag)
+	}
+
+	// And once materialized (as any materializing command leaves it), the
+	// diagnostic is gone and the service-scoped checks run.
+	materialized := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":         "name: solution\nlayout: modules\nmodule-resolution:\n    saas: git\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+		"codefly.local.yaml":             "resolve:\n    saas:\n        path: clone\n",
+		composition.ResolutionRecordName: "resolved:\n    saas:\n        source: owner/saas\n        requested: \"0.1.0\"\n        mode: declared-git\n        version: v0.1.0\n        path: clone\n",
+		"clone/module.codefly.yaml":      "name: saas\n",
+	})
+	report = runReadiness(t, workspaceReadinessOptions{dir: materialized})
+	requireNoCode(t, report, codeModuleNotMaterialized)
+	if findCheck(report, "services") == nil {
+		t.Fatalf("service-scoped checks should run once materialized: %s", reportJSON(t, report))
+	}
+}
+
+// An unsupported resolution value is a manifest error, not a key to ignore:
+// ignored, it would read as "this module resolves verified" and send the reader
+// to fix module-trust for a package that does not exist.
+func TestDoctorWorkspaceUnknownResolutionIsReported(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodule-resolution:\n    saas: worktree\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	diag := requireCode(t, report, codeWorkspaceInvalid, "fail")
+	if !strings.Contains(diag.Message, "worktree") {
+		t.Fatalf("the diagnostic must name the unsupported value: %+v", diag)
+	}
+}
+
+// The per-entry `resolution:` spelling is the one core drops on its next write
+// to this file, so doctor must refuse it rather than let it look like it works.
+func TestDoctorWorkspacePerModuleResolutionKeyIsRefused(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n      resolution: git\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	diag := requireCode(t, report, codeWorkspaceInvalid, "fail")
+	if !strings.Contains(diag.Message, "module-resolution") {
+		t.Fatalf("the diagnostic must name the key that survives a write: %+v", diag)
+	}
+}
+
 // A malformed record must be named, not read as "nothing is opted out" — that
 // silently turns an unverified module into a module-trust failure and hides the
 // real problem.
@@ -405,6 +544,133 @@ func TestDoctorWorkspaceRequiredWorkspaceConfiguration(t *testing.T) {
 		})
 		report := runReadiness(t, workspaceReadinessOptions{dir: dir})
 		requireCode(t, report, codeConfigurationMissing, "fail")
+	})
+}
+
+const testWorkspaceYAMLComposed = testWorkspaceYAML + `    - name: host-a
+      path: ../host-a
+    - name: host-b
+      path: ../host-b
+`
+
+// composedWorkspace lays out a workspace beside two path-referenced modules,
+// host-a and host-b, each shipping the configurations/local files given in
+// shipped[<module>]. The workspace's own backend/api service declares
+// workspaceDeps; extra lands in the workspace. It returns the workspace
+// directory.
+func composedWorkspace(t *testing.T, workspaceDeps []string, extra map[string]string, shipped map[string]map[string]string) string {
+	t.Helper()
+	files := map[string]string{
+		"solution/workspace.codefly.yaml":                            testWorkspaceYAMLComposed,
+		"solution/modules/backend/module.codefly.yaml":               testModuleYAML("api"),
+		"solution/modules/backend/services/api/service.codefly.yaml": testServiceYAML("api", workspaceDeps...),
+	}
+	for _, host := range []string{"host-a", "host-b"} {
+		files[host+"/module.codefly.yaml"] = "kind: module\nname: " + host + "\nservices: []\n"
+		for name, content := range shipped[host] {
+			files[host+"/configurations/local/"+name] = content
+		}
+	}
+	for rel, content := range extra {
+		files["solution/"+rel] = content
+	}
+	return filepath.Join(writeTestWorkspace(t, files), "solution")
+}
+
+func findCheck(report *workspaceReadinessReport, name string) *workspaceDiagnostic {
+	for i := range report.Checks {
+		if report.Checks[i].Name == name {
+			return &report.Checks[i]
+		}
+	}
+	return nil
+}
+
+// A run provisions the configurations a composed module ships in its own tree
+// (core's ReadWorkspaceConfigurations); the doctor must answer as the run does.
+func TestDoctorWorkspaceComposedModuleConfigurations(t *testing.T) {
+	legalFromHostA := map[string]map[string]string{"host-a": {"legal.env": "LEGAL_URL=host-a-legal\n"}}
+
+	t.Run("module-shipped configuration satisfies a requirement", func(t *testing.T) {
+		dir := composedWorkspace(t, []string{"legal"}, nil, legalFromHostA)
+		report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+		if report.Status != readinessStatusReady {
+			t.Fatalf("status = %q, want ready: %s", report.Status, reportJSON(t, report))
+		}
+		requireNoCode(t, report, codeConfigurationMissing)
+		requireNoCode(t, report, codeConfigurationDirMissing)
+		check := findCheck(report, "workspace configuration legal")
+		if check == nil || check.Status != "ok" || !strings.Contains(check.Message, `"host-a"`) {
+			t.Fatalf("the satisfied group should name its providing module: %s", reportJSON(t, report))
+		}
+		if dirExists(filepath.Join(dir, "configurations", "local")) {
+			t.Fatal("doctor created the missing configurations directory")
+		}
+	})
+	t.Run("workspace file overrides a module-shipped one", func(t *testing.T) {
+		dir := composedWorkspace(t, []string{"legal"}, map[string]string{
+			"configurations/local/legal.env": "LEGAL_URL=solution-legal\n",
+		}, legalFromHostA)
+		report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+		if report.Status != readinessStatusReady {
+			t.Fatalf("status = %q, want ready: %s", report.Status, reportJSON(t, report))
+		}
+		if check := findCheck(report, "workspace configuration legal"); check != nil {
+			t.Fatalf("the workspace's own file wins, so no module should be credited: %+v", *check)
+		}
+		if check := findCheck(report, "composed module configurations"); check != nil {
+			t.Fatalf("the overridden module file is not a composed configuration: %+v", *check)
+		}
+		own := findCheck(report, "workspace configurations")
+		if own == nil || !strings.Contains(own.Message, "legal") {
+			t.Fatalf("the workspace's own configuration should be listed: %s", reportJSON(t, report))
+		}
+	})
+	t.Run("unprovided configuration still fails", func(t *testing.T) {
+		dir := composedWorkspace(t, []string{"legal", "openrouter"}, nil, legalFromHostA)
+		report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+		if report.Status != readinessStatusNotReady {
+			t.Fatalf("status = %q, want not_ready: %s", report.Status, reportJSON(t, report))
+		}
+		missingDir := requireCode(t, report, codeConfigurationDirMissing, "fail")
+		if !strings.Contains(missingDir.Message, "1 required") || !strings.Contains(missingDir.Message, "openrouter") || strings.Contains(missingDir.Message, "legal") {
+			t.Fatalf("the missing directory should count only the unprovided group: %q", missingDir.Message)
+		}
+		missing := findDiagnostics(report, codeConfigurationMissing)
+		if len(missing) != 1 || !strings.Contains(missing[0].Message, "openrouter") || !strings.Contains(missing[0].Message, "backend/api") {
+			t.Fatalf("exactly the unprovided group should be missing: %s", reportJSON(t, report))
+		}
+		if dirExists(filepath.Join(dir, "configurations", "local")) {
+			t.Fatal("doctor created the missing configurations directory")
+		}
+	})
+	t.Run("ambiguous providers fail", func(t *testing.T) {
+		dir := composedWorkspace(t, []string{"observability"}, nil, map[string]map[string]string{
+			"host-a": {"observability.env": "OBSERVABILITY_URL=host-a-observability\n"},
+			"host-b": {"observability.env": "OBSERVABILITY_URL=host-b-observability\n"},
+		})
+		report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+		if report.Status != readinessStatusNotReady {
+			t.Fatalf("status = %q, want not_ready: %s", report.Status, reportJSON(t, report))
+		}
+		diag := requireCode(t, report, codeConfigurationDuplicate, "fail")
+		for _, want := range []string{"observability", "host-a", "host-b", "backend/api"} {
+			if !strings.Contains(diag.Message, want) {
+				t.Fatalf("ambiguity should name the group, both providers and the requiring service; missing %q in %q", want, diag.Message)
+			}
+		}
+		requireNoCode(t, report, codeConfigurationMissing)
+	})
+	t.Run("identical definitions are one provider", func(t *testing.T) {
+		dir := composedWorkspace(t, []string{"observability"}, nil, map[string]map[string]string{
+			"host-a": {"observability.env": "OBSERVABILITY_URL=shared\n"},
+			"host-b": {"observability.env": "OBSERVABILITY_URL=shared\n"},
+		})
+		report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+		if report.Status != readinessStatusReady {
+			t.Fatalf("status = %q, want ready: %s", report.Status, reportJSON(t, report))
+		}
+		requireNoCode(t, report, codeConfigurationDuplicate)
 	})
 }
 

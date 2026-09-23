@@ -1,0 +1,5 @@
+name: platform
+layout: modules
+modules:
+    - name: host
+    - name: app

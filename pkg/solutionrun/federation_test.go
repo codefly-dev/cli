@@ -100,7 +100,7 @@ func TestEntryConsumes(t *testing.T) {
 	dir := t.TempDir()
 	writeSolutionManifest(t, dir, solutionManifestWithConsumes)
 
-	consumed, value, err := entryConsumes(wikiWorkspace(dir), wikiModule(), wikiService("backend"))
+	consumed, value, err := entryConsumes(wikiModuleAt(dir), wikiService("backend"))
 	if err != nil {
 		t.Fatalf("entryConsumes: %v", err)
 	}
@@ -120,45 +120,42 @@ func TestEntryConsumes(t *testing.T) {
 	}
 }
 
-// The manifest at the workspace root describes the workspace's own module.
-// Injecting it into any other service binds one solution's consumes to another
-// backend, so every non-entry target must come back empty.
-func TestEntryConsumesOnlyTargetsTheSelfRootEntry(t *testing.T) {
+// The manifest is the module's own: it is read from the module's directory and
+// only for that module's service-entry. Any other service — a sibling of the
+// entry, or the entry of a module whose directory ships no manifest — must come
+// back empty, or one solution's consumes would bind to another backend.
+func TestEntryConsumesOnlyTargetsTheModulesOwnEntry(t *testing.T) {
 	dir := t.TempDir()
 	writeSolutionManifest(t, dir, solutionManifestWithConsumes)
+	elsewhere := t.TempDir()
 
 	for _, tc := range []struct {
-		name      string
-		workspace *resources.Workspace
-		module    *resources.Module
-		service   *resources.Service
+		name    string
+		module  *resources.Module
+		service *resources.Service
 	}{
 		{
-			name:      "a non-entry service of the solution root",
-			workspace: wikiWorkspace(dir),
-			module:    wikiModule(),
-			service:   wikiService("worker"),
+			name:    "a non-entry service of the solution module",
+			module:  wikiModuleAt(dir),
+			service: wikiService("worker"),
 		},
 		{
-			name:      "a same-named service in a composed module",
-			workspace: wikiWorkspace(dir),
-			module:    &resources.Module{Name: "documents", ServiceEntry: "backend"},
-			service:   wikiService("backend"),
+			name: "a same-named entry of a module shipping no manifest",
+			module: func() *resources.Module {
+				module := &resources.Module{Name: "documents", ServiceEntry: "backend"}
+				module.WithDir(elsewhere)
+				return module
+			}(),
+			service: wikiService("backend"),
 		},
 		{
-			name: "no self-root module, so the entry came from a composed module",
-			workspace: workspaceAt(dir, &resources.Workspace{
-				Name: "orphan",
-				Modules: []*resources.ModuleReference{
-					{Name: "saas-starter", PathOverride: strptr("../saas/module")},
-				},
-			}),
-			module:  &resources.Module{Name: "saas-starter", ServiceEntry: "backend"},
+			name:    "a module with no directory to ship a manifest in",
+			module:  &resources.Module{Name: "wiki", ServiceEntry: "backend"},
 			service: wikiService("backend"),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			consumed, value, err := entryConsumes(tc.workspace, tc.module, tc.service)
+			consumed, value, err := entryConsumes(tc.module, tc.service)
 			if err != nil {
 				t.Fatalf("entryConsumes: %v", err)
 			}
@@ -166,6 +163,27 @@ func TestEntryConsumesOnlyTargetsTheSelfRootEntry(t *testing.T) {
 				t.Fatalf("expected no injection, got %+v / %q", consumed, value)
 			}
 		})
+	}
+}
+
+// A solution composed by source and version is never the workspace's own
+// module: its manifest sits in its cache checkout, not at the workspace root.
+// The manifest a run reads is the module's, wherever the module is — gating it
+// on the workspace root left a composed solution with no projection at all.
+func TestEntryConsumesIsLocatedByTheModuleNotTheWorkspace(t *testing.T) {
+	checkout := t.TempDir()
+	writeSolutionManifest(t, checkout, solutionManifestWithConsumes)
+	workspaceDir := t.TempDir()
+	writeSolutionManifest(t, workspaceDir, solutionManifestWithoutConsumes)
+
+	composed := &resources.Module{Name: "lastlogin", ServiceEntry: "backend"}
+	composed.WithDir(checkout)
+	consumed, value, err := entryConsumes(composed, wikiService("backend"))
+	if err != nil {
+		t.Fatalf("entryConsumes: %v", err)
+	}
+	if len(consumed) != 1 || consumed[0].Module != "documents" || value == "" {
+		t.Fatalf("the composed module's own manifest was not read: got %+v / %q", consumed, value)
 	}
 }
 
@@ -183,7 +201,7 @@ func TestEntryConsumesNoOps(t *testing.T) {
 			if tc.manifest != "" {
 				writeSolutionManifest(t, dir, tc.manifest)
 			}
-			consumed, value, err := entryConsumes(wikiWorkspace(dir), wikiModule(), wikiService("backend"))
+			consumed, value, err := entryConsumes(wikiModuleAt(dir), wikiService("backend"))
 			if err != nil {
 				t.Fatalf("entryConsumes: %v", err)
 			}
@@ -210,7 +228,7 @@ func TestEntryConsumesToleratesUnrelatedSchemaDrift(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			writeSolutionManifest(t, dir, tc.manifest)
-			consumed, value, err := entryConsumes(wikiWorkspace(dir), wikiModule(), wikiService("backend"))
+			consumed, value, err := entryConsumes(wikiModuleAt(dir), wikiService("backend"))
 			if err != nil {
 				t.Fatalf("schema drift must not block the run: %v", err)
 			}
@@ -228,7 +246,7 @@ func TestEntryConsumesRejectsPartialBinding(t *testing.T) {
 	dir := t.TempDir()
 	writeSolutionManifest(t, dir, strings.Replace(solutionManifestWithConsumes, "      service: api\n", "", 1))
 
-	if _, _, err := entryConsumes(wikiWorkspace(dir), wikiModule(), wikiService("backend")); err == nil {
+	if _, _, err := entryConsumes(wikiModuleAt(dir), wikiService("backend")); err == nil {
 		t.Fatal("expected an error for a partially bound api.consumes entry")
 	}
 }
@@ -248,7 +266,7 @@ func TestEntryConsumesRejectsADuplicatedFacadePrefix(t *testing.T) {
       as: documents
 lifecycle:`, 1))
 
-	_, _, err := entryConsumes(wikiWorkspace(dir), wikiModule(), wikiService("backend"))
+	_, _, err := entryConsumes(wikiModuleAt(dir), wikiService("backend"))
 	if err == nil {
 		t.Fatal("expected an error for two api.consumes entries claiming one facade prefix")
 	}
@@ -278,7 +296,7 @@ func TestEntryConsumesRejectsAnUnroutableFacadePrefix(t *testing.T) {
 			writeSolutionManifest(t, dir, strings.Replace(solutionManifestWithConsumes,
 				"as: documents", "as: "+tc.prefix, 1))
 
-			_, _, err := entryConsumes(wikiWorkspace(dir), wikiModule(), wikiService("backend"))
+			_, _, err := entryConsumes(wikiModuleAt(dir), wikiService("backend"))
 			if err == nil {
 				t.Fatalf("expected an error for the facade prefix %q", tc.prefix)
 			}
@@ -296,7 +314,7 @@ func TestEntryConsumesRejectsUnparseableManifest(t *testing.T) {
 	dir := t.TempDir()
 	writeSolutionManifest(t, dir, "api:\n\tconsumes: [oops\n")
 
-	if _, _, err := entryConsumes(wikiWorkspace(dir), wikiModule(), wikiService("backend")); err == nil {
+	if _, _, err := entryConsumes(wikiModuleAt(dir), wikiService("backend")); err == nil {
 		t.Fatal("expected an error for an unparseable solution manifest")
 	}
 }
@@ -313,8 +331,32 @@ func workspaceAt(dir string, workspace *resources.Workspace) *resources.Workspac
 	return workspace
 }
 
-func wikiModule() *resources.Module {
-	return &resources.Module{Name: "wiki", ServiceEntry: "backend"}
+// wikiModuleAt is the wiki solution module as a run loads it: with the directory
+// its solution manifest sits in.
+func wikiModuleAt(dir string) *resources.Module {
+	module := &resources.Module{Name: "wiki", ServiceEntry: "backend"}
+	module.WithDir(dir)
+	return module
+}
+
+// wikiModuleIn is the wiki module of a loaded workspace where it is the `path: .`
+// module, so its directory is the workspace's.
+func wikiModuleIn(workspace *resources.Workspace) *resources.Module {
+	return wikiModuleAt(workspace.Dir())
+}
+
+// entryConsumes is the api.consumes half of what DerivedRunInputs reads from the
+// entry manifest: the projection and its CODEFLY__API_CONSUMES value.
+func entryConsumes(module *resources.Module, service *resources.Service) ([]manifest.ConsumedAPI, string, error) {
+	solutionManifest, err := entryManifest(module, service)
+	if err != nil || solutionManifest == nil {
+		return nil, "", err
+	}
+	consumed := solutionManifest.ConsumedAPIs()
+	if len(consumed) == 0 {
+		return nil, "", nil
+	}
+	return consumed, solutionManifest.ConsumedAPIsEnvValue(), nil
 }
 
 func wikiService(name string) *resources.Service {
@@ -528,7 +570,7 @@ func TestFederationRegistrarsToleratesAWorkspaceWithout(t *testing.T) {
 func TestDerivedRunInputsProvisionsBothHalves(t *testing.T) {
 	ctx := context.Background()
 	workspace := loadTestWorkspace(t, "testdata/solution-federation")
-	module := &resources.Module{Name: "wiki", ServiceEntry: "backend"}
+	module := wikiModuleIn(workspace)
 
 	derived, err := DerivedRunInputs(ctx, workspace, module, wikiService("backend"), "wiki/backend")
 	if err != nil {
@@ -585,7 +627,7 @@ func TestDerivedRunInputsProvisionsBothHalves(t *testing.T) {
 func TestDerivedRunInputsProvisionsTheConsumedModulesOwnSecret(t *testing.T) {
 	ctx := context.Background()
 	workspace := loadTestWorkspace(t, "testdata/solution-federation")
-	module := &resources.Module{Name: "wiki", ServiceEntry: "backend"}
+	module := wikiModuleIn(workspace)
 
 	derived, err := DerivedRunInputs(ctx, workspace, module, wikiService("backend"), "wiki/backend")
 	if err != nil {
@@ -694,7 +736,7 @@ func TestDerivedRunInputsKeepsTheBackendHalfWhenAModuleIsUnresolvable(t *testing
 		func(ref *resources.ModuleReference) bool { return ref.Name == "documents" })
 
 	derived, err := DerivedRunInputs(ctx, workspace,
-		&resources.Module{Name: "wiki", ServiceEntry: "backend"}, wikiService("backend"), "wiki/backend")
+		wikiModuleIn(workspace), wikiService("backend"), "wiki/backend")
 	if err != nil {
 		t.Fatalf("DerivedRunInputs: %v", err)
 	}
@@ -773,14 +815,15 @@ func TestConsumedModuleSecretOverridesBindsIdentityToDeclaredPrefix(t *testing.T
 	}
 }
 
-// A solution that federates nothing must run exactly as before: no secrets
-// provisioned, and no override on any host service.
-func TestDerivedRunInputsNoOpsWithoutConsumes(t *testing.T) {
+// A solution that federates nothing, in a workspace with no registrar to admit
+// it, must run exactly as before: no projection, no secret, no override on any
+// service and no configuration declared.
+func TestDerivedRunInputsNoOpsWithoutConsumesOrRegistrar(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	writeSolutionManifest(t, dir, solutionManifestWithoutConsumes)
 
-	derived, err := DerivedRunInputs(ctx, wikiWorkspace(dir), wikiModule(), wikiService("backend"), "wiki/backend")
+	derived, err := DerivedRunInputs(ctx, wikiWorkspace(dir), wikiModuleAt(dir), wikiService("backend"), "wiki/backend")
 	if err != nil {
 		t.Fatalf("DerivedRunInputs: %v", err)
 	}
@@ -801,12 +844,15 @@ func TestDerivedRunInputsWithholdsSecretsWithoutARegistrar(t *testing.T) {
 		func(ref *resources.ModuleReference) bool { return ref.Name == "host" })
 
 	derived, err := DerivedRunInputs(ctx, workspace,
-		&resources.Module{Name: "wiki", ServiceEntry: "backend"}, wikiService("backend"), "wiki/backend")
+		wikiModuleIn(workspace), wikiService("backend"), "wiki/backend")
 	if err != nil {
 		t.Fatalf("DerivedRunInputs: %v", err)
 	}
 	if got := derived.Overrides["wiki/backend"][moduleRegistrationSecretsEnvironmentVariable]; got != "" {
 		t.Errorf("provisioned a secret %q with no registrar to authorize it", got)
+	}
+	if got := derived.Overrides["wiki/backend"][solutionRegistrationSecretEnvironmentVariable]; got != "" {
+		t.Errorf("provisioned the solution's own secret %q with no registrar to admit it", got)
 	}
 	// Withholding is symmetric: a secret no registrar can authorize is useless to
 	// the module that would present it too.
@@ -834,6 +880,9 @@ func TestDerivedRunInputsWithholdsSecretsWithoutARegistrar(t *testing.T) {
 	for _, note := range derived.Notes {
 		if note.Warning && strings.Contains(note.Message, federationConfigurationGroup) {
 			warned = true
+			if !strings.Contains(note.Message, "solution wiki") {
+				t.Errorf("the warning %q does not say the solution itself cannot register", note.Message)
+			}
 		}
 	}
 	if !warned {
@@ -853,7 +902,7 @@ func TestDerivedRunInputsReportsNotesWithoutPrinting(t *testing.T) {
 	var derivedErr error
 	stdout := captureStdout(t, func() {
 		derived, derivedErr = DerivedRunInputs(ctx, workspace,
-			&resources.Module{Name: "wiki", ServiceEntry: "backend"}, wikiService("backend"), "wiki/backend")
+			wikiModuleIn(workspace), wikiService("backend"), "wiki/backend")
 	})
 	if derivedErr != nil {
 		t.Fatalf("DerivedRunInputs: %v", derivedErr)
@@ -935,4 +984,245 @@ func parsePairs(t *testing.T, raw string) map[string]string {
 		out[prefix] = value
 	}
 	return out
+}
+
+// The solution's own credential is the third thing a run provisions, and the
+// one every solution needs whether or not it consumes anything: the host admits
+// a solution's gateway upstream and frontend remote only against the digest
+// declared for its id in SOLUTION_REGISTRATION_SECRETS. The entry gets the
+// plaintext, the registrar the `id:sha256hex` digest under the solution key —
+// never under a module key, since a solution credential carries strictly more
+// authority than a module one.
+func TestDerivedRunInputsProvisionsTheSolutionsOwnRegistrationSecret(t *testing.T) {
+	ctx := context.Background()
+	workspace := loadTestWorkspace(t, "testdata/solution-federation")
+
+	derived, err := DerivedRunInputs(ctx, workspace, wikiModuleIn(workspace), wikiService("backend"), "wiki/backend")
+	if err != nil {
+		t.Fatalf("DerivedRunInputs: %v", err)
+	}
+	secret := derived.Overrides["wiki/backend"][solutionRegistrationSecretEnvironmentVariable]
+	if secret == "" {
+		t.Fatalf("the entry received no %s", solutionRegistrationSecretEnvironmentVariable)
+	}
+	declared := derived.WorkspaceConfigurations[federationConfigurationGroup]
+	digests := parsePairs(t, declared[solutionRegistrationSecretsKey])
+	want := sha256.Sum256([]byte(secret))
+	if len(digests) != 1 || digests["wiki"] != hex.EncodeToString(want[:]) {
+		t.Errorf("%s = %q, want the module name paired with the sha256 of the entry's secret",
+			solutionRegistrationSecretsKey, declared[solutionRegistrationSecretsKey])
+	}
+	for key, value := range declared {
+		if strings.Contains(value, secret) {
+			t.Errorf("registrar received the plaintext solution secret under %s; it must hold only digests", key)
+		}
+		if key != solutionRegistrationSecretsKey && strings.Contains(value, "wiki:") {
+			t.Errorf("the solution digest was declared under %s; a solution credential is not a module credential", key)
+		}
+	}
+	// The module halves are untouched by the third.
+	if declared[moduleRegistrationSecretsKey] == "" || declared[moduleIdentitySecretsKey] == "" {
+		t.Errorf("provisioning the solution secret dropped the module digests: %+v", declared)
+	}
+	for unique, values := range derived.Overrides {
+		if unique == "wiki/backend" {
+			continue
+		}
+		if _, leaked := values[solutionRegistrationSecretEnvironmentVariable]; leaked {
+			t.Errorf("%s received the solution's registration secret; only the entry presents it", unique)
+		}
+	}
+	var reported bool
+	for _, note := range derived.Notes {
+		if strings.Contains(note.Message, solutionRegistrationSecretEnvironmentVariable) && strings.Contains(note.Message, "solution wiki") {
+			reported = true
+		}
+	}
+	if !reported {
+		t.Errorf("the notes never say the solution secret was provisioned: %+v", derived.Notes)
+	}
+}
+
+// A solution that consumes nothing still registers with the host, so it still
+// needs its own secret — and only that: no module key is declared for a run
+// that federates no prefix.
+func TestDerivedRunInputsProvisionsTheSolutionSecretWithoutConsumes(t *testing.T) {
+	ctx := context.Background()
+	workspace := loadTestWorkspace(t, "testdata/solution-federation")
+	checkout := t.TempDir()
+	writeSolutionManifest(t, checkout, solutionManifestWithoutConsumes)
+	module := wikiModuleAt(checkout)
+
+	derived, err := DerivedRunInputs(ctx, workspace, module, wikiService("backend"), "wiki/backend")
+	if err != nil {
+		t.Fatalf("DerivedRunInputs: %v", err)
+	}
+	backend := derived.Overrides["wiki/backend"]
+	if backend[solutionRegistrationSecretEnvironmentVariable] == "" {
+		t.Fatalf("the entry received no %s: %+v", solutionRegistrationSecretEnvironmentVariable, derived.Overrides)
+	}
+	if _, projected := backend[manifest.APIConsumesEnvironmentVariable]; projected {
+		t.Errorf("a manifest with no api.consumes projected %s", manifest.APIConsumesEnvironmentVariable)
+	}
+	if _, provisioned := backend[moduleRegistrationSecretsEnvironmentVariable]; provisioned {
+		t.Errorf("a solution federating nothing received %s", moduleRegistrationSecretsEnvironmentVariable)
+	}
+	declared := derived.WorkspaceConfigurations[federationConfigurationGroup]
+	if declared[solutionRegistrationSecretsKey] == "" {
+		t.Errorf("no solution digest declared: %+v", declared)
+	}
+	for _, key := range []string{moduleRegistrationSecretsKey, moduleIdentitySecretsKey} {
+		if _, present := declared[key]; present {
+			t.Errorf("%s declared for a run that federates no prefix", key)
+		}
+	}
+}
+
+// The whole derivation for a solution composed by source and version: its module
+// is not the workspace's own and its manifest sits in its own checkout, and it
+// must still get the projection, the module secrets for what it consumes, and
+// its own registration secret under its module name.
+func TestDerivedRunInputsForAComposedSolution(t *testing.T) {
+	ctx := context.Background()
+	workspace := loadTestWorkspace(t, "testdata/solution-composed")
+	if self := RootRef(workspace); self != nil {
+		t.Fatalf("the fixture must have no self-root module for this to prove anything, got %q", self.Name)
+	}
+	module := loadTestModule(t, workspace, "consumer")
+
+	derived, err := DerivedRunInputs(ctx, workspace, module, wikiService("backend"), "consumer/backend")
+	if err != nil {
+		t.Fatalf("DerivedRunInputs: %v", err)
+	}
+	backend := derived.Overrides["consumer/backend"]
+	if backend[manifest.APIConsumesEnvironmentVariable] == "" {
+		t.Errorf("the composed entry received no %s", manifest.APIConsumesEnvironmentVariable)
+	}
+	if secrets := parsePairs(t, backend[moduleRegistrationSecretsEnvironmentVariable]); secrets["accounts"] == "" {
+		t.Errorf("the composed entry received no registration secret for the accounts prefix: %q", backend[moduleRegistrationSecretsEnvironmentVariable])
+	}
+	secret := backend[solutionRegistrationSecretEnvironmentVariable]
+	if secret == "" {
+		t.Fatalf("the composed entry received no %s", solutionRegistrationSecretEnvironmentVariable)
+	}
+	declared := derived.WorkspaceConfigurations[federationConfigurationGroup]
+	want := sha256.Sum256([]byte(secret))
+	if got := parsePairs(t, declared[solutionRegistrationSecretsKey])["consumer"]; got != hex.EncodeToString(want[:]) {
+		t.Errorf("solution digest for consumer = %q, want the sha256 of its secret", got)
+	}
+}
+
+// The registrar refuses a whole declaration when one identity is malformed, and
+// refuses to boot: a module name it cannot accept must therefore mint nothing,
+// out loud, rather than take the host down with a message blaming a credential.
+func TestProvisionSolutionRegistrationSecretRefusesAnIdentityTheRegistrarRejects(t *testing.T) {
+	for _, id := range []string{"Wiki", "wiki_go", "wiki.go", "-wiki", strings.Repeat("w", registrationIdentityMaxLength+1)} {
+		secret, notes := provisionSolutionRegistrationSecret(id, "wiki/backend", []string{"host/accounts"})
+		if secret != "" {
+			t.Errorf("minted a secret for %q, which the registrar cannot declare", id)
+		}
+		if len(notes) != 1 || !notes[0].Warning || !strings.Contains(notes[0].Message, id) {
+			t.Errorf("refusing %q was not reported as a warning naming it: %+v", id, notes)
+		}
+	}
+	if secret, _ := provisionSolutionRegistrationSecret("wiki-go", "wiki/backend", []string{"host/accounts"}); secret == "" {
+		t.Error("a well-formed identity minted nothing")
+	}
+}
+
+// A module holding the registrar admits solutions; it does not register as one.
+// Injecting the plaintext beside the digest it is checked against would dissolve
+// the separation the digest carrier exists to create.
+func TestProvisionSolutionRegistrationSecretSkipsTheRegistrarsOwnModule(t *testing.T) {
+	secret, notes := provisionSolutionRegistrationSecret("host", "host/frontend", []string{"host/accounts"})
+	if secret != "" {
+		t.Errorf("minted a solution secret for the module that holds the digests")
+	}
+	if len(notes) != 1 || notes[0].Warning {
+		t.Errorf("skipping the registrar's module is a statement, not a warning: %+v", notes)
+	}
+}
+
+// Two solutions named as co-roots of one run each declare a digest to the same
+// host. Merged key by key the second would replace the first, and only the
+// last-named solution could register; the declarations must join instead — and
+// an identity declared by both is kept once, since the registrar refuses a
+// duplicate and boots nothing when it sees one.
+func TestMergeJoinsDeclarationsAcrossRoots(t *testing.T) {
+	first := RunInputs{
+		Overrides:               map[string]map[string]string{"wiki/backend": {"A": "1"}},
+		WorkspaceConfigurations: map[string]map[string]string{federationConfigurationGroup: {solutionRegistrationSecretsKey: "wiki:aa", moduleRegistrationSecretsKey: "documents:11"}},
+		Notes:                   []Note{{Message: "first"}},
+	}
+	second := RunInputs{
+		Overrides:               map[string]map[string]string{"notes/backend": {"B": "2"}, "wiki/backend": {"A": "3"}},
+		WorkspaceConfigurations: map[string]map[string]string{federationConfigurationGroup: {solutionRegistrationSecretsKey: "notes:bb", moduleRegistrationSecretsKey: "documents:22,archives:33"}},
+		Notes:                   []Note{{Message: "second"}},
+	}
+	merged := Merge(first, second)
+	declared := merged.WorkspaceConfigurations[federationConfigurationGroup]
+	if declared[solutionRegistrationSecretsKey] != "wiki:aa,notes:bb" {
+		t.Errorf("%s = %q, want both solutions declared", solutionRegistrationSecretsKey, declared[solutionRegistrationSecretsKey])
+	}
+	if declared[moduleRegistrationSecretsKey] != "documents:11,archives:33" {
+		t.Errorf("%s = %q, want the first declaration of documents kept and archives joined", moduleRegistrationSecretsKey, declared[moduleRegistrationSecretsKey])
+	}
+	if merged.Overrides["wiki/backend"]["A"] != "3" || merged.Overrides["notes/backend"]["B"] != "2" {
+		t.Errorf("overrides did not layer key by key: %+v", merged.Overrides)
+	}
+	if len(merged.Notes) != 2 || merged.Notes[0].Message != "first" || merged.Notes[1].Message != "second" {
+		t.Errorf("notes lost their order: %+v", merged.Notes)
+	}
+	if empty := Merge(RunInputs{}, RunInputs{}); empty.Overrides != nil || empty.WorkspaceConfigurations != nil {
+		t.Errorf("merging nothing produced inputs: %+v", empty)
+	}
+}
+
+// Among the modules declaring a service-entry, the root is the one nothing else
+// in that set depends on. The host is depended on by the app, through a module
+// with no entry of its own, and by the consumer, through api.consumes alone —
+// so it is never a root, whichever of the two is composed beside it.
+func TestSolutionRootsExcludesAnEntryAnotherEntryDependsOn(t *testing.T) {
+	ctx := context.Background()
+	workspace := loadTestWorkspace(t, "testdata/solution-composed")
+	host := loadTestModule(t, workspace, "host")
+	app := loadTestModule(t, workspace, "app")
+	consumer := loadTestModule(t, workspace, "consumer")
+
+	for _, tc := range []struct {
+		name    string
+		entries []*resources.Module
+		want    []string
+	}{
+		{name: "transitively through a module with no entry", entries: []*resources.Module{host, app}, want: []string{"app"}},
+		{name: "through api.consumes alone", entries: []*resources.Module{consumer, host}, want: []string{"consumer"}},
+		{name: "two solutions beside one host", entries: []*resources.Module{host, app, consumer}, want: []string{"app", "consumer"}},
+		{name: "a lone entry", entries: []*resources.Module{host}, want: []string{"host"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			for _, root := range SolutionRoots(ctx, workspace, tc.entries) {
+				got = append(got, root.Name)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("SolutionRoots = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func loadTestModule(t *testing.T, workspace *resources.Workspace, name string) *resources.Module {
+	t.Helper()
+	for _, ref := range workspace.Modules {
+		if ref.Name != name {
+			continue
+		}
+		module, err := workspace.LoadModuleFromReference(context.Background(), ref)
+		if err != nil {
+			t.Fatalf("cannot load module %s: %v", name, err)
+		}
+		return module
+	}
+	t.Fatalf("workspace %s references no module %s", workspace.Name, name)
+	return nil
 }

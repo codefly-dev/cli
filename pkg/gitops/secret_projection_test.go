@@ -224,7 +224,7 @@ func azureServiceSecrets() *environments.EnvironmentServiceSecrets {
 
 func TestServiceSecretProjectionDefaultsAndOverridesRemoteKeys(t *testing.T) {
 	projection, err := serviceSecretProjection(
-		"accounts", "payments", azureServiceSecrets(),
+		unitScope{Namespace: "payments"}, "accounts", azureServiceSecrets(),
 		[]string{"workos-api-key", "workos-client-secret"},
 	)
 	if err != nil {
@@ -249,10 +249,10 @@ func TestServiceSecretProjectionDefaultsAndOverridesRemoteKeys(t *testing.T) {
 }
 
 func TestServiceSecretProjectionRendersNothingWithoutStoreOrKeys(t *testing.T) {
-	if projection, err := serviceSecretProjection("accounts", "payments", nil, []string{"api-key"}); err != nil || projection != nil {
+	if projection, err := serviceSecretProjection(unitScope{Namespace: "payments"}, "accounts", nil, []string{"api-key"}); err != nil || projection != nil {
 		t.Fatalf("nil store rendered %v (err %v)", projection, err)
 	}
-	if projection, err := serviceSecretProjection("accounts", "payments", azureServiceSecrets(), nil); err != nil || projection != nil {
+	if projection, err := serviceSecretProjection(unitScope{Namespace: "payments"}, "accounts", azureServiceSecrets(), nil); err != nil || projection != nil {
 		t.Fatalf("no keys rendered %v (err %v)", projection, err)
 	}
 }
@@ -264,7 +264,7 @@ func TestServiceSecretProjectionHonorsPerServiceStore(t *testing.T) {
 			"accounts": {SecretStore: &environments.EnvironmentSecretStoreReference{Name: "accounts-vault", Kind: "SecretStore"}},
 		},
 	}
-	projection, err := serviceSecretProjection("accounts", "payments", secrets, []string{"api-key"})
+	projection, err := serviceSecretProjection(unitScope{Namespace: "payments"}, "accounts", secrets, []string{"api-key"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,7 @@ func TestServiceSecretProjectionHonorsPerServiceStore(t *testing.T) {
 	}
 
 	// A service without an override still resolves through the environment store.
-	other, err := serviceSecretProjection("billing", "payments", secrets, []string{"api-key"})
+	other, err := serviceSecretProjection(unitScope{Namespace: "payments"}, "billing", secrets, []string{"api-key"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,11 +286,11 @@ func TestServiceSecretProjectionRejectsInvalidStore(t *testing.T) {
 	backendKind := &environments.EnvironmentServiceSecrets{
 		SecretStore: environments.EnvironmentSecretStoreReference{Name: "azure-keyvault-prod", Kind: "azure-keyvault"},
 	}
-	if _, err := serviceSecretProjection("accounts", "payments", backendKind, []string{"api-key"}); err == nil {
+	if _, err := serviceSecretProjection(unitScope{Namespace: "payments"}, "accounts", backendKind, []string{"api-key"}); err == nil {
 		t.Fatal("expected error for backend-type store kind")
 	}
 	valid := azureServiceSecrets()
-	if _, err := serviceSecretProjection("accounts", "", valid, []string{"api-key"}); err == nil {
+	if _, err := serviceSecretProjection(unitScope{Namespace: ""}, "accounts", valid, []string{"api-key"}); err == nil {
 		t.Fatal("expected error for missing namespace")
 	}
 }
@@ -312,7 +312,7 @@ func TestServiceSecretProjectionUsesProperty(t *testing.T) {
 			key: {Key: "lodestar-identity", Property: "client_secret"},
 		},
 	})
-	projection, err := serviceSecretProjection("accounts", "lodestar", secrets, []string{key})
+	projection, err := serviceSecretProjection(unitScope{Namespace: "lodestar"}, "accounts", secrets, []string{key})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func TestServiceSecretProjectionScalarFormStillWorks(t *testing.T) {
 	secrets := cellServiceSecrets(environments.EnvironmentServiceSecretMapping{
 		RemoteKeys: map[string]environments.EnvironmentSecretRemoteRef{"K": {Key: "some-key"}},
 	})
-	projection, err := serviceSecretProjection("accounts", "lodestar", secrets, []string{"K"})
+	projection, err := serviceSecretProjection(unitScope{Namespace: "lodestar"}, "accounts", secrets, []string{"K"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +356,7 @@ func TestServiceSecretProjectionDefaultsTemplate(t *testing.T) {
 	secrets := cellServiceSecrets(environments.EnvironmentServiceSecretMapping{
 		Defaults: &environments.EnvironmentSecretRemoteRef{Key: "lodestar-{service}", Property: "{key}"},
 	})
-	projection, err := serviceSecretProjection("accounts", "lodestar", secrets, []string{"K"})
+	projection, err := serviceSecretProjection(unitScope{Namespace: "lodestar"}, "accounts", secrets, []string{"K"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +380,7 @@ func TestRenderAcceptsExternalSecretWithProperty(t *testing.T) {
 			gatewayToken: {Key: "lodestar-internal-auth", Property: "gateway_token"},
 		},
 	})
-	projection, err := serviceSecretProjection("accounts", "lodestar", secrets, []string{clientSecret, gatewayToken})
+	projection, err := serviceSecretProjection(unitScope{Namespace: "lodestar"}, "accounts", secrets, []string{clientSecret, gatewayToken})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +484,7 @@ func TestServiceSecretProjectionReproducesInfraBaseAccounts(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "accounts")
 	writeServiceTreeReferencingKeys(t, root, "prod", "lodestar", "accounts", keys)
 
-	projected, err := projectServiceSecrets(root, "accounts", "prod", "lodestar", secrets)
+	projected, err := projectServiceSecrets(root, unitScope{Namespace: "lodestar"}, "accounts", "prod", secrets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -574,7 +574,7 @@ func TestServiceSecretKeysDiscoversReferencedKeys(t *testing.T) {
 func TestProjectServiceSecretsInjectsPromotableOverlay(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "accounts")
 	writeServiceTree(t, root, "production")
-	projected, err := projectServiceSecrets(root, "accounts", "production", "payments", azureServiceSecrets())
+	projected, err := projectServiceSecrets(root, unitScope{Namespace: "payments"}, "accounts", "production", azureServiceSecrets())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -620,7 +620,7 @@ func TestProjectServiceSecretsInjectsPromotableOverlay(t *testing.T) {
 func TestProjectServiceSecretsNoOpWithoutDeclaration(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "accounts")
 	writeServiceTree(t, root, "production")
-	projected, err := projectServiceSecrets(root, "accounts", "production", "payments", nil)
+	projected, err := projectServiceSecrets(root, unitScope{Namespace: "payments"}, "accounts", "production", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -702,7 +702,7 @@ func TestProjectServiceSecretsFailsClearlyWithoutOverlay(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(root, "overlays")); err != nil {
 		t.Fatal(err)
 	}
-	_, err := projectServiceSecrets(root, "accounts", "production", "payments", azureServiceSecrets())
+	_, err := projectServiceSecrets(root, unitScope{Namespace: "payments"}, "accounts", "production", azureServiceSecrets())
 	if err == nil {
 		t.Fatal("expected an error when the environment overlay is missing")
 	}
@@ -729,7 +729,7 @@ func TestProjectRenderedServiceSecretsCoversEveryServiceTree(t *testing.T) {
 		resources.ServiceUnique("identity", "accounts"): {Name: "accounts"},
 		resources.ServiceUnique("identity", "web"):      {Name: "web"},
 	}
-	if err := projectRenderedServiceConfiguration(t.Context(), stage, env, graph); err != nil {
+	if err := projectRenderedServiceConfiguration(t.Context(), stage, singleModuleWorkspace(), env, graph); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(accounts, "overlays", "production", "external-secret.yaml")); err != nil {
@@ -745,7 +745,7 @@ func TestProjectRenderedServiceSecretsNoOpWithoutDeclaration(t *testing.T) {
 	writeServiceTree(t, filepath.Join(stage, "modules", "identity", "services", "accounts"), "production")
 	env := &environments.Environment{Name: "production", Namespace: "payments"}
 	graph := map[string]*resources.Service{resources.ServiceUnique("identity", "accounts"): {Name: "accounts"}}
-	if err := projectRenderedServiceConfiguration(t.Context(), stage, env, graph); err != nil {
+	if err := projectRenderedServiceConfiguration(t.Context(), stage, singleModuleWorkspace(), env, graph); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(stage, "modules", "identity", "services", "accounts", "overlays", "production", "external-secret.yaml")); !os.IsNotExist(err) {

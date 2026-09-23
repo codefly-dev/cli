@@ -24,7 +24,11 @@ type ProduceRequest struct {
 	// StandAlone renders a single service without its dependencies. It applies
 	// only when Service is set and is ignored for a whole-module render.
 	StandAlone bool
-	Sink       orchestration.OutputSink
+	// ValidateCluster asks each service's promotable render for a server-side
+	// dry-run against the environment's declared cluster. Off by default: a
+	// render is a function of the workspace and needs no cluster.
+	ValidateCluster bool
+	Sink            orchestration.OutputSink
 }
 
 // ManifestProducer renders a validated, transport-neutral manifest bundle.
@@ -109,9 +113,9 @@ type flowProducer struct{}
 
 func (flowProducer) Produce(ctx context.Context, request ProduceRequest) (RenderResult, error) {
 	if request.Service == nil {
-		return RenderModule(ctx, request.Workspace, request.Module, request.Environment, request.AppProject, request.Sink)
+		return renderModuleTree(ctx, request.Workspace, request.Module, request.Environment, request.AppProject, request.Sink, true, request.ValidateCluster)
 	}
-	return RenderService(ctx, request.Workspace, request.Module, request.Service, request.Environment, request.AppProject, request.StandAlone, request.Sink)
+	return renderService(ctx, request.Workspace, request.Module, request.Service, request.Environment, request.AppProject, request.StandAlone, request.ValidateCluster, request.Sink)
 }
 
 type repositoryPublisher struct{}

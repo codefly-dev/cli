@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -31,7 +32,7 @@ var SolutionCmd = &cobra.Command{
 
 		name := args[0]
 		if solutionAgent == "" {
-			return fmt.Errorf("--agent is required: the codefly:solution executor that packages and renders %s", name)
+			return fmt.Errorf("--agent is required: the codefly:solution executor that packages and renders %s; %s", name, composedSolutionRenderHint(name, envInput))
 		}
 		if solutionSource == "" {
 			return fmt.Errorf("--source is required: the solution source directory to package")
@@ -64,7 +65,7 @@ var SolutionCmd = &cobra.Command{
 			Values:      solutionValues,
 		})
 		if err != nil {
-			return fmt.Errorf("cannot render solution: %w", err)
+			return solutionRenderError(err, name, env.Name)
 		}
 		cli.Info("Rendered %s", result.Path)
 		cli.Info("Digest %s", result.Inventory.Digest)
@@ -72,6 +73,26 @@ var SolutionCmd = &cobra.Command{
 		cli.Header(1, "Solution render done!")
 		return nil
 	},
+}
+
+// solutionRenderError reports a failed render. When no executor could be
+// obtained at all it says so and names the way out: no codefly:solution
+// executor is published today, so a render that depends on one cannot
+// succeed with any --agent, while a solution composed into this workspace by
+// source and version is a module — `deploy gitops render` renders it through
+// its service agents. Every other failure came from an executor that ran, and
+// is reported as it was.
+func solutionRenderError(err error, name, env string) error {
+	if errors.Is(err, gitops.ErrSolutionExecutorUnavailable) {
+		return fmt.Errorf("cannot render solution %s: %w; %s", name, err, composedSolutionRenderHint(name, env))
+	}
+	return fmt.Errorf("cannot render solution: %w", err)
+}
+
+// composedSolutionRenderHint is the one line every executor-less failure ends
+// on: the command that renders a composed solution as the module it is.
+func composedSolutionRenderHint(name, env string) string {
+	return fmt.Sprintf("no codefly:solution executor is published, so a solution composed into this workspace renders as a module: `codefly deploy gitops render %s --env %s`", name, env)
 }
 
 var (

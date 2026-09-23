@@ -42,7 +42,7 @@ func TestTransportNeutralModuleWorkspaceRemovesGitOpsAuthority(t *testing.T) {
 		RepoURL: "https://github.com/codefly-dev/manifests.git",
 		Path:    "environments", Branch: "main",
 	})
-	sanitized, err := encodeTransportNeutralModuleWorkspace(workspace)
+	sanitized, err := encodeTransportNeutralModuleWorkspace(workspace, "payments")
 	if err != nil {
 		t.Fatal(err)
 	}

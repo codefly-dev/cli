@@ -149,7 +149,11 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 		return err
 	}
 	w := wool.Get(ctx).In("Workspace::ValidateEnvironments", wool.NameField(workspace.Name))
+	if nsErr := validateModuleNamespaces(workspace, environments); nsErr != nil {
+		return w.Wrap(nsErr)
+	}
 	needsGraph := false
+
 	for _, env := range environments {
 		if env != nil && len(env.serviceScopedNames()) > 0 {
 			needsGraph = true
@@ -179,6 +183,33 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 				if known[name] > 1 {
 					return fmt.Errorf("environment %q %s references ambiguous service %q", env.Name, block, name)
 				}
+			}
+		}
+	}
+	return nil
+}
+
+// validateModuleNamespaces checks that the namespace each module derives in
+// every environment (Environment.ModuleNamespace) is one Kubernetes accepts. The
+// derivation suffixes the declared namespace with the module name only when the
+// workspace composes several modules, so this is where a declared namespace that
+// was a valid label on its own can stop being one — over 63 characters, say. A
+// namespace that is not a label sails through render and publish unvalidated and
+// fails only when Argo CD applies it, far from the workspace that caused it.
+func validateModuleNamespaces(workspace *resources.Workspace, environments []*Environment) error {
+	if !ComposesSeveralModules(workspace) {
+		return nil
+	}
+	for _, env := range environments {
+		if env == nil || env.Namespace == "" {
+			continue
+		}
+		for _, module := range workspace.Modules {
+			if module == nil {
+				continue
+			}
+			if err := ValidateNamespaceName("module namespace", env.ModuleNamespace(workspace, module.Name)); err != nil {
+				return fmt.Errorf("environment %q: %w (the workspace composes %d modules, so module %q renders into \"<namespace>-<module>\")", env.Name, err, len(workspace.Modules), module.Name)
 			}
 		}
 	}

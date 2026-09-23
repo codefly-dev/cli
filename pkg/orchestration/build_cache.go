@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"encoding/json"
+	"slices"
 
 	dockerhelpers "github.com/codefly-dev/core/agents/helpers/docker"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
@@ -20,7 +21,7 @@ func scopedBuildCache(cache *builderv0.BuildCacheOptions, identity ...string) *b
 	return result
 }
 
-func cachedBuildxArgs(recipe *builderv0.DockerBuildRecipe, dockerfile, contextDir string, push, multiArch bool, metadataFile, builderName string, cache *builderv0.BuildCacheOptions) ([]string, error) {
+func cachedBuildxArgs(recipe *builderv0.DockerBuildRecipe, dockerfile, contextDir string, push, multiArch bool, metadataFile, builderName string, cache *builderv0.BuildCacheOptions, private privateModuleBuild) ([]string, error) {
 	platforms := recipe.GetPlatforms()
 	if !push && len(platforms) > 1 {
 		platforms = platforms[:1]
@@ -31,6 +32,6 @@ func cachedBuildxArgs(recipe *builderv0.DockerBuildRecipe, dockerfile, contextDi
 	}
 	args := buildxArgs(recipe, dockerfile, contextDir, push, multiArch, metadataFile, builderName)
 	// The final positional argument must remain the prepared local context.
-	args = append(args[:len(args)-1], append(flags, "--progress", "plain", contextDir)...)
+	args = slices.Concat(args[:len(args)-1], flags, private.buildxArgs(recipe.GetBuildArgs()), []string{"--progress", "plain", contextDir})
 	return args, nil
 }

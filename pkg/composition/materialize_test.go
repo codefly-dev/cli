@@ -20,6 +20,27 @@ import (
 
 func strptr(s string) *string { return &s }
 
+// mustCacheRoot is pinnedModuleCacheRoot for a test that has already established
+// where the cache is (CODEFLY_HOME, or ModuleCacheEnv): the root cannot fail to
+// resolve there, and a test asserting on a path should not carry the branch.
+func mustCacheRoot(t *testing.T) string {
+	t.Helper()
+	root, err := pinnedModuleCacheRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func mustVerifiedCacheRoot(t *testing.T, workspaceDir string) string {
+	t.Helper()
+	root, err := verifiedPinnedModuleCacheRoot(workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
 func TestPinnedManaged(t *testing.T) {
 	cacheRoot := filepath.Join(t.TempDir(), "modules")
 	inCache := filepath.Join(cacheRoot, "owner", "repo", "v1.0.0")
@@ -57,6 +78,15 @@ func TestPinnedManaged(t *testing.T) {
 			ref:       &resources.ModuleReference{Name: "saas", Source: "owner/repo"},
 			directive: &resources.ModuleResolveDirective{Worktree: "owner/repo@main"},
 			want:      false,
+		},
+		{
+			// Core classifies this reference as pinned and leaves the resolve to the
+			// CLI, so refusing it here left the module unmaterialized and the run
+			// unable to load it, while its overridden service resolved fine.
+			name:      "services-only entry leaves the module resolving from committed config",
+			ref:       &resources.ModuleReference{Name: "saas", Source: "owner/repo"},
+			directive: &resources.ModuleResolveDirective{Services: map[string]*resources.ServiceResolveDirective{"gateway": {Version: "0.0.2"}}},
+			want:      true,
 		},
 		{
 			name:      "user path override left alone",
@@ -937,7 +967,7 @@ func TestMaterializePinnedModulesRepairsPathAndGitEntry(t *testing.T) {
 
 	workspaceDir := t.TempDir()
 	writeSolutionWorkspace(t, workspaceDir, source, "v0.0.1")
-	corrupted := filepath.Join(pinnedModuleCacheRoot(), filepath.FromSlash(source), "v0.0.1")
+	corrupted := filepath.Join(mustCacheRoot(t), filepath.FromSlash(source), "v0.0.1")
 	if err := resources.SaveLocalOverlay(ctx, workspaceDir, &resources.LocalOverlay{
 		Resolve: map[string]*resources.ModuleResolveDirective{"saas": {Path: corrupted, Git: true}},
 	}); err != nil {
@@ -1109,7 +1139,7 @@ func TestMaterializePinnedModulesRecoversFromReceiptWrittenWithoutOverlay(t *tes
 	workspaceDir := t.TempDir()
 	writeSolutionWorkspace(t, workspaceDir, source, "v0.0.1")
 	writeGitFallbackOverlay(t, workspaceDir, "saas")
-	orphan := filepath.Join(pinnedModuleCacheRoot(), filepath.FromSlash(source), "v0.0.1")
+	orphan := filepath.Join(mustCacheRoot(t), filepath.FromSlash(source), "v0.0.1")
 	if err := SaveResolutionReceipts(ctx, workspaceDir, map[string]*ResolutionReceipt{
 		"saas": {
 			Source: source, Requested: "v0.0.1", Mode: ResolutionModeGit,
@@ -1149,7 +1179,7 @@ func TestMaterializePinnedModulesRejectsMigratedRecordThatAnswersNoRequest(t *te
 
 	workspaceDir := t.TempDir()
 	writeSolutionWorkspace(t, workspaceDir, source, "v9.9.9")
-	stale := filepath.Join(pinnedModuleCacheRoot(), filepath.FromSlash(source), "v0.0.1")
+	stale := filepath.Join(mustCacheRoot(t), filepath.FromSlash(source), "v0.0.1")
 	if err := os.MkdirAll(stale, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1212,7 +1242,7 @@ func TestMaterializePinnedModulesRejectsStaleVerifiedPackageAfterFailedBump(t *t
 		t.Fatal(err)
 	}
 	verified := overlay.Resolve["saas"].Path
-	if !underDir(verifiedPinnedModuleCacheRoot(workspaceDir), verified) {
+	if !underDir(mustVerifiedCacheRoot(t, workspaceDir), verified) {
 		t.Fatalf("verified resolution must land in the workspace cache, got %q", verified)
 	}
 	receipts, err := LoadResolutionReceipts(workspaceDir)

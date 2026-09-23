@@ -14,29 +14,31 @@ import (
 	"github.com/codefly-dev/core/resources"
 )
 
-func projectServiceConfiguration(ctx context.Context, root string, service *resources.Service, env *environments.Environment) error {
+func projectServiceConfiguration(ctx context.Context, root string, service *resources.Service, env *environments.Environment, scope unitScope) error {
 	if err := projectConfigurationValues(ctx, root, service.Name, env); err != nil {
 		return fmt.Errorf("project service %s configuration: %w", service.Name, err)
 	}
-	if _, err := projectServiceSecrets(root, service.Name, env.Name, env.Namespace, env.ServiceSecrets); err != nil {
+	if _, err := projectServiceSecrets(root, scope, service.Name, env.Name, env.ServiceSecrets); err != nil {
 		return fmt.Errorf("project service %s secrets: %w", service.Name, err)
 	}
-	if _, err := projectServiceAutoscale(root, service.Name, env.Name, env.Namespace, service.Autoscale); err != nil {
+	if _, err := projectServiceAutoscale(root, service.Name, env.Name, scope.Namespace, service.Autoscale); err != nil {
 		return fmt.Errorf("project service %s autoscale: %w", service.Name, err)
 	}
-	if err := projectManagedIdentity(ctx, root, service, env); err != nil {
+	if err := projectManagedIdentity(ctx, root, service, env, scope.Namespace); err != nil {
 		return fmt.Errorf("project service %s managed identity: %w", service.Name, err)
 	}
-	return validateProjectedConfiguration(root, service, env)
+	return validateProjectedConfiguration(root, service, env, scope)
 }
 
-// projectManagedIdentity applies only the declared runtime identity. Endpoint
-// addresses and container choices remain owned by their existing renderers.
+// projectManagedIdentity applies only the declared runtime identity, into the
+// namespace the service's manifests bind to. Endpoint addresses and container
+// choices remain owned by their existing renderers.
 func projectManagedIdentity(
 	ctx context.Context,
 	serviceRoot string,
 	service *resources.Service,
 	env *environments.Environment,
+	namespace string,
 ) error {
 	if err := env.Validate(); err != nil {
 		return err
@@ -53,7 +55,7 @@ func projectManagedIdentity(
 	if err := overlay.AttachServiceAccount(&coreservices.WorkloadServiceAccount{Annotations: identity.Annotations}, identity.Labels); err != nil {
 		return err
 	}
-	return coreservices.ProjectServiceAccount(ctx, filepath.Join(serviceRoot, "base"), env.Namespace, service.Name, overlay)
+	return coreservices.ProjectServiceAccount(ctx, filepath.Join(serviceRoot, "base"), namespace, service.Name, overlay)
 }
 
 // consumedManagedServices returns, in a stable order, the environment's managed
@@ -107,9 +109,14 @@ func soleWorkloadIdentity(service string, consumed []string, env *environments.E
 	return identity, nil
 }
 
+// projectRenderedServiceConfiguration projects every service tree a flow
+// rendered under stage/modules/<module>/services/<service>. Each is scoped to
+// its own module: a dependency the flow loaded from another module binds to that
+// module's namespace, the one its addresses were synthesized in.
 func projectRenderedServiceConfiguration(
 	ctx context.Context,
 	stage string,
+	workspace *resources.Workspace,
 	env *environments.Environment,
 	graph map[string]*resources.Service,
 ) error {
@@ -146,7 +153,9 @@ func projectRenderedServiceConfiguration(
 				filepath.Join(servicesRoot, serviceEntry.Name()),
 				service,
 				env,
+				moduleScope(env, workspace, moduleEntry.Name()),
 			); err != nil {
+
 				return fmt.Errorf("project service %s configuration: %w", serviceEntry.Name(), err)
 			}
 		}

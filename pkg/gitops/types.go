@@ -3,7 +3,9 @@ package gitops
 import (
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	"github.com/codefly-dev/core/resources"
 )
 
 const (
@@ -142,6 +144,33 @@ type InventoryFile struct {
 	Path   string `json:"path"`
 	SHA256 string `json:"sha256"`
 	Size   int64  `json:"size"`
+}
+
+// unitScope locates one rendered service unit: the workspace and module it
+// belongs to, and the namespace its manifests bind to. The namespace is the
+// module's (environments.Environment.ModuleNamespace) — the environment's own
+// only when the workspace composes a single module — so every projection that
+// stamps it (ExternalSecret, HPA, ServiceAccount, quota) agrees with the
+// manifests the service agent rendered and with the addresses other modules
+// were handed.
+type unitScope struct {
+	Workspace string
+	Module    string
+	Namespace string
+}
+
+// moduleScope is the scope of every unit a module renders in an environment.
+func moduleScope(env *environments.Environment, workspace *resources.Workspace, module string) unitScope {
+	return unitScope{
+		Workspace: workspace.Name,
+		Module:    module,
+		Namespace: env.ModuleNamespace(workspace, module),
+	}
+}
+
+// secretScope is the scope a service's secret keys resolve in.
+func (scope unitScope) secretScope(service string) environments.SecretScope {
+	return environments.SecretScope{Workspace: scope.Workspace, Module: scope.Module, Service: service}
 }
 
 type RenderOptions struct {

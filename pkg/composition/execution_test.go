@@ -41,6 +41,15 @@ var (
 
 func TestMain(m *testing.M) {
 	renderExecutorEnvironment = append(os.Environ(), "GOWORK=off")
+	// Cleared for the whole package: several tests assert on where a module
+	// lands, and a developer who has pointed their own machine's module cache at
+	// a vendor directory would otherwise have the suite write real modules into
+	// it — and assert against the wrong root. It is cleared after the executor
+	// environment is captured, which is the environment as the process received
+	// it and must stay that way.
+	if err := os.Unsetenv(ModuleCacheEnv); err != nil {
+		panic(err)
+	}
 	code := m.Run()
 	if renderExecutorDirectory != "" {
 		_ = os.RemoveAll(renderExecutorDirectory)

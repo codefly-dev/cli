@@ -40,7 +40,7 @@ var PlanCmd = &cobra.Command{
 		ctx, done := common.NewContext()
 		defer done()
 
-		workspace, err := common.LoadWorkspace(ctx)
+		workspace, err := common.LoadWorkspaceWithPinnedModules(ctx)
 		if err != nil {
 			return err
 		}
