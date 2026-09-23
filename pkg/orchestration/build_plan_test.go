@@ -150,11 +150,23 @@ func TestRecipeContextRootFollowsTheInventoryScope(t *testing.T) {
 	serviceDir := "/work/services/store"
 	outputDir := "/work/.codefly/build/mod/store/builder"
 
-	tree := &builderv0.DockerBuildPlan{Scope: builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE}
+	recipes := []*builderv0.DockerBuildRecipe{{Dockerfile: "Dockerfile", Dockerignore: ".dockerignore"}}
+	assembled := []*builderv0.RecipeFile{{Path: "Dockerfile"}, {Path: "code/go.mod"}}
+	controlOnly := []*builderv0.RecipeFile{{Path: "Dockerfile"}, {Path: ".dockerignore"}}
+
+	tree := &builderv0.DockerBuildPlan{Scope: builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE, Recipes: recipes, Files: assembled}
 	require.Equal(t, outputDir, recipeContextRoot(serviceDir, outputDir, tree))
 
-	emitted := &builderv0.DockerBuildPlan{Scope: builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_EMITTED}
+	emitted := &builderv0.DockerBuildPlan{Scope: builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_EMITTED, Recipes: recipes, Files: controlOnly}
 	require.Equal(t, serviceDir, recipeContextRoot(serviceDir, outputDir, emitted))
+
+	// The transition: an emitter that declared TREE while writing only its own
+	// control files assembled no context, so the documented context — the
+	// service directory — is the only one its Dockerfile can be evaluated
+	// against. This is what lets the CLI ship before every agent's declaration
+	// is corrected; drop it once none is wrong.
+	declaredTreeAssembledNothing := &builderv0.DockerBuildPlan{Scope: builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE, Recipes: recipes, Files: controlOnly}
+	require.Equal(t, serviceDir, recipeContextRoot(serviceDir, outputDir, declaredTreeAssembledNothing))
 
 	// An unspecified scope never reaches here — VerifyDockerBuildPlan rejects
 	// it — and it must not be read as a licence to build the recipe tree.

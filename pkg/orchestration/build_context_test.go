@@ -159,17 +159,27 @@ func TestRecipeContextRootSelectsWhatBuildxReceives(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(serviceRoot, "code"), 0o755))
 
 	recipe := &builderv0.DockerBuildRecipe{Dockerfile: "Dockerfile", Context: "."}
+	// An assembled inventory names something the emitter built beyond its own
+	// control files; a control-only inventory names nothing but them.
+	assembled := []*builderv0.RecipeFile{{Path: "Dockerfile"}, {Path: "code/_replace/go.mod"}}
+	controlOnly := []*builderv0.RecipeFile{{Path: "Dockerfile"}, {Path: ".dockerignore"}}
 	for _, tc := range []struct {
 		name  string
 		scope builderv0.RecipeInventoryScope
+		files []*builderv0.RecipeFile
 		root  string
 		carry bool
 	}{
-		{"tree builds the assembled destination", builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE, recipeRoot, true},
-		{"emitted builds the service directory", builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_EMITTED, serviceRoot, false},
+		{"tree builds the assembled destination", builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE, assembled, recipeRoot, true},
+		{"emitted builds the service directory", builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_EMITTED, controlOnly, serviceRoot, false},
+		// The transition: an emitter that declared TREE but assembled nothing
+		// keeps the documented context, the service directory, so the fleet does
+		// not have to be swept before this ships.
+		{"tree that assembled nothing builds the service directory", builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE, controlOnly, serviceRoot, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := recipeContextRoot(serviceRoot, recipeRoot, &builderv0.DockerBuildPlan{Scope: tc.scope})
+			plan := &builderv0.DockerBuildPlan{Scope: tc.scope, Files: tc.files, Recipes: []*builderv0.DockerBuildRecipe{{Dockerfile: "Dockerfile", Dockerignore: ".dockerignore"}}}
+			root := recipeContextRoot(serviceRoot, recipeRoot, plan)
 			require.Equal(t, tc.root, root)
 
 			contextDir, err := recipeContext(root, recipe)
