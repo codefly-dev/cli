@@ -35,7 +35,7 @@ const argoAPIGroup = "argoproj.io"
 var clusterScopedKinds = map[string]struct{}{
 	"APIService": {}, "CSIDriver": {}, "CSINode": {}, "ClusterIssuer": {},
 	"ClusterRole": {}, "ClusterRoleBinding": {}, "CustomResourceDefinition": {},
-	"IngressClass": {}, "MutatingWebhookConfiguration": {}, "Namespace": {},
+	"IngressClass": {}, "MutatingWebhookConfiguration": {}, kindNamespace: {},
 	"Node": {}, "PersistentVolume": {}, "PriorityClass": {}, "RuntimeClass": {},
 	"StorageClass": {}, "ValidatingWebhookConfiguration": {}, "VolumeAttachment": {},
 }
@@ -86,6 +86,13 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err := generate(ctx, owned); err != nil {
 		return RenderResult{}, fmt.Errorf("generate staged manifests: %w", err)
 	}
+	// Before anything measures or validates the staged tree: a promotable render
+	// deploys into a namespace provisioned outside it, so no service unit may
+	// ship a Namespace claiming that namespace. See service_namespace.go.
+	elided, err := elideProvisionedNamespaces(owned, opts)
+	if err != nil {
+		return RenderResult{}, err
+	}
 	manifests, err := validateTree(owned, opts)
 	if err != nil {
 		return RenderResult{}, err
@@ -107,7 +114,7 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err := replaceOwnedTree(owned, destination); err != nil {
 		return RenderResult{}, err
 	}
-	return RenderResult{Path: destination, Inventory: inventory, Sizing: sizing}, nil
+	return RenderResult{Path: destination, Inventory: inventory, Sizing: sizing, ElidedNamespaces: elided}, nil
 }
 
 func LoadInventory(root string) (Inventory, error) {
@@ -655,7 +662,7 @@ func validateKustomization(path string, root map[string]any) ([]string, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	var references []string
-	for _, key := range []string{"resources", "bases", "components", "patchesStrategicMerge"} {
+	for _, key := range kustomizeFileListKeys {
 		values, _ := root[key].([]any)
 		for _, raw := range values {
 			value, ok := raw.(string)
@@ -857,7 +864,7 @@ func validateManifest(item manifest, contract *projectContract, promotable bool)
 		if _, allowed := contract.clusterResources[item.group+"/"+item.kind]; !allowed {
 			return fmt.Errorf("cluster-scoped %s is not declared by AppProject %s", item.kind, contract.name)
 		}
-		if item.kind == "Namespace" {
+		if item.kind == kindNamespace {
 			name := metadataString(item.value, "name")
 			if _, allowed := contract.destinations[name]; !allowed {
 				return fmt.Errorf("namespace %s is outside AppProject %s destinations", name, contract.name)

@@ -68,6 +68,7 @@ var ModuleCmd = &cobra.Command{
 			cli.Info("Rendered %s", result.Path)
 			cli.Info("Digest %s", result.Inventory.Digest)
 			printSizingReport(result.Sizing)
+			printElidedNamespaces(result.ElidedNamespaces)
 			cli.Header(1, "Module render done!")
 			return nil
 		}
