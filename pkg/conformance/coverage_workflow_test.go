@@ -2,7 +2,6 @@ package conformance
 
 import (
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -34,16 +33,37 @@ func TestCoverageBudgetPreservesQualificationAndTimeoutDiagnostics(t *testing.T)
 		t.Fatal(err)
 	}
 	job := workflow.Jobs["quality"]
-	minutes, err := strconv.Atoi(job.Timeout)
-	if err != nil || minutes != 8 {
-		t.Fatalf("quality budget = %q, want every gate to share eight minutes", job.Timeout)
+	if job.Timeout != "${{ matrix.timeout_minutes }}" {
+		t.Fatalf("quality budget = %q, want the matrix row to own each gate timeout", job.Timeout)
 	}
-	jobBudget := time.Duration(minutes) * time.Minute
+	wantBudgets := map[string]int{
+		"bootstrap-audit":     8,
+		"control-integration": 12,
+		"coverage":            16,
+		"race":                20,
+	}
+	var coverageMinutes int
 	for _, row := range job.Strategy.Matrix.Include {
-		if row.Timeout != 0 {
-			t.Errorf("%s carries a budget of its own; a slow gate is diagnosed, not given more time", row.Gate)
+		want, ok := wantBudgets[row.Gate]
+		if !ok {
+			t.Errorf("unexpected quality gate %q carries timeout %d", row.Gate, row.Timeout)
+			continue
 		}
+		if row.Timeout != want {
+			t.Errorf("%s timeout = %d, want %d", row.Gate, row.Timeout, want)
+		}
+		if row.Gate == "coverage" {
+			coverageMinutes = row.Timeout
+		}
+		delete(wantBudgets, row.Gate)
 	}
+	for gate := range wantBudgets {
+		t.Errorf("quality gate %s is missing its timeout row", gate)
+	}
+	if coverageMinutes == 0 {
+		t.Fatal("coverage gate timeout is missing")
+	}
+	jobBudget := time.Duration(coverageMinutes) * time.Minute
 	for _, step := range job.Steps {
 		if step.Name != "Test with coverage" {
 			continue
