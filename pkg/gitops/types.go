@@ -54,6 +54,14 @@ const serviceUnitDir = "services"
 // solutionUnitDir is the render subdirectory holding solution units.
 const solutionUnitDir = "solutions"
 
+// graphStageDir is the scratch directory, a sibling of the owned tree inside
+// the render's staging root, where a module render stages the services of the
+// *other* modules its dependency graph pulls in. Those manifests belong to
+// their own module's render, so they are kept out of the owned tree entirely
+// rather than written beside the module's own units, where a shared service
+// name would collide. The staging root is removed when the render finishes.
+const graphStageDir = ".graph"
+
 // unitDirectory maps an artifact kind to the render subdirectory that holds its
 // units, reporting whether the kind is known. Generalizing the render path
 // beyond services is a matter of adding a case here rather than threading a new

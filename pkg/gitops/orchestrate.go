@@ -99,6 +99,7 @@ func renderModuleTree(
 			}
 		}
 		outputs := make(map[string]*builderv0.DeploymentOutput)
+		destinations := moduleStageDestinations(workspace, module, stage)
 		for _, service := range roots {
 			if err := renderServiceFlow(
 				ctx,
@@ -109,10 +110,7 @@ func renderModuleTree(
 				false,
 				validateCluster,
 				sink,
-				func(_ *resources.Module, rendered *resources.Service) string {
-					serviceDir, _ := unitDirectory(UnitKindService)
-					return filepath.Join(stage, serviceDir, rendered.Name)
-				},
+				destinations,
 				func(rendered map[string]*builderv0.DeploymentOutput) {
 					for unique, output := range rendered {
 						outputs[unique] = output
@@ -323,6 +321,38 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		return projectRenderedServiceConfiguration(ctx, stage, workspace, env, graph)
 
 	})
+}
+
+// moduleStageDestinations locates the staged tree of every service a module
+// render deploys. Rendering a module drives the whole dependency graph, so the
+// flow also deploys services belonging to other modules, and a destination
+// keyed by service name alone makes two modules that ship a same-named service
+// resolve to one directory. A service's identity is workspace, module and
+// service name together — the host module's "store" and another module's
+// "store" are two services, in two namespaces, with two databases — so the
+// destination is keyed by all three and they can never share a directory.
+//
+// The module under render keeps the committed layout "services/<name>": the
+// workspace and module halves of its key are already carried by the owned
+// tree's own location, <workspace>/deployments/modules/<module>, and the
+// inventory contract pins that relative path (see validateInventoryUnits).
+// Every other module's services stage outside the owned tree, under the
+// render's scratch root, so they cannot collide with the module's own units,
+// cannot reach the inventory or the committed tree, and are discarded with the
+// staging directory. Their manifests belong to their own module's render.
+func moduleStageDestinations(workspace *resources.Workspace, module *resources.Module, owned string) func(*resources.Module, *resources.Service) string {
+	serviceDir, _ := unitDirectory(UnitKindService)
+	scratch := filepath.Join(filepath.Dir(owned), graphStageDir, workspace.Name)
+	return func(rendered *resources.Module, service *resources.Service) string {
+		if rendered != nil && rendered.Name == module.Name {
+			return filepath.Join(owned, serviceDir, service.Name)
+		}
+		foreign := ""
+		if rendered != nil {
+			foreign = rendered.Name
+		}
+		return filepath.Join(scratch, foreign, serviceDir, service.Name)
+	}
 }
 
 func serviceRenderDestinations(root string) func(*resources.Module, *resources.Service) string {
