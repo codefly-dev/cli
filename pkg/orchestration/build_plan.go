@@ -61,13 +61,35 @@ func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *bui
 			return w.NewError("snapshot build for %s requires push to resolve an immutable image digest", b.instance.Unique())
 		}
 	}
-	serviceDir := b.instance.Service.Dir()
+	contextRoot := recipeContextRoot(b.instance.Service.Dir(), outputDir, plan)
 	for _, recipe := range recipes {
-		if err := b.buildRecipe(ctx, w, outputDir, serviceDir, recipe, shouldPush); err != nil {
+		if err := b.buildRecipe(ctx, w, outputDir, contextRoot, recipe, shouldPush); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// recipeContextRoot is the directory a recipe's context is resolved against.
+//
+// The inventory scope says who assembled the context. A TREE plan claims every
+// file under the recipe directory precisely because "the emitter assembled the
+// whole destination — typically because it copied the build context there and a
+// recipe builds \".\"" (RecipeInventoryScope in core's builder contract), and the
+// CLI has just verified every one of those files against the plan's digests.
+// Building the service directory instead silently discards whatever the emitter
+// put there: a Go service whose module replaces a sibling by filesystem path
+// emits a context carrying that sibling, and the build would resolve the
+// original directive against a directory the image does not contain.
+//
+// An EMITTED plan claims only the files it wrote — the Dockerfile and its
+// ignore — and the application's inputs are the service's own tree, so the
+// context stays the service directory.
+func recipeContextRoot(serviceDir, outputDir string, plan *builderv0.DockerBuildPlan) string {
+	if plan.GetScope() == builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE {
+		return outputDir
+	}
+	return serviceDir
 }
 
 // buildRecipe builds and (when pushing) publishes one recipe. It refuses to push
@@ -77,7 +99,7 @@ func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *bui
 func (b *Builder) buildRecipe(
 	ctx context.Context,
 	w *wool.Wool,
-	outputDir, serviceDir string,
+	outputDir, contextRoot string,
 	recipe *builderv0.DockerBuildRecipe,
 	shouldPush bool,
 ) error {
@@ -87,7 +109,7 @@ func (b *Builder) buildRecipe(
 			recipe.GetName(), b.instance.Unique(), recipe.GetPlatforms(), deploymentImageArchitecture, deploymentImageArchitecture,
 		)
 	}
-	contextDir, err := recipeContext(serviceDir, recipe)
+	contextDir, err := recipeContext(contextRoot, recipe)
 	if err != nil {
 		return w.Wrapf(err, "cannot resolve build context for recipe %s of %s", recipe.GetName(), b.instance.Unique())
 	}
@@ -261,17 +283,17 @@ func recipeDockerfile(outputDir string, recipe *builderv0.DockerBuildRecipe) (st
 	return dockerfile, nil
 }
 
-// recipeContext resolves a recipe's build context and rejects a context that
-// escapes the service directory.
-func recipeContext(serviceDir string, recipe *builderv0.DockerBuildRecipe) (string, error) {
+// recipeContext resolves a recipe's build context against the root the plan's
+// scope selects, and rejects a context that escapes it.
+func recipeContext(root string, recipe *builderv0.DockerBuildRecipe) (string, error) {
 	relative := recipe.GetContext()
 	if relative == "" || relative == "." {
-		return serviceDir, nil
+		return root, nil
 	}
-	contextDir := filepath.Join(serviceDir, filepath.FromSlash(relative))
-	rel, err := filepath.Rel(serviceDir, contextDir)
+	contextDir := filepath.Join(root, filepath.FromSlash(relative))
+	rel, err := filepath.Rel(root, contextDir)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("recipe context %q escapes the service directory", relative)
+		return "", fmt.Errorf("recipe context %q escapes the build context root", relative)
 	}
 	return contextDir, nil
 }

@@ -139,3 +139,55 @@ func TestRecipeContextDockerSemantics(t *testing.T) {
 		})
 	}
 }
+
+// TestRecipeContextRootSelectsWhatBuildxReceives closes the loop the scope
+// opens: the root the plan selects is the directory prepareRecipeContext hands
+// buildx, and the two scopes select different trees on the same fixture.
+//
+// The case that matters is a Go service whose module replaces a sibling by
+// filesystem path. Its agent carries that sibling into the recipe tree and
+// rewrites the directive, so the replacement exists under the recipe root and
+// nowhere under the service root. Build the service root and the image resolves
+// the original directive against a directory it does not contain; build the
+// tree the TREE plan claims — and that the CLI has just verified file by file —
+// and it resolves what the host resolves.
+func TestRecipeContextRootSelectsWhatBuildxReceives(t *testing.T) {
+	serviceRoot := t.TempDir()
+	recipeRoot := filepath.Join(serviceRoot, ".codefly-recipe")
+	require.NoError(t, os.MkdirAll(filepath.Join(recipeRoot, "code", "_replace"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(recipeRoot, "Dockerfile"), []byte("FROM scratch\nCOPY code/ ./code/\n"), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(serviceRoot, "code"), 0o755))
+
+	recipe := &builderv0.DockerBuildRecipe{Dockerfile: "Dockerfile", Context: "."}
+	for _, tc := range []struct {
+		name  string
+		scope builderv0.RecipeInventoryScope
+		root  string
+		carry bool
+	}{
+		{"tree builds the assembled destination", builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE, recipeRoot, true},
+		{"emitted builds the service directory", builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_EMITTED, serviceRoot, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := recipeContextRoot(serviceRoot, recipeRoot, &builderv0.DockerBuildPlan{Scope: tc.scope})
+			require.Equal(t, tc.root, root)
+
+			contextDir, err := recipeContext(root, recipe)
+			require.NoError(t, err)
+			prepared, err := prepareRecipeContext(context.Background(), contextDir, recipeRoot, recipe)
+			require.NoError(t, err)
+			defer func() { require.NoError(t, prepared.Close()) }()
+
+			resolved, err := filepath.EvalSymlinks(tc.root)
+			require.NoError(t, err)
+			require.Equal(t, resolved, prepared.Root, "buildx must receive the root the scope selects")
+
+			_, err = os.Stat(filepath.Join(prepared.Root, "code", "_replace"))
+			if tc.carry {
+				require.NoError(t, err, "a carried replacement must be inside the context buildx receives")
+			} else {
+				require.True(t, os.IsNotExist(err), "the service tree never holds what the emitter assembled")
+			}
+		})
+	}
+}
