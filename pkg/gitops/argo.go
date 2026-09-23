@@ -34,7 +34,18 @@ const (
 	kindApplication    = "Application"
 	kindApplicationSet = "ApplicationSet"
 	kindKustomization  = "Kustomization"
+	kindNamespace      = "Namespace"
+
+	// kustomizationFile is the canonical kustomization file name, and
+	// resourcesKey the kustomization key listing the files it builds from.
+	kustomizationFile    = "kustomization.yaml"
+	kustomizationFileAlt = "kustomization.yml"
+	resourcesKey         = "resources"
 )
+
+// kustomizeFileListKeys are the kustomization keys whose values are paths to
+// other files in the tree.
+var kustomizeFileListKeys = []string{resourcesKey, "bases", "components", "patchesStrategicMerge"}
 
 type argoResourceAuthority struct {
 	Group string `yaml:"group"`

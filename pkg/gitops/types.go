@@ -228,6 +228,12 @@ type RenderResult struct {
 	Path      string       `json:"path"`
 	Inventory Inventory    `json:"inventory"`
 	Sizing    SizingReport `json:"sizing"`
+	// ElidedNamespaces are the tree-relative manifest paths the render dropped
+	// because they claimed the externally provisioned destination namespace. A
+	// non-empty list means a service agent still emits the shared Namespace and
+	// should be fixed; the render reports it rather than changing its committed
+	// output silently. See service_namespace.go.
+	ElidedNamespaces []string `json:"elidedNamespaces,omitempty"`
 }
 
 type PublishRequest struct {

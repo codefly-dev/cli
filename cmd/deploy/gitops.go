@@ -55,6 +55,7 @@ var gitOpsRenderCmd = &cobra.Command{
 		cli.Info("Rendered %s", result.Path)
 		cli.Info("Digest %s", result.Inventory.Digest)
 		printSizingReport(result.Sizing)
+		printElidedNamespaces(result.ElidedNamespaces)
 		return nil
 	},
 }
@@ -81,6 +82,7 @@ var gitOpsSnapshotCmd = &cobra.Command{
 		cli.Info("Rendered service snapshot %s", result.Path)
 		cli.Info("Digest %s", result.Inventory.Digest)
 		printSizingReport(result.Sizing)
+		printElidedNamespaces(result.ElidedNamespaces)
 		return nil
 	},
 }
@@ -403,6 +405,21 @@ func publishRequest(module string) gitops.PublishRequest {
 // totals a target cell must schedule (per-replica amounts multiplied by replica
 // count), the per-replica sizing of each workload, and a warning for any
 // workload with a container missing CPU or memory requests or limits.
+// printElidedNamespaces reports the Namespace manifests the render dropped
+// because they claimed the externally provisioned destination namespace. The
+// render is correct either way, but the service agent that emitted one is not,
+// so the operator is told which one to fix rather than left with a quietly
+// different committed tree.
+func printElidedNamespaces(elided []string) {
+	if len(elided) == 0 {
+		return
+	}
+	cli.Warning("%d Namespace manifest(s) claiming the destination namespace were dropped: the namespace is provisioned outside this render (Argo Applications carry CreateNamespace=false)", len(elided))
+	for _, path := range elided {
+		cli.Warning("  %s — its service agent should elide the Namespace under a restricted output profile", path)
+	}
+}
+
 func printSizingReport(report gitops.SizingReport) {
 	if len(report.Workloads) == 0 {
 		return

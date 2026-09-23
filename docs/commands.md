@@ -457,6 +457,18 @@ already exist in that cluster: the rendered Argo Application does not create it
 service with a message naming the namespace and context rather than failing the
 render. A cluster that cannot be reached is an error.
 
+The destination namespace is provisioned outside the render, by the cell rather
+than by the module: every Application the CLI stamps carries
+`CreateNamespace=false`. A *service* unit therefore never ships a `Namespace`
+object for the namespace it deploys into — it does not own a namespace its
+sibling services share — and render drops one that a service agent still emits,
+naming the manifest it dropped so that agent gets fixed. This is what lets a
+governed cell work: an AppProject with an empty `clusterResourceWhitelist`
+refuses `Namespace`, and the render no longer needs it whitelisted. A `Namespace`
+naming anything other than the render's own destination is still a cluster-level
+claim and is still held to the selected AppProject's authority. A *solution*
+renders into a namespace nothing else shares and keeps owning it.
+
 The workspace declares the destination repository, owned path, and Argo target
 branch:
 
