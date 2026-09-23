@@ -72,9 +72,40 @@ func (m *RemoteManager) GenerateNetworkMappings(ctx context.Context,
 	if m.dnsManager == nil {
 		return nil, w.NewError("RemoteManager: dnsManager is nil — call NewRemoteManager with a non-nil DNSManager")
 	}
+	// External endpoints resolve to an environment-specific public host: a
+	// declared dns.codefly.yaml entry wins; otherwise the host is derived from
+	// the environment's declared app host suffix (sourced from the coordinate
+	// contract) so a promotable render is value-free. Resolution runs before
+	// port allocation because an external endpoint with no public host that this
+	// flow still renders in-cluster competes for the canonical port exactly like
+	// an internal endpoint does.
+	externalDNS := make(map[*basev0.Endpoint]*basev0.DNS)
+	for _, endpoint := range endpoints {
+		if endpoint == nil || !resources.IsExternalEndpoint(endpoint) {
+			continue
+		}
+		dns, err := m.dnsManager.GetDNS(ctx, service, endpoint.Name)
+		if err == nil && dns != nil {
+			externalDNS[endpoint] = dns
+			continue
+		}
+		if derived := DerivedExternalDNS(env, service, endpoint); derived != nil {
+			externalDNS[endpoint] = derived
+			continue
+		}
+		if !renderedInCluster(env, service) {
+			if err != nil {
+				return nil, err
+			}
+			return nil, w.NewError("cannot find dns for endpoint %s", endpoint.Name)
+		}
+	}
+	inCluster := func(endpoint *basev0.Endpoint) bool {
+		return endpoint != nil && (!resources.IsExternalEndpoint(endpoint) || externalDNS[endpoint] == nil)
+	}
 	apiCounts := make(map[string]int)
 	for _, endpoint := range endpoints {
-		if endpoint != nil && !resources.IsExternalEndpoint(endpoint) {
+		if inCluster(endpoint) {
 			apiCounts[endpoint.Api]++
 		}
 	}
@@ -84,7 +115,7 @@ func (m *RemoteManager) GenerateNetworkMappings(ctx context.Context,
 	}
 	canonicalOwners := make(map[uint16]*basev0.Endpoint)
 	for _, endpoint := range endpoints {
-		if endpoint == nil || resources.IsExternalEndpoint(endpoint) {
+		if !inCluster(endpoint) {
 			continue
 		}
 		if apiCounts[endpoint.Api] > 1 && endpoint.Name != endpoint.Api {
@@ -106,36 +137,18 @@ func (m *RemoteManager) GenerateNetworkMappings(ctx context.Context,
 		nm := &basev0.NetworkMapping{
 			Endpoint: endpoint,
 		}
-		// External endpoints (e.g. public load-balanced) resolve to an
-		// environment-specific public host. A declared dns.codefly.yaml entry
-		// wins when present; otherwise the host is derived from the
-		// environment's declared app host suffix (sourced from the coordinate
-		// contract) so a promotable render is value-free — no local value file
-		// required. Only when neither exists is there nothing to route to.
-		if resources.IsExternalEndpoint(endpoint) {
-			dns, err := m.dnsManager.GetDNS(ctx, service, endpoint.Name)
-			if err == nil && dns != nil {
-				nm.Instances = []*basev0.NetworkInstance{
-					corenetwork.ExternalInstance(corenetwork.DNS(service, endpoint, dns)),
-				}
-				out = append(out, nm)
-				continue
+		if dns := externalDNS[endpoint]; dns != nil {
+			nm.Instances = []*basev0.NetworkInstance{
+				corenetwork.ExternalInstance(corenetwork.DNS(service, endpoint, dns)),
 			}
-			if derived := DerivedExternalDNS(env, service, endpoint); derived != nil {
-				nm.Instances = []*basev0.NetworkInstance{
-					corenetwork.ExternalInstance(corenetwork.DNS(service, endpoint, derived)),
-				}
-				out = append(out, nm)
-				continue
-			}
-			if err != nil {
-				return nil, err
-			}
-			return nil, w.NewError("cannot find dns for endpoint %s", endpoint.Name)
+			out = append(out, nm)
+			continue
 		}
 
-		// Internal endpoints use a declared environment DNS contract when
-		// present. Otherwise Kubernetes service discovery is synthesized.
+		// In-cluster endpoints — internal ones, and external ones with no public
+		// host that this flow renders as a workload anyway — use a declared
+		// environment DNS contract when present. Otherwise Kubernetes service
+		// discovery is synthesized.
 		port := standards.Port(endpoint.Api)
 		if canonicalOwners[port] != endpoint {
 			port = corenetwork.ToNamedPort(ctx, "", service.Module, service.Name, endpoint.Name, endpoint.Api, corenetwork.PortModeHost)
@@ -171,6 +184,23 @@ func (m *RemoteManager) GenerateNetworkMappings(ctx context.Context,
 		out = append(out, nm)
 	}
 	return out, nil
+}
+
+// renderedInCluster reports whether the flow that asked for these mappings
+// emits the service as an in-cluster workload (Deployment + Service), so an
+// external endpoint with no declared or derivable public host still has an
+// address to route to: the ClusterIP the render creates. The manager is only
+// ever asked about services the flow deploys; the one class it deploys without
+// an in-cluster workload is the environment's managed services (an external
+// database, say), whose bundle is bootstrap-only and whose address must be
+// declared. For those, and for a nil environment, nothing is synthesized and
+// the caller keeps the hard failure.
+func renderedInCluster(env *environments.Environment, service *resources.ServiceIdentity) bool {
+	if env == nil || service == nil {
+		return false
+	}
+	_, managed := env.ManagedServices[service.Name]
+	return !managed
 }
 
 // DerivedExternalDNS builds a public DNS record for an external endpoint from

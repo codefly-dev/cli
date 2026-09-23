@@ -24,6 +24,14 @@ const (
 	// (docker buildx -f services/<svc>/builder/Dockerfile services/<svc>), and the
 	// Dockerfiles COPY builder/… paths relative to the service-directory context.
 	buildRecipeDir = "builder"
+	// buildScratchDir is the workspace-relative root a service's build output
+	// (builder/ and build-recipes/) is redirected to when the service tree is
+	// not the workspace's own authored source: a CLI-materialized module (a
+	// verified package under .codefly/cache, or a git clone under the module
+	// cache root) is read-only from the CLI's point of view — its tree digest is
+	// verified against the package, and a clone must stay byte-identical to the
+	// commit it resolved. `.codefly/` is gitignored by core's composition.
+	buildScratchDir = ".codefly/build"
 	// buildxBuilderName is the dedicated docker-container buildx builder the CLI
 	// creates for multi-platform builds. The default buildx builder uses the
 	// "docker" driver, which cannot build multiple platforms.
@@ -423,9 +431,58 @@ func readPushedImageDigest(metadataFile string) (string, error) {
 }
 
 // buildRecipeOutputDirectory is the absolute destination the caller asks the
-// agent to emit recipes into: the committed builder/ directory under the
-// service. It does not create the directory — the emitting agent owns writing
-// there, so a legacy agent that ignores the field leaves no empty directory.
-func buildRecipeOutputDirectory(serviceDir string) (string, error) {
-	return filepath.Abs(filepath.Join(serviceDir, buildRecipeDir))
+// agent to emit recipes into: the builder/ directory under the service's build
+// root (see buildRecipeRoot). It does not create the directory — the emitting
+// agent owns writing there, so a legacy agent that ignores the field leaves no
+// empty directory.
+func buildRecipeOutputDirectory(root string) (string, error) {
+	return filepath.Abs(filepath.Join(root, buildRecipeDir))
+}
+
+// buildRecipeRoot is the directory a service's build output — the builder/
+// recipe the agent emits and the build-recipes/ archive — lands under.
+//
+// For a service authored in the workspace it is the service directory itself:
+// builder/Dockerfile is committed there and the archive is versioned beside it.
+// For a service the CLI materialized — anywhere outside the workspace
+// directory, or under the workspace's own .codefly/ (where the verified
+// package cache lives) — writing into the service tree would poison the
+// package's tree digest and silently mutate a git-cloned module, so the output
+// is redirected to <workspace>/.codefly/build/<module>/<service>. Only the
+// recipe moves: the docker build context is still the service's code
+// (recipeContext), and the recipe's Dockerfile and dockerignore resolve from
+// this root (recipeDockerfile / prepareRecipeContext) — the same split the
+// Build request already expresses as BuildContext vs OutputDirectory.
+//
+// An unset workspace directory cannot classify the service, so the output
+// stays beside it.
+func buildRecipeRoot(workspaceDir, module, service, serviceDir string) (string, error) {
+	if workspaceDir == "" || serviceDir == "" {
+		return serviceDir, nil
+	}
+	workspaceDir, err := filepath.Abs(workspaceDir)
+	if err != nil {
+		return "", err
+	}
+	absolute, err := filepath.Abs(serviceDir)
+	if err != nil {
+		return "", err
+	}
+	if underDirectory(workspaceDir, absolute) && !underDirectory(filepath.Join(workspaceDir, ".codefly"), absolute) {
+		return serviceDir, nil
+	}
+	if module == "" || service == "" {
+		return "", fmt.Errorf("cannot redirect build output for %q: the service has no module/service identity", serviceDir)
+	}
+	return filepath.Join(workspaceDir, filepath.FromSlash(buildScratchDir), module, service), nil
+}
+
+// underDirectory reports whether path is dir or lies beneath it. Both must be
+// absolute and clean.
+func underDirectory(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }

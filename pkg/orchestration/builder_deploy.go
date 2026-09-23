@@ -3,6 +3,7 @@ package orchestration
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -101,19 +102,20 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if b.world.DeploymentDestination != nil {
 		deploy.GetKubernetes().Destination = b.world.DeploymentDestination(b.instance.Module, b.instance.Service)
 	}
-	deploy.GetKubernetes().ValidateServerSide =
-		profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 &&
-			b.world.Env.IsK3d()
-	validationContext := ""
-	if deploy.GetKubernetes().GetValidateServerSide() {
-		kubeconfig, contextName, targetErr := kubernetesValidationTarget(ctx, b.world.Env)
-		if targetErr != nil {
-			return nil, w.Wrapf(targetErr, "cannot resolve promotable GitOps validation target")
-		}
-		deploy.GetKubernetes().ValidationKubeconfig = kubeconfig
-		deploy.GetKubernetes().ValidationContext = contextName
-		validationContext = contextName
+	validation, err := resolveClusterValidation(ctx, b.world, profile, namespace)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot resolve promotable GitOps validation target")
 	}
+	if validation.Skipped != "" {
+		w.Warn(validation.Skipped)
+		if b.world.OutputSink != nil {
+			b.world.OutputSink.Info("%s", validation.Skipped)
+		}
+	}
+	deploy.GetKubernetes().ValidateServerSide = validation.Enabled()
+	deploy.GetKubernetes().ValidationKubeconfig = validation.Kubeconfig
+	deploy.GetKubernetes().ValidationContext = validation.Context
+	validationContext := validation.Context
 
 	w.Debug("deployments", wool.Field("deployments", deploy))
 
@@ -214,6 +216,107 @@ func withContainerReachableAsPublic(ctx context.Context, mappings []*basev0.Netw
 		out = append(out, clone)
 	}
 	return out
+}
+
+// clusterValidation is the outcome of deciding whether a promotable deploy asks
+// the agent for a server-side dry-run: the exact target when it does, or the
+// reason it does not although the caller opted in.
+type clusterValidation struct {
+	Kubeconfig string
+	Context    string
+	// Skipped explains why an opted-in validation cannot run against this
+	// cluster. It is surfaced to the caller rather than silently dropped.
+	Skipped string
+}
+
+// Enabled reports whether the deploy request carries a server-side validation
+// target.
+func (v clusterValidation) Enabled() bool {
+	return v.Context != ""
+}
+
+// NamespaceProbe reports whether a namespace exists in the cluster a kubeconfig
+// context selects. It is the one cluster read a render performs, so a World
+// can substitute it.
+type NamespaceProbe func(ctx context.Context, kubeconfig, kubeContext, namespace string) (bool, error)
+
+// resolveClusterValidation decides the server-side validation a promotable
+// deploy requests. A render is a pure function of the workspace: it must not
+// need a cluster, so the dry-run is opt-in (World.ValidateCluster, set by
+// `deploy gitops render --validate-cluster`) and off by default. Direct apply
+// paths are untouched — they never request a promotable profile, so the
+// decision here does not reach them.
+//
+// When opted in, the environment must declare cluster.context, and the
+// namespace the manifests bind to must already exist: core runs the dry-run
+// with `kubectl apply --namespace <ns>`, and a server-side dry-run of namespaced
+// objects fails on a namespace that is not there, while the rendered Argo
+// Application does not create it (CreateNamespace=false). Rather than fail a
+// render on that gap, the validation is skipped with a clear reason.
+func resolveClusterValidation(
+	ctx context.Context,
+	world *World,
+	profile builderv0.KubernetesOutputProfile,
+	namespace string,
+) (clusterValidation, error) {
+	// Only a restricted (promotable) profile is ever validated against a
+	// cluster: an ephemeral local apply is about to be applied for real.
+	if world == nil || !world.ValidateCluster || !coreservices.IsRestrictedOutputProfile(profile) {
+		return clusterValidation{}, nil
+	}
+	kubeconfig, contextName, err := kubernetesValidationTarget(ctx, world.Env)
+	if err != nil {
+		return clusterValidation{}, err
+	}
+	probe := world.NamespaceProbe
+	if probe == nil {
+		probe = kubectlNamespaceExists
+	}
+	exists, err := probe(ctx, kubeconfig, contextName, namespace)
+	if err != nil {
+		return clusterValidation{}, fmt.Errorf("cannot inspect namespace %q in context %q: %w", namespace, contextName, err)
+	}
+	if !exists {
+		return clusterValidation{Skipped: fmt.Sprintf(
+			"skipping server-side validation: namespace %q does not exist in context %q; "+
+				"the rendered Argo Application does not create it (CreateNamespace=false), "+
+				"so create the namespace first to validate this render against the cluster",
+			namespace, contextName,
+		)}, nil
+	}
+	return clusterValidation{Kubeconfig: kubeconfig, Context: contextName}, nil
+}
+
+// kubectlNamespaceExists is the default NamespaceProbe: a read-only
+// `kubectl get namespace` against the explicit validation target.
+func kubectlNamespaceExists(ctx context.Context, kubeconfig, kubeContext, namespace string) (bool, error) {
+	kubectl, err := exec.LookPath("kubectl")
+	if err != nil {
+		return false, fmt.Errorf("cluster validation requires kubectl: %w", err)
+	}
+	output, err := exec.CommandContext(
+		ctx,
+		kubectl,
+		"--kubeconfig", kubeconfig,
+		"--context", kubeContext,
+		"get", "namespace", namespace,
+		"-o", "name",
+	).CombinedOutput()
+	return namespaceProbeResult(output, err)
+}
+
+// namespaceProbeResult interprets a `kubectl get namespace` outcome: success
+// means the namespace exists, a NotFound error means it does not, and any other
+// failure (unreachable cluster, bad context) is an error the caller must see.
+func namespaceProbeResult(output []byte, err error) (bool, error) {
+	if err == nil {
+		return true, nil
+	}
+	text := strings.TrimSpace(string(output))
+	if strings.Contains(text, "NotFound") || strings.Contains(text, "not found") {
+		return false, nil
+	}
+	return false, fmt.Errorf("%w: %s", err, text)
 }
 
 func kubernetesValidationTarget(ctx context.Context, environment *environments.Environment) (string, string, error) {

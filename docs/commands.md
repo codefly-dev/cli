@@ -421,6 +421,16 @@ codefly deploy gitops rollback payments --env production \
   --to-revision <previous-reviewed-commit>
 ```
 
+`render` is a function of the workspace and needs no cluster: by default no
+service's manifests are sent to a Kubernetes API. Pass `--validate-cluster` to
+also dry-run each rendered service server-side (`kubectl apply --server-side
+--dry-run=server`) against the environment's declared `cluster.context` — the
+environment must then declare one, and the namespace the manifests bind to must
+already exist in that cluster: the rendered Argo Application does not create it
+(`CreateNamespace=false`), so when it is missing the dry-run is skipped for that
+service with a message naming the namespace and context rather than failing the
+render. A cluster that cannot be reached is an error.
+
 The workspace declares the destination repository, owned path, and Argo target
 branch:
 

@@ -41,7 +41,7 @@ func TestRecordBuildRecipeArchivesRecipeTaggedWithVersion(t *testing.T) {
 	}
 	service := serviceWithRecipe(t, "0.3.5", recipe)
 
-	require.NoError(t, recordBuildRecipe(context.Background(), service, nil))
+	require.NoError(t, recordBuildRecipe(context.Background(), service, service.Dir(), nil))
 
 	archive := filepath.Join(service.Dir(), buildRecipeArchiveDir, "0.3.5")
 	for name, content := range recipe {
@@ -89,7 +89,7 @@ func TestRecordBuildRecipePersistsAgentDeclaredBuildArgs(t *testing.T) {
 		}},
 	}
 
-	require.NoError(t, recordBuildRecipe(context.Background(), service, plan))
+	require.NoError(t, recordBuildRecipe(context.Background(), service, service.Dir(), plan))
 
 	archive := filepath.Join(service.Dir(), buildRecipeArchiveDir, "0.3.5")
 	payload, err := os.ReadFile(filepath.Join(archive, buildRecipeManifest))
@@ -129,7 +129,7 @@ func TestRecordBuildRecipeRedactsSensitiveBuildArgs(t *testing.T) {
 		}},
 	}
 
-	require.NoError(t, recordBuildRecipe(context.Background(), service, plan))
+	require.NoError(t, recordBuildRecipe(context.Background(), service, service.Dir(), plan))
 
 	archive := filepath.Join(service.Dir(), buildRecipeArchiveDir, "0.3.5")
 	payload, err := os.ReadFile(filepath.Join(archive, buildRecipeManifest))
@@ -150,12 +150,12 @@ func TestRecordBuildRecipeRedactsSensitiveBuildArgs(t *testing.T) {
 
 func TestRecordBuildRecipeReplacesStalePriorArchive(t *testing.T) {
 	service := serviceWithRecipe(t, "0.3.5", map[string]string{"Dockerfile": "FROM alpine\n"})
-	require.NoError(t, recordBuildRecipe(context.Background(), service, nil))
+	require.NoError(t, recordBuildRecipe(context.Background(), service, service.Dir(), nil))
 
 	stale := filepath.Join(service.Dir(), buildRecipeArchiveDir, "0.3.5", "old-only.txt")
 	require.NoError(t, os.WriteFile(stale, []byte("stale"), 0o644))
 
-	require.NoError(t, recordBuildRecipe(context.Background(), service, nil))
+	require.NoError(t, recordBuildRecipe(context.Background(), service, service.Dir(), nil))
 
 	_, err := os.Stat(stale)
 	require.True(t, os.IsNotExist(err), "stale recipe file survived re-recording")
@@ -169,7 +169,7 @@ func TestRecordBuildRecipeNoRecipeIsNoOp(t *testing.T) {
 	}
 	service.WithDir(dir)
 
-	require.NoError(t, recordBuildRecipe(context.Background(), service, nil))
+	require.NoError(t, recordBuildRecipe(context.Background(), service, service.Dir(), nil))
 
 	_, err := os.Stat(filepath.Join(dir, buildRecipeArchiveDir))
 	require.True(t, os.IsNotExist(err))
@@ -177,5 +177,5 @@ func TestRecordBuildRecipeNoRecipeIsNoOp(t *testing.T) {
 
 func TestRecordBuildRecipeRejectsUnsafeVersion(t *testing.T) {
 	service := serviceWithRecipe(t, "../escape", map[string]string{"Dockerfile": "FROM alpine\n"})
-	require.Error(t, recordBuildRecipe(context.Background(), service, nil))
+	require.Error(t, recordBuildRecipe(context.Background(), service, service.Dir(), nil))
 }

@@ -217,6 +217,14 @@ type World struct {
 	DeploymentDestination   func(*resources.Module, *resources.Service) string
 	KubernetesOutputProfile builderv0.KubernetesOutputProfile
 
+	// ValidateCluster opts a promotable render into a server-side dry-run of
+	// its manifests against the environment's declared cluster. Off by default:
+	// a render needs no cluster. See resolveClusterValidation.
+	ValidateCluster bool
+	// NamespaceProbe is the cluster read ValidateCluster performs before asking
+	// for the dry-run; nil selects the kubectl-backed default.
+	NamespaceProbe NamespaceProbe
+
 	// DAG
 	Dependencies *architecture.ServiceDependencies
 
@@ -1973,6 +1981,12 @@ func (flow *Flow) WithDeploymentDestination(destination func(*resources.Module, 
 
 func (flow *Flow) WithKubernetesOutputProfile(profile builderv0.KubernetesOutputProfile) {
 	flow.world.KubernetesOutputProfile = profile
+}
+
+// WithClusterValidation opts a promotable render into a server-side dry-run
+// against the environment's declared cluster (`--validate-cluster`).
+func (flow *Flow) WithClusterValidation(validate bool) {
+	flow.world.ValidateCluster = validate
 }
 
 func (flow *Flow) WithStandAlone(alone bool) {

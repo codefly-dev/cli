@@ -39,7 +39,7 @@ var gitOpsRenderCmd = &cobra.Command{
 		}
 		result, err := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
 			Workspace: workspace, Module: module, Environment: env,
-			AppProject: gitOpsProject, Sink: cli.NewOutputSink(),
+			AppProject: gitOpsProject, ValidateCluster: gitOpsValidateCluster, Sink: cli.NewOutputSink(),
 		})
 		if err != nil {
 			return err
@@ -465,6 +465,7 @@ var (
 	gitOpsYes                      bool
 	gitOpsLocal                    bool
 	gitOpsAllowUnresolvedContracts bool
+	gitOpsValidateCluster          bool
 )
 
 func init() {
@@ -472,6 +473,8 @@ func init() {
 	for _, command := range []*cobra.Command{gitOpsSnapshotCmd, gitOpsRenderCmd, gitOpsPlanCmd, gitOpsPublishCmd, gitOpsObserveCmd, gitOpsRollbackCmd} {
 		command.Flags().StringVar(&gitOpsEnv, "env", "local", "Environment to promote")
 	}
+	gitOpsRenderCmd.Flags().BoolVar(&gitOpsValidateCluster, "validate-cluster", false,
+		"Also dry-run each service's manifests server-side against the environment's declared cluster.context (off: a render needs no cluster)")
 	for _, command := range []*cobra.Command{gitOpsSnapshotCmd, gitOpsRenderCmd} {
 		command.Flags().StringVar(&gitOpsProject, "app-project", "", "AppProject contract for cluster-scoped resources")
 	}
