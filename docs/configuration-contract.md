@@ -42,6 +42,12 @@ Producers must supply:
   rather than dropped: a mistyped `services` would otherwise leave a valid
   `default` standing and silently collapse every override onto it.
 - Any application secret mappings through the existing `service-secrets` model.
+  An explicit `remote-keys` entry or `defaults` mapping may select a `secret-store`
+  (`name`, `kind`) for that reference. It overrides the per-service/environment
+  store and renders as ESO `data[].sourceRef.storeRef`; other keys keep their
+  own store. This allows a service to consume protected shared credentials and
+  cell-local credentials without copying values between backends. Unknown fields,
+  invalid stores and effective-overlay redirection are refused.
 - Any resolved non-secret values through `service-config`, keyed by consuming
   service and then by the exact key the service reads. The producer resolves the
   value; The CLI carries it verbatim and derives none of it. A declared service with

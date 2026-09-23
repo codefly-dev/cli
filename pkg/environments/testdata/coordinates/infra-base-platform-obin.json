@@ -1,0 +1,67 @@
+{
+  "schema": "codefly/coordinate/v1",
+  "coordinate": "hosted/gcp/us-east1/US/staging",
+  "environment": {
+    "name": "staging",
+    "namespace": "platform-obin",
+    "cluster": {
+      "kind": "external",
+      "context": "gke_obin-hosted-staging_us-east1_obinh-use1-gke"
+    },
+    "gitops": {
+      "repo-url": "git@github.com:obin-ai/platform-obin.git",
+      "path": "deployments",
+      "branch": "main",
+      "revision": "main"
+    },
+    "registry": {
+      "url": "us-east1-docker.pkg.dev/obin-hosted-staging/obinh-use1-registry"
+    },
+    "service-secrets": {
+      "secret-store": {
+        "kind": "ClusterSecretStore",
+        "name": "cell-secrets"
+      },
+      "defaults": {
+        "key": "platform-obin-{module}-{service}",
+        "property": "{key}"
+      },
+      "services": {
+        "accounts": {
+          "secret-store": {
+            "kind": "ClusterSecretStore",
+            "name": "cell-secrets"
+          },
+          "remote-keys": {
+            "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDENTITY__IDENTITY_CLIENT_SECRET": {
+              "key": "workos-product-ripe-elephant-45-staging-authkit-app",
+              "property": "client_secret",
+              "secret-store": {
+                "name": "platform-obin-identity",
+                "kind": "ClusterSecretStore"
+              }
+            },
+            "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDENTITY__IDENTITY_MANAGEMENT_API_KEY": {
+              "key": "workos-product-ripe-elephant-45-staging-authkit-app",
+              "property": "management_api_key",
+              "secret-store": {
+                "name": "platform-obin-identity",
+                "kind": "ClusterSecretStore"
+              }
+            }
+          }
+        }
+      }
+    },
+    "service-config": {
+      "services": {
+        "accounts": {
+          "values": {
+            "CODEFLY__WORKSPACE_CONFIGURATION__IDENTITY__IDENTITY_CLIENT_ID": "client_01M2JXQ6XMQY5J0TDNAPHDHKMV",
+            "CODEFLY__WORKSPACE_CONFIGURATION__IDENTITY__IDENTITY_ISSUER": "https://ripe-elephant-45-staging.authkit.app"
+          }
+        }
+      }
+    }
+  }
+}

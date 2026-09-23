@@ -73,8 +73,13 @@ type externalSecretTemplate struct {
 }
 
 type externalSecretData struct {
-	SecretKey string               `yaml:"secretKey"`
-	RemoteRef externalSecretRemote `yaml:"remoteRef"`
+	SecretKey string                   `yaml:"secretKey"`
+	RemoteRef externalSecretRemote     `yaml:"remoteRef"`
+	SourceRef *externalSecretSourceRef `yaml:"sourceRef,omitempty"`
+}
+
+type externalSecretSourceRef struct {
+	StoreRef externalSecretStoreRef `yaml:"storeRef"`
 }
 
 type externalSecretRemote struct {
@@ -141,10 +146,16 @@ func serviceSecretProjection(scope unitScope, service string, secrets *environme
 	data := make([]externalSecretData, 0, len(keys))
 	for _, key := range keys {
 		remote := secrets.RemoteRef(scope.secretScope(service), key)
-		data = append(data, externalSecretData{
+		entry := externalSecretData{
 			SecretKey: key,
 			RemoteRef: externalSecretRemote{Key: remote.Key, Property: remote.Property},
-		})
+		}
+		if remote.SecretStore != nil {
+			entry.SourceRef = &externalSecretSourceRef{
+				StoreRef: externalSecretStoreRef{Name: remote.SecretStore.Name, Kind: remote.SecretStore.Kind},
+			}
+		}
+		data = append(data, entry)
 	}
 	projection, err := externalSecretProjection(service, namespace, store, data)
 	if err != nil {
@@ -177,6 +188,15 @@ func externalSecretProjection(service, namespace string, store environments.Envi
 	}
 	if _, ok := externalSecretStoreKinds[store.Kind]; !ok {
 		return nil, fmt.Errorf("service %q secret store kind %q must be SecretStore or ClusterSecretStore", service, store.Kind)
+	}
+	for _, entry := range data {
+		if entry.SourceRef == nil {
+			continue
+		}
+		ref := entry.SourceRef.StoreRef
+		if _, ok := externalSecretStoreKinds[ref.Kind]; !ok || strings.TrimSpace(ref.Name) == "" {
+			return nil, fmt.Errorf("service %q secret %q source store requires a name and SecretStore or ClusterSecretStore kind", service, entry.SecretKey)
+		}
 	}
 	target := "secret-" + service
 	return &externalSecret{

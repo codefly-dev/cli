@@ -84,6 +84,20 @@ type EnvironmentSecretStoreReference struct {
 	Kind string `yaml:"kind"`
 }
 
+// UnmarshalYAML keeps strict decoding inside custom remote-reference decoders,
+// where yaml.Node.Decode does not inherit the outer KnownFields setting.
+func (store *EnvironmentSecretStoreReference) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i < len(node.Content); i += 2 {
+			if key := node.Content[i].Value; key != "name" && key != "kind" {
+				return fmt.Errorf("unknown secret store field %q", key)
+			}
+		}
+	}
+	type plain EnvironmentSecretStoreReference
+	return node.Decode((*plain)(store))
+}
+
 // EnvironmentManagedSecretReference maps a remote managed secret into a
 // namespaced Kubernetes Secret. Property, when set, names the field inside a
 // structured remote document (a Key Vault JSON secret, a Vault KV path) that
@@ -101,6 +115,9 @@ type EnvironmentManagedSecretReference struct {
 type EnvironmentSecretRemoteRef struct {
 	Key      string `yaml:"key"`
 	Property string `yaml:"property,omitempty"`
+	// SecretStore overrides the service/environment store for this key only.
+	// Shared identity credentials need not be copied into a cell-local backend.
+	SecretStore *EnvironmentSecretStoreReference `yaml:"secret-store,omitempty"`
 }
 
 // UnmarshalYAML accepts either a scalar remote key ("lodestar-accounts", which
@@ -113,7 +130,7 @@ func (ref *EnvironmentSecretRemoteRef) UnmarshalYAML(node *yaml.Node) error {
 	}
 	if node.Kind == yaml.MappingNode {
 		for i := 0; i < len(node.Content); i += 2 {
-			if key := node.Content[i].Value; key != "key" && key != "property" {
+			if key := node.Content[i].Value; key != "key" && key != "property" && key != "secret-store" {
 				return fmt.Errorf("unknown secret reference field %q", key)
 			}
 		}
@@ -127,7 +144,7 @@ func (ref *EnvironmentSecretRemoteRef) UnmarshalYAML(node *yaml.Node) error {
 // rewrites it in place — preserves a scalar remote-key declaration instead of
 // expanding it to a {key: …} mapping. With a property it emits the full mapping.
 func (ref EnvironmentSecretRemoteRef) MarshalYAML() (any, error) {
-	if ref.Property == "" {
+	if ref.Property == "" && ref.SecretStore == nil {
 		return ref.Key, nil
 	}
 	type plain EnvironmentSecretRemoteRef
@@ -441,6 +458,9 @@ func (ref EnvironmentSecretStoreReference) validate(label string) error {
 	if strings.TrimSpace(ref.Kind) == "" {
 		return fmt.Errorf("%s: kind cannot be empty", label)
 	}
+	if ref.Kind != "SecretStore" && ref.Kind != "ClusterSecretStore" {
+		return fmt.Errorf("%s: kind must be SecretStore or ClusterSecretStore", label)
+	}
 	return nil
 }
 
@@ -491,6 +511,11 @@ func (s *EnvironmentServiceSecrets) Validate() error {
 			if strings.TrimSpace(remote.Key) == "" {
 				return fmt.Errorf("service-secrets service %q: remote-key %q resolves to an empty path", name, key)
 			}
+			if remote.SecretStore != nil {
+				if err := remote.SecretStore.validate(fmt.Sprintf("service-secrets service %q remote-key %q secret-store", name, key)); err != nil {
+					return err
+				}
+			}
 		}
 		if err := mapping.Defaults.validate(fmt.Sprintf("service-secrets service %q", name)); err != nil {
 			return err
@@ -513,6 +538,9 @@ func (ref *EnvironmentSecretRemoteRef) validate(label string) error {
 	}
 	if err := validateSecretTemplate(ref.Property); err != nil {
 		return fmt.Errorf("%s defaults property: %w", label, err)
+	}
+	if ref.SecretStore != nil {
+		return ref.SecretStore.validate(label + " defaults secret-store")
 	}
 	return nil
 }
@@ -550,8 +578,9 @@ func (s *EnvironmentServiceSecrets) RemoteRef(scope SecretScope, key string) Env
 				"{key}", key,
 			)
 			return EnvironmentSecretRemoteRef{
-				Key:      substitute.Replace(defaults.Key),
-				Property: substitute.Replace(defaults.Property),
+				Key:         substitute.Replace(defaults.Key),
+				Property:    substitute.Replace(defaults.Property),
+				SecretStore: defaults.SecretStore,
 			}
 		}
 	}
