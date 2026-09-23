@@ -447,6 +447,39 @@ codefly deploy gitops rollback payments --env production \
   --to-revision <previous-reviewed-commit>
 ```
 
+`render`, `snapshot`, `plan` and `publish` evaluate the workspace readiness
+verdict for the target environment **before** they do any expensive work, and
+refuse with the `codefly doctor workspace` diagnostics and fix hints when it is
+not ready. That check is the one in [`codefly doctor
+workspace`](#codefly-doctor-workspace), scoped with `--module` to the module the
+verb acts on: a configuration only a sibling module requires does not block this
+one. Without it, a missing configuration group surfaced minutes later as `no
+configuration found for <group>` from deep inside the builder, after modules had
+been resolved and container images built and pushed.
+
+```
+☠️ workspace configurations — required workspace configuration "openrouter" is
+   neither under configurations/local nor shipped by a composed module
+   (required by demo/backend/api)
+   fix: add configurations/local/openrouter.env (or openrouter.secret.env
+   holding provider references)
+☠️ Workspace is NOT ready for environment "local" — fix the items marked ✗ above.
+Error: workspace is not ready for environment "local": … — refusing to render
+(override with --skip-workspace-readiness)
+```
+
+`--skip-workspace-readiness` proceeds anyway. It exists for one situation — an
+operator mid-repair who must render a module whose *sibling* is unready — is
+never the default, and announces itself in the output when taken. The gate is a
+precondition of the delivery verbs only: `observe`, `rollback` and the `remote`
+verbs act on an already-reviewed revision and are exactly what an operator
+reaches for while the workspace is broken, so they are not gated.
+
+The gate runs after the module is resolved, because resolving it materializes
+the workspace's composed pinned modules — which is what the readiness check
+itself needs in order to judge configuration at all, and which is free once it
+has happened. Everything the failure used to hide behind still comes after.
+
 `render` is a function of the workspace and needs no cluster: by default no
 service's manifests are sent to a Kubernetes API. Pass `--validate-cluster` to
 also dry-run each rendered service server-side (`kubectl apply --server-side
@@ -2066,6 +2099,7 @@ printing or writing secret values.
 ```bash
 codefly doctor workspace                       # validate the local environment
 codefly doctor workspace --env staging         # validate a declared environment
+codefly doctor workspace --module payments     # restrict to one module's services
 codefly doctor workspace --service api         # restrict to one service's declared dependencies
 codefly doctor workspace --json                # machine-readable report (for worktree managers)
 codefly doctor workspace --timeout 10s         # bound secret-provider resolution
@@ -2101,19 +2135,22 @@ What it checks, in order:
 
 With `--service`, only that service's declared workspace/service configuration
 requirements are validated and resolved; unrelated configurations are not
-touched.
+touched. `--module` narrows the same way to one module's services, so a sibling
+module's missing configuration does not fail the check — this is the scope the
+GitOps delivery verbs evaluate for the module they act on. `--service` is the
+narrower of the two and wins when both are given.
 
 **Exit codes:** `0` — ready (warnings allowed); `1` — at least one check
 failed (or the command itself failed).
 
 **JSON contract** (`--json`, stdout): `{schema_version: 1, workspace,
-workspace_dir, environment, environment_declared, service?, status:
+workspace_dir, environment, environment_declared, module?, service?, status:
 "ready"|"not_ready", checks: [{code, name, status: "ok"|"warn"|"fail",
 message, remediation?}]}`. Output never contains configuration values, raw
 `op://` references, provider output, or environment dumps.
 
 **Stable diagnostic codes:** `workspace_not_found`, `workspace_invalid`,
-`environment_not_found`, `service_not_found`,
+`environment_not_found`, `module_not_found`, `service_not_found`,
 `configuration_directory_missing`, `configuration_missing`,
 `configuration_invalid`, `configuration_duplicate`, `provider_not_configured`,
 `provider_executable_missing`, `provider_authentication_required`,

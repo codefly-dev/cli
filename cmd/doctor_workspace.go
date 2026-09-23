@@ -35,6 +35,7 @@ const (
 	codeWorkspaceInvalid           = "workspace_invalid"
 	codeEnvironmentNotFound        = "environment_not_found"
 	codeServiceNotFound            = "service_not_found"
+	codeModuleNotFound             = "module_not_found"
 	codeConfigurationDirMissing    = "configuration_directory_missing"
 	codeConfigurationMissing       = "configuration_missing"
 	codeConfigurationInvalid       = "configuration_invalid"
@@ -65,6 +66,11 @@ const (
 	readinessStatusNotReady = "not_ready"
 )
 
+// Per-check statuses, as they appear in the JSON report.
+const (
+	checkStatusFail = "fail"
+)
+
 type workspaceDiagnostic struct {
 	Code        string `json:"code"`
 	Name        string `json:"name"`
@@ -79,6 +85,7 @@ type workspaceReadinessReport struct {
 	WorkspaceDir        string                `json:"workspace_dir,omitempty"`
 	Environment         string                `json:"environment"`
 	EnvironmentDeclared bool                  `json:"environment_declared"`
+	Module              string                `json:"module,omitempty"`
 	Service             string                `json:"service,omitempty"`
 	Status              string                `json:"status"`
 	Checks              []workspaceDiagnostic `json:"checks"`
@@ -88,7 +95,7 @@ func (report *workspaceReadinessReport) add(code, name, status, message, remedia
 	report.Checks = append(report.Checks, workspaceDiagnostic{
 		Code: code, Name: name, Status: status, Message: message, Remediation: remediation,
 	})
-	if status == "fail" {
+	if status == checkStatusFail {
 		report.Status = readinessStatusNotReady
 	}
 }
@@ -96,8 +103,12 @@ func (report *workspaceReadinessReport) add(code, name, status, message, remedia
 type workspaceReadinessOptions struct {
 	// dir pins the workspace directory (tests). Empty means the usual upward
 	// discovery from the current directory.
-	dir     string
-	env     string
+	dir string
+	env string
+	// module narrows the scope to the services of one module, for a verb that
+	// acts on exactly one — `deploy gitops render <module>`. A sibling module's
+	// missing configuration is then not this module's problem.
+	module  string
 	service string
 	timeout time.Duration
 }
@@ -149,12 +160,12 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 		return report
 	}
 
-	scope, requiredBy := checkScope(ctx, ws, opts.service, report)
+	scope, requiredBy := checkScope(ctx, ws, opts.module, opts.service, report)
 	if scope == nil {
 		return report
 	}
 
-	toResolve := checkConfigurationSources(ctx, ws, env, opts.service != "", scope, requiredBy, report)
+	toResolve := checkConfigurationSources(ctx, ws, env, opts.module != "" || opts.service != "", scope, requiredBy, report)
 
 	checkSecretReferences(ctx, env, resolvers, unavailable, toResolve, report)
 
@@ -722,10 +733,16 @@ func checkSecretProviders(env *environments.Environment, report *workspaceReadin
 	return byScheme, unavailable
 }
 
-// checkScope loads the services under validation — all of them, or the one
-// selected with --service — and collects the workspace configurations they
-// declare, mapped to the services that require them.
-func checkScope(ctx context.Context, ws *resources.Workspace, serviceName string, report *workspaceReadinessReport) ([]*resources.Service, map[string][]string) {
+// checkScope loads the services under validation — all of them, the ones of the
+// module selected with --module, or the one selected with --service — and
+// collects the workspace configurations they declare, mapped to the services
+// that require them.
+//
+// --module and --service narrow the same way for the same reason: a verb that
+// acts on one unit must not be judged by a sibling unit's missing
+// configuration. --service wins when both are given, being the narrower of the
+// two.
+func checkScope(ctx context.Context, ws *resources.Workspace, moduleName, serviceName string, report *workspaceReadinessReport) ([]*resources.Service, map[string][]string) {
 	services, err := ws.LoadServices(ctx)
 	if err != nil {
 		report.add(codeWorkspaceInvalid, "services", "fail",
@@ -734,6 +751,29 @@ func checkScope(ctx context.Context, ws *resources.Workspace, serviceName string
 		return nil, nil
 	}
 	scope := services
+	if moduleName != "" && serviceName == "" {
+		mod, modErr := ws.LoadModuleFromName(ctx, moduleName)
+		if modErr != nil {
+			available := ws.ModulesNames()
+			sort.Strings(available)
+			report.add(codeModuleNotFound, "module", "fail",
+				fmt.Sprintf("cannot find module %q: %v", moduleName, modErr),
+				"workspace modules: "+strings.Join(available, ", "))
+			return nil, nil
+		}
+		moduleServices, svcErr := mod.LoadServices(ctx)
+		if svcErr != nil {
+			report.add(codeWorkspaceInvalid, "services", "fail",
+				fmt.Sprintf("cannot load services of module %q: %v", moduleName, svcErr),
+				"fix the service manifests referenced by the module")
+			return nil, nil
+		}
+		for _, svc := range moduleServices {
+			svc.WithModule(mod.Name)
+		}
+		scope = moduleServices
+		report.Module = mod.Name
+	}
 	if serviceName != "" {
 		svc, mod, findErr := ws.FindUniqueModuleServiceByName(ctx, serviceName)
 		if findErr != nil {
@@ -1225,6 +1265,7 @@ func (machineReadableDoctorError) MachineReadable() bool { return true }
 
 var (
 	doctorWorkspaceEnv     string
+	doctorWorkspaceModule  string
 	doctorWorkspaceService string
 	doctorWorkspaceJSON    bool
 	doctorWorkspaceTimeout time.Duration
@@ -1255,11 +1296,16 @@ Exit codes:
 
 With --json, a versioned report is printed to stdout:
   {schema_version, workspace, workspace_dir, environment, environment_declared,
-   service?, status: ready|not_ready, checks: [{code, name, status, message,
-   remediation?}]}
+   module?, service?, status: ready|not_ready, checks: [{code, name, status,
+   message, remediation?}]}
+
+--module and --service narrow the scope to one unit's declared configuration
+dependencies, so a sibling unit's missing configuration does not fail the
+check. --service is the narrower of the two and wins when both are given.
 
 Stable diagnostic codes: workspace_not_found, workspace_invalid,
-environment_not_found, service_not_found, module_reference_unresolved,
+environment_not_found, module_not_found, service_not_found,
+module_reference_unresolved,
 module_trust_missing, module_checkout_version_drift,
 service_override_active, service_override_unresolved,
 service_override_contract_drift,
@@ -1273,6 +1319,7 @@ bindings_schema_unknown, and the per-binding validation codes).`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		report := workspaceReadiness(cmd.Context(), workspaceReadinessOptions{
 			env:     doctorWorkspaceEnv,
+			module:  doctorWorkspaceModule,
 			service: doctorWorkspaceService,
 			timeout: doctorWorkspaceTimeout,
 		})
@@ -1309,7 +1356,7 @@ func printWorkspaceDiagnostic(diagnostic workspaceDiagnostic) {
 	case "warn":
 		result.status = statusWarn
 		result.detail = fmt.Sprintf("%s [%s]", diagnostic.Message, diagnostic.Code)
-	case "fail":
+	case checkStatusFail:
 		result.status = statusFail
 		result.detail = fmt.Sprintf("%s [%s]", diagnostic.Message, diagnostic.Code)
 	default:
@@ -1320,6 +1367,7 @@ func printWorkspaceDiagnostic(diagnostic workspaceDiagnostic) {
 
 func init() {
 	DoctorWorkspaceCmd.Flags().StringVar(&doctorWorkspaceEnv, "env", "local", "Environment to validate against")
+	DoctorWorkspaceCmd.Flags().StringVar(&doctorWorkspaceModule, "module", "", "Restrict validation to one module's services and their declared configuration dependencies")
 	DoctorWorkspaceCmd.Flags().StringVar(&doctorWorkspaceService, "service", "", "Restrict validation to one service's declared configuration dependencies")
 	DoctorWorkspaceCmd.Flags().BoolVar(&doctorWorkspaceJSON, "json", false, "Print a machine-readable report to stdout")
 	DoctorWorkspaceCmd.Flags().DurationVar(&doctorWorkspaceTimeout, "timeout", 30*time.Second, "Overall bound; secret resolution is cancelled when it expires")

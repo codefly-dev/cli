@@ -41,6 +41,9 @@ var gitOpsRenderCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if err = requireWorkspaceReady(ctx, "render", gitOpsEnv, module.Name); err != nil {
+			return err
+		}
 		env, err := orchestration.SelectEnvironment(workspace, gitOpsEnv)
 		if err != nil {
 			return err
@@ -70,6 +73,9 @@ var gitOpsSnapshotCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if err = requireWorkspaceReady(ctx, "snapshot", gitOpsEnv, module.Name); err != nil {
+			return err
+		}
 		env, err := orchestration.SelectEnvironment(workspace, gitOpsEnv)
 		if err != nil {
 			return err
@@ -96,6 +102,9 @@ var gitOpsPlanCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		if err = requireWorkspaceReady(ctx, "plan", gitOpsEnv, module.Name); err != nil {
+			return err
+		}
 		request := publishRequest(module.Name)
 		plan, err := gitops.NewCoordinator().PlanPublish(ctx, workspace, &request)
 		if err != nil {
@@ -115,6 +124,9 @@ var gitOpsPublishCmd = &cobra.Command{
 		defer done()
 		workspace, module, err := loadGitOpsModule(ctx, args)
 		if err != nil {
+			return err
+		}
+		if err = requireWorkspaceReady(ctx, "publish", gitOpsEnv, module.Name); err != nil {
 			return err
 		}
 		request := publishRequest(module.Name)
@@ -480,6 +492,15 @@ func init() {
 	GitOpsCmd.AddCommand(gitOpsSnapshotCmd, gitOpsRenderCmd, gitOpsPlanCmd, gitOpsPublishCmd, gitOpsObserveCmd, gitOpsRollbackCmd)
 	for _, command := range []*cobra.Command{gitOpsSnapshotCmd, gitOpsRenderCmd, gitOpsPlanCmd, gitOpsPublishCmd, gitOpsObserveCmd, gitOpsRollbackCmd} {
 		command.Flags().StringVar(&gitOpsEnv, "env", "local", "Environment to promote")
+	}
+	// The delivery verbs — the ones that render a manifest tree from the
+	// workspace's environment configuration, or promote one — evaluate the
+	// `doctor workspace` verdict first. `observe`, `rollback` and the `remote`
+	// verbs deliberately do not: they act on an already-reviewed revision and
+	// are exactly what an operator reaches for while the workspace is broken.
+	for _, command := range []*cobra.Command{gitOpsSnapshotCmd, gitOpsRenderCmd, gitOpsPlanCmd, gitOpsPublishCmd} {
+		command.Flags().BoolVar(&skipWorkspaceReadiness, SkipWorkspaceReadinessFlag, false,
+			"Proceed even when `codefly doctor workspace --env <env> --module <module>` says the workspace is not ready (for an operator mid-repair; the skip is announced in the output)")
 	}
 	gitOpsRenderCmd.Flags().BoolVar(&gitOpsValidateCluster, "validate-cluster", false,
 		"Also dry-run each service's manifests server-side against the environment's declared cluster.context (off: a render needs no cluster)")
