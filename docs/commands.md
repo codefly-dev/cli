@@ -1,11 +1,5 @@
 # CLI Command Reference
 
-An exported endpoint that carries no machine-readable contract is skipped with a
-notice, never a failure: `http` and `tcp` endpoints, a `connect` endpoint on a
-service with no proto, and a `rest` endpoint with no OpenAPI document. An
-interface may export such an endpoint so composed modules can reach it (a
-gateway's REST surface, say); that export is reachability, not a contract.
-
 Codefly formalizes development operations as typed gRPC APIs. The CLI is the user-facing entry point that orchestrates agents (gRPC plugin processes) to execute these operations.
 
 ## Quick Start Workflow
@@ -1651,6 +1645,12 @@ the service's proto sources; REST endpoints get their OpenAPI document
 (`openapi.json`). HTTP and TCP endpoints have no machine-readable contract and are
 skipped. When the module has a `module.package.codefly.yaml`, its
 `services[*].api-contracts` are updated to match.
+
+An exported endpoint that carries no machine-readable contract is skipped with a
+notice, never a failure: `http` and `tcp` endpoints, a `connect` endpoint on a
+service with no proto, and a `rest` endpoint with no OpenAPI document. An
+interface may export such an endpoint so composed modules can reach it (a
+gateway's REST surface, say); that export is reachability, not a contract.
 
 Run it before `module-package build`; the package carries the result. `--check`
 is the CI drift gate.
