@@ -812,9 +812,10 @@ modules:
 `source` at its `version` by cloning its git tag, **unverified by declaration**.
 Nothing is signature- or digest-checked; the workspace is stating in committed,
 reviewable config that it accepts that for this module, rather than each
-developer accepting it again on their own machine. `run` prints `unverified git
-clone for <name> (declared in workspace.codefly.yaml)` when it materializes one,
-and `codefly doctor workspace` reports it with the informational
+developer accepting it again on their own machine. Every [command that
+materializes](#which-commands-materialize) prints `unverified git clone for
+<name> (declared in workspace.codefly.yaml)` when it materializes one, and
+`codefly doctor workspace` reports it with the informational
 `module_resolution_git` diagnostic beside the standing `module_unverified`
 warning — writing the opt-out down does not make the clone checked.
 
@@ -950,6 +951,41 @@ resolve:
 [`codefly run service --service-path`](#codefly-run-service-name) remains the
 per-run spelling for the one service you are launching; an overlay entry is
 durable and applies to every service, on any layout.
+#### Which commands materialize
+
+Materialization — pulling a composed pinned module into the module cache,
+recording its [receipt](#resolution-receipts), pointing the overlay's
+`resolve.<name>.path` at the result and gitignoring both files — is not a
+`run`-only step. Every command that loads composed modules in order to act on
+them materializes first, through one entry point, so a fresh checkout of a
+workspace composed by identity works for each of them with no prior run:
+
+- `run service`, `run job`, `run command`, `run solution` (which alone
+  re-resolves a floating reference forward), and the dependency stacks the SDK
+  spawns;
+- `test service`, `test solution`, `test composition`;
+- `deploy gitops render`, `snapshot`, `plan`, `publish`, `observe`, `rollback`,
+  `deploy module` and `deploy service` — a CI render always starts from a fresh
+  checkout, so it materializes exactly as `run` does;
+- every `ci` verb (`plan`, `build`, `test`, `run`, `validate`, `push`,
+  `deploy`);
+- `generate client`, `sync solution-sdk` and the fixture listing, which read a
+  composed module's tree.
+
+All of them share the fast path: once a receipt answers the request the
+workspace makes, a later command compares and pulls nothing, takes no lock and
+rewrites no file, so a render after a run, or a second render, costs nothing.
+All of them print the same `unverified git clone for <name>` warning when the
+clone is unverified, and write the same overlay, receipt and `.gitignore`
+entries.
+
+The one command that reads composed modules and **never writes** is `codefly
+doctor workspace`. When a declared module is not materialized on the machine it
+reports `module_not_materialized` — "module X is declared but not materialized
+yet" — with the commands that materialize it as the remediation, and skips the
+service-scoped checks it cannot perform, rather than relaying core's refusal to
+load the module as if the manifests were broken.
+
 #### The module cache
 
 `CODEFLY_MODULE_CACHE` names the directory composed modules are cached in. It
@@ -972,12 +1008,12 @@ reserved subdirectory rather than sharing the browsable tree. A value that is
 not usable as a root is an error rather than an ignored setting: falling back
 silently would put the modules somewhere other than where you said, and you
 would go looking where you asked. Resolution receipts record the path the module
-actually landed at and `run` checks it against the root in force now, so moving
-the root — or deleting the cache — re-materializes on the next run of any shape
-rather than leaving a module pointed at where it used to be. A root you
-configure is yours, not the CLI's: a checkout of your own inside it keeps its
-`resolve.<name>.path`, because there `run` treats only the path on a receipt as
-its own output.
+actually landed at and every materializing command checks it against the root in
+force now, so moving the root — or deleting the cache — re-materializes on the
+next materializing command of any shape rather than leaving a module pointed at
+where it used to be. A root you configure is yours, not the CLI's: a checkout of
+your own inside it keeps its `resolve.<name>.path`, because there the CLI treats
+only the path on a receipt as its own output.
 
 Two names under the root are reserved for the CLI: `.packages/` holds the
 digest-addressed verified packages, and `.staging/` holds in-flight clones being
@@ -991,7 +1027,8 @@ repository.
 
 #### Resolution receipts
 
-Everything `run` materializes is recorded as a receipt in
+Everything the CLI materializes — by any of the [commands that
+do](#which-commands-materialize) — is recorded as a receipt in
 `codefly.local.resolved.yaml` beside the overlay (gitignored like it). A
 receipt binds the request it answered — canonical source, module subpath,
 requested version or constraint — to what that request resolved to: the
@@ -1277,13 +1314,14 @@ A package that cannot be read, and a name two packages both declare, are reporte
 as problems *after* the listing, and the command exits non-zero. The listing is
 not suppressed: a collision is what you run this command to diagnose, so it names
 what each package declares rather than withholding the data needed to act on it.
-Unlike the run path, this command reads the workspace without materializing
-pinned modules into the overlay, so it never writes `codefly.local.yaml` or
-`.gitignore`. It does resolve each composed module in order to read its manifest,
-which materializes a pinned module into the content-addressed cache and fetches
-it when absent — so this is not a purely offline command the first time a pinned
-package is seen. A module that cannot be resolved is reported as a problem, not
-silently dropped from the listing.
+This command resolves each composed module in order to read its manifest, and
+[materializes](#which-commands-materialize) a pinned module exactly as the run
+path does when it is not materialized yet — into the module cache, with the
+receipt and overlay entry written and gitignored — so this is not a purely
+offline command the first time a pinned module is seen, and it writes
+`codefly.local.yaml` on that first sight like every other materializing command.
+A module that cannot be resolved is reported as a problem, not silently dropped
+from the listing.
 
 A name two packages declare *differently* is a collision. Identical declarations
 of one name — what a package composed under two module references produces — name
@@ -2034,11 +2072,17 @@ codefly doctor workspace --timeout 10s         # bound secret-provider resolutio
 What it checks, in order:
 
 1. Workspace discovery and manifest validity (never migrates or rewrites files).
-2. The requested environment resolves through the workspace declaration
+2. Every composed pinned module is materialized on this machine. The doctor
+   never writes, so it cannot pull one; a module no materializing command has
+   pulled yet fails with `module_not_materialized` naming the module and the
+   commands that materialize it (see [which commands
+   materialize](#which-commands-materialize)), and the service-scoped checks
+   below are skipped rather than reported as core's refusal to load it.
+3. The requested environment resolves through the workspace declaration
    (`local` is implicit when undeclared).
-3. Declared secret backends are supported and their executables are on PATH
+4. Declared secret backends are supported and their executables are on PATH
    (`op` for 1Password).
-4. Every workspace configuration group services declare under
+5. Every workspace configuration group services declare under
    `workspace-configuration-dependencies` is provided and defines values.
    The doctor reads exactly what a run provisions: the workspace's own
    `configurations/<profile>/*` composed with the groups each composed module
@@ -2048,8 +2092,8 @@ What it checks, in order:
    (`configuration_duplicate`, naming both providers) until the workspace
    declares it. A missing `configurations/<profile>` directory fails only for
    the groups no composed module provides. The directory is never created.
-5. Per-service `configurations/<env>` files parse; duplicates are flagged.
-6. Secret provider references (`op://…`) resolve in memory through the
+6. Per-service `configurations/<env>` files parse; duplicates are flagged.
+7. Secret provider references (`op://…`) resolve in memory through the
    configured backend; resolved values are discarded immediately. Plaintext
    values shaped like unsupported reference schemes are flagged.
 
@@ -2072,7 +2116,8 @@ message, remediation?}]}`. Output never contains configuration values, raw
 `configuration_invalid`, `configuration_duplicate`, `provider_not_configured`,
 `provider_executable_missing`, `provider_authentication_required`,
 `provider_resolution_failed`, `plaintext_not_allowed`,
-`reference_scheme_unknown`, `timeout`. Automation should match on codes, never
+`reference_scheme_unknown`, `module_not_materialized`, `timeout`. Automation
+should match on codes, never
 on message prose; renaming or removing a code bumps `schema_version`.
 
 ### `codefly version`

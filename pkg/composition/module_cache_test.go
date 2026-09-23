@@ -556,3 +556,59 @@ func TestGitWorkTreeContaining(t *testing.T) {
 		t.Fatalf("a directory in no repository must resolve to nothing, got %q", got)
 	}
 }
+
+// The read-only half of materialization is what `codefly doctor workspace`
+// reports from, and ResolveComposedModuleDir is how the commands that read a
+// composed module's tree get at it. Both must see a declared git resolution the
+// same way `run` does: unmaterialized on a fresh workspace, materialized — into
+// the clone cache, with no verified package involved — after one resolution,
+// and unmaterialized again once the clone is gone from disk.
+func TestUnmaterializedModulesAndResolveComposedModuleDirFollowADeclaredGitResolution(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	// The module sits at the repository root: the committed reference the
+	// workspace file declares names no `module:` subpath.
+	source := initModuleRepo(t, "", "v0.0.1")
+	ctx := context.Background()
+
+	workspaceDir := t.TempDir()
+	writeSolutionWorkspaceWithResolution(t, workspaceDir, source, "v0.0.1", "git")
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, workspaceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	missing, err := UnmaterializedModules(ctx, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) != 1 || missing[0].Name != "saas" || missing[0].MissingPath != "" {
+		t.Fatalf("fresh workspace: unmaterialized = %+v, want saas with no path", missing)
+	}
+
+	dir, err := ResolveComposedModuleDir(ctx, workspace, workspace.Modules[0])
+	if err != nil {
+		t.Fatalf("a declared git resolution must materialize on first resolution: %v", err)
+	}
+	if !underDir(mustCacheRoot(t), dir) {
+		t.Fatalf("resolved to %q, outside the clone cache", dir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, resources.ModuleConfigurationName)); err != nil {
+		t.Fatalf("resolved directory is not a module: %v", err)
+	}
+	if missing, err = UnmaterializedModules(ctx, workspace); err != nil || len(missing) != 0 {
+		t.Fatalf("after resolution: unmaterialized = %+v, %v; want none", missing, err)
+	}
+
+	// The clone vanished from under the overlay: the module is declared, was
+	// materialized, and is not now — and the vanished path is named.
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	missing, err = UnmaterializedModules(ctx, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) != 1 || missing[0].Name != "saas" || missing[0].MissingPath != dir {
+		t.Fatalf("after deleting the clone: unmaterialized = %+v, want saas at %s", missing, dir)
+	}
+}

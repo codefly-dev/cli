@@ -62,7 +62,7 @@ func resolveRunPins(ctx context.Context) error {
 	if pinsAlreadyResolved {
 		return nil
 	}
-	return common.ResolvePinnedModulesForRun(ctx)
+	return common.ResolvePinnedModules(ctx)
 }
 
 func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {

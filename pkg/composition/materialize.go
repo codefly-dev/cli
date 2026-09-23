@@ -333,6 +333,98 @@ func EnsurePinnedModules(ctx context.Context, workspace *resources.Workspace) er
 	return err
 }
 
+// materializationState is what every read of "is this workspace materialized?"
+// starts from: the overlay core will resolve against, the receipts recorded
+// beside it, the cache roots in force now, and the workspace's own committed
+// resolution declarations. Loaded once per question rather than per module.
+type materializationState struct {
+	overlay   *resources.LocalOverlay
+	receipts  map[string]*ResolutionReceipt
+	roots     moduleCacheRoots
+	declared  map[string]WorkspaceResolution
+	recordDir string
+}
+
+func loadMaterializationState(ctx context.Context, workspace *resources.Workspace) (*materializationState, error) {
+	overlay, err := resources.LoadLocalOverlay(ctx, workspace.Dir())
+	if err != nil {
+		return nil, fmt.Errorf("cannot load local overlay: %w", err)
+	}
+	recordDir := workspace.Dir()
+	if dir := NearestOverlayDir(workspace.Dir()); dir != "" {
+		recordDir = dir
+	}
+	receipts, err := LoadResolutionReceipts(recordDir)
+	if err != nil {
+		return nil, fmt.Errorf("cannot load %s: %w", ResolutionRecordName, err)
+	}
+	roots, err := moduleCacheRootsFor(workspace.Dir())
+	if err != nil {
+		return nil, err
+	}
+	declared, err := LoadModuleResolutions(workspace.Dir())
+	if err != nil {
+		return nil, err
+	}
+	return &materializationState{overlay: overlay, receipts: receipts, roots: roots, declared: declared, recordDir: recordDir}, nil
+}
+
+// UnmaterializedModule is a composed pinned module core cannot load as a local
+// checkout on this machine right now. MissingPath is set when the overlay does
+// select a materialization for it but that directory is gone or empty; empty
+// when nothing has ever been materialized for it (no overlay path at all, or an
+// entry that names a strategy — `git: true`, `pinned: true`, service overrides
+// only — rather than a location).
+type UnmaterializedModule struct {
+	Name        string
+	MissingPath string
+}
+
+// UnmaterializedModules names every composed pinned module that the next
+// module load would refuse: nothing about it is materialized, or what was is
+// gone. It is the read-only half of EnsurePinnedModules — the same ownership
+// rule (pinnedManaged) decides which modules are the CLI's to materialize, and
+// nothing is pulled or written — so a command that must not write, `codefly
+// doctor workspace`, can say precisely which modules a materializing command
+// has yet to pull instead of relaying core's refusal to load them.
+//
+// It is deliberately narrower than pinnedRequestsAnswered: a materialization
+// that answers a different request than the workspace makes now, or one that
+// sits under a cache root no longer in force, still loads — it is stale, not
+// absent — and is reported as such by the caller rather than here.
+func UnmaterializedModules(ctx context.Context, workspace *resources.Workspace) ([]UnmaterializedModule, error) {
+	state, err := loadMaterializationState(ctx, workspace)
+	if err != nil {
+		return nil, err
+	}
+	var missing []UnmaterializedModule
+	for _, ref := range workspace.Modules {
+		var directive *resources.ModuleResolveDirective
+		if state.overlay != nil {
+			directive = state.overlay.Resolve[ref.Name]
+		}
+		receipt := state.receipts[ref.Name]
+		if !pinnedManaged(ref, directive, receipt.ResolvedPath(), state.roots.owned...) {
+			continue
+		}
+		if directive == nil || directive.Path == "" {
+			missing = append(missing, UnmaterializedModule{Name: ref.Name})
+			continue
+		}
+		// A relative overlay path is relative to the file that holds it, which
+		// is how core resolves it; checked the same way so a workspace-relative
+		// materialization is not misread from whatever the working directory is.
+		path := directive.Path
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(state.recordDir, path)
+		}
+		if !dirPopulated(path) {
+			missing = append(missing, UnmaterializedModule{Name: ref.Name, MissingPath: path})
+		}
+	}
+	return missing, nil
+}
+
 // pinnedRequestsAnswered reports whether every composed pinned module is already
 // materialized for the request the workspace makes now. It needs no network and
 // pulls nothing: the receipt records which request its path answered, so this is
@@ -348,26 +440,11 @@ func EnsurePinnedModules(ctx context.Context, workspace *resources.Workspace) er
 // overlay `path`/`worktree` of their own — is governed by no committed version,
 // so it is never what makes a workspace unanswered.
 func pinnedRequestsAnswered(ctx context.Context, workspace *resources.Workspace) (bool, error) {
-	overlay, err := resources.LoadLocalOverlay(ctx, workspace.Dir())
-	if err != nil {
-		return false, fmt.Errorf("cannot load local overlay: %w", err)
-	}
-	recordDir := workspace.Dir()
-	if dir := NearestOverlayDir(workspace.Dir()); dir != "" {
-		recordDir = dir
-	}
-	receipts, err := LoadResolutionReceipts(recordDir)
-	if err != nil {
-		return false, fmt.Errorf("cannot load %s: %w", ResolutionRecordName, err)
-	}
-	roots, err := moduleCacheRootsFor(workspace.Dir())
+	state, err := loadMaterializationState(ctx, workspace)
 	if err != nil {
 		return false, err
 	}
-	declared, err := LoadModuleResolutions(workspace.Dir())
-	if err != nil {
-		return false, err
-	}
+	overlay, receipts, roots, declared := state.overlay, state.receipts, state.roots, state.declared
 	for _, ref := range workspace.Modules {
 		var directive *resources.ModuleResolveDirective
 		if overlay != nil {

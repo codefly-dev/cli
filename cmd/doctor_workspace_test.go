@@ -294,6 +294,66 @@ func TestDoctorWorkspaceDroppedGitResolutionIsFlaggedAgain(t *testing.T) {
 	requireCode(t, report, codeModuleTrustMissing, "fail")
 }
 
+// A fresh checkout of a workspace whose module is composed by source+version has
+// no overlay yet, and the doctor never writes one. It must say exactly that —
+// which module, and which commands materialize it — and skip the service-scoped
+// checks it cannot perform, rather than relay core's "pinned modules are pulled
+// by the CLI, not loadable as a local checkout" out of the service load as if
+// the manifests were broken.
+func TestDoctorWorkspaceReportsAModuleNotYetMaterialized(t *testing.T) {
+	dir := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: solution\nlayout: modules\nmodule-resolution:\n    saas: git\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	diag := requireCode(t, report, codeModuleNotMaterialized, "fail")
+	if !strings.Contains(diag.Message, `module "saas" is declared but not materialized yet`) {
+		t.Fatalf("diagnostic should say precisely what is missing: %+v", diag)
+	}
+	for _, want := range []string{"codefly run", "codefly deploy gitops render"} {
+		if !strings.Contains(diag.Remediation, want) {
+			t.Fatalf("remediation should name %s: %+v", want, diag)
+		}
+	}
+	for _, check := range report.Checks {
+		if strings.Contains(check.Message, "not loadable as a local checkout") {
+			t.Fatalf("core's refusal must not be relayed as a diagnostic: %+v", check)
+		}
+		if check.Name == "services" {
+			t.Fatalf("the service-scoped checks must be skipped, got %+v", check)
+		}
+	}
+	if report.Status != readinessStatusNotReady {
+		t.Fatalf("status = %q, want not_ready", report.Status)
+	}
+
+	// The same reading when the overlay selects a materialization that has since
+	// been deleted: the module is declared, was materialized, and is not now.
+	gone := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":         "name: solution\nlayout: modules\nmodule-resolution:\n    saas: git\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+		"codefly.local.yaml":             "resolve:\n    saas:\n        path: clone\n",
+		composition.ResolutionRecordName: "resolved:\n    saas:\n        source: owner/saas\n        requested: \"0.1.0\"\n        mode: declared-git\n        version: v0.1.0\n        path: clone\n",
+	})
+	report = runReadiness(t, workspaceReadinessOptions{dir: gone})
+	diag = requireCode(t, report, codeModuleNotMaterialized, "fail")
+	if !strings.Contains(diag.Message, filepath.Join(gone, "clone")) {
+		t.Fatalf("diagnostic should name the vanished materialization: %+v", diag)
+	}
+
+	// And once materialized (as any materializing command leaves it), the
+	// diagnostic is gone and the service-scoped checks run.
+	materialized := writeTestWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":         "name: solution\nlayout: modules\nmodule-resolution:\n    saas: git\nmodules:\n    - name: saas\n      source: owner/saas\n      version: \"0.1.0\"\n",
+		"codefly.local.yaml":             "resolve:\n    saas:\n        path: clone\n",
+		composition.ResolutionRecordName: "resolved:\n    saas:\n        source: owner/saas\n        requested: \"0.1.0\"\n        mode: declared-git\n        version: v0.1.0\n        path: clone\n",
+		"clone/module.codefly.yaml":      "name: saas\n",
+	})
+	report = runReadiness(t, workspaceReadinessOptions{dir: materialized})
+	requireNoCode(t, report, codeModuleNotMaterialized)
+	if findCheck(report, "services") == nil {
+		t.Fatalf("service-scoped checks should run once materialized: %s", reportJSON(t, report))
+	}
+}
+
 // An unsupported resolution value is a manifest error, not a key to ignore:
 // ignored, it would read as "this module resolves verified" and send the reader
 // to fix module-trust for a package that does not exist.

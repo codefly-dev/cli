@@ -33,7 +33,7 @@ var DeployCmd = &cobra.Command{
 			return fmt.Errorf("cannot initialize platform client: %w", err)
 		}
 
-		workspace, err := common.LoadWorkspace(ctx)
+		workspace, err := common.LoadWorkspaceWithPinnedModules(ctx)
 		if err != nil {
 			return err
 		}

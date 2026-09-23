@@ -17,6 +17,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// loadGitOpsModule is how every gitops verb finds the module it acts on. It
+// materializes the workspace's composed pinned modules first: a CI render
+// always starts from a fresh checkout with no codefly.local.yaml, where the
+// module named on the command line is exactly what core refuses to load until
+// the CLI has pulled it — the same materialization `codefly run` performs, with
+// the same cache, receipts and overlay, and free once it has happened.
+var loadGitOpsModule = common.LoadRequiredModuleWithPinnedModulesE
+
 var GitOpsCmd = &cobra.Command{
 	Use:   "gitops",
 	Short: "Render, publish, observe, and recover reviewed GitOps promotions",
@@ -29,7 +37,7 @@ var gitOpsRenderCmd = &cobra.Command{
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
-		workspace, module, err := common.LoadRequiredModuleE(ctx, args)
+		workspace, module, err := loadGitOpsModule(ctx, args)
 		if err != nil {
 			return err
 		}
@@ -58,7 +66,7 @@ var gitOpsSnapshotCmd = &cobra.Command{
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
-		workspace, module, err := common.LoadRequiredModuleE(ctx, args)
+		workspace, module, err := loadGitOpsModule(ctx, args)
 		if err != nil {
 			return err
 		}
@@ -84,7 +92,7 @@ var gitOpsPlanCmd = &cobra.Command{
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
-		workspace, module, err := common.LoadRequiredModuleE(ctx, args)
+		workspace, module, err := loadGitOpsModule(ctx, args)
 		if err != nil {
 			return err
 		}
@@ -105,7 +113,7 @@ var gitOpsPublishCmd = &cobra.Command{
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
-		workspace, module, err := common.LoadRequiredModuleE(ctx, args)
+		workspace, module, err := loadGitOpsModule(ctx, args)
 		if err != nil {
 			return err
 		}
@@ -157,7 +165,7 @@ var gitOpsObserveCmd = &cobra.Command{
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
-		workspace, module, err := common.LoadRequiredModuleE(ctx, args)
+		workspace, module, err := loadGitOpsModule(ctx, args)
 		if err != nil {
 			return err
 		}
@@ -196,7 +204,7 @@ var gitOpsRollbackCmd = &cobra.Command{
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
-		workspace, module, err := common.LoadRequiredModuleE(ctx, args)
+		workspace, module, err := loadGitOpsModule(ctx, args)
 		if err != nil {
 			return err
 		}

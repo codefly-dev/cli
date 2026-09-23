@@ -195,7 +195,7 @@ func resolveTestPins(ctx context.Context) error {
 	if pinsAlreadyResolved {
 		return nil
 	}
-	return common.ResolvePinnedModulesForRun(ctx)
+	return common.ResolvePinnedModules(ctx)
 }
 
 // testEnvironment resolves the environment this test flow runs in. It mirrors

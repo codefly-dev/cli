@@ -44,7 +44,7 @@ var RunCmd = &cobra.Command{
 
 		cli.Init()
 		defer services.ClearAgents()
-		workspace, err := common.LoadWorkspace(ctx)
+		workspace, err := common.LoadWorkspaceWithPinnedModules(ctx)
 		if err != nil {
 			return err
 		}

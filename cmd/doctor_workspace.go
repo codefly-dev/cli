@@ -50,6 +50,7 @@ const (
 	codeModuleUnverified           = "module_unverified"
 	codeModuleResolutionGit        = "module_resolution_git"
 	codeModuleResolutionStale      = "module_resolution_stale"
+	codeModuleNotMaterialized      = "module_not_materialized"
 	codeModuleCheckoutVersionDrift = "module_checkout_version_drift"
 	codeServiceOverrideActive      = "service_override_active"
 	codeServiceOverrideUnresolved  = "service_override_unresolved"
@@ -128,6 +129,7 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	checkVendoredPins(ctx, ws, report)
 	checkModuleTrust(ctx, ws, report)
 	checkServiceOverrides(ctx, ws, report)
+	materialized := checkModulesMaterialized(ctx, ws, report)
 
 	env := checkEnvironment(ws, opts.env, report)
 	if env == nil {
@@ -137,6 +139,15 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	checkProviderBindings(ctx, ws, env, report)
 
 	resolvers, unavailable := checkSecretProviders(env, report)
+
+	// Everything from here loads the workspace's services, which core refuses
+	// for a composed module nobody has materialized on this machine. The
+	// diagnostic above already names each such module and the command that
+	// pulls it; relaying core's refusal on top would report the same condition
+	// a second time, worded as a manifest error.
+	if !materialized {
+		return report
+	}
 
 	scope, requiredBy := checkScope(ctx, ws, opts.service, report)
 	if scope == nil {
@@ -501,6 +512,34 @@ func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *work
 				fmt.Sprintf("add module-trust.repositories/signers for %q to %s, or set resolve.%s.git: true in %s to use the unverified git clone", ref.Name, resources.WorkspaceConfigurationName, ref.Name, resources.LocalOverlayConfigurationName))
 		}
 	}
+}
+
+// checkModulesMaterialized reports every composed pinned module that no
+// materializing command has pulled onto this machine yet, and returns whether
+// the service-scoped checks can run at all. The doctor never writes, so it
+// cannot materialize the module itself the way `run`, `deploy gitops render`
+// or `ci` would; what it can do is say exactly that, with the command that
+// does, instead of relaying core's "pinned modules are pulled by the CLI, not
+// loadable as a local checkout" out of the service load. A materialization the
+// overlay still selects but which is gone from disk is the same condition with
+// a different cause, and is named with the path that vanished.
+func checkModulesMaterialized(ctx context.Context, ws *resources.Workspace, report *workspaceReadinessReport) bool {
+	missing, err := composition.UnmaterializedModules(ctx, ws)
+	if err != nil {
+		// The files this reads are owned and reported by checkModuleTrust; a
+		// second diagnostic for the same unreadable file adds nothing.
+		return true
+	}
+	for _, module := range missing {
+		message := fmt.Sprintf("module %q is declared but not materialized yet: nothing has pulled it into the module cache on this machine, so its services cannot be loaded", module.Name)
+		if module.MissingPath != "" {
+			message = fmt.Sprintf("module %q is declared but not materialized yet: %s selects %s for it, and that directory is gone or empty", module.Name, resources.LocalOverlayConfigurationName, module.MissingPath)
+		}
+		report.add(codeModuleNotMaterialized, "materialization of "+module.Name, "fail",
+			message,
+			fmt.Sprintf("run `codefly run service <service>` or `codefly deploy gitops render <module> --env <env>` once: either materializes every declared module and records it in %s, which doctor never writes; the service-scoped checks are skipped until then", resources.LocalOverlayConfigurationName))
+	}
+	return len(missing) == 0
 }
 
 // unverifiedRemediation names the file the opt-out actually lives in, so the
