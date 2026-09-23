@@ -329,7 +329,9 @@ platform (`linux/amd64`) and build env exactly as a module render does, and on
 success prints the pushed image's immutable digest (`Image digest sha256:…`).
 Pass `--stand-alone` to build only the named service. To run the amd64 build on a
 native/remote builder instead of local QEMU emulation, point it at a preexisting
-docker buildx builder with `--builder <name>`:
+docker buildx builder with `--builder <name>`. A service importing a private Go
+module builds with the host's `GOPRIVATE` and netrc, see [Private Go modules in
+image builds](#private-go-modules-in-image-builds):
 
 ```bash
 codefly build service front --env production --push --stand-alone --builder amd64-remote
@@ -2232,6 +2234,50 @@ in-agent image builds must acknowledge cache execution or fail explicitly. Pushe
 BuildKit progress reports cache hits, transfer sizes and import/export durations
 when available; image-build wall time is logged and CI reporting retains the
 operation's total duration. Provider workflows continue invoking Codefly.
+
+### Private Go modules in image builds
+
+A Go service that imports a module the public proxy does not serve — a private
+repository — needs two things at `go mod download` inside the image build that a
+host-side `go build` gets from the shell: the module paths to fetch directly and
+a credential. Every image build the CLI runs (`codefly build service`, `codefly
+build module`, `codefly ci build`, the build phase of `codefly ci run`, and a
+module render such as `codefly deploy gitops render`) takes both from the host
+environment, exactly as the go tool does on the host:
+
+- `GOPRIVATE` is passed as the `GOPRIVATE` build argument, which the agent's
+  Dockerfile declares as `ARG GOPRIVATE` before its dependency download. It is
+  taken verbatim; a recipe that declares `GOPRIVATE` in its own build arguments
+  keeps its value.
+- The credential is a [netrc](https://go.dev/doc/faq#git_https) file mounted as
+  the BuildKit secret `netrc` at `/root/.netrc` for the dependency download only.
+  It is the first of `CODEFLY_BUILD_NETRC` (explicit; the build fails up front if
+  the file is missing), `NETRC` (the go tool's own override) and `~/.netrc`. A
+  secret is mounted for one `RUN` and never becomes a build argument, an `ENV`, a
+  layer or a cache entry, so the token is absent from the image and from the
+  registry build cache.
+
+Neither is declared in a manifest: whether a module path is private is a
+property of how the building machine reaches it (the same service builds
+through an authenticated `GOPROXY` with neither), and the committed recipe
+archive stays free of one machine's environment. When neither is set the build
+is unchanged, so a consumer rebuilding a vendored recipe by hand adds the same
+two flags: `--build-arg GOPRIVATE=… --secret id=netrc,src=…`.
+
+```sh
+# A developer whose `go build` already reaches the private module.
+GOPRIVATE=github.com/example-org/* codefly build service api
+
+# A CI job: write the netrc from the job token; git credential helpers set up
+# on the runner (e.g. `gh auth setup-git`) are not visible inside BuildKit.
+printf 'machine github.com login x-access-token password %s\n' "$GITHUB_TOKEN" > "$RUNNER_TEMP/netrc"
+export GOPRIVATE=github.com/example-org/* CODEFLY_BUILD_NETRC="$RUNNER_TEMP/netrc"
+codefly ci run --phase build
+```
+
+Only agents whose recipe declares the mount and the argument use them
+(`go-grpc` recipes newer than 0.1.44); an older recipe ignores the secret and reports the
+build argument as unconsumed.
 
 ### Startup container cleanup ownership
 

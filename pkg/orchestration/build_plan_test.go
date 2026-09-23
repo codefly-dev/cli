@@ -192,13 +192,13 @@ func TestBuildCacheSeparatesServicesRecipesAndWorkspaces(t *testing.T) {
 		require.Equal(t, cache.Exports, scoped.Exports)
 		require.Equal(t, cache.Mode, scoped.Mode)
 		recipe := &builderv0.DockerBuildRecipe{Image: "ghcr.io/org/app:v1", Platforms: []string{"linux/amd64"}}
-		args, err := cachedBuildxArgs(recipe, "Dockerfile", ".", false, false, "", "", scoped)
+		args, err := cachedBuildxArgs(recipe, "Dockerfile", ".", false, false, "", "", scoped, privateModuleBuild{})
 		require.NoError(t, err)
 		export := args[slices.Index(args, "--cache-to")+1]
 		require.False(t, references[export], "cache export collides for %v", identity)
 		references[export] = true
 		recipe.Image = "ghcr.io/org/app:v2"
-		again, err := cachedBuildxArgs(recipe, "Dockerfile", ".", false, false, "", "", scopedBuildCache(cache, identity[0], identity[1], identity[2]))
+		again, err := cachedBuildxArgs(recipe, "Dockerfile", ".", false, false, "", "", scopedBuildCache(cache, identity[0], identity[1], identity[2]), privateModuleBuild{})
 		require.NoError(t, err)
 		require.Equal(t, export, again[slices.Index(again, "--cache-to")+1])
 	}

@@ -135,12 +135,21 @@ func (b *Builder) buildRecipe(
 	}
 
 	cache := scopedBuildCache(b.world.BuildCache, b.world.Workspace.Name, b.instance.Unique(), recipe.GetName())
-	args, err := cachedBuildxArgs(recipe, dockerfile, contextDir, shouldPush, multiArch, metadataFile, builderName, cache)
+	// A service that imports a private Go module can only be built with the
+	// host's GOPRIVATE and a credential; both come from the environment of the
+	// machine building, resolved per build so a CI job's exported netrc is seen.
+	private, err := resolvePrivateModuleBuild(os.LookupEnv, os.UserHomeDir)
+	if err != nil {
+		return w.Wrapf(err, "cannot resolve private module credentials for %s", b.instance.Unique())
+	}
+	args, err := cachedBuildxArgs(recipe, dockerfile, contextDir, shouldPush, multiArch, metadataFile, builderName, cache, private)
 	if err != nil {
 		return err
 	}
 	started := time.Now()
-	w.Info("building image", wool.Field("image", recipe.GetImage()), wool.Field("push", shouldPush))
+	// Log that a credential is mounted, never where it is or what it holds.
+	w.Info("building image", wool.Field("image", recipe.GetImage()), wool.Field("push", shouldPush),
+		wool.Field("goprivate", private.GoPrivate), wool.Field("netrc_mounted", private.Netrc != ""))
 	command := exec.CommandContext(ctx, "docker", args...)
 	command.Stdout = os.Stderr
 	command.Stderr = os.Stderr
