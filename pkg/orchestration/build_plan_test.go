@@ -150,15 +150,38 @@ func TestRecipeContextRootFollowsTheInventoryScope(t *testing.T) {
 	serviceDir := "/work/services/store"
 	outputDir := "/work/.codefly/build/mod/store/builder"
 
-	tree := &builderv0.DockerBuildPlan{Scope: builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE}
+	recipes := []*builderv0.DockerBuildRecipe{{Dockerfile: "builder/Dockerfile", Dockerignore: "builder/dockerignore"}}
+	assembled := []*builderv0.RecipeFile{
+		{Path: "builder/Dockerfile"}, {Path: "builder/dockerignore"},
+		{Path: "code/go.mod"}, {Path: "code/_replace/services/lib/lib.go"},
+	}
+	tree := &builderv0.DockerBuildPlan{
+		Scope:   builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE,
+		Recipes: recipes, Files: assembled,
+	}
 	require.Equal(t, outputDir, recipeContextRoot(serviceDir, outputDir, tree))
 
-	emitted := &builderv0.DockerBuildPlan{Scope: builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_EMITTED}
+	emitted := &builderv0.DockerBuildPlan{
+		Scope:   builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_EMITTED,
+		Recipes: recipes,
+		Files:   []*builderv0.RecipeFile{{Path: "builder/Dockerfile"}, {Path: "builder/dockerignore"}},
+	}
 	require.Equal(t, serviceDir, recipeContextRoot(serviceDir, outputDir, emitted))
+
+	// TRANSITION: an agent published before the distinction was enforced
+	// declares TREE while emitting only its build definition. That inventory
+	// says, truthfully, that it assembled no context, so the context stays the
+	// service directory and the agent keeps working until it is corrected.
+	mislabelled := &builderv0.DockerBuildPlan{
+		Scope:   builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE,
+		Recipes: recipes,
+		Files:   []*builderv0.RecipeFile{{Path: "builder/Dockerfile"}, {Path: "builder/dockerignore"}},
+	}
+	require.Equal(t, serviceDir, recipeContextRoot(serviceDir, outputDir, mislabelled))
 
 	// An unspecified scope never reaches here — VerifyDockerBuildPlan rejects
 	// it — and it must not be read as a licence to build the recipe tree.
-	unspecified := &builderv0.DockerBuildPlan{}
+	unspecified := &builderv0.DockerBuildPlan{Recipes: recipes, Files: assembled}
 	require.Equal(t, serviceDir, recipeContextRoot(serviceDir, outputDir, unspecified))
 }
 

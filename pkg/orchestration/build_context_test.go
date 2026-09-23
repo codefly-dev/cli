@@ -169,7 +169,12 @@ func TestRecipeContextRootSelectsWhatBuildxReceives(t *testing.T) {
 		{"emitted builds the service directory", builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_EMITTED, serviceRoot, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := recipeContextRoot(serviceRoot, recipeRoot, &builderv0.DockerBuildPlan{Scope: tc.scope})
+			plan := &builderv0.DockerBuildPlan{
+				Scope:   tc.scope,
+				Recipes: []*builderv0.DockerBuildRecipe{recipe},
+				Files:   []*builderv0.RecipeFile{{Path: "Dockerfile"}, {Path: "code/_replace/keep.go"}},
+			}
+			root := recipeContextRoot(serviceRoot, recipeRoot, plan)
 			require.Equal(t, tc.root, root)
 
 			contextDir, err := recipeContext(root, recipe)

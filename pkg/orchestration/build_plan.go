@@ -86,10 +86,42 @@ func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *bui
 // ignore — and the application's inputs are the service's own tree, so the
 // context stays the service directory.
 func recipeContextRoot(serviceDir, outputDir string, plan *builderv0.DockerBuildPlan) string {
-	if plan.GetScope() == builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE {
+	if plan.GetScope() == builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE && assembledAContext(plan) {
 		return outputDir
 	}
 	return serviceDir
+}
+
+// assembledAContext reports whether a TREE plan's inventory holds anything
+// beyond the recipes' own build definitions.
+//
+// TRANSITION. A TREE claim says the emitter "assembled the whole destination",
+// and this reads that claim against what the inventory actually lists: an
+// inventory of nothing but Dockerfiles and ignore files states, truthfully,
+// that no context was assembled, and the application's inputs are still the
+// service's own tree. Agents published before the distinction was enforced
+// declared TREE while emitting exactly that — service-go-grpc did until 0.1.46
+// — and a consumer pins its agent version per service, so those emitters stay
+// live long after the corrected agent ships. Without this, every one of them
+// fails with `failed to compute cache key: "/code": not found`.
+//
+// Remove it once no released agent declares TREE for a build definition alone.
+// It narrows nothing for a real TREE emitter: a plan that carried a context in
+// lists those files too.
+func assembledAContext(plan *builderv0.DockerBuildPlan) bool {
+	definitions := make(map[string]struct{}, 2*len(plan.GetRecipes()))
+	for _, recipe := range plan.GetRecipes() {
+		definitions[recipe.GetDockerfile()] = struct{}{}
+		if ignore := recipe.GetDockerignore(); ignore != "" {
+			definitions[ignore] = struct{}{}
+		}
+	}
+	for _, file := range plan.GetFiles() {
+		if _, isDefinition := definitions[file.GetPath()]; !isDefinition {
+			return true
+		}
+	}
+	return false
 }
 
 // buildRecipe builds and (when pushing) publishes one recipe. It refuses to push
