@@ -99,6 +99,7 @@ func renderModuleTree(
 			}
 		}
 		outputs := make(map[string]*builderv0.DeploymentOutput)
+		selfEndpoints := make(map[string]map[string]string)
 		destinations := moduleStageDestinations(workspace, module, stage)
 		for _, service := range roots {
 			if err := renderServiceFlow(
@@ -117,9 +118,18 @@ func renderModuleTree(
 					}
 				},
 				nil,
+				func(rendered map[string]map[string]string) {
+					for unique, variables := range rendered {
+						selfEndpoints[unique] = variables
+					}
+				},
 			); err != nil {
 				return fmt.Errorf("render service %s: %w", service.Name, err)
 			}
+		}
+		injections, err := deriveRenderInjections(ctx, workspace, selfEndpoints, sink)
+		if err != nil {
+			return err
 		}
 		unitDir, _ := unitDirectory(UnitKindService)
 		for _, service := range services {
@@ -159,6 +169,7 @@ func renderModuleTree(
 					service,
 					env,
 					scope,
+					injections.forService(module.Name, service.Name),
 				); projectErr != nil {
 					return projectErr
 				}
@@ -303,6 +314,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 			return err
 		}
 		var graph map[string]*resources.Service
+		var selfEndpoints map[string]map[string]string
 		if err := renderServiceFlow(
 			ctx,
 			workspace,
@@ -315,10 +327,15 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 			serviceRenderDestinations(stage),
 			nil,
 			func(services map[string]*resources.Service) { graph = services },
+			func(rendered map[string]map[string]string) { selfEndpoints = rendered },
 		); err != nil {
 			return err
 		}
-		return projectRenderedServiceConfiguration(ctx, stage, workspace, env, graph)
+		injections, err := deriveRenderInjections(ctx, workspace, selfEndpoints, sink)
+		if err != nil {
+			return err
+		}
+		return projectRenderedServiceConfiguration(ctx, stage, workspace, env, graph, injections)
 
 	})
 }
@@ -391,6 +408,7 @@ func renderServiceFlow(
 	destination func(*resources.Module, *resources.Service) string,
 	record func(map[string]*builderv0.DeploymentOutput),
 	recordServices func(map[string]*resources.Service),
+	recordSelfEndpoints func(map[string]map[string]string),
 ) (result error) {
 	if err := selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
 		return err
@@ -426,6 +444,9 @@ func renderServiceFlow(
 	}
 	if record != nil {
 		record(flow.DeploymentOutputs())
+	}
+	if recordSelfEndpoints != nil {
+		recordSelfEndpoints(flow.SelfEndpoints(ctx))
 	}
 	if recordServices != nil {
 		services := map[string]*resources.Service{}

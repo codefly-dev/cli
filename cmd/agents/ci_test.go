@@ -2,7 +2,9 @@ package agents
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -660,5 +662,41 @@ func runGitForAgentCITest(t *testing.T, dir string, args ...string) {
 	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+}
+
+// The SBOM step runs syft inside agent CI children, and syft never reads the
+// active docker context: without DOCKER_HOST it dials the default socket, which
+// does not exist on OrbStack or colima hosts.
+func TestAgentCIChildEnvironmentCarriesTheResolvedDockerHost(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"currentContext":"orbstack"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta := filepath.Join(dir, "contexts", "meta", fmt.Sprintf("%x", sha256.Sum256([]byte("orbstack"))))
+	if err := os.MkdirAll(meta, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(meta, "meta.json"), []byte(`{"Endpoints":{"docker":{"Host":"unix:///orbstack/docker.sock"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DOCKER_CONFIG", dir)
+	t.Setenv("DOCKER_HOST", "")
+	t.Setenv("DOCKER_CONTEXT", "")
+
+	for name, environment := range map[string][]string{
+		"agent CI child":   agentCIChildEnvironment("/isolated/codefly-home", "CI=1"),
+		"agent build":      agentBuildChildEnvironment("/isolated/codefly-home", "/checkout/go.work"),
+		"conformance gate": agentConformanceEnvironment("/isolated/codefly-home"),
+	} {
+		var hosts []string
+		for _, entry := range environment {
+			if key, value, ok := strings.Cut(entry, "="); ok && key == "DOCKER_HOST" {
+				hosts = append(hosts, value)
+			}
+		}
+		if !reflect.DeepEqual(hosts, []string{"unix:///orbstack/docker.sock"}) {
+			t.Fatalf("%s: DOCKER_HOST = %v, want the active context endpoint only", name, hosts)
+		}
 	}
 }

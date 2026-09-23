@@ -99,7 +99,7 @@ func TestModuleRenderKeepsEachModulesStoreInItsOwnNamespace(t *testing.T) {
 	writeServiceTreeReferencingKeys(t, own, env.Name, env.ModuleNamespace(workspace, host.Name), store.Name, []string{"PASSWORD"})
 	writeServiceTreeReferencingKeys(t, foreign, env.Name, env.ModuleNamespace(workspace, other.Name), store.Name, []string{"PASSWORD"})
 
-	require.NoError(t, projectServiceConfiguration(t.Context(), own, store, env, moduleScope(env, workspace, host.Name)))
+	require.NoError(t, projectServiceConfiguration(t.Context(), own, store, env, moduleScope(env, workspace, host.Name), serviceInjection{}))
 
 	// The module under render projected its own namespace and its own remote key.
 	projected := readExternalSecret(t, filepath.Join(own, "overlays", env.Name, "external-secret.yaml"))

@@ -949,6 +949,29 @@ func (flow *Flow) DeploymentOutputs() map[string]*builderv0.DeploymentOutput {
 	return outputs
 }
 
+// SelfEndpoints returns, per deployed service unique, the self-endpoint
+// carriers derived from the network mappings its deploy recorded — the
+// in-cluster address (container access) a render resolves, never the listen
+// address. Core's builder emits the same carrier into the ConfigMap from v0.5.6;
+// the render projects these after the fact so an agent built on an older core
+// still carries it, and refuses a builder value that disagrees.
+func (flow *Flow) SelfEndpoints(ctx context.Context) map[string]map[string]string {
+	endpoints := map[string]map[string]string{}
+	if flow == nil || flow.world == nil || flow.world.SharedState == nil {
+		return endpoints
+	}
+	for _, unique := range flow.OrderedServiceUniques() {
+		mappings, ok := flow.world.SharedState.GetNetworkMappingsFromUnique(unique)
+		if !ok {
+			continue
+		}
+		if variables := SelfEndpointEnvironmentVariables(ctx, mappings, resources.NewContainerNetworkAccess()); len(variables) > 0 {
+			endpoints[unique] = variables
+		}
+	}
+	return endpoints
+}
+
 // OriginImageDigest returns the immutable registry manifest digest of the image
 // the origin service pushed during a build, or "" when nothing was pushed. It is
 // how a targeted single-service build+push returns the digest to its caller.

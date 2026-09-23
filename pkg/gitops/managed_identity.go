@@ -14,9 +14,14 @@ import (
 	"github.com/codefly-dev/core/resources"
 )
 
-func projectServiceConfiguration(ctx context.Context, root string, service *resources.Service, env *environments.Environment, scope unitScope) error {
+func projectServiceConfiguration(ctx context.Context, root string, service *resources.Service, env *environments.Environment, scope unitScope, injection serviceInjection) error {
 	if err := projectConfigurationValues(ctx, root, service.Name, env); err != nil {
 		return fmt.Errorf("project service %s configuration: %w", service.Name, err)
+	}
+	// Before the secret projection: the derived secretKeyRefs are part of what
+	// the ExternalSecret must materialize.
+	if err := projectServiceInjection(ctx, root, service.Name, env, injection); err != nil {
+		return fmt.Errorf("project service %s derived configuration: %w", service.Name, err)
 	}
 	if _, err := projectServiceSecrets(root, scope, service.Name, env.Name, env.ServiceSecrets); err != nil {
 		return fmt.Errorf("project service %s secrets: %w", service.Name, err)
@@ -27,7 +32,10 @@ func projectServiceConfiguration(ctx context.Context, root string, service *reso
 	if err := projectManagedIdentity(ctx, root, service, env, scope.Namespace); err != nil {
 		return fmt.Errorf("project service %s managed identity: %w", service.Name, err)
 	}
-	return validateProjectedConfiguration(root, service, env, scope)
+	if err := validateProjectedConfiguration(root, service, env, scope); err != nil {
+		return err
+	}
+	return validateProjectedInjection(root, service.Name, env, injection)
 }
 
 // projectManagedIdentity applies only the declared runtime identity, into the
@@ -119,6 +127,7 @@ func projectRenderedServiceConfiguration(
 	workspace *resources.Workspace,
 	env *environments.Environment,
 	graph map[string]*resources.Service,
+	injections renderInjections,
 ) error {
 	modulesRoot := filepath.Join(stage, "modules")
 	moduleEntries, err := os.ReadDir(modulesRoot)
@@ -154,6 +163,7 @@ func projectRenderedServiceConfiguration(
 				service,
 				env,
 				moduleScope(env, workspace, moduleEntry.Name()),
+				injections.forService(moduleEntry.Name(), serviceEntry.Name()),
 			); err != nil {
 
 				return fmt.Errorf("project service %s configuration: %w", serviceEntry.Name(), err)
