@@ -138,6 +138,30 @@ func TestRecipeDockerfileResolvesAndContains(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestRecipeContextRootFollowsTheInventoryScope holds the contract the scope
+// declares. A TREE plan claims every file under the recipe directory because
+// its emitter assembled the whole destination — it copied the build context
+// there — so that directory is what buildx must build: anything the emitter
+// put there (a Go module's filesystem replacement carried in beside it, say)
+// is in the image only if the context is the tree. An EMITTED plan claims only
+// the Dockerfile and ignore file its build wrote, and the application's inputs
+// are the service's own tree, so the context stays the service directory.
+func TestRecipeContextRootFollowsTheInventoryScope(t *testing.T) {
+	serviceDir := "/work/services/store"
+	outputDir := "/work/.codefly/build/mod/store/builder"
+
+	tree := &builderv0.DockerBuildPlan{Scope: builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE}
+	require.Equal(t, outputDir, recipeContextRoot(serviceDir, outputDir, tree))
+
+	emitted := &builderv0.DockerBuildPlan{Scope: builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_EMITTED}
+	require.Equal(t, serviceDir, recipeContextRoot(serviceDir, outputDir, emitted))
+
+	// An unspecified scope never reaches here — VerifyDockerBuildPlan rejects
+	// it — and it must not be read as a licence to build the recipe tree.
+	unspecified := &builderv0.DockerBuildPlan{}
+	require.Equal(t, serviceDir, recipeContextRoot(serviceDir, outputDir, unspecified))
+}
+
 func TestRecipeContextResolvesAndContains(t *testing.T) {
 	serviceDir := "/work/services/store"
 
