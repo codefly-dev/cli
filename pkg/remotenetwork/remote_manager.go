@@ -35,10 +35,17 @@ func (m *RemoteManager) Stop() {
 	m.pairingsWG.Wait()
 }
 
+// GetNamespace is the namespace a service's workloads bind to and are addressed
+// in. A declared environment namespace resolves per module through
+// Environment.ModuleNamespace, from the service's own module: the address
+// synthesized for a dependency in another module therefore names the provider's
+// namespace, never the consumer's. Undeclared, a per-module namespace is
+// synthesized from the workspace, module and environment names.
 func (m *RemoteManager) GetNamespace(_ context.Context, env *environments.Environment, workspace *resources.Workspace, service *resources.ServiceIdentity) (string, error) {
-	if env.Namespace != "" {
-		return env.Namespace, nil
+	if namespace := env.ModuleNamespace(workspace, service.Module); namespace != "" {
+		return namespace, nil
 	}
+
 	if workspace.Layout == resources.LayoutKindFlat {
 		return fmt.Sprintf("%s-%s", workspace.Name, env.Name), nil
 	}

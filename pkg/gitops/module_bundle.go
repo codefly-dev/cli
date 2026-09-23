@@ -57,7 +57,7 @@ func renderModuleBundle(
 	if err := copyModuleInputTree(module.Dir(), stagedModule); err != nil {
 		return fmt.Errorf("stage module bundle input: %w", err)
 	}
-	moduleWorkspaceData, err := encodeTransportNeutralModuleWorkspace(workspace)
+	moduleWorkspaceData, err := encodeTransportNeutralModuleWorkspace(workspace, module.Name)
 	if err != nil {
 		return fmt.Errorf("prepare transport-neutral module workspace: %w", err)
 	}
@@ -73,7 +73,8 @@ func renderModuleBundle(
 	}
 
 	root := filepath.Join(stagedModule, "deployment", "kustomize")
-	_, selected, err := loadSelectedModuleBundle(root, module.Name, environment, graph)
+	namespace := environment.ModuleNamespace(workspace, module.Name)
+	_, selected, err := loadSelectedModuleBundle(root, module.Name, environment, namespace, graph)
 	if err != nil {
 		return err
 	}
@@ -88,7 +89,7 @@ func renderModuleBundle(
 	if err := copyEnvironmentBootstrap(root, environment.Name, destination); err != nil {
 		return fmt.Errorf("copy selected module bundle: %w", err)
 	}
-	if _, err := projectResourceQuota(destination, environment.Name, environment.Namespace, environment.ResourceQuota); err != nil {
+	if _, err := projectResourceQuota(destination, environment.Name, namespace, environment.ResourceQuota); err != nil {
 		return fmt.Errorf("project module namespace resource quota: %w", err)
 	}
 	if err := validateTransportNeutralModuleBundle(destination); err != nil {
@@ -163,7 +164,12 @@ type transportNeutralModuleCluster struct {
 	Kind string `yaml:"kind,omitempty"`
 }
 
-func encodeTransportNeutralModuleWorkspace(workspace *resources.Workspace) ([]byte, error) {
+// encodeTransportNeutralModuleWorkspace projects the workspace a module bundle
+// generator is handed. Each environment carries the namespace this module renders
+// into (Environment.ModuleNamespace), not the environment's own: the generator
+// stamps every namespaced object and the Namespace itself from that one value,
+// and loadSelectedModuleBundle then holds its bundle to the same value.
+func encodeTransportNeutralModuleWorkspace(workspace *resources.Workspace, module string) ([]byte, error) {
 	declared, err := environments.FromWorkspace(workspace)
 	if err != nil {
 		return nil, err
@@ -182,7 +188,7 @@ func encodeTransportNeutralModuleWorkspace(workspace *resources.Workspace) ([]by
 			NamingScope:          environment.NamingScope,
 			Fixture:              environment.Fixture,
 			ConfigurationProfile: environment.ConfigurationProfile,
-			Namespace:            environment.Namespace,
+			Namespace:            environment.ModuleNamespace(workspace, module),
 			Ingress:              environment.Ingress,
 			ManagedServices:      environment.ManagedServices,
 		}
@@ -228,10 +234,14 @@ func transportNeutralModuleEnvironment(stage string) ([]string, error) {
 	), nil
 }
 
+// loadSelectedModuleBundle reads the generator's bundle and holds its selected
+// environment to the render's own target: the module's namespace (the one the
+// generator was handed) and the environment's cluster kind.
 func loadSelectedModuleBundle(
 	root string,
 	module string,
 	environment *environments.Environment,
+	namespace string,
 	graph []InventoryUnit,
 ) (moduleBundle, moduleBundleEnvironment, error) {
 	data, err := os.ReadFile(filepath.Join(root, "bundle.json"))
@@ -260,20 +270,21 @@ func loadSelectedModuleBundle(
 	if selected == nil {
 		return moduleBundle{}, moduleBundleEnvironment{}, fmt.Errorf("module bundle has no environment %q", environment.Name)
 	}
-	if environment.Namespace == "" {
+	if namespace == "" {
 		return moduleBundle{}, moduleBundleEnvironment{}, fmt.Errorf(
 			"environment %q requires an explicit namespace for GitOps rendering",
 			environment.Name,
 		)
 	}
-	if selected.Namespace != environment.Namespace {
+	if selected.Namespace != namespace {
 		return moduleBundle{}, moduleBundleEnvironment{}, fmt.Errorf(
 			"module bundle environment %q namespace is %q, expected %q",
 			environment.Name,
 			selected.Namespace,
-			environment.Namespace,
+			namespace,
 		)
 	}
+
 	if environment.Cluster == nil || environment.Cluster.Kind == "" {
 		return moduleBundle{}, moduleBundleEnvironment{}, fmt.Errorf(
 			"environment %q requires an explicit cluster kind for GitOps rendering",

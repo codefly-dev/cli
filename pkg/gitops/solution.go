@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -64,7 +63,8 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 		return RenderResult{}, err
 	}
 	env := req.Environment
-	namespace, err := solutionNamespace(req.Name, env.Namespace)
+	namespace, err := solutionNamespace(req.Name, env, req.Workspace)
+
 	if err != nil {
 		return RenderResult{}, err
 	}
@@ -154,10 +154,6 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 // destination — so the executor cannot choose it and must render into this one.
 const SolutionNamespaceValue = "codefly.namespace"
 
-// dns1123Label is the RFC 1123 label grammar Kubernetes enforces on a namespace
-// name: lowercase alphanumerics and '-', beginning and ending alphanumeric.
-var dns1123Label = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-
 // solutionNamespace derives a solution's own Kubernetes namespace from its deploy
 // id, isolating each solution from the platform host namespace and from sibling
 // solutions. The id is only a validated path component upstream (it names the
@@ -170,18 +166,25 @@ var dns1123Label = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 //     the AppProject destination unvalidated, so an id like "My_Solution" would
 //     otherwise sail through render and publish and fail only when ArgoCD applies
 //     it — a late, opaque error far from the deploy command.
-//   - It must differ from the host namespace. A solution renders and owns a
-//     cluster-scoped Namespace object that its ArgoCD Application prunes under the
-//     promotable sync policy (Automated.Prune); were that the shared platform
-//     namespace, the solution would own it and, on any later namespace change,
-//     prune it — cascade-deleting the platform. A solution is isolated by
-//     definition, so this is a hard error, not a warning.
-func solutionNamespace(name, hostNamespace string) (string, error) {
-	if len(name) > 63 || !dns1123Label.MatchString(name) {
-		return "", fmt.Errorf("solution %q is not a valid Kubernetes namespace: it must be a lowercase RFC 1123 label (a-z, 0-9, '-') of at most 63 characters", name)
+//   - It must differ from every host namespace: the environment's declared one
+//     and, when the workspace composes several modules, each module's derived
+//     "<namespace>-<module>" (environments.Environment.ModuleNamespace). A
+//     solution renders and owns a cluster-scoped Namespace object that its ArgoCD
+//     Application prunes under the promotable sync policy (Automated.Prune); were
+//     that a shared platform namespace, the solution would own it and, on any
+//     later namespace change, prune it — cascade-deleting the platform. A
+//     solution is isolated by definition, so this is a hard error, not a warning.
+func solutionNamespace(name string, env *environments.Environment, workspace *resources.Workspace) (string, error) {
+	if err := environments.ValidateNamespaceName("solution", name); err != nil {
+		return "", err
 	}
-	if name == hostNamespace {
-		return "", fmt.Errorf("solution %q would render into the host namespace %q; a solution must be isolated in its own namespace, not the shared platform namespace", name, hostNamespace)
+	if name == env.Namespace {
+		return "", fmt.Errorf("solution %q would render into the host namespace %q; a solution must be isolated in its own namespace, not the shared platform namespace", name, env.Namespace)
+	}
+	for _, module := range workspace.Modules {
+		if module != nil && name == env.ModuleNamespace(workspace, module.Name) {
+			return "", fmt.Errorf("solution %q would render into the host namespace %q of module %q; a solution must be isolated in its own namespace, not a shared platform namespace", name, env.ModuleNamespace(workspace, module.Name), module.Name)
+		}
 	}
 	return name, nil
 }

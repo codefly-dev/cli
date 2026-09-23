@@ -498,3 +498,43 @@ func TestRemoteManagerRenderedExternalWithoutDNSSharesCanonicalPortAllocation(t 
 	require.Equal(t, uint32(standards.Port(standards.GRPC)), mappings[0].Instances[0].GetPort())
 	require.NotEqual(t, mappings[0].Instances[0].GetPort(), mappings[1].Instances[0].GetPort())
 }
+
+// A workspace composing several modules gives each module its own namespace,
+// "<namespace>-<module>", and the address synthesized for a service names the
+// namespace of the module that owns it — so a consumer in module A is handed
+// "store.<ns>-B.svc.cluster.local" for a provider in module B, never its own.
+func TestRemoteManagerScopesNamespacePerModuleWhenWorkspaceComposesSeveral(t *testing.T) {
+	manager, err := NewRemoteManager(context.Background(), remoteDNSManager{})
+	require.NoError(t, err)
+	environment := &environments.Environment{Name: "staging", Namespace: "platform"}
+	workspace := &resources.Workspace{
+		Name:   "acme",
+		Layout: resources.LayoutKindModules,
+		Modules: []*resources.ModuleReference{
+			{Name: "saas"}, {Name: "documents"}, {Name: "runtime"},
+		},
+	}
+
+	for module, want := range map[string]string{
+		"saas":      "platform-saas",
+		"documents": "platform-documents",
+		"runtime":   "platform-runtime",
+	} {
+		namespace, err := manager.GetNamespace(context.Background(), environment, workspace, &resources.ServiceIdentity{Module: module, Name: "store"})
+		require.NoError(t, err)
+		require.Equal(t, want, namespace, "module %s", module)
+	}
+
+	// The provider's own mappings — the ones its consumers are handed.
+	provider := &resources.ServiceIdentity{Module: "documents", Name: "store"}
+	endpoint := &basev0.Endpoint{Module: "documents", Service: "store", Name: "grpc", Api: standards.GRPC}
+	mappings, err := manager.GenerateNetworkMappings(context.Background(), environment, workspace, provider, []*basev0.Endpoint{endpoint})
+	require.NoError(t, err)
+	assertInClusterMapping(t, mappings, "store.platform-documents.svc.cluster.local", uint32(standards.Port(standards.GRPC)))
+
+	// A single-module workspace keeps the environment namespace as is.
+	single := &resources.Workspace{Name: "acme", Layout: resources.LayoutKindModules, Modules: []*resources.ModuleReference{{Name: "saas"}}}
+	namespace, err := manager.GetNamespace(context.Background(), environment, single, provider)
+	require.NoError(t, err)
+	require.Equal(t, "platform", namespace)
+}

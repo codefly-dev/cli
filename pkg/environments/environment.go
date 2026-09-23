@@ -317,8 +317,14 @@ func (env *Environment) WorkloadIdentity(service string) *EnvironmentWorkloadIde
 // secretKeyRefs materializes in-cluster without any secret value entering git,
 // state, or manifests.
 type EnvironmentServiceSecrets struct {
-	SecretStore EnvironmentSecretStoreReference            `yaml:"secret-store"`
-	Services    map[string]EnvironmentServiceSecretMapping `yaml:"services,omitempty"`
+	SecretStore EnvironmentSecretStoreReference `yaml:"secret-store"`
+	// Defaults is the environment-wide template a key resolves through when
+	// neither the service's RemoteKeys nor its own Defaults name it. One
+	// declaration covers every service instead of the same template repeated
+	// once per service; see SecretTemplatePlaceholders for what it may
+	// substitute. Absent, an unmatched key falls back to "<service>/<key>".
+	Defaults *EnvironmentSecretRemoteRef                `yaml:"defaults,omitempty"`
+	Services map[string]EnvironmentServiceSecretMapping `yaml:"services,omitempty"`
 }
 
 // EnvironmentServiceSecretMapping overrides how one service resolves its
@@ -334,9 +340,9 @@ type EnvironmentServiceSecretMapping struct {
 	// still accepted and means {key: "key"}.
 	RemoteKeys map[string]EnvironmentSecretRemoteRef `yaml:"remote-keys,omitempty"`
 	// Defaults applies to every key of this service not listed in RemoteKeys: Key
-	// and Property may contain "{key}" (replaced by the secret key) and "{service}"
-	// (replaced by the service name); absent, codefly's default "<service>/<key>"
-	// applies.
+	// and Property may carry any of SecretTemplatePlaceholders. Absent, the
+	// environment-wide EnvironmentServiceSecrets.Defaults applies, and absent that
+	// too, codefly's default "<service>/<key>".
 	Defaults *EnvironmentSecretRemoteRef `yaml:"defaults,omitempty"`
 	// Template is evaluated by ESO, never by the CLI. It preserves producer
 	// transformations without exposing the resolved secret to the renderer.
@@ -450,6 +456,9 @@ func (s *EnvironmentServiceSecrets) Validate() error {
 	if err := s.SecretStore.validate("service-secrets secret-store"); err != nil {
 		return err
 	}
+	if err := s.Defaults.validate("service-secrets"); err != nil {
+		return err
+	}
 	for name, mapping := range s.Services {
 		if strings.TrimSpace(name) == "" {
 			return fmt.Errorf("service-secrets: service name cannot be empty")
@@ -483,19 +492,70 @@ func (s *EnvironmentServiceSecrets) Validate() error {
 				return fmt.Errorf("service-secrets service %q: remote-key %q resolves to an empty path", name, key)
 			}
 		}
-		if mapping.Defaults != nil {
-			if strings.TrimSpace(mapping.Defaults.Key) == "" {
-				return fmt.Errorf("service-secrets service %q: defaults key cannot be empty", name)
-			}
-			if err := validateSecretTemplate(mapping.Defaults.Key); err != nil {
-				return fmt.Errorf("service-secrets service %q defaults key: %w", name, err)
-			}
-			if err := validateSecretTemplate(mapping.Defaults.Property); err != nil {
-				return fmt.Errorf("service-secrets service %q defaults property: %w", name, err)
-			}
+		if err := mapping.Defaults.validate(fmt.Sprintf("service-secrets service %q", name)); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// validate checks a defaults template: a non-empty key and only placeholders
+// the projection substitutes. A nil receiver is a valid "not declared" state.
+func (ref *EnvironmentSecretRemoteRef) validate(label string) error {
+	if ref == nil {
+		return nil
+	}
+	if strings.TrimSpace(ref.Key) == "" {
+		return fmt.Errorf("%s: defaults key cannot be empty", label)
+	}
+	if err := validateSecretTemplate(ref.Key); err != nil {
+		return fmt.Errorf("%s defaults key: %w", label, err)
+	}
+	if err := validateSecretTemplate(ref.Property); err != nil {
+		return fmt.Errorf("%s defaults property: %w", label, err)
+	}
+	return nil
+}
+
+// SecretScope names the coordinates a service-secrets defaults template can
+// substitute. Module and Workspace are what let two modules that each ship a
+// service of the same name resolve to different remote secrets: a template of
+// "{service}/{key}" alone would send both modules' "store" to the same entry.
+type SecretScope struct {
+	Workspace string
+	Module    string
+	Service   string
+}
+
+// RemoteRef locates one secret key of a service in the remote store. An explicit
+// per-service RemoteKeys entry wins; else the service's own Defaults template;
+// else the environment-wide Defaults template; else the "<service>/<key>" store
+// path. Property rides along with a template so a store of structured documents
+// can name the field inside the remote entry. A nil receiver resolves the
+// fallback path, the same as an environment that declares nothing.
+func (s *EnvironmentServiceSecrets) RemoteRef(scope SecretScope, key string) EnvironmentSecretRemoteRef {
+	if s != nil {
+		mapping := s.Services[scope.Service]
+		if remote, ok := mapping.RemoteKeys[key]; ok {
+			return remote
+		}
+		for _, defaults := range []*EnvironmentSecretRemoteRef{mapping.Defaults, s.Defaults} {
+			if defaults == nil {
+				continue
+			}
+			substitute := strings.NewReplacer(
+				"{workspace}", scope.Workspace,
+				"{module}", scope.Module,
+				"{service}", scope.Service,
+				"{key}", key,
+			)
+			return EnvironmentSecretRemoteRef{
+				Key:      substitute.Replace(defaults.Key),
+				Property: substitute.Replace(defaults.Property),
+			}
+		}
+	}
+	return EnvironmentSecretRemoteRef{Key: scope.Service + "/" + key}
 }
 
 // Validate checks the structural invariants of a declared service-config block.
@@ -582,8 +642,14 @@ func (env *Environment) serviceScopedNames() map[string][]string {
 // secretTemplatePlaceholder matches any "{…}" token in a defaults template.
 var secretTemplatePlaceholder = regexp.MustCompile(`\{[^{}]*\}`)
 
+// SecretTemplatePlaceholders are the tokens a service-secrets defaults template
+// may carry, each replaced by RemoteRef from the SecretScope of the key being
+// resolved: the workspace name, the module name, the service name, and the
+// secret key itself.
+var SecretTemplatePlaceholders = []string{"{workspace}", "{module}", "{service}", "{key}"}
+
 // validateSecretTemplate rejects any placeholder in a defaults template other
-// than the two the projection substitutes ({service}, {key}). An unrecognized
+// than the ones the projection substitutes (SecretTemplatePlaceholders). An unrecognized
 // token — a misspelled placeholder name, say — is left un-substituted, so it
 // would render literally into the ExternalSecret's remoteRef and pass every
 // render check (codefly's single-brace syntax is invisible to the manifest
@@ -592,11 +658,58 @@ var secretTemplatePlaceholder = regexp.MustCompile(`\{[^{}]*\}`)
 // workspace-load error.
 func validateSecretTemplate(template string) error {
 	for _, token := range secretTemplatePlaceholder.FindAllString(template, -1) {
-		if token != "{service}" && token != "{key}" {
-			return fmt.Errorf("unknown placeholder %q (only {service} and {key} are supported)", token)
+		if !slices.Contains(SecretTemplatePlaceholders, token) {
+			return fmt.Errorf("unknown placeholder %q (only %s are supported)", token, strings.Join(SecretTemplatePlaceholders, ", "))
 		}
 	}
 	return nil
+}
+
+// dns1123Label is the RFC 1123 label grammar Kubernetes enforces on a namespace
+// name: lowercase alphanumerics and '-', beginning and ending alphanumeric.
+var dns1123Label = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// ValidateNamespaceName rejects a name Kubernetes would refuse as a namespace: it
+// must be a lowercase RFC 1123 label of at most 63 characters. Kind names what
+// the name is for in the error ("solution", "module namespace").
+func ValidateNamespaceName(kind, name string) error {
+	if len(name) > 63 || !dns1123Label.MatchString(name) {
+		return fmt.Errorf("%s %q is not a valid Kubernetes namespace: it must be a lowercase RFC 1123 label (a-z, 0-9, '-') of at most 63 characters", kind, name)
+	}
+	return nil
+}
+
+// ModuleNamespace is the Kubernetes namespace a module's workloads bind to in
+// this environment, for the workspace that composes it.
+//
+// A workspace composing a single module — a flat workspace, or a modules layout
+// with one reference — renders it into the declared Namespace unchanged. A
+// workspace composing several modules gives each its own "<namespace>-<module>":
+// modules are independent service graphs that routinely ship a service of the
+// same name (a "store", say), and one namespace cannot hold two Services, two
+// StatefulSets or two "cm-store" ConfigMaps of that name, nor answer
+// "store.<namespace>.svc.cluster.local" for both. The suffix is derived, not
+// declared, so every projection that names the namespace — manifests, render
+// record, Argo destinations, quota, ExternalSecrets, cross-module addresses —
+// agrees by construction.
+//
+// An environment that declares no Namespace returns "" so each caller keeps its
+// own derivation (the remote network manager already synthesizes one per module).
+func (env *Environment) ModuleNamespace(workspace *resources.Workspace, module string) string {
+	if env == nil || env.Namespace == "" {
+		return ""
+	}
+	if !ComposesSeveralModules(workspace) {
+		return env.Namespace
+	}
+	return env.Namespace + "-" + module
+}
+
+// ComposesSeveralModules reports whether the workspace composes more than one
+// module, the condition under which ModuleNamespace suffixes the environment's
+// namespace. A flat workspace embeds its services directly and composes one.
+func ComposesSeveralModules(workspace *resources.Workspace) bool {
+	return workspace != nil && workspace.Layout != resources.LayoutKindFlat && len(workspace.Modules) > 1
 }
 
 // Environment is a configuration for an environment

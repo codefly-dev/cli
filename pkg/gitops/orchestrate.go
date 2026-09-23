@@ -53,11 +53,16 @@ func renderModuleTree(
 	if gitopsPath != "" {
 		ownedPath = filepath.ToSlash(filepath.Join(gitopsPath, ownedPath))
 	}
+	// The module's namespace, not the environment's: a workspace composing
+	// several modules gives each its own, and the render record, the Argo
+	// destinations derived from it, the quota and the secret projections all
+	// take it from here.
+	scope := moduleScope(env, workspace, module.Name)
 	options := &RenderOptions{
 		Destination: destination,
 		Module:      module.Name,
 		Environment: env.Name,
-		Namespace:   env.Namespace,
+		Namespace:   scope.Namespace,
 		AppProject:  project,
 		Promotable:  true,
 		OwnedPath:   ownedPath,
@@ -133,7 +138,7 @@ func renderModuleTree(
 					filepath.Join(stage, unitDir, service.Name),
 					service.Name,
 					env.Name,
-					env.Namespace,
+					scope.Namespace,
 					managedService.SecretReferences,
 				)
 				if bundleErr != nil {
@@ -155,6 +160,7 @@ func renderModuleTree(
 					filepath.Join(stage, unitDir, service.Name),
 					service,
 					env,
+					scope,
 				); projectErr != nil {
 					return projectErr
 				}
@@ -190,7 +196,7 @@ func renderModuleTree(
 		if err := copyEnvironmentBootstrap(static, env.Name, bootstrap); err != nil {
 			return fmt.Errorf("copy module environment bootstrap: %w", err)
 		}
-		if _, err := projectResourceQuota(bootstrap, env.Name, env.Namespace, env.ResourceQuota); err != nil {
+		if _, err := projectResourceQuota(bootstrap, env.Name, scope.Namespace, env.ResourceQuota); err != nil {
 			return fmt.Errorf("project module namespace resource quota: %w", err)
 		}
 		return nil
@@ -290,7 +296,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		Module:      module.Name,
 		Unit:        service.Name,
 		Environment: env.Name,
-		Namespace:   env.Namespace,
+		Namespace:   env.ModuleNamespace(workspace, module.Name),
 		AppProject:  project,
 		Promotable:  true,
 		Package:     pkg,
@@ -314,7 +320,8 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		); err != nil {
 			return err
 		}
-		return projectRenderedServiceConfiguration(ctx, stage, env, graph)
+		return projectRenderedServiceConfiguration(ctx, stage, workspace, env, graph)
+
 	})
 }
 
