@@ -86,10 +86,47 @@ func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *bui
 // ignore — and the application's inputs are the service's own tree, so the
 // context stays the service directory.
 func recipeContextRoot(serviceDir, outputDir string, plan *builderv0.DockerBuildPlan) string {
-	if plan.GetScope() == builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE {
+	if plan.GetScope() == builderv0.RecipeInventoryScope_RECIPE_INVENTORY_SCOPE_TREE && planAssembledAContext(plan) {
 		return outputDir
 	}
 	return serviceDir
+}
+
+// planAssembledAContext reports whether a TREE plan's inventory holds anything
+// beyond the recipes' own Dockerfiles and ignore files.
+//
+// Core states two things that only agree for an emitter that actually built a
+// context. DockerBuildRecipe.context is "relative to the SERVICE directory —
+// not to output_directory", which is every emitter's documented path; while
+// RECIPE_INVENTORY_SCOPE_TREE describes an emitter that "assembled the whole
+// destination — typically because it copied the build context there and a
+// recipe builds '.'", whose context cannot be the service directory because the
+// service directory is precisely what it does not contain.
+//
+// The inventory says which of the two a plan is, and it says so in the plan's
+// own terms rather than by sniffing the filesystem: a plan that wrote only its
+// Dockerfile and its ignore file assembled nothing, so its context is the
+// service directory the field documents. This also keeps every agent that
+// declared TREE before the distinction was enforced building exactly as it did
+// — those plans write two files and nothing else — so the fleet does not have
+// to be swept before this ships. Remove it once no released agent declares TREE
+// without assembling, and the field and the scope can stop disagreeing.
+func planAssembledAContext(plan *builderv0.DockerBuildPlan) bool {
+	control := make(map[string]bool, 2*len(plan.GetRecipes()))
+	for _, recipe := range plan.GetRecipes() {
+		if path := recipe.GetDockerfile(); path != "" {
+			control[filepath.ToSlash(filepath.Clean(path))] = true
+		}
+		if path := recipe.GetDockerignore(); path != "" {
+			control[filepath.ToSlash(filepath.Clean(path))] = true
+		}
+	}
+	for _, file := range plan.GetFiles() {
+		if !control[filepath.ToSlash(filepath.Clean(file.GetPath()))] {
+			return true
+		}
+	}
+	return false
 }
 
 // buildRecipe builds and (when pushing) publishes one recipe. It refuses to push
