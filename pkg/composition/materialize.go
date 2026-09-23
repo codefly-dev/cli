@@ -130,7 +130,7 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 	// than per module: it is one side-parse of workspace.codefly.yaml, and a
 	// malformed declaration must fail the whole materialization rather than
 	// resolve some modules and not others.
-	declared, err := LoadModuleResolutions(workspace.Dir())
+	declared, err := EffectiveModuleResolutions(workspace)
 	if err != nil {
 		return err
 	}
@@ -153,7 +153,7 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 			delete(receipts, ref.Name)
 			recorded = true
 		}
-		resolved, err := materializeModule(ctx, workspace.Dir(), ref, roots.clone, mode)
+		resolved, err := materializeModule(ctx, workspace.ModuleDeclarationDir(ref.Name), ref, roots.clone, mode)
 		if err != nil {
 			if directive == nil || directive.Path == "" {
 				// Nothing was materialized for this module, so nothing stale can be
@@ -220,7 +220,7 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 			changed = true
 		}
 	}
-	serviceChanged, serviceRecorded, serviceUnresolved := materializeServiceOverrides(ctx, workspace.Dir(), workspace.Modules, overlay, receipts, declared, roots)
+	serviceChanged, serviceRecorded, serviceUnresolved := materializeServiceOverrides(ctx, workspace, overlay, receipts, declared, roots)
 	changed = changed || serviceChanged
 	recorded = recorded || serviceRecorded
 	unresolved = append(unresolved, serviceUnresolved...)
@@ -362,7 +362,7 @@ func loadMaterializationState(ctx context.Context, workspace *resources.Workspac
 	if err != nil {
 		return nil, err
 	}
-	declared, err := LoadModuleResolutions(workspace.Dir())
+	declared, err := EffectiveModuleResolutions(workspace)
 	if err != nil {
 		return nil, err
 	}
@@ -1200,10 +1200,10 @@ func serviceModuleRequest(ref *resources.ModuleReference, version string) *resou
 // A service version is the same trust decision a module version is — same
 // package, same `module-trust` requirement, same `git: true` escape — so it goes
 // through materializeModule rather than a route of its own.
-func materializeServiceOverrides(ctx context.Context, workspaceDir string, modules []*resources.ModuleReference, overlay *resources.LocalOverlay, receipts map[string]*ResolutionReceipt, declared map[string]WorkspaceResolution, roots moduleCacheRoots) (bool, bool, []error) {
+func materializeServiceOverrides(ctx context.Context, workspace *resources.Workspace, overlay *resources.LocalOverlay, receipts map[string]*ResolutionReceipt, declared map[string]WorkspaceResolution, roots moduleCacheRoots) (bool, bool, []error) {
 	var changed, recorded bool
 	var unresolved []error
-	for _, ref := range modules {
+	for _, ref := range workspace.Modules {
 		directive := overlay.Resolve[ref.Name]
 		if directive == nil {
 			continue
@@ -1222,7 +1222,7 @@ func materializeServiceOverrides(ctx context.Context, workspaceDir string, modul
 					service, ref.Name, requestedVersionLabel(request.Version)))
 				continue
 			}
-			resolved, err := materializeModule(ctx, workspaceDir, request, roots.clone, moduleMode)
+			resolved, err := materializeModule(ctx, workspace.ModuleDeclarationDir(ref.Name), request, roots.clone, moduleMode)
 			if err != nil {
 				// A service's request lives only on its receipt — the directive that
 				// carried it was replaced by the path it produced — so a previous

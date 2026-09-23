@@ -209,7 +209,7 @@ func checkWorkspace(ctx context.Context, opts workspaceReadinessOptions, report 
 		}
 	}
 
-	ws, err := resources.LoadWorkspaceFromDir(ctx, dir)
+	ws, err := resources.LoadWorkspaceFromDir(composition.WithWorkspaceResolution(ctx, false), dir)
 	if err != nil {
 		report.add(codeWorkspaceInvalid, "workspace", "fail",
 			fmt.Sprintf("cannot load workspace: %v", err),
@@ -462,7 +462,7 @@ func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *work
 			fmt.Sprintf("fix %s in %s", resources.WorkspaceConfigurationName, ws.Dir()))
 		return
 	}
-	declared, err := composition.LoadModuleResolutions(ws.Dir())
+	declared, err := composition.EffectiveModuleResolutions(ws)
 	if err != nil {
 		report.add(codeWorkspaceInvalid, "module resolution", "fail",
 			fmt.Sprintf("cannot read module resolution from %s: %v", resources.WorkspaceConfigurationName, err),
@@ -506,7 +506,7 @@ func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *work
 				unverifiedRemediation(ref.Name, mode))
 			continue
 		}
-		if err := composition.CheckModuleTrustCoverage(ws.Dir(), ref); err != nil {
+		if err := composition.CheckModuleTrustCoverage(ws.ModuleDeclarationDir(ref.Name), ref); err != nil {
 			report.add(codeModuleTrustMissing, "module-trust for "+ref.Name, "fail",
 				fmt.Sprintf("module %q is pinned but not resolvable under module-trust: %v", ref.Name, err),
 				fmt.Sprintf("add module-trust.repositories/signers for %q to %s, or set resolve.%s.git: true in %s to use the unverified git clone", ref.Name, resources.WorkspaceConfigurationName, ref.Name, resources.LocalOverlayConfigurationName))

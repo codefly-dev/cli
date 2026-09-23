@@ -36,7 +36,7 @@ func ResolveComposedModuleDir(ctx context.Context, workspace *resources.Workspac
 	if err = EnsurePinnedModules(ctx, workspace); err != nil {
 		return "", err
 	}
-	reloaded, err := resources.LoadWorkspaceFromDir(ctx, workspace.Dir())
+	reloaded, err := resources.LoadWorkspaceFromDir(WithWorkspaceResolution(ctx, false), workspace.Dir())
 	if err != nil {
 		return "", err
 	}
@@ -46,7 +46,7 @@ func ResolveComposedModuleDir(ctx context.Context, workspace *resources.Workspac
 	if resolution.Kind != resources.ResolutionPinned {
 		return resolution.Dir, nil
 	}
-	pinned, err := ResolvePinnedModule(ctx, workspace.Dir(), ref)
+	pinned, err := ResolvePinnedModule(ctx, workspace.ModuleDeclarationDir(ref.Name), ref)
 	if err != nil {
 		return "", err
 	}

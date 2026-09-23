@@ -2,6 +2,7 @@ package common
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/core/resources"
@@ -25,9 +26,13 @@ import (
 // leaves behind for them is the overlay on disk, not an object. Callers that
 // need the workspace itself use LoadWorkspaceWithPinnedModules.
 func ResolvePinnedModules(ctx context.Context) error {
-	workspace, err := LoadWorkspace(ctx)
+	ctx = composition.WithWorkspaceResolution(ctx, true)
+	workspace, err := resources.FindWorkspaceUp(ctx)
 	if err != nil {
 		return err
+	}
+	if workspace == nil {
+		return fmt.Errorf("no workspace found")
 	}
 	if err = composition.EnsurePinnedModules(ctx, workspace); err != nil {
 		return err

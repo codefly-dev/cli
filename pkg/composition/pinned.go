@@ -574,14 +574,17 @@ type rawModuleTrust struct {
 type rawWorkspaceModuleTrustProbe struct {
 	ModuleTrust      *rawModuleTrust   `yaml:"module-trust"`
 	ModuleResolution map[string]string `yaml:"module-resolution"`
-	Modules          []struct {
-		Name    string `yaml:"name"`
-		Package string `yaml:"package"`
-		// Resolution catches the per-module spelling of the declaration so it can
-		// be refused rather than ignored. It is *not* where the declaration lives:
-		// see LoadModuleResolutions.
-		Resolution string `yaml:"resolution"`
-	} `yaml:"modules"`
+	Modules          []rawModulePolicy `yaml:"modules"`
+	Solutions        []rawModulePolicy `yaml:"solutions"`
+}
+
+type rawModulePolicy struct {
+	Name    string `yaml:"name"`
+	Package string `yaml:"package"`
+	// Resolution catches the per-module spelling of the declaration so it can
+	// be refused rather than ignored. It is *not* where the declaration lives:
+	// see LoadModuleResolutions.
+	Resolution string `yaml:"resolution"`
 }
 
 // loadWorkspaceProbe reads workspace.codefly.yaml and side-parses the keys core
@@ -600,6 +603,7 @@ func loadWorkspaceProbe(workspaceDir string) (*rawWorkspaceModuleTrustProbe, err
 	if err := yaml.Unmarshal(data, &probe); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", resources.WorkspaceConfigurationName, err)
 	}
+	probe.Modules = append(probe.Modules, probe.Solutions...)
 	return &probe, nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/composition"
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/tui"
 )
@@ -28,6 +29,7 @@ func LoadActiveContextNonInteractive(ctx context.Context) (*ActiveContext, error
 }
 
 func loadActiveContext(ctx context.Context, interactive bool) (*ActiveContext, error) {
+	ctx = composition.WithWorkspaceResolution(ctx, false)
 	active := &ActiveContext{}
 
 	workspace, err := resources.FindWorkspaceUp(ctx)
@@ -214,6 +216,7 @@ func LoadModule(ctx context.Context) (*resources.Module, error) {
 // process. RunE commands should prefer this over Workspace/RequireWorkspace so
 // Cobra and deferred cleanup can observe failures.
 func LoadWorkspace(ctx context.Context) (*resources.Workspace, error) {
+	ctx = composition.WithWorkspaceResolution(ctx, false)
 	workspace, err := resources.FindWorkspaceUp(ctx)
 	if err != nil {
 		return nil, err

@@ -15,6 +15,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/environment"
 	providercmd "github.com/codefly-dev/cli/cmd/provider"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/core/actions/actions"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
@@ -79,7 +80,7 @@ func init() {
 // Execute runs the root command and returns any failure to the process boundary.
 func Execute() error {
 	configureSubcommandValidation(RootCmd)
-	return RootCmd.Execute()
+	return RootCmd.ExecuteContext(composition.WithWorkspaceResolution(context.Background(), false))
 }
 
 func configureSubcommandValidation(command *cobra.Command) {
