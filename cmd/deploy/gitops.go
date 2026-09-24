@@ -59,6 +59,7 @@ var gitOpsRenderCmd = &cobra.Command{
 		cli.Info("Digest %s", result.Inventory.Digest)
 		printSizingReport(result.Sizing)
 		printElidedNamespaces(result.ElidedNamespaces)
+		printClearedDev(result.ClearedDev)
 		return nil
 	},
 }
@@ -89,6 +90,7 @@ var gitOpsSnapshotCmd = &cobra.Command{
 		cli.Info("Digest %s", result.Inventory.Digest)
 		printSizingReport(result.Sizing)
 		printElidedNamespaces(result.ElidedNamespaces)
+		printClearedDev(result.ClearedDev)
 		return nil
 	},
 }

@@ -40,7 +40,7 @@ func renderModuleTree(
 	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
 		return RenderResult{}, err
 	}
-	destination := filepath.Join(workspace.Dir(), "deployments", "modules", module.Name)
+	destination := moduleRenderDestination(workspace, module.Name)
 	ownedPath := filepath.ToSlash(filepath.Join("deployments", "modules", module.Name))
 	gitopsPath := ""
 	if env.Gitops != nil {

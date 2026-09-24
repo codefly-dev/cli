@@ -111,10 +111,17 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err := os.WriteFile(filepath.Join(owned, InventoryFilename), canonical, 0o644); err != nil { //nolint:gosec
 		return RenderResult{}, fmt.Errorf("write render inventory: %w", err)
 	}
+	// A dev deployment is only ever cleared by a render; read what the tree
+	// being replaced carried so the caller can say so. An unreadable previous
+	// inventory is not this render's concern: the tree is replaced whole.
+	var cleared []InventoryDevDeployment
+	if previous, previousErr := LoadInventory(destination); previousErr == nil {
+		cleared = previous.Dev
+	}
 	if err := replaceOwnedTree(owned, destination); err != nil {
 		return RenderResult{}, err
 	}
-	return RenderResult{Path: destination, Inventory: inventory, Sizing: sizing, ElidedNamespaces: elided}, nil
+	return RenderResult{Path: destination, Inventory: inventory, Sizing: sizing, ElidedNamespaces: elided, ClearedDev: cleared}, nil
 }
 
 func LoadInventory(root string) (Inventory, error) {
