@@ -109,3 +109,64 @@ data:
 		}
 	}
 }
+
+// A carrier name embeds module, service and endpoint names; the guard must
+// classify the configuration key it carries, never that structure. These are
+// the exact names v0.1.167 refused while rendering real modules: the endpoint
+// addresses of a service called auth-gateway.
+func TestRenderGuardIgnoresCarrierStructure(t *testing.T) {
+	public := []string{
+		"CODEFLY__ENDPOINT__SAAS__AUTH_GATEWAY__GRPC__GRPC",
+		"CODEFLY__ENDPOINT__SAAS__AUTH_GATEWAY__REST__REST",
+		"CODEFLY__SELF_ENDPOINT__SAAS__AUTH_GATEWAY__GRPC__GRPC",
+		"CODEFLY__SERVICE_CONFIGURATION__SAAS__AUTH_GATEWAY__IDENTITY__AUTHORITY_ISSUER",
+		"AUTHORITY_ISSUER",
+	}
+	credential := []string{
+		"JWT_SECRET", "WEBHOOK_SECRET", "ACCESS_TOKEN",
+		"CODEFLY__SERVICE_CONFIGURATION__SAAS__AUTH_GATEWAY__IDENTITY__CLIENT_SECRET",
+		"CODEFLY__SERVICE_CONFIGURATION__SAAS__AUTH_GATEWAY__IDENTITY__ACCESS_TOKEN",
+		"CODEFLY__SERVICE_SECRET_CONFIGURATION__SAAS__AUTH_GATEWAY__IDENTITY__AUTHORITY_ISSUER",
+	}
+	for _, key := range public {
+		for name, value := range configurationShapes(key) {
+			if err := inspectValue(value, nil, false); err != nil {
+				t.Errorf("%s as %s: refused: %v", key, name, err)
+			}
+			if err := inspectTemplatedValue(value, nil); err != nil {
+				t.Errorf("%s as %s (templated): refused: %v", key, name, err)
+			}
+		}
+	}
+	for _, key := range credential {
+		for name, value := range configurationShapes(key) {
+			err := inspectValue(value, nil, false)
+			if err == nil || !strings.Contains(err.Error(), "credential value") {
+				t.Errorf("%s as %s: want credential refusal, got %v", key, name, err)
+			}
+			err = inspectTemplatedValue(value, nil)
+			if name != "env entry" && (err == nil || !strings.Contains(err.Error(), "credential value")) {
+				t.Errorf("%s as %s (templated): want credential refusal, got %v", key, name, err)
+			}
+		}
+	}
+
+	// End to end, the ConfigMap shape the render refused.
+	manifests := pinnedDeployment + `---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: endpoints
+data:
+  CODEFLY__ENDPOINT__SAAS__AUTH_GATEWAY__GRPC__GRPC: "auth-gateway.saas.svc.cluster.local:8080"
+  CODEFLY__ENDPOINT__SAAS__AUTH_GATEWAY__REST__REST: "http://auth-gateway.saas.svc.cluster.local:8081"
+`
+	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
+		Destination: filepath.Join(t.TempDir(), "owned"), Module: "payments", Environment: "production",
+	}, func(ctx context.Context, root string) error {
+		return os.WriteFile(filepath.Join(root, "manifests.yaml"), []byte(manifests), 0o644)
+	})
+	if err != nil {
+		t.Fatalf("endpoint addresses refused: %v", err)
+	}
+}
