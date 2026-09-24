@@ -307,7 +307,13 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get service configuration")
 	}
 
-	workspaceConfigurations, err := runner.world.workspaceConfigurationsFor(cfgCtx, runner.instance.Service)
+	runtimeContext, err := resources.NewRuntimeContext(runner.runtimeContext)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
+	}
+
+	workspaceConfigurations, err := runner.world.workspaceConfigurationsFor(cfgCtx, runner.instance.Service,
+		dependenciesNetworkMappings, resources.NetworkAccessFromRuntimeContext(runtimeContext))
 	if err != nil {
 		if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
 			w.Warn("timeout waiting for workspace dependencies configurations after 30s; check that dependency services are reachable")
@@ -325,10 +331,6 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get configuration for dependencies")
 	}
 
-	runtimeContext, err := resources.NewRuntimeContext(runner.runtimeContext)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
-	}
 	networkMappings, err := runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env.Runtime(), runner.world.Workspace, runner.instance.Identity, runner.endpoints, runtimeContext)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
@@ -439,14 +441,21 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	return outputProperty, nil
 }
 
-func (world *World) workspaceConfigurationsFor(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error) {
+// workspaceConfigurationsFor resolves the workspace configurations one service
+// receives. ${endpoint:…} references resolve against that service's dependency
+// mappings, in the address family of its access.
+func (world *World) workspaceConfigurationsFor(
+	ctx context.Context, service *resources.Service,
+	dependencyMappings []*basev0.NetworkMapping, access *basev0.NetworkAccess,
+) ([]*basev0.Configuration, error) {
+	manager := world.ConfigurationManager.ForConsumer(dependencyMappings, access)
 	dependencies := make([]string, 0, len(service.WorkspaceConfigurationDependencies))
 	for _, dependency := range service.WorkspaceConfigurationDependencies {
 		if !world.excludedWorkspaceConfigurations[dependency] {
 			dependencies = append(dependencies, dependency)
 		}
 	}
-	declared, err := world.ConfigurationManager.GetWorkspaceDependenciesConfigurations(ctx, dependencies...)
+	declared, err := manager.GetWorkspaceDependenciesConfigurations(ctx, dependencies...)
 	if err != nil {
 		return nil, err
 	}
@@ -456,7 +465,7 @@ func (world *World) workspaceConfigurationsFor(ctx context.Context, service *res
 	// dependency on one of the root's own configurations (e.g. the root service
 	// itself) yields that name in both sets, so union by name to avoid emitting
 	// it twice.
-	root, err := world.ConfigurationManager.GetCompositionRootWorkspaceConfigurations(ctx)
+	root, err := manager.GetCompositionRootWorkspaceConfigurations(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -575,7 +584,15 @@ func (flow *Flow) WorkspaceConfigurationsFor(ctx context.Context, service *resou
 	if flow == nil || flow.world == nil {
 		return nil, nil
 	}
-	return flow.world.workspaceConfigurationsFor(ctx, service)
+	runtimeContext, err := resources.NewRuntimeContext(flow.runtimeContextFor(service))
+	if err != nil {
+		return nil, err
+	}
+	dependencyMappings, err := flow.SharedState.GetDependenciesNetworkMappings(ctx, service)
+	if err != nil {
+		return nil, err
+	}
+	return flow.world.workspaceConfigurationsFor(ctx, service, dependencyMappings, resources.NetworkAccessFromRuntimeContext(runtimeContext))
 }
 
 func (runner *Runner) InitRemote(ctx context.Context) (*OutputProperty, error) {
