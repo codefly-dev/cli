@@ -112,3 +112,68 @@ func TestDependencyPinsRejectInvalidOrUnmatchedSelections(t *testing.T) {
 		require.Error(t, err)
 	}
 }
+
+// A plain `go get` of a dependency bump leaves the old version's go.sum lines
+// behind, and the agent CI's `go mod tidy -diff` gate reds the pin PR. The pin
+// must leave every owned lock exactly as that gate expects.
+func TestPinLeavesEveryOwnedLockTidyAfterStaleBump(t *testing.T) {
+	proxy := t.TempDir()
+	const sdk = "example.test/sdk"
+	for _, version := range []string{"v0.0.1", "v0.0.2"} {
+		publishPinFixture(t, proxy, coreModule, version, "module "+coreModule+"\ngo 1.23\n", "package core\nfunc Value() int { return 42 }\n")
+		publishPinFixture(t, proxy, sdk, version, "module "+sdk+"\ngo 1.23\nrequire "+coreModule+" "+version+"\n",
+			"package sdk\nimport core \""+coreModule+"\"\nfunc Value() int { return core.Value() }\n")
+	}
+	t.Setenv("GOPROXY", (&url.URL{Scheme: "file", Path: filepath.ToSlash(proxy)}).String())
+	t.Setenv("GOPRIVATE", "")
+	t.Setenv("GONOPROXY", "none")
+	t.Setenv("GOSUMDB", "off")
+	t.Setenv("GOFLAGS", "")
+	t.Setenv("GOWORK", "off")
+	t.Setenv("GOMODCACHE", t.TempDir())
+	root := t.TempDir()
+	t.Cleanup(func() { require.NoError(t, runGo(context.Background(), root, "clean", "-modcache")) })
+	base := filepath.Join(root, "base", "code")
+	template := filepath.Join(root, "templates", "factory", "code")
+	source := "import (\n\tcore \"" + coreModule + "\"\n\t\"" + sdk + "\"\n)\nvar Value = core.Value() + sdk.Value()\n"
+	for dir, module := range map[string]string{root: "example.test/agent", base: "example.test/service"} {
+		writePinFixture(t, filepath.Join(dir, "go.mod"), "module "+module+"\ngo 1.23\nrequire (\n"+coreModule+" v0.0.1\n"+sdk+" v0.0.1\n)\n")
+		writePinFixture(t, filepath.Join(dir, "value.go"), "package value\n"+source)
+	}
+	writePinFixture(t, filepath.Join(template, "go.mod.tmpl"), "module {{ .Service.Name.DNSCase }}\ngo 1.23\n")
+	writePinFixture(t, filepath.Join(template, "go.sum.tmpl"), "")
+	ctx, done := common.NewContext()
+	defer done()
+	for _, dir := range []string{root, base} {
+		require.NoError(t, runGo(ctx, dir, "mod", "tidy"))
+		// The bump as it happens by hand: go.sum keeps the v0.0.1 lines.
+		require.NoError(t, runGo(ctx, dir, "get", sdk+"@v0.0.2"))
+		require.Error(t, runGo(ctx, dir, "mod", "tidy", "-diff"), "fixture must start untidy")
+	}
+
+	require.NoError(t, pinCore(ctx, root, "v0.0.2", sdk+"@v0.0.2"))
+	for _, dir := range []string{root, base} {
+		require.NoError(t, runGo(ctx, dir, "mod", "tidy", "-diff"))
+		sum, err := os.ReadFile(filepath.Join(dir, "go.sum"))
+		require.NoError(t, err)
+		require.NotContains(t, string(sum), sdk+" v0.0.1 h1:")
+	}
+	baseSum, err := os.ReadFile(filepath.Join(base, "go.sum"))
+	require.NoError(t, err)
+	templateSum, err := os.ReadFile(filepath.Join(template, "go.sum.tmpl"))
+	require.NoError(t, err)
+	require.Equal(t, baseSum, templateSum)
+}
+
+// The final gate fails loudly on a lock tidy would rewrite.
+func TestVerifyTidyRejectsStaleSum(t *testing.T) {
+	t.Setenv("GOFLAGS", "")
+	dir := t.TempDir()
+	writePinFixture(t, filepath.Join(dir, "go.mod"), "module example.test/agent\ngo 1.23\n")
+	writePinFixture(t, filepath.Join(dir, "value.go"), "package value\n")
+	ctx, done := common.NewContext()
+	defer done()
+	require.NoError(t, verifyTidy(ctx, dir, "."))
+	writePinFixture(t, filepath.Join(dir, "go.sum"), "example.test/stale v0.0.1 h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n")
+	require.ErrorContains(t, verifyTidy(ctx, dir, "."), "the agent module is not tidy")
+}

@@ -1508,8 +1508,12 @@ codefly agent deps --pin vX.Y.Z --dependency github.com/codefly-dev/sdk-go@vA.B.
 
 `agent deps --dependency` is repeatable and requires `--pin`. It updates only
 modules that already require the selected library, then verifies their standalone
-builds and regenerates factory locks. Unknown selections or a failed build leave
-the original locks intact. See [the release runbook](runbooks/release-the-fleet.md).
+builds and regenerates factory locks. After pinning, every owned module (root
+and base fixtures; factory templates are byte copies of their base lock) must pass
+`go mod tidy -diff` with `GOWORK=off` and no `GOFLAGS` — the tidy gate agent CI
+runs — or the verb fails. Unknown selections, a failed build or an untidy lock
+leave the original locks intact. Re-running `agent deps --pin` after a manual
+`go get` is how to bring the locks back to tidy. See [the release runbook](runbooks/release-the-fleet.md).
 
 `--kind` on `codefly agent install` selects the registered agent kind
 (`service`, the default, or `runnable`). A runnable language agent is named by
