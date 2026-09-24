@@ -32,10 +32,16 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get ConfigurationManager information")
 	}
 
-	workspaceConfigurations, err := b.world.ConfigurationManager.GetWorkspaceDependenciesConfigurations(
-		ctx,
-		b.instance.Service.WorkspaceConfigurationDependencies...,
-	)
+	dependenciesNetworkMappings, err := b.world.SharedState.GetDependenciesNetworkMappings(ctx, b.instance.Service)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot load service instance")
+	}
+
+	// A deployed service reaches its dependencies inside the cluster, so its
+	// ${endpoint:…} references resolve to their in-cluster addresses.
+	workspaceConfigurations, err := b.world.ConfigurationManager.
+		ForConsumer(dependenciesNetworkMappings, resources.NewContainerNetworkAccess()).
+		GetWorkspaceDependenciesConfigurations(ctx, b.instance.Service.WorkspaceConfigurationDependencies...)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get workspace configurations")
 	}
@@ -68,11 +74,6 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	err = b.world.SharedState.RecordNetworkMappings(ctx, b.instance.Service, networkMappings)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record network mappings")
-	}
-
-	dependenciesNetworkMappings, err := b.world.SharedState.GetDependenciesNetworkMappings(ctx, b.instance.Service)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
 	namespace, err := b.world.RemoteNetworkManager.GetNamespace(ctx, b.world.Env, b.world.Workspace, b.instance.Identity)

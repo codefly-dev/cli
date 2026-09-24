@@ -79,7 +79,7 @@ func TestWorkspaceConfigurationsForInjectsCompositionRootSet(t *testing.T) {
 	})
 	world := &World{ConfigurationManager: manager}
 
-	confs, err := world.workspaceConfigurationsFor(context.Background(), &resources.Service{})
+	confs, err := world.workspaceConfigurationsFor(context.Background(), &resources.Service{}, nil, resources.NewNativeNetworkAccess())
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"work-context"}, workspaceConfigurationNames(confs))
 }
@@ -96,7 +96,7 @@ func TestWorkspaceConfigurationsForUnionsDeclaredAndRoot(t *testing.T) {
 	world := &World{ConfigurationManager: manager}
 
 	confs, err := world.workspaceConfigurationsFor(context.Background(),
-		&resources.Service{WorkspaceConfigurationDependencies: []string{"db"}})
+		&resources.Service{WorkspaceConfigurationDependencies: []string{"db"}}, nil, resources.NewNativeNetworkAccess())
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"db", "work-context"}, workspaceConfigurationNames(confs))
 }
@@ -115,7 +115,7 @@ func TestWorkspaceConfigurationsForDeduplicatesOverlap(t *testing.T) {
 	world := &World{ConfigurationManager: manager}
 
 	confs, err := world.workspaceConfigurationsFor(context.Background(),
-		&resources.Service{WorkspaceConfigurationDependencies: []string{"db", "work-context"}})
+		&resources.Service{WorkspaceConfigurationDependencies: []string{"db", "work-context"}}, nil, resources.NewNativeNetworkAccess())
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"db", "work-context"}, workspaceConfigurationNames(confs))
 }
@@ -137,7 +137,46 @@ func TestWorkspaceConfigurationsForExcludesProfiledConfigurations(t *testing.T) 
 	}
 
 	confs, err := world.workspaceConfigurationsFor(context.Background(),
-		&resources.Service{WorkspaceConfigurationDependencies: []string{"db"}})
+		&resources.Service{WorkspaceConfigurationDependencies: []string{"db"}}, nil, resources.NewNativeNetworkAccess())
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"db", "work-context"}, workspaceConfigurationNames(confs))
+}
+
+// A workspace configuration value naming ${endpoint:…} resolves against the
+// consumer's own dependency mappings, in the address family of its access: the
+// same group gives a native consumer its loopback address and a deployed one its
+// in-cluster address.
+func TestWorkspaceConfigurationsForResolvesEndpointsFromConsumerMappings(t *testing.T) {
+	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
+		confs: []*basev0.Configuration{
+			workspaceConfiguration("platform", "gateway-endpoint", "http://${endpoint:saas/auth-gateway/rest}"),
+		},
+	})
+	world := &World{ConfigurationManager: manager}
+	service := &resources.Service{WorkspaceConfigurationDependencies: []string{"platform"}}
+	mappings := []*basev0.NetworkMapping{{
+		Endpoint: &basev0.Endpoint{Module: "saas", Service: "auth-gateway", Name: "rest", Api: "rest"},
+		Instances: []*basev0.NetworkInstance{
+			{Address: "localhost:38342", Access: resources.NewNativeNetworkAccess()},
+			{Address: "auth-gateway.platform-obin-saas.svc.cluster.local:8080", Access: resources.NewContainerNetworkAccess()},
+		},
+	}}
+
+	native, err := world.workspaceConfigurationsFor(context.Background(), service, mappings, resources.NewNativeNetworkAccess())
+	require.NoError(t, err)
+	value, err := resources.GetConfigurationValue(context.Background(), native[0], "platform", "gateway-endpoint")
+	require.NoError(t, err)
+	require.Equal(t, "http://localhost:38342", value)
+
+	deployed, err := world.workspaceConfigurationsFor(context.Background(), service, mappings, resources.NewContainerNetworkAccess())
+	require.NoError(t, err)
+	value, err = resources.GetConfigurationValue(context.Background(), deployed[0], "platform", "gateway-endpoint")
+	require.NoError(t, err)
+	require.Equal(t, "http://auth-gateway.platform-obin-saas.svc.cluster.local:8080", value)
+
+	undeclared, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewNativeNetworkAccess())
+	require.NoError(t, err)
+	value, err = resources.GetConfigurationValue(context.Background(), undeclared[0], "platform", "gateway-endpoint")
+	require.NoError(t, err)
+	require.Empty(t, value, "a consumer that does not depend on the endpoint does not receive it")
 }
