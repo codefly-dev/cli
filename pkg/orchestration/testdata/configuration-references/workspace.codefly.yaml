@@ -1,0 +1,5 @@
+name: configuration-refs
+layout: modules
+modules:
+    - name: saas
+    - name: platform

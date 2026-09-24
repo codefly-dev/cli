@@ -39,17 +39,18 @@ func (flow *Flow) exportExcludedOriginEnvironment(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load excluded root service configuration: %w", err)
 	}
-	workspaceConfigurations, err := flow.world.workspaceConfigurationsFor(ctx, flow.originService)
+	dependencyMappings, err := flow.SharedState.GetDependenciesNetworkMappings(ctx, flow.originService)
+	if err != nil {
+		return fmt.Errorf("load excluded root dependency endpoints: %w", err)
+	}
+	workspaceConfigurations, err := flow.world.workspaceConfigurationsFor(ctx, flow.originService,
+		dependencyMappings, resources.NetworkAccessFromRuntimeContext(runtimeContext))
 	if err != nil {
 		return fmt.Errorf("load excluded root workspace configurations: %w", err)
 	}
 	dependencyConfigurations, err := flow.SharedState.GetDependentConfigurationsFor(ctx, identity)
 	if err != nil {
 		return fmt.Errorf("load excluded root dependency configurations: %w", err)
-	}
-	dependencyMappings, err := flow.SharedState.GetDependenciesNetworkMappings(ctx, flow.originService)
-	if err != nil {
-		return fmt.Errorf("load excluded root dependency endpoints: %w", err)
 	}
 	// --exclude-root never loads the root agent, so services.RuntimeInstance.Start
 	// — the call that narrows what a running service receives — never runs for it.

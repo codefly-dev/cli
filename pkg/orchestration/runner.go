@@ -307,7 +307,13 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get service configuration")
 	}
 
-	workspaceConfigurations, err := runner.world.workspaceConfigurationsFor(cfgCtx, runner.instance.Service)
+	runtimeContext, err := resources.NewRuntimeContext(runner.runtimeContext)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
+	}
+
+	workspaceConfigurations, err := runner.world.workspaceConfigurationsFor(cfgCtx, runner.instance.Service,
+		dependenciesNetworkMappings, resources.NetworkAccessFromRuntimeContext(runtimeContext))
 	if err != nil {
 		if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
 			w.Warn("timeout waiting for workspace dependencies configurations after 30s; check that dependency services are reachable")
@@ -325,10 +331,6 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot get configuration for dependencies")
 	}
 
-	runtimeContext, err := resources.NewRuntimeContext(runner.runtimeContext)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
-	}
 	networkMappings, err := runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env.Runtime(), runner.world.Workspace, runner.instance.Identity, runner.endpoints, runtimeContext)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
@@ -439,14 +441,24 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	return outputProperty, nil
 }
 
-func (world *World) workspaceConfigurationsFor(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error) {
+// workspaceConfigurationsFor resolves the workspace configurations one service
+// receives. ${endpoint:…} references resolve against that service's dependency
+// mappings, in the address family of its access, plus the mappings of every
+// producer in the run that a configuration the service declares names (see
+// referencedProducerMappings).
+func (world *World) workspaceConfigurationsFor(
+	ctx context.Context, service *resources.Service,
+	dependencyMappings []*basev0.NetworkMapping, access *basev0.NetworkAccess,
+) ([]*basev0.Configuration, error) {
 	dependencies := make([]string, 0, len(service.WorkspaceConfigurationDependencies))
 	for _, dependency := range service.WorkspaceConfigurationDependencies {
 		if !world.excludedWorkspaceConfigurations[dependency] {
 			dependencies = append(dependencies, dependency)
 		}
 	}
-	declared, err := world.ConfigurationManager.GetWorkspaceDependenciesConfigurations(ctx, dependencies...)
+	mappings := append(slices.Clone(dependencyMappings), world.referencedProducerMappings(ctx, service, dependencies)...)
+	manager := world.ConfigurationManager.ForConsumer(mappings, access)
+	declared, err := manager.GetWorkspaceDependenciesConfigurations(ctx, dependencies...)
 	if err != nil {
 		return nil, err
 	}
@@ -456,7 +468,7 @@ func (world *World) workspaceConfigurationsFor(ctx context.Context, service *res
 	// dependency on one of the root's own configurations (e.g. the root service
 	// itself) yields that name in both sets, so union by name to avoid emitting
 	// it twice.
-	root, err := world.ConfigurationManager.GetCompositionRootWorkspaceConfigurations(ctx)
+	root, err := manager.GetCompositionRootWorkspaceConfigurations(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -474,6 +486,81 @@ func (world *World) workspaceConfigurationsFor(ctx context.Context, service *res
 		out = append(out, conf)
 	}
 	return world.applyWorkspaceConfigurationValues(out, dependencies), nil
+}
+
+// referencedProducerMappings returns the network mappings of the producers the
+// workspace configurations a service declares reference by ${endpoint:…} and
+// that the service does not itself depend on.
+//
+// A workspace configuration is the composition root's: it names endpoints the
+// consuming module cannot know, such as the host by the composition's name for
+// it, which is why the consumer declares the group and not the dependency. The
+// root's reference is what binds the two, so it resolves for the consumer when
+// the producer is part of this run. With no edge between them, the producer may
+// not have initialized yet: every service of the run is loaded before any
+// initializes, so its endpoints are known, and its mappings are derived exactly
+// as its own Init proposes them (named ports are a function of its identity).
+// A producer outside the run, or the service itself, contributes nothing, and
+// the key is omitted for the consumer as before. Only groups the service
+// declares are considered: the root's groups injected into every service never
+// bind one service to another.
+func (world *World) referencedProducerMappings(ctx context.Context, service *resources.Service, groups []string) []*basev0.NetworkMapping {
+	if world == nil || world.ConfigurationManager == nil || world.SharedState == nil || world.Dependencies == nil || len(groups) == 0 {
+		return nil
+	}
+	w := wool.Get(ctx).In("World.referencedProducerMappings", wool.ThisField(resources.WithUnique(service)))
+	self := resources.WithUnique(service).Unique()
+	depends := make(map[string]bool, len(service.ServiceDependencies))
+	for _, dependency := range service.ServiceDependencies {
+		depends[dependency.Unique()] = true
+	}
+	var out []*basev0.NetworkMapping
+	collected := make(map[string]bool)
+	for _, reference := range world.ConfigurationManager.WorkspaceEndpointReferences(groups...) {
+		info, err := resources.ParseEndpoint(reference)
+		if err != nil {
+			continue
+		}
+		producer := info.Module + "/" + info.Service
+		if producer == self || depends[producer] || collected[producer] {
+			continue
+		}
+		collected[producer] = true
+		mappings, err := world.producerNetworkMappings(ctx, producer)
+		if err != nil {
+			w.Warn("cannot derive the addresses of a producer a workspace configuration references; the reference is omitted for this service",
+				wool.Field("producer", producer), wool.Field("reference", reference), wool.Field("error", err.Error()))
+			continue
+		}
+		out = append(out, mappings...)
+	}
+	return out
+}
+
+// producerNetworkMappings returns a producer's mappings: the ones it recorded
+// at Init, or, before it has initialized, the ones its Init proposes, derived
+// from the endpoints it recorded at Load. A producer outside the run has none.
+func (world *World) producerNetworkMappings(ctx context.Context, producer string) ([]*basev0.NetworkMapping, error) {
+	if mappings, ok := world.SharedState.GetNetworkMappingsFromUnique(producer); ok {
+		return mappings, nil
+	}
+	service, err := world.Dependencies.ServiceFromUnique(producer)
+	if err != nil {
+		return nil, nil
+	}
+	identity, err := service.Identity()
+	if err != nil {
+		return nil, err
+	}
+	endpoints := world.SharedState.RecordedEndpoints(producer)
+	if len(endpoints) == 0 || world.LocalNetworkManager == nil || world.runtimeContextFor == nil {
+		return nil, nil
+	}
+	runtimeContext, err := resources.NewRuntimeContext(world.runtimeContextFor(service))
+	if err != nil {
+		return nil, err
+	}
+	return world.LocalNetworkManager.GenerateNetworkMappings(ctx, world.Env.Runtime(), world.Workspace, identity, endpoints, runtimeContext)
 }
 
 // applyWorkspaceConfigurationValues layers the run's derived values onto the
@@ -575,7 +662,15 @@ func (flow *Flow) WorkspaceConfigurationsFor(ctx context.Context, service *resou
 	if flow == nil || flow.world == nil {
 		return nil, nil
 	}
-	return flow.world.workspaceConfigurationsFor(ctx, service)
+	runtimeContext, err := resources.NewRuntimeContext(flow.runtimeContextFor(service))
+	if err != nil {
+		return nil, err
+	}
+	dependencyMappings, err := flow.SharedState.GetDependenciesNetworkMappings(ctx, service)
+	if err != nil {
+		return nil, err
+	}
+	return flow.world.workspaceConfigurationsFor(ctx, service, dependencyMappings, resources.NetworkAccessFromRuntimeContext(runtimeContext))
 }
 
 func (runner *Runner) InitRemote(ctx context.Context) (*OutputProperty, error) {

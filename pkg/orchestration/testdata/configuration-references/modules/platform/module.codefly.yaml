@@ -1,0 +1,6 @@
+kind: module
+name: platform
+project: configuration-refs
+domain: github.com/codefly-ai/configuration-refs/platform
+services:
+    - name: warden

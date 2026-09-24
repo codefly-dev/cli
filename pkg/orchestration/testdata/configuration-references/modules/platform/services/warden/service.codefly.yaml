@@ -1,0 +1,17 @@
+kind: service
+name: warden
+version: 0.0.0
+module: platform
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.16
+    publisher: codefly.ai
+# warden reaches saas/accounts only through the `platform` group the
+# composition root writes (configurations/local/platform.env).
+workspace-configuration-dependencies:
+    - platform
+endpoints:
+    - name: rest
+      api: rest
+      visibility: public
