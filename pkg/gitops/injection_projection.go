@@ -192,13 +192,9 @@ func projectServiceInjection(ctx context.Context, root, service string, env *env
 		}
 	}
 	if matched == 0 {
-		// A self endpoint is an address offered to a Codefly-aware process so it
-		// can register where it is reachable. A container that does not declare
-		// CODEFLY__SERVICE (a vendor image such as redis) reads no Codefly
-		// carrier at all, so there is nothing to deliver it to and nothing is
-		// lost by not rendering it. Anything else a service derives — federation
-		// secrets, consumed-API routes — is required, and still refuses.
-		if len(injection.Secrets) == 0 && onlySelfEndpoints(injection.Public) {
+		// See offeredOnly: an unclaimed service is a vendor image that reads no
+		// Codefly carrier, so offered carriers are skipped; required ones refuse.
+		if offeredOnly(injection) {
 			return nil
 		}
 		return fmt.Errorf("service %q derives %s but no rendered container declares %s=%s",
@@ -207,10 +203,27 @@ func projectServiceInjection(ctx context.Context, root, service string, env *env
 	return writeChangedConfigurationFiles(ctx, paths, files, changed)
 }
 
-// onlySelfEndpoints reports whether every public carrier is a self endpoint.
-func onlySelfEndpoints(public map[string]string) bool {
-	for key := range public {
-		if !strings.HasPrefix(key, resources.SelfEndpointPrefix+"__") {
+// offeredOnly reports whether every carrier a service derives is one offered to
+// any Codefly-aware process of it — its own reachable address, or the consumed
+// module's identity every service of that module receives — rather than one the
+// render must deliver (a solution's consumed routes and registration secrets).
+// A container that declares no CODEFLY__SERVICE (a vendor image: postgres,
+// redis) reads none of them, so an unclaimed service may skip offered carriers.
+func offeredOnly(injection serviceInjection) bool {
+	offered := func(key string) bool {
+		switch key {
+		case "CODEFLY__MODULE_IDENTITY_PREFIX", "CODEFLY__MODULE_IDENTITY_SECRET", "CODEFLY__MODULE_REGISTRATION_SECRET":
+			return true
+		}
+		return strings.HasPrefix(key, resources.SelfEndpointPrefix+"__")
+	}
+	for key := range injection.Public {
+		if !offered(key) {
+			return false
+		}
+	}
+	for key := range injection.Secrets {
+		if !offered(key) {
 			return false
 		}
 	}
@@ -379,9 +392,8 @@ func validateProjectedInjection(root, service string, env *environments.Environm
 		}
 	}
 	if matched == 0 {
-		// Mirrors projectServiceInjection: self endpoints alone were skipped there
-		// because no container reads them, so none is expected here.
-		if len(injection.Secrets) == 0 && onlySelfEndpoints(injection.Public) {
+		// Mirrors projectServiceInjection: offered carriers were skipped there.
+		if offeredOnly(injection) {
 			return nil
 		}
 		return fmt.Errorf("service %q derived configuration binds no effective workload", service)

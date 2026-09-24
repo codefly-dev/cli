@@ -224,7 +224,7 @@ func TestRenderInjectionsJoinSelfEndpointsWithFederation(t *testing.T) {
 // the service. Its self endpoint has no Codefly-aware reader, so the render
 // leaves the tree untouched instead of refusing; a required carrier (a
 // federation secret) for the same unclaimed service still refuses.
-func TestDerivedInjectionSkipsSelfEndpointsNoContainerClaims(t *testing.T) {
+func TestDerivedInjectionSkipsOfferedCarriersNoContainerClaims(t *testing.T) {
 	env := storeEnvironment()
 	root := t.TempDir()
 	writeConsumerTree(t, root, env.Name, env.Namespace, "backend", "documents.example:8080")
@@ -236,6 +236,17 @@ func TestDerivedInjectionSkipsSelfEndpointsNoContainerClaims(t *testing.T) {
 	}}
 	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "cache"}, env, scopeOf(env), selfOnly))
 	after, err := os.ReadFile(filepath.Join(root, "base", "deployment.yaml"))
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(after))
+
+	// A consumed module's identity is offered to every service of that module;
+	// its postgres store reads none of it.
+	identity := serviceInjection{
+		Public:  map[string]string{identityPrefixKey: "documents"},
+		Secrets: map[string]string{identitySecretKey: identitySecretKey, identityAliasKey: identitySecretKey},
+	}
+	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "cache"}, env, scopeOf(env), identity))
+	after, err = os.ReadFile(filepath.Join(root, "base", "deployment.yaml"))
 	require.NoError(t, err)
 	require.Equal(t, string(before), string(after))
 
