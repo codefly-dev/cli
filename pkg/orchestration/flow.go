@@ -33,6 +33,11 @@ import (
 )
 
 type Flow struct {
+	// configurationReferences orders a consumer after the producers its
+	// workspace configurations reference (configurationReferenceOption); every
+	// rebuild of the graph carries it.
+	configurationReferences architecture.DependencyOption
+
 	workspace *resources.Workspace
 
 	// graphWorkspace is the workspace the dependency graph is built from: the
@@ -264,6 +269,27 @@ type World struct {
 	AnswerProvider AnswerProvider
 }
 
+// configurationReferenceOption reads what env provides to the workspace — the
+// same read a run provisions from — and orders every service declaring a
+// workspace configuration after the services its ${endpoint:…} references name.
+// A read that fails orders nothing: the run reports the configuration fault
+// itself when it loads.
+func configurationReferenceOption(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) architecture.DependencyOption {
+	if workspace == nil || env == nil {
+		return nil
+	}
+	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime())
+	if err != nil {
+		wool.Get(ctx).In("configurationReferenceOption").Debug("cannot read workspace configurations; no reference orders the run", wool.Field("error", err.Error()))
+		return nil
+	}
+	producers := configurations.EndpointProducers(provided.Infos)
+	if len(producers) == 0 {
+		return nil
+	}
+	return architecture.WithConfigurationReferences(producers)
+}
+
 // FlowFailure carries a runner-level death up to the top-level command.
 // A failure here means a service started OK but its underlying process
 // has since exited (e.g. user binary crashed, agent plugin lost contact).
@@ -290,8 +316,15 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 		return nil, w.Wrap(err)
 	}
 
-	// Get dependency graph
-	dependencies, err := architecture.NewServiceDependencies(ctx, graphWorkspace)
+	// Get dependency graph. A service reaching a producer only through a
+	// workspace configuration group the composition root writes is ordered
+	// after it, as for a declared dependency.
+	configurationReferences := configurationReferenceOption(ctx, workspace, env)
+	var graphOptions []architecture.DependencyOption
+	if configurationReferences != nil {
+		graphOptions = append(graphOptions, configurationReferences)
+	}
+	dependencies, err := architecture.NewServiceDependencies(ctx, graphWorkspace, graphOptions...)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -357,6 +390,8 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 		originModule:   module,
 
 		world: world,
+
+		configurationReferences: configurationReferences,
 
 		SharedState:          stateManager,
 		ConfigurationManager: configurationManager,
@@ -1662,6 +1697,9 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	}
 	remotes := make(map[string]*Remote)
 	var dependencyOptions []architecture.DependencyOption
+	if flow.configurationReferences != nil {
+		dependencyOptions = append(dependencyOptions, flow.configurationReferences)
+	}
 	if len(flow.remoteServices) > 0 {
 		var cutoffs []string
 		for _, remote := range flow.remoteServices {

@@ -260,3 +260,27 @@ func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testin
 	require.NoError(t, err)
 	require.Equal(t, "http://localhost:10650", recorded)
 }
+
+// A service reaching a producer only through a workspace configuration group
+// the composition root writes is ordered after it, as for a declared dependency.
+func TestConfigurationReferencesOrderTheRun(t *testing.T) {
+	ctx := context.Background()
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, "testdata/configuration-references")
+	require.NoError(t, err)
+	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+
+	option := configurationReferenceOption(ctx, workspace, env)
+	require.NotNil(t, option)
+	dependencies, err := architecture.NewServiceDependencies(ctx, workspace, option)
+	require.NoError(t, err)
+	order, err := dependencies.OrderTo(ctx, "platform/warden")
+	require.NoError(t, err)
+	require.Equal(t, []architecture.Service{{Unique: "saas/accounts"}}, order)
+
+	plain, err := architecture.NewServiceDependencies(ctx, workspace)
+	require.NoError(t, err)
+	order, err = plain.OrderTo(ctx, "platform/warden")
+	require.NoError(t, err)
+	require.Empty(t, order)
+}

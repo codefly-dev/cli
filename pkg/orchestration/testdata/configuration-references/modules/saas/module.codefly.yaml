@@ -1,0 +1,7 @@
+kind: module
+name: saas
+project: configuration-refs
+domain: github.com/codefly-ai/configuration-refs/saas
+services:
+    - name: accounts
+    - name: codegen
