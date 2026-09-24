@@ -4,7 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/network"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
@@ -179,4 +181,82 @@ func TestWorkspaceConfigurationsForResolvesEndpointsFromConsumerMappings(t *test
 	value, err = resources.GetConfigurationValue(context.Background(), undeclared[0], "platform", "gateway-endpoint")
 	require.NoError(t, err)
 	require.Empty(t, value, "a consumer that does not depend on the endpoint does not receive it")
+}
+
+// A workspace configuration the consumer declares may name a producer the
+// consumer does not depend on — the composition root binding the host by its
+// own name for it. Before the producer initializes, the reference resolves to
+// the mappings its Init proposes, derived from the endpoints it recorded at
+// Load; a producer outside the run is omitted.
+func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testing.T) {
+	ctx := context.Background()
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, "testdata/excluded-root-visibility")
+	require.NoError(t, err)
+	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
+	require.NoError(t, err)
+	sharedState, err := NewStateManager(ctx, nil, dependencies)
+	require.NoError(t, err)
+	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+
+	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
+		confs: []*basev0.Configuration{{
+			Origin: resources.ConfigurationWorkspace,
+			Infos: []*basev0.ConfigurationInformation{{
+				Name: "platform",
+				ConfigurationValues: []*basev0.ConfigurationValue{
+					{Key: "accounts-endpoint", Value: "${endpoint:saas/accounts/connect}"},
+					{Key: "elsewhere", Value: "${endpoint:absent/service/http}"},
+				},
+			}},
+		}},
+	})
+	localNetwork, err := network.NewRuntimeManager(ctx, manager)
+	require.NoError(t, err)
+	world := &World{
+		Env: env, Workspace: workspace,
+		ConfigurationManager: manager, SharedState: sharedState, Dependencies: dependencies,
+		LocalNetworkManager: localNetwork,
+		runtimeContextFor:   func(*resources.Service) string { return resources.RuntimeContextNative },
+	}
+
+	saas, err := workspace.LoadModuleFromName(ctx, "saas")
+	require.NoError(t, err)
+	accounts, err := saas.LoadServiceFromName(ctx, "accounts")
+	require.NoError(t, err)
+	accountsIdentity, err := accounts.Identity()
+	require.NoError(t, err)
+	endpoints, err := accounts.LoadEndpoints(ctx)
+	require.NoError(t, err)
+	require.NoError(t, sharedState.RecordEndpoints(ctx, accountsIdentity, endpoints))
+	consumer, err := saas.LoadServiceFromName(ctx, "codegen")
+	require.NoError(t, err)
+	require.Empty(t, consumer.ServiceDependencies)
+	consumer.WorkspaceConfigurationDependencies = []string{"platform"}
+
+	confs, err := world.workspaceConfigurationsFor(ctx, consumer, nil, resources.NewNativeNetworkAccess())
+	require.NoError(t, err)
+	require.Len(t, confs, 1)
+	derived, err := resources.GetConfigurationValue(ctx, confs[0], "platform", "accounts-endpoint")
+	require.NoError(t, err)
+	require.Regexp(t, `^http://localhost:\d+$`, derived)
+	keys := make([]string, 0, 2)
+	for _, value := range confs[0].Infos[0].ConfigurationValues {
+		keys = append(keys, value.Key)
+	}
+	require.Equal(t, []string{"accounts-endpoint"}, keys, "a producer outside the run is omitted for the consumer")
+
+	// Once the producer has initialized, its accepted mappings are what resolves.
+	require.NoError(t, sharedState.RecordNetworkMappings(ctx, accounts, []*basev0.NetworkMapping{{
+		Endpoint: &basev0.Endpoint{Module: "saas", Service: "accounts", Name: "connect", Api: "rest"},
+		Instances: []*basev0.NetworkInstance{{
+			Address: "http://localhost:10650",
+			Access:  resources.NewNativeNetworkAccess(),
+		}},
+	}}))
+	confs, err = world.workspaceConfigurationsFor(ctx, consumer, nil, resources.NewNativeNetworkAccess())
+	require.NoError(t, err)
+	recorded, err := resources.GetConfigurationValue(ctx, confs[0], "platform", "accounts-endpoint")
+	require.NoError(t, err)
+	require.Equal(t, "http://localhost:10650", recorded)
 }

@@ -242,6 +242,11 @@ type World struct {
 
 	excludedWorkspaceConfigurations map[string]bool
 
+	// runtimeContextFor is the flow's choice of runtime context per service, so
+	// the world can derive a producer's proposed mappings before it initializes
+	// (referencedProducerMappings).
+	runtimeContextFor func(*resources.Service) string
+
 	// workspaceConfigurationValues are values the run path derives itself,
 	// keyed group -> key -> value. They are layered onto the resolved workspace
 	// configurations of every service declaring that group, so a derived value
@@ -359,6 +364,7 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 		endpoints:       make(map[string][]*basev0.Endpoint),
 		networkMappings: make(map[string][]*basev0.NetworkMapping),
 	}
+	world.runtimeContextFor = flow.runtimeContextFor
 	// Per-developer runtime preferences (~/.codefly/preferences.yaml). Best
 	// effort: a missing file = empty prefs (everything falls back to the global
 	// runtime context); a malformed file is logged, not fatal — debugging should

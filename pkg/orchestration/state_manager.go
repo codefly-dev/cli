@@ -157,6 +157,16 @@ func (s *StateManager) RecordEndpoints(ctx context.Context, service *resources.S
 	return nil
 }
 
+// RecordedEndpoints returns the endpoints a service of the run recorded at Load.
+func (s *StateManager) RecordedEndpoints(unique string) []*basev0.Endpoint {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.endpoints[unique]
+}
+
 // GetDependenciesEndpoints returns the endpoints for the dependencies of the given service
 func (s *StateManager) GetDependenciesEndpoints(ctx context.Context, service *resources.Service) ([]*basev0.Endpoint, error) {
 	if s == nil {
