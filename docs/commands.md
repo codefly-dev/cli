@@ -624,6 +624,55 @@ CODEFLY_GITOPS_K3D_QUALIFY=1 \
   go test ./pkg/gitops -run TestLocalFetchRemoteLifecycle -v -count=1
 ```
 
+### `codefly deploy dev <module>/<service>` — the dev escape hatch
+
+> **Dev escape hatch, not a release path.** After it runs, the environment runs
+> code that no module release and no full render describes, until the next full
+> `codefly deploy gitops render` of that module.
+
+Push ONE service's current code — uncommitted or unreleased — into a hosted
+environment that a full render has already produced, in about the time one
+image build takes, without tagging a module or re-rendering everything. Run it
+from the deployment workspace the render writes into:
+
+```bash
+codefly deploy dev payments/api --env staging --path ../payments/services/api
+codefly deploy dev payments/api --env staging            # uses the service override
+codefly deploy dev payments/api --env staging --commit   # commit it
+codefly deploy dev payments/api --env staging --commit --push
+```
+
+1. **Source.** `--path <dir>` if given; else the machine-local service override
+   (`codefly override service <module>/<service>`, i.e.
+   `resolve.<module>.services.<service>` in `codefly.local.yaml`); else it refuses
+   with "nothing to deploy". A `--path` passes the same contract check an
+   override does (same name, agent and endpoints).
+2. **Build.** The service is built and pushed through exactly the path
+   `deploy gitops render` takes for it: the environment's `registry` (and its
+   login), the snapshot flow driving the service agent's Build and Deploy with
+   push, and the same `@sha256:` digest capture. `DOCKER_HOST` is honoured the
+   way every build honours it.
+3. **Patch.** Only that service's digest pin changes, inside its own rendered
+   unit (`deployments/modules/<module>/services/<service>/`); every other byte of
+   the tree is left as the render wrote it, and the render inventory is
+   re-derived so the tree still matches it. It refuses when the module was never
+   rendered, was rendered for another environment (or another `--app-project`,
+   when given), was edited since its render, or does not pin the image the build
+   produced — in every case: run the full render first.
+4. **Record.** `.codefly-render.json` gains a `dev` entry for the service:
+   source origin and path, the source's git commit and whether it was dirty, the
+   image and digest, and the time. `codefly doctor workspace` reports each one as
+   a `gitops_dev_deployment_active` warning.
+5. **Git.** The changed files are staged and the exact commit and push commands
+   printed. `--commit` commits them as
+   `dev: <module>/<service> from <path>@<sha>[-dirty]`; `--push` (which needs
+   `--commit`) pushes the current branch. Nothing is pushed otherwise. Argo CD
+   then syncs the new digest.
+
+**Leaving dev mode** is a full render: `codefly deploy gitops render <module>
+--env <env>` re-derives every image from the workspace, drops the `dev` entries
+and says which dev deployments it cleared.
+
 ### `codefly deploy solution [name]`
 
 Drive a `codefly:solution` executor: package a solution source into an OCI
@@ -990,7 +1039,10 @@ back.
 in effect (they are invisible in committed config, so the healthy ones are
 listed too), `service_override_unresolved` when the directory is missing or the
 module declares no such service, and `service_override_contract_drift` when the
-directory is not the same service. `codefly ci plan` and `codefly ci run`
+directory is not the same service. It also reports
+`gitops_dev_deployment_active`, a warning, for every
+[dev deployment](#codefly-deploy-dev-moduleservice--the-dev-escape-hatch) a
+rendered module tree carries. `codefly ci plan` and `codefly ci run`
 **refuse** to run while any service override is in effect, because a CI plan is
 a claim about the committed workspace; pass `--allow-service-overrides` to plan
 against them deliberately, in which case each override's tree is part of the
@@ -1076,7 +1128,7 @@ workspace composed by identity works for each of them with no prior run:
   spawns;
 - `test service`, `test solution`, `test composition`;
 - `deploy gitops render`, `snapshot`, `plan`, `publish`, `observe`, `rollback`,
-  `deploy module` and `deploy service` — a CI render always starts from a fresh
+  `deploy module`, `deploy service` and `deploy dev` — a CI render always starts from a fresh
   checkout, so it materializes exactly as `run` does;
 - every `ci` verb (`plan`, `build`, `test`, `run`, `validate`, `push`,
   `deploy`);

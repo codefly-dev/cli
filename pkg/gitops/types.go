@@ -93,6 +93,10 @@ type Inventory struct {
 	Units   []InventoryUnit   `json:"units"`
 	Files   []InventoryFile   `json:"files"`
 	Digest  string            `json:"digest"`
+	// Dev lists the dev deployments (`codefly deploy dev`) applied on top of
+	// this render: services whose image was re-pinned to code no release
+	// describes. A full render re-derives the tree and never carries it over.
+	Dev []InventoryDevDeployment `json:"dev,omitempty"`
 }
 
 type InventoryPackage struct {
@@ -234,6 +238,9 @@ type RenderResult struct {
 	// should be fixed; the render reports it rather than changing its committed
 	// output silently. See service_namespace.go.
 	ElidedNamespaces []string `json:"elidedNamespaces,omitempty"`
+	// ClearedDev are the dev deployments the tree this render replaced carried.
+	// A full render re-derives every image, so they no longer run.
+	ClearedDev []InventoryDevDeployment `json:"clearedDev,omitempty"`
 }
 
 type PublishRequest struct {
