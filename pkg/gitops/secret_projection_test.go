@@ -729,7 +729,7 @@ func TestProjectRenderedServiceSecretsCoversEveryServiceTree(t *testing.T) {
 		resources.ServiceUnique("identity", "accounts"): {Name: "accounts"},
 		resources.ServiceUnique("identity", "web"):      {Name: "web"},
 	}
-	if err := projectRenderedServiceConfiguration(t.Context(), stage, singleModuleWorkspace(), env, graph); err != nil {
+	if err := projectRenderedServiceConfiguration(t.Context(), stage, singleModuleWorkspace(), env, graph, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(accounts, "overlays", "production", "external-secret.yaml")); err != nil {
@@ -745,7 +745,7 @@ func TestProjectRenderedServiceSecretsNoOpWithoutDeclaration(t *testing.T) {
 	writeServiceTree(t, filepath.Join(stage, "modules", "identity", "services", "accounts"), "production")
 	env := &environments.Environment{Name: "production", Namespace: "payments"}
 	graph := map[string]*resources.Service{resources.ServiceUnique("identity", "accounts"): {Name: "accounts"}}
-	if err := projectRenderedServiceConfiguration(t.Context(), stage, singleModuleWorkspace(), env, graph); err != nil {
+	if err := projectRenderedServiceConfiguration(t.Context(), stage, singleModuleWorkspace(), env, graph, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(stage, "modules", "identity", "services", "accounts", "overlays", "production", "external-secret.yaml")); !os.IsNotExist(err) {

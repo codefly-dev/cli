@@ -31,7 +31,7 @@ func TestActualInfraBaseValuesReachRenderedWorkload(t *testing.T) {
 	env := &contract.Environment
 	root := t.TempDir()
 	writeConsumerTree(t, root, env.Name, env.Namespace, "accounts", "declared.example")
-	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "accounts"}, env, scopeOf(env)))
+	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "accounts"}, env, scopeOf(env), serviceInjection{}))
 	rendered := buildOverlay(t, root, env.Name)
 	values := containerEnvironment(t, rendered)
 	for key, value := range env.ServiceConfig.Services["accounts"].Values {
@@ -63,7 +63,7 @@ func TestActualInfraBaseValuesReachRenderedWorkload(t *testing.T) {
 	require.True(t, seen["ExternalSecret"])
 	require.Empty(t, env.ManagedServices)
 	addProjectionPatch(t, root, env.Name, "ExternalSecret", "- op: replace\n  path: /spec/target/template/data/SOLUTION_REGISTRATION_SECRETS\n  value: wrong-value")
-	require.ErrorContains(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "accounts"}, env, scopeOf(env)), "ExternalSecret")
+	require.ErrorContains(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "accounts"}, env, scopeOf(env), serviceInjection{}), "ExternalSecret")
 }
 
 func TestConfigurationProjectionRejectsOverriddenEffectiveValues(t *testing.T) {
@@ -80,7 +80,7 @@ func TestConfigurationProjectionRejectsOverriddenEffectiveValues(t *testing.T) {
 		require.NoError(t, err)
 		data = append(data, []byte("patches:\n  - target:\n      kind: Deployment\n      name: api\n    patch: |-\n      "+strings.ReplaceAll(strings.TrimSpace(patch), "\n", "\n      ")+"\n")...)
 		require.NoError(t, os.WriteFile(path, data, 0o600))
-		err = projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env))
+		err = projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env), serviceInjection{})
 		require.ErrorContains(t, err, "overlay")
 	}
 }
@@ -102,7 +102,7 @@ func TestConfigurationProjectionRejectsRedirectedSecretDelivery(t *testing.T) {
 			root := t.TempDir()
 			writeConsumerTree(t, root, env.Name, env.Namespace, "api", "declared.example")
 			addProjectionPatch(t, root, env.Name, "ExternalSecret", patch)
-			require.ErrorContains(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env)), "ExternalSecret")
+			require.ErrorContains(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env), serviceInjection{}), "ExternalSecret")
 		})
 	}
 }
@@ -113,7 +113,7 @@ func TestConfigurationProjectionRejectsConsumerNamespaceMismatch(t *testing.T) {
 	root := t.TempDir()
 	writeConsumerTree(t, root, env.Name, env.Namespace, "api", "declared.example")
 	addProjectionPatch(t, root, env.Name, "Deployment", "- op: replace\n  path: /metadata/namespace\n  value: other-namespace")
-	require.ErrorContains(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env)), "different namespace")
+	require.ErrorContains(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env), serviceInjection{}), "different namespace")
 }
 
 func TestConfigurationProjectionChecksDiscoveredSecretDelivery(t *testing.T) {
@@ -122,9 +122,9 @@ func TestConfigurationProjectionChecksDiscoveredSecretDelivery(t *testing.T) {
 	env.ServiceSecrets.Services = nil
 	root := t.TempDir()
 	writeServiceTreeReferencingKeys(t, root, env.Name, env.Namespace, "api", []string{"PASSWORD"})
-	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env)))
+	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env), serviceInjection{}))
 	addProjectionPatch(t, root, env.Name, "ExternalSecret", "- op: replace\n  path: /spec/data/0/remoteRef/key\n  value: other-tenant/api")
-	require.ErrorContains(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env)), "ExternalSecret")
+	require.ErrorContains(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env), serviceInjection{}), "ExternalSecret")
 }
 
 func TestIdentityProjectionRejectsOverlayNamespaceMismatch(t *testing.T) {
@@ -132,7 +132,7 @@ func TestIdentityProjectionRejectsOverlayNamespaceMismatch(t *testing.T) {
 	root := t.TempDir()
 	writeConsumerTree(t, root, env.Name, env.Namespace, "api", "declared.example")
 	addProjectionPatch(t, root, env.Name, "ServiceAccount", "- op: replace\n  path: /metadata/namespace\n  value: wrong-namespace")
-	require.ErrorContains(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env)), "service account product/api")
+	require.ErrorContains(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env), serviceInjection{}), "service account product/api")
 }
 
 func TestConfigurationScalarSpellingsReachRenderedWorkload(t *testing.T) {
@@ -144,7 +144,7 @@ func TestConfigurationScalarSpellingsReachRenderedWorkload(t *testing.T) {
 	require.NoError(t, err)
 	root := t.TempDir()
 	writeConsumerTree(t, root, env.Name, env.Namespace, "api", "declared.example")
-	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env)))
+	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env), serviceInjection{}))
 	values := containerEnvironment(t, buildOverlay(t, root, env.Name))
 	for key, expected := range map[string]string{"ACCOUNT": "00123", "DATE": "2026-09-21", "EXPONENT": "1e3"} {
 		require.Equal(t, expected, values[key]["value"])
@@ -170,7 +170,7 @@ func TestConfigurationProjectionRejectsMissingAndCompetingExternalSecrets(t *tes
 			env := injectionContract(t)
 			root := t.TempDir()
 			writeConsumerTree(t, root, env.Name, env.Namespace, "api", "declared.example")
-			require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env)))
+			require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env), serviceInjection{}))
 			file := filepath.Join(root, "overlays", env.Name, "external-secret.yaml")
 			data, err := os.ReadFile(file)
 			require.NoError(t, err)
@@ -226,7 +226,7 @@ func TestCoordinateConfigurationAndIdentityRenderWithoutManagedServices(t *testi
 	require.Empty(t, env.ManagedServices)
 	root := t.TempDir()
 	writeConsumerTree(t, root, env.Name, env.Namespace, "api", "declared.example")
-	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env)))
+	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env), serviceInjection{}))
 	rendered := buildOverlay(t, root, env.Name)
 	values := containerEnvironment(t, rendered)
 	require.Equal(t, "product-staging.database.example", values["DATABASE_HOST"]["value"])
@@ -247,7 +247,7 @@ func TestSingleServiceRenderProjectsTheSameConfiguration(t *testing.T) {
 	root := filepath.Join(stage, "modules", "product", serviceUnitDir, "worker")
 	writeConsumerTree(t, root, env.Name, env.Namespace, "worker", "declared.example")
 	graph := map[string]*resources.Service{resources.ServiceUnique("product", "worker"): {Name: "worker"}}
-	require.NoError(t, projectRenderedServiceConfiguration(t.Context(), stage, singleModuleWorkspace(), env, graph))
+	require.NoError(t, projectRenderedServiceConfiguration(t.Context(), stage, singleModuleWorkspace(), env, graph, nil))
 	rendered := buildOverlay(t, root, env.Name)
 	require.Equal(t, "product-staging.database.example", containerEnvironment(t, rendered)["DATABASE_HOST"]["value"])
 	account := manifestOfKind(t, rendered, "ServiceAccount")
@@ -327,7 +327,7 @@ func TestConfigurationProjectionUsesDeclaredServiceNotContainerName(t *testing.T
 			data, err = yaml.Marshal(doc)
 			require.NoError(t, err)
 			require.NoError(t, os.WriteFile(file, data, 0o600))
-			require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env)))
+			require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env), serviceInjection{}))
 			rendered := buildOverlay(t, root, env.Name)
 			require.Equal(t, "product-staging.database.example", containerEnvironment(t, rendered)["DATABASE_HOST"]["value"])
 			spec, _ = podSpec(manifestOfKind(t, rendered, kindDeployment))
@@ -347,7 +347,7 @@ func TestIdentityProjectionDoesNotRequireAContainerBinding(t *testing.T) {
 	data = []byte(strings.Replace(string(data), "- name: api", "- name: nextjs", 1))
 	data = []byte(strings.Replace(string(data), "          envFrom:\n            - configMapRef:\n                name: api\n", "", 1))
 	require.NoError(t, os.WriteFile(file, data, 0o600))
-	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env)))
+	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env), serviceInjection{}))
 	require.Equal(t, "api", mapField(podTemplate(manifestOfKind(t, buildOverlay(t, root, env.Name), kindDeployment)), "spec")["serviceAccountName"])
 }
 
@@ -357,7 +357,7 @@ func TestIdentityProjectionRejectsServiceAccountInAnotherNamespace(t *testing.T)
 			env := injectionContract(t)
 			root := t.TempDir()
 			writeConsumerTree(t, root, env.Name, env.Namespace, "api", "declared.example")
-			require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env)))
+			require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env), serviceInjection{}))
 			file := filepath.Join(root, "base", "serviceaccount.yaml")
 			raw, err := os.ReadFile(file)
 			require.NoError(t, err)
@@ -386,7 +386,7 @@ func TestRejectedConfigurationCannotReplacePublishedTree(t *testing.T) {
 	_, err := RenderOwnedTree(t.Context(), &RenderOptions{Destination: destination, Promotable: true}, func(ctx context.Context, stage string) error {
 		writeConsumerTree(t, stage, env.Name, env.Namespace, "api", "declared.example")
 		addProjectionPatch(t, stage, env.Name, "ExternalSecret", "- op: replace\n  path: /spec/data/0/remoteRef/key\n  value: other-tenant/api")
-		return projectServiceConfiguration(ctx, stage, &resources.Service{Name: "api"}, env, scopeOf(env))
+		return projectServiceConfiguration(ctx, stage, &resources.Service{Name: "api"}, env, scopeOf(env), serviceInjection{})
 	})
 	require.ErrorContains(t, err, "ExternalSecret")
 	data, err := os.ReadFile(filepath.Join(destination, "retained.yaml"))

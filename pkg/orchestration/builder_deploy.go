@@ -417,16 +417,22 @@ func misplacedSecretKeys(configurations []*basev0.Configuration) []string {
 }
 
 // endpointKeySuffixes name the OIDC identity endpoint keys — authorize/token
-// URLs and the authorize selector — whose only credential signal is the broad
-// AUTH/TOKEN substring markers. They are secret-classified: restricted render
-// requires them in *.secret.env (rendered as secretKeyRefs), so a plaintext
-// value under one of these names is a misplacement, not plain routing config.
+// URLs and selectors — whose only credential signal is an AUTH or TOKEN
+// marker. Core decides which of them are sensitive at all: since core v0.5.6
+// (codefly-dev/core#640) AUTH is matched per word, so a public word such as
+// AUTHORIZE or AUTHORITY no longer marks IDENTITY_AUTHORIZE_URL, while a TOKEN
+// endpoint (IDENTITY_TOKEN_URL) and every other AUTH word (OAUTH_*_URL,
+// NEXTAUTH_URL, AUTHORIZATION_URL) still do. The ones core still classifies are
+// secret-classified here: restricted render requires them in *.secret.env
+// (rendered as secretKeyRefs), so a plaintext value under one of these names
+// is a misplacement, not plain routing config.
 var endpointKeySuffixes = []string{"_URL", "_SELECTOR"}
 
-// endpointMarkerStripper removes the broad substring markers that routinely
-// appear in OAuth authorize/token endpoint names. AUTH and TOKEN are the only
-// markers the suffix classifier keys on; anything else IsSensitiveKey reacts to
-// names a real credential the connection-string safety net promotes on its own.
+// endpointMarkerStripper removes the AUTH and TOKEN markers so the suffix
+// classifier can ask core whether anything else in the name is a credential.
+// AUTH is still stripped although core now matches it per word: OAUTH_*_URL and
+// NEXTAUTH_URL remain sensitive in core solely through their AUTH word, and
+// must stay on the misplacement path rather than the connection-string one.
 var endpointMarkerStripper = strings.NewReplacer("AUTH", "", "TOKEN", "")
 
 var keyCanonicalizer = strings.NewReplacer(" ", "_", "-", "_", ".", "_", "/", "_")
@@ -448,11 +454,16 @@ func promotesToDeploymentSecret(value *basev0.ConfigurationValue) bool {
 }
 
 // isSecretEndpointKey reports whether a key is an OIDC identity endpoint key
-// (…_URL/…_SELECTOR) whose sensitivity comes solely from the broad AUTH/TOKEN
-// markers. It strips those markers and defers to IsSensitiveKey, so a real
-// credential marker — including ones core adds later — still takes the
-// connection-string promotion path without this package tracking core's list.
+// (…_URL/…_SELECTOR) that core classifies as sensitive solely through its
+// AUTH/TOKEN markers. A key core does not classify at all is never one: the CLI
+// only narrows within core's classification, never widens or second-guesses it.
+// Stripping the markers and deferring to IsSensitiveKey means a real credential
+// marker — including ones core adds later — still takes the connection-string
+// promotion path without this package tracking core's list.
 func isSecretEndpointKey(key string) bool {
+	if !resources.IsSensitiveKey(key) {
+		return false
+	}
 	canonical := keyCanonicalizer.Replace(strings.ToUpper(key))
 	hasEndpointSuffix := false
 	for _, suffix := range endpointKeySuffixes {

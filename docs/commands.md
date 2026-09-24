@@ -292,6 +292,24 @@ every consumed module rather than leaving a gap to be discovered at runtime:
   all, both leave federation unconfigured: the run warns and boots, and the
   solution still serves its own routes.
 
+**In a GitOps render** (`codefly deploy gitops render`, restricted profile) the
+same carriers reach the deployed services, but nothing is minted: a render is
+committed, so a secret written into it is published. Public carriers
+(`CODEFLY__API_CONSUMES`, `CODEFLY__MODULE_IDENTITY_PREFIX`) are rendered into
+the service's ConfigMap; every secret carrier is rendered only as a
+`secretKeyRef` on `secret-<service>`, which the projected ExternalSecret
+materializes from the environment's `service-secrets` store under the key named
+by the carrier (the deprecated alias resolves to the stored
+`CODEFLY__MODULE_IDENTITY_SECRET`). The operator writes each secret and its
+digest (the registrar's `federation` group, already delivered by reference) into
+the store once. A render that needs a secret but whose environment declares no
+secret store fails instead of rendering a dangling reference or a value.
+
+Every run and render also carries a service's **self endpoint** —
+`CODEFLY__SELF_ENDPOINT__<MODULE>__<SERVICE>__<ENDPOINT>__<API>`, core's carrier
+— beside its listen address `CODEFLY__ENDPOINT__…`: the in-cluster address in a
+render, the address matching the runtime context in a run.
+
 ### `codefly run job [name]`
 
 Run a job (scheduled or one-shot task).

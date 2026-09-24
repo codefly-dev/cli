@@ -74,6 +74,7 @@ func TestPromotableDeploymentInputsRejectMisplacedSecretEndpointKeys(t *testing.
 				{Key: "IDENTITY_AUTHORIZE_URL", Value: "https://issuer.example.com/authorize"},
 				{Key: "IDENTITY_TOKEN_URL", Value: "https://issuer.example.com/token"},
 				{Key: "IDENTITY_AUTHORIZE_SELECTOR", Value: "primary"},
+				{Key: "OAUTH_CALLBACK_URL", Value: "https://app.example.com/callback"},
 				{Key: "IDENTITY_ISSUER", Value: "https://issuer.example.com"},
 			},
 		}},
@@ -83,12 +84,15 @@ func TestPromotableDeploymentInputsRejectMisplacedSecretEndpointKeys(t *testing.
 	require.Error(t, err)
 	// Every misplaced key is named in one error, each with the *.secret.env that
 	// resolves it — the reported case is a local identity.env file.
-	require.Contains(t, err.Error(), "IDENTITY_AUTHORIZE_URL in users/accounts (declare it as a secret, e.g. identity.secret.env)")
 	require.Contains(t, err.Error(), "IDENTITY_TOKEN_URL in users/accounts (declare it as a secret, e.g. identity.secret.env)")
-	require.Contains(t, err.Error(), "IDENTITY_AUTHORIZE_SELECTOR in users/accounts (declare it as a secret, e.g. identity.secret.env)")
+	require.Contains(t, err.Error(), "OAUTH_CALLBACK_URL in users/accounts (declare it as a secret, e.g. identity.secret.env)")
 	// A plain endpoint-shaped key (no credential marker) is not a secret and must
-	// not be dragged into the misplacement error.
+	// not be dragged into the misplacement error — and since core matches AUTH per
+	// word (core#640), neither is an authorize endpoint: AUTHORIZE names a public
+	// OIDC endpoint, not credential material.
 	require.NotContains(t, err.Error(), "IDENTITY_ISSUER")
+	require.NotContains(t, err.Error(), "IDENTITY_AUTHORIZE_URL")
+	require.NotContains(t, err.Error(), "IDENTITY_AUTHORIZE_SELECTOR")
 }
 
 func TestPromotableDeploymentInputsAggregateMisplacedKeysAcrossConfigurations(t *testing.T) {
@@ -97,7 +101,7 @@ func TestPromotableDeploymentInputsAggregateMisplacedKeysAcrossConfigurations(t 
 		Infos: []*basev0.ConfigurationInformation{{
 			Name: "identity",
 			ConfigurationValues: []*basev0.ConfigurationValue{
-				{Key: "IDENTITY_AUTHORIZE_URL", Value: "https://issuer.example.com/authorize"},
+				{Key: "IDENTITY_TOKEN_URL", Value: "https://issuer.example.com/token"},
 			},
 		}},
 	}
@@ -117,7 +121,7 @@ func TestPromotableDeploymentInputsAggregateMisplacedKeysAcrossConfigurations(t 
 	// surface in a single error, each traceable to its own configuration scope —
 	// the workspace file uses the friendly "workspace" label, the dependency uses
 	// its service origin (whose info name is not a local file the operator edits).
-	require.Contains(t, err.Error(), "IDENTITY_AUTHORIZE_URL in workspace (declare it as a secret, e.g. identity.secret.env)")
+	require.Contains(t, err.Error(), "IDENTITY_TOKEN_URL in workspace (declare it as a secret, e.g. identity.secret.env)")
 	require.Contains(t, err.Error(), "IDENTITY_TOKEN_URL in infra/postgres (declare it as a secret, e.g. connection.secret.env)")
 }
 

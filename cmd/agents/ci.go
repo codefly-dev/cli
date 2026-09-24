@@ -18,6 +18,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/dockerhost"
 	"github.com/codefly-dev/cli/pkg/sourceworkspace"
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/failures"
@@ -666,7 +667,11 @@ func agentChildEnvironment(codeflyHome, goWorkFile string, additional ...string)
 	for _, name := range overrideOrder {
 		environment = append(environment, name+"="+overrides[name])
 	}
-	return environment
+	// Agent CI children scan the images they build with syft, which dials
+	// DOCKER_HOST or the default socket and never reads the active docker
+	// context. Hand them the endpoint the CLI itself resolves, so the SBOM step
+	// reaches the same engine as the build on OrbStack, colima or Docker Desktop.
+	return dockerhost.Bind(environment)
 }
 
 type agentWorktreeSnapshot struct {
@@ -748,12 +753,12 @@ func runRunnableConformance(ctx context.Context, temporary, agentHome string, ma
 }
 
 func agentConformanceEnvironment(agentHome string) []string {
-	return append(os.Environ(),
+	return dockerhost.Bind(append(os.Environ(),
 		resources.CodeflyHomeEnv+"="+agentHome,
 		"CODEFLY_AGENT_SOURCE=local",
 		"CODEFLY_COLOR=never",
 		"CI=1",
-	)
+	))
 }
 
 func runGeneratedServiceConformance(ctx context.Context, temporary, agentHome string, manifest agentYAML) ([]byte, string, error) {

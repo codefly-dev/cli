@@ -126,7 +126,7 @@ func TestProjectRenderedServiceConfigurationScopesEachModule(t *testing.T) {
 		writeServiceTreeReferencingKeys(t, root, env.Name, env.ModuleNamespace(workspace, module), "store", []string{"PASSWORD"})
 		graph[resources.ServiceUnique(module, "store")] = &resources.Service{Name: "store"}
 	}
-	require.NoError(t, projectRenderedServiceConfiguration(t.Context(), stage, workspace, env, graph))
+	require.NoError(t, projectRenderedServiceConfiguration(t.Context(), stage, workspace, env, graph, nil))
 
 	for module, namespace := range map[string]string{"saas": "platform-saas", "documents": "platform-documents"} {
 		data, err := os.ReadFile(filepath.Join(stage, "modules", module, serviceUnitDir, "store", "overlays", "staging", "external-secret.yaml"))

@@ -355,7 +355,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		WorkspaceConfigurations:     workspaceConfigurations,
 		DependenciesConfigurations:  dependenciesConfigurations,
 		Fixture:                     runner.fixture,
-		Overrides:                   runner.runtimeOverrides(),
+		Overrides:                   runner.runtimeOverridesFor(networkMappings),
 	}
 	err = resources.Validate(req)
 	if err != nil {
@@ -1325,7 +1325,38 @@ func (runner *Runner) WithOverrides(overrides map[string]string) {
 // derive the same carrier from Environment, so both paths converge on the
 // identical value.
 func (runner *Runner) runtimeOverrides() map[string]string {
-	overrides := make(map[string]string, len(runner.overrides)+1)
+	return runner.runtimeOverridesFor(runner.networkMappings)
+}
+
+// selfNetworkAccess is the access this runner's peers reach it with — its own
+// runtime context's, as core's RuntimeWrapper.AddSelfEndpoints selects: a
+// native process advertises its host address, a container its container-network
+// address.
+func (runner *Runner) selfNetworkAccess() *basev0.NetworkAccess {
+	runtimeContext, err := resources.NewRuntimeContext(runner.runtimeContext)
+	if err != nil {
+		return resources.NewNativeNetworkAccess()
+	}
+	return resources.NetworkAccessFromRuntimeContext(runtimeContext)
+}
+
+// runtimeOverridesFor derives the runtime overrides against a given view of the
+// service's own network mappings. Init has only the proposed mappings — the
+// accepted set does not exist until the agent answers — and an agent keeps the
+// first non-empty override set it receives, so the self-endpoint carrier must
+// already ride Init rather than first appear at Start.
+//
+// The self carrier is layered beneath the caller's overrides: it is derived,
+// and an explicit --set of the same key is the operator's to make. It rides the
+// override seam so it reaches agents built before core emits it themselves
+// (RuntimeWrapper.AddSelfEndpoints); the derivation is core's, so both paths
+// converge on the same value.
+func (runner *Runner) runtimeOverridesFor(own []*basev0.NetworkMapping) map[string]string {
+	self := SelfEndpointEnvironmentVariables(context.Background(), own, runner.selfNetworkAccess())
+	overrides := make(map[string]string, len(self)+len(runner.overrides)+1)
+	for key, value := range self {
+		overrides[key] = value
+	}
 	for key, value := range runner.overrides {
 		overrides[key] = value
 	}
