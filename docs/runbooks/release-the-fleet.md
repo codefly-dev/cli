@@ -40,7 +40,11 @@ authorization; they are not permission to merge or publish automatically.
    codefly agent deps --dir /path/to/affected-agent --pin vX.Y.Z
    # commit each repo, then per agent repo (clean, on main, synced):
    codefly publish patch                   # runs release CI + creates the GitHub release
+   codefly publish patch --remote          # or: the same release, run on GitHub (publish.yml caller)
    ```
+   An agent repository that carries the `publish.yml` caller of
+   `publish-agent.yml` is released from GitHub instead of from this machine; see
+   [Releasing from GitHub](../commands.md#releasing-from-github-instead-of-a-laptop).
    When that Core API change also requires a library update, select it explicitly
    in the same operation, for example `--dependency github.com/codefly-dev/sdk-go@vA.B.C`.
    Repeat `--dependency` for additional libraries. Only modules already requiring

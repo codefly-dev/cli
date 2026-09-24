@@ -48,9 +48,18 @@ var loaderPlatforms = []platform{
 // every loader platform, and the absence of any GitHub credential to
 // authenticate the release API calls. Both are deterministic and
 // side-effect free, so they are safe to run during the validate phase.
-func checkAgentReleasePreconditions() error {
-	if err := hostBuildsLoaderPlatforms(); err != nil {
-		return err
+//
+// The host only has to build every loader platform when publish itself
+// uploads the archives (release.owner: cli). When the repository's release
+// workflow owns publication, that workflow builds and uploads every platform,
+// and publish verifies what it published; the host's own build is release-grade
+// qualification, which any host that runs agent CI can do. That is what lets a
+// workflow-owned agent be released from a linux/amd64 CI runner.
+func checkAgentReleasePreconditions(publication agentPublication) error {
+	if publication.Owner != publicationWorkflow {
+		if err := hostBuildsLoaderPlatforms(); err != nil {
+			return err
+		}
 	}
 	if gh.Token() == "" {
 		return fmt.Errorf("a GitHub token is required to publish agent release assets; set GITHUB_TOKEN or GH_TOKEN, or authenticate the gh CLI (gh auth login)")
@@ -64,14 +73,19 @@ func checkAgentReleasePreconditions() error {
 // producible targets is fully determined by the host — no need to run CI
 // to discover an incapable host.
 func hostBuildsLoaderPlatforms() error {
-	missing := missingLoaderPlatforms(runtime.GOOS, runtime.GOARCH)
+	hostOS, hostArch := hostPlatform()
+	missing := missingLoaderPlatforms(hostOS, hostArch)
 	if len(missing) > 0 {
 		return fmt.Errorf(
-			"this host (%s/%s) cannot build required loader platform(s) %s; publish agents from a host that can — e.g. darwin/arm64 covers darwin/arm64 plus the linux/amd64 container build",
-			runtime.GOOS, runtime.GOARCH, strings.Join(missing, ", "))
+			"this host (%s/%s) cannot build required loader platform(s) %s; publish agents from a host that can — e.g. darwin/arm64 covers darwin/arm64 plus the linux/amd64 container build — or let the repository's release workflow own publication (release.owner: workflow)",
+			hostOS, hostArch, strings.Join(missing, ", "))
 	}
 	return nil
 }
+
+// hostPlatform is the os/arch this process builds natively; a variable so a
+// test can stand in for a CI runner.
+var hostPlatform = func() (string, string) { return runtime.GOOS, runtime.GOARCH }
 
 // missingLoaderPlatforms returns the required loader platforms a host with
 // the given os/arch cannot produce. CI emits the native (host) build plus
@@ -231,6 +245,18 @@ func collectLoaderAssets(reg *resources.AgentKindRegistration, ciOutput, name, v
 			strings.Join(missing, ", "), strings.Join(produced, ", "))
 	}
 	return assets, nil
+}
+
+// expectedLoaderAssets names the archive every required loader platform must
+// carry on a release the agent's own workflow publishes. Nothing is staged:
+// the workflow is the sole producer of those bytes, and verifyWorkflowRelease
+// establishes them against the checksums that workflow published.
+func expectedLoaderAssets(reg *resources.AgentKindRegistration, name, version string) []loaderAsset {
+	assets := make([]loaderAsset, 0, len(loaderPlatforms))
+	for _, p := range loaderPlatforms {
+		assets = append(assets, loaderAsset{platform: p, archivePath: loaderArchiveName(reg, name, version, p)})
+	}
+	return assets
 }
 
 func copyFile(src, dst string) (err error) {
@@ -428,6 +454,10 @@ type agentReleaser struct {
 	stageDir        string
 	assets          []loaderAsset
 	publication     agentPublication
+	// workflowPoll and registrationGrace pace the wait on a workflow-owned
+	// publication; zero means the production defaults.
+	workflowPoll      time.Duration
+	registrationGrace time.Duration
 }
 
 type releaseGate interface {
@@ -495,7 +525,7 @@ func checkAgentReleasePreconditionsForManifest(path string) error {
 		if err := identity.Release.validate(filepath.Dir(path)); err != nil {
 			return err
 		}
-		return checkAgentReleasePreconditions()
+		return checkAgentReleasePreconditions(identity.Release)
 	case sourceTagKinds[identity.Kind]:
 		return nil
 	default:
@@ -523,19 +553,19 @@ func unsupportedReleaseKindError(kind string) error {
 }
 
 func newAgentReleaser(agentDir string) (*agentReleaser, error) {
-	if err := checkAgentReleasePreconditions(); err != nil {
-		return nil, err
-	}
-	self, err := os.Executable()
-	if err != nil {
-		return nil, fmt.Errorf("resolve codefly executable: %w", err)
-	}
 	identity, err := readAgentIdentity(filepath.Join(agentDir, "agent.codefly.yaml"))
 	if err != nil {
 		return nil, err
 	}
 	if validationErr := identity.Release.validate(agentDir); validationErr != nil {
 		return nil, validationErr
+	}
+	if preconditionErr := checkAgentReleasePreconditions(identity.Release); preconditionErr != nil {
+		return nil, preconditionErr
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve codefly executable: %w", err)
 	}
 	kind := identity.Kind
 	if kind == "" {
@@ -581,6 +611,12 @@ func (r *agentReleaser) beforeCommit(ctx context.Context, newTag string) error {
 	version := strings.TrimPrefix(newTag, "v")
 	if err := runReleaseAgentCI(ctx, r.self, r.agentDir, r.ciOutput, false, r.skipConformance); err != nil {
 		return err
+	}
+	if r.publication.Owner == publicationWorkflow {
+		// The workflow builds and uploads every archive; what publish needs
+		// from here on is the set of names it must find on that release.
+		r.assets = expectedLoaderAssets(r.reg, r.name, version)
+		return nil
 	}
 	assets, err := collectLoaderAssets(r.reg, r.ciOutput, r.name, version, r.stageDir)
 	if err != nil {

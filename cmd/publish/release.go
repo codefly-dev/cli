@@ -23,6 +23,13 @@ type Engine struct {
 	WorkDir             string // git operations run from here; defaults to manifest's dir parent
 	SignTag             bool
 
+	// CI runs the release on a machine nobody is sitting at: a CI runner with
+	// no git identity and no signing key. See ciGitArgs.
+	CI bool
+	// ciArgs are the `-c` overrides CI mode prepends to every git call,
+	// resolved once by prepareCI.
+	ciArgs []string
+
 	// Landing decides how the release commit and its tag reach origin. Nil
 	// means a direct atomic push of main and the tag — right for a repo whose
 	// main accepts one, and the only landing that needs no GitHub API access.
@@ -50,6 +57,9 @@ type Engine struct {
 // failure surface should be aborted with the working tree untouched
 // where possible.
 func (e *Engine) Release(ctx context.Context) (string, error) {
+	if err := e.prepareCI(ctx); err != nil {
+		return "", err
+	}
 	if err := e.preflight(ctx); err != nil {
 		return "", err
 	}
@@ -471,6 +481,9 @@ func (e *Engine) ReTag(ctx context.Context) (string, error) {
 	if e.Manifest != nil && e.Manifest.Mode == ModeCLI {
 		return "", errors.New("CLI release tags are immutable; publish a new version instead")
 	}
+	if err := e.prepareCI(ctx); err != nil {
+		return "", err
+	}
 	if err := e.preflight(ctx); err != nil {
 		return "", err
 	}
@@ -547,7 +560,8 @@ func (e *Engine) tagExistsRemotely(ctx context.Context, tag string) (bool, error
 // would require us to wire signing manually, and the codefly
 // convention is signed commits everywhere.
 func (e *Engine) git(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	// ciArgs are fixed `-c` overrides built by prepareCI, never caller input.
+	cmd := exec.CommandContext(ctx, "git", append(append([]string(nil), e.ciArgs...), args...)...) //nolint:gosec // G204: git with internally constructed arguments
 	if e.WorkDir != "" {
 		cmd.Dir = e.WorkDir
 	}

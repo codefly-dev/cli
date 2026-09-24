@@ -80,6 +80,10 @@ type pullRequestLanding struct {
 	// poll spaces out the mergeability checks while CI runs. The overall
 	// budget is the context's: the caller sizes it to the repo's CI.
 	poll time.Duration
+	// registrationGrace is how long a wait tolerates no CI at all on the
+	// commit it watches before concluding none is coming. Zero means
+	// checksRegistrationGrace.
+	registrationGrace time.Duration
 }
 
 // newPullRequestLanding resolves the GitHub repository behind origin and
@@ -160,6 +164,7 @@ func (l *pullRequestLanding) open(ctx context.Context, branch, tag string) (int,
 // a direct push produced — which is also the marker a re-run reads to tell an
 // unfinished release from a fresh one.
 func (l *pullRequestLanding) merge(ctx context.Context, number int, tag string) error {
+	deadline := newRegistrationDeadline(l.registrationGrace)
 	for {
 		pr, _, err := l.client.PullRequests.Get(ctx, l.owner, l.repo, number)
 		if err != nil {
@@ -171,7 +176,7 @@ func (l *pullRequestLanding) merge(ctx context.Context, number int, tag string) 
 		state := pr.GetMergeableState()
 		switch state {
 		case "clean", "unstable", "has_hooks":
-			ready, checksErr := l.checksReady(ctx, pr.GetHead().GetSHA())
+			ready, checksErr := l.checksReady(ctx, pr.GetHead().GetSHA(), deadline)
 			if checksErr != nil {
 				return fmt.Errorf("release pull request #%d: %w", number, checksErr)
 			}
@@ -208,7 +213,7 @@ func (l *pullRequestLanding) merge(ctx context.Context, number int, tag string) 
 				return fmt.Errorf("update release pull request #%d onto main: %w", number, err)
 			}
 		case "blocked":
-			if _, checksErr := l.checksReady(ctx, pr.GetHead().GetSHA()); checksErr != nil {
+			if _, checksErr := l.checksReady(ctx, pr.GetHead().GetSHA(), deadline); checksErr != nil {
 				return fmt.Errorf("release pull request #%d: %w", number, checksErr)
 			}
 		}
@@ -222,32 +227,52 @@ func (l *pullRequestLanding) merge(ctx context.Context, number int, tag string) 
 
 // checksReady requires positive success, not merely permission to merge.
 // An unreadable or absent check list never authorizes release publication.
-func (l *pullRequestLanding) checksReady(ctx context.Context, sha string) (bool, error) {
-	ready, failed, err := l.readChecks(ctx, sha)
+// A commit on which no CI at all has registered once the deadline's grace is
+// spent fails the wait instead of holding it for the whole publish budget.
+func (l *pullRequestLanding) checksReady(ctx context.Context, sha string, deadline *registrationDeadline) (bool, error) {
+	verdict, err := l.inspectChecks(ctx, sha)
 	if err != nil {
 		fmt.Printf("==> warning: cannot read checks for %s, still waiting: %v\n", sha, err)
 		return false, nil
 	}
-	if len(failed) > 0 {
-		return false, fmt.Errorf("is red (%s); fix CI and publish again", strings.Join(failed, ", "))
+	if len(verdict.failed) > 0 {
+		return false, fmt.Errorf("is red (%s); fix CI and publish again", strings.Join(verdict.failed, ", "))
 	}
-	return ready, nil
+	if deadline != nil && deadline.expired(verdict.observed) {
+		return false, fmt.Errorf("%s after %s: %w", sha, deadline.grace, errNothingRegistered)
+	}
+	return verdict.ready, nil
+}
+
+// checkVerdict is what the checks on one commit say about it.
+type checkVerdict struct {
+	ready  bool
+	failed []string
+	// observed reports whether any CI registered on the commit at all —
+	// running, finished or failed. Dependabot's own run is not CI.
+	observed bool
 }
 
 func (l *pullRequestLanding) readChecks(ctx context.Context, sha string) (bool, []string, error) {
+	verdict, err := l.inspectChecks(ctx, sha)
+	return verdict.ready, verdict.failed, err
+}
+
+func (l *pullRequestLanding) inspectChecks(ctx context.Context, sha string) (checkVerdict, error) {
 	options := &github.ListCheckRunsOptions{Filter: github.Ptr("latest"), ListOptions: github.ListOptions{PerPage: 100}}
 	var failed []string
-	pending, succeeded := false, false
+	pending, succeeded, observed := false, false, false
 	for {
 		runs, response, err := l.client.Checks.ListCheckRunsForRef(ctx, l.owner, l.repo, sha, options)
 		if err != nil {
-			return false, nil, err
+			return checkVerdict{}, err
 		}
 		for _, run := range runs.CheckRuns {
 			if run.GetApp().GetSlug() == dependabotApp {
 				continue
 			}
-			if run.GetStatus() != "completed" {
+			observed = true
+			if run.GetStatus() != runCompleted {
 				pending = true
 				continue
 			}
@@ -270,9 +295,10 @@ func (l *pullRequestLanding) readChecks(ctx context.Context, sha string) (bool, 
 	}
 	status, _, err := l.client.Repositories.GetCombinedStatus(ctx, l.owner, l.repo, sha, &github.ListOptions{PerPage: 100})
 	if err != nil {
-		return false, nil, err
+		return checkVerdict{}, err
 	}
 	if status.GetTotalCount() > 0 {
+		observed = true
 		switch status.GetState() {
 		case checkSuccess:
 			succeeded = true
@@ -282,12 +308,13 @@ func (l *pullRequestLanding) readChecks(ctx context.Context, sha string) (bool, 
 			failed = append(failed, "commit status "+status.GetState())
 		}
 	}
-	return succeeded && !pending && len(failed) == 0, failed, nil
+	return checkVerdict{ready: succeeded && !pending && len(failed) == 0, failed: failed, observed: observed}, nil
 }
 
 func (l *pullRequestLanding) waitForChecks(ctx context.Context, sha string) error {
+	deadline := newRegistrationDeadline(l.registrationGrace)
 	for {
-		ready, err := l.checksReady(ctx, sha)
+		ready, err := l.checksReady(ctx, sha, deadline)
 		if err != nil {
 			return err
 		}
