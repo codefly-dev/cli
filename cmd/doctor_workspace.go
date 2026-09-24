@@ -56,6 +56,8 @@ const (
 	codeServiceOverrideActive      = "service_override_active"
 	codeServiceOverrideUnresolved  = "service_override_unresolved"
 	codeServiceOverrideDrift       = "service_override_contract_drift"
+	codeAgentOverrideActive        = "agent_override_active"
+	codeAgentOverrideInvalid       = "agent_override_invalid"
 	codeTimeout                    = "timeout"
 )
 
@@ -141,6 +143,7 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	checkModuleTrust(ctx, ws, report)
 	checkServiceOverrides(ctx, ws, report)
 	materialized := checkModulesMaterialized(ctx, ws, report)
+	checkAgentOverrides(ctx, ws, report)
 
 	env := checkEnvironment(ws, opts.env, report)
 	if env == nil {
@@ -363,6 +366,26 @@ func checkServiceOverrides(ctx context.Context, ws *resources.Workspace, report 
 		for _, service := range sortedServiceNames(directive.Services) {
 			checkServiceOverride(ctx, ref, service, resolution.Services[service], declared, declaredErr, report)
 		}
+	}
+}
+
+// checkAgentOverrides lists every committed agent-overrides entry in force, and
+// fails on one a run or render would refuse (malformed, or naming an agent no
+// composed service runs on). An active override is informational: it is
+// committed and reviewed, but the services it moves run at a version their
+// modules do not pin, which is exactly what should be visible at a glance.
+func checkAgentOverrides(ctx context.Context, ws *resources.Workspace, report *workspaceReadinessReport) {
+	uses, err := composition.ResolveAgentOverrides(ctx, ws)
+	if err != nil {
+		report.add(codeAgentOverrideInvalid, resources.AgentOverridesKey, "fail",
+			err.Error(),
+			fmt.Sprintf("fix or drop the entry in %s.%s", resources.WorkspaceConfigurationName, resources.AgentOverridesKey))
+		return
+	}
+	for _, use := range uses {
+		report.add(codeAgentOverrideActive, "agent override "+use.Key(), "ok",
+			fmt.Sprintf("%s: %s", use.Line(), strings.Join(use.Services, ", ")),
+			fmt.Sprintf("once the modules pin %s themselves, drop %s from %s.%s", use.Version, use.Key(), resources.WorkspaceConfigurationName, resources.AgentOverridesKey))
 	}
 }
 
@@ -1308,7 +1331,8 @@ environment_not_found, module_not_found, service_not_found,
 module_reference_unresolved,
 module_trust_missing, module_checkout_version_drift,
 service_override_active, service_override_unresolved,
-service_override_contract_drift,
+service_override_contract_drift, agent_override_active,
+agent_override_invalid,
 configuration_directory_missing, configuration_missing,
 configuration_invalid, configuration_duplicate, provider_not_configured,
 provider_executable_missing, provider_authentication_required,
