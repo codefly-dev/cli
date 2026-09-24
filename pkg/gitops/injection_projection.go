@@ -167,6 +167,12 @@ func projectServiceInjection(ctx context.Context, root, service string, env *env
 				continue
 			}
 			matched++
+			// A container that loads no Codefly ConfigMap (a gateway image that is
+			// not a Codefly SDK process) reads no carrier: offered ones are skipped
+			// for it exactly as for an unclaimed service; required ones refuse.
+			if _, loads := boundConfigMap(container, namespace, service, configMaps); !loads && offeredOnly(injection) {
+				continue
+			}
 			if len(injection.Public) > 0 {
 				bound, ok := boundConfigMap(container, namespace, service, configMaps)
 				if !ok {
@@ -366,6 +372,9 @@ func validateProjectedInjection(root, service string, env *environments.Environm
 				continue
 			}
 			matched++
+			if _, loads := boundConfigMap(container, namespace, service, configMaps); !loads && offeredOnly(injection) {
+				continue
+			}
 			entries := map[string]map[string]any{}
 			for _, item := range sliceField(container, "env") {
 				entry, _ := item.(map[string]any)
