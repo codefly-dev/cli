@@ -1123,20 +1123,27 @@ var manifestFieldNormalizer = strings.NewReplacer("-", "", "_", "", ".", "")
 // isCredentialKey reports whether a manifest key names credential material, so a
 // non-empty inline value under it is a leaked credential.
 //
-// resources.IsSensitiveKey is the single source of truth for configuration
-// names — an env entry's name, a key of a ConfigMap/Secret data map — which are
-// exactly the names orchestration classifies through the same function to
-// promote a value to a secretKeyRef. A plaintext value the guard sees under a
-// name core calls sensitive therefore escaped promotion, and one core does not
-// (MAX_OUTPUT_TOKENS: a model output-token limit, core#645) is ordinary
-// configuration the guard must not refuse.
+// Core is the single source of truth for configuration names — an env entry's
+// name, a key of a ConfigMap/Secret data map. Those are environment variable
+// names, and many are codefly carriers whose name embeds module, service and
+// endpoint names, so they go through resources.IsSensitiveEnvironmentVariable,
+// which classifies the configuration key a carrier holds and never its
+// structure: CODEFLY__ENDPOINT__SAAS__AUTH_GATEWAY__GRPC__GRPC is an address,
+// not a credential, although the service is called auth-gateway. A plaintext
+// value the guard sees under a name core calls sensitive escaped promotion, and
+// one core does not (MAX_OUTPUT_TOKENS: a model output-token limit, core#645)
+// is ordinary configuration the guard must not refuse.
 //
 // Every key, configuration name or schema field, is also checked against the
 // camelCase field fragments above, and any key mentioning a token defers to
 // core, which keeps every TOKEN sensitive except a whole-word TOKENS count.
 func isCredentialKey(key string, configurationName bool) bool {
-	if configurationName && resources.IsSensitiveKey(key) {
-		return true
+	classify := resources.IsSensitiveKey
+	if configurationName {
+		classify = resources.IsSensitiveEnvironmentVariable
+		if classify(key) {
+			return true
+		}
 	}
 	normalized := strings.ToLower(manifestFieldNormalizer.Replace(key))
 	for _, fragment := range manifestFieldCredentialFragments {
@@ -1144,7 +1151,7 @@ func isCredentialKey(key string, configurationName bool) bool {
 			return true
 		}
 	}
-	return strings.Contains(normalized, "token") && resources.IsSensitiveKey(key)
+	return strings.Contains(normalized, "token") && classify(key)
 }
 
 // isConfigurationDataPath reports whether the map at path holds configuration
