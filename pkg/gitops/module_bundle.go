@@ -149,15 +149,16 @@ type transportNeutralModuleWorkspace struct {
 }
 
 type transportNeutralWorkspaceEnvironment struct {
-	Name                 string                                            `yaml:"name"`
-	Description          string                                            `yaml:"description,omitempty"`
-	NamingScope          string                                            `yaml:"naming-scope,omitempty"`
-	Fixture              string                                            `yaml:"fixture,omitempty"`
-	ConfigurationProfile string                                            `yaml:"configuration-profile,omitempty"`
-	Cluster              *transportNeutralModuleCluster                    `yaml:"cluster,omitempty"`
-	Namespace            string                                            `yaml:"namespace,omitempty"`
-	Ingress              []environments.EnvironmentIngressRoute            `yaml:"ingress,omitempty"`
-	ManagedServices      map[string]environments.EnvironmentManagedService `yaml:"managed-services,omitempty"`
+	Name                  string                                            `yaml:"name"`
+	Description           string                                            `yaml:"description,omitempty"`
+	NamingScope           string                                            `yaml:"naming-scope,omitempty"`
+	Fixture               string                                            `yaml:"fixture,omitempty"`
+	ConfigurationProfile  string                                            `yaml:"configuration-profile,omitempty"`
+	ConfigurationProfiles []string                                          `yaml:"configuration-profiles,omitempty"`
+	Cluster               *transportNeutralModuleCluster                    `yaml:"cluster,omitempty"`
+	Namespace             string                                            `yaml:"namespace,omitempty"`
+	Ingress               []environments.EnvironmentIngressRoute            `yaml:"ingress,omitempty"`
+	ManagedServices       map[string]environments.EnvironmentManagedService `yaml:"managed-services,omitempty"`
 }
 
 type transportNeutralModuleCluster struct {
@@ -183,14 +184,15 @@ func encodeTransportNeutralModuleWorkspace(workspace *resources.Workspace, modul
 			return nil, fmt.Errorf("workspace contains an empty environment")
 		}
 		projected := transportNeutralWorkspaceEnvironment{
-			Name:                 environment.Name,
-			Description:          environment.Description,
-			NamingScope:          environment.NamingScope,
-			Fixture:              environment.Fixture,
-			ConfigurationProfile: environment.ConfigurationProfile,
-			Namespace:            environment.ModuleNamespace(workspace, module),
-			Ingress:              environment.Ingress,
-			ManagedServices:      environment.ManagedServices,
+			Name:                  environment.Name,
+			Description:           environment.Description,
+			NamingScope:           environment.NamingScope,
+			Fixture:               environment.Fixture,
+			ConfigurationProfile:  environment.ConfigurationProfile,
+			ConfigurationProfiles: environment.ConfigurationProfiles,
+			Namespace:             environment.ModuleNamespace(workspace, module),
+			Ingress:               environment.Ingress,
+			ManagedServices:       environment.ManagedServices,
 		}
 		if environment.Cluster != nil {
 			projected.Cluster = &transportNeutralModuleCluster{Kind: environment.Cluster.Kind}

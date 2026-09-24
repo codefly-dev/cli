@@ -60,3 +60,23 @@ func TestSelectionPreservesScalarSpellings(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, selected, again)
 }
+
+// A declared profile chain is admitted and reaches Core's runtime environment,
+// which reads each configuration location through it.
+func TestSelectionCarriesTheConfigurationProfileChain(t *testing.T) {
+	var workspace resources.Workspace
+	require.NoError(t, yaml.Unmarshal([]byte(`name: product
+environments:
+  - name: staging
+    configuration-profiles: [staging, local]
+`), &workspace))
+	env, err := environments.Select(&workspace, "staging")
+	require.NoError(t, err)
+	require.Equal(t, []string{"staging", "local"}, env.ConfigurationProfiles)
+	names, err := env.Runtime().ConfigurationProfileNames()
+	require.NoError(t, err)
+	require.Equal(t, []string{"staging", "local"}, names)
+	own, err := env.ConfigurationProfileName()
+	require.NoError(t, err)
+	require.Equal(t, "staging", own)
+}
