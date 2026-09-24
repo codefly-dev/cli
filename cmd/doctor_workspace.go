@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codefly-dev/cli/cmd/publish"
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/environments"
 	hostprovider "github.com/codefly-dev/cli/pkg/provider"
@@ -58,6 +59,7 @@ const (
 	codeServiceOverrideDrift       = "service_override_contract_drift"
 	codeAgentOverrideActive        = "agent_override_active"
 	codeAgentOverrideInvalid       = "agent_override_invalid"
+	codeAgentDevBuild              = "agent_dev_build"
 	codeTimeout                    = "timeout"
 )
 
@@ -168,6 +170,8 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	if scope == nil {
 		return report
 	}
+
+	checkDevAgents(scope, report)
 
 	toResolve := checkConfigurationSources(ctx, ws, env, opts.module != "" || opts.service != "", scope, requiredBy, report)
 
@@ -827,6 +831,20 @@ func checkScope(ctx context.Context, ws *resources.Workspace, moduleName, servic
 	return scope, requiredBy
 }
 
+// checkDevAgents warns about every service in scope running an agent dev build
+// (`codefly publish dev`): an unreleased agent, fine for iteration and never
+// something a workspace should ship on.
+func checkDevAgents(scope []*resources.Service, report *workspaceReadinessReport) {
+	for _, svc := range scope {
+		if svc.Agent == nil || !publish.IsDevVersion(svc.Agent.Version) {
+			continue
+		}
+		report.add(codeAgentDevBuild, "agent "+svc.Agent.Identifier(), "warn",
+			fmt.Sprintf("%s runs unreleased agent dev build %s", serviceUnique(svc), svc.Agent.Version),
+			fmt.Sprintf("release the agent with `codefly publish patch` and pin that version instead of %s", svc.Agent.Version))
+	}
+}
+
 func serviceUnique(svc *resources.Service) string {
 	if identity, err := svc.Identity(); err == nil {
 		return identity.Unique()
@@ -1334,6 +1352,7 @@ module_trust_missing, module_checkout_version_drift,
 service_override_active, service_override_unresolved,
 service_override_contract_drift, agent_override_active,
 agent_override_invalid, gitops_dev_deployment_active,
+agent_dev_build,
 configuration_directory_missing, configuration_missing,
 configuration_invalid, configuration_duplicate, provider_not_configured,
 provider_executable_missing, provider_authentication_required,
