@@ -726,6 +726,10 @@ type Environment struct {
 	// Codefly deliberately loads configurations/local. It is explicit and
 	// opt-in; the default remains the environment's own name.
 	ConfigurationProfile string `yaml:"configuration-profile,omitempty"`
+	// ConfigurationProfiles is Core's explicit profile chain, the alternative
+	// to ConfigurationProfile: each configuration location reads the first
+	// profile it holds (resources.Environment.ConfigurationProfiles).
+	ConfigurationProfiles []string `yaml:"configuration-profiles,omitempty"`
 
 	// Deploy-target overrides (CLI-side; not serialized to proto).
 	// Empty values fall back to legacy defaults (local k3d, ~/.kube/config,
@@ -804,7 +808,8 @@ func (env *Environment) Runtime() *resources.Environment {
 	}
 	return &resources.Environment{
 		Name: env.Name, Description: env.Description, NamingScope: env.NamingScope,
-		Fixture: env.Fixture, ConfigurationProfile: env.ConfigurationProfile, Secrets: env.Secrets,
+		Fixture: env.Fixture, ConfigurationProfile: env.ConfigurationProfile,
+		ConfigurationProfiles: env.ConfigurationProfiles, Secrets: env.Secrets,
 	}
 }
 

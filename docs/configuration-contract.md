@@ -57,8 +57,10 @@ secret, which the environment block alone cannot see.
 - Resolved delivery repository, branch and path when declaring a GitOps target.
   The CLI neither appends the namespace nor chooses a branch.
 
-Local configuration can declare `configuration-profile` and `secrets` without a
-cluster or registry. Import is configuration admission, not deployment approval:
+Local configuration can declare `configuration-profile` (or the explicit chain
+`configuration-profiles`, e.g. `[staging, local]`: each configuration location
+reads the first profile it holds, never merging profiles — Core's
+`docs/workspace-composition.md`) and `secrets` without a cluster or registry. Import is configuration admission, not deployment approval:
 CLI still validates the selected operation, service graph and deployment target.
 Local secret resolution and deployed secret projection remain separate consumers
 of the existing configuration model; secret values do not belong in descriptors.

@@ -878,15 +878,24 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 	// The profile, not the environment name, selects the directory — the same
 	// choice core makes when the run loads.
 	runtimeEnv := env.Runtime()
-	profile, err := runtimeEnv.ConfigurationProfileName()
+	profiles, err := runtimeEnv.ConfigurationProfileNames()
 	if err != nil {
 		report.add(codeEnvironmentNotFound, "environment", "fail",
 			fmt.Sprintf("environment %q selects an invalid configuration profile: %v", env.Name, err),
 			fmt.Sprintf("fix `configuration-profile` of environment %q in %s", env.Name, resources.WorkspaceConfigurationName))
 		return nil
 	}
-	wsCfgDir := filepath.Join(ws.Dir(), "configurations", profile)
-	relCfgDir := filepath.Join("configurations", profile)
+	profile := profiles[0]
+	// Each location resolves to the first profile of the chain it holds.
+	wsCfgDir, _, err := configurations.ProfileDirectory(ctx, ws.Dir(), "configurations", profiles)
+	if err != nil {
+		report.add(codeConfigurationDirMissing, "workspace configurations", "fail", err.Error(), "")
+		return nil
+	}
+	relCfgDir, err := filepath.Rel(ws.Dir(), wsCfgDir)
+	if err != nil {
+		relCfgDir = wsCfgDir
+	}
 
 	if provided := loadWorkspaceConfigurations(ctx, ws, runtimeEnv, relCfgDir, report); provided != nil {
 		byName := make(map[string]*basev0.ConfigurationInformation, len(provided.Infos))
@@ -976,10 +985,14 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 
 	serviceConfigurations := 0
 	for _, svc := range scope {
-		svcCfgDir := filepath.Join(svc.Dir(), "configurations", profile)
+		svcCfgDir, svcCfgExists, err := configurations.ProfileDirectory(ctx, svc.Dir(), "configurations", profiles)
+		if err != nil {
+			report.add(codeConfigurationDirMissing, "service configurations", "fail", err.Error(), "")
+			continue
+		}
 		label := fmt.Sprintf("service %s", serviceUnique(svc))
-		relSvcDir := filepath.Join(svc.Name, "configurations", profile)
-		if !dirExists(svcCfgDir) {
+		relSvcDir := filepath.Join(svc.Name, "configurations", filepath.Base(svcCfgDir))
+		if !svcCfgExists {
 			if others := otherEnvironmentDirs(filepath.Join(svc.Dir(), "configurations"), profile); len(others) > 0 {
 				report.add(codeConfigurationDirMissing, "service configurations", "warn",
 					fmt.Sprintf("%s has configurations for %s but none for environment %q", label, strings.Join(others, ", "), env.Name),
