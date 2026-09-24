@@ -219,3 +219,27 @@ func TestRenderInjectionsJoinSelfEndpointsWithFederation(t *testing.T) {
 	require.Equal(t, "http://backend.example-wiki.svc.cluster.local:8080", injections.forService("wiki", "backend").Public[selfEndpointKey])
 	require.Empty(t, injections.forService("wiki", "other").Public)
 }
+
+// A vendor image (redis) declares no CODEFLY__SERVICE, so no container claims
+// the service. Its self endpoint has no Codefly-aware reader, so the render
+// leaves the tree untouched instead of refusing; a required carrier (a
+// federation secret) for the same unclaimed service still refuses.
+func TestDerivedInjectionSkipsSelfEndpointsNoContainerClaims(t *testing.T) {
+	env := storeEnvironment()
+	root := t.TempDir()
+	writeConsumerTree(t, root, env.Name, env.Namespace, "backend", "documents.example:8080")
+	before, err := os.ReadFile(filepath.Join(root, "base", "deployment.yaml"))
+	require.NoError(t, err)
+
+	selfOnly := serviceInjection{Public: map[string]string{
+		"CODEFLY__SELF_ENDPOINT__SAAS__CACHE__READ__TCP": "tcp://cache.example-saas.svc.cluster.local:6379",
+	}}
+	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "cache"}, env, scopeOf(env), selfOnly))
+	after, err := os.ReadFile(filepath.Join(root, "base", "deployment.yaml"))
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(after))
+
+	required := serviceInjection{Secrets: map[string]string{registrationSecretsKey: registrationSecretsKey}}
+	err = projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "cache"}, env, scopeOf(env), required)
+	require.ErrorContains(t, err, "no rendered container declares")
+}

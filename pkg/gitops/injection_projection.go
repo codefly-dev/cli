@@ -192,10 +192,29 @@ func projectServiceInjection(ctx context.Context, root, service string, env *env
 		}
 	}
 	if matched == 0 {
+		// A self endpoint is an address offered to a Codefly-aware process so it
+		// can register where it is reachable. A container that does not declare
+		// CODEFLY__SERVICE (a vendor image such as redis) reads no Codefly
+		// carrier at all, so there is nothing to deliver it to and nothing is
+		// lost by not rendering it. Anything else a service derives — federation
+		// secrets, consumed-API routes — is required, and still refuses.
+		if len(injection.Secrets) == 0 && onlySelfEndpoints(injection.Public) {
+			return nil
+		}
 		return fmt.Errorf("service %q derives %s but no rendered container declares %s=%s",
 			service, strings.Join(append(sortedKeys(injection.Public), sortedKeys(injection.Secrets)...), ", "), resources.ServicePrefix, service)
 	}
 	return writeChangedConfigurationFiles(ctx, paths, files, changed)
+}
+
+// onlySelfEndpoints reports whether every public carrier is a self endpoint.
+func onlySelfEndpoints(public map[string]string) bool {
+	for key := range public {
+		if !strings.HasPrefix(key, resources.SelfEndpointPrefix+"__") {
+			return false
+		}
+	}
+	return true
 }
 
 // writeChangedConfigurationFiles re-encodes only the files holding a document a
@@ -360,6 +379,11 @@ func validateProjectedInjection(root, service string, env *environments.Environm
 		}
 	}
 	if matched == 0 {
+		// Mirrors projectServiceInjection: self endpoints alone were skipped there
+		// because no container reads them, so none is expected here.
+		if len(injection.Secrets) == 0 && onlySelfEndpoints(injection.Public) {
+			return nil
+		}
 		return fmt.Errorf("service %q derived configuration binds no effective workload", service)
 	}
 	return nil
