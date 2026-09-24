@@ -1685,3 +1685,24 @@ func TestDoctorWorkspaceReportsAgentOverrides(t *testing.T) {
 	requireNoCode(t, report, codeAgentOverrideActive)
 	requireNoCode(t, report, codeAgentOverrideInvalid)
 }
+
+func TestDoctorWorkspaceWarnsOnAgentDevBuild(t *testing.T) {
+	t.Run("dev build", func(t *testing.T) {
+		service := strings.Replace(testServiceYAML("api"), "version: 0.0.16", "version: 0.0.16-dev.abc123def456", 1)
+		dir := singleServiceWorkspace(t, testWorkspaceYAML, nil, map[string]string{
+			"modules/backend/services/api/service.codefly.yaml": service,
+		})
+		report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+		diag := requireCode(t, report, codeAgentDevBuild, "warn")
+		if !strings.Contains(diag.Message, "0.0.16-dev.abc123def456") || !strings.Contains(diag.Message, "backend/api") {
+			t.Fatalf("message should name the dev build and the service running it: %q", diag.Message)
+		}
+		if report.Status != readinessStatusReady {
+			t.Fatalf("a dev build warns, it does not fail readiness: %s", reportJSON(t, report))
+		}
+	})
+	t.Run("release", func(t *testing.T) {
+		dir := singleServiceWorkspace(t, testWorkspaceYAML, nil, nil)
+		requireNoCode(t, runReadiness(t, workspaceReadinessOptions{dir: dir}), codeAgentDevBuild)
+	})
+}

@@ -316,7 +316,13 @@ func runReleaseAgentCI(ctx context.Context, self, agentDir, output string, nativ
 //
 // A retry may fill missing assets or reuse identical bytes, never replace them.
 func createAndUploadRelease(ctx context.Context, client *github.Client, owner, repo, tag string, assets []loaderAsset) error {
-	release, err := getOrCreateRelease(ctx, client, owner, repo, tag)
+	return publishReleaseAssets(ctx, client, owner, repo, releaseRequest(tag, false), assets)
+}
+
+// publishReleaseAssets is createAndUploadRelease for an explicit release
+// request — the one upload path a semantic release and a dev build share.
+func publishReleaseAssets(ctx context.Context, client *github.Client, owner, repo string, request *github.CreateReleaseRequest, assets []loaderAsset) error {
+	release, err := getOrCreateRelease(ctx, client, owner, repo, request)
 	if err != nil {
 		return err
 	}
@@ -341,23 +347,47 @@ func createAndUploadRelease(ctx context.Context, client *github.Client, owner, r
 // getOrCreateRelease returns the existing release for tag, or creates one when
 // none exists yet. A non-404 lookup error is surfaced rather than masked as a
 // missing release, so a transient API failure can't silently spawn a duplicate.
-func getOrCreateRelease(ctx context.Context, client *github.Client, owner, repo, tag string) (*github.RepositoryRelease, error) {
+//
+// A dev build's release (request.Prerelease) must stay a prerelease: an
+// existing release for its tag that is not one is refused rather than filled,
+// since its assets would then be served as a real release.
+func getOrCreateRelease(ctx context.Context, client *github.Client, owner, repo string, request *github.CreateReleaseRequest) (*github.RepositoryRelease, error) {
+	tag := request.TagName
 	release, resp, err := client.Repositories.GetReleaseByTag(ctx, owner, repo, tag)
 	if err == nil {
+		if request.GetPrerelease() && !release.GetPrerelease() {
+			return nil, fmt.Errorf("GitHub release %s exists but is not a prerelease; a dev build is only ever published as one", tag)
+		}
 		return release, nil
 	}
 	if resp == nil || resp.StatusCode != http.StatusNotFound {
 		return nil, fmt.Errorf("look up GitHub release %s: %w", tag, err)
 	}
-	created, _, err := client.Repositories.CreateRelease(ctx, owner, repo, github.CreateReleaseRequest{
-		TagName: tag,
-		Name:    github.Ptr(tag),
-		Body:    github.Ptr("Release " + tag),
-	})
+	created, _, err := client.Repositories.CreateRelease(ctx, owner, repo, *request)
 	if err != nil {
 		return nil, fmt.Errorf("create GitHub release %s: %w", tag, err)
 	}
 	return created, nil
+}
+
+// releaseRequest is the GitHub release a tag is published as. A dev build is a
+// prerelease that is never marked Latest: GitHub's latest-release lookup is how
+// `version: latest` resolves, so a dev build must never be what it returns.
+func releaseRequest(tag string, dev bool) *github.CreateReleaseRequest {
+	if !dev {
+		return &github.CreateReleaseRequest{
+			TagName: tag,
+			Name:    github.Ptr(tag),
+			Body:    github.Ptr("Release " + tag),
+		}
+	}
+	return &github.CreateReleaseRequest{
+		TagName:    tag,
+		Name:       github.Ptr(tag),
+		Body:       github.Ptr("Dev build " + tag + " from `codefly publish dev`. Not a release: for iteration only."),
+		Prerelease: github.Ptr(true),
+		MakeLatest: github.Ptr("false"),
+	}
 }
 
 func uploadReleaseAsset(ctx context.Context, client *github.Client, owner, repo string, releaseID int64, path string, existing map[string]*github.ReleaseAsset) error {
@@ -458,6 +488,8 @@ type agentReleaser struct {
 	// publication; zero means the production defaults.
 	workflowPoll      time.Duration
 	registrationGrace time.Duration
+	// dev publishes a `codefly publish dev` build: a prerelease, never Latest.
+	dev bool
 }
 
 type releaseGate interface {
@@ -635,13 +667,19 @@ func (r *agentReleaser) afterPush(ctx context.Context, newTag string) error {
 		return err
 	}
 	if r.publication.Owner == publicationWorkflow {
-		return r.waitForWorkflowRelease(ctx, client, owner, repo, newTag)
+		if err := r.waitForWorkflowRelease(ctx, client, owner, repo, newTag); err != nil {
+			return err
+		}
+		if r.dev {
+			return assertDevRelease(ctx, client, owner, repo, newTag)
+		}
+		return nil
 	}
 	// The tag is live: a deadline that expired while CI ran must not abort the
 	// upload half-done, nor report a release that shipped as failed.
 	ctx, cancel := postPublicationContext(ctx)
 	defer cancel()
-	if err := createAndUploadRelease(ctx, client, owner, repo, newTag, r.assets); err != nil {
+	if err := publishReleaseAssets(ctx, client, owner, repo, releaseRequest(newTag, r.dev), r.assets); err != nil {
 		return err
 	}
 	return verifyReleaseAssets(ctx, r.reg, r.publisher, r.name, version, r.assets)

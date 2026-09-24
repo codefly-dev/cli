@@ -1634,6 +1634,57 @@ per-repository `codefly publish` when only some of the fleet should move.
 Move the current manifest tag to `HEAD` without rewriting `main`. For a release
 whose tag landed on the wrong commit; it never force-pushes `main`.
 
+### `codefly publish dev`
+
+Publish an agent build **for iteration**, without a release. Run it in an agent
+repository on any branch:
+
+```bash
+codefly publish dev                 # build HEAD and publish it as a dev build
+codefly publish dev --dry-run       # print the dev version, build and publish nothing
+codefly publish dev --allow-dirty   # publish the working tree with uncommitted changes
+```
+
+A dev build is built exactly as `codefly publish` builds a release
+(release-grade `codefly agent ci`, the same loader archives and SBOMs) but is
+published under a **non-semantic dev version** derived from the commit:
+
+```text
+<current-version>-dev.<12-char-sha>     e.g. 0.1.47-dev.abc123def456
+```
+
+It is a semver prerelease, so every resolver parses it, and semver ranks it
+*below* the release it was built from (`0.1.47-dev.… < 0.1.47`): a dev build
+can never collide with or outrank a real release. Nothing is bumped —
+`agent.codefly.yaml` keeps its version (the build sees the dev version only
+while it runs), no release pull request is opened, `main` is never touched.
+The only ref created is the tag `v<dev-version>` at `HEAD`, and the assets go
+where release assets go, as a GitHub **prerelease that is never marked Latest**
+— so `version: latest` never resolves to a dev build.
+
+- A dirty tree is refused unless `--allow-dirty`. Published assets are
+  immutable, so publishing different bytes again under the same commit is
+  refused; commit to get a new dev version.
+- An agent whose releases a workflow publishes (`release.owner: workflow`) is
+  built by that workflow from the pushed tag. `--allow-dirty` is refused for
+  it, and its `.goreleaser.yaml` must set `release: {prerelease: auto}` so the
+  dev tag is published as a prerelease — the command refuses before pushing
+  anything otherwise, and checks the published release is a prerelease after.
+
+The command prints the exact spelling to consume the build with. Either override
+the agent for the whole workspace (`workspace.codefly.yaml`):
+
+```yaml
+agent-overrides:
+  codefly.dev/go-grpc: 0.1.47-dev.abc123def456
+```
+
+or pin one service's `agent.version` in its `service.codefly.yaml`.
+`codefly doctor workspace` warns (`agent_dev_build`) about every service running
+a dev build. Dev builds are for iteration only: `codefly publish patch` remains
+the release path, and a workspace should pin the released version before it
+ships.
+
 ### `codefly publish library <name>`
 
 Publish a workspace library's language exports (`codefly add library`) to the durable stores configured under the workspace's `libraries.publish` block — a GitHub repository tagged at the version for `go`/`python`, an npm-compatible registry for `typescript`. Published versions are immutable: an identical retry adopts the existing version, while different bytes require a version bump.
