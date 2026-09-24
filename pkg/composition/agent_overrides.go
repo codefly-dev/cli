@@ -23,7 +23,7 @@ type AgentOverrideUse struct {
 }
 
 // Line is the announcement a run or render prints for this override.
-func (use AgentOverrideUse) Line() string {
+func (use *AgentOverrideUse) Line() string {
 	return fmt.Sprintf("agent %s overridden to %s by %s (%d services; module pins: %s)",
 		use.Key(), use.Version, resources.WorkspaceConfigurationName, len(use.Services), strings.Join(use.ModulePins, ", "))
 }
@@ -96,13 +96,13 @@ func ResolveAgentOverrides(ctx context.Context, workspace *resources.Workspace) 
 		sort.Strings(uses[i].Services)
 	}
 	if len(unused) > 0 && !incomplete {
-		return nil, fmt.Errorf("%s in %s names %s, but no composed service runs on that agent; the override would move nothing — check the <publisher>/<name> spelling against the services' agent:",
+		return nil, fmt.Errorf("%s in %s names %s, but no composed service runs on that agent; the override would move nothing — check the <publisher>/<name> spelling against the services' agent field",
 			resources.AgentOverridesKey, resources.WorkspaceConfigurationName, strings.Join(unused, ", "))
 	}
 	var used []AgentOverrideUse
-	for _, use := range uses {
-		if len(use.Services) > 0 {
-			used = append(used, use)
+	for i := range uses {
+		if len(uses[i].Services) > 0 {
+			used = append(used, uses[i])
 		}
 	}
 	return used, nil
@@ -117,8 +117,8 @@ func ReportAgentOverrides(ctx context.Context, workspace *resources.Workspace) e
 	if err != nil {
 		return err
 	}
-	for _, use := range uses {
-		cli.Info("%s", use.Line())
+	for i := range uses {
+		cli.Info("%s", uses[i].Line())
 	}
 	return nil
 }
