@@ -29,7 +29,7 @@ import (
 //   - --pin: the ONLY mode that pulls — bump every dependency lock the agent
 //     owns (its go.mod, any nested base fixtures, and the factory templates
 //     generated from them) to a published core version, tidy, and verify each
-//     builds standalone (release / CI readiness).
+//     builds standalone and passes `go mod tidy -diff` (release / CI readiness).
 //
 // `--all` applies any of these across every agent in the directory tree.
 var DepsCmd = &cobra.Command{
@@ -46,7 +46,8 @@ published core in go.mod.
   --unlink          remove the local go.work (revert to published deps)
   --pin <version>   pin every lock the agent owns (go.mod, nested base fixtures,
                     and their factory templates) to a published core version +
-                    tidy + verify the standalone build (the ONLY mode that
+                    tidy + verify the standalone build and that every owned
+                    module passes 'go mod tidy -diff' (the ONLY mode that
                     pulls); "latest" allowed
   --dependency <module>@<version>
                     with --pin, also update an explicitly selected dependency
@@ -345,7 +346,36 @@ func pinCore(ctx context.Context, dir, version string, dependencies ...string) (
 			return err
 		}
 	}
+	// Last: prove every owned lock is in the exact state the agent's CI tidy
+	// gate (`go mod tidy -diff`) demands. A build that passes on an untidy
+	// go.sum — stale hashes for a version the bump left behind — still reds
+	// the pin PR, so "standalone build OK" alone is not done. Factory templates
+	// are byte copies of their base lock, so the base check covers them.
+	for _, m := range append([]string{dir}, fixtures...) {
+		if err := verifyTidy(ctx, m, relLabel(dir, m)); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// verifyTidy fails when dir's go.mod/go.sum differ from what `go mod tidy`
+// would write, run the way agent CI runs it: no workspace, no GOFLAGS
+// override. The diff goes to stderr so the operator sees the offending lines.
+func verifyTidy(ctx context.Context, dir, label string) error {
+	env := append(os.Environ(), "GOWORK=off", "GOFLAGS=")
+	if err := runGoEnv(ctx, dir, env, "mod", "tidy", "-diff"); err != nil {
+		return fmt.Errorf("%s is not tidy after the pin (`go mod tidy -diff` in %s, as agent CI runs it): %w", moduleLabel(labelOrRoot(label)), dir, err)
+	}
+	return nil
+}
+
+// labelOrRoot maps relLabel's "." for the agent root to moduleLabel's "".
+func labelOrRoot(label string) string {
+	if label == "." {
+		return ""
+	}
+	return label
 }
 
 // pinModule pins a single Go module to coreModule@version, tidies, and verifies
