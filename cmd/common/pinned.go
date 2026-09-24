@@ -36,10 +36,16 @@ func ResolvePinnedModules(ctx context.Context) error {
 	// announced at the directory it was pulled to rather than as an unresolved
 	// coordinate. The workspace is reloaded because materialization is what
 	// writes those directories into the overlay this one was loaded against.
-	if reloaded, err := LoadWorkspace(ctx); err == nil {
-		composition.ReportServiceOverrides(ctx, reloaded)
+	reloaded, err := LoadWorkspace(ctx)
+	if err != nil {
+		return nil
 	}
-	return nil
+	composition.ReportServiceOverrides(ctx, reloaded)
+	// Unlike a service override, a committed agent override that does not hold
+	// up (a key no composed service's agent answers to, a malformed entry)
+	// refuses the command: it is committed config, and running the modules' own
+	// pins while the workspace reads as if it moved them is the silent failure.
+	return composition.ReportAgentOverrides(ctx, reloaded)
 }
 
 // LoadWorkspaceWithPinnedModules is ResolvePinnedModules for callers that use

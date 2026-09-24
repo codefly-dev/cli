@@ -1016,6 +1016,52 @@ resolve:
 [`codefly run service --service-path`](#codefly-run-service-name) remains the
 per-run spelling for the one service you are launching; an overlay entry is
 durable and applies to every service, on any layout.
+#### Moving the agent version of composed services
+
+A composed module pins the agent each of its services runs on. When an agent
+ships a fix (say `go-grpc` 0.1.46 → 0.1.47), a workspace that composes modules
+by tagged version would otherwise have to wait for every module using that
+agent to be re-tagged. A top-level `agent-overrides` block in
+`workspace.codefly.yaml` moves the agent version in **committed** config
+instead:
+
+```yaml
+agent-overrides:
+    codefly.dev/go-grpc: 0.1.47   # <publisher>/<name>: exact version
+```
+
+Every composed service whose agent is that publisher and name runs against that
+version — in `codefly run`, `codefly deploy gitops render` and every `codefly
+ci` verb alike, because core applies it at the one place a composed module
+loads a service. Only the version moves; the agent's publisher, name and kind
+never do, and the module's own files are untouched. Each run or render states
+it once per overridden agent:
+
+```text
+agent codefly.dev/go-grpc overridden to 0.1.47 by workspace.codefly.yaml (3 services; module pins: 0.1.46)
+```
+
+The command refuses, naming the key, a key that is not `<publisher>/<name>`, a
+version that is not an exact semantic version (`0.1.47`, not `^0.1` or
+`v0.1.47`), and a key no composed service's agent answers to — the typo surface
+of a top-level map, as with `module-resolution`. The block is top level, not a
+key on a module or service entry, for the same round-trip reason: core
+preserves a top-level key it does not own across a load-and-save.
+`codefly doctor workspace` lists each override in force as
+`agent_override_active` (informational) and reports the refusals as
+`agent_override_invalid`.
+
+This is distinct from [overriding one service of a composed
+module](#overriding-one-service-of-a-composed-module), which stays machine-local
+because the module is the unit of trust and a committed per-service pin would
+bypass `module-trust`. An agent is not module content: it is published and
+versioned on its own, so pinning its version in committed config changes which
+released agent interprets the module, not what the module contains, and the
+module is still resolved and verified exactly as before.
+
+Leaving it is one edit: once the modules pin that version themselves, drop the
+key.
+
 #### Which commands materialize
 
 Materialization — pulling a composed pinned module into the module cache,
@@ -2189,7 +2235,8 @@ message, remediation?}]}`. Output never contains configuration values, raw
 `configuration_invalid`, `configuration_duplicate`, `provider_not_configured`,
 `provider_executable_missing`, `provider_authentication_required`,
 `provider_resolution_failed`, `plaintext_not_allowed`,
-`reference_scheme_unknown`, `module_not_materialized`, `timeout`. Automation
+`reference_scheme_unknown`, `module_not_materialized`,
+`agent_override_active`, `agent_override_invalid`, `timeout`. Automation
 should match on codes, never
 on message prose; renaming or removing a code bumps `schema_version`.
 

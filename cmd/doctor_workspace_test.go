@@ -1653,3 +1653,35 @@ func TestDoctorWorkspaceReportsAnOverrideOnAnUnmaterializedModule(t *testing.T) 
 		t.Fatalf("diagnostic should say the override is active but uncheckable: %+v", diag)
 	}
 }
+
+// A committed agent override is listed while it is in force, and one naming an
+// agent no composed service runs on is the failure a run would refuse with.
+func TestDoctorWorkspaceReportsAgentOverrides(t *testing.T) {
+	service := "kind: service\nname: accounts\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.1.46\n  publisher: codefly.dev\n"
+	files := func(overrides string) map[string]string {
+		return map[string]string{
+			"workspace.codefly.yaml":                              "name: deploy\nlayout: modules\nmodules:\n    - name: saas\n" + overrides,
+			"modules/saas/module.codefly.yaml":                    "kind: module\nname: saas\nservices:\n    - name: accounts\n",
+			"modules/saas/services/accounts/service.codefly.yaml": service,
+		}
+	}
+
+	report := runReadiness(t, workspaceReadinessOptions{dir: writeTestWorkspace(t, files("agent-overrides:\n    codefly.dev/go-grpc: 0.1.47\n"))})
+	diag := requireCode(t, report, codeAgentOverrideActive, "ok")
+	for _, want := range []string{"codefly.dev/go-grpc", "0.1.47", "module pins: 0.1.46", "saas/accounts"} {
+		if !strings.Contains(diag.Message, want) {
+			t.Fatalf("diagnostic must mention %q: %+v", want, diag)
+		}
+	}
+	requireNoCode(t, report, codeAgentOverrideInvalid)
+
+	report = runReadiness(t, workspaceReadinessOptions{dir: writeTestWorkspace(t, files("agent-overrides:\n    codefly.dev/go-grcp: 0.1.47\n"))})
+	diag = requireCode(t, report, codeAgentOverrideInvalid, "fail")
+	if !strings.Contains(diag.Message, "codefly.dev/go-grcp") {
+		t.Fatalf("the refusal must name the key: %+v", diag)
+	}
+
+	report = runReadiness(t, workspaceReadinessOptions{dir: writeTestWorkspace(t, files(""))})
+	requireNoCode(t, report, codeAgentOverrideActive)
+	requireNoCode(t, report, codeAgentOverrideInvalid)
+}
