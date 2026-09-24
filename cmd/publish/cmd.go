@@ -65,12 +65,27 @@ Requires the gh CLI to be authenticated.
 Module-agent repos run source/build/audit CI and publish the immutable Git tag
 their module package is built from; they do not publish service-loader assets.
 
+Running from CI (--ci, on by default when CI=true): the runner has no git
+identity and no signing key, so the release commit and tag are made as the
+GitHub Actions bot with signing off (main still receives GitHub's signed squash
+commit), and a release whose CI never registers — the signature of a token
+that cannot trigger workflows — fails after a grace period instead of waiting
+out the whole budget. A workflow-owned agent release (release.owner: workflow)
+no longer needs a darwin/arm64 host: its own workflow builds every platform.
+
+--remote releases from GitHub instead of from here: it dispatches the
+repository's release workflow (.github/workflows/publish.yml by default, the
+caller of codefly-dev/cli's reusable publish-agent.yml) on main and returns;
+the laptop can close. --wait follows the run to its conclusion.
+
 Examples:
   codefly publish              # patch bump
   codefly publish minor
-	  codefly publish major
-	  codefly publish beta         # next beta, or advance beta.N
-  codefly publish --dry-run    # show what would happen, change nothing`,
+  codefly publish major
+  codefly publish beta         # next beta, or advance beta.N
+  codefly publish --dry-run    # show what would happen, change nothing
+  codefly publish --remote     # run the release on GitHub, return at once
+  codefly publish minor --remote --wait`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: run,
 }
@@ -83,6 +98,10 @@ const releaseWaitBudget = 45 * time.Minute
 func init() {
 	Cmd.Flags().Bool("dry-run", false, "show what would happen without modifying anything")
 	Cmd.Flags().String("dir", "", "manifest directory (default: cwd)")
+	Cmd.Flags().Bool("ci", false, "run as a CI job: bot git identity, no signing, fail fast when CI never registers (default: on when CI=true)")
+	Cmd.Flags().Bool("remote", false, "dispatch the repository's release workflow on GitHub instead of releasing from this machine")
+	Cmd.Flags().Bool("wait", false, "with --remote, follow the dispatched release to its conclusion")
+	Cmd.Flags().String("workflow", defaultRemoteWorkflow, "with --remote, the release workflow file in .github/workflows")
 	Cmd.AddCommand(reTagCmd)
 }
 
@@ -93,10 +112,22 @@ func run(c *cobra.Command, args []string) error {
 	}
 	dryRun, _ := c.Flags().GetBool("dry-run")
 	dir, _ := c.Flags().GetString("dir")
+	remote, _ := c.Flags().GetBool("remote")
+	wait, _ := c.Flags().GetBool("wait")
+	workflow, _ := c.Flags().GetString("workflow")
+	if wait && !remote {
+		return fmt.Errorf("--wait applies to --remote only")
+	}
+	if remote && dryRun {
+		return fmt.Errorf("--remote dispatches a real release; run --dry-run without --remote to rehearse it")
+	}
 
 	manifest, workDir, err := loadManifest(dir)
 	if err != nil {
 		return err
+	}
+	if remote {
+		return runRemote(workDir, bumpType, workflow, wait)
 	}
 
 	fmt.Printf("==> %s mode (%s); current version %s\n",
@@ -107,6 +138,10 @@ func run(c *cobra.Command, args []string) error {
 		BumpType: bumpType,
 		DryRun:   dryRun,
 		WorkDir:  workDir,
+		CI:       ciModeFromFlags(c),
+	}
+	if engine.CI {
+		fmt.Println("==> CI mode: bot identity where git has none, signing off, fail fast when CI never registers")
 	}
 	// Resolved for --dry-run too. A dry run is the rehearsal the runbook tells
 	// operators to do first, so it has to fail on the credential the real run
@@ -178,6 +213,7 @@ publish — first-time releases use the bump path.`,
 func init() {
 	reTagCmd.Flags().Bool("dry-run", false, "show what would happen without modifying anything")
 	reTagCmd.Flags().String("dir", "", "manifest directory (default: cwd)")
+	reTagCmd.Flags().Bool("ci", false, "run as a CI job: bot git identity, no signing (default: on when CI=true)")
 }
 
 func runReTag(c *cobra.Command, _ []string) error {
@@ -196,6 +232,7 @@ func runReTag(c *cobra.Command, _ []string) error {
 		Manifest: manifest,
 		DryRun:   dryRun,
 		WorkDir:  workDir,
+		CI:       ciModeFromFlags(c),
 	}
 
 	// For agents, re-tag re-runs release-grade CI and re-uploads the

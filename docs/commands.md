@@ -1541,6 +1541,67 @@ Releasing does not update what the repository *pins*. Move a dependency first �
 that on `main`, and then publish. See
 [docs/runbooks/release-the-fleet.md](runbooks/release-the-fleet.md) for the order.
 
+#### Releasing from GitHub instead of a laptop
+
+A release does not need a laptop that stays open. An agent repository adds one
+caller workflow, `.github/workflows/publish.yml`, that runs the reusable
+[`publish-agent.yml`](../.github/workflows/publish-agent.yml) from this
+repository:
+
+```yaml
+on: {workflow_dispatch: {inputs: {bump: {type: choice, options: [patch, minor, major], default: patch}}}}
+jobs:
+  publish:
+    uses: codefly-dev/cli/.github/workflows/publish-agent.yml@vX.Y.Z
+    with: {bump: "${{ inputs.bump }}", codefly-version: vX.Y.Z}
+    secrets: {release-token: "${{ secrets.GH_PAT }}"}
+```
+
+The job refuses anything but `main`, installs the pinned CLI release on an
+`ubuntu-latest` runner after verifying `checksums.txt` against its signature and
+the pinned release certificate, and runs `codefly publish <bump> --ci` on the
+runner's Docker. Pin `codefly-version` (and the `@vX.Y.Z` ref) to a release
+that carries `--ci`.
+
+`release-token` is required: GitHub starts no workflow for a push, pull request
+or tag made with a workflow's own `GITHUB_TOKEN`, so the release pull request
+would never get the CI `publish` waits on, and the tag would never start the
+repository's own release workflow. Pass a GitHub App installation token or a
+PAT with contents and pull-requests write on the repository.
+
+Fire it with one click in the Actions tab, with
+`gh workflow run publish.yml -R <owner>/<repo> -f bump=patch`, or from the
+repository checkout:
+
+```bash
+codefly publish --remote              # dispatch on main, print the run URL, return
+codefly publish minor --remote --wait # follow the run to its conclusion
+codefly publish --remote --workflow release-agent.yml   # a differently named caller
+```
+
+`--remote` accepts `patch`, `minor` or `major`; a beta is cut locally.
+
+`--ci` (on by default when `CI=true`) is what makes the flow runner-safe, and
+works on any CI system:
+
+- the release commit and tag are made as `github-actions[bot]` when git has no
+  identity, with commit and tag signing off. `main` still receives the commit
+  GitHub creates and signs when it squash-merges the release pull request; the
+  annotated tag naming it is unsigned. A release that must sign its tag refuses
+  CI mode rather than drop the signature.
+- when no CI at all registers on the release pull request, the merged commit,
+  or — for `release.owner: workflow` — the tag, within 10 minutes, the release
+  fails and says why, instead of waiting out its whole budget. This check is on
+  outside CI mode too.
+
+Independently of `--ci`, a service agent whose `release.owner` is `workflow`
+no longer needs a darwin/arm64 host: its own release workflow builds and
+uploads every loader platform, and `publish` verifies those archives against
+the checksums that workflow published. Release-grade agent CI still runs on the
+publishing host, so on a linux/amd64 runner that qualification is the
+linux/amd64 build only. An agent with `release.owner: cli` uploads the archives
+itself and still requires a host that builds every platform.
+
 ### `codefly publish all [patch|minor|major]`
 
 Discover every git repository under the workspace that carries a codefly
@@ -1551,7 +1612,16 @@ standalone modules → agents.
 codefly publish all              # patch-bump every repository
 codefly publish all --dry-run    # print the full plan, change nothing
 codefly publish all --root DIR   # workspace root (default: nearest go.work, else cwd)
+codefly publish all --remote     # release each repository on GitHub, in order
 ```
+
+With `--remote`, nothing is built or pushed from this machine. Every
+repository must carry the caller workflow above (`--workflow` names it;
+default `publish.yml`), which is checked for all of them before the first
+dispatch. Each release is then dispatched in dependency order and must conclude
+successfully before the next repository's is dispatched, so a consumer is never
+released against a dependency that did not ship. The machine running it must
+stay up for the whole sequence; a single `codefly publish --remote` does not.
 
 The run is atomic at the pre-flight boundary: every repository is validated
 first and any failure aborts before a single tag is pushed. Publication then

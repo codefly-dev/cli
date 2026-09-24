@@ -161,7 +161,7 @@ func TestLoaderAssetGateSelectsRegistrationAndConformance(t *testing.T) {
 	// Loader-asset publishing requires a host that can build every loader
 	// platform plus a resolvable GitHub token — the same gate a real
 	// service/toolbox publish hits. Skip where that can't be exercised.
-	if err := checkAgentReleasePreconditions(); err != nil {
+	if err := checkAgentReleasePreconditions(agentPublication{Owner: publicationCLI}); err != nil {
 		t.Skipf("host cannot exercise loader-asset publishing: %v", err)
 	}
 	for _, tc := range []struct {

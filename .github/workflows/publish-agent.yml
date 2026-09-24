@@ -1,0 +1,145 @@
+name: publish-agent
+
+# Reusable release of a Codefly agent repository, run entirely on GitHub: the
+# same `codefly publish` a laptop runs, on a runner's Docker, so a release is
+# one click (or `codefly publish --remote`) and nothing local has to stay open.
+#
+# An agent repository adds one caller, .github/workflows/publish.yml:
+#
+#   on: {workflow_dispatch: {inputs: {bump: {type: choice, options: [patch, minor, major], default: patch}}}}
+#   jobs:
+#     publish:
+#       uses: codefly-dev/cli/.github/workflows/publish-agent.yml@vX.Y.Z
+#       with: {bump: "${{ inputs.bump }}", codefly-version: vX.Y.Z}
+#       secrets: {release-token: "${{ secrets.GH_PAT }}"}
+#
+# docs/commands.md (`codefly publish --remote`) is the reference for it.
+#
+# Why `release-token` and not only the job's GITHUB_TOKEN: GitHub starts no
+# workflow for a push, pull request or tag made with a workflow's own
+# GITHUB_TOKEN. The release pull request would then never get the CI that
+# publish waits on, and the pushed tag would never start the repository's own
+# release workflow (release.owner: workflow) that builds the loader archives.
+# The release has to be made with a token that does start workflows: a GitHub
+# App installation token or a fine-grained PAT with contents and pull-requests
+# write on the agent repository.
+
+on:
+  workflow_call:
+    inputs:
+      bump:
+        description: Version component to bump — patch, minor or major.
+        type: string
+        default: patch
+      codefly-version:
+        description: >-
+          The codefly CLI release to publish with (vX.Y.Z). Pin it: the
+          release engine is part of what makes a release reproducible.
+        type: string
+        required: true
+    secrets:
+      release-token:
+        description: >-
+          Token the release is pushed, opened, merged and tagged with. Must be
+          able to trigger workflows (GitHub App installation token or PAT).
+        required: true
+
+permissions: {}
+
+jobs:
+  publish:
+    name: publish ${{ inputs.bump }}
+    runs-on: ubuntu-latest
+    # Release-grade agent CI, the release pull request's checks and the
+    # repository's own release workflow, end to end.
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    # One release of a repository at a time; never cancel one in flight, since
+    # a release can be stopped between its merge and its tag.
+    concurrency:
+      group: codefly-publish-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: Refuse a release from anywhere but main
+        if: github.ref != 'refs/heads/main'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::releases are cut from main only; this run was dispatched on ${REF}"
+          exit 1
+
+      - name: Validate inputs
+        env:
+          BUMP: ${{ inputs.bump }}
+          CODEFLY_VERSION: ${{ inputs.codefly-version }}
+        run: |
+          set -euo pipefail
+          case "$BUMP" in patch|minor|major) ;; *)
+            echo "::error::bump must be patch, minor or major, got '${BUMP}'"; exit 1 ;;
+          esac
+          if ! [[ "$CODEFLY_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::codefly-version must be a release tag vX.Y.Z, got '${CODEFLY_VERSION}'"; exit 1
+          fi
+
+      # The release token is persisted as the checkout's credential, so the
+      # release branch and tag pushes made by `codefly publish` are made with
+      # it and start the repository's workflows.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.release-token }}
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: hashFiles('go.mod') != ''
+        with:
+          go-version-file: go.mod
+          # A go.mod `toolchain` newer than its `go` line is downloaded into the
+          # module cache, which setup-go's cache restore corrupts.
+          cache: false
+
+      # The archive is trusted only through checksums.txt, and checksums.txt
+      # only through its signature by Codefly's release certificate, whose
+      # fingerprint is pinned here (docs/cli-updates.md, "Verify a release
+      # manually"). A rotated certificate fails this step loudly.
+      - name: Install codefly ${{ inputs.codefly-version }} (verified)
+        env:
+          CODEFLY_VERSION: ${{ inputs.codefly-version }}
+          CERT_SHA256: 90:8A:DE:62:61:EB:3A:48:13:37:F7:D4:1A:5D:80:FF:08:3A:01:4E:53:4E:AD:84:34:76:ED:7F:3D:D1:13:ED
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/codefly-install"
+          mkdir -p "$work/bin"
+          cd "$work"
+          archive="codefly_${CODEFLY_VERSION#v}_linux_amd64.tar.gz"
+          base="https://github.com/codefly-dev/cli/releases/download/${CODEFLY_VERSION}"
+          for file in "$archive" checksums.txt checksums.txt.sig; do
+            curl -fsSL --retry 3 -o "$file" "$base/$file"
+          done
+          curl -fsSL --retry 3 -o release-signing-cert.pem \
+            "https://raw.githubusercontent.com/codefly-dev/cli/${CODEFLY_VERSION}/pkg/cliupdate/release-signing-cert.pem"
+          fingerprint=$(openssl x509 -in release-signing-cert.pem -noout -fingerprint -sha256 | cut -d= -f2)
+          if [ "${fingerprint^^}" != "$CERT_SHA256" ]; then
+            echo "::error::release certificate fingerprint ${fingerprint} is not the pinned ${CERT_SHA256}"; exit 1
+          fi
+          openssl x509 -in release-signing-cert.pem -pubkey -noout > release-public-key.pem
+          openssl dgst -sha256 -verify release-public-key.pem -signature checksums.txt.sig checksums.txt
+          entry=$(awk -v name="$archive" '$2 == name || $2 == "*" name' checksums.txt)
+          if [ "$(printf '%s\n' "$entry" | grep -c .)" != 1 ]; then
+            echo "::error::checksums.txt must list ${archive} exactly once"; exit 1
+          fi
+          printf '%s\n' "$entry" | sha256sum -c -
+          tar -xzf "$archive" -C bin codefly
+          echo "$work/bin" >> "$GITHUB_PATH"
+          "$work/bin/codefly" version
+
+      # `--ci` is also implied by CI=true; it is spelled out so the log says
+      # which mode released. The engine commits and tags as the Actions bot
+      # with signing off (main receives GitHub's signed squash commit), and
+      # fails fast if the release pull request or the tag never gets CI.
+      - name: codefly publish ${{ inputs.bump }}
+        env:
+          BUMP: ${{ inputs.bump }}
+          GITHUB_TOKEN: ${{ secrets.release-token }}
+        run: codefly publish "$BUMP" --ci

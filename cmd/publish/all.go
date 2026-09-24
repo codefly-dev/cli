@@ -51,7 +51,14 @@ Examples:
   codefly publish all              # patch-bump every repo
   codefly publish all minor
   codefly publish all --dry-run    # print the full plan, change nothing
-  codefly publish all --root DIR   # workspace root (default: nearest go.work, else cwd)`,
+  codefly publish all --root DIR   # workspace root (default: nearest go.work, else cwd)
+  codefly publish all --remote     # each release runs on GitHub, one after another
+
+With --remote nothing is built or pushed from this machine: every repository
+must carry the release workflow (checked for all of them before the first
+dispatch), and each dispatched release must conclude successfully before the
+next repository's is dispatched, so a consumer is never released against a
+dependency that did not ship.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runAll,
 }
@@ -59,6 +66,9 @@ Examples:
 func init() {
 	allCmd.Flags().Bool("dry-run", false, "print the full plan without modifying anything")
 	allCmd.Flags().String("root", "", "workspace root to scan (default: nearest go.work ancestor, else cwd)")
+	allCmd.Flags().Bool("ci", false, "run as a CI job (default: on when CI=true); see `codefly publish --help`")
+	allCmd.Flags().Bool("remote", false, "release each repository on GitHub, in dependency order: dispatch its release workflow and wait for it before the next")
+	allCmd.Flags().String("workflow", defaultRemoteWorkflow, "with --remote, the release workflow file every repository carries")
 	Cmd.AddCommand(allCmd)
 }
 
@@ -74,7 +84,7 @@ type repoTarget struct {
 // version because Engine.Release mutates it in place when reconciling
 // the bump base against the latest tag — a validate pass must not leak
 // that mutation into the execute pass.
-func (t *repoTarget) engine(bump string, dry bool) *Engine {
+func (t *repoTarget) engine(bump string, dry, ci bool) *Engine {
 	ver := *t.Manifest.Version
 	return &Engine{
 		Manifest: &Manifest{Mode: t.Manifest.Mode, Path: t.Manifest.Path, Version: &ver},
@@ -82,6 +92,7 @@ func (t *repoTarget) engine(bump string, dry bool) *Engine {
 		DryRun:   dry,
 		WorkDir:  t.Dir,
 		Landing:  t.Landing,
+		CI:       ci,
 	}
 }
 
@@ -92,6 +103,9 @@ func runAll(c *cobra.Command, args []string) error {
 	}
 	dryRun, _ := c.Flags().GetBool("dry-run")
 	rootFlag, _ := c.Flags().GetString("root")
+	remote, _ := c.Flags().GetBool("remote")
+	workflow, _ := c.Flags().GetString("workflow")
+	ci := ciModeFromFlags(c)
 
 	root, err := resolveWorkspaceRoot(rootFlag)
 	if err != nil {
@@ -110,6 +124,10 @@ func runAll(c *cobra.Command, args []string) error {
 	fmt.Printf("==> %d codefly repo(s) under %s (bump: %s)\n", len(targets), root, bumpType)
 	for _, t := range targets {
 		fmt.Printf("    %-18s %s (v%s)\n", t.Manifest.Mode, relOrBase(root, t.Dir), t.Manifest.Version)
+	}
+
+	if remote {
+		return runAllRemote(root, targets, bumpType, workflow, dryRun)
 	}
 
 	// Phase 1 — validate EVERY repo. A dry-run Release runs the full
@@ -141,7 +159,7 @@ func runAll(c *cobra.Command, args []string) error {
 		}
 		t.Landing = landing
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		tag, verr := t.engine(bumpType, true).Release(ctx)
+		tag, verr := t.engine(bumpType, true, ci).Release(ctx)
 		cancel()
 		if verr != nil {
 			failures = append(failures, fmt.Sprintf("  %-30s %v", relOrBase(root, t.Dir), verr))
@@ -167,7 +185,7 @@ func runAll(c *cobra.Command, args []string) error {
 	fmt.Println("==> all repos validated; publishing...")
 	var done []string
 	for _, t := range targets {
-		engine := t.engine(bumpType, false)
+		engine := t.engine(bumpType, false, ci)
 
 		// Every bump waits on its repo's required checks before it merges, and
 		// agent repos additionally run release-grade CI and upload
@@ -301,4 +319,57 @@ func relOrBase(root, p string) string {
 		return rel
 	}
 	return filepath.Base(p)
+}
+
+// runAllRemote releases every target on GitHub in dependency order. It keeps
+// the local run's safety shape: every repository is checked before anything is
+// dispatched, and the run stops at the first release that does not succeed,
+// reporting what already shipped.
+func runAllRemote(root string, targets []*repoTarget, bump, workflow string, dryRun bool) error {
+	if err := validateRemoteBump(bump); err != nil {
+		return err
+	}
+	fmt.Printf("==> checking every repository carries .github/workflows/%s...\n", workflow)
+	remotes := make([]*remoteRelease, len(targets))
+	var failures []string
+	for i, t := range targets {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		remote, err := newRemoteRelease(ctx, t.Dir, workflow)
+		if err == nil {
+			err = remote.check(ctx)
+		}
+		cancel()
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("  %-30s %v", relOrBase(root, t.Dir), err))
+			continue
+		}
+		remotes[i] = remote
+		fmt.Printf("    ✓ %-30s %s\n", relOrBase(root, t.Dir), remote.name())
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("pre-flight failed for %d repo(s) — nothing was dispatched:\n%s",
+			len(failures), strings.Join(failures, "\n"))
+	}
+	if dryRun {
+		fmt.Printf("==> dry-run complete; would dispatch %d release(s) in the order above\n", len(targets))
+		return nil
+	}
+	var done []string
+	for i, remote := range remotes {
+		ctx, cancel := context.WithTimeout(context.Background(), remoteReleaseBudget)
+		runID, url, err := remote.dispatch(ctx, bump)
+		if err == nil {
+			fmt.Printf("==> %s release (%s) running: %s\n", remote.name(), bump, url)
+			err = remote.wait(ctx, runID)
+		}
+		cancel()
+		if err != nil {
+			return fmt.Errorf("publish failed at %s: %w\n  already released: %s",
+				relOrBase(root, targets[i].Dir), err, strings.Join(done, ", "))
+		}
+		done = append(done, remote.name())
+		fmt.Printf("    ✓ released %s\n", remote.name())
+	}
+	fmt.Printf("==> published %d repo(s) from GitHub\n", len(done))
+	return nil
 }

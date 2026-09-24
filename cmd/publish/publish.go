@@ -31,6 +31,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// The bump types every release flow accepts; beta is local-only.
+const (
+	bumpPatch = "patch"
+	bumpMinor = "minor"
+	bumpMajor = "major"
+)
+
 // Mode names the kind of repo we're releasing — different manifest
 // shapes ship version metadata in different places, but the release
 // flow is identical.
@@ -155,16 +162,16 @@ func readVersion(path string) (*semver.Version, error) {
 // "patch". Beta starts the next patch line at beta.1, then advances beta.N.
 func (m *Manifest) Bump(bumpType string) (*semver.Version, error) {
 	if bumpType == "" {
-		bumpType = "patch"
+		bumpType = bumpPatch
 	}
 	switch bumpType {
-	case "patch":
+	case bumpPatch:
 		next := m.Version.IncPatch()
 		return &next, nil
-	case "minor":
+	case bumpMinor:
 		next := m.Version.IncMinor()
 		return &next, nil
-	case "major":
+	case bumpMajor:
 		next := m.Version.IncMajor()
 		return &next, nil
 	case "beta":

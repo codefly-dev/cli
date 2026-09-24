@@ -21,6 +21,7 @@ const (
 	publicationCLI      = "cli"
 	publicationWorkflow = "workflow"
 	checkSuccess        = "success"
+	runCompleted        = "completed"
 )
 
 type agentPublication struct {
@@ -54,19 +55,29 @@ func (p agentPublication) validate(root string) error {
 // Match the tag event as well as the commit: a green branch run at the same
 // commit does not establish that the tag's publication jobs ran.
 func workflowReleaseReady(runs []*github.WorkflowRun, head, tag string) (bool, error) {
+	ready, _, err := workflowReleaseState(runs, head, tag)
+	return ready, err
+}
+
+// workflowReleaseState also reports whether the tag's run exists at all, which
+// is what tells a release workflow still running from one that never started.
+func workflowReleaseState(runs []*github.WorkflowRun, head, tag string) (ready, started bool, err error) {
 	var selected *github.WorkflowRun
 	for _, run := range runs {
 		if run.GetHeadSHA() == head && run.GetHeadBranch() == tag && run.GetEvent() == "push" && (selected == nil || run.GetID() > selected.GetID()) {
 			selected = run
 		}
 	}
-	if selected == nil || selected.GetStatus() != "completed" {
-		return false, nil
+	if selected == nil {
+		return false, false, nil
+	}
+	if selected.GetStatus() != runCompleted {
+		return false, true, nil
 	}
 	if selected.GetConclusion() != checkSuccess {
-		return false, fmt.Errorf("release workflow %s concluded %s", selected.GetHTMLURL(), selected.GetConclusion())
+		return false, true, fmt.Errorf("release workflow %s concluded %s", selected.GetHTMLURL(), selected.GetConclusion())
 	}
-	return true, nil
+	return true, true, nil
 }
 
 func (r *agentReleaser) waitForWorkflowRelease(ctx context.Context, client *github.Client, owner, repo, tag string) error {
@@ -76,8 +87,13 @@ func (r *agentReleaser) waitForWorkflowRelease(ctx context.Context, client *gith
 		return fmt.Errorf("resolve published tag commit: %w", err)
 	}
 	head := strings.TrimSpace(output)
-	ticker := time.NewTicker(20 * time.Second)
+	poll := r.workflowPoll
+	if poll <= 0 {
+		poll = 20 * time.Second
+	}
+	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
+	deadline := newRegistrationDeadline(r.registrationGrace)
 	for {
 		runs, _, readErr := client.Actions.ListWorkflowRunsByFileName(ctx, owner, repo, r.publication.Workflow, &github.ListWorkflowRunsOptions{
 			HeadSHA: head, Branch: tag, Event: "push", ListOptions: github.ListOptions{PerPage: 100},
@@ -85,12 +101,15 @@ func (r *agentReleaser) waitForWorkflowRelease(ctx context.Context, client *gith
 		if readErr != nil {
 			return fmt.Errorf("read release workflow: %w", readErr)
 		}
-		ready, workflowErr := workflowReleaseReady(runs.WorkflowRuns, head, tag)
+		ready, started, workflowErr := workflowReleaseState(runs.WorkflowRuns, head, tag)
 		if workflowErr != nil {
 			return workflowErr
 		}
 		if ready {
 			break
+		}
+		if deadline.expired(started) {
+			return fmt.Errorf("tag %s is pushed but %s has not started for it after %s: %w", tag, r.publication.Workflow, deadline.grace, errNothingRegistered)
 		}
 		select {
 		case <-ctx.Done():
