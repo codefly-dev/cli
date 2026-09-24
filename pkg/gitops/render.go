@@ -19,6 +19,7 @@ import (
 
 	coreservices "github.com/codefly-dev/core/agents/services"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
 	"sigs.k8s.io/kustomize/api/krusty"
 	"sigs.k8s.io/kustomize/kyaml/filesys"
@@ -953,8 +954,7 @@ func inspectTemplatedValue(value any, path []string) error {
 	case map[string]any:
 		for key, child := range typed {
 			next := extendPath(path, key)
-			normalized := strings.ToLower(strings.NewReplacer("-", "", "_", "", ".", "").Replace(key))
-			if isCredentialKey(normalized) && scalarHasValue(child) {
+			if isCredentialKey(key, isConfigurationDataPath(path)) && scalarHasValue(child) {
 				return fmt.Errorf("%s contains credential value", strings.Join(next, "."))
 			}
 			if err := inspectTemplatedValue(child, next); err != nil {
@@ -1006,13 +1006,12 @@ func inspectValueAllowingReferences(
 ) error {
 	switch typed := value.(type) {
 	case map[string]any:
-		if name, ok := typed["name"].(string); ok && isCredentialKey(strings.ToLower(strings.NewReplacer("-", "", "_", "", ".", "").Replace(name))) && scalarHasValue(typed["value"]) {
+		if name, ok := typed["name"].(string); ok && isCredentialKey(name, true) && scalarHasValue(typed["value"]) {
 			return fmt.Errorf("%s.value contains credential value", strings.Join(path, "."))
 		}
 		for key, child := range typed {
 			next := extendPath(path, key)
-			normalized := strings.ToLower(strings.NewReplacer("-", "", "_", "", ".", "").Replace(key))
-			if isCredentialKey(normalized) && scalarHasValue(child) &&
+			if isCredentialKey(key, isConfigurationDataPath(path)) && scalarHasValue(child) &&
 				(allowCredentialReference == nil || !allowCredentialReference(next)) {
 				return fmt.Errorf("%s contains credential value", strings.Join(next, "."))
 			}
@@ -1105,13 +1104,56 @@ func validateURLValue(path, value string) error {
 	return nil
 }
 
-func isCredentialKey(normalized string) bool {
-	for _, fragment := range []string{"password", "passwd", "token", "credential", "privatekey", "clientsecret", "accesskey", "secretkey"} {
+// manifestFieldCredentialFragments name credential material inside a manifest
+// SCHEMA field name (clientSecret, privateKey, accessKey), matched against the
+// separator-free lowercase spelling. They are a different concept from core's
+// configuration-name classifier and exist only because core's cannot see them:
+// core splits on separators, so a camelCase field such as privateKey is one word
+// to it, and applying core's wider marker list (SECRET, SESSION, CONNECTION,
+// AUTH, ...) to schema fields would refuse ordinary Kubernetes structure such as
+// volumes[].secret.secretName or spec.sessionAffinity. TOKEN is deliberately
+// absent: whether a key naming a token is a credential is core's decision (see
+// isCredentialKey).
+var manifestFieldCredentialFragments = []string{
+	"password", "passwd", "credential", "privatekey", "clientsecret", "accesskey", "secretkey",
+}
+
+var manifestFieldNormalizer = strings.NewReplacer("-", "", "_", "", ".", "")
+
+// isCredentialKey reports whether a manifest key names credential material, so a
+// non-empty inline value under it is a leaked credential.
+//
+// resources.IsSensitiveKey is the single source of truth for configuration
+// names — an env entry's name, a key of a ConfigMap/Secret data map — which are
+// exactly the names orchestration classifies through the same function to
+// promote a value to a secretKeyRef. A plaintext value the guard sees under a
+// name core calls sensitive therefore escaped promotion, and one core does not
+// (MAX_OUTPUT_TOKENS: a model output-token limit, core#645) is ordinary
+// configuration the guard must not refuse.
+//
+// Every key, configuration name or schema field, is also checked against the
+// camelCase field fragments above, and any key mentioning a token defers to
+// core, which keeps every TOKEN sensitive except a whole-word TOKENS count.
+func isCredentialKey(key string, configurationName bool) bool {
+	if configurationName && resources.IsSensitiveKey(key) {
+		return true
+	}
+	normalized := strings.ToLower(manifestFieldNormalizer.Replace(key))
+	for _, fragment := range manifestFieldCredentialFragments {
 		if strings.Contains(normalized, fragment) {
 			return true
 		}
 	}
-	return false
+	return strings.Contains(normalized, "token") && resources.IsSensitiveKey(key)
+}
+
+// isConfigurationDataPath reports whether the map at path holds configuration
+// names as its keys: the data/stringData map of a ConfigMap or Secret.
+func isConfigurationDataPath(path []string) bool {
+	if len(path) != 1 {
+		return false
+	}
+	return path[0] == "data" || path[0] == "stringData"
 }
 
 func scalarHasValue(value any) bool {
