@@ -224,7 +224,7 @@ func DeployedFederationSecrets(ctx context.Context, workspace *resources.Workspa
 			}
 		}
 
-		consumed := solutionManifest.ConsumedAPIs()
+		consumed, _ := federatedConsumedAPIs(solutionManifest.ConsumedAPIs(), holdsDigests)
 		var prefixes []Credential
 		for i := range consumed {
 			prefix := consumed[i].As
@@ -235,10 +235,6 @@ func DeployedFederationSecrets(ctx context.Context, workspace *resources.Workspa
 			prefixes = append(prefixes, credential)
 			if !slices.Contains(registrations, credential) {
 				registrations = append(registrations, credential)
-			}
-			identity := Credential{Kind: ModuleIdentity, Identity: prefix}
-			if !slices.Contains(identities, identity) {
-				identities = append(identities, identity)
 			}
 		}
 		if len(prefixes) == 0 {
@@ -265,7 +261,15 @@ func DeployedFederationSecrets(ctx context.Context, workspace *resources.Workspa
 					"no %s derived for %s (%v)", moduleIdentitySecretEnvironmentVariable, bound.module, err)})
 				continue
 			}
-			identity := SecretDerivation{Credentials: []Credential{{Kind: ModuleIdentity, Identity: bound.prefix}}}
+			// The registrar holds an identity digest only for a module whose
+			// services hold the plaintext: a digest nothing can present admits no
+			// one, and minting its preimage would leave a credential no service
+			// ever receives.
+			credential := Credential{Kind: ModuleIdentity, Identity: bound.prefix}
+			if len(services) > 0 && !slices.Contains(identities, credential) {
+				identities = append(identities, credential)
+			}
+			identity := SecretDerivation{Credentials: []Credential{credential}}
 			for _, unique := range services {
 				secrets.set(unique, moduleIdentitySecretEnvironmentVariable, identity)
 				secrets.set(unique, moduleRegistrationSecretEnvironmentVariable, identity)

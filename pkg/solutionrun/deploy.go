@@ -104,7 +104,13 @@ func DerivedDeployInputs(ctx context.Context, workspace *resources.Workspace) (D
 		entry := resources.ServiceUnique(mod.Name, mod.ServiceEntry)
 		inputs.public(entry, manifest.APIConsumesEnvironmentVariable, solutionManifest.ConsumedAPIsEnvValue())
 
-		bindings := consumedModuleBindings(consumed)
+		federated, hosted := federatedConsumedAPIs(consumed, holdsDigests)
+		if len(hosted) > 0 {
+			inputs.Notes = append(inputs.Notes, Note{Message: fmt.Sprintf(
+				"consumed modules %s declare the %q group and hold the digests: the host routes their APIs itself, so %s federates no prefix for them",
+				strings.Join(hosted, ", "), federationConfigurationGroup, mod.Name)})
+		}
+		bindings := consumedModuleBindings(federated)
 		if len(bindings) == 0 {
 			continue
 		}

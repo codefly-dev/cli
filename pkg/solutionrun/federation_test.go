@@ -1080,8 +1080,9 @@ func TestDerivedRunInputsProvisionsTheSolutionSecretWithoutConsumes(t *testing.T
 
 // The whole derivation for a solution composed by source and version: its module
 // is not the workspace's own and its manifest sits in its own checkout, and it
-// must still get the projection, the module secrets for what it consumes, and
-// its own registration secret under its module name.
+// must still get the projection and its own registration secret under its module
+// name. What it consumes here is the registrar's own accounts API, which the host
+// routes itself, so no module secret is provisioned for that prefix.
 func TestDerivedRunInputsForAComposedSolution(t *testing.T) {
 	ctx := context.Background()
 	workspace := loadTestWorkspace(t, "testdata/solution-composed")
@@ -1098,8 +1099,8 @@ func TestDerivedRunInputsForAComposedSolution(t *testing.T) {
 	if backend[manifest.APIConsumesEnvironmentVariable] == "" {
 		t.Errorf("the composed entry received no %s", manifest.APIConsumesEnvironmentVariable)
 	}
-	if secrets := parsePairs(t, backend[moduleRegistrationSecretsEnvironmentVariable]); secrets["accounts"] == "" {
-		t.Errorf("the composed entry received no registration secret for the accounts prefix: %q", backend[moduleRegistrationSecretsEnvironmentVariable])
+	if got := backend[moduleRegistrationSecretsEnvironmentVariable]; got != "" {
+		t.Errorf("the composed entry received registration secrets %q for the host's own accounts API", got)
 	}
 	secret := backend[solutionRegistrationSecretEnvironmentVariable]
 	if secret == "" {

@@ -475,6 +475,29 @@ func registrarModules(registrars []string) []string {
 	return modules
 }
 
+// federatedConsumedAPIs drops the consumed APIs a registrar module serves, and
+// names the modules it dropped. Such an API is the host's own surface, which the
+// host's catalog routes itself: a solution never registers a federated prefix
+// for it (the gateway would either refuse it as catalog-owned or hold a route no
+// client calls), and the module cannot present an identity secret either, since
+// it holds the digests. So neither a registration nor an identity credential is
+// minted for its prefix. The api.consumes projection still carries the entry:
+// it is what the solution calls, not what it federates.
+func federatedConsumedAPIs(consumed []manifest.ConsumedAPI, holdsDigests []string) ([]manifest.ConsumedAPI, []string) {
+	federated := make([]manifest.ConsumedAPI, 0, len(consumed))
+	var hosted []string
+	for i := range consumed {
+		if slices.Contains(holdsDigests, consumed[i].Module) {
+			if !slices.Contains(hosted, consumed[i].Module) {
+				hosted = append(hosted, consumed[i].Module)
+			}
+			continue
+		}
+		federated = append(federated, consumed[i])
+	}
+	return federated, hosted
+}
+
 // moduleServiceUniques returns the module-qualified uniques of every service the
 // named module declares.
 //
@@ -561,8 +584,14 @@ func DerivedRunInputs(ctx context.Context, workspace *resources.Workspace, modul
 			manifest.APIConsumesEnvironmentVariable, serviceName, strings.Join(ids, ", "))})
 	}
 
-	provisioned := provisionModuleRegistrationSecrets(consumed)
 	registrars := federationRegistrars(ctx, workspace)
+	federated, hosted := federatedConsumedAPIs(consumed, registrarModules(registrars))
+	if len(hosted) > 0 {
+		notes = append(notes, Note{Message: fmt.Sprintf(
+			"consumed modules %s declare the %q group and hold the digests: the host routes their APIs itself, so no registration or identity secret is provisioned for their prefixes",
+			strings.Join(hosted, ", "), federationConfigurationGroup)})
+	}
+	provisioned := provisionModuleRegistrationSecrets(federated)
 	if len(registrars) == 0 {
 		// Without a registrar holding the digests, nothing can authorize a mint.
 		// Hand the backend a secret anyway and it spends every heartbeat on an
@@ -610,7 +639,7 @@ func DerivedRunInputs(ctx context.Context, workspace *resources.Workspace, modul
 	// background workers idle. Every module is accounted for out loud — the line
 	// above otherwise reads as a fully wired federation while half of it is
 	// missing, which is the diagnosis this provisioning exists to end.
-	injection := consumedModuleSecretOverrides(ctx, workspace, consumed, provisioned, registrars)
+	injection := consumedModuleSecretOverrides(ctx, workspace, federated, provisioned, registrars)
 	if len(injection.provisioned) > 0 {
 		notes = append(notes, Note{Message: fmt.Sprintf("provisioned %s and %s into the services of %s",
 			moduleIdentityPrefixEnvironmentVariable, moduleIdentitySecretEnvironmentVariable, strings.Join(injection.provisioned, ", "))})

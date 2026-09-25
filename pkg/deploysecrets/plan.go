@@ -81,8 +81,13 @@ type SecretPlan struct {
 	HasVersion bool
 	// Read is whether the plan knows the key's properties: it was read, or it
 	// has nothing to read.
-	Read       bool
-	Properties []PropertyPlan
+	Read bool
+	// Counterpart names the scoped modules this key is planned for although no
+	// service of theirs reads it: it is the registrar holding the digests of a
+	// credential those modules present. Only those digest properties are
+	// planned on it. Empty for a key in scope in its own right.
+	Counterpart []string
+	Properties  []PropertyPlan
 }
 
 // CredentialPlan is where one federation credential's value comes from.
@@ -96,7 +101,10 @@ type CredentialPlan struct {
 // Plan is a resolved environment. Its exported fields name keys and sources
 // only; the values it would write stay inside it.
 type Plan struct {
-	Store       string
+	Store string
+	// Modules is the scope the plan was limited to; empty plans every rendered
+	// module.
+	Modules     []string
 	Secrets     []SecretPlan
 	Credentials []CredentialPlan
 	Notes       []string
@@ -161,6 +169,13 @@ type Inputs struct {
 	// properties it holds. Without it the plan is metadata only: it knows which
 	// keys exist, not what they hold, and cannot be applied.
 	ReadPayloads bool
+	// Modules limits the plan to the remote keys the services of these modules
+	// read, plus their federation counterpart: the registrar's digest properties
+	// encoding a credential those keys hold. Every other key is still described
+	// and read — the credentials and configuration values it holds are what a
+	// scoped key keeps agreeing with — but nothing else is planned or written.
+	// Empty plans the whole environment.
+	Modules []string
 }
 
 // remoteState is one remote key as the plan sees it.
@@ -175,7 +190,7 @@ func (state *remoteState) known() bool { return state.document != nil }
 
 // Build resolves every property the rendered environment reads to a source.
 func Build(ctx context.Context, in *Inputs) (*Plan, error) {
-	plan := &Plan{Store: in.Store.Name()}
+	plan := &Plan{Store: in.Store.Name(), Modules: in.Modules}
 	for _, note := range in.Federation.Notes {
 		plan.Notes = append(plan.Notes, note.Message)
 	}
@@ -215,6 +230,7 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	scope := newPlanScope(in.Modules, states, derivations)
 
 	// generated holds one value per stored configuration key, so every remote key
 	// reading it receives the same one.
@@ -230,11 +246,19 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 		changes := map[string]string{}
 		digests := false
 		for _, property := range state.secret.Properties {
+			derivation, derived := derivations[state.secret.RemoteKey][property]
+			inScope, counterpart := scope.property(state, derivation, derived)
+			if !inScope {
+				continue
+			}
 			var propertyPlan PropertyPlan
 			var value string
-			if derivation, derived := derivations[state.secret.RemoteKey][property]; derived {
+			if derived {
 				propertyPlan, value = planDerived(state, property, derivation, credentials)
 				digests = digests || (derivation.Digest && value != "")
+				if counterpart {
+					propertyPlan.Source += " (federation counterpart of " + strings.Join(in.Modules, ", ") + ")"
+				}
 			} else {
 				propertyPlan, value, err = planConfigured(state, property, states, generators, generated)
 				if err != nil {
@@ -245,6 +269,15 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 				changes[property] = value
 			}
 			secretPlan.Properties = append(secretPlan.Properties, propertyPlan)
+			if value != "" && derived {
+				scope.written(derivation)
+			}
+		}
+		if len(secretPlan.Properties) == 0 {
+			continue
+		}
+		if !scope.owns(state) {
+			secretPlan.Counterpart = in.Modules
 		}
 		plan.Secrets = append(plan.Secrets, secretPlan)
 		if len(changes) > 0 && state.known() {
@@ -254,7 +287,135 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 		}
 	}
 	sort.SliceStable(plan.writes, func(i, j int) bool { return !plan.writes[i].digests && plan.writes[j].digests })
+	if err := scope.check(plan); err != nil {
+		return nil, err
+	}
+	plan.Credentials = scope.credentialPlans(plan.Credentials)
 	return plan, nil
+}
+
+// planScope decides which properties a module-scoped plan covers.
+type planScope struct {
+	modules []string
+	// held are the credentials a scoped key holds in plaintext; a registrar
+	// digest encoding one of them is the scope's federation counterpart.
+	held []solutionrun.Credential
+	// used are the credentials some planned property derives from.
+	used []solutionrun.Credential
+	// writtenPlain and writtenDigest are the credentials a write carries, as a
+	// plaintext and as a digest.
+	writtenPlain, writtenDigest []solutionrun.Credential
+}
+
+func newPlanScope(modules []string, states []*remoteState, derivations map[string]map[string]solutionrun.SecretDerivation) *planScope {
+	scope := &planScope{modules: modules}
+	for _, state := range states {
+		if !scope.owns(state) {
+			continue
+		}
+		for _, derivation := range derivations[state.secret.RemoteKey] {
+			if derivation.Digest {
+				continue
+			}
+			for _, credential := range derivation.Credentials {
+				if !slices.Contains(scope.held, credential) {
+					scope.held = append(scope.held, credential)
+				}
+			}
+		}
+	}
+	return scope
+}
+
+// owns reports whether a service of a scoped module reads the key; every key is
+// owned by an unscoped plan.
+func (scope *planScope) owns(state *remoteState) bool {
+	if len(scope.modules) == 0 {
+		return true
+	}
+	for _, unique := range state.secret.Services {
+		module, _, _ := strings.Cut(unique, "/")
+		if slices.Contains(scope.modules, module) {
+			return true
+		}
+	}
+	return false
+}
+
+// property reports whether a property is planned, and whether only as the
+// federation counterpart of the scope.
+func (scope *planScope) property(state *remoteState, derivation solutionrun.SecretDerivation, derived bool) (inScope, counterpart bool) {
+	if scope.owns(state) {
+		scope.use(derivation, derived)
+		return true, false
+	}
+	if !derived || !derivation.Digest {
+		return false, false
+	}
+	for _, credential := range derivation.Credentials {
+		if slices.Contains(scope.held, credential) {
+			scope.use(derivation, derived)
+			return true, true
+		}
+	}
+	return false, false
+}
+
+func (scope *planScope) use(derivation solutionrun.SecretDerivation, derived bool) {
+	if !derived {
+		return
+	}
+	for _, credential := range derivation.Credentials {
+		if !slices.Contains(scope.used, credential) {
+			scope.used = append(scope.used, credential)
+		}
+	}
+}
+
+func (scope *planScope) written(derivation solutionrun.SecretDerivation) {
+	target := &scope.writtenPlain
+	if derivation.Digest {
+		target = &scope.writtenDigest
+	}
+	for _, credential := range derivation.Credentials {
+		if !slices.Contains(*target, credential) {
+			*target = append(*target, credential)
+		}
+	}
+}
+
+// check refuses a scoped plan that would store the digest of a credential it
+// mints without also storing that credential where a service presents it: the
+// registrar would then admit a secret no service holds, and the holder, outside
+// the scope, would later be minted a different one.
+func (scope *planScope) check(plan *Plan) error {
+	if len(scope.modules) == 0 {
+		return nil
+	}
+	for _, credential := range plan.Credentials {
+		if credential.Action != ActionGenerate {
+			continue
+		}
+		if slices.Contains(scope.writtenDigest, credential.Credential) && !slices.Contains(scope.writtenPlain, credential.Credential) {
+			return fmt.Errorf("--module %s would mint %s and store only its digest: the services holding it are outside the scope; add their module",
+				strings.Join(scope.modules, ","), credential.Credential)
+		}
+	}
+	return nil
+}
+
+// credentialPlans keeps the credentials a planned property derives from.
+func (scope *planScope) credentialPlans(all []CredentialPlan) []CredentialPlan {
+	if len(scope.modules) == 0 {
+		return all
+	}
+	var kept []CredentialPlan
+	for _, credential := range all {
+		if slices.Contains(scope.used, credential.Credential) {
+			kept = append(kept, credential)
+		}
+	}
+	return kept
 }
 
 // federationDerivations maps each remote key's properties to the federation

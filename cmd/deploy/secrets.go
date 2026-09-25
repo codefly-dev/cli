@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -26,6 +27,7 @@ var (
 	secretsMetadataOnly bool
 	secretsAllowMissing bool
 	secretsYes          bool
+	secretsModules      []string
 )
 
 // SecretsCmd seeds an environment's secret store with what its render reads.
@@ -43,7 +45,13 @@ SecretStore the render names, read from the environment's cluster.
 Values are never printed: the plan names keys and sources only.
 
 --dry-run prints the plan and writes nothing. --metadata-only additionally never
-reads a stored value: it knows which remote keys exist, not what they hold.`,
+reads a stored value: it knows which remote keys exist, not what they hold.
+
+--module limits the plan to the remote keys the named modules' services read,
+plus their federation counterpart — the registrar's digest properties encoding a
+credential those keys hold — and names that counterpart in the plan. Every other
+remote key is still read, so a scoped key keeps agreeing with what the store
+already holds, but nothing outside the scope is planned or written.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
@@ -70,6 +78,11 @@ reads a stored value: it knows which remote keys exist, not what they hold.`,
 			cli.Info("No rendered service of environment %s reads a secret", env.Name)
 			return nil
 		}
+		for _, module := range secretsModules {
+			if !slices.Contains(rendered.Modules, module) {
+				return fmt.Errorf("--module %s: not a module rendered for %s (rendered: %s)", module, env.Name, strings.Join(rendered.Modules, ", "))
+			}
+		}
 		store, err := resolveSecretStore(ctx, env, rendered)
 		if err != nil {
 			return err
@@ -85,6 +98,7 @@ reads a stored value: it knows which remote keys exist, not what they hold.`,
 			Services:     workspaceServiceUniques(ctx, workspace),
 			Store:        store,
 			ReadPayloads: !secretsMetadataOnly,
+			Modules:      secretsModules,
 		})
 		if err != nil {
 			return err
@@ -148,6 +162,9 @@ func workspaceServiceUniques(ctx context.Context, workspace *resources.Workspace
 func printSecretsPlan(out io.Writer, environment string, rendered gitops.RenderedEnvironment, plan *deploysecrets.Plan) {
 	fmt.Fprintf(out, "Environment %s — store %s\n", environment, plan.Store)
 	fmt.Fprintf(out, "Rendered modules: %s\n", strings.Join(rendered.Modules, ", "))
+	if len(plan.Modules) > 0 {
+		fmt.Fprintf(out, "Scoped to modules: %s (and their federation counterpart)\n", strings.Join(plan.Modules, ", "))
+	}
 	if len(rendered.Skipped) > 0 {
 		fmt.Fprintf(out, "Skipped (rendered for another environment): %s\n", strings.Join(rendered.Skipped, ", "))
 	}
@@ -173,6 +190,9 @@ func printSecretsPlan(out io.Writer, environment string, rendered gitops.Rendere
 			state = "exists, not read"
 		}
 		fmt.Fprintf(out, "\n%s [%s] read by %s\n", secret.RemoteKey, state, strings.Join(secret.Services, ", "))
+		if len(secret.Counterpart) > 0 {
+			fmt.Fprintf(out, "  federation counterpart of %s: only the digests of their credentials are planned here\n", strings.Join(secret.Counterpart, ", "))
+		}
 		table := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 		for _, property := range secret.Properties {
 			fmt.Fprintf(table, "  %s\t%s\t%s\n", property.Action, property.Property, property.Source)
@@ -200,4 +220,5 @@ func init() {
 	SecretsCmd.Flags().BoolVar(&secretsMetadataOnly, "metadata-only", false, "With --dry-run: never read a stored value, only which remote keys exist")
 	SecretsCmd.Flags().BoolVar(&secretsAllowMissing, "allow-missing", false, "Write what can be resolved even when some properties must still be supplied")
 	SecretsCmd.Flags().BoolVarP(&secretsYes, "yes", "y", false, "Write without an interactive confirmation")
+	SecretsCmd.Flags().StringSliceVar(&secretsModules, "module", nil, "Plan only these modules' remote keys (comma-separated or repeated), plus the registrar digests of their credentials")
 }

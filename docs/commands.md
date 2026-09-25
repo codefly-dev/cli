@@ -604,6 +604,7 @@ and nobody hand-authors ExternalSecrets.
 codefly deploy secrets --env staging --dry-run --metadata-only  # which keys exist; reads no value
 codefly deploy secrets --env staging --dry-run                  # full plan; reads the store in memory
 codefly deploy secrets --env staging                            # write it (confirms; --yes to skip)
+codefly deploy secrets --env staging --module runtime --dry-run  # one module's keys, plus its federation counterpart
 ```
 
 It reads every `ExternalSecret` the render projected for `--env` under
@@ -625,6 +626,21 @@ while any property is `require` (`--allow-missing` writes the rest), and refuses
 a `--metadata-only` plan, which never saw what existing keys hold. Two keys
 holding one credential or one configuration value with different values are
 refused rather than reconciled.
+
+`--module <m>[,<m>]` limits the plan to the remote keys the named modules'
+services read, plus their **federation counterpart**: the registrar's digest
+properties that encode a credential those keys hold (scoping to a solution also
+plans the registrar's digest of its registration secret, and nothing else of the
+registrar's key). The plan names each counterpart key and property as such.
+Every other remote key is still read, so a scoped key keeps agreeing with what
+the store already holds, but nothing outside the scope is planned or written. A
+scope that would mint a credential and store only its digest, its holder being
+outside the scope, is refused.
+
+A consumed API that the registrar's own module serves (a solution calling the
+host's accounts service) is not federated: the host routes it itself, so
+neither a registration secret for its prefix nor an identity credential is
+derived — the same rule a run and a render follow.
 
 Which configuration keys are random is declared by the environment:
 
