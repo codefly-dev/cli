@@ -598,6 +598,15 @@ A key with no matching `remote-keys` entry and no `defaults` falls back to the
 source; the platform side seeds the store and does not hand-author
 ExternalSecrets.
 
+A key its producer declares as a template (core's `ConfigurationValue.template`
+— a Postgres agent's `READ_WRITE_CONNECTION`, say: role, address and database
+around a reference to its read-write password) is never read from the store.
+The consumer's ExternalSecret reads the producer's referenced keys from the
+**producer's** remote location — where the producer's own ExternalSecret reads
+them — and assembles the value in the cluster with a `target.template`
+(`engine-version: v2`, `merge-policy: Merge`). The store holds only the
+primitives. An environment `template` may not also assemble such a key.
+
 Locally there is no reachable Git host for Argo to fetch from, so the CLI owns a
 reproducible read-only fetch remote on the private k3d network:
 

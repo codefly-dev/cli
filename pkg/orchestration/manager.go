@@ -124,6 +124,13 @@ func (manager *Manager) BuilderDeploymentOutput() *builderv0.DeploymentOutput {
 	return manager.Builder.DeploymentOutput()
 }
 
+func (manager *Manager) BuilderDeployedConfiguration() *basev0.Configuration {
+	if manager.Builder == nil {
+		return nil
+	}
+	return manager.Builder.DeployedConfiguration()
+}
+
 func (manager *Manager) BuilderImageDigest() string {
 	if manager.Builder == nil {
 		return ""

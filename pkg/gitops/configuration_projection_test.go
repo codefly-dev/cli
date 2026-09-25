@@ -247,7 +247,7 @@ func TestSingleServiceRenderProjectsTheSameConfiguration(t *testing.T) {
 	root := filepath.Join(stage, "modules", "product", serviceUnitDir, "worker")
 	writeConsumerTree(t, root, env.Name, env.Namespace, "worker", "declared.example")
 	graph := map[string]*resources.Service{resources.ServiceUnique("product", "worker"): {Name: "worker"}}
-	require.NoError(t, projectRenderedServiceConfiguration(t.Context(), stage, singleModuleWorkspace(), env, graph, nil))
+	require.NoError(t, projectRenderedServiceConfiguration(t.Context(), stage, singleModuleWorkspace(), env, graph, nil, nil))
 	rendered := buildOverlay(t, root, env.Name)
 	require.Equal(t, "product-staging.database.example", containerEnvironment(t, rendered)["DATABASE_HOST"]["value"])
 	account := manifestOfKind(t, rendered, "ServiceAccount")

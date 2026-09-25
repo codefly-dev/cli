@@ -12,6 +12,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 )
@@ -100,6 +101,7 @@ func renderModuleTree(
 		}
 		outputs := make(map[string]*builderv0.DeploymentOutput)
 		selfEndpoints := make(map[string]map[string]string)
+		deployed := make(map[string]*basev0.Configuration)
 		destinations := moduleStageDestinations(workspace, module, stage)
 		for _, service := range roots {
 			if err := renderServiceFlow(
@@ -123,9 +125,18 @@ func renderModuleTree(
 						selfEndpoints[unique] = variables
 					}
 				},
+				func(rendered map[string]*basev0.Configuration) {
+					for unique, configuration := range rendered {
+						deployed[unique] = configuration
+					}
+				},
 			); err != nil {
 				return fmt.Errorf("render service %s: %w", service.Name, err)
 			}
+		}
+		scope.Templates = renderTemplates{}
+		if err = collectRenderTemplates(scope.Templates, deployed); err != nil {
+			return err
 		}
 		injections, err := deriveRenderInjections(ctx, workspace, selfEndpoints, sink)
 		if err != nil {
@@ -315,6 +326,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		}
 		var graph map[string]*resources.Service
 		var selfEndpoints map[string]map[string]string
+		var deployed map[string]*basev0.Configuration
 		if err := renderServiceFlow(
 			ctx,
 			workspace,
@@ -328,6 +340,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 			nil,
 			func(services map[string]*resources.Service) { graph = services },
 			func(rendered map[string]map[string]string) { selfEndpoints = rendered },
+			func(rendered map[string]*basev0.Configuration) { deployed = rendered },
 		); err != nil {
 			return err
 		}
@@ -335,7 +348,11 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		if err != nil {
 			return err
 		}
-		return projectRenderedServiceConfiguration(ctx, stage, workspace, env, graph, injections)
+		templates := renderTemplates{}
+		if err := collectRenderTemplates(templates, deployed); err != nil {
+			return err
+		}
+		return projectRenderedServiceConfiguration(ctx, stage, workspace, env, graph, injections, templates)
 
 	})
 }
@@ -409,6 +426,7 @@ func renderServiceFlow(
 	record func(map[string]*builderv0.DeploymentOutput),
 	recordServices func(map[string]*resources.Service),
 	recordSelfEndpoints func(map[string]map[string]string),
+	recordConfigurations func(map[string]*basev0.Configuration),
 ) (result error) {
 	if err := selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
 		return err
@@ -447,6 +465,9 @@ func renderServiceFlow(
 	}
 	if recordSelfEndpoints != nil {
 		recordSelfEndpoints(flow.SelfEndpoints(ctx))
+	}
+	if recordConfigurations != nil {
+		recordConfigurations(flow.DeployedConfigurations())
 	}
 	if recordServices != nil {
 		services := map[string]*resources.Service{}

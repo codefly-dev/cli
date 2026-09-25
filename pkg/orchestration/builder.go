@@ -56,6 +56,9 @@ type Builder struct {
 	syncResponse     *builderv0.SyncResponse
 	syncSkipped      bool
 	deploymentOutput *builderv0.DeploymentOutput
+	// deployedConfiguration is the configuration the service's Deploy exposed
+	// to its consumers, as the builder returned it.
+	deployedConfiguration *basev0.Configuration
 }
 
 func NewBuilder(ctx context.Context, instance *services.Instance, world *World) (*Builder, error) {
@@ -76,6 +79,12 @@ func NewBuilder(ctx context.Context, instance *services.Instance, world *World) 
 
 func (b *Builder) DeploymentOutput() *builderv0.DeploymentOutput {
 	return b.deploymentOutput
+}
+
+// DeployedConfiguration returns the configuration the service's Deploy exposed
+// to its consumers, or nil before a Deploy.
+func (b *Builder) DeployedConfiguration() *basev0.Configuration {
+	return b.deployedConfiguration
 }
 
 // ImageDigest returns the immutable registry manifest digest of the image this

@@ -169,6 +169,10 @@ type unitScope struct {
 	Workspace string
 	Module    string
 	Namespace string
+	// Templates are the producer-declared assemblies of the secret keys this
+	// render delivers. A key named here is assembled in the cluster from its
+	// producer's primitives instead of read from the store as a whole.
+	Templates renderTemplates
 }
 
 // moduleScope is the scope of every unit a module renders in an environment.

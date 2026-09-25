@@ -990,6 +990,28 @@ func (flow *Flow) DeploymentOutputs() map[string]*builderv0.DeploymentOutput {
 	return outputs
 }
 
+// DeployedConfigurations returns, per deployed service unique, the
+// configuration its Deploy exposed to consumers — in a restricted render, keys
+// without values, some carrying the producer's template for assembling them.
+func (flow *Flow) DeployedConfigurations() map[string]*basev0.Configuration {
+	configurations := make(map[string]*basev0.Configuration)
+	if flow == nil || flow.hub == nil {
+		return configurations
+	}
+	for _, manager := range flow.hub.managers {
+		source, ok := manager.(interface {
+			BuilderDeployedConfiguration() *basev0.Configuration
+		})
+		if !ok {
+			continue
+		}
+		if configuration := source.BuilderDeployedConfiguration(); configuration != nil {
+			configurations[manager.Unique()] = configuration
+		}
+	}
+	return configurations
+}
+
 // SelfEndpoints returns, per deployed service unique, the self-endpoint
 // carriers derived from the network mappings its deploy recorded — the
 // in-cluster address (container access) a render resolves, never the listen

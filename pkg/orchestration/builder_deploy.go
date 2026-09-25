@@ -147,6 +147,9 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		b.deploymentOutput = proto.Clone(resp.Deployment).(*builderv0.DeploymentOutput)
 	}
 
+	if resp.Configuration != nil {
+		b.deployedConfiguration = proto.CloneOf(resp.Configuration)
+	}
 	err = b.world.ConfigurationManager.ExposeConfiguration(ctx, b.instance.Identity, resp.Configuration)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record shared configuration configurations")

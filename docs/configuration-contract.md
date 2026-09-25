@@ -134,6 +134,17 @@ explicit remote keys. These are External Secrets declarations, evaluated only by
 ESO. The CLI never resolves or evaluates secret expressions. Other template
 engines, replacement policies and undeclared output keys fail admission.
 
+A producer may also declare one of its secret values as a template over its own
+secret configuration values (core's `ConfigurationValue.template`). The CLI
+translates it into the consumer's ExternalSecret `target.template` over the
+producer's primitives, read from the producer's remote keys, and never reads the
+assembled value from the store. The translation reproduces core's
+`EvaluateConfigurationValueTemplate` byte for byte. A template of literals only
+is refused: under a credential-named key it would be a value in the tree.
+Rendered manifests admit template delimiters, and credential-named keys, only at
+an ExternalSecret's `spec.target.template.data.<key>`, and only for a value that
+carries a template action.
+
 Validation rebuilds the selected overlay and checks the complete CLI-owned
 ExternalSecret delivery specification, including its store, target, keys and
 properties. Overlay patches may not redirect or replace that specification.
