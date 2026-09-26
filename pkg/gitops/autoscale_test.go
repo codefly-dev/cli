@@ -117,7 +117,7 @@ func TestProjectRenderedServiceAutoscaleUsesLoadedGraph(t *testing.T) {
 	graph := map[string]*resources.Service{
 		resources.ServiceUnique("web", "accounts"): {Name: "accounts", Autoscale: &resources.ServiceAutoscale{Min: 2, Max: 6, TargetCPU: 70}},
 	}
-	if err := projectRenderedServiceConfiguration(t.Context(), stage, singleModuleWorkspace(), env, graph, nil); err != nil {
+	if err := projectRenderedServiceConfiguration(t.Context(), stage, singleModuleWorkspace(), env, graph, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(scaled, "overlays", "production", hpaFile)); err != nil {

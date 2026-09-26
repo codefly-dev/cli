@@ -196,13 +196,15 @@ func TestIdentityProjectionRejectsEmptyPrincipal(t *testing.T) {
 	env.ServiceIdentity.Default.Principal = ""
 	root := t.TempDir()
 	writeConsumerTree(t, root, env.Name, env.Namespace, "api", "declared.example")
-	require.ErrorContains(t, projectManagedIdentity(t.Context(), root, &resources.Service{Name: "api"}, env, env.Namespace), "principal")
+	scope := unitScope{Workspace: "platform", Module: "saas", Namespace: env.Namespace}
+	require.ErrorContains(t, projectManagedIdentity(t.Context(), root, &resources.Service{Name: "api"}, env, scope), "principal")
 }
 
 func TestServiceIdentityConflictsWithManagedDependencyIdentity(t *testing.T) {
 	env := injectionContract(t)
 	env.ManagedServices = map[string]environments.EnvironmentManagedService{"store": managedIdentityService()}
-	_, err := soleWorkloadIdentity("api", []string{"store"}, env)
+	consumer := &resources.Service{Name: "api", ServiceDependencies: []*resources.ServiceDependency{{Name: "store"}}}
+	_, err := soleWorkloadIdentity("api", consumedManagedServices(consumer, "saas", env), env)
 	require.ErrorContains(t, err, "different runtime identities")
 }
 
@@ -247,7 +249,7 @@ func TestSingleServiceRenderProjectsTheSameConfiguration(t *testing.T) {
 	root := filepath.Join(stage, "modules", "product", serviceUnitDir, "worker")
 	writeConsumerTree(t, root, env.Name, env.Namespace, "worker", "declared.example")
 	graph := map[string]*resources.Service{resources.ServiceUnique("product", "worker"): {Name: "worker"}}
-	require.NoError(t, projectRenderedServiceConfiguration(t.Context(), stage, singleModuleWorkspace(), env, graph, nil))
+	require.NoError(t, projectRenderedServiceConfiguration(t.Context(), stage, singleModuleWorkspace(), env, graph, nil, nil))
 	rendered := buildOverlay(t, root, env.Name)
 	require.Equal(t, "product-staging.database.example", containerEnvironment(t, rendered)["DATABASE_HOST"]["value"])
 	account := manifestOfKind(t, rendered, "ServiceAccount")

@@ -21,9 +21,6 @@ package config
 import (
 	"bufio"
 	"bytes"
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -31,6 +28,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/codefly-dev/cli/pkg/secretgen"
 )
 
 // The configuration file layout core/configurations reads. Kept as constants so
@@ -283,42 +282,27 @@ func gitIgnores(path string) (bool, error) {
 	return false, fmt.Errorf("check whether git ignores %s: %w", path, err)
 }
 
-// Format selects the encoding of a generated secret.
-type Format string
+// Format selects the encoding of a generated secret. The generator is
+// pkg/secretgen, shared with `codefly deploy secrets`.
+type Format = secretgen.Format
 
 const (
-	FormatHex    Format = "hex"
-	FormatBase64 Format = "base64"
+	FormatHex    = secretgen.FormatHex
+	FormatBase64 = secretgen.FormatBase64
 )
 
-// ParseFormat validates a --format value.
+// ParseFormat validates a --format value: a local configuration value is hex or
+// base64.
 func ParseFormat(raw string) (Format, error) {
-	switch Format(strings.TrimSpace(strings.ToLower(raw))) {
-	case FormatHex:
-		return FormatHex, nil
-	case FormatBase64:
-		return FormatBase64, nil
-	default:
+	format, err := secretgen.ParseFormat(raw)
+	if err != nil || (format != FormatHex && format != FormatBase64) {
 		return "", fmt.Errorf("unknown --format %q: expected hex or base64", raw)
 	}
+	return format, nil
 }
 
 // Generate returns a cryptographically random value of size bytes in the given
 // encoding.
 func Generate(format Format, size int) (string, error) {
-	if size <= 0 {
-		return "", fmt.Errorf("--bytes must be positive, got %d", size)
-	}
-	buf := make([]byte, size)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("generate %d random bytes: %w", size, err)
-	}
-	switch format {
-	case FormatHex:
-		return hex.EncodeToString(buf), nil
-	case FormatBase64:
-		return base64.StdEncoding.EncodeToString(buf), nil
-	default:
-		return "", fmt.Errorf("unknown format %q", format)
-	}
+	return secretgen.Generate(format, size)
 }

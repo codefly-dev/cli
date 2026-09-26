@@ -25,6 +25,16 @@ Producers must supply:
   rather than reusing credentials or delivery paths resolved for another target.
 - Each managed service under its explicit service key, with its endpoint and port.
   Multiple services are supported without assigning the first one to `store`.
+  The key is `<module>/<service>`, or a bare `<service>` where only one module of
+  the workspace declares that name. Composed modules routinely ship a service of
+  the same name — a `redis`, say — and a bare key covers every one of them, so all
+  of them would render with this entry's address and secrets while only one was
+  meant; a bare key matching several is refused at workspace load, naming the
+  candidates. A qualified key matching no service is refused too: it is a typo in
+  the module or the service name, and the service it should have replaced would
+  otherwise deploy as its module declares it with nothing reporting the entry went
+  unused. A bare key matching nothing stays inert, so a contract may declare a
+  fleet's managed services for a workspace composing only some of them.
 - Explicit secret references, including the target Secret name, remote key,
   optional property and secret store. No declaration means no reference is added;
   it does not assert that the service is passwordless.
@@ -133,6 +143,23 @@ with `engine-version: v2`, `merge-policy: Merge` and `data` expressions for its
 explicit remote keys. These are External Secrets declarations, evaluated only by
 ESO. The CLI never resolves or evaluates secret expressions. Other template
 engines, replacement policies and undeclared output keys fail admission.
+
+A producer may also declare one of its secret values as a template over its own
+secret configuration values (core's `ConfigurationValue.template`). The CLI
+translates it into the consumer's ExternalSecret `target.template` over the
+producer's primitives, read from the producer's remote keys through whichever
+surface the producer itself resolves through, and never reads the assembled
+value from the store. The translation reproduces core's
+`EvaluateConfigurationValueTemplate` byte for byte. A template of literals only
+is refused: under a credential-named key it would be a value in the tree. So is
+a template referencing a key the producer's own deployment does not read as a
+secret, and a producer whose keys resolve through a different store than the
+consumer. The template is emitted with `mergePolicy: Replace` and an entry for
+every key the consumer references, so the primitives it reads are fetched but
+never emitted into the consumer's Secret.
+Rendered manifests admit template delimiters, and credential-named keys, only at
+an ExternalSecret's `spec.target.template.data.<key>`, and only for a value that
+carries a template action.
 
 Validation rebuilds the selected overlay and checks the complete CLI-owned
 ExternalSecret delivery specification, including its store, target, keys and

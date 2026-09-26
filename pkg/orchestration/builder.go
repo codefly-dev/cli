@@ -56,6 +56,13 @@ type Builder struct {
 	syncResponse     *builderv0.SyncResponse
 	syncSkipped      bool
 	deploymentOutput *builderv0.DeploymentOutput
+	// deployedConfiguration is the configuration the service's Deploy exposed
+	// to its consumers, as the builder returned it.
+	deployedConfiguration *basev0.Configuration
+	// deployedSecretKeys are the secret keys the service's own promotable
+	// deployment reads from secret-<service> — the exact key set its own
+	// ExternalSecret fetches from the store under its own scope.
+	deployedSecretKeys []string
 }
 
 func NewBuilder(ctx context.Context, instance *services.Instance, world *World) (*Builder, error) {
@@ -76,6 +83,21 @@ func NewBuilder(ctx context.Context, instance *services.Instance, world *World) 
 
 func (b *Builder) DeploymentOutput() *builderv0.DeploymentOutput {
 	return b.deploymentOutput
+}
+
+// DeployedConfiguration returns the configuration the service's Deploy exposed
+// to its consumers, or nil before a Deploy.
+func (b *Builder) DeployedConfiguration() *basev0.Configuration {
+	return b.deployedConfiguration
+}
+
+// DeployedSecretKeys returns the secret keys the service's own promotable
+// deployment reads from secret-<service>, sorted, or nil before a promotable
+// Deploy. They are the keys its own ExternalSecret fetches under its own
+// scope, which is what a consumer assembling one of this service's templated
+// values must be able to read.
+func (b *Builder) DeployedSecretKeys() []string {
+	return b.deployedSecretKeys
 }
 
 // ImageDigest returns the immutable registry manifest digest of the image this
