@@ -91,7 +91,7 @@ func renderModuleTree(
 		}
 		// A configuration error refuses the render before any image is built or
 		// pushed, listing every unresolved reference of every root's graph.
-		if err := orchestration.PlanConfigurationReferences(ctx, workspace, env, roots, false); err != nil {
+		if err = orchestration.PlanConfigurationReferences(ctx, workspace, env, roots, false); err != nil {
 			return err
 		}
 		// The registry is only needed to build and push service images. A module

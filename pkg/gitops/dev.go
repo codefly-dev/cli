@@ -187,7 +187,7 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 		return DevResult{}, err
 	}
 	// A configuration error refuses the deploy before the image is built.
-	if err := orchestration.PlanConfigurationReferences(ctx, request.Workspace, request.Environment, []*resources.Service{service}, true); err != nil {
+	if err = orchestration.PlanConfigurationReferences(ctx, request.Workspace, request.Environment, []*resources.Service{service}, true); err != nil {
 		return DevResult{}, err
 	}
 	images, err := buildServiceImage(ctx, request.Workspace, request.Module, service, request.Environment, request.Sink)
