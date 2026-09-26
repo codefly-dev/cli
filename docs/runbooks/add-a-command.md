@@ -1,7 +1,8 @@
 # Runbook: Add a new command
 
 Add a Cobra command (or subcommand) to the CLI and wire up help, docs, and — where relevant —
-MCP exposure. See [../commands.md](../commands.md) for the user-facing command reference.
+MCP exposure. See [../commands.md](../commands.md) for the narrative command guide and
+[../cli-reference.md](../cli-reference.md) for the generated list of every command and flag.
 
 ## When to use
 
@@ -85,16 +86,30 @@ Every command must give complete, useful `--help` **without network access** (se
 <cmd>` reprints this static help and optionally augments it via an external `codefly-help`
 provider — so the static text is the contract; keep it accurate.
 
-### 4. Update the command reference
+### 4. Regenerate the command reference, and write up the verb
 
-Add the command to [../commands.md](../commands.md) under the right category, with its flags and a
-usage example. If it introduces a global flag, add it to the Global Flags table.
+Two documents, two jobs.
+
+[../cli-reference.md](../cli-reference.md) is generated from the command tree and lists every
+command and flag. Regenerate it — `go test ./cmd -run TestCLIReferenceIsCurrent -update-reference`
+— and commit the result. `TestCLIReferenceIsCurrent` fails otherwise, naming your command: that is
+the guard, and it is why a new verb can no longer ship undocumented. Its text is the `Short`,
+`Long` and flag usage from step 3, so the reference and `--help` cannot disagree.
+
+[../commands.md](../commands.md) is the narrative guide, and is still written by hand: add the
+command under the right category with what it is *for* and the chain it takes part in — the thing
+generated text cannot say. If it introduces a global flag, add it to the Global Flags table.
 
 ### 5. Consider MCP exposure
 
 Per the project rule, when you add a CLI capability, decide whether AI agents should reach it too.
 If yes, register a corresponding tool in `pkg/mcp/` (`tools.go` / `service_tools.go` / …). See
 [../mcp-server.md](../mcp-server.md).
+
+One family is already decided: no `codefly deploy` verb is exposed, because they act on real
+clusters and secret stores with the operator's own credentials, and an MCP tool is called by an
+agent rather than typed by that operator. `TestNoDeployVerbIsExposedAsATool` in `pkg/mcp` holds
+that line. Changing it is a deliberate edit to that test, not an oversight.
 
 ### 6. Test
 
@@ -116,6 +131,7 @@ go test ./cmd/...
 - [ ] Registered in `cmd/root.go` (top-level) or the parent's `init()`
 - [ ] Parent groups reject unknown subcommands
 - [ ] `Short`/`Long`/`Example` complete and network-free
-- [ ] Added to `docs/commands.md`
-- [ ] MCP tool added or consciously skipped
+- [ ] `docs/cli-reference.md` regenerated and committed (`go test ./cmd -run TestCLIReferenceIsCurrent -update-reference`)
+- [ ] Written up in `docs/commands.md` under the right category
+- [ ] MCP tool added or consciously skipped (no `deploy` verb is exposed — see step 5)
 - [ ] Tests pass; `--help` and `explain` render

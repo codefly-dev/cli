@@ -32,7 +32,7 @@ func Install(t *testing.T, names ...string) []string {
 	_, source, _, ok := runtime.Caller(0)
 	require.True(t, ok)
 	binary := filepath.Join(t.TempDir(), "protocol-peer")
-	command := exec.CommandContext(t.Context(), "go", "build", "-race", "-o", binary, "./testdata/peer")
+	command := exec.CommandContext(t.Context(), "go", peerBuildArgs(binary)...) //nolint:gosec // G204: go build with internally constructed arguments and a temp-dir output path
 	command.Dir = filepath.Dir(source)
 	command.Env = append(os.Environ(), "GOWORK=off")
 	output, err := command.CombinedOutput()
@@ -47,6 +47,21 @@ func Install(t *testing.T, names ...string) []string {
 		identifiers = append(identifiers, selection.Identifier())
 	}
 	return identifiers
+}
+
+// peerBuildArgs builds the peer with the race detector exactly when the test
+// binary has it. The race job still races the peer; every other job builds it
+// from the same cache entries its own test binary already filled. A
+// hard-coded -race made a job without a race-instrumented cache (a cold
+// coverage run) compile the peer's whole dependency graph under -race in every
+// package that installs it, which alone took about three minutes on a CI
+// runner and pushed pkg/gateway past its four-minute test timeout.
+func peerBuildArgs(binary string) []string {
+	args := []string{"build"}
+	if raceEnabled {
+		args = append(args, "-race")
+	}
+	return append(args, "-o", binary, "./testdata/peer")
 }
 
 func Response(t *testing.T, root, name string, response proto.Message) {

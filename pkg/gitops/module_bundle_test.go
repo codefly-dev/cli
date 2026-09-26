@@ -121,3 +121,62 @@ func TestTransportNeutralModuleEnvironmentIsIsolated(t *testing.T) {
 		}
 	}
 }
+
+// A module bundle generator renders one module and looks a service up by the
+// name that module knows it under, so a module-qualified key is re-keyed bare for
+// the module it names and dropped for every other: another module's same-named
+// entry would otherwise replace the wrong service's address and secrets.
+func TestTransportNeutralModuleWorkspaceScopesManagedServicesToTheModule(t *testing.T) {
+	workspace := &resources.Workspace{
+		Name: "workspace",
+		Environments: []*resources.Environment{resourceEnvironment(t, &environments.Environment{
+			Name:      "production",
+			Namespace: "payments",
+			ManagedServices: map[string]environments.EnvironmentManagedService{
+				"payments/redis": {Kind: "redis", ExternalName: "payments.cache.example", Port: 6379},
+				"catalog/redis":  {Kind: "redis", ExternalName: "catalog.cache.example", Port: 6379},
+				"warehouse":      {Kind: "postgres", ExternalName: "warehouse.example", Port: 5432},
+			},
+		})},
+	}
+
+	encoded, err := encodeTransportNeutralModuleWorkspace(workspace, "payments")
+	if err != nil {
+		t.Fatal(err)
+	}
+	managed := decodedModuleManagedServices(t, encoded)
+
+	redis, ok := managed["redis"].(map[string]any)
+	if !ok {
+		t.Fatalf("payments/redis was not re-keyed bare: %#v", managed)
+	}
+	if redis["external-name"] != "payments.cache.example" {
+		t.Errorf("redis external-name = %v, want this module's entry", redis["external-name"])
+	}
+	if _, leaked := managed["payments/redis"]; leaked {
+		t.Errorf("a qualified key reached the generator: %#v", managed)
+	}
+	if _, leaked := managed["catalog/redis"]; leaked {
+		t.Errorf("another module's entry reached the generator: %#v", managed)
+	}
+	// A bare key is unambiguous within one module, so it is carried through.
+	if _, ok := managed["warehouse"]; !ok {
+		t.Errorf("a bare key was dropped: %#v", managed)
+	}
+}
+
+func decodedModuleManagedServices(t *testing.T, encoded []byte) map[string]any {
+	t.Helper()
+	var decoded struct {
+		Environments []struct {
+			ManagedServices map[string]any `yaml:"managed-services"`
+		} `yaml:"environments"`
+	}
+	if err := yaml.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Environments) != 1 {
+		t.Fatalf("environments = %d, want 1", len(decoded.Environments))
+	}
+	return decoded.Environments[0].ManagedServices
+}

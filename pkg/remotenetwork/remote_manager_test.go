@@ -538,3 +538,42 @@ func TestRemoteManagerScopesNamespacePerModuleWhenWorkspaceComposesSeveral(t *te
 	require.NoError(t, err)
 	require.Equal(t, "platform", namespace)
 }
+
+// A managed-services entry qualifying one module's service leaves a same-named
+// service of another module rendered in-cluster, so its external endpoint still
+// falls back to the ClusterIP the render creates rather than demanding a declared
+// address it has no reason to carry.
+func TestRemoteManagerManagedServiceOfAnotherModuleStaysInCluster(t *testing.T) {
+	rm, err := NewRemoteManager(context.Background(), erroringDNSManager{})
+	require.NoError(t, err)
+	environment := &environments.Environment{
+		Name:            "azure",
+		Namespace:       "platform",
+		ManagedServices: map[string]environments.EnvironmentManagedService{"warehouse/store": {Kind: "postgres", ExternalName: "store.example.internal", Port: 5432}},
+	}
+	workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
+	service := &resources.ServiceIdentity{Module: "saas", Name: "store"}
+	endpoint := &basev0.Endpoint{Module: "saas", Service: "store", Name: "api", Api: standards.REST, Location: resources.LocationExternal}
+
+	mappings, err := rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint})
+	require.NoError(t, err)
+	assertInClusterMapping(t, mappings, "store.platform.svc.cluster.local", uint32(standards.Port(standards.REST)))
+}
+
+// The module the entry names has no in-cluster workload — its bundle is
+// bootstrap-only — so its external endpoint keeps the hard failure.
+func TestRemoteManagerManagedServiceOfTheNamedModuleIsNotInCluster(t *testing.T) {
+	rm, err := NewRemoteManager(context.Background(), erroringDNSManager{})
+	require.NoError(t, err)
+	environment := &environments.Environment{
+		Name:            "azure",
+		Namespace:       "platform",
+		ManagedServices: map[string]environments.EnvironmentManagedService{"saas/store": {Kind: "postgres", ExternalName: "store.example.internal", Port: 5432}},
+	}
+	workspace := &resources.Workspace{Name: "mind", Layout: resources.LayoutKindModules}
+	service := &resources.ServiceIdentity{Module: "saas", Name: "store"}
+	endpoint := &basev0.Endpoint{Module: "saas", Service: "store", Name: "api", Api: standards.REST, Location: resources.LocationExternal}
+
+	_, err = rm.GenerateNetworkMappings(context.Background(), environment, workspace, service, []*basev0.Endpoint{endpoint})
+	require.Error(t, err, "a managed service of the named module has no in-cluster address to fall back on")
+}

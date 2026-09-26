@@ -73,6 +73,7 @@ new runbook (and its skill) whenever you do a multi-step operational task a seco
 
 ### Reference (deep dives, not step-by-step)
 - **All CLI commands, by category** → [docs/commands.md](docs/commands.md)
+- **Every command and flag** (generated from the command tree; regenerate with `go test ./cmd -run TestCLIReferenceIsCurrent -update-reference`) → [docs/cli-reference.md](docs/cli-reference.md)
 - **Orchestration engine** → [docs/orchestration.md](docs/orchestration.md)
 - **Runnables** (what the CLI does with `runnable.codefly.yaml`, and what is deliberately not implemented yet) → [docs/runnable.md](docs/runnable.md)
 - **Product-owned selections** (Core resolution, local checkouts, evidence and execution blockers) → [docs/composition-selections.md](docs/composition-selections.md)

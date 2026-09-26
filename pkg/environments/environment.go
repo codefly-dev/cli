@@ -147,6 +147,43 @@ type EnvironmentManagedService struct {
 	Identity *EnvironmentWorkloadIdentity `yaml:"identity,omitempty"`
 }
 
+// ManagedService returns the environment's replacement for a service, or false
+// when the service deploys as its module declares it. A key naming the service's
+// module wins over a bare one: an environment that manages one module's "redis"
+// and leaves another's alone says so by qualifying the entry, and a bare key
+// left standing beside it would otherwise capture both.
+//
+// A bare key that matches this service may also match a same-named service in
+// another module. That is a property of the declaration and the workspace graph
+// together, neither of which a single lookup can see, so it is refused by
+// ValidateManagedServices instead of guessed at here. Every entry point that
+// reaches this resolver runs that check first — the gitops passes through
+// ValidateWorkspace, a run through NewFlow — so adding one means running it
+// there too.
+func (env *Environment) ManagedService(module, service string) (EnvironmentManagedService, bool) {
+	if env == nil {
+		return EnvironmentManagedService{}, false
+	}
+	if managed, declared := env.ManagedServices[resources.ServiceUnique(module, service)]; declared {
+		return managed, true
+	}
+	managed, declared := env.ManagedServices[service]
+	return managed, declared
+}
+
+// validateManagedServiceKey accepts either shape a managed-services key takes: a
+// module-qualified "<module>/<service>" or a bare "<service>".
+func validateManagedServiceKey(key string) error {
+	module, service, qualified := strings.Cut(key, "/")
+	if !qualified {
+		return validateResourcePathComponent("managed service", key)
+	}
+	if err := validateResourcePathComponent("managed service module", module); err != nil {
+		return err
+	}
+	return validateResourcePathComponent("managed service", service)
+}
+
 // EnvironmentWorkloadIdentity is the runtime principal a workload authenticates
 // as, and the platform's own means of attaching it. Annotations land on the
 // workload's ServiceAccount and Labels on its pod template, verbatim: an environment
@@ -325,6 +362,119 @@ type EnvironmentServiceSecrets struct {
 	// substitute. Absent, an unmatched key falls back to "<service>/<key>".
 	Defaults *EnvironmentSecretRemoteRef                `yaml:"defaults,omitempty"`
 	Services map[string]EnvironmentServiceSecretMapping `yaml:"services,omitempty"`
+	// Generate declares the secret configuration keys this environment's store
+	// holds as values minted at random rather than supplied from outside — the
+	// only thing `codefly deploy secrets` generates besides the federation
+	// credentials it derives itself. A key no generator names, no federation
+	// derivation covers and no stored secret already holds is reported as one the
+	// operator must supply; it is never guessed.
+	Generate []EnvironmentSecretGenerator `yaml:"generate,omitempty"`
+}
+
+// Secret generator scopes: which configuration a generator's keys belong to.
+const (
+	SecretGeneratorScopeWorkspace = "workspace"
+	SecretGeneratorScopeService   = "service"
+)
+
+// Secret generator formats: how a generated value is encoded.
+const (
+	SecretGeneratorFormatHex        = "hex"
+	SecretGeneratorFormatBase64     = "base64"
+	SecretGeneratorFormatIdentifier = "identifier"
+)
+
+// EnvironmentSecretGenerator names keys of one configuration group that the
+// environment's secret store holds as random values. Scope "workspace" selects a
+// workspace configuration group; scope "service" a service configuration of that
+// name, of every service or of the Services (module/service uniques) listed.
+//
+// Format is the value's encoding: hex (default) or base64 of Bytes random bytes
+// (default 32), or identifier — a lowercase letter followed by hex, for a value
+// that must also be a SQL or DNS identifier (a database owner name), of Bytes
+// random bytes (default 12).
+type EnvironmentSecretGenerator struct {
+	Scope         string   `yaml:"scope"`
+	Configuration string   `yaml:"configuration"`
+	Services      []string `yaml:"services,omitempty"`
+	Keys          []string `yaml:"keys"`
+	Format        string   `yaml:"format,omitempty"`
+	Bytes         int      `yaml:"bytes,omitempty"`
+}
+
+// UnmarshalYAML refuses an unknown key: a mistyped `keys` would otherwise leave a
+// generator that generates nothing, and the keys it meant are then reported as
+// ones to supply by hand.
+func (generator *EnvironmentSecretGenerator) UnmarshalYAML(node *yaml.Node) error {
+	if err := rejectUnknownKeys(node, "service-secrets generate", "scope", "configuration", "services", "keys", "format", "bytes"); err != nil {
+		return err
+	}
+	type plain EnvironmentSecretGenerator
+	return node.Decode((*plain)(generator))
+}
+
+func (generator *EnvironmentSecretGenerator) validate(index int) error {
+	label := fmt.Sprintf("service-secrets generate[%d]", index)
+	switch generator.Scope {
+	case SecretGeneratorScopeWorkspace:
+		if len(generator.Services) > 0 {
+			return fmt.Errorf("%s: a workspace-scoped generator names no services", label)
+		}
+	case SecretGeneratorScopeService:
+		for _, unique := range generator.Services {
+			module, service, ok := strings.Cut(unique, "/")
+			if !ok || validateResourcePathComponent("module", module) != nil || validateResourcePathComponent("service", service) != nil {
+				return fmt.Errorf("%s: service %q must be <module>/<service>", label, unique)
+			}
+		}
+	default:
+		return fmt.Errorf("%s: scope must be %q or %q, got %q", label, SecretGeneratorScopeWorkspace, SecretGeneratorScopeService, generator.Scope)
+	}
+	if strings.TrimSpace(generator.Configuration) == "" {
+		return fmt.Errorf("%s: configuration cannot be empty", label)
+	}
+	if len(generator.Keys) == 0 {
+		return fmt.Errorf("%s: keys cannot be empty", label)
+	}
+	for _, key := range generator.Keys {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("%s: key names cannot be empty", label)
+		}
+	}
+	switch generator.Format {
+	case "", SecretGeneratorFormatHex, SecretGeneratorFormatBase64, SecretGeneratorFormatIdentifier:
+	default:
+		return fmt.Errorf("%s: format must be hex, base64 or identifier, got %q", label, generator.Format)
+	}
+	if generator.Bytes < 0 {
+		return fmt.Errorf("%s: bytes must be positive", label)
+	}
+	return nil
+}
+
+// StoredKeys is every stored key the generator covers — the names core gives
+// the configuration values in a service's environment, which are the keys a
+// rendered ExternalSecret reads. A service-scoped generator with no services
+// covers the configuration of each of services.
+func (generator *EnvironmentSecretGenerator) StoredKeys(services []string) []string {
+	prefixes := []string{resources.WorkspaceSecretConfigurationPrefix}
+	if generator.Scope == SecretGeneratorScopeService {
+		selected := generator.Services
+		if len(selected) == 0 {
+			selected = services
+		}
+		prefixes = make([]string, 0, len(selected))
+		for _, unique := range selected {
+			prefixes = append(prefixes, resources.ServiceSecretConfigurationEnvironmentKeyPrefixFromUnique(unique))
+		}
+	}
+	keys := make([]string, 0, len(prefixes)*len(generator.Keys))
+	for _, prefix := range prefixes {
+		for _, key := range generator.Keys {
+			keys = append(keys, prefix+"__"+resources.NameToKey(generator.Configuration)+"__"+resources.NameToKey(key))
+		}
+	}
+	return keys
 }
 
 // EnvironmentServiceSecretMapping overrides how one service resolves its
@@ -458,6 +608,11 @@ func (s *EnvironmentServiceSecrets) Validate() error {
 	}
 	if err := s.Defaults.validate("service-secrets"); err != nil {
 		return err
+	}
+	for index := range s.Generate {
+		if err := s.Generate[index].validate(index); err != nil {
+			return err
+		}
 	}
 	for name, mapping := range s.Services {
 		if strings.TrimSpace(name) == "" {
@@ -740,7 +895,16 @@ type Environment struct {
 	Namespace string               `yaml:"namespace,omitempty"`
 	Gitops    *EnvironmentGitops   `yaml:"gitops,omitempty"`
 
-	Ingress         []EnvironmentIngressRoute            `yaml:"ingress,omitempty"`
+	Ingress []EnvironmentIngressRoute `yaml:"ingress,omitempty"`
+
+	// ManagedServices keys a replacement by the identity of the service it
+	// replaces: "<module>/<service>", or a bare "<service>" when exactly one
+	// module in the workspace declares that name. Composed modules routinely ship
+	// a service of the same name — a "redis", say — and a bare key covers every
+	// one of them, so both would render with this entry's address and secrets;
+	// ValidateManagedServices refuses an ambiguous bare key rather than replacing
+	// a service nobody declared managed. Read it through ManagedService, never by
+	// indexing the map with a bare name.
 	ManagedServices map[string]EnvironmentManagedService `yaml:"managed-services,omitempty"`
 
 	// DNS carries the environment's DNS contract. Its AppHostSuffix lets the network layer
