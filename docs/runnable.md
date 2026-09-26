@@ -62,8 +62,8 @@ rather than followed.
 See [`generate runnables`](commands.md#generate-runnables) for the output
 layout, the refusal rules and how the release version is derived. What this
 does *not* do is invoke anything: no CLI command invokes a Runnable, derived or
-authored, and preparing a binding from `index.json` is the composition's
-tooling.
+authored. Preparing each operation's binding for an environment is
+[`generate runnable-bindings`](commands.md#generate-runnable-bindings).
 
 ### Identity and coexistence
 
