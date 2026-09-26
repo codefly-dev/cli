@@ -125,7 +125,7 @@ Examples:
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(target, content, 0o644); err != nil {
+		if err := os.WriteFile(target, content, 0o600); err != nil {
 			return err
 		}
 		cli.Header(1, "Bound %d runnable operation(s) for %s in %s", count, env.Name, target)
@@ -163,7 +163,8 @@ func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace
 		if err != nil {
 			return nil, 0, fmt.Errorf("module %s: %w", module.Name, err)
 		}
-		for _, operation := range derived {
+		for i := range derived {
+			operation := &derived[i]
 			prepared, err := prepareRunnable(ctx, module, operation, resolver, env.Name)
 			if err != nil {
 				return nil, 0, fmt.Errorf("module %s operation %s: %w", module.Name, operation.Entry.Name, err)
@@ -207,7 +208,7 @@ func RunnableBindingKey(module, name string) string {
 	return key.String()
 }
 
-func prepareRunnable(ctx context.Context, module *resources.Module, operation runnablespkg.Derived, resolver *endpointResolver, envName string) (*PreparedRunnable, error) {
+func prepareRunnable(ctx context.Context, module *resources.Module, operation *runnablespkg.Derived, resolver *endpointResolver, envName string) (*PreparedRunnable, error) {
 	pkg := operation.Package
 	if len(pkg.GetServiceOperations()) != 1 {
 		return nil, fmt.Errorf("a derived package carries exactly one service operation, found %d", len(pkg.GetServiceOperations()))
@@ -237,7 +238,7 @@ func prepareRunnable(ctx context.Context, module *resources.Module, operation ru
 	if err != nil {
 		return nil, err
 	}
-	if err := corerunnable.VerifyBinding(binding, pkg); err != nil {
+	if err = corerunnable.VerifyBinding(binding, pkg); err != nil {
 		return nil, err
 	}
 	packageJSON, err := corerunnable.CanonicalJSON(pkg)
@@ -281,7 +282,8 @@ func methodDescriptors(module *resources.Module, service, endpoint, method strin
 		return nil, err
 	}
 	var path string
-	for _, published := range catalog.Endpoints {
+	for i := range catalog.Endpoints {
+		published := &catalog.Endpoints[i]
 		if published.Service == service && published.Endpoint == endpoint && published.Kind == composition.APIContractKindProtobuf {
 			path = published.Path
 		}
