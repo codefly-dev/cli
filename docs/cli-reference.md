@@ -2641,6 +2641,12 @@ Generate code from local proto files without pushing to buf.build first.
 
 Runs buf inside the versioned proto companion image, using the buf.gen.yaml in
 the --proto directory, or an explicit --template relative to --output.
+The companion mounts the nearest directory holding --proto, --output, the
+template and every `out` the template declares, so outputs beside the proto
+directory (out: ../code/pkg/gen) are written on the host. An `out` that
+escapes the owning workspace (or, outside a workspace, the directory the named
+paths share) is refused, and a run that writes no file under any declared
+`out` fails rather than reporting success.
 --local selects --output/buf.gen.local.yaml, not execution on the host.
 Go, gRPC, Connect, gateway, OpenAPI and TypeScript
 outputs, then goimports over every Go output the template declares. Nothing
