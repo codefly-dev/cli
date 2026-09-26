@@ -190,6 +190,24 @@ func waitForScannedOrphan(t *testing.T, pid int) DevServerOrphan {
 	}
 }
 
+// waitForCodeflyOwned waits until pid carries codefly's process-group
+// authentication. The child joins its group before it execs, so a group leader
+// can still be running the parent's image and environment, which lacks the
+// authentication. A kill decided in that window would rightly spare the group.
+func waitForCodeflyOwned(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if owned, err := processIsCodeflyOwned(pid); err == nil && owned {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("process %d never carried codefly's process-group authentication", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func isAlive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }
@@ -300,6 +318,7 @@ func TestKillAuthenticatedProcessGroupReapsOwnedGroup(t *testing.T) {
 	command := startDevServerHelper(t, workspace, testGroupAuth, 0)
 	pid := command.Process.Pid
 	waitForGroupLeader(t, pid)
+	waitForCodeflyOwned(t, pid)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
