@@ -196,13 +196,15 @@ func TestIdentityProjectionRejectsEmptyPrincipal(t *testing.T) {
 	env.ServiceIdentity.Default.Principal = ""
 	root := t.TempDir()
 	writeConsumerTree(t, root, env.Name, env.Namespace, "api", "declared.example")
-	require.ErrorContains(t, projectManagedIdentity(t.Context(), root, &resources.Service{Name: "api"}, env, env.Namespace), "principal")
+	scope := unitScope{Workspace: "platform", Module: "saas", Namespace: env.Namespace}
+	require.ErrorContains(t, projectManagedIdentity(t.Context(), root, &resources.Service{Name: "api"}, env, scope), "principal")
 }
 
 func TestServiceIdentityConflictsWithManagedDependencyIdentity(t *testing.T) {
 	env := injectionContract(t)
 	env.ManagedServices = map[string]environments.EnvironmentManagedService{"store": managedIdentityService()}
-	_, err := soleWorkloadIdentity("api", []string{"store"}, env)
+	consumer := &resources.Service{Name: "api", ServiceDependencies: []*resources.ServiceDependency{{Name: "store"}}}
+	_, err := soleWorkloadIdentity("api", consumedManagedServices(consumer, "saas", env), env)
 	require.ErrorContains(t, err, "different runtime identities")
 }
 

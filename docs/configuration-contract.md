@@ -25,6 +25,16 @@ Producers must supply:
   rather than reusing credentials or delivery paths resolved for another target.
 - Each managed service under its explicit service key, with its endpoint and port.
   Multiple services are supported without assigning the first one to `store`.
+  The key is `<module>/<service>`, or a bare `<service>` where only one module of
+  the workspace declares that name. Composed modules routinely ship a service of
+  the same name — a `redis`, say — and a bare key covers every one of them, so all
+  of them would render with this entry's address and secrets while only one was
+  meant; a bare key matching several is refused at workspace load, naming the
+  candidates. A qualified key matching no service is refused too: it is a typo in
+  the module or the service name, and the service it should have replaced would
+  otherwise deploy as its module declares it with nothing reporting the entry went
+  unused. A bare key matching nothing stays inert, so a contract may declare a
+  fleet's managed services for a workspace composing only some of them.
 - Explicit secret references, including the target Secret name, remote key,
   optional property and secret store. No declaration means no reference is added;
   it does not assert that the service is passwordless.
