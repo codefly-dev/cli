@@ -2,6 +2,9 @@ package orchestration
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/codefly-dev/core/architecture"
@@ -346,4 +349,75 @@ func TestConfigurationReferencesToAProducerDeclaredExternal(t *testing.T) {
 	value, err := resources.GetConfigurationValue(ctx, confs[0], "platform", "accounts-endpoint")
 	require.NoError(t, err)
 	require.Regexp(t, `^http://localhost:\d+$`, value)
+}
+
+// copyConfigurationReferencesWorkspace copies testdata/configuration-references
+// and replaces its local `platform` group with platformEnv.
+func copyConfigurationReferencesWorkspace(t *testing.T, platformEnv string) *resources.Workspace {
+	t.Helper()
+	root := t.TempDir()
+	require.NoError(t, os.CopyFS(root, os.DirFS("testdata/configuration-references")))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "configurations", "local", "platform.env"), []byte(platformEnv), 0o644))
+	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	require.NoError(t, err)
+	return workspace
+}
+
+// A run refuses a configuration error when its flow is planned, before any
+// service of the run set is created or started, and lists every unresolved
+// reference of every service in the run at once.
+func TestRunRefusesUnresolvedConfigurationReferencesBeforeStartingAnything(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	workspace := copyConfigurationReferencesWorkspace(t,
+		"accounts-endpoint=${endpoint:saas/accounts/connect}\n"+
+			"documents-endpoint=${endpoint:documents/store/grpc}\n"+
+			"accounts-admin=${endpoint:saas/accounts/admin}\n")
+	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+	platform, err := workspace.LoadModuleFromName(ctx, "platform")
+	require.NoError(t, err)
+	relay, err := platform.LoadServiceFromName(ctx, "relay")
+	require.NoError(t, err)
+
+	flow, err := NewFlow(ctx, workspace, platform, relay, env, RunMode)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = flow.Stop() })
+	err = flow.InitManagers(ctx)
+	var unresolved *configurations.UnresolvedReferencesError
+	require.True(t, errors.As(err, &unresolved), "want the plan-time refusal, got %v", err)
+	var got []string
+	for _, reference := range unresolved.References {
+		got = append(got, reference.Consumer+" "+reference.Key+" "+reference.Producer)
+	}
+	require.Equal(t, []string{
+		"platform/relay accounts-admin saas/accounts",
+		"platform/relay documents-endpoint documents/store",
+	}, got)
+	require.Empty(t, flow.hub.managers, "no service of the run set was created")
+}
+
+// The same plan check, for a plan with no flow yet, and a resolvable plan
+// passes it.
+func TestPlanConfigurationReferences(t *testing.T) {
+	ctx := context.Background()
+	broken := copyConfigurationReferencesWorkspace(t, "documents-endpoint=${endpoint:documents/store/grpc}\n")
+	env, err := SelectEnvironment(broken, LocalEnvironmentName)
+	require.NoError(t, err)
+	warden, err := broken.LoadModuleFromName(ctx, "platform")
+	require.NoError(t, err)
+	root, err := warden.LoadServiceFromName(ctx, "warden")
+	require.NoError(t, err)
+	err = PlanConfigurationReferences(ctx, broken, env, []*resources.Service{root}, false)
+	require.ErrorContains(t, err, "platform/warden: platform/documents-endpoint = ${endpoint:documents/store/grpc} (producer documents/store)")
+
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, "testdata/configuration-references")
+	require.NoError(t, err)
+	env, err = SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+	module, err := workspace.LoadModuleFromName(ctx, "platform")
+	require.NoError(t, err)
+	root, err = module.LoadServiceFromName(ctx, "warden")
+	require.NoError(t, err)
+	require.NoError(t, PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{root}, false))
 }

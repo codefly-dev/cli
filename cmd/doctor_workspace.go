@@ -41,6 +41,7 @@ const (
 	codeConfigurationMissing       = "configuration_missing"
 	codeConfigurationInvalid       = "configuration_invalid"
 	codeConfigurationDuplicate     = "configuration_duplicate"
+	codeConfigurationReference     = "configuration_reference_unresolved"
 	codeProviderNotConfigured      = "provider_not_configured"
 	codeProviderExecutableMissing  = "provider_executable_missing"
 	codeProviderAuthRequired       = "provider_authentication_required"
@@ -174,6 +175,8 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	checkDevAgents(scope, report)
 
 	toResolve := checkConfigurationSources(ctx, ws, env, opts.module != "" || opts.service != "", scope, requiredBy, report)
+
+	checkConfigurationReferences(ctx, ws, env, scope, report)
 
 	checkSecretReferences(ctx, env, resolvers, unavailable, toResolve, report)
 
@@ -829,6 +832,45 @@ func checkScope(ctx context.Context, ws *resources.Workspace, moduleName, servic
 	}
 	report.add("", "services", "ok", fmt.Sprintf("%d service(s) in scope", len(scope)), "")
 	return scope, requiredBy
+}
+
+// checkConfigurationReferences runs the check every run, render and deploy
+// runs before it builds or starts anything: each ${endpoint:…} reference in a
+// workspace configuration a service in scope declares must name a service of
+// the workspace and an endpoint that service declares. One failure per
+// unresolved reference, naming the consumer, the key, the reference and the
+// producer. A workspace whose configurations cannot be read is reported by
+// checkConfigurationSources, so it is not reported twice here.
+func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, env *environments.Environment, scope []*resources.Service, report *workspaceReadinessReport) {
+	provided, err := configurations.ReadWorkspaceConfigurations(ctx, ws, env.Runtime())
+	if err != nil {
+		return
+	}
+	services, err := ws.LoadServices(ctx)
+	if err != nil {
+		return
+	}
+	producers := make(map[string]*resources.Service, len(services))
+	for _, svc := range services {
+		producers[serviceUnique(svc)] = svc
+	}
+	err = configurations.CheckEndpointReferences(provided.Infos, scope, nil, func(unique string) (*resources.Service, bool) {
+		svc, ok := producers[unique]
+		return svc, ok
+	})
+	var unresolved *configurations.UnresolvedReferencesError
+	switch {
+	case err == nil:
+		report.add("", "configuration references", "ok", "every endpoint reference in the declared workspace configurations resolves", "")
+	case errors.As(err, &unresolved):
+		for _, reference := range unresolved.References {
+			report.add(codeConfigurationReference, "workspace configuration "+reference.Group, "fail",
+				reference.String(),
+				fmt.Sprintf("make %s/%s name a service of this workspace and an endpoint it declares, or compose the producer into the workspace", reference.Group, reference.Key))
+		}
+	default:
+		report.add(codeConfigurationInvalid, "configuration references", "fail", err.Error(), "")
+	}
 }
 
 // checkDevAgents warns about every service in scope running an agent dev build

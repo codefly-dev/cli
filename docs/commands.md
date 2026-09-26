@@ -2381,8 +2381,15 @@ What it checks, in order:
    (`configuration_duplicate`, naming both providers) until the workspace
    declares it. A missing `configurations/<profile>` directory fails only for
    the groups no composed module provides. The directory is never created.
-6. Per-service `configurations/<env>` files parse; duplicates are flagged.
-7. Secret provider references (`op://…`) resolve in memory through the
+6. Every `${endpoint:<module>/<service>/<endpoint>}` reference in a workspace
+   configuration a service in scope declares names a service of the workspace
+   and an endpoint that service declares (`configuration_reference_unresolved`,
+   one per reference, naming the consumer, the key and the producer). This is
+   the check `codefly run`, `codefly ci run` (with the test phase), `codefly
+   deploy gitops render` and `codefly deploy dev` run before they build or start
+   anything; an unresolved reference is never silently omitted.
+7. Per-service `configurations/<env>` files parse; duplicates are flagged.
+8. Secret provider references (`op://…`) resolve in memory through the
    configured backend; resolved values are discarded immediately. Plaintext
    values shaped like unsupported reference schemes are flagged.
 
@@ -2405,7 +2412,8 @@ message, remediation?}]}`. Output never contains configuration values, raw
 **Stable diagnostic codes:** `workspace_not_found`, `workspace_invalid`,
 `environment_not_found`, `module_not_found`, `service_not_found`,
 `configuration_directory_missing`, `configuration_missing`,
-`configuration_invalid`, `configuration_duplicate`, `provider_not_configured`,
+`configuration_invalid`, `configuration_duplicate`,
+`configuration_reference_unresolved`, `provider_not_configured`,
 `provider_executable_missing`, `provider_authentication_required`,
 `provider_resolution_failed`, `plaintext_not_allowed`,
 `reference_scheme_unknown`, `module_not_materialized`,

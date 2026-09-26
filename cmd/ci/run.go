@@ -67,6 +67,9 @@ var RunCmd = &cobra.Command{
 			if err := validateAgentVersions(ctx, workspace, plan); err != nil {
 				return err
 			}
+			if err := validateConfigurationReferences(ctx, workspace, plan, phases); err != nil {
+				return err
+			}
 			suites := normalizeTestSuites(testSuites)
 			for _, phase := range phases {
 				if phase == "verify" {

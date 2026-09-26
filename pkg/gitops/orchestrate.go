@@ -89,6 +89,11 @@ func renderModuleTree(
 		if err != nil {
 			return err
 		}
+		// A configuration error refuses the render before any image is built or
+		// pushed, listing every unresolved reference of every root's graph.
+		if err := orchestration.PlanConfigurationReferences(ctx, workspace, env, roots, false); err != nil {
+			return err
+		}
 		// The registry is only needed to build and push service images. A module
 		// with no buildable services still renders its bootstrap kustomize tree or
 		// module bundle, which need no registry, so demand one only when there is a
@@ -310,6 +315,11 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		Promotable:  true,
 		Package:     pkg,
 	}, func(ctx context.Context, stage string) error {
+		// A configuration error refuses the render before any image is built or
+		// pushed.
+		if err := orchestration.PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{service}, standAlone); err != nil {
+			return err
+		}
 		if err := prepareSnapshotRegistry(ctx, env); err != nil {
 			return err
 		}

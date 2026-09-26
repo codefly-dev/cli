@@ -1771,6 +1771,11 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	if err := flow.validateDependencyEndpointDeclarations(required); err != nil {
 		return w.Wrap(err)
 	}
+	// Fail on a configuration error before any service of the run set is
+	// created, built or started.
+	if err := flow.checkConfigurationReferences(ctx, required); err != nil {
+		return err
+	}
 	if err := flow.logRunPlan(ctx, required, remotes); err != nil {
 		return w.Wrapf(err, "cannot describe service run plan")
 	}
