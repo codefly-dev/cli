@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/builder"
@@ -63,6 +64,13 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot prepare promotable configuration")
 		}
+		// Key names only: this records which secret keys this service's own
+		// ExternalSecret fetches, never any value.
+		b.deployedSecretKeys = make([]string, 0, len(secretReferences))
+		for key := range secretReferences {
+			b.deployedSecretKeys = append(b.deployedSecretKeys, key)
+		}
+		sort.Strings(b.deployedSecretKeys)
 	}
 
 	networkMappings, err := b.world.RemoteNetworkManager.GenerateNetworkMappings(ctx, b.world.Env, b.world.Workspace, b.instance.Identity, b.endpoints)

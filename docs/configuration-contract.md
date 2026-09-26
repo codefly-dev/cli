@@ -137,10 +137,16 @@ engines, replacement policies and undeclared output keys fail admission.
 A producer may also declare one of its secret values as a template over its own
 secret configuration values (core's `ConfigurationValue.template`). The CLI
 translates it into the consumer's ExternalSecret `target.template` over the
-producer's primitives, read from the producer's remote keys, and never reads the
-assembled value from the store. The translation reproduces core's
+producer's primitives, read from the producer's remote keys through whichever
+surface the producer itself resolves through, and never reads the assembled
+value from the store. The translation reproduces core's
 `EvaluateConfigurationValueTemplate` byte for byte. A template of literals only
-is refused: under a credential-named key it would be a value in the tree.
+is refused: under a credential-named key it would be a value in the tree. So is
+a template referencing a key the producer's own deployment does not read as a
+secret, and a producer whose keys resolve through a different store than the
+consumer. The template is emitted with `mergePolicy: Replace` and an entry for
+every key the consumer references, so the primitives it reads are fetched but
+never emitted into the consumer's Secret.
 Rendered manifests admit template delimiters, and credential-named keys, only at
 an ExternalSecret's `spec.target.template.data.<key>`, and only for a value that
 carries a template action.

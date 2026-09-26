@@ -131,6 +131,13 @@ func (manager *Manager) BuilderDeployedConfiguration() *basev0.Configuration {
 	return manager.Builder.DeployedConfiguration()
 }
 
+func (manager *Manager) BuilderDeployedSecretKeys() []string {
+	if manager.Builder == nil {
+		return nil
+	}
+	return manager.Builder.DeployedSecretKeys()
+}
+
 func (manager *Manager) BuilderImageDigest() string {
 	if manager.Builder == nil {
 		return ""

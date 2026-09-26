@@ -173,6 +173,11 @@ type unitScope struct {
 	// render delivers. A key named here is assembled in the cluster from its
 	// producer's primitives instead of read from the store as a whole.
 	Templates renderTemplates
+	// Managed are the environment's managed services, keyed as the environment
+	// keys them. A managed producer's secret keys are enumerated there and
+	// nowhere else, so resolving one of its primitives has to consult this
+	// rather than EnvironmentServiceSecrets.
+	Managed map[string]environments.EnvironmentManagedService
 }
 
 // moduleScope is the scope of every unit a module renders in an environment.
@@ -181,6 +186,7 @@ func moduleScope(env *environments.Environment, workspace *resources.Workspace, 
 		Workspace: workspace.Name,
 		Module:    module,
 		Namespace: env.ModuleNamespace(workspace, module),
+		Managed:   env.ManagedServices,
 	}
 }
 

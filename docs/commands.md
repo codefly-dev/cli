@@ -604,8 +604,24 @@ around a reference to its read-write password) is never read from the store.
 The consumer's ExternalSecret reads the producer's referenced keys from the
 **producer's** remote location — where the producer's own ExternalSecret reads
 them — and assembles the value in the cluster with a `target.template`
-(`engine-version: v2`, `merge-policy: Merge`). The store holds only the
+(`engineVersion: v2`, `mergePolicy: Replace`). The store holds only the
 primitives. An environment `template` may not also assemble such a key.
+
+The producer's location is whichever surface the producer itself resolves
+through: a managed service's keys come from its `secret-references`
+(`remote-key`/`property`), a regular service's from `service-secrets` under the
+producer's own scope. A producer resolving through a different `secret-store`
+than the consumer is refused — one ExternalSecret reads through one store. A
+template may only reference keys the producer's own deployment reads as
+secrets; a reference to one of its plain values is refused at render.
+
+`mergePolicy: Replace` is what keeps the primitives out of the consumer's
+Secret. They are still listed under `data`, because the template has to read
+them, but an ExternalSecret under `Merge` emits everything it fetches — which
+would put the producer's raw password in `secret-<consumer>` beside the value
+it assembles. Under `Replace` the template is the whole Secret, so every key
+the consumer references gets an entry: its assembly, the environment's
+expression, or a `{{ .KEY }}` pass-through.
 
 Locally there is no reachable Git host for Argo to fetch from, so the CLI owns a
 reproducible read-only fetch remote on the private k3d network:
