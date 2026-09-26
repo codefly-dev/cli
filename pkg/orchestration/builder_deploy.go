@@ -12,7 +12,6 @@ import (
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/cli/pkg/environments"
-	"github.com/codefly-dev/cli/pkg/remotenetwork"
 	coreservices "github.com/codefly-dev/core/agents/services"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
@@ -28,16 +27,6 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	env, err := b.world.Env.Proto()
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
-	}
-
-	// A hand-declared in-cluster port that disagrees with the allocation is
-	// refused before any configuration is resolved or any manifest written.
-	deployedPorts, err := b.world.RemoteNetworkManager.DeployedPorts(ctx, b.world.Env, b.instance.Identity, b.endpoints)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot allocate in-cluster ports for service endpoints")
-	}
-	if err = remotenetwork.CheckDeclaredEndpointPorts(b.instance.Service, deployedPorts); err != nil {
-		return nil, w.Wrap(err)
 	}
 
 	conf, err := b.world.ConfigurationManager.GetServiceConfiguration(ctx, b.instance.Identity)

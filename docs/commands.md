@@ -518,17 +518,10 @@ API takes the canonical port (`grpc` 9090, `rest` 8080, `connect` 8081, …) and
 every other endpoint a stable port hashed from the name the workspace composes the
 module under, the service and the endpoint. A tool outside the CLI reads the
 allocation from [`codefly show network --json`](#codefly-show-network) or calls
-that function. A service that still declares `spec.deployment.endpoint-ports`
-must match it. `render` and `snapshot` refuse before any image is built, and
-every Kubernetes deploy step (including `deploy service`) refuses before it
-writes a manifest, when a declared port differs from the allocation or names an
-endpoint the render does not place in-cluster:
-
-```
-service saas/accounts endpoint authority: declared port 9091 (spec.deployment.endpoint-ports)
-differs from the allocated in-cluster port 52893; read the allocation from
-`codefly show network --json` or network.DeployedEndpointPorts instead of declaring it
-```
+that function. This is the Service port. A workload's container (pod) port is
+the agent's to choose and may differ (a database agent keeps its engine's port
+behind the allocated Service port), so the allocation does not replace a
+module's declared pod ports.
 
 `render` is a function of the workspace and needs no cluster: by default no
 service's manifests are sent to a Kubernetes API. Pass `--validate-cluster` to
