@@ -208,9 +208,10 @@ func encodeTransportNeutralModuleWorkspace(workspace *resources.Workspace, modul
 // them under, so a module-qualified key would match nothing there and another
 // module's same-named entry would match the wrong service.
 //
-// A bare key is carried through: within one module a service name is unique, so
-// it is this module's service or a service the module does not render, and the
-// generator ignores the latter.
+// A bare key is carried through unchanged, which is what every bundle received
+// before keys could be qualified: within one module a service name is unique, so
+// narrowing bare keys further would need the module's service list here, and
+// dropping one would turn a managed service back into a rendered workload.
 func moduleManagedServices(env *environments.Environment, module string) map[string]environments.EnvironmentManagedService {
 	if len(env.ManagedServices) == 0 {
 		return nil

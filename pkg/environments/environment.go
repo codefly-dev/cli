@@ -155,8 +155,11 @@ type EnvironmentManagedService struct {
 //
 // A bare key that matches this service may also match a same-named service in
 // another module. That is a property of the declaration and the workspace graph
-// together, neither of which a single lookup can see, so it is refused once at
-// workspace load (ValidateWorkspace) instead of guessed at here.
+// together, neither of which a single lookup can see, so it is refused by
+// ValidateManagedServices instead of guessed at here. Every entry point that
+// reaches this resolver runs that check first — the gitops passes through
+// ValidateWorkspace, a run through NewFlow — so adding one means running it
+// there too.
 func (env *Environment) ManagedService(module, service string) (EnvironmentManagedService, bool) {
 	if env == nil {
 		return EnvironmentManagedService{}, false
@@ -781,8 +784,8 @@ type Environment struct {
 	// module in the workspace declares that name. Composed modules routinely ship
 	// a service of the same name — a "redis", say — and a bare key covers every
 	// one of them, so both would render with this entry's address and secrets;
-	// ValidateWorkspace refuses an ambiguous bare key rather than replacing a
-	// service nobody declared managed. Read it through ManagedService, never by
+	// ValidateManagedServices refuses an ambiguous bare key rather than replacing
+	// a service nobody declared managed. Read it through ManagedService, never by
 	// indexing the map with a bare name.
 	ManagedServices map[string]EnvironmentManagedService `yaml:"managed-services,omitempty"`
 

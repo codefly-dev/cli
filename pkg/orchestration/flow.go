@@ -311,6 +311,14 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	for _, opt := range opts {
 		opt(options)
 	}
+	// Against the whole composition, not the run's closure: whether a bare
+	// managed-services key names one service is a property of the declaration, and
+	// a flow resolves managed services through env.ManagedService — the remote
+	// network manager asks it whether a service is replaced — without ever
+	// reaching the workspace-wide gitops pass.
+	if err := environments.ValidateManagedServices(ctx, workspace); err != nil {
+		return nil, w.Wrap(err)
+	}
 	graphWorkspace, err := runModuleClosure(ctx, workspace, options.moduleClosureSeeds)
 	if err != nil {
 		return nil, w.Wrap(err)

@@ -230,3 +230,99 @@ func TestEnvironmentValidateAcceptsBothManagedServiceKeyShapes(t *testing.T) {
 		t.Fatalf("Validate = %v, want nil", err)
 	}
 }
+
+// writeDuplicatePinWorkspace pins one module twice — nothing rejects that — so
+// the graph yields the same service under the same unique more than once.
+func writeDuplicatePinWorkspace(t *testing.T, envDeclarations string) string {
+	t.Helper()
+	root := t.TempDir()
+	files := map[string]string{
+		resources.WorkspaceConfigurationName: `name: platform
+layout: modules
+modules:
+  - name: saas
+  - name: saas
+environments:
+  - name: prod
+    namespace: platform
+` + envDeclarations,
+		filepath.Join("modules", "saas", resources.ModuleConfigurationName): `kind: module
+name: saas
+services:
+    - name: accounts
+`,
+		filepath.Join("modules", "saas", "services", "accounts", resources.ServiceConfigurationName): `kind: service
+name: accounts
+version: 0.0.0
+agent:
+  kind: runtime::service
+  name: go-grpc
+  version: 0.0.1
+  publisher: codefly.ai
+`,
+	}
+	for rel, content := range files {
+		full := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// Both pins resolve to one service, so the name refers to exactly one candidate
+// and the bare key stands. Counting pins instead of services would refuse it as
+// ambiguous between "saas/accounts" and itself — a verdict qualifying the entry
+// cannot satisfy.
+func TestValidateManagedServicesCountsServicesNotModulePins(t *testing.T) {
+	ctx := context.Background()
+	root := writeDuplicatePinWorkspace(t, managedServicesDeclaration("accounts"))
+	ws, err := loadDeploymentWorkspace(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := environments.ValidateManagedServices(ctx, ws.Workspace); err != nil {
+		t.Fatalf("ValidateManagedServices = %v, want nil", err)
+	}
+	if err := ws.ValidateEnvironments(ctx); err != nil {
+		t.Fatalf("ValidateEnvironments = %v, want nil", err)
+	}
+}
+
+// ValidateManagedServices is reachable on its own because the paths that resolve
+// managed services without running the workspace-wide pass — a run exposing
+// endpoints to a remote environment — need the same refusal.
+func TestValidateManagedServicesRefusesAmbiguityOnItsOwn(t *testing.T) {
+	ctx := context.Background()
+	ws, err := loadDeploymentWorkspace(ctx, writeTwoModuleWorkspace(t, managedServicesDeclaration("redis")))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = environments.ValidateManagedServices(ctx, ws.Workspace)
+	if err == nil {
+		t.Fatal("expected ValidateManagedServices to refuse the ambiguous bare key")
+	}
+	for _, want := range []string{"ambiguous", "sessions/redis", "catalog/redis"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to contain %q", err, want)
+		}
+	}
+}
+
+// A workspace whose environments declare no managed service reads no module
+// configuration at all, so the check costs nothing where it does not apply.
+func TestValidateManagedServicesSkipsWorkspacesWithoutManagedServices(t *testing.T) {
+	ctx := context.Background()
+	ws, err := loadDeploymentWorkspace(ctx, writeTwoModuleWorkspace(t, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := environments.ValidateManagedServices(ctx, ws.Workspace); err != nil {
+		t.Fatalf("ValidateManagedServices = %v, want nil", err)
+	}
+}
