@@ -160,7 +160,7 @@ func TestWorkspaceConfigurationsForResolvesEndpointsFromConsumerMappings(t *test
 		Endpoint: &basev0.Endpoint{Module: "saas", Service: "auth-gateway", Name: "rest", Api: "rest"},
 		Instances: []*basev0.NetworkInstance{
 			{Address: "localhost:38342", Access: resources.NewNativeNetworkAccess()},
-			{Address: "auth-gateway.platform-obin-saas.svc.cluster.local:8080", Access: resources.NewContainerNetworkAccess()},
+			{Address: "auth-gateway.platform-acme-saas.svc.cluster.local:8080", Access: resources.NewContainerNetworkAccess()},
 		},
 	}}
 
@@ -174,7 +174,7 @@ func TestWorkspaceConfigurationsForResolvesEndpointsFromConsumerMappings(t *test
 	require.NoError(t, err)
 	value, err = resources.GetConfigurationValue(context.Background(), deployed[0], "platform", "gateway-endpoint")
 	require.NoError(t, err)
-	require.Equal(t, "http://auth-gateway.platform-obin-saas.svc.cluster.local:8080", value)
+	require.Equal(t, "http://auth-gateway.platform-acme-saas.svc.cluster.local:8080", value)
 
 	undeclared, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewNativeNetworkAccess())
 	require.NoError(t, err)
