@@ -552,7 +552,11 @@ func mappingsCarry(mappings []*basev0.NetworkMapping, info *resources.EndpointIn
 		if endpoint == nil || endpoint.GetModule() != info.Module || endpoint.GetService() != info.Service {
 			continue
 		}
-		if (info.Name == "" || endpoint.GetName() == info.Name) && (info.API == "" || endpoint.GetApi() == info.API) {
+		// The same match a reference resolves by (resources.InterpolateEndpoints).
+		if info.API != "" && endpoint.GetApi() != info.API {
+			continue
+		}
+		if info.Name == "" || endpoint.GetName() == info.Name || endpoint.GetApi() == info.Name {
 			return true
 		}
 	}
