@@ -66,10 +66,11 @@ func (m *RemoteManager) KubernetesService(service *resources.ServiceIdentity, en
 
 // GenerateNetworkMappings generates network mappings for a service endpoints.
 //
-// Unlike RuntimeManager, this takes no runtime context: remote (k8s) mappings
-// use canonical per-API ports when they do not collide. The conventional
-// endpoint of the highest-priority API keeps a shared canonical port; named
-// siblings and colliding APIs receive stable endpoint-specific ports.
+// Unlike RuntimeManager, this takes no runtime context: remote (k8s) ports are
+// core's network.DeployedEndpointPorts over the in-cluster endpoints. The
+// conventional endpoint of the highest-priority API keeps a shared canonical
+// port; named siblings and colliding APIs receive stable endpoint-specific
+// ports.
 func (m *RemoteManager) GenerateNetworkMappings(ctx context.Context,
 	env *environments.Environment,
 	workspace *resources.Workspace,
@@ -79,6 +80,92 @@ func (m *RemoteManager) GenerateNetworkMappings(ctx context.Context,
 	if m.dnsManager == nil {
 		return nil, w.NewError("RemoteManager: dnsManager is nil — call NewRemoteManager with a non-nil DNSManager")
 	}
+	externalDNS, err := m.resolveExternalDNS(ctx, env, service, endpoints)
+	if err != nil {
+		return nil, err
+	}
+	ports, err := corenetwork.DeployedEndpointPorts(ctx, service.Module, service.Name, inClusterEndpoints(endpoints, externalDNS))
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	var out []*basev0.NetworkMapping
+	for _, endpoint := range endpoints {
+		if endpoint == nil {
+			return nil, w.NewError("cannot generate network mapping for nil endpoint")
+		}
+		nm := &basev0.NetworkMapping{
+			Endpoint: endpoint,
+		}
+		if dns := externalDNS[endpoint]; dns != nil {
+			nm.Instances = []*basev0.NetworkInstance{
+				corenetwork.ExternalInstance(corenetwork.DNS(service, endpoint, dns)),
+			}
+			out = append(out, nm)
+			continue
+		}
+
+		// In-cluster endpoints — internal ones, and external ones with no public
+		// host that this flow renders as a workload anyway — use a declared
+		// environment DNS contract when present. Otherwise Kubernetes service
+		// discovery is synthesized.
+		dns, dnsErr := m.dnsManager.GetDNS(ctx, service, endpoint.Name)
+		if dnsErr == nil && dns != nil {
+			nm.Instances = []*basev0.NetworkInstance{
+				corenetwork.PublicInstance(corenetwork.DNS(service, endpoint, dns)),
+				corenetwork.ContainerInstance(corenetwork.DNS(service, endpoint, dns)),
+			}
+			out = append(out, nm)
+			continue
+		}
+
+		namespace, nsErr := m.GetNamespace(ctx, env, workspace, service)
+		if nsErr != nil {
+			return nil, nsErr
+		}
+		port := ports[endpoint.Name]
+		// A no-ingress endpoint's ClusterIP is the only address that exists, so
+		// it has to answer both Public and Container lookups — mirror the DNS
+		// branch above. KubernetesService is called twice on purpose: it returns
+		// a fresh instance each time and PublicInstance/ContainerInstance stamp
+		// Access in place, so a single shared instance would collapse to one
+		// access and silently drop the other.
+		nm.Instances = append(nm.Instances,
+			corenetwork.PublicInstance(m.KubernetesService(service, endpoint, namespace, port)),
+			corenetwork.ContainerInstance(m.KubernetesService(service, endpoint, namespace, port)),
+		)
+		out = append(out, nm)
+	}
+	return out, nil
+}
+
+// DeployedPorts is the in-cluster port of each of a service's endpoints,
+// keyed by endpoint name: the one allocation GenerateNetworkMappings renders,
+// from core's network.DeployedEndpointPorts. An external endpoint that resolves
+// to a public host has no cluster port and is absent.
+func (m *RemoteManager) DeployedPorts(ctx context.Context,
+	env *environments.Environment,
+	service *resources.ServiceIdentity,
+	endpoints []*basev0.Endpoint) (map[string]uint16, error) {
+	w := wool.Get(ctx).In("network.Runtime.DeployedPorts")
+	if m.dnsManager == nil {
+		return nil, w.NewError("RemoteManager: dnsManager is nil — call NewRemoteManager with a non-nil DNSManager")
+	}
+	externalDNS, err := m.resolveExternalDNS(ctx, env, service, endpoints)
+	if err != nil {
+		return nil, err
+	}
+	ports, err := corenetwork.DeployedEndpointPorts(ctx, service.Module, service.Name, inClusterEndpoints(endpoints, externalDNS))
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	return ports, nil
+}
+
+// resolveExternalDNS resolves every external endpoint to its public host.
+func (m *RemoteManager) resolveExternalDNS(ctx context.Context,
+	env *environments.Environment,
+	service *resources.ServiceIdentity,
+	endpoints []*basev0.Endpoint) (map[*basev0.Endpoint]*basev0.DNS, error) {
 	// External endpoints resolve to an environment-specific public host: a
 	// declared dns.codefly.yaml entry wins; otherwise the host is derived from
 	// the environment's declared app host suffix (sourced from the coordinate
@@ -86,6 +173,7 @@ func (m *RemoteManager) GenerateNetworkMappings(ctx context.Context,
 	// port allocation because an external endpoint with no public host that this
 	// flow still renders in-cluster competes for the canonical port exactly like
 	// an internal endpoint does.
+	w := wool.Get(ctx).In("network.Runtime.resolveExternalDNS")
 	externalDNS := make(map[*basev0.Endpoint]*basev0.DNS)
 	for _, endpoint := range endpoints {
 		if endpoint == nil || !resources.IsExternalEndpoint(endpoint) {
@@ -107,90 +195,20 @@ func (m *RemoteManager) GenerateNetworkMappings(ctx context.Context,
 			return nil, w.NewError("cannot find dns for endpoint %s", endpoint.Name)
 		}
 	}
-	inCluster := func(endpoint *basev0.Endpoint) bool {
-		return endpoint != nil && (!resources.IsExternalEndpoint(endpoint) || externalDNS[endpoint] == nil)
-	}
-	apiCounts := make(map[string]int)
-	for _, endpoint := range endpoints {
-		if inCluster(endpoint) {
-			apiCounts[endpoint.Api]++
-		}
-	}
-	apiPriority := make(map[string]int, len(standards.APIS()))
-	for priority, api := range standards.APIS() {
-		apiPriority[api] = priority
-	}
-	canonicalOwners := make(map[uint16]*basev0.Endpoint)
-	for _, endpoint := range endpoints {
-		if !inCluster(endpoint) {
-			continue
-		}
-		if apiCounts[endpoint.Api] > 1 && endpoint.Name != endpoint.Api {
-			continue
-		}
-		port := standards.Port(endpoint.Api)
-		owner := canonicalOwners[port]
-		if owner == nil || apiPriority[endpoint.Api] < apiPriority[owner.Api] ||
-			(apiPriority[endpoint.Api] == apiPriority[owner.Api] && resources.EndpointDestination(endpoint) < resources.EndpointDestination(owner)) {
-			canonicalOwners[port] = endpoint
-		}
-	}
-	allocatedPorts := make(map[uint16]string)
-	var out []*basev0.NetworkMapping
-	for _, endpoint := range endpoints {
-		if endpoint == nil {
-			return nil, w.NewError("cannot generate network mapping for nil endpoint")
-		}
-		nm := &basev0.NetworkMapping{
-			Endpoint: endpoint,
-		}
-		if dns := externalDNS[endpoint]; dns != nil {
-			nm.Instances = []*basev0.NetworkInstance{
-				corenetwork.ExternalInstance(corenetwork.DNS(service, endpoint, dns)),
-			}
-			out = append(out, nm)
-			continue
-		}
+	return externalDNS, nil
+}
 
-		// In-cluster endpoints — internal ones, and external ones with no public
-		// host that this flow renders as a workload anyway — use a declared
-		// environment DNS contract when present. Otherwise Kubernetes service
-		// discovery is synthesized.
-		port := standards.Port(endpoint.Api)
-		if canonicalOwners[port] != endpoint {
-			port = corenetwork.ToNamedPort(ctx, "", service.Module, service.Name, endpoint.Name, endpoint.Api, corenetwork.PortModeHost)
+// inClusterEndpoints is the endpoints the render emits in-cluster: internal
+// ones, and external ones with no public host that the flow renders as a
+// workload anyway.
+func inClusterEndpoints(endpoints []*basev0.Endpoint, externalDNS map[*basev0.Endpoint]*basev0.DNS) []*basev0.Endpoint {
+	inCluster := make([]*basev0.Endpoint, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		if endpoint != nil && (!resources.IsExternalEndpoint(endpoint) || externalDNS[endpoint] == nil) {
+			inCluster = append(inCluster, endpoint)
 		}
-		dns, dnsErr := m.dnsManager.GetDNS(ctx, service, endpoint.Name)
-		if dnsErr == nil && dns != nil {
-			nm.Instances = []*basev0.NetworkInstance{
-				corenetwork.PublicInstance(corenetwork.DNS(service, endpoint, dns)),
-				corenetwork.ContainerInstance(corenetwork.DNS(service, endpoint, dns)),
-			}
-			out = append(out, nm)
-			continue
-		}
-
-		namespace, err := m.GetNamespace(ctx, env, workspace, service)
-		if err != nil {
-			return nil, err
-		}
-		if owner, exists := allocatedPorts[port]; exists {
-			return nil, w.NewError("endpoints %q and %q resolve to the same port %d", owner, endpoint.Name, port)
-		}
-		allocatedPorts[port] = endpoint.Name
-		// A no-ingress endpoint's ClusterIP is the only address that exists, so
-		// it has to answer both Public and Container lookups — mirror the DNS
-		// branch above. KubernetesService is called twice on purpose: it returns
-		// a fresh instance each time and PublicInstance/ContainerInstance stamp
-		// Access in place, so a single shared instance would collapse to one
-		// access and silently drop the other.
-		nm.Instances = append(nm.Instances,
-			corenetwork.PublicInstance(m.KubernetesService(service, endpoint, namespace, port)),
-			corenetwork.ContainerInstance(m.KubernetesService(service, endpoint, namespace, port)),
-		)
-		out = append(out, nm)
 	}
-	return out, nil
+	return inCluster
 }
 
 // renderedInCluster reports whether the flow that asked for these mappings

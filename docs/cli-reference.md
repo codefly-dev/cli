@@ -4352,12 +4352,26 @@ Flags:
 Show service bindings and dependency endpoint addresses
 
 ```
+Show every service's endpoints with the deterministic native address each binds
+to on a local run, and the dependency endpoints each service consumes.
+
+--json emits the same per service, plus each endpoint's deployed in-cluster port:
+the port a GitOps render (codefly deploy gitops render) gives it, for the
+environment named by --env. That allocation depends on the environment, since an
+external endpoint that resolves to a public host gets no cluster port and a
+managed service has no in-cluster workload. Tools outside the CLI read ports from
+here rather than declaring them.
+```
+
+```
 codefly show network [flags]
 ```
 
 Flags:
 
 ```
+      --env string                        Environment whose in-cluster allocation --json reports, as for deploy gitops render --env (default "local")
+      --json                              Emit machine-readable JSON, with each endpoint's deployed in-cluster port
       --naming-scope run --naming-scope   naming scope used to derive deterministic ports (matches run --naming-scope)
 ```
 

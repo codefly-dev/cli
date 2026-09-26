@@ -154,3 +154,101 @@ EOF
 		t.Fatal(err)
 	}
 }
+
+// TestRenderModuleBundleHandsTheGeneratorTheComposedModuleName proves the
+// module bundle generator's second argument is the name the workspace composes
+// the module under, not the name the module declares for itself: a generator
+// that hashes in-cluster ports (network.DeployedEndpointPorts) must use the
+// composed name, or its ports disagree with the render's.
+func TestRenderModuleBundleHandsTheGeneratorTheComposedModuleName(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	moduleDir := filepath.Join(t.TempDir(), "payments")
+	// The module declares itself "payments"; the workspace composes it as "billing".
+	writeReferencedModuleWorkspace(t, root, moduleDir)
+	config := fmt.Sprintf(`name: workspace
+layout: modules
+modules:
+  - name: billing
+    path: %s
+environments:
+  - name: production
+    namespace: payments
+    cluster:
+      kind: k3d
+`, moduleDir)
+	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	module, err := workspace.LoadModuleFromName(ctx, "billing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, err := orchestration.SelectEnvironment(workspace, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	installModuleBundleGeneratorEchoingName(t)
+
+	destination := t.TempDir()
+	if err := renderModuleBundle(ctx, workspace, module, environment, destination, promotableServiceGraph("billing", []string{"api"})); err != nil {
+		t.Fatalf("render aliased module bundle: %v", err)
+	}
+	received, err := os.ReadFile(filepath.Join(destination, "overlays", "production", "module-name"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(received); got != "billing\n" {
+		t.Fatalf("generator received module name %q, want the composed name %q", got, "billing")
+	}
+}
+
+// installModuleBundleGeneratorEchoingName installs a codefly:module agent whose
+// bundle belongs to the module name it is given as its second argument, and
+// which records that name in the selected overlay.
+func installModuleBundleGeneratorEchoingName(t *testing.T) {
+	t.Helper()
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	agent := &resources.Agent{Kind: resources.ModuleAgent, Publisher: "codefly.dev", Name: "gitops-test", Version: "1.0.0"}
+	binary, err := agent.Path(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	generator := `#!/bin/sh
+set -eu
+module_dir="$1"
+module_name="$2"
+destination="$module_dir/deployment/kustomize"
+mkdir -p "$destination/overlays/production"
+printf '%s\n' "$module_name" > "$destination/overlays/production/module-name"
+cat > "$destination/overlays/production/kustomization.yaml" <<'EOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: []
+EOF
+cat > "$destination/bundle.json" <<EOF
+{
+  "schemaVersion": "codefly.dev/module-bundle/v1",
+  "module": "$module_name",
+  "environments": [{
+    "name": "production",
+    "namespace": "payments",
+    "cluster": "k3d",
+    "resourcePath": "overlays/production",
+    "services": ["api"]
+  }]
+}
+EOF
+`
+	if err := os.WriteFile(binary, []byte(generator), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
