@@ -43,3 +43,38 @@ plugins:
 	require.NoError(t, err)
 	require.Equal(t, first, second)
 }
+
+// The go-grpc service layout: buf.gen.yaml in proto/, --output the proto
+// directory, and outputs in sibling directories. Before #836 buf wrote them
+// inside the container and the run reported success with nothing on disk.
+func TestProtoSiblingOutputsThroughPinnedCompanion(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "workspace.codefly.yaml"), "name: example\n")
+	service := filepath.Join(root, "svc")
+	input := filepath.Join(service, "proto")
+	writeTestFile(t, filepath.Join(input, "buf.yaml"), "version: v2\nmodules:\n  - path: .\n")
+	writeTestFile(t, filepath.Join(input, "api.proto"), `syntax = "proto3";
+package example.v1;
+option go_package = "example.com/svc/pkg/gen;gen";
+message Item { string value = 1; }
+`)
+	writeTestFile(t, filepath.Join(input, "buf.gen.yaml"), `version: v2
+plugins:
+  - local: protoc-gen-go
+    out: ../code/pkg/gen
+    opt: paths=source_relative
+`)
+	oldTemplate, oldLocal, oldPaths := protoTemplate, protoLocal, protoPaths
+	t.Cleanup(func() { protoTemplate, protoLocal, protoPaths = oldTemplate, oldLocal, oldPaths })
+	protoTemplate, protoLocal, protoPaths = "", false, []string{"api.proto"}
+	require.NoError(t, generateProtoCode(context.Background(), input, input))
+	generated := filepath.Join(service, "code", "pkg", "gen", "api.pb.go")
+	first, err := os.ReadFile(generated)
+	require.NoError(t, err)
+	require.Contains(t, string(first), "type Item struct")
+	// A no-change regeneration rewrites the same bytes and still succeeds.
+	require.NoError(t, generateProtoCode(context.Background(), input, input))
+	second, err := os.ReadFile(generated)
+	require.NoError(t, err)
+	require.Equal(t, first, second)
+}
