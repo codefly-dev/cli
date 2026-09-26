@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/codefly-dev/core/resources"
 )
 
 // federationWorkspaceWithSolutionRegistration copies the federation testdata
@@ -173,5 +175,49 @@ func TestDeployedFederationSecretsDerivesNothingWithoutARegistrar(t *testing.T) 
 	}
 	if len(secrets.Services) != 0 {
 		t.Errorf("derived %v without a registrar", secrets.Services)
+	}
+}
+
+// Without a registrar nothing can admit a federation credential, so deriving
+// nothing is right — but saying nothing leaves `deploy secrets` reporting every
+// federation key as one the operator must type, with the actual cause unnamed.
+// The run and the render both warn here; so does this.
+func TestDeployedFederationSecretsWarnsWithoutARegistrar(t *testing.T) {
+	ctx := context.Background()
+	workspace := loadTestWorkspace(t, "testdata/solution-federation")
+	workspace.Modules = slices.DeleteFunc(workspace.Modules,
+		func(ref *resources.ModuleReference) bool { return ref.Name == "host" })
+
+	secrets, err := DeployedFederationSecrets(ctx, workspace)
+	if err != nil {
+		t.Fatalf("DeployedFederationSecrets: %v", err)
+	}
+	if len(secrets.Services) != 0 {
+		t.Errorf("derived %v without a registrar", secrets.Services)
+	}
+	if len(secrets.Notes) != 1 || !secrets.Notes[0].Warning {
+		t.Fatalf("notes = %+v, want one warning naming the missing group", secrets.Notes)
+	}
+	if !strings.Contains(secrets.Notes[0].Message, federationConfigurationGroup) {
+		t.Errorf("warning %q does not name the %q group", secrets.Notes[0].Message, federationConfigurationGroup)
+	}
+}
+
+// Identities is how a caller rewriting an `identity:value,…` value sees what the
+// store admits today: an identity the derivation no longer covers would be
+// dropped by the rewrite, de-authorizing whatever holds it.
+func TestSecretDerivationIdentities(t *testing.T) {
+	encoded := SecretDerivation{Credentials: []Credential{{Kind: ModuleRegistration, Identity: "documents"}}, Encoded: true, Digest: true}
+	if got := encoded.Identities("documents:aaa, legacy:bbb ,documents:ccc"); !reflect.DeepEqual(got, []string{"documents", "legacy"}) {
+		t.Errorf("Identities = %v, want each identity once in stored order", got)
+	}
+	for _, malformed := range []string{"", "documents:", ":bbb", "documents"} {
+		if got := encoded.Identities(malformed); len(got) != 0 {
+			t.Errorf("Identities(%q) = %v, want none: a malformed entry admits nothing", malformed, got)
+		}
+	}
+	single := SecretDerivation{Credentials: []Credential{{Kind: SolutionRegistration, Identity: "wiki"}}}
+	if got := single.Identities("wiki:not-encoded"); got != nil {
+		t.Errorf("Identities = %v, want none: a value that is not of the encoded form declares no identities", got)
 	}
 }

@@ -8,7 +8,9 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
@@ -20,7 +22,10 @@ import (
 type fakeStore struct {
 	documents map[string]map[string]string
 	// empty are keys that exist with no enabled version.
-	empty  map[string]bool
+	empty map[string]bool
+	// Build describes and reads the keys concurrently, so the recording is
+	// guarded; the recorded order is not meaningful and tests compare sets.
+	mutex  sync.Mutex
 	reads  []string
 	writes []string
 }
@@ -32,6 +37,8 @@ func newFakeStore(documents map[string]map[string]string) *fakeStore {
 func (store *fakeStore) Name() string { return "fake" }
 
 func (store *fakeStore) Describe(_ context.Context, key string) (Description, error) {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
 	if store.empty[key] {
 		return Description{Exists: true}, nil
 	}
@@ -40,8 +47,10 @@ func (store *fakeStore) Describe(_ context.Context, key string) (Description, er
 }
 
 func (store *fakeStore) Read(_ context.Context, key string) (map[string]string, error) {
+	store.mutex.Lock()
 	store.reads = append(store.reads, key)
 	document, ok := store.documents[key]
+	store.mutex.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("no %s", key)
 	}
@@ -375,4 +384,221 @@ func TestGeneratorCoveringAKeyTwiceIsRefused(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "twice") {
 		t.Fatalf("Build = %v, want a refusal", err)
 	}
+}
+
+// A module the workspace composes but this environment's render does not cover —
+// it renders for another environment, or has not been rendered yet — still
+// appears in the federation derivation, which is the workspace's. Minting its
+// credentials would write the registrar the digests of secrets no service will
+// ever hold, and, because the digest list is recomputed whole, would drop the
+// digests the module's running services are admitted by. Nothing is minted, the
+// registrar's key is left exactly as it is, and every affected property says so.
+func TestPlanMintsNothingForACredentialTheRenderDoesNotCarry(t *testing.T) {
+	ctx := context.Background()
+	rendered, federation := fixture()
+	rendered.Secrets = slices.DeleteFunc(rendered.Secrets, func(secret gitops.RenderedServiceSecret) bool {
+		return secret.RemoteKey == "wiki-backend" || secret.RemoteKey == "notes-backend"
+	})
+	rendered.Skipped = []string{"wiki", "notes"}
+	documents := seeded()
+	admitted := map[string]string{registrarDigest: documents["host-accounts"][registrarDigest], solutionDigest: documents["host-accounts"][solutionDigest]}
+	store := newFakeStore(documents)
+
+	plan, err := Build(ctx, &Inputs{Rendered: rendered, Federation: federation, Generators: generators(),
+		Services: []string{"tasks/store", "tasks/worker"}, Store: store, ReadPayloads: true})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	for _, credential := range plan.Credentials {
+		if credential.Action == ActionGenerate {
+			t.Errorf("minted %s, which no rendered ExternalSecret carries", credential.Credential)
+		}
+		if credential.Action != ActionRequire {
+			t.Errorf("credential %s = %s, want require", credential.Credential, credential.Action)
+		}
+	}
+	for _, property := range []string{registrarDigest, solutionDigest} {
+		if got := propertyPlan(t, plan, "host-accounts", property); got.Action != ActionRequire {
+			t.Errorf("host-accounts#%s = %s (%s), want require", property, got.Action, got.Source)
+		}
+	}
+	if slices.Contains(plan.Changes(), "host-accounts") {
+		t.Fatalf("the registrar's key would be rewritten: changes = %v", plan.Changes())
+	}
+	// --allow-missing writes the rest; the registrar's admitted digests survive it
+	// byte for byte, so the running services keep being admitted.
+	if _, err := plan.Apply(ctx, store, true); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	for property, before := range admitted {
+		if after := documents["host-accounts"][property]; after != before {
+			t.Errorf("host-accounts#%s was rewritten:\n before %q\n after  %q", property, before, after)
+		}
+	}
+}
+
+// One configuration value is one value however many services read it. Two keys
+// holding it with different values is a store that no longer agrees with itself,
+// and reporting both as `keep` is the one reading an operator cannot act on —
+// so it is refused whether or not a third key needs it propagated.
+func TestPlanRefusesAConfigurationValueHeldWithTwoValues(t *testing.T) {
+	rendered, federation := fixture()
+	documents := seeded()
+	documents["notes-backend"] = map[string]string{
+		registrations:  "documents:documents-registration",
+		internalToken:  "a-different-internal-token",
+		solutionSecret: "notes-solution",
+	}
+	_, err := Build(context.Background(), &Inputs{Rendered: rendered, Federation: federation, Generators: generators(),
+		Services: []string{"tasks/store", "tasks/worker"}, Store: newFakeStore(documents), ReadPayloads: true})
+	if err == nil || !strings.Contains(err.Error(), "cannot be two") {
+		t.Fatalf("Build = %v, want a refusal naming the divergence", err)
+	}
+	if strings.Contains(err.Error(), "a-different-internal-token") || strings.Contains(err.Error(), "shared-internal-token") {
+		t.Errorf("the refusal quotes a stored value: %v", err)
+	}
+}
+
+// The registrar's digest list is rewritten whole, so an identity it admits that
+// the workspace no longer derives would be dropped — de-authorizing whatever
+// holds it. The render is pinned to its inventory; the federation is derived
+// from the workspace as it is now, so the two diverge whenever the workspace
+// moved on (a consumed prefix renamed after the render). The drop is named, not
+// made.
+func TestPlanRefusesToDropAnIdentityTheStoreStillAdmits(t *testing.T) {
+	rendered, federation := fixture()
+	documents := seeded()
+	stored := documents["host-accounts"][solutionDigest] + ",legacy:" + digest("legacy-solution")
+	documents["host-accounts"][solutionDigest] = stored
+	store := newFakeStore(documents)
+
+	plan, err := Build(context.Background(), &Inputs{Rendered: rendered, Federation: federation, Generators: generators(),
+		Services: []string{"tasks/store", "tasks/worker"}, Store: store, ReadPayloads: true})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	got := propertyPlan(t, plan, "host-accounts", solutionDigest)
+	if got.Action != ActionRequire {
+		t.Fatalf("host-accounts#%s = %s (%s), want require rather than a rewrite that drops legacy", solutionDigest, got.Action, got.Source)
+	}
+	if !strings.Contains(got.Source, "legacy") {
+		t.Errorf("source %q does not name the identity that would be dropped", got.Source)
+	}
+	if slices.Contains(plan.Changes(), "host-accounts") {
+		t.Errorf("the registrar's key would still be rewritten: %v", plan.Changes())
+	}
+	if _, err := plan.Apply(context.Background(), store, true); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if documents["host-accounts"][solutionDigest] != stored {
+		t.Errorf("stored digests changed to %q", documents["host-accounts"][solutionDigest])
+	}
+}
+
+// Two services reading one key's property but deriving it differently cannot
+// both be right, and silently taking the last would, when they disagree on
+// Digest, hand a registrar the preimage of a digest it is meant to hold.
+func TestPlanRefusesOnePropertyDerivedTwoWays(t *testing.T) {
+	store := environments.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"}
+	rendered := gitops.RenderedEnvironment{Secrets: []gitops.RenderedServiceSecret{
+		{Store: store, RemoteKey: "shared", Services: []string{"host/accounts", "wiki/backend"}, Properties: []string{registrations}},
+	}}
+	federation := solutionrun.DeployedSecrets{Services: map[string]map[string]solutionrun.SecretDerivation{
+		"wiki/backend":  {registrations: {Credentials: []solutionrun.Credential{documentsRegistration}, Encoded: true}},
+		"host/accounts": {registrations: {Credentials: []solutionrun.Credential{documentsRegistration}, Encoded: true, Digest: true}},
+	}}
+	_, err := Build(context.Background(), &Inputs{Rendered: rendered, Federation: federation,
+		Store: newFakeStore(map[string]map[string]string{}), ReadPayloads: true})
+	if err == nil || !strings.Contains(err.Error(), "deriving it differently") {
+		t.Fatalf("Build = %v, want a refusal", err)
+	}
+}
+
+// Ordering follows the credentials, not the keys: a plaintext is always stored
+// before the digest that admits it, so a run cut short leaves a federation that
+// is incomplete rather than one admitting a secret nobody holds. A per-key "has
+// digests" flag gets this wrong for a key that carries both.
+func TestOrderWritesPutsEveryPlaintextBeforeTheDigestAdmittingIt(t *testing.T) {
+	first := solutionrun.Credential{Kind: solutionrun.ModuleIdentity, Identity: "first"}
+	second := solutionrun.Credential{Kind: solutionrun.ModuleIdentity, Identity: "second"}
+	// "mixed" holds second in plaintext and digests first; "registrar" holds
+	// first in plaintext. A per-key flag makes both "digest writes" and leaves
+	// them in input order, storing first's digest before first itself.
+	writes := []pendingWrite{
+		{key: "mixed", plain: []solutionrun.Credential{second}, digest: []solutionrun.Credential{first}},
+		{key: "holder", plain: []solutionrun.Credential{first}},
+		{key: "registrar", digest: []solutionrun.Credential{second}},
+	}
+	ordered, err := orderWrites(writes)
+	if err != nil {
+		t.Fatalf("orderWrites: %v", err)
+	}
+	position := map[string]int{}
+	for i, write := range ordered {
+		position[write.key] = i
+	}
+	if position["holder"] > position["mixed"] {
+		t.Errorf("the digest of %s was stored before the key holding it: %v", first, orderedKeys(ordered))
+	}
+	if position["mixed"] > position["registrar"] {
+		t.Errorf("the digest of %s was stored before the key holding it: %v", second, orderedKeys(ordered))
+	}
+}
+
+// Two writes that each digest what the other holds cannot be ordered at all.
+// Picking one is wrong either way, so it is refused and both keys are named.
+func TestOrderWritesRefusesAnUnorderableCycle(t *testing.T) {
+	first := solutionrun.Credential{Kind: solutionrun.ModuleIdentity, Identity: "first"}
+	second := solutionrun.Credential{Kind: solutionrun.ModuleIdentity, Identity: "second"}
+	_, err := orderWrites([]pendingWrite{
+		{key: "a", plain: []solutionrun.Credential{first}, digest: []solutionrun.Credential{second}},
+		{key: "b", plain: []solutionrun.Credential{second}, digest: []solutionrun.Credential{first}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "a") || !strings.Contains(err.Error(), "b") {
+		t.Fatalf("orderWrites = %v, want a refusal naming both keys", err)
+	}
+}
+
+func orderedKeys(writes []pendingWrite) []string {
+	keys := make([]string, 0, len(writes))
+	for _, write := range writes {
+		keys = append(keys, write.key)
+	}
+	return keys
+}
+
+// The keys are gathered together, so a failure must still name the key that
+// actually failed. A key skipped because another one failed carries no error of
+// its own, and returning its cancellation instead would name nothing an operator
+// can act on.
+func TestBuildReportsTheKeyThatFailedNotTheOnesItCancelled(t *testing.T) {
+	rendered, federation := fixture()
+	store := &failingStore{fakeStore: newFakeStore(seeded()), failRead: "wiki-backend"}
+	_, err := Build(context.Background(), &Inputs{Rendered: rendered, Federation: federation, Generators: generators(),
+		Services: []string{"tasks/store", "tasks/worker"}, Store: store, ReadPayloads: true})
+	if err == nil || !strings.Contains(err.Error(), "wiki-backend") {
+		t.Fatalf("Build = %v, want the failing key named", err)
+	}
+	if strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("the cancellation masked the failure: %v", err)
+	}
+}
+
+// failingStore refuses to read one key, and is slow on the others so that they
+// are still in flight when it does.
+type failingStore struct {
+	*fakeStore
+	failRead string
+}
+
+func (store *failingStore) Read(ctx context.Context, key string) (map[string]string, error) {
+	if key == store.failRead {
+		return nil, fmt.Errorf("permission denied on %s", key)
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(50 * time.Millisecond):
+	}
+	return store.fakeStore.Read(ctx, key)
 }

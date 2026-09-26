@@ -74,12 +74,12 @@ func RenderedServiceSecrets(workspaceDir, environment string) (RenderedEnvironme
 			continue
 		}
 		rendered.Modules = append(rendered.Modules, inventory.Module)
-		for _, unit := range inventory.Units {
+		for index := range inventory.Units {
+			unit := &inventory.Units[index]
 			if unit.Kind != "service" || unit.Path == "" {
 				continue
 			}
-			relative := unit.Path + "/overlays/" + environment + "/external-secret.yaml"
-			projection, err := readProjectedSecret(root, relative, &inventory)
+			projection, err := readProjectedSecret(root, projectedSecretPath(unit, environment), &inventory)
 			if err != nil {
 				return RenderedEnvironment{}, fmt.Errorf("service %s/%s: %w", unit.Module, unit.Name, err)
 			}
@@ -93,11 +93,19 @@ func RenderedServiceSecrets(workspaceDir, environment string) (RenderedEnvironme
 				}
 				secret, seen := byKey[data.RemoteRef.Key]
 				store := environments.EnvironmentSecretStoreReference{Name: projection.Spec.SecretStoreRef.Name, Kind: projection.Spec.SecretStoreRef.Kind}
-				if !seen {
+				switch {
+				case !seen:
 					secret = &RenderedServiceSecret{Store: store, Namespace: projection.Metadata.Namespace, RemoteKey: data.RemoteRef.Key}
 					byKey[data.RemoteRef.Key] = secret
-				} else if secret.Store != store {
+				case secret.Store != store:
 					return RenderedEnvironment{}, fmt.Errorf("remote key %s is read through two stores (%s and %s)", data.RemoteRef.Key, secret.Store.Name, store.Name)
+				case store.Kind == "SecretStore" && secret.Namespace != projection.Metadata.Namespace:
+					// A SecretStore is namespaced, so the same name in two namespaces is
+					// two objects, resolving through two backends. Grouping by remote key
+					// alone would collapse them and leave whichever namespace was read
+					// first deciding the backend for both.
+					return RenderedEnvironment{}, fmt.Errorf("remote key %s is read through the namespaced SecretStore %s in namespaces %s and %s, which are two different stores",
+						data.RemoteRef.Key, store.Name, secret.Namespace, projection.Metadata.Namespace)
 				}
 				if !slices.Contains(secret.Services, unique) {
 					secret.Services = append(secret.Services, unique)
@@ -124,14 +132,36 @@ func RenderedServiceSecrets(workspaceDir, environment string) (RenderedEnvironme
 	return rendered, nil
 }
 
-// readProjectedSecret decodes the ExternalSecret projectServiceSecrets wrote, or
-// nil when the service references no secret and so has none. The file must be
-// the one the render recorded: an ExternalSecret edited after the render names
-// keys the render never derived, and seeding a store from it would hide the
-// edit rather than surface it.
+// projectedSecretPath is where the render put a unit's ExternalSecret. A regular
+// service's is projected into its environment overlay (projectServiceSecrets); a
+// managed service has no overlay of its own — its bundle is assembled from the
+// bootstrap Jobs and the projection together (retainManagedBundle), and the
+// projection is the bundle's base, which every environment's overlay includes.
+// Reading only the overlay path left every remote key an environment's
+// managed-services secret-references name out of the plan entirely.
+func projectedSecretPath(unit *InventoryUnit, environment string) string {
+	if unit.Managed {
+		return unit.Path + "/base/external-secret.yaml"
+	}
+	return unit.Path + "/overlays/" + environment + "/external-secret.yaml"
+}
+
+// readProjectedSecret decodes the ExternalSecret the render projected, or nil
+// when the service references no secret and so has none. The file must be the
+// one the render recorded: an ExternalSecret edited after the render names keys
+// the render never derived, and seeding a store from it would hide the edit
+// rather than surface it. A projection the inventory records but that is no
+// longer on disk is refused for the same reason and a worse one — deleting it
+// takes its keys out of the plan silently, and a federation credential whose
+// only carrier left that way is one the registrar would then be handed a digest
+// of and no service the plaintext.
 func readProjectedSecret(root, relative string, inventory *Inventory) (*externalSecret, error) {
+	recorded := slices.IndexFunc(inventory.Files, func(file InventoryFile) bool { return file.Path == relative })
 	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relative)))
 	if errors.Is(err, os.ErrNotExist) {
+		if recorded >= 0 {
+			return nil, fmt.Errorf("%s is recorded in %s but is no longer there: re-render instead of deleting it", relative, InventoryFilename)
+		}
 		return nil, nil
 	}
 	if err != nil {
@@ -139,7 +169,6 @@ func readProjectedSecret(root, relative string, inventory *Inventory) (*external
 	}
 	sum := sha256.Sum256(data)
 	digest := "sha256:" + hex.EncodeToString(sum[:])
-	recorded := slices.IndexFunc(inventory.Files, func(file InventoryFile) bool { return file.Path == relative })
 	if recorded < 0 || inventory.Files[recorded].SHA256 != digest {
 		return nil, fmt.Errorf("%s is not the file the render recorded in %s: re-render instead of editing it", relative, InventoryFilename)
 	}

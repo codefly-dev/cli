@@ -197,9 +197,22 @@ func (store *GoogleSecretManager) Write(ctx context.Context, key string, documen
 	return err
 }
 
+// notFound reports whether a backend command failed because the remote key does
+// not exist, rather than for any other reason.
+//
+// It must not match a message about something other than the secret. gcloud says
+// "Project [x] not found" for a mistyped or inaccessible project, and reading
+// that as an absent key makes every key in the store look missing: the plan then
+// mints credentials the store already holds and reports the whole environment as
+// unseeded. So the bare prose form is accepted only when it is about a secret;
+// the API status stands on its own.
 func notFound(err error) bool {
 	var command *CommandError
-	return errors.As(err, &command) && (strings.Contains(command.Stderr, "NOT_FOUND") || strings.Contains(command.Stderr, "not found"))
+	if !errors.As(err, &command) {
+		return false
+	}
+	return strings.Contains(command.Stderr, "NOT_FOUND") ||
+		(strings.Contains(command.Stderr, "not found") && strings.Contains(command.Stderr, "Secret ["))
 }
 
 // decodeDocument parses a remote value as the JSON object of string properties

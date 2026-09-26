@@ -28,8 +28,8 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"sort"
 	"strings"
+	"sync"
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
@@ -107,7 +107,11 @@ type Plan struct {
 	Modules     []string
 	Secrets     []SecretPlan
 	Credentials []CredentialPlan
-	Notes       []string
+	// Notes are the federation derivation's narration. The Warning flag is
+	// carried, not flattened: it marks a line an operator has to act on — a
+	// federation that cannot work — and a caller that renders it as ordinary
+	// narration buries the one line that is a diagnosis.
+	Notes []solutionrun.Note
 
 	writes []pendingWrite
 }
@@ -116,9 +120,12 @@ type pendingWrite struct {
 	key      string
 	document map[string]string
 	create   bool
-	// digests marks a write carrying a registrar's digests: it is applied after
-	// every write carrying the plaintexts those digests admit.
-	digests bool
+	// plain and digest are the credentials this write carries as a plaintext and
+	// as a digest. A write is applied after every write carrying, in plaintext, a
+	// credential it digests: the registrar must never admit a secret before the
+	// service presenting it holds one. A single key may carry both, so the order
+	// follows the credentials rather than a per-key flag.
+	plain, digest []solutionrun.Credential
 }
 
 // Changes lists the remote keys an apply would write, in the order it would
@@ -191,31 +198,16 @@ func (state *remoteState) known() bool { return state.document != nil }
 // Build resolves every property the rendered environment reads to a source.
 func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 	plan := &Plan{Store: in.Store.Name(), Modules: in.Modules}
-	for _, note := range in.Federation.Notes {
-		plan.Notes = append(plan.Notes, note.Message)
-	}
+	plan.Notes = append(plan.Notes, in.Federation.Notes...)
 
-	states := make([]*remoteState, 0, len(in.Rendered.Secrets))
 	for _, secret := range in.Rendered.Secrets {
 		if slices.Contains(secret.Properties, "") {
 			return nil, fmt.Errorf("remote key %s is read as a bare value; only a JSON document read by property can be planned", secret.RemoteKey)
 		}
-		description, err := in.Store.Describe(ctx, secret.RemoteKey)
-		if err != nil {
-			return nil, fmt.Errorf("describe %s: %w", secret.RemoteKey, err)
-		}
-		state := &remoteState{secret: secret, description: description}
-		switch {
-		case !description.Exists || !description.HasVersion:
-			state.document = map[string]string{}
-		case in.ReadPayloads:
-			document, err := in.Store.Read(ctx, secret.RemoteKey)
-			if err != nil {
-				return nil, fmt.Errorf("read %s: %w", secret.RemoteKey, err)
-			}
-			state.document = document
-		}
-		states = append(states, state)
+	}
+	states, err := readStates(ctx, in)
+	if err != nil {
+		return nil, err
 	}
 
 	derivations, err := federationDerivations(states, in.Federation)
@@ -244,7 +236,7 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 			Read:       state.known(),
 		}
 		changes := map[string]string{}
-		digests := false
+		var carriedPlain, carriedDigest []solutionrun.Credential
 		for _, property := range state.secret.Properties {
 			derivation, derived := derivations[state.secret.RemoteKey][property]
 			inScope, counterpart := scope.property(state, derivation, derived)
@@ -255,7 +247,17 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 			var value string
 			if derived {
 				propertyPlan, value = planDerived(state, property, derivation, credentials)
-				digests = digests || (derivation.Digest && value != "")
+				if value != "" {
+					target := &carriedPlain
+					if derivation.Digest {
+						target = &carriedDigest
+					}
+					for _, credential := range derivation.Credentials {
+						if !slices.Contains(*target, credential) {
+							*target = append(*target, credential)
+						}
+					}
+				}
 				if counterpart {
 					propertyPlan.Source += " (federation counterpart of " + strings.Join(in.Modules, ", ") + ")"
 				}
@@ -283,15 +285,162 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 		if len(changes) > 0 && state.known() {
 			document := maps.Clone(state.document)
 			maps.Copy(document, changes)
-			plan.writes = append(plan.writes, pendingWrite{key: state.secret.RemoteKey, document: document, create: !state.description.Exists, digests: digests})
+			plan.writes = append(plan.writes, pendingWrite{key: state.secret.RemoteKey, document: document,
+				create: !state.description.Exists, plain: carriedPlain, digest: carriedDigest})
 		}
 	}
-	sort.SliceStable(plan.writes, func(i, j int) bool { return !plan.writes[i].digests && plan.writes[j].digests })
+	plan.writes, err = orderWrites(plan.writes)
+	if err != nil {
+		return nil, err
+	}
 	if err := scope.check(plan); err != nil {
 		return nil, err
 	}
 	plan.Credentials = scope.credentialPlans(plan.Credentials)
 	return plan, nil
+}
+
+// storeReaders bounds how many backend commands run at once. Each remote key
+// costs a describe, a version listing and a read, and every one of them is a
+// process: a hundred-key environment is three hundred `gcloud` invocations, which
+// serially is minutes of process startup and nothing else. The keys are
+// independent, so they are gathered together; the bound keeps a large render
+// from forking a process per key at once.
+const storeReaders = 8
+
+// readStates gathers every rendered key's description, and its document when the
+// plan reads payloads. A key's own failure is recorded against its index and the
+// first in the render's order is returned, so a failure names the same key
+// however the work happened to be scheduled.
+func readStates(ctx context.Context, in *Inputs) ([]*remoteState, error) {
+	states := make([]*remoteState, len(in.Rendered.Secrets))
+	errs := make([]error, len(in.Rendered.Secrets))
+	// The first failure cancels the rest: there is no plan without every key, and
+	// a store that refuses one command usually refuses the next hundred too.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var wait sync.WaitGroup
+	slots := make(chan struct{}, storeReaders)
+	for i := range in.Rendered.Secrets {
+		wait.Add(1)
+		go func(i int) {
+			defer wait.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			if ctx.Err() != nil {
+				return
+			}
+			secret := in.Rendered.Secrets[i]
+			// fail records a failure only when it is this key's own. Once one key
+			// has failed, every other key's command fails too, with the
+			// cancellation — recording those would bury the one error that says
+			// what actually went wrong behind whichever key sorts first.
+			fail := func(err error) bool {
+				if err == nil {
+					return false
+				}
+				if ctx.Err() == nil {
+					errs[i] = err
+					cancel()
+				}
+				return true
+			}
+			description, err := in.Store.Describe(ctx, secret.RemoteKey)
+			if fail(wrapKeyError("describe", secret.RemoteKey, err)) {
+				return
+			}
+			state := &remoteState{secret: secret, description: description}
+			switch {
+			case !description.Exists || !description.HasVersion:
+				state.document = map[string]string{}
+			case in.ReadPayloads:
+				document, err := in.Store.Read(ctx, secret.RemoteKey)
+				if fail(wrapKeyError("read", secret.RemoteKey, err)) {
+					return
+				}
+				state.document = document
+			}
+			states[i] = state
+		}(i)
+	}
+	wait.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+	for i := range states {
+		if states[i] == nil {
+			// Nothing recorded a failure, so the caller's own context ended.
+			return nil, ctx.Err()
+		}
+	}
+	return states, nil
+}
+
+// wrapKeyError names the key and the command that failed on it, and passes nil
+// through so a caller can test the result rather than the input.
+func wrapKeyError(verb, key string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s %s: %w", verb, key, err)
+}
+
+// orderWrites orders the writes so that every write carrying a credential in
+// plaintext precedes every write carrying a digest of that credential: a
+// registrar must never admit a secret before the service presenting it holds
+// one, so a run that fails part way leaves a federation that is incomplete
+// rather than one that admits a secret nobody has.
+//
+// The order follows the credentials, not the keys. A key that carries both a
+// plaintext and a digest is ordered by what it actually carries — a per-key
+// "has digests" flag would push it after a key holding the plaintext it
+// digests. A write carrying both the plaintext and the digest of one credential
+// is one document, so it constrains nothing against itself. Two writes that
+// each digest what the other holds cannot be ordered at all, and are refused
+// rather than written in an order that is wrong either way.
+func orderWrites(writes []pendingWrite) ([]pendingWrite, error) {
+	ordered := make([]pendingWrite, 0, len(writes))
+	placed := make([]bool, len(writes))
+	for len(ordered) < len(writes) {
+		progressed := false
+		for i := range writes {
+			if placed[i] || awaitsPlaintext(writes, placed, i) {
+				continue
+			}
+			ordered = append(ordered, writes[i])
+			placed[i] = true
+			progressed = true
+		}
+		if !progressed {
+			var stuck []string
+			for i := range writes {
+				if !placed[i] {
+					stuck = append(stuck, writes[i].key)
+				}
+			}
+			return nil, fmt.Errorf("%s each hold a credential the other digests, so no order writes a plaintext before the digest admitting it: the store cannot be seeded until one of them stops carrying both",
+				strings.Join(stuck, " and "))
+		}
+	}
+	return ordered, nil
+}
+
+// awaitsPlaintext reports whether an unplaced write still holds, in plaintext, a
+// credential write i digests.
+func awaitsPlaintext(writes []pendingWrite, placed []bool, i int) bool {
+	for j := range writes {
+		if j == i || placed[j] {
+			continue
+		}
+		for _, credential := range writes[j].plain {
+			if slices.Contains(writes[i].digest, credential) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // planScope decides which properties a module-scoped plan covers.
@@ -384,22 +533,30 @@ func (scope *planScope) written(derivation solutionrun.SecretDerivation) {
 	}
 }
 
-// check refuses a scoped plan that would store the digest of a credential it
-// mints without also storing that credential where a service presents it: the
-// registrar would then admit a secret no service holds, and the holder, outside
-// the scope, would later be minted a different one.
+// check refuses a plan that would store the digest of a credential it mints
+// without also storing that credential where a service presents it: the
+// registrar would then admit a secret no service holds, and the holder would
+// later be minted a different one.
+//
+// The invariant is a credential's, not a scope's, so it is checked whether or
+// not the plan is scoped. resolveCredentials already refuses to mint a
+// credential no rendered key carries, so an unscoped plan should never reach
+// this — it is the backstop for that rule, and the only enforcement for the
+// scoped case, where the carrier is rendered but deliberately not planned.
 func (scope *planScope) check(plan *Plan) error {
-	if len(scope.modules) == 0 {
-		return nil
-	}
 	for _, credential := range plan.Credentials {
 		if credential.Action != ActionGenerate {
 			continue
 		}
-		if slices.Contains(scope.writtenDigest, credential.Credential) && !slices.Contains(scope.writtenPlain, credential.Credential) {
+		if !slices.Contains(scope.writtenDigest, credential.Credential) || slices.Contains(scope.writtenPlain, credential.Credential) {
+			continue
+		}
+		if len(scope.modules) > 0 {
 			return fmt.Errorf("--module %s would mint %s and store only its digest: the services holding it are outside the scope; add their module",
 				strings.Join(scope.modules, ","), credential.Credential)
 		}
+		return fmt.Errorf("the plan would mint %s and store only its digest: nothing it writes hands that credential to a service, so the store would admit a secret no one holds",
+			credential.Credential)
 	}
 	return nil
 }
@@ -430,8 +587,12 @@ func federationDerivations(states []*remoteState, federation solutionrun.Deploye
 				if !ok {
 					continue
 				}
-				if found != nil && !slices.Equal(found.Credentials, derivation.Credentials) {
-					return nil, fmt.Errorf("remote key %s property %s is read by services deriving it from different credentials", state.secret.RemoteKey, property)
+				// The whole derivation, not only its credentials: two services agreeing
+				// on the credentials but disagreeing on the encoding resolve to
+				// whichever sorts last, and if they disagree on Digest that hands a
+				// registrar the preimage of a digest it is supposed to hold.
+				if found != nil && (!slices.Equal(found.Credentials, derivation.Credentials) || found.Encoded != derivation.Encoded || found.Digest != derivation.Digest) {
+					return nil, fmt.Errorf("remote key %s property %s is read by services deriving it differently", state.secret.RemoteKey, property)
 				}
 				found = &derivation
 			}
@@ -447,24 +608,45 @@ func federationDerivations(states []*remoteState, federation solutionrun.Deploye
 	return derivations, nil
 }
 
-// credentialValues are the federation credentials' plaintexts, and which could
-// not be established because a key that may hold one was not read.
+// credentialValues are the federation credentials' plaintexts, which could not
+// be established because a key that may hold one was not read, and which no
+// rendered key carries at all.
 type credentialValues struct {
 	plaintexts map[solutionrun.Credential]string
 	unverified map[solutionrun.Credential]bool
+	// unheld are credentials no rendered ExternalSecret reads in plaintext, so
+	// nothing this plan writes would ever present them. They are never minted:
+	// see resolveCredentials.
+	unheld map[solutionrun.Credential]bool
 }
 
 // resolveCredentials establishes every federation credential: the plaintext the
 // store already holds, recovered from whichever key carries it, else a freshly
 // minted one. Two keys carrying one credential with different values is a store
 // that no longer federates, and is refused rather than silently resolved.
+//
+// A credential is minted only when some rendered ExternalSecret reads the key
+// that would hold its plaintext. The federation is derived from the workspace
+// and the keys from the render, and the two disagree whenever a module is not
+// rendered for this environment — it renders for another one, or has not been
+// rendered yet. Minting there would write the registrar the digest of a secret
+// no service will ever be handed, and, because the registrar's digest list is
+// recomputed whole, would drop the digest the module's running services are
+// admitted by. So such a credential is reported as unheld and the properties
+// deriving from it fall to `require`, leaving the stored value untouched.
 func resolveCredentials(plan *Plan, states []*remoteState, derivations map[string]map[string]solutionrun.SecretDerivation, federation solutionrun.DeployedSecrets) (credentialValues, error) {
-	values := credentialValues{plaintexts: map[solutionrun.Credential]string{}, unverified: map[solutionrun.Credential]bool{}}
+	values := credentialValues{plaintexts: map[solutionrun.Credential]string{}, unverified: map[solutionrun.Credential]bool{}, unheld: map[solutionrun.Credential]bool{}}
 	heldIn := map[solutionrun.Credential]string{}
+	// carried are the credentials some rendered key reads in plaintext, whether
+	// or not that key was read or currently holds a value.
+	carried := map[solutionrun.Credential]bool{}
 	for _, state := range states {
 		for property, derivation := range derivations[state.secret.RemoteKey] {
 			if derivation.Digest {
 				continue
+			}
+			for _, credential := range derivation.Credentials {
+				carried[credential] = true
 			}
 			if !state.known() {
 				for _, credential := range derivation.Credentials {
@@ -489,6 +671,10 @@ func resolveCredentials(plan *Plan, states []*remoteState, derivations map[strin
 			plan.Credentials = append(plan.Credentials, CredentialPlan{Credential: credential, Action: ActionKeep, Source: "held in " + heldIn[credential]})
 		case values.unverified[credential]:
 			plan.Credentials = append(plan.Credentials, CredentialPlan{Credential: credential, Action: ActionUnverified, Source: "may be held in a key that was not read; minted if not"})
+		case !carried[credential]:
+			values.unheld[credential] = true
+			plan.Credentials = append(plan.Credentials, CredentialPlan{Credential: credential, Action: ActionRequire,
+				Source: "no rendered ExternalSecret reads the key that would hold it: render its module for this environment, then seed again"})
 		default:
 			values.plaintexts[credential] = solutionrun.MintCredential()
 			plan.Credentials = append(plan.Credentials, CredentialPlan{Credential: credential, Action: ActionGenerate, Source: "minted: no key holds it"})
@@ -502,9 +688,13 @@ func resolveCredentials(plan *Plan, states []*remoteState, derivations map[strin
 func planDerived(state *remoteState, property string, derivation solutionrun.SecretDerivation, credentials credentialValues) (PropertyPlan, string) {
 	names := make([]string, 0, len(derivation.Credentials))
 	inputsUnverified := false
+	var unheld []string
 	for _, credential := range derivation.Credentials {
 		names = append(names, credential.String())
 		inputsUnverified = inputsUnverified || credentials.unverified[credential]
+		if credentials.unheld[credential] {
+			unheld = append(unheld, credential.String())
+		}
 	}
 	source := "derived from " + strings.Join(names, ", ")
 	if derivation.Digest {
@@ -521,6 +711,13 @@ func planDerived(state *remoteState, property string, derivation solutionrun.Sec
 		}
 		return PropertyPlan{Property: property, Action: action, Source: source + " (inputs not read)"}, ""
 	}
+	// A credential no rendered key holds cannot be minted here (resolveCredentials
+	// says why), so this property is left exactly as the store has it.
+	if len(unheld) > 0 {
+		return PropertyPlan{Property: property, Action: ActionRequire,
+			Source: source + ": no rendered ExternalSecret reads the key holding " + strings.Join(unheld, ", ") +
+				"; render its module for this environment, then seed again"}, ""
+	}
 	value, err := derivation.Value(credentials.plaintexts)
 	if err != nil {
 		return PropertyPlan{Property: property, Action: ActionRequire, Source: source + ": " + err.Error()}, ""
@@ -529,10 +726,34 @@ func planDerived(state *remoteState, property string, derivation solutionrun.Sec
 	case present && existing == value:
 		return PropertyPlan{Property: property, Action: ActionKeep, Source: source}, ""
 	case present:
+		// The stored value is rewritten whole, so an identity it admits that this
+		// derivation no longer covers would be dropped — de-authorizing whatever
+		// holds it, which is a rotation of a stored value by another name. The
+		// render is pinned to its inventory but the federation is derived from the
+		// workspace as it is now, so the two diverge whenever the workspace moved
+		// on: a consumed prefix renamed after the render leaves the old prefix
+		// admitted here and derived nowhere. Name it rather than drop it.
+		if dropped := droppedIdentities(derivation, existing); len(dropped) > 0 {
+			return PropertyPlan{Property: property, Action: ActionRequire,
+				Source: source + ": the stored value also admits " + strings.Join(dropped, ", ") +
+					", which this workspace no longer derives; rewriting it would de-authorize whatever holds them — re-render the environment, or drop them from the store deliberately"}, ""
+		}
 		return PropertyPlan{Property: property, Action: ActionUpdate, Source: source + " (stored value no longer encodes them)"}, value
 	default:
 		return PropertyPlan{Property: property, Action: ActionDerive, Source: source}, value
 	}
+}
+
+// droppedIdentities lists the identities a stored encoded value admits that the
+// derivation no longer covers, so rewriting it would remove them.
+func droppedIdentities(derivation solutionrun.SecretDerivation, stored string) []string {
+	var dropped []string
+	for _, identity := range derivation.Identities(stored) {
+		if !slices.ContainsFunc(derivation.Credentials, func(credential solutionrun.Credential) bool { return credential.Identity == identity }) {
+			dropped = append(dropped, identity)
+		}
+	}
+	return dropped
 }
 
 // configurationKey reports whether a stored key is a configuration value —
@@ -544,12 +765,15 @@ func configurationKey(key string) bool {
 }
 
 // planConfigured plans a property that is not federation-derived.
+//
+// The other keys holding the same configuration value are looked at before this
+// key's own state, not only when this key lacks it. A configuration value is one
+// value however many services read it, so two keys holding it with different
+// values is a store that no longer agrees with itself — and that is true whether
+// or not a third key needs it propagated. Keeping what each key happens to hold
+// would report the divergence as `keep`, which is the one reading an operator
+// cannot act on.
 func planConfigured(state *remoteState, property string, states []*remoteState, generators map[string]environments.EnvironmentSecretGenerator, generated map[string]string) (PropertyPlan, string, error) {
-	if state.known() {
-		if _, present := state.document[property]; present {
-			return PropertyPlan{Property: property, Action: ActionKeep, Source: "stored"}, "", nil
-		}
-	}
 	var holders, unread []string
 	var holderValue string
 	if configurationKey(property) {
@@ -566,10 +790,18 @@ func planConfigured(state *remoteState, property string, states []*remoteState, 
 				continue
 			}
 			if len(holders) > 0 && value != holderValue {
-				return PropertyPlan{}, "", fmt.Errorf("%s holds different values in %s and %s: one configuration value cannot be propagated from two", property, holders[0], other.secret.RemoteKey)
+				return PropertyPlan{}, "", fmt.Errorf("%s holds different values in %s and %s: one configuration value cannot be two; resolve it before planning", property, holders[0], other.secret.RemoteKey)
 			}
 			holders = append(holders, other.secret.RemoteKey)
 			holderValue = value
+		}
+	}
+	if state.known() {
+		if stored, present := state.document[property]; present {
+			if len(holders) > 0 && stored != holderValue {
+				return PropertyPlan{}, "", fmt.Errorf("%s holds different values in %s and %s: one configuration value cannot be two; resolve it before planning", property, state.secret.RemoteKey, holders[0])
+			}
+			return PropertyPlan{Property: property, Action: ActionKeep, Source: "stored"}, "", nil
 		}
 	}
 	fallback, value, err := fallbackSource(property, generators, generated)

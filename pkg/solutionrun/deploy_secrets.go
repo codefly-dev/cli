@@ -116,6 +116,28 @@ func (derivation SecretDerivation) Plaintexts(stored string) map[Credential]stri
 	return found
 }
 
+// Identities lists the identities a stored `identity:value,…` value declares,
+// in the order stored and once each. It is how a caller rewriting such a value
+// sees what the store admits today: an identity this derivation no longer
+// covers would be dropped by the rewrite, de-authorizing whatever holds it. A
+// value that is not of the encoded form declares no identities.
+func (derivation SecretDerivation) Identities(stored string) []string {
+	if !derivation.Encoded || stored == "" {
+		return nil
+	}
+	var identities []string
+	for _, entry := range strings.Split(stored, ",") {
+		identity, value, ok := strings.Cut(strings.TrimSpace(entry), ":")
+		if !ok || identity == "" || value == "" {
+			continue
+		}
+		if !slices.Contains(identities, identity) {
+			identities = append(identities, identity)
+		}
+	}
+	return identities
+}
+
 // MintCredential returns a fresh federation credential with the same entropy
 // and encoding a run mints, so a deployed credential satisfies every parser a
 // run's does.
@@ -194,6 +216,13 @@ func DeployedFederationSecrets(ctx context.Context, workspace *resources.Workspa
 	secrets := DeployedSecrets{Services: map[string]map[string]SecretDerivation{}}
 	registrars := federationRegistrars(ctx, workspace)
 	if len(registrars) == 0 {
+		// A render references nothing without a registrar, so deriving nothing is
+		// right — but saying nothing leaves every federation key reported as one
+		// the operator must supply by hand, with the actual cause unnamed. The run
+		// and the render both warn here; so does this.
+		secrets.Notes = append(secrets.Notes, Note{Warning: true, Message: fmt.Sprintf(
+			"no service declares the %q workspace configuration: nothing can admit a federation credential, so none is derived and every federation key must be supplied by hand",
+			federationConfigurationGroup)})
 		return secrets, nil
 	}
 	holdsDigests := registrarModules(registrars)

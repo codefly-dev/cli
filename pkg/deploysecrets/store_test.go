@@ -137,3 +137,21 @@ func TestDecodeDocumentNeverQuotesThePayload(t *testing.T) {
 		t.Fatalf("decodeDocument = %v, %v", document, err)
 	}
 }
+
+// gcloud says "Project [x] not found" for a mistyped or inaccessible project.
+// Reading that as an absent key makes every key in the store look missing: the
+// plan then mints credentials the store already holds and reports the whole
+// environment as unseeded. Only a message about the secret is absence.
+func TestGoogleSecretManagerDoesNotReadAProjectFailureAsAMissingKey(t *testing.T) {
+	runner := &scriptedRunner{answers: map[string]func() ([]byte, error){
+		"gcloud secrets describe key": func() ([]byte, error) {
+			return nil, &CommandError{Command: "gcloud secrets describe",
+				Stderr: "ERROR: (gcloud.secrets.describe) Project [wrong-project] not found or deleted.", Err: errors.New("exit status 1")}
+		},
+	}}
+	store := &GoogleSecretManager{Project: "wrong-project", Run: runner.run}
+	description, err := store.Describe(context.Background(), "key")
+	if err == nil {
+		t.Fatalf("Describe = %+v, want the project failure surfaced rather than reported as an absent key", description)
+	}
+}

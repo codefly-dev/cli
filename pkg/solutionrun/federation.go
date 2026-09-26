@@ -387,9 +387,6 @@ type consumedModuleSecretInjection struct {
 	overrides map[string]map[string]string
 	// provisioned are the modules whose services received their own secret.
 	provisioned []string
-	// registrars are consumed modules that hold the digests themselves, and so
-	// are deliberately left out.
-	registrars []string
 	// unresolved are consumed modules with no service to inject into, each with
 	// the reason it has none.
 	unresolved []string
@@ -399,19 +396,16 @@ type consumedModuleSecretInjection struct {
 // the secret minted for the prefix that module federates under, keyed by the
 // module-qualified unique so an injection lands on exactly one service.
 //
-// A module holding a federation registrar is excluded: it is the authority the
-// exchange runs against, not a module that authenticates to it — it mints work
-// contexts rather than presenting a secret for one. Injecting there would put the
-// plaintext and the digest it is checked against in the same process, dissolving
-// the separation the digest carrier exists to create.
-func consumedModuleSecretOverrides(ctx context.Context, workspace *resources.Workspace, consumed []manifest.ConsumedAPI, provisioned *moduleRegistrationSecrets, registrars []string) consumedModuleSecretInjection {
+// A module holding a federation registrar is excluded before this: it is the
+// authority the exchange runs against, not a module that authenticates to it —
+// it mints work contexts rather than presenting a secret for one. Injecting
+// there would put the plaintext and the digest it is checked against in the same
+// process, dissolving the separation the digest carrier exists to create.
+// federatedConsumedAPIs is the one place that exclusion is made, so consumed is
+// already free of them here.
+func consumedModuleSecretOverrides(ctx context.Context, workspace *resources.Workspace, consumed []manifest.ConsumedAPI, provisioned *moduleRegistrationSecrets) consumedModuleSecretInjection {
 	injection := consumedModuleSecretInjection{overrides: make(map[string]map[string]string)}
-	holdsDigests := registrarModules(registrars)
 	for _, binding := range consumedModuleBindings(consumed) {
-		if slices.Contains(holdsDigests, binding.module) {
-			injection.registrars = append(injection.registrars, binding.module)
-			continue
-		}
 		services, err := moduleServiceUniques(ctx, workspace, binding.module)
 		if err != nil {
 			injection.unresolved = append(injection.unresolved, fmt.Sprintf("%s (%v)", binding.module, err))
@@ -639,15 +633,10 @@ func DerivedRunInputs(ctx context.Context, workspace *resources.Workspace, modul
 	// background workers idle. Every module is accounted for out loud — the line
 	// above otherwise reads as a fully wired federation while half of it is
 	// missing, which is the diagnosis this provisioning exists to end.
-	injection := consumedModuleSecretOverrides(ctx, workspace, federated, provisioned, registrars)
+	injection := consumedModuleSecretOverrides(ctx, workspace, federated, provisioned)
 	if len(injection.provisioned) > 0 {
 		notes = append(notes, Note{Message: fmt.Sprintf("provisioned %s and %s into the services of %s",
 			moduleIdentityPrefixEnvironmentVariable, moduleIdentitySecretEnvironmentVariable, strings.Join(injection.provisioned, ", "))})
-	}
-	if len(injection.registrars) > 0 {
-		notes = append(notes, Note{Message: fmt.Sprintf(
-			"consumed modules %s declare the %q group and hold the digests: they mint work contexts rather than present a secret for one",
-			strings.Join(injection.registrars, ", "), federationConfigurationGroup)})
 	}
 	if len(injection.unresolved) > 0 {
 		notes = append(notes, Note{Warning: true, Message: fmt.Sprintf(

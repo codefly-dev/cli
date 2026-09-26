@@ -169,7 +169,11 @@ func printSecretsPlan(out io.Writer, environment string, rendered gitops.Rendere
 		fmt.Fprintf(out, "Skipped (rendered for another environment): %s\n", strings.Join(rendered.Skipped, ", "))
 	}
 	for _, note := range plan.Notes {
-		fmt.Fprintf(out, "note: %s\n", note)
+		label := "note"
+		if note.Warning {
+			label = "warning"
+		}
+		fmt.Fprintf(out, "%s: %s\n", label, note.Message)
 	}
 	if len(plan.Credentials) > 0 {
 		fmt.Fprintln(out, "\nFederation credentials")

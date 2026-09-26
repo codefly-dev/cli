@@ -3,7 +3,6 @@ package solutionrun
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/codefly-dev/core/resources"
@@ -130,13 +129,9 @@ func DerivedDeployInputs(ctx context.Context, workspace *resources.Workspace) (D
 			manifest.APIConsumesEnvironmentVariable, entry, moduleRegistrationSecretsEnvironmentVariable,
 			strings.Join(prefixes, ", "), federationConfigurationGroup)})
 
+		// federatedConsumedAPIs already dropped every consumed module that holds the
+		// digests, so no binding here is a registrar's.
 		for _, bound := range bindings {
-			if slices.Contains(holdsDigests, bound.module) {
-				inputs.Notes = append(inputs.Notes, Note{Message: fmt.Sprintf(
-					"consumed module %s declares the %q group and holds the digests: it mints work contexts rather than present a secret for one",
-					bound.module, federationConfigurationGroup)})
-				continue
-			}
 			if earlier, seen := boundPrefix[bound.module]; seen {
 				if earlier.prefix != bound.prefix {
 					return DeployInputs{}, fmt.Errorf(

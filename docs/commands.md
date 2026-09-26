@@ -621,11 +621,30 @@ resolves every remote property to a source, never printing a value:
 | `generate` | declared random by `service-secrets.generate` (below) |
 | `require` | nothing produces it: the operator supplies it — an external credential, or a value its producing agent derives |
 
-Apply writes plaintexts before the registrar digests that admit them, refuses
-while any property is `require` (`--allow-missing` writes the rest), and refuses
-a `--metadata-only` plan, which never saw what existing keys hold. Two keys
-holding one credential or one configuration value with different values are
-refused rather than reconciled.
+Apply writes plaintexts before the registrar digests that admit them — ordered by
+the credentials, so a key carrying both is still written in the right place —
+refuses while any property is `require` (`--allow-missing` writes the rest), and
+refuses a `--metadata-only` plan, which never saw what existing keys hold. Two
+keys holding one credential or one configuration value with different values are
+refused rather than reconciled, whether or not a third key needs it propagated.
+
+The federation is derived from the workspace and the keys from the render, so the
+two can disagree, and where they do the store is left alone rather than rewritten:
+
+- A credential no rendered `ExternalSecret` reads in plaintext is never minted —
+  its module renders for another environment, or has not been rendered yet.
+  Minting it would hand the registrar the digest of a secret no service will ever
+  hold and, because the digest list is recomputed whole, drop the digest that
+  module's running services are admitted by. It is reported as `require`: render
+  its module for this environment, then seed again.
+- A stored digest list that admits an identity this workspace no longer derives —
+  a consumed prefix renamed after the render — is `require` too, naming what the
+  rewrite would drop. Re-render the environment, or drop those identities from the
+  store deliberately.
+
+A managed service's remote keys (the environment's `managed-services.<svc>.secret-references`)
+are planned like any other: its projection is its bundle's base rather than an
+environment overlay, and both are read.
 
 `--module <m>[,<m>]` limits the plan to the remote keys the named modules'
 services read, plus their **federation counterpart**: the registrar's digest
