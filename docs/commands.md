@@ -2,6 +2,12 @@
 
 Codefly formalizes development operations as typed gRPC APIs. The CLI is the user-facing entry point that orchestrates agents (gRPC plugin processes) to execute these operations.
 
+This page is the narrative guide: what a verb is for, and the chains it takes
+part in. For the complete list of every command and flag, see
+[cli-reference.md](cli-reference.md), which is generated from the command tree —
+a command cannot exist without appearing there, and its text is the same one
+`--help` prints.
+
 ## Quick Start Workflow
 
 ```bash
@@ -300,9 +306,9 @@ the service's ConfigMap; every secret carrier is rendered only as a
 `secretKeyRef` on `secret-<service>`, which the projected ExternalSecret
 materializes from the environment's `service-secrets` store under the key named
 by the carrier (the deprecated alias resolves to the stored
-`CODEFLY__MODULE_IDENTITY_SECRET`). The operator writes each secret and its
-digest (the registrar's `federation` group, already delivered by reference) into
-the store once. A render that needs a secret but whose environment declares no
+`CODEFLY__MODULE_IDENTITY_SECRET`). `codefly deploy secrets` writes each secret
+and its digest (the registrar's `federation` group, already delivered by
+reference) into the store, deriving both from one credential. A render that needs a secret but whose environment declares no
 secret store fails instead of rendering a dangling reference or a value.
 
 Every run and render also carries a service's **self endpoint** —
@@ -595,8 +601,89 @@ service-secrets:
 
 A key with no matching `remote-keys` entry and no `defaults` falls back to the
 `<service>/<key>` store path. The rendered `ExternalSecret` is the single
-source; the platform side seeds the store and does not hand-author
-ExternalSecrets.
+source; the store is seeded from it with `codefly deploy secrets`, never by hand,
+and nobody hand-authors ExternalSecrets.
+
+#### `codefly deploy secrets` — seed the store from the render
+
+```bash
+codefly deploy secrets --env staging --dry-run --metadata-only  # which keys exist; reads no value
+codefly deploy secrets --env staging --dry-run                  # full plan; reads the store in memory
+codefly deploy secrets --env staging                            # write it (confirms; --yes to skip)
+codefly deploy secrets --env staging --module runtime --dry-run  # one module's keys, plus its federation counterpart
+```
+
+It reads every `ExternalSecret` the render projected for `--env` under
+`deployments/modules` (refusing one edited after the render), resolves the store
+behind the `SecretStore`/`ClusterSecretStore` it names from the environment's
+cluster (today: `gcpsm`, written through the operator's own `gcloud` login), and
+resolves every remote property to a source, never printing a value:
+
+| action | source |
+| --- | --- |
+| `keep` | the store already holds it; nothing stored is ever rotated |
+| `derive` / `update` | a federation credential or the registrar's digests of them: a solution's registration secret, a consuming backend's `prefix:secret` map, a consumed module's identity secret. A credential the store already holds anywhere is reused; the registrar's digests are recomputed from the plaintexts, so both ends always agree |
+| `propagate` | a configuration value (`CODEFLY__WORKSPACE_SECRET_CONFIGURATION__…`, `CODEFLY__SERVICE_SECRET_CONFIGURATION__…`) is one value however many services read it, so it is copied from the remote key that holds it |
+| `generate` | declared random by `service-secrets.generate` (below) |
+| `require` | nothing produces it: the operator supplies it — an external credential, or a value its producing agent derives |
+
+Apply writes plaintexts before the registrar digests that admit them — ordered by
+the credentials, so a key carrying both is still written in the right place —
+refuses while any property is `require` (`--allow-missing` writes the rest), and
+refuses a `--metadata-only` plan, which never saw what existing keys hold. Two
+keys holding one credential or one configuration value with different values are
+refused rather than reconciled, whether or not a third key needs it propagated.
+
+The federation is derived from the workspace and the keys from the render, so the
+two can disagree, and where they do the store is left alone rather than rewritten:
+
+- A credential no rendered `ExternalSecret` reads in plaintext is never minted —
+  its module renders for another environment, or has not been rendered yet.
+  Minting it would hand the registrar the digest of a secret no service will ever
+  hold and, because the digest list is recomputed whole, drop the digest that
+  module's running services are admitted by. It is reported as `require`: render
+  its module for this environment, then seed again.
+- A stored digest list that admits an identity this workspace no longer derives —
+  a consumed prefix renamed after the render — is `require` too, naming what the
+  rewrite would drop. Re-render the environment, or drop those identities from the
+  store deliberately.
+
+A managed service's remote keys (the environment's `managed-services.<svc>.secret-references`)
+are planned like any other: its projection is its bundle's base rather than an
+environment overlay, and both are read.
+
+`--module <m>[,<m>]` limits the plan to the remote keys the named modules'
+services read, plus their **federation counterpart**: the registrar's digest
+properties that encode a credential those keys hold (scoping to a solution also
+plans the registrar's digest of its registration secret, and nothing else of the
+registrar's key). The plan names each counterpart key and property as such.
+Every other remote key is still read, so a scoped key keeps agreeing with what
+the store already holds, but nothing outside the scope is planned or written. A
+scope that would mint a credential and store only its digest, its holder being
+outside the scope, is refused.
+
+A consumed API that the registrar's own module serves (a solution calling the
+host's accounts service) is not federated: the host routes it itself, so
+neither a registration secret for its prefix nor an identity credential is
+derived — the same rule a run and a render follow.
+
+Which configuration keys are random is declared by the environment:
+
+```yaml
+service-secrets:
+  generate:
+    - scope: workspace            # a workspace configuration group
+      configuration: internal-auth
+      keys: [CODEFLY_INTERNAL_TOKEN, CODEFLY_GATEWAY_TOKEN]
+    - scope: service              # a service configuration, of every service
+      configuration: postgres     # or of the `services` listed
+      keys: [POSTGRES_PASSWORD, POSTGRES_READ_ONLY_PASSWORD, POSTGRES_READ_WRITE_PASSWORD]
+    - scope: service
+      configuration: postgres
+      services: [runtime/store]
+      keys: [POSTGRES_USER]
+      format: identifier          # hex (default), base64, identifier; `bytes` sizes it
+```
 
 Locally there is no reachable Git host for Argo to fetch from, so the CLI owns a
 reproducible read-only fetch remote on the private k3d network:

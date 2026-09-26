@@ -18,4 +18,5 @@ func init() {
 	DeployCmd.AddCommand(deploy.SolutionCmd)
 	DeployCmd.AddCommand(deploy.GitOpsCmd)
 	DeployCmd.AddCommand(deploy.DevCmd)
+	DeployCmd.AddCommand(deploy.SecretsCmd)
 }

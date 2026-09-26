@@ -708,7 +708,7 @@ func TestConsumedModuleSecretOverridesReportsAModuleItCannotResolve(t *testing.T
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			injection := consumedModuleSecretOverrides(ctx, tc.workspace(), consumed, provisioned, []string{"host/accounts"})
+			injection := consumedModuleSecretOverrides(ctx, tc.workspace(), consumed, provisioned)
 			if len(injection.overrides) != 0 {
 				t.Errorf("injected %v for a module with no service", injection.overrides)
 			}
@@ -755,6 +755,11 @@ func TestDerivedRunInputsKeepsTheBackendHalfWhenAModuleIsUnresolvable(t *testing
 // exchange runs against, not a module that authenticates to it. Injecting the
 // plaintext there would hand the registrar the preimage of the digest it compares
 // against — the separation the digest carrier exists to create.
+//
+// federatedConsumedAPIs is the one place that exclusion is made, so the test
+// runs the composition the run uses — filter, then inject — rather than the
+// injector alone: a second, redundant guard inside the injector could only ever
+// be dead, and would hide the filter regressing.
 func TestConsumedModuleSecretOverridesExcludesTheRegistrarsOwnModule(t *testing.T) {
 	ctx := context.Background()
 	workspace := loadTestWorkspace(t, "testdata/solution-federation")
@@ -762,9 +767,13 @@ func TestConsumedModuleSecretOverridesExcludesTheRegistrarsOwnModule(t *testing.
 		{ID: "accounts", Module: "host", Service: "accounts", Endpoint: "connect", As: "accounts"},
 		{ID: "documents", Module: "documents", Service: "api", Endpoint: "connect", As: "documents"},
 	}
-	provisioned := provisionModuleRegistrationSecrets(consumed)
+	federated, hosted := federatedConsumedAPIs(consumed, registrarModules(federationRegistrars(ctx, workspace)))
+	if !reflect.DeepEqual(hosted, []string{"host"}) {
+		t.Errorf("hosted = %v, want [host] reported as deliberately excluded", hosted)
+	}
+	provisioned := provisionModuleRegistrationSecrets(federated)
 
-	injection := consumedModuleSecretOverrides(ctx, workspace, consumed, provisioned, federationRegistrars(ctx, workspace))
+	injection := consumedModuleSecretOverrides(ctx, workspace, federated, provisioned)
 
 	for _, unique := range []string{"host/accounts", "host/gateway"} {
 		if injection.overrides[unique]["CODEFLY__MODULE_IDENTITY_SECRET"] != "" || injection.overrides[unique]["CODEFLY__MODULE_IDENTITY_PREFIX"] != "" {
@@ -773,9 +782,6 @@ func TestConsumedModuleSecretOverridesExcludesTheRegistrarsOwnModule(t *testing.
 		if got := injection.overrides[unique][moduleRegistrationSecretEnvironmentVariable]; got != "" {
 			t.Errorf("%s received the plaintext %q whose digest its own module holds", unique, got)
 		}
-	}
-	if !reflect.DeepEqual(injection.registrars, []string{"host"}) {
-		t.Errorf("registrars = %v, want [host] reported as deliberately excluded", injection.registrars)
 	}
 	// The module that does authenticate is unaffected.
 	if injection.overrides["documents/api"][moduleRegistrationSecretEnvironmentVariable] != provisioned.byPrefix["documents"].identity {
@@ -793,7 +799,7 @@ func TestConsumedModuleSecretOverridesBindsIdentityToDeclaredPrefix(t *testing.T
 		{ID: "consumer", Module: "wiki", Service: "backend", Endpoint: "connect", As: "consumer"},
 	}
 	provisioned := provisionModuleRegistrationSecrets(consumed)
-	injection := consumedModuleSecretOverrides(ctx, workspace, consumed, provisioned, []string{"host/accounts"})
+	injection := consumedModuleSecretOverrides(ctx, workspace, consumed, provisioned)
 	for unique, prefix := range map[string]string{
 		"documents/api": "knowledge", "documents/worker": "knowledge", "wiki/backend": "consumer",
 	} {
@@ -1080,8 +1086,9 @@ func TestDerivedRunInputsProvisionsTheSolutionSecretWithoutConsumes(t *testing.T
 
 // The whole derivation for a solution composed by source and version: its module
 // is not the workspace's own and its manifest sits in its own checkout, and it
-// must still get the projection, the module secrets for what it consumes, and
-// its own registration secret under its module name.
+// must still get the projection and its own registration secret under its module
+// name. What it consumes here is the registrar's own accounts API, which the host
+// routes itself, so no module secret is provisioned for that prefix.
 func TestDerivedRunInputsForAComposedSolution(t *testing.T) {
 	ctx := context.Background()
 	workspace := loadTestWorkspace(t, "testdata/solution-composed")
@@ -1098,8 +1105,8 @@ func TestDerivedRunInputsForAComposedSolution(t *testing.T) {
 	if backend[manifest.APIConsumesEnvironmentVariable] == "" {
 		t.Errorf("the composed entry received no %s", manifest.APIConsumesEnvironmentVariable)
 	}
-	if secrets := parsePairs(t, backend[moduleRegistrationSecretsEnvironmentVariable]); secrets["accounts"] == "" {
-		t.Errorf("the composed entry received no registration secret for the accounts prefix: %q", backend[moduleRegistrationSecretsEnvironmentVariable])
+	if got := backend[moduleRegistrationSecretsEnvironmentVariable]; got != "" {
+		t.Errorf("the composed entry received registration secrets %q for the host's own accounts API", got)
 	}
 	secret := backend[solutionRegistrationSecretEnvironmentVariable]
 	if secret == "" {
