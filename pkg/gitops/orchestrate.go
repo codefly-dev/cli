@@ -133,7 +133,7 @@ func renderModuleTree(
 		}
 		unitDir, _ := unitDirectory(UnitKindService)
 		for _, service := range services {
-			managedService, managed := env.ManagedServices[service.Name]
+			managedService, managed := env.ManagedService(module.Name, service.Name)
 			entry := InventoryUnit{
 				Kind:      UnitKindService,
 				Module:    module.Name,

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/codefly-dev/core/resources"
@@ -115,6 +116,9 @@ func (env *Environment) Validate() error {
 		return err
 	}
 	for name, managed := range env.ManagedServices {
+		if err := validateManagedServiceKey(name); err != nil {
+			return err
+		}
 		if err := managed.Identity.validate(fmt.Sprintf("managed service %q", name)); err != nil {
 			return err
 		}
@@ -155,7 +159,7 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 	needsGraph := false
 
 	for _, env := range environments {
-		if env != nil && len(env.serviceScopedNames()) > 0 {
+		if env != nil && (len(env.serviceScopedNames()) > 0 || len(env.ManagedServices) > 0) {
 			needsGraph = true
 			break
 		}
@@ -163,13 +167,13 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 	if !needsGraph {
 		return nil
 	}
-	services, err := workspace.LoadServices(ctx)
+	services, err := workspace.LoadServiceWithModules(ctx)
 	if err != nil {
 		return w.Wrap(err)
 	}
-	known := make(map[string]int, len(services))
+	byName := make(map[string][]string, len(services))
 	for _, svc := range services {
-		known[svc.Name]++
+		byName[svc.Name] = append(byName[svc.Name], resources.ServiceUnique(svc.Module, svc.Name))
 	}
 	for _, env := range environments {
 		if env == nil {
@@ -177,13 +181,49 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 		}
 		for block, names := range env.serviceScopedNames() {
 			for _, name := range names {
-				if _, ok := known[name]; !ok {
+				switch len(byName[name]) {
+				case 0:
 					return w.Wrap(fmt.Errorf("environment %q %s references unknown service %q", env.Name, block, name))
-				}
-				if known[name] > 1 {
+				case 1:
+				default:
 					return fmt.Errorf("environment %q %s references ambiguous service %q", env.Name, block, name)
 				}
 			}
+		}
+		if err := validateManagedServiceKeys(env, byName); err != nil {
+			return w.Wrap(err)
+		}
+	}
+	return nil
+}
+
+// validateManagedServiceKeys holds every managed-services key to a single
+// service of the workspace graph. A bare key matching several is the bug this
+// keying exists to remove: it replaces each same-named service with one entry, so
+// every one of them renders with that entry's address and secrets, and only the
+// declaration can say which was meant. A module-qualified key matching nothing is
+// a typo in a module or service name — inert at projection time, where the
+// service it should have replaced deploys as its module declares it instead, with
+// nothing reporting the entry went unused.
+//
+// A bare key matching nothing is left alone: an imported coordinate contract
+// declares a fleet's managed services, and a workspace that composes none of them
+// is entitled to carry the entry unused.
+func validateManagedServiceKeys(env *Environment, byName map[string][]string) error {
+	for key := range env.ManagedServices {
+		if err := validateManagedServiceKey(key); err != nil {
+			return fmt.Errorf("environment %q: %w", env.Name, err)
+		}
+		if _, service, qualified := strings.Cut(key, "/"); qualified {
+			if !slices.Contains(byName[service], key) {
+				return fmt.Errorf("environment %q managed service %q references unknown service", env.Name, key)
+			}
+			continue
+		}
+		if candidates := byName[key]; len(candidates) > 1 {
+			sorted := slices.Sorted(slices.Values(candidates))
+			return fmt.Errorf("environment %q managed service %q is ambiguous: %s each declare a service named %q, so qualify the entry with the module whose service is managed",
+				env.Name, key, strings.Join(sorted, " and "), key)
 		}
 	}
 	return nil

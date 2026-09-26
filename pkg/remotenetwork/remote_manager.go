@@ -206,7 +206,7 @@ func renderedInCluster(env *environments.Environment, service *resources.Service
 	if env == nil || service == nil {
 		return false
 	}
-	_, managed := env.ManagedServices[service.Name]
+	_, managed := env.ManagedService(service.Module, service.Name)
 	return !managed
 }
 

@@ -102,7 +102,7 @@ func (c *CoordinateContract) validate() error {
 
 func validateManagedContractServices(services map[string]EnvironmentManagedService) error {
 	for name, service := range services {
-		if err := validateResourcePathComponent("managed service", name); err != nil {
+		if err := validateManagedServiceKey(name); err != nil {
 			return err
 		}
 		if strings.TrimSpace(service.ExternalName) == "" || service.Port < 1 || service.Port > 65535 {

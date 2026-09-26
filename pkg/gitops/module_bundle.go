@@ -192,7 +192,7 @@ func encodeTransportNeutralModuleWorkspace(workspace *resources.Workspace, modul
 			ConfigurationProfiles: environment.ConfigurationProfiles,
 			Namespace:             environment.ModuleNamespace(workspace, module),
 			Ingress:               environment.Ingress,
-			ManagedServices:       environment.ManagedServices,
+			ManagedServices:       moduleManagedServices(environment, module),
 		}
 		if environment.Cluster != nil {
 			projected.Cluster = &transportNeutralModuleCluster{Kind: environment.Cluster.Kind}
@@ -200,6 +200,38 @@ func encodeTransportNeutralModuleWorkspace(workspace *resources.Workspace, modul
 		input.Environments = append(input.Environments, projected)
 	}
 	return yaml.Marshal(input)
+}
+
+// moduleManagedServices narrows an environment's managed services to the ones
+// replacing a service of this module, keyed by bare service name. The bundle
+// generator renders one module and looks its services up by the name it knows
+// them under, so a module-qualified key would match nothing there and another
+// module's same-named entry would match the wrong service.
+//
+// A bare key is carried through: within one module a service name is unique, so
+// it is this module's service or a service the module does not render, and the
+// generator ignores the latter.
+func moduleManagedServices(env *environments.Environment, module string) map[string]environments.EnvironmentManagedService {
+	if len(env.ManagedServices) == 0 {
+		return nil
+	}
+	projected := make(map[string]environments.EnvironmentManagedService, len(env.ManagedServices))
+	for key, managed := range env.ManagedServices {
+		if !strings.Contains(key, "/") {
+			projected[key] = managed
+		}
+	}
+	// Second pass, so a qualified entry wins over a bare one of the same service
+	// here as it does in Environment.ManagedService, whatever order the map yields.
+	for key, managed := range env.ManagedServices {
+		if declaredModule, service, qualified := strings.Cut(key, "/"); qualified && declaredModule == module {
+			projected[service] = managed
+		}
+	}
+	if len(projected) == 0 {
+		return nil
+	}
+	return projected
 }
 
 func transportNeutralModuleEnvironment(stage string) ([]string, error) {

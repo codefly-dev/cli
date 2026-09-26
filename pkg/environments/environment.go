@@ -147,6 +147,40 @@ type EnvironmentManagedService struct {
 	Identity *EnvironmentWorkloadIdentity `yaml:"identity,omitempty"`
 }
 
+// ManagedService returns the environment's replacement for a service, or false
+// when the service deploys as its module declares it. A key naming the service's
+// module wins over a bare one: an environment that manages one module's "redis"
+// and leaves another's alone says so by qualifying the entry, and a bare key
+// left standing beside it would otherwise capture both.
+//
+// A bare key that matches this service may also match a same-named service in
+// another module. That is a property of the declaration and the workspace graph
+// together, neither of which a single lookup can see, so it is refused once at
+// workspace load (ValidateWorkspace) instead of guessed at here.
+func (env *Environment) ManagedService(module, service string) (EnvironmentManagedService, bool) {
+	if env == nil {
+		return EnvironmentManagedService{}, false
+	}
+	if managed, declared := env.ManagedServices[resources.ServiceUnique(module, service)]; declared {
+		return managed, true
+	}
+	managed, declared := env.ManagedServices[service]
+	return managed, declared
+}
+
+// validateManagedServiceKey accepts either shape a managed-services key takes: a
+// module-qualified "<module>/<service>" or a bare "<service>".
+func validateManagedServiceKey(key string) error {
+	module, service, qualified := strings.Cut(key, "/")
+	if !qualified {
+		return validateResourcePathComponent("managed service", key)
+	}
+	if err := validateResourcePathComponent("managed service module", module); err != nil {
+		return err
+	}
+	return validateResourcePathComponent("managed service", service)
+}
+
 // EnvironmentWorkloadIdentity is the runtime principal a workload authenticates
 // as, and the platform's own means of attaching it. Annotations land on the
 // workload's ServiceAccount and Labels on its pod template, verbatim: an environment
@@ -740,7 +774,16 @@ type Environment struct {
 	Namespace string               `yaml:"namespace,omitempty"`
 	Gitops    *EnvironmentGitops   `yaml:"gitops,omitempty"`
 
-	Ingress         []EnvironmentIngressRoute            `yaml:"ingress,omitempty"`
+	Ingress []EnvironmentIngressRoute `yaml:"ingress,omitempty"`
+
+	// ManagedServices keys a replacement by the identity of the service it
+	// replaces: "<module>/<service>", or a bare "<service>" when exactly one
+	// module in the workspace declares that name. Composed modules routinely ship
+	// a service of the same name — a "redis", say — and a bare key covers every
+	// one of them, so both would render with this entry's address and secrets;
+	// ValidateWorkspace refuses an ambiguous bare key rather than replacing a
+	// service nobody declared managed. Read it through ManagedService, never by
+	// indexing the map with a bare name.
 	ManagedServices map[string]EnvironmentManagedService `yaml:"managed-services,omitempty"`
 
 	// DNS carries the environment's DNS contract. Its AppHostSuffix lets the network layer
