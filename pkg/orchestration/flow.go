@@ -150,6 +150,9 @@ type Flow struct {
 	remoteServices []*Remote
 
 	excludedDependencyServices []string
+	// runProfile is the run profile WithRunProfile applied, as resolved; the
+	// plan-time reference check hands it to core unchanged. Zero when none was.
+	runProfile resources.RunProfile
 
 	// stateListener, when set, is invoked on every runtime lifecycle transition
 	// of every managed service (not just the origin) so a UI can render live
@@ -251,6 +254,14 @@ type World struct {
 	SyncRequest *builderv0.SyncRequest
 
 	excludedWorkspaceConfigurations map[string]bool
+
+	// runProducers is the run set, by <module>/<service>: every service this
+	// run starts or deploys. A workspace configuration reference naming one of
+	// them must resolve, so reading it without an address fails; a reference to
+	// anything else is not for this run and is dropped for the consumer (core's
+	// configurations.Manager.WithRunProducers). Nil until the flow has decided
+	// its run set, which proves nothing is in the run.
+	runProducers map[string]bool
 
 	// runtimeContextFor is the flow's choice of runtime context per service, so
 	// the world can derive a producer's proposed mappings before it initializes
@@ -1805,6 +1816,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	// decides whether the run has dependencies at all. A failure here leaves that
 	// preflight runner reachable through flow.Stop(), as every other partial
 	// InitManagers failure does.
+	flow.world.setRunProducers(required, flow.originService)
 	if err := flow.checkConfigurationReferences(ctx, required); err != nil {
 		return err
 	}
@@ -2351,6 +2363,7 @@ func (flow *Flow) WithRunProfile(profile resources.RunProfile) error {
 	if flow == nil || flow.world == nil || (flow.world.Mode != RunMode && flow.world.Mode != TestMode) {
 		return fmt.Errorf("run profiles can only be applied to run or test flows")
 	}
+	flow.runProfile = profile
 	flow.excludedDependencyServices = append([]string(nil), profile.ExcludeDependencies...)
 	flow.world.excludedWorkspaceConfigurations = make(map[string]bool, len(profile.ExcludeWorkspaceConfigurations))
 	for _, configuration := range profile.ExcludeWorkspaceConfigurations {

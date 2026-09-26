@@ -50,6 +50,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	consumerMappings := append(slices.Clone(dependenciesNetworkMappings), referenced...)
 	workspaceConfigurations, err := b.world.ConfigurationManager.
 		ForConsumer(consumerMappings, resources.NewContainerNetworkAccess()).
+		WithRunProducers(b.world.producerInRun()).
 		GetWorkspaceDependenciesConfigurations(ctx, b.instance.Service.WorkspaceConfigurationDependencies...)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get workspace configurations")

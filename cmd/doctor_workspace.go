@@ -870,7 +870,7 @@ func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, 
 			fmt.Sprintf("cannot build the service graph to check endpoint references: %v", err), "")
 		return
 	}
-	err = orchestration.CheckConfigurationReferences(ctx, ws, env, provided, dependencies, scope, nil, nil)
+	err = orchestration.CheckConfigurationReferences(ctx, ws, env, provided, dependencies, scope, resources.RunProfile{}, nil)
 	var unresolved *configurations.UnresolvedReferencesError
 	switch {
 	case err == nil:

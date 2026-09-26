@@ -21,8 +21,9 @@ import (
 // value is resolved: that is the last line of defence, this is the first.
 //
 // provided may be a read the caller already has; nil reads it here.
-// excludedGroups names the groups a profile excludes, which the consumer never
-// receives. excludedProducers names the services the caller removed from the
+// profile is the run profile the caller resolved; the groups it excludes are
+// never received by a consumer (a zero profile excludes nothing), and core reads
+// them from it rather than from a set assembled here. excludedProducers names the services the caller removed from the
 // plan (--exclude-dependency, a run profile): they are absent from dependencies
 // like a service of another workspace, so without them the refusal would report
 // "not a service of this plan" about a service the workspace does declare, and
@@ -31,7 +32,7 @@ func CheckConfigurationReferences(
 	ctx context.Context, workspace *resources.Workspace, env *environments.Environment,
 	provided *configurations.WorkspaceConfigurations,
 	dependencies *architecture.ServiceDependencies, consumers []*resources.Service,
-	excludedGroups map[string]bool, excludedProducers map[string]bool,
+	profile resources.RunProfile, excludedProducers map[string]bool,
 ) error {
 	if workspace == nil || env == nil || dependencies == nil || len(consumers) == 0 {
 		return nil
@@ -43,7 +44,7 @@ func CheckConfigurationReferences(
 		}
 		provided = read
 	}
-	err := configurations.CheckEndpointReferences(provided.Infos, consumers, excludedGroups, func(unique string) (*resources.Service, bool) {
+	err := configurations.CheckEndpointReferences(provided.Infos, consumers, profile, func(unique string) (*resources.Service, bool) {
 		service, err := dependencies.ServiceFromUnique(unique)
 		return service, err == nil
 	})
@@ -120,7 +121,7 @@ func PlanConfigurationReferences(ctx context.Context, workspace *resources.Works
 			}
 		}
 	}
-	return CheckConfigurationReferences(ctx, workspace, env, provided, dependencies, consumers, nil, nil)
+	return CheckConfigurationReferences(ctx, workspace, env, provided, dependencies, consumers, resources.RunProfile{}, nil)
 }
 
 // checkConfigurationReferences runs the plan-time check for a flow whose run
@@ -162,5 +163,5 @@ func (flow *Flow) checkConfigurationReferences(ctx context.Context, required []s
 		excludedProducers[excluded] = true
 	}
 	return CheckConfigurationReferences(ctx, flow.workspace, flow.world.Env, flow.providedWorkspaceConfigurations,
-		flow.world.Dependencies, consumers, flow.world.excludedWorkspaceConfigurations, excludedProducers)
+		flow.world.Dependencies, consumers, flow.runProfile, excludedProducers)
 }

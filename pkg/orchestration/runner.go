@@ -441,6 +441,27 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	return outputProperty, nil
 }
 
+// setRunProducers records the run set: the services a flow starts or deploys,
+// by <module>/<service>, and its origin.
+func (world *World) setRunProducers(required []string, origin *resources.Service) {
+	world.runProducers = make(map[string]bool, len(required)+1)
+	for _, unique := range required {
+		world.runProducers[unique] = true
+	}
+	if origin != nil {
+		world.runProducers[resources.WithUnique(origin).Unique()] = true
+	}
+}
+
+// producerInRun is the run set as core asks for it: nil before the flow has
+// decided one, so no reference is provably to a producer of the run.
+func (world *World) producerInRun() func(unique string) bool {
+	if world.runProducers == nil {
+		return nil
+	}
+	return func(unique string) bool { return world.runProducers[unique] }
+}
+
 // workspaceConfigurationsFor resolves the workspace configurations one service
 // receives. ${endpoint:…} references resolve against that service's dependency
 // mappings, in the address family of its access, plus the mappings of every
@@ -461,7 +482,7 @@ func (world *World) workspaceConfigurationsFor(
 		return nil, err
 	}
 	mappings := append(slices.Clone(dependencyMappings), referenced...)
-	manager := world.ConfigurationManager.ForConsumer(mappings, access)
+	manager := world.ConfigurationManager.ForConsumer(mappings, access).WithRunProducers(world.producerInRun())
 	declared, err := manager.GetWorkspaceDependenciesConfigurations(ctx, dependencies...)
 	if err != nil {
 		return nil, err

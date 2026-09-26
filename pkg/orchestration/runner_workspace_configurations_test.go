@@ -179,18 +179,51 @@ func TestWorkspaceConfigurationsForResolvesEndpointsFromConsumerMappings(t *test
 	require.NoError(t, err)
 	require.Equal(t, "http://auth-gateway.platform-obin-saas.svc.cluster.local:8080", value)
 
+	// A producer of the run with no address for this consumer is a fault the
+	// read reports, naming the key and the producer, never an omitted key.
+	world.setRunProducers([]string{"saas/auth-gateway"}, nil)
 	_, err = world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewNativeNetworkAccess())
-	require.Error(t, err, "a reference with no producer address fails, never an omitted key")
+	require.Error(t, err, "a reference to a producer of the run with no address fails, never an omitted key")
 	require.Contains(t, err.Error(), "platform/gateway-endpoint")
 	require.Contains(t, err.Error(), "producer saas/auth-gateway")
+
+	// A producer the run does not contain is not for this run: the consumer
+	// does not receive the key. Whether the workspace can resolve it at all is
+	// the plan-time check's question (TestPlanConfigurationReferences).
+	world.setRunProducers(nil, nil)
+	dropped, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewNativeNetworkAccess())
+	require.NoError(t, err)
+	require.False(t, configurationsCarryKey(dropped, "platform", "gateway-endpoint"),
+		"a reference to a producer outside the run is dropped for the consumer")
+}
+
+// configurationsCarryKey reports whether any configuration carries name/key at
+// all. resources.GetConfigurationValue answers "" and no error for an absent
+// key, which cannot tell a dropped value from an empty one.
+func configurationsCarryKey(confs []*basev0.Configuration, name, key string) bool {
+	for _, conf := range confs {
+		for _, info := range conf.GetInfos() {
+			if info.GetName() != name {
+				continue
+			}
+			for _, value := range info.GetConfigurationValues() {
+				if value.GetKey() == key {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // A workspace configuration the consumer declares may name a producer the
 // consumer does not depend on — the composition root binding the host by its
 // own name for it. Before the producer initializes, the reference resolves to
 // the mappings its Init proposes, derived from the endpoints it recorded at
-// Load; a producer that is not a service of the workspace fails the read, naming
-// the key and the producer.
+// Load. A producer that is not in the run, such as one that is not a service of
+// the workspace, is not for this run: the read drops it for the consumer, and
+// the plan-time check refuses it before anything starts
+// (TestPlanConfigurationReferences).
 func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testing.T) {
 	ctx := context.Background()
 	workspace, err := resources.LoadWorkspaceFromDir(ctx, "testdata/excluded-root-visibility")
@@ -237,10 +270,14 @@ func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testin
 	require.Empty(t, consumer.ServiceDependencies)
 	consumer.WorkspaceConfigurationDependencies = []string{"platform"}
 
-	_, err = world.workspaceConfigurationsFor(ctx, consumer, nil, resources.NewNativeNetworkAccess())
-	require.Error(t, err, "a producer outside the workspace fails the read, never an omitted key")
-	require.Contains(t, err.Error(), "platform/elsewhere")
-	require.Contains(t, err.Error(), "producer absent/service")
+	world.setRunProducers([]string{"saas/accounts"}, consumer)
+	mixed, err := world.workspaceConfigurationsFor(ctx, consumer, nil, resources.NewNativeNetworkAccess())
+	require.NoError(t, err, "a producer outside the run never fails the read")
+	require.Len(t, mixed, 1)
+	resolved, err := resources.GetConfigurationValue(ctx, mixed[0], "platform", "accounts-endpoint")
+	require.NoError(t, err)
+	require.Regexp(t, `^http://localhost:\d+$`, resolved)
+	require.False(t, configurationsCarryKey(mixed, "platform", "elsewhere"), "a producer outside the run is dropped for the consumer")
 
 	manager = loadedWorkspaceManager(t, staticWorkspaceLoader{
 		confs: []*basev0.Configuration{workspaceConfiguration("platform", "accounts-endpoint", "${endpoint:saas/accounts/connect}")},
@@ -355,6 +392,7 @@ func TestConfigurationReferencesToAProducerDeclaredExternal(t *testing.T) {
 	// address exists for it and the read fails naming the key and the producer.
 	// Deriving one from its manifest would give the consumer a free local port
 	// no service is behind.
+	world.setRunProducers([]string{"saas/accounts"}, relay)
 	_, err = world.workspaceConfigurationsFor(ctx, relay, dependencyMappings, resources.NewNativeNetworkAccess())
 	require.Error(t, err, "a producer that never loaded has no address, so the read fails")
 	require.Contains(t, err.Error(), "platform/accounts-endpoint")
