@@ -456,8 +456,11 @@ func (world *World) workspaceConfigurationsFor(
 			dependencies = append(dependencies, dependency)
 		}
 	}
-	mappings := append(slices.Clone(dependencyMappings),
-		world.referencedProducerMappings(ctx, service, dependencies, dependencyMappings, world.localProducerMappings)...)
+	referenced, err := world.referencedProducerMappings(ctx, service, dependencies, dependencyMappings)
+	if err != nil {
+		return nil, err
+	}
+	mappings := append(slices.Clone(dependencyMappings), referenced...)
 	manager := world.ConfigurationManager.ForConsumer(mappings, access)
 	declared, err := manager.GetWorkspaceDependenciesConfigurations(ctx, dependencies...)
 	if err != nil {
@@ -498,10 +501,7 @@ func (world *World) workspaceConfigurationsFor(
 // consuming module cannot know, such as the host by the composition's name for
 // it, which is why the consumer declares the group and not the dependency. The
 // root's reference is what binds the two, so it resolves for the consumer when
-// the producer is part of this run. The producer may not have initialized yet:
-// every service of the run is loaded before any initializes, so its endpoints
-// are known, and its mappings are derived exactly as its own Init proposes them
-// (named ports are a function of its identity).
+// the producer is part of this run.
 //
 // A declared dependency does not by itself carry the referenced endpoint: a
 // `kind: external` one is never started or waited for, so its producer has
@@ -513,14 +513,17 @@ func (world *World) workspaceConfigurationsFor(
 // nothing is omitted silently. Only groups the service declares are considered:
 // the root's groups injected into every service never bind one service to
 // another.
+//
+// Failing to derive a producer's addresses is an error, not a warning: swallowing
+// it leaves the consumer's read to fail with core's "producer is not part of the
+// run", which names the wrong cause and buries the real one in a log line nobody
+// correlates.
 func (world *World) referencedProducerMappings(
-	ctx context.Context, service *resources.Service, groups []string,
-	have []*basev0.NetworkMapping, derive producerMappingsDeriver,
-) []*basev0.NetworkMapping {
+	ctx context.Context, service *resources.Service, groups []string, have []*basev0.NetworkMapping,
+) ([]*basev0.NetworkMapping, error) {
 	if world == nil || world.ConfigurationManager == nil || world.SharedState == nil || world.Dependencies == nil || len(groups) == 0 {
-		return nil
+		return nil, nil
 	}
-	w := wool.Get(ctx).In("World.referencedProducerMappings", wool.ThisField(resources.WithUnique(service)))
 	var out []*basev0.NetworkMapping
 	collected := make(map[string]bool)
 	for _, reference := range world.ConfigurationManager.WorkspaceEndpointReferences(groups...) {
@@ -533,15 +536,14 @@ func (world *World) referencedProducerMappings(
 			continue
 		}
 		collected[producer] = true
-		mappings, err := world.producerNetworkMappings(ctx, producer, derive)
+		mappings, err := world.producerNetworkMappings(ctx, producer)
 		if err != nil {
-			w.Warn("cannot derive the addresses of a producer a workspace configuration references",
-				wool.Field("producer", producer), wool.Field("reference", reference), wool.Field("error", err.Error()))
-			continue
+			return nil, fmt.Errorf("cannot derive the addresses of %s, named by the workspace configuration reference ${endpoint:%s} that %s declares: %w",
+				producer, reference, resources.WithUnique(service).Unique(), err)
 		}
 		out = append(out, mappings...)
 	}
-	return out
+	return out, nil
 }
 
 // mappingsCarry reports whether mappings already hold the endpoint a reference
@@ -563,15 +565,25 @@ func mappingsCarry(mappings []*basev0.NetworkMapping, info *resources.EndpointIn
 	return false
 }
 
-// producerMappingsDeriver derives the mappings a producer's Init (or deploy)
-// will propose from its identity and endpoints, before it has recorded any.
-type producerMappingsDeriver func(ctx context.Context, service *resources.Service, identity *resources.ServiceIdentity, endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error)
-
 // localProducerMappings derives a producer's mappings as a local run's Init
-// proposes them.
+// proposes them. Only legitimate while the proposal IS the address: a named port
+// is a pure function of the producer's identity, so deriving it for a producer
+// of this run that has not initialized yet yields the address it will serve.
+//
+// Under --temporary-ports it is not: every call takes a fresh ephemeral port
+// from the kernel, so a derived address is a free port nothing listens on, and
+// two consumers of one group would each get a different one. Deriving there
+// would hand out a plausible address for a service that is not behind it, which
+// fails at connect time far from its cause — so say so instead. The producer
+// initializing first (which its reference orders, core's
+// architecture.WithConfigurationReferences) makes its recorded mappings
+// authoritative and never reaches this.
 func (world *World) localProducerMappings(ctx context.Context, service *resources.Service, identity *resources.ServiceIdentity, endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error) {
 	if world.LocalNetworkManager == nil || world.runtimeContextFor == nil {
 		return nil, nil
+	}
+	if world.temporaryPorts {
+		return nil, fmt.Errorf("its address is allocated at initialization (--temporary-ports), so this run cannot know it before %s initializes: order it before this service, or declare it as a dependency for the referenced endpoint", identity.Unique())
 	}
 	runtimeContext, err := resources.NewRuntimeContext(world.runtimeContextFor(service))
 	if err != nil {
@@ -581,10 +593,19 @@ func (world *World) localProducerMappings(ctx context.Context, service *resource
 }
 
 // producerNetworkMappings returns a producer's mappings: the ones it recorded,
-// or, before it has, the ones derive proposes from the endpoints it recorded at
-// Load — or, when it has not been loaded, the endpoints its manifest declares.
-// A producer that is not a service of the workspace has none.
-func (world *World) producerNetworkMappings(ctx context.Context, producer string, derive producerMappingsDeriver) ([]*basev0.NetworkMapping, error) {
+// or, before it has, the ones its own Init (or deploy) will propose.
+//
+// Where the proposal comes from differs by mode, because what makes it
+// authoritative differs. A deployed producer's in-cluster address is a pure
+// function of its identity and namespace, so it holds whether or not this
+// operation deploys that producer, and its manifest's endpoints are enough. A
+// local producer's address is allocated, so only a producer of THIS run has one
+// to derive: membership is exactly "it recorded endpoints at Load", every
+// service of a run being loaded before any initializes. A producer that never
+// loaded is not in the run and has no address — it contributes nothing, and core
+// fails the consumer's read naming the key and the producer rather than this
+// handing back an address no service is behind.
+func (world *World) producerNetworkMappings(ctx context.Context, producer string) ([]*basev0.NetworkMapping, error) {
 	if mappings, ok := world.SharedState.GetNetworkMappingsFromUnique(producer); ok {
 		return mappings, nil
 	}
@@ -596,16 +617,32 @@ func (world *World) producerNetworkMappings(ctx context.Context, producer string
 	if err != nil {
 		return nil, err
 	}
-	endpoints := world.SharedState.RecordedEndpoints(producer)
-	if len(endpoints) == 0 {
-		if endpoints, err = service.LoadEndpoints(ctx); err != nil {
+	if world.deploys() {
+		endpoints, err := service.LoadEndpoints(ctx)
+		if err != nil {
 			return nil, err
 		}
+		if len(endpoints) == 0 {
+			return nil, nil
+		}
+		return world.remoteProducerMappings(ctx, identity, endpoints)
 	}
-	if len(endpoints) == 0 || derive == nil {
+	endpoints := world.SharedState.RecordedEndpoints(producer)
+	if len(endpoints) == 0 {
 		return nil, nil
 	}
-	return derive(ctx, service, identity, endpoints)
+	return world.localProducerMappings(ctx, service, identity, endpoints)
+}
+
+// deploys reports whether this world reaches producers at their deployed
+// in-cluster addresses rather than at locally allocated ones.
+func (world *World) deploys() bool {
+	switch world.Mode {
+	case DeployMode, SnapshotMode, BuildMode, SyncMode:
+		return true
+	default:
+		return false
+	}
 }
 
 // applyWorkspaceConfigurationValues layers the run's derived values onto the

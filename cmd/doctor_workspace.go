@@ -17,7 +17,9 @@ import (
 	"github.com/codefly-dev/cli/cmd/publish"
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	hostprovider "github.com/codefly-dev/cli/pkg/provider"
+	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/provider/configuration"
@@ -174,9 +176,9 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 
 	checkDevAgents(scope, report)
 
-	toResolve := checkConfigurationSources(ctx, ws, env, opts.module != "" || opts.service != "", scope, requiredBy, report)
+	toResolve, provided := checkConfigurationSources(ctx, ws, env, opts.module != "" || opts.service != "", scope, requiredBy, report)
 
-	checkConfigurationReferences(ctx, ws, env, scope, report)
+	checkConfigurationReferences(ctx, ws, env, provided, scope, report)
 
 	checkSecretReferences(ctx, env, resolvers, unavailable, toResolve, report)
 
@@ -839,25 +841,36 @@ func checkScope(ctx context.Context, ws *resources.Workspace, moduleName, servic
 // workspace configuration a service in scope declares must name a service of
 // the workspace and an endpoint that service declares. One failure per
 // unresolved reference, naming the consumer, the key, the reference and the
-// producer. A workspace whose configurations cannot be read is reported by
-// checkConfigurationSources, so it is not reported twice here.
-func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, env *environments.Environment, scope []*resources.Service, report *workspaceReadinessReport) {
-	provided, err := configurations.ReadWorkspaceConfigurations(ctx, ws, env.Runtime())
-	if err != nil {
+// producer.
+//
+// It calls the very check the run calls, over the very graph the run builds
+// (orchestration.CheckConfigurationReferences), because a second implementation
+// with its own producer lookup is free to disagree — and a doctor that reports
+// ready for a run the flow then refuses is worse than no check at all. provided
+// is the read checkConfigurationSources already performed.
+//
+// Nothing here returns silently: a check that could not run says so, or the
+// report claims a clean bill the doctor never established.
+func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, env *environments.Environment, provided *configurations.WorkspaceConfigurations, scope []*resources.Service, report *workspaceReadinessReport) {
+	if len(scope) == 0 {
 		return
 	}
-	services, err := ws.LoadServices(ctx)
-	if err != nil {
+	if provided == nil {
+		// checkConfigurationSources already failed on the read and said why;
+		// record that this check did not run rather than leaving its absence to
+		// be read as a pass.
+		report.add("", "configuration references", "warn",
+			"not checked: the workspace configurations could not be read",
+			"fix the workspace configurations reported above, then run the doctor again")
 		return
 	}
-	producers := make(map[string]*resources.Service, len(services))
-	for _, svc := range services {
-		producers[serviceUnique(svc)] = svc
+	dependencies, err := architecture.NewServiceDependencies(ctx, ws)
+	if err != nil {
+		report.add(codeWorkspaceInvalid, "configuration references", "fail",
+			fmt.Sprintf("cannot build the service graph to check endpoint references: %v", err), "")
+		return
 	}
-	err = configurations.CheckEndpointReferences(provided.Infos, scope, nil, func(unique string) (*resources.Service, bool) {
-		svc, ok := producers[unique]
-		return svc, ok
-	})
+	err = orchestration.CheckConfigurationReferences(ctx, ws, env, provided, dependencies, scope, nil, nil)
 	var unresolved *configurations.UnresolvedReferencesError
 	switch {
 	case err == nil:
@@ -866,11 +879,36 @@ func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, 
 		for _, reference := range unresolved.References {
 			report.add(codeConfigurationReference, "workspace configuration "+reference.Group, "fail",
 				reference.String(),
-				fmt.Sprintf("make %s/%s name a service of this workspace and an endpoint it declares, or compose the producer into the workspace", reference.Group, reference.Key))
+				referenceRemediation(&reference, dependencies))
 		}
 	default:
 		report.add(codeConfigurationInvalid, "configuration references", "fail", err.Error(), "")
 	}
+}
+
+// referenceRemediation says what to do about one unresolved reference. The three
+// ways a reference fails need three different answers, and the facts tell them
+// apart without reading core's prose: a malformed reference names no producer at
+// all, a producer absent from the graph is not in the workspace, and a producer
+// that is there is missing the endpoint. One shared line telling every reader to
+// "compose the producer into the workspace" is wrong advice for two of the three.
+func referenceRemediation(reference *configurations.UnresolvedReference, dependencies *architecture.ServiceDependencies) string {
+	switch {
+	case reference.Producer == "":
+		return fmt.Sprintf("write %s as ${endpoint:<module>/<service>/<endpoint>} in the %q workspace configuration", reference.Key, reference.Group)
+	case !inWorkspace(dependencies, reference.Producer):
+		return fmt.Sprintf("compose the module providing %s into this workspace, or point %s at a service this workspace declares", reference.Producer, reference.Key)
+	default:
+		return fmt.Sprintf("declare the endpoint on %s, or point %s at an endpoint %s already declares", reference.Producer, reference.Key, reference.Producer)
+	}
+}
+
+func inWorkspace(dependencies *architecture.ServiceDependencies, unique string) bool {
+	if dependencies == nil {
+		return false
+	}
+	_, err := dependencies.ServiceFromUnique(unique)
+	return err == nil
 }
 
 // checkDevAgents warns about every service in scope running an agent dev build
@@ -908,7 +946,7 @@ type scopedConfiguration struct {
 // workspace directory is a failure only for the groups no composed module
 // provides. It returns the configurations whose secret values are in scope for
 // reference resolution.
-func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env *environments.Environment, serviceScoped bool, scope []*resources.Service, requiredBy map[string][]string, report *workspaceReadinessReport) []scopedConfiguration {
+func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env *environments.Environment, serviceScoped bool, scope []*resources.Service, requiredBy map[string][]string, report *workspaceReadinessReport) ([]scopedConfiguration, *configurations.WorkspaceConfigurations) {
 	required := make([]string, 0, len(requiredBy))
 	for name := range requiredBy {
 		required = append(required, name)
@@ -925,21 +963,22 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 		report.add(codeEnvironmentNotFound, "environment", "fail",
 			fmt.Sprintf("environment %q selects an invalid configuration profile: %v", env.Name, err),
 			fmt.Sprintf("fix `configuration-profile` of environment %q in %s", env.Name, resources.WorkspaceConfigurationName))
-		return nil
+		return nil, nil
 	}
 	profile := profiles[0]
 	// Each location resolves to the first profile of the chain it holds.
 	wsCfgDir, _, err := configurations.ProfileDirectory(ctx, ws.Dir(), "configurations", profiles)
 	if err != nil {
 		report.add(codeConfigurationDirMissing, "workspace configurations", "fail", err.Error(), "")
-		return nil
+		return nil, nil
 	}
 	relCfgDir, err := filepath.Rel(ws.Dir(), wsCfgDir)
 	if err != nil {
 		relCfgDir = wsCfgDir
 	}
 
-	if provided := loadWorkspaceConfigurations(ctx, ws, runtimeEnv, relCfgDir, report); provided != nil {
+	provided := loadWorkspaceConfigurations(ctx, ws, runtimeEnv, relCfgDir, report)
+	if provided != nil {
 		byName := make(map[string]*basev0.ConfigurationInformation, len(provided.Infos))
 		var own, composed []*basev0.ConfigurationInformation
 		for _, info := range provided.Infos {
@@ -1025,6 +1064,14 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 		}
 	}
 
+	return append(toResolve, checkServiceConfigurationSources(ctx, env, profiles, profile, scope, report)...), provided
+}
+
+// checkServiceConfigurationSources checks the per-service `configurations/<env>`
+// files of every service in scope and returns what they contribute to secret
+// resolution.
+func checkServiceConfigurationSources(ctx context.Context, env *environments.Environment, profiles []string, profile string, scope []*resources.Service, report *workspaceReadinessReport) []scopedConfiguration {
+	var toResolve []scopedConfiguration
 	serviceConfigurations := 0
 	for _, svc := range scope {
 		svcCfgDir, svcCfgExists, err := configurations.ProfileDirectory(ctx, svc.Dir(), "configurations", profiles)

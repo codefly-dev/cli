@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/codefly-dev/core/configurations"
@@ -12,9 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// A gate that runs the test phase refuses a configuration error of a planned
-// service before any phase runs; a gate that only lints, compiles or builds
-// resolves no configuration and is not refused.
+// A gate that runs a phase resolving workspace configurations refuses a
+// configuration error of a planned service before any phase runs; a gate whose
+// phases resolve none is not refused.
 func TestCIGateRefusesUnresolvedConfigurationReferencesBeforeAnyPhase(t *testing.T) {
 	root := t.TempDir()
 	for rel, content := range map[string]string{
@@ -42,5 +43,23 @@ func TestCIGateRefusesUnresolvedConfigurationReferencesBeforeAnyPhase(t *testing
 	require.Equal(t, "store-endpoint", unresolved.References[0].Key)
 	require.Equal(t, "store/db", unresolved.References[0].Producer)
 
-	require.NoError(t, validateConfigurationReferences(ctx, workspace, plan, []string{ciPhaseLint, ciPhaseBuild}))
+	// Lint and compile drive a runtime flow that reaches RuntimeInit, so both
+	// resolve the workspace configurations and are refused by the same error —
+	// a gate of either alone is checked.
+	for _, phases := range [][]string{{ciPhaseLint}, {ciPhaseCompile}, {ciPhaseLint, ciPhaseBuild}} {
+		require.Error(t, validateConfigurationReferences(ctx, workspace, plan, phases), "phases %v resolve configurations", phases)
+	}
+	// Nothing in this set resolves a configuration.
+	require.NoError(t, validateConfigurationReferences(ctx, workspace, plan,
+		[]string{ciPhaseSyncDrift, ciPhaseAudit, ciPhaseSBOM, ciPhaseBuild}))
+}
+
+// --fail-fast=false asks every remaining phase to contribute its own evidence.
+// A reference error refuses only the phases that resolve configurations, so the
+// rest must survive the filter the gate applies to them.
+func TestConfigurationReferenceRefusalKeepsThePhasesItDoesNotRefuse(t *testing.T) {
+	all := []string{ciPhaseSyncDrift, ciPhaseLint, ciPhaseCompile, ciPhaseTest, ciPhaseAudit, ciPhaseSBOM, ciPhaseBuild}
+	require.Equal(t,
+		[]string{ciPhaseSyncDrift, ciPhaseAudit, ciPhaseSBOM, ciPhaseBuild},
+		slices.DeleteFunc(slices.Clone(all), phaseResolvesConfigurations))
 }

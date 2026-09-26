@@ -546,22 +546,32 @@ func runScheduledTask(ctx context.Context, reporter *CIReporter, reportID string
 			wool.Field("service", planned.Service))
 		return nil
 	}
-	return executePlannedService(ctx, workspace, *planned, action)
+	return executePlannedService(ctx, workspace, planned, action)
 }
 
-func executePlannedService(ctx context.Context, workspace *resources.Workspace, planned PlannedService, action Action) error {
-	w := wool.Get(ctx).In("affectedCI")
+// loadPlannedService resolves one planned service of a plan to its module and
+// service.
+func loadPlannedService(ctx context.Context, workspace *resources.Workspace, planned *PlannedService) (*resources.Module, *resources.Service, error) {
 	ref, err := resources.ParseServiceWithOptionalModule(planned.Service)
 	if err != nil {
-		return w.Wrapf(err, "Cannot parse planned service <%s>", planned.Service)
+		return nil, nil, fmt.Errorf("parse planned service %q: %w", planned.Service, err)
 	}
 	module, err := workspace.LoadModuleFromName(ctx, ref.Module)
 	if err != nil {
-		return w.Wrapf(err, "Cannot load module <%s>", ref.Module)
+		return nil, nil, fmt.Errorf("load module %q: %w", ref.Module, err)
 	}
 	service, err := module.LoadServiceFromName(ctx, ref.Name)
 	if err != nil {
-		return w.Wrapf(err, "Cannot load service <%s>", planned.Service)
+		return nil, nil, fmt.Errorf("load service %q: %w", planned.Service, err)
+	}
+	return module, service, nil
+}
+
+func executePlannedService(ctx context.Context, workspace *resources.Workspace, planned *PlannedService, action Action) error {
+	w := wool.Get(ctx).In("affectedCI")
+	module, service, err := loadPlannedService(ctx, workspace, planned)
+	if err != nil {
+		return w.Wrap(err)
 	}
 	service.WithModule(module.Name)
 	w.Info("Handling affected service",

@@ -9,8 +9,8 @@ import (
 
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
-	"github.com/codefly-dev/core/network"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -297,6 +297,13 @@ func TestConfigurationReferencesOrderTheRun(t *testing.T) {
 // nothing, so it must not stand in for the reference. The run starts the
 // producer first, and the consumer's read of the group resolves its address
 // even before the producer has recorded any mapping — never an omitted key.
+//
+// "Before it has recorded a mapping" is not "before it is in the run": the
+// address is derived from the endpoints the producer recorded at Load, which is
+// what makes it the address that producer will serve. A producer that never
+// loaded is not in the run and has no address to give, and a run with ephemeral
+// ports has none to give either — both must say so rather than hand back a free
+// port nothing is listening on.
 func TestConfigurationReferencesToAProducerDeclaredExternal(t *testing.T) {
 	ctx := context.Background()
 	workspace, err := resources.LoadWorkspaceFromDir(ctx, "testdata/configuration-references")
@@ -343,12 +350,53 @@ func TestConfigurationReferencesToAProducerDeclaredExternal(t *testing.T) {
 	dependencyMappings, err := sharedState.GetDependenciesNetworkMappings(ctx, relay)
 	require.NoError(t, err)
 	require.Empty(t, dependencyMappings, "the external producer has recorded nothing yet")
+
+	// The producer is not in the run: no endpoints recorded at Load, so no
+	// address exists for it and the read fails naming the key and the producer.
+	// Deriving one from its manifest would give the consumer a free local port
+	// no service is behind.
+	_, err = world.workspaceConfigurationsFor(ctx, relay, dependencyMappings, resources.NewNativeNetworkAccess())
+	require.Error(t, err, "a producer that never loaded has no address, so the read fails")
+	require.Contains(t, err.Error(), "platform/accounts-endpoint")
+	require.Contains(t, err.Error(), "producer saas/accounts")
+
+	// The run orders the producer first, so it has loaded and recorded its
+	// endpoints by the time the consumer reads the group. Its address is then
+	// the one its own Init proposes, a function of its identity.
+	accounts, err := loadService(ctx, t, workspace, "saas", "accounts")
+	require.NoError(t, err)
+	accountsEndpoints, err := accounts.LoadEndpoints(ctx)
+	require.NoError(t, err)
+	accountsIdentity, err := accounts.Identity()
+	require.NoError(t, err)
+	require.NoError(t, sharedState.RecordEndpoints(ctx, accountsIdentity, accountsEndpoints))
+
 	confs, err := world.workspaceConfigurationsFor(ctx, relay, dependencyMappings, resources.NewNativeNetworkAccess())
 	require.NoError(t, err)
 	require.Len(t, confs, 1)
 	value, err := resources.GetConfigurationValue(ctx, confs[0], "platform", "accounts-endpoint")
 	require.NoError(t, err)
 	require.Regexp(t, `^http://localhost:\d+$`, value)
+
+	// With ephemeral ports the proposal is not the address: every call takes a
+	// fresh port from the kernel, so it must refuse rather than hand out one the
+	// producer will not be listening on.
+	world.temporaryPorts = true
+	localNetwork.WithTemporaryPorts()
+	_, err = world.workspaceConfigurationsFor(ctx, relay, dependencyMappings, resources.NewNativeNetworkAccess())
+	require.Error(t, err, "an ephemeral port cannot be derived before the producer initializes")
+	require.Contains(t, err.Error(), "--temporary-ports")
+	require.Contains(t, err.Error(), "saas/accounts")
+}
+
+// loadService loads one service of a workspace by module and name.
+func loadService(ctx context.Context, t *testing.T, workspace *resources.Workspace, module, service string) (*resources.Service, error) {
+	t.Helper()
+	mod, err := workspace.LoadModuleFromName(ctx, module)
+	if err != nil {
+		return nil, err
+	}
+	return mod.LoadServiceFromName(ctx, service)
 }
 
 // copyConfigurationReferencesWorkspace copies testdata/configuration-references
@@ -420,4 +468,83 @@ func TestPlanConfigurationReferences(t *testing.T) {
 	root, err = module.LoadServiceFromName(ctx, "warden")
 	require.NoError(t, err)
 	require.NoError(t, PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{root}, false))
+}
+
+// Excluding a producer from the run (--exclude-dependency, a run profile) takes
+// it out of the graph, so core cannot tell it from a service of another
+// workspace and reports "not a service of this plan" — which sends the reader
+// hunting for a missing composition instead of at their own exclusion. The
+// refusal must name the exclusion and the way out.
+func TestRunNamesTheExclusionThatLeftAReferenceWithNoProducer(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	workspace := copyConfigurationReferencesWorkspace(t, "accounts-endpoint=${endpoint:saas/accounts/connect}\n")
+	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+	platform, err := workspace.LoadModuleFromName(ctx, "platform")
+	require.NoError(t, err)
+	relay, err := platform.LoadServiceFromName(ctx, "relay")
+	require.NoError(t, err)
+
+	resolved, err := workspace.ResolveRunProfile(ctx, "", resources.RunProfile{ExcludeDependencies: []string{"saas/accounts"}})
+	require.NoError(t, err)
+
+	flow, err := NewFlow(ctx, workspace, platform, relay, env, RunMode)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = flow.Stop() })
+	require.NoError(t, flow.WithRunProfile(resolved))
+
+	err = flow.InitManagers(ctx)
+	var unresolved *configurations.UnresolvedReferencesError
+	require.True(t, errors.As(err, &unresolved), "want the plan-time refusal, got %v", err)
+	require.Len(t, unresolved.References, 1)
+	require.Equal(t, "saas/accounts", unresolved.References[0].Producer)
+	require.Contains(t, unresolved.References[0].Reason, "excluded from this run")
+	require.Contains(t, unresolved.References[0].Reason, `exclude the "platform" workspace configuration too`)
+	require.NotContains(t, unresolved.References[0].Reason, "not a service of this plan")
+
+	// Excluding the group as the refusal instructs gets past the check.
+	flow, err = NewFlow(ctx, workspace, platform, relay, env, RunMode)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = flow.Stop() })
+	require.NoError(t, flow.WithRunProfile(resources.RunProfile{
+		ExcludeDependencies:            []string{"saas/accounts"},
+		ExcludeWorkspaceConfigurations: []string{"platform"},
+	}))
+	err = flow.InitManagers(ctx)
+	require.False(t, errors.As(err, &unresolved), "excluding the group too clears the reference check, got %v", err)
+}
+
+// A service bound to a remote environment resolves no workspace configuration
+// at all (Runner.InitRemote only sets up networking), so a reference in a group
+// it declares is never read and must not refuse the local run.
+func TestRemoteBoundServiceIsNotCheckedForConfigurationReferences(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	workspace := copyConfigurationReferencesWorkspace(t, "documents-endpoint=${endpoint:documents/store/grpc}\n")
+	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+	platform, err := workspace.LoadModuleFromName(ctx, "platform")
+	require.NoError(t, err)
+	relay, err := platform.LoadServiceFromName(ctx, "relay")
+	require.NoError(t, err)
+
+	// Locally, relay's unresolvable reference refuses the run.
+	local, err := NewFlow(ctx, workspace, platform, relay, env, RunMode)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = local.Stop() })
+	var unresolved *configurations.UnresolvedReferencesError
+	require.True(t, errors.As(local.InitManagers(ctx), &unresolved))
+
+	// Bound to a remote environment, the same reference is not its run's to
+	// resolve, so the check must let the plan through.
+	remote, err := NewFlow(ctx, workspace, platform, relay, env, RunMode)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = remote.Stop() })
+	remote.WithRemotes([]*Remote{{
+		ServiceWithModule: &resources.ServiceWithModule{Name: "relay", Module: "platform"},
+		Environment:       env,
+	}})
+	err = remote.InitManagers(ctx)
+	require.False(t, errors.As(err, &unresolved), "a remote-bound service resolves no group, got %v", err)
 }

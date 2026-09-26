@@ -42,9 +42,12 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	// ${endpoint:…} references resolve to their in-cluster addresses: its
 	// dependencies' and those of every producer its declared groups reference
 	// (referencedProducerMappings), derived as their own deploy records them.
-	consumerMappings := append(slices.Clone(dependenciesNetworkMappings),
-		b.world.referencedProducerMappings(ctx, b.instance.Service, b.instance.Service.WorkspaceConfigurationDependencies,
-			dependenciesNetworkMappings, b.world.remoteProducerMappings)...)
+	referenced, err := b.world.referencedProducerMappings(ctx, b.instance.Service,
+		b.instance.Service.WorkspaceConfigurationDependencies, dependenciesNetworkMappings)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	consumerMappings := append(slices.Clone(dependenciesNetworkMappings), referenced...)
 	workspaceConfigurations, err := b.world.ConfigurationManager.
 		ForConsumer(consumerMappings, resources.NewContainerNetworkAccess()).
 		GetWorkspaceDependenciesConfigurations(ctx, b.instance.Service.WorkspaceConfigurationDependencies...)
@@ -200,19 +203,6 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 //
 // Mappings that need a mirror are cloned, so the input slice's instances are
 // never mutated.
-// remoteProducerMappings derives a producer's mappings as its deploy records
-// them (Deploy), for a consumer deployed before it.
-func (world *World) remoteProducerMappings(ctx context.Context, _ *resources.Service, identity *resources.ServiceIdentity, endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error) {
-	if world.RemoteNetworkManager == nil {
-		return nil, nil
-	}
-	mappings, err := world.RemoteNetworkManager.GenerateNetworkMappings(ctx, world.Env, world.Workspace, identity, endpoints)
-	if err != nil {
-		return nil, err
-	}
-	return withContainerReachableAsPublic(ctx, mappings), nil
-}
-
 func withContainerReachableAsPublic(ctx context.Context, mappings []*basev0.NetworkMapping) []*basev0.NetworkMapping {
 	out := make([]*basev0.NetworkMapping, 0, len(mappings))
 	for _, mapping := range mappings {
@@ -236,6 +226,21 @@ func withContainerReachableAsPublic(ctx context.Context, mappings []*basev0.Netw
 		out = append(out, clone)
 	}
 	return out
+}
+
+// remoteProducerMappings derives a producer's mappings as its own deploy records
+// them (Deploy), for a consumer deployed before it. A deployed address is a pure
+// function of the producer's identity and namespace, so it holds whether or not
+// this operation deploys that producer.
+func (world *World) remoteProducerMappings(ctx context.Context, identity *resources.ServiceIdentity, endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error) {
+	if world.RemoteNetworkManager == nil {
+		return nil, nil
+	}
+	mappings, err := world.RemoteNetworkManager.GenerateNetworkMappings(ctx, world.Env, world.Workspace, identity, endpoints)
+	if err != nil {
+		return nil, err
+	}
+	return withContainerReachableAsPublic(ctx, mappings), nil
 }
 
 // clusterValidation is the outcome of deciding whether a promotable deploy asks

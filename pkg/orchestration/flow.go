@@ -38,6 +38,11 @@ type Flow struct {
 	// rebuild of the graph carries it.
 	configurationReferences architecture.DependencyOption
 
+	// providedWorkspaceConfigurations is the read configurationReferences was
+	// derived from, kept so the plan-time reference check reuses it instead of
+	// walking the same configuration tree again.
+	providedWorkspaceConfigurations *configurations.WorkspaceConfigurations
+
 	workspace *resources.Workspace
 
 	// graphWorkspace is the workspace the dependency graph is built from: the
@@ -252,6 +257,11 @@ type World struct {
 	// (referencedProducerMappings).
 	runtimeContextFor func(*resources.Service) string
 
+	// temporaryPorts mirrors Flow.temporaryPorts: with ephemeral ports a
+	// producer's address is not a function of its identity, so it cannot be
+	// derived before that producer initializes (localProducerMappings).
+	temporaryPorts bool
+
 	// workspaceConfigurationValues are values the run path derives itself,
 	// keyed group -> key -> value. They are layered onto the resolved workspace
 	// configurations of every service declaring that group, so a derived value
@@ -269,18 +279,33 @@ type World struct {
 	AnswerProvider AnswerProvider
 }
 
-// configurationReferenceOption reads what env provides to the workspace — the
-// same read a run provisions from — and orders every service declaring a
-// workspace configuration after the services its ${endpoint:…} references name.
-// A read that fails orders nothing: the run reports the configuration fault
-// itself when it loads.
-func configurationReferenceOption(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) architecture.DependencyOption {
+// readWorkspaceConfigurationsForReferences reads what env provides to the
+// workspace — the same read a run provisions from. A read that fails is not
+// fatal here: the caller orders nothing and the run reports the configuration
+// fault itself when it loads.
+func readWorkspaceConfigurationsForReferences(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) *configurations.WorkspaceConfigurations {
 	if workspace == nil || env == nil {
 		return nil
 	}
 	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime())
 	if err != nil {
-		wool.Get(ctx).In("configurationReferenceOption").Debug("cannot read workspace configurations; no reference orders the run", wool.Field("error", err.Error()))
+		wool.Get(ctx).In("readWorkspaceConfigurationsForReferences").Debug("cannot read workspace configurations; no reference orders the run", wool.Field("error", err.Error()))
+		return nil
+	}
+	return provided
+}
+
+// configurationReferenceOption orders every service declaring a workspace
+// configuration after the services its ${endpoint:…} references name.
+func configurationReferenceOption(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) architecture.DependencyOption {
+	return configurationReferenceOptionFrom(readWorkspaceConfigurationsForReferences(ctx, workspace, env))
+}
+
+// configurationReferenceOptionFrom is configurationReferenceOption for a read
+// the caller already has, so one operation never reads the same configuration
+// tree twice.
+func configurationReferenceOptionFrom(provided *configurations.WorkspaceConfigurations) architecture.DependencyOption {
+	if provided == nil {
 		return nil
 	}
 	producers := configurations.EndpointProducers(provided.Infos)
@@ -319,7 +344,8 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	// Get dependency graph. A service reaching a producer only through a
 	// workspace configuration group the composition root writes is ordered
 	// after it, as for a declared dependency.
-	configurationReferences := configurationReferenceOption(ctx, workspace, env)
+	providedWorkspaceConfigurations := readWorkspaceConfigurationsForReferences(ctx, workspace, env)
+	configurationReferences := configurationReferenceOptionFrom(providedWorkspaceConfigurations)
 	var graphOptions []architecture.DependencyOption
 	if configurationReferences != nil {
 		graphOptions = append(graphOptions, configurationReferences)
@@ -391,7 +417,8 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 
 		world: world,
 
-		configurationReferences: configurationReferences,
+		configurationReferences:         configurationReferences,
+		providedWorkspaceConfigurations: providedWorkspaceConfigurations,
 
 		SharedState:          stateManager,
 		ConfigurationManager: configurationManager,
@@ -1771,8 +1798,13 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	if err := flow.validateDependencyEndpointDeclarations(required); err != nil {
 		return w.Wrap(err)
 	}
-	// Fail on a configuration error before any service of the run set is
-	// created, built or started.
+	// Fail on a configuration error before any dependency's manager is created
+	// and before anything is built or started. It cannot come earlier than this:
+	// the run set is what is checked, and in test mode the origin's own manager
+	// is already loaded above as the dependency-policy preflight — that is what
+	// decides whether the run has dependencies at all. A failure here leaves that
+	// preflight runner reachable through flow.Stop(), as every other partial
+	// InitManagers failure does.
 	if err := flow.checkConfigurationReferences(ctx, required); err != nil {
 		return err
 	}
@@ -2096,6 +2128,9 @@ func (flow *Flow) WithRuntimeContext(runtimeContext string) {
 // collisions through one in-memory allocation table.
 func (flow *Flow) WithTemporaryPorts(enabled bool) {
 	flow.temporaryPorts = enabled
+	if flow.world != nil {
+		flow.world.temporaryPorts = enabled
+	}
 	if enabled && flow.world != nil && flow.world.LocalNetworkManager != nil {
 		flow.world.LocalNetworkManager.WithTemporaryPorts()
 	}

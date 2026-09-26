@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -67,8 +68,19 @@ var RunCmd = &cobra.Command{
 			if err := validateAgentVersions(ctx, workspace, plan); err != nil {
 				return err
 			}
-			if err := validateConfigurationReferences(ctx, workspace, plan, phases); err != nil {
-				return err
+			// A configuration error refuses the phases that resolve
+			// configurations, not the gate. With --fail-fast it stops here, as
+			// any phase failure does. Without it, the gate's contract is that
+			// every remaining phase still runs and contributes its own
+			// diagnostic evidence, so drop exactly the phases this error refuses
+			// — running them would start services against a reference that
+			// cannot resolve — and report it beside what the rest found.
+			referenceErr := validateConfigurationReferences(ctx, workspace, plan, phases)
+			if referenceErr != nil {
+				if ciFailFast {
+					return referenceErr
+				}
+				phases = slices.DeleteFunc(slices.Clone(phases), phaseResolvesConfigurations)
 			}
 			suites := normalizeTestSuites(testSuites)
 			for _, phase := range phases {
@@ -93,10 +105,10 @@ var RunCmd = &cobra.Command{
 				}
 			}
 
-			return runCIPhases(ctx, phases, ciFailFast, func(phaseContext context.Context, phase string) error {
+			return errors.Join(referenceErr, runCIPhases(ctx, phases, ciFailFast, func(phaseContext context.Context, phase string) error {
 				cli.Header(2, "CI phase: %s", phase)
 				return executeCIPhase(phaseContext, reporter, workspace, plan, phase, suites, ciFailFast)
-			})
+			}))
 		})
 	},
 }

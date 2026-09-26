@@ -43,5 +43,18 @@ func TestDoctorWorkspaceChecksEndpointReferences(t *testing.T) {
 				t.Fatalf("diagnostic %d = %+v, want a failure containing %q", i, diagnostics[i], want)
 			}
 		}
+		// The two references fail for different reasons and need different
+		// answers: store/db is in no module of this workspace, while
+		// backend/worker is composed and simply declares no `admin` endpoint.
+		// Telling the second reader to compose the producer in is wrong advice.
+		if want := "compose the module providing store/db into this workspace"; !strings.Contains(diagnostics[0].Remediation, want) {
+			t.Fatalf("remediation for an absent producer = %q, want it to contain %q", diagnostics[0].Remediation, want)
+		}
+		if want := "declare the endpoint on backend/worker"; !strings.Contains(diagnostics[1].Remediation, want) {
+			t.Fatalf("remediation for a missing endpoint = %q, want it to contain %q", diagnostics[1].Remediation, want)
+		}
+		if bad := "compose"; strings.Contains(diagnostics[1].Remediation, bad) {
+			t.Fatalf("remediation for a missing endpoint = %q, must not suggest composing an already-composed producer", diagnostics[1].Remediation)
+		}
 	})
 }
