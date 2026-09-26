@@ -32,7 +32,7 @@ func Install(t *testing.T, names ...string) []string {
 	_, source, _, ok := runtime.Caller(0)
 	require.True(t, ok)
 	binary := filepath.Join(t.TempDir(), "protocol-peer")
-	command := exec.CommandContext(t.Context(), "go", peerBuildArgs(binary)...)
+	command := exec.CommandContext(t.Context(), "go", peerBuildArgs(binary)...) //nolint:gosec // G204: go build with internally constructed arguments and a temp-dir output path
 	command.Dir = filepath.Dir(source)
 	command.Env = append(os.Environ(), "GOWORK=off")
 	output, err := command.CombinedOutput()
