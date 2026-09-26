@@ -1,0 +1,24 @@
+kind: service
+name: relay
+version: 0.0.0
+module: platform
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.16
+    publisher: codefly.ai
+# relay names saas/accounts as an external dependency (for configuration only:
+# codefly never starts or waits for an external edge) and reaches it through
+# the `platform` group the composition root writes.
+workspace-configuration-dependencies:
+    - platform
+service-dependencies:
+    - name: accounts
+      module: saas
+      kind: external
+      endpoints:
+          - name: connect
+endpoints:
+    - name: rest
+      api: rest
+      visibility: public

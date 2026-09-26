@@ -177,6 +177,14 @@ validates the selected profile and all references before starting agents.
 Repeatable `--exclude-dependency` values add to the profile's service
 exclusions.
 
+The two lists are coupled when a workspace configuration names an excluded
+service: excluding a producer from the run leaves any
+`${endpoint:<module>/<service>/<endpoint>}` reference to it with nothing to
+resolve against, so the run is refused naming the group, the key and the
+excluded producer. Exclude that group under `exclude-workspace-configurations`
+as well (or stop excluding the producer) — a reference is never silently
+dropped.
+
 Profiles affect run composition only: they do not rewrite service or workspace
 manifests, and build and deployment operations ignore them. In-process callers
 select the identical resolver through
@@ -2382,7 +2390,19 @@ What it checks, in order:
    declares it. A missing `configurations/<profile>` directory fails only for
    the groups no composed module provides. The directory is never created.
 6. Per-service `configurations/<env>` files parse; duplicates are flagged.
-7. Secret provider references (`op://…`) resolve in memory through the
+7. Every `${endpoint:<module>/<service>/<endpoint>}` reference in a workspace
+   configuration a service in scope declares names a service of the workspace
+   and an endpoint that service declares (`configuration_reference_unresolved`,
+   one per reference, naming the consumer, the key and the producer). This is
+   the same check, over the same service graph, that `codefly run`, `codefly ci
+   run` (for its test, lint and compile phases), `codefly deploy gitops render`
+   and `codefly deploy dev` run before they build or start anything; an
+   unresolved reference is never silently omitted. A run that excludes the
+   producer — `--exclude-dependency`, or a run profile's
+   `exclude-dependencies` — must exclude the group that references it as well
+   (`exclude-workspace-configurations`), or the reference has no producer left
+   to resolve against and the run is refused naming both.
+8. Secret provider references (`op://…`) resolve in memory through the
    configured backend; resolved values are discarded immediately. Plaintext
    values shaped like unsupported reference schemes are flagged.
 
@@ -2405,7 +2425,8 @@ message, remediation?}]}`. Output never contains configuration values, raw
 **Stable diagnostic codes:** `workspace_not_found`, `workspace_invalid`,
 `environment_not_found`, `module_not_found`, `service_not_found`,
 `configuration_directory_missing`, `configuration_missing`,
-`configuration_invalid`, `configuration_duplicate`, `provider_not_configured`,
+`configuration_invalid`, `configuration_duplicate`,
+`configuration_reference_unresolved`, `provider_not_configured`,
 `provider_executable_missing`, `provider_authentication_required`,
 `provider_resolution_failed`, `plaintext_not_allowed`,
 `reference_scheme_unknown`, `module_not_materialized`,
