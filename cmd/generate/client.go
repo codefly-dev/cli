@@ -377,6 +377,14 @@ func buildLocalContractEndpoint(ctx context.Context, service *resources.Service,
 		if err = googleproto.Unmarshal(descriptorSet, &set); err != nil {
 			return nil, nil, nil, fmt.Errorf("cannot parse generated descriptor set: %w", err)
 		}
+		// The same surface `generate contracts` records, so a library built
+		// from the live service and one built from its exported contract
+		// name the same services, across every package the service declares
+		// them in.
+		pkg, services, err := protobufContractSurface(&set, protoDir, grpc.Package)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("service %s endpoint %s: %w", service.Name, endpoint.Name, err)
+		}
 		protoSources, err := collectProtoSources(protoDir)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("cannot read proto sources: %w", err)
@@ -386,10 +394,10 @@ func buildLocalContractEndpoint(ctx context.Context, service *resources.Service,
 			Endpoint: endpoint.Name,
 			API:      endpoint.Api,
 			Kind:     composition.APIContractKindProtobuf,
-			Package:  grpc.Package,
+			Package:  pkg,
 			Path:     "contract.binpb",
 			Digest:   composition.APIContractDigest(descriptorSet),
-			Services: composition.ProtobufServices(&set, grpc.Package),
+			Services: services,
 		}, protoSources, nil
 	}
 	if rest := resources.IsRest(ctx, endpoint); rest != nil {

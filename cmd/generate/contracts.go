@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"time"
 
@@ -222,7 +223,7 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 			if !ok {
 				return nil, fmt.Errorf("service %s does not report endpoint %q at Builder.Load", serviceName, endpoint.Name)
 			}
-			contractEndpoint, writeErr := writeEndpointContract(ctx, module, service, actual, opts)
+			contractEndpoint, writeErr := writeEndpointContract(ctx, module, service, actual, declaredProtoPackage(ctx, actual, loaded), opts)
 			if writeErr != nil {
 				return nil, fmt.Errorf("cannot write contract for %s/%s: %w", serviceName, endpoint.Name, writeErr)
 			}
@@ -297,9 +298,35 @@ func endpointCarriesContract(api string) bool {
 	return api == standards.GRPC || api == standards.CONNECT || api == standards.REST
 }
 
+// declaredProtoPackage returns the proto package the service's agent declares
+// for its gRPC API: the endpoint's own when it is the grpc endpoint, otherwise
+// the one every grpc endpoint of the service agrees on. A connect endpoint
+// carries no GrpcAPI, but it serves the same proto as the service's grpc
+// endpoint, so both name the same primary package. Empty when the service
+// reports no grpc endpoint, or grpc endpoints that disagree.
+func declaredProtoPackage(ctx context.Context, endpoint *basev0.Endpoint, loaded []*basev0.Endpoint) string {
+	if grpc := resources.IsGRPC(ctx, endpoint); grpc != nil && grpc.Package != "" {
+		return grpc.Package
+	}
+	declared := ""
+	for _, sibling := range loaded {
+		grpc := resources.IsGRPC(ctx, sibling)
+		if grpc == nil || grpc.Package == "" {
+			continue
+		}
+		if declared != "" && declared != grpc.Package {
+			return ""
+		}
+		declared = grpc.Package
+	}
+	return declared
+}
+
 // writeEndpointContract writes one endpoint's contract files and returns its
-// catalog entry.
-func writeEndpointContract(ctx context.Context, module *resources.Module, service *resources.Service, endpoint *basev0.Endpoint, opts generateOptions) (*composition.APIContractEndpoint, error) {
+// catalog entry. declaredPackage is the proto package the service's agent
+// declares (declaredProtoPackage); it names the entry's Package when the
+// service's own protos declare services in more than one package.
+func writeEndpointContract(ctx context.Context, module *resources.Module, service *resources.Service, endpoint *basev0.Endpoint, declaredPackage string, opts generateOptions) (*composition.APIContractEndpoint, error) {
 	physicalDir := filepath.Join(opts.writeDir, service.Name, endpoint.Name)
 	canonicalDir := filepath.Join(opts.canonicalOutput, service.Name, endpoint.Name)
 	if err := os.RemoveAll(physicalDir); err != nil {
@@ -310,7 +337,7 @@ func writeEndpointContract(ctx context.Context, module *resources.Module, servic
 	}
 
 	if endpoint.Api == standards.CONNECT || resources.IsGRPC(ctx, endpoint) != nil {
-		return writeProtobufContract(ctx, module, service, endpoint, physicalDir, canonicalDir)
+		return writeProtobufContract(ctx, module, service, endpoint, declaredPackage, physicalDir, canonicalDir)
 	}
 	if rest := resources.IsRest(ctx, endpoint); rest != nil {
 		return writeRestContract(ctx, module, endpoint, rest, physicalDir, canonicalDir)
@@ -323,8 +350,8 @@ func writeEndpointContract(ctx context.Context, module *resources.Module, servic
 // shares the service's proto with grpc, but core models a connect endpoint as
 // an HTTP-shaped endpoint that carries no GrpcAPI, so the package and services
 // are derived from the built descriptor set rather than from endpoint API
-// details.
-func writeProtobufContract(ctx context.Context, module *resources.Module, service *resources.Service, endpoint *basev0.Endpoint, physicalDir, canonicalDir string) (*composition.APIContractEndpoint, error) {
+// details (see protobufContractSurface).
+func writeProtobufContract(ctx context.Context, module *resources.Module, service *resources.Service, endpoint *basev0.Endpoint, declaredPackage, physicalDir, canonicalDir string) (*composition.APIContractEndpoint, error) {
 	protoDir := filepath.Join(service.Dir(), "proto")
 	if ok, _ := shared.FileExists(ctx, filepath.Join(protoDir, "buf.yaml")); !ok {
 		return nil, fmt.Errorf("service %s has no proto/buf.yaml; cannot build a descriptor set for endpoint %s", service.Name, endpoint.Name)
@@ -340,7 +367,7 @@ func writeProtobufContract(ctx context.Context, module *resources.Module, servic
 		return nil, fmt.Errorf("cannot parse generated descriptor set: %w", err)
 	}
 
-	pkg, err := serviceContractPackage(&set, protoDir)
+	pkg, services, err := protobufContractSurface(&set, protoDir, declaredPackage)
 	if err != nil {
 		return nil, fmt.Errorf("service %s endpoint %s: %w", service.Name, endpoint.Name, err)
 	}
@@ -366,17 +393,66 @@ func writeProtobufContract(ctx context.Context, module *resources.Module, servic
 		Package:  pkg,
 		Path:     relPath,
 		Digest:   composition.APIContractDigest(descriptorSet),
-		Services: composition.ProtobufServices(&set, pkg),
+		Services: services,
 	}, nil
 }
 
-// serviceContractPackage returns the single proto package that the service's
-// own proto files — those physically under protoDir, not the transitive
-// imports buf pulls in — use to declare services. A codefly service declares
-// all of its RPC services in one package; message-only packages contributed
-// alongside it (composed settings, shared types) carry no service to expose in
-// a client contract and are ignored.
-func serviceContractPackage(set *descriptorpb.FileDescriptorSet, protoDir string) (string, error) {
+// protobufContractSurface returns a protobuf contract entry's Package and
+// Services from the built descriptor set.
+//
+// Services lists every service the service's own proto files declare, across
+// every package they declare services in — a service may serve its own API
+// beside a generic one in another package (a receipt service, say), and a
+// consumer resolves a method by its fully-qualified service name, so the
+// entry must name both. Package is the endpoint's primary package: the only
+// one when there is one, which keeps a single-package catalog byte-identical
+// to what it has always been; otherwise the package the service's agent
+// declares for its gRPC API (declaredPackage). A multi-package endpoint whose
+// agent declares none of its packages is refused rather than given an
+// arbitrary one.
+//
+// Two services with the same short name in different packages are refused
+// too: client generation and consume declarations select services by short
+// name, so the pair would be ambiguous to every one of them.
+func protobufContractSurface(set *descriptorpb.FileDescriptorSet, protoDir, declaredPackage string) (string, []composition.APIContractService, error) {
+	packages, err := serviceContractPackages(set, protoDir)
+	if err != nil {
+		return "", nil, err
+	}
+
+	primary := packages[0]
+	if len(packages) > 1 {
+		if !slices.Contains(packages, declaredPackage) {
+			declared := "no gRPC API package"
+			if declaredPackage != "" {
+				declared = fmt.Sprintf("package %q, which is not one of them", declaredPackage)
+			}
+			return "", nil, fmt.Errorf("proto declares services in packages %v, and the service's grpc endpoint declares %s; a multi-package contract endpoint takes its primary package from the package its gRPC API declares", packages, declared)
+		}
+		primary = declaredPackage
+	}
+
+	var services []composition.APIContractService
+	byName := map[string]string{}
+	for _, pkg := range packages {
+		for _, service := range composition.ProtobufServices(set, pkg) {
+			if other, clash := byName[service.Name]; clash && other != service.FullName {
+				return "", nil, fmt.Errorf("proto declares service %s as both %s and %s; a contract endpoint's services must have distinct names, since clients select them by name", service.Name, other, service.FullName)
+			}
+			byName[service.Name] = service.FullName
+			services = append(services, service)
+		}
+	}
+	sort.Slice(services, func(i, j int) bool { return services[i].FullName < services[j].FullName })
+	return primary, services, nil
+}
+
+// serviceContractPackages returns, sorted, the proto packages in which the
+// service's own proto files — those physically under protoDir, not the
+// transitive imports buf pulls in — declare services. Message-only packages
+// contributed alongside them (composed settings, shared types) carry no
+// service to expose in a client contract and are ignored.
+func serviceContractPackages(set *descriptorpb.FileDescriptorSet, protoDir string) ([]string, error) {
 	own := map[string]struct{}{}
 	walkErr := filepath.WalkDir(protoDir, func(p string, entry os.DirEntry, err error) error {
 		if err != nil {
@@ -393,7 +469,7 @@ func serviceContractPackage(set *descriptorpb.FileDescriptorSet, protoDir string
 		return nil
 	})
 	if walkErr != nil {
-		return "", walkErr
+		return nil, walkErr
 	}
 
 	matchedOwn := false
@@ -416,8 +492,7 @@ func serviceContractPackage(set *descriptorpb.FileDescriptorSet, protoDir string
 	}
 	sort.Strings(packages)
 
-	switch len(packages) {
-	case 0:
+	if len(packages) == 0 {
 		// buf always includes the service's own files in the descriptor set,
 		// so matching none of them means buf named them differently than their
 		// path under protoDir — a buf module `path:` or v1beta1 `roots:` entry
@@ -425,14 +500,11 @@ func serviceContractPackage(set *descriptorpb.FileDescriptorSet, protoDir string
 		// "no services", which would send the reader hunting for services that
 		// are in fact declared.
 		if len(own) > 0 && !matchedOwn {
-			return "", fmt.Errorf("none of the service's own proto files under %s appear in the built descriptor set under the same path; a buf module path or roots entry may be remapping file names", protoDir)
+			return nil, fmt.Errorf("none of the service's own proto files under %s appear in the built descriptor set under the same path; a buf module path or roots entry may be remapping file names", protoDir)
 		}
-		return "", fmt.Errorf("proto declares no services; nothing to export")
-	case 1:
-		return packages[0], nil
-	default:
-		return "", fmt.Errorf("proto declares services in multiple packages %v; a contract endpoint must be single-package", packages)
+		return nil, fmt.Errorf("proto declares no services; nothing to export")
 	}
+	return packages, nil
 }
 
 func writeRestContract(ctx context.Context, module *resources.Module, endpoint *basev0.Endpoint, rest *basev0.RestAPI, physicalDir, canonicalDir string) (*composition.APIContractEndpoint, error) {

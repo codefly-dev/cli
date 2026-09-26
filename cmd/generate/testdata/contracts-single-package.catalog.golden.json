@@ -1,0 +1,33 @@
+{
+  "schema": "codefly/module-api-contracts/v1",
+  "package": "codefly/billing",
+  "version": "0.1.0",
+  "endpoints": [
+    {
+      "service": "api",
+      "endpoint": "grpc",
+      "api": "grpc",
+      "kind": "protobuf",
+      "package": "acme.billing.v1",
+      "path": "contracts/api/api/grpc/contract.binpb",
+      "digest": "sha256:39510d76390c0c4bee59a07be797621f87f6d29cb4884f122743ba032fda3fd3",
+      "services": [
+        {
+          "name": "AdminService",
+          "fullName": "acme.billing.v1.AdminService",
+          "procedures": [
+            "/acme.billing.v1.AdminService/Reset"
+          ]
+        },
+        {
+          "name": "InvoiceService",
+          "fullName": "acme.billing.v1.InvoiceService",
+          "procedures": [
+            "/acme.billing.v1.InvoiceService/Create",
+            "/acme.billing.v1.InvoiceService/Void"
+          ]
+        }
+      ]
+    }
+  ]
+}

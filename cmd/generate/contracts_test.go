@@ -475,6 +475,76 @@ func TestGenerateContractsGoGrpc(t *testing.T) {
 	}
 }
 
+// TestGenerateContractsGoGrpcMultiPackage exports a service whose own protos
+// declare services in two packages — its own API and a generic receipt
+// service beside it. The entry's Package is the one the agent's gRPC API
+// declares, and Services names both packages' services.
+func TestGenerateContractsGoGrpcMultiPackage(t *testing.T) {
+	conformancetest.Gate(t, "linux-amd64-docker-generate", "docker")
+	moduleDir := scaffoldGoGRPCFixture(t)
+	writeFixtureFile(t, filepath.Join(moduleDir, "services", "api", "proto", "acme", "receipts", "v1", "receipts.proto"), []byte(`syntax = "proto3";
+package acme.receipts.v1;
+
+option go_package = "api/pkg/gen/acme/receipts/v1;receiptsv1";
+
+// LookupRequest names the effect whose receipt is read.
+message LookupRequest {
+    // effect_digest identifies the effect.
+    string effect_digest = 1;
+}
+
+// LookupResponse is the receipt.
+message LookupResponse {
+    // reference is what the effect produced.
+    string reference = 1;
+}
+
+// ReceiptService reads the receipt of an applied effect.
+service ReceiptService {
+    // Lookup reads one receipt.
+    rpc Lookup(LookupRequest) returns (LookupResponse);
+}
+`))
+
+	t.Chdir(moduleDir)
+	resetContractsFlags(t)
+	contractsFormat = "json"
+	out, err := captureStdout(t, func() error {
+		return ContractsCmd.RunE(ContractsCmd, []string{"billing"})
+	})
+	if err != nil {
+		t.Fatalf("RunE: %v\noutput:\n%s", err, out)
+	}
+
+	var catalog composition.APIContractCatalog
+	decoder := json.NewDecoder(strings.NewReader(out[strings.Index(out, "{"):]))
+	if err := decoder.Decode(&catalog); err != nil {
+		t.Fatalf("cannot parse catalog JSON: %v\noutput:\n%s", err, out)
+	}
+	if len(catalog.Endpoints) != 1 {
+		t.Fatalf("catalog.Endpoints = %+v, want one", catalog.Endpoints)
+	}
+	endpoint := catalog.Endpoints[0]
+	if endpoint.Package != "api" {
+		t.Fatalf("package = %q, want the package the agent's gRPC API declares", endpoint.Package)
+	}
+	var fullNames []string
+	for _, service := range endpoint.Services {
+		fullNames = append(fullNames, service.FullName)
+	}
+	if strings.Join(fullNames, ",") != "acme.receipts.v1.ReceiptService,api.ApiService" {
+		t.Fatalf("services = %v, want both packages' services", fullNames)
+	}
+
+	manifest, err := composition.LoadPackageManifest(moduleDir)
+	if err != nil {
+		t.Fatalf("LoadPackageManifest: %v", err)
+	}
+	if err := composition.ValidatePackageAPIContracts(moduleDir, manifest, &catalog); err != nil {
+		t.Fatalf("the multi-package export does not validate against its manifest: %v", err)
+	}
+}
+
 func TestGenerateContractsCheckDetectsDrift(t *testing.T) {
 	conformancetest.Gate(t, "linux-amd64-docker-generate", "docker")
 	moduleDir := scaffoldGoGRPCFixture(t)
@@ -537,7 +607,7 @@ func TestEndpointCarriesContract(t *testing.T) {
 	}
 }
 
-func TestServiceContractPackage(t *testing.T) {
+func TestServiceContractPackages(t *testing.T) {
 	// protoDir holds the service's own files; imports buf pulls in live
 	// elsewhere and must be ignored even when they declare services.
 	protoDir := t.TempDir()
@@ -566,12 +636,12 @@ func TestServiceContractPackage(t *testing.T) {
 			// an import: has a service but is not one of the service's own files.
 			file("google/protobuf/descriptor.proto", "google.protobuf", true),
 		}}
-		pkg, err := serviceContractPackage(set, protoDir)
+		packages, err := serviceContractPackages(set, protoDir)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if pkg != "saas.acct.v1" {
-			t.Fatalf("pkg = %q, want saas.acct.v1", pkg)
+		if len(packages) != 1 || packages[0] != "saas.acct.v1" {
+			t.Fatalf("packages = %v, want [saas.acct.v1]", packages)
 		}
 	})
 
@@ -580,18 +650,22 @@ func TestServiceContractPackage(t *testing.T) {
 			file("saas/acct/v1/api.proto", "saas.acct.v1", false),
 			file("saas/shared/v1/types.proto", "saas.shared.v1", false),
 		}}
-		if _, err := serviceContractPackage(set, protoDir); err == nil {
+		if _, err := serviceContractPackages(set, protoDir); err == nil {
 			t.Fatal("expected an error when no own file declares a service")
 		}
 	})
 
-	t.Run("services across multiple own packages is an error", func(t *testing.T) {
+	t.Run("services across multiple own packages are all returned, sorted", func(t *testing.T) {
 		set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
-			file("saas/acct/v1/api.proto", "saas.acct.v1", true),
 			file("saas/shared/v1/types.proto", "saas.shared.v1", true),
+			file("saas/acct/v1/api.proto", "saas.acct.v1", true),
 		}}
-		if _, err := serviceContractPackage(set, protoDir); err == nil {
-			t.Fatal("expected an error when services span multiple packages")
+		packages, err := serviceContractPackages(set, protoDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if strings.Join(packages, ",") != "saas.acct.v1,saas.shared.v1" {
+			t.Fatalf("packages = %v, want [saas.acct.v1 saas.shared.v1]", packages)
 		}
 	})
 
@@ -603,7 +677,7 @@ func TestServiceContractPackage(t *testing.T) {
 			file("acct/v1/api.proto", "saas.acct.v1", true),
 			file("shared/v1/types.proto", "saas.shared.v1", false),
 		}}
-		_, err := serviceContractPackage(set, protoDir)
+		_, err := serviceContractPackages(set, protoDir)
 		if err == nil {
 			t.Fatal("expected an error when no descriptor file matches an own path")
 		}

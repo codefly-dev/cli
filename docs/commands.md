@@ -2202,6 +2202,19 @@ service with no proto, and a `rest` endpoint with no OpenAPI document. An
 interface may export such an endpoint so composed modules can reach it (a
 gateway's REST surface, say); that export is reachability, not a contract.
 
+A protobuf entry's `services` lists every service the service's own proto files
+declare (never a transitive import's), by fully-qualified name, across every
+package they declare services in — a service may serve its own API beside a
+generic one in another package, such as a receipt service. Its `package` is the
+endpoint's primary package: the only one when there is one, so a single-package
+catalog is unchanged; otherwise the package the service's gRPC API declares (a
+`connect` endpoint takes it from the service's `grpc` endpoint). A
+multi-package endpoint whose service declares none of its packages that way is
+refused, as are two services of one short name in different packages, since
+clients and `api.consumes` select services by short name. `generate runnables`
+and `generate runnable-bindings` derive and bind a marked method in any of the
+entry's packages.
+
 Run it before `module-package build`; the package carries the result. `--check`
 is the CI drift gate.
 

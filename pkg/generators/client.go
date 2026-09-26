@@ -192,7 +192,8 @@ func GenerateClientLibrary(ctx context.Context, req *ClientLibraryRequest) error
 // package is consumed at more than one contract digest — two producers (or
 // two versions of one) claiming the same proto package cannot both be baked
 // into one generated library, the same rule pkg/composition/coherence.go
-// enforces for shared library majors.
+// enforces for shared library majors. An entry claims every package it
+// declares services in (ContractServicePackages), not only its primary one.
 func checkContractDiamond(entries []ContractEntry) error {
 	type sighting struct{ digest, module, service, endpoint string }
 	byPackage := map[string][]sighting{}
@@ -201,9 +202,11 @@ func checkContractDiamond(entries []ContractEntry) error {
 		if entry.Endpoint.Kind != composition.APIContractKindProtobuf {
 			continue
 		}
-		byPackage[entry.Endpoint.Package] = append(byPackage[entry.Endpoint.Package], sighting{
-			digest: entry.Endpoint.Digest, module: entry.ModuleName, service: entry.Endpoint.Service, endpoint: entry.Endpoint.Endpoint,
-		})
+		for _, pkg := range ContractServicePackages(&entry.Endpoint) {
+			byPackage[pkg] = append(byPackage[pkg], sighting{
+				digest: entry.Endpoint.Digest, module: entry.ModuleName, service: entry.Endpoint.Service, endpoint: entry.Endpoint.Endpoint,
+			})
+		}
 	}
 	packages := make([]string, 0, len(byPackage))
 	for pkg := range byPackage {

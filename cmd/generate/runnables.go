@@ -12,6 +12,7 @@ import (
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/generators"
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/composition"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -266,14 +267,17 @@ func deriveEndpoint(module *resources.Module, endpoint *composition.APIContractE
 		Agent:    agent,
 	}
 	// The methods come from the contract bytes rather than the catalog's
-	// summary of them, filtered to the package the endpoint publishes services
-	// in: a transitive import's service is not this endpoint's to derive from,
-	// and a catalog that has drifted from the descriptor it names must not
-	// decide which methods exist.
-	for _, service := range composition.ProtobufServices(&set, endpoint.Package) {
-		for _, method := range service.Procedures {
-			if err = deriveMethod(module, endpoint, owner, files, method, derived); err != nil {
-				return err
+	// summary of them, filtered to the packages the endpoint publishes
+	// services in — its primary package and any other its own protos declare
+	// services in: a transitive import's service is not this endpoint's to
+	// derive from, and a catalog that has drifted from the descriptor it names
+	// must not decide which methods exist.
+	for _, pkg := range generators.ContractServicePackages(endpoint) {
+		for _, service := range composition.ProtobufServices(&set, pkg) {
+			for _, method := range service.Procedures {
+				if err = deriveMethod(module, endpoint, owner, files, method, derived); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -319,6 +323,15 @@ func deriveMethod(module *resources.Module, endpoint *composition.APIContractEnd
 	}
 
 	dir := filepath.Join(endpoint.Service, endpoint.Endpoint, name)
+	// A derived operation is named and placed by its method's short name, so
+	// two services of one endpoint — in one package or across two — that
+	// both mark a method of that name would write one directory twice.
+	for i := range derived.index.Operations {
+		if other := &derived.index.Operations[i]; other.Service == endpoint.Service && other.Endpoint == endpoint.Endpoint && methodName(other.Method) == name {
+			derived.refusals = append(derived.refusals, fmt.Sprintf("%s: derives %s, which %s already derives; rename one of the two methods", fullMethod, filepath.ToSlash(dir), other.Method))
+			return nil
+		}
+	}
 	derived.files[filepath.ToSlash(filepath.Join(dir, runnablespkg.PackageFileName))] = append(packageBytes, '\n')
 	derived.files[filepath.ToSlash(filepath.Join(dir, runnablespkg.OperationFileName))] = operationBytes
 
