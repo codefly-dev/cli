@@ -114,12 +114,14 @@ func TestProcessGroupHelper(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer listener.Close()
-		if err := os.WriteFile(os.Getenv(helperReadyEnv), []byte("ready"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		// Handle the signal before announcing readiness: a caller that signals
+		// as soon as it sees the ready file must never meet the default action.
 		stopping := make(chan os.Signal, 1)
 		signal.Notify(stopping, syscall.SIGTERM, syscall.SIGINT)
 		defer signal.Stop(stopping)
+		if err := os.WriteFile(os.Getenv(helperReadyEnv), []byte("ready"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		<-stopping
 	case "graph-owner":
 		for index, port := range strings.Split(os.Getenv(helperPortsEnv), ",") {
@@ -166,12 +168,14 @@ func TestProcessGroupHelper(t *testing.T) {
 		if err := os.WriteFile(statePath, []byte(strconv.Itoa(state+1)), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(os.Getenv(helperReadyEnv), []byte("ready"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		// Handle the signal before announcing readiness: a caller that signals
+		// as soon as it sees the ready file must never meet the default action.
 		stopping := make(chan os.Signal, 1)
 		signal.Notify(stopping, syscall.SIGTERM, syscall.SIGINT)
 		defer signal.Stop(stopping)
+		if err := os.WriteFile(os.Getenv(helperReadyEnv), []byte("ready"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		<-stopping
 	case "leaderless-owner":
 		command := exec.Command(os.Args[0], "-test.run=^TestProcessGroupHelper$")
@@ -242,12 +246,14 @@ func TestProcessGroupHelper(t *testing.T) {
 		defer signal.Stop(stopping)
 		<-stopping
 	case "ignores-term":
-		if err := os.WriteFile(os.Getenv(helperReadyEnv), []byte("ready"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		// Handle the signal before announcing readiness: a caller that signals
+		// as soon as it sees the ready file must never meet the default action.
 		stopping := make(chan os.Signal, 1)
 		signal.Notify(stopping, syscall.SIGTERM)
 		defer signal.Stop(stopping)
+		if err := os.WriteFile(os.Getenv(helperReadyEnv), []byte("ready"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		for range stopping {
 			if path := os.Getenv(helperTermEnv); path != "" {
 				if err := os.WriteFile(path, []byte("term"), 0o600); err != nil {
@@ -256,12 +262,14 @@ func TestProcessGroupHelper(t *testing.T) {
 			}
 		}
 	case "delayed-term":
-		if err := os.WriteFile(os.Getenv(helperReadyEnv), []byte("ready"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		// Handle the signal before announcing readiness: a caller that signals
+		// as soon as it sees the ready file must never meet the default action.
 		stopping := make(chan os.Signal, 1)
 		signal.Notify(stopping, syscall.SIGTERM)
 		defer signal.Stop(stopping)
+		if err := os.WriteFile(os.Getenv(helperReadyEnv), []byte("ready"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		<-stopping
 		if err := os.WriteFile(os.Getenv(helperTermEnv), []byte("term"), 0o600); err != nil {
 			t.Fatal(err)
