@@ -120,15 +120,19 @@ func runDev(c *cobra.Command, _ []string) error {
 func devConsumptionHint(publisher, name, version string) string {
 	return fmt.Sprintf(`
 Use it in a workspace (workspace.codefly.yaml):
+  codefly update workspace --agent-override %s/%s=%s
+which writes:
   agent-overrides:
     %s/%s: %s
-or pin one service (service.codefly.yaml):
+or pin one service the workspace authors (service.codefly.yaml):
+  codefly update service <service> --agent-version %s
+which writes:
   agent:
     publisher: %s
     name: %s
     version: %s
 Dev builds are for iteration only; release with `+"`codefly publish patch`"+`.
-`, publisher, name, version, publisher, name, version)
+`, publisher, name, version, publisher, name, version, version, publisher, name, version)
 }
 
 // PublishDev publishes the build at HEAD under its dev version and returns the

@@ -4683,6 +4683,7 @@ codefly update <subcommand>
 Subcommands:
 
 - [`codefly update deps`](#codefly-update-deps)
+- [`codefly update service`](#codefly-update-service)
 - [`codefly update workspace`](#codefly-update-workspace)
 
 ## `codefly update deps`
@@ -4724,12 +4725,63 @@ Flags:
       --stale-days int   Audit: fail when a suppression's reviewed date is older than this many days (0 disables) (default 45)
 ```
 
+## `codefly update service`
+
+Update a service to its latest compatible agent, or pin one with --agent-version
+
+```
+Update a service's agent in its own service.codefly.yaml.
+
+Without --agent-version the service moves to its agent's latest compatible
+release. With --agent-version it is pinned to exactly that version, prereleases
+included — the way to consume a dev build from `codefly publish dev`.
+The version must be an exact semantic version, and the candidate is downloaded
+and its protocol checked before the file is written, so a version that was never
+published is refused and the file is left untouched.
+
+Only the agent.version token is rewritten; comments, formatting and every other
+key are kept byte-for-byte. A service of a composed module is refused: its
+service.codefly.yaml is that module's content. Move its agent with
+`codefly update workspace --agent-override <publisher>/<name>=<version>` instead.
+```
+
+```
+codefly update service [<service>]
+```
+
+Flags:
+
+```
+      --agent-version string   Pin the service's agent to exactly this version (prereleases such as dev builds accepted) instead of its latest release
+```
+
 ## `codefly update workspace`
 
-Update every workspace service to its latest compatible agent
+Update every workspace service to its latest compatible agent, or pin one with --agent-override
+
+```
+Update the agents the workspace's services run on.
+
+Without flags every service moves to its agent's latest compatible release.
+
+With --agent-override <publisher>/<name>=<version> nothing else moves: the entry
+is written to the top-level agent-overrides block of workspace.codefly.yaml,
+which moves every composed service on that agent to exactly that version —
+prereleases included, the way to consume a dev build from `codefly publish dev`.
+Entries the command does not name are kept. Before the file is written the
+version must be an exact semantic version, the key must name an agent some
+composed service runs on, and the agent must be published at that version and
+start with a compatible protocol; any failure leaves the file untouched.
+```
 
 ```
 codefly update workspace [flags]
+```
+
+Flags:
+
+```
+      --agent-override stringArray   Pin <publisher>/<name>=<version> in workspace.codefly.yaml agent-overrides (repeatable; prereleases such as dev builds accepted) instead of moving services to their latest release
 ```
 
 ## `codefly upgrade`

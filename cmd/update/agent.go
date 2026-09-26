@@ -3,10 +3,14 @@ package update
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+
+	"github.com/Masterminds/semver/v3"
 
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/resources"
@@ -22,29 +26,115 @@ type agentUpdate struct {
 	To   string
 }
 
+// inspectAgent starts a candidate agent and checks its live protocol, without
+// invoking any lifecycle RPC. It is the one admission every selection this
+// package writes goes through, and it is how a pinned version is proven to
+// exist: the candidate is downloaded from its published release, so a version
+// that was never published fails here, before any manifest is touched. Tests
+// replace it to keep the host boundary off the network.
+var inspectAgent = func(ctx context.Context, candidate *resources.Agent) error {
+	inspectCtx, cancel := context.WithTimeout(ctx, manager.DefaultStartupTimeout+2*manager.DefaultDialTimeout)
+	defer cancel()
+	_, _, err := services.InspectAgent(inspectCtx, candidate)
+	return err
+}
+
+// admissionError names what failed when a candidate agent is not admitted.
+// Core's loader reports a missing release as manager.ErrAgentBinaryNotFound
+// without the version it looked for, and asks callers to pick the message by
+// that sentinel; for a pinned version, "not published" is the whole answer.
+func admissionError(candidate *resources.Agent, err error) error {
+	if errors.Is(err, manager.ErrAgentBinaryNotFound) {
+		return &unpublishedAgentError{agent: candidate.Publisher + "/" + candidate.Name, version: candidate.Version, cause: err}
+	}
+	return err
+}
+
+// unpublishedAgentError says a pinned version has no downloadable release. It
+// carries its cause for errors.Is but exposes it only as a multi-error, so the
+// terminal's root-cause line (which follows single unwraps) is this message,
+// the one that names the version, rather than the loader's.
+type unpublishedAgentError struct {
+	agent   string
+	version string
+	cause   error
+}
+
+func (e *unpublishedAgentError) Error() string {
+	return fmt.Sprintf("agent %s is not published at version %s — no release could be downloaded; list its published versions with `codefly agent versions %s` (%v)",
+		e.agent, e.version, e.agent, e.cause)
+}
+
+func (e *unpublishedAgentError) Unwrap() []error { return []error{e.cause} }
+
 // updateServiceAgent checks the latest candidate's live protocol before updating
 // a service's selection. Operation and functional qualification remain separate.
-// It uses a surgical, text-preserving edit of the single agent.version token and
-// never reserializes resources.Service, so unmodeled keys, comments, and
-// formatting survive byte-for-byte. Returns nil when nothing changed.
+// Returns nil when nothing changed.
 func updateServiceAgent(ctx context.Context, svc *resources.Service) (*agentUpdate, error) {
+	if svc.Agent == nil {
+		return nil, fmt.Errorf("service %s declares no agent", svc.Name)
+	}
+	candidate := *svc.Agent
+	if _, err := manager.PinToLatestRelease(ctx, &candidate); err != nil {
+		return nil, fmt.Errorf("cannot resolve latest agent version: %w", err)
+	}
+	return selectServiceAgent(ctx, svc, &candidate)
+}
+
+// pinServiceAgent selects exactly version for the service's agent — a release
+// or a prerelease such as a `codefly publish dev` build — after the same
+// admission a latest-release update takes. Returns nil when nothing changed.
+func pinServiceAgent(ctx context.Context, svc *resources.Service, version string) (*agentUpdate, error) {
+	if svc.Agent == nil {
+		return nil, fmt.Errorf("service %s declares no agent", svc.Name)
+	}
+	exact, err := exactAgentVersion(version)
+	if err != nil {
+		return nil, err
+	}
+	candidate := *svc.Agent
+	candidate.Version = exact
+	return selectServiceAgent(ctx, svc, &candidate)
+}
+
+// exactAgentVersion accepts only an exact semantic version — the spelling
+// core's agent-overrides parser accepts, prereleases included (0.1.47,
+// 0.1.47-dev.abc123def456) — and refuses ranges, "latest", partial versions
+// and a leading v, so a pin never reads as moved while resolving elsewhere.
+func exactAgentVersion(version string) (string, error) {
+	trimmed := strings.TrimSpace(version)
+	if _, err := semver.StrictNewVersion(trimmed); err != nil {
+		return "", fmt.Errorf("agent version %q is not an exact semantic version (e.g. 0.1.47, or a dev build such as 0.1.47-dev.abc123def456)", version)
+	}
+	return trimmed, nil
+}
+
+// selectServiceAgent admits candidate and writes its version into the
+// service's own service.codefly.yaml. It uses a surgical, text-preserving edit
+// of the single agent.version token and never reserializes resources.Service,
+// so unmodeled keys, comments, and formatting survive byte-for-byte.
+func selectServiceAgent(ctx context.Context, svc *resources.Service, candidate *resources.Agent) (*agentUpdate, error) {
 	file := filepath.Join(svc.Dir(), resources.ServiceConfigurationName)
 	content, err := os.ReadFile(file)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read %s: %w", file, err)
 	}
-	from := svc.Agent.Version
-	candidate := *svc.Agent
-	if _, err = manager.PinToLatestRelease(ctx, &candidate); err != nil {
-		return nil, fmt.Errorf("cannot resolve latest agent version: %w", err)
+	// Compare against the version the file declares, not the in-memory one: a
+	// module loaded from a workspace reference carries the workspace's
+	// agent-overrides, which never change this file.
+	declared, err := resources.LoadServiceFromDir(ctx, svc.Dir())
+	if err != nil {
+		return nil, fmt.Errorf("cannot load %s: %w", file, err)
 	}
+	if declared.Agent == nil {
+		return nil, fmt.Errorf("%s declares no agent", file)
+	}
+	from := declared.Agent.Version
 	if candidate.Version == from {
 		return nil, nil
 	}
-	inspectCtx, cancel := context.WithTimeout(ctx, manager.DefaultStartupTimeout+2*manager.DefaultDialTimeout)
-	defer cancel()
-	if _, _, err = services.InspectAgent(inspectCtx, &candidate); err != nil {
-		return nil, fmt.Errorf("cannot select agent %s: %w", candidate.Identifier(), err)
+	if err = inspectAgent(ctx, candidate); err != nil {
+		return nil, fmt.Errorf("cannot select agent %s: %w", candidate.Identifier(), admissionError(candidate, err))
 	}
 	updated, err := rewriteAgentVersion(content, candidate.Version)
 	if err != nil {

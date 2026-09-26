@@ -14,6 +14,7 @@ import (
 
 	"github.com/blang/semver"
 	"github.com/codefly-dev/cli/cmd/common"
+	"github.com/codefly-dev/cli/cmd/publish"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/gh"
 	"github.com/codefly-dev/core/resources"
@@ -100,30 +101,67 @@ func (inv inventory) versionResolvable(version string) bool {
 	return false
 }
 
-// versionsBehind counts the resolvable versions strictly newer than the given
-// pinned version — how many downloadable releases the pin trails its repo's
-// main line. It counts only resolvable versions (a GitHub-release asset or OCI
-// manifest is present), never bare tags: a newer tag that shipped no artifact
-// is not something the pin can be bumped to, so counting it would nag a pin
-// already at the latest usable version and, worse, point "bump the pin" at an
+// pinDrift is how a pinned version compares with what its agent repo has
+// released.
+type pinDrift struct {
+	// Behind counts the resolvable releases newer than the pin — see
+	// classifyPin for what "newer" means for a prerelease.
+	Behind int
+	// DevBuildOf is the release a dev build (`codefly publish dev`) was cut
+	// from, when the pin is one; empty otherwise.
+	DevBuildOf string
+}
+
+// classifyPin measures a pin against the resolvable versions of its repo.
+//
+// Only resolvable releases count (a GitHub-release asset or OCI manifest is
+// present), never bare tags: a newer tag that shipped no artifact is not
+// something the pin can be bumped to, so counting it would nag a pin already
+// at the latest usable version and, worse, point "bump the pin" at an
 // unresolvable version. A pin at 0.0.15 with 0.0.16..0.0.22 all published
-// reports 7. A version of "latest", or one that doesn't parse, has nothing to
-// compare against and reports 0.
-func versionsBehind(versions []versionEntry, version string) int {
-	if version == "latest" {
-		return 0
+// reports 7.
+//
+// Only releases count, never prereleases: `codefly update workspace` moves a
+// pin to the latest release, and GitHub's latest-release lookup excludes
+// prereleases, so a dev build or release candidate is never the version a
+// pin trails. Counting them would also make every `codefly publish dev` of an
+// agent push each workspace one more version "behind".
+//
+// A dev build is compared by the release it was cut from, not by semver
+// precedence. `<X>-dev.<sha>` is built from a commit on top of release X — the
+// agent's version when it was published — so it is not behind X even though
+// semver ranks a prerelease below its release; it is behind only the releases
+// after X. Any other prerelease (1.0.0-rc.1) keeps semver's meaning: it
+// precedes 1.0.0, so 1.0.0 counts.
+//
+// A version of "latest", or one that doesn't parse, has nothing to compare
+// against and reports zero drift.
+func classifyPin(versions []versionEntry, version string) pinDrift {
+	if version == latestAgentVersion {
+		return pinDrift{}
 	}
 	pinned, err := semver.Parse(strings.TrimPrefix(version, "v"))
 	if err != nil {
-		return 0
+		return pinDrift{}
 	}
-	behind := 0
-	for _, entry := range versions {
-		if entry.Sources.resolvable() && entry.sem.GT(pinned) {
-			behind++
+	var drift pinDrift
+	if publish.IsDevVersion(pinned.String()) {
+		pinned.Pre = nil
+		drift.DevBuildOf = pinned.String()
+	}
+	for i := range versions {
+		entry := &versions[i]
+		if entry.Sources.resolvable() && len(entry.sem.Pre) == 0 && entry.sem.GT(pinned) {
+			drift.Behind++
 		}
 	}
-	return behind
+	return drift
+}
+
+// versionsBehind counts the resolvable releases the pin trails; see
+// classifyPin.
+func versionsBehind(versions []versionEntry, version string) int {
+	return classifyPin(versions, version).Behind
 }
 
 // LatestResolvableDrift reports, for a single agent, the newest resolvable
@@ -331,10 +369,13 @@ type agentSummary struct {
 	PinnedResolvable bool   `json:"pinned_resolvable"`
 	LatestResolvable string `json:"latest_resolvable"`
 	LatestTag        string `json:"latest_tag"`
-	// Behind is how many tagged releases newer than the pin exist — the
+	// Behind is how many resolvable releases newer than the pin exist — the
 	// "N versions behind main" drift the workspace should be warned about.
-	Behind  int      `json:"behind"`
-	Modules []string `json:"modules,omitempty"`
+	Behind int `json:"behind"`
+	// DevBuildOf is the release a pinned dev build was cut from. A dev build is
+	// a distinct state, not drift: it is not behind the release it was built on.
+	DevBuildOf string   `json:"dev_build_of,omitempty"`
+	Modules    []string `json:"modules,omitempty"`
 }
 
 // workspacePins enumerates every service in the workspace and returns those
@@ -380,13 +421,15 @@ func summarizeWorkspaceAgents(ctx context.Context, pins []agentPin) []agentSumma
 		pinKey := agent.Identifier()
 		row, ok := rows[pinKey]
 		if !ok {
+			drift := classifyPin(inv.Versions, agent.Version)
 			row = &agentSummary{
 				Agent:            repoKey,
 				Pinned:           agent.Version,
 				PinnedResolvable: inv.versionResolvable(agent.Version),
 				LatestResolvable: inv.LatestResolvable,
 				LatestTag:        inv.LatestTag,
-				Behind:           versionsBehind(inv.Versions, agent.Version),
+				Behind:           drift.Behind,
+				DevBuildOf:       drift.DevBuildOf,
 			}
 			rows[pinKey] = row
 			order = append(order, pinKey)
@@ -606,8 +649,12 @@ func renderInventory(inv inventory) {
 	}
 	for _, pin := range inv.Pinned {
 		fmt.Printf("pinned            -> %s (resolvable: %s)\n", pin, yesNo(inv.versionResolvable(pin)))
-		if behind := versionsBehind(inv.Versions, pin); behind > 0 {
-			fmt.Printf("  warning: %d version(s) behind its repo main (latest resolvable %s)\n", behind, dashIfEmpty(inv.LatestResolvable))
+		drift := classifyPin(inv.Versions, pin)
+		if drift.DevBuildOf != "" {
+			fmt.Printf("  note: dev build of %s — unreleased, for iteration only\n", drift.DevBuildOf)
+		}
+		if drift.Behind > 0 {
+			fmt.Printf("  warning: %d release(s) behind its repo main (latest resolvable %s)\n", drift.Behind, dashIfEmpty(inv.LatestResolvable))
 		}
 	}
 }
@@ -624,7 +671,7 @@ func renderSummaries(summaries []agentSummary) {
 			summary.Agent,
 			summary.Pinned,
 			yesNo(summary.PinnedResolvable),
-			behindCell(summary.Behind),
+			behindCell(summary.Behind, summary.DevBuildOf),
 			dashIfEmpty(summary.LatestResolvable),
 			dashIfEmpty(summary.LatestTag),
 			dashIfEmpty(strings.Join(summary.Modules, ", ")),
@@ -632,17 +679,27 @@ func renderSummaries(summaries []agentSummary) {
 	}
 	_ = tw.Flush()
 
-	for _, summary := range summaries {
+	for i := range summaries {
+		summary := &summaries[i]
+		if summary.DevBuildOf != "" {
+			cli.Info("%s pinned %s is a dev build of %s — unreleased, for iteration only; release it with `codefly publish patch` before shipping",
+				summary.Agent, summary.Pinned, summary.DevBuildOf)
+		}
 		if summary.Behind > 0 {
-			cli.Warning("%s pinned %s is %d version(s) behind its repo main (latest resolvable %s) — rebuild/release from main or bump the pin",
+			cli.Warning("%s pinned %s is %d release(s) behind its repo main (latest resolvable %s) — rebuild/release from main or bump the pin",
 				summary.Agent, summary.Pinned, summary.Behind, dashIfEmpty(summary.LatestResolvable))
 		}
 	}
 }
 
 // behindCell renders the drift column. Zero is a measured result, not a
-// missing one, so it prints as 0 rather than the empty-cell dash.
-func behindCell(behind int) string {
+// missing one, so it prints as 0 rather than the empty-cell dash. A dev build
+// says so beside the count: it is a state of its own, not drift from the
+// release it was cut from.
+func behindCell(behind int, devBuildOf string) string {
+	if devBuildOf != "" {
+		return fmt.Sprintf("%d (dev build of %s)", behind, devBuildOf)
+	}
 	return fmt.Sprintf("%d", behind)
 }
 
