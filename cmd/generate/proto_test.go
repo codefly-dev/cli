@@ -1,10 +1,12 @@
 package generate
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestProtoGenerationPathArgs(t *testing.T) {
@@ -60,12 +62,127 @@ func TestResolveProtoTemplate(t *testing.T) {
 }
 
 func TestProtoMountRootNeverExposesFilesystemRoot(t *testing.T) {
-	if _, err := protoMountRoot("/repo/proto", "/repo/output", "/elsewhere/templates"); err == nil {
+	if _, err := protoMountRoot("/repo/proto", "/repo/output", "/elsewhere/templates", nil, ""); err == nil {
 		t.Fatal("accepted writable mount of the filesystem root")
 	}
-	root, err := protoMountRoot("/repo/proto", "/repo/service/output", "/repo/templates")
+	root, err := protoMountRoot("/repo/proto", "/repo/service/output", "/repo/templates", nil, "")
 	if err != nil || root != "/repo" {
 		t.Fatalf("mount root = %q, %v", root, err)
+	}
+}
+
+// The go-grpc service layout keeps buf.gen.yaml in proto/ with its outputs in
+// sibling directories. The mount must reach every one of them, or buf writes
+// them inside the container and they are lost (#836).
+func TestProtoMountRootCoversSiblingOutputs(t *testing.T) {
+	workspace := t.TempDir()
+	service := filepath.Join(workspace, "mod", "svc")
+	input := filepath.Join(service, "proto")
+	template := filepath.Join(input, "buf.gen.yaml")
+	writeTestFile(t, template, `version: v2
+plugins:
+  - local: protoc-gen-go
+    out: ../code/pkg/gen
+    opt: paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: ../code/pkg/gen
+  - local: protoc-gen-openapiv2
+    out: ../openapi
+`)
+	outs, err := protoTemplateOutputs(template)
+	if err != nil {
+		t.Fatalf("template outputs: %v", err)
+	}
+	if want := []string{filepath.Join(service, "code", "pkg", "gen"), filepath.Join(service, "openapi")}; !reflect.DeepEqual(outs, want) {
+		t.Fatalf("outputs = %v, want %v", outs, want)
+	}
+	root, err := protoMountRoot(input, input, input, outs, workspace)
+	if err != nil {
+		t.Fatalf("mount root: %v", err)
+	}
+	if root != service {
+		t.Fatalf("mount root = %q, want %q", root, service)
+	}
+	for _, path := range append([]string{input}, outs...) {
+		if !pathWithin(root, path) {
+			t.Fatalf("mount root %s does not cover %s", root, path)
+		}
+	}
+}
+
+func TestProtoMountRootRefusesOutputEscapingBoundary(t *testing.T) {
+	workspace := t.TempDir()
+	input := filepath.Join(workspace, "svc", "proto")
+	template := filepath.Join(input, "buf.gen.yaml")
+	writeTestFile(t, template, "version: v2\nplugins:\n  - local: protoc-gen-go\n    out: ../../../elsewhere\n")
+	outs, err := protoTemplateOutputs(template)
+	if err != nil {
+		t.Fatalf("template outputs: %v", err)
+	}
+	if _, err := protoMountRoot(input, input, input, outs, workspace); err == nil {
+		t.Fatal("accepted an output outside the workspace")
+	}
+	// Outside a workspace the boundary is the directories the caller named.
+	if _, err := protoMountRoot(input, input, input, outs, ""); err == nil {
+		t.Fatal("accepted an output outside the named directories")
+	}
+	writeTestFile(t, template, "version: v2\nplugins:\n  - local: protoc-gen-go\n    out: /abs/gen\n")
+	if _, err := protoTemplateOutputs(template); err == nil {
+		t.Fatal("accepted an absolute output the companion cannot see")
+	}
+}
+
+func TestProtoMountBoundaryIsTheOwningWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	writeTestFile(t, filepath.Join(workspace, "workspace.codefly.yaml"), "name: example\n")
+	input := filepath.Join(workspace, "mod", "svc", "proto")
+	if err := os.MkdirAll(input, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := protoMountBoundary(context.Background(), input)
+	if err != nil || got != workspace {
+		t.Fatalf("boundary = %q, %v; want %q", got, err, workspace)
+	}
+}
+
+// A template that lists outputs but leaves every one untouched must fail: that
+// is exactly what buf writing into the container looks like from the host.
+func TestRequireProtoOutputsWrittenRefusesSilentNoOp(t *testing.T) {
+	root := t.TempDir()
+	out := filepath.Join(root, "gen")
+	committed := filepath.Join(out, "api.pb.go")
+	writeTestFile(t, committed, "package gen\n")
+	outs := []string{out, filepath.Join(root, "openapi")}
+
+	before, err := snapshotProtoOutputs(outs)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if err := requireProtoOutputsWritten(outs, before, "buf.gen.yaml"); err == nil {
+		t.Fatal("reported success for a generation that wrote nothing")
+	}
+
+	// A rewrite of identical bytes is a real regeneration.
+	later := time.Now().Add(time.Second)
+	if err := os.Chtimes(committed, later, later); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireProtoOutputsWritten(outs, before, "buf.gen.yaml"); err != nil {
+		t.Fatalf("refused a rewritten output: %v", err)
+	}
+
+	// So is a file in an output that did not exist before.
+	empty, err := snapshotProtoOutputs(outs[1:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(outs[1], "api.swagger.json"), "{}")
+	if err := requireProtoOutputsWritten(outs[1:], empty, "buf.gen.yaml"); err != nil {
+		t.Fatalf("refused a new output: %v", err)
+	}
+
+	if err := requireProtoOutputsWritten(nil, nil, "buf.gen.yaml"); err != nil {
+		t.Fatalf("a template without outputs cannot be judged: %v", err)
 	}
 }
 

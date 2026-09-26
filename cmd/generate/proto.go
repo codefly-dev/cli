@@ -6,15 +6,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/core/companions/proto"
+	"github.com/codefly-dev/core/resources"
 	runners "github.com/codefly-dev/core/runners/dockerrun"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var protoDir string
@@ -31,6 +35,12 @@ var ProtoCmd = &cobra.Command{
 
 Runs buf inside the versioned proto companion image, using the buf.gen.yaml in
 the --proto directory, or an explicit --template relative to --output.
+The companion mounts the nearest directory holding --proto, --output, the
+template and every ` + "`out`" + ` the template declares, so outputs beside the proto
+directory (out: ../code/pkg/gen) are written on the host. An ` + "`out`" + ` that
+escapes the owning workspace (or, outside a workspace, the directory the named
+paths share) is refused, and a run that writes no file under any declared
+` + "`out`" + ` fails rather than reporting success.
 --local selects --output/buf.gen.local.yaml, not execution on the host.
 Go, gRPC, Connect, gateway, OpenAPI and TypeScript
 outputs, then goimports over every Go output the template declares. Nothing
@@ -98,9 +108,21 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 		return w.Wrapf(err, "cannot create output directory")
 	}
 
-	// Mount inputs, outputs and template together; buf resolves output paths
-	// against its working directory, which is the template's own directory.
-	commonRoot, err := protoMountRoot(protoDir, outputDir, templateDir)
+	// Mount inputs, the template and every output it declares together; buf
+	// resolves output paths against its working directory, which is the
+	// template's own directory. An `out` beside the proto directory
+	// (`../code/pkg/gen`, the go-grpc layout) widens the mount to reach it:
+	// anything buf writes outside the mount is written into the container and
+	// discarded.
+	outs, err := protoTemplateOutputs(templatePath)
+	if err != nil {
+		return err
+	}
+	boundary, err := protoMountBoundary(ctx, protoDir)
+	if err != nil {
+		return err
+	}
+	commonRoot, err := protoMountRoot(protoDir, outputDir, templateDir, outs, boundary)
 	if err != nil {
 		return err
 	}
@@ -164,6 +186,13 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 
 	w.Info("Generating proto code...")
 
+	// Snapshot the declared outputs so a generation that wrote nothing on the
+	// host is an error, not "generated successfully".
+	before, err := snapshotProtoOutputs(outs)
+	if err != nil {
+		return err
+	}
+
 	// The input and path filters are absolute because a custom template may
 	// live outside the proto directory.
 	pathArgs := protoGenerationPathArgs(containerProto, true)
@@ -178,6 +207,9 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	if err != nil {
 		return w.Wrapf(err, "cannot generate proto code")
 	}
+	if err = requireProtoOutputsWritten(outs, before, templatePath); err != nil {
+		return err
+	}
 
 	// buf's Go is not the Go a repository commits: every consumer runs
 	// goimports over it and gates its checked-in bindings on that shape. The
@@ -191,12 +223,139 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	return nil
 }
 
-func protoMountRoot(protoDir, outputDir, templateDir string) (string, error) {
+// protoMountRoot is the host directory mounted into the companion: the nearest
+// common ancestor of the proto input, the --output directory, the template's
+// directory and every `out` the template declares. An `out` that resolves
+// outside boundary is refused rather than widening the mount past it.
+func protoMountRoot(protoDir, outputDir, templateDir string, outs []string, boundary string) (string, error) {
 	root := commonAncestor(commonAncestor(protoDir, outputDir), templateDir)
+	scope := "the workspace " + boundary
+	if boundary == "" {
+		boundary = root
+		scope = boundary + ", the directory shared by --proto, --output and the template (no workspace owns " + protoDir + ")"
+	}
+	for _, out := range outs {
+		if !pathWithin(boundary, out) {
+			return "", fmt.Errorf("generation output %s lies outside %s; every `out` in the template must stay under it", out, scope)
+		}
+		root = commonAncestor(root, out)
+	}
 	if root == "" || filepath.Dir(root) == root {
 		return "", fmt.Errorf("proto input, output and template must share a directory below the filesystem root")
 	}
 	return root, nil
+}
+
+// protoMountBoundary is the directory no template output may escape: the
+// workspace owning the proto directory, or, outside any workspace, nothing
+// beyond the directories the caller named (the empty string).
+func protoMountBoundary(ctx context.Context, protoDir string) (string, error) {
+	dir, err := resources.FindUpFrom[resources.Workspace](ctx, protoDir)
+	if err != nil {
+		return "", fmt.Errorf("cannot look up the workspace owning %s: %w", protoDir, err)
+	}
+	if dir == nil {
+		return "", nil
+	}
+	return filepath.Clean(*dir), nil
+}
+
+// protoTemplateOutputs returns every `out` the buf template declares, as
+// absolute host paths resolved against the template's directory, which is
+// where buf resolves them. An absolute `out` is refused: it names a host path
+// the companion cannot see, so buf would write it inside the container.
+func protoTemplateOutputs(templatePath string) ([]string, error) {
+	contents, err := os.ReadFile(templatePath)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read generation template %s: %w", templatePath, err)
+	}
+	var document struct {
+		Plugins []struct {
+			Out string `yaml:"out"`
+		} `yaml:"plugins"`
+	}
+	if err := yaml.Unmarshal(contents, &document); err != nil {
+		return nil, fmt.Errorf("cannot parse generation template %s: %w", templatePath, err)
+	}
+	templateDir := filepath.Dir(templatePath)
+	seen := map[string]bool{}
+	var outs []string
+	for _, plugin := range document.Plugins {
+		out := strings.TrimSpace(plugin.Out)
+		if out == "" {
+			continue
+		}
+		if filepath.IsAbs(out) {
+			return nil, fmt.Errorf("generation output %q in %s is absolute; the companion resolves `out` inside its own filesystem, so it must be relative to the template", out, templatePath)
+		}
+		out = filepath.Join(templateDir, out)
+		if !seen[out] {
+			seen[out] = true
+			outs = append(outs, out)
+		}
+	}
+	sort.Strings(outs)
+	return outs, nil
+}
+
+func pathWithin(root, p string) bool {
+	rel, err := filepath.Rel(root, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+type protoOutputFile struct {
+	modTime time.Time
+	size    int64
+}
+
+// snapshotProtoOutputs records every regular file under the declared outputs.
+// A missing output directory is an empty snapshot: buf creates it.
+func snapshotProtoOutputs(outs []string) (map[string]protoOutputFile, error) {
+	files := map[string]protoOutputFile{}
+	for _, out := range outs {
+		err := filepath.WalkDir(out, func(file string, entry os.DirEntry, err error) error {
+			if err != nil {
+				if os.IsNotExist(err) && file == out {
+					return filepath.SkipDir
+				}
+				return err
+			}
+			if !entry.Type().IsRegular() {
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			files[file] = protoOutputFile{modTime: info.ModTime(), size: info.Size()}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("cannot inspect generation output %s: %w", out, err)
+		}
+	}
+	return files, nil
+}
+
+// requireProtoOutputsWritten fails a generation whose template declares
+// outputs but which left no new or rewritten file under any of them. buf
+// rewrites every file it generates, so even a no-change regeneration moves
+// modification times; an untouched tree means buf wrote somewhere the host
+// cannot see.
+func requireProtoOutputsWritten(outs []string, before map[string]protoOutputFile, templatePath string) error {
+	if len(outs) == 0 {
+		return nil
+	}
+	after, err := snapshotProtoOutputs(outs)
+	if err != nil {
+		return err
+	}
+	for file, now := range after {
+		if was, ok := before[file]; !ok || !was.modTime.Equal(now.modTime) || was.size != now.size {
+			return nil
+		}
+	}
+	return fmt.Errorf("generation wrote no file under any output declared by %s (%s); nothing was regenerated", templatePath, strings.Join(outs, ", "))
 }
 
 func resolveProtoTemplate(protoDir, outputDir, template string, local bool) (string, error) {

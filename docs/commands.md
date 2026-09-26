@@ -1959,6 +1959,20 @@ codefly generate runnables documents --check                                    
 |------|-------------|
 | `--proto` | Path to proto directory |
 | `--output` | Output directory for generated code |
+| `--path` | Limit generation to a proto-relative path (repeatable) |
+| `--template` | Generation template, relative to `--output` or absolute (default: `--proto`/`buf.gen.yaml`) |
+| `--local` | Select `--output`/`buf.gen.local.yaml`; plugins still run inside the pinned companion |
+
+buf resolves each `out` in the template against the template's directory, inside
+the companion. The companion therefore mounts the nearest common ancestor of
+`--proto`, `--output`, the template's directory and **every** `out` the template
+declares, so a template whose outputs sit beside the proto directory
+(`out: ../code/pkg/gen`, `out: ../openapi` — the go-grpc service layout)
+regenerates on the host. An `out` that escapes the workspace owning `--proto`
+(outside a workspace: the directory `--proto`, `--output` and the template share)
+is refused, as is an absolute `out`, which names a path the companion cannot see.
+A run whose template declares outputs but which writes no file under any of them
+fails instead of reporting success.
 
 #### generate client
 
