@@ -2071,6 +2071,7 @@ codefly generate contracts saas-starter                                         
 codefly generate contracts saas-starter --check                                          # CI drift gate: fail if the on-disk catalog is stale
 codefly generate runnables documents                                                     # Derive a Runnable package per method carrying the operation option
 codefly generate runnables documents --check                                             # CI drift gate: fail if the derived packages are stale
+codefly generate runnable-bindings --env staging                                         # Bind every derived operation to its owner endpoint as the environment resolves it
 ```
 
 **`generate proto` flags:**
@@ -2232,6 +2233,26 @@ and the MCP `list_runnables` tool, with facility `service` and a `source` of
 | `--check` | Do not write; exit 1 with a unified diff if the on-disk tree differs from what would be generated |
 
 ---
+
+#### generate runnable-bindings
+
+`codefly generate runnable-bindings [--env <env>] [--check]` prepares, for one
+environment, the binding of every operation the workspace's modules derived
+(`contracts/runnables/index.json`). Each becomes one key of the workspace
+configuration group `runnable-bindings`, in
+`configurations/<profile>/runnable-bindings.env`, whose value is a JSON document:
+the canonical `package`, the `binding` core prepared and verified against it
+(SERVICE facility, targeting the owner endpoint at the address the environment
+resolves: the native address locally, the in-cluster Service in a Kubernetes
+environment), the method's `operation` policy and authority, and the owner's
+`descriptors` for the method (base64 FileDescriptorSet). The key is
+`<MODULE>__<OPERATION>`, upper-cased.
+
+A service that installs derived operations declares `runnable-bindings` as a
+workspace configuration dependency and receives them like any other group, so an
+installer never names an owner module. `--check` exits non-zero when the file is
+stale. Run it after `generate runnables` in every module it binds, and again
+whenever an owner endpoint moves.
 
 ## Infrastructure
 

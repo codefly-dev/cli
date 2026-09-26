@@ -2564,6 +2564,7 @@ Subcommands:
 - [`codefly generate client`](#codefly-generate-client)
 - [`codefly generate contracts`](#codefly-generate-contracts)
 - [`codefly generate proto`](#codefly-generate-proto)
+- [`codefly generate runnable-bindings`](#codefly-generate-runnable-bindings)
 - [`codefly generate runnables`](#codefly-generate-runnables)
 - [`codefly generate tenant-overlays`](#codefly-generate-tenant-overlays)
 
@@ -2664,6 +2665,53 @@ Flags:
       --path strings      limit generation to a proto-relative path (repeatable)
       --proto string      path to proto source directory (required)
       --template string   generation template, relative to --output or absolute; runs in its own directory
+```
+
+## `codefly generate runnable-bindings`
+
+Prepare the binding of every derived Runnable operation for an environment
+
+```
+Prepare the binding of every Runnable operation the workspace's modules derived
+(contracts/runnables/index.json, written by `codefly generate runnables`), for
+one environment, and write them as the workspace configuration group
+runnable-bindings.
+
+For each derived operation the value is one JSON document:
+
+  package      the canonical RunnablePackage
+  binding      the RunnableBinding: the package installed on the SERVICE facility,
+               targeting the owner endpoint at the address this environment
+               resolves (the native address locally, the in-cluster Service in a
+               Kubernetes environment); prepared and verified by core
+  operation    the execution policy and authority the method declared
+  descriptors  the owner's FileDescriptorSet for the method's file and its imports
+               (base64), which a generic caller resolves the method in
+
+The address is resolved, never configured: it is the one a run or a render of
+the same environment gives the owner. A service that installs derived
+operations declares runnable-bindings as a workspace configuration dependency and
+receives them like any other group, so the installer names no owner module.
+
+The output is configurations/<profile>/runnable-bindings.env in the workspace, for the
+environment's first configuration profile. --check regenerates in memory and
+exits non-zero when the file differs.
+
+Examples:
+  codefly generate runnable-bindings
+  codefly generate runnable-bindings --env staging
+  codefly generate runnable-bindings --env staging --check
+```
+
+```
+codefly generate runnable-bindings [flags]
+```
+
+Flags:
+
+```
+      --check        do not write; exit 1 if the on-disk file differs from what would be generated
+      --env string   environment whose resolved addresses the bindings target (default "local")
 ```
 
 ## `codefly generate runnables`
