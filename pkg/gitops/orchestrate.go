@@ -95,6 +95,10 @@ func renderModuleTree(
 		if err = orchestration.PlanConfigurationReferences(ctx, workspace, env, roots, false); err != nil {
 			return err
 		}
+		// So does a hand-declared in-cluster port that disagrees with the allocation.
+		if err = orchestration.PlanDeclaredEndpointPorts(ctx, workspace, env, roots); err != nil {
+			return err
+		}
 		// The registry is only needed to build and push service images. A module
 		// with no buildable services still renders its bootstrap kustomize tree or
 		// module bundle, which need no registry, so demand one only when there is a
@@ -333,6 +337,9 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		// A configuration error refuses the render before any image is built or
 		// pushed.
 		if err := orchestration.PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{service}, standAlone); err != nil {
+			return err
+		}
+		if err := orchestration.PlanDeclaredEndpointPorts(ctx, workspace, env, []*resources.Service{service}); err != nil {
 			return err
 		}
 		if err := prepareSnapshotRegistry(ctx, env); err != nil {

@@ -512,6 +512,24 @@ the workspace's composed pinned modules — which is what the readiness check
 itself needs in order to judge configuration at all, and which is free once it
 has happened. Everything the failure used to hide behind still comes after.
 
+**In-cluster ports are allocated, never declared.** Each endpoint's in-cluster
+port is core's `network.DeployedEndpointPorts`: the conventional endpoint of each
+API takes the canonical port (`grpc` 9090, `rest` 8080, `connect` 8081, …) and
+every other endpoint a stable port hashed from the name the workspace composes the
+module under, the service and the endpoint. A tool outside the CLI reads the
+allocation from [`codefly show network --json`](#codefly-show-network) or calls
+that function. A service that still declares `spec.deployment.endpoint-ports`
+must match it. `render` and `snapshot` refuse before any image is built, and
+every Kubernetes deploy step (including `deploy service`) refuses before it
+writes a manifest, when a declared port differs from the allocation or names an
+endpoint the render does not place in-cluster:
+
+```
+service saas/accounts endpoint authority: declared port 9091 (spec.deployment.endpoint-ports)
+differs from the allocated in-cluster port 52893; read the allocation from
+`codefly show network --json` or network.DeployedEndpointPorts instead of declaring it
+```
+
 `render` is a function of the workspace and needs no cluster: by default no
 service's manifests are sent to a Kubernetes API. Pass `--validate-cluster` to
 also dry-run each rendered service server-side (`kubectl apply --server-side
@@ -1600,6 +1618,52 @@ what the workspace declares, using core's own binding rules for runnables
 launches a binding, not to this command. An unresolved
 dependency is reported, not fatal: the command exits 0, and unattended callers
 gate on `--json` and each dependency's `resolved` field.
+
+### `codefly show network`
+
+Show every service's endpoints with the deterministic native address each binds
+to on a local run, and the dependency endpoints each consumes. Nothing is started.
+
+```bash
+codefly show network
+codefly show network --naming-scope ci-42
+codefly show network --json --env staging
+```
+
+`--json` adds each endpoint's `deployed_port`: its in-cluster port in the
+environment `--env` names (default `local`, as `deploy gitops render`), the same
+allocation the render emits. It depends on the environment: an external endpoint
+that resolves to a public host gets no cluster port, and a service the
+environment replaces with a managed one (`"managed": true`) has none at all, so
+`deployed_port` is absent there. `native` is absent for an external endpoint.
+Module generators read ports from here rather than declaring them.
+
+```json
+{
+  "workspace": "acme",
+  "naming_scope": "",
+  "environment": "staging",
+  "services": [
+    {
+      "service": "saas/accounts",
+      "module": "saas",
+      "name": "accounts",
+      "endpoints": [
+        {"name": "authority", "api": "grpc", "visibility": "private",
+         "native": "localhost:28113", "deployed_port": 52893},
+        {"name": "grpc", "api": "grpc", "visibility": "private",
+         "native": "localhost:18883", "deployed_port": 9090}
+      ],
+      "dependencies": [{"service": "saas/store", "endpoints": ["tcp"]}]
+    }
+  ]
+}
+```
+
+`module` is the name the workspace composes the module under, which the named
+ports are hashed on: the same `authority` endpoint composed as `saas-starter`
+deploys on 6003. The text output, without `--json`, is unchanged and takes no
+environment.
 
 ### `codefly show fixtures`
 
