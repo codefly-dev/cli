@@ -456,7 +456,8 @@ func (world *World) workspaceConfigurationsFor(
 			dependencies = append(dependencies, dependency)
 		}
 	}
-	mappings := append(slices.Clone(dependencyMappings), world.referencedProducerMappings(ctx, service, dependencies)...)
+	mappings := append(slices.Clone(dependencyMappings),
+		world.referencedProducerMappings(ctx, service, dependencies, dependencyMappings, world.localProducerMappings)...)
 	manager := world.ConfigurationManager.ForConsumer(mappings, access)
 	declared, err := manager.GetWorkspaceDependenciesConfigurations(ctx, dependencies...)
 	if err != nil {
@@ -489,31 +490,37 @@ func (world *World) workspaceConfigurationsFor(
 }
 
 // referencedProducerMappings returns the network mappings of the producers the
-// workspace configurations a service declares reference by ${endpoint:…} and
-// that the service does not itself depend on.
+// workspace configurations a service declares reference by ${endpoint:…}, for
+// every referenced endpoint the service's own dependency mappings (have) do not
+// already carry.
 //
 // A workspace configuration is the composition root's: it names endpoints the
 // consuming module cannot know, such as the host by the composition's name for
 // it, which is why the consumer declares the group and not the dependency. The
 // root's reference is what binds the two, so it resolves for the consumer when
-// the producer is part of this run. With no edge between them, the producer may
-// not have initialized yet: every service of the run is loaded before any
-// initializes, so its endpoints are known, and its mappings are derived exactly
-// as its own Init proposes them (named ports are a function of its identity).
-// A producer outside the run, or the service itself, contributes nothing, and
-// the key is omitted for the consumer as before. Only groups the service
-// declares are considered: the root's groups injected into every service never
-// bind one service to another.
-func (world *World) referencedProducerMappings(ctx context.Context, service *resources.Service, groups []string) []*basev0.NetworkMapping {
+// the producer is part of this run. The producer may not have initialized yet:
+// every service of the run is loaded before any initializes, so its endpoints
+// are known, and its mappings are derived exactly as its own Init proposes them
+// (named ports are a function of its identity).
+//
+// A declared dependency does not by itself carry the referenced endpoint: a
+// `kind: external` one is never started or waited for, so its producer has
+// recorded nothing when the consumer reads the group, and a declaration may
+// name other endpoints of the producer than the one referenced. Only an
+// endpoint already in have is skipped. The service's own endpoints resolve the
+// same way. A reference whose producer is not a service of the workspace
+// contributes nothing, and core fails the read naming the key and the producer:
+// nothing is omitted silently. Only groups the service declares are considered:
+// the root's groups injected into every service never bind one service to
+// another.
+func (world *World) referencedProducerMappings(
+	ctx context.Context, service *resources.Service, groups []string,
+	have []*basev0.NetworkMapping, derive producerMappingsDeriver,
+) []*basev0.NetworkMapping {
 	if world == nil || world.ConfigurationManager == nil || world.SharedState == nil || world.Dependencies == nil || len(groups) == 0 {
 		return nil
 	}
 	w := wool.Get(ctx).In("World.referencedProducerMappings", wool.ThisField(resources.WithUnique(service)))
-	self := resources.WithUnique(service).Unique()
-	depends := make(map[string]bool, len(service.ServiceDependencies))
-	for _, dependency := range service.ServiceDependencies {
-		depends[dependency.Unique()] = true
-	}
 	var out []*basev0.NetworkMapping
 	collected := make(map[string]bool)
 	for _, reference := range world.ConfigurationManager.WorkspaceEndpointReferences(groups...) {
@@ -522,13 +529,13 @@ func (world *World) referencedProducerMappings(ctx context.Context, service *res
 			continue
 		}
 		producer := info.Module + "/" + info.Service
-		if producer == self || depends[producer] || collected[producer] {
+		if collected[producer] || mappingsCarry(have, info) {
 			continue
 		}
 		collected[producer] = true
-		mappings, err := world.producerNetworkMappings(ctx, producer)
+		mappings, err := world.producerNetworkMappings(ctx, producer, derive)
 		if err != nil {
-			w.Warn("cannot derive the addresses of a producer a workspace configuration references; the reference is omitted for this service",
+			w.Warn("cannot derive the addresses of a producer a workspace configuration references",
 				wool.Field("producer", producer), wool.Field("reference", reference), wool.Field("error", err.Error()))
 			continue
 		}
@@ -537,10 +544,43 @@ func (world *World) referencedProducerMappings(ctx context.Context, service *res
 	return out
 }
 
-// producerNetworkMappings returns a producer's mappings: the ones it recorded
-// at Init, or, before it has initialized, the ones its Init proposes, derived
-// from the endpoints it recorded at Load. A producer outside the run has none.
-func (world *World) producerNetworkMappings(ctx context.Context, producer string) ([]*basev0.NetworkMapping, error) {
+// mappingsCarry reports whether mappings already hold the endpoint a reference
+// names.
+func mappingsCarry(mappings []*basev0.NetworkMapping, info *resources.EndpointInformation) bool {
+	for _, mapping := range mappings {
+		endpoint := mapping.GetEndpoint()
+		if endpoint == nil || endpoint.GetModule() != info.Module || endpoint.GetService() != info.Service {
+			continue
+		}
+		if (info.Name == "" || endpoint.GetName() == info.Name) && (info.API == "" || endpoint.GetApi() == info.API) {
+			return true
+		}
+	}
+	return false
+}
+
+// producerMappingsDeriver derives the mappings a producer's Init (or deploy)
+// will propose from its identity and endpoints, before it has recorded any.
+type producerMappingsDeriver func(ctx context.Context, service *resources.Service, identity *resources.ServiceIdentity, endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error)
+
+// localProducerMappings derives a producer's mappings as a local run's Init
+// proposes them.
+func (world *World) localProducerMappings(ctx context.Context, service *resources.Service, identity *resources.ServiceIdentity, endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error) {
+	if world.LocalNetworkManager == nil || world.runtimeContextFor == nil {
+		return nil, nil
+	}
+	runtimeContext, err := resources.NewRuntimeContext(world.runtimeContextFor(service))
+	if err != nil {
+		return nil, err
+	}
+	return world.LocalNetworkManager.GenerateNetworkMappings(ctx, world.Env.Runtime(), world.Workspace, identity, endpoints, runtimeContext)
+}
+
+// producerNetworkMappings returns a producer's mappings: the ones it recorded,
+// or, before it has, the ones derive proposes from the endpoints it recorded at
+// Load — or, when it has not been loaded, the endpoints its manifest declares.
+// A producer that is not a service of the workspace has none.
+func (world *World) producerNetworkMappings(ctx context.Context, producer string, derive producerMappingsDeriver) ([]*basev0.NetworkMapping, error) {
 	if mappings, ok := world.SharedState.GetNetworkMappingsFromUnique(producer); ok {
 		return mappings, nil
 	}
@@ -553,14 +593,15 @@ func (world *World) producerNetworkMappings(ctx context.Context, producer string
 		return nil, err
 	}
 	endpoints := world.SharedState.RecordedEndpoints(producer)
-	if len(endpoints) == 0 || world.LocalNetworkManager == nil || world.runtimeContextFor == nil {
+	if len(endpoints) == 0 {
+		if endpoints, err = service.LoadEndpoints(ctx); err != nil {
+			return nil, err
+		}
+	}
+	if len(endpoints) == 0 || derive == nil {
 		return nil, nil
 	}
-	runtimeContext, err := resources.NewRuntimeContext(world.runtimeContextFor(service))
-	if err != nil {
-		return nil, err
-	}
-	return world.LocalNetworkManager.GenerateNetworkMappings(ctx, world.Env.Runtime(), world.Workspace, identity, endpoints, runtimeContext)
+	return derive(ctx, service, identity, endpoints)
 }
 
 // applyWorkspaceConfigurationValues layers the run's derived values onto the

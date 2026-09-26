@@ -176,18 +176,18 @@ func TestWorkspaceConfigurationsForResolvesEndpointsFromConsumerMappings(t *test
 	require.NoError(t, err)
 	require.Equal(t, "http://auth-gateway.platform-obin-saas.svc.cluster.local:8080", value)
 
-	undeclared, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewNativeNetworkAccess())
-	require.NoError(t, err)
-	value, err = resources.GetConfigurationValue(context.Background(), undeclared[0], "platform", "gateway-endpoint")
-	require.NoError(t, err)
-	require.Empty(t, value, "a consumer that does not depend on the endpoint does not receive it")
+	_, err = world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewNativeNetworkAccess())
+	require.Error(t, err, "a reference with no producer address fails, never an omitted key")
+	require.Contains(t, err.Error(), "platform/gateway-endpoint")
+	require.Contains(t, err.Error(), "producer saas/auth-gateway")
 }
 
 // A workspace configuration the consumer declares may name a producer the
 // consumer does not depend on — the composition root binding the host by its
 // own name for it. Before the producer initializes, the reference resolves to
 // the mappings its Init proposes, derived from the endpoints it recorded at
-// Load; a producer outside the run is omitted.
+// Load; a producer that is not a service of the workspace fails the read, naming
+// the key and the producer.
 func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testing.T) {
 	ctx := context.Background()
 	workspace, err := resources.LoadWorkspaceFromDir(ctx, "testdata/excluded-root-visibility")
@@ -234,17 +234,21 @@ func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testin
 	require.Empty(t, consumer.ServiceDependencies)
 	consumer.WorkspaceConfigurationDependencies = []string{"platform"}
 
+	_, err = world.workspaceConfigurationsFor(ctx, consumer, nil, resources.NewNativeNetworkAccess())
+	require.Error(t, err, "a producer outside the workspace fails the read, never an omitted key")
+	require.Contains(t, err.Error(), "platform/elsewhere")
+	require.Contains(t, err.Error(), "producer absent/service")
+
+	manager = loadedWorkspaceManager(t, staticWorkspaceLoader{
+		confs: []*basev0.Configuration{workspaceConfiguration("platform", "accounts-endpoint", "${endpoint:saas/accounts/connect}")},
+	})
+	world.ConfigurationManager = manager
 	confs, err := world.workspaceConfigurationsFor(ctx, consumer, nil, resources.NewNativeNetworkAccess())
 	require.NoError(t, err)
 	require.Len(t, confs, 1)
 	derived, err := resources.GetConfigurationValue(ctx, confs[0], "platform", "accounts-endpoint")
 	require.NoError(t, err)
 	require.Regexp(t, `^http://localhost:\d+$`, derived)
-	keys := make([]string, 0, 2)
-	for _, value := range confs[0].Infos[0].ConfigurationValues {
-		keys = append(keys, value.Key)
-	}
-	require.Equal(t, []string{"accounts-endpoint"}, keys, "a producer outside the run is omitted for the consumer")
 
 	// Once the producer has initialized, its accepted mappings are what resolves.
 	require.NoError(t, sharedState.RecordNetworkMappings(ctx, accounts, []*basev0.NetworkMapping{{
@@ -283,4 +287,63 @@ func TestConfigurationReferencesOrderTheRun(t *testing.T) {
 	order, err = plain.OrderTo(ctx, "platform/warden")
 	require.NoError(t, err)
 	require.Empty(t, order)
+}
+
+// A consumer declaring a producer `kind: external` and reaching it through a
+// workspace group the composition root writes: the external edge orders
+// nothing, so it must not stand in for the reference. The run starts the
+// producer first, and the consumer's read of the group resolves its address
+// even before the producer has recorded any mapping — never an omitted key.
+func TestConfigurationReferencesToAProducerDeclaredExternal(t *testing.T) {
+	ctx := context.Background()
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, "testdata/configuration-references")
+	require.NoError(t, err)
+	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+
+	plain, err := architecture.NewServiceDependencies(ctx, workspace)
+	require.NoError(t, err)
+	plainRun, err := plain.ForStage(resources.StageRun)
+	require.NoError(t, err)
+	order, err := plainRun.OrderTo(ctx, "platform/relay")
+	require.NoError(t, err)
+	require.Empty(t, order, "the external declaration alone orders nothing")
+
+	option := configurationReferenceOption(ctx, workspace, env)
+	require.NotNil(t, option)
+	dependencies, err := architecture.NewServiceDependencies(ctx, workspace, option)
+	require.NoError(t, err)
+	run, err := dependencies.ForStage(resources.StageRun)
+	require.NoError(t, err)
+	order, err = run.OrderTo(ctx, "platform/relay")
+	require.NoError(t, err)
+	require.Equal(t, []architecture.Service{{Unique: "saas/accounts"}}, order)
+
+	sharedState, err := NewStateManager(ctx, nil, dependencies)
+	require.NoError(t, err)
+	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
+		confs: []*basev0.Configuration{workspaceConfiguration("platform", "accounts-endpoint", "${endpoint:saas/accounts/connect}")},
+	})
+	localNetwork, err := network.NewRuntimeManager(ctx, manager)
+	require.NoError(t, err)
+	world := &World{
+		Env: env, Workspace: workspace,
+		ConfigurationManager: manager, SharedState: sharedState, Dependencies: dependencies,
+		LocalNetworkManager: localNetwork,
+		runtimeContextFor:   func(*resources.Service) string { return resources.RuntimeContextNative },
+	}
+	platform, err := workspace.LoadModuleFromName(ctx, "platform")
+	require.NoError(t, err)
+	relay, err := platform.LoadServiceFromName(ctx, "relay")
+	require.NoError(t, err)
+
+	dependencyMappings, err := sharedState.GetDependenciesNetworkMappings(ctx, relay)
+	require.NoError(t, err)
+	require.Empty(t, dependencyMappings, "the external producer has recorded nothing yet")
+	confs, err := world.workspaceConfigurationsFor(ctx, relay, dependencyMappings, resources.NewNativeNetworkAccess())
+	require.NoError(t, err)
+	require.Len(t, confs, 1)
+	value, err := resources.GetConfigurationValue(ctx, confs[0], "platform", "accounts-endpoint")
+	require.NoError(t, err)
+	require.Regexp(t, `^http://localhost:\d+$`, value)
 }
