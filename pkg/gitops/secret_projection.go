@@ -138,9 +138,69 @@ func serviceSecretProjection(scope unitScope, service string, secrets *environme
 	if mapping.SecretStore != nil {
 		store = *mapping.SecretStore
 	}
-	data := make([]externalSecretData, 0, len(keys))
+	remotes := make(map[string]environments.EnvironmentSecretRemoteRef, len(keys))
+	read := func(key string, remote environments.EnvironmentSecretRemoteRef) error {
+		if prior, seen := remotes[key]; seen && prior != remote {
+			return fmt.Errorf("service %q reads secret key %s from two remote locations", service, key)
+		}
+		remotes[key] = remote
+		return nil
+	}
+	assembled := map[string]string{}
+	// Primitives resolve first, and at their producer. A key this consumer also
+	// references directly is still read where its producer's own ExternalSecret
+	// reads it — the one place it is seeded — rather than being claimed twice
+	// at two scopes and failing the render on a conflict it cannot act on.
 	for _, key := range keys {
-		remote := secrets.RemoteRef(scope.secretScope(service), key)
+		delivered, templated := scope.Templates[key]
+		if !templated {
+			continue
+		}
+		// A producer-declared assembly: read the producer's primitives from the
+		// producer's own remote keys, never the assembled value from the store.
+		expression, primitives, err := externalSecretTemplateExpression(delivered)
+		if err != nil {
+			return nil, fmt.Errorf("service %q secret key %s: %w", service, key, err)
+		}
+		for _, primitive := range primitives {
+			remote, primitiveStore, err := producerPrimitiveRemote(scope, delivered, primitive, secrets)
+			if err != nil {
+				return nil, fmt.Errorf("service %q secret key %s: %w", service, key, err)
+			}
+			// An ExternalSecret reads through one store. A producer whose keys
+			// live in another one cannot be assembled here at all; reading them
+			// from this service's store would address an entry nobody wrote.
+			if primitiveStore != store {
+				return nil, fmt.Errorf(
+					"service %q secret key %s is assembled from %s, which producer %s reads from store %s/%s, not this service's %s/%s",
+					service, key, primitive, delivered.producer,
+					primitiveStore.Kind, primitiveStore.Name, store.Kind, store.Name)
+			}
+			if err := read(primitive, remote); err != nil {
+				return nil, err
+			}
+		}
+		assembled[key] = expression
+	}
+	for _, key := range keys {
+		if _, templated := scope.Templates[key]; templated {
+			continue
+		}
+		if _, claimed := remotes[key]; claimed {
+			continue
+		}
+		if err := read(key, secrets.RemoteRef(scope.secretScope(service), key)); err != nil {
+			return nil, err
+		}
+	}
+	projected := make([]string, 0, len(remotes))
+	for key := range remotes {
+		projected = append(projected, key)
+	}
+	sort.Strings(projected)
+	data := make([]externalSecretData, 0, len(projected))
+	for _, key := range projected {
+		remote := remotes[key]
 		data = append(data, externalSecretData{
 			SecretKey: key,
 			RemoteRef: externalSecretRemote{Key: remote.Key, Property: remote.Property},
@@ -158,6 +218,46 @@ func serviceSecretProjection(scope unitScope, service string, secrets *environme
 			EngineVersion: mapping.Template.EngineVersion,
 			MergePolicy:   mapping.Template.MergePolicy,
 			Data:          maps.Clone(mapping.Template.Data),
+		}
+	}
+	if len(assembled) > 0 {
+		// Under mergePolicy Merge an ExternalSecret emits every key it fetches,
+		// so the producer's primitives would land in this service's Secret
+		// beside the value they assemble — handing everything that can read
+		// secret-<service> a credential this service never referenced. Replace
+		// makes the template the whole Secret: the primitives are still
+		// fetched, so the expressions can read them, but only the keys the
+		// service's manifests actually reference are emitted. That means every
+		// one of those keys needs an entry, including the ones that previously
+		// passed straight through from data.
+		data := map[string]string{}
+		if template := projection.Spec.Target.Template; template != nil && template.Data != nil {
+			data = template.Data
+		}
+		for _, key := range keys {
+			expression, isAssembled := assembled[key]
+			_, declared := data[key]
+			if isAssembled {
+				if declared {
+					return nil, fmt.Errorf("service %q secret key %s is assembled by its producer and also templated by the environment", service, key)
+				}
+				data[key] = expression
+				continue
+			}
+			if declared {
+				continue
+			}
+			if !templateVariable.MatchString(key) {
+				return nil, fmt.Errorf(
+					"service %q secret key %s cannot be named in an External Secrets template, which this service needs because it also assembles %d producer-templated key(s)",
+					service, key, len(assembled))
+			}
+			data[key] = "{{ ." + key + " }}"
+		}
+		projection.Spec.Target.Template = &externalSecretTemplate{
+			EngineVersion: "v2",
+			MergePolicy:   "Replace",
+			Data:          data,
 		}
 	}
 	return projection, nil

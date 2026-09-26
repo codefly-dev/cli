@@ -460,7 +460,10 @@ func validateTree(root string, opts *RenderOptions) ([]manifest, error) {
 		// Go-template expressions ({{.tenant}}, {{.server}}, …); every other file —
 		// including any ApplicationSet outside the bootstrap path — is held to the
 		// no-unresolved-placeholder rule.
-		if placeholderPattern.Match(data) && !isBootstrapApplicationSet(relative, decoded) {
+		// An ExternalSecret's target template is an External Secrets expression
+		// by design; the per-value inspection admits one exactly there, so its
+		// file is held to that narrower rule instead of this whole-file one.
+		if placeholderPattern.Match(data) && !isBootstrapApplicationSet(relative, decoded) && !onlyExternalSecrets(decoded) {
 			return fmt.Errorf("%s contains an unresolved placeholder", relative)
 		}
 		if manifestFile {
@@ -886,11 +889,45 @@ func validateManifest(item manifest, contract *projectContract, promotable bool)
 			return fmt.Errorf("Application project %q differs from selected AppProject %q", project, contract.name)
 		}
 	}
-	var allowCredentialReference func([]string) bool
+	var allowCredentialReference, allowExpression func([]string) bool
 	if item.group == "external-secrets.io" && item.kind == "ExternalSecret" {
 		allowCredentialReference = externalSecretCredentialReference
+		allowExpression = externalSecretTemplateDataPath
 	}
-	return inspectValueAllowingReferences(item.value, nil, promotable, allowCredentialReference)
+	return inspectValueAllowingExpressions(item.value, nil, promotable, allowCredentialReference, allowExpression)
+}
+
+// onlyExternalSecrets reports whether a decoded file holds ExternalSecrets and
+// nothing else.
+func onlyExternalSecrets(manifests []manifest) bool {
+	if len(manifests) == 0 {
+		return false
+	}
+	for _, item := range manifests {
+		if item.group != "external-secrets.io" || item.kind != kindExternalSecret {
+			return false
+		}
+	}
+	return true
+}
+
+// externalSecretTemplateDataPath is spec.target.template.data.<key> of an
+// ExternalSecret: a value External Secrets evaluates in the cluster over the
+// keys the ExternalSecret reads, never a value the tree carries.
+func externalSecretTemplateDataPath(path []string) bool {
+	return len(path) == 5 &&
+		path[0] == "spec" &&
+		path[1] == "target" &&
+		path[2] == "template" &&
+		path[3] == "data"
+}
+
+// externalSecretTemplateAction reports whether a template value computes from
+// the secret it is delivered into. One with no action is a literal, and a
+// literal under a credential-named key is a credential in the tree.
+func externalSecretTemplateAction(value any) bool {
+	text, ok := value.(string)
+	return ok && strings.Contains(text, "{{") && strings.Contains(text, "}}")
 }
 
 // bootstrapApplicationSetPath is the single tree location the promotion driver
@@ -1004,6 +1041,24 @@ func inspectValueAllowingReferences(
 	promotable bool,
 	allowCredentialReference func([]string) bool,
 ) error {
+	return inspectValueAllowingExpressions(value, path, promotable, allowCredentialReference, nil)
+}
+
+// inspectValueAllowingExpressions is inspectValueAllowingReferences that also
+// admits, at the paths allowExpression names, a template expression evaluated
+// in the cluster: it may carry template delimiters, and may sit under a
+// credential-named key as long as it computes from something rather than
+// being a literal.
+func inspectValueAllowingExpressions(
+	value any,
+	path []string,
+	promotable bool,
+	allowCredentialReference func([]string) bool,
+	allowExpression func([]string) bool,
+) error {
+	expressionAt := func(path []string, value any) bool {
+		return allowExpression != nil && allowExpression(path) && externalSecretTemplateAction(value)
+	}
 	switch typed := value.(type) {
 	case map[string]any:
 		if name, ok := typed["name"].(string); ok && isCredentialKey(name, true) && scalarHasValue(typed["value"]) {
@@ -1012,7 +1067,7 @@ func inspectValueAllowingReferences(
 		for key, child := range typed {
 			next := extendPath(path, key)
 			if isCredentialKey(key, isConfigurationDataPath(path)) && scalarHasValue(child) &&
-				(allowCredentialReference == nil || !allowCredentialReference(next)) {
+				(allowCredentialReference == nil || !allowCredentialReference(next)) && !expressionAt(next, child) {
 				return fmt.Errorf("%s contains credential value", strings.Join(next, "."))
 			}
 			if key == "image" && promotable {
@@ -1021,23 +1076,24 @@ func inspectValueAllowingReferences(
 					return fmt.Errorf("%s image %q is not digest-pinned", strings.Join(next, "."), image)
 				}
 			}
-			if err := inspectValueAllowingReferences(child, next, promotable, allowCredentialReference); err != nil {
+			if err := inspectValueAllowingExpressions(child, next, promotable, allowCredentialReference, allowExpression); err != nil {
 				return err
 			}
 		}
 	case []any:
 		for index, child := range typed {
-			if err := inspectValueAllowingReferences(
+			if err := inspectValueAllowingExpressions(
 				child,
 				extendPath(path, fmt.Sprintf("[%d]", index)),
 				promotable,
 				allowCredentialReference,
+				allowExpression,
 			); err != nil {
 				return err
 			}
 		}
 	case string:
-		if placeholderPattern.MatchString(typed) {
+		if placeholderPattern.MatchString(typed) && !expressionAt(path, typed) {
 			return fmt.Errorf("%s contains an unresolved placeholder", strings.Join(path, "."))
 		}
 		if isURLBearingPath(path) {
