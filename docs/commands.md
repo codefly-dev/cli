@@ -1423,13 +1423,40 @@ codefly delete service api
 
 ### `codefly update`
 
-Update resources.
+Move the agents services run on, or a repository's dependencies.
 
 ```bash
-codefly update service api       # Update a service
-codefly update workspace         # Update workspace configuration
-codefly update --interactive     # Interactive update mode
+codefly update workspace                                              # every service to its latest compatible release
+codefly update workspace --agent-override codefly.dev/go-grpc=0.1.47-dev.abc123def456
+codefly update service api                                            # one service to its latest compatible release
+codefly update service api --agent-version 0.1.47-dev.abc123def456    # pin one service exactly
+codefly update deps                                                   # Go dependencies under the current directory
 ```
+
+Without flags, `update workspace` and `update service` move to the agent's
+**latest release** — never a prerelease. Pinning an exact version, a
+[dev build](#codefly-publish-dev) included, takes one of two flags, one per
+place a pin can live:
+
+- `update workspace --agent-override <publisher>/<name>=<version>` (repeatable)
+  writes the top-level [`agent-overrides`](#moving-the-agent-version-of-composed-services)
+  block of `workspace.codefly.yaml`, and moves nothing else. It is the pin for
+  services of **composed** modules: the modules' own files stay untouched.
+  Entries not named are kept; the file is written through core's workspace
+  saver, which re-emits the file in canonical form (comments are not kept, as
+  with `codefly add module`).
+- `update service [<service>] --agent-version <version>` rewrites the
+  `agent.version` of the service's own `service.codefly.yaml`, and only that
+  token — comments, formatting and every other key are kept byte-for-byte. It is
+  the pin for a service the workspace **authors**; a service of a module the
+  workspace composes by `source` is refused, pointing at `--agent-override`.
+
+Both refuse, before writing anything, a version that is not an exact semantic
+version (`0.1.47` or `0.1.47-dev.abc123def456`; not `latest`, `^0.1`, `0.1` or
+`v0.1.47`), and a version that is not published: the candidate agent is
+downloaded and started to check its protocol, exactly as a latest-release
+update admits one. `--agent-override` also refuses a key no composed service's
+agent answers to, the same check every run applies to the block.
 
 ### `codefly sync`
 
@@ -1799,7 +1826,12 @@ agent-overrides:
   codefly.dev/go-grpc: 0.1.47-dev.abc123def456
 ```
 
-or pin one service's `agent.version` in its `service.codefly.yaml`.
+or pin one service's `agent.version` in its `service.codefly.yaml`. Both are
+written by a command rather than by hand — `codefly update workspace
+--agent-override <publisher>/<name>=<version>` and `codefly update service
+<service> --agent-version <version>` (see [`codefly update`](#codefly-update)).
+`codefly agent list` reports such a pin as `dev build of <release>`, not as
+behind that release: it was built on top of it.
 `codefly doctor workspace` warns (`agent_dev_build`) about every service running
 a dev build. Dev builds are for iteration only: `codefly publish patch` remains
 the release path, and a workspace should pin the released version before it
@@ -2660,6 +2692,13 @@ The set of agents evolves, so it isn't reproduced here: run `codefly agent list`
 agent known to your machine, `codefly agent versions <publisher/name>` (e.g. `go-grpc`, `nextjs`,
 `postgres`) for its available versions, or call the MCP `list_agents` tool for the same
 information from an AI assistant.
+
+`codefly agent list` (and `agent versions`) report how far each pin trails its
+repository as **releases** behind: prereleases never count, since no update
+moves a pin to one. A dev build `<X>-dev.<sha>` is shown as `dev build of <X>`
+and counted only against the releases after `X` — semver ranks it below `X`,
+but it was built on top of `X`, so it is not behind it. Any other prerelease
+(`1.0.0-rc.1`) keeps semver's meaning and is behind `1.0.0`.
 
 ### Registry build cache
 

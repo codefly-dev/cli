@@ -292,11 +292,103 @@ func TestArchivedRepoReportsNoDrift(t *testing.T) {
 }
 
 func TestBehindCell(t *testing.T) {
-	if got := behindCell(0); got != "0" {
+	if got := behindCell(0, ""); got != "0" {
 		t.Fatalf("behindCell(0) = %q, want 0", got)
 	}
-	if got := behindCell(3); got != "3" {
+	if got := behindCell(3, ""); got != "3" {
 		t.Fatalf("behindCell(3) = %q, want 3", got)
+	}
+	if got := behindCell(0, "0.0.139"); got != "0 (dev build of 0.0.139)" {
+		t.Fatalf("behindCell(dev build) = %q, want the dev-build state beside the count", got)
+	}
+}
+
+// devBuildInventory is an agent repo that released 0.0.138 and 0.0.139, then
+// published dev builds cut from 0.0.139 — every one a resolvable GitHub
+// prerelease, exactly as `codefly publish dev` leaves them.
+func devBuildInventory(extra ...releaseInfo) inventory {
+	releases := []releaseInfo{
+		{version: "0.0.138", platforms: []string{ciPlatform}},
+		{version: "0.0.139", platforms: []string{ciPlatform}},
+		{version: "0.0.139-dev.9b0c2212c6be", platforms: []string{ciPlatform}},
+		{version: "0.0.139-dev.abc123def456", platforms: []string{ciPlatform}},
+	}
+	releases = append(releases, extra...)
+	return buildInventory(redisAgent(), releases, nil, nil, nil, nil, false)
+}
+
+func TestClassifyPinDevBuildIsNotBehindItsRelease(t *testing.T) {
+	inv := devBuildInventory()
+	got := classifyPin(inv.Versions, "0.0.139-dev.9b0c2212c6be")
+	want := pinDrift{Behind: 0, DevBuildOf: "0.0.139"}
+	if got != want {
+		t.Fatalf("dev build of the latest release = %+v, want %+v: semver ranks it below 0.0.139, but it was built on top of it", got, want)
+	}
+}
+
+func TestClassifyPinDevBuildOfAnOlderRelease(t *testing.T) {
+	inv := devBuildInventory()
+	got := classifyPin(inv.Versions, "0.0.138-dev.abc123def456")
+	want := pinDrift{Behind: 1, DevBuildOf: "0.0.138"}
+	if got != want {
+		t.Fatalf("dev build of 0.0.138 = %+v, want %+v (behind only the release after its base)", got, want)
+	}
+}
+
+func TestClassifyPinDevBuildBehindANewerRelease(t *testing.T) {
+	inv := devBuildInventory(releaseInfo{version: "0.0.140", platforms: []string{ciPlatform}})
+	got := classifyPin(inv.Versions, "0.0.139-dev.9b0c2212c6be")
+	want := pinDrift{Behind: 1, DevBuildOf: "0.0.139"}
+	if got != want {
+		t.Fatalf("dev build with a newer release out = %+v, want %+v", got, want)
+	}
+}
+
+func TestClassifyPinReleaseIgnoresDevBuilds(t *testing.T) {
+	inv := devBuildInventory()
+	if got := classifyPin(inv.Versions, "0.0.139"); got != (pinDrift{}) {
+		t.Fatalf("release 0.0.139 = %+v, want up to date", got)
+	}
+	// 0.0.138 trails 0.0.139 only; the two dev builds are not releases a pin
+	// is moved to, so they are not drift.
+	if got := classifyPin(inv.Versions, "0.0.138"); got != (pinDrift{Behind: 1}) {
+		t.Fatalf("release 0.0.138 = %+v, want 1 behind (dev builds not counted)", got)
+	}
+}
+
+func TestClassifyPinOtherPrereleaseKeepsSemverPrecedence(t *testing.T) {
+	inv := buildInventory(redisAgent(), []releaseInfo{
+		{version: "1.0.0-rc.1", platforms: []string{ciPlatform}},
+		{version: "1.0.0", platforms: []string{ciPlatform}},
+	}, nil, nil, nil, nil, false)
+	if got := classifyPin(inv.Versions, "1.0.0-rc.1"); got != (pinDrift{Behind: 1}) {
+		t.Fatalf("release candidate = %+v, want 1 behind its release and no dev-build state", got)
+	}
+}
+
+func TestSummarizeWorkspaceAgentsReportsDevBuild(t *testing.T) {
+	restoreReleases, restoreTags, restoreOCI, restoreArchived := fetchReleases, fetchTags, fetchOCITags, repoArchived
+	defer func() {
+		fetchReleases, fetchTags, fetchOCITags, repoArchived = restoreReleases, restoreTags, restoreOCI, restoreArchived
+	}()
+	repoArchived = func(context.Context, *resources.Agent) bool { return false }
+	fetchReleases = func(context.Context, *resources.Agent) ([]releaseInfo, error) {
+		return []releaseInfo{
+			{version: "0.0.139", platforms: []string{ciPlatform}},
+			{version: "0.0.139-dev.9b0c2212c6be", platforms: []string{ciPlatform}},
+		}, nil
+	}
+	fetchTags = func(context.Context, *resources.Agent) ([]string, error) { return nil, nil }
+	fetchOCITags = func(context.Context, *resources.Agent) (bool, []string, error) { return false, nil, nil }
+
+	pins := []agentPin{{module: "acme", agent: &resources.Agent{Kind: resources.ServiceAgent, Publisher: "codefly.dev", Name: "go-grpc", Version: "0.0.139-dev.9b0c2212c6be"}}}
+	summaries := summarizeWorkspaceAgents(context.Background(), pins)
+	if len(summaries) != 1 {
+		t.Fatalf("summaries = %d, want 1", len(summaries))
+	}
+	got := summaries[0]
+	if got.Behind != 0 || got.DevBuildOf != "0.0.139" || !got.PinnedResolvable {
+		t.Fatalf("summary = %+v, want resolvable, 0 behind, dev build of 0.0.139", got)
 	}
 }
 

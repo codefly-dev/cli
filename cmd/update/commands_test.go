@@ -15,9 +15,18 @@ func TestUpdateCommandsReturnErrorsThroughCobra(t *testing.T) {
 		if command.RunE == nil || command.Run != nil {
 			t.Errorf("%s is not exclusively RunE", command.Name())
 		}
+	}
+	for _, command := range []*cobra.Command{WorkspaceCmd, DepsCmd} {
 		if err := command.Args(command, []string{"extra"}); err == nil {
 			t.Errorf("%s accepted a positional argument", command.Name())
 		}
+	}
+	// update service names at most one service.
+	if err := ServiceCmd.Args(ServiceCmd, []string{"api"}); err != nil {
+		t.Errorf("service refused a service name: %v", err)
+	}
+	if err := ServiceCmd.Args(ServiceCmd, []string{"api", "extra"}); err == nil {
+		t.Error("service accepted two positional arguments")
 	}
 }
 
