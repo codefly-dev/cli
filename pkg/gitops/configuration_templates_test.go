@@ -177,7 +177,10 @@ func TestExternalSecretTemplateRoundTripsPasswords(t *testing.T) {
 func TestExternalSecretTemplateQuotesLiteralDelimiters(t *testing.T) {
 	delivered := deliveredTemplate{producer: producerUnique, template: &basev0.ConfigurationValueTemplate{Segments: []*basev0.ConfigurationValueTemplateSegment{
 		{Content: &basev0.ConfigurationValueTemplateSegment_Literal{Literal: `a{{ .x }}"b`}},
-		{Content: &basev0.ConfigurationValueTemplateSegment_Reference{Reference: &basev0.ConfigurationValueReference{Configuration: "postgres", Key: "K"}}},
+		{Content: &basev0.ConfigurationValueTemplateSegment_Reference{Reference: &basev0.ConfigurationValueReference{
+			Configuration: "postgres", Key: "K",
+			Escape: basev0.ConfigurationValueEscape_CONFIGURATION_VALUE_ESCAPE_NONE,
+		}}},
 	}}}
 	expression, primitives, err := externalSecretTemplateExpression(delivered)
 	require.NoError(t, err)
@@ -373,6 +376,7 @@ func TestTemplateReferencingAKeyTheProducerDoesNotReadIsRefused(t *testing.T) {
 			{Content: &basev0.ConfigurationValueTemplateSegment_Literal{Literal: "@"}},
 			{Content: &basev0.ConfigurationValueTemplateSegment_Reference{Reference: &basev0.ConfigurationValueReference{
 				Configuration: "postgres", Key: "DATABASE_HOST",
+				Escape: basev0.ConfigurationValueEscape_CONFIGURATION_VALUE_ESCAPE_URL_USERINFO,
 			}}},
 		},
 	}
@@ -412,6 +416,7 @@ func TestTemplateReferencingAnotherAssembledValueIsRefused(t *testing.T) {
 				{Content: &basev0.ConfigurationValueTemplateSegment_Literal{Literal: "jdbc:"}},
 				{Content: &basev0.ConfigurationValueTemplateSegment_Reference{Reference: &basev0.ConfigurationValueReference{
 					Configuration: "postgres", Key: "read-write-connection",
+					Escape: basev0.ConfigurationValueEscape_CONFIGURATION_VALUE_ESCAPE_URL_USERINFO,
 				}}},
 			}},
 		})
