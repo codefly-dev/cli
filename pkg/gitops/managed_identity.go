@@ -128,6 +128,7 @@ func projectRenderedServiceConfiguration(
 	env *environments.Environment,
 	graph map[string]*resources.Service,
 	injections renderInjections,
+	templates renderTemplates,
 ) error {
 	modulesRoot := filepath.Join(stage, "modules")
 	moduleEntries, err := os.ReadDir(modulesRoot)
@@ -157,12 +158,14 @@ func projectRenderedServiceConfiguration(
 			if service == nil {
 				continue
 			}
+			scope := moduleScope(env, workspace, moduleEntry.Name())
+			scope.Templates = templates
 			if err := projectServiceConfiguration(
 				ctx,
 				filepath.Join(servicesRoot, serviceEntry.Name()),
 				service,
 				env,
-				moduleScope(env, workspace, moduleEntry.Name()),
+				scope,
 				injections.forService(moduleEntry.Name(), serviceEntry.Name()),
 			); err != nil {
 
