@@ -29,7 +29,7 @@ func projectServiceConfiguration(ctx context.Context, root string, service *reso
 	if _, err := projectServiceAutoscale(root, service.Name, env.Name, scope.Namespace, service.Autoscale); err != nil {
 		return fmt.Errorf("project service %s autoscale: %w", service.Name, err)
 	}
-	if err := projectManagedIdentity(ctx, root, service, env, scope.Namespace); err != nil {
+	if err := projectManagedIdentity(ctx, root, service, env, scope); err != nil {
 		return fmt.Errorf("project service %s managed identity: %w", service.Name, err)
 	}
 	if err := validateProjectedConfiguration(root, service, env, scope); err != nil {
@@ -46,13 +46,12 @@ func projectManagedIdentity(
 	serviceRoot string,
 	service *resources.Service,
 	env *environments.Environment,
-	namespace string,
+	scope unitScope,
 ) error {
 	if err := env.Validate(); err != nil {
 		return err
 	}
-	consumed := consumedManagedServices(service, env)
-	identity, err := soleWorkloadIdentity(service.Name, consumed, env)
+	identity, err := soleWorkloadIdentity(service.Name, consumedManagedServices(service, scope.Module, env), env)
 	if err != nil {
 		return err
 	}
@@ -63,34 +62,50 @@ func projectManagedIdentity(
 	if err := overlay.AttachServiceAccount(&coreservices.WorkloadServiceAccount{Annotations: identity.Annotations}, identity.Labels); err != nil {
 		return err
 	}
-	return coreservices.ProjectServiceAccount(ctx, filepath.Join(serviceRoot, "base"), namespace, service.Name, overlay)
+	return coreservices.ProjectServiceAccount(ctx, filepath.Join(serviceRoot, "base"), scope.Namespace, service.Name, overlay)
+}
+
+// managedConsumption is one managed service a workload dials, named by the
+// module-qualified identity of the service it replaces so an error can tell two
+// same-named dependencies apart.
+type managedConsumption struct {
+	unique  string
+	managed environments.EnvironmentManagedService
 }
 
 // consumedManagedServices returns, in a stable order, the environment's managed
-// services this service's pods dial. Only edges that constrain running count: a
-// build or schema edge on a database is read by the toolchain that generates
-// code, not by the workload, so stamping its identity onto the pod would
-// authenticate a container that never opens the connection.
-func consumedManagedServices(service *resources.Service, env *environments.Environment) []string {
-	var consumed []string
-	for name := range env.ManagedServices {
-		dependency := managedDependency(service, name)
-		if dependency == nil || !dependency.Kind.Participates(resources.StageRun) {
+// services this service's pods dial. It walks the service's own dependencies
+// rather than the environment's entries: a dependency carries the module it
+// resolves in, which is what decides whether this environment manages it, while
+// an entry keyed by a bare name alone cannot say which module's service it
+// replaced. module is the module the consuming service renders in, the default
+// for a dependency that names no module of its own.
+//
+// Only edges that constrain running count: a build or schema edge on a database
+// is read by the toolchain that generates code, not by the workload, so stamping
+// its identity onto the pod would authenticate a container that never opens the
+// connection.
+func consumedManagedServices(service *resources.Service, module string, env *environments.Environment) []managedConsumption {
+	var consumed []managedConsumption
+	for _, dependency := range service.ServiceDependencies {
+		if !dependency.Kind.Participates(resources.StageRun) {
 			continue
 		}
-		consumed = append(consumed, name)
-	}
-	sort.Strings(consumed)
-	return consumed
-}
-
-func managedDependency(service *resources.Service, managed string) *resources.ServiceDependency {
-	for _, dependency := range service.ServiceDependencies {
-		if dependency.Name == managed {
-			return dependency
+		dependencyModule := dependency.Module
+		if dependencyModule == "" {
+			dependencyModule = module
 		}
+		managed, replaced := env.ManagedService(dependencyModule, dependency.Name)
+		if !replaced {
+			continue
+		}
+		consumed = append(consumed, managedConsumption{
+			unique:  resources.ServiceUnique(dependencyModule, dependency.Name),
+			managed: managed,
+		})
 	}
-	return nil
+	sort.Slice(consumed, func(i, j int) bool { return consumed[i].unique < consumed[j].unique })
+	return consumed
 }
 
 // soleWorkloadIdentity combines a service's own identity with those its managed
@@ -99,20 +114,20 @@ func managedDependency(service *resources.Service, managed string) *resources.Se
 // last would win and the other endpoint would refuse the workload at runtime
 // with nothing in the deploy to show for it. Several endpoints reached as the
 // same principal are one identity and render as one.
-func soleWorkloadIdentity(service string, consumed []string, env *environments.Environment) (*environments.EnvironmentWorkloadIdentity, error) {
+func soleWorkloadIdentity(service string, consumed []managedConsumption, env *environments.Environment) (*environments.EnvironmentWorkloadIdentity, error) {
 	identity := env.WorkloadIdentity(service)
 	var declaring []string
-	for _, name := range consumed {
-		declared := env.ManagedServices[name].Identity
+	for _, consumption := range consumed {
+		declared := consumption.managed.Identity
 		if declared == nil {
 			continue
 		}
 		if identity != nil && !reflect.DeepEqual(identity, declared) {
 			return nil, fmt.Errorf("service %q consumes managed services %s, which declare different runtime identities; a pod authenticates as one",
-				service, strings.Join(append(declaring, name), ", "))
+				service, strings.Join(append(declaring, consumption.unique), ", "))
 		}
 		identity = declared
-		declaring = append(declaring, name)
+		declaring = append(declaring, consumption.unique)
 	}
 	return identity, nil
 }

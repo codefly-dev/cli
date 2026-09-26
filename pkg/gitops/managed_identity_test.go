@@ -78,6 +78,12 @@ func consumerEnvironment(managed environments.EnvironmentManagedService) *enviro
 	}
 }
 
+// consumerScope is the scope the payments module's units render in, the module a
+// dependency naming none of its own resolves in.
+func consumerScope() unitScope {
+	return unitScope{Workspace: "platform", Module: "payments", Namespace: "payments"}
+}
+
 // buildOverlay runs kustomize over a rendered service overlay so assertions read
 // what the cluster would receive rather than one file on disk.
 func buildOverlay(t *testing.T, root, environment string) []manifest {
@@ -114,7 +120,7 @@ func TestProjectManagedIdentityProjectsWithoutRewritingEndpoints(t *testing.T) {
 	writeConsumerTree(t, root, "production", "payments", "accounts", "store.payments.svc:5432")
 
 	if err := projectManagedIdentity(
-		context.Background(), root, storeConsumer("accounts"), consumerEnvironment(managedIdentityService()), "payments",
+		context.Background(), root, storeConsumer("accounts"), consumerEnvironment(managedIdentityService()), consumerScope(),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +179,7 @@ func TestProjectManagedIdentityRefusesConflictingIdentities(t *testing.T) {
 	service := storeConsumer("accounts")
 	service.ServiceDependencies = append(service.ServiceDependencies, &resources.ServiceDependency{Name: "warehouse"})
 
-	err := projectManagedIdentity(context.Background(), root, service, env, env.Namespace)
+	err := projectManagedIdentity(context.Background(), root, service, env, consumerScope())
 	if err == nil || !strings.Contains(err.Error(), "authenticates as one") {
 		t.Fatalf("err = %v, want a refusal naming the conflict", err)
 	}
@@ -182,7 +188,7 @@ func TestProjectManagedIdentityRefusesConflictingIdentities(t *testing.T) {
 	// as one rather than being refused.
 	sameIdentity := managedIdentityService()
 	env.ManagedServices["warehouse"] = sameIdentity
-	if err = projectManagedIdentity(context.Background(), root, service, env, env.Namespace); err != nil {
+	if err = projectManagedIdentity(context.Background(), root, service, env, consumerScope()); err != nil {
 		t.Fatalf("two endpoints with one principal were refused: %v", err)
 	}
 }
@@ -196,7 +202,7 @@ func TestProjectManagedIdentityLeavesNonConsumersAlone(t *testing.T) {
 	before := readTree(t, root)
 
 	if err := projectManagedIdentity(
-		context.Background(), root, &resources.Service{Name: "frontend"}, consumerEnvironment(managedIdentityService()), "payments",
+		context.Background(), root, &resources.Service{Name: "frontend"}, consumerEnvironment(managedIdentityService()), consumerScope(),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +223,7 @@ func TestProjectManagedIdentityLeavesAbsentIdentityAlone(t *testing.T) {
 		EgressCIDRs:  []string{"10.20.11.0/28"},
 	}
 	if err := projectManagedIdentity(
-		context.Background(), root, storeConsumer("accounts"), consumerEnvironment(legacy), "payments",
+		context.Background(), root, storeConsumer("accounts"), consumerEnvironment(legacy), consumerScope(),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -257,11 +263,117 @@ func TestProjectManagedIdentityIgnoresBuildOnlyEdge(t *testing.T) {
 		ServiceDependencies: []*resources.ServiceDependency{{Name: "store", Kind: resources.DependencyKindBuild}},
 	}
 	if err := projectManagedIdentity(
-		context.Background(), root, service, consumerEnvironment(managedIdentityService()), "payments",
+		context.Background(), root, service, consumerEnvironment(managedIdentityService()), consumerScope(),
 	); err != nil {
 		t.Fatal(err)
 	}
 	if after := readTree(t, root); after != before {
 		t.Errorf("tree changed for a build-only edge:\n%s", after)
+	}
+}
+
+// TestProjectManagedIdentityFollowsTheDependencysModule pins that the identity a
+// workload is stamped with comes from the entry managing the service it actually
+// dials. Two modules each shipping a "store" is the ordinary case, and a bare
+// lookup gave both consumers whichever entry the name matched.
+func TestProjectManagedIdentityFollowsTheDependencysModule(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "accounts")
+	writeConsumerTree(t, root, "production", "payments", "accounts", "store.payments.svc:5432")
+
+	env := consumerEnvironment(managedIdentityService())
+	delete(env.ManagedServices, "store")
+	env.ManagedServices["payments/store"] = managedIdentityService()
+
+	if err := projectManagedIdentity(
+		context.Background(), root, storeConsumer("accounts"), env, consumerScope(),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	serviceAccount := manifestOfKind(t, buildOverlay(t, root, "production"), "ServiceAccount")
+	metadata, _ := serviceAccount.value["metadata"].(map[string]any)
+	annotations, _ := metadata["annotations"].(map[string]any)
+	if annotations["iam.gke.io/gcp-service-account"] != "platform-db@obinh.iam.gserviceaccount.com" {
+		t.Errorf("ServiceAccount annotations = %v, want the identity of payments/store", annotations)
+	}
+}
+
+// The mirror case: the environment manages another module's same-named service,
+// so this consumer dials the service its own module deploys and acquires no
+// identity from an entry that never applied to it.
+func TestProjectManagedIdentityIgnoresAnotherModulesManagedService(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "accounts")
+	writeConsumerTree(t, root, "production", "payments", "accounts", "store.payments.svc:5432")
+	before := readTree(t, root)
+
+	env := consumerEnvironment(managedIdentityService())
+	delete(env.ManagedServices, "store")
+	env.ManagedServices["warehouse/store"] = managedIdentityService()
+
+	if err := projectManagedIdentity(
+		context.Background(), root, storeConsumer("accounts"), env, consumerScope(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if after := readTree(t, root); after != before {
+		t.Errorf("a consumer was stamped with another module's managed identity:\n%s", after)
+	}
+}
+
+// A dependency naming its own module resolves there, not in the consuming
+// service's module, so a cross-module edge onto a managed service is honored.
+func TestProjectManagedIdentityResolvesCrossModuleDependency(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "accounts")
+	writeConsumerTree(t, root, "production", "payments", "accounts", "store.warehouse.svc:5432")
+
+	env := consumerEnvironment(managedIdentityService())
+	delete(env.ManagedServices, "store")
+	env.ManagedServices["warehouse/store"] = managedIdentityService()
+
+	service := &resources.Service{
+		Name:                "accounts",
+		ServiceDependencies: []*resources.ServiceDependency{{Name: "store", Module: "warehouse"}},
+	}
+	if err := projectManagedIdentity(context.Background(), root, service, env, consumerScope()); err != nil {
+		t.Fatal(err)
+	}
+
+	serviceAccount := manifestOfKind(t, buildOverlay(t, root, "production"), "ServiceAccount")
+	metadata, _ := serviceAccount.value["metadata"].(map[string]any)
+	annotations, _ := metadata["annotations"].(map[string]any)
+	if annotations["iam.gke.io/gcp-service-account"] != "platform-db@obinh.iam.gserviceaccount.com" {
+		t.Errorf("ServiceAccount annotations = %v, want the identity of warehouse/store", annotations)
+	}
+}
+
+// A conflict is reported with the module-qualified identity of each dependency,
+// so two same-named managed services in different modules are distinguishable in
+// the refusal.
+func TestProjectManagedIdentityNamesConflictingDependenciesByModule(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "accounts")
+	writeConsumerTree(t, root, "production", "payments", "accounts", "store.payments.svc:5432")
+
+	other := managedIdentityService()
+	other.Identity = &environments.EnvironmentWorkloadIdentity{Principal: "warehouse@obinh.iam.gserviceaccount.com"}
+	env := consumerEnvironment(managedIdentityService())
+	delete(env.ManagedServices, "store")
+	env.ManagedServices["payments/store"] = managedIdentityService()
+	env.ManagedServices["warehouse/store"] = other
+
+	service := &resources.Service{
+		Name: "accounts",
+		ServiceDependencies: []*resources.ServiceDependency{
+			{Name: "store"},
+			{Name: "store", Module: "warehouse"},
+		},
+	}
+	err := projectManagedIdentity(context.Background(), root, service, env, consumerScope())
+	if err == nil {
+		t.Fatal("expected a refusal naming the conflict")
+	}
+	for _, want := range []string{"payments/store", "warehouse/store", "authenticates as one"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to contain %q", err, want)
+		}
 	}
 }

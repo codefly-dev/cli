@@ -173,7 +173,7 @@ func validateProjectedConfiguration(root string, service *resources.Service, env
 	if env.ServiceSecrets != nil {
 		refs = env.ServiceSecrets.Services[service.Name].RemoteKeys
 	}
-	identity, err := soleWorkloadIdentity(service.Name, consumedManagedServices(service, env), env)
+	identity, err := soleWorkloadIdentity(service.Name, consumedManagedServices(service, scope.Module, env), env)
 	if err != nil {
 		return err
 	}

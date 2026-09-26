@@ -569,7 +569,6 @@ func validateModuleUnits(
 	if err != nil {
 		return err
 	}
-	managed := selectedEnvironment.ManagedServices
 	declared := make([]string, 0, len(module.ServiceReferences))
 	for _, reference := range module.ServiceReferences {
 		declared = append(declared, reference.Name)
@@ -580,7 +579,7 @@ func validateModuleUnits(
 		if unit.Module != moduleName {
 			return fmt.Errorf("rendered unit %q belongs to module %q, expected %q", unit.Name, unit.Module, moduleName)
 		}
-		_, expectedManaged := managed[unit.Name]
+		_, expectedManaged := selectedEnvironment.ManagedService(moduleName, unit.Name)
 		if unit.Managed != expectedManaged {
 			return fmt.Errorf("rendered unit %q managed state differs from environment %q", unit.Name, environment)
 		}
