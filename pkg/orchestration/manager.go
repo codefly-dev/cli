@@ -371,7 +371,7 @@ func (n NoOpManager) BuilderDoLoad(ctx context.Context) (*OutputProperty, error)
 	return &OutputProperty{OnInit: true}, nil
 }
 
-func (n NoOpManager) BuilderDoPlan(ctx context.Context) (*OutputProperty, error) {
+func (n NoOpManager) BuilderDoPlan(_ context.Context) (*OutputProperty, error) {
 	return &OutputProperty{OnInit: true}, nil
 }
 
