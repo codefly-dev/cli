@@ -1,0 +1,9 @@
+name: acme
+layout: modules
+modules:
+  - name: shop
+environments:
+  - name: staging
+    namespace: acme
+    registry:
+      url: registry.example.com/acme

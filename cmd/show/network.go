@@ -14,6 +14,9 @@ var (
 	namingScope     string
 	showNetworkJSON bool
 	showNetworkEnv  string
+	// showNetworkRendered adds each endpoint's container port to --json, read
+	// from the committed module render for --env.
+	showNetworkRendered bool
 )
 
 // NetworkCmd shows every service's endpoints and the DETERMINISTIC native address each
@@ -35,9 +38,18 @@ the port a GitOps render (codefly deploy gitops render) gives it, for the
 environment named by --env. That allocation depends on the environment, since an
 external endpoint that resolves to a public host gets no cluster port and a
 managed service has no in-cluster workload. Tools outside the CLI read ports from
-here rather than declaring them.`,
+here rather than declaring them.
+
+--rendered adds each endpoint's container port: the port its pods listen on,
+which the service's agent decides and which differs from the deployed port when
+the agent keeps an engine port (5432, 6379, 3000) behind the Service. No agent
+reports it before rendering, so it is read from the module render committed at
+deployments/modules/<module>: the targetPort of the rendered Service port that
+publishes the endpoint's deployed port. A service whose module has no render
+carries none; a render for another environment is an error.`,
 	Example: `  codefly show network
-  codefly show network --json --env staging`,
+  codefly show network --json --env staging
+  codefly show network --json --env staging --rendered`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
@@ -53,6 +65,9 @@ here rather than declaring them.`,
 			return fmt.Errorf("cannot build dependency graph: %w", err)
 		}
 
+		if showNetworkRendered && !showNetworkJSON {
+			return fmt.Errorf("--rendered adds container ports to --json: pass --json")
+		}
 		if showNetworkJSON {
 			return writeNetworkJSON(ctx, cmd.OutOrStdout(), workspace, deps)
 		}
@@ -111,4 +126,5 @@ func init() {
 	NetworkCmd.Flags().StringVar(&namingScope, "naming-scope", "", "naming scope used to derive deterministic ports (matches `run --naming-scope`)")
 	NetworkCmd.Flags().BoolVar(&showNetworkJSON, "json", false, "Emit machine-readable JSON, with each endpoint's deployed in-cluster port")
 	NetworkCmd.Flags().StringVar(&showNetworkEnv, "env", "local", "Environment whose in-cluster allocation --json reports, as for deploy gitops render --env")
+	NetworkCmd.Flags().BoolVar(&showNetworkRendered, "rendered", false, "With --json, add each endpoint's container port, read from the module render for --env")
 }

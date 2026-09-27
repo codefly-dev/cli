@@ -108,9 +108,10 @@ func renderModuleTree(
 		selfEndpoints := make(map[string]map[string]string)
 		deployed := make(map[string]*basev0.Configuration)
 		secretKeys := make(map[string][]string)
+		inClusterPorts := make(map[string]map[string]uint32)
 		destinations := moduleStageDestinations(workspace, module, stage)
 		for _, service := range roots {
-			if err := renderServiceFlow(
+			if flowErr := serviceFlow(
 				ctx,
 				workspace,
 				module,
@@ -139,8 +140,13 @@ func renderModuleTree(
 						secretKeys[unique] = declared
 					}
 				},
-			); err != nil {
-				return fmt.Errorf("render service %s: %w", service.Name, err)
+				func(rendered map[string]map[string]uint32) {
+					for unique, ports := range rendered {
+						inClusterPorts[unique] = ports
+					}
+				},
+			); flowErr != nil {
+				return fmt.Errorf("render service %s: %w", service.Name, flowErr)
 			}
 		}
 		scope.Templates = renderTemplates{}
@@ -192,6 +198,15 @@ func renderModuleTree(
 					injections.forService(module.Name, service.Name),
 				); projectErr != nil {
 					return projectErr
+				}
+				if portsErr := verifyDeclaredEndpointPorts(
+					filepath.Join(stage, unitDir, service.Name),
+					env.Name,
+					module.Name,
+					service,
+					inClusterPorts[resources.ServiceUnique(module.Name, service.Name)],
+				); portsErr != nil {
+					return portsErr
 				}
 			}
 			options.Units = append(options.Units, entry)
@@ -342,7 +357,8 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		var selfEndpoints map[string]map[string]string
 		var deployed map[string]*basev0.Configuration
 		var secretKeys map[string][]string
-		if err := renderServiceFlow(
+		var inClusterPorts map[string]map[string]uint32
+		if err := serviceFlow(
 			ctx,
 			workspace,
 			module,
@@ -358,6 +374,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 			func(rendered map[string]*basev0.Configuration, keys map[string][]string) {
 				deployed, secretKeys = rendered, keys
 			},
+			func(rendered map[string]map[string]uint32) { inClusterPorts = rendered },
 		); err != nil {
 			return err
 		}
@@ -369,7 +386,10 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		if err := collectRenderTemplates(templates, deployed, secretKeys); err != nil {
 			return err
 		}
-		return projectRenderedServiceConfiguration(ctx, stage, workspace, env, graph, injections, templates)
+		if err := projectRenderedServiceConfiguration(ctx, stage, workspace, env, graph, injections, templates); err != nil {
+			return err
+		}
+		return verifyGraphDeclaredEndpointPorts(stage, env, graph, inClusterPorts)
 
 	})
 }
@@ -430,6 +450,11 @@ func prepareSnapshotRegistry(ctx context.Context, env *environments.Environment)
 	return nil
 }
 
+// serviceFlow renders one root service's dependency graph through its service
+// agents. It is a variable so a test can stand an in-process agent in for the
+// flow, the way stubBuild stands in for the image build boundary.
+var serviceFlow = renderServiceFlow
+
 func renderServiceFlow(
 	ctx context.Context,
 	workspace *resources.Workspace,
@@ -444,6 +469,7 @@ func renderServiceFlow(
 	recordServices func(map[string]*resources.Service),
 	recordSelfEndpoints func(map[string]map[string]string),
 	recordConfigurations func(map[string]*basev0.Configuration, map[string][]string),
+	recordInClusterPorts func(map[string]map[string]uint32),
 ) (result error) {
 	if err := selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
 		return err
@@ -485,6 +511,9 @@ func renderServiceFlow(
 	}
 	if recordConfigurations != nil {
 		recordConfigurations(flow.DeployedConfigurations(), flow.DeployedSecretKeys())
+	}
+	if recordInClusterPorts != nil {
+		recordInClusterPorts(flow.InClusterPorts(ctx))
 	}
 	if recordServices != nil {
 		services := map[string]*resources.Service{}

@@ -523,6 +523,32 @@ the agent's to choose and may differ (a database agent keeps its engine's port
 behind the allocated Service port), so the allocation does not replace a
 module's declared pod ports.
 
+**Declared container ports are checked against what the agent rendered.** A
+service may declare `spec.deployment.endpoint-ports` — endpoint name to the
+container port its pods listen on, which a module's own manifests (a
+NetworkPolicy, say) are written against. No agent reports its container ports
+over the builder protocol, so the render reads them from the tree the agent
+wrote: it builds the unit's environment overlay with Kustomize, finds the
+Service port entry publishing the endpoint's in-cluster port (the one its agent
+was handed), and takes its `targetPort` — resolved through the pods that Service
+selects when it names a container port. After every service is rendered and
+before anything is installed, the render refuses a declaration that differs
+from that port, one naming an endpoint that is not rendered in-cluster in the
+environment, and one whose in-cluster port no rendered Service publishes,
+listing every violation of the service at once:
+
+```
+service shop/api: spec.deployment.endpoint-ports disagrees with the manifests its agent rendered for environment staging:
+  authority = 9091, but its pods listen on container port 19043 (the Service publishes port 19043 with targetPort 19043)
+```
+
+A go-grpc agent binds a named endpoint on its allocated port, so a declaration
+there must be that port; a postgres agent publishes the allocated port and
+targets 5432, so `tcp: 5432` passes. A service without a declaration is not
+read, and a managed service (no workload) is skipped. The check adds nothing to
+the rendered output. `codefly show network --json --rendered` reports the same
+container ports to tools outside the CLI.
+
 `render` is a function of the workspace and needs no cluster: by default no
 service's manifests are sent to a Kubernetes API. Pass `--validate-cluster` to
 also dry-run each rendered service server-side (`kubectl apply --server-side
@@ -1621,6 +1647,7 @@ to on a local run, and the dependency endpoints each consumes. Nothing is starte
 codefly show network
 codefly show network --naming-scope ci-42
 codefly show network --json --env staging
+codefly show network --json --env staging --rendered
 ```
 
 `--json` adds each endpoint's `deployed_port`: its in-cluster port in the
@@ -1657,6 +1684,24 @@ Module generators read ports from here rather than declaring them.
 ports are hashed on: the same `authority` endpoint composed as `saas-starter`
 deploys on 6003. The text output, without `--json`, is unchanged and takes no
 environment.
+
+`--rendered` (with `--json`) adds each endpoint's `container_port`: the port its
+pods listen on. The agent decides it when it renders, so it is not known before
+a render and is read from the render committed at `deployments/modules/<module>`
+(recorded per service as `render`, relative to the workspace), exactly as
+`deploy gitops render` reads it to check `spec.deployment.endpoint-ports`: the
+`targetPort` of the rendered Service port that publishes the endpoint's
+in-cluster port. A service whose module has no render, or whose render has no
+unit for it (a managed service), carries no `render` and no `container_port`; an
+endpoint no rendered Service publishes carries none either. A render for an
+environment other than `--env` is an error. The render output itself is not
+extended with a ports file: the manifests are the record, and this is its one
+reader.
+
+```json
+{"name": "tcp", "api": "tcp", "visibility": "external",
+ "native": "localhost:21422", "deployed_port": 80, "container_port": 5432}
+```
 
 ### `codefly show fixtures`
 
