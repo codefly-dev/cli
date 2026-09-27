@@ -534,6 +534,7 @@ func TestGenerateRunnablesReproducesTheDocumentStoreOracle(t *testing.T) {
 			Timeout:        durationpb.New(time.Minute),
 			Cancellation:   basev0.RunnableExecution_CANCELLATION_NONE,
 			Recovery:       basev0.RunnableExecution_RECOVERY_RECEIPT,
+			Completion:     basev0.RunnableExecution_COMPLETION_CALL,
 			MaxInputBytes:  resources.DefaultRunnablePayloadBytes,
 			MaxOutputBytes: resources.DefaultRunnablePayloadBytes,
 		},
@@ -559,7 +560,13 @@ func TestGenerateRunnablesReproducesTheDocumentStoreOracle(t *testing.T) {
 	if !googleproto.Equal(handWritten, asOracle) {
 		t.Fatalf("the derived package is not the one document-store publishes:\n%v", asOracle)
 	}
-	if asOracle.GetDigest() != "4c26fb95a0236b94107b30f34783cd893f2be36e0d157340c247013fd93a9a1f" {
+	// The digest moved when the completion mode became a required part of an
+	// execution: the oracle above states COMPLETION_CALL and the derivation
+	// reproduces it, so this is the same lift over a contract that gained a
+	// field. module-document-store's own hand-assembled ingestrunnable.Package
+	// has to state the mode too, or core refuses it — which is a change owed in
+	// that repo, not here.
+	if asOracle.GetDigest() != "ee460290f91e2cad2d9e7efe6d740ba35ff5ec89b4395bbde1e8bd19bd8291a0" {
 		t.Fatalf("digest = %s, want the published oracle's", asOracle.GetDigest())
 	}
 }

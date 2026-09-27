@@ -112,6 +112,6 @@ func TestIdentityJSONKeysArePinned(t *testing.T) {
 		executionKeys = append(executionKeys, key)
 	}
 	require.ElementsMatch(t,
-		[]string{"facilities", "timeout", "cancellation", "recovery", "concurrency", "max_input_bytes", "max_output_bytes"},
+		[]string{"facilities", "timeout", "cancellation", "recovery", "concurrency", "max_input_bytes", "max_output_bytes", "completion"},
 		executionKeys)
 }

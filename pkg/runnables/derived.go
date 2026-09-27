@@ -150,6 +150,12 @@ type Operation struct {
 	// so the policy is where an installer reads them.
 	MaxInputBytes  uint64 `json:"max_input_bytes,omitempty"`
 	MaxOutputBytes uint64 `json:"max_output_bytes,omitempty"`
+	// Completion is how the operation's answer arrives, "call" or "submit". Like
+	// the payload bounds above it, a prepared binding carries no package, so this
+	// document is the only place an installer reads it — and core refuses a
+	// policy that names no mode, so dropping it here would make every binding
+	// this generates unusable at install rather than merely incomplete.
+	Completion string `json:"completion"`
 }
 
 // Scope is one authority a binding is minted for.
@@ -279,7 +285,15 @@ func newPackageExecution(execution *basev0.RunnableExecution) Execution {
 		Concurrency:    execution.GetConcurrency(),
 		MaxInputBytes:  execution.GetMaxInputBytes(),
 		MaxOutputBytes: execution.GetMaxOutputBytes(),
+		Completion:     completionSpelling(execution.GetCompletion()),
 	}
+}
+
+func completionSpelling(completion basev0.RunnableExecution_Completion) string {
+	if completion == basev0.RunnableExecution_COMPLETION_SUBMIT {
+		return string(resources.RunnableCompletionSubmit)
+	}
+	return string(resources.RunnableCompletionCall)
 }
 
 func cancellationSpelling(cancellation basev0.RunnableExecution_Cancellation) string {

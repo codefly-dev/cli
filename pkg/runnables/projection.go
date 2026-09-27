@@ -22,6 +22,11 @@ type Execution struct {
 	Concurrency    uint32   `json:"concurrency,omitempty"`
 	MaxInputBytes  uint64   `json:"max_input_bytes"`
 	MaxOutputBytes uint64   `json:"max_output_bytes"`
+	// Completion is how the answer arrives, "call" or "submit". Like the payload
+	// bounds it is the EFFECTIVE value: a declaration that omits it means "call",
+	// and reporting a blank would tell a caller nothing about whether it gets a
+	// reply or a handle.
+	Completion string `json:"completion"`
 }
 
 // Identity is the immutable module/name@version release identity plus the
@@ -71,5 +76,6 @@ func NewExecution(execution *resources.RunnableExecution) Execution {
 		Concurrency:    execution.Concurrency,
 		MaxInputBytes:  execution.MaxInputBytes(),
 		MaxOutputBytes: execution.MaxOutputBytes(),
+		Completion:     string(execution.GetCompletion()),
 	}
 }
