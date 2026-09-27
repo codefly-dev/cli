@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"google.golang.org/protobuf/reflect/protodesc"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	corerunnable "github.com/codefly-dev/core/runnable"
 	"google.golang.org/protobuf/encoding/protojson"
 	googleproto "google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 

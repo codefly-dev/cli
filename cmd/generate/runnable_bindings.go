@@ -348,7 +348,7 @@ func descriptorClosure(set *descriptorpb.FileDescriptorSet, method string) *desc
 			// installer as configuration, which the environment carries (a
 			// process environment on a run), so what it does not need it must
 			// not carry.
-			lean := googleproto.Clone(file).(*descriptorpb.FileDescriptorProto)
+			lean := googleproto.CloneOf(file)
 			lean.SourceCodeInfo = nil
 			out.File = append(out.File, lean)
 		}
