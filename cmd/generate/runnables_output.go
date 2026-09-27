@@ -14,7 +14,6 @@ import (
 	"github.com/codefly-dev/cli/pkg/cli"
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
 	"github.com/codefly-dev/core/shared"
 	"github.com/pmezard/go-difflib/difflib"
@@ -34,17 +33,7 @@ func newOperationDocument(spec *corerunnable.OperationSpec) *runnablespkg.Operat
 		LookupMethod:   spec.LookupMethod,
 		MaxInputBytes:  spec.MaxInputBytes,
 		MaxOutputBytes: spec.MaxOutputBytes,
-		Completion:     completionDocument(spec.Completion),
 	}
-}
-
-// completionDocument spells the mode the owner declared. Core has already
-// refused a spec naming neither, so these two arms are the whole vocabulary.
-func completionDocument(completion basev0.RunnableExecution_Completion) string {
-	if completion == basev0.RunnableExecution_COMPLETION_SUBMIT {
-		return string(resources.RunnableCompletionSubmit)
-	}
-	return string(resources.RunnableCompletionCall)
 }
 
 func scopeDocuments(scopes []*basev0.WorkScopeV1) []runnablespkg.Scope {

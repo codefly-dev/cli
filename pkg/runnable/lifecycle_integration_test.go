@@ -114,7 +114,6 @@ func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 		Facility:       &basev0.RunnableFacility{Kind: basev0.RunnableFacility_NATIVE},
 		Implementation: &basev0.RunnableBinding_Artifact{Artifact: artifact},
 		Target:         nativeTarget(installed),
-		Authority:      testAuthority(),
 	}, pkg)
 	require.NoError(t, err)
 	launcher, err := runnableops.NewNativeLauncher(pkg, binding, installed)
@@ -136,9 +135,6 @@ func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 				// Recompute may carry the caller's shared effect identity too.
 				EffectId: "effect-" + id,
 				IssuedAt: timestamppb.New(issued), Deadline: timestamppb.New(issued.Add(90 * time.Second)), Input: []byte(input),
-				Identity: &basev0.RunnableInvocationIdentity{
-					Carrier: &basev0.RunnableInvocationIdentity_WorkContext{WorkContext: "test.work-context"},
-				},
 			},
 			Directory: filepath.Join(invocations, id), Stdout: &out, Stderr: &logs,
 		})

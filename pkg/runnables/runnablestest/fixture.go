@@ -40,7 +40,6 @@ func Package(t *testing.T, workspace, module, name string) *basev0.RunnablePacka
 			Timeout:        durationpb.New(time.Minute),
 			Cancellation:   basev0.RunnableExecution_CANCELLATION_NONE,
 			Recovery:       basev0.RunnableExecution_RECOVERY_RECEIPT,
-			Completion:     basev0.RunnableExecution_COMPLETION_CALL,
 			MaxInputBytes:  resources.DefaultRunnablePayloadBytes,
 			MaxOutputBytes: resources.DefaultRunnablePayloadBytes,
 		},

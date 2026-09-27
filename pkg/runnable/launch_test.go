@@ -38,7 +38,6 @@ func testPackage(t *testing.T, command []string, adjust func(*basev0.RunnableExe
 		MaxInputBytes:  4096,
 		MaxOutputBytes: 4096,
 		MaxLogBytes:    4096,
-		Completion:     basev0.RunnableExecution_COMPLETION_CALL,
 	}
 	if adjust != nil {
 		adjust(execution)
@@ -75,21 +74,9 @@ func testBinding(t *testing.T, pkg *basev0.RunnablePackage, root string) *basev0
 		Facility:       &basev0.RunnableFacility{Kind: basev0.RunnableFacility_NATIVE},
 		Implementation: &basev0.RunnableBinding_Artifact{Artifact: pkg.GetArtifacts()[0]},
 		Target:         nativeTarget(root),
-		Authority:      testAuthority(),
 	}, pkg)
 	require.NoError(t, err)
 	return binding
-}
-
-// testAuthority is the Work Context the binding installs under. Core requires
-// one on every binding in every facility, so a launcher test cannot install
-// without it.
-func testAuthority() *basev0.RunnableAuthority {
-	return &basev0.RunnableAuthority{
-		Audience:     "operations.word-count",
-		InvokeScopes: []*basev0.WorkScopeV1{{ResourceKind: "documents", Actions: []string{"count", "read"}}},
-		LookupScopes: []*basev0.WorkScopeV1{{ResourceKind: "documents", Actions: []string{"read"}}},
-	}
 }
 
 func nativeTarget(root string) *basev0.RunnableTarget {
@@ -137,9 +124,6 @@ func invocationFor(pkg *basev0.RunnablePackage, id string, budget time.Duration)
 	return &basev0.RunnableInvocation{
 		Protocol: corerunnable.ProtocolV1, Runnable: pkg.GetIdentity(), InvocationId: id, IntentId: "intent-1",
 		IssuedAt: timestamppb.New(issued), Deadline: timestamppb.New(issued.Add(budget)), Input: []byte(`{"text":"one two three"}`),
-		Identity: &basev0.RunnableInvocationIdentity{
-			Carrier: &basev0.RunnableInvocationIdentity_WorkContext{WorkContext: "test.work-context"},
-		},
 	}
 }
 
