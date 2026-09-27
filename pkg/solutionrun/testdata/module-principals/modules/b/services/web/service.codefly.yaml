@@ -1,0 +1,10 @@
+kind: service
+name: web
+version: 0.0.0
+module: b
+agent:
+    kind: runtime::service
+    name: go
+    version: 0.0.1
+    publisher: codefly.dev
+

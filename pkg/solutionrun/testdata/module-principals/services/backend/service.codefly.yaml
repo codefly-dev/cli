@@ -1,0 +1,10 @@
+kind: service
+name: backend
+version: 0.0.0
+module: app
+agent:
+    kind: runtime::service
+    name: go
+    version: 0.0.1
+    publisher: codefly.dev
+

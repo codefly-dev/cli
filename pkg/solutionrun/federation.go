@@ -557,14 +557,35 @@ type Note struct {
 // Nothing here depends on the module being the workspace's own: a solution
 // composed by source and version derives the same inputs from the manifest in
 // its cache checkout.
+//
+// Beside the solution's own inputs, every run provisions the identity of each
+// module one of whose services declares `module-identity` (see
+// derivedDeclaredModuleIdentities) — whether or not the service being run is a
+// solution entry, since such a module needs its identity whenever it runs
+// against a registrar.
 func DerivedRunInputs(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, serviceName string) (RunInputs, error) {
 	solutionManifest, err := entryManifest(module, service)
 	if err != nil {
 		return RunInputs{}, err
 	}
-	if solutionManifest == nil {
+	if workspace == nil {
 		return RunInputs{}, nil
 	}
+	registrars := federationRegistrars(ctx, workspace)
+	var solution RunInputs
+	var bound []consumedModuleBinding
+	if solutionManifest != nil {
+		solution, bound = derivedSolutionRunInputs(ctx, workspace, module, serviceName, solutionManifest, registrars)
+	}
+	return Merge(solution, derivedDeclaredModuleIdentities(ctx, workspace, registrars, bound)), nil
+}
+
+// derivedSolutionRunInputs is what a solution's entry service derives from its
+// manifest: the api.consumes projection, the solution's own registration secret,
+// and the registration and identity secrets of every module it consumes under a
+// facade prefix. It also returns those facade bindings, which the declared-identity
+// provisioning must not bind a second time.
+func derivedSolutionRunInputs(ctx context.Context, workspace *resources.Workspace, module *resources.Module, serviceName string, solutionManifest *manifest.Manifest, registrars []string) (RunInputs, []consumedModuleBinding) {
 	var notes []Note
 	overrides := map[string]map[string]string{serviceName: {}}
 	consumed := solutionManifest.ConsumedAPIs()
@@ -578,8 +599,8 @@ func DerivedRunInputs(ctx context.Context, workspace *resources.Workspace, modul
 			manifest.APIConsumesEnvironmentVariable, serviceName, strings.Join(ids, ", "))})
 	}
 
-	registrars := federationRegistrars(ctx, workspace)
 	federated, hosted := federatedConsumedAPIs(consumed, registrarModules(registrars))
+	bound := consumedModuleBindings(federated)
 	if len(hosted) > 0 {
 		notes = append(notes, Note{Message: fmt.Sprintf(
 			"consumed modules %s declare the %q group and hold the digests: the host routes their APIs itself, so no registration or identity secret is provisioned for their prefixes",
@@ -600,7 +621,7 @@ func DerivedRunInputs(ctx context.Context, workspace *resources.Workspace, modul
 		notes = append(notes, Note{Warning: true, Message: fmt.Sprintf(
 			"no service declares the %q workspace configuration: %s",
 			federationConfigurationGroup, strings.Join(withheld, "; "))})
-		return RunInputs{Overrides: mergeOverrides(overrides), Notes: notes}, nil
+		return RunInputs{Overrides: mergeOverrides(overrides), Notes: notes}, bound
 	}
 	declared := map[string]string{}
 
@@ -620,7 +641,7 @@ func DerivedRunInputs(ctx context.Context, workspace *resources.Workspace, modul
 			Overrides:               mergeOverrides(overrides),
 			Notes:                   notes,
 			WorkspaceConfigurations: federationDeclaration(declared),
-		}, nil
+		}, bound
 	}
 	overrides[serviceName][moduleRegistrationSecretsEnvironmentVariable] = provisioned.registrationSecrets()
 	notes = append(notes, Note{Message: fmt.Sprintf(
@@ -649,7 +670,7 @@ func DerivedRunInputs(ctx context.Context, workspace *resources.Workspace, modul
 		Overrides:               mergeOverrides(overrides, injection.overrides),
 		Notes:                   notes,
 		WorkspaceConfigurations: federationDeclaration(declared),
-	}, nil
+	}, bound
 }
 
 // federationDeclaration wraps the digests a run declares into the federation
@@ -692,9 +713,16 @@ func provisionSolutionRegistrationSecret(id, serviceName string, registrars []st
 // and two solution roots in one run each declare their own — the second must
 // join the first, not replace it, or only the last-named solution can register.
 // Notes keep their order across roots.
+//
+// A module's identity is the exception to later-wins. Each root mints its own
+// identity secret for a module it provisions, and the registrar keeps the first
+// root's digest for that identity (joinDeclarations), so the module's services
+// must keep the first root's plaintext too: letting a later root's secret win
+// hands the module a credential whose digest was never declared, and its
+// work-context exchange is refused.
 func Merge(base, layer RunInputs) RunInputs {
 	merged := RunInputs{
-		Overrides: mergeOverrides(base.Overrides, layer.Overrides),
+		Overrides: mergeOverrides(base.Overrides, layer.Overrides, moduleIdentityOverrides(base.Overrides)),
 		Notes:     append(append([]Note{}, base.Notes...), layer.Notes...),
 	}
 	if len(base.WorkspaceConfigurations) == 0 && len(layer.WorkspaceConfigurations) == 0 {
@@ -712,6 +740,25 @@ func Merge(base, layer RunInputs) RunInputs {
 		}
 	}
 	return merged
+}
+
+// moduleIdentityOverrides selects, per service, the module-identity carriers of
+// the services that received an identity, so Merge can layer them back over a
+// later root's.
+func moduleIdentityOverrides(overrides map[string]map[string]string) map[string]map[string]string {
+	identities := map[string]map[string]string{}
+	for service, values := range overrides {
+		if _, provisioned := values[moduleIdentitySecretEnvironmentVariable]; !provisioned {
+			continue
+		}
+		identities[service] = map[string]string{}
+		for _, key := range []string{moduleIdentityPrefixEnvironmentVariable, moduleIdentitySecretEnvironmentVariable, moduleRegistrationSecretEnvironmentVariable} {
+			if value, ok := values[key]; ok {
+				identities[service][key] = value
+			}
+		}
+	}
+	return identities
 }
 
 // joinDeclarations appends the `identity:value` entries of layer to those of

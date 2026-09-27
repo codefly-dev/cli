@@ -1,0 +1,9 @@
+name: app
+layout: modules
+modules:
+    - name: app
+      path: .
+    - name: host
+    - name: a
+    - name: b
+    - name: c
