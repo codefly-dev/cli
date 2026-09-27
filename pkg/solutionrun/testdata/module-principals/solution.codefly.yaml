@@ -1,0 +1,20 @@
+schema_version: codefly.solution-manifest/v0
+protocol_version: codefly.solution/v0
+agent:
+  kind: codefly:solution
+  publisher: codefly.dev
+  name: app
+  version: 0.1.0
+api:
+  exposes:
+    - id: gateway
+      protocol: http
+  consumes:
+    - id: a
+      protocol: connect
+      module: a
+      service: api
+      endpoint: connect
+      as: a-api
+lifecycle:
+  create: true

@@ -287,6 +287,25 @@ included:
 | Registrar | `MODULE_REGISTRATION_SECRETS` in the `federation` workspace configuration group | `prefix:sha256hex` — the digests the registering backend is checked against |
 | Registrar | `MODULE_IDENTITY_SECRETS` in the same group | `prefix:sha256hex` — the digests a module's own work-context exchange is checked against |
 
+A module that federates no facade can still be a principal of its host — a
+worker that mints its own module Work Context or runs a delegated exchange. Such a
+service declares it in its `service.codefly.yaml`:
+
+```yaml
+module-identity: true
+```
+
+Every run — not only a solution entry's — then mints that module an identity
+secret, hands it to the declaring services under the same three identity
+carriers, and adds its digest to the registrar's `MODULE_IDENTITY_SECRETS`. The
+identity is the facade prefix a solution in the workspace consumes the module
+under, or the module name when none does. No registration secret is minted for
+it: those exist for facade prefixes only. Which host admits the module, and with
+what authority, remains that host's own configuration. When one run has several
+roots, the first root's identity for a module is the one its services receive
+and the registrar holds. A render does not yet derive declared identities; only
+facade-consumed modules are rendered.
+
 The two declarations are what let the registrar tell the backend registering
 `documents` apart from the service principal of `documents`. A backend holds the
 registration plaintext for every prefix it consumes and the identity plaintext for
