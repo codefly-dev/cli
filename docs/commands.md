@@ -2411,9 +2411,18 @@ configuration group `runnable-bindings`, in
 the canonical `package`, the `binding` core prepared and verified against it
 (SERVICE facility, targeting the owner endpoint at the address the environment
 resolves: the native address locally, the in-cluster Service in a Kubernetes
-environment), the method's `operation` policy and authority, and the owner's
-`descriptors` for the method (base64 FileDescriptorSet). The key is
-`<MODULE>__<OPERATION>`, upper-cased.
+environment), the method's `operation` policy and authority, and a
+`descriptor_set` reference: the digest of the owner endpoint's descriptor set.
+The key is `<MODULE>__<OPERATION>`, upper-cased. Each referenced set is written
+once beside the values, under `DESCRIPTOR_SET__<digest>`: the endpoint's
+published `contract.binpb` without source info, base64. Every operation on one
+endpoint shares it, the installer refuses a set whose digest is not the one
+referenced, and a contract whose bytes the catalog did not record is refused
+here (run `generate contracts`). The value schema is
+`codefly.runnable-prepared/v2`; an installer refuses the older embedded form, so
+regenerate the group after upgrading. A set is larger than a process
+environment should carry, so Codefly delivers it by file (core
+`docs/runnable-binding-delivery.md`).
 
 A service that installs derived operations declares `runnable-bindings` as a
 workspace configuration dependency and receives them like any other group, so an

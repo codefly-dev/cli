@@ -2683,16 +2683,24 @@ Prepare the binding of every Runnable operation the workspace's modules derived
 one environment, and write them as the workspace configuration group
 runnable-bindings.
 
-For each derived operation the value is one JSON document:
+For each derived operation the value is one JSON document
+(codefly.runnable-prepared/v2):
 
-  package      the canonical RunnablePackage
-  binding      the RunnableBinding: the package installed on the SERVICE facility,
-               targeting the owner endpoint at the address this environment
-               resolves (the native address locally, the in-cluster Service in a
-               Kubernetes environment); prepared and verified by core
-  operation    the execution policy and authority the method declared
-  descriptors  the owner's FileDescriptorSet for the method's file and its imports
-               (base64), which a generic caller resolves the method in
+  package         the canonical RunnablePackage
+  binding         the RunnableBinding: the package installed on the SERVICE
+                  facility, targeting the owner endpoint at the address this
+                  environment resolves (the native address locally, the
+                  in-cluster Service in a Kubernetes environment); prepared and
+                  verified by core
+  operation       the execution policy and authority the method declared
+  descriptor_set  a reference, by digest, to the owner endpoint's descriptor set
+
+Each referenced descriptor set is written once, beside the values, under
+DESCRIPTOR_SET__<digest>: the endpoint's published contract.binpb (from
+`codefly generate contracts`) without source info, base64. Every operation
+on one endpoint shares it, and the installer refuses a set whose digest is not
+the one referenced. A set is larger than a process environment should carry, so
+Codefly delivers it by file (core docs/runnable-binding-delivery.md).
 
 The address is resolved, never configured: it is the one a run or a render of
 the same environment gives the owner. A service that installs derived
