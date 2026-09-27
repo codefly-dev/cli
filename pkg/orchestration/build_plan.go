@@ -43,7 +43,7 @@ const (
 // recipe — multi-arch and pushed as a manifest list when pushing — so the build
 // recipe is a durable, first-class artifact and images are not tied to the
 // builder's host architecture.
-func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *builderv0.DockerBuildPlan) error {
+func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *builderv0.DockerBuildPlan, proxies map[string]map[string]string) error {
 	w := wool.Get(ctx).In("Builder.buildFromPlan", wool.ThisField(b.instance))
 	if err := coreservices.VerifyDockerBuildPlan(outputDir, plan); err != nil {
 		return w.Wrapf(err, "cannot verify build recipe for %s", b.instance.Unique())
@@ -63,7 +63,13 @@ func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *bui
 	}
 	contextRoot := recipeContextRoot(b.instance.Service.Dir(), outputDir, plan)
 	for _, recipe := range recipes {
-		if err := b.buildRecipe(ctx, w, outputDir, contextRoot, recipe, shouldPush); err != nil {
+		// A recipe declaring Go module downloads is only built with the proxies
+		// its plan phase fetched; building it without them would fall back to
+		// fetching inside the build, which is what declaring them removes.
+		if recipeMissesGoModuleProxies(recipe, proxies[recipe.GetName()]) {
+			return w.NewError("recipe %s of %s declares Go module downloads that were not fetched before the build", recipe.GetName(), b.instance.Unique())
+		}
+		if err := b.buildRecipe(ctx, w, outputDir, contextRoot, recipe, shouldPush, proxies[recipe.GetName()]); err != nil {
 			return err
 		}
 	}
@@ -139,6 +145,7 @@ func (b *Builder) buildRecipe(
 	outputDir, contextRoot string,
 	recipe *builderv0.DockerBuildRecipe,
 	shouldPush bool,
+	goModuleProxies map[string]string,
 ) error {
 	if shouldPush && !platformsIncludeDeploymentArch(recipe.GetPlatforms()) {
 		return w.NewError(
@@ -194,21 +201,17 @@ func (b *Builder) buildRecipe(
 	}
 
 	cache := scopedBuildCache(b.world.BuildCache, b.world.Workspace.Name, b.instance.Unique(), recipe.GetName())
-	// A service that imports a private Go module can only be built with the
-	// host's GOPRIVATE and a credential; both come from the environment of the
-	// machine building, resolved per build so a CI job's exported netrc is seen.
-	private, err := resolvePrivateModuleBuild(os.LookupEnv, os.UserHomeDir)
-	if err != nil {
-		return w.Wrapf(err, "cannot resolve private module credentials for %s", b.instance.Unique())
-	}
+	// A service that imports a private Go module reads it from the proxy the
+	// plan phase fetched; GOPRIVATE, a list of module paths and not a
+	// credential, still reaches recipes that declare it as an ARG.
+	private := resolvePrivateModuleBuild(os.LookupEnv).withProxies(goModuleProxies)
 	args, err := cachedBuildxArgs(recipe, dockerfile, contextDir, shouldPush, multiArch, metadataFile, builderName, cache, private)
 	if err != nil {
 		return err
 	}
 	started := time.Now()
-	// Log that a credential is mounted, never where it is or what it holds.
 	w.Info("building image", wool.Field("image", recipe.GetImage()), wool.Field("push", shouldPush),
-		wool.Field("goprivate", private.GoPrivate), wool.Field("netrc_mounted", private.Netrc != ""))
+		wool.Field("goprivate", private.GoPrivate), wool.Field("go_module_proxies", len(private.Proxies)))
 	command := exec.CommandContext(ctx, "docker", args...)
 	command.Stdout = os.Stderr
 	command.Stderr = os.Stderr

@@ -33,6 +33,7 @@ type IManager interface {
 
 	BuilderDoInit(ctx context.Context) (*OutputProperty, error)
 	BuilderDoLoad(ctx context.Context) (*OutputProperty, error)
+	BuilderDoPlan(ctx context.Context) (*OutputProperty, error)
 	BuilderDoBuild(ctx context.Context) (*OutputProperty, error)
 	BuilderDoSync(ctx context.Context) (*OutputProperty, error)
 	BuilderDoDeploy(ctx context.Context) (*OutputProperty, error)
@@ -89,6 +90,10 @@ func (manager *Manager) BuilderDoInit(ctx context.Context) (*OutputProperty, err
 
 func (manager *Manager) BuilderDoLoad(ctx context.Context) (*OutputProperty, error) {
 	return manager.Builder.Load(ctx)
+}
+
+func (manager *Manager) BuilderDoPlan(ctx context.Context) (*OutputProperty, error) {
+	return manager.Builder.Plan(ctx)
 }
 
 func (manager *Manager) BuilderDoBuild(ctx context.Context) (*OutputProperty, error) {
@@ -363,6 +368,10 @@ func (n NoOpManager) BuilderDoInit(ctx context.Context) (*OutputProperty, error)
 }
 
 func (n NoOpManager) BuilderDoLoad(ctx context.Context) (*OutputProperty, error) {
+	return &OutputProperty{OnInit: true}, nil
+}
+
+func (n NoOpManager) BuilderDoPlan(ctx context.Context) (*OutputProperty, error) {
 	return &OutputProperty{OnInit: true}, nil
 }
 

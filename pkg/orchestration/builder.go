@@ -53,6 +53,11 @@ type Builder struct {
 	imageEvidence  []*builderv0.ImageSBOM
 	resolvedImages []coresbom.ResolvedImage
 
+	// planned is the recipe the agent emitted in the plan phase, with its Go
+	// module downloads already fetched, waiting for the build phase to execute
+	// it. See Plan.
+	planned *plannedBuild
+
 	syncResponse     *builderv0.SyncResponse
 	syncSkipped      bool
 	deploymentOutput *builderv0.DeploymentOutput
@@ -282,9 +287,29 @@ func (b *Builder) buildRecipeRoot() (string, error) {
 	return buildRecipeRoot(workspaceDir, module, service, b.instance.Service.Dir())
 }
 
-func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
+// plannedBuild is one service's emitted build: where its recipe lives, the
+// agent's answer, and the Go module proxies prefetched for each recipe.
+type plannedBuild struct {
+	recipeRoot string
+	outputDir  string
+	response   *builderv0.BuildResponse
+	// proxies maps a recipe name to its prefetched Go module proxies, keyed by
+	// the build-context name the recipe declares.
+	proxies map[string]map[string]string
+}
+
+// Plan asks the agent for the service's build recipe and fetches the Go module
+// graphs the recipe declares, without building an image. A snapshot runs Plan
+// for every service before it builds any (SnapshotPolicy), so every module is
+// fetched at the start of the render, with the credentials the host has then,
+// and no image build needs one. Build executes the planned recipe; a flow
+// without a plan phase plans at the start of Build instead.
+func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance))
-	w.Debug("Build")
+	w.Debug("Plan")
+	if b.planned != nil {
+		return OnInit(), nil
+	}
 	if advertised, supported := ValidationOperationSupport(b.instance.Info, ValidationArtifactBuild); advertised && !supported {
 		return nil, w.NewError("cannot build deployable artifact for %s: agent explicitly advertises artifact build as unsupported", b.instance.Unique())
 	}
@@ -318,11 +343,56 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.NewError("call to build failed")
 	}
 
+	planned := &plannedBuild{recipeRoot: recipeRoot, outputDir: outputDir, response: resp}
+	if plan := resp.Result.GetDockerBuildPlan(); plan != nil {
+		// Fetch only for a recipe tree that verifies: a declared module root is
+		// resolved against the context the verified plan selects.
+		if err := coreservices.VerifyDockerBuildPlan(outputDir, plan); err != nil {
+			return nil, w.Wrapf(err, "cannot verify build recipe for %s", b.instance.Unique())
+		}
+		contextRoot := recipeContextRoot(b.instance.Service.Dir(), outputDir, plan)
+		for _, recipe := range plan.GetRecipes() {
+			if len(recipe.GetGoModuleDownloads()) == 0 {
+				continue
+			}
+			contextDir, err := recipeContext(contextRoot, recipe)
+			if err != nil {
+				return nil, w.Wrapf(err, "cannot resolve build context for recipe %s of %s", recipe.GetName(), b.instance.Unique())
+			}
+			w.Info("fetching Go modules before any image build", wool.Field("recipe", recipe.GetName()))
+			proxies, err := b.world.goModules().proxiesFor(ctx, contextDir, recipe)
+			if err != nil {
+				return nil, w.Wrapf(err, "cannot fetch the Go modules of %s", b.instance.Unique())
+			}
+			if planned.proxies == nil {
+				planned.proxies = map[string]map[string]string{}
+			}
+			planned.proxies[recipe.GetName()] = proxies
+		}
+	}
+	b.planned = planned
+	return OnInit(), nil
+}
+
+// Build executes the service's planned recipe, planning it first when the flow
+// has no plan phase.
+func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
+	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance))
+	w.Debug("Build")
+	if b.planned == nil {
+		if _, err := b.Plan(ctx); err != nil {
+			return nil, err
+		}
+	}
+	planned := b.planned
+	b.planned = nil
+	resp, outputDir, recipeRoot := planned.response, planned.outputDir, planned.recipeRoot
+
 	// A build plan means the agent emitted recipes and the CLI owns the docker
 	// build; otherwise the agent built in-process (legacy) and the CLI only pushes.
 	plan := resp.Result.GetDockerBuildPlan()
 
-	err = b.outputPropertyForBuild.Set(ctx, &BuilderBuildOutput{})
+	err := b.outputPropertyForBuild.Set(ctx, &BuilderBuildOutput{})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for build")
 	}
@@ -334,7 +404,7 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 
 	buildResult := dockerBuildResult(resp.Result)
 	if plan != nil {
-		if err = b.buildFromPlan(ctx, outputDir, plan); err != nil {
+		if err = b.buildFromPlan(ctx, outputDir, plan, planned.proxies); err != nil {
 			return nil, err
 		}
 	} else if buildResult != nil {

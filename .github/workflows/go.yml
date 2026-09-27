@@ -175,6 +175,13 @@ jobs:
         if: matrix.gate == 'control-integration'
         run: go test -tags=integration -run '^TestCIBuildOrdersRealImagePrerequisites$' ./cmd/ci -v
 
+      # A Go image build reads its modules from the proxy the host prefetched,
+      # with no credential in the build: it builds from the proxy and fails
+      # without it. Needs Docker and the host go toolchain, which the runner has.
+      - name: Prove a Go image build needs no credential with its prefetched modules
+        if: matrix.gate == 'control-integration'
+        run: go test -tags=integration -run '^TestAGoModuleBuildNeedsNoCredentialWithThePrefetchedProxy$' ./pkg/orchestration -v
+
       # Keep the tag in step with qualificationImage in
       # cmd/generate/container_recovery_docker_test.go.
       - name: Pull the interrupted-generate proof's image

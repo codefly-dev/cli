@@ -34,6 +34,7 @@ func (m *recordingManager) RunnerDoDestroy(context.Context) (*OutputProperty, er
 
 func (m *recordingManager) BuilderDoInit(context.Context) (*OutputProperty, error)       { return nil, nil }
 func (m *recordingManager) BuilderDoLoad(context.Context) (*OutputProperty, error)       { return nil, nil }
+func (m *recordingManager) BuilderDoPlan(context.Context) (*OutputProperty, error)       { return nil, nil }
 func (m *recordingManager) BuilderDoBuild(context.Context) (*OutputProperty, error)      { return nil, nil }
 func (m *recordingManager) BuilderDoSync(context.Context) (*OutputProperty, error)       { return nil, nil }
 func (m *recordingManager) BuilderDoDeploy(context.Context) (*OutputProperty, error)     { return nil, nil }

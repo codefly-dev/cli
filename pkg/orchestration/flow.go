@@ -212,6 +212,11 @@ type World struct {
 	BuildxBuilder string
 	BuildCache    *builderv0.BuildCacheOptions
 
+	// goModulePrefetch holds the Go module graphs this flow's recipes declared,
+	// fetched once on the host before any image build (see goModulePrefetch).
+	// It is removed when the flow stops.
+	goModulePrefetch *goModulePrefetch
+
 	// CaptureImageDigest asks a pushed build to resolve the immutable manifest
 	// digest of the image it published so a caller can report or pin it. It is
 	// opt-in per flow: a plain `build module` never consumes a digest, so it does
@@ -1523,6 +1528,11 @@ func (flow *Flow) Stop() error {
 	if flow == nil || flow.hub == nil {
 		return nil
 	}
+	if flow.world != nil {
+		if err := flow.world.goModulePrefetch.Close(); err != nil {
+			wool.Get(context.Background()).In("flow.Stop").Warn("cannot remove the Go module prefetch", wool.ErrField(err))
+		}
+	}
 	// Builder-only flows have no Runtime runner to stop. Their service-scoped
 	// agent connections are closed by the caller after this lifecycle hook.
 	if flow.world != nil && (flow.world.Mode == BuildMode || flow.world.Mode == SyncMode || flow.world.Mode == DeployMode || flow.world.Mode == SnapshotMode) {
@@ -1574,6 +1584,8 @@ func (flow *Flow) GetExecutor(ctx context.Context, action Action) (OutputProcess
 		return manager.BuilderDoLoad, nil
 	case BuilderInit:
 		return manager.BuilderDoInit, nil
+	case BuilderPlan:
+		return manager.BuilderDoPlan, nil
 	case BuilderBuild:
 		return manager.BuilderDoBuild, nil
 	case BuilderSync:
@@ -2427,3 +2439,11 @@ func (flow *Flow) WithRunProfile(profile resources.RunProfile) error {
 }
 
 var _ ExecutorManager = &Flow{}
+
+// goModules is the flow's Go module prefetch, created on first use.
+func (world *World) goModules() *goModulePrefetch {
+	if world.goModulePrefetch == nil {
+		world.goModulePrefetch = newGoModulePrefetch()
+	}
+	return world.goModulePrefetch
+}
