@@ -21,6 +21,7 @@ func TestSnapshotPolicyBuildsBeforeDeploy(t *testing.T) {
 	for _, want := range []orchestration.ActionType{
 		orchestration.BuilderLoad,
 		orchestration.BuilderInit,
+		orchestration.BuilderPlan,
 		orchestration.BuilderBuild,
 		orchestration.BuilderDeploy,
 	} {

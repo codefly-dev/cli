@@ -111,13 +111,22 @@ func TestTestFlowUsesRuntimeStageAcrossMixedCycle(t *testing.T) {
 			positions[action.Type][action.Service] = index
 		}
 		if alone {
-			if len(policy.actions) != 4 {
+			if len(policy.actions) != 5 {
 				t.Fatalf("standalone snapshot actions: %v", policy.actions)
 			}
 			continue
 		}
-		if len(policy.actions) != 16 {
+		if len(policy.actions) != 20 {
 			t.Fatalf("snapshot omitted actions: %v", policy.actions)
+		}
+		// Every recipe is planned — its Go modules fetched — before any image
+		// is built, so no build depends on a credential from the render's start.
+		for _, planned := range positions[BuilderPlan] {
+			for _, built := range positions[BuilderBuild] {
+				if planned >= built {
+					t.Fatalf("snapshot built an image before every recipe was planned: %v", policy.actions)
+				}
+			}
 		}
 		if positions[BuilderBuild]["web/frontend"] >= positions[BuilderBuild]["management/organization"] {
 			t.Fatal("snapshot built organization before its build prerequisite frontend")

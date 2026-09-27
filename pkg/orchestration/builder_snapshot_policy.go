@@ -75,12 +75,16 @@ func (policy *SnapshotPolicy) Restrict(ctx context.Context, unique string) error
 	policy.actions = nil
 	// Every member of the union closure needs a builder, but only edges for
 	// the current stage constrain its order. Complete builds before rendering.
+	// Every recipe is planned — and the Go modules it declares fetched — before
+	// any image is built, so no build needs a credential that is only valid at
+	// the start of the render.
 	for _, phase := range []struct {
 		kind  ActionType
 		stage resources.Stage
 	}{
 		{BuilderLoad, resources.StageBuild},
 		{BuilderInit, resources.StageBuild},
+		{BuilderPlan, resources.StageBuild},
 		{BuilderBuild, resources.StageBuild},
 		{BuilderDeploy, resources.StageRun},
 	} {

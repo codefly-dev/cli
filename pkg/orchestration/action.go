@@ -26,6 +26,7 @@ const (
 	BuilderBegin  ActionType = "builder-begin"
 	BuilderLoad   ActionType = "builder-load"
 	BuilderInit   ActionType = "builder-init"
+	BuilderPlan   ActionType = "builder-plan"
 	BuilderBuild  ActionType = "builder-build"
 	BuilderSync   ActionType = "builder-sync"
 	BuilderDeploy ActionType = "builder-deploy"

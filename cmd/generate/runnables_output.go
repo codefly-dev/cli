@@ -31,6 +31,8 @@ func newOperationDocument(spec *corerunnable.OperationSpec) *runnablespkg.Operat
 		InvokeScopes:   scopeDocuments(spec.InvokeScopes),
 		LookupScopes:   scopeDocuments(spec.LookupScopes),
 		LookupMethod:   spec.LookupMethod,
+		MaxInputBytes:  spec.MaxInputBytes,
+		MaxOutputBytes: spec.MaxOutputBytes,
 	}
 }
 

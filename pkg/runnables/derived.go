@@ -145,6 +145,11 @@ type Operation struct {
 	InvokeScopes   []Scope  `json:"invoke_scopes"`
 	LookupScopes   []Scope  `json:"lookup_scopes"`
 	LookupMethod   string   `json:"lookup_method,omitempty"`
+	// MaxInputBytes and MaxOutputBytes are the inline payload bounds the owner
+	// declared; zero keeps the default. A prepared binding carries no package,
+	// so the policy is where an installer reads them.
+	MaxInputBytes  uint64 `json:"max_input_bytes,omitempty"`
+	MaxOutputBytes uint64 `json:"max_output_bytes,omitempty"`
 }
 
 // Scope is one authority a binding is minted for.
