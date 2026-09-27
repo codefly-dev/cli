@@ -147,7 +147,7 @@ func snapshotProcess(ctx context.Context, pid int, proc *process.Process) (proce
 // user launched by hand (no authentication) and servers still supervised by a
 // live codefly (leader with a live parent) are left untouched. With dryRun set,
 // nothing is signalled and the return value is what would be reaped.
-func ReapDevServerOrphans(ctx context.Context, dryRun bool) ([]DevServerOrphan, error) {
+func ReapDevServerOrphans(ctx context.Context, dryRun bool, scope Scope) ([]DevServerOrphan, error) {
 	orphans, err := ScanDevServerOrphans(ctx)
 	if err != nil {
 		return nil, err
@@ -156,7 +156,7 @@ func ReapDevServerOrphans(ctx context.Context, dryRun bool) ([]DevServerOrphan, 
 	var reaped []DevServerOrphan
 	var failures []error
 	for _, orphan := range orphans {
-		if !orphan.Owned {
+		if !orphan.Owned || !scope.Includes(orphan.Workspace) {
 			continue
 		}
 		if _, done := reapedGroups[orphan.PGID]; done {
@@ -196,14 +196,20 @@ func ReapDevServerOrphans(ctx context.Context, dryRun bool) ([]DevServerOrphan, 
 // directory — a postgres data dir lives under ~/.codefly/data, outside the repo —
 // so ownership rests entirely on the process-group authentication.
 type NativeServiceOrphan struct {
-	PID      int
-	PGID     int
-	Parent   int
-	Command  string
-	Cwd      string
-	Started  time.Time
-	Orphaned bool
-	Owned    bool
+	PID     int
+	PGID    int
+	Parent  int
+	Command string
+	Cwd     string
+	// Workspace is the workspace enclosing Cwd, empty when the process runs
+	// outside any workspace. Unlike a dev server, a native service is matched by
+	// its executable rather than by sitting in a workspace, so this can be empty
+	// for a genuinely codefly-owned process — and an empty workspace is only ever
+	// reaped by the machine-wide scope.
+	Workspace string
+	Started   time.Time
+	Orphaned  bool
+	Owned     bool
 }
 
 // ScanNativeServiceOrphans finds native-mode service processes (a compiled user
@@ -260,7 +266,7 @@ func ScanNativeServiceOrphans(ctx context.Context) ([]NativeServiceOrphan, error
 // — a member carries the process-group authentication — and (2) stale — its leader
 // is gone or reparented to init. With dryRun set, nothing is signalled and the
 // return value is what would be reaped.
-func ReapNativeServiceOrphans(ctx context.Context, dryRun bool) ([]NativeServiceOrphan, error) {
+func ReapNativeServiceOrphans(ctx context.Context, dryRun bool, scope Scope) ([]NativeServiceOrphan, error) {
 	orphans, err := ScanNativeServiceOrphans(ctx)
 	if err != nil {
 		return nil, err
@@ -269,7 +275,7 @@ func ReapNativeServiceOrphans(ctx context.Context, dryRun bool) ([]NativeService
 	var reaped []NativeServiceOrphan
 	var failures []error
 	for _, orphan := range orphans {
-		if !orphan.Owned {
+		if !orphan.Owned || !scope.Includes(orphan.Workspace) {
 			continue
 		}
 		if _, done := reapedGroups[orphan.PGID]; done {

@@ -97,7 +97,9 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	defer func() {
 		services.ClearAgents()
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		evidence, err := processgroup.ReapStaleProcessGroupsWithEvidence(cleanupCtx)
+		// Machine-wide on purpose: this recovers records whose owner has exited,
+		// which is garbage collection and never signals a live workspace's run.
+		evidence, err := processgroup.ReapStaleProcessGroupsWithEvidence(cleanupCtx, processgroup.AllWorkspaces())
 		cleanupCancel()
 		if err != nil {
 			returnErr = errors.Join(returnErr, fmt.Errorf("reap managed processes after run: %w", err))

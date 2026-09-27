@@ -431,7 +431,7 @@ func TestStopManagedProcessGroupsReapsGraphAndPreservesStateForRestart(t *testin
 	if err := firstOwner.Wait(); err == nil {
 		t.Fatal("interrupted graph owner exited successfully")
 	}
-	firstEvidence, err := StopManagedProcessGroups(context.Background())
+	firstEvidence, err := StopManagedProcessGroups(context.Background(), AllWorkspaces())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,7 +451,7 @@ func TestStopManagedProcessGroupsReapsGraphAndPreservesStateForRestart(t *testin
 	for index := range ports {
 		assertStateGeneration(t, filepath.Join(stateDir, fmt.Sprintf("service-%d", index)), 2)
 	}
-	secondEvidence, err := StopManagedProcessGroups(context.Background())
+	secondEvidence, err := StopManagedProcessGroups(context.Background(), AllWorkspaces())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -512,7 +512,7 @@ func TestReaperTreatsEmptyAuthenticatedRecordAsClean(t *testing.T) {
 	inspectAuthenticatedProcessGroup = func(context.Context, int) ([]processIdentity, error) { return nil, nil }
 	t.Cleanup(func() { inspectAuthenticatedProcessGroup = originalInspector })
 
-	evidence, err := ReapStaleProcessGroupsWithEvidence(context.Background())
+	evidence, err := ReapStaleProcessGroupsWithEvidence(context.Background(), AllWorkspaces())
 	inspectAuthenticatedProcessGroup = originalInspector
 	if err != nil {
 		t.Fatal(err)
@@ -635,7 +635,7 @@ func TestReaperRetainsMalformedParentWithoutSignalingGroup(t *testing.T) {
 	}
 	rewriteRecordField(t, recordPath, "parent", "not-a-pid")
 
-	evidence, err := ReapStaleProcessGroupsWithEvidence(context.Background())
+	evidence, err := ReapStaleProcessGroupsWithEvidence(context.Background(), AllWorkspaces())
 	if err == nil {
 		t.Fatal("reaper accepted a malformed parent")
 	}

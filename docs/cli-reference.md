@@ -1043,6 +1043,7 @@ codefly clear [name-filter...]
 Flags:
 
 ```
+      --all               Act on every workspace on this machine, not just the current one
       --dry-run           List what would be removed without removing anything
       --keep-containers   Don't remove docker containers (only kill processes)
       --keep-processes    Don't kill running codefly processes (only remove containers)
@@ -4466,10 +4467,16 @@ Flags:
 
 ## `codefly stop`
 
-Stop Codefly processes while preserving stateful containers for reuse
+Stop this workspace's Codefly processes, preserving stateful containers for reuse
 
 ```
 codefly stop [name-filter...]
+```
+
+Flags:
+
+```
+      --all   Stop every workspace's processes on this machine, not just the current one
 ```
 
 ## `codefly sync`
