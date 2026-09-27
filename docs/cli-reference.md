@@ -2684,23 +2684,24 @@ one environment, and write them as the workspace configuration group
 runnable-bindings.
 
 For each derived operation the value is one JSON document
-(codefly.runnable-prepared/v2):
+(codefly.runnable-prepared/v3):
 
-  package         the canonical RunnablePackage
-  binding         the RunnableBinding: the package installed on the SERVICE
-                  facility, targeting the owner endpoint at the address this
-                  environment resolves (the native address locally, the
-                  in-cluster Service in a Kubernetes environment); prepared and
-                  verified by core
-  operation       the execution policy and authority the method declared
-  descriptor_set  a reference, by digest, to the owner endpoint's descriptor set
+  operation        the owner coordinates, and the operation as the owner spells
+                   it: /pkg.Service/Method, or "POST /path"
+  call             where one call is sent: the resolved base URL, and a typed
+                   route — connect (the procedure, POSTed as JSON on the owner's
+                   Connect endpoint) or rest (the owner's own verb and path)
+  contract         the bounded input and output schema
+  contract_digest  sha256 over that contract, so an owner that republishes a
+                   changed contract is refused rather than called with a payload
+                   shaped for the one it used to publish
+  policy           the execution policy and Work Context authority the owner
+                   declared on its method option or x-codefly-operation marker
 
-Each referenced descriptor set is written once, beside the values, under
-DESCRIPTOR_SET__<digest>: the endpoint's published contract.binpb (from
-`codefly generate contracts`) without source info, base64. Every operation
-on one endpoint shares it, and the installer refuses a set whose digest is not
-the one referenced. A set is larger than a process environment should carry, so
-Codefly delivers it by file (core docs/runnable-binding-delivery.md).
+An owner is called with JSON, so no protobuf descriptor is delivered to anyone.
+A gRPC owner is therefore called on its **Connect** endpoint: a service that
+publishes a runnable-marked method and declares no connect endpoint is refused
+here, by name, rather than at a call.
 
 The address is resolved, never configured: it is the one a run or a render of
 the same environment gives the owner. A service that installs derived

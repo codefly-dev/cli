@@ -3,15 +3,13 @@ package generate
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -21,10 +19,13 @@ import (
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	runnablev0 "github.com/codefly-dev/core/generated/go/codefly/runnable/v0"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
+	"github.com/codefly-dev/core/standards"
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 // RunnableBindingsGroup is the workspace configuration group the prepared
@@ -42,9 +43,9 @@ var (
 )
 
 // RunnableBindingsCmd prepares, for one environment, the binding of every
-// operation the workspace's modules derived: the package, its binding to the
-// owner endpoint as that environment resolves it, the execution policy, and
-// the owner's descriptors the call is made from.
+// operation the workspace's modules derived: the operation, where one call is
+// sent as that environment resolves it, the bounded contract with its digest,
+// and the policy and authority the owner declared.
 var RunnableBindingsCmd = &cobra.Command{
 	Use:   "runnable-bindings",
 	Short: "Prepare the binding of every derived Runnable operation for an environment",
@@ -54,23 +55,24 @@ one environment, and write them as the workspace configuration group
 ` + RunnableBindingsGroup + `.
 
 For each derived operation the value is one JSON document
-(` + corerunnable.PreparedSchemaV2 + `):
+(` + corerunnable.PreparedSchemaV3 + `):
 
-  package         the canonical RunnablePackage
-  binding         the RunnableBinding: the package installed on the SERVICE
-                  facility, targeting the owner endpoint at the address this
-                  environment resolves (the native address locally, the
-                  in-cluster Service in a Kubernetes environment); prepared and
-                  verified by core
-  operation       the execution policy and authority the method declared
-  descriptor_set  a reference, by digest, to the owner endpoint's descriptor set
+  operation        the owner coordinates, and the operation as the owner spells
+                   it: /pkg.Service/Method, or "POST /path"
+  call             where one call is sent: the resolved base URL, and a typed
+                   route — connect (the procedure, POSTed as JSON on the owner's
+                   Connect endpoint) or rest (the owner's own verb and path)
+  contract         the bounded input and output schema
+  contract_digest  sha256 over that contract, so an owner that republishes a
+                   changed contract is refused rather than called with a payload
+                   shaped for the one it used to publish
+  policy           the execution policy and Work Context authority the owner
+                   declared on its method option or x-codefly-operation marker
 
-Each referenced descriptor set is written once, beside the values, under
-DESCRIPTOR_SET__<digest>: the endpoint's published contract.binpb (from
-` + "`codefly generate contracts`" + `) without source info, base64. Every operation
-on one endpoint shares it, and the installer refuses a set whose digest is not
-the one referenced. A set is larger than a process environment should carry, so
-Codefly delivers it by file (core docs/runnable-binding-delivery.md).
+An owner is called with JSON, so no protobuf descriptor is delivered to anyone.
+A gRPC owner is therefore called on its **Connect** endpoint: a service that
+publishes a runnable-marked method and declares no connect endpoint is refused
+here, by name, rather than at a call.
 
 The address is resolved, never configured: it is the one a run or a render of
 the same environment gives the owner. A service that installs derived
@@ -155,7 +157,6 @@ func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace
 		return nil, 0, err
 	}
 	lines := map[string]string{}
-	sets := map[string]string{}
 	for _, module := range modules {
 		derived, err := runnablespkg.LoadDerivedOperations(module.Dir())
 		if err != nil {
@@ -163,17 +164,15 @@ func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace
 		}
 		for i := range derived {
 			operation := &derived[i]
-			prepared, set, err := prepareRunnable(ctx, module, operation, resolver, env.Name)
+			prepared, err := prepareRunnable(ctx, module, operation, resolver)
 			if err != nil {
 				return nil, 0, fmt.Errorf("module %s operation %s: %w", module.Name, operation.Entry.Name, err)
 			}
-			value, err := json.Marshal(prepared)
+			// EncodePrepared fills the schema and the contract digest and holds
+			// the value to the rules its reader applies, so what is written is
+			// what installs.
+			value, err := corerunnable.EncodePrepared(prepared)
 			if err != nil {
-				return nil, 0, err
-			}
-			// What is written is what an installer reads: hold it to the
-			// installer's own rules before it reaches any workspace.
-			if _, err = corerunnable.DecodePrepared(value); err != nil {
 				return nil, 0, fmt.Errorf("module %s operation %s: %w", module.Name, operation.Entry.Name, err)
 			}
 			key := RunnableBindingKey(module.Name, operation.Entry.Name)
@@ -181,22 +180,9 @@ func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace
 				return nil, 0, fmt.Errorf("two operations bind under key %s", key)
 			}
 			lines[key] = string(value)
-			setKey, err := prepared.DescriptorSet.Key()
-			if err != nil {
-				return nil, 0, err
-			}
-			sets[setKey] = corerunnable.EncodeDescriptorSet(set)
 		}
 	}
 	count := len(lines)
-	// One descriptor set per owner endpoint, however many operations it
-	// serves; a set nothing references is not written.
-	for key, set := range sets {
-		if _, taken := lines[key]; taken {
-			return nil, 0, fmt.Errorf("an operation binds under the descriptor set key %s", key)
-		}
-		lines[key] = set
-	}
 	keys := make([]string, 0, len(lines))
 	for key := range lines {
 		keys = append(keys, key)
@@ -225,111 +211,110 @@ func RunnableBindingKey(module, name string) string {
 	return key.String()
 }
 
-// prepareRunnable prepares one operation and returns, beside it, the owner
-// endpoint's descriptor set its reference names.
-func prepareRunnable(ctx context.Context, module *resources.Module, operation *runnablespkg.Derived, resolver *endpointResolver, envName string) (*corerunnable.Prepared, []byte, error) {
+// prepareRunnable prepares one derived operation for the environment the
+// resolver answers for.
+func prepareRunnable(ctx context.Context, module *resources.Module, operation *runnablespkg.Derived, resolver *endpointResolver) (*runnablev0.PreparedBinding, error) {
 	pkg := operation.Package
 	if len(pkg.GetServiceOperations()) != 1 {
-		return nil, nil, fmt.Errorf("a derived package carries exactly one service operation, found %d", len(pkg.GetServiceOperations()))
+		return nil, fmt.Errorf("a derived package carries exactly one service operation, found %d", len(pkg.GetServiceOperations()))
 	}
 	descriptor := pkg.GetServiceOperations()[0]
-	mapping, err := resolver.resolve(ctx, module, operation.Entry.Service, operation.Entry.Endpoint)
+	call, kind, err := resolver.callTarget(ctx, module, operation.Entry.Service, operation.Entry.Endpoint, descriptor.GetOperation())
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	target := &basev0.RunnableTarget{
-		Schema:      corerunnable.TargetSchemaV1,
-		Environment: envName,
-		Coordinates: &basev0.RunnableTarget_Service{Service: &basev0.RunnableServiceTarget{Endpoint: mapping}},
+	if err = verifyPublishedContract(module, operation.Entry.Service, operation.Entry.Endpoint, kind); err != nil {
+		return nil, err
 	}
-	target.Revision, err = targetRevision(pkg.GetDigest(), mapping)
+	policy, err := preparedPolicy(operation.Operation)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	binding, err := corerunnable.PrepareBinding(&basev0.RunnableBinding{
-		Schema:         corerunnable.BindingSchemaV1,
-		Identity:       pkg.GetIdentity(),
-		PackageDigest:  pkg.GetDigest(),
-		Facility:       &basev0.RunnableFacility{Kind: basev0.RunnableFacility_SERVICE},
-		Implementation: &basev0.RunnableBinding_ServiceOperation{ServiceOperation: descriptor},
-		Target:         target,
-	}, pkg)
-	if err != nil {
-		return nil, nil, err
-	}
-	if err = corerunnable.VerifyBinding(binding, pkg); err != nil {
-		return nil, nil, err
-	}
-	packageJSON, err := corerunnable.CanonicalJSON(pkg)
-	if err != nil {
-		return nil, nil, err
-	}
-	bindingJSON, err := corerunnable.CanonicalJSON(binding)
-	if err != nil {
-		return nil, nil, err
-	}
-	set, reference, err := endpointDescriptorSet(module, operation.Entry.Service, operation.Entry.Endpoint)
-	if err != nil {
-		return nil, nil, err
-	}
-	policy, err := json.Marshal(operation.Operation)
-	if err != nil {
-		return nil, nil, err
-	}
-	return &corerunnable.Prepared{
-		Schema:        corerunnable.PreparedSchemaV2,
-		Package:       packageJSON,
-		Binding:       bindingJSON,
-		Operation:     policy,
-		DescriptorSet: reference,
-	}, set, nil
+	return &runnablev0.PreparedBinding{
+		Operation: &runnablev0.PreparedOperation{
+			Module:   descriptor.GetModule(),
+			Service:  descriptor.GetName(),
+			Endpoint: descriptor.GetEndpoint(),
+			Spelling: descriptor.GetOperation(),
+		},
+		Call:     call,
+		Contract: pkg.GetContract(),
+		Policy:   policy,
+	}, nil
 }
 
-// targetRevision identifies what a binding dispatches to: the package and the
-// resolved address. A moved owner is a different binding, never the same one
-// pointing elsewhere.
-func targetRevision(packageDigest string, mapping *basev0.NetworkMapping) (string, error) {
-	raw, err := corerunnable.CanonicalJSON(mapping)
-	if err != nil {
-		return "", err
+// preparedPolicy is the declared policy as the message core validates. The
+// derived operation's own document is a second spelling of
+// codefly.runnable.v0.Operation, so this reads it back into that message rather
+// than into a third: core then holds the result to the installation bounds, and
+// a field this drops is a field an installer never sees.
+func preparedPolicy(declared *runnablespkg.Operation) (*runnablev0.Operation, error) {
+	if declared == nil {
+		return nil, errors.New("the operation declares no execution policy")
 	}
-	sum := sha256.Sum256(append([]byte(packageDigest+"\x00"), raw...))
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
+	durations := map[string]time.Duration{}
+	for field, spelled := range map[string]string{
+		"attempt_timeout": declared.AttemptTimeout,
+		"total_timeout":   declared.TotalTimeout,
+		"backoff":         declared.Backoff,
+	} {
+		parsed, err := time.ParseDuration(spelled)
+		if err != nil {
+			return nil, fmt.Errorf("%s %q is not a duration: %w", field, spelled, err)
+		}
+		durations[field] = parsed
+	}
+	return &runnablev0.Operation{
+		AttemptTimeout: durationpb.New(durations["attempt_timeout"]),
+		TotalTimeout:   durationpb.New(durations["total_timeout"]),
+		MaxAttempts:    declared.MaxAttempts,
+		Backoff:        durationpb.New(durations["backoff"]),
+		RetryableCodes: declared.RetryableCodes,
+		Audience:       declared.Audience,
+		InvokeScopes:   preparedScopes(declared.InvokeScopes),
+		LookupScopes:   preparedScopes(declared.LookupScopes),
+		LookupMethod:   declared.LookupMethod,
+		MaxInputBytes:  declared.MaxInputBytes,
+		MaxOutputBytes: declared.MaxOutputBytes,
+	}, nil
 }
 
-// endpointDescriptorSet reads the owner endpoint's published contract from
-// the module's API contract catalog and derives the set every operation on
-// that endpoint shares (runnable.LeanDescriptorSet), with the reference that
-// names it. A contract whose bytes are not the ones the catalog recorded is
-// refused: the catalog is stale, and a reference to it would name a contract
-// nobody published.
-func endpointDescriptorSet(module *resources.Module, service, endpoint string) ([]byte, *corerunnable.DescriptorSetReference, error) {
+func preparedScopes(declared []runnablespkg.Scope) []*basev0.WorkScopeV1 {
+	scopes := make([]*basev0.WorkScopeV1, 0, len(declared))
+	for _, scope := range declared {
+		scopes = append(scopes, &basev0.WorkScopeV1{ResourceKind: scope.ResourceKind, Actions: scope.Actions, ResourceIds: scope.ResourceIDs})
+	}
+	return scopes
+}
+
+// verifyPublishedContract holds the owner's published contract to the bytes the
+// API contract catalog recorded for it. A prepared value states the digest of
+// the bounded contract derived from it, so a catalog that no longer describes
+// what is on disk means the derivation the value carries was read from
+// something nobody published.
+func verifyPublishedContract(module *resources.Module, service, endpoint, kind string) error {
 	catalog, err := composition.LoadAPIContractCatalog(module.Dir())
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 	var published *composition.APIContractEndpoint
 	for i := range catalog.Endpoints {
 		candidate := &catalog.Endpoints[i]
-		if candidate.Service == service && candidate.Endpoint == endpoint && candidate.Kind == composition.APIContractKindProtobuf {
+		if candidate.Service == service && candidate.Endpoint == endpoint && candidate.Kind == kind {
 			published = candidate
 		}
 	}
 	if published == nil {
-		return nil, nil, fmt.Errorf("%s/%s publishes no protobuf contract", service, endpoint)
+		return fmt.Errorf("%s/%s publishes no %s contract: run `codefly generate contracts`", service, endpoint, kind)
 	}
 	raw, err := os.ReadFile(filepath.Join(module.Dir(), filepath.FromSlash(published.Path)))
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 	if digest := composition.APIContractDigest(raw); digest != published.Digest {
-		return nil, nil, fmt.Errorf("%s/%s: %s is %s but the contract catalog records %s: run `codefly generate contracts`", service, endpoint, published.Path, digest, published.Digest)
+		return fmt.Errorf("%s/%s: %s is %s but the contract catalog records %s: run `codefly generate contracts`", service, endpoint, published.Path, digest, published.Digest)
 	}
-	set, err := corerunnable.LeanDescriptorSet(raw)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%s/%s: %w", service, endpoint, err)
-	}
-	return set, &corerunnable.DescriptorSetReference{Digest: corerunnable.DescriptorSetDigest(set), Contract: published.Digest}, nil
+	return nil
 }
 
 // endpointResolver resolves an owner endpoint the way a run or a render of the
@@ -361,48 +346,116 @@ func newEndpointResolver(ctx context.Context, workspace *resources.Workspace, en
 	return resolver, nil
 }
 
-func (r *endpointResolver) resolve(ctx context.Context, module *resources.Module, serviceName, endpointName string) (*basev0.NetworkMapping, error) {
+// callTarget answers where a JSON call to one operation is sent, and the kind
+// of contract its owner publishes for it.
+//
+// A gRPC owner is called on its **Connect** endpoint: the gRPC port carries no
+// JSON call, and an owner's descriptors are delivered to nobody any more. A
+// service that publishes a runnable-marked method and declares no connect
+// endpoint is refused here rather than at a call — the address a caller would
+// otherwise be handed is one that answers nothing it can send.
+func (r *endpointResolver) callTarget(ctx context.Context, module *resources.Module, serviceName, publishedName, spelling string) (*runnablev0.PreparedCall, string, error) {
+	identity, endpoints, err := r.load(ctx, module, serviceName)
+	if err != nil {
+		return nil, "", err
+	}
+	published := endpointNamed(endpoints, publishedName)
+	if published == nil {
+		return nil, "", fmt.Errorf("service %s/%s declares no endpoint %s", module.Name, serviceName, publishedName)
+	}
+	switch published.GetApi() {
+	case standards.GRPC:
+		connect := endpointWithAPI(endpoints, standards.CONNECT)
+		if connect == nil {
+			return nil, "", fmt.Errorf("%s/%s publishes %s on its %s endpoint but declares no %s endpoint: a Runnable owner is called with JSON, so mark the method only on a service that serves Connect",
+				module.Name, serviceName, spelling, publishedName, standards.CONNECT)
+		}
+		address, err := r.address(ctx, identity, endpoints, connect)
+		if err != nil {
+			return nil, "", err
+		}
+		return &runnablev0.PreparedCall{
+			Address: address,
+			Route:   &runnablev0.PreparedCall_Connect{Connect: &runnablev0.ConnectProcedure{Procedure: spelling}},
+		}, composition.APIContractKindProtobuf, nil
+	case standards.REST:
+		address, err := r.address(ctx, identity, endpoints, published)
+		if err != nil {
+			return nil, "", err
+		}
+		verb, path, spelled := strings.Cut(spelling, " ")
+		if !spelled {
+			return nil, "", fmt.Errorf("%s/%s publishes %q, which is not a route a REST owner is called on", module.Name, serviceName, spelling)
+		}
+		return &runnablev0.PreparedCall{
+			Address: address,
+			Route:   &runnablev0.PreparedCall_Rest{Rest: &runnablev0.HTTPRoute{Verb: verb, Path: path}},
+		}, composition.APIContractKindOpenAPI, nil
+	default:
+		return nil, "", fmt.Errorf("%s/%s/%s is a %s endpoint, and a derived operation is called over %s or %s",
+			module.Name, serviceName, publishedName, published.GetApi(), standards.GRPC, standards.REST)
+	}
+}
+
+func endpointNamed(endpoints []*basev0.Endpoint, name string) *basev0.Endpoint {
+	for _, candidate := range endpoints {
+		if candidate.GetName() == name {
+			return candidate
+		}
+	}
+	return nil
+}
+
+func endpointWithAPI(endpoints []*basev0.Endpoint, api string) *basev0.Endpoint {
+	for _, candidate := range endpoints {
+		if candidate.GetApi() == api {
+			return candidate
+		}
+	}
+	return nil
+}
+
+func (r *endpointResolver) load(ctx context.Context, module *resources.Module, serviceName string) (*resources.ServiceIdentity, []*basev0.Endpoint, error) {
 	service, err := module.LoadServiceFromName(ctx, serviceName)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	identity, err := service.Identity()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	endpoints, err := service.LoadEndpoints(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var endpoint *basev0.Endpoint
-	for _, candidate := range endpoints {
-		if candidate.GetName() == endpointName {
-			endpoint = candidate
-		}
-	}
-	if endpoint == nil {
-		return nil, fmt.Errorf("service %s/%s declares no endpoint %s", module.Name, serviceName, endpointName)
-	}
+	return identity, endpoints, nil
+}
+
+// address is the endpoint's address as a run or a render of this environment
+// gives it: the native address locally, the in-cluster Service in a Kubernetes
+// environment. An HTTP-based endpoint resolves to a base URL, which is what a
+// prepared call carries.
+func (r *endpointResolver) address(ctx context.Context, identity *resources.ServiceIdentity, endpoints []*basev0.Endpoint, endpoint *basev0.Endpoint) (string, error) {
 	if r.env.Local() {
 		instance := network.NativeFor(ctx, r.workspace.Name, identity.Module, identity.Name, r.env.NamingScope, endpoint)
 		if instance == nil {
-			return nil, fmt.Errorf("no native address for %s/%s/%s", module.Name, serviceName, endpointName)
+			return "", fmt.Errorf("no native address for %s/%s/%s", identity.Module, identity.Name, endpoint.GetName())
 		}
-		return &basev0.NetworkMapping{Endpoint: endpoint, Instances: []*basev0.NetworkInstance{instance}}, nil
+		return instance.GetAddress(), nil
 	}
 	mappings, err := r.remote.GenerateNetworkMappings(ctx, r.env, r.workspace, identity, endpoints)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	for _, mapping := range mappings {
-		if mapping.GetEndpoint().GetName() != endpointName {
+		if mapping.GetEndpoint().GetName() != endpoint.GetName() {
 			continue
 		}
 		container := resources.FilterNetworkInstance(ctx, mapping.GetInstances(), resources.NewContainerNetworkAccess())
 		if container == nil {
-			return nil, fmt.Errorf("%s/%s/%s resolves no in-cluster address in %s", module.Name, serviceName, endpointName, r.env.Name)
+			return "", fmt.Errorf("%s/%s/%s resolves no in-cluster address in %s", identity.Module, identity.Name, endpoint.GetName(), r.env.Name)
 		}
-		return &basev0.NetworkMapping{Endpoint: endpoint, Instances: []*basev0.NetworkInstance{container}}, nil
+		return container.GetAddress(), nil
 	}
-	return nil, fmt.Errorf("%s/%s/%s resolves no mapping in %s", module.Name, serviceName, endpointName, r.env.Name)
+	return "", fmt.Errorf("%s/%s/%s resolves no mapping in %s", identity.Module, identity.Name, endpoint.GetName(), r.env.Name)
 }

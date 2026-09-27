@@ -189,8 +189,10 @@ func descriptorSet(t *testing.T, file *descriptorpb.FileDescriptorProto) []byte 
 
 // saveRunnableFixture writes a module whose service publishes one protobuf
 // endpoint, with the contract catalog `generate contracts` would have left
-// behind. It returns the workspace root and the module directory.
-func saveRunnableFixture(t *testing.T, ctx context.Context, contract []byte, manifestVersion string) (root, moduleDir string) {
+// behind, and whatever further endpoints the service declares beside it — a
+// connect endpoint is how a gRPC owner is called. It returns the workspace root
+// and the module directory.
+func saveRunnableFixture(t *testing.T, ctx context.Context, contract []byte, manifestVersion string, beside ...*resources.Endpoint) (root, moduleDir string) {
 	t.Helper()
 	root, moduleDir = saveFixtureWorkspace(t, ctx, "documents",
 		&resources.ModuleInterface{
@@ -202,9 +204,9 @@ func saveRunnableFixture(t *testing.T, ctx context.Context, contract []byte, man
 			Name:    "runtime-worker",
 			Version: "0.0.1",
 			Agent:   &resources.Agent{Kind: resources.ServiceAgent, Name: "go", Version: "0.0.48", Publisher: "codefly.dev"},
-			Endpoints: []*resources.Endpoint{
+			Endpoints: append([]*resources.Endpoint{
 				{Name: "grpc", API: "grpc", Visibility: resources.VisibilityPublic},
-			},
+			}, beside...),
 		},
 	)
 
