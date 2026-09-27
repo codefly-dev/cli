@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -26,8 +25,6 @@ import (
 	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
 	"github.com/spf13/cobra"
-	googleproto "google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 // RunnableBindingsGroup is the workspace configuration group the prepared
@@ -56,16 +53,24 @@ var RunnableBindingsCmd = &cobra.Command{
 one environment, and write them as the workspace configuration group
 ` + RunnableBindingsGroup + `.
 
-For each derived operation the value is one JSON document:
+For each derived operation the value is one JSON document
+(` + corerunnable.PreparedSchemaV2 + `):
 
-  package      the canonical RunnablePackage
-  binding      the RunnableBinding: the package installed on the SERVICE facility,
-               targeting the owner endpoint at the address this environment
-               resolves (the native address locally, the in-cluster Service in a
-               Kubernetes environment); prepared and verified by core
-  operation    the execution policy and authority the method declared
-  descriptors  the owner's FileDescriptorSet for the method's file and its imports
-               (base64), which a generic caller resolves the method in
+  package         the canonical RunnablePackage
+  binding         the RunnableBinding: the package installed on the SERVICE
+                  facility, targeting the owner endpoint at the address this
+                  environment resolves (the native address locally, the
+                  in-cluster Service in a Kubernetes environment); prepared and
+                  verified by core
+  operation       the execution policy and authority the method declared
+  descriptor_set  a reference, by digest, to the owner endpoint's descriptor set
+
+Each referenced descriptor set is written once, beside the values, under
+DESCRIPTOR_SET__<digest>: the endpoint's published contract.binpb (from
+` + "`codefly generate contracts`" + `) without source info, base64. Every operation
+on one endpoint shares it, and the installer refuses a set whose digest is not
+the one referenced. A set is larger than a process environment should carry, so
+Codefly delivers it by file (core docs/runnable-binding-delivery.md).
 
 The address is resolved, never configured: it is the one a run or a render of
 the same environment gives the owner. A service that installs derived
@@ -138,14 +143,6 @@ func init() {
 	RunnableBindingsCmd.Flags().BoolVar(&runnableBindingsCheck, "check", false, "do not write; exit 1 if the on-disk file differs from what would be generated")
 }
 
-// PreparedRunnable is one derived operation installed for an environment.
-type PreparedRunnable struct {
-	Package     json.RawMessage         `json:"package"`
-	Binding     json.RawMessage         `json:"binding"`
-	Operation   *runnablespkg.Operation `json:"operation"`
-	Descriptors string                  `json:"descriptors"`
-}
-
 // prepareRunnableBindings walks every module of the workspace and prepares a
 // binding for each operation it derived, returning the configuration file.
 func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) ([]byte, int, error) {
@@ -158,6 +155,7 @@ func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace
 		return nil, 0, err
 	}
 	lines := map[string]string{}
+	sets := map[string]string{}
 	for _, module := range modules {
 		derived, err := runnablespkg.LoadDerivedOperations(module.Dir())
 		if err != nil {
@@ -165,7 +163,7 @@ func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace
 		}
 		for i := range derived {
 			operation := &derived[i]
-			prepared, err := prepareRunnable(ctx, module, operation, resolver, env.Name)
+			prepared, set, err := prepareRunnable(ctx, module, operation, resolver, env.Name)
 			if err != nil {
 				return nil, 0, fmt.Errorf("module %s operation %s: %w", module.Name, operation.Entry.Name, err)
 			}
@@ -173,12 +171,31 @@ func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace
 			if err != nil {
 				return nil, 0, err
 			}
+			// What is written is what an installer reads: hold it to the
+			// installer's own rules before it reaches any workspace.
+			if _, err = corerunnable.DecodePrepared(value); err != nil {
+				return nil, 0, fmt.Errorf("module %s operation %s: %w", module.Name, operation.Entry.Name, err)
+			}
 			key := RunnableBindingKey(module.Name, operation.Entry.Name)
 			if _, taken := lines[key]; taken {
 				return nil, 0, fmt.Errorf("two operations bind under key %s", key)
 			}
 			lines[key] = string(value)
+			setKey, err := prepared.DescriptorSet.Key()
+			if err != nil {
+				return nil, 0, err
+			}
+			sets[setKey] = corerunnable.EncodeDescriptorSet(set)
 		}
+	}
+	count := len(lines)
+	// One descriptor set per owner endpoint, however many operations it
+	// serves; a set nothing references is not written.
+	for key, set := range sets {
+		if _, taken := lines[key]; taken {
+			return nil, 0, fmt.Errorf("an operation binds under the descriptor set key %s", key)
+		}
+		lines[key] = set
 	}
 	keys := make([]string, 0, len(lines))
 	for key := range lines {
@@ -190,7 +207,7 @@ func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace
 	for _, key := range keys {
 		out.WriteString(key + "=" + lines[key] + "\n")
 	}
-	return []byte(out.String()), len(keys), nil
+	return []byte(out.String()), count, nil
 }
 
 // RunnableBindingKey is the configuration key an operation is bound under:
@@ -208,15 +225,17 @@ func RunnableBindingKey(module, name string) string {
 	return key.String()
 }
 
-func prepareRunnable(ctx context.Context, module *resources.Module, operation *runnablespkg.Derived, resolver *endpointResolver, envName string) (*PreparedRunnable, error) {
+// prepareRunnable prepares one operation and returns, beside it, the owner
+// endpoint's descriptor set its reference names.
+func prepareRunnable(ctx context.Context, module *resources.Module, operation *runnablespkg.Derived, resolver *endpointResolver, envName string) (*corerunnable.Prepared, []byte, error) {
 	pkg := operation.Package
 	if len(pkg.GetServiceOperations()) != 1 {
-		return nil, fmt.Errorf("a derived package carries exactly one service operation, found %d", len(pkg.GetServiceOperations()))
+		return nil, nil, fmt.Errorf("a derived package carries exactly one service operation, found %d", len(pkg.GetServiceOperations()))
 	}
 	descriptor := pkg.GetServiceOperations()[0]
 	mapping, err := resolver.resolve(ctx, module, operation.Entry.Service, operation.Entry.Endpoint)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	target := &basev0.RunnableTarget{
 		Schema:      corerunnable.TargetSchemaV1,
@@ -225,7 +244,7 @@ func prepareRunnable(ctx context.Context, module *resources.Module, operation *r
 	}
 	target.Revision, err = targetRevision(pkg.GetDigest(), mapping)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	binding, err := corerunnable.PrepareBinding(&basev0.RunnableBinding{
 		Schema:         corerunnable.BindingSchemaV1,
@@ -236,29 +255,34 @@ func prepareRunnable(ctx context.Context, module *resources.Module, operation *r
 		Target:         target,
 	}, pkg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err = corerunnable.VerifyBinding(binding, pkg); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	packageJSON, err := corerunnable.CanonicalJSON(pkg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	bindingJSON, err := corerunnable.CanonicalJSON(binding)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	descriptors, err := methodDescriptors(module, operation.Entry.Service, operation.Entry.Endpoint, descriptor.GetOperation())
+	set, reference, err := endpointDescriptorSet(module, operation.Entry.Service, operation.Entry.Endpoint)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return &PreparedRunnable{
-		Package:     packageJSON,
-		Binding:     bindingJSON,
-		Operation:   operation.Operation,
-		Descriptors: base64.StdEncoding.EncodeToString(descriptors),
-	}, nil
+	policy, err := json.Marshal(operation.Operation)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &corerunnable.Prepared{
+		Schema:        corerunnable.PreparedSchemaV2,
+		Package:       packageJSON,
+		Binding:       bindingJSON,
+		Operation:     policy,
+		DescriptorSet: reference,
+	}, set, nil
 }
 
 // targetRevision identifies what a binding dispatches to: the package and the
@@ -273,87 +297,39 @@ func targetRevision(packageDigest string, mapping *basev0.NetworkMapping) (strin
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-// methodDescriptors reads the owner endpoint's published contract and keeps
-// the file that declares the method's service, every file it imports, and the
-// generic receipt service when the owner publishes it.
-func methodDescriptors(module *resources.Module, service, endpoint, method string) ([]byte, error) {
+// endpointDescriptorSet reads the owner endpoint's published contract from
+// the module's API contract catalog and derives the set every operation on
+// that endpoint shares (runnable.LeanDescriptorSet), with the reference that
+// names it. A contract whose bytes are not the ones the catalog recorded is
+// refused: the catalog is stale, and a reference to it would name a contract
+// nobody published.
+func endpointDescriptorSet(module *resources.Module, service, endpoint string) ([]byte, *corerunnable.DescriptorSetReference, error) {
 	catalog, err := composition.LoadAPIContractCatalog(module.Dir())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var path string
+	var published *composition.APIContractEndpoint
 	for i := range catalog.Endpoints {
-		published := &catalog.Endpoints[i]
-		if published.Service == service && published.Endpoint == endpoint && published.Kind == composition.APIContractKindProtobuf {
-			path = published.Path
+		candidate := &catalog.Endpoints[i]
+		if candidate.Service == service && candidate.Endpoint == endpoint && candidate.Kind == composition.APIContractKindProtobuf {
+			published = candidate
 		}
 	}
-	if path == "" {
-		return nil, fmt.Errorf("%s/%s publishes no protobuf contract", service, endpoint)
+	if published == nil {
+		return nil, nil, fmt.Errorf("%s/%s publishes no protobuf contract", service, endpoint)
 	}
-	raw, err := os.ReadFile(filepath.Join(module.Dir(), filepath.FromSlash(path)))
+	raw, err := os.ReadFile(filepath.Join(module.Dir(), filepath.FromSlash(published.Path)))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var set descriptorpb.FileDescriptorSet
-	if err := googleproto.Unmarshal(raw, &set); err != nil {
-		return nil, err
+	if digest := composition.APIContractDigest(raw); digest != published.Digest {
+		return nil, nil, fmt.Errorf("%s/%s: %s is %s but the contract catalog records %s: run `codefly generate contracts`", service, endpoint, published.Path, digest, published.Digest)
 	}
-	return googleproto.MarshalOptions{Deterministic: true}.Marshal(descriptorClosure(&set, method))
-}
-
-// descriptorClosure keeps the file declaring the method's service and its
-// transitive imports, in the set's own order.
-func descriptorClosure(set *descriptorpb.FileDescriptorSet, method string) *descriptorpb.FileDescriptorSet {
-	byName := map[string]*descriptorpb.FileDescriptorProto{}
-	for _, file := range set.GetFile() {
-		byName[file.GetName()] = file
+	set, err := corerunnable.LeanDescriptorSet(raw)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s/%s: %w", service, endpoint, err)
 	}
-	serviceName := strings.TrimPrefix(method, "/")
-	if cut := strings.LastIndex(serviceName, "/"); cut >= 0 {
-		serviceName = serviceName[:cut]
-	}
-	keep := map[string]bool{}
-	var visit func(string)
-	visit = func(name string) {
-		if keep[name] {
-			return
-		}
-		file, ok := byName[name]
-		if !ok {
-			return
-		}
-		keep[name] = true
-		for _, dependency := range file.GetDependency() {
-			visit(dependency)
-		}
-	}
-	for _, file := range set.GetFile() {
-		for _, declared := range file.GetService() {
-			full := declared.GetName()
-			if file.GetPackage() != "" {
-				full = file.GetPackage() + "." + full
-			}
-			if full == serviceName || full == "codefly.runnable.receipts.v0.Receipts" {
-				visit(file.GetName())
-			}
-		}
-	}
-	out := &descriptorpb.FileDescriptorSet{}
-	for _, file := range set.GetFile() {
-		if keep[file.GetName()] {
-			// A generic caller resolves types and methods; comments and
-			// source locations are no part of that, and they are most of a
-			// descriptor's size. Every prepared binding is delivered to its
-			// installer as configuration, which the environment carries (a
-			// process environment on a run), so what it does not need it must
-			// not carry.
-			lean := googleproto.CloneOf(file)
-			lean.SourceCodeInfo = nil
-			out.File = append(out.File, lean)
-		}
-	}
-	return out
+	return set, &corerunnable.DescriptorSetReference{Digest: corerunnable.DescriptorSetDigest(set), Contract: published.Digest}, nil
 }
 
 // endpointResolver resolves an owner endpoint the way a run or a render of the
