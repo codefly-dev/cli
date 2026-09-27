@@ -342,7 +342,15 @@ func descriptorClosure(set *descriptorpb.FileDescriptorSet, method string) *desc
 	out := &descriptorpb.FileDescriptorSet{}
 	for _, file := range set.GetFile() {
 		if keep[file.GetName()] {
-			out.File = append(out.File, file)
+			// A generic caller resolves types and methods; comments and
+			// source locations are no part of that, and they are most of a
+			// descriptor's size. Every prepared binding is delivered to its
+			// installer as configuration, which the environment carries (a
+			// process environment on a run), so what it does not need it must
+			// not carry.
+			lean := googleproto.CloneOf(file)
+			lean.SourceCodeInfo = nil
+			out.File = append(out.File, lean)
 		}
 	}
 	return out

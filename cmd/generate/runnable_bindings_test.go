@@ -13,6 +13,7 @@ import (
 	corerunnable "github.com/codefly-dev/core/runnable"
 	"google.golang.org/protobuf/encoding/protojson"
 	googleproto "google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
@@ -101,5 +102,51 @@ func TestGenerateRunnableBindingsBindsEveryDerivedOperation(t *testing.T) {
 func TestRunnableBindingKeyIsAnEnvironmentKey(t *testing.T) {
 	if got := RunnableBindingKey("documents", "documents.ingest-document"); got != "DOCUMENTS__DOCUMENTS_INGEST_DOCUMENT" {
 		t.Fatalf("key %q", got)
+	}
+}
+
+// A prepared binding carries the owner's descriptors so a generic caller can
+// resolve the method; it is delivered as configuration, which a run carries in
+// the process environment, so source locations and comments — most of a
+// descriptor's bytes and nothing a caller resolves with — are dropped, while the
+// closure and the method stay resolvable.
+func TestDescriptorClosureCarriesNoSourceInfo(t *testing.T) {
+	owner := &descriptorpb.FileDescriptorProto{
+		Name: googleproto.String("owner/v1/api.proto"), Package: googleproto.String("owner.v1"),
+		Dependency:  []string{"owner/v1/types.proto"},
+		MessageType: []*descriptorpb.DescriptorProto{{Name: googleproto.String("Req")}},
+		Service: []*descriptorpb.ServiceDescriptorProto{{Name: googleproto.String("Owner"), Method: []*descriptorpb.MethodDescriptorProto{{
+			Name: googleproto.String("Apply"), InputType: googleproto.String(".owner.v1.Req"), OutputType: googleproto.String(".owner.v1.Res"),
+		}}}},
+		SourceCodeInfo: &descriptorpb.SourceCodeInfo{Location: []*descriptorpb.SourceCodeInfo_Location{{Path: []int32{4, 0}, Span: []int32{1, 0, 3}, LeadingComments: googleproto.String(" a long comment")}}},
+		Syntax:         googleproto.String("proto3"),
+	}
+	types := &descriptorpb.FileDescriptorProto{
+		Name: googleproto.String("owner/v1/types.proto"), Package: googleproto.String("owner.v1"),
+		MessageType:    []*descriptorpb.DescriptorProto{{Name: googleproto.String("Res")}},
+		SourceCodeInfo: &descriptorpb.SourceCodeInfo{Location: []*descriptorpb.SourceCodeInfo_Location{{Path: []int32{4, 0}, Span: []int32{1, 0, 3}}}},
+		Syntax:         googleproto.String("proto3"),
+	}
+	unrelated := &descriptorpb.FileDescriptorProto{Name: googleproto.String("other/v1/x.proto"), Package: googleproto.String("other.v1"), Syntax: googleproto.String("proto3")}
+	set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{types, owner, unrelated}}
+
+	out := descriptorClosure(set, "/owner.v1.Owner/Apply")
+	if len(out.GetFile()) != 2 {
+		t.Fatalf("closure holds %d files, want the method's file and its import", len(out.GetFile()))
+	}
+	for _, file := range out.GetFile() {
+		if file.GetSourceCodeInfo() != nil {
+			t.Fatalf("%s carries source info", file.GetName())
+		}
+	}
+	if owner.GetSourceCodeInfo() == nil {
+		t.Fatal("the contract's own descriptors were modified")
+	}
+	files, err := protodesc.NewFiles(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.FindDescriptorByName("owner.v1.Owner.Apply"); err != nil {
+		t.Fatal("the method no longer resolves: ", err)
 	}
 }
