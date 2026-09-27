@@ -5,9 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 
+	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/remotenetwork"
 	"github.com/codefly-dev/core/architecture"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 )
@@ -29,7 +34,11 @@ type networkServiceReport struct {
 	Name    string `json:"name"`
 	// Managed is true when the environment replaces the service with a managed
 	// one: it has no in-cluster workload, so no endpoint has a deployed port.
-	Managed      bool                      `json:"managed,omitempty"`
+	Managed bool `json:"managed,omitempty"`
+	// Render is the module render, relative to the workspace, that the
+	// endpoints' container ports were read from (--rendered); absent when the
+	// service's module has no render or the render has no unit for it.
+	Render       string                    `json:"render,omitempty"`
 	Endpoints    []networkEndpointReport   `json:"endpoints"`
 	Dependencies []networkDependencyReport `json:"dependencies,omitempty"`
 }
@@ -44,6 +53,11 @@ type networkEndpointReport struct {
 	// DeployedPort is the endpoint's in-cluster port in the environment; absent
 	// when the render gives it none (a public host, or a managed service).
 	DeployedPort *uint16 `json:"deployed_port,omitempty"`
+	// ContainerPort is the port the endpoint's pods listen on, read from the
+	// rendered manifests (--rendered): the targetPort of the Service port that
+	// publishes the endpoint's in-cluster port. Absent without a render, or
+	// when the render publishes no Service port for the endpoint.
+	ContainerPort *uint32 `json:"container_port,omitempty"`
 }
 
 type networkDependencyReport struct {
@@ -93,6 +107,12 @@ func writeNetworkJSON(ctx context.Context, out io.Writer, workspace *resources.W
 				return fmt.Errorf("cannot allocate in-cluster ports of %s in environment %s: %w", id.Unique(), env.Name, err)
 			}
 		}
+		var container map[string]uint32
+		if showNetworkRendered && !service.Managed {
+			if container, service.Render, err = renderedContainerPorts(ctx, workspace, env, remote, id, endpoints); err != nil {
+				return err
+			}
+		}
 		for _, ep := range endpoints {
 			entry := networkEndpointReport{Name: ep.Name, API: ep.Api, Visibility: ep.Visibility}
 			if entry.Visibility == "" {
@@ -105,6 +125,9 @@ func writeNetworkJSON(ctx context.Context, out io.Writer, workspace *resources.W
 			}
 			if port, placed := deployed[ep.Name]; placed {
 				entry.DeployedPort = &port
+			}
+			if port, rendered := container[ep.Name]; rendered {
+				entry.ContainerPort = &port
 			}
 			service.Endpoints = append(service.Endpoints, entry)
 		}
@@ -120,4 +143,31 @@ func writeNetworkJSON(ctx context.Context, out io.Writer, workspace *resources.W
 	encoder := json.NewEncoder(out)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(report)
+}
+
+// renderedContainerPorts reads a service's container ports from its module's
+// committed render, joining on the in-cluster ports the render hands the
+// service's agent (the same RemoteManager.GenerateNetworkMappings a deploy
+// calls). It returns the render's path relative to the workspace.
+func renderedContainerPorts(
+	ctx context.Context,
+	workspace *resources.Workspace,
+	env *environments.Environment,
+	remote *remotenetwork.RemoteManager,
+	id *resources.ServiceIdentity,
+	endpoints []*basev0.Endpoint,
+) (map[string]uint32, string, error) {
+	mappings, err := remote.GenerateNetworkMappings(ctx, env, workspace, id, endpoints)
+	if err != nil {
+		return nil, "", fmt.Errorf("cannot map the in-cluster endpoints of %s in environment %s: %w", id.Unique(), env.Name, err)
+	}
+	ports, root, err := gitops.ServiceContainerPorts(workspace, id.Module, id.Name, env.Name, orchestration.InClusterPorts(ctx, mappings))
+	if err != nil || root == "" {
+		return nil, "", err
+	}
+	relative, err := filepath.Rel(workspace.Dir(), root)
+	if err != nil {
+		return nil, "", err
+	}
+	return ports, filepath.ToSlash(relative), nil
 }
