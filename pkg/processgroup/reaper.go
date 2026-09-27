@@ -21,25 +21,26 @@ import (
 )
 
 const (
-	stateDirName         = "runs"
-	authenticatedDirName = "authenticated-v1"
-	registryLockName     = ".reaper.lock"
-	maxSweepPasses       = 4
-	maxRecordSize        = 16 << 10
-	recordReadAttempts   = 3
-	recordReadRetry      = 10 * time.Millisecond
-	groupAuthBytes       = 32
-	groupAuthEnv         = "CODEFLY_PROCESS_GROUP_AUTH"
-	dispositionFailed    = "failed"
-	dispositionReaped    = "reaped"
-	dispositionStopped   = "stopped"
-	dispositionRemoved   = "removed"
-	dispositionRejected  = "rejected"
-	dispositionPreserved = "preserved"
-	sigtermGrace         = 15 * time.Second
-	sigkillGrace         = 2 * time.Second
-	startTolerance       = 2 * time.Second
-	createTimePrecision  = time.Millisecond
+	stateDirName          = "runs"
+	authenticatedDirName  = "authenticated-v1"
+	registryLockName      = ".reaper.lock"
+	maxSweepPasses        = 4
+	maxRecordSize         = 16 << 10
+	recordReadAttempts    = 3
+	recordReadRetry       = 10 * time.Millisecond
+	groupAuthBytes        = 32
+	groupAuthEnv          = "CODEFLY_PROCESS_GROUP_AUTH"
+	dispositionFailed     = "failed"
+	dispositionReaped     = "reaped"
+	dispositionStopped    = "stopped"
+	dispositionRemoved    = "removed"
+	dispositionRejected   = "rejected"
+	dispositionPreserved  = "preserved"
+	sigtermGrace          = 15 * time.Second
+	sigkillGrace          = 2 * time.Second
+	startTolerance        = 2 * time.Second
+	createTimePrecision   = time.Millisecond
+	dispositionOutOfScope = "skipped-other-workspace"
 )
 
 var errLeaderExited = errors.New("process-group leader exited")
@@ -133,9 +134,16 @@ type GroupCleanup struct {
 }
 
 // CleanupEvidence retains typed cleanup and recovery outcomes for callers.
+//
+// OutOfScope names the groups a scoped reap deliberately left running because
+// they belong to another workspace. It is reported rather than silent so a
+// caller can tell the difference between "nothing was running" and "something
+// was running and is not yours".
 type CleanupEvidence struct {
 	Outcome CleanupOutcome
 	Groups  []GroupCleanup
+	// OutOfScope holds the pgids a scoped reap left running.
+	OutOfScope []int
 }
 
 // RecoveredPGIDs returns the exact process groups recovered from stale state.
@@ -150,6 +158,7 @@ func (e CleanupEvidence) RecoveredPGIDs() []int {
 }
 
 func (e *CleanupEvidence) merge(other CleanupEvidence) {
+	e.OutOfScope = append(e.OutOfScope, other.OutOfScope...)
 	for _, group := range other.Groups {
 		e.record(group.Record, group.PGID, group.Outcome)
 	}
@@ -194,33 +203,51 @@ func cleanupOutcomePriority(outcome CleanupOutcome) int {
 
 // ReapStaleProcessGroups reconciles both the current authenticated registry
 // and the legacy root registry still written by independently released agents.
+//
+// It is machine-wide, and stays so: it only recovers groups whose recorded
+// owner is already gone, which is garbage collection rather than stopping
+// anything a live workspace is using.
 func ReapStaleProcessGroups(ctx context.Context) error {
-	_, err := ReapStaleProcessGroupsWithEvidence(ctx)
+	_, err := ReapStaleProcessGroupsWithEvidence(ctx, AllWorkspaces())
 	return err
 }
 
 // ReapStaleProcessGroupsWithEvidence recovers groups whose recorded owner is
-// gone and retains the outcome for callers that need lifecycle evidence.
-func ReapStaleProcessGroupsWithEvidence(ctx context.Context) (CleanupEvidence, error) {
-	return reconcileProcessGroupRegistries(ctx, false)
+// gone and retains the outcome for callers that need lifecycle evidence. Pass
+// AllWorkspaces for the machine-wide sweep, or InWorkspace to leave other
+// workspaces' records alone.
+func ReapStaleProcessGroupsWithEvidence(ctx context.Context, scope Scope) (CleanupEvidence, error) {
+	return reconcileProcessGroupRegistries(ctx, reapPolicy{scope: scope})
 }
 
-// StopManagedProcessGroups stops every managed group, including groups whose
+// StopManagedProcessGroups stops managed groups in scope, including groups whose
 // agent owner has not finished exiting yet.
-func StopManagedProcessGroups(ctx context.Context) (CleanupEvidence, error) {
-	return reconcileProcessGroupRegistries(ctx, true)
+//
+// Unlike the stale sweep this signals groups that are alive and doing work, so
+// the scope is load-bearing: AllWorkspaces stops every workspace's run on the
+// machine, which is almost never what someone standing in one workspace means.
+func StopManagedProcessGroups(ctx context.Context, scope Scope) (CleanupEvidence, error) {
+	return reconcileProcessGroupRegistries(ctx, reapPolicy{stopManaged: true, scope: scope})
 }
 
-func reconcileProcessGroupRegistries(ctx context.Context, stopManaged bool) (CleanupEvidence, error) {
+// reapPolicy is what one reconciliation pass may do, and to whose groups.
+type reapPolicy struct {
+	// stopManaged signals groups whose owner is still alive, not only those it
+	// has outlived.
+	stopManaged bool
+	scope       Scope
+}
+
+func reconcileProcessGroupRegistries(ctx context.Context, policy reapPolicy) (CleanupEvidence, error) {
 	evidence := CleanupEvidence{Outcome: CleanupClean}
 	dir, err := stateDir()
 	if err != nil {
 		evidence.Outcome = CleanupFailed
 		return evidence, err
 	}
-	currentEvidence, currentErr := reapProcessGroups(ctx, filepath.Join(dir, authenticatedDirName), stopManaged)
+	currentEvidence, currentErr := reapProcessGroups(ctx, filepath.Join(dir, authenticatedDirName), policy)
 	evidence.merge(currentEvidence)
-	legacyEvidence, legacyErr := reapProcessGroups(ctx, dir, stopManaged)
+	legacyEvidence, legacyErr := reapProcessGroups(ctx, dir, policy)
 	evidence.merge(legacyEvidence)
 	if err := errors.Join(currentErr, legacyErr); err != nil {
 		evidence.Outcome = CleanupFailed
@@ -229,7 +256,7 @@ func reconcileProcessGroupRegistries(ctx context.Context, stopManaged bool) (Cle
 	return evidence, nil
 }
 
-func reapProcessGroups(ctx context.Context, dir string, stopManaged bool) (CleanupEvidence, error) {
+func reapProcessGroups(ctx context.Context, dir string, policy reapPolicy) (CleanupEvidence, error) {
 	evidence := CleanupEvidence{Outcome: CleanupClean}
 	select {
 	case registryProcessLock <- struct{}{}:
@@ -267,7 +294,7 @@ func reapProcessGroups(ctx context.Context, dir string, stopManaged bool) (Clean
 
 	var failures []error
 	for range maxSweepPasses {
-		reaped, passEvidence, passErr := sweep(ctx, dir, stopManaged)
+		reaped, passEvidence, passErr := sweep(ctx, dir, policy)
 		evidence.merge(passEvidence)
 		if passErr != nil {
 			failures = append(failures, passErr)
@@ -299,7 +326,7 @@ func stateDir() (string, error) {
 	return dir, nil
 }
 
-func sweep(ctx context.Context, dir string, stopManaged bool) (int, CleanupEvidence, error) {
+func sweep(ctx context.Context, dir string, policy reapPolicy) (int, CleanupEvidence, error) {
 	evidence := CleanupEvidence{Outcome: CleanupClean}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -318,7 +345,7 @@ func sweep(ctx context.Context, dir string, stopManaged bool) (int, CleanupEvide
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
-		disposition, err := reconcile(ctx, path, stopManaged)
+		disposition, err := reconcile(ctx, path, policy)
 		if disposition == dispositionReaped || disposition == dispositionStopped {
 			reaped++
 		}
@@ -328,6 +355,12 @@ func sweep(ctx context.Context, dir string, stopManaged bool) (int, CleanupEvide
 		}
 		if err != nil || disposition == dispositionFailed {
 			outcome = CleanupFailed
+		}
+		if disposition == dispositionOutOfScope {
+			if pgid := pgidFromRecordName(entry.Name()); pgid > 0 {
+				evidence.OutOfScope = append(evidence.OutOfScope, pgid)
+			}
+			continue
 		}
 		evidence.record(path, pgidFromRecordName(entry.Name()), outcome)
 		if err != nil {
@@ -345,7 +378,7 @@ func pgidFromRecordName(name string) int {
 	return value
 }
 
-func reconcile(ctx context.Context, path string, stopManaged bool) (string, error) {
+func reconcile(ctx context.Context, path string, policy reapPolicy) (string, error) {
 	w := wool.Get(ctx).In("processgroup.reconcile")
 	rec, snapshot, err := readRecord(ctx, path)
 	if err != nil {
@@ -386,13 +419,23 @@ func reconcile(ctx context.Context, path string, stopManaged bool) (string, erro
 			wool.Field("disposition", "removed-dead-group"))...)
 		return dispositionRemoved, nil
 	}
+	// A record carries no workspace of its own — independently released agents
+	// write these and this package cannot change their format — so the group is
+	// attributed the same way an orphan is: from its leader's working directory.
+	// Out of scope means left alone entirely: not signalled, and its record kept,
+	// because the workspace that owns it is still using it.
+	if !policy.scope.includesProcessGroup(rec.pgid) {
+		w.Debug("reconciled process-group record", append(fields,
+			wool.Field("disposition", dispositionOutOfScope))...)
+		return dispositionOutOfScope, nil
+	}
 	if rec.contract == authenticatedJSONRecord {
-		return reconcileAuthenticated(ctx, path, &rec, snapshot, fields, stopManaged)
+		return reconcileAuthenticated(ctx, path, &rec, snapshot, fields, policy.stopManaged)
 	}
 
 	leader, err := inspectLeader(rec.pgid)
 	if errors.Is(err, errLeaderExited) {
-		return reconcileLeaderless(ctx, path, &rec, snapshot, fields, stopManaged)
+		return reconcileLeaderless(ctx, path, &rec, snapshot, fields, policy.stopManaged)
 	}
 	if err != nil {
 		w.Warn("could not inspect process-group leader",
@@ -428,7 +471,7 @@ func reconcile(ctx context.Context, path string, stopManaged bool) (string, erro
 			return dispositionFailed, fmt.Errorf("inspect process-group owner %d from record %s: %w", rec.parent, path, err)
 		}
 		if ownerAlive {
-			if stopManaged {
+			if policy.stopManaged {
 				return reapGroup(ctx, path, &rec, snapshot, fields, dispositionStopped)
 			}
 			w.Debug("reconciled process-group record", append(fields,

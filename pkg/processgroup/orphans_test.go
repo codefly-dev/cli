@@ -262,7 +262,7 @@ func TestReapDevServerOrphansDryRunSkipsUnownedAndSupervised(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	reaped, err := ReapDevServerOrphans(ctx, true)
+	reaped, err := ReapDevServerOrphans(ctx, true, AllWorkspaces())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func TestReapDevServerOrphansDryRunSelectsOwnedStaleGroup(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	reaped, err := ReapDevServerOrphans(ctx, true)
+	reaped, err := ReapDevServerOrphans(ctx, true, AllWorkspaces())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +433,7 @@ func TestReapNativeServiceOrphansDryRunSkipsUnownedAndSupervised(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	reaped, err := ReapNativeServiceOrphans(ctx, true)
+	reaped, err := ReapNativeServiceOrphans(ctx, true, AllWorkspaces())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +468,7 @@ func TestReapNativeServiceOrphansDryRunSelectsOwnedStaleGroup(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	reaped, err := ReapNativeServiceOrphans(ctx, true)
+	reaped, err := ReapNativeServiceOrphans(ctx, true, AllWorkspaces())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"github.com/codefly-dev/cli/pkg/processgroup"
 	"os/exec"
 	"reflect"
 	"testing"
@@ -53,7 +54,7 @@ bad /usr/local/bin/codefly
 func TestCodeflyOwnedPIDsReturnsProcessErrors(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := codeflyOwnedPIDs(ctx, -1); err == nil {
+	if _, err := codeflyOwnedPIDs(ctx, -1, processgroup.AllWorkspaces()); err == nil {
 		t.Fatal("expected cancelled process enumeration to return an error")
 	}
 }

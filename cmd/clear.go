@@ -26,13 +26,27 @@ import (
 // It matches on the EXECUTABLE path, never on a substring of the full command
 // line, so unrelated processes that merely mention the repo path are spared.
 // The caller's own PID (self) is always excluded.
-func codeflyOwnedPIDs(ctx context.Context, self int) ([]int, error) {
+func codeflyOwnedPIDs(ctx context.Context, self int, scope processgroup.Scope) ([]int, error) {
 	// `command=` prints the full argv; the first token is the executable.
 	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,command=").Output()
 	if err != nil {
 		return nil, fmt.Errorf("list processes: %w", err)
 	}
-	return parseCodeflyOwnedPIDs(out, self), nil
+	pids := parseCodeflyOwnedPIDs(out, self)
+	if scope.All() {
+		return pids, nil
+	}
+	// A scoped kill only signals codefly processes working inside this
+	// workspace. An agent or CLI whose workspace cannot be resolved belongs to
+	// nobody we can name, so a scoped kill leaves it alone.
+	kept := make([]int, 0, len(pids))
+	for _, pid := range pids {
+		workspace, ok := processgroup.EnclosingWorkspaceOfProcess(pid)
+		if ok && scope.Includes(workspace) {
+			kept = append(kept, pid)
+		}
+	}
+	return kept, nil
 }
 
 func parseCodeflyOwnedPIDs(out []byte, self int) []int {
@@ -87,6 +101,8 @@ var (
 	clearKeepProcesses  bool
 	clearKeepContainers bool
 	clearDryRun         bool
+	clearAllWorkspaces  bool
+	stopAllWorkspaces   bool
 )
 
 type clearOptions struct {
@@ -94,6 +110,9 @@ type clearOptions struct {
 	keepProcesses  bool
 	keepContainers bool
 	dryRun         bool
+	// scope bounds which workspace's processes may be signalled. The zero value
+	// is machine-wide, so every construction site states what it means.
+	scope processgroup.Scope
 }
 
 func clearCommandOptions() clearOptions {
@@ -102,7 +121,32 @@ func clearCommandOptions() clearOptions {
 		keepProcesses:  clearKeepProcesses,
 		keepContainers: clearKeepContainers,
 		dryRun:         clearDryRun,
+		scope:          reapScope(clearAllWorkspaces),
 	}
+}
+
+// reapScope is the workspace a stop or clear may touch. Without --all it is the
+// workspace the command was run in, so a machine running several workspaces at
+// once — one per checkout, which is the normal shape for anyone working on more
+// than one branch — never has one workspace's stop kill another's services.
+//
+// Outside any workspace there is nothing to scope to, so the scope is
+// machine-wide: a bare `stop` in a home directory still behaves as it always
+// did. The caller announces which of the two it got, because the difference
+// decides what survives.
+func reapScope(all bool) processgroup.Scope {
+	if all {
+		return processgroup.AllWorkspaces()
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return processgroup.AllWorkspaces()
+	}
+	workspace, ok := processgroup.CurrentWorkspace(cwd)
+	if !ok {
+		return processgroup.AllWorkspaces()
+	}
+	return processgroup.InWorkspace(workspace)
 }
 
 // ClearCmd removes codefly state (running processes + docker containers).
@@ -140,6 +184,7 @@ func init() {
 	ClearCmd.Flags().BoolVar(&clearKeepProcesses, "keep-processes", false, "Don't kill running codefly processes (only remove containers)")
 	ClearCmd.Flags().BoolVar(&clearKeepContainers, "keep-containers", false, "Don't remove docker containers (only kill processes)")
 	ClearCmd.Flags().BoolVar(&clearDryRun, "dry-run", false, "List what would be removed without removing anything")
+	ClearCmd.Flags().BoolVar(&clearAllWorkspaces, "all", false, "Act on every workspace on this machine, not just the current one")
 }
 
 func clearCommand(ctx context.Context, args []string, options clearOptions) (returnErr error) {
@@ -171,7 +216,7 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 		// live under ~/.codefly/agents/, and the CLI itself is the `codefly`
 		// executable; nothing else qualifies.
 		self := os.Getpid()
-		pids, err := codeflyOwnedPIDs(ctx, self)
+		pids, err := codeflyOwnedPIDs(ctx, self, options.scope)
 		if err != nil {
 			w.Warn("cannot enumerate codefly processes", wool.ErrField(err))
 			failures = append(failures, err)
@@ -227,9 +272,9 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 		var processEvidence processgroup.CleanupEvidence
 		var processErr error
 		if options.keepProcesses {
-			processEvidence, processErr = processgroup.ReapStaleProcessGroupsWithEvidence(ctx)
+			processEvidence, processErr = processgroup.ReapStaleProcessGroupsWithEvidence(ctx, options.scope)
 		} else {
-			processEvidence, processErr = processgroup.StopManagedProcessGroups(ctx)
+			processEvidence, processErr = processgroup.StopManagedProcessGroups(ctx, options.scope)
 		}
 		if processErr != nil {
 			w.Warn("cannot reap stale process groups", wool.ErrField(processErr))
@@ -238,6 +283,12 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 			w.Info("reaped managed process groups", wool.Field("count", len(recovered)), wool.Field("pgids", recovered))
 		} else {
 			w.Info("managed process groups reconciled")
+		}
+		// Say what was deliberately left running. Silence here reads as "nothing
+		// was up", which is the opposite of the truth and the reason someone
+		// reaches for --all without knowing what it will take with it.
+		if left := processEvidence.OutOfScope; len(left) > 0 {
+			w.Info("left other workspaces' process groups running", wool.Field("count", len(left)), wool.Field("pgids", left), wool.Field("hint", "--all to include them"))
 		}
 	}
 
@@ -347,7 +398,7 @@ func reapOrphanedDevServers(ctx context.Context, w *wool.Wool, options clearOpti
 	if options.keepProcesses {
 		return nil
 	}
-	reaped, err := processgroup.ReapDevServerOrphans(ctx, options.dryRun)
+	reaped, err := processgroup.ReapDevServerOrphans(ctx, options.dryRun, options.scope)
 	if err != nil {
 		w.Warn("cannot reap orphaned dev servers", wool.ErrField(err))
 	}
@@ -382,7 +433,7 @@ func reapOrphanedNativeServices(ctx context.Context, w *wool.Wool, options clear
 	if options.keepProcesses {
 		return nil
 	}
-	reaped, err := processgroup.ReapNativeServiceOrphans(ctx, options.dryRun)
+	reaped, err := processgroup.ReapNativeServiceOrphans(ctx, options.dryRun, options.scope)
 	if err != nil {
 		w.Warn("cannot reap orphaned native services", wool.ErrField(err))
 	}
