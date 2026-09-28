@@ -188,3 +188,77 @@ func TestLoadRequiredModuleEReturnsMissingWorkspaceError(t *testing.T) {
 		t.Fatal("missing workspace returned nil error")
 	}
 }
+
+// ambiguousWorkspace lays out one module with two services, so nothing but a
+// person (or an explicit name) can settle which service is meant.
+func ambiguousWorkspace(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	workspace := &resources.Workspace{
+		Name:    "ambiguous",
+		Layout:  resources.LayoutKindModules,
+		Modules: []*resources.ModuleReference{{Name: "mod"}},
+	}
+	if err := workspace.SaveToDirUnsafe(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	moduleDir := filepath.Join(root, "modules", "mod")
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(moduleDir, "module.codefly.yaml"),
+		"kind: module\nname: mod\nservices:\n  - name: gateway\n  - name: api\n")
+	for _, service := range []string{"gateway", "api"} {
+		write(filepath.Join(moduleDir, "services", service, "service.codefly.yaml"),
+			"kind: service\nname: "+service+"\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.0.1\n  publisher: codefly.ai\n")
+	}
+	t.Chdir(root)
+	return root
+}
+
+// TestLoadActiveContextIsHeadlessWithoutATTY is the regression. `go test` runs
+// with no controlling terminal, exactly like CI, a pipe, an MCP server or an
+// agent — so this test is only meaningful because it cannot show a selector.
+//
+// Before the fix, LoadActiveContext asked for a selector unconditionally and the
+// process died with `open /dev/tty: device not configured`: no mention of the
+// ambiguity it was resolving, and no hint that naming the service would have
+// fixed it. `codefly generate contracts` in a two-service workspace failed that
+// way, and so did every other command reaching this from a script.
+//
+// The assertion is on the *content* of the error, not merely that one occurred:
+// an unhelpful failure is what this replaces, so a test that accepted any error
+// would pass against the bug.
+func TestLoadActiveContextIsHeadlessWithoutATTY(t *testing.T) {
+	ambiguousWorkspace(t)
+
+	_, err := LoadActiveContext(context.Background())
+	if err == nil {
+		t.Fatal("two services resolved to one without anybody choosing")
+	}
+	message := err.Error()
+	if strings.Contains(message, "/dev/tty") || strings.Contains(message, "device not configured") {
+		t.Fatalf("a headless caller was sent to a terminal: %v", err)
+	}
+	for _, want := range []string{"multiple services found", "gateway", "api", "pass the service name explicitly"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("error does not say %q, so it cannot be acted on: %v", want, err)
+		}
+	}
+}
+
+// TestInteractivePossibleAgreesWithTheHeadlessCheck: one process must not be
+// headless for a question and interactive for a picker, so this uses the same
+// test the prompt bridge uses. Under `go test` there is no terminal, which is the
+// case that matters.
+func TestInteractivePossibleAgreesWithTheHeadlessCheck(t *testing.T) {
+	if interactivePossible() {
+		t.Fatal("a process with no controlling terminal reported that it can show a selector")
+	}
+}

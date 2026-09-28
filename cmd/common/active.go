@@ -3,11 +3,14 @@ package common
 import (
 	"context"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/cli"
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/tui"
+	"golang.org/x/term"
 )
 
 type ActiveContext struct {
@@ -16,8 +19,31 @@ type ActiveContext struct {
 	Service   *resources.Service
 }
 
+// LoadActiveContext resolves context, offering a selector when the ambiguity can
+// only be settled by a person. Interactivity is *requested* here, not asserted:
+// see interactivePossible.
 func LoadActiveContext(ctx context.Context) (*ActiveContext, error) {
-	return loadActiveContext(ctx, true)
+	return loadActiveContext(ctx, interactivePossible())
+}
+
+// interactivePossible reports whether a selector can actually be shown.
+//
+// Asking is a request, not a fact. The selector opens /dev/tty, so a process
+// without one — CI, a pipe, an MCP server, an agent — got
+// `open /dev/tty: device not configured` and nothing else: no mention of the
+// ambiguity it was trying to resolve, and no hint that naming the service would
+// have fixed it. `codefly generate contracts` in a two-service workspace failed
+// that way, as does anything else reaching this from a script.
+//
+// The non-interactive path already produces the right answer — an actionable
+// ambiguity error naming the services and how to disambiguate — so the fix is to
+// take it whenever a selector is impossible rather than to invent a new error.
+// The same test the prompt bridge already uses (pkg/cli/communicate) decides it,
+// so one process cannot be headless for a question and interactive for a picker.
+func interactivePossible() bool {
+	return !cli.WithDefault() &&
+		term.IsTerminal(int(os.Stdin.Fd())) &&
+		term.IsTerminal(int(os.Stdout.Fd()))
 }
 
 // LoadActiveContextNonInteractive resolves only context encoded by the
