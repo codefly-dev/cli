@@ -37,10 +37,14 @@ func (err *EnvironmentExistsError) Error() string {
 //	Kubeconfig: path to the kubeconfig file. Tilde expansion is supported.
 //	            If empty, defaults to $KUBECONFIG or ~/.kube/config.
 //	Context: optional kubectl context within the kubeconfig.
+//	Architectures: the CPU architectures of the cluster's nodes, as Go/OCI
+//	       names ("amd64", "arm64"). An image built for the environment is
+//	       built for exactly these, see ImagePlatforms.
 type EnvironmentCluster struct {
-	Kind       string `yaml:"kind,omitempty"`
-	Kubeconfig string `yaml:"kubeconfig,omitempty"`
-	Context    string `yaml:"context,omitempty"`
+	Kind          string   `yaml:"kind,omitempty"`
+	Kubeconfig    string   `yaml:"kubeconfig,omitempty"`
+	Context       string   `yaml:"context,omitempty"`
+	Architectures []string `yaml:"architectures,omitempty"`
 }
 
 // EnvironmentRegistry declares the container image registry an environment
