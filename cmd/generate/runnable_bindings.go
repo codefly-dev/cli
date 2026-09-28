@@ -264,6 +264,11 @@ func preparedPolicy(declared *runnablespkg.Operation) (*runnablev0.Operation, er
 		}
 		durations[field] = parsed
 	}
+	completion, named := basev0.RunnableExecution_Completion_value[declared.Completion]
+	if !named || basev0.RunnableExecution_Completion(completion) == basev0.RunnableExecution_COMPLETION_UNKNOWN {
+		return nil, fmt.Errorf("completion %q is not a completion mode; %s and %s are the two",
+			declared.Completion, basev0.RunnableExecution_COMPLETION_CALL, basev0.RunnableExecution_COMPLETION_SUBMIT)
+	}
 	return &runnablev0.Operation{
 		AttemptTimeout: durationpb.New(durations["attempt_timeout"]),
 		TotalTimeout:   durationpb.New(durations["total_timeout"]),
@@ -276,6 +281,7 @@ func preparedPolicy(declared *runnablespkg.Operation) (*runnablev0.Operation, er
 		LookupMethod:   declared.LookupMethod,
 		MaxInputBytes:  declared.MaxInputBytes,
 		MaxOutputBytes: declared.MaxOutputBytes,
+		Completion:     basev0.RunnableExecution_Completion(completion),
 	}, nil
 }
 

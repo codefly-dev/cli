@@ -534,6 +534,7 @@ func TestGenerateRunnablesReproducesTheDocumentStoreOracle(t *testing.T) {
 			Timeout:        durationpb.New(time.Minute),
 			Cancellation:   basev0.RunnableExecution_CANCELLATION_NONE,
 			Recovery:       basev0.RunnableExecution_RECOVERY_RECEIPT,
+			Completion:     basev0.RunnableExecution_COMPLETION_CALL,
 			MaxInputBytes:  resources.DefaultRunnablePayloadBytes,
 			MaxOutputBytes: resources.DefaultRunnablePayloadBytes,
 		},
@@ -559,7 +560,13 @@ func TestGenerateRunnablesReproducesTheDocumentStoreOracle(t *testing.T) {
 	if !googleproto.Equal(handWritten, asOracle) {
 		t.Fatalf("the derived package is not the one document-store publishes:\n%v", asOracle)
 	}
-	if asOracle.GetDigest() != "4c26fb95a0236b94107b30f34783cd893f2be36e0d157340c247013fd93a9a1f" {
+	// The digest is over the canonical package, so a field added to
+	// RunnableExecution moves it for every package in the fleet. This one moved
+	// with the completion mode (codefly-dev/core#678); it had been
+	// 4c26fb95a0236b94107b30f34783cd893f2be36e0d157340c247013fd93a9a1f. The
+	// equality check above is what proves the derivation still matches what
+	// document-store publishes — this line only pins the number.
+	if asOracle.GetDigest() != "ee460290f91e2cad2d9e7efe6d740ba35ff5ec89b4395bbde1e8bd19bd8291a0" {
 		t.Fatalf("digest = %s, want the published oracle's", asOracle.GetDigest())
 	}
 }
