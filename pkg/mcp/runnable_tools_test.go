@@ -30,7 +30,7 @@ agent:
   version: 0.0.1
   publisher: codefly.dev
 contract:
-  protocol: codefly.runnable/v1
+  protocol: codefly.runnable.served/v1
   input:
     fields:
       - name: text
@@ -42,7 +42,7 @@ contract:
 entrypoint:
   handler: handler.py
 execution:
-  facilities: [native]
+  facilities: [generated-service]
   timeout: 2m
   cancellation: signal
   recovery: recompute
@@ -73,7 +73,7 @@ func TestListRunnablesToolViaControlPlane(t *testing.T) {
 		`"module": "backend"`,
 		`"version": "0.1.0"`,
 		`"agent": "codefly.dev/python:0.0.1"`,
-		`"protocol": "codefly.runnable/v1"`,
+		`"protocol": "codefly.runnable.served/v1"`,
 		`"max_output_bytes": 1048576`,
 	} {
 		if !strings.Contains(text, want) {

@@ -22,7 +22,7 @@ agent:
   version: 0.0.1
   publisher: codefly.dev
 contract:
-  protocol: codefly.runnable/v1
+  protocol: codefly.runnable.served/v1
   input:
     fields:
       - name: text
@@ -34,7 +34,7 @@ contract:
 entrypoint:
   handler: handler.py
 execution:
-  facilities: [native, kubernetes]
+  facilities: [generated-service, kubernetes]
   timeout: 2m
   cancellation: signal
   recovery: recompute
@@ -61,8 +61,8 @@ func TestIdentityCarriesEveryFieldASurfaceReports(t *testing.T) {
 	require.Equal(t, "0.1.0", identity.Version)
 	require.Equal(t, "Count words", identity.Description)
 	require.Equal(t, "codefly.dev/python:0.0.1", identity.Agent)
-	require.Equal(t, "codefly.runnable/v1", identity.Protocol)
-	require.Equal(t, []string{"native", "kubernetes"}, identity.Execution.Facilities)
+	require.Equal(t, "codefly.runnable.served/v1", identity.Protocol)
+	require.Equal(t, []string{"generated-service", "kubernetes"}, identity.Execution.Facilities)
 	require.Equal(t, "2m", identity.Execution.Timeout)
 	require.Equal(t, "signal", identity.Execution.Cancellation)
 	require.Equal(t, "recompute", identity.Execution.Recovery)

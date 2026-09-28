@@ -42,7 +42,7 @@ agent:
   version: 0.0.1
   publisher: codefly.dev
 contract:
-  protocol: codefly.runnable/v1
+  protocol: codefly.runnable.served/v1
   input:
     fields:
       - name: text
@@ -54,7 +54,7 @@ contract:
 entrypoint:
   handler: handler.py
 execution:
-  facilities: [native]
+  facilities: [generated-service]
   timeout: 2m
   cancellation: none
   recovery: recompute

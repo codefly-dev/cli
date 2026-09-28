@@ -25,7 +25,7 @@ agent:
   version: 0.0.1
   publisher: codefly.dev
 contract:
-  protocol: codefly.runnable/v1
+  protocol: codefly.runnable.served/v1
   input:
     fields:
       - name: text
@@ -50,8 +50,8 @@ func writeWorkspaceWithTwoRunnables(t *testing.T) string {
 	dir := t.TempDir()
 	workspace := "name: test-ws\nlayout: flat\nrunnables:\n  - name: word-count\n  - name: summarize\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "workspace.codefly.yaml"), []byte(workspace), 0o644))
-	writeRunnable(t, dir, "word-count", "0.1.0", "native")
-	writeRunnable(t, dir, "summarize", "1.2.3", "native, kubernetes")
+	writeRunnable(t, dir, "word-count", "0.1.0", "generated-service")
+	writeRunnable(t, dir, "summarize", "1.2.3", "generated-service, kubernetes")
 	return dir
 }
 
@@ -76,7 +76,7 @@ func TestListRunnablesTableHasARowPerRunnable(t *testing.T) {
 	require.Contains(t, lines[0], "VERSION")
 	require.Contains(t, buf.String(), "word-count")
 	require.Contains(t, buf.String(), "summarize")
-	require.Contains(t, buf.String(), "native,kubernetes")
+	require.Contains(t, buf.String(), "generated-service,kubernetes")
 }
 
 func TestListRunnablesJSONCarriesIdentityAndFacilities(t *testing.T) {
@@ -96,7 +96,7 @@ func TestListRunnablesJSONCarriesIdentityAndFacilities(t *testing.T) {
 	}
 	require.Equal(t, "1.2.3", byName["summarize"].Version)
 	require.Equal(t, "codefly.dev/python:0.0.1", byName["summarize"].Agent)
-	require.Equal(t, []string{"native", "kubernetes"}, byName["summarize"].Execution.Facilities)
+	require.Equal(t, []string{"generated-service", "kubernetes"}, byName["summarize"].Execution.Facilities)
 	require.Equal(t, "test-ws", byName["word-count"].Module)
 }
 
@@ -157,7 +157,7 @@ func writeWorkspaceWithADerivedOperation(t *testing.T) string {
 	require.NoError(t, os.MkdirAll(moduleDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(moduleDir, "module.codefly.yaml"),
 		[]byte("kind: module\nname: documents\nrunnables:\n  - name: word-count\n"), 0o644))
-	writeRunnable(t, moduleDir, "word-count", "0.1.0", "native")
+	writeRunnable(t, moduleDir, "word-count", "0.1.0", "generated-service")
 	runnablestest.Write(t, moduleDir, "test-workspace", "documents", "runtime-worker-grpc-apply-text")
 	return dir
 }
