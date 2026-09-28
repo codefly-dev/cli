@@ -27,16 +27,21 @@ const maxWorkspaceWalk = 64
 var nativeBuildCacheSegments = []string{"/.cache/native/", "/cache/native/"}
 
 // DevServerOrphan is a frontend dev server found by signature rather than by
-// registry record: a dev-server-shaped process whose working directory sits
-// inside a codefly workspace. These leak when the `codefly run` / daemon that
-// launched them exits and the process-group registry loses the record, leaving
-// the server reparented to the init process and spinning a CPU core unnoticed.
+// registry record: a dev-server-shaped process that a codefly run launched, or
+// whose working directory sits inside a codefly workspace. These leak when the
+// `codefly run` / daemon that launched them exits and the process-group registry
+// loses the record, leaving the server reparented to the init process and
+// spinning a CPU core unnoticed.
 type DevServerOrphan struct {
-	PID       int
-	PGID      int
-	Parent    int
-	Command   string
-	Cwd       string
+	PID     int
+	PGID    int
+	Parent  int
+	Command string
+	Cwd     string
+	// Workspace is the workspace this server belongs to: the run that launched
+	// it, or — for a server no run recorded — the workspace enclosing Cwd. The
+	// two differ for a composed module's frontend, which runs from a checkout
+	// outside the workspace that composed it.
 	Workspace string
 	Started   time.Time
 	// Orphaned is true when the process has been reparented away from its
@@ -50,11 +55,14 @@ type DevServerOrphan struct {
 	Owned bool
 }
 
-// ScanDevServerOrphans finds frontend dev servers running inside a codefly
-// workspace, machine-wide, without relying on the process-group registry. It
-// is the fallback discovery path for servers that escaped tracking. A process
-// qualifies only when its working directory is enclosed by a codefly workspace,
-// so unrelated dev servers the user runs outside codefly are never matched.
+// ScanDevServerOrphans finds frontend dev servers belonging to a codefly
+// workspace, machine-wide, without relying on the process-group registry. It is
+// the fallback discovery path for servers that escaped tracking. A process
+// qualifies when a codefly run launched it, or when its working directory is
+// enclosed by a codefly workspace, so unrelated dev servers the user runs
+// outside codefly are never matched. Requiring the working directory alone was
+// too narrow: a composed module's frontend runs from a checkout outside the
+// workspace that composed it, so it was invisible to every scan.
 func ScanDevServerOrphans(ctx context.Context) ([]DevServerOrphan, error) {
 	pids, err := process.PidsWithContext(ctx)
 	if err != nil {
@@ -79,10 +87,10 @@ func ScanDevServerOrphans(ctx context.Context) ([]DevServerOrphan, error) {
 			continue
 		}
 		cwd, err := processWorkingDirectory(pid)
-		if err != nil || cwd == "" {
-			continue
+		if err != nil {
+			cwd = ""
 		}
-		workspace, ok := enclosingWorkspace(cwd)
+		workspace, ok := workspaceOfProcess(pid, cwd)
 		if !ok {
 			continue
 		}
@@ -201,11 +209,14 @@ type NativeServiceOrphan struct {
 	Parent  int
 	Command string
 	Cwd     string
-	// Workspace is the workspace enclosing Cwd, empty when the process runs
-	// outside any workspace. Unlike a dev server, a native service is matched by
-	// its executable rather than by sitting in a workspace, so this can be empty
-	// for a genuinely codefly-owned process — and an empty workspace is only ever
-	// reaped by the machine-wide scope.
+	// Workspace is the workspace this service belongs to: the run that launched
+	// it, or — for a process no run recorded — the workspace enclosing Cwd. It
+	// is the run that answers for a store, whose data directory lives under
+	// ~/.codefly/data and encloses no workspace at all. Unlike a dev server, a
+	// native service is matched by its executable rather than by sitting in a
+	// workspace, so this can still be empty for a genuinely codefly-owned
+	// process — and an empty workspace is only ever reaped by the machine-wide
+	// scope.
 	Workspace string
 	Started   time.Time
 	Orphaned  bool
@@ -255,6 +266,13 @@ func ScanNativeServiceOrphans(ctx context.Context) ([]NativeServiceOrphan, error
 		}
 		if cwd, err := processWorkingDirectory(pid); err == nil {
 			orphan.Cwd = cwd
+		}
+		// Attribution is what a scoped reap filters on, so a native service that
+		// has none is left running by anything but --all. It was never filled in:
+		// every native service read as unattributable, which made a scoped stop a
+		// no-op over the compiled service binaries and stores it exists to reap.
+		if workspace, ok := workspaceOfProcess(pid, orphan.Cwd); ok {
+			orphan.Workspace = workspace
 		}
 		orphans = append(orphans, orphan)
 	}

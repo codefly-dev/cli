@@ -3,7 +3,6 @@
 package processgroup
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -97,7 +96,9 @@ func linuxBootID() (string, error) {
 	return bootID, nil
 }
 
-func readProcessGroupAuthentication(pid int) (string, error) {
+// readProcessEnvironmentValue returns the value pid carries for key in its
+// environment, and "" when it carries no such entry.
+func readProcessEnvironmentValue(pid int, key string) (string, error) {
 	file, err := os.Open(filepath.Join("/proc", strconv.Itoa(pid), "environ"))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -110,13 +111,7 @@ func readProcessGroupAuthentication(pid int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	prefix := []byte(groupAuthEnv + "=")
-	for entry := range bytes.SplitSeq(data, []byte{0}) {
-		if value, ok := bytes.CutPrefix(entry, prefix); ok {
-			return string(value), nil
-		}
-	}
-	return "", nil
+	return environmentValue(data, key), nil
 }
 
 type linuxProcessSignalHandle struct {

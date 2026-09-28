@@ -6,7 +6,7 @@ import (
 )
 
 func stopClearOptions() clearOptions {
-	return clearOptions{verb: "stop", keepContainers: true, scope: reapScope(stopAllWorkspaces)}
+	return clearOptions{verb: "stop", keepContainers: true, scope: workspaceScope(stopAllWorkspaces)}
 }
 
 // StopCmd stops a running codefly stack — the command muscle-memory reaches for.
@@ -28,6 +28,15 @@ func stopClearOptions() clearOptions {
 // "orphaned" and long-lived dev servers it had never launched. Nothing in the
 // output said another workspace had been touched. `--all` is now how someone asks
 // for the machine-wide sweep, and a scoped stop reports what it left alone.
+//
+// What "this workspace" MEANS is the run that launched a process, recorded in
+// its environment, not the directory it happens to run in. Scoping by working
+// directory looked equivalent and was not: a composed module is checked out
+// outside the workspace that composes it, so its services run from that
+// checkout, and a store runs from a data directory under ~/.codefly/data that
+// is in no workspace at all. Both then attributed to nobody — and a scoped stop
+// must never signal what it cannot attribute — so stop reported success and
+// left exactly the composed run's processes holding their ports.
 var StopCmd = &cobra.Command{
 	Use:     "stop [name-filter...]",
 	Short:   "Stop this workspace's Codefly processes, preserving stateful containers for reuse",

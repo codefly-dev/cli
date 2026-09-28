@@ -15,6 +15,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/environment"
 	providercmd "github.com/codefly-dev/cli/cmd/provider"
 	"github.com/codefly-dev/cli/pkg/cli"
+	"github.com/codefly-dev/cli/pkg/processgroup"
 	"github.com/codefly-dev/core/actions/actions"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
@@ -183,7 +184,43 @@ func applyRootOptions() error {
 		}
 		actions.SetActionTracker(tr)
 	}
+	markLaunchWorkspace()
 	return nil
+}
+
+// markLaunchWorkspace records which workspace this invocation's run belongs to,
+// before it starts anything. Everything the run goes on to spawn inherits it —
+// agents, the runners inside them, service binaries, the stores they bring up —
+// so `stop` and `ps` can ask a process whose run it is instead of guessing from
+// where it happens to be running.
+//
+// The guess is what they used to do, and it is wrong for exactly the processes a
+// composed run adds: a composed module's service runs from that module's
+// checkout, which sits outside the workspace that composed it, and a store runs
+// from a data directory that sits in no workspace at all. Both then read as
+// belonging to nobody, so a scoped stop skipped them and reported success while
+// they kept holding their ports.
+//
+// Outside a workspace there is nothing to record and any inherited value stands,
+// which is what keeps a codefly invoked from inside a run attributed to that run.
+func markLaunchWorkspace() {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	markLaunchWorkspaceFrom(cwd)
+}
+
+// markLaunchWorkspaceFrom records the workspace enclosing dir, for a command
+// that serves a workspace it was pointed at rather than the one it was started
+// in. It re-records deliberately: the directory the command was given is a
+// better answer than the directory it happens to be standing in.
+func markLaunchWorkspaceFrom(dir string) {
+	workspace, ok := processgroup.CurrentWorkspace(dir)
+	if !ok {
+		return
+	}
+	processgroup.MarkLaunchWorkspace(workspace)
 }
 
 // Origin of the World

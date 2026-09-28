@@ -3489,13 +3489,21 @@ Flags:
 
 ## `codefly ps`
 
-List dev servers running in codefly workspaces on this machine
+List the processes this workspace's run is still holding
 
 ```
-List frontend dev servers (next dev / npm run dev / vite) running inside a
-codefly workspace, machine-wide. STATUS is one of: orphaned (codefly's, escaped
-its supervisor — reaped by 'codefly clear'), tracked (codefly's, still
-supervised), or external (not codefly's — shown for visibility, never reaped).
+List the processes a codefly run is keeping alive: frontend dev servers
+(next dev / npm run dev / vite) and native-mode services (compiled service
+binaries and the stateful stores a run started), including those belonging to
+composed modules checked out outside the workspace.
+
+Scoped to the current workspace — the same set 'codefly stop' acts on. Use
+--all for every workspace on this machine. Outside a workspace the listing is
+machine-wide, since there is nothing to scope to.
+
+STATUS is one of: orphaned (codefly's, escaped its supervisor — reaped by
+'codefly clear'), tracked (codefly's, still supervised), or external (not
+codefly's — shown for visibility, never reaped).
 ```
 
 ```
@@ -3505,7 +3513,8 @@ codefly ps [flags]
 Flags:
 
 ```
-      --json   Print the dev servers as JSON
+      --all    List every workspace's processes on this machine, not just the current one
+      --json   Print the processes as JSON
 ```
 
 ## `codefly publish`

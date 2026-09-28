@@ -2806,12 +2806,25 @@ as `external`) are never touched.
 
 ### `codefly ps`
 
-List frontend dev servers running inside a codefly workspace, machine-wide and
-independent of the current directory (unlike `list jobs`, which needs a
-workspace). STATUS is `orphaned` (codefly's, escaped its supervisor — reaped by
-`codefly clear`), `tracked` (codefly's, still supervised), or `external` (not
-codefly's — shown for visibility, never reaped). Add `--json` for machine-readable
-output.
+List the processes this workspace's run is still holding: frontend dev servers
+(`next dev` / `npm run dev` / `vite`) and native-mode services — the compiled
+service binaries and the stateful stores a run started. STATUS is `orphaned`
+(codefly's, escaped its supervisor — reaped by `codefly clear`), `tracked`
+(codefly's, still supervised), or `external` (not codefly's — shown for
+visibility, never reaped). Add `--json` for machine-readable output.
+
+A process belongs to the run that launched it, not to the directory it runs in.
+That is the difference that makes a composed run listable at all: a composed
+module is checked out outside the workspace that composes it, so its services
+run from that checkout, and a store runs from a data directory under
+`~/.codefly/data` that is in no workspace at all. The run is recorded in the
+environment of everything a `codefly` invocation starts, so `ps` lists a
+composed run whole — which matters because it is the set `codefly stop` acts on.
+
+Scoped to the current workspace. `--all` lists every workspace's processes on
+this machine, which is how to find a leak belonging to a checkout you are not
+standing in; outside a workspace the listing is machine-wide, since there is
+nothing to scope to.
 
 ---
 
