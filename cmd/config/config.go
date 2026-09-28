@@ -116,7 +116,9 @@ Examples:
 				kept = append(kept, key)
 				continue
 			}
-			doc.Set(key, value)
+			if err := doc.Set(key, value); err != nil {
+				return fmt.Errorf("codefly config set: %w", err)
+			}
 			written = append(written, key)
 		}
 		if len(written) > 0 {
@@ -181,7 +183,9 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("codefly config generate: %w", err)
 			}
-			doc.Set(key, value)
+			if err := doc.Set(key, value); err != nil {
+				return fmt.Errorf("codefly config generate: %w", err)
+			}
 			written = append(written, key)
 		}
 		if len(written) > 0 {
