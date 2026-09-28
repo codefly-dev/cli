@@ -15,15 +15,18 @@ var runnableJSON bool
 
 var RunnableCmd = &cobra.Command{
 	Use:   "runnable <name>",
-	Short: "Build and verify a native Runnable package through its agent",
-	Long: `Generate and prepare the loaded Runnable through its agent, package a native
-archive, and verify its release descriptor and actual artifact digest. The output
-directory must be new; the default build directory is CLI-owned and is replaced
-on each build. The name is module/name or an unambiguous bare name.
+	Short: "Build and verify a Runnable package through its agent",
+	Long: `Generate and prepare the loaded Runnable through its agent, package an archive
+carrying the generated harness, and verify its release descriptor and actual
+artifact digest. The output directory must be new; the default build directory is
+CLI-owned and is replaced on each build. The name is module/name or an unambiguous
+bare name.
 
-The agent owns language tooling and launch information. This command does not
-install a binding, invoke a task or build an image. Build-time service prerequisites
-and internal library preparation are not yet supported.`,
+The agent owns language tooling and the command that starts the harness. The
+archive is what a generated-service binding runs: the harness serves the
+contract and is called over the same transport an invocation Job uses. This
+command does not install a binding, invoke a task or build an image. Build-time
+service prerequisites and internal library preparation are not yet supported.`,
 	Example: "  codefly build runnable word-count\n  codefly build runnable backend/word-count --output=/tmp/word-count-build --json",
 	Args:    cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {

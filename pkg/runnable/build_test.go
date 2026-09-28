@@ -92,7 +92,7 @@ func artifactFixture(t *testing.T, dir string, name string, content []byte) (*ba
 	platform := runtime.GOOS + "/" + runtime.GOARCH
 	command := []string{"bin/python", "-m", "codefly_runnable"}
 	return &basev0.RunnableArtifact{
-		Kind: basev0.RunnableArtifact_NATIVE, Platform: platform,
+		Kind: basev0.RunnableArtifact_ARCHIVE, Platform: platform,
 		Reference: name, Digest: digest, Command: command,
 	}, &builderv0.PackageArtifact{
 		Kind: builderv0.PackageArtifact_ARCHIVE, Path: filepath.Join(dir, name),
@@ -140,18 +140,18 @@ func TestVerifyArtifactsRejectsTamperedAndMismatchedArtifacts(t *testing.T) {
 		{"emitted path points elsewhere", func(_ *testing.T, dir string, _ *basev0.RunnableArtifact, emitted *builderv0.PackageArtifact) {
 			emitted.Path = filepath.Join(dir, "somewhere-else.tar.gz")
 		}, "does not match the emitted file metadata"},
-		{"artifact kind is not native", func(_ *testing.T, _ string, artifact *basev0.RunnableArtifact, _ *builderv0.PackageArtifact) {
+		{"artifact kind is not an archive", func(_ *testing.T, _ string, artifact *basev0.RunnableArtifact, _ *builderv0.PackageArtifact) {
 			artifact.Kind = basev0.RunnableArtifact_IMAGE
 		}, "unsupported artifact kind"},
 		{"reference escapes the directory", func(_ *testing.T, _ string, artifact *basev0.RunnableArtifact, _ *builderv0.PackageArtifact) {
 			artifact.Reference = "../escape.tar.gz"
-		}, "invalid or duplicate native artifact filename"},
+		}, "invalid or duplicate archive artifact filename"},
 		{"reference is the descriptor", func(_ *testing.T, _ string, artifact *basev0.RunnableArtifact, _ *builderv0.PackageArtifact) {
 			artifact.Reference = PackageFile
-		}, "invalid or duplicate native artifact filename"},
+		}, "invalid or duplicate archive artifact filename"},
 		{"reference is a directory component", func(_ *testing.T, _ string, artifact *basev0.RunnableArtifact, _ *builderv0.PackageArtifact) {
 			artifact.Reference = "nested/archive.tar.gz"
-		}, "invalid or duplicate native artifact filename"},
+		}, "invalid or duplicate archive artifact filename"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -181,7 +181,7 @@ func TestVerifyArtifactsRejectsCountAndDuplicateMismatches(t *testing.T) {
 	require.ErrorContains(t, verifyArtifacts([]*basev0.RunnableArtifact{artifact},
 		[]*builderv0.PackageArtifact{emitted, emitted}, dir), "package descriptor and emitted artifacts differ")
 	require.ErrorContains(t, verifyArtifacts([]*basev0.RunnableArtifact{artifact, artifact},
-		[]*builderv0.PackageArtifact{emitted, emitted}, dir), "invalid or duplicate native artifact filename")
+		[]*builderv0.PackageArtifact{emitted, emitted}, dir), "invalid or duplicate archive artifact filename")
 }
 
 // Everything the descriptor names gets digested; a file the agent never
