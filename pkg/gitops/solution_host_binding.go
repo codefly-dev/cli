@@ -152,7 +152,7 @@ type SolutionModulePin struct {
 // validateTree so the ConfigMaps it writes are held to the same promotable
 // ruleset as everything else in the tree, and before buildInventory so they are
 // hashed into the render digest like any other delivered file.
-func renderSolutionHostBindings(owned, destination string, opts *RenderOptions) ([]string, error) {
+func renderSolutionHostBindings(owned, destination string, opts *RenderOptions) ([]DeclaredSolutionHostBinding, error) {
 	if len(opts.SolutionInstances) == 0 {
 		return nil, nil
 	}
@@ -188,14 +188,16 @@ func renderSolutionHostBindings(owned, destination string, opts *RenderOptions) 
 	if _, err := (solutionhost.Host{}).Admit(documents...); err != nil {
 		return nil, fmt.Errorf("rendered solution host bindings are not admissible: %w", err)
 	}
-	written := make([]string, 0, len(documents))
+	written := make([]DeclaredSolutionHostBinding, 0, len(documents))
 	names := make([]string, 0, len(documents))
 	for index, document := range documents {
 		relative, err := writeSolutionHostBinding(owned, opts, document, instances[index].Alias)
 		if err != nil {
 			return nil, err
 		}
-		written = append(written, relative)
+		written = append(written, DeclaredSolutionHostBinding{
+			Path: relative, Binding: document.Binding, Generation: document.Generation,
+		})
 		names = append(names, document.Binding+".yaml")
 	}
 	if err := writeSolutionHostBindingKustomization(owned, opts.Environment, names); err != nil {

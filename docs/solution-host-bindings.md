@@ -139,6 +139,13 @@ avoid it would be a renderer asserting a history it does not have.
 
 An unreadable delivered document is an error, never a silent reset to 1.
 
+The sharp edge: the render destination is per **module**, not per environment,
+and a render replaces it whole. Rendering staging and then production again
+finds no prior production document and starts over at 1. The render prints the
+generation it declared for exactly this reason — a reset is otherwise
+invisible until the host refuses the document. Render an environment from a
+checkout that holds that environment's delivered tree.
+
 ## Release digest
 
 Empty in v1, and left empty deliberately. Signed releases do not exist yet; a
