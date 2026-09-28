@@ -72,6 +72,8 @@ func renderModuleTree(
 		AppProject:  project,
 		Promotable:  true,
 		OwnedPath:   ownedPath,
+		Workspace:   workspace.Name,
+		Host:        env.Host,
 	}
 	return RenderOwnedTree(ctx, options, func(ctx context.Context, stage string) error {
 		services := make([]*resources.Service, 0, len(module.ServiceReferences))
@@ -218,6 +220,18 @@ func renderModuleTree(
 		sort.Slice(options.Units, func(i, j int) bool {
 			return options.Units[i].Name < options.Units[j].Name
 		})
+		// Declared presence, from the resolution this render already holds:
+		// the module it is rendering, the services it loaded from it, the
+		// package it resolved, and the units it just assembled. Nothing is
+		// looked up again, so the binding cannot describe a composition the
+		// workloads did not come from.
+		instance, err := solutionInstanceOf(module, services, env, options)
+		if err != nil {
+			return err
+		}
+		if instance != nil {
+			options.SolutionInstances = []SolutionInstance{*instance}
+		}
 		if module.Agent != nil {
 			modulePath := filepath.Join(stage, moduleBundleDir)
 			if err = renderModuleBundle(ctx, workspace, module, env, modulePath, options.Units); err != nil {

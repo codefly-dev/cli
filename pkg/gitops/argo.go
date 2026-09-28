@@ -89,6 +89,11 @@ const (
 	moduleResourcesWave = "-1"
 	bootstrapUnitWave   = "0"
 	consumerUnitWave    = "1"
+	// Declared presence lands last: a SolutionHostBinding pins the digests of
+	// the artifacts this generation rendered, so declaring it before those
+	// artifacts are healthy would declare a presence the delivery has not yet
+	// produced.
+	solutionHostBindingWave = "2"
 )
 
 func unitWave(unit *InventoryUnit) string {
@@ -256,6 +261,14 @@ func generateArgoBootstrap(
 		})
 	}
 
+	if inventory.SolutionHostBindingPath != "" {
+		components = append(components, argoBootstrapComponent{
+			Component: argoBoundedName(componentNameBudget, inventory.Module, "solution-host-bindings"),
+			Overlay:   filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionHostBindingPath, "overlays", environment)),
+			Wave:      solutionHostBindingWave,
+		})
+	}
+
 	// The tenant registry is operator-owned content that lives outside every
 	// module's publication path, so the driver never wipes it and `git add -A` on
 	// the module path never stages its deletion — adding or removing a tenant is a
@@ -327,6 +340,9 @@ func snapshotAuthority(target string, inventory *Inventory, environment string) 
 		if unit.Path != "" {
 			sources = append(sources, filepath.Join(target, filepath.FromSlash(unit.Path), "overlays", environment))
 		}
+	}
+	if inventory.SolutionHostBindingPath != "" {
+		sources = append(sources, filepath.Join(target, filepath.FromSlash(inventory.SolutionHostBindingPath), "overlays", environment))
 	}
 	cluster := make(map[string]argoResourceAuthority)
 	namespaced := make(map[string]argoResourceAuthority)

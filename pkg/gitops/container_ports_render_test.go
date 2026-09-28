@@ -272,28 +272,16 @@ func treeDigest(t *testing.T, root string) string {
 }
 
 // undeclaredFixtureDigest is treeDigest of the fixture's module render with
-// no declaration, captured on main before the container-port check existed
-// (b990c162, with only the serviceFlow seam added). A render that declares
-// nothing must stay byte-identical.
-// The digest moved with the output profile: the render records the profile it
-// requested in its own evidence file (.codefly-render.json), so switching from
-// PROMOTABLE_GITOPS_V1 to RESTRICTED_PORTABLE_V1 changes that one string and
-// therefore the tree digest. The MANIFESTS are unchanged — the two profiles
-// render the identical restricted bundle, which core's proto states and
-// service-vault's own deployment test proves byte-for-byte — and the two cases
-// below still agree with each other, which is the property this digest pins.
+// no declaration. A render that declares nothing must stay byte-identical.
 //
-// Every committed .codefly-render.json in the fleet records the old string and
-// will show this one-line change on its next render.
-//
-// It moved again when the inventory started persisting the RESTRICTED security
-// property instead of the `promotable` delivery decision: the rendered
-// manifests are byte-identical, and the one differing byte range is
-// render-inventory.json's validation object, now
-// {"staticValidation","serverSideValidation","restricted","violations"}. That
-// was verified by rendering the fixture and reading the installed inventory —
-// no "promotable" key remains anywhere in it.
-const undeclaredFixtureDigest = "ed0a83231a659a8c0c8e3a4d5245289fd3c1a0dbef09e508b201283a468e8347"
+// It was captured on main before the container-port check existed (b990c162,
+// with only the serviceFlow seam added) as
+// "aaca0799de4ebe4f9afa38c7cb84594a63b7b2dfd984251de5d90c4fd03cee0d", and
+// re-captured when the render inventory schema went from 5 to 6 for declared
+// solution presence. That bump is the ONLY difference between the two: a
+// module with no solution instance renders the same tree, byte for byte, with
+// one digit changed in .codefly-render.json.
+const undeclaredFixtureDigest = "7ceafca4d99ac8800dac7b23e233f8fa7a0927cfac49f5d68823b06dd5a6d1fc"
 
 func TestRenderModuleWithoutDeclarationsIsByteIdentical(t *testing.T) {
 	installFakeAgents(t)

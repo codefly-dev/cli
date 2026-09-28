@@ -71,6 +71,7 @@ var SolutionCmd = &cobra.Command{
 		cli.Info("Digest %s", result.Inventory.Digest)
 		printSizingReport(result.Sizing)
 		printElidedNamespaces(result.ElidedNamespaces)
+		printSolutionHostBindings(&result)
 		cli.Header(1, "Solution render done!")
 		return nil
 	},

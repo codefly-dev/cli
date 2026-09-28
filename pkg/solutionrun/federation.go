@@ -69,6 +69,18 @@ func entryManifest(module *resources.Module, service *resources.Service) (*manif
 	return moduleManifest(module)
 }
 
+// ModuleSolution reports whether a composed module is a solution instance, by
+// returning the solution manifest it ships — or nil when it ships none. It is
+// the same read every run derivation here performs, exported so a render can
+// ask the question of a module it has already resolved rather than walking the
+// composition a second time to answer it.
+func ModuleSolution(module *resources.Module) (*manifest.Manifest, error) {
+	if module == nil {
+		return nil, nil
+	}
+	return moduleManifest(module)
+}
+
 // moduleManifest returns the solution manifest a module ships, or nil when it
 // ships none. A module with no directory — one constructed rather than loaded —
 // has nowhere to ship it, so it is read as having none rather than as a relative
