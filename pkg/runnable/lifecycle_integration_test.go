@@ -114,6 +114,14 @@ func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 		Facility:       &basev0.RunnableFacility{Kind: basev0.RunnableFacility_NATIVE},
 		Implementation: &basev0.RunnableBinding_Artifact{Artifact: artifact},
 		Target:         nativeTarget(installed),
+		// Every facility calls under a Work Context since
+		// codefly-dev/core#678, NATIVE included; a binding with no authority is
+		// refused at install.
+		Authority: &basev0.RunnableAuthority{
+			Audience:     "qualification.operations",
+			InvokeScopes: []*basev0.WorkScopeV1{{ResourceKind: "operations", Actions: []string{"invoke", "read"}}},
+			LookupScopes: []*basev0.WorkScopeV1{{ResourceKind: "operations", Actions: []string{"read"}}},
+		},
 	}, pkg)
 	require.NoError(t, err)
 	launcher, err := runnableops.NewNativeLauncher(pkg, binding, installed)
@@ -135,6 +143,11 @@ func TestCreateBuildAndInvokeRunnable(t *testing.T) {
 				// Recompute may carry the caller's shared effect identity too.
 				EffectId: "effect-" + id,
 				IssuedAt: timestamppb.New(issued), Deadline: timestamppb.New(issued.Add(90 * time.Second)), Input: []byte(input),
+				// Required since core#678: an invocation runs as someone. The
+				// launcher carries it verbatim to the harness.
+				Identity: &basev0.RunnableInvocationIdentity{
+					Carrier: &basev0.RunnableInvocationIdentity_WorkContext{WorkContext: "work-context-fixture"},
+				},
 			},
 			Directory: filepath.Join(invocations, id), Stdout: &out, Stderr: &logs,
 		})
