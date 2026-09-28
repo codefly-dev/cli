@@ -85,7 +85,7 @@ func create(ctx context.Context, workspace *resources.Workspace, r *resources.Ru
 	return nil
 }
 
-// Build emits one verified native release into a new caller-owned directory.
+// Build emits one verified release into a new caller-owned directory.
 // This is authoring/building; it does not install a binding or invoke a task.
 func Build(ctx context.Context, workspace *resources.Workspace, r *resources.Runnable, output string, logs io.Writer) (*basev0.RunnablePackage, error) {
 	if !filepath.IsAbs(output) {
@@ -385,11 +385,11 @@ func verifyArtifacts(artifacts []*basev0.RunnableArtifact, emittedFiles []*build
 	for _, artifact := range artifacts {
 		name := artifact.GetReference()
 		if filepath.Base(name) != name || name == "." || name == ".." || name == PackageFile || strings.ContainsAny(name, "/\\") || seen[name] {
-			return fmt.Errorf("invalid or duplicate native artifact filename %q", name)
+			return fmt.Errorf("invalid or duplicate archive artifact filename %q", name)
 		}
 		seen[name] = true
-		if artifact.GetKind() != basev0.RunnableArtifact_NATIVE {
-			return fmt.Errorf("native build returned an unsupported artifact kind")
+		if artifact.GetKind() != basev0.RunnableArtifact_ARCHIVE {
+			return fmt.Errorf("runnable build returned an unsupported artifact kind")
 		}
 		file := filepath.Join(root, name)
 		info, err := os.Lstat(file)
@@ -406,14 +406,14 @@ func verifyArtifacts(artifacts []*basev0.RunnableArtifact, emittedFiles []*build
 			}
 		}
 		if !matched {
-			return fmt.Errorf("native artifact %s does not match the emitted file metadata", name)
+			return fmt.Errorf("archive artifact %s does not match the emitted file metadata", name)
 		}
 		actual, err := digestFile(file)
 		if err != nil {
 			return err
 		}
 		if actual != artifact.GetDigest() {
-			return fmt.Errorf("native artifact %s content digest does not match", name)
+			return fmt.Errorf("archive artifact %s content digest does not match", name)
 		}
 	}
 	return verifyNoUnverifiedFiles(root, seen)
@@ -474,10 +474,10 @@ func assemble(ctx context.Context, workspace *resources.Workspace, r *resources.
 	}
 	for _, file := range files {
 		if file.GetKind() != builderv0.PackageArtifact_ARCHIVE || len(file.GetCommand()) == 0 {
-			return nil, fmt.Errorf("agent must return a native archive with its launch command")
+			return nil, fmt.Errorf("agent must return an archive with the command that starts its harness")
 		}
 		pkg.Artifacts = append(pkg.Artifacts, &basev0.RunnableArtifact{
-			Kind: basev0.RunnableArtifact_NATIVE, Platform: file.GetTarget().GetOs() + "/" + file.GetTarget().GetArchitecture(),
+			Kind: basev0.RunnableArtifact_ARCHIVE, Platform: file.GetTarget().GetOs() + "/" + file.GetTarget().GetArchitecture(),
 			Reference: filepath.Base(file.GetPath()), Digest: "sha256:" + file.GetSha256(), Command: slices.Clone(file.GetCommand()),
 		})
 	}

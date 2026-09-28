@@ -22,7 +22,7 @@ agent:
   version: 0.0.1
   publisher: codefly.dev
 contract:
-  protocol: codefly.runnable/v1
+  protocol: codefly.runnable.served/v1
   input:
     fields:
       - name: text
@@ -44,7 +44,7 @@ entrypoint:
   handler: handler.py
   inputs: [pyproject.toml]
 execution:
-  facilities: [native, kubernetes]
+  facilities: [generated-service, kubernetes]
   timeout: 2m
   cancellation: signal
   recovery: recompute
@@ -117,11 +117,11 @@ func TestShowRunnableRendersContractAndExecution(t *testing.T) {
 	require.Contains(t, out, "Workspace:  test-ws")
 	require.Contains(t, out, "Module:     test-ws")
 	require.Contains(t, out, "codefly.dev/python:0.0.1")
-	require.Contains(t, out, "codefly.runnable/v1")
+	require.Contains(t, out, "codefly.runnable.served/v1")
 	require.Contains(t, out, "options: object (optional)")
 	require.Contains(t, out, "stop_words: array (nullable)")
 	require.Contains(t, out, "items: string")
-	require.Contains(t, out, "native, kubernetes")
+	require.Contains(t, out, "generated-service, kubernetes")
 	require.Contains(t, out, "65536 bytes in / 1048576 bytes out")
 	require.Contains(t, out, "test-ws/store [runtime] tcp — resolved")
 	require.Contains(t, out, "Configurations: openai")
@@ -257,7 +257,7 @@ agent:
   version: 0.0.1
   publisher: codefly.dev
 contract:
-  protocol: codefly.runnable/v1
+  protocol: codefly.runnable.served/v1
   input:
     fields:
       - name: grid
@@ -280,7 +280,7 @@ contract:
 entrypoint:
   handler: handler.py
 execution:
-  facilities: [native]
+  facilities: [generated-service]
   timeout: 2m
   cancellation: signal
   recovery: recompute
