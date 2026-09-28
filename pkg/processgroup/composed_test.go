@@ -277,12 +277,6 @@ func startSignatureHelper(t *testing.T, argv0, dir string, environ []string) int
 	return pid
 }
 
-// TestMarkLaunchWorkspaceIsWhatDescendantsInherit covers the mechanism the whole
-// attribution rests on. The workspace is recorded in THIS process's own
-// environment, which is what makes every process started from here carry it
-// without any of them cooperating — the chain from the CLI runs through agents
-// released independently of this repository, which cannot be asked to pass
-// anything along.
 // waitForAttributedWorkspace polls until pid can be attributed to a workspace.
 //
 // The attribution reads the child's own environment out of the kernel, and a
@@ -309,6 +303,12 @@ func waitForAttributedWorkspace(t *testing.T, pid int) string {
 	}
 }
 
+// TestMarkLaunchWorkspaceIsWhatDescendantsInherit covers the mechanism the whole
+// attribution rests on. The workspace is recorded in THIS process's own
+// environment, which is what makes every process started from here carry it
+// without any of them cooperating — the chain from the CLI runs through agents
+// released independently of this repository, which cannot be asked to pass
+// anything along.
 func TestMarkLaunchWorkspaceIsWhatDescendantsInherit(t *testing.T) {
 	// t.Setenv restores the variable afterwards, so marking here cannot leak
 	// into another test's helpers.
