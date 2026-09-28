@@ -447,8 +447,8 @@ func printElidedNamespaces(elided []string) {
 // environment names no host both render zero bindings, and only this tells
 // them apart.
 func printSolutionHostBindings(result *gitops.RenderResult) {
-	for _, path := range result.SolutionHostBindings {
-		cli.Info("Declared solution host binding %s", path)
+	for _, declared := range result.SolutionHostBindings {
+		cli.Info("Declared solution host binding %s at generation %d (%s)", declared.Binding, declared.Generation, declared.Path)
 	}
 	if len(result.UndeclaredSolutions) == 0 {
 		return

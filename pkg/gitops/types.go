@@ -278,16 +278,32 @@ type RenderResult struct {
 	// ClearedDev are the dev deployments the tree this render replaced carried.
 	// A full render re-derives every image, so they no longer run.
 	ClearedDev []InventoryDevDeployment `json:"clearedDev,omitempty"`
-	// SolutionHostBindings are the tree-relative paths of the rendered
-	// SolutionHostBinding documents: what this render declares should be
-	// present on the host, one per solution instance.
-	SolutionHostBindings []string `json:"solutionHostBindings,omitempty"`
+	// SolutionHostBindings are the SolutionHostBinding documents this render
+	// declared: what it says should be present on the host, one per solution
+	// instance.
+	SolutionHostBindings []DeclaredSolutionHostBinding `json:"solutionHostBindings,omitempty"`
 	// UndeclaredSolutions are the solution instances this render delivered
 	// workloads for but declared no binding for, because the environment names
 	// no host. It is reported rather than inferred from an empty list: a
 	// missing declaration and a composition with no solution look the same
 	// otherwise.
 	UndeclaredSolutions []string `json:"undeclaredSolutions,omitempty"`
+}
+
+// DeclaredSolutionHostBinding is one rendered binding document: where it was
+// written, which binding it declares, and at which generation.
+//
+// The generation is reported rather than left in the file because a reset is
+// otherwise invisible. The prior generation comes from the tree this render
+// replaced, and that tree is per module and not per environment — rendering
+// another environment replaces it whole. So rendering staging and then
+// production again finds no prior production document and starts at 1, which
+// the production host refuses as stale. Printing the generation is what turns
+// that into something an operator sees at the render instead of at the host.
+type DeclaredSolutionHostBinding struct {
+	Path       string `json:"path"`
+	Binding    string `json:"binding"`
+	Generation uint64 `json:"generation"`
 }
 
 type PublishRequest struct {

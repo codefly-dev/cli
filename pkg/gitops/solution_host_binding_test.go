@@ -99,8 +99,13 @@ func TestRenderDeclaresOneBindingPerSolutionInstance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.SolutionHostBindings) != 1 || result.SolutionHostBindings[0] != "solution-host-bindings/overlays/prod/obin.prod.crm.yaml" {
-		t.Fatalf("rendered bindings %v", result.SolutionHostBindings)
+	if len(result.SolutionHostBindings) != 1 {
+		t.Fatalf("rendered bindings %+v", result.SolutionHostBindings)
+	}
+	declared := result.SolutionHostBindings[0]
+	if declared.Path != "solution-host-bindings/overlays/prod/obin.prod.crm.yaml" ||
+		declared.Binding != "obin.prod.crm" || declared.Generation != 1 {
+		t.Fatalf("declared binding %+v", declared)
 	}
 	if len(result.UndeclaredSolutions) != 0 {
 		t.Fatalf("declared a host yet reported undeclared solutions %v", result.UndeclaredSolutions)
@@ -279,7 +284,7 @@ func TestRenderDeclaresNoBindingWithoutADeclaredHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(result.SolutionHostBindings) != 0 {
-		t.Fatalf("a binding was rendered with no host: %v", result.SolutionHostBindings)
+		t.Fatalf("a binding was rendered with no host: %+v", result.SolutionHostBindings)
 	}
 	// Silence is not the report: the render says which solution it could not
 	// declare, so an operator can tell this from a composition with none.
@@ -383,7 +388,7 @@ func TestRenderRefusesAMixedReleaseSet(t *testing.T) {
 	options.SolutionInstances[0].Package = "obin/crm"
 	result, err := RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment))
 	if err != nil {
-		t.Fatalf("two artifacts of one release were refused: %v (%v)", err, result.SolutionHostBindings)
+		t.Fatalf("two artifacts of one release were refused: %v (%+v)", err, result.SolutionHostBindings)
 	}
 	document := deliveredBinding(t, destination, "obin.prod.crm")
 	for _, artifact := range document.Artifacts {
@@ -458,7 +463,7 @@ func TestRenderSolutionDeclaresItsOwnPresence(t *testing.T) {
 		t.Fatalf("RenderSolution: %v", err)
 	}
 	if len(result.SolutionHostBindings) != 1 {
-		t.Fatalf("rendered bindings %v (undeclared %v)", result.SolutionHostBindings, result.UndeclaredSolutions)
+		t.Fatalf("rendered bindings %+v (undeclared %v)", result.SolutionHostBindings, result.UndeclaredSolutions)
 	}
 	document := deliveredBindingIn(t, result.Path, "local", "hello.local.lastlogin-go")
 	if document.Host.Coordinate != "obin/local/dev" {
@@ -596,9 +601,9 @@ func TestRenderedTreeDeliversItsBindings(t *testing.T) {
 	if !strings.Contains(string(kustomization), "obin.prod.crm.yaml") {
 		t.Fatalf("the kustomization does not name the delivered document:\n%s", kustomization)
 	}
-	for _, path := range result.SolutionHostBindings {
-		if !strings.HasPrefix(path, solutionHostBindingOverlay("prod")+"/") {
-			t.Fatalf("binding %q is outside the overlay Argo delivers", path)
+	for _, declared := range result.SolutionHostBindings {
+		if !strings.HasPrefix(declared.Path, solutionHostBindingOverlay("prod")+"/") {
+			t.Fatalf("binding %q is outside the overlay Argo delivers", declared.Path)
 		}
 	}
 }
@@ -642,5 +647,60 @@ func TestReleaseIdentityRefusesAPackageItCannotName(t *testing.T) {
 	publisher, name, err := releaseIdentity(&SolutionInstance{Package: "obin/crm", Version: "1.4.0"})
 	if err != nil || publisher != "obin" || name != "crm" {
 		t.Fatalf("releaseIdentity = %q, %q, %v", publisher, name, err)
+	}
+}
+
+// TestRenderingAnotherEnvironmentResetsTheGeneration pins the sharp edge of
+// taking the prior generation from the delivered tree. The render destination
+// is per module and NOT per environment, and a render replaces it whole, so
+// rendering staging and then production again finds no prior production
+// document and starts over at 1 — which the production host correctly refuses
+// as stale.
+//
+// It is a test rather than a note because the behaviour is load-bearing: the
+// alternative, inventing a generation the renderer cannot know, is worse. The
+// render reports the generation it declared so the reset is visible where it
+// happens.
+func TestRenderingAnotherEnvironmentResetsTheGeneration(t *testing.T) {
+	destination := filepath.Join(t.TempDir(), "modules", "crm")
+	production := solutionRenderOptions(destination)
+	changed := strings.Replace(pinnedDeployment, "name: api\nspec:", "name: api\n  labels:\n    v: \"2\"\nspec:", 1)
+	for _, body := range []string{pinnedDeployment, changed} {
+		if _, err := RenderOwnedTree(context.Background(), production, renderWorkload(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if advanced := deliveredBinding(t, destination, "obin.prod.crm").Generation; advanced != 2 {
+		t.Fatalf("production reached generation %d, want 2", advanced)
+	}
+
+	staging := solutionRenderOptions(destination)
+	staging.Environment = "staging"
+	staging.SolutionInstances[0].Units[0].Path = "services/api"
+	stagingRender := func(_ context.Context, root string) error {
+		overlay := filepath.Join(root, "services", "api", "overlays", "staging")
+		if err := os.MkdirAll(overlay, 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(pinnedDeployment), 0o644)
+	}
+	if _, err := RenderOwnedTree(context.Background(), staging, stagingRender); err != nil {
+		t.Fatal(err)
+	}
+	// The whole owned tree was replaced, production's document with it.
+	if _, err := os.Stat(filepath.Join(destination, filepath.FromSlash(solutionHostBindingOverlay("prod")))); !os.IsNotExist(err) {
+		t.Fatalf("production's overlay survived a staging render: %v", err)
+	}
+	result, err := RenderOwnedTree(context.Background(), production, renderWorkload(changed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := deliveredBinding(t, destination, "obin.prod.crm").Generation; got != 1 {
+		t.Fatalf("production resumed at generation %d; the prior document was gone, so 1 is the honest answer", got)
+	}
+	// And the render says so, rather than leaving the reset to be discovered
+	// when the host refuses the document.
+	if len(result.SolutionHostBindings) != 1 || result.SolutionHostBindings[0].Generation != 1 {
+		t.Fatalf("the render did not report the generation it declared: %+v", result.SolutionHostBindings)
 	}
 }
