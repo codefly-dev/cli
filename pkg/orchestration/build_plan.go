@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	coreservices "github.com/codefly-dev/core/agents/services"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/wool"
@@ -147,11 +149,12 @@ func (b *Builder) buildRecipe(
 	shouldPush bool,
 	goModuleProxies map[string]string,
 ) error {
-	if shouldPush && !platformsIncludeDeploymentArch(recipe.GetPlatforms()) {
-		return w.NewError(
-			"recipe %s of %s targets platforms %v but deployment nodes require linux/%s; the recipe must build %s",
-			recipe.GetName(), b.instance.Unique(), recipe.GetPlatforms(), deploymentImageArchitecture, deploymentImageArchitecture,
-		)
+	if shouldPush {
+		targeted, err := b.targetEnvironmentPlatforms(recipe)
+		if err != nil {
+			return w.Wrapf(err, "cannot build recipe %s of %s", recipe.GetName(), b.instance.Unique())
+		}
+		recipe = targeted
 	}
 	contextDir, err := recipeContext(contextRoot, recipe)
 	if err != nil {
@@ -556,4 +559,53 @@ func underDirectory(dir, path string) bool {
 		return false
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+// targetEnvironmentPlatforms narrows a pushed recipe to the platforms of the
+// environment the flow builds for: the architectures its cluster's nodes run
+// (Environment.ImagePlatforms). A recipe declares every platform it can build;
+// the environment decides which of them its images need, so a render for an
+// amd64 cell builds amd64 natively and never emulates an architecture no node
+// runs. A platform the environment needs and the recipe cannot build is refused.
+//
+// A render or a deploy always targets an environment, so one that does not
+// declare its architectures is refused (fail early). A plain pushed build of an
+// environment that declares no cluster publishes a portable artifact rather
+// than an image for a cell: it keeps the recipe's platforms, which must still
+// include the architecture every deployment so far has run on.
+func (b *Builder) targetEnvironmentPlatforms(recipe *builderv0.DockerBuildRecipe) (*builderv0.DockerBuildRecipe, error) {
+	env := b.world.Env
+	targetsCell := b.world.Mode == SnapshotMode || b.world.Mode == DeployMode
+	if env == nil || ((env.Cluster == nil || env.Cluster.Kind == "") && !targetsCell) {
+		if !platformsIncludeDeploymentArch(recipe.GetPlatforms()) {
+			return nil, fmt.Errorf("recipe targets platforms %v but a portable image must include linux/%s; declare the target environment's cluster.architectures to build for it instead",
+				recipe.GetPlatforms(), deploymentImageArchitecture)
+		}
+		return recipe, nil
+	}
+	platforms, err := b.world.imagePlatforms()
+	if err != nil {
+		return nil, err
+	}
+	for _, platform := range platforms {
+		if !recipeBuildsPlatform(recipe.GetPlatforms(), platform) {
+			return nil, fmt.Errorf("environment %q runs %s, which the recipe does not build (it builds %v)", env.Name, platform, recipe.GetPlatforms())
+		}
+	}
+	narrowed := proto.CloneOf(recipe)
+	narrowed.Platforms = platforms
+	return narrowed, nil
+}
+
+// recipeBuildsPlatform reports whether a recipe's platforms include platform,
+// comparing os/arch and ignoring a variant the recipe names ("linux/amd64/v2"
+// builds linux/amd64).
+func recipeBuildsPlatform(platforms []string, platform string) bool {
+	for _, candidate := range platforms {
+		fields := strings.Split(candidate, "/")
+		if len(fields) >= 2 && fields[0]+"/"+fields[1] == platform {
+			return true
+		}
+	}
+	return false
 }

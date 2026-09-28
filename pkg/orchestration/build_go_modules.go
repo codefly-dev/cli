@@ -28,8 +28,13 @@ import (
 // then reads every module from a directory: no credential reaches it, and none
 // has to outlive the start of the flow.
 //
-// Each module root gets its own module cache, so a build is handed exactly the
-// graph its go.mod resolves to and nothing another service fetched.
+// Every module root of the flow is fetched into one module cache, so a
+// dependency shared by several services is downloaded and stored once, and each
+// build is handed that cache's proxy tree. A build reads only the versions its
+// own go.sum names, so the modules another service fetched are inert to it.
+// Only the proxy tree is kept: the sources the go tool extracts and the version
+// control clones it makes for direct fetches are never read by a build, and a
+// render fetches many graphs on a runner with bounded disk.
 type goModulePrefetch struct {
 	mu      sync.Mutex
 	root    string
@@ -62,7 +67,7 @@ func (p *goModulePrefetch) fetch(ctx context.Context, moduleDir string) (string,
 		}
 		p.root = root
 	}
-	modCache := filepath.Join(p.root, fmt.Sprintf("%d", len(p.fetched)))
+	modCache := filepath.Join(p.root, "modcache")
 	env := goPrefetchEnv(os.Environ(), modCache)
 	// The same two reads the build makes: the modules its packages need, and the
 	// go.mod of every module in the graph, which listing it loads.
@@ -79,8 +84,43 @@ func (p *goModulePrefetch) fetch(ctx context.Context, moduleDir string) (string,
 	if err := os.MkdirAll(proxy, 0o755); err != nil {
 		return "", fmt.Errorf("cannot stage the Go module proxy of %s: %w", moduleDir, err)
 	}
+	if err := pruneToProxy(modCache); err != nil {
+		return "", fmt.Errorf("cannot prune the Go module cache of %s: %w", moduleDir, err)
+	}
 	p.fetched[moduleDir] = proxy
 	return proxy, nil
+}
+
+// pruneToProxy removes everything in a module cache but its proxy tree
+// (cache/download): the extracted module sources and the version control
+// clones under cache/vcs. The go tool re-extracts from the proxy tree when a
+// later fetch needs a module again.
+func pruneToProxy(modCache string) error {
+	entries, err := os.ReadDir(modCache)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() == "cache" {
+			continue
+		}
+		if err = os.RemoveAll(filepath.Join(modCache, entry.Name())); err != nil {
+			return err
+		}
+	}
+	caches, err := os.ReadDir(filepath.Join(modCache, "cache"))
+	if err != nil {
+		return err
+	}
+	for _, entry := range caches {
+		if entry.Name() == "download" {
+			continue
+		}
+		if err = os.RemoveAll(filepath.Join(modCache, "cache", entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // proxiesFor fetches every download a recipe declares and returns the proxy to

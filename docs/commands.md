@@ -568,6 +568,29 @@ read, and a managed service (no workload) is skipped. The check adds nothing to
 the rendered output. `codefly show network --json --rendered` reports the same
 container ports to tools outside the CLI.
 
+**Image platforms follow the cell.** The images a render (or a deploy) builds
+are built for the architectures the environment's cluster nodes run, and for
+nothing else, so every image runs natively on every node and no architecture
+the cell does not run is emulated:
+
+```yaml
+environments:
+  - name: staging
+    cluster:
+      kind: gke
+      architectures: [amd64]   # the node architectures, Go/OCI names
+```
+
+A recipe declares every platform it can build; the environment picks which of
+them to build, and a platform the cell needs that the recipe cannot build is an
+error. A local cluster (`k3d`, `kind`, `minikube`) runs on the machine building
+the images, so when it declares no architectures its nodes have the container
+engine's (an amd64 CI runner builds amd64, an Apple Silicon laptop arm64). A
+remote cluster that declares none, or an environment with no `cluster`, is
+refused before anything is built. A pushed `codefly build service` for an
+environment with no `cluster` builds a portable artifact instead: every platform
+its recipe declares.
+
 `render` is a function of the workspace and needs no cluster: by default no
 service's manifests are sent to a Kubernetes API. Pass `--validate-cluster` to
 also dry-run each rendered service server-side (`kubectl apply --server-side
@@ -2587,7 +2610,7 @@ once; the report entry carries that digest, the platform, and every service
 association. Incomplete coverage — a failed scan, a missing image, a stale
 digest, or an omitted platform — fails the build instead of being reported as
 covered. What is owed follows what the build actually made: a build that pushes
-writes every declared platform into one manifest list and owes evidence for all
+writes every platform it builds (the target environment's, see above) into one manifest list and owes evidence for all
 of them, while a build that does not push loads a single platform per recipe and
 owes evidence for that one alone. The report names the platform each document
 covers, so a local build is never a claim about the platforms it did not build.

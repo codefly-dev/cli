@@ -29,7 +29,17 @@ func recordingGo(calls *[]goCall, fail error) func(context.Context, string, []st
 		}
 		for _, entry := range env {
 			if cache, ok := strings.CutPrefix(entry, "GOMODCACHE="); ok && args[0] == "mod" {
-				return os.MkdirAll(filepath.Join(cache, "cache", "download", "example.com", "lib", "@v"), 0o755)
+				// What the go tool leaves: the proxy tree, the extracted
+				// source and a version control clone.
+				for _, dir := range []string{
+					filepath.Join(cache, "cache", "download", "example.com", "lib", "@v"),
+					filepath.Join(cache, "example.com", "lib@v1.0.0"),
+					filepath.Join(cache, "cache", "vcs", "0123abcd"),
+				} {
+					if err := os.MkdirAll(dir, 0o755); err != nil {
+						return err
+					}
+				}
 			}
 		}
 		return nil
@@ -55,7 +65,7 @@ func envValue(env []string, key string) (string, bool) {
 // TestGoModulePrefetchFetchesOnceIntoItsOwnCache pins what a build receives: the
 // cache/download tree of a module cache private to the prefetch, fetched with the
 // same two reads the build makes, once per module root however many recipes
-// declare it.
+// declare it, and pruned to that tree.
 func TestGoModulePrefetchFetchesOnceIntoItsOwnCache(t *testing.T) {
 	var calls []goCall
 	prefetch := newGoModulePrefetch()
@@ -67,6 +77,9 @@ func TestGoModulePrefetchFetchesOnceIntoItsOwnCache(t *testing.T) {
 	require.NoError(t, err)
 	require.DirExists(t, filepath.Join(proxy, "example.com", "lib", "@v"))
 	require.Equal(t, "download", filepath.Base(proxy))
+	cache := filepath.Dir(filepath.Dir(proxy))
+	require.NoDirExists(t, filepath.Join(cache, "example.com"), "extracted sources are pruned")
+	require.NoDirExists(t, filepath.Join(cache, "cache", "vcs"), "version control clones are pruned")
 
 	require.Len(t, calls, 2)
 	require.Equal(t, []string{"mod", "download"}, calls[0].args)
@@ -155,7 +168,7 @@ func TestProxiesForResolvesRootsAgainstTheContext(t *testing.T) {
 	proxies, err := prefetch.proxiesFor(context.Background(), contextDir, recipe)
 	require.NoError(t, err)
 	require.Len(t, proxies, 2)
-	require.NotEqual(t, proxies["gomodproxy"], proxies["toolsproxy"], "each module root has its own cache")
+	require.Equal(t, proxies["gomodproxy"], proxies["toolsproxy"], "the flow's module roots share one cache")
 	require.True(t, slices.ContainsFunc(calls, func(call goCall) bool { return call.dir == filepath.Join(contextDir, "tools") }))
 
 	none, err := prefetch.proxiesFor(context.Background(), contextDir, &builderv0.DockerBuildRecipe{Name: "plain"})
