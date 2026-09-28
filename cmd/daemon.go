@@ -235,6 +235,11 @@ var daemonGatewayCmd = &cobra.Command{
 		if absDir == "" {
 			absDir = "."
 		}
+		// The gateway serves the workspace it was POINTED at, for its whole
+		// life, which is not necessarily the one it was started in. Everything
+		// it runs must be attributed to that workspace, or a stop issued there
+		// cannot see its own run.
+		markLaunchWorkspaceFrom(absDir)
 
 		execution, err := gatewayExecution.open(ctx, absDir)
 		if err != nil {

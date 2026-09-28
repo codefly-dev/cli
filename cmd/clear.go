@@ -36,12 +36,15 @@ func codeflyOwnedPIDs(ctx context.Context, self int, scope processgroup.Scope) (
 	if scope.All() {
 		return pids, nil
 	}
-	// A scoped kill only signals codefly processes working inside this
-	// workspace. An agent or CLI whose workspace cannot be resolved belongs to
-	// nobody we can name, so a scoped kill leaves it alone.
+	// A scoped kill only signals codefly processes belonging to this workspace's
+	// run. An agent or CLI whose workspace cannot be resolved belongs to nobody
+	// we can name, so a scoped kill leaves it alone. Attribution follows the run
+	// that launched the process, not its working directory: an agent serving a
+	// composed module runs from that module's checkout, outside the workspace
+	// that composed it.
 	kept := make([]int, 0, len(pids))
 	for _, pid := range pids {
-		workspace, ok := processgroup.EnclosingWorkspaceOfProcess(pid)
+		workspace, ok := processgroup.WorkspaceOfProcess(pid)
 		if ok && scope.Includes(workspace) {
 			kept = append(kept, pid)
 		}
@@ -121,20 +124,22 @@ func clearCommandOptions() clearOptions {
 		keepProcesses:  clearKeepProcesses,
 		keepContainers: clearKeepContainers,
 		dryRun:         clearDryRun,
-		scope:          reapScope(clearAllWorkspaces),
+		scope:          workspaceScope(clearAllWorkspaces),
 	}
 }
 
-// reapScope is the workspace a stop or clear may touch. Without --all it is the
-// workspace the command was run in, so a machine running several workspaces at
-// once — one per checkout, which is the normal shape for anyone working on more
-// than one branch — never has one workspace's stop kill another's services.
+// workspaceScope is the workspace a command acts on or reports: what a stop or
+// clear may touch, and what a ps lists. Without --all it is the workspace the
+// command was run in, so a machine running several workspaces at once — one per
+// checkout, which is the normal shape for anyone working on more than one
+// branch — never has one workspace's stop kill another's services, and never
+// has one workspace's listing describe another's run.
 //
 // Outside any workspace there is nothing to scope to, so the scope is
 // machine-wide: a bare `stop` in a home directory still behaves as it always
 // did. The caller announces which of the two it got, because the difference
 // decides what survives.
-func reapScope(all bool) processgroup.Scope {
+func workspaceScope(all bool) processgroup.Scope {
 	if all {
 		return processgroup.AllWorkspaces()
 	}

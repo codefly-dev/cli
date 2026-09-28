@@ -121,7 +121,11 @@ func darwinBootID() (string, error) {
 	return fmt.Sprintf("%d:%d", bootTime.Sec, bootTime.Usec), nil
 }
 
-func readProcessGroupAuthentication(pid int) (string, error) {
+// readProcessEnvironmentValue returns the value pid carries for key in its
+// environment, and "" when it carries no such entry. On darwin the environment
+// block sits after argv in kern.procargs2, so it is reached by skipping the
+// executable path and then argc arguments.
+func readProcessEnvironmentValue(pid int, key string) (string, error) {
 	data, err := unix.SysctlRaw("kern.procargs2", pid)
 	if err != nil {
 		if errors.Is(err, syscall.ESRCH) || errors.Is(err, syscall.ENOENT) {
@@ -146,13 +150,7 @@ func readProcessGroupAuthentication(pid int) (string, error) {
 		}
 		data = data[argumentEnd+1:]
 	}
-	prefix := []byte(groupAuthEnv + "=")
-	for entry := range bytes.SplitSeq(data, []byte{0}) {
-		if value, ok := bytes.CutPrefix(entry, prefix); ok {
-			return string(value), nil
-		}
-	}
-	return "", nil
+	return environmentValue(data, key), nil
 }
 
 type darwinProcessSignalHandle struct {

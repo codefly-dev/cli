@@ -46,19 +46,6 @@ func InWorkspace(dir string) Scope {
 // Scope means machine-wide, which is the opposite.
 func CurrentWorkspace(dir string) (string, bool) { return enclosingWorkspace(dir) }
 
-// EnclosingWorkspaceOfProcess is the workspace a running process belongs to,
-// resolved from its working directory the same way the orphan scanners resolve
-// one. It is how a registry record — which carries no workspace of its own, and
-// is written by independently released agents this package cannot change — is
-// attributed to a workspace.
-func EnclosingWorkspaceOfProcess(pid int) (string, bool) {
-	cwd, err := processWorkingDirectory(pid)
-	if err != nil || cwd == "" {
-		return "", false
-	}
-	return enclosingWorkspace(cwd)
-}
-
 // All reports whether the scope admits every workspace.
 func (s Scope) All() bool { return s.Workspace == "" }
 
@@ -80,11 +67,19 @@ func (s Scope) Includes(workspace string) bool {
 
 // includesProcessGroup resolves a group's workspace from its leader and reports
 // whether it is in scope.
+//
+// A registry record carries no workspace of its own — independently released
+// agents write these and this package cannot change their format — so the
+// leader is asked instead: the run recorded in its environment when it was
+// launched, and only failing that the workspace enclosing its working
+// directory. Asking the working directory first was the whole defect: a
+// composed module's service runs from a checkout outside the workspace that
+// composed it, so a scoped stop left it running and reported success.
 func (s Scope) includesProcessGroup(pgid int) bool {
 	if s.All() {
 		return true
 	}
-	workspace, ok := EnclosingWorkspaceOfProcess(pgid)
+	workspace, ok := WorkspaceOfProcess(pgid)
 	if !ok {
 		return false
 	}
