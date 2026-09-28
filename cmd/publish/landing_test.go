@@ -42,6 +42,9 @@ type fakeGitHubPullRequests struct {
 	// only by a merge queue: the direct merge is refused with 405, and the
 	// merge happens when the pull request is enqueued.
 	mergeQueueOwnsMain bool
+	// enqueueReportsAlreadyQueued makes the enqueue mutation answer with the
+	// error GitHub returns for a pull request the queue already holds.
+	enqueueReportsAlreadyQueued bool
 	// afterChecks runs once the check-runs response has been served, which is
 	// a point reached only from inside the wait for the pull request. Tests
 	// that need the publish budget to expire *there* cancel from here rather
@@ -140,6 +143,15 @@ func (f *fakeGitHubPullRequests) client(t *testing.T) *github.Client {
 		require.Contains(t, body.Query, "enqueuePullRequest")
 		f.mu.Lock()
 		f.enqueued = append(f.enqueued, body.Variables["id"])
+		if f.enqueueReportsAlreadyQueued {
+			f.merged = true
+			f.commitTitle = f.title
+			title := f.commitTitle
+			f.mu.Unlock()
+			f.squashOntoMain(title)
+			fmt.Fprint(w, `{"errors":[{"message":"Pull request is already queued"}]}`)
+			return
+		}
 		// The queue is the only writer to main: the merge it performs is what
 		// the caller's next poll observes.
 		f.merged = true
@@ -323,6 +335,24 @@ func TestEngine_Release_EntersTheMergeQueueWhenMainIsOwnedByOne(t *testing.T) {
 // TestMergeQueueRequired pins the discrimination the fallback rests on: the
 // status alone would swallow every other 405, and the prose alone would depend
 // on wording no API promises.
+// TestEngine_Release_AlreadyQueuedIsNotAFailure pins that a release is not
+// failed for being in the queue already. The desired state is "in the queue",
+// and a retry — a dropped response, a second pass round the wait — reaching an
+// entry that exists is the state succeeding, not refusing.
+func TestEngine_Release_AlreadyQueuedIsNotAFailure(t *testing.T) {
+	dir, origin, _ := releaseRepo(t, "0.1.0")
+	fake := &fakeGitHubPullRequests{
+		t: t, origin: origin, states: []string{"clean"},
+		mergeQueueOwnsMain:          true,
+		enqueueReportsAlreadyQueued: true,
+	}
+
+	tag, err := landingEngine(t, dir, fake).Release(context.Background())
+	require.NoError(t, err, "an entry the queue already holds is the desired state, not an error")
+	require.Equal(t, "v0.1.1", tag)
+	require.Equal(t, gitIn(t, origin, "rev-parse", "refs/heads/main"), gitIn(t, origin, "rev-list", "-n1", tag))
+}
+
 func TestMergeQueueRequired(t *testing.T) {
 	queueRefusal := &github.ErrorResponse{
 		Response: &http.Response{StatusCode: http.StatusMethodNotAllowed},

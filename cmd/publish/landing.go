@@ -205,13 +205,15 @@ func (l *pullRequestLanding) enqueue(ctx context.Context, nodeID string) error {
 	if _, err := l.client.Do(request, &answer); err != nil {
 		return err
 	}
-	for _, e := range answer.Errors {
-		if strings.Contains(strings.ToLower(e.Message), "already queued") {
+	if len(answer.Errors) == 0 {
+		return nil
+	}
+	for _, reported := range answer.Errors {
+		if strings.Contains(strings.ToLower(reported.Message), "already queued") {
 			return nil
 		}
-		return errors.New(e.Message)
 	}
-	return nil
+	return errors.New(answer.Errors[0].Message)
 }
 
 // merge waits for the release pull request to become mergeable and merges it.
