@@ -30,6 +30,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/secretgen"
+	"github.com/codefly-dev/core/resources"
 )
 
 // The configuration file layout core/configurations reads. Kept as constants so
@@ -182,15 +183,45 @@ func (d *Document) Keys() []string {
 	return keys
 }
 
+// ErrMultilineValue is a value that cannot be stored as one line.
+//
+// The whole refusal lives in the sentinel's own text, with no ": " in it, and
+// the wrap adds only the key and the carrier's name. The terse error view
+// renders the chain's first segment, so guidance written after a colon is the
+// part the reader never sees — and a refusal that does not say what to do
+// instead only moves the problem.
+var ErrMultilineValue = errors.New(
+	"a configuration value cannot contain a newline; Codefly carries a multi-line value by file, not inline " +
+		"(for JSON, a compact encoding is the same document on one line)")
+
 // Set writes key=value, replacing an existing line in place or appending.
-func (d *Document) Set(key, value string) {
+//
+// A value carrying a newline is refused. This document is one entry per line
+// and neither quotes nor escapes: writing such a value emits physical lines
+// that parseDocument reads back as separate entries, so the value cannot be
+// read back — and nothing reported it, on write or on read, because Has only
+// inspects the key's own first line. The corruption also survives a repair:
+// Set replaces that one line in place, leaving the orphaned continuations in
+// the document, so the only way back is to delete the file and provision it
+// again.
+//
+// Codefly already carries a value too large or too shaped for one line by
+// file (core/resources.FileCarrierKey, read by sdk-go), which is what a
+// certificate chain, a private key or a rendered manifest belongs in. Writing
+// that carrier is not something this command does yet, so the honest answer
+// here is to refuse and say so rather than to write a line nobody can read.
+func (d *Document) Set(key, value string) error {
+	if strings.ContainsAny(value, "\r\n") {
+		return fmt.Errorf("%w: %s is carried by %s", ErrMultilineValue, key, resources.FileCarrierKey(key))
+	}
 	line := key + "=" + value
 	if i, ok := d.index[key]; ok {
 		d.lines[i] = line
-		return
+		return nil
 	}
 	d.lines = append(d.lines, line)
 	d.index[key] = len(d.lines) - 1
+	return nil
 }
 
 func (d *Document) Bytes() []byte {

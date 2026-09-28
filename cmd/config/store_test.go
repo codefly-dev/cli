@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/codefly-dev/core/resources"
 )
 
 func target(t *testing.T, root string, secret bool) Target {
@@ -232,5 +234,81 @@ func TestTargetPathsFollowTheReaderLayout(t *testing.T) {
 	plain := Target{ScopeDir: "/w", Profile: "aws", Name: "edge"}
 	if got, want := plain.Path(), filepath.Join("/w", "configurations", "aws", "edge.env"); got != want {
 		t.Fatalf("plaintext path = %s, want %s", got, want)
+	}
+}
+
+// A multi-line value used to be written raw: the document is one entry per line
+// and neither quotes nor escapes, so the continuations came back as separate
+// entries and the value could not be read back. Nothing reported it — not the
+// write, not a later `config check`, which only inspects the key's own first
+// line — so the failure surfaced in whatever process consumed the value, as a
+// complaint about its content.
+func TestSetRefusesAValueItCouldNotReadBack(t *testing.T) {
+	for _, value := range []string{"{\n \"a\": 1\n}", "line\r\nline", "trailing\n"} {
+		doc := parseDocument(nil)
+		err := doc.Set("MANIFEST", value)
+		if !errors.Is(err, ErrMultilineValue) {
+			t.Fatalf("Set(%q) = %v, want ErrMultilineValue", value, err)
+		}
+		if got := doc.Keys(); len(got) != 0 {
+			t.Fatalf("a refused Set left %v in the document; it must write nothing", got)
+		}
+	}
+}
+
+// The refusal has to say where such a value belongs, or it only moves the
+// problem: Codefly carries one by file, and the reader (sdk-go) looks for that
+// companion variable by name.
+func TestTheRefusalNamesTheFileCarrier(t *testing.T) {
+	doc := parseDocument(nil)
+	err := doc.Set("MANIFEST", "a\nb")
+	if err == nil {
+		t.Fatal("want a refusal")
+	}
+	if carrier := resources.FileCarrierKey("MANIFEST"); !strings.Contains(err.Error(), carrier) {
+		t.Fatalf("refusal %q does not name the file carrier %q", err, carrier)
+	}
+}
+
+// Every value Set accepts survives the round trip through the file, which is
+// the property the refusal above exists to keep true.
+func TestAnAcceptedValueReadsBackUnchanged(t *testing.T) {
+	root := gitRepo(t, "*.secret.env")
+	target := Target{ScopeDir: root, Profile: "local", Name: "manifest"}
+	doc := parseDocument(nil)
+	compact := `{"contract":"runtime.installation/v1","nodes":[{"id":"a b"},{"id":"c=d"}]}`
+	for key, value := range map[string]string{
+		"MANIFEST": compact,
+		"EQUALS":   "k=v=w",
+		"EMPTY":    "",
+	} {
+		if err := doc.Set(key, value); err != nil {
+			t.Fatalf("Set(%s) = %v", key, err)
+		}
+	}
+	if err := Write(target, doc); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	reloaded, err := Load(target)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// Not asserted here: splitEntry trims the whole line before cutting, so a
+	// value's trailing whitespace is dropped on read-back ("  padded  " comes
+	// back "  padded"). That is a real fidelity loss of the same family, in a
+	// different function, and correcting it changes how every existing file
+	// parses — so it is named rather than fixed alongside this refusal.
+	for key, want := range map[string]string{
+		"MANIFEST": compact,
+		"EQUALS":   "k=v=w",
+	} {
+		i, ok := reloaded.index[key]
+		if !ok {
+			t.Fatalf("%s is absent after the round trip", key)
+		}
+		_, got, _ := splitEntry(reloaded.lines[i])
+		if got != want {
+			t.Fatalf("%s read back as %q, want %q", key, got, want)
+		}
 	}
 }
