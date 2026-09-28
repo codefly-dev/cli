@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net"
 	"net/url"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -216,6 +217,11 @@ type World struct {
 	// fetched once on the host before any image build (see goModulePrefetch).
 	// It is removed when the flow stops.
 	goModulePrefetch *goModulePrefetch
+
+	// hostArchitecture reads the container engine's architecture, which a
+	// local cluster's nodes run; nil selects `docker info`.
+	hostArchitecture func() (string, error)
+	platforms        []string
 
 	// CaptureImageDigest asks a pushed build to resolve the immutable manifest
 	// digest of the image it published so a caller can report or pin it. It is
@@ -2446,4 +2452,38 @@ func (world *World) goModules() *goModulePrefetch {
 		world.goModulePrefetch = newGoModulePrefetch()
 	}
 	return world.goModulePrefetch
+}
+
+// imagePlatforms is the environment's image platforms, resolved once per flow.
+func (world *World) imagePlatforms() ([]string, error) {
+	if world.platforms != nil {
+		return world.platforms, nil
+	}
+	host := world.hostArchitecture
+	if host == nil {
+		host = dockerEngineArchitecture
+	}
+	platforms, err := world.Env.ImagePlatforms(host)
+	if err != nil {
+		return nil, err
+	}
+	world.platforms = platforms
+	return platforms, nil
+}
+
+// dockerEngineArchitecture is the architecture of the container engine the CLI
+// builds with, as a Go/OCI name.
+func dockerEngineArchitecture() (string, error) {
+	out, err := exec.Command("docker", "info", "--format", "{{.Architecture}}").Output()
+	if err != nil {
+		return "", fmt.Errorf("docker info: %w", err)
+	}
+	switch architecture := strings.TrimSpace(string(out)); architecture {
+	case "x86_64", "amd64":
+		return "amd64", nil
+	case "aarch64", "arm64":
+		return "arm64", nil
+	default:
+		return "", fmt.Errorf("the container engine reports architecture %q, which this CLI does not map", architecture)
+	}
 }
