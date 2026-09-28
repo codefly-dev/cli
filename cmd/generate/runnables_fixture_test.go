@@ -75,6 +75,7 @@ func conformingOperation() *runnablev0.Operation {
 		InvokeScopes:   []*basev0.WorkScopeV1{{ResourceKind: "documents", Actions: []string{"ingest", "read"}}},
 		LookupScopes:   []*basev0.WorkScopeV1{{ResourceKind: "documents", Actions: []string{"read"}}},
 		LookupMethod:   "/documents.ingest.v1.IngestionService/LookupText",
+		Completion:     basev0.RunnableExecution_COMPLETION_CALL,
 	}
 }
 

@@ -35,6 +35,7 @@ func testPackage(t *testing.T, command []string, adjust func(*basev0.RunnableExe
 		Timeout:        durationpb.New(2 * time.Minute),
 		Cancellation:   basev0.RunnableExecution_CANCELLATION_SIGNAL,
 		Recovery:       basev0.RunnableExecution_RECOVERY_RECOMPUTE,
+		Completion:     basev0.RunnableExecution_COMPLETION_CALL,
 		MaxInputBytes:  4096,
 		MaxOutputBytes: 4096,
 		MaxLogBytes:    4096,
@@ -74,6 +75,15 @@ func testBinding(t *testing.T, pkg *basev0.RunnablePackage, root string) *basev0
 		Facility:       &basev0.RunnableFacility{Kind: basev0.RunnableFacility_NATIVE},
 		Implementation: &basev0.RunnableBinding_Artifact{Artifact: pkg.GetArtifacts()[0]},
 		Target:         nativeTarget(root),
+		// Every facility calls under a Work Context since
+		// codefly-dev/core#678 — NATIVE included, which is the facility that
+		// used to run as the platform. A binding with no authority is refused
+		// at install, so the fixture carries one like any real installation.
+		Authority: &basev0.RunnableAuthority{
+			Audience:     "qualification.operations",
+			InvokeScopes: []*basev0.WorkScopeV1{{ResourceKind: "operations", Actions: []string{"invoke", "read"}}},
+			LookupScopes: []*basev0.WorkScopeV1{{ResourceKind: "operations", Actions: []string{"read"}}},
+		},
 	}, pkg)
 	require.NoError(t, err)
 	return binding
@@ -124,6 +134,12 @@ func invocationFor(pkg *basev0.RunnablePackage, id string, budget time.Duration)
 	return &basev0.RunnableInvocation{
 		Protocol: corerunnable.ProtocolV1, Runnable: pkg.GetIdentity(), InvocationId: id, IntentId: "intent-1",
 		IssuedAt: timestamppb.New(issued), Deadline: timestamppb.New(issued.Add(budget)), Input: []byte(`{"text":"one two three"}`),
+		// Required since codefly-dev/core#678: an invocation runs as someone.
+		// The launcher carries the capability verbatim, so a fixture value
+		// stands in for the signed one a real caller mints.
+		Identity: &basev0.RunnableInvocationIdentity{
+			Carrier: &basev0.RunnableInvocationIdentity_WorkContext{WorkContext: "work-context-fixture"},
+		},
 	}
 }
 

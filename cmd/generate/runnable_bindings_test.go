@@ -2,11 +2,13 @@ package generate
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
@@ -106,6 +108,15 @@ func TestGenerateRunnableBindingsBindsEveryDerivedOperation(t *testing.T) {
 		if len(policy.GetInvokeScopes()) != len(declared.GetInvokeScopes()) || len(policy.GetLookupScopes()) != len(declared.GetLookupScopes()) {
 			t.Fatalf("policy authority: %v", policy)
 		}
+		// The completion mode travels the whole way, from the method option to
+		// the installed policy. It is asserted here rather than trusted because
+		// the mode passes through a document that once had no field for it:
+		// derivation validated the owner's declaration, the binding was built
+		// from the sidecar, and the mode was silently dropped in between — an
+		// installer then saw COMPLETION_UNKNOWN and refused every binding.
+		if policy.GetCompletion() != declared.GetCompletion() {
+			t.Fatalf("the declared completion mode is not installed: %v, want %v", policy.GetCompletion(), declared.GetCompletion())
+		}
 	}
 
 	// The committed file is current; a stale one is refused by --check.
@@ -173,5 +184,53 @@ func connectEndpoint() *resources.Endpoint {
 func TestRunnableBindingKeyIsAnEnvironmentKey(t *testing.T) {
 	if got := RunnableBindingKey("documents", "documents.ingest-document"); got != "DOCUMENTS__DOCUMENTS_INGEST_DOCUMENT" {
 		t.Fatalf("key %q", got)
+	}
+}
+
+// An operation.json derived before the completion mode existed names no mode.
+// It is refused here, by name, rather than prepared as the mode nobody chose:
+// the sidecar is the only thing a binding's policy is built from, so a missing
+// value there would otherwise install as COMPLETION_UNKNOWN and be refused far
+// from the file that has to change.
+func TestGenerateRunnableBindingsRefusesADerivedOperationNamingNoCompletionMode(t *testing.T) {
+	ctx := context.Background()
+	root, _ := saveRunnableFixture(t, ctx, descriptorSet(t, ingestionFile(conformingOperation())), "0.1.0", connectEndpoint())
+	t.Chdir(root)
+	resetRunnablesFlags(t)
+	resetRunnableBindingsFlags(t)
+	if err := RunnablesCmd.RunE(RunnablesCmd, []string{"documents"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rewrite the derived document the way a tree derived by an older CLI holds
+	// it: every other field intact, the mode absent.
+	operationPath := filepath.Join(root, "modules", "documents", "contracts", "runnables",
+		"runtime-worker", "grpc", "ApplyText", runnablespkg.OperationFileName)
+	raw, err := os.ReadFile(operationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := map[string]any{}
+	if err = json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	if _, declared := document["completion"]; !declared {
+		t.Fatal("the derived operation names no completion mode to remove")
+	}
+	delete(document, "completion")
+	rewritten, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(operationPath, rewritten, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err = RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil)
+	if err == nil {
+		t.Fatal("a derived operation naming no completion mode was prepared anyway")
+	}
+	if !strings.Contains(err.Error(), "is not a completion mode") {
+		t.Fatalf("the refusal does not name the missing mode: %v", err)
 	}
 }

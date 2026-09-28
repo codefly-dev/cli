@@ -33,6 +33,7 @@ func newOperationDocument(spec *corerunnable.OperationSpec) *runnablespkg.Operat
 		LookupMethod:   spec.LookupMethod,
 		MaxInputBytes:  spec.MaxInputBytes,
 		MaxOutputBytes: spec.MaxOutputBytes,
+		Completion:     spec.Completion.String(),
 	}
 }
 

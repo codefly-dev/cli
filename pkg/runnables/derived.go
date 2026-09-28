@@ -150,6 +150,14 @@ type Operation struct {
 	// so the policy is where an installer reads them.
 	MaxInputBytes  uint64 `json:"max_input_bytes,omitempty"`
 	MaxOutputBytes uint64 `json:"max_output_bytes,omitempty"`
+	// Completion is how the answer arrives, spelled as the
+	// codefly.base.v0.RunnableExecution.Completion enum name
+	// ("COMPLETION_CALL", "COMPLETION_SUBMIT"). It is required and carries no
+	// omitempty: core refuses a policy that names no mode, and a document that
+	// simply omitted it would install as the one nobody chose. An operation
+	// derived before this field existed therefore fails to prepare, by name,
+	// instead of being prepared as something the owner never declared.
+	Completion string `json:"completion"`
 }
 
 // Scope is one authority a binding is minted for.

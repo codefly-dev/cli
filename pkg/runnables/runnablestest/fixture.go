@@ -40,6 +40,7 @@ func Package(t *testing.T, workspace, module, name string) *basev0.RunnablePacka
 			Timeout:        durationpb.New(time.Minute),
 			Cancellation:   basev0.RunnableExecution_CANCELLATION_NONE,
 			Recovery:       basev0.RunnableExecution_RECOVERY_RECEIPT,
+			Completion:     basev0.RunnableExecution_COMPLETION_CALL,
 			MaxInputBytes:  resources.DefaultRunnablePayloadBytes,
 			MaxOutputBytes: resources.DefaultRunnablePayloadBytes,
 		},
@@ -80,6 +81,7 @@ func Write(t *testing.T, moduleDir, workspace, module, name string) *basev0.Runn
 		InvokeScopes:   []runnables.Scope{{ResourceKind: "documents", Actions: []string{"ingest", "read"}}},
 		LookupScopes:   []runnables.Scope{{ResourceKind: "documents", Actions: []string{"read"}}},
 		LookupMethod:   "/documents.ingest.v1.IngestionService/LookupText",
+		Completion:     basev0.RunnableExecution_COMPLETION_CALL.String(),
 	}))
 	write(t, filepath.Join(moduleDir, "contracts", "runnables", runnables.IndexFileName), marshal(t, &runnables.Index{
 		Schema:    runnables.IndexSchema,
