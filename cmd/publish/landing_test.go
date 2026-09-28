@@ -38,6 +38,10 @@ type fakeGitHubPullRequests struct {
 	// mergeFailsAfterMerging reproduces a merge that commits server-side and
 	// still fails its caller.
 	mergeFailsAfterMerging bool
+	// mergeQueueOwnsMain reproduces a repository whose base branch is written
+	// only by a merge queue: the direct merge is refused with 405, and the
+	// merge happens when the pull request is enqueued.
+	mergeQueueOwnsMain bool
 	// afterChecks runs once the check-runs response has been served, which is
 	// a point reached only from inside the wait for the pull request. Tests
 	// that need the publish budget to expire *there* cancel from here rather
@@ -52,6 +56,7 @@ type fakeGitHubPullRequests struct {
 	merged      bool
 	commitTitle string
 	mergeMethod string
+	enqueued    []string
 }
 
 func (f *fakeGitHubPullRequests) client(t *testing.T) *github.Client {
@@ -72,7 +77,7 @@ func (f *fakeGitHubPullRequests) client(t *testing.T) *github.Client {
 		f.polls++
 		merged := f.merged
 		f.mu.Unlock()
-		fmt.Fprintf(w, `{"number":7,"merged":%t,"mergeable_state":%q,"head":{"sha":%q}}`,
+		fmt.Fprintf(w, `{"number":7,"node_id":"PR_node_7","merged":%t,"mergeable_state":%q,"head":{"sha":%q}}`,
 			merged, state, f.headSHA())
 	})
 	mux.HandleFunc("/repos/codefly-dev/cli/pulls/7/merge", func(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +89,11 @@ func (f *fakeGitHubPullRequests) client(t *testing.T) *github.Client {
 		}
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		require.Equal(t, f.headSHA(), body.SHA, "merge must be pinned to the head it inspected")
+		if f.mergeQueueOwnsMain {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			fmt.Fprint(w, `{"message":"Changes must be made through the merge queue"}`)
+			return
+		}
 		f.mu.Lock()
 		f.commitTitle, f.mergeMethod, f.merged = body.CommitTitle, body.MergeMethod, true
 		f.mu.Unlock()
@@ -118,6 +128,27 @@ func (f *fakeGitHubPullRequests) client(t *testing.T) *github.Client {
 		if f.afterChecks != nil {
 			f.afterChecks()
 		}
+	})
+
+	mux.HandleFunc("/graphql", func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		var body struct {
+			Query     string            `json:"query"`
+			Variables map[string]string `json:"variables"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Contains(t, body.Query, "enqueuePullRequest")
+		f.mu.Lock()
+		f.enqueued = append(f.enqueued, body.Variables["id"])
+		// The queue is the only writer to main: the merge it performs is what
+		// the caller's next poll observes.
+		f.merged = true
+		f.mergeMethod = "queue"
+		f.commitTitle = f.title
+		title := f.commitTitle
+		f.mu.Unlock()
+		f.squashOntoMain(title)
+		fmt.Fprint(w, `{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"state":"QUEUED"}}}}`)
 	})
 
 	ts := httptest.NewServer(mux)
@@ -259,6 +290,60 @@ func TestEngine_Release_LandsTheBumpThroughAPullRequest(t *testing.T) {
 
 	branches := gitIn(t, origin, "branch", "--list", "release-0.1.1")
 	require.Empty(t, branches, "the release branch must be cleaned up after the merge")
+}
+
+// TestEngine_Release_EntersTheMergeQueueWhenMainIsOwnedByOne pins the behaviour
+// a repository with a merge queue needs. GitHub refuses a direct merge there
+// with 405 "Changes must be made through the merge queue", and publish used to
+// treat that as a failed release: it unwound, leaving the bump unlanded and no
+// way to release the repository at all.
+func TestEngine_Release_EntersTheMergeQueueWhenMainIsOwnedByOne(t *testing.T) {
+	dir, origin, manifest := releaseRepo(t, "0.1.0")
+	fake := &fakeGitHubPullRequests{
+		t: t, origin: origin, states: []string{"clean"}, mergeQueueOwnsMain: true,
+	}
+
+	tag, err := landingEngine(t, dir, fake).Release(context.Background())
+	require.NoError(t, err, "a refused direct merge must route through the queue, not fail the release")
+	require.Equal(t, "v0.1.1", tag)
+
+	require.Equal(t, []string{"PR_node_7"}, fake.enqueued,
+		"the release must be enqueued exactly once, by node id")
+	require.Equal(t, "release: v0.1.1", fake.commitTitle)
+
+	mergedSHA := gitIn(t, origin, "rev-parse", "refs/heads/main")
+	require.Equal(t, mergedSHA, gitIn(t, origin, "rev-list", "-n1", tag),
+		"the tag must name the commit the queue put on main")
+
+	contents, err := os.ReadFile(manifest)
+	require.NoError(t, err)
+	require.Equal(t, "version: 0.1.1\n", string(contents))
+}
+
+// TestMergeQueueRequired pins the discrimination the fallback rests on: the
+// status alone would swallow every other 405, and the prose alone would depend
+// on wording no API promises.
+func TestMergeQueueRequired(t *testing.T) {
+	queueRefusal := &github.ErrorResponse{
+		Response: &http.Response{StatusCode: http.StatusMethodNotAllowed},
+		Message:  "Changes must be made through the merge queue",
+	}
+	require.True(t, mergeQueueRequired(queueRefusal))
+
+	otherRefusal := &github.ErrorResponse{
+		Response: &http.Response{StatusCode: http.StatusMethodNotAllowed},
+		Message:  "Pull Request is not mergeable",
+	}
+	require.False(t, otherRefusal.Message == "" || mergeQueueRequired(otherRefusal),
+		"a 405 that is not about the queue must not be retried as one")
+
+	conflict := &github.ErrorResponse{
+		Response: &http.Response{StatusCode: http.StatusConflict},
+		Message:  "Changes must be made through the merge queue",
+	}
+	require.False(t, mergeQueueRequired(conflict), "the queue refusal is a 405")
+
+	require.False(t, mergeQueueRequired(errors.New("merge queue")), "a bare error is not an API refusal")
 }
 
 func TestEngine_Release_RedPullRequest_PublishesNothing(t *testing.T) {
