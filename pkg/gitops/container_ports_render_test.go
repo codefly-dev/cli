@@ -267,10 +267,16 @@ func treeDigest(t *testing.T, root string) string {
 }
 
 // undeclaredFixtureDigest is treeDigest of the fixture's module render with
-// no declaration, captured on main before the container-port check existed
-// (b990c162, with only the serviceFlow seam added). A render that declares
-// nothing must stay byte-identical.
-const undeclaredFixtureDigest = "aaca0799de4ebe4f9afa38c7cb84594a63b7b2dfd984251de5d90c4fd03cee0d"
+// no declaration. A render that declares nothing must stay byte-identical.
+//
+// It was captured on main before the container-port check existed (b990c162,
+// with only the serviceFlow seam added) as
+// "aaca0799de4ebe4f9afa38c7cb84594a63b7b2dfd984251de5d90c4fd03cee0d", and
+// re-captured when the render inventory schema went from 5 to 6 for declared
+// solution presence. That bump is the ONLY difference between the two: a
+// module with no solution instance renders the same tree, byte for byte, with
+// one digit changed in .codefly-render.json.
+const undeclaredFixtureDigest = "7ceafca4d99ac8800dac7b23e233f8fa7a0927cfac49f5d68823b06dd5a6d1fc"
 
 func TestRenderModuleWithoutDeclarationsIsByteIdentical(t *testing.T) {
 	installFakeAgents(t)

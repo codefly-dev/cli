@@ -60,6 +60,7 @@ var gitOpsRenderCmd = &cobra.Command{
 		cli.Info("Digest %s", result.Inventory.Digest)
 		printSizingReport(result.Sizing)
 		printElidedNamespaces(result.ElidedNamespaces)
+		printSolutionHostBindings(&result)
 		printClearedDev(result.ClearedDev)
 		return nil
 	},
@@ -95,6 +96,7 @@ var gitOpsSnapshotCmd = &cobra.Command{
 		cli.Info("Digest %s", result.Inventory.Digest)
 		printSizingReport(result.Sizing)
 		printElidedNamespaces(result.ElidedNamespaces)
+		printSolutionHostBindings(&result)
 		printClearedDev(result.ClearedDev)
 		return nil
 	},
@@ -436,6 +438,25 @@ func printElidedNamespaces(elided []string) {
 	cli.Warning("%d Namespace manifest(s) claiming the destination namespace were dropped: the namespace is provisioned outside this render (Argo Applications carry CreateNamespace=false)", len(elided))
 	for _, path := range elided {
 		cli.Warning("  %s — its service agent should elide the Namespace under a restricted output profile", path)
+	}
+}
+
+// printSolutionHostBindings reports what this render DECLARED should be
+// present on the host, and what it could not declare. The second half matters
+// as much as the first: a composition with no solution and one whose
+// environment names no host both render zero bindings, and only this tells
+// them apart.
+func printSolutionHostBindings(result *gitops.RenderResult) {
+	for _, path := range result.SolutionHostBindings {
+		cli.Info("Declared solution host binding %s", path)
+	}
+	if len(result.UndeclaredSolutions) == 0 {
+		return
+	}
+	cli.Warning("%d solution instance(s) rendered no host binding: environment %q declares no host (coordinate, component, audience)",
+		len(result.UndeclaredSolutions), result.Inventory.Environment)
+	for _, name := range result.UndeclaredSolutions {
+		cli.Warning("  %s — its presence on the host still depends on the runtime registering itself", name)
 	}
 }
 

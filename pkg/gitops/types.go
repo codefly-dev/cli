@@ -10,11 +10,16 @@ import (
 
 const (
 	InventoryFilename = ".codefly-render.json"
-	SchemaVersion     = 5
+	SchemaVersion     = 6
 	// priorSchemaVersion is the last schema loadInventory still accepts: a
-	// render from before contract provenance existed, carrying no Package and
-	// no unit Contracts.
-	priorSchemaVersion    = 4
+	// render from before declared solution presence existed, carrying no
+	// SolutionHostBindingPath.
+	//
+	// The bump is not cosmetic. A newer render's binding documents are wired
+	// into Argo through this field, so an older CLI publishing that tree would
+	// commit the documents and deliver them to nothing — silently. Refusing the
+	// schema is what turns that into an error the operator sees.
+	priorSchemaVersion    = 5
 	EvidenceSchemaVersion = 1
 )
 
@@ -87,6 +92,11 @@ type Inventory struct {
 	AppProject    string `json:"appProject"`
 	OwnedPath     string `json:"ownedPath"`
 	ModulePath    string `json:"modulePath,omitempty"`
+	// SolutionHostBindingPath is the render subdirectory holding the declared
+	// SolutionHostBinding documents, when this render declared any. Publish
+	// points an Argo Application at its environment overlay and derives the
+	// promotion's authority from it, exactly as it does for a unit.
+	SolutionHostBindingPath string `json:"solutionHostBindingPath,omitempty"`
 	// Package identifies the module package this render was produced from
 	// (module.package.codefly.yaml id/version), when the module has one.
 	Package *InventoryPackage `json:"package,omitempty"`
@@ -213,6 +223,23 @@ type RenderOptions struct {
 	ModulePath           string
 	Units                []InventoryUnit
 	Package              *InventoryPackage
+	// Workspace is the composing workspace's name. A solution host binding ID
+	// is scoped by it, so two workspaces delivering to one host never claim the
+	// same binding.
+	Workspace string
+	// Host is the deployment host this render delivers to, as the environment
+	// declares it. Absent, no solution host binding is rendered: a binding names
+	// a host, and a derived coordinate is a guess the host refuses later.
+	Host *environments.EnvironmentHost
+	// SolutionHostBindingPath is set by the render once it has written binding
+	// documents, so the inventory records the delivered path rather than the
+	// intent to write one.
+	SolutionHostBindingPath string
+	// SolutionInstances are the solution instances of the resolved composition
+	// whose workloads this render delivers, resolved by the caller from the same
+	// resolution the workloads came from. One SolutionHostBinding is rendered
+	// per entry.
+	SolutionInstances []SolutionInstance
 }
 
 func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKubernetesOutput {
@@ -251,6 +278,16 @@ type RenderResult struct {
 	// ClearedDev are the dev deployments the tree this render replaced carried.
 	// A full render re-derives every image, so they no longer run.
 	ClearedDev []InventoryDevDeployment `json:"clearedDev,omitempty"`
+	// SolutionHostBindings are the tree-relative paths of the rendered
+	// SolutionHostBinding documents: what this render declares should be
+	// present on the host, one per solution instance.
+	SolutionHostBindings []string `json:"solutionHostBindings,omitempty"`
+	// UndeclaredSolutions are the solution instances this render delivered
+	// workloads for but declared no binding for, because the environment names
+	// no host. It is reported rather than inferred from an empty list: a
+	// missing declaration and a composition with no solution look the same
+	// otherwise.
+	UndeclaredSolutions []string `json:"undeclaredSolutions,omitempty"`
 }
 
 type PublishRequest struct {

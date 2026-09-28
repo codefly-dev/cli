@@ -94,6 +94,19 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err != nil {
 		return RenderResult{}, err
 	}
+	// Declared presence, before anything validates or measures the tree: the
+	// binding pins the digest of every rendered artifact, so it is written once
+	// the artifacts are final, and it is written BEFORE validateTree so the
+	// ConfigMaps that carry it are held to the same promotable ruleset as the
+	// rest of the tree, and before buildInventory so they are hashed into the
+	// render digest like any other delivered file.
+	bindings, err := renderSolutionHostBindings(owned, destination, opts)
+	if err != nil {
+		return RenderResult{}, err
+	}
+	if len(bindings) > 0 {
+		opts.SolutionHostBindingPath = solutionHostBindingDir
+	}
 	manifests, err := validateTree(owned, opts)
 	if err != nil {
 		return RenderResult{}, err
@@ -122,7 +135,11 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err := replaceOwnedTree(owned, destination); err != nil {
 		return RenderResult{}, err
 	}
-	return RenderResult{Path: destination, Inventory: inventory, Sizing: sizing, ElidedNamespaces: elided, ClearedDev: cleared}, nil
+	return RenderResult{
+		Path: destination, Inventory: inventory, Sizing: sizing,
+		ElidedNamespaces: elided, ClearedDev: cleared,
+		SolutionHostBindings: bindings, UndeclaredSolutions: undeclaredSolutions(opts),
+	}, nil
 }
 
 func LoadInventory(root string) (Inventory, error) {
@@ -1258,7 +1275,8 @@ func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
 		Module:        opts.Module, Unit: opts.Unit, Environment: opts.Environment,
 		Namespace: opts.Namespace, AppProject: opts.AppProject, OwnedPath: filepath.ToSlash(opts.OwnedPath),
 		ModulePath: filepath.ToSlash(opts.ModulePath), Package: opts.Package,
-		Units: append([]InventoryUnit(nil), opts.Units...),
+		SolutionHostBindingPath: filepath.ToSlash(opts.SolutionHostBindingPath),
+		Units:                   append([]InventoryUnit(nil), opts.Units...),
 	}
 	if len(inventory.Units) == 0 {
 		serviceDir, _ := unitDirectory(UnitKindService)

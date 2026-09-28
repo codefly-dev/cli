@@ -191,6 +191,62 @@ func validateManagedServiceKey(key string) error {
 	return validateResourcePathComponent("managed service", service)
 }
 
+// EnvironmentHost is the deployment host an environment delivers to. Every
+// field names an identity the host already has; none is derived, because a
+// derived coordinate would be a guess that a host silently refuses at
+// reconcile time (core solutionhost.ErrWrongHost) rather than at render.
+//
+// The three are declared together because a binding needs all three at once:
+// Coordinate is matched by the host, Component names the component instance
+// within it, and Audience is what the host expects a workload's token to be
+// bound to. A partial declaration would render a document the host cannot use,
+// so UnmarshalYAML refuses an unknown key and Validate refuses a missing one.
+type EnvironmentHost struct {
+	Coordinate string `yaml:"coordinate"`
+	Component  string `yaml:"component"`
+	Audience   string `yaml:"audience"`
+}
+
+// UnmarshalYAML refuses an unknown key rather than dropping it: workspace YAML
+// is lenient, and a mistyped `component` would otherwise leave a host block
+// that looks declared and renders nothing.
+func (host *EnvironmentHost) UnmarshalYAML(node *yaml.Node) error {
+	if err := rejectUnknownKeys(node, "host", "coordinate", "component", "audience"); err != nil {
+		return err
+	}
+	type plain EnvironmentHost
+	return node.Decode((*plain)(host))
+}
+
+// hostNamePattern is core solutionhost's namePattern: the lowercase dotted or
+// slashed name a coordinate and a component are. It is restated here so a
+// malformed declaration fails at workspace load, naming the field, instead of
+// at render, naming a document.
+var hostNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$`)
+
+// Validate checks a declared host names every part of its identity. A nil
+// receiver is a valid "not declared" state.
+func (host *EnvironmentHost) Validate() error {
+	if host == nil {
+		return nil
+	}
+	for _, part := range []struct{ label, value string }{
+		{"coordinate", host.Coordinate}, {"component", host.Component},
+	} {
+		if !hostNamePattern.MatchString(part.value) {
+			return fmt.Errorf("host %s %q is not a lowercase dotted or slashed name", part.label, part.value)
+		}
+	}
+	// The audience is an opaque identity the host chose (often a URI), so it is
+	// checked for shape rather than spelling: a single line, no whitespace. That
+	// is what core's WorkloadIdentity accepts, and it is not the shape of a
+	// pasted credential.
+	if host.Audience == "" || strings.ContainsFunc(host.Audience, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+		return fmt.Errorf("host audience must be a single-line identity, got %q", host.Audience)
+	}
+	return nil
+}
+
 // EnvironmentWorkloadIdentity is the runtime principal a workload authenticates
 // as, and the platform's own means of attaching it. Annotations land on the
 // workload's ServiceAccount and Labels on its pod template, verbatim: an environment
@@ -916,6 +972,16 @@ type Environment struct {
 	Gitops    *EnvironmentGitops   `yaml:"gitops,omitempty"`
 
 	Ingress []EnvironmentIngressRoute `yaml:"ingress,omitempty"`
+
+	// Host names the deployment host this environment delivers to: the
+	// coordinate that identifies it, the component instance within it, and the
+	// audience a workload token presented to it must be bound to. It is what a
+	// rendered SolutionHostBinding declares as its target, and the CLI has no
+	// other durable record of it — `codefly environment import` reads the
+	// coordinate off a codefly/coordinate/v1 contract and keeps it only as a
+	// provenance comment. Absent, a render declares no solution host binding
+	// rather than inventing a host. CLI-side; not serialized to proto.
+	Host *EnvironmentHost `yaml:"host,omitempty"`
 
 	// ManagedServices keys a replacement by the identity of the service it
 	// replaces: "<module>/<service>", or a bare "<service>" when exactly one
