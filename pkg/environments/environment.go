@@ -27,6 +27,9 @@ func (err *EnvironmentExistsError) Error() string {
 	return fmt.Sprintf("environment %s already exists", err.name)
 }
 
+// ClusterKindK3d is the cluster kind of a local k3d cluster.
+const ClusterKindK3d = "k3d"
+
 // EnvironmentCluster declares which Kubernetes cluster an environment
 // targets. Lets `codefly deploy --env <name>` route kubectl to the
 // right kubeconfig instead of string-matching env names in CLI source.
@@ -992,7 +995,7 @@ func LocalEnvironment() *Environment {
 	return &Environment{
 		Name: "local",
 		Cluster: &EnvironmentCluster{
-			Kind: "k3d",
+			Kind: ClusterKindK3d,
 		},
 	}
 }
@@ -1002,7 +1005,7 @@ func LocalEnvironment() *Environment {
 // (k3d-only — EKS/GKE pull from a registry instead).
 func (env *Environment) IsK3d() bool {
 	if env.Cluster != nil && env.Cluster.Kind != "" {
-		return env.Cluster.Kind == "k3d"
+		return env.Cluster.Kind == ClusterKindK3d
 	}
 	// Legacy fallback: any env not explicitly cluster-typed is treated
 	// as local-k3d. Preserves the old "default to k3d image import"

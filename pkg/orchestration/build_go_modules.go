@@ -104,7 +104,7 @@ func pruneToProxy(modCache string) error {
 		if entry.Name() == "cache" {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(modCache, entry.Name())); err != nil {
+		if err = os.RemoveAll(filepath.Join(modCache, entry.Name())); err != nil {
 			return err
 		}
 	}
@@ -116,7 +116,7 @@ func pruneToProxy(modCache string) error {
 		if entry.Name() == "download" {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(modCache, "cache", entry.Name())); err != nil {
+		if err = os.RemoveAll(filepath.Join(modCache, "cache", entry.Name())); err != nil {
 			return err
 		}
 	}

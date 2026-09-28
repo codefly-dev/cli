@@ -8,7 +8,7 @@ import (
 
 // localClusterKinds run their nodes on the machine that builds the images: a
 // k3d, kind or minikube cluster is containers in the local container engine.
-var localClusterKinds = map[string]bool{"k3d": true, "kind": true, "minikube": true}
+var localClusterKinds = map[string]bool{ClusterKindK3d: true, "kind": true, "minikube": true}
 
 // imageArchitectures are the node architectures an environment may declare,
 // named as Go and OCI name them.
