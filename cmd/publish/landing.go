@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"strings"
 	"time"
@@ -156,6 +157,65 @@ func (l *pullRequestLanding) open(ctx context.Context, branch, tag string) (int,
 	return pr.GetNumber(), nil
 }
 
+// mergeQueueRequired reports whether err is GitHub refusing a direct merge
+// because a merge queue owns the base branch.
+//
+// The refusal is a 405 naming the queue. Matching the status alone would also
+// swallow the other things GitHub answers 405 to, and matching the prose alone
+// would depend on wording no API promises, so both are required.
+func mergeQueueRequired(err error) bool {
+	var response *github.ErrorResponse
+	if !errors.As(err, &response) {
+		return false
+	}
+	return response.Response != nil &&
+		response.Response.StatusCode == http.StatusMethodNotAllowed &&
+		strings.Contains(strings.ToLower(response.Message), "merge queue")
+}
+
+// enqueue adds the release pull request to its repository's merge queue.
+//
+// There is no REST route for this, so it is the one GraphQL call publish
+// makes. It goes through the same client, and therefore the same token and
+// base URL, as every REST call: the GraphQL endpoint shares the API host, so
+// a relative "graphql" resolves to it without a second client to configure or
+// a second credential to hold.
+//
+// Enqueueing something already queued is not an error worth failing a release
+// over — the desired state is "in the queue", and it is.
+func (l *pullRequestLanding) enqueue(ctx context.Context, nodeID string) error {
+	if nodeID == "" {
+		return errors.New("the pull request has no node id to enqueue")
+	}
+	body := map[string]any{
+		"query": "mutation($id:ID!){enqueuePullRequest(input:{pullRequestId:$id}){mergeQueueEntry{state}}}",
+		"variables": map[string]any{
+			"id": nodeID,
+		},
+	}
+	request, err := l.client.NewRequest(ctx, http.MethodPost, "graphql", body)
+	if err != nil {
+		return err
+	}
+	var answer struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if _, err := l.client.Do(request, &answer); err != nil {
+		return err
+	}
+	if len(answer.Errors) == 0 {
+		return nil
+	}
+	for _, reported := range answer.Errors {
+		if strings.Contains(strings.ToLower(reported.Message), "already queued") {
+			return nil
+		}
+	}
+	return errors.New(answer.Errors[0].Message)
+}
+
 // merge waits for the release pull request to become mergeable and merges it.
 // The wait is the point: the bump is admitted exactly when the CI every other
 // change passes goes green.
@@ -165,6 +225,7 @@ func (l *pullRequestLanding) open(ctx context.Context, branch, tag string) (int,
 // unfinished release from a fresh one.
 func (l *pullRequestLanding) merge(ctx context.Context, number int, tag string) error {
 	deadline := newRegistrationDeadline(l.registrationGrace)
+	queued := false
 	for {
 		pr, _, err := l.client.PullRequests.Get(ctx, l.owner, l.repo, number)
 		if err != nil {
@@ -196,6 +257,20 @@ func (l *pullRequestLanding) merge(ctx context.Context, number int, tag string) 
 				// from the transport.
 				if l.confirmMerged(ctx, number) {
 					return nil
+				}
+				// A repository whose main is owned by a merge queue refuses a
+				// direct merge outright. The queue is then the only writer, so
+				// the release joins it and the poll above observes the merge
+				// the queue performs, exactly as it observes a direct one.
+				if mergeQueueRequired(err) {
+					if !queued {
+						if queueErr := l.enqueue(ctx, pr.GetNodeID()); queueErr != nil {
+							return fmt.Errorf("add release pull request #%d to the merge queue: %w", number, queueErr)
+						}
+						fmt.Printf("==> release pull request #%d entered the merge queue\n", number)
+						queued = true
+					}
+					break
 				}
 				return fmt.Errorf("merge release pull request #%d: %w", number, err)
 			}
