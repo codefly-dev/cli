@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	runnersbase "github.com/codefly-dev/core/runners/base"
 )
@@ -282,6 +283,32 @@ func startSignatureHelper(t *testing.T, argv0, dir string, environ []string) int
 // without any of them cooperating — the chain from the CLI runs through agents
 // released independently of this repository, which cannot be asked to pass
 // anything along.
+// waitForAttributedWorkspace polls until pid can be attributed to a workspace.
+//
+// The attribution reads the child's own environment out of the kernel, and a
+// process is visible to the kernel from fork — before exec has replaced its
+// argument and environment block. Reading in that window yields no value and
+// is indistinguishable from a child that inherited nothing, so asserting
+// immediately after Start makes the test fail on scheduling rather than on
+// behaviour. Polling is what the rest of this package already does for the
+// same reason (waitForGroupLeader, waitForCodeflyOwned).
+//
+// Only the timing assumption is relaxed: a child that genuinely inherits
+// nothing still fails, on the deadline.
+func waitForAttributedWorkspace(t *testing.T, pid int) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if workspace, ok := WorkspaceOfProcess(pid); ok {
+			return workspace
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("a process started from a marked run (%d) was attributed to no workspace", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestMarkLaunchWorkspaceIsWhatDescendantsInherit(t *testing.T) {
 	// t.Setenv restores the variable afterwards, so marking here cannot leak
 	// into another test's helpers.
@@ -296,10 +323,7 @@ func TestMarkLaunchWorkspaceIsWhatDescendantsInherit(t *testing.T) {
 
 	// Nothing is passed to the child: it inherits, which is the point.
 	inherited := startSignatureHelper(t, "next dev", moduleCheckout, os.Environ())
-	found, ok := WorkspaceOfProcess(inherited)
-	if !ok {
-		t.Fatalf("a process started from a marked run (%d) was attributed to no workspace", inherited)
-	}
+	found := waitForAttributedWorkspace(t, inherited)
 	if !sameDirectory(found, workspace) {
 		t.Errorf("inherited attribution is %s, want the marked workspace %s", found, workspace)
 	}
