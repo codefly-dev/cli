@@ -3,7 +3,6 @@
 package processgroup
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
