@@ -2199,6 +2199,11 @@ propagated (a configuration value another remote key already holds), generated
 (supplied by the operator, and named). The store is the backend behind the
 SecretStore the render names, read from the environment's cluster.
 
+Each property is resolved by the secret key the render reads out of it, not by
+the property name the environment files that key under, so an environment that
+maps keys to its store's own property names resolves exactly like one that does
+not. Both are reported.
+
 Values are never printed: the plan names keys and sources only.
 
 --dry-run prints the plan and writes nothing. --metadata-only additionally never

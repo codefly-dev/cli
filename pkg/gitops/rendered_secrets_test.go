@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -82,7 +83,7 @@ func TestRenderedServiceSecretsReadsTheEnvironmentsProjections(t *testing.T) {
 	}
 	secret := rendered.Secrets[0]
 	if secret.RemoteKey != "example-billing-api" || secret.Store.Name != "cell-secrets" || secret.Namespace != "example-billing" ||
-		!reflect.DeepEqual(secret.Services, []string{"billing/api"}) || !reflect.DeepEqual(secret.Properties, []string{"A_KEY", "B_KEY"}) {
+		!reflect.DeepEqual(secret.Services, []string{"billing/api"}) || !reflect.DeepEqual(secret.Properties, []RenderedSecretProperty{{Property: "A_KEY", Keys: []string{"A_KEY"}}, {Property: "B_KEY", Keys: []string{"B_KEY"}}}) {
 		t.Errorf("secret = %+v", secret)
 	}
 }
@@ -158,7 +159,7 @@ func TestRenderedServiceSecretsReadsAManagedServicesProjection(t *testing.T) {
 	}
 	secret := rendered.Secrets[0]
 	if secret.RemoteKey != "workos-credentials" || !reflect.DeepEqual(secret.Services, []string{"payments/workos"}) ||
-		!reflect.DeepEqual(secret.Properties, []string{"WORKOS_API_KEY"}) {
+		!reflect.DeepEqual(secret.Properties, []RenderedSecretProperty{{Property: "WORKOS_API_KEY", Keys: []string{"WORKOS_API_KEY"}}}) {
 		t.Errorf("secret = %+v", secret)
 	}
 }
@@ -212,5 +213,102 @@ func TestRenderedServiceSecretsRefusesOneKeyThroughTwoNamespacedStores(t *testin
 	_, err := RenderedServiceSecrets(workspace, "staging")
 	if err == nil || !strings.Contains(err.Error(), "two different stores") {
 		t.Fatalf("RenderedServiceSecrets = %v, want a refusal naming the two namespaces", err)
+	}
+}
+
+// writeMappedRender lays down one service's render where the environment files
+// each secret key under a store property of its own naming — what
+// `service-secrets.services.<svc>.remote-keys` produces. The key and the
+// property are then different strings for every entry.
+func writeMappedRender(t *testing.T, workspace, module, service, environment, remoteKey string, keysByProperty map[string][]string) {
+	t.Helper()
+	root := filepath.Join(workspace, "deployments", "modules", module)
+	var data strings.Builder
+	properties := make([]string, 0, len(keysByProperty))
+	for property := range keysByProperty {
+		properties = append(properties, property)
+	}
+	sort.Strings(properties)
+	for _, property := range properties {
+		for _, key := range keysByProperty[property] {
+			data.WriteString("        - secretKey: " + key + "\n          remoteRef:\n            key: " + remoteKey + "\n            property: " + property + "\n")
+		}
+	}
+	content := []byte(fmt.Sprintf(renderedExternalSecret, service, module, service, data.String()))
+	relative := "services/" + service + "/overlays/" + environment + "/external-secret.yaml"
+	path := filepath.Join(root, filepath.FromSlash(relative))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(content)
+	inventory := Inventory{SchemaVersion: SchemaVersion, Module: module, Environment: environment, AppProject: "example", OwnedPath: "deployments/modules/" + module}
+	inventory.Units = append(inventory.Units, InventoryUnit{Kind: "service", Module: module, Name: service, Path: "services/" + service})
+	inventory.Files = append(inventory.Files, InventoryFile{Path: relative, SHA256: "sha256:" + hex.EncodeToString(sum[:]), Size: int64(len(content))})
+	encoded, err := json.MarshalIndent(inventory, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, InventoryFilename), append(encoded, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The property is where a value is filed; the secretKey is what it is. An
+// environment that maps them apart must still report both, or everything that
+// resolves a value by its key — a federation derivation, a declared generator, a
+// configuration value shared across remote keys — recognizes none of them.
+func TestRenderedServiceSecretsRecordsTheKeyReadFromEachProperty(t *testing.T) {
+	workspace := t.TempDir()
+	writeMappedRender(t, workspace, "saas", "store", "staging", "cell-store", map[string][]string{
+		"postgres_user":       {"CODEFLY__SERVICE_SECRET_CONFIGURATION__SAAS__STORE__POSTGRES__POSTGRES_USER"},
+		"read_write_password": {"CODEFLY__SERVICE_SECRET_CONFIGURATION__SAAS__STORE__POSTGRES__POSTGRES_READ_WRITE_PASSWORD"},
+	})
+
+	rendered, err := RenderedServiceSecrets(workspace, "staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rendered.Secrets) != 1 {
+		t.Fatalf("secrets = %+v", rendered.Secrets)
+	}
+	want := []RenderedSecretProperty{
+		{Property: "postgres_user", Keys: []string{"CODEFLY__SERVICE_SECRET_CONFIGURATION__SAAS__STORE__POSTGRES__POSTGRES_USER"}},
+		{Property: "read_write_password", Keys: []string{"CODEFLY__SERVICE_SECRET_CONFIGURATION__SAAS__STORE__POSTGRES__POSTGRES_READ_WRITE_PASSWORD"}},
+	}
+	if !reflect.DeepEqual(rendered.Secrets[0].Properties, want) {
+		t.Errorf("properties = %+v", rendered.Secrets[0].Properties)
+	}
+}
+
+// Two services reading one property under one key is one entry; the key is not
+// repeated.
+func TestRenderedServiceSecretsDeduplicatesTheKeysOfOneProperty(t *testing.T) {
+	workspace := t.TempDir()
+	writeMappedRender(t, workspace, "saas", "accounts", "staging", "cell-auth", map[string][]string{
+		"internal_token": {"CODEFLY__WORKSPACE_SECRET_CONFIGURATION__INTERNAL_AUTH__TOKEN", "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__INTERNAL_AUTH__TOKEN"},
+	})
+
+	rendered, err := RenderedServiceSecrets(workspace, "staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []RenderedSecretProperty{{Property: "internal_token", Keys: []string{"CODEFLY__WORKSPACE_SECRET_CONFIGURATION__INTERNAL_AUTH__TOKEN"}}}
+	if !reflect.DeepEqual(rendered.Secrets[0].Properties, want) {
+		t.Errorf("properties = %+v", rendered.Secrets[0].Properties)
+	}
+}
+
+// An entry with no secretKey names where a value lives and never what it is.
+// Reading the property as the key would report a derivable value as one to type.
+func TestRenderedServiceSecretsRefusesAnEntryWithNoSecretKey(t *testing.T) {
+	workspace := t.TempDir()
+	writeMappedRender(t, workspace, "saas", "store", "staging", "cell-store", map[string][]string{"postgres_user": {""}})
+
+	_, err := RenderedServiceSecrets(workspace, "staging")
+	if err == nil || !strings.Contains(err.Error(), "into no secret key") {
+		t.Fatalf("err = %v", err)
 	}
 }

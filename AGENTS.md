@@ -72,6 +72,7 @@ new runbook (and its skill) whenever you do a multi-step operational task a seco
 - **Export a module's API contracts** → [docs/commands.md#generate-contracts](docs/commands.md#generate-contracts)
 
 ### Reference (deep dives, not step-by-step)
+- **The development loop** (change → render → build → deploy, what is cached, how to force a rebuild, and how to tell a stale build from a wrong one) → [docs/development-loop.md](docs/development-loop.md)
 - **All CLI commands, by category** → [docs/commands.md](docs/commands.md)
 - **Every command and flag** (generated from the command tree; regenerate with `go test ./cmd -run TestCLIReferenceIsCurrent -update-reference`) → [docs/cli-reference.md](docs/cli-reference.md)
 - **Orchestration engine** → [docs/orchestration.md](docs/orchestration.md)
