@@ -125,6 +125,7 @@ func initBuildService(ctx context.Context, workspace *resources.Workspace, modul
 		return nil, err
 	}
 	flow.WithBuildCache(cache)
+	flow.WithRebuild(buildCacheFlags.Rebuild())
 	flow.WithPush(push)
 	flow.WithBuildxBuilder(buildxBuilder)
 	flow.WithImageDigest(true)

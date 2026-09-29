@@ -154,6 +154,7 @@ func deployOneService(ctx context.Context, workspace *resources.Workspace, modul
 	// Stand-alone: the module loop is the dependency walker. If we let
 	// each Flow walk deps, we'd re-deploy shared services N times.
 	flow.WithStandAlone(true)
+	flow.WithRebuild(rebuildImages)
 
 	if err := flow.InitManagers(ctx); err != nil {
 		return w.Wrapf(err, "cannot initialize managers")
@@ -202,5 +203,6 @@ func init() {
 	ModuleCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Render the deployment without applying it")
 	ModuleCmd.Flags().BoolVar(&renderOnly, "render-only", false, "Render kustomize manifests to disk without applying. Used for gitops flows where ArgoCD/Flux syncs from the rendered tree.")
 	ModuleCmd.Flags().StringVar(&appProject, "app-project", "", "AppProject contract used to validate cluster-scoped rendered resources")
+	ModuleCmd.Flags().BoolVar(&rebuildImages, "rebuild", false, "Build every image even when no input of it changed, instead of keeping the image already built from those inputs")
 	registerCompletionFlags(ModuleCmd)
 }

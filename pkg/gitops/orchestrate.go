@@ -17,12 +17,17 @@ import (
 	"github.com/codefly-dev/core/resources"
 )
 
-func RenderModule(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
-	return renderModuleTree(ctx, workspace, module, env, project, sink, true, false)
+// renderBuild is what a render decides about the image builds its services run:
+// how much of the graph to drive, whether to validate against a cluster, and
+// whether to rebuild an image whose inputs have not changed.
+type renderBuild struct {
+	standAlone      bool
+	validateCluster bool
+	rebuild         bool
 }
 
-func RenderModuleSnapshot(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
-	return renderModuleTree(ctx, workspace, module, env, project, sink, false, false)
+func RenderModule(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
+	return renderModuleTree(ctx, workspace, module, env, project, sink, true, renderBuild{})
 }
 
 func renderModuleTree(
@@ -33,7 +38,7 @@ func renderModuleTree(
 	project string,
 	sink orchestration.OutputSink,
 	includeBootstrap bool,
-	validateCluster bool,
+	build renderBuild,
 ) (RenderResult, error) {
 	if err := selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
 		return RenderResult{}, err
@@ -117,8 +122,7 @@ func renderModuleTree(
 				module,
 				service,
 				env,
-				false,
-				validateCluster,
+				renderBuild{validateCluster: build.validateCluster, rebuild: build.rebuild},
 				sink,
 				destinations,
 				func(rendered map[string]*builderv0.DeploymentOutput) {
@@ -322,10 +326,10 @@ func copyEnvironmentBootstrap(source, environment, destination string) error {
 }
 
 func RenderService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *environments.Environment, project string, standAlone bool, sink orchestration.OutputSink) (RenderResult, error) {
-	return renderService(ctx, workspace, module, service, env, project, standAlone, false, sink)
+	return renderService(ctx, workspace, module, service, env, project, renderBuild{standAlone: standAlone}, sink)
 }
 
-func renderService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *environments.Environment, project string, standAlone, validateCluster bool, sink orchestration.OutputSink) (RenderResult, error) {
+func renderService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *environments.Environment, project string, build renderBuild, sink orchestration.OutputSink) (RenderResult, error) {
 	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
 		return RenderResult{}, err
 	}
@@ -347,7 +351,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 	}, func(ctx context.Context, stage string) error {
 		// A configuration error refuses the render before any image is built or
 		// pushed.
-		if err := orchestration.PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{service}, standAlone); err != nil {
+		if err := orchestration.PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{service}, build.standAlone); err != nil {
 			return err
 		}
 		if err := prepareSnapshotRegistry(ctx, env); err != nil {
@@ -364,8 +368,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 			module,
 			service,
 			env,
-			standAlone,
-			validateCluster,
+			build,
 			sink,
 			serviceRenderDestinations(stage),
 			nil,
@@ -461,8 +464,7 @@ func renderServiceFlow(
 	module *resources.Module,
 	service *resources.Service,
 	env *environments.Environment,
-	standAlone bool,
-	validateCluster bool,
+	build renderBuild,
 	sink orchestration.OutputSink,
 	destination func(*resources.Module, *resources.Service) string,
 	record func(map[string]*builderv0.DeploymentOutput),
@@ -482,8 +484,9 @@ func renderServiceFlow(
 	if sink != nil {
 		flow.WithOutputSink(sink)
 	}
-	flow.WithStandAlone(standAlone)
-	flow.WithClusterValidation(validateCluster)
+	flow.WithStandAlone(build.standAlone)
+	flow.WithClusterValidation(build.validateCluster)
+	flow.WithRebuild(build.rebuild)
 	defer func() {
 		if stopErr := flow.Stop(); result == nil && stopErr != nil {
 			result = stopErr

@@ -94,8 +94,12 @@ type DevRequest struct {
 	// AppProject, when set, must be the AppProject the tree was rendered for.
 	AppProject string
 	Source     DevSource
-	Sink       orchestration.OutputSink
-	Now        func() time.Time
+	// Rebuild builds the service's image even when no input of it changed. This
+	// verb exists to carry local code into an environment, so the operator who
+	// suspects the image does not hold their change must be able to say so here.
+	Rebuild bool
+	Sink    orchestration.OutputSink
+	Now     func() time.Time
 }
 
 // DevResult reports what a dev deployment changed.
@@ -124,6 +128,7 @@ func buildRenderedServiceImages(
 	module *resources.Module,
 	service *resources.Service,
 	env *environments.Environment,
+	rebuild bool,
 	sink orchestration.OutputSink,
 ) ([]string, error) {
 	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
@@ -138,7 +143,7 @@ func buildRenderedServiceImages(
 	}
 	defer os.RemoveAll(scratch)
 	destinations := serviceRenderDestinations(scratch)
-	if err := renderServiceFlow(ctx, workspace, module, service, env, true, false, sink, destinations, nil, nil, nil, nil, nil); err != nil {
+	if err := renderServiceFlow(ctx, workspace, module, service, env, renderBuild{standAlone: true, rebuild: rebuild}, sink, destinations, nil, nil, nil, nil, nil); err != nil {
 		return nil, fmt.Errorf("build service %s: %w", service.Name, err)
 	}
 	return digestImages(destinations(module, service))
@@ -190,7 +195,7 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 	if err = orchestration.PlanConfigurationReferences(ctx, request.Workspace, request.Environment, []*resources.Service{service}, true); err != nil {
 		return DevResult{}, err
 	}
-	images, err := buildServiceImage(ctx, request.Workspace, request.Module, service, request.Environment, request.Sink)
+	images, err := buildServiceImage(ctx, request.Workspace, request.Module, service, request.Environment, request.Rebuild, request.Sink)
 	if err != nil {
 		return DevResult{}, err
 	}

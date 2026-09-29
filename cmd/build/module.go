@@ -91,6 +91,7 @@ func buildOneService(ctx context.Context, workspace *resources.Workspace, module
 		return err
 	}
 	flow.WithBuildCache(cache)
+	flow.WithRebuild(buildCacheFlags.Rebuild())
 	flow.WithPush(push)
 	flow.WithOutputSink(cli.NewOutputSink())
 	stopped := false

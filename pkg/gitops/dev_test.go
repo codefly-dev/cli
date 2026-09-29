@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,15 +101,24 @@ func renderDevFixture(t *testing.T, workspace *resources.Workspace) RenderResult
 	return result
 }
 
-// stubBuild replaces the shared build/push boundary for the test's duration.
+// stubBuild replaces the shared build/push boundary for the test's duration and
+// records what the dev deployment asked it to do.
 func stubBuild(t *testing.T, images []string, seen *string) *int {
+	t.Helper()
+	return stubBuildRecordingRebuild(t, images, seen, nil)
+}
+
+func stubBuildRecordingRebuild(t *testing.T, images []string, seen *string, rebuilt *bool) *int {
 	t.Helper()
 	calls := 0
 	previous := buildServiceImage
-	buildServiceImage = func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service, _ *environments.Environment, _ orchestration.OutputSink) ([]string, error) {
+	buildServiceImage = func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service, _ *environments.Environment, rebuild bool, _ orchestration.OutputSink) ([]string, error) {
 		calls++
 		if seen != nil {
 			*seen = service.Dir()
+		}
+		if rebuilt != nil {
+			*rebuilt = rebuild
 		}
 		return images, nil
 	}
@@ -346,4 +356,29 @@ func TestDeployDevRefusesATreeEditedSinceItsRender(t *testing.T) {
 	})
 	require.ErrorContains(t, err, "the tree was edited since it was rendered")
 	require.Zero(t, *calls)
+}
+
+// A dev deployment exists to carry local code into an environment, so the
+// operator who suspects the image does not hold their change has to be able to
+// force the build. The request carries that decision to the build boundary.
+func TestDeployDevCarriesRebuildToTheBuild(t *testing.T) {
+	for _, rebuild := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rebuild=%t", rebuild), func(t *testing.T) {
+			workspace, module := writeDevWorkspace(t)
+			renderDevFixture(t, workspace)
+			source := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(source, resources.ServiceConfigurationName), []byte(devServiceYAML("api")), 0o644))
+
+			var asked bool
+			calls := stubBuildRecordingRebuild(t, []string{"registry.example.com/acme/api:0.0.1@" + devNewDigest}, nil, &asked)
+			_, err := DeployDev(context.Background(), &DevRequest{
+				Workspace: workspace, Module: module, Service: "api", Environment: environmentNamed("staging"),
+				AppProject: "acme-staging", Source: DevSource{Dir: source, Origin: DevSourceFlag},
+				Rebuild: rebuild,
+			})
+			require.NoError(t, err)
+			require.Equal(t, 1, *calls)
+			require.Equal(t, rebuild, asked, "the build must be told whether to rebuild")
+		})
+	}
 }

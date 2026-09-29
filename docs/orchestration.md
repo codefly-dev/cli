@@ -349,6 +349,47 @@ The `Builder` manages build/deploy lifecycle via the agent's builder API.
 | **Build** | Builds container image (Docker context) | `Builder.Build()` |
 | **Deploy** | Deploys to target environment | `Builder.Deploy()` |
 
+### Image reuse
+
+`Builder.Build` executes the recipe the plan phase emitted, and before it runs
+`docker buildx` it asks whether the image it would produce already exists. The
+question is answered by a digest over the image's inputs — every byte of the
+build context Docker would send, the verified recipe tree, and the normalized
+buildx invocation — held in `pkg/orchestration/image_cache.go`. A key that has
+an entry, whose recorded image the registry or the daemon can still produce,
+stands in for the build: the digest a snapshot pins and the resolved images
+every SBOM subject binds to come from the entry, so nothing downstream can tell
+a reused image from a freshly built one.
+
+The identity is taken over bytes and never over a declaration about them — a
+dependency manifest, a lock file, a recorded tree digest. Keying on a manifest is
+what makes a source-only edit in a language whose manifest did not move
+invisible to a cache, which serves a stale binary while every digest looks
+correct. Anything the digest cannot account for declines rather than guesses, and
+`World.RebuildImages` (`--rebuild`) bypasses reuse entirely.
+
+Two inputs a build reads without reading the context are bound separately: the
+`go.mod`/`go.sum` of every declared Go module root, hashed by path so no ignore
+policy can drop what the prefetch acts on, and the resolved manifest digest of
+every base image, because a `FROM` tag is re-pushed whenever the base is patched.
+The identity also carries the context digest it was taken over, so the tree can
+be proven unchanged after the build; a context that moved mid-build records
+nothing, since the entry would claim inputs the image does not match.
+
+**The identity binds what the agent emitted.** For a service whose module
+replaces a sibling by filesystem path, the agent assembles a build context
+carrying that sibling and the identity is taken over the assembled tree — so an
+edit to the shared source reaches the key through the agent's re-emission. An
+agent that cached its own assembly would hand over stale bytes that this hashes
+and confirms, which is the one way the guarantee can be defeated from outside.
+
+Two costs a reused image still pays: the agent's plan phase still runs, so the
+recipe is re-emitted and any Go module graph the recipe declares is still
+prefetched on the host before the reuse decision is taken. Computing the identity
+earlier would avoid the prefetch, and is achievable with a single construction of
+the key cached on the planned build; it is left as a trade-off taken, not a
+constraint.
+
 ## Service Dependency Resolution
 
 The DAG is built from `service.codefly.yaml` files. Each service declares its dependencies:

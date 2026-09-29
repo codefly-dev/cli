@@ -213,6 +213,14 @@ type World struct {
 	BuildxBuilder string
 	BuildCache    *builderv0.BuildCacheOptions
 
+	// RebuildImages builds every image even when no input of it changed,
+	// bypassing the content-addressed reuse of a previously built image (see
+	// pkg/orchestration/image_cache.go). Off by default: reuse is what makes a
+	// configuration-only change cost the configuration render rather than a
+	// rebuild of every image. It is the escape hatch for a suspected stale
+	// image, so it must stay reachable from every command that builds.
+	RebuildImages bool
+
 	// goModulePrefetch holds the Go module graphs this flow's recipes declared,
 	// fetched once on the host before any image build (see goModulePrefetch).
 	// It is removed when the flow stops.
@@ -2191,6 +2199,12 @@ func (flow *Flow) WithBuildCache(cache *builderv0.BuildCacheOptions) {
 
 func (flow *Flow) WithBuildxBuilder(name string) {
 	flow.world.BuildxBuilder = name
+}
+
+// WithRebuild forces every image build to run, ignoring any image this
+// workspace already built from the same inputs.
+func (flow *Flow) WithRebuild(rebuild bool) {
+	flow.world.RebuildImages = rebuild
 }
 
 func (flow *Flow) WithImageDigest(capture bool) {

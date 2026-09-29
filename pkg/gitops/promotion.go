@@ -28,7 +28,13 @@ type ProduceRequest struct {
 	// dry-run against the environment's declared cluster. Off by default: a
 	// render is a function of the workspace and needs no cluster.
 	ValidateCluster bool
-	Sink            orchestration.OutputSink
+	// Snapshot renders the immutable service snapshot: the module's own units
+	// without its bootstrap kustomize tree.
+	Snapshot bool
+	// Rebuild builds every image even when no input of it changed, instead of
+	// keeping the image this workspace already built from those inputs.
+	Rebuild bool
+	Sink    orchestration.OutputSink
 }
 
 // ManifestProducer renders a validated, transport-neutral manifest bundle.
@@ -112,10 +118,11 @@ func (c *Coordinator) Observe(ctx context.Context, request *ObserveRequest) (Obs
 type flowProducer struct{}
 
 func (flowProducer) Produce(ctx context.Context, request ProduceRequest) (RenderResult, error) {
+	build := renderBuild{standAlone: request.StandAlone, validateCluster: request.ValidateCluster, rebuild: request.Rebuild}
 	if request.Service == nil {
-		return renderModuleTree(ctx, request.Workspace, request.Module, request.Environment, request.AppProject, request.Sink, true, request.ValidateCluster)
+		return renderModuleTree(ctx, request.Workspace, request.Module, request.Environment, request.AppProject, request.Sink, !request.Snapshot, build)
 	}
-	return renderService(ctx, request.Workspace, request.Module, request.Service, request.Environment, request.AppProject, request.StandAlone, request.ValidateCluster, request.Sink)
+	return renderService(ctx, request.Workspace, request.Module, request.Service, request.Environment, request.AppProject, build, request.Sink)
 }
 
 type repositoryPublisher struct{}

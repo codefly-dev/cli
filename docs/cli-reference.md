@@ -729,6 +729,7 @@ Flags:
       --env string               Environment to build for (looks up registry/cluster from workspace.codefly.yaml) (default "local")
       --org string               Image registry override (wins over env's registry.url)
       --push                     Push the images to the registry
+      --rebuild                  Build every image even when no input of it changed, instead of keeping the image already built from those inputs
       --stand-alone              Begin services as standalone, i.e. without their dependencies
 ```
 
@@ -781,6 +782,7 @@ Flags:
       --env string               Environment to build for (looks up registry/cluster from workspace.codefly.yaml) (default "local")
       --org string               Image registry override (e.g. ghcr.io/myorg). Wins over the env's registry.url.
       --push                     Push the image to the repository
+      --rebuild                  Build every image even when no input of it changed, instead of keeping the image already built from those inputs
       --stand-alone              Begin service as standalone, i.e. without its dependencies
 ```
 
@@ -831,6 +833,7 @@ Flags:
       --load-only                LoadRequired service only, i.e. without running it
       --output string            Directory for Codefly CI reports and artifacts (relative to the workspace root) (default ".codefly/ci")
       --plan string              Replay a saved CI plan, validating independent selection bounds and local contents
+      --rebuild                  Build every image even when no input of it changed, instead of keeping the image already built from those inputs
       --runtime-context string   Runtime context for the flow (default "free")
       --scope string             Runtime scope (for testing encapsulation)
       --silent strings           Silent mode
@@ -974,6 +977,7 @@ Flags:
       --override-port strings             Pin an endpoint to a host port (endpoint=port, e.g. app/subject/rest=45001; repeatable)
       --phase strings                     CI phase to run (repeatable or comma-separated; default: full Codefly gate)
       --plan string                       Replay a saved CI plan, validating independent selection bounds and local contents
+      --rebuild                           Build every image even when no input of it changed, instead of keeping the image already built from those inputs
       --reuse-audit-max-age duration      Maximum age of a reusable dependency-audit result; zero always re-runs audits because advisory data changes independently of source
       --reuse-environment string          Identity of the execution environment (for example the runner image digest; default $CODEFLY_CI_REUSE_ENVIRONMENT)
       --reuse-max-age duration            Maximum age of a reusable result (default 168h0m0s)
@@ -1945,6 +1949,7 @@ Flags:
       --env string                                                 Environment whose rendered tree to patch (required)
       --path string                                                Service source directory to deploy (default: the machine-local service override)
       --push                                                       Push the commit (requires --commit)
+      --rebuild                                                    Build the image even when no input of it changed, instead of keeping the image already built from those inputs
 ```
 
 ## `codefly deploy gitops`
@@ -2109,6 +2114,7 @@ Flags:
 ```
       --app-project string                                                                AppProject contract for cluster-scoped resources
       --env string                                                                        Environment to promote (default "local")
+      --rebuild                                                                           Build every image even when no input of it changed, instead of keeping the image already built from those inputs
       --skip-workspace-readiness codefly doctor workspace --env <env> --module <module>   Proceed even when codefly doctor workspace --env <env> --module <module> says the workspace is not ready (for an operator mid-repair; the skip is announced in the output)
       --validate-cluster                                                                  Also dry-run each service's manifests server-side against the environment's declared cluster.context (off: a render needs no cluster)
 ```
@@ -2148,6 +2154,7 @@ Flags:
 ```
       --app-project string                                                                AppProject contract for cluster-scoped resources
       --env string                                                                        Environment to promote (default "local")
+      --rebuild                                                                           Build every image even when no input of it changed, instead of keeping the image already built from those inputs
       --skip-workspace-readiness codefly doctor workspace --env <env> --module <module>   Proceed even when codefly doctor workspace --env <env> --module <module> says the workspace is not ready (for an operator mid-repair; the skip is announced in the output)
 ```
 
@@ -2173,6 +2180,7 @@ Flags:
       --app-project string      AppProject contract used to validate cluster-scoped rendered resources
       --dry-run                 Render the deployment without applying it
       --env string              Environment to deploy the module (default "local")
+      --rebuild                 Build every image even when no input of it changed, instead of keeping the image already built from those inputs
       --render-only             Render kustomize manifests to disk without applying. Used for gitops flows where ArgoCD/Flux syncs from the rendered tree.
       --wait-for string         Completion stage the deployment must establish before it is reported as successful (applied, bootstrapped, healthy) (default "applied")
       --wait-timeout duration   Budget for observing the deployment when --wait-for goes beyond applied (default 10m0s)
@@ -2232,6 +2240,7 @@ Flags:
       --app-project string      AppProject contract used to validate cluster-scoped rendered resources
       --dry-run                 Render the deployment without applying it
       --env string              Environment to deploy the service (default "local")
+      --rebuild                 Build every image even when no input of it changed, instead of keeping the image already built from those inputs
       --render-only             Render kustomize manifests to disk without applying. Used for gitops flows where ArgoCD/Flux syncs from the rendered tree.
       --stand-alone             Begin service as standalone, i.e. without its dependencies
       --wait-for string         Completion stage the deployment must establish before it is reported as successful (applied, bootstrapped, healthy) (default "applied")

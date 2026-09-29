@@ -19,6 +19,7 @@ var (
 	devAppProject string
 	devCommit     bool
 	devPush       bool
+	devRebuild    bool
 )
 
 // DevCmd is the dev escape hatch: ship one service's current code into an
@@ -73,7 +74,7 @@ the next full ` + "`codefly deploy gitops render <module> --env <env>`" + ` clea
 		cli.Warning("DEV DEPLOYMENT: %s/%s from %s (%s) into %s — this environment will run code no release describes until the next full render", module.Name, target.Name, source.Dir, source.Origin, env.Name)
 		result, err := gitops.DeployDev(ctx, &gitops.DevRequest{
 			Workspace: workspace, Module: module, Service: target.Name, Environment: env,
-			AppProject: devAppProject, Source: source, Sink: cli.NewOutputSink(),
+			AppProject: devAppProject, Source: source, Rebuild: devRebuild, Sink: cli.NewOutputSink(),
 		})
 		if err != nil {
 			return err
@@ -106,6 +107,7 @@ func init() {
 	DevCmd.Flags().StringVar(&devAppProject, "app-project", "", "AppProject the environment was rendered for (checked against the render)")
 	DevCmd.Flags().BoolVar(&devCommit, "commit", false, "Commit the change as `dev: <module>/<service> from <path>@<sha>[-dirty]`")
 	DevCmd.Flags().BoolVar(&devPush, "push", false, "Push the commit (requires --commit)")
+	DevCmd.Flags().BoolVar(&devRebuild, "rebuild", false, "Build the image even when no input of it changed, instead of keeping the image already built from those inputs")
 	_ = DevCmd.MarkFlagRequired("env")
 }
 
