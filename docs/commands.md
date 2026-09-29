@@ -2877,12 +2877,30 @@ every image in the module.
 
 Reuse is keyed on a digest over the bytes that go into the image: every file of
 the build context Docker would send, the verified recipe tree the agent emitted,
-and the exact `docker buildx` invocation (platforms, target, every build
-argument and its value, push versus load, the registry cache policy). It is
-never keyed on a dependency manifest, a lock file or any other declaration
-*about* those bytes — that is how a cache serves a stale binary for a source
-edit in a language whose manifest did not move. A source file that changes by one
-byte changes the key whether or not any manifest changed.
+the exact `docker buildx` invocation (platforms, target, every build argument and
+its value, push versus load, the registry cache policy), the `go.mod`/`go.sum` of
+every Go module root the recipe declares a download for, and the resolved
+manifest digest of every base image the Dockerfile builds from. It is never
+keyed on a dependency manifest, a lock file or any other declaration *about*
+those bytes — that is how a cache serves a stale binary for a source edit in a
+language whose manifest did not move. A source file that changes by one byte
+changes the key whether or not any manifest changed.
+
+The last two are bound separately because a build reads them without reading the
+context. The Go module prefetch reads a declared module root's manifests off the
+filesystem, where no ignore policy applies, so they are hashed by path — hashing
+them only through the context would let an ignore rule drop a live input. And a
+base image is resolved rather than read as text: `FROM golang:1.25` is built from
+whatever manifest that tag points at, and the tag is re-pushed whenever the base
+is patched, so a reference is resolved to its manifest digest and the digest goes
+in the key. A base reference the build cannot resolve — an unreachable registry,
+no container engine, a value the recipe parameterizes — makes the recipe decline
+reuse and build.
+
+**What no digest over inputs can bind:** whatever a build step fetches from the
+network itself. A `RUN` that installs from a mutable package index reads bytes no
+input names, so reuse means "the image built from these inputs", not "the image a
+build today would produce". Docker's own layer cache has the same property.
 
 Two exclusions, both because the CLI writes the file from inputs the key already
 binds: anything under a `.codefly/` directory (CLI-owned scratch, which is where
@@ -2899,12 +2917,23 @@ anything else — including an unreachable registry — builds. A plan with no
 verified recipe digest, a context that cannot be walked and an ignore file that
 cannot be parsed all build as well.
 
+A build whose context changes while it runs records nothing: the identity was
+taken before the build and the image was produced after, so an entry would claim
+inputs the image does not match. The build itself is unaffected; only the record
+is skipped, and the next build runs.
+
 `--rebuild` builds every image even when no input changed. It is on
 `codefly build service`, `codefly build module`, `codefly ci build`,
 `codefly ci run`, `codefly deploy service`, `codefly deploy module`,
-`codefly deploy gitops render`, and `codefly deploy gitops snapshot`. Reach for
-it when you suspect the reuse rather than the code; a rebuild also replaces the
-record. Records live one small JSON file per input set under
+`codefly deploy dev`, `codefly deploy gitops render`, and
+`codefly deploy gitops snapshot`. Reach for it when you suspect the reuse rather
+than the code; a rebuild also replaces the record.
+
+`--rebuild` bypasses **this** cache — the workspace's record of images it already
+built — and nothing else. A registry layer cache (`--cache-from`/`--cache-to`), a
+BuildKit layer cache, and any cache inside a build agent's own recipe emission or
+inside the image build itself are untouched by it and still have to be cleared
+their own way. Records live one small JSON file per input set under
 `<workspace>/.codefly/build-cache/`, are never pruned, and can be removed
 wholesale with `rm -rf <workspace>/.codefly/build-cache`.
 

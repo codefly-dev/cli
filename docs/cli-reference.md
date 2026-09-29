@@ -1949,6 +1949,7 @@ Flags:
       --env string                                                 Environment whose rendered tree to patch (required)
       --path string                                                Service source directory to deploy (default: the machine-local service override)
       --push                                                       Push the commit (requires --commit)
+      --rebuild                                                    Build the image even when no input of it changed, instead of keeping the image already built from those inputs
 ```
 
 ## `codefly deploy gitops`
