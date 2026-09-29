@@ -13,9 +13,9 @@ loop that changes the CLI itself, see [development.md](development.md).
 ## The cycle
 
 ```
-edit ──▶ codefly run service          local, no images            seconds
+edit ──▶ codefly run service          local, no image build       seconds
       └▶ codefly deploy gitops render builds + pushes images      minutes (kept when nothing changed)
-         codefly deploy secrets       seeds the environment store seconds
+         codefly deploy secrets       seeds the environment store one store read per key
          codefly deploy gitops plan   the publication diff        seconds
          codefly deploy gitops publish signed promotion PR         seconds
          codefly deploy gitops observe Argo CD reconciled it       minutes
@@ -23,9 +23,9 @@ edit ──▶ codefly run service          local, no images            seconds
 
 | Step | Verb | What it does | Cost |
 |---|---|---|---|
-| Run it locally | `codefly run service <name>` | Starts the service and its dependency graph on this machine, injecting connection strings as env vars. No image is built. | Seconds. This is the inner loop; stay in it as long as you can. |
+| Run it locally | `codefly run service <name>` | Starts the service and its dependency graph on this machine, injecting connection strings as env vars. No image is built — a docker-backed dependency runs from an image it already has. | Seconds. This is the inner loop; stay in it as long as you can. |
 | Render | `codefly deploy gitops render <module> --env <env>` | Resolves the module, builds and pushes every service image, writes the promotable tree under `deployments/modules/<module>/` and records `.codefly-render.json`. | Minutes — the image builds. Images whose inputs did not change are kept, so a configuration-only edit costs the render and no build. |
-| Seed secrets | `codefly deploy secrets --env <env>` | Reads the ExternalSecrets the render projected and resolves each remote property to a source — kept, derived, propagated, generated or required — then writes the store. Values are never printed. | Seconds. Run it after a render that added a service or a secret key. |
+| Seed secrets | `codefly deploy secrets --env <env>` | Reads the ExternalSecrets the render projected and resolves each remote property to a source — kept, derived, propagated, generated or required — then writes the store. Values are never printed. | One backend read per remote key, eight at a time: seconds for a small environment, longer for a large one. Run it after a render that added a service or a secret key. |
 | Plan | `codefly deploy gitops plan <module> --env <env>` | Shows the exact publication diff — what publishing would change in the GitOps repository — and writes nothing. | Seconds. |
 | Publish | `codefly deploy gitops publish <module> --env <env>` | Creates a signed promotion commit and opens or updates its pull request. The cluster changes when that lands and Argo CD syncs it, never from this command. | Seconds. |
 | Observe | `codefly deploy gitops observe <module> --env <env>` | Verifies Argo CD reconciled the reviewed revision and stores the evidence. | As long as the rollout takes. See [deployment-completion.md](deployment-completion.md). |
