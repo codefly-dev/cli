@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -80,6 +81,23 @@ const (
 	solutionDigest  = "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__FEDERATION__SOLUTION_REGISTRATION_SECRETS"
 )
 
+// filed files each secret key under a property of its own name — the shape an
+// environment that declares no remote-key mapping renders. `mapped` is the other
+// shape, where the environment names the property itself.
+func filed(keys ...string) []gitops.RenderedSecretProperty {
+	properties := make([]gitops.RenderedSecretProperty, 0, len(keys))
+	for _, key := range keys {
+		properties = append(properties, gitops.RenderedSecretProperty{Property: key, Keys: []string{key}})
+	}
+	return properties
+}
+
+// mapped files a secret key under a store property of a different name, the way
+// `service-secrets.services.<svc>.remote-keys` does.
+func mapped(property string, keys ...string) gitops.RenderedSecretProperty {
+	return gitops.RenderedSecretProperty{Property: property, Keys: keys}
+}
+
 var (
 	documentsRegistration = solutionrun.Credential{Kind: solutionrun.ModuleRegistration, Identity: "documents"}
 	wikiSolution          = solutionrun.Credential{Kind: solutionrun.SolutionRegistration, Identity: "wiki"}
@@ -92,11 +110,11 @@ var (
 func fixture() (gitops.RenderedEnvironment, solutionrun.DeployedSecrets) {
 	store := environments.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"}
 	rendered := gitops.RenderedEnvironment{Secrets: []gitops.RenderedServiceSecret{
-		{Store: store, RemoteKey: "host-accounts", Services: []string{"host/accounts"}, Properties: []string{clientSecret, internalToken, registrarDigest, solutionDigest}},
-		{Store: store, RemoteKey: "notes-backend", Services: []string{"notes/backend"}, Properties: []string{registrations, internalToken, solutionSecret}},
-		{Store: store, RemoteKey: "tasks-store", Services: []string{"tasks/store"}, Properties: []string{migration, storePassword}},
-		{Store: store, RemoteKey: "tasks-worker", Services: []string{"tasks/worker"}, Properties: []string{storeConnection}},
-		{Store: store, RemoteKey: "wiki-backend", Services: []string{"wiki/backend"}, Properties: []string{registrations, internalToken, solutionSecret}},
+		{Store: store, RemoteKey: "host-accounts", Services: []string{"host/accounts"}, Properties: filed(clientSecret, internalToken, registrarDigest, solutionDigest)},
+		{Store: store, RemoteKey: "notes-backend", Services: []string{"notes/backend"}, Properties: filed(registrations, internalToken, solutionSecret)},
+		{Store: store, RemoteKey: "tasks-store", Services: []string{"tasks/store"}, Properties: filed(migration, storePassword)},
+		{Store: store, RemoteKey: "tasks-worker", Services: []string{"tasks/worker"}, Properties: filed(storeConnection)},
+		{Store: store, RemoteKey: "wiki-backend", Services: []string{"wiki/backend"}, Properties: filed(registrations, internalToken, solutionSecret)},
 	}}
 	registration := solutionrun.SecretDerivation{Credentials: []solutionrun.Credential{documentsRegistration}, Encoded: true}
 	federation := solutionrun.DeployedSecrets{Services: map[string]map[string]solutionrun.SecretDerivation{
@@ -501,7 +519,7 @@ func TestPlanRefusesToDropAnIdentityTheStoreStillAdmits(t *testing.T) {
 func TestPlanRefusesOnePropertyDerivedTwoWays(t *testing.T) {
 	store := environments.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"}
 	rendered := gitops.RenderedEnvironment{Secrets: []gitops.RenderedServiceSecret{
-		{Store: store, RemoteKey: "shared", Services: []string{"host/accounts", "wiki/backend"}, Properties: []string{registrations}},
+		{Store: store, RemoteKey: "shared", Services: []string{"host/accounts", "wiki/backend"}, Properties: filed(registrations)},
 	}}
 	federation := solutionrun.DeployedSecrets{Services: map[string]map[string]solutionrun.SecretDerivation{
 		"wiki/backend":  {registrations: {Credentials: []solutionrun.Credential{documentsRegistration}, Encoded: true}},
@@ -601,4 +619,154 @@ func (store *failingStore) Read(ctx context.Context, key string) (map[string]str
 	case <-time.After(50 * time.Millisecond):
 	}
 	return store.fakeStore.Read(ctx, key)
+}
+
+// mappedFixture is the same composition as fixture(), rendered by an
+// environment that files every secret key under a property of the store's own
+// naming — `service-secrets.services.<svc>.remote-keys`, which is how a cell
+// whose vault documents predate codefly is wired. No property equals its key,
+// and the shared token is filed under three different names.
+func mappedFixture() (gitops.RenderedEnvironment, solutionrun.DeployedSecrets) {
+	store := environments.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"}
+	rendered := gitops.RenderedEnvironment{Secrets: []gitops.RenderedServiceSecret{
+		{Store: store, RemoteKey: "host-accounts", Services: []string{"host/accounts"}, Properties: []gitops.RenderedSecretProperty{
+			mapped("client_secret", clientSecret),
+			mapped("shared_token", internalToken),
+			mapped("module_registration_secrets", registrarDigest),
+			mapped("solution_registration_secrets", solutionDigest),
+		}},
+		{Store: store, RemoteKey: "notes-backend", Services: []string{"notes/backend"}, Properties: []gitops.RenderedSecretProperty{
+			mapped("module_registrations", registrations),
+			mapped("token", internalToken),
+			mapped("solution_secret", solutionSecret),
+		}},
+		{Store: store, RemoteKey: "tasks-store", Services: []string{"tasks/store"}, Properties: []gitops.RenderedSecretProperty{
+			mapped("migration_connection", migration),
+			mapped("store_password", storePassword),
+		}},
+		{Store: store, RemoteKey: "tasks-worker", Services: []string{"tasks/worker"}, Properties: []gitops.RenderedSecretProperty{
+			mapped("store_read_write_connection", storeConnection),
+		}},
+		{Store: store, RemoteKey: "wiki-backend", Services: []string{"wiki/backend"}, Properties: []gitops.RenderedSecretProperty{
+			mapped("module_registrations", registrations),
+			mapped("internal_token", internalToken),
+			mapped("solution_secret", solutionSecret),
+		}},
+	}}
+	_, federation := fixture()
+	return rendered, federation
+}
+
+// mappedSeeded is seeded() written under the mapped property names.
+func mappedSeeded() map[string]map[string]string {
+	return map[string]map[string]string{
+		"host-accounts": {
+			"client_secret":                 "external-client-secret",
+			"shared_token":                  "shared-internal-token",
+			"module_registration_secrets":   "documents:" + digest("documents-registration"),
+			"solution_registration_secrets": "wiki:" + digest("wiki-solution"),
+		},
+		"wiki-backend": {
+			"module_registrations": "documents:documents-registration",
+			"internal_token":       "shared-internal-token",
+			"solution_secret":      "wiki-solution",
+		},
+	}
+}
+
+// The verb's answer must not depend on what the environment named the store
+// properties. Resolving by the property instead of by the secret key read out of
+// it matched no federation derivation, no shared configuration value and no
+// declared generator here, so every property in this shape reported as `require`
+// — a hand-typed secret for each of the three classes the system derives itself.
+func TestPlanResolvesByTheSecretKeyNotByTheStorePropertyName(t *testing.T) {
+	ctx := context.Background()
+	rendered, federation := mappedFixture()
+	store := newFakeStore(mappedSeeded())
+
+	plan, err := Build(ctx, &Inputs{Rendered: rendered, Federation: federation, Generators: generators(),
+		Services: []string{"tasks/store", "tasks/worker"}, Store: store, ReadPayloads: true})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	for _, check := range []struct {
+		key, property string
+		action        Action
+	}{
+		// Federation, derived from the key although the property is named otherwise.
+		{"host-accounts", "module_registration_secrets", ActionKeep},
+		{"host-accounts", "solution_registration_secrets", ActionUpdate},
+		{"notes-backend", "module_registrations", ActionDerive},
+		{"notes-backend", "solution_secret", ActionDerive},
+		// One configuration value filed under three different property names is
+		// still one value, propagated to the remote key that lacks it.
+		{"notes-backend", "token", ActionPropagate},
+		{"host-accounts", "shared_token", ActionKeep},
+		// A declared generator is declared over the key, not the property.
+		{"tasks-store", "store_password", ActionGenerate},
+		// Supplied from outside either way, and named.
+		{"host-accounts", "client_secret", ActionKeep},
+		{"tasks-store", "migration_connection", ActionRequire},
+		{"tasks-worker", "store_read_write_connection", ActionRequire},
+	} {
+		if got := propertyPlan(t, plan, check.key, check.property); got.Action != check.action {
+			t.Errorf("%s#%s = %s (%s), want %s", check.key, check.property, got.Action, got.Source, check.action)
+		}
+	}
+	// The propagated value is the one the store already holds, not a new one.
+	if got := store.documents["wiki-backend"]["internal_token"]; got != "shared-internal-token" {
+		t.Errorf("seeded token = %q", got)
+	}
+	// What must be supplied names the key as well as the property: the property
+	// alone says where the value is filed, never what it is.
+	required := plan.Required()
+	if !slices.Contains(required, "tasks-worker#store_read_write_connection ("+storeConnection+")") {
+		t.Errorf("required = %v", required)
+	}
+}
+
+// The plan reports the key beside the property for every entry, so an operator
+// reading "require postgres_user" can tell which secret that is.
+func TestPlanReportsTheKeysReadFromEachProperty(t *testing.T) {
+	ctx := context.Background()
+	rendered, federation := mappedFixture()
+	plan, err := Build(ctx, &Inputs{Rendered: rendered, Federation: federation, Generators: generators(),
+		Services: []string{"tasks/store", "tasks/worker"}, Store: newFakeStore(mappedSeeded()), ReadPayloads: true})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	got := propertyPlan(t, plan, "tasks-store", "store_password")
+	if !reflect.DeepEqual(got.Keys, []string{storePassword}) {
+		t.Errorf("keys = %v", got.Keys)
+	}
+}
+
+// A property the render recorded no key for says where a value lives and never
+// what it is. Every source this package resolves is named by the key, so such a
+// property would fall to `require` whatever it actually is — the hand-typed
+// outcome, arrived at silently. Refuse instead.
+func TestPlanRefusesAPropertyWithNoSecretKey(t *testing.T) {
+	rendered, federation := fixture()
+	rendered.Secrets[2].Properties[1].Keys = nil
+	_, err := Build(context.Background(), &Inputs{Rendered: rendered, Federation: federation, Generators: generators(),
+		Services: []string{"tasks/store", "tasks/worker"}, Store: newFakeStore(seeded()), ReadPayloads: true})
+	if err == nil || !strings.Contains(err.Error(), "records no secret key") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// Two keys filed under one property, covered by generators that disagree, have
+// no answer: whichever won would be an accident of ordering.
+func TestPlanRefusesOnePropertyGeneratedTwoWays(t *testing.T) {
+	rendered, federation := fixture()
+	other := "CODEFLY__SERVICE_SECRET_CONFIGURATION__TASKS__STORE__POSTGRES__POSTGRES_USER"
+	rendered.Secrets[2].Properties[1].Keys = []string{storePassword, other}
+	declared := append(generators(), environments.EnvironmentSecretGenerator{
+		Scope: environments.SecretGeneratorScopeService, Configuration: "postgres",
+		Keys: []string{"POSTGRES_USER"}, Format: environments.SecretGeneratorFormatIdentifier})
+	_, err := Build(context.Background(), &Inputs{Rendered: rendered, Federation: federation, Generators: declared,
+		Services: []string{"tasks/store", "tasks/worker"}, Store: newFakeStore(seeded()), ReadPayloads: true})
+	if err == nil || !strings.Contains(err.Error(), "declares differently") {
+		t.Fatalf("err = %v", err)
+	}
 }

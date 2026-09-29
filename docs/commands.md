@@ -714,6 +714,26 @@ resolves every remote property to a source, never printing a value:
 | `generate` | declared random by `service-secrets.generate` (below) |
 | `require` | nothing produces it: the operator supplies it — an external credential, or a value its producing agent derives |
 
+**Each property is resolved by the secret key read out of it, not by the
+property's name.** An `ExternalSecret` entry has both: `remoteRef.property` is
+where the value is filed in the store, and `secretKey` is the
+`CODEFLY__…` name core gives the configuration value — what the value *is*. They
+are the same string only when an environment files a key under its own name; one
+that maps keys to its store's own property names
+(`service-secrets.services.<svc>.remote-keys` with `property: postgres_user`)
+makes them differ for every key it maps. Every source above is named by the key —
+a federation derivation, one configuration value shared across remote keys, a
+`service-secrets.generate` declaration — so resolving by the property matched
+none of them there, and each of those values reported as `require`: a secret to
+type by hand for something the CLI derives itself. The plan reports both names,
+and `Must be supplied` lists `remote-key#property (key)`.
+
+A property the render recorded no `secretKey` for is refused rather than read as
+its own key: nothing could say what that value is, so it would fall to `require`
+whatever it actually was. A property read as two keys that
+`service-secrets.generate` declares differently is refused too — whichever won
+would be an accident of ordering.
+
 Apply writes plaintexts before the registrar digests that admit them — ordered by
 the credentials, so a key carrying both is still written in the right place —
 refuses while any property is `require` (`--allow-missing` writes the rest), and

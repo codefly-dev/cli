@@ -19,14 +19,24 @@
 //     random;
 //  5. require — anything else is supplied from outside, and named.
 //
-// Values never leave the package: a plan reports property names and sources
-// only, and the writes it carries are unexported.
+// Every one of those resolutions is named by the SECRET KEY the render reads —
+// the CODEFLY__… name core gives a configuration value — never by the property
+// the environment files that key under. The two are the same string only when an
+// environment happens to file a key under its own name; one that maps keys to
+// human-named properties (`property: postgres_user`) makes them differ for every
+// key it maps, and resolving by the property then matches no federation
+// derivation, no shared configuration value and no declared generator. Each of
+// those is a value the system derives, reported instead as one to type by hand.
+//
+// Values never leave the package: a plan reports property names, the keys read
+// from them and sources only, and the writes it carries are unexported.
 package deploysecrets
 
 import (
 	"context"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -69,8 +79,14 @@ const (
 // value.
 type PropertyPlan struct {
 	Property string
-	Action   Action
-	Source   string
+	// Keys are the secret keys the render reads out of this property — what the
+	// value is, as against where it is filed. They are reported beside the
+	// property because an operator asked to supply a value needs the key to know
+	// what to put there: "lodestar-store#postgres_user" says where, and only the
+	// key says it is a database owner name.
+	Keys   []string
+	Action Action
+	Source string
 }
 
 // SecretPlan is the plan for one remote key.
@@ -138,14 +154,15 @@ func (plan *Plan) Changes() []string {
 	return keys
 }
 
-// Required lists, as `remote-key#property`, every property the operator must
-// supply.
+// Required lists, as `remote-key#property (key)`, every property the operator
+// must supply. The secret key rides along: the property alone says where the
+// value is filed, not what it is.
 func (plan *Plan) Required() []string {
 	var required []string
 	for _, secret := range plan.Secrets {
 		for _, property := range secret.Properties {
 			if property.Action == ActionRequire {
-				required = append(required, secret.RemoteKey+"#"+property.Property)
+				required = append(required, secret.RemoteKey+"#"+property.Property+" ("+strings.Join(property.Keys, ", ")+")")
 			}
 		}
 	}
@@ -201,8 +218,19 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 	plan.Notes = append(plan.Notes, in.Federation.Notes...)
 
 	for _, secret := range in.Rendered.Secrets {
-		if slices.Contains(secret.Properties, "") {
-			return nil, fmt.Errorf("remote key %s is read as a bare value; only a JSON document read by property can be planned", secret.RemoteKey)
+		for _, property := range secret.Properties {
+			if property.Property == "" {
+				return nil, fmt.Errorf("remote key %s is read as a bare value; only a JSON document read by property can be planned", secret.RemoteKey)
+			}
+			if len(property.Keys) == 0 {
+				// Without the key nothing can tell whether the property is a
+				// federation credential, a shared configuration value or a declared
+				// generator, and every one of them would fall to `require` — the
+				// hand-typed outcome this verb exists to remove. Refuse rather than
+				// read the property name as if it were the key.
+				return nil, fmt.Errorf("remote key %s property %s records no secret key: re-render the environment so the plan knows what that value is",
+					secret.RemoteKey, property.Property)
+			}
 		}
 	}
 	states, err := readStates(ctx, in)
@@ -238,7 +266,7 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 		changes := map[string]string{}
 		var carriedPlain, carriedDigest []solutionrun.Credential
 		for _, property := range state.secret.Properties {
-			derivation, derived := derivations[state.secret.RemoteKey][property]
+			derivation, derived := derivations[state.secret.RemoteKey][property.Property]
 			inScope, counterpart := scope.property(state, derivation, derived)
 			if !inScope {
 				continue
@@ -268,7 +296,7 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 				}
 			}
 			if value != "" {
-				changes[property] = value
+				changes[property.Property] = value
 			}
 			secretPlan.Properties = append(secretPlan.Properties, propertyPlan)
 			if value != "" && derived {
@@ -577,24 +605,34 @@ func (scope *planScope) credentialPlans(all []CredentialPlan) []CredentialPlan {
 
 // federationDerivations maps each remote key's properties to the federation
 // derivation of the service reading it.
+//
+// The federation is keyed by the secret key a service reads — the CODEFLY__…
+// name — never by the property the environment files that key under. Asking it
+// about the property matches nothing whenever the two differ, and a federation
+// credential the CLI derives itself then reports as one to type by hand.
 func federationDerivations(states []*remoteState, federation solutionrun.DeployedSecrets) (map[string]map[string]solutionrun.SecretDerivation, error) {
 	derivations := map[string]map[string]solutionrun.SecretDerivation{}
 	for _, state := range states {
 		for _, property := range state.secret.Properties {
 			var found *solutionrun.SecretDerivation
 			for _, unique := range state.secret.Services {
-				derivation, ok := federation.For(unique, property)
-				if !ok {
-					continue
+				for _, key := range property.Keys {
+					derivation, ok := federation.For(unique, key)
+					if !ok {
+						continue
+					}
+					// The whole derivation, not only its credentials: two services agreeing
+					// on the credentials but disagreeing on the encoding resolve to
+					// whichever sorts last, and if they disagree on Digest that hands a
+					// registrar the preimage of a digest it is supposed to hold. Two keys
+					// filed under one property disagree the same way, and are refused for
+					// the same reason.
+					if found != nil && (!slices.Equal(found.Credentials, derivation.Credentials) || found.Encoded != derivation.Encoded || found.Digest != derivation.Digest) {
+						return nil, fmt.Errorf("remote key %s property %s is read as %s by services deriving it differently",
+							state.secret.RemoteKey, property.Property, strings.Join(property.Keys, ", "))
+					}
+					found = &derivation
 				}
-				// The whole derivation, not only its credentials: two services agreeing
-				// on the credentials but disagreeing on the encoding resolve to
-				// whichever sorts last, and if they disagree on Digest that hands a
-				// registrar the preimage of a digest it is supposed to hold.
-				if found != nil && (!slices.Equal(found.Credentials, derivation.Credentials) || found.Encoded != derivation.Encoded || found.Digest != derivation.Digest) {
-					return nil, fmt.Errorf("remote key %s property %s is read by services deriving it differently", state.secret.RemoteKey, property)
-				}
-				found = &derivation
 			}
 			if found == nil {
 				continue
@@ -602,7 +640,7 @@ func federationDerivations(states []*remoteState, federation solutionrun.Deploye
 			if derivations[state.secret.RemoteKey] == nil {
 				derivations[state.secret.RemoteKey] = map[string]solutionrun.SecretDerivation{}
 			}
-			derivations[state.secret.RemoteKey][property] = *found
+			derivations[state.secret.RemoteKey][property.Property] = *found
 		}
 	}
 	return derivations, nil
@@ -685,7 +723,7 @@ func resolveCredentials(plan *Plan, states []*remoteState, derivations map[strin
 
 // planDerived plans a federation-derived property, returning the value to write
 // when it changes.
-func planDerived(state *remoteState, property string, derivation solutionrun.SecretDerivation, credentials credentialValues) (PropertyPlan, string) {
+func planDerived(state *remoteState, property gitops.RenderedSecretProperty, derivation solutionrun.SecretDerivation, credentials credentialValues) (PropertyPlan, string) {
 	names := make([]string, 0, len(derivation.Credentials))
 	inputsUnverified := false
 	var unheld []string
@@ -701,30 +739,30 @@ func planDerived(state *remoteState, property string, derivation solutionrun.Sec
 		source = "digests of " + strings.Join(names, ", ")
 	}
 	if !state.known() {
-		return PropertyPlan{Property: property, Action: ActionUnverified, Source: source + " if absent or stale"}, ""
+		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionUnverified, Source: source + " if absent or stale"}, ""
 	}
-	existing, present := state.document[property]
+	existing, present := state.document[property.Property]
 	if inputsUnverified {
 		action := ActionDerive
 		if present {
 			action = ActionUnverified
 		}
-		return PropertyPlan{Property: property, Action: action, Source: source + " (inputs not read)"}, ""
+		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: action, Source: source + " (inputs not read)"}, ""
 	}
 	// A credential no rendered key holds cannot be minted here (resolveCredentials
 	// says why), so this property is left exactly as the store has it.
 	if len(unheld) > 0 {
-		return PropertyPlan{Property: property, Action: ActionRequire,
+		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionRequire,
 			Source: source + ": no rendered ExternalSecret reads the key holding " + strings.Join(unheld, ", ") +
 				"; render its module for this environment, then seed again"}, ""
 	}
 	value, err := derivation.Value(credentials.plaintexts)
 	if err != nil {
-		return PropertyPlan{Property: property, Action: ActionRequire, Source: source + ": " + err.Error()}, ""
+		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionRequire, Source: source + ": " + err.Error()}, ""
 	}
 	switch {
 	case present && existing == value:
-		return PropertyPlan{Property: property, Action: ActionKeep, Source: source}, ""
+		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionKeep, Source: source}, ""
 	case present:
 		// The stored value is rewritten whole, so an identity it admits that this
 		// derivation no longer covers would be dropped — de-authorizing whatever
@@ -734,13 +772,13 @@ func planDerived(state *remoteState, property string, derivation solutionrun.Sec
 		// on: a consumed prefix renamed after the render leaves the old prefix
 		// admitted here and derived nowhere. Name it rather than drop it.
 		if dropped := droppedIdentities(derivation, existing); len(dropped) > 0 {
-			return PropertyPlan{Property: property, Action: ActionRequire,
+			return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionRequire,
 				Source: source + ": the stored value also admits " + strings.Join(dropped, ", ") +
 					", which this workspace no longer derives; rewriting it would de-authorize whatever holds them — re-render the environment, or drop them from the store deliberately"}, ""
 		}
-		return PropertyPlan{Property: property, Action: ActionUpdate, Source: source + " (stored value no longer encodes them)"}, value
+		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionUpdate, Source: source + " (stored value no longer encodes them)"}, value
 	default:
-		return PropertyPlan{Property: property, Action: ActionDerive, Source: source}, value
+		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionDerive, Source: source}, value
 	}
 }
 
@@ -764,6 +802,24 @@ func configurationKey(key string) bool {
 		strings.HasPrefix(key, resources.ServiceSecretConfigurationPrefix+"__")
 }
 
+// sharesConfigurationKey reports whether two properties carry the same
+// configuration value: some configuration key is read out of both.
+//
+// Two remote keys hold one configuration value when the SAME secret key is read
+// from each, whatever each environment filed it under — `lodestar-accounts` may
+// file it as `internal_token` and another entry under the key's own name, and it
+// is still one value. Matching the property names instead both misses that pair
+// and, worse, pairs two unrelated values two remote keys happen to file under
+// one word.
+func sharesConfigurationKey(a, b gitops.RenderedSecretProperty) bool {
+	for _, key := range a.Keys {
+		if configurationKey(key) && slices.Contains(b.Keys, key) {
+			return true
+		}
+	}
+	return false
+}
+
 // planConfigured plans a property that is not federation-derived.
 //
 // The other keys holding the same configuration value are looked at before this
@@ -773,35 +829,42 @@ func configurationKey(key string) bool {
 // or not a third key needs it propagated. Keeping what each key happens to hold
 // would report the divergence as `keep`, which is the one reading an operator
 // cannot act on.
-func planConfigured(state *remoteState, property string, states []*remoteState, generators map[string]environments.EnvironmentSecretGenerator, generated map[string]string) (PropertyPlan, string, error) {
+func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, states []*remoteState,
+	generators map[string]environments.EnvironmentSecretGenerator, generated map[string]string) (PropertyPlan, string, error) {
 	var holders, unread []string
 	var holderValue string
-	if configurationKey(property) {
-		for _, other := range states {
-			if other == state || !slices.Contains(other.secret.Properties, property) {
-				continue
-			}
-			if !other.known() {
-				unread = append(unread, other.secret.RemoteKey)
-				continue
-			}
-			value, present := other.document[property]
-			if !present {
-				continue
-			}
-			if len(holders) > 0 && value != holderValue {
-				return PropertyPlan{}, "", fmt.Errorf("%s holds different values in %s and %s: one configuration value cannot be two; resolve it before planning", property, holders[0], other.secret.RemoteKey)
-			}
-			holders = append(holders, other.secret.RemoteKey)
-			holderValue = value
+	for _, other := range states {
+		if other == state {
+			continue
 		}
+		index := slices.IndexFunc(other.secret.Properties, func(candidate gitops.RenderedSecretProperty) bool {
+			return sharesConfigurationKey(property, candidate)
+		})
+		if index < 0 {
+			continue
+		}
+		if !other.known() {
+			unread = append(unread, other.secret.RemoteKey)
+			continue
+		}
+		value, present := other.document[other.secret.Properties[index].Property]
+		if !present {
+			continue
+		}
+		if len(holders) > 0 && value != holderValue {
+			return PropertyPlan{}, "", fmt.Errorf("%s holds different values in %s and %s: one configuration value cannot be two; resolve it before planning",
+				sharedKeys(property, other.secret.Properties[index]), holders[0], other.secret.RemoteKey)
+		}
+		holders = append(holders, other.secret.RemoteKey)
+		holderValue = value
 	}
 	if state.known() {
-		if stored, present := state.document[property]; present {
+		if stored, present := state.document[property.Property]; present {
 			if len(holders) > 0 && stored != holderValue {
-				return PropertyPlan{}, "", fmt.Errorf("%s holds different values in %s and %s: one configuration value cannot be two; resolve it before planning", property, state.secret.RemoteKey, holders[0])
+				return PropertyPlan{}, "", fmt.Errorf("%s holds different values in %s and %s: one configuration value cannot be two; resolve it before planning",
+					strings.Join(property.Keys, ", "), state.secret.RemoteKey, holders[0])
 			}
-			return PropertyPlan{Property: property, Action: ActionKeep, Source: "stored"}, "", nil
+			return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionKeep, Source: "stored"}, "", nil
 		}
 	}
 	fallback, value, err := fallbackSource(property, generators, generated)
@@ -814,34 +877,75 @@ func planConfigured(state *remoteState, property string, states []*remoteState, 
 		if len(holders) > 0 {
 			source = "propagated from " + strings.Join(holders, ", ")
 		}
-		return PropertyPlan{Property: property, Action: ActionUnverified, Source: "if absent: " + source}, "", nil
+		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionUnverified, Source: "if absent: " + source}, "", nil
 	case len(holders) > 0:
-		return PropertyPlan{Property: property, Action: ActionPropagate, Source: "from " + strings.Join(holders, ", ")}, holderValue, nil
+		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionPropagate, Source: "from " + strings.Join(holders, ", ")}, holderValue, nil
 	case len(unread) > 0:
-		return PropertyPlan{Property: property, Action: ActionUnverified, Source: fmt.Sprintf("may propagate from %s (not read); else %s", strings.Join(unread, ", "), fallback.Source)}, "", nil
+		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionUnverified,
+			Source: fmt.Sprintf("may propagate from %s (not read); else %s", strings.Join(unread, ", "), fallback.Source)}, "", nil
 	default:
 		return fallback, value, nil
 	}
 }
 
+// sharedKeys names the configuration keys two properties both carry, for an
+// error about the value they disagree on.
+func sharedKeys(a, b gitops.RenderedSecretProperty) string {
+	var shared []string
+	for _, key := range a.Keys {
+		if configurationKey(key) && slices.Contains(b.Keys, key) {
+			shared = append(shared, key)
+		}
+	}
+	return strings.Join(shared, ", ")
+}
+
 // fallbackSource is what produces a property no remote key holds: a declared
 // generator, or the operator.
-func fallbackSource(property string, generators map[string]environments.EnvironmentSecretGenerator, generated map[string]string) (PropertyPlan, string, error) {
-	generator, declared := generators[property]
-	if !declared {
-		return PropertyPlan{Property: property, Action: ActionRequire, Source: "no key holds it, no federation derivation covers it, and service-secrets.generate declares no generator for it"}, "", nil
+//
+// A generator is declared over the secret key, which is the only name that says
+// what the value is; the property is where the environment files it. Looking a
+// generator up by the property matches nothing whenever the two differ, and the
+// declared generator then reports as "no generator declares it" — the hand-typed
+// outcome, with a declaration sitting in the environment that says otherwise.
+//
+// A property read as two keys covered by two different generators has no answer:
+// whichever won would be an accident of ordering, so it is refused.
+func fallbackSource(property gitops.RenderedSecretProperty, generators map[string]environments.EnvironmentSecretGenerator,
+	generated map[string]string) (PropertyPlan, string, error) {
+	var declaredKey string
+	var generator environments.EnvironmentSecretGenerator
+	for _, key := range property.Keys {
+		candidate, declared := generators[key]
+		if !declared {
+			continue
+		}
+		if declaredKey != "" && !reflect.DeepEqual(candidate, generator) {
+			return PropertyPlan{}, "", fmt.Errorf("property %s is read as both %s and %s, which service-secrets.generate declares differently",
+				property.Property, declaredKey, key)
+		}
+		declaredKey, generator = key, candidate
+	}
+	if declaredKey == "" {
+		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionRequire,
+			Source: "no key holds it, no federation derivation covers it, and service-secrets.generate declares no generator for " +
+				strings.Join(property.Keys, ", ")}, "", nil
 	}
 	format, size := generatorFormat(&generator)
-	value, ok := generated[property]
+	// One value per stored key, so every remote key reading that key is handed
+	// the same one: a configuration value is one value however many properties
+	// file it.
+	value, ok := generated[declaredKey]
 	if !ok {
 		var err error
 		value, err = secretgen.Generate(format, size)
 		if err != nil {
 			return PropertyPlan{}, "", err
 		}
-		generated[property] = value
+		generated[declaredKey] = value
 	}
-	return PropertyPlan{Property: property, Action: ActionGenerate, Source: fmt.Sprintf("service-secrets.generate %s/%s (%s, %d bytes)", generator.Scope, generator.Configuration, format, size)}, value, nil
+	return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionGenerate,
+		Source: fmt.Sprintf("service-secrets.generate %s/%s for %s (%s, %d bytes)", generator.Scope, generator.Configuration, declaredKey, format, size)}, value, nil
 }
 
 func generatorFormat(generator *environments.EnvironmentSecretGenerator) (secretgen.Format, int) {

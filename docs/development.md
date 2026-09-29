@@ -1,5 +1,10 @@
 # Contributing and Development Setup
 
+> This is the loop for changing **the CLI itself**. For the loop that carries a
+> change to an application in a workspace into a running environment — render,
+> build, deploy, and how to tell a stale build from a wrong one — see
+> [the development loop](development-loop.md).
+
 ## Prerequisites
 
 - **Go 1.26+** (check with `go version`; `go.mod` is the source of truth — see [runbooks/bump-go-version.md](runbooks/bump-go-version.md))

@@ -27,9 +27,30 @@ type RenderedServiceSecret struct {
 	// Services are the module-qualified uniques whose ExternalSecret reads this
 	// remote key, sorted.
 	Services []string
-	// Properties are the properties read from the remote key, sorted. An empty
-	// property is the whole remote value, for a store of bare scalars.
-	Properties []string
+	// Properties are the properties read from the remote key, sorted by property
+	// name. An empty property is the whole remote value, for a store of bare
+	// scalars.
+	Properties []RenderedSecretProperty
+}
+
+// RenderedSecretProperty is one property of one remote key, and the secret keys
+// the rendered ExternalSecrets read out of it.
+//
+// The two are not the same string. The property is only where a value is
+// filed in the store; the key is what the value IS — the CODEFLY__… name core
+// gives a configuration value, which is what a federation derivation, a
+// `service-secrets.generate` declaration and one configuration value shared by
+// several services are all named by. An environment that files a key under a
+// human-named property (`property: postgres_user`) makes them differ, and
+// anything that reads the property as if it were the key then recognizes none
+// of the three and reports every value as one to type by hand.
+type RenderedSecretProperty struct {
+	Property string
+	// Keys are the secret keys read from this property (an ExternalSecret's
+	// data[].secretKey), sorted and de-duplicated. Two services reading one
+	// property under one key give one entry; two different keys are kept, and
+	// whoever resolves them says what a disagreement means.
+	Keys []string
 }
 
 // RenderedEnvironment is every rendered module's secret requirements for one
@@ -91,6 +112,10 @@ func RenderedServiceSecrets(workspaceDir, environment string) (RenderedEnvironme
 				if data.RemoteRef.Key == "" {
 					return RenderedEnvironment{}, fmt.Errorf("service %s reads %s from an empty remote key", unique, data.SecretKey)
 				}
+				if data.SecretKey == "" {
+					return RenderedEnvironment{}, fmt.Errorf("service %s reads %s#%s into no secret key: nothing names what that value is",
+						unique, data.RemoteRef.Key, data.RemoteRef.Property)
+				}
 				secret, seen := byKey[data.RemoteRef.Key]
 				store := environments.EnvironmentSecretStoreReference{Name: projection.Spec.SecretStoreRef.Name, Kind: projection.Spec.SecretStoreRef.Kind}
 				switch {
@@ -110,8 +135,15 @@ func RenderedServiceSecrets(workspaceDir, environment string) (RenderedEnvironme
 				if !slices.Contains(secret.Services, unique) {
 					secret.Services = append(secret.Services, unique)
 				}
-				if !slices.Contains(secret.Properties, data.RemoteRef.Property) {
-					secret.Properties = append(secret.Properties, data.RemoteRef.Property)
+				index := slices.IndexFunc(secret.Properties, func(property RenderedSecretProperty) bool {
+					return property.Property == data.RemoteRef.Property
+				})
+				if index < 0 {
+					secret.Properties = append(secret.Properties, RenderedSecretProperty{Property: data.RemoteRef.Property})
+					index = len(secret.Properties) - 1
+				}
+				if !slices.Contains(secret.Properties[index].Keys, data.SecretKey) {
+					secret.Properties[index].Keys = append(secret.Properties[index].Keys, data.SecretKey)
 				}
 			}
 		}
@@ -124,7 +156,10 @@ func RenderedServiceSecrets(workspaceDir, environment string) (RenderedEnvironme
 	for _, key := range keys {
 		secret := byKey[key]
 		sort.Strings(secret.Services)
-		sort.Strings(secret.Properties)
+		sort.Slice(secret.Properties, func(i, j int) bool { return secret.Properties[i].Property < secret.Properties[j].Property })
+		for index := range secret.Properties {
+			sort.Strings(secret.Properties[index].Keys)
+		}
 		rendered.Secrets = append(rendered.Secrets, *secret)
 	}
 	sort.Strings(rendered.Modules)
