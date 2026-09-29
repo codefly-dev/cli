@@ -71,7 +71,7 @@ func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *bui
 		if recipeMissesGoModuleProxies(recipe, proxies[recipe.GetName()]) {
 			return w.NewError("recipe %s of %s declares Go module downloads that were not fetched before the build", recipe.GetName(), b.instance.Unique())
 		}
-		if err := b.buildRecipe(ctx, w, outputDir, contextRoot, recipe, shouldPush, proxies[recipe.GetName()]); err != nil {
+		if err := b.buildRecipe(ctx, w, outputDir, contextRoot, plan, recipe, shouldPush, proxies[recipe.GetName()]); err != nil {
 			return err
 		}
 	}
@@ -145,6 +145,7 @@ func (b *Builder) buildRecipe(
 	ctx context.Context,
 	w *wool.Wool,
 	outputDir, contextRoot string,
+	plan *builderv0.DockerBuildPlan,
 	recipe *builderv0.DockerBuildRecipe,
 	shouldPush bool,
 	goModuleProxies map[string]string,
@@ -169,11 +170,49 @@ func (b *Builder) buildRecipe(
 	dockerfile := prepared.Dockerfile
 	contextDir = prepared.Root
 
+	multiArch := shouldPush && len(recipe.GetPlatforms()) > 1
+
+	// A pushed build records the immutable manifest digest a snapshot pins and a
+	// targeted single-service build returns to its caller. A non-pushed build
+	// never lands in a registry, so there is no digest to capture.
+	captureDigest := shouldPush && (b.world.Mode == SnapshotMode || b.world.CaptureImageDigest)
+	// Image evidence is owed by every recipe, not only the one a snapshot pins,
+	// so asking for it needs the digest of each pushed image too.
+	resolveEvidence := b.world.CollectImageSBOM
+
+	cache := scopedBuildCache(b.world.BuildCache, b.world.Workspace.Name, b.instance.Unique(), recipe.GetName())
+	// A service that imports a private Go module reads it from the proxy the
+	// plan phase fetched; GOPRIVATE, a list of module paths and not a
+	// credential, still reaches recipes that declare it as an ARG.
+	private := resolvePrivateModuleBuild(os.LookupEnv).withProxies(goModuleProxies)
+
+	// The identity is derived from the invocation as it would run on any builder
+	// and without a metadata file, so the decision to reuse is taken before a
+	// builder is provisioned — provisioning one is work a reused image does not
+	// need. normalizedBuildxArgs drops those same two flags from whatever argv it
+	// is handed, so the two constructions cannot disagree about anything else.
+	identityArgs, err := cachedBuildxArgs(recipe, dockerfile, contextDir, shouldPush, multiArch, "", "", cache, private)
+	if err != nil {
+		return err
+	}
+	identity, identityErr := imageBuildIdentity(recipe, plan, outputDir, contextDir, dockerfile, identityArgs, private.Proxies)
+	if identityErr != nil {
+		w.Debug("image inputs cannot be digested; building", wool.Field("recipe", recipe.GetName()), wool.ErrField(identityErr))
+	}
+	imageCache := b.imageBuildCache()
+	if identity != "" && !b.world.RebuildImages {
+		if entry, found := imageCache.lookup(identity); found && imageStillExists(ctx, entry) {
+			w.Info("no image input changed; keeping the built image",
+				wool.Field("image", entry.Image), wool.Field("digest", entry.Digest), wool.Field("recipe", recipe.GetName()))
+			b.adoptCachedImage(recipe, entry, captureDigest, resolveEvidence)
+			return nil
+		}
+	}
+
 	// A caller-provided builder (e.g. a native amd64 buildkit) is authoritative:
 	// it owns whatever platforms the recipe declares, so the CLI neither
 	// provisions nor selects the local emulating builder.
 	builderName := b.world.BuildxBuilder
-	multiArch := shouldPush && len(recipe.GetPlatforms()) > 1
 	if multiArch && b.world.BuildCache == nil && builderName == "" {
 		if err := ensureBuildxBuilder(ctx); err != nil {
 			return w.Wrapf(err, "cannot provision image builder for %s", b.instance.Unique())
@@ -185,15 +224,12 @@ func (b *Builder) buildRecipe(
 		builderName = buildxBuilderName
 	}
 
-	// A pushed build records the immutable manifest digest a snapshot pins and a
-	// targeted single-service build returns to its caller. A non-pushed build
-	// never lands in a registry, so there is no digest to capture.
-	captureDigest := shouldPush && (b.world.Mode == SnapshotMode || b.world.CaptureImageDigest)
-	// Image evidence is owed by every recipe, not only the one a snapshot pins,
-	// so asking for it needs the digest of each pushed image too.
-	resolveEvidence := b.world.CollectImageSBOM
+	// A pushed build also resolves its digest when it has an entry to record:
+	// the digest is the only identity a later run can verify the pushed image
+	// against, so a build that does not resolve one cannot be reused.
+	recordable := identity != "" && imageCache.enabled()
 	var metadataFile string
-	if captureDigest || (shouldPush && resolveEvidence) {
+	if captureDigest || (shouldPush && (resolveEvidence || recordable)) {
 		file, err := os.CreateTemp("", "codefly-build-metadata-*.json")
 		if err != nil {
 			return w.Wrapf(err, "cannot stage build metadata for %s", b.instance.Unique())
@@ -203,11 +239,6 @@ func (b *Builder) buildRecipe(
 		defer os.Remove(metadataFile)
 	}
 
-	cache := scopedBuildCache(b.world.BuildCache, b.world.Workspace.Name, b.instance.Unique(), recipe.GetName())
-	// A service that imports a private Go module reads it from the proxy the
-	// plan phase fetched; GOPRIVATE, a list of module paths and not a
-	// credential, still reaches recipes that declare it as an ARG.
-	private := resolvePrivateModuleBuild(os.LookupEnv).withProxies(goModuleProxies)
 	args, err := cachedBuildxArgs(recipe, dockerfile, contextDir, shouldPush, multiArch, metadataFile, builderName, cache, private)
 	if err != nil {
 		return err
@@ -224,6 +255,7 @@ func (b *Builder) buildRecipe(
 
 	w.Info("image build completed", wool.Field("image", recipe.GetImage()), wool.Field("duration", time.Since(started)))
 
+	var pushedDigest, loadedImageID string
 	if metadataFile != "" {
 		digest, err := readPushedImageDigest(metadataFile)
 		switch {
@@ -237,6 +269,7 @@ func (b *Builder) buildRecipe(
 			// derivation refuses the unpinned subject on its own.
 			w.Warn("built and pushed but could not resolve image digest", wool.ErrField(err))
 		default:
+			pushedDigest = digest
 			if captureDigest {
 				b.imageDigest = digest
 			}
@@ -244,14 +277,51 @@ func (b *Builder) buildRecipe(
 		}
 	}
 
-	if resolveEvidence && !shouldPush {
+	if !shouldPush && (resolveEvidence || recordable) {
 		imageID, err := inspectLocalImageID(ctx, recipe.GetImage())
-		if err != nil {
+		switch {
+		case err != nil && resolveEvidence:
 			return w.Wrapf(err, "cannot resolve the loaded image of recipe %s for %s", recipe.GetName(), b.instance.Unique())
+		case err != nil:
+			// Nothing to record: the image is built and loaded, it simply cannot
+			// be identified, so no later run may stand in for this build.
+			w.Debug("built image cannot be identified; recording no reuse entry", wool.ErrField(err))
+		default:
+			loadedImageID = imageID
+			if resolveEvidence {
+				b.recordLoadedImage(recipe, imageID)
+			}
 		}
-		b.recordLoadedImage(recipe, imageID)
+	}
+
+	if recordable {
+		if entry := cachedImageEntry(identity, b.instance.Unique(), recipe, shouldPush, pushedDigest, loadedImageID); entry != nil {
+			if err := imageCache.store(ctx, entry); err != nil {
+				// The image is built; failing here would report a build failure
+				// for a bookkeeping write. The next run rebuilds, which is the
+				// behaviour without a cache at all.
+				w.Warn("cannot record the image build for reuse", wool.ErrField(err))
+			}
+		}
 	}
 	return nil
+}
+
+// adoptCachedImage makes a reused entry indistinguishable to the rest of the
+// flow from a build that just ran: the digest a snapshot pins and the resolved
+// image every SBOM subject is bound to come from the entry, which is only
+// adopted after the image it names has been proven to still exist.
+func (b *Builder) adoptCachedImage(recipe *builderv0.DockerBuildRecipe, entry *imageCacheEntry, captureDigest, resolveEvidence bool) {
+	if entry.Pushed {
+		if captureDigest {
+			b.imageDigest = entry.Digest
+		}
+		b.recordPushedImage(recipe, entry.Digest)
+		return
+	}
+	if resolveEvidence {
+		b.recordLoadedImage(recipe, entry.ImageID)
+	}
 }
 
 // buildxArgs renders the docker buildx argv for one recipe. A push builds every

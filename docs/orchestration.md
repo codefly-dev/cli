@@ -349,6 +349,29 @@ The `Builder` manages build/deploy lifecycle via the agent's builder API.
 | **Build** | Builds container image (Docker context) | `Builder.Build()` |
 | **Deploy** | Deploys to target environment | `Builder.Deploy()` |
 
+### Image reuse
+
+`Builder.Build` executes the recipe the plan phase emitted, and before it runs
+`docker buildx` it asks whether the image it would produce already exists. The
+question is answered by a digest over the image's inputs — every byte of the
+build context Docker would send, the verified recipe tree, and the normalized
+buildx invocation — held in `pkg/orchestration/image_cache.go`. A key that has
+an entry, whose recorded image the registry or the daemon can still produce,
+stands in for the build: the digest a snapshot pins and the resolved images
+every SBOM subject binds to come from the entry, so nothing downstream can tell
+a reused image from a freshly built one.
+
+The identity is taken over bytes and never over a declaration about them — a
+dependency manifest, a lock file, a recorded tree digest. Keying on a manifest is
+what makes a source-only edit in a language whose manifest did not move
+invisible to a cache, which serves a stale binary while every digest looks
+correct. Anything the digest cannot account for declines rather than guesses, and
+`World.RebuildImages` (`--rebuild`) bypasses reuse entirely.
+
+Two costs a reused image still pays: the agent's plan phase still runs, so the
+recipe is re-emitted and any Go module graph the recipe declares is still
+prefetched on the host before the reuse decision is taken.
+
 ## Service Dependency Resolution
 
 The DAG is built from `service.codefly.yaml` files. Each service declares its dependencies:

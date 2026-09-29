@@ -61,7 +61,7 @@ func installFakeAgents(t *testing.T) {
 		module *resources.Module,
 		root *resources.Service,
 		env *environments.Environment,
-		_, _ bool,
+		_ renderBuild,
 		_ orchestration.OutputSink,
 		destination func(*resources.Module, *resources.Service) string,
 		record func(map[string]*builderv0.DeploymentOutput),

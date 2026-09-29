@@ -92,6 +92,7 @@ func initBuildService(ctx context.Context, workspace *resources.Workspace, modul
 		return nil, err
 	}
 	flow.WithBuildCache(cache)
+	flow.WithRebuild(buildCacheFlags.Rebuild())
 	flow.WithImageSBOM(ciImageSBOM)
 	flow.WithOutputSink(cli.NewOutputSink())
 	flow.WithLoadOnly(loadOnly)

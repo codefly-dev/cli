@@ -2866,6 +2866,53 @@ and counted only against the releases after `X` — semver ranks it below `X`,
 but it was built on top of `X`, so it is not behind it. Any other prerelease
 (`1.0.0-rc.1`) keeps semver's meaning and is behind `1.0.0`.
 
+### Keeping an image whose inputs did not change
+
+A build reuses the image this workspace already built from the same inputs
+instead of building it again. A configuration-only change — an edit to a value
+under `configurations/`, a workspace or module manifest, anything a service reads
+at runtime rather than at build time — re-renders the configuration and leaves
+every image digest where it was, so it costs the render and not a rebuild of
+every image in the module.
+
+Reuse is keyed on a digest over the bytes that go into the image: every file of
+the build context Docker would send, the verified recipe tree the agent emitted,
+and the exact `docker buildx` invocation (platforms, target, every build
+argument and its value, push versus load, the registry cache policy). It is
+never keyed on a dependency manifest, a lock file or any other declaration
+*about* those bytes — that is how a cache serves a stale binary for a source
+edit in a language whose manifest did not move. A source file that changes by one
+byte changes the key whether or not any manifest changed.
+
+Two exclusions, both because the CLI writes the file from inputs the key already
+binds: anything under a `.codefly/` directory (CLI-owned scratch, which is where
+the reuse records themselves live), and the `build-recipes/` archive, whose
+contents are a copy of the recipe tree keyed by agent version. Everything the
+recipe's ignore policy excludes is excluded too, matched with the same matcher
+Docker uses — a file Docker does not send is not an input. A recipe-declared
+ignore file takes precedence over the context root's, exactly as for Docker.
+
+Reuse never stands in for a build on the strength of the record alone. A pushed
+image is reused only if the registry still serves the recorded manifest digest,
+and a locally loaded image only if the daemon still holds the recorded image ID;
+anything else — including an unreachable registry — builds. A plan with no
+verified recipe digest, a context that cannot be walked and an ignore file that
+cannot be parsed all build as well.
+
+`--rebuild` builds every image even when no input changed. It is on
+`codefly build service`, `codefly build module`, `codefly ci build`,
+`codefly ci run`, `codefly deploy service`, `codefly deploy module`,
+`codefly deploy gitops render`, and `codefly deploy gitops snapshot`. Reach for
+it when you suspect the reuse rather than the code; a rebuild also replaces the
+record. Records live one small JSON file per input set under
+`<workspace>/.codefly/build-cache/`, are never pruned, and can be removed
+wholesale with `rm -rf <workspace>/.codefly/build-cache`.
+
+```sh
+codefly deploy gitops render saas --env staging            # keeps unchanged images
+codefly deploy gitops render saas --env staging --rebuild  # builds every image
+```
+
 ### Registry build cache
 
 `codefly build service`, `codefly build module`, `codefly ci build`, and the build

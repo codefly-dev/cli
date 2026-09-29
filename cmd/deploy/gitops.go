@@ -50,7 +50,8 @@ var gitOpsRenderCmd = &cobra.Command{
 		}
 		result, err := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
 			Workspace: workspace, Module: module, Environment: env,
-			AppProject: gitOpsProject, ValidateCluster: gitOpsValidateCluster, Sink: cli.NewOutputSink(),
+			AppProject: gitOpsProject, ValidateCluster: gitOpsValidateCluster,
+			Rebuild: gitOpsRebuild, Sink: cli.NewOutputSink(),
 		})
 		if err != nil {
 			return err
@@ -82,7 +83,11 @@ var gitOpsSnapshotCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		result, err := gitops.RenderModuleSnapshot(ctx, workspace, module, env, gitOpsProject, cli.NewOutputSink())
+		result, err := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
+			Workspace: workspace, Module: module, Environment: env,
+			AppProject: gitOpsProject, Snapshot: true,
+			Rebuild: gitOpsRebuild, Sink: cli.NewOutputSink(),
+		})
 		if err != nil {
 			return err
 		}
@@ -505,6 +510,7 @@ var (
 	gitOpsLocal                    bool
 	gitOpsAllowUnresolvedContracts bool
 	gitOpsValidateCluster          bool
+	gitOpsRebuild                  bool
 )
 
 func init() {
@@ -525,6 +531,8 @@ func init() {
 		"Also dry-run each service's manifests server-side against the environment's declared cluster.context (off: a render needs no cluster)")
 	for _, command := range []*cobra.Command{gitOpsSnapshotCmd, gitOpsRenderCmd} {
 		command.Flags().StringVar(&gitOpsProject, "app-project", "", "AppProject contract for cluster-scoped resources")
+		command.Flags().BoolVar(&gitOpsRebuild, "rebuild", false,
+			"Build every image even when no input of it changed, instead of keeping the image already built from those inputs")
 	}
 	for _, command := range []*cobra.Command{gitOpsPlanCmd, gitOpsPublishCmd, gitOpsRollbackCmd} {
 		command.Flags().StringVar(&gitOpsBranch, "promotion-branch", "", "Promotion branch (deterministic default when empty)")

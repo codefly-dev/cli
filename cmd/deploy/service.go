@@ -166,6 +166,7 @@ func initDeployService(ctx context.Context, workspace *resources.Workspace, modu
 
 	flow.WithOutputSink(cli.NewOutputSink())
 	flow.WithStandAlone(standAlone)
+	flow.WithRebuild(rebuildImages)
 	err = flow.InitManagers(ctx)
 	if err != nil {
 		return nil, nil, w.Wrapf(err, "cannot initialize managers")
@@ -198,6 +199,7 @@ func deployService(ctx context.Context, flow *orchestration.Flow) error {
 var standAlone bool
 var envInput string
 var dryRun bool
+var rebuildImages bool
 var renderOnly bool
 var appProject string
 var waitFor string
@@ -224,5 +226,6 @@ func init() {
 	ServiceCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Render the deployment without applying it")
 	ServiceCmd.Flags().BoolVar(&renderOnly, "render-only", false, "Render kustomize manifests to disk without applying. Used for gitops flows where ArgoCD/Flux syncs from the rendered tree.")
 	ServiceCmd.Flags().StringVar(&appProject, "app-project", "", "AppProject contract used to validate cluster-scoped rendered resources")
+	ServiceCmd.Flags().BoolVar(&rebuildImages, "rebuild", false, "Build every image even when no input of it changed, instead of keeping the image already built from those inputs")
 	registerCompletionFlags(ServiceCmd)
 }
