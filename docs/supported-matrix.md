@@ -20,6 +20,21 @@ Redis/Nix-specific row and makes no Nix or released-agent qualification claim.
 Provider runtime, packaging and language-toolchain qualification belong to their
 owners, not prerequisites for a CLI contract change.
 
+## Updating the core pin
+
+When `go.mod` moves to a new core release line, update the `core` field in
+`pkg/conformance/matrix.json` in the same change. Run
+`go test ./pkg/conformance/...` before the full coverage and race gates.
+`TestMatrixCoreMatchesGoMod` refuses a stale declared version.
+
+A missing receipt can be a consequence of an earlier failure: coverage and race
+run `go test -failfast`, so a failed package can stop the npm tests in
+`pkg/librarystore` before they emit `linux-amd64-native-npm` receipts. Each job
+produces and verifies its own receipts. The quality matrix also uses fail-fast,
+so coverage failure can cancel the race job. Inspect the first failed test and
+the cancelled job's check annotation before diagnosing the final receipt check.
+Keep the required rows and receipt verifier enabled; absence is still a failure.
+
 ## What the statuses mean
 
 | Status | Meaning |
