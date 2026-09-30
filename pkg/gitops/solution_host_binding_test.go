@@ -558,10 +558,15 @@ func TestDeclaredBindingsReachArgo(t *testing.T) {
 	if !strings.Contains(set, "overlay: "+overlay) {
 		t.Fatalf("no Argo Application delivers the declared bindings:\n%s", set)
 	}
-	// Last: a binding pins the digests of artifacts this generation rendered,
-	// so it is declared after they are healthy, never before.
+	// With the module's own resources, before any unit. Argo starts a wave only
+	// once the previous is healthy, so a later wave would withhold the
+	// declaration of desired state from a solution whose workload is unhealthy
+	// — exactly when a host needs it.
 	if !strings.Contains(set, "wave: \""+solutionHostBindingWave+"\"") {
-		t.Fatalf("the bindings do not land in the last wave:\n%s", set)
+		t.Fatalf("the bindings do not land in the module-resources wave:\n%s", set)
+	}
+	if solutionHostBindingWave != moduleResourcesWave {
+		t.Fatalf("declared presence is gated behind the units it describes (wave %q)", solutionHostBindingWave)
 	}
 	cluster, namespaced, err := snapshotAuthority(root, inventory, "prod")
 	if err != nil {
@@ -702,5 +707,92 @@ func TestRenderingAnotherEnvironmentResetsTheGeneration(t *testing.T) {
 	// when the host refuses the document.
 	if len(result.SolutionHostBindings) != 1 || result.SolutionHostBindings[0].Generation != 1 {
 		t.Fatalf("the render did not report the generation it declared: %+v", result.SolutionHostBindings)
+	}
+}
+
+// TestBindingIDRefusesAPartThatCannotNameAKubernetesObject is the guard whose
+// absence let an invalid ConfigMap name reach ArgoCD.
+//
+// core's bindingPattern deliberately admits uppercase and underscores so a ULID
+// or a UUID can be a binding ID, so core's own Validate accepts
+// "My_Workspace.prod.crm" — and the render would then deliver a ConfigMap named
+// "solution-host-binding-My_Workspace.prod.crm", which Kubernetes refuses as an
+// object name. Nothing downstream catches it: the tree validates and the
+// publish succeeds, so the first refusal is ArgoCD at sync, far from here.
+func TestBindingIDRefusesAPartThatCannotNameAKubernetesObject(t *testing.T) {
+	for name, part := range map[string]struct{ workspace, environment, instance string }{
+		"uppercase workspace":   {"My_Workspace", "prod", "crm"},
+		"capitalised":           {"Obin", "prod", "crm"},
+		"underscore":            {"obin_prod", "prod", "crm"},
+		"uppercase instance":    {"obin", "prod", "CRM"},
+		"leading dash":          {"obin", "prod", "-crm"},
+		"trailing dash":         {"obin", "prod", "crm-"},
+		"uppercase environment": {"obin", "Prod", "crm"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			id, err := bindingID(part.workspace, part.environment, part.instance)
+			if err == nil {
+				t.Fatalf("binding ID %q was accepted; it would name the ConfigMap %q", id, solutionHostBindingKind+"-"+id)
+			}
+			if !strings.Contains(err.Error(), "Kubernetes object") {
+				t.Fatalf("refused for the wrong reason: %v", err)
+			}
+		})
+	}
+	if _, err := bindingID("obin", "prod", "crm-eu-1"); err != nil {
+		t.Fatalf("a legal binding ID was refused: %v", err)
+	}
+}
+
+// TestRenderRefusesAWorkspaceThatCannotNameAKubernetesObject drives the same
+// refusal through the render, so the guard is exercised where it matters and
+// not only in the helper.
+func TestRenderRefusesAWorkspaceThatCannotNameAKubernetesObject(t *testing.T) {
+	destination := filepath.Join(t.TempDir(), "modules", "crm")
+	options := solutionRenderOptions(destination)
+	options.Workspace = "My_Workspace"
+	_, err := RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment))
+	if err == nil || !strings.Contains(err.Error(), "Kubernetes object") {
+		t.Fatalf("the render delivered a document ArgoCD would refuse: %v", err)
+	}
+}
+
+// TestARenderThatDeclaresNothingClearsTheDeliveryPath is the guard whose
+// absence refused an entire publication.
+//
+// The inventory field is what points publish at the binding overlay. Writing it
+// only when a binding was written leaves a previous render's value in place on
+// a reused RenderOptions, and both readers of the field kustomize-build
+// "<path>/overlays/<environment>" — so a stale value is not a cosmetic
+// inaccuracy, it fails generateArgoBootstrap and refuses the whole publication.
+func TestARenderThatDeclaresNothingClearsTheDeliveryPath(t *testing.T) {
+	destination := filepath.Join(t.TempDir(), "modules", "crm")
+	options := solutionRenderOptions(destination)
+	first, err := RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Inventory.SolutionHostBindingPath != solutionHostBindingDir {
+		t.Fatalf("the first render recorded no delivery path: %q", first.Inventory.SolutionHostBindingPath)
+	}
+	// The operator removes the host declaration and re-renders with the same
+	// options, as a caller that holds one render's options would.
+	options.Host = nil
+	second, err := RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Inventory.SolutionHostBindingPath != "" {
+		t.Fatalf("the inventory still claims %q; the tree has no such directory, and publish builds it",
+			second.Inventory.SolutionHostBindingPath)
+	}
+	// The field and the tree must agree: the directory really is gone, so a
+	// non-empty field would point publish at nothing. (What publish then does
+	// with a path that is present is covered by TestDeclaredBindingsReachArgo.)
+	if _, statErr := os.Stat(filepath.Join(destination, solutionHostBindingDir)); !os.IsNotExist(statErr) {
+		t.Fatalf("the binding directory survived a render that declared none: %v", statErr)
+	}
+	if len(second.UndeclaredSolutions) != 1 || second.UndeclaredSolutions[0] != "crm" {
+		t.Fatalf("the render did not report what it could not declare: %v", second.UndeclaredSolutions)
 	}
 }

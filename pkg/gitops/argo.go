@@ -89,11 +89,19 @@ const (
 	moduleResourcesWave = "-1"
 	bootstrapUnitWave   = "0"
 	consumerUnitWave    = "1"
-	// Declared presence lands last: a SolutionHostBinding pins the digests of
-	// the artifacts this generation rendered, so declaring it before those
-	// artifacts are healthy would declare a presence the delivery has not yet
-	// produced.
-	solutionHostBindingWave = "2"
+	// Declared presence lands with the module's own resources, before any unit.
+	//
+	// It was briefly placed last, on the reasoning that a binding pins the
+	// digests of this generation's artifacts and should not be declared before
+	// they are healthy. That reasoning is wrong twice over. The digests are
+	// taken over rendered bytes in the delivery repository, which exist at
+	// delivery time whatever the cluster is doing, so nothing about them needs
+	// the workload running first. And Argo only starts a wave once the previous
+	// one is healthy, so a solution whose Deployment crashloops would never
+	// have its binding applied — withholding the declaration of desired state
+	// exactly when actual state has diverged from it, which is when a host most
+	// needs it.
+	solutionHostBindingWave = moduleResourcesWave
 )
 
 func unitWave(unit *InventoryUnit) string {

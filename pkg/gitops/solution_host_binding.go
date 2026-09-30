@@ -78,12 +78,20 @@ const (
 	kindConfigMap = "ConfigMap"
 )
 
-// routeAliasPattern is narrower than core's namePattern on purpose. core admits
-// a dotted or slashed alias; a host keys its registry on the alias as a single
-// URL path segment, and a slashed alias cannot be one. Rendering an alias the
-// host would have to map is worse than refusing it here, where the composition
-// that authored it is in hand.
-var routeAliasPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+// rfc1123Label is one lowercase DNS label. Two different things in this file
+// must each be one, for two different reasons, and both are narrower than what
+// core accepts:
+//
+//   - A route alias, because a host keys its registry on it as a single URL
+//     path segment, and core's namePattern admits dots and slashes.
+//   - Every part of a binding ID, because the ID becomes a Kubernetes object
+//     name, and core's bindingPattern deliberately admits uppercase and
+//     underscores so that a ULID or a UUID can be a binding ID.
+//
+// Refusing here is the whole point: both would otherwise sail through the
+// render and the publish and fail only when ArgoCD applies the manifest — the
+// late, opaque error solutionNamespace exists to prevent for namespaces.
+var rfc1123Label = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 // bindingIDMaxLength bounds a binding ID to one Kubernetes label value, which
 // is stricter than core's 128. The ID is stamped as a label so a host can find
@@ -217,7 +225,7 @@ func solutionHostBinding(owned string, opts *RenderOptions, instance *SolutionIn
 	if err != nil {
 		return nil, fmt.Errorf("solution %s: %w", instance.Name, err)
 	}
-	if !routeAliasPattern.MatchString(instance.Alias) {
+	if !rfc1123Label.MatchString(instance.Alias) {
 		return nil, fmt.Errorf(
 			"solution %s claims the route alias %q; a host keys its registry on the alias as one URL path segment, so it must be lowercase letters, digits and dashes, starting and ending alphanumeric",
 			instance.Name, instance.Alias)
@@ -295,8 +303,17 @@ func bindingID(workspace, environment, instance string) (string, error) {
 		if part.value == "" {
 			return "", fmt.Errorf("solution host binding ID needs the %s name", part.label)
 		}
-		if strings.ContainsAny(part.value, "./ ") {
-			return "", fmt.Errorf("solution host binding ID cannot be built from %s %q: it joins its parts on \".\"", part.label, part.value)
+		// Each part must be one lowercase DNS label. core's bindingPattern is
+		// wider — it admits uppercase and underscores so a ULID or UUID can be
+		// a binding ID — so core's own Validate accepts "My_Workspace.prod.crm"
+		// and the render would deliver a ConfigMap named
+		// "solution-host-binding-My_Workspace.prod.crm", which is not a legal
+		// Kubernetes object name. Nothing downstream refuses that: the tree
+		// validates, the publish succeeds, and ArgoCD fails at sync.
+		if !rfc1123Label.MatchString(part.value) {
+			return "", fmt.Errorf(
+				"solution host binding ID cannot be built from %s %q: the ID names a Kubernetes object, so each part must be lowercase letters, digits and dashes, starting and ending alphanumeric",
+				part.label, part.value)
 		}
 	}
 	id := strings.Join([]string{workspace, environment, instance}, ".")
@@ -536,6 +553,23 @@ func writeSolutionHostBindingKustomization(owned, environment string, names []st
 		return fmt.Errorf("write solution host binding kustomization: %w", err)
 	}
 	return nil
+}
+
+// deliveredBindingPath is the render subdirectory the inventory records, derived
+// from what this render actually wrote.
+//
+// It is computed unconditionally, and that is the point. Setting the field only
+// when a binding was written leaves a previous render's value in place on a
+// reused RenderOptions, and the inventory then claims a delivery path the tree
+// does not have. Both readers of that field — generateArgoBootstrap and
+// snapshotAuthority — kustomize-build "<path>/overlays/<environment>", so a
+// stale value does not degrade to the old behaviour: it refuses the whole
+// publication with "build promotion source ...: must build at directory".
+func deliveredBindingPath(bindings []DeclaredSolutionHostBinding) string {
+	if len(bindings) == 0 {
+		return ""
+	}
+	return solutionHostBindingDir
 }
 
 // undeclaredSolutions names the solution instances this render delivered
