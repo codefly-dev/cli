@@ -104,9 +104,7 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err != nil {
 		return RenderResult{}, err
 	}
-	if len(bindings) > 0 {
-		opts.SolutionHostBindingPath = solutionHostBindingDir
-	}
+	opts.SolutionHostBindingPath = deliveredBindingPath(bindings)
 	manifests, err := validateTree(owned, opts)
 	if err != nil {
 		return RenderResult{}, err

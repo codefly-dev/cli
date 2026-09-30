@@ -176,8 +176,21 @@ both and clears the dev deployments.
 
 ## Removal
 
-Not implemented. An instance that leaves the composition currently leaves the
+No tombstone is rendered. An instance that leaves the composition leaves the
 tree, and core is explicit that removal is a generation and never an absence —
-so a host keeps the binding until a tombstone arrives. That is core's design
-failing safe rather than a host deleting what it can no longer see, but a
-solution genuinely withdrawn is not yet withdrawable through delivery.
+so a host must keep the binding until a tombstone arrives, and a solution
+genuinely withdrawn is not yet withdrawable through delivery.
+
+**The document does not merely stop being refreshed — Argo deletes it.** When no
+binding is rendered the inventory records no binding path, so the promotion
+emits no ApplicationSet element for it; dropping an element deletes its
+Application, and the Application template carries
+`finalizers: [resources-finalizer.argocd.argoproj.io]` with
+`syncPolicy.automated.prune: true`. The delivered ConfigMaps are cascade-deleted
+from the cluster.
+
+So a reconciler cannot treat "the document is gone" as "nothing to do". It has
+to hold the binding across the document's disappearance, or removing a `host`
+declaration — or a module ceasing to be a solution — silently withdraws every
+binding it delivered. That is a requirement delivery places on the host, not
+something the host can infer from what it observes.
