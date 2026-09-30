@@ -734,6 +734,20 @@ whatever it actually was. A property read as two keys that
 `service-secrets.generate` declares differently is refused too — whichever won
 would be an accident of ordering.
 
+Properties connected through configuration-key aliases resolve as one value,
+including properties in the same remote document. Every existing holder must
+agree. Federation derivation uses the service/key bindings in each rendered
+entry, so separate services can store independent credentials in one document.
+A mapping that mixes federation and configured sources is refused.
+
+Existing empty required properties and malformed federation encodings are
+errors: they never authorize minting a replacement. Missing externally supplied
+values fail apply even when there is nothing to write. `--dry-run` still reports
+requirements without writing, and `--allow-missing` permits only the remaining
+valid writes. Neither flag authorizes invalid stored values or conflicting
+sources. See [deployment secret safety](deployment-secret-safety.md) for migration,
+output handling, and the limits of validation.
+
 Apply writes plaintexts before the registrar digests that admit them — ordered by
 the credentials, so a key carrying both is still written in the right place —
 refuses while any property is `require` (`--allow-missing` writes the rest), and

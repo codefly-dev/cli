@@ -2,6 +2,7 @@ package solutionrun
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"slices"
 	"strings"
@@ -328,4 +329,33 @@ func sortedKeys[V any](values map[string]V) []string {
 	}
 	slices.Sort(keys)
 	return keys
+}
+
+// ValidateStored refuses an invalid existing encoding before a caller can
+// mistake failed recovery for an absent credential. Errors never quote input.
+func (derivation SecretDerivation) ValidateStored(stored string) error {
+	if strings.TrimSpace(stored) == "" {
+		return fmt.Errorf("empty credential")
+	}
+	if !derivation.Encoded {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, entry := range strings.Split(stored, ",") {
+		identity, value, ok := strings.Cut(strings.TrimSpace(entry), ":")
+		if !ok || strings.TrimSpace(identity) == "" || strings.TrimSpace(value) == "" {
+			return fmt.Errorf("malformed credential entry (stored content withheld)")
+		}
+		if seen[identity] {
+			return fmt.Errorf("duplicate credential identity (stored content withheld)")
+		}
+		seen[identity] = true
+		if derivation.Digest {
+			decoded, err := hex.DecodeString(value)
+			if err != nil || len(decoded) != 32 {
+				return fmt.Errorf("invalid credential digest (stored content withheld)")
+			}
+		}
+	}
+	return nil
 }

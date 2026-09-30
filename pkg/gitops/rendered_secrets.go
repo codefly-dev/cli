@@ -51,6 +51,15 @@ type RenderedSecretProperty struct {
 	// property under one key give one entry; two different keys are kept, and
 	// whoever resolves them says what a disagreement means.
 	Keys []string
+	// Readers retain the association between a key and the service reading it.
+	// Services at the remote-document level are insufficient for derivation.
+	Readers []RenderedSecretReader
+}
+
+// RenderedSecretReader is an actual service/key binding from an ExternalSecret.
+type RenderedSecretReader struct {
+	Service string
+	Key     string
 }
 
 // RenderedEnvironment is every rendered module's secret requirements for one
@@ -142,6 +151,10 @@ func RenderedServiceSecrets(workspaceDir, environment string) (RenderedEnvironme
 					secret.Properties = append(secret.Properties, RenderedSecretProperty{Property: data.RemoteRef.Property})
 					index = len(secret.Properties) - 1
 				}
+				reader := RenderedSecretReader{Service: unique, Key: data.SecretKey}
+				if !slices.Contains(secret.Properties[index].Readers, reader) {
+					secret.Properties[index].Readers = append(secret.Properties[index].Readers, reader)
+				}
 				if !slices.Contains(secret.Properties[index].Keys, data.SecretKey) {
 					secret.Properties[index].Keys = append(secret.Properties[index].Keys, data.SecretKey)
 				}
@@ -159,6 +172,13 @@ func RenderedServiceSecrets(workspaceDir, environment string) (RenderedEnvironme
 		sort.Slice(secret.Properties, func(i, j int) bool { return secret.Properties[i].Property < secret.Properties[j].Property })
 		for index := range secret.Properties {
 			sort.Strings(secret.Properties[index].Keys)
+			sort.Slice(secret.Properties[index].Readers, func(i, j int) bool {
+				a, b := secret.Properties[index].Readers[i], secret.Properties[index].Readers[j]
+				if a.Service != b.Service {
+					return a.Service < b.Service
+				}
+				return a.Key < b.Key
+			})
 		}
 		rendered.Secrets = append(rendered.Secrets, *secret)
 	}

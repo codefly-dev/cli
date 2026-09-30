@@ -96,3 +96,66 @@ func TestPrintSecretsPlanPrintsNoValue(t *testing.T) {
 		t.Errorf("the plan does not name the key and property:\n%s", out.String())
 	}
 }
+
+type outputSafetyStore struct {
+	document map[string]string
+	writes   int
+}
+
+func (*outputSafetyStore) Name() string { return "test" }
+func (store *outputSafetyStore) Describe(context.Context, string) (deploysecrets.Description, error) {
+	return deploysecrets.Description{Exists: store.document != nil, HasVersion: store.document != nil}, nil
+}
+func (store *outputSafetyStore) Read(context.Context, string) (map[string]string, error) {
+	return store.document, nil
+}
+func (store *outputSafetyStore) Write(context.Context, string, map[string]string, bool) error {
+	store.writes++
+	return nil
+}
+
+func TestSecretsCommandRefusesMissingNoOpBeforeConfirmation(t *testing.T) {
+	store := &outputSafetyStore{}
+	rendered := gitops.RenderedEnvironment{Secrets: []gitops.RenderedServiceSecret{{RemoteKey: "remote", Services: []string{"app/api"}, Properties: []gitops.RenderedSecretProperty{{Property: "required", Keys: []string{"EXTERNAL_KEY"}}}}}}
+	plan, err := deploysecrets.Build(context.Background(), &deploysecrets.Inputs{Rendered: rendered, Store: store, ReadPayloads: true})
+	if err != nil {
+		t.Fatal("could not construct missing-value plan")
+	}
+	confirmed := false
+	confirm := func() bool { confirmed = true; return true }
+	if err = finishSecretsPlan(context.Background(), plan, store, false, false, confirm); err == nil {
+		t.Fatal("command accepted unresolved no-op plan")
+	}
+	if confirmed || store.writes != 0 {
+		t.Fatal("incomplete plan prompted or wrote")
+	}
+	if err = finishSecretsPlan(context.Background(), plan, store, true, false, confirm); err != nil {
+		t.Fatal("dry run should report the incomplete plan")
+	}
+	if err = finishSecretsPlan(context.Background(), plan, store, false, true, confirm); err != nil {
+		t.Fatal("explicit allow-missing should permit a no-op")
+	}
+}
+
+func TestStoredIdentityIsWithheldFromCLIOutput(t *testing.T) {
+	marker := solutionrun.MintCredential()
+	key := "CODEFLY__MODULE_REGISTRATION_SECRETS"
+	store := &outputSafetyStore{document: map[string]string{"mapped": marker + ":" + solutionrun.MintCredential()}}
+	rendered := gitops.RenderedEnvironment{Secrets: []gitops.RenderedServiceSecret{{RemoteKey: "remote", Services: []string{"app/api"}, Properties: []gitops.RenderedSecretProperty{{Property: "mapped", Keys: []string{key}}}}}}
+	federation := solutionrun.DeployedSecrets{Services: map[string]map[string]solutionrun.SecretDerivation{"app/api": {key: {Encoded: true, Credentials: []solutionrun.Credential{{Kind: solutionrun.ModuleRegistration, Identity: "module"}}}}}}
+	plan, err := deploysecrets.Build(context.Background(), &deploysecrets.Inputs{Rendered: rendered, Federation: federation, Store: store, ReadPayloads: true})
+	if err != nil {
+		t.Fatal("could not construct refusal plan")
+	}
+	var output bytes.Buffer
+	printSecretsPlan(&output, "staging", rendered, plan)
+	if strings.Contains(output.String(), marker) {
+		t.Fatal("stored identity reached CLI stdout")
+	}
+	if !strings.Contains(output.String(), "withheld") {
+		t.Fatal("output must explain that stored identities are withheld")
+	}
+	if err = finishSecretsPlan(context.Background(), plan, store, false, false, func() bool { return true }); err == nil || strings.Contains(err.Error(), marker) {
+		t.Fatal("command must refuse without disclosing payload")
+	}
+}

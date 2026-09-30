@@ -109,22 +109,32 @@ already holds, but nothing outside the scope is planned or written.`,
 			return err
 		}
 		printSecretsPlan(cmd.OutOrStdout(), env.Name, rendered, plan)
-		if secretsDryRun {
-			return nil
-		}
-		if len(plan.Changes()) == 0 {
-			cli.Info("Nothing to write")
-			return nil
-		}
-		if !secretsYes && !models.Confirm(ctx, fmt.Sprintf("Write %d remote keys to %s?", len(plan.Changes()), plan.Store), false) {
-			return fmt.Errorf("write not confirmed")
-		}
-		written, err := plan.Apply(ctx, store, secretsAllowMissing)
-		for _, key := range written {
-			cli.Info("Wrote %s", key)
-		}
-		return err
+		return finishSecretsPlan(ctx, plan, store, secretsDryRun, secretsAllowMissing, func() bool {
+			return secretsYes || models.Confirm(ctx, fmt.Sprintf("Write %d remote keys to %s?", len(plan.Changes()), plan.Store), false)
+		})
 	},
+}
+
+// finishSecretsPlan validates completeness before even a no-op apply succeeds.
+func finishSecretsPlan(ctx context.Context, plan *deploysecrets.Plan, store deploysecrets.Store, dryRun, allowMissing bool, confirm func() bool) error {
+	if dryRun {
+		return nil
+	}
+	if err := plan.ValidateApply(allowMissing); err != nil {
+		return err
+	}
+	if len(plan.Changes()) == 0 {
+		cli.Info("Nothing to write")
+		return nil
+	}
+	if !confirm() {
+		return fmt.Errorf("write not confirmed")
+	}
+	written, err := plan.Apply(ctx, store, allowMissing)
+	for _, key := range written {
+		cli.Info("Wrote %s", key)
+	}
+	return err
 }
 
 // resolveSecretStore resolves the one store every rendered ExternalSecret reads
