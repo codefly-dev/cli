@@ -499,8 +499,8 @@ func TestPlanRefusesToDropAnIdentityTheStoreStillAdmits(t *testing.T) {
 	if got.Action != ActionRequire {
 		t.Fatalf("host-accounts#%s = %s (%s), want require rather than a rewrite that drops legacy", solutionDigest, got.Action, got.Source)
 	}
-	if !strings.Contains(got.Source, "legacy") {
-		t.Errorf("source %q does not name the identity that would be dropped", got.Source)
+	if strings.Contains(got.Source, "legacy") || !strings.Contains(got.Source, "identities withheld") {
+		t.Error("source must explain the refusal without exposing stored identities")
 	}
 	if slices.Contains(plan.Changes(), "host-accounts") {
 		t.Errorf("the registrar's key would still be rewritten: %v", plan.Changes())

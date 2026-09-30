@@ -133,25 +133,29 @@ bytes no input names, so reuse means "the image built from these inputs", not
    records `image` and `digest` in the `dev` entry of
    `deployments/modules/payments/.codefly-render.json`.
 
-2. **The digest did not move, and you changed source →** suspect stale. Re-run
-   with `--rebuild` and look again. If the digest now moves, the previous run
-   reused an image it should not have: the change was real and something did not
-   see it.
+2. **The digest did not move after a source edit:** investigate the source
+   checkout and build inputs, then retry with `--rebuild`. The edit may have no
+   effect on the compiled artifact, or a cache or recipe may have missed it.
+   An unchanged digest after a configuration-only change is expected when no
+   image input changed.
 
-   (A digest that does not move for a *configuration-only* change is the
-   expected, cheap outcome — not staleness.)
+3. **The digest moved:** some part of the image changed. This does not prove the
+   application binary contains the edit: a base-image update or image metadata
+   can change the digest while the application stays stale. Verify the selected
+   source revision and exercise behavior specific to the edit in the deployed
+   service. Where the build emits revision information, compare it with the
+   intended checkout as additional evidence.
 
-3. **The digest moved →** it is not stale. The image holds new code, so the
-   change is wrong, incomplete, or not on the path you are exercising.
+4. **`--rebuild` produced the same digest:** the output is unchanged, but that
+   alone does not prove the inputs were unchanged or the binary is current.
+   Check that you edited the source the build actually reads — `codefly deploy
+   dev` builds `--path` if given, else the machine-local service override, which
+   may select another checkout. Inspect the recipe's source inputs and any
+   downstream cache before concluding the build is reproducible.
 
-4. **`--rebuild` produced the same digest →** the build is reproducible from
-   inputs that genuinely did not change. Check that you edited the source the
-   build actually reads — `codefly deploy dev` builds `--path` if given, else the
-   machine-local service override, which may be a different checkout from the one
-   you have open.
-
-When in doubt the cheap move is `--rebuild`: one build's worth of minutes buys
-the answer, and a rebuild also replaces the record.
+`--rebuild` bypasses the CLI's image reuse record. It leaves BuildKit layers and
+agent recipe caches in place, so it is a diagnostic step, not proof that the
+intended application code reached the image.
 
 ### Leaving the escape hatch
 

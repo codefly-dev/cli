@@ -83,7 +83,7 @@ func TestRenderedServiceSecretsReadsTheEnvironmentsProjections(t *testing.T) {
 	}
 	secret := rendered.Secrets[0]
 	if secret.RemoteKey != "example-billing-api" || secret.Store.Name != "cell-secrets" || secret.Namespace != "example-billing" ||
-		!reflect.DeepEqual(secret.Services, []string{"billing/api"}) || !reflect.DeepEqual(secret.Properties, []RenderedSecretProperty{{Property: "A_KEY", Keys: []string{"A_KEY"}}, {Property: "B_KEY", Keys: []string{"B_KEY"}}}) {
+		!reflect.DeepEqual(secret.Services, []string{"billing/api"}) || !reflect.DeepEqual(secret.Properties, []RenderedSecretProperty{{Property: "A_KEY", Keys: []string{"A_KEY"}, Readers: []RenderedSecretReader{{Service: "billing/api", Key: "A_KEY"}}}, {Property: "B_KEY", Keys: []string{"B_KEY"}, Readers: []RenderedSecretReader{{Service: "billing/api", Key: "B_KEY"}}}}) {
 		t.Errorf("secret = %+v", secret)
 	}
 }
@@ -148,7 +148,7 @@ func writeManagedProjection(t *testing.T, workspace, module, environment, servic
 // external credentials the environment enumerates.
 func TestRenderedServiceSecretsReadsAManagedServicesProjection(t *testing.T) {
 	workspace := t.TempDir()
-	writeManagedProjection(t, workspace, "payments", "staging", "workos", "workos-credentials", []string{"WORKOS_API_KEY"})
+	writeManagedProjection(t, workspace, "payments", "staging", "identity", "identity-credentials", []string{"API_KEY"})
 
 	rendered, err := RenderedServiceSecrets(workspace, "staging")
 	if err != nil {
@@ -158,8 +158,8 @@ func TestRenderedServiceSecretsReadsAManagedServicesProjection(t *testing.T) {
 		t.Fatalf("secrets = %+v, want the managed service's remote key", rendered.Secrets)
 	}
 	secret := rendered.Secrets[0]
-	if secret.RemoteKey != "workos-credentials" || !reflect.DeepEqual(secret.Services, []string{"payments/workos"}) ||
-		!reflect.DeepEqual(secret.Properties, []RenderedSecretProperty{{Property: "WORKOS_API_KEY", Keys: []string{"WORKOS_API_KEY"}}}) {
+	if secret.RemoteKey != "identity-credentials" || !reflect.DeepEqual(secret.Services, []string{"payments/identity"}) ||
+		!reflect.DeepEqual(secret.Properties, []RenderedSecretProperty{{Property: "API_KEY", Keys: []string{"API_KEY"}, Readers: []RenderedSecretReader{{Service: secret.Services[0], Key: "API_KEY"}}}}) {
 		t.Errorf("secret = %+v", secret)
 	}
 }
@@ -278,6 +278,11 @@ func TestRenderedServiceSecretsRecordsTheKeyReadFromEachProperty(t *testing.T) {
 		{Property: "postgres_user", Keys: []string{"CODEFLY__SERVICE_SECRET_CONFIGURATION__SAAS__STORE__POSTGRES__POSTGRES_USER"}},
 		{Property: "read_write_password", Keys: []string{"CODEFLY__SERVICE_SECRET_CONFIGURATION__SAAS__STORE__POSTGRES__POSTGRES_READ_WRITE_PASSWORD"}},
 	}
+	for i := range want {
+		for _, key := range want[i].Keys {
+			want[i].Readers = append(want[i].Readers, RenderedSecretReader{Service: rendered.Secrets[0].Services[0], Key: key})
+		}
+	}
 	if !reflect.DeepEqual(rendered.Secrets[0].Properties, want) {
 		t.Errorf("properties = %+v", rendered.Secrets[0].Properties)
 	}
@@ -296,6 +301,11 @@ func TestRenderedServiceSecretsDeduplicatesTheKeysOfOneProperty(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []RenderedSecretProperty{{Property: "internal_token", Keys: []string{"CODEFLY__WORKSPACE_SECRET_CONFIGURATION__INTERNAL_AUTH__TOKEN"}}}
+	for i := range want {
+		for _, key := range want[i].Keys {
+			want[i].Readers = append(want[i].Readers, RenderedSecretReader{Service: rendered.Secrets[0].Services[0], Key: key})
+		}
+	}
 	if !reflect.DeepEqual(rendered.Secrets[0].Properties, want) {
 		t.Errorf("properties = %+v", rendered.Secrets[0].Properties)
 	}
@@ -310,5 +320,25 @@ func TestRenderedServiceSecretsRefusesAnEntryWithNoSecretKey(t *testing.T) {
 	_, err := RenderedServiceSecrets(workspace, "staging")
 	if err == nil || !strings.Contains(err.Error(), "into no secret key") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestRenderedSecretsKeepActualServicePropertyBindings(t *testing.T) {
+	workspace := t.TempDir()
+	key := "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__SOLUTION_REGISTRATION__SECRET"
+	writeMappedRender(t, workspace, "first", "api", "staging", "shared", map[string][]string{"first_registration": {key}})
+	writeMappedRender(t, workspace, "second", "api", "staging", "shared", map[string][]string{"second_registration": {key}})
+	rendered, err := RenderedServiceSecrets(workspace, "staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rendered.Secrets) != 1 || len(rendered.Secrets[0].Properties) != 2 {
+		t.Fatal("shared document properties were lost")
+	}
+	for i, service := range []string{"first/api", "second/api"} {
+		readers := rendered.Secrets[0].Properties[i].Readers
+		if !reflect.DeepEqual(readers, []RenderedSecretReader{{Service: service, Key: key}}) {
+			t.Fatal("service/key association was lost")
+		}
 	}
 }

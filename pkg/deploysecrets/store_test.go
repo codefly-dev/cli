@@ -2,7 +2,11 @@ package deploysecrets
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -75,7 +79,7 @@ func TestResolveStoreRefusesAProviderItCannotWrite(t *testing.T) {
 func TestGoogleSecretManagerDescribesAMissingKey(t *testing.T) {
 	runner := &scriptedRunner{answers: map[string]func() ([]byte, error){
 		"gcloud secrets describe key": func() ([]byte, error) {
-			return nil, &CommandError{Command: "gcloud secrets describe", Stderr: "ERROR: NOT_FOUND: Secret [key] not found", Err: errors.New("exit status 1")}
+			return nil, &CommandError{Command: "gcloud secrets describe", stderr: "ERROR: NOT_FOUND: Secret [key] not found", Err: errors.New("exit status 1")}
 		},
 	}}
 	store := &GoogleSecretManager{Project: "p", Run: runner.run}
@@ -146,12 +150,46 @@ func TestGoogleSecretManagerDoesNotReadAProjectFailureAsAMissingKey(t *testing.T
 	runner := &scriptedRunner{answers: map[string]func() ([]byte, error){
 		"gcloud secrets describe key": func() ([]byte, error) {
 			return nil, &CommandError{Command: "gcloud secrets describe",
-				Stderr: "ERROR: (gcloud.secrets.describe) Project [wrong-project] not found or deleted.", Err: errors.New("exit status 1")}
+				stderr: "ERROR: (gcloud.secrets.describe) Project [wrong-project] not found or deleted.", Err: errors.New("exit status 1")}
 		},
 	}}
 	store := &GoogleSecretManager{Project: "wrong-project", Run: runner.run}
 	description, err := store.Describe(context.Background(), "key")
 	if err == nil {
 		t.Fatalf("Describe = %+v, want the project failure surfaced rather than reported as an absent key", description)
+	}
+}
+
+// A failing backend may echo stdin or an HTTP response on either stream. Run a
+// real child process and assert that neither error formatting nor JSON exposes it.
+func TestExecRunnerWithholdsBackendOutput(t *testing.T) {
+	if os.Getenv("CLI_SECRET_ERROR_CHILD") == "1" {
+		payload, _ := io.ReadAll(os.Stdin)
+		_, _ = os.Stdout.Write(payload)
+		_, _ = os.Stderr.Write(payload)
+		os.Exit(2)
+	}
+	t.Setenv("CLI_SECRET_ERROR_CHILD", "1")
+	marker := testPayload()
+	out, err := ExecRunner(context.Background(), []byte(marker), os.Args[0], "-test.run=^TestExecRunnerWithholdsBackendOutput$")
+	if err == nil || len(out) != 0 {
+		t.Fatal("failed backend returned output or success")
+	}
+	encoded, encodeErr := json.Marshal(err)
+	if encodeErr != nil {
+		t.Fatal("cannot encode backend error")
+	}
+	for _, reported := range []string{err.Error(), fmt.Sprintf("%+v", err), fmt.Sprintf("%#v", err), string(encoded)} {
+		if strings.Contains(reported, marker) {
+			t.Fatal("backend payload reached an error representation")
+		}
+	}
+}
+
+func TestStoreRefusesEmptyNullAndNonObjectDocuments(t *testing.T) {
+	for _, payload := range []string{"", " \n", "null", "[]"} {
+		if _, err := decodeDocument("remote", []byte(payload)); err == nil {
+			t.Fatal("invalid existing document was accepted")
+		}
 	}
 }

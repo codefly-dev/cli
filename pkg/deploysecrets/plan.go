@@ -36,7 +36,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -222,6 +221,11 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 			if property.Property == "" {
 				return nil, fmt.Errorf("remote key %s is read as a bare value; only a JSON document read by property can be planned", secret.RemoteKey)
 			}
+			for _, key := range property.Keys {
+				if strings.TrimSpace(key) == "" {
+					return nil, fmt.Errorf("remote key %s property %s records an empty secret key", secret.RemoteKey, property.Property)
+				}
+			}
 			if len(property.Keys) == 0 {
 				// Without the key nothing can tell whether the property is a
 				// federation credential, a shared configuration value or a declared
@@ -247,6 +251,10 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 		return nil, err
 	}
 	generators, err := generatorIndex(in.Generators, in.Services)
+	if err != nil {
+		return nil, err
+	}
+	aliases, err := configurationAliases(states, derivations)
 	if err != nil {
 		return nil, err
 	}
@@ -290,7 +298,7 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 					propertyPlan.Source += " (federation counterpart of " + strings.Join(in.Modules, ", ") + ")"
 				}
 			} else {
-				propertyPlan, value, err = planConfigured(state, property, states, generators, generated)
+				propertyPlan, value, err = planConfigured(state, property, states, generators, generated, aliases[propertyLocation{state.secret.RemoteKey, property.Property}])
 				if err != nil {
 					return nil, err
 				}
@@ -387,6 +395,12 @@ func readStates(ctx context.Context, in *Inputs) ([]*remoteState, error) {
 					return
 				}
 				state.document = document
+			}
+			for _, property := range secret.Properties {
+				if value, present := state.document[property.Property]; present && strings.TrimSpace(value) == "" {
+					fail(fmt.Errorf("remote key %s property %s is empty: supply a nonempty value before planning", secret.RemoteKey, property.Property))
+					return
+				}
 			}
 			states[i] = state
 		}(i)
@@ -615,24 +629,24 @@ func federationDerivations(states []*remoteState, federation solutionrun.Deploye
 	for _, state := range states {
 		for _, property := range state.secret.Properties {
 			var found *solutionrun.SecretDerivation
-			for _, unique := range state.secret.Services {
-				for _, key := range property.Keys {
-					derivation, ok := federation.For(unique, key)
-					if !ok {
-						continue
-					}
-					// The whole derivation, not only its credentials: two services agreeing
-					// on the credentials but disagreeing on the encoding resolve to
-					// whichever sorts last, and if they disagree on Digest that hands a
-					// registrar the preimage of a digest it is supposed to hold. Two keys
-					// filed under one property disagree the same way, and are refused for
-					// the same reason.
-					if found != nil && (!slices.Equal(found.Credentials, derivation.Credentials) || found.Encoded != derivation.Encoded || found.Digest != derivation.Digest) {
-						return nil, fmt.Errorf("remote key %s property %s is read as %s by services deriving it differently",
-							state.secret.RemoteKey, property.Property, strings.Join(property.Keys, ", "))
-					}
-					found = &derivation
+			readers, err := propertyReaders(&state.secret, property)
+			if err != nil {
+				return nil, err
+			}
+			unconfigured := false
+			for _, reader := range readers {
+				derivation, ok := federation.For(reader.Service, reader.Key)
+				if !ok {
+					unconfigured = true
+					continue
 				}
+				if found != nil && (!slices.Equal(found.Credentials, derivation.Credentials) || found.Encoded != derivation.Encoded || found.Digest != derivation.Digest) {
+					return nil, fmt.Errorf("remote key %s property %s is read by services deriving it differently", state.secret.RemoteKey, property.Property)
+				}
+				found = &derivation
+			}
+			if found != nil && unconfigured {
+				return nil, fmt.Errorf("remote key %s property %s mixes federation and configured sources", state.secret.RemoteKey, property.Property)
 			}
 			if found == nil {
 				continue
@@ -680,6 +694,11 @@ func resolveCredentials(plan *Plan, states []*remoteState, derivations map[strin
 	carried := map[solutionrun.Credential]bool{}
 	for _, state := range states {
 		for property, derivation := range derivations[state.secret.RemoteKey] {
+			if stored, present := state.document[property]; present {
+				if err := derivation.ValidateStored(stored); err != nil {
+					return credentialValues{}, fmt.Errorf("remote key %s property %s has an invalid federation value: %w", state.secret.RemoteKey, property, err)
+				}
+			}
 			if derivation.Digest {
 				continue
 			}
@@ -770,11 +789,10 @@ func planDerived(state *remoteState, property gitops.RenderedSecretProperty, der
 		// render is pinned to its inventory but the federation is derived from the
 		// workspace as it is now, so the two diverge whenever the workspace moved
 		// on: a consumed prefix renamed after the render leaves the old prefix
-		// admitted here and derived nowhere. Name it rather than drop it.
+		// admitted here and derived nowhere. Refuse without quoting stored identities.
 		if dropped := droppedIdentities(derivation, existing); len(dropped) > 0 {
 			return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionRequire,
-				Source: source + ": the stored value also admits " + strings.Join(dropped, ", ") +
-					", which this workspace no longer derives; rewriting it would de-authorize whatever holds them — re-render the environment, or drop them from the store deliberately"}, ""
+				Source: source + ": the stored value also admits identities this workspace no longer derives; refusing to remove them (stored identities withheld)"}, ""
 		}
 		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionUpdate, Source: source + " (stored value no longer encodes them)"}, value
 	default:
@@ -830,33 +848,34 @@ func sharesConfigurationKey(a, b gitops.RenderedSecretProperty) bool {
 // would report the divergence as `keep`, which is the one reading an operator
 // cannot act on.
 func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, states []*remoteState,
-	generators map[string]environments.EnvironmentSecretGenerator, generated map[string]string) (PropertyPlan, string, error) {
+	generators map[string]environments.EnvironmentSecretGenerator, generated map[string]string, keys []string) (PropertyPlan, string, error) {
+	lookup := property
+	lookup.Keys = keys
+	if _, _, err := declaredGenerator(lookup, generators); err != nil {
+		return PropertyPlan{}, "", err
+	}
 	var holders, unread []string
 	var holderValue string
 	for _, other := range states {
-		if other == state {
-			continue
+		for _, candidate := range other.secret.Properties {
+			if (other != state || candidate.Property != property.Property) && !sharesConfigurationKey(lookup, candidate) {
+				continue
+			}
+			location := other.secret.RemoteKey + "#" + candidate.Property
+			if !other.known() {
+				unread = append(unread, location)
+				continue
+			}
+			value, present := other.document[candidate.Property]
+			if !present {
+				continue
+			}
+			if len(holders) > 0 && value != holderValue {
+				return PropertyPlan{}, "", fmt.Errorf("one configuration value cannot be two: different values in %s and %s; resolve it before planning", holders[0], location)
+			}
+			holders = append(holders, location)
+			holderValue = value
 		}
-		index := slices.IndexFunc(other.secret.Properties, func(candidate gitops.RenderedSecretProperty) bool {
-			return sharesConfigurationKey(property, candidate)
-		})
-		if index < 0 {
-			continue
-		}
-		if !other.known() {
-			unread = append(unread, other.secret.RemoteKey)
-			continue
-		}
-		value, present := other.document[other.secret.Properties[index].Property]
-		if !present {
-			continue
-		}
-		if len(holders) > 0 && value != holderValue {
-			return PropertyPlan{}, "", fmt.Errorf("%s holds different values in %s and %s: one configuration value cannot be two; resolve it before planning",
-				sharedKeys(property, other.secret.Properties[index]), holders[0], other.secret.RemoteKey)
-		}
-		holders = append(holders, other.secret.RemoteKey)
-		holderValue = value
 	}
 	if state.known() {
 		if stored, present := state.document[property.Property]; present {
@@ -867,10 +886,11 @@ func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, 
 			return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionKeep, Source: "stored"}, "", nil
 		}
 	}
-	fallback, value, err := fallbackSource(property, generators, generated)
+	fallback, value, err := fallbackSource(lookup, generators, generated)
 	if err != nil {
 		return PropertyPlan{}, "", err
 	}
+	fallback.Keys = property.Keys
 	switch {
 	case !state.known():
 		source := fallback.Source
@@ -888,18 +908,6 @@ func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, 
 	}
 }
 
-// sharedKeys names the configuration keys two properties both carry, for an
-// error about the value they disagree on.
-func sharedKeys(a, b gitops.RenderedSecretProperty) string {
-	var shared []string
-	for _, key := range a.Keys {
-		if configurationKey(key) && slices.Contains(b.Keys, key) {
-			shared = append(shared, key)
-		}
-	}
-	return strings.Join(shared, ", ")
-}
-
 // fallbackSource is what produces a property no remote key holds: a declared
 // generator, or the operator.
 //
@@ -913,18 +921,9 @@ func sharedKeys(a, b gitops.RenderedSecretProperty) string {
 // whichever won would be an accident of ordering, so it is refused.
 func fallbackSource(property gitops.RenderedSecretProperty, generators map[string]environments.EnvironmentSecretGenerator,
 	generated map[string]string) (PropertyPlan, string, error) {
-	var declaredKey string
-	var generator environments.EnvironmentSecretGenerator
-	for _, key := range property.Keys {
-		candidate, declared := generators[key]
-		if !declared {
-			continue
-		}
-		if declaredKey != "" && !reflect.DeepEqual(candidate, generator) {
-			return PropertyPlan{}, "", fmt.Errorf("property %s is read as both %s and %s, which service-secrets.generate declares differently",
-				property.Property, declaredKey, key)
-		}
-		declaredKey, generator = key, candidate
+	declaredKey, generator, err := declaredGenerator(property, generators)
+	if err != nil {
+		return PropertyPlan{}, "", err
 	}
 	if declaredKey == "" {
 		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionRequire,
@@ -985,11 +984,8 @@ func generatorIndex(generators []environments.EnvironmentSecretGenerator, servic
 // before the registrar's digests that admit them. It returns the keys written,
 // which on error are the ones written before it.
 func (plan *Plan) Apply(ctx context.Context, store Store, allowMissing bool) ([]string, error) {
-	if plan.Unverified() {
-		return nil, fmt.Errorf("the plan did not read every existing remote key, so it cannot be applied without overwriting what it never saw")
-	}
-	if required := plan.Required(); len(required) > 0 && !allowMissing {
-		return nil, fmt.Errorf("%d properties have no source and must be supplied first (or pass --allow-missing to write the rest): %s", len(required), strings.Join(required, ", "))
+	if err := plan.ValidateApply(allowMissing); err != nil {
+		return nil, err
 	}
 	var written []string
 	for _, write := range plan.writes {
@@ -999,4 +995,41 @@ func (plan *Plan) Apply(ctx context.Context, store Store, allowMissing bool) ([]
 		written = append(written, write.key)
 	}
 	return written, nil
+}
+
+// ValidateApply checks completeness before confirmation, no-op success or writes.
+func (plan *Plan) ValidateApply(allowMissing bool) error {
+	if plan.Unverified() {
+		return fmt.Errorf("the plan did not read every existing remote key, so it cannot be applied without overwriting what it never saw")
+	}
+	for _, secret := range plan.Secrets {
+		for _, property := range secret.Properties {
+			if property.Action == ActionUnverified {
+				return fmt.Errorf("remote key %s property %s has unverified inputs and cannot be applied", secret.RemoteKey, property.Property)
+			}
+		}
+	}
+	if required := plan.Required(); len(required) > 0 && !allowMissing {
+		return fmt.Errorf("%d properties have no source and must be supplied first (or pass --allow-missing to write the rest): %s", len(required), strings.Join(required, ", "))
+	}
+	return nil
+}
+
+func declaredGenerator(property gitops.RenderedSecretProperty, generators map[string]environments.EnvironmentSecretGenerator) (string, environments.EnvironmentSecretGenerator, error) {
+	var declaredKey string
+	var generator environments.EnvironmentSecretGenerator
+	for _, key := range property.Keys {
+		candidate, declared := generators[key]
+		if !declared {
+			continue
+		}
+		candidateFormat, candidateSize := generatorFormat(&candidate)
+		format, size := generatorFormat(&generator)
+		if declaredKey != "" && (candidateFormat != format || candidateSize != size) {
+			return "", environments.EnvironmentSecretGenerator{}, fmt.Errorf("property %s is read as both %s and %s, which service-secrets.generate declares differently",
+				property.Property, declaredKey, key)
+		}
+		declaredKey, generator = key, candidate
+	}
+	return declaredKey, generator, nil
 }

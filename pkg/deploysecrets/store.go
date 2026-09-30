@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 
@@ -46,8 +47,8 @@ type Description struct {
 type Runner func(ctx context.Context, stdin []byte, name string, args ...string) ([]byte, error)
 
 // ExecRunner runs the command on the host. A failure carries the command's
-// standard error — which the backends' CLIs never fill with a secret value —
-// and never its standard output.
+// status only. Neither standard output nor standard error is safe to print:
+// backend diagnostics and HTTP tracing can include payloads.
 func ExecRunner(ctx context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, name, args...)
 	if stdin != nil {
@@ -57,7 +58,7 @@ func ExecRunner(ctx context.Context, stdin []byte, name string, args ...string) 
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err != nil {
-		return nil, &CommandError{Command: name + " " + firstArguments(args), Stderr: strings.TrimSpace(stderr.String()), Err: err}
+		return nil, &CommandError{Command: name + " " + firstArguments(args), stderr: strings.TrimSpace(stderr.String()), Err: err}
 	}
 	return stdout.Bytes(), nil
 }
@@ -67,15 +68,17 @@ func ExecRunner(ctx context.Context, stdin []byte, name string, args ...string) 
 // act on.
 type CommandError struct {
 	Command string
-	Stderr  string
+	stderr  string
 	Err     error
 }
 
 func (e *CommandError) Error() string {
-	if e.Stderr == "" {
-		return fmt.Sprintf("%s: %v", e.Command, e.Err)
-	}
-	return fmt.Sprintf("%s: %v: %s", e.Command, e.Err, e.Stderr)
+	return fmt.Sprintf("%s failed (backend output withheld)", e.Command)
+}
+
+// Format also protects debug formatting such as %+v and %#v.
+func (e *CommandError) Format(out fmt.State, _ rune) {
+	_, _ = io.WriteString(out, e.Error())
 }
 
 func (e *CommandError) Unwrap() error { return e.Err }
@@ -124,14 +127,14 @@ func ResolveStore(ctx context.Context, run Runner, target ClusterTarget, ref env
 		} `json:"spec"`
 	}
 	if err := json.Unmarshal(output, &store); err != nil {
-		return nil, fmt.Errorf("decode %s %s: %w", ref.Kind, ref.Name, err)
+		return nil, fmt.Errorf("decode %s %s: invalid store document (backend output withheld)", ref.Kind, ref.Name)
 	}
 	if raw, ok := store.Spec.Provider["gcpsm"]; ok {
 		var gcp struct {
 			ProjectID string `json:"projectID"`
 		}
 		if err := json.Unmarshal(raw, &gcp); err != nil {
-			return nil, fmt.Errorf("decode %s %s gcpsm provider: %w", ref.Kind, ref.Name, err)
+			return nil, fmt.Errorf("decode %s %s gcpsm provider: invalid provider configuration (backend output withheld)", ref.Kind, ref.Name)
 		}
 		if gcp.ProjectID == "" {
 			return nil, fmt.Errorf("%s %s declares no gcpsm projectID", ref.Kind, ref.Name)
@@ -211,8 +214,8 @@ func notFound(err error) bool {
 	if !errors.As(err, &command) {
 		return false
 	}
-	return strings.Contains(command.Stderr, "NOT_FOUND") ||
-		(strings.Contains(command.Stderr, "not found") && strings.Contains(command.Stderr, "Secret ["))
+	return strings.Contains(command.stderr, "NOT_FOUND") ||
+		(strings.Contains(command.stderr, "not found") && strings.Contains(command.stderr, "Secret ["))
 }
 
 // decodeDocument parses a remote value as the JSON object of string properties
@@ -221,9 +224,12 @@ func notFound(err error) bool {
 func decodeDocument(key string, payload []byte) (map[string]string, error) {
 	document := map[string]string{}
 	if len(bytes.TrimSpace(payload)) == 0 {
-		return document, nil
+		return nil, fmt.Errorf("remote key %s holds an empty document", key)
 	}
 	if err := json.Unmarshal(payload, &document); err != nil {
+		return nil, fmt.Errorf("remote key %s does not hold a JSON object of string properties", key)
+	}
+	if document == nil {
 		return nil, fmt.Errorf("remote key %s does not hold a JSON object of string properties", key)
 	}
 	return document, nil
