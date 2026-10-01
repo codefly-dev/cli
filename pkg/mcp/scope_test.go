@@ -58,3 +58,27 @@ func TestDeployBoundaryGuardCatchesADeployTool(t *testing.T) {
 		}
 	}
 }
+
+// TestPrereleaseGateIsExposedAsATool records the opposite decision to the one
+// above, for the same reason it is written down: an agent that writes an agent pin
+// is exactly who trips the prerelease gate, and it should be able to check its own
+// edit before a human reviews the pull request. The tool is read-only — it reads
+// committed text and changes nothing — which is what makes it safe to expose where
+// a deploy verb is not.
+func TestPrereleaseGateIsExposedAsATool(t *testing.T) {
+	server, err := NewServer(context.Background(), "test-version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	for _, tool := range server.toolbox.Definitions() {
+		if tool.Name == "check_prerelease_versions" {
+			if !strings.Contains(tool.Description, "codefly ci prerelease") {
+				t.Error("the tool does not name the command it mirrors, so an agent cannot tell a human how to reproduce it")
+			}
+			return
+		}
+	}
+	t.Error("check_prerelease_versions is not registered")
+}

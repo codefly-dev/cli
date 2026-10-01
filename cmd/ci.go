@@ -13,6 +13,7 @@ var CiCmd = &cobra.Command{
 
 func init() {
 	CiCmd.AddCommand(ci.PlanCmd)
+	CiCmd.AddCommand(ci.PrereleaseCmd)
 	CiCmd.AddCommand(ci.RunCmd)
 	CiCmd.AddCommand(ci.LintCmd)
 	CiCmd.AddCommand(ci.CompileCmd)

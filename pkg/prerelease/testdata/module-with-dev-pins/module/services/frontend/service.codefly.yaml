@@ -1,0 +1,7 @@
+name: frontend
+version: 0.0.0
+agent:
+    kind: codefly:service
+    name: nextjs
+    version: 0.0.159-dev.1ed5001fd8b4
+    publisher: codefly.dev

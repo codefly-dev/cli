@@ -1,0 +1,7 @@
+name: auth-gateway
+version: 0.0.0
+agent:
+    kind: codefly:service
+    name: go-grpc
+    version: 0.1.48-dev.e87db5e08865
+    publisher: codefly.dev

@@ -1,0 +1,7 @@
+name: documents
+layout: modules
+modules:
+    - name: documents
+      version: 0.0.24
+    - name: runtime
+      version: latest
