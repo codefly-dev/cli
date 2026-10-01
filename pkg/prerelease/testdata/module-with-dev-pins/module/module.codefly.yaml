@@ -1,0 +1,9 @@
+kind: module
+name: saas-starter
+service-entry: frontend
+services:
+    - name: accounts
+    - name: auth-gateway
+    - name: cache
+    - name: frontend
+    - name: store

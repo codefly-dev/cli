@@ -1,0 +1,9 @@
+name: store
+version: 0.0.0
+agent:
+    kind: codefly:service
+    name: postgres
+    # STOPGAP, labelled: a dev prerelease. A comment does not make a committed
+    # service pin acceptable — only an agent-overrides entry may carry one.
+    version: 0.0.139-dev.9785d12f3700
+    publisher: codefly.dev

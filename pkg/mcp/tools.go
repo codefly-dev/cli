@@ -12,6 +12,7 @@ import (
 	"github.com/Masterminds/semver"
 	blangsemver "github.com/blang/semver"
 	"github.com/codefly-dev/cli/pkg/agentkinds"
+	"github.com/codefly-dev/cli/pkg/prerelease"
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
@@ -33,6 +34,30 @@ func (s *Server) registerTools() {
 			Properties: map[string]PropertySchema{},
 		},
 	}, s.workspaceInfo)
+
+	// Exposed deliberately: an agent writing an agent pin is exactly who trips
+	// the prerelease gate, and this lets it check its own edit before a human
+	// reviews the pull request. Read-only — it reads committed text and changes
+	// nothing.
+	// Registration cannot fail for a distinct name, and the neighbours here do not
+	// check it either; discarded explicitly rather than silently.
+	_ = s.RegisterTool(Tool{
+		Name:        "check_prerelease_versions",
+		Description: "Check the workspace repository for prerelease version pins that must not reach the default branch (semver prereleases like 0.1.48-dev.abc, Go pseudo-versions). Returns the same report as `codefly ci prerelease`. Pass release=true for the stricter scope a tag is cut in, where even a labelled agent-overrides dev pin is refused.",
+		InputSchema: InputSchema{
+			Type: "object",
+			Properties: map[string]PropertySchema{
+				"release": {
+					Type:        schemaTypeString,
+					Description: "\"true\" to use the release scope, which permits no prerelease anywhere, not even a labelled agent-overrides entry",
+				},
+				"go_modules": {
+					Type:        schemaTypeString,
+					Description: "\"true\" to also refuse first-party Go pseudo-versions in go.mod instead of only reporting them",
+				},
+			},
+		},
+	}, s.checkPrereleaseVersions)
 
 	s.RegisterTool(Tool{
 		Name:        "list_modules",
@@ -256,6 +281,27 @@ func (s *Server) registerTools() {
 // workspaceInfo returns information about the current workspace
 // workspaceInfo summarizes the workspace. Delegates enumeration to the control
 // plane (Phase-3 adapter); this handler only shapes the JSON.
+// checkPrereleaseVersions runs the prerelease gate over the workspace's own
+// repository. It is the same scan `codefly ci prerelease` performs, so an agent
+// and the pull request it opens cannot disagree about whether a pin is acceptable.
+func (s *Server) checkPrereleaseVersions(_ context.Context, args map[string]string) ([]Content, error) {
+	if s.workspace == nil {
+		return []Content{TextContent("No workspace loaded. Run this from a codefly workspace directory.")}, nil
+	}
+	result, err := prerelease.Scan(s.workspace.Dir(), prerelease.Options{
+		Release:   strings.EqualFold(strings.TrimSpace(args["release"]), "true"),
+		GoModules: strings.EqualFold(strings.TrimSpace(args["go_modules"]), "true"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	payload, err := result.JSON()
+	if err != nil {
+		return nil, err
+	}
+	return []Content{TextContent(string(payload))}, nil
+}
+
 func (s *Server) workspaceInfo(ctx context.Context, args map[string]string) ([]Content, error) {
 	inv, err := s.plane.Inventory(ctx)
 	if err != nil {

@@ -801,6 +801,7 @@ Subcommands:
 - [`codefly ci deploy`](#codefly-ci-deploy)
 - [`codefly ci lint`](#codefly-ci-lint)
 - [`codefly ci plan`](#codefly-ci-plan)
+- [`codefly ci prerelease`](#codefly-ci-prerelease)
 - [`codefly ci push`](#codefly-ci-push)
 - [`codefly ci run`](#codefly-ci-run)
 - [`codefly ci test`](#codefly-ci-test)
@@ -924,6 +925,59 @@ Flags:
       --replay                    Include validated execution plans and candidate content identity (use --format json; save outside the repository)
       --runtime-context string    Runtime context bound by a replay plan (default "free")
       --suite strings             Named test suites bound by a replay plan
+```
+
+## `codefly ci prerelease`
+
+Refuse a prerelease version pin, so one never reaches the default branch or a release
+
+```
+Fail when a committed version pin names a build that was never released.
+
+A prerelease version — a semver prerelease component (0.1.48-dev.e87db5e08865,
+-rc.1, -alpha) or a Go pseudo-version (v0.0.0-20260930123456-abcdef123456, the
+same defect spelled differently) — belongs on a branch or in a gitignored
+codefly.local.yaml, never on the default branch, and therefore never inside a
+released tag. Detection is the shape of the version, never the literal "dev".
+
+What is read, in files git tracks and nothing else:
+
+  *.codefly.yaml          every version: key at any depth — a service's
+                          agent.version, a workspace's modules[].version and
+                          solutions[].version, a module's or library's own
+                          version
+  workspace.codefly.yaml  the top-level agent-overrides block, whose values are
+                          versions under an agent identity
+  go.mod                  first-party requires (codefly-dev/*, obin-ai/*),
+                          reported but not refused unless --go-modules
+
+testdata/ trees are skipped, because a fixture's job can be to carry a bad pin;
+--include-testdata reads them.
+
+The one exception is agent-overrides, the sanctioned prerelease carrier a dev
+loop publishes into with codefly publish dev and codefly update workspace
+--agent-override. A prerelease is allowed there on the default branch when the
+entry carries a label — a comment naming the issue it stands in for — and is
+refused under --release, which is the scope a tag is cut in. That is what
+guarantees the property a released tag has to have.
+
+Needs no workspace, no agent and no network: it reads committed text, so it runs
+in a fresh clone in milliseconds.
+```
+
+```
+codefly ci prerelease [flags]
+```
+
+Flags:
+
+```
+      --dir string            Repository directory to scan (default: current directory)
+      --first-party strings   Go module path prefixes treated as first-party (default [github.com/codefly-dev/,github.com/obin-ai/])
+      --format string         Report format: text or json (default "text")
+      --go-modules            Also refuse first-party Go pseudo-versions in go.mod, instead of only reporting them
+      --include-testdata      Also scan testdata/ trees, whose fixtures often carry a bad pin on purpose
+      --release               Release scope: refuse a prerelease in agent-overrides too, so a tag cannot be cut over a dev override
 ```
 
 ## `codefly ci push`

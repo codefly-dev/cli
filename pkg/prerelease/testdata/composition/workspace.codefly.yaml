@@ -1,0 +1,29 @@
+name: platform
+layout: modules
+modules:
+    - name: saas
+      version: 0.0.85
+    - name: runtime
+      version: 0.1.5
+    - name: robin
+      # A composed module at a prerelease: the composition would ship a module
+      # version nobody released.
+      version: 0.1.8-rc.1
+solutions:
+    - name: wiki
+      version: 0.0.0-20260930123456-abcdef123456
+
+agent-overrides:
+    # DEV PIN, labelled: codefly-dev/service-go#117 — the `go` agent ran
+    # `go mod download` inside the container, where no credential exists for a
+    # private module. Removed before anything here is tagged (docs/release.md).
+    codefly.dev/go: 0.0.63-dev.bd71dd90cc10
+    # DEV PIN, labelled: codefly-dev/service-go-grpc#146 — the render advertised a
+    # port only for endpoints whose handler the agent scaffolds.
+    # Removed before anything here is tagged (docs/release.md).
+    codefly.dev/go-grpc: 0.1.48-dev.42ce38050224
+    codefly.dev/nextjs: 0.0.159-dev.1ed5001fd8b4
+    # A comment that names no issue is a remark, not a label: it says nothing
+    # about what has to ship before the override can go.
+    codefly.dev/python-fastapi: 0.0.110-dev.d7feea072dc8
+    codefly.dev/redis: 0.0.94

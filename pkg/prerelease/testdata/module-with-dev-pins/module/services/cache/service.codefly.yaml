@@ -1,0 +1,7 @@
+name: cache
+version: 0.0.0
+agent:
+    kind: codefly:service
+    name: redis
+    version: 0.0.94
+    publisher: codefly.dev

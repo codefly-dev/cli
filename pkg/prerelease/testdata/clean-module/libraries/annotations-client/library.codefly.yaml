@@ -1,0 +1,9 @@
+name: annotations-client
+version: 0.0.0
+dependencies:
+    - name: annotations
+      # A range constraint, not a version: it names no build, so it is not a
+      # prerelease and must not be flagged.
+      version: ^0.0.1
+    - name: runtime
+      version: ~1.2

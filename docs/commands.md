@@ -2008,6 +2008,14 @@ or pin one service's `agent.version` in its `service.codefly.yaml`. Both are
 written by a command rather than by hand — `codefly update workspace
 --agent-override <publisher>/<name>=<version>` and `codefly update service
 <service> --agent-version <version>` (see [`codefly update`](#codefly-update)).
+
+**Which of the two survives a merge.** `codefly ci prerelease` refuses a dev version in a
+service's `agent.version` on the default branch, because a tag cut from that branch would ship a
+module pinning an unreleased agent — which is exactly what `module-saas-starter` v0.0.85 and
+`module-runtime` v0.1.5 did. Use a service pin on a branch, for as long as the branch lives. The
+committed route is the workspace-wide `agent-overrides` entry **with a label**: a comment naming
+the issue it stands in for. Even that is refused by `codefly ci prerelease --release`, so a dev
+build cannot survive into a tag. See [prerelease-gate.md](prerelease-gate.md).
 `codefly agent list` reports such a pin as `dev build of <release>`, not as
 behind that release: it was built on top of it.
 `codefly doctor workspace` warns (`agent_dev_build`) about every service running
@@ -2611,6 +2619,7 @@ codefly ci compile --changed-file <path>          # Run native compile/typecheck
 codefly ci test --base <revision>                 # Run tests for affected services
 codefly ci test --all --suite integration         # Use an advertised named suite
 codefly ci build --base <revision>                # Build deployable artifacts for affected services
+codefly ci prerelease                            # Refuse a prerelease version pin (see below)
 ```
 
 All selection flags are provider-neutral. Use `--all` for an explicit full
@@ -2651,6 +2660,41 @@ covers, so a local build is never a claim about the platforms it did not build.
 It is opt-in because collecting evidence runs a container scanner and
 needs an agent that serves image-scope SBOMs. The `sbom` phase is unchanged and
 remains source-scoped evidence, which never counts as image coverage.
+
+### `codefly ci prerelease`
+
+Refuse a prerelease version pin, so one never reaches the default branch and therefore never
+reaches a released tag. Full reference: [prerelease-gate.md](prerelease-gate.md).
+
+```bash
+codefly ci prerelease                      # on every pull request
+codefly ci prerelease --release            # before cutting a tag: no exception at all
+codefly ci prerelease --go-modules         # also refuse first-party Go pseudo-versions
+codefly ci prerelease --dir ../module-runtime --format json
+```
+
+Detection is the *shape* of the version, never the literal `dev`: a semver prerelease component
+(`0.1.48-dev.e87db5e08865`, `-rc.1`, `-alpha`) and a Go pseudo-version
+(`v0.0.0-20260930123456-abcdef123456`) are the same defect spelled differently. A range
+constraint (`^0.0.1`) and the `latest` sentinel name no build and are left alone.
+
+It reads every `version:` key in every tracked `*.codefly.yaml` at any depth — a service's
+`agent.version`, a workspace's `modules[].version` and `solutions[].version`, a module's or
+library's own version — plus `workspace.codefly.yaml`'s `agent-overrides` block and first-party
+requires in `go.mod`. Only files git tracks, which is also why `codefly.local.yaml` is outside
+the gate by construction; `testdata/` trees are skipped unless `--include-testdata`.
+
+`agent-overrides` is the one sanctioned carrier, because `codefly publish dev` and `codefly
+update workspace --agent-override` are a documented loop that has to reach a shared environment.
+A prerelease is permitted there on the default branch when the entry carries a label — a comment
+naming the issue it stands in for — and refused under `--release`, which is the scope a tag is
+cut in. First-party `go.mod` pseudo-versions are reported rather than refused unless
+`--go-modules`: they are routine in trees whose agent pins are clean, and an `// indirect` one
+moves only when its dependency releases.
+
+Needs no workspace, no agent and no network. Failure names the file, the line, the key and the
+version, and says what to do instead; `--format json` emits the same report as a
+schema-versioned payload. Agents reach it over MCP as `check_prerelease_versions`.
 
 ### Verified result reuse
 
