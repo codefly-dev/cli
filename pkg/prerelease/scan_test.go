@@ -30,10 +30,9 @@ func scanFixture(t *testing.T, fixture string, options Options) *Result {
 }
 
 // TestTaggedModulesWithDevAgentPinsAreRefused is the regression the gate exists
-// for. The fixture is codefly-dev/module-saas-starter v0.0.85 and
-// obin-ai/module-runtime v0.1.5 as those tags actually shipped: five service
-// agent pins at dev prereleases, each with the DEV PIN comment that was supposed
-// to be enough. A comment is not a gate, which is why both tags were cut anyway.
+// for: the shape two released module tags actually shipped — five service agent
+// pins at dev prereleases, each with the DEV PIN comment that was supposed to be
+// enough. A comment is not a gate, which is why both tags were cut anyway.
 func TestTaggedModulesWithDevAgentPinsAreRefused(t *testing.T) {
 	result := scanFixture(t, "module-with-dev-pins", Options{})
 	if result.OK() {
@@ -64,11 +63,11 @@ func TestTaggedModulesWithDevAgentPinsAreRefused(t *testing.T) {
 	}
 }
 
-// TestCleanModulesPass is the other half of the same regression: the four module
-// releases that were verified clean must not fail. Each pins released agents, and
-// each carries first-party Go pseudo-versions anyway — three of the four real ones
-// do — so this is also what pins the go.mod policy. A gate that cannot tell this
-// fixture from the one above is not a gate, it is a grep for "-".
+// TestCleanModulesPass is the other half of the same regression: a module release
+// verified clean must not fail. It pins released agents and carries first-party Go
+// pseudo-versions anyway — three of the four real clean releases did — so this is
+// also what pins the go.mod policy. A gate that cannot tell this fixture from the
+// one above is not a gate, it is a grep for "-".
 func TestCleanModulesPass(t *testing.T) {
 	result := scanFixture(t, "clean-module", Options{})
 	if !result.OK() {
@@ -116,19 +115,19 @@ func TestThirdPartyPseudoVersionsAreNotOurBusiness(t *testing.T) {
 	}
 	var sawFirstParty bool
 	for _, finding := range result.Findings {
-		if finding.Carrier == CarrierGoModule && strings.Contains(finding.Key, "codefly-dev/core") {
+		if finding.Carrier == CarrierGoModule && strings.Contains(finding.Key, "acme/platform-core") {
 			sawFirstParty = true
 		}
 	}
 	if !sawFirstParty {
-		t.Error("the first-party core pseudo-version in the same file was not found, so the previous check passes vacuously")
+		t.Error("the first-party pseudo-version in the same file was not found, so the previous check passes vacuously")
 	}
 }
 
 // TestLabelledAgentOverrideIsPermittedOnMainAndRefusedForARelease is the design
-// decision, stated as behaviour: platform-obin's documented dev loop keeps
-// working on the default branch, and the release scope is what guarantees the
-// property that actually broke — a released tag free of prereleases.
+// decision, stated as behaviour: a documented dev loop keeps working on the
+// default branch, and the release scope is what guarantees the property that
+// actually broke — a released tag free of prereleases.
 func TestLabelledAgentOverrideIsPermittedOnMainAndRefusedForARelease(t *testing.T) {
 	onMain := scanFixture(t, "composition", Options{})
 	wantBlocking := []string{
@@ -387,5 +386,81 @@ func TestMalformedFilesAreLeftToTheCommandThatLoadsThem(t *testing.T) {
 	}
 	if len(result.Findings) != 0 {
 		t.Errorf("got findings from malformed files: %v", result.Findings)
+	}
+}
+
+// TestFirstPartyComesFromTheRepositoryNotFromTheCLI is the correction this file
+// exists to hold. The gate shipped with two GitHub organisations hardcoded in the
+// binary, which was wrong in kind: a generic tool cannot name the products that
+// use it, the list is stale the moment somebody adds an organisation, and every
+// repository that is not one of those two silently got a narrower check.
+//
+// First-party is now whatever owner the scanned repository's own go.mod module
+// paths publish under — so a repository the CLI has never heard of gets the same
+// check as one it was written against.
+func TestFirstPartyComesFromTheRepositoryNotFromTheCLI(t *testing.T) {
+	result := scanFixture(t, "clean-module", Options{GoModules: true})
+	if want := []string{"github.com/acme/"}; len(result.FirstParty) != 1 || result.FirstParty[0] != want[0] {
+		t.Fatalf("derived first-party %v, want %v — the fixture's go.mod publishes under github.com/acme/", result.FirstParty, want)
+	}
+	if len(result.Blocking()) == 0 {
+		t.Fatal("the derived owner matched nothing, so the derivation is not actually in use")
+	}
+	for _, finding := range result.Blocking() {
+		if !strings.Contains(finding.Key, "github.com/acme/") {
+			t.Errorf("%s: judged %q first-party, which the fixture does not publish", finding.Location(), finding.Key)
+		}
+	}
+
+	// Nothing in the binary names an owner: a repository publishing under an owner
+	// no fixture mentions is judged by its own go.mod all the same.
+	dir := t.TempDir()
+	const mod = "module example.test/someone-else/thing\n\ngo 1.26\n\nrequire example.test/someone-else/lib v0.0.0-20260930123456-abcdef123456\n"
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere, err := Scan(dir, Options{GoModules: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(elsewhere.Blocking()) != 1 {
+		t.Fatalf("an unrelated owner's repository got %d findings, want 1:\n%s", len(elsewhere.Blocking()), elsewhere.Report())
+	}
+	if got := elsewhere.FirstParty; len(got) != 1 || got[0] != "example.test/someone-else/" {
+		t.Errorf("derived %v", got)
+	}
+}
+
+// TestExplicitFirstPartyOverridesTheDerivation, for a repository whose siblings
+// are published under an owner it does not itself publish under.
+func TestExplicitFirstPartyOverridesTheDerivation(t *testing.T) {
+	result := scanFixture(t, "clean-module", Options{GoModules: true, FirstParty: []string{"github.com/nobody/"}})
+	if !result.OK() {
+		t.Errorf("an explicit prefix that matches nothing still produced findings:\n%s", result.Report())
+	}
+	if len(result.FirstParty) != 1 || result.FirstParty[0] != "github.com/nobody/" {
+		t.Errorf("FirstParty is %v, want the caller's value", result.FirstParty)
+	}
+}
+
+// TestOwnerPrefixNeedsAnOwnerSegment: a module path with nothing to take an owner
+// from contributes no prefix, rather than a prefix that matches half the world.
+func TestOwnerPrefixNeedsAnOwnerSegment(t *testing.T) {
+	for path, want := range map[string]string{
+		"github.com/acme/widgets":                   "github.com/acme/",
+		"github.com/acme/widgets/services/api/code": "github.com/acme/",
+		"example.test/someone-else/thing":           "example.test/someone-else/",
+		"example.com/thing":                         "",
+		"localmodule":                               "",
+		"":                                          "",
+	} {
+		if got := ownerPrefix(path); got != want {
+			t.Errorf("ownerPrefix(%q) = %q, want %q", path, got, want)
+		}
+	}
+	// The trailing slash is load-bearing: without it one owner's prefix matches
+	// another whose name merely starts the same way.
+	if isFirstParty("github.com/acme-corp/widgets", []string{ownerPrefix("github.com/acme/widgets")}) {
+		t.Error("github.com/acme/ matched github.com/acme-corp/")
 	}
 }

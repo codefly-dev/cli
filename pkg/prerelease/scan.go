@@ -11,7 +11,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"golang.org/x/mod/modfile"
 )
+
+// goModFilename is the file whose requires the go.mod scan reads, and whose own
+// `module` path says which owners this repository publishes under.
+const goModFilename = "go.mod"
 
 // Carrier is the kind of declaration a version was found in. It is what decides
 // whether the gate refuses the finding; see the package comment.
@@ -28,13 +34,54 @@ const (
 	CarrierGoModule Carrier = "go-module"
 )
 
-// DefaultFirstParty are the module path prefixes whose pseudo-versions are
-// first-party to this fleet: a prerelease of something the fleet itself
-// publishes and could instead release. A third-party pseudo-version is somebody
-// else's release cadence and is none of this gate's business.
-var DefaultFirstParty = []string{
-	"github.com/codefly-dev/",
-	"github.com/obin-ai/",
+// firstPartyPrefixes are the module path prefixes whose pseudo-versions this
+// gate treats as first-party: a prerelease of something the scanned repository's
+// own owner publishes, and could instead release. A third-party pseudo-version
+// is somebody else's release cadence and is none of this gate's business.
+//
+// Derived from the repository, never carried by the CLI. The owner prefix of
+// every go.mod's own `module` path is first-party to that repository:
+//
+//	module github.com/acme/widgets/services/api/code   ->  github.com/acme/
+//
+// An earlier version of this gate shipped a hardcoded list of two GitHub
+// organisations instead. That was wrong in kind, not just in content: a generic
+// tool cannot name the products that happen to use it, the list is stale the
+// moment anyone adds an organisation, and every repository in the world that is
+// not one of those two got a silently narrower check. A repository that spans
+// several owners names them with Options.FirstParty.
+func firstPartyPrefixes(dir string, files []string) []string {
+	seen := map[string]bool{}
+	var prefixes []string
+	for _, file := range files {
+		if path.Base(file) != goModFilename {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(file)))
+		if err != nil {
+			continue
+		}
+		prefix := ownerPrefix(modfile.ModulePath(content))
+		if prefix == "" || seen[prefix] {
+			continue
+		}
+		seen[prefix] = true
+		prefixes = append(prefixes, prefix)
+	}
+	sort.Strings(prefixes)
+	return prefixes
+}
+
+// ownerPrefix is the "<host>/<owner>/" a module path belongs to, or "" when the
+// path has no owner segment to speak of (a bare "example.com/thing", a local
+// module name). The trailing slash is what keeps github.com/acme/ from matching
+// github.com/acme-corp/widgets.
+func ownerPrefix(modulePath string) string {
+	segments := strings.Split(modulePath, "/")
+	if len(segments) < 3 || segments[0] == "" || segments[1] == "" {
+		return ""
+	}
+	return segments[0] + "/" + segments[1] + "/"
 }
 
 // Options configures a scan.
@@ -58,15 +105,19 @@ type Options struct {
 	// testdata — and the flag exists so the exclusion is a choice rather than a
 	// blind spot.
 	IncludeTestdata bool
-	// FirstParty overrides DefaultFirstParty.
+	// FirstParty overrides the owners derived from the repository's own go.mod
+	// module paths — for a repository whose siblings are published under an owner
+	// it does not itself publish under.
 	FirstParty []string
 }
 
-func (options Options) firstParty() []string {
+// firstParty is the prefixes to use, preferring what the caller named over what
+// the repository says about itself.
+func (options Options) firstParty(derived []string) []string {
 	if len(options.FirstParty) > 0 {
 		return options.FirstParty
 	}
-	return DefaultFirstParty
+	return derived
 }
 
 // Finding is one prerelease version in one declaration.
@@ -119,6 +170,11 @@ type Result struct {
 	Tracked bool
 	// Options are the options the scan ran with.
 	Options Options
+	// FirstParty are the module path prefixes the scan treated as first-party,
+	// either named by the caller or derived from the repository's own go.mod
+	// module paths. Reported so a run can say which owners it judged rather than
+	// leaving the reader to guess why a pseudo-version was passed over.
+	FirstParty []string
 }
 
 // Blocking is the findings that fail the scan.
@@ -164,7 +220,13 @@ func Scan(dir string, options Options) (*Result, error) {
 	if !options.IncludeTestdata {
 		files = withoutTestdata(files)
 	}
-	result := &Result{Dir: absolute, Files: files, Tracked: tracked, Options: options}
+	result := &Result{
+		Dir:        absolute,
+		Files:      files,
+		Tracked:    tracked,
+		Options:    options,
+		FirstParty: options.firstParty(firstPartyPrefixes(absolute, files)),
+	}
 	for _, file := range files {
 		content, err := os.ReadFile(filepath.Join(absolute, filepath.FromSlash(file)))
 		if err != nil {
@@ -175,7 +237,7 @@ func Scan(dir string, options Options) (*Result, error) {
 			}
 			return nil, fmt.Errorf("read %s: %w", file, err)
 		}
-		findings, err := scanFile(file, content, options)
+		findings, err := scanFile(file, content, options, result.FirstParty)
 		if err != nil {
 			return nil, err
 		}
@@ -193,10 +255,10 @@ func Scan(dir string, options Options) (*Result, error) {
 	return result, nil
 }
 
-func scanFile(file string, content []byte, options Options) ([]Finding, error) {
+func scanFile(file string, content []byte, options Options, firstParty []string) ([]Finding, error) {
 	switch {
-	case path.Base(file) == "go.mod":
-		return scanGoMod(file, content, options)
+	case path.Base(file) == goModFilename:
+		return scanGoMod(file, content, options, firstParty)
 	case isCodeflyConfig(file):
 		return scanCodeflyConfig(file, content, options)
 	}
@@ -288,7 +350,7 @@ func underTestdata(file string) bool {
 func keepScannable(files []string) []string {
 	var kept []string
 	for _, file := range files {
-		if path.Base(file) == "go.mod" || isCodeflyConfig(file) {
+		if path.Base(file) == goModFilename || isCodeflyConfig(file) {
 			kept = append(kept, file)
 		}
 	}

@@ -46,8 +46,9 @@ What is read, in files git tracks and nothing else:
                           version
   workspace.codefly.yaml  the top-level agent-overrides block, whose values are
                           versions under an agent identity
-  go.mod                  first-party requires (codefly-dev/*, obin-ai/*),
-                          reported but not refused unless --go-modules
+  go.mod                  requires under an owner this repository itself
+                          publishes under, derived from its own go.mod module
+                          paths; reported but not refused unless --go-modules
 
 testdata/ trees are skipped, because a fixture's job can be to carry a bad pin;
 --include-testdata reads them.
@@ -71,7 +72,7 @@ in a fresh clone in milliseconds.`,
   codefly ci prerelease --go-modules
 
   # A repository elsewhere, machine-readable
-  codefly ci prerelease --dir ../module-runtime --format json`,
+  codefly ci prerelease --dir ../some-module --format json`,
 	Args: cobra.NoArgs,
 	RunE: runPrereleaseCommand,
 }
@@ -143,6 +144,11 @@ func runPrereleaseCommand(cmd *cobra.Command, _ []string) error {
 	}
 
 	cli.Header(1, "Codefly prerelease gate (%s scope)", result.Scope())
+	if len(result.FirstParty) > 0 {
+		// Said rather than assumed: which owners were judged first-party decides
+		// which go.mod requires were looked at, and it is derived, not fixed.
+		cli.Info("first-party owners: %s", strings.Join(result.FirstParty, " "))
+	}
 	if !result.Tracked {
 		// Said out loud rather than silently widened: outside a git work tree the
 		// scan cannot tell a committed file from a local one, so a finding may be
@@ -171,6 +177,6 @@ func init() {
 	PrereleaseCmd.Flags().String("format", prereleaseFormatText, "Report format: text or json")
 	PrereleaseCmd.Flags().Bool("release", false, "Release scope: refuse a prerelease in agent-overrides too, so a tag cannot be cut over a dev override")
 	PrereleaseCmd.Flags().Bool("go-modules", false, "Also refuse first-party Go pseudo-versions in go.mod, instead of only reporting them")
-	PrereleaseCmd.Flags().StringSlice("first-party", prerelease.DefaultFirstParty, "Go module path prefixes treated as first-party")
+	PrereleaseCmd.Flags().StringSlice("first-party", nil, "Go module path prefixes treated as first-party (default: the owners this repository's own go.mod module paths publish under)")
 	PrereleaseCmd.Flags().Bool("include-testdata", false, "Also scan testdata/ trees, whose fixtures often carry a bad pin on purpose")
 }

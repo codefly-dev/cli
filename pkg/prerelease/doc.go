@@ -10,12 +10,13 @@
 // depends on an unreleased artifact, and every consumer of that tag inherits the
 // dependency without being told.
 //
-// That is not a hypothetical. module-saas-starter v0.0.85 and module-runtime
-// v0.1.5 were tagged carrying dev agent pins; obin-ai/platform-obin's release
-// procedure then cannot drop its own agent-overrides, because its step 2 rests
-// on "a module released after the agent fix pins the released agent itself", and
-// those modules do not. The pin cost one line at the PR that wrote it and two
-// module release rounds afterwards.
+// That is not a hypothetical. Of six module tags cut in one release round, two
+// carried dev agent pins. A composition downstream of them could then not
+// complete its own release, because its procedure rests on "a module released
+// after the agent fix pins the released agent itself" — and those modules did
+// not. The pin cost one line at the pull request that wrote it and two further
+// module release rounds afterwards. Every one of those pins carried a comment
+// saying to move it before tagging; a comment is not a gate.
 //
 // # What is scanned
 //
@@ -30,29 +31,35 @@
 //     known schema means a new versioned field is covered the day it is added.
 //   - workspace.codefly.yaml's top-level agent-overrides block, whose values are
 //     versions under an agent identity rather than under a `version:` key.
-//   - go.mod: first-party requires (see [DefaultFirstParty]).
+//   - go.mod: requires under an owner the repository itself publishes under (see
+//     [firstPartyPrefixes]).
+//
+// Nothing here is specific to any product, workspace or organisation. The gate
+// is told what to judge by the repository in front of it: the owners it treats as
+// first-party come from that repository's own go.mod module paths, and the
+// agent-overrides exception is recognised by the shape of the declaration rather
+// than by who wrote it.
 //
 // # Carriers, and why they are not all refused alike
 //
 // [CarrierConfig] is refused outright: a prerelease there is the defect above.
 //
-// [CarrierAgentOverride] is the one sanctioned carrier. platform-obin's
-// docs/release.md documents a dev loop that publishes an agent with
-// `codefly publish dev` and pins it in agent-overrides, and
-// `codefly update workspace --agent-override` exists to write it; that loop also
-// has to reach a shared environment, which a gitignored overlay cannot do. So a
-// prerelease is allowed there on the default branch when the entry carries a
-// label — a comment naming the issue it stands in for — and refused under
-// [Options.Release], which is the scope a tag is cut in. That turns
-// release.md's "drop every dev override before tagging" step, which was never
-// enforced, into a gate.
+// [CarrierAgentOverride] is the one sanctioned carrier. A dev loop publishes an
+// agent build with `codefly publish dev` and pins it in agent-overrides, which is
+// what `codefly update workspace --agent-override` exists to write; that loop also
+// has to reach a shared environment, which a gitignored machine-local overlay
+// cannot do. So a prerelease is allowed there on the default branch when the
+// entry carries a label — a comment naming the issue it stands in for — and
+// refused under [Options.Release], which is the scope a tag is cut in. That turns
+// "drop every dev override before tagging", which a release procedure can ask for
+// but not enforce, into a gate.
 //
 // [CarrierGoModule] is reported and not refused unless [Options.GoModules] asks
 // for it. First-party Go pseudo-versions are pervasive in trees that are
-// otherwise clean — module-robin v0.1.7, module-annotations v0.2.9 and
-// module-document-store v0.0.24 all carry them, and all three are releases whose
-// agent pins are correct — and many arrive as `// indirect` entries no change in
-// the repository can move. Refusing them by default would fail every repository
-// in the fleet on the day the gate landed, which is how a gate gets switched
-// off. They are surfaced so a repository can tighten at its own pace.
+// otherwise clean: of four module releases verified to have correct agent pins,
+// three carried them — 27, 9 and 3 of them — and many arrive as `// indirect`
+// entries no change in the repository can move. Refusing them by default would
+// fail three of this package's own clean fixtures and every comparable repository
+// on the day the gate landed, which is how a gate gets switched off. They are
+// surfaced so a repository can tighten at its own pace.
 package prerelease

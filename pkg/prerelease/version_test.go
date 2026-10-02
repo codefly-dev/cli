@@ -56,7 +56,7 @@ func TestLabelledRequiresAnIssueReference(t *testing.T) {
 	labelled := []string{
 		"# DEV PIN, labelled: codefly-dev/service-go#117 — the `go` agent ran `go mod download` inside the container.",
 		"DEV PIN: see #146, removed before tagging",
-		"stands in for obin-ai/module-runtime#188",
+		"stands in for acme/runtime#188",
 	}
 	for _, comment := range labelled {
 		if !Labelled(comment) {

@@ -1,7 +1,7 @@
-name: annotations-client
+name: client-sdk
 version: 0.0.0
 dependencies:
-    - name: annotations
+    - name: records
       # A range constraint, not a version: it names no build, so it is not a
       # prerelease and must not be flagged.
       version: ^0.0.1

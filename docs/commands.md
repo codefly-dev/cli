@@ -2013,8 +2013,8 @@ written by a command rather than by hand — `codefly update workspace
 
 **Which of the two survives a merge.** `codefly ci prerelease` refuses a dev version in a
 service's `agent.version` on the default branch, because a tag cut from that branch would ship a
-module pinning an unreleased agent — which is exactly what `module-saas-starter` v0.0.85 and
-`module-runtime` v0.1.5 did. Use a service pin on a branch, for as long as the branch lives. The
+module pinning an unreleased agent — which is exactly what two released module tags did. Use a
+service pin on a branch, for as long as the branch lives. The
 committed route is the workspace-wide `agent-overrides` entry **with a label**: a comment naming
 the issue it stands in for. Even that is refused by `codefly ci prerelease --release`, so a dev
 build cannot survive into a tag. See [prerelease-gate.md](prerelease-gate.md).
@@ -2682,9 +2682,11 @@ constraint (`^0.0.1`) and the `latest` sentinel name no build and are left alone
 
 It reads every `version:` key in every tracked `*.codefly.yaml` at any depth — a service's
 `agent.version`, a workspace's `modules[].version` and `solutions[].version`, a module's or
-library's own version — plus `workspace.codefly.yaml`'s `agent-overrides` block and first-party
-requires in `go.mod`. Only files git tracks, which is also why `codefly.local.yaml` is outside
-the gate by construction; `testdata/` trees are skipped unless `--include-testdata`.
+library's own version — plus `workspace.codefly.yaml`'s `agent-overrides` block and `go.mod`
+requires under an owner the repository itself publishes under — derived from its own `go.mod`
+module paths, never a list the CLI carries, and overridable with `--first-party`. Only files git
+tracks, which is also why `codefly.local.yaml` is outside the gate by construction; `testdata/`
+trees are skipped unless `--include-testdata`.
 
 `agent-overrides` is the one sanctioned carrier, because `codefly publish dev` and `codefly
 update workspace --agent-override` are a documented loop that has to reach a shared environment.

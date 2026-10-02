@@ -7,22 +7,24 @@ import (
 )
 
 // scanGoMod finds first-party prerelease requires. A pseudo-version here names a
-// commit of a repository the fleet publishes itself, which could have been
-// released instead; a third-party one is somebody else's cadence.
+// commit of a repository published under an owner this one also publishes under,
+// which could have been released instead; a third-party one is somebody else's
+// cadence. firstParty is the set of owner prefixes to judge against — see
+// firstPartyPrefixes.
 //
 // Reported rather than refused unless Options.GoModules — see the package
 // comment for why, and the measurement behind it.
 //
 // A go.mod that does not parse is left to the Go toolchain to complain about,
 // for the same reason a malformed YAML document is.
-func scanGoMod(file string, content []byte, options Options) ([]Finding, error) {
+func scanGoMod(file string, content []byte, options Options, firstParty []string) ([]Finding, error) {
 	parsed, err := modfile.Parse(file, content, nil)
 	if err != nil {
 		return nil, nil
 	}
 	var findings []Finding
 	for _, require := range parsed.Require {
-		if !isFirstParty(require.Mod.Path, options.firstParty()) {
+		if !isFirstParty(require.Mod.Path, firstParty) {
 			continue
 		}
 		kind, prerelease := Classify(require.Mod.Version)
@@ -44,9 +46,9 @@ func scanGoMod(file string, content []byte, options Options) ([]Finding, error) 
 			finding.Key += " // indirect"
 		}
 		if finding.Blocking {
-			finding.Why = "--go-modules: a first-party pseudo-version pins an unreleased commit of a repository this fleet publishes"
+			finding.Why = "--go-modules: a first-party pseudo-version pins an unreleased commit of a repository under an owner this one publishes under"
 		} else {
-			finding.Why = "reported only: first-party pseudo-versions are routine in this fleet and an indirect one cannot be moved from here — pass --go-modules to refuse them"
+			finding.Why = "reported only: first-party pseudo-versions are routine, and an indirect one cannot be moved from here — pass --go-modules to refuse them"
 		}
 		finding.Remedy = []string{
 			"release the first-party module and `go get` the released version",
