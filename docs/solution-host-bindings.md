@@ -273,6 +273,83 @@ jobs:
 The host's identity allowlist pins this workflow: the repository, the workflow
 path and the ref pattern it may sign from, under the GitHub Actions issuer.
 
+## Local runs
+
+`codefly run` on a laptop has no Kubernetes today: no TokenReview, no pod to
+read an image from, no SVID, no delivery repository and no signing identity.
+The host owns the verification policy; the CLI owns what a local run emits.
+What follows is the shape agreed with the host session on 2026-10-02, and it is
+not what the first proposal asked for: there is **no `local` trust policy**, no
+second document schema, no second carrier and no policy switch. Local and
+deployed differ in data — the host's coordinate and its identity allowlist —
+never in a code path.
+
+**A process run cannot be described honestly, so a local run runs pods.** A
+present generation of the presence schema declares at least one rendered
+artifact and, for a backend artifact, workloads pinned to an OCI image manifest
+digest with a SPIFFE ID. A laptop run that executes processes renders nothing
+and runs no image; a presence document for it could only be produced by
+inventing digests, and neither the CLI nor the host accepts an invented one.
+The host's decision is that `codefly run` provisions or attaches a **local
+cluster** and runs each service as a Pod from a locally built image. Then
+nothing is invented: the manifests rendered into the local tree are real bytes
+with a real digest (no artifact URI is claimed, so the document never says
+they live in a delivery repository); the locally built image's manifest digest
+is real and moves on every rebuild, which moves the generation; and the SPIFFE
+ID is the account-derived identity the pod runs as — core checks that field
+for well-formedness only, and whether anything verifies it on the wire stays
+conditional on a projected trust bundle, so no local issuer is required.
+
+**One trust model.** A local document is signed through the same Sigstore
+keyless flow as a deployed one, with the **developer's own OIDC identity**. A
+deployed host's allowlist names the reviewed-change workflow identity and
+nothing else, so a locally signed document is refused there by the ordinary
+check that refuses any unlisted identity — not a mode, not a coordinate
+comparison, not an environment variable. (A variable that selected a trust
+model would be a variable that leaks into a deployment manifest once and is
+never noticed.) The host accepts no `policy` field in a request: a caller that
+could name its own trust model is what the allowlist exists to decide.
+
+**Same delivery, same mint.** The same two routes, the same `{document,
+bundle}` carrier, the same idempotency on generation and content hash, the
+same receipt. A local pod mints with its projected ServiceAccount token, and
+the host runs TokenReview and reads the pod's image locally too — `codefly run`
+exercises the real path rather than a simulation of it.
+
+**Removal is a tombstone, locally too.** The host treats an empty or
+unreadable desired set as removing nothing, under every circumstance; it has
+declined to invert that under any policy, because one reconciler holding two
+opposite answers to "the desired set is empty" is the failure its tests exist
+to prevent. Stopping a run feels like removal and is not: withdrawing a binding
+is a POSTed tombstone generation.
+
+**The ceiling locally** is a developer-authored envelope file in the host's
+`local` configuration profile, with the same schema as the reviewed envelope,
+at a path the host names when it builds the envelope table. The attestation's
+own authority is deliberately not the ceiling: effective authority is the
+intersection of binding, envelope and installation, and collapsing two of the
+three locally would have a developer test a different authorisation shape than
+production computes.
+
+**What this PR does on a laptop, and what it does not.** A local render emits
+unsigned documents and says so. `codefly deploy gitops publish --local` (a
+k3d qualification environment) delivers them unsigned, records `signed: false`
+in the inventory and renders no Job — a host refuses an unsigned document, and
+the CLI says so rather than POST what will be refused. Not built here: the
+local-cluster run path for `codefly run`, and signing with a developer OIDC
+identity (the keyless flow with an interactive token instead of the workflow's).
+Until both exist, a local run of a host and its solutions has no presence on
+the host.
+
+**The cost, and the alternative the host would accept.** Requiring a local
+cluster changes the laptop story from a container runtime to a container
+runtime plus a cluster, on every developer's machine. The host names the
+alternative it would accept instead — not a second trust model but **no
+capability surface locally**: presence and routing so a developer sees their
+UI, and no module credential minted at all. Which of the two holds is the
+owner's call; this document records the first, as agreed, until the owner
+decides otherwise.
+
 ## Dev deployments
 
 `codefly deploy dev` re-pins a service's image inside an already-rendered tree
