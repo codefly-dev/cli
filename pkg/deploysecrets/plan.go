@@ -418,7 +418,7 @@ func readStates(ctx context.Context, in *Inputs) ([]*remoteState, error) {
 				if declaredEmpty(property, in.MayBeEmpty) {
 					continue
 				}
-				if !planning(secret, in.Modules) {
+				if !planning(&secret, in.Modules) {
 					continue
 				}
 				fail(fmt.Errorf("remote key %s property %s is empty: supply a nonempty value, or declare it in service-secrets.may-be-empty if this environment holds no value for it", secret.RemoteKey, property.Property))
@@ -462,7 +462,7 @@ func declaredEmpty(property gitops.RenderedSecretProperty, mayBeEmpty []string) 
 // module's services read. Deliberately the same test planScope.owns applies,
 // on the same module/service uniques, so what a run refuses and what it writes
 // cannot drift apart.
-func planning(secret gitops.RenderedServiceSecret, modules []string) bool {
+func planning(secret *gitops.RenderedServiceSecret, modules []string) bool {
 	if len(modules) == 0 {
 		return true
 	}
