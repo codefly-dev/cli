@@ -343,20 +343,60 @@ secret store fails instead of rendering a dangling reference or a value.
 A render delivers a service the **same workspace configuration groups** `codefly
 run` delivers it: the groups it declares under
 `workspace-configuration-dependencies` unioned with the ones the composition root
-provides run-wide, so a service reading a root-provided value gets it in both or
-is refused in both. Only the addresses inside those groups differ — in-cluster
-here, loopback or the runtime context's family under `run`. The rule and its one
-deliberate exception (a run profile trims the run only) are in
-[the orchestration engine's workspace configuration
-groups](orchestration.md#workspace-configuration-groups).
+provides run-wide. Only the addresses inside those groups differ — in-cluster
+here, loopback or the runtime context's family under `run`. The rule, how the set
+is selected before any reference is resolved, and the two asymmetries that remain
+(a run profile trims the run only; a root group's `${endpoint:…}` does not order
+the run, so a consumer starting before its producer sees that one value dropped
+locally and present in the render) are in [the orchestration engine's workspace
+configuration groups](orchestration.md#workspace-configuration-groups). Both
+asymmetries leave the run with less than the render, never the reverse.
 
-A credential-named value in a composition-root group therefore renders the way a
-declared group's always has — as a `secretKeyRef` on `secret-<service>`, never
-inline in a committed manifest — so the environment's `service-secrets` store must
-hold that key for the projected ExternalSecret to materialize it.
-`codefly deploy secrets` seeds the store from the render, so the key follows the
-next time it runs; a store seeded before a root group's values reached the render
-does not hold it yet.
+<a id="codefly-deploy-gitops-render-secret-consequence"></a>
+
+#### A root group's credential, and what `deploy secrets` can and cannot seed
+
+A credential-named value in a composition-root group renders the way a declared
+group's always has — as a `secretKeyRef` on `secret-<service>`, never inline in a
+committed manifest — so the environment's `service-secrets` store must hold that
+key for the projected ExternalSecret to materialize it. The key is core's
+encoding of the group and the value, e.g.
+`CODEFLY__WORKSPACE_SECRET_CONFIGURATION__WORK_CONTEXT__AUTHORITY_TOKEN`.
+
+`codefly deploy secrets` **discovers** that key from the render. It supplies the
+value only from a source its planner can reach:
+
+- the store already holds the property (`keep`);
+- a federation derivation covers it (`derive`, `update`);
+- another remote key in the environment holds the same configuration value
+  (`propagate`);
+- the environment declares a generator for the key under
+  `service-secrets.generate` (`generate`).
+
+An arbitrary root-group credential is none of those. The render discarded its
+plaintext — that is what keeps it out of the committed manifest — so the planner
+never sees the configuration value, and the plan reports the property as
+`require`: a value **the operator must supply**. `codefly deploy secrets
+--dry-run` lists every such property as `remote-key#property (key)`.
+
+So re-running `deploy secrets` after a root group's credential first reaches the
+render does not by itself make the workload startable. Either write the value
+into the store, or declare a generator for the key so the verb can mint it:
+
+```yaml
+service-secrets:
+  generate:
+    - scope: workspace
+      configuration: work-context
+      keys: [AUTHORITY_TOKEN]
+```
+
+The full source table, and why each property is resolved by its secret key
+rather than by the store property it is filed under, are under [`codefly deploy
+secrets`](#codefly-deploy-secrets--seed-the-store-from-the-render).
+`TestARootGroupCredentialWithNoSourceIsRequiredNotSeeded` and
+`TestARootGroupCredentialTheEnvironmentDeclaresIsGenerated`
+(`pkg/deploysecrets`) pin both outcomes against an empty store.
 
 Every run and render also carries a service's **self endpoint** —
 `CODEFLY__SELF_ENDPOINT__<MODULE>__<SERVICE>__<ENDPOINT>__<API>`, core's carrier

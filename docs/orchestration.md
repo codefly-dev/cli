@@ -152,7 +152,7 @@ group a composed module ships reaches only the services that declare it.
 
 **The rendered deployment is the source of truth for that set, and the local run
 resolves the identical one.** `codefly run` and `codefly deploy gitops render`
-hand a given service the same group names, or refuse it for the same reason. Only
+hand a given service the same group names, and the same keys inside them. Only
 the address family differs, and must: a value naming
 `${endpoint:<module>/<service>/<endpoint>}` resolves to the producer's loopback
 address for a local run and to its in-cluster address in a render.
@@ -163,21 +163,77 @@ mistake anyone made — the root supplies a value every service can read, the ru
 delivers it, and the deployed service starts without it, naming a key it never
 saw or, worse, not noticing. A run resolving fewer would hide the mirror-image
 fault equally well. `TestRenderAndRunDeliverTheSameWorkspaceConfigurationGroups`
-renders a fixture composition both ways and diffs the per-service group set; the
-diff must be empty.
+renders a fixture composition both ways and diffs the per-service group set *and
+the keys of each group*; both diffs must be empty.
 
-One asymmetry is deliberate and directional: a [run
-profile](commands.md#codefly-run-service)'s `exclude-workspace-configurations`
-trims the **run** only — build and deployment operations ignore profiles — so a
-profile can leave the run with fewer groups than the render, never the reverse.
-That is an operator's explicit choice about their local shape, and it cannot
-produce the fault above.
+#### The set is selected before anything is resolved
 
-A root group's values are then subject to the render's own rules, which is the
-point of there being one resolved set: a credential-named value is promoted to a
-`secretKeyRef` on the service's own Secret rather than rendered inline, so the
-environment's secret store must hold that key (`codefly deploy secrets` seeds it
-from the render).
+The whole effective set drives producer discovery, and that ordering is the
+correctness condition rather than a tidiness one.
+
+Core resolves the root's run-wide groups **leniently**: a value whose
+`${endpoint:…}` a given consumer cannot resolve is dropped for that consumer
+rather than failing it, and an information block whose every value was dropped
+goes with them (core #393 — the leniency exists because a run-wide group reaches
+leaf services that never declared the producer). So a resolution that discovered
+producers from the declared groups alone deleted a root group's endpoint values
+from every service that did not declare the group, and a root group holding
+nothing but references disappeared whole, with no error anywhere. A group holding
+one literal beside its references keeps its *name*, which is why a parity
+assertion over group names cannot see the loss.
+
+Two things prevent it, and both are needed:
+
+- `effectiveWorkspaceConfigurationGroups` selects declared ∪ root − excluded
+  **before** `referencedProducerMappings` runs, so a reference carried by a group
+  the service never declared still gets its producer's addresses bound.
+- `refuseUnresolvedWorkspaceConfigurationReferences` refuses a reference that
+  stayed unresolvable anyway, where core would drop it. A reference naming a
+  producer this run does not contain is still a legitimate drop — excluded
+  infrastructure, or a run of one service rather than the workspace, and no
+  composition change would make it resolvable. The two refused cases are a
+  reference naming an endpoint a derived producer does not serve (a
+  misreference, in either path) and, in a **render**, a producer of the
+  deployment no address could be derived for: a deployed address is a pure
+  function of identity and namespace, so there is no "not yet".
+
+The root's group names come from the manager's own loaders (core's
+`configurations.Loader.CompositionRootWorkspaceConfigurationNames`) and are bound
+on the `World` at the one place a loader is registered. A `World` that cannot
+name a root group would plan producer discovery without it, so
+`requireKnownRootGroup` refuses such a group rather than delivering it with its
+references resolved against nothing.
+
+#### The two asymmetries that remain, and why neither is the fault above
+
+- A [run profile](commands.md#codefly-run-service)'s
+  `exclude-workspace-configurations` trims the **run** only — build and
+  deployment operations ignore profiles.
+- A root group's `${endpoint:…}` does not order the run. Core's dependency graph
+  orders a consumer after the producers of the groups it *declares*
+  (`architecture.WithConfigurationReferences` reads
+  `workspace-configuration-dependencies`), so a consumer that starts before the
+  producer of a root group's reference sees core drop that value, and the run is
+  not refused for it — refusing would fail a run whose service simply starts
+  first. `TestARunToleratesARootReferenceThatHasNotResolvedYet` pins it;
+  `TestARenderRefusesARootReferenceItCannotResolve` pins that the render does
+  not tolerate it.
+
+Both leave the **run** with less than the render, never the reverse, which is the
+direction that cannot produce "works locally, unconfigured once deployed".
+
+#### The consequence an operator meets
+
+A root group's values are subject to the render's own rules, which is the point
+of there being one resolved set: a credential-named value (or one declared
+`Secret`) is promoted to a `secretKeyRef` on the service's own Secret rather than
+rendered inline, so the environment's `service-secrets` store must hold that key
+for the projected ExternalSecret to materialize it.
+
+`codefly deploy secrets` discovers that key from the render. It does **not**
+necessarily supply the value: see [the render's secret
+consequence](commands.md#codefly-deploy-gitops-render-secret-consequence) for the sources its
+planner can reach and the refusal it reports when none of them covers the key.
 
 ## Playbook
 

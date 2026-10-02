@@ -274,6 +274,21 @@ type World struct {
 
 	excludedWorkspaceConfigurations map[string]bool
 
+	// compositionRootGroups names the workspace configuration groups the
+	// composition root itself provides run-wide, read from the manager's own
+	// loaders (core's configurations.Loader capability
+	// CompositionRootWorkspaceConfigurationNames). It is a function, not a
+	// slice, because a loader only knows them after its Load, which runs well
+	// after the World exists.
+	//
+	// The resolution plans producer discovery against this set
+	// (effectiveWorkspaceConfigurationGroups), so a World that cannot name a
+	// root group resolves that group's ${endpoint:…} references against nothing
+	// and silently drops its values. It is bound at the one place a loader is
+	// registered, and requireKnownRootGroup refuses rather than ships a group
+	// this never named.
+	compositionRootGroups func() []string
+
 	// runProducers is the run set, by <module>/<service>: every service this
 	// run starts or deploys. A workspace configuration reference naming one of
 	// them must resolve, so reading it without an address fails; a reference to
@@ -412,6 +427,11 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 		return nil, w.Wrap(err)
 	}
 	configurationManager.WithLoader(localReader)
+	// Bound here, with the loader: the resolution plans producer discovery
+	// against the root's group names, so a manager that loaded a root group and
+	// a world that cannot name it would resolve that group's references for
+	// nobody. Lazy, because Load (flow.Start) is what populates the names.
+	world.compositionRootGroups = localReader.CompositionRootWorkspaceConfigurationNames
 
 	// A GitOps snapshot render is value-free: it emits secret references derived
 	// from the committed declarations and discards every secret value. Resolving

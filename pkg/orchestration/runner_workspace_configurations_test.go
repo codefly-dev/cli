@@ -71,18 +71,31 @@ func loadedWorkspaceManager(t *testing.T, loader staticWorkspaceLoader) *configu
 	return manager
 }
 
+// loadedWorkspaceWorld is a World over one static loader, bound the way NewFlow
+// binds one: the manager and the composition-root group source come from the
+// same loader. Binding only the manager is not a lighter version of this — the
+// resolution plans producer discovery against the root's group names, so a World
+// that cannot name a root group refuses it (requireKnownRootGroup) rather than
+// resolve its references against nothing.
+func loadedWorkspaceWorld(t *testing.T, loader staticWorkspaceLoader) *World {
+	t.Helper()
+	return &World{
+		ConfigurationManager:  loadedWorkspaceManager(t, loader),
+		compositionRootGroups: loader.CompositionRootWorkspaceConfigurationNames,
+	}
+}
+
 // A composed service reads the composition root's workspace configurations even
 // when it declares none of them as dependencies: the root set is unioned into
 // every service.
 func TestWorkspaceConfigurationsForInjectsCompositionRootSet(t *testing.T) {
-	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
+	world := loadedWorkspaceWorld(t, staticWorkspaceLoader{
 		confs: []*basev0.Configuration{
 			workspaceConfiguration("db", "url", "postgres://db"),
 			workspaceConfiguration("work-context", "authority-jwks-url", "https://jwks"),
 		},
 		rootConfigs: []string{"work-context"},
 	})
-	world := &World{ConfigurationManager: manager}
 
 	confs, err := world.workspaceConfigurationsFor(context.Background(), &resources.Service{}, nil, resources.NewNativeNetworkAccess())
 	require.NoError(t, err)
@@ -91,14 +104,13 @@ func TestWorkspaceConfigurationsForInjectsCompositionRootSet(t *testing.T) {
 
 // The union of declared dependencies and the composition-root set is returned.
 func TestWorkspaceConfigurationsForUnionsDeclaredAndRoot(t *testing.T) {
-	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
+	world := loadedWorkspaceWorld(t, staticWorkspaceLoader{
 		confs: []*basev0.Configuration{
 			workspaceConfiguration("db", "url", "postgres://db"),
 			workspaceConfiguration("work-context", "authority-jwks-url", "https://jwks"),
 		},
 		rootConfigs: []string{"work-context"},
 	})
-	world := &World{ConfigurationManager: manager}
 
 	confs, err := world.workspaceConfigurationsFor(context.Background(),
 		&resources.Service{WorkspaceConfigurationDependencies: []string{"db"}}, nil, resources.NewNativeNetworkAccess())
@@ -110,14 +122,13 @@ func TestWorkspaceConfigurationsForUnionsDeclaredAndRoot(t *testing.T) {
 // configuration (e.g. the root service declaring its own workspace config) is
 // emitted once, not duplicated.
 func TestWorkspaceConfigurationsForDeduplicatesOverlap(t *testing.T) {
-	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
+	world := loadedWorkspaceWorld(t, staticWorkspaceLoader{
 		confs: []*basev0.Configuration{
 			workspaceConfiguration("db", "url", "postgres://db"),
 			workspaceConfiguration("work-context", "authority-jwks-url", "https://jwks"),
 		},
 		rootConfigs: []string{"work-context"},
 	})
-	world := &World{ConfigurationManager: manager}
 
 	confs, err := world.workspaceConfigurationsFor(context.Background(),
 		&resources.Service{WorkspaceConfigurationDependencies: []string{"db", "work-context"}}, nil, resources.NewNativeNetworkAccess())
@@ -128,7 +139,7 @@ func TestWorkspaceConfigurationsForDeduplicatesOverlap(t *testing.T) {
 // Profile-excluded workspace configurations are dropped from both the declared
 // and the composition-root sets.
 func TestWorkspaceConfigurationsForExcludesProfiledConfigurations(t *testing.T) {
-	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
+	world := loadedWorkspaceWorld(t, staticWorkspaceLoader{
 		confs: []*basev0.Configuration{
 			workspaceConfiguration("db", "url", "postgres://db"),
 			workspaceConfiguration("work-context", "authority-jwks-url", "https://jwks"),
@@ -136,10 +147,7 @@ func TestWorkspaceConfigurationsForExcludesProfiledConfigurations(t *testing.T) 
 		},
 		rootConfigs: []string{"work-context", "managed-auth"},
 	})
-	world := &World{
-		ConfigurationManager:            manager,
-		excludedWorkspaceConfigurations: map[string]bool{"managed-auth": true},
-	}
+	world.excludedWorkspaceConfigurations = map[string]bool{"managed-auth": true}
 
 	confs, err := world.workspaceConfigurationsFor(context.Background(),
 		&resources.Service{WorkspaceConfigurationDependencies: []string{"db"}}, nil, resources.NewNativeNetworkAccess())
@@ -152,12 +160,11 @@ func TestWorkspaceConfigurationsForExcludesProfiledConfigurations(t *testing.T) 
 // same group gives a native consumer its loopback address and a deployed one its
 // in-cluster address.
 func TestWorkspaceConfigurationsForResolvesEndpointsFromConsumerMappings(t *testing.T) {
-	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
+	world := loadedWorkspaceWorld(t, staticWorkspaceLoader{
 		confs: []*basev0.Configuration{
 			workspaceConfiguration("platform", "gateway-endpoint", "http://${endpoint:saas/auth-gateway/rest}"),
 		},
 	})
-	world := &World{ConfigurationManager: manager}
 	service := &resources.Service{WorkspaceConfigurationDependencies: []string{"platform"}}
 	mappings := []*basev0.NetworkMapping{{
 		Endpoint: &basev0.Endpoint{Module: "saas", Service: "auth-gateway", Name: "rest", Api: "rest"},

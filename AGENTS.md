@@ -184,7 +184,10 @@ relative paths.
 - **A deployed service receives the same workspace configuration groups it receives
   under `run`.** The set is declared ∪ the composition root's, resolved once in
   `pkg/orchestration/workspace_configurations.go`; the render is the source of truth and
-  `run` matches it. Never resolve groups in a delivery path of your own. See
+  `run` matches it. Never resolve groups in a delivery path of your own, and **select
+  the whole set before resolving anything**: core drops a root group's unresolvable
+  `${endpoint:…}` silently, so discovering producers from the declared groups alone
+  deletes values from every service that did not declare the group. See
   [docs/orchestration.md](docs/orchestration.md#workspace-configuration-groups).
 - **Configs flow as environment variables, not files.** Connection strings derived from network
   mappings are injected as `CODEFLY__SERVICE_...` env vars.
