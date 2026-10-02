@@ -1,4 +1,0 @@
-kind: module
-name: host
-services:
-    - name: accounts

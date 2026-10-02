@@ -17,9 +17,13 @@ import (
 
 func testHost() *environments.EnvironmentHost {
 	return &environments.EnvironmentHost{
-		Coordinate: "obin/prod/eu-west-1",
-		Component:  "saas-host",
-		Audience:   "https://saas-host.obin.example",
+		Coordinate:       "example/prod/region-a",
+		Component:        "platform-host",
+		Domain:           "example",
+		Audience:         "accounts",
+		TrustDomain:      "cluster.example",
+		EnvelopeRevision: 1,
+		Delivery:         "platform/accounts/rest",
 	}
 }
 
@@ -32,20 +36,20 @@ func solutionRenderOptions(destination string) *RenderOptions {
 		Environment: "prod",
 		Namespace:   "crm",
 		Promotable:  true,
-		Workspace:   "obin",
+		Workspace:   "example",
 		Host:        testHost(),
 		Units:       promotableServiceGraph("crm", []string{"api"}),
 		SolutionInstances: []SolutionInstance{{
 			Name:    "crm",
 			Alias:   "crm",
-			Package: "obin/crm",
+			Package: "example/crm",
 			Version: "1.4.0",
-			Subject: "crm@obin.iam.example",
+			Subject: "crm@example.iam.test",
 			Units:   []SolutionArtifactUnit{{Name: "api", Path: "services/api"}},
 			Endpoints: []SolutionEndpoint{
 				{Name: "grpc", Service: "api", Module: "crm", API: "grpc", Visibility: "internal"},
 			},
-			Modules: []SolutionModulePin{{Module: "crm", Package: "obin/crm", Version: "1.4.0"}},
+			Modules: []SolutionModulePin{{Module: "crm", Package: "example/crm", Version: "1.4.0"}},
 		}},
 	}
 }
@@ -103,27 +107,27 @@ func TestRenderDeclaresOneBindingPerSolutionInstance(t *testing.T) {
 		t.Fatalf("rendered bindings %+v", result.SolutionHostBindings)
 	}
 	declared := result.SolutionHostBindings[0]
-	if declared.Path != "solution-host-bindings/overlays/prod/obin.prod.crm.yaml" ||
-		declared.Binding != "obin.prod.crm" || declared.Generation != 1 {
+	if declared.Path != "solution-host-bindings/overlays/prod/example.prod.crm.yaml" ||
+		declared.Binding != "example.prod.crm" || declared.Generation != 1 {
 		t.Fatalf("declared binding %+v", declared)
 	}
 	if len(result.UndeclaredSolutions) != 0 {
 		t.Fatalf("declared a host yet reported undeclared solutions %v", result.UndeclaredSolutions)
 	}
-	document := deliveredBinding(t, destination, "obin.prod.crm")
-	if document.Binding != "obin.prod.crm" {
+	document := deliveredBinding(t, destination, "example.prod.crm")
+	if document.Binding != "example.prod.crm" {
 		t.Fatalf("binding ID %q", document.Binding)
 	}
 	if document.Generation != 1 {
 		t.Fatalf("first generation is %d, want 1", document.Generation)
 	}
-	if document.Host.Coordinate != "obin/prod/eu-west-1" || document.Host.Component != "saas-host" {
+	if document.Host.Coordinate != "example/prod/region-a" || document.Host.Component != "platform-host" {
 		t.Fatalf("host target %+v", document.Host)
 	}
-	if document.Workload.Audience != "https://saas-host.obin.example" || document.Workload.Subject != "crm@obin.iam.example" {
+	if document.Workload.Audience != "accounts" || document.Workload.Subject != "crm@example.iam.test" {
 		t.Fatalf("workload identity %+v", document.Workload)
 	}
-	if document.Release.Publisher != "obin" || document.Release.Name != "crm" || document.Release.Version != "1.4.0" {
+	if document.Release.Publisher != "example" || document.Release.Name != "crm" || document.Release.Version != "1.4.0" {
 		t.Fatalf("release %+v", document.Release)
 	}
 	// v1 leaves the release digest empty; signed releases do not exist yet and
@@ -135,7 +139,7 @@ func TestRenderDeclaresOneBindingPerSolutionInstance(t *testing.T) {
 		t.Fatalf("artifacts %+v", document.Artifacts)
 	}
 	artifact := document.Artifacts[0]
-	if artifact.Name != "api" || artifact.Release != "obin/crm@1.4.0" || !strings.HasPrefix(artifact.Digest, "sha256:") {
+	if artifact.Name != "api" || artifact.Release != "example/crm@1.4.0" || !strings.HasPrefix(artifact.Digest, "sha256:") {
 		t.Fatalf("artifact %+v", artifact)
 	}
 	if len(document.Routes) != 1 || document.Routes[0].Alias != "crm" {
@@ -151,7 +155,7 @@ func TestRenderDeclaresOneBindingPerSolutionInstance(t *testing.T) {
 	// promotable ruleset and was hashed into the render digest.
 	var carried bool
 	for _, file := range result.Inventory.Files {
-		if file.Path == "solution-host-bindings/overlays/prod/obin.prod.crm.yaml" {
+		if file.Path == "solution-host-bindings/overlays/prod/example.prod.crm.yaml" {
 			carried = true
 		}
 	}
@@ -169,8 +173,8 @@ func TestRenderedBindingAdvancesGenerationOnlyWhenTheRenderChanges(t *testing.T)
 	if _, err := RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment)); err != nil {
 		t.Fatal(err)
 	}
-	first := deliveredBinding(t, destination, "obin.prod.crm")
-	firstBytes, err := os.ReadFile(filepath.Join(destination, filepath.FromSlash(solutionHostBindingOverlay("prod")), "obin.prod.crm.yaml"))
+	first := deliveredBinding(t, destination, "example.prod.crm")
+	firstBytes, err := os.ReadFile(filepath.Join(destination, filepath.FromSlash(solutionHostBindingOverlay("prod")), "example.prod.crm.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,11 +185,11 @@ func TestRenderedBindingAdvancesGenerationOnlyWhenTheRenderChanges(t *testing.T)
 	if _, err = RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment)); err != nil {
 		t.Fatal(err)
 	}
-	again := deliveredBinding(t, destination, "obin.prod.crm")
+	again := deliveredBinding(t, destination, "example.prod.crm")
 	if again.Generation != first.Generation {
 		t.Fatalf("a no-change re-render bumped the generation %d -> %d", first.Generation, again.Generation)
 	}
-	againBytes, err := os.ReadFile(filepath.Join(destination, filepath.FromSlash(solutionHostBindingOverlay("prod")), "obin.prod.crm.yaml"))
+	againBytes, err := os.ReadFile(filepath.Join(destination, filepath.FromSlash(solutionHostBindingOverlay("prod")), "example.prod.crm.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +206,7 @@ func TestRenderedBindingAdvancesGenerationOnlyWhenTheRenderChanges(t *testing.T)
 	if _, err = RenderOwnedTree(context.Background(), options, renderWorkload(changed)); err != nil {
 		t.Fatal(err)
 	}
-	bumped := deliveredBinding(t, destination, "obin.prod.crm")
+	bumped := deliveredBinding(t, destination, "example.prod.crm")
 	if bumped.Generation != first.Generation+1 {
 		t.Fatalf("a changed render produced generation %d, want %d", bumped.Generation, first.Generation+1)
 	}
@@ -212,11 +216,11 @@ func TestRenderedBindingAdvancesGenerationOnlyWhenTheRenderChanges(t *testing.T)
 }
 
 func TestBindingIDIsStablePerInstanceAndDistinctPerSecondInstance(t *testing.T) {
-	first, err := bindingID("obin", "prod", "crm")
+	first, err := bindingID("example", "prod", "crm")
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := bindingID("obin", "prod", "crm")
+	again, err := bindingID("example", "prod", "crm")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +229,7 @@ func TestBindingIDIsStablePerInstanceAndDistinctPerSecondInstance(t *testing.T) 
 	}
 	// A second instance of the same solution is a second composed module under
 	// a second name.
-	second, err := bindingID("obin", "prod", "crm-eu")
+	second, err := bindingID("example", "prod", "crm-eu")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,10 +249,10 @@ func TestBindingIDIsStablePerInstanceAndDistinctPerSecondInstance(t *testing.T) 
 			t.Fatalf("binding ID %q exceeds a label value", id)
 		}
 	}
-	if _, err = bindingID("obin", "prod", strings.Repeat("a", 64)); err == nil {
+	if _, err = bindingID("example", "prod", strings.Repeat("a", 64)); err == nil {
 		t.Fatal("an over-long binding ID was accepted")
 	}
-	if _, err = bindingID("obin", "prod", "crm.eu"); err == nil {
+	if _, err = bindingID("example", "prod", "crm.eu"); err == nil {
 		t.Fatal("an instance name carrying the join separator was accepted")
 	}
 }
@@ -258,7 +262,7 @@ func TestRenderRefusesARouteAliasAHostCannotKeyOn(t *testing.T) {
 	options := solutionRenderOptions(destination)
 	// core's namePattern admits it; a host keys its registry on the alias as a
 	// single URL path segment, and a slashed alias cannot be one.
-	options.SolutionInstances[0].Alias = "obin/crm"
+	options.SolutionInstances[0].Alias = "example/crm"
 	_, err := RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment))
 	if err == nil || !strings.Contains(err.Error(), "URL path segment") {
 		t.Fatalf("a slashed route alias was accepted: %v", err)
@@ -299,7 +303,7 @@ func TestRenderRefusesAnUnreadableDeliveredBinding(t *testing.T) {
 	if _, err := RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment)); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(destination, filepath.FromSlash(solutionHostBindingOverlay("prod")), "obin.prod.crm.yaml")
+	path := filepath.Join(destination, filepath.FromSlash(solutionHostBindingOverlay("prod")), "example.prod.crm.yaml")
 	if err := os.WriteFile(path, []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: x\ndata: {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -385,12 +389,12 @@ func TestRenderRefusesAMixedReleaseSet(t *testing.T) {
 	// generation: a partial rollout is not a thing delivery may describe.
 	options.SolutionInstances[0].Units = append(options.SolutionInstances[0].Units,
 		SolutionArtifactUnit{Name: "worker", Path: "services/api"})
-	options.SolutionInstances[0].Package = "obin/crm"
+	options.SolutionInstances[0].Package = "example/crm"
 	result, err := RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment))
 	if err != nil {
 		t.Fatalf("two artifacts of one release were refused: %v (%+v)", err, result.SolutionHostBindings)
 	}
-	document := deliveredBinding(t, destination, "obin.prod.crm")
+	document := deliveredBinding(t, destination, "example.prod.crm")
 	for _, artifact := range document.Artifacts {
 		if artifact.Release != document.Release.Identity() {
 			t.Fatalf("artifact %s names release %q, not %q", artifact.Name, artifact.Release, document.Release.Identity())
@@ -421,12 +425,16 @@ environments:
     cluster:
       kind: k3d
     host:
-      coordinate: obin/local/dev
-      component: saas-host
-      audience: https://saas-host.local.example
+      coordinate: example/local/dev
+      component: platform-host
+      domain: example
+      audience: accounts
+      trust_domain: cluster.local
+      envelope_revision: 1
+      delivery: hello/host/rest
     service-identity:
       default:
-        principal: lastlogin@obin.iam.example
+        principal: lastlogin@example.iam.test
 `
 	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(config), 0o644); err != nil {
 		t.Fatal(err)
@@ -453,7 +461,7 @@ func TestRenderSolutionDeclaresItsOwnPresence(t *testing.T) {
 	result, err := RenderSolution(context.Background(), &SolutionRenderRequest{
 		Workspace:   workspace,
 		Environment: env,
-		Agent:       &resources.Agent{Kind: resources.SolutionAgent, Publisher: "obin", Name: "lastlogin", Version: "0.0.1"},
+		Agent:       &resources.Agent{Kind: resources.SolutionAgent, Publisher: "example", Name: "lastlogin", Version: "0.0.1"},
 		Name:        "lastlogin-go",
 		Source:      filepath.Join(workspace.Dir(), "solution-src"),
 		Reference:   "ghcr.io/codefly-dev/hello-solution:0.0.1",
@@ -466,10 +474,10 @@ func TestRenderSolutionDeclaresItsOwnPresence(t *testing.T) {
 		t.Fatalf("rendered bindings %+v (undeclared %v)", result.SolutionHostBindings, result.UndeclaredSolutions)
 	}
 	document := deliveredBindingIn(t, result.Path, "local", "hello.local.lastlogin-go")
-	if document.Host.Coordinate != "obin/local/dev" {
+	if document.Host.Coordinate != "example/local/dev" {
 		t.Fatalf("host %+v", document.Host)
 	}
-	if document.Release.Identity() != "obin/lastlogin@0.0.1" {
+	if document.Release.Identity() != "example/lastlogin@0.0.1" {
 		t.Fatalf("release identity %q", document.Release.Identity())
 	}
 	if len(document.Routes) != 1 || document.Routes[0].Alias != "lastlogin-go" {
@@ -478,7 +486,7 @@ func TestRenderSolutionDeclaresItsOwnPresence(t *testing.T) {
 	if len(document.Artifacts) != 1 || document.Artifacts[0].Name != "lastlogin-go" {
 		t.Fatalf("artifacts %+v", document.Artifacts)
 	}
-	if document.Workload.Subject != "lastlogin@obin.iam.example" {
+	if document.Workload.Subject != "lastlogin@example.iam.test" {
 		t.Fatalf("workload %+v", document.Workload)
 	}
 }
@@ -499,7 +507,7 @@ func TestDeliveredCarrierMatchesTheGolden(t *testing.T) {
 	if _, err := RenderOwnedTree(context.Background(), solutionRenderOptions(destination), renderWorkload(pinnedDeployment)); err != nil {
 		t.Fatal(err)
 	}
-	body, err := os.ReadFile(filepath.Join(destination, filepath.FromSlash(solutionHostBindingOverlay("prod")), "obin.prod.crm.yaml"))
+	body, err := os.ReadFile(filepath.Join(destination, filepath.FromSlash(solutionHostBindingOverlay("prod")), "example.prod.crm.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -603,7 +611,7 @@ func TestRenderedTreeDeliversItsBindings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the delivered binding overlay has no kustomization: %v", err)
 	}
-	if !strings.Contains(string(kustomization), "obin.prod.crm.yaml") {
+	if !strings.Contains(string(kustomization), "example.prod.crm.yaml") {
 		t.Fatalf("the kustomization does not name the delivered document:\n%s", kustomization)
 	}
 	for _, declared := range result.SolutionHostBindings {
@@ -639,9 +647,9 @@ func TestReleaseIdentityRefusesAPackageItCannotName(t *testing.T) {
 	for name, instance := range map[string]SolutionInstance{
 		"no publisher": {Package: "crm", Version: "1.0.0"},
 		"empty":        {Package: "", Version: "1.0.0"},
-		"three parts":  {Package: "obin/crm/eu", Version: "1.0.0"},
-		"empty name":   {Package: "obin/", Version: "1.0.0"},
-		"no version":   {Package: "obin/crm", Version: ""},
+		"three parts":  {Package: "example/crm/eu", Version: "1.0.0"},
+		"empty name":   {Package: "example/", Version: "1.0.0"},
+		"no version":   {Package: "example/crm", Version: ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, _, err := releaseIdentity(&instance); err == nil {
@@ -649,8 +657,8 @@ func TestReleaseIdentityRefusesAPackageItCannotName(t *testing.T) {
 			}
 		})
 	}
-	publisher, name, err := releaseIdentity(&SolutionInstance{Package: "obin/crm", Version: "1.4.0"})
-	if err != nil || publisher != "obin" || name != "crm" {
+	publisher, name, err := releaseIdentity(&SolutionInstance{Package: "example/crm", Version: "1.4.0"})
+	if err != nil || publisher != "example" || name != "crm" {
 		t.Fatalf("releaseIdentity = %q, %q, %v", publisher, name, err)
 	}
 }
@@ -675,7 +683,7 @@ func TestRenderingAnotherEnvironmentResetsTheGeneration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if advanced := deliveredBinding(t, destination, "obin.prod.crm").Generation; advanced != 2 {
+	if advanced := deliveredBinding(t, destination, "example.prod.crm").Generation; advanced != 2 {
 		t.Fatalf("production reached generation %d, want 2", advanced)
 	}
 
@@ -700,7 +708,7 @@ func TestRenderingAnotherEnvironmentResetsTheGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := deliveredBinding(t, destination, "obin.prod.crm").Generation; got != 1 {
+	if got := deliveredBinding(t, destination, "example.prod.crm").Generation; got != 1 {
 		t.Fatalf("production resumed at generation %d; the prior document was gone, so 1 is the honest answer", got)
 	}
 	// And the render says so, rather than leaving the reset to be discovered
@@ -739,7 +747,7 @@ func TestBindingIDRefusesAPartThatCannotNameAKubernetesObject(t *testing.T) {
 			}
 		})
 	}
-	if _, err := bindingID("obin", "prod", "crm-eu-1"); err != nil {
+	if _, err := bindingID("example", "prod", "crm-eu-1"); err != nil {
 		t.Fatalf("a legal binding ID was refused: %v", err)
 	}
 }

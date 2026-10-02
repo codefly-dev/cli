@@ -178,7 +178,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	}
 	runCoRoots = coRoots
 
-	derived, derivedErr := derivedInputsForRoots(ctx, workspace, module, service, serviceName, coRootServices)
+	derived, derivedErr := derivedInputsForRoots(module, service, serviceName, coRootServices)
 	if derivedErr != nil {
 		return derivedErr
 	}
@@ -192,7 +192,6 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		cli.Info("%s", note.Message)
 	}
 	derivedOverrides = derived.Overrides
-	derivedWorkspaceConfigurations = derived.WorkspaceConfigurations
 
 	var flow *orchestration.Flow
 
@@ -710,18 +709,17 @@ func loadCoRoots(ctx context.Context, workspace *resources.Workspace, args []str
 	return uniques, roots, nil
 }
 
-// derivedInputsForRoots resolves the solution injections for every root of the
+// derivedInputsForRoots resolves the solution injection for every root of the
 // run and merges them. Every root that is a solution's service-entry derives
-// its own — two solutions named as co-roots each declare a registration digest
-// to the same host — so the merge is solutionrun's, which joins declarations
-// instead of letting the last-named root replace the first's.
-func derivedInputsForRoots(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, serviceName string, coRoots []*rootService) (solutionrun.RunInputs, error) {
-	merged, err := solutionrun.DerivedRunInputs(ctx, workspace, module, service, serviceName)
+// its own projection onto its own unique, so the merge is solutionrun's, which
+// layers the roots' overrides key by key and keeps their notes in order.
+func derivedInputsForRoots(module *resources.Module, service *resources.Service, serviceName string, coRoots []*rootService) (solutionrun.RunInputs, error) {
+	merged, err := solutionrun.DerivedRunInputs(module, service, serviceName)
 	if err != nil {
 		return solutionrun.RunInputs{}, err
 	}
 	for _, root := range coRoots {
-		derived, err := solutionrun.DerivedRunInputs(ctx, workspace, root.module, root.service, root.unique)
+		derived, err := solutionrun.DerivedRunInputs(root.module, root.service, root.unique)
 		if err != nil {
 			return solutionrun.RunInputs{}, err
 		}
@@ -916,7 +914,6 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	// authoritative by construction, rather than by parseSetOverrides happening
 	// to let the final duplicate entry win.
 	flow.WithOverrides(mergeOverrides(derivedOverrides, overrides))
-	flow.WithWorkspaceConfigurationValues(derivedWorkspaceConfigurations)
 	flow.WithRemotes(remoteServices)
 	resolvedProfile, err := workspace.ResolveRunProfile(ctx, profile, resources.RunProfile{ExcludeDependencies: excludeDependencies})
 	if err != nil {

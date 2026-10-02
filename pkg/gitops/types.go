@@ -3,6 +3,7 @@ package gitops
 import (
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -10,16 +11,18 @@ import (
 
 const (
 	InventoryFilename = ".codefly-render.json"
-	SchemaVersion     = 6
+	SchemaVersion     = 7
 	// priorSchemaVersion is the last schema loadInventory still accepts: a
-	// render from before declared solution presence existed, carrying no
-	// SolutionHostBindingPath.
+	// render from before publish settled and signed the delivery documents,
+	// carrying no Delivery record and no WorkspaceConfigurationDigests.
 	//
-	// The bump is not cosmetic. A newer render's binding documents are wired
-	// into Argo through this field, so an older CLI publishing that tree would
-	// commit the documents and deliver them to nothing — silently. Refusing the
-	// schema is what turns that into an error the operator sees.
-	priorSchemaVersion    = 5
+	// The bump is not cosmetic, either time. An older CLI publishing a newer
+	// tree would deliver its documents unsettled and unsigned — committed to the
+	// repository, refused by the host, with nothing at publish saying why — and
+	// would drop the group digests that keep two consumers of one value from
+	// being delivered apart. Refusing the schema is what turns that into an
+	// error the operator sees.
+	priorSchemaVersion    = 6
 	EvidenceSchemaVersion = 1
 )
 
@@ -100,9 +103,20 @@ type Inventory struct {
 	// Package identifies the module package this render was produced from
 	// (module.package.codefly.yaml id/version), when the module has one.
 	Package *InventoryPackage `json:"package,omitempty"`
-	Units   []InventoryUnit   `json:"units"`
-	Files   []InventoryFile   `json:"files"`
-	Digest  string            `json:"digest"`
+	// Delivery records the delivery documents publish settled and signed into
+	// this tree: each document's identity, generation and whether it is a
+	// tombstone, and the identity that signed them. A render records none; the
+	// generation is settled, and the signature made, at publish.
+	Delivery *InventoryDelivery `json:"delivery,omitempty"`
+	// WorkspaceConfigurationDigests records, per workspace configuration group
+	// the module's services consume, a digest of the group as the environment
+	// provided it to this render. A sibling module consuming the same group
+	// and recording another digest was rendered against another value, and the
+	// render refuses to deliver two values of one group.
+	WorkspaceConfigurationDigests map[string]string `json:"workspaceConfigurationDigests,omitempty"`
+	Units                         []InventoryUnit   `json:"units"`
+	Files                         []InventoryFile   `json:"files"`
+	Digest                        string            `json:"digest"`
 	// Dev lists the dev deployments (`codefly deploy dev`) applied on top of
 	// this render: services whose image was re-pinned to code no release
 	// describes. A full render re-derives the tree and never carries it over.
@@ -231,6 +245,14 @@ type RenderOptions struct {
 	// declares it. Absent, no solution host binding is rendered: a binding names
 	// a host, and a derived coordinate is a guess the host refuses later.
 	Host *environments.EnvironmentHost
+	// DeliveryTarget is the host's delivery API as this render resolved it from
+	// the host block's delivery endpoint; the delivery Jobs POST to it.
+	DeliveryTarget *DeliveryTarget
+	// Delivered is what publish settled and signed, recorded in the inventory.
+	Delivered *InventoryDelivery
+	// WorkspaceConfigurationDigests are the digests of the workspace
+	// configuration groups this render bakes in, recorded in the inventory.
+	WorkspaceConfigurationDigests map[string]string
 	// SolutionHostBindingPath is set by the render once it has written binding
 	// documents, so the inventory records the delivered path rather than the
 	// intent to write one.
@@ -288,6 +310,38 @@ type RenderResult struct {
 	// missing declaration and a composition with no solution look the same
 	// otherwise.
 	UndeclaredSolutions []string `json:"undeclaredSolutions,omitempty"`
+	// Cell is the environment's cell file this render regenerated, when the
+	// environment names a host.
+	Cell *CellResult `json:"cell,omitempty"`
+}
+
+// InventoryDelivery is what publish settled into a tree: the delivery documents
+// at their settled generations, and the identity that signed them.
+type InventoryDelivery struct {
+	// Signed reports whether every document carries a signature. Unsigned
+	// documents are delivered only to a local qualification environment, and a
+	// host refuses them.
+	Signed bool `json:"signed"`
+	// Identity is who signed — the certificate subject and its issuer — when
+	// Signed. It is reporting, read from the bundle's certificate, and not a
+	// verification: the host verifies.
+	Identity string `json:"identity,omitempty"`
+	// Documents are the documents delivered, presence and authority alike.
+	Documents []InventoryDeliveredDocument `json:"documents,omitempty"`
+}
+
+// InventoryDeliveredDocument is one delivered document.
+type InventoryDeliveredDocument struct {
+	// Kind is "presence" or "authority".
+	Kind string `json:"kind"`
+	// ID is the binding ID of a presence document or the authority ID of an
+	// authority document.
+	ID         string `json:"id"`
+	Generation uint64 `json:"generation"`
+	// Removed marks a tombstone.
+	Removed bool `json:"removed,omitempty"`
+	// Digest is the document's canonical digest at this generation.
+	Digest string `json:"digest"`
 }
 
 // DeclaredSolutionHostBinding is one rendered binding document: where it was
@@ -318,6 +372,10 @@ type PublishRequest struct {
 	// exposing module is not yet deployed in the target GitOps tree from a
 	// violation to a skipped check, for bootstrap ordering.
 	AllowUnresolvedContracts bool
+	// Signer signs the delivery documents this publish settles. nil means the
+	// process environment decides: the publishing workflow's OIDC identity, or
+	// none — in which case only a Local publish may deliver unsigned.
+	Signer signing.Signer `json:"-"`
 }
 
 type PublishPlan struct {

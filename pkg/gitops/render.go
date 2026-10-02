@@ -1276,6 +1276,13 @@ func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
 		SolutionHostBindingPath: filepath.ToSlash(opts.SolutionHostBindingPath),
 		Units:                   append([]InventoryUnit(nil), opts.Units...),
 	}
+	inventory.Delivery = opts.Delivered
+	if len(opts.WorkspaceConfigurationDigests) > 0 {
+		inventory.WorkspaceConfigurationDigests = make(map[string]string, len(opts.WorkspaceConfigurationDigests))
+		for group, digest := range opts.WorkspaceConfigurationDigests {
+			inventory.WorkspaceConfigurationDigests[group] = digest
+		}
+	}
 	if len(inventory.Units) == 0 {
 		serviceDir, _ := unitDirectory(UnitKindService)
 		for _, name := range opts.UnitNames {
