@@ -49,9 +49,14 @@ const (
 
 // CellFile is the inventory of one environment's cell.
 type CellFile struct {
-	Schema      string `yaml:"schema"`
-	Coordinate  string `yaml:"coordinate,omitempty"`
-	Component   string `yaml:"component,omitempty"`
+	Schema     string `yaml:"schema"`
+	Coordinate string `yaml:"coordinate,omitempty"`
+	Component  string `yaml:"component,omitempty"`
+	// TrustDomain is the SPIFFE trust domain every workload's identity is
+	// issued under, carried at the top level as well as inside each spiffe_id
+	// so the platform can re-derive an identity and refuse a mismatch rather
+	// than parse the domain back out of the string it is checking.
+	TrustDomain string `yaml:"trust_domain,omitempty"`
 	Environment string `yaml:"environment"`
 	// Namespaces are the namespaces the composition's modules render into, one
 	// per module, in name order.
@@ -92,6 +97,13 @@ type CellWorkload struct {
 	// SPIFFEID is the identity the host's issuer gives that account, when the
 	// environment declares a host trust domain.
 	SPIFFEID string `yaml:"spiffe_id,omitempty"`
+	// Authenticating names the one container that authenticates as the
+	// workload — the same designation the presence document carries — so an
+	// admission policy compares that container's image to the approved build
+	// and treats every other container, init containers included, as a closed
+	// set that never does. Inferring it from a single container is safe;
+	// inferring it from several is the sidecar attack, so it is named.
+	Authenticating string `yaml:"authenticating"`
 	// Containers are the workload's containers and the exact image each runs.
 	Containers []CellContainer `yaml:"containers"`
 	// InitContainers are the workload's init containers, which never
@@ -107,6 +119,20 @@ type CellWorkload struct {
 	Endpoints []CellEndpoint `yaml:"endpoints,omitempty"`
 	// Ingress are the environment's ingress routes to this workload's endpoints.
 	Ingress []CellIngress `yaml:"ingress,omitempty"`
+	// Verifier marks the serving workloads of the service the environment's
+	// host block names as the delivery API: the one that verifies delivered
+	// documents, from which the platform derives the narrow RBAC that needs
+	// (token reviews, pod reads in delivered namespaces) and the carrier's
+	// allow into it. Derived from host.delivery, never guessed.
+	Verifier bool `yaml:"verifier,omitempty"`
+	// Bindings are the cell-provided resources the service is declared to
+	// bind, from the environment's cell declaration; the cell provisions each
+	// and derives the grant.
+	Bindings []string `yaml:"bindings,omitempty"`
+	// CloudIdentity is whether the workload mints a cloud credential from the
+	// node's metadata server, declared by the environment: a network path no
+	// egress waypoint carries, which the platform allows per workload.
+	CloudIdentity bool `yaml:"cloud_identity,omitempty"`
 }
 
 // CellContainer is one container and its pinned image.
@@ -161,12 +187,21 @@ type CellIngress struct {
 }
 
 // CellEgress is the external reach one service is declared to need: the hosts
-// the environment declares it dials (a declaration, never derived), and the
-// CIDRs of a managed service that replaces it.
+// the environment declares it dials (a declaration, never derived), each on
+// the port it is reached on, and the CIDRs of a managed service that replaces
+// it.
 type CellEgress struct {
-	Service string   `yaml:"service"`
-	Hosts   []string `yaml:"hosts,omitempty"`
-	CIDRs   []string `yaml:"cidrs,omitempty"`
+	Service string           `yaml:"service"`
+	Hosts   []CellEgressHost `yaml:"hosts,omitempty"`
+	CIDRs   []string         `yaml:"cidrs,omitempty"`
+}
+
+// CellEgressHost is one host and the port it is reached on. The port is always
+// explicit here, because a mesh allows a (host, port) and a reader defaulting
+// it would be a second place the default lives.
+type CellEgressHost struct {
+	Name string `yaml:"name"`
+	Port int    `yaml:"port"`
 }
 
 // CellResult reports what a cell render wrote and what it left out.
@@ -204,7 +239,7 @@ func RenderCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 	}
 	cell := CellFile{Schema: CellSchemaV1, Environment: env.Name}
 	if env.Host != nil {
-		cell.Coordinate, cell.Component = env.Host.Coordinate, env.Host.Component
+		cell.Coordinate, cell.Component, cell.TrustDomain = env.Host.Coordinate, env.Host.Component, env.Host.TrustDomain
 	}
 	consumers, err := endpointConsumers(ctx, workspace)
 	if err != nil {
@@ -284,13 +319,22 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 		if len(workloads) == 0 {
 			return CellNamespace{}, fmt.Errorf("unit %s/%s renders no workload", inventory.Module, unit.Name)
 		}
+		grant, _ := env.CellWorkload(inventory.Module, unit.Name)
 		for index := range workloads {
 			workload := &workloads[index]
 			workload.Service = resources.ServiceUnique(inventory.Module, unit.Name)
 			workload.Artifact = CellArtifact{Name: unit.Name, Digest: digest}
 			workload.Release = release
+			authenticating, _, err := authenticatingContainer(unit.Name, workload)
+			if err != nil {
+				return CellNamespace{}, fmt.Errorf("unit %s/%s workload %s: %w", inventory.Module, unit.Name, workload.Name, err)
+			}
+			workload.Authenticating = authenticating.Name
+			workload.Bindings = append([]string(nil), grant.Bindings...)
+			workload.CloudIdentity = grant.CloudIdentity
 			if env.Host != nil {
 				workload.SPIFFEID = env.Host.SPIFFEID(inventory.Namespace, workload.ServiceAccount)
+				workload.Verifier = isDeliveryVerifier(env, workload)
 			}
 			for _, endpoint := range service.Endpoints {
 				if endpoint == nil {
@@ -317,7 +361,10 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 		if unit.Kind != UnitKindService {
 			continue
 		}
-		egress := CellEgress{Service: resources.ServiceUnique(inventory.Module, unit.Name), Hosts: env.EgressHosts(inventory.Module, unit.Name)}
+		egress := CellEgress{Service: resources.ServiceUnique(inventory.Module, unit.Name)}
+		for _, host := range env.EgressHosts(inventory.Module, unit.Name) {
+			egress.Hosts = append(egress.Hosts, CellEgressHost{Name: host.Name, Port: host.Port})
+		}
 		if managed, declared := env.ManagedService(inventory.Module, unit.Name); declared {
 			egress.CIDRs = append([]string(nil), managed.EgressCIDRs...)
 		}
@@ -328,6 +375,23 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 	}
 	sort.Slice(namespace.Egress, func(i, j int) bool { return namespace.Egress[i].Service < namespace.Egress[j].Service })
 	return namespace, nil
+}
+
+// isDeliveryVerifier reports whether a workload is a serving workload of the
+// service the environment's host block names as the delivery API. A bootstrap
+// Job of that service runs its own image and verifies nothing, so only the
+// kinds that serve are marked.
+func isDeliveryVerifier(env *environments.Environment, workload *CellWorkload) bool {
+	if env == nil || env.Host == nil {
+		return false
+	}
+	switch workload.Kind {
+	case kindDeployment, kindStatefulSet, kindDaemonSet:
+	default:
+		return false
+	}
+	module, service, _ := env.Host.DeliveryEndpoint()
+	return workload.Service == resources.ServiceUnique(module, service)
 }
 
 // renderedWorkloads reads the pod-template-bearing workloads out of a unit's
