@@ -100,6 +100,10 @@ type Inventory struct {
 	// points an Argo Application at its environment overlay and derives the
 	// promotion's authority from it, exactly as it does for a unit.
 	SolutionHostBindingPath string `json:"solutionHostBindingPath,omitempty"`
+	// SolutionAuthorityPath is the render subdirectory holding the declared
+	// authority documents, when this render declared any. Delivered into the
+	// platform's authority namespace, through its own Argo component.
+	SolutionAuthorityPath string `json:"solutionAuthorityPath,omitempty"`
 	// Package identifies the module package this render was produced from
 	// (module.package.codefly.yaml id/version), when the module has one.
 	Package *InventoryPackage `json:"package,omitempty"`
@@ -276,6 +280,19 @@ type RenderOptions struct {
 	// resolution the workloads came from. One SolutionHostBinding is rendered
 	// per entry.
 	SolutionInstances []SolutionInstance
+	// UndeclaredPresence is why this render declares no presence for the
+	// module, when it declares none for a reason other than the environment
+	// naming no host.
+	UndeclaredPresence string
+	// AuthorityInstances are the authority documents this render declares, one
+	// per module-identity service of a module publishing a contract.
+	AuthorityInstances []AuthorityInstance
+	// SolutionAuthorityPath is set by the render once it has written authority
+	// documents, so the inventory records the delivered path.
+	SolutionAuthorityPath string
+	// UndeclaredAuthority is why this render declares no authority, when the
+	// reason is the module's own.
+	UndeclaredAuthority string
 }
 
 func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKubernetesOutput {
@@ -324,6 +341,14 @@ type RenderResult struct {
 	// missing declaration and a composition with no solution look the same
 	// otherwise.
 	UndeclaredSolutions []string `json:"undeclaredSolutions,omitempty"`
+	// UndeclaredPresence says why the module declares no presence when the
+	// reason is the module's own — no package manifest to name a release from.
+	UndeclaredPresence string `json:"undeclaredPresence,omitempty"`
+	// SolutionAuthorities are the authority documents this render declared.
+	SolutionAuthorities []DeclaredAuthority `json:"solutionAuthorities,omitempty"`
+	// UndeclaredAuthority says why the module declares no authority: no
+	// contract, no module-identity service, or no presence to be effective from.
+	UndeclaredAuthority string `json:"undeclaredAuthority,omitempty"`
 	// Cell is the environment's cell file this render regenerated, when the
 	// environment names a host.
 	Cell *CellResult `json:"cell,omitempty"`
@@ -408,7 +433,9 @@ type PublishPlan struct {
 	SnapshotRevision string          `json:"snapshotRevision"`
 	Changed          []string        `json:"changed"`
 	Diff             string          `json:"diff"`
-	ContractChecks   []ContractCheck `json:"contractChecks,omitempty"`
+	ContractChecks   []ContractCheck `json:"contractChecks,omitempty"` // Delivery is what the publication settled and signed, for the plan's
+	// reader and the result.
+	Delivery *InventoryDelivery `json:"delivery,omitempty"`
 }
 
 // ContractCheck reports the admission result of one consumed API contract
@@ -441,6 +468,10 @@ type PublishResult struct {
 	PullRequest      string          `json:"pullRequest"`
 	PullRequestID    int             `json:"pullRequestId,omitempty"`
 	ContractChecks   []ContractCheck `json:"contractChecks,omitempty"`
+	// Delivery is what this publish settled and signed: every presence and
+	// authority document at its settled generation, and the identity that
+	// signed them.
+	Delivery *InventoryDelivery `json:"delivery,omitempty"`
 }
 
 type RollbackRequest struct {

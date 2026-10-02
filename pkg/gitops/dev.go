@@ -280,6 +280,7 @@ func inventoryRenderOptions(inventory *Inventory) *RenderOptions {
 		// a diff. Dropping this one stops Argo delivering the declared
 		// bindings on the next publish while the documents stay in the tree.
 		SolutionHostBindingPath:       inventory.SolutionHostBindingPath,
+		SolutionAuthorityPath:         inventory.SolutionAuthorityPath,
 		Delivered:                     inventory.Delivery,
 		WorkspaceConfigurationDigests: inventory.WorkspaceConfigurationDigests,
 	}

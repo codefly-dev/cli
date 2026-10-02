@@ -10,9 +10,12 @@ metadata:
         codefly.dev/solution: crm
 data:
     solution-host-binding.codefly.yaml: |
-        schema: codefly/solution-host-binding/v1
+        schema: codefly/solution-host-binding/v2
+        kind: solution
         binding: example.prod.crm
         generation: 1
+        ownership_domain: example
+        envelope_revision: 1
         host:
             coordinate: example/prod/region-a
             component: platform-host
@@ -20,6 +23,7 @@ data:
             publisher: example
             name: crm
             version: 1.4.0
+            digest: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
         routes:
             - alias: crm
               surface: backend
@@ -28,6 +32,18 @@ data:
               name: api
               release: example/crm@1.4.0
               digest: sha256:9176742fd9177b1efc917bbf81818ea6c1c8e5cc4c24bc566607fde43112561f
+        workloads:
+            - name: api
+              artifact: api
+              container: api
+              image:
+                repository: ghcr.io/codefly-dev/api
+                digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+              identity:
+                audience: accounts
+                subject: crm@example.iam.test
+                spiffe_id: spiffe://cluster.example/ns/crm/sa/default
+              non_authenticating: []
         modules:
             - module: crm
               package: example/crm
@@ -38,6 +54,3 @@ data:
               module: crm
               api: grpc
               visibility: internal
-        workload:
-            audience: accounts
-            subject: crm@example.iam.test

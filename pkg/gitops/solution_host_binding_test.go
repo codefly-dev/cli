@@ -15,6 +15,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// testReleaseDigest is the release digest the fixtures pin: a release digest,
+// distinct from every rendered-bytes and image digest in the fixtures.
+const testReleaseDigest = solutionhost.ReleaseDigest("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+
 func testHost() *environments.EnvironmentHost {
 	return &environments.EnvironmentHost{
 		Coordinate:       "example/prod/region-a",
@@ -40,12 +44,13 @@ func solutionRenderOptions(destination string) *RenderOptions {
 		Host:        testHost(),
 		Units:       promotableServiceGraph("crm", []string{"api"}),
 		SolutionInstances: []SolutionInstance{{
-			Name:    "crm",
-			Alias:   "crm",
-			Package: "example/crm",
-			Version: "1.4.0",
-			Subject: "crm@example.iam.test",
-			Units:   []SolutionArtifactUnit{{Name: "api", Path: "services/api"}},
+			Kind:          solutionhost.KindSolution,
+			Name:          "crm",
+			Alias:         "crm",
+			Package:       "example/crm",
+			Version:       "1.4.0",
+			ReleaseDigest: testReleaseDigest,
+			Units:         []SolutionArtifactUnit{{Name: "api", Path: "services/api", Subject: "crm@example.iam.test"}},
 			Endpoints: []SolutionEndpoint{
 				{Name: "grpc", Service: "api", Module: "crm", API: "grpc", Visibility: "internal"},
 			},
@@ -124,22 +129,39 @@ func TestRenderDeclaresOneBindingPerSolutionInstance(t *testing.T) {
 	if document.Host.Coordinate != "example/prod/region-a" || document.Host.Component != "platform-host" {
 		t.Fatalf("host target %+v", document.Host)
 	}
-	if document.Workload.Audience != "accounts" || document.Workload.Subject != "crm@example.iam.test" {
-		t.Fatalf("workload identity %+v", document.Workload)
+	if document.Kind != solutionhost.KindSolution || document.OwnershipDomain != "example" || document.EnvelopeRevision != 1 {
+		t.Fatalf("kind %q domain %q envelope revision %d", document.Kind, document.OwnershipDomain, document.EnvelopeRevision)
+	}
+	if len(document.Workloads) != 1 {
+		t.Fatalf("workloads %+v", document.Workloads)
+	}
+	workload := document.Workloads[0]
+	if workload.Name != "api" || workload.Artifact != "api" || workload.Container != "api" {
+		t.Fatalf("workload %+v", workload)
+	}
+	if workload.Image.Repository != "ghcr.io/codefly-dev/api" || string(workload.Image.Digest) != "sha256:"+strings.Repeat("a", 64) {
+		t.Fatalf("workload image %+v", workload.Image)
+	}
+	if workload.Identity.Audience != "accounts" || workload.Identity.Subject != "crm@example.iam.test" ||
+		workload.Identity.SPIFFEID != "spiffe://cluster.example/ns/crm/sa/default" {
+		t.Fatalf("workload identity %+v", workload.Identity)
+	}
+	if workload.NonAuthenticating == nil || len(workload.NonAuthenticating) != 0 {
+		t.Fatalf("non-authenticating containers must be declared empty, got %#v", workload.NonAuthenticating)
 	}
 	if document.Release.Publisher != "example" || document.Release.Name != "crm" || document.Release.Version != "1.4.0" {
 		t.Fatalf("release %+v", document.Release)
 	}
-	// v1 leaves the release digest empty; signed releases do not exist yet and
-	// a digest invented here would pin nothing while looking like a pin.
-	if document.Release.Digest != "" {
-		t.Fatalf("release digest is %q; v1 leaves it empty", document.Release.Digest)
+	// The release digest is required: a generation without one can be matched
+	// to no authority.
+	if document.Release.Digest != testReleaseDigest {
+		t.Fatalf("release digest is %q", document.Release.Digest)
 	}
 	if len(document.Artifacts) != 1 {
 		t.Fatalf("artifacts %+v", document.Artifacts)
 	}
 	artifact := document.Artifacts[0]
-	if artifact.Name != "api" || artifact.Release != "example/crm@1.4.0" || !strings.HasPrefix(artifact.Digest, "sha256:") {
+	if artifact.Name != "api" || artifact.Release != "example/crm@1.4.0" || !strings.HasPrefix(string(artifact.Digest), "sha256:") {
 		t.Fatalf("artifact %+v", artifact)
 	}
 	if len(document.Routes) != 1 || document.Routes[0].Alias != "crm" {
@@ -272,7 +294,7 @@ func TestRenderRefusesARouteAliasAHostCannotKeyOn(t *testing.T) {
 func TestRenderRefusesASolutionWhoseWorkloadAuthenticatesAsNothing(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "modules", "crm")
 	options := solutionRenderOptions(destination)
-	options.SolutionInstances[0].Subject = ""
+	options.SolutionInstances[0].Units[0].Subject = ""
 	_, err := RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment))
 	if err == nil || !strings.Contains(err.Error(), "declares no workload identity") {
 		t.Fatalf("a binding with no subject was rendered: %v", err)
@@ -388,9 +410,19 @@ func TestRenderRefusesAMixedReleaseSet(t *testing.T) {
 	// An artifact rendered from another release cannot be declared in this
 	// generation: a partial rollout is not a thing delivery may describe.
 	options.SolutionInstances[0].Units = append(options.SolutionInstances[0].Units,
-		SolutionArtifactUnit{Name: "worker", Path: "services/api"})
+		SolutionArtifactUnit{Name: "worker", Path: "services/worker", Subject: "crm@example.iam.test"})
 	options.SolutionInstances[0].Package = "example/crm"
-	result, err := RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment))
+	options.Units = promotableServiceGraph("crm", []string{"api", "worker"})
+	result, err := RenderOwnedTree(context.Background(), options, func(ctx context.Context, root string) error {
+		if err := renderWorkload(pinnedDeployment)(ctx, root); err != nil {
+			return err
+		}
+		overlay := filepath.Join(root, "services", "worker", "overlays", "prod")
+		if err := os.MkdirAll(overlay, 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(strings.ReplaceAll(strings.ReplaceAll(pinnedDeployment, "name: api", "name: worker"), "codefly-dev/api@", "codefly-dev/worker@")), 0o644)
+	})
 	if err != nil {
 		t.Fatalf("two artifacts of one release were refused: %v (%+v)", err, result.SolutionHostBindings)
 	}
@@ -404,7 +436,7 @@ func TestRenderRefusesAMixedReleaseSet(t *testing.T) {
 
 func mustFixtureDocument(t *testing.T, name string) []byte {
 	t.Helper()
-	data, err := solutionhost.FixtureDocument(name)
+	data, err := solutionhost.FixtureDocument(solutionhost.DocumentTypePresence, name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,8 +518,11 @@ func TestRenderSolutionDeclaresItsOwnPresence(t *testing.T) {
 	if len(document.Artifacts) != 1 || document.Artifacts[0].Name != "lastlogin-go" {
 		t.Fatalf("artifacts %+v", document.Artifacts)
 	}
-	if document.Workload.Subject != "lastlogin@example.iam.test" {
-		t.Fatalf("workload %+v", document.Workload)
+	if len(document.Workloads) != 1 || document.Workloads[0].Identity.Subject != "lastlogin@example.iam.test" {
+		t.Fatalf("workloads %+v", document.Workloads)
+	}
+	if document.Release.Digest != "sha256:"+digestPlaceholder {
+		t.Fatalf("release digest %q is not the artifact digest the executor reported", document.Release.Digest)
 	}
 }
 

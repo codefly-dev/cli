@@ -244,12 +244,21 @@ func renderModuleTree(
 		// package it resolved, and the units it just assembled. Nothing is
 		// looked up again, so the binding cannot describe a composition the
 		// workloads did not come from.
-		instance, err := solutionInstanceOf(module, services, env, options)
+		instance, undeclared, err := presenceInstanceOf(module, services, env, options)
 		if err != nil {
 			return err
 		}
+		options.UndeclaredPresence = undeclared
 		if instance != nil {
 			options.SolutionInstances = []SolutionInstance{*instance}
+			// Authority is effective from a presence generation, so a module
+			// declaring no presence asks for none.
+			options.AuthorityInstances, options.UndeclaredAuthority, err = authorityInstancesOf(ctx, workspace, module, services, env, instance.Units)
+			if err != nil {
+				return err
+			}
+		} else {
+			options.UndeclaredAuthority = "the module declares no presence, so no authority can be effective from it"
 		}
 		if module.Agent != nil {
 			modulePath := filepath.Join(stage, moduleBundleDir)

@@ -82,6 +82,9 @@ type CellWorkload struct {
 	SPIFFEID string `yaml:"spiffe_id,omitempty"`
 	// Containers are the workload's containers and the exact image each runs.
 	Containers []CellContainer `yaml:"containers"`
+	// InitContainers are the workload's init containers, which never
+	// authenticate as the workload.
+	InitContainers []CellContainer `yaml:"init_containers,omitempty"`
 	// Artifact is the rendered unit the workload comes from, pinned by the
 	// digest of its rendered bytes.
 	Artifact CellArtifact `yaml:"artifact"`
@@ -301,16 +304,7 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 // pinned images.
 func renderedWorkloads(unitDir, environment string) ([]CellWorkload, error) {
 	overlay := filepath.Join(unitDir, "overlays", environment)
-	kustomizer := krusty.MakeKustomizer(krusty.MakeDefaultOptions())
-	built, err := kustomizer.Run(filesys.MakeFsOnDisk(), overlay)
-	if err != nil {
-		return nil, fmt.Errorf("build %s: %w", overlay, err)
-	}
-	output, err := built.AsYaml()
-	if err != nil {
-		return nil, fmt.Errorf("encode %s: %w", overlay, err)
-	}
-	manifests, _, err := decodeYAML("kustomize:"+filepath.ToSlash(overlay), output)
+	manifests, err := overlayManifests(overlay)
 	if err != nil {
 		return nil, err
 	}
@@ -330,22 +324,78 @@ func renderedWorkloads(unitDir, environment string) ([]CellWorkload, error) {
 		if workload.ServiceAccount == "" {
 			workload.ServiceAccount = "default"
 		}
-		for _, raw := range sliceField(spec, "containers") {
-			container, _ := raw.(map[string]any)
-			name, _ := container["name"].(string)
-			image, _ := container["image"].(string)
-			repository, digest, pinned := strings.Cut(image, "@")
-			if !pinned {
-				return nil, fmt.Errorf("workload %s container %s image %q is not pinned by digest", workload.Name, name, image)
-			}
-			// The repository is the name only: a tag beside a digest would give
-			// one container two answers about what it runs.
-			if at := strings.LastIndex(repository, ":"); at > strings.LastIndex(repository, "/") {
-				repository = repository[:at]
-			}
-			workload.Containers = append(workload.Containers, CellContainer{Name: name, Image: CellImage{Repository: repository, Digest: digest}})
+		containers, err := renderedContainers(workload.Name, sliceField(spec, "containers"))
+		if err != nil {
+			return nil, err
+		}
+		workload.Containers = containers
+		if workload.InitContainers, err = renderedContainers(workload.Name, sliceField(spec, "initContainers")); err != nil {
+			return nil, err
 		}
 		workloads = append(workloads, workload)
 	}
 	return workloads, nil
+}
+
+// renderedContainers reads a pod template's containers and their pinned images.
+func renderedContainers(workload string, raw []any) ([]CellContainer, error) {
+	var containers []CellContainer
+	for _, entry := range raw {
+		container, _ := entry.(map[string]any)
+		name, _ := container["name"].(string)
+		image, _ := container["image"].(string)
+		repository, digest, pinned := strings.Cut(image, "@")
+		if !pinned {
+			return nil, fmt.Errorf("workload %s container %s image %q is not pinned by digest", workload, name, image)
+		}
+		// The repository is the name only: a tag beside a digest would give one
+		// container two answers about what it runs.
+		if at := strings.LastIndex(repository, ":"); at > strings.LastIndex(repository, "/") {
+			repository = repository[:at]
+		}
+		containers = append(containers, CellContainer{Name: name, Image: CellImage{Repository: repository, Digest: digest}})
+	}
+	return containers, nil
+}
+
+// overlayManifests reads the manifests of a unit's overlay: the kustomize build
+// when the overlay has a kustomization, the YAML files themselves otherwise. A
+// unit an agent rendered always has one; a tree assembled directly in a test
+// may not, and what it says about its workloads is the same either way.
+func overlayManifests(overlay string) ([]manifest, error) {
+	for _, name := range []string{kustomizationFile, kustomizationFileAlt} {
+		if _, err := os.Stat(filepath.Join(overlay, name)); err == nil {
+			kustomizer := krusty.MakeKustomizer(krusty.MakeDefaultOptions())
+			built, buildErr := kustomizer.Run(filesys.MakeFsOnDisk(), overlay)
+			if buildErr != nil {
+				return nil, fmt.Errorf("build %s: %w", overlay, buildErr)
+			}
+			output, encodeErr := built.AsYaml()
+			if encodeErr != nil {
+				return nil, fmt.Errorf("encode %s: %w", overlay, encodeErr)
+			}
+			manifests, _, decodeErr := decodeYAML("kustomize:"+filepath.ToSlash(overlay), output)
+			return manifests, decodeErr
+		}
+	}
+	entries, err := os.ReadDir(overlay)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", overlay, err)
+	}
+	var manifests []manifest
+	for _, entry := range entries {
+		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), yamlExtension) && !strings.HasSuffix(entry.Name(), ymlExtension)) {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(overlay, entry.Name())) //nolint:gosec // a file of the overlay being read
+		if readErr != nil {
+			return nil, readErr
+		}
+		decoded, _, decodeErr := decodeYAML(filepath.ToSlash(filepath.Join(overlay, entry.Name())), data)
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		manifests = append(manifests, decoded...)
+	}
+	return manifests, nil
 }
