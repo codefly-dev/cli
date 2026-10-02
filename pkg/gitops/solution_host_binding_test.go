@@ -146,7 +146,9 @@ func TestRenderDeclaresOneBindingPerSolutionInstance(t *testing.T) {
 		workload.Identity.SPIFFEID != "spiffe://cluster.example/ns/crm/sa/default" {
 		t.Fatalf("workload identity %+v", workload.Identity)
 	}
-	if workload.NonAuthenticating == nil || len(workload.NonAuthenticating) != 0 {
+	// Declared empty, never absent: core refuses a nil list because a host
+	// could not tell it from "there are none".
+	if workload.NonAuthenticating == nil || len(*workload.NonAuthenticating) != 0 {
 		t.Fatalf("non-authenticating containers must be declared empty, got %#v", workload.NonAuthenticating)
 	}
 	if document.Release.Publisher != "example" || document.Release.Name != "crm" || document.Release.Version != "1.4.0" {

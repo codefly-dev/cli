@@ -33,6 +33,27 @@
 // string where a slot belongs is a schema error, not a value: a literal audience
 // written into a module repository is a coupling across a module boundary that
 // should never be accepted silently.
+//
+// A slot's KEY NAME carries its meaning, because no reader can check what a
+// resolved value means: an audience slot pointing at a declared, supplied key
+// that holds a model profile name resolves cleanly to a binding addressed to a
+// profile, which the receiver refuses far from the contract that caused it. So
+// the reader holds the convention the modules publish against: audience takes
+// a *-audience key (or a *-prefix one, since a module's prefix is the audience
+// a capability for it is addressed to), resource_kind a *-resource-kind key and
+// binding_key a *-binding key, in either spelling core accepts.
+//
+// # Scope ceilings
+//
+// A binding's ceiling is written per operation in one of two spellings. Bare
+// actions ([read, write]) are qualified by the binding's resource_kind slot,
+// and a binding declaring none cannot write them: a scope names a resource
+// kind, and one without a kind is a request nothing can mint. A binding whose
+// acts span several kinds spells each scope out instead —
+// [{resource_kind: other.things, actions: [write]}] — naming the kind
+// literally, because a permission's namespace is fixed by the module that
+// contributes it, exactly as its proto package is, while a service the
+// composition chooses is configuration and stays a slot.
 package modulecontract
 
 import (
@@ -74,6 +95,14 @@ const (
 )
 
 var operations = []string{OperationInvoke, OperationLookup, OperationHeadless}
+
+// The slot fields of a binding, as the file spells them: what a refusal names
+// and what the key-naming convention is keyed by.
+const (
+	fieldAudience     = "audience"
+	fieldResourceKind = "resource_kind"
+	fieldBindingKey   = "binding_key"
+)
 
 // Destination kinds. The vocabulary belongs with the host's envelope table;
 // these three are what is written until that table names it.
@@ -161,11 +190,71 @@ type Binding struct {
 	ResourceKind *Slot `yaml:"resource_kind,omitempty"`
 	// BindingKey is the key the host installs the binding under, a slot.
 	BindingKey *Slot `yaml:"binding_key,omitempty"`
-	// ScopeCeiling is, per declared operation, the actions the binding may at
+	// ScopeCeiling is, per declared operation, the scopes the binding may at
 	// most carry. Every declared operation names its ceiling: a binding
 	// declaring no scopes for an operation cannot be minted that way at all.
-	ScopeCeiling map[string][]string `yaml:"scope_ceiling"`
+	ScopeCeiling map[string]Ceiling `yaml:"scope_ceiling"`
 }
+
+// Ceiling is one operation's scope ceiling, in exactly one of two spellings:
+// bare actions qualified by the binding's resource_kind slot, or explicit
+// scopes each naming its resource kind literally. A sequence mixing the two is
+// refused, so a reader never has to guess which kind an action was meant for.
+type Ceiling struct {
+	// Actions is the bare spelling: [read, write].
+	Actions []string
+	// Scopes is the explicit spelling: [{resource_kind: k, actions: [...]}].
+	Scopes []CeilingScope
+}
+
+// CeilingScope is one explicit scope of a ceiling: a resource kind, named
+// literally, and the actions permitted on it.
+type CeilingScope struct {
+	ResourceKind string   `yaml:"resource_kind"`
+	Actions      []string `yaml:"actions"`
+}
+
+// UnmarshalYAML reads a ceiling in either spelling, deciding by the first
+// element and refusing a sequence that changes shape after it.
+func (ceiling *Ceiling) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.SequenceNode {
+		return fmt.Errorf("%w: a scope ceiling is a list of actions or of {resource_kind, actions} entries", ErrInvalid)
+	}
+	if len(node.Content) == 0 {
+		return nil
+	}
+	switch node.Content[0].Kind {
+	case yaml.ScalarNode:
+		for _, item := range node.Content {
+			if item.Kind != yaml.ScalarNode {
+				return fmt.Errorf("%w: a scope ceiling mixes bare actions with {resource_kind, actions} entries", ErrInvalid)
+			}
+			ceiling.Actions = append(ceiling.Actions, item.Value)
+		}
+	case yaml.MappingNode:
+		for _, item := range node.Content {
+			if item.Kind != yaml.MappingNode {
+				return fmt.Errorf("%w: a scope ceiling mixes {resource_kind, actions} entries with bare actions", ErrInvalid)
+			}
+			for index := 0; index < len(item.Content); index += 2 {
+				if key := item.Content[index].Value; key != fieldResourceKind && key != "actions" {
+					return fmt.Errorf("%w: unknown scope ceiling field %q (an entry carries resource_kind and actions)", ErrInvalid, key)
+				}
+			}
+			var scope CeilingScope
+			if err := item.Decode(&scope); err != nil {
+				return fmt.Errorf("%w: %v", ErrInvalid, err)
+			}
+			ceiling.Scopes = append(ceiling.Scopes, scope)
+		}
+	default:
+		return fmt.Errorf("%w: a scope ceiling is a list of actions or of {resource_kind, actions} entries", ErrInvalid)
+	}
+	return nil
+}
+
+// empty reports a ceiling that permits nothing.
+func (ceiling Ceiling) empty() bool { return len(ceiling.Actions) == 0 && len(ceiling.Scopes) == 0 }
 
 // Lookup is how a binding's lookup operation discovers what it looks up.
 type Lookup struct {
@@ -202,10 +291,29 @@ func (slot Slot) Group() string { group, _, _ := strings.Cut(slot.From, "/"); re
 // Key is the key half of the slot's reference.
 func (slot Slot) Key() string { _, key, _ := strings.Cut(slot.From, "/"); return key }
 
-func (slot Slot) validate(label string) error {
+// slotSuffixes is the naming convention a slot's key carries, per slot: the
+// key's meaning, since no reader can check what the value it resolves to means.
+// Compared in core's normalized spelling, so model-audience and MODEL_AUDIENCE
+// both pass.
+var slotSuffixes = map[string][]string{
+	fieldAudience:     {"_AUDIENCE", "_PREFIX"},
+	fieldResourceKind: {"_RESOURCE_KIND"},
+	fieldBindingKey:   {"_BINDING"},
+}
+
+func (slot Slot) validate(label, field string) error {
 	group, key, found := strings.Cut(slot.From, "/")
 	if !found || !namePattern.MatchString(group) || !slotKeyPattern.MatchString(key) {
 		return fmt.Errorf("%w: %s slot %q is not <group>/<key>", ErrInvalid, label, slot.From)
+	}
+	suffixes := slotSuffixes[field]
+	if !slices.ContainsFunc(suffixes, func(suffix string) bool { return strings.HasSuffix(normalizeKey(key), suffix) }) {
+		spelled := make([]string, 0, len(suffixes))
+		for _, suffix := range suffixes {
+			spelled = append(spelled, "*"+strings.ToLower(strings.ReplaceAll(suffix, "_", "-")))
+		}
+		return fmt.Errorf("%w: %s slot %q names a key that is not %s; a slot's key carries its meaning, because no reader can check what the value it resolves to means",
+			ErrInvalid, label, slot.From, strings.Join(spelled, " or "))
 	}
 	return nil
 }
@@ -374,17 +482,17 @@ func (contract *Contract) validateBindings() error {
 				return fmt.Errorf("%w: binding %q lookup method %q is not a lowercase name", ErrInvalid, binding.ID, binding.Lookup.Method)
 			}
 		}
-		if err := binding.Audience.validate("binding " + binding.ID + " audience"); err != nil {
+		if err := binding.Audience.validate("binding "+binding.ID+" "+fieldAudience, fieldAudience); err != nil {
 			return err
 		}
 		for _, slot := range []struct {
 			label string
 			slot  *Slot
-		}{{"resource_kind", binding.ResourceKind}, {"binding_key", binding.BindingKey}} {
+		}{{fieldResourceKind, binding.ResourceKind}, {fieldBindingKey, binding.BindingKey}} {
 			if slot.slot == nil {
 				continue
 			}
-			if err := slot.slot.validate("binding " + binding.ID + " " + slot.label); err != nil {
+			if err := slot.slot.validate("binding "+binding.ID+" "+slot.label, slot.label); err != nil {
 				return err
 			}
 		}
@@ -394,16 +502,49 @@ func (contract *Contract) validateBindings() error {
 			}
 		}
 		for _, operation := range binding.Operations {
-			actions := binding.ScopeCeiling[operation]
-			if len(actions) == 0 {
-				// The ceiling is the gate: a binding carrying no scopes for an
-				// operation cannot be minted that way at all, so an operation
-				// declared without one is a request for nothing.
-				return fmt.Errorf("%w: binding %q declares operation %q with no scope ceiling", ErrInvalid, binding.ID, operation)
-			}
-			if err := validateActions("binding "+binding.ID+" "+operation, actions); err != nil {
+			if err := binding.validateCeiling(operation); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+// validateCeiling checks one operation's ceiling: present, and in a spelling
+// the binding can qualify.
+func (binding *Binding) validateCeiling(operation string) error {
+	label := "binding " + binding.ID + " " + operation
+	ceiling := binding.ScopeCeiling[operation]
+	if ceiling.empty() {
+		// The ceiling is the gate: a binding carrying no scopes for an
+		// operation cannot be minted that way at all, so an operation
+		// declared without one is a request for nothing.
+		return fmt.Errorf("%w: binding %q declares operation %q with no scope ceiling", ErrInvalid, binding.ID, operation)
+	}
+	if len(ceiling.Actions) > 0 {
+		if binding.ResourceKind == nil {
+			// A scope names a resource kind (core's WorkScopeV1 requires one),
+			// so a bare action with no kind to qualify it is a request nothing
+			// can mint.
+			return fmt.Errorf("%w: %s ceiling lists bare actions but the binding declares no resource_kind slot to qualify them; "+
+				"add the slot, or spell each scope as {resource_kind: <kind>, actions: [...]}", ErrInvalid, label)
+		}
+		return validateActions(label, ceiling.Actions)
+	}
+	seen := make(map[string]struct{}, len(ceiling.Scopes))
+	for _, scope := range ceiling.Scopes {
+		if !namePattern.MatchString(scope.ResourceKind) {
+			return fmt.Errorf("%w: %s ceiling resource kind %q is not a lowercase name", ErrInvalid, label, scope.ResourceKind)
+		}
+		if _, exists := seen[scope.ResourceKind]; exists {
+			return fmt.Errorf("%w: %s ceiling names resource kind %q twice", ErrInvalid, label, scope.ResourceKind)
+		}
+		seen[scope.ResourceKind] = struct{}{}
+		if len(scope.Actions) == 0 {
+			return fmt.Errorf("%w: %s ceiling resource kind %q permits no action", ErrInvalid, label, scope.ResourceKind)
+		}
+		if err := validateActions(label+" "+scope.ResourceKind, scope.Actions); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -464,8 +605,9 @@ type ResolvedBinding struct {
 	// BindingKey is the resolved key, or empty when the binding declared none.
 	BindingKey string
 	// Scopes are, per operation, the scope strings the binding may at most
-	// carry: "<resource kind>:<action>" when a resource kind is declared, the
-	// bare action otherwise. Sorted.
+	// carry, every one "<resource kind>:<action>": the binding's resolved
+	// resource kind qualifies its bare actions, and an explicit scope names
+	// its own. Sorted.
 	Scopes map[string][]string
 }
 
@@ -515,12 +657,16 @@ func (contract *Contract) Resolve(values Values) (*Resolved, error) {
 			Scopes:       make(map[string][]string, len(binding.Operations)),
 		}
 		for _, operation := range binding.Operations {
-			scopes := make([]string, 0, len(binding.ScopeCeiling[operation]))
-			for _, action := range binding.ScopeCeiling[operation] {
-				if entry.ResourceKind != "" {
-					scopes = append(scopes, entry.ResourceKind+":"+action)
-				} else {
-					scopes = append(scopes, action)
+			ceiling := binding.ScopeCeiling[operation]
+			scopes := make([]string, 0, len(ceiling.Actions)+len(ceiling.Scopes))
+			// Bare actions are qualified by the binding's resolved resource
+			// kind; explicit scopes carry their own.
+			for _, action := range ceiling.Actions {
+				scopes = append(scopes, entry.ResourceKind+":"+action)
+			}
+			for _, scope := range ceiling.Scopes {
+				for _, action := range scope.Actions {
+					scopes = append(scopes, scope.ResourceKind+":"+action)
 				}
 			}
 			sort.Strings(scopes)

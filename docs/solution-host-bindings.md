@@ -147,6 +147,36 @@ slot pointing at a secret-classified value fails the render rather than inlining
 it into a delivered document, and a bare string where a slot belongs is a schema
 error.
 
+A slot's **key name carries its meaning**, because no reader can check what the
+value it resolves to means: a declared, supplied key holding a model profile
+name resolves cleanly into a binding addressed to a profile, which the receiver
+refuses far from the contract that caused it. The reader holds the convention
+the modules publish against — `audience` from a `*-audience` key (or a
+`*-prefix` one: a module's prefix is the audience a capability for it is
+addressed to), `resource_kind` from a `*-resource-kind` key, `binding_key` from
+a `*-binding` key — in either key spelling core accepts, and refuses a slot
+whose key is named otherwise.
+
+A binding's **scope ceiling** is written per operation in one of two spellings,
+never mixed in one list. Bare actions (`invoke: [invoke, read]`) are qualified
+by the binding's `resource_kind` slot, and a binding declaring no such slot
+cannot write them: a scope names a resource kind (core's `WorkScopeV1` requires
+one), so an action with no kind is a request nothing can mint. A binding whose
+acts span several kinds spells each scope out instead:
+
+```yaml
+scope_ceiling:
+    headless:
+        - resource_kind: annotations.vocabularies
+          actions: [write]
+        - resource_kind: annotations.annotations
+          actions: [redact]
+```
+
+naming the other module's permission namespace literally — a namespace is fixed
+by the module that contributes it, exactly as its proto package is, while a
+service the composition chooses stays a slot.
+
 The derivation:
 
 - **authority ID** `<binding-id>:<service>`;
