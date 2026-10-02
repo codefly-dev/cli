@@ -64,18 +64,22 @@ func parityWorld(t *testing.T, mode Mode) (*World, *resources.Workspace) {
 		// resolution plans producer discovery against their names.
 		compositionRootGroups: localReader.CompositionRootWorkspaceConfigurationNames,
 	}
-	world.setRunProducers([]string{"platform/gateway", "payments/api", "payments/worker"}, nil)
+	world.setRunProducers([]string{"platform/gateway", "platform/authority", "payments/api", "payments/worker"}, nil)
 
 	// A local run derives a producer's address from the endpoints it recorded at
 	// Load; a render derives it from the producer's identity and namespace. Only
-	// the run needs the recording, so only the run world gets it.
+	// the run needs the recording, so only the run world gets it. Both producers
+	// record: platform/gateway is the one a declared group names, and
+	// platform/authority the one only the composition root's group names.
 	if !world.deploys() {
-		gateway := parityService(t, workspace, "platform", "gateway")
-		identity, err := gateway.Identity()
-		require.NoError(t, err)
-		endpoints, err := gateway.LoadEndpoints(ctx)
-		require.NoError(t, err)
-		require.NoError(t, sharedState.RecordEndpoints(ctx, identity, endpoints))
+		for _, producer := range []string{"gateway", "authority"} {
+			service := parityService(t, workspace, "platform", producer)
+			identity, err := service.Identity()
+			require.NoError(t, err)
+			endpoints, err := service.LoadEndpoints(ctx)
+			require.NoError(t, err)
+			require.NoError(t, sharedState.RecordEndpoints(ctx, identity, endpoints))
+		}
 	}
 	return world, workspace
 }
@@ -192,6 +196,11 @@ func TestRenderAndRunDeliverTheSameWorkspaceConfigurationGroups(t *testing.T) {
 			}},
 		{"payments", "worker", []string{"work-context"},
 			map[string][]string{"work-context": {"authority-url", "authority-endpoint", "authority-token"}}},
+		// The producer the root group references is itself a consumer of it: it
+		// declares no group, and the reference it receives names its own
+		// endpoint. Covered so no service of the fixture is left unasserted.
+		{"platform", "authority", []string{"work-context"},
+			map[string][]string{"work-context": {"authority-url", "authority-endpoint", "authority-token"}}},
 	} {
 		expected, expectedKeys := want.groups, want.keys
 		t.Run(want.module+"/"+want.name, func(t *testing.T) {
@@ -274,7 +283,7 @@ func TestARootOnlyEndpointReferenceReachesAServiceThatDeclaresNoGroup(t *testing
 	require.NoError(t, err)
 	deployed, delivered := groupValue(render, "work-context", "authority-endpoint")
 	require.True(t, delivered, "the render dropped a root group's endpoint value for an undeclared consumer")
-	requireInClusterAddress(t, deployed, "platform", "gateway")
+	requireInClusterAddress(t, deployed, "platform", "authority")
 }
 
 // requireInClusterAddress asserts a deployed address is the producer's
@@ -300,7 +309,11 @@ func requireInClusterAddress(t *testing.T, address, module, service string) {
 // declares, and `work-context`, which only the composition root provides. The
 // declared one alone would pass against the pre-change resolution, which
 // resolved declared groups in both paths already; the root one is what this
-// change makes resolvable at all.
+// change makes resolvable at all, and it is only that if it names a producer no
+// declared group names. `payments-store` names platform/gateway, so a root
+// reference to platform/gateway would be bound by that group's own discovery
+// and resolve pre-change too — verified, which is why the root group references
+// platform/authority instead.
 func TestRenderAndRunDifferOnlyInTheAddressFamily(t *testing.T) {
 	ctx := context.Background()
 	runWorld, workspace := parityWorld(t, RunMode)
@@ -319,9 +332,9 @@ func TestRenderAndRunDifferOnlyInTheAddressFamily(t *testing.T) {
 	render, err := builder.workspaceConfigurations(ctx, nil)
 	require.NoError(t, err)
 
-	for _, reference := range []struct{ group, key string }{
-		{"payments-store", "gateway-endpoint"},
-		{"work-context", "authority-endpoint"},
+	for _, reference := range []struct{ group, key, module, producer string }{
+		{"payments-store", "gateway-endpoint", "platform", "gateway"},
+		{"work-context", "authority-endpoint", "platform", "authority"},
 	} {
 		t.Run(reference.group+"/"+reference.key, func(t *testing.T) {
 			local, delivered := groupValue(run, reference.group, reference.key)
@@ -331,7 +344,7 @@ func TestRenderAndRunDifferOnlyInTheAddressFamily(t *testing.T) {
 			deployed, delivered := groupValue(render, reference.group, reference.key)
 			require.True(t, delivered, "the render did not deliver the reference at all")
 			require.NotEqual(t, local, deployed, "the render resolved the local address")
-			requireInClusterAddress(t, deployed, "platform", "gateway")
+			requireInClusterAddress(t, deployed, reference.module, reference.producer)
 		})
 	}
 

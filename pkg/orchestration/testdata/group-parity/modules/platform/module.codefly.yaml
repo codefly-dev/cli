@@ -4,3 +4,4 @@ project: group-parity
 domain: github.com/codefly-ai/group-parity/platform
 services:
     - name: gateway
+    - name: authority

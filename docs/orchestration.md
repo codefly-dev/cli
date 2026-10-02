@@ -211,9 +211,11 @@ references resolved against nothing.
   deployment operations ignore profiles.
 - A root group's `${endpoint:…}` does not order the run. Core's dependency graph
   orders a consumer after the producers of the groups it *declares*
-  (`architecture.WithConfigurationReferences` reads
-  `workspace-configuration-dependencies`), so a consumer that starts before the
-  producer of a root group's reference sees core drop that value, and the run is
+  (`ServiceDependencies.addConfigurationReferenceEdges`, core
+  `architecture/service_dependencies.go`, reads a consumer's
+  `workspace-configuration-dependencies` and no more), so a consumer that starts
+  before the producer of a root group's reference sees core drop that value, and
+  the run is
   not refused for it — refusing would fail a run whose service simply starts
   first. `TestARunToleratesARootReferenceThatHasNotResolvedYet` pins it;
   `TestARenderRefusesARootReferenceItCannotResolve` pins that the render does

@@ -1,0 +1,19 @@
+kind: service
+name: authority
+version: 0.0.0
+module: platform
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.16
+    publisher: codefly.ai
+# The producer the composition root's own group references, and the only one no
+# service declares a group for. A producer that some declared group also names
+# would be bound by that group's discovery anyway, so a root-only reference to
+# it would resolve whether or not the root's groups drove discovery — and a test
+# over it could not fail against the declared-only resolution. This service is
+# what keeps the root-only path load-bearing.
+endpoints:
+    - name: rest
+      api: rest
+      visibility: public
