@@ -1,0 +1,43 @@
+# A module contract of the agreed shape: a request, bounded later by the
+# envelope, the authority document and an installation.
+schema: codefly/module-contract/v1
+principal: assistant
+namespaces:
+    - assistant
+queues: []
+scope_ceilings:
+    - resource_kind: assistant.tasks
+      actions: [execute]
+    - resource_kind: assistant.answers
+      actions: [read, review]
+bindings:
+    - id: model
+      operations: [invoke, lookup]
+      lookup: {method: profile}
+      audience: {from: assistant/model-profile}
+      resource_kind: {from: assistant/model-resource-kind}
+      binding_key: {from: assistant/model-binding}
+      scope_ceiling:
+          invoke: [invoke, read]
+          lookup: [read]
+    - id: evidence
+      revision: 2
+      operations: [invoke]
+      audience: {from: assistant/documents-endpoint}
+      resource_kind: {from: assistant/evidence-resource-kind}
+      scope_ceiling:
+          invoke: [read]
+    - id: annotations
+      operations: [headless]
+      audience: {from: assistant/annotations-prefix}
+      scope_ceiling:
+          headless: [read, write]
+destinations:
+    - id: chat-http
+      service: chat
+      endpoint: http
+      kind: module
+    - id: host-health
+      service: host
+      endpoint: health
+      kind: platform-internal

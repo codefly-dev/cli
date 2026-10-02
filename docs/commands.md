@@ -233,12 +233,9 @@ declares a `service-entry`, or when several do and none depends on another.
 A solution entry — the `service-entry` of a module shipping a
 `solution.codefly.yaml` — boots with what the composition would otherwise have
 to hand-set, derived from that manifest wherever the module is (the workspace
-root, or the cache checkout of a composed one): `CODEFLY__API_CONSUMES` and a
-per-run registration secret for every facade prefix it consumes, and the
-solution's own `CODEFLY__SOLUTION_REGISTRATION_SECRET`, minted per run and
-declared to the host's `federation` group as `<module>:sha256hex` under
-`SOLUTION_REGISTRATION_SECRETS` beside the module keys. The identity a solution
-registers under is its module name. The run does not invent endpoints: the host
+root, or the cache checkout of a composed one): `CODEFLY__API_CONSUMES`, the
+projection of its `api.consumes` the solution runtime registers each consumed
+module's upstream from. The run does not invent endpoints: the host
 addresses the entry resolves (the gateway's `rest`, the frontend's `http`) are
 the `service-dependencies` its `service.codefly.yaml` declares, and an address it
 does not declare is not injected.
@@ -272,73 +269,21 @@ the service that implements it with
 `--set <module>/<service>:CODEFLY__FIXTURE=<name>`, which is layered last and is
 authoritative by construction.
 
-Each run mints two independent secrets per consumed facade prefix — one the
-consuming backend registers the route with, one the consumed module proves its
-own identity with — and provisions every end of the federation exchange.
-Provisioning writes nothing to disk, so a secret lives in the environment of the
-processes that spend it and does not outlive the run — unless you ask for it with
-`--output-env`, which exports a service's whole runtime environment, overrides
-included:
+Two rules follow from one facade prefix being one route, and the run reports
+what it injected rather than leaving a gap to be discovered at runtime:
 
-| End | Carrier | Value |
-|-----|---------|-------|
-| Solution entry service | `CODEFLY__MODULE_REGISTRATION_SECRETS` | `prefix:secret,…` — presented to register each consumed module's routes |
-| Consumed module's services | `CODEFLY__MODULE_IDENTITY_PREFIX` | the module's declared federation prefix, which can differ from its module name |
-| Consumed module's services | `CODEFLY__MODULE_IDENTITY_SECRET` | that module's own identity secret, presented to mint its service-principal work context |
-| Consumed module's services (deprecated alias) | `CODEFLY__MODULE_REGISTRATION_SECRET` | the same module identity secret, retained for existing runtimes; never the backend's registration secret |
-| Registrar | `MODULE_REGISTRATION_SECRETS` in the `federation` workspace configuration group | `prefix:sha256hex` — the digests the registering backend is checked against |
-| Registrar | `MODULE_IDENTITY_SECRETS` in the same group | `prefix:sha256hex` — the digests a module's own work-context exchange is checked against |
-
-A module that federates no facade can still be a principal of its host — a
-worker that mints its own module Work Context or runs a delegated exchange. Such a
-service declares it in its `service.codefly.yaml`:
-
-```yaml
-module-identity: true
-```
-
-Every run — not only a solution entry's — then mints that module an identity
-secret, hands it to the declaring services under the same three identity
-carriers, and adds its digest to the registrar's `MODULE_IDENTITY_SECRETS`. The
-identity is the facade prefix a solution in the workspace consumes the module
-under, or the module name when none does. No registration secret is minted for
-it: those exist for facade prefixes only. Which host admits the module, and with
-what authority, remains that host's own configuration. When one run has several
-roots, the first root's identity for a module is the one its services receive
-and the registrar holds. A render does not yet derive declared identities; only
-facade-consumed modules are rendered.
-
-The two declarations are what let the registrar tell the backend registering
-`documents` apart from the service principal of `documents`. A backend holds the
-registration plaintext for every prefix it consumes and the identity plaintext for
-none, so it cannot mint a consumed module's work context.
-
-The registrar is whichever service declares the `federation` group. Two rules
-follow from one prefix being one identity, and the run reports what it did with
-every consumed module rather than leaving a gap to be discovered at runtime:
-
-- Two `api.consumes` entries claiming the same `as` prefix are rejected — they
-  would hand two modules one credential, letting either mint the other's work
-  context. (`sync` and `package` already reject this; the run's lenient decode
-  skips the full schema check, so it is enforced here too.)
-- A consumed module that itself declares the `federation` group is the authority
-  the exchange runs against, so it is not given a plaintext whose digest it holds.
-- A consumed module the workspace cannot resolve, and a run with no registrar at
-  all, both leave federation unconfigured: the run warns and boots, and the
-  solution still serves its own routes.
+- Two `api.consumes` entries claiming the same `as` prefix are rejected — one
+  `/v1/<prefix>/*` route cannot reach two modules. (`sync` and `package` already
+  reject this; the run's lenient decode skips the full schema check, so it is
+  enforced here too.)
+- An entry binding only part of `module`/`service`/`endpoint` is rejected: it
+  would project into an endpoint key built from empty segments.
 
 **In a GitOps render** (`codefly deploy gitops render`, restricted profile) the
-same carriers reach the deployed services, but nothing is minted: a render is
-committed, so a secret written into it is published. Public carriers
-(`CODEFLY__API_CONSUMES`, `CODEFLY__MODULE_IDENTITY_PREFIX`) are rendered into
-the service's ConfigMap; every secret carrier is rendered only as a
-`secretKeyRef` on `secret-<service>`, which the projected ExternalSecret
-materializes from the environment's `service-secrets` store under the key named
-by the carrier (the deprecated alias resolves to the stored
-`CODEFLY__MODULE_IDENTITY_SECRET`). `codefly deploy secrets` writes each secret
-and its digest (the registrar's `federation` group, already delivered by
-reference) into the store, deriving both from one credential. A render that needs a secret but whose environment declares no
-secret store fails instead of rendering a dangling reference or a value.
+same projection reaches the deployed solution: `CODEFLY__API_CONSUMES` is
+rendered into the entry service's ConfigMap with the value a run injects. The
+projection names routes, not credentials, so it is a plain value; a render never
+writes a secret value into the tree.
 
 A render delivers a service the **same workspace configuration groups** `codefly
 run` delivers it: the groups it declares under
@@ -592,8 +537,8 @@ behaves differently from `run`:
 | `--temporary-ports` | **On by default here**, where `run` defaults it off. Each invocation takes ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state — overriding any scope the environment declares — so two concurrent `codefly test` runs in one workspace cannot collide. Pass `--temporary-ports=false` to keep the declared scope and deterministic names, or `--naming-scope` to name the scope yourself |
 
 A suite whose agent advertises `START_DEPENDENCIES` or `NONE` never starts the
-service under test. The fixture and the process overrides
-(`CODEFLY__API_CONSUMES`, the federation registration secrets) still reach it:
+service under test. The fixture and the process override
+(`CODEFLY__API_CONSUMES`) still reach it:
 Codefly delivers both on Init, which every service receives, and an agent takes
 the first non-empty of the Init and Start values. `--output-env` is the one
 input that cannot follow, because the exported environment is composed inside
@@ -607,8 +552,8 @@ Test a solution as a unit from its root. It resolves the same `service-entry`
 [`run solution`](#codefly-run-solution) boots, materializes composed pinned
 modules, and delegates to the `test service` path with that entry — so a
 solution is tested through exactly the orchestration that runs it, with the
-solution-derived inputs (`CODEFLY__API_CONSUMES`, the federation registration
-secrets) injected on the origin either way.
+solution-derived input (`CODEFLY__API_CONSUMES`) injected on the origin either
+way.
 
 ```bash
 codefly test solution                          # The entry's default suite
@@ -867,7 +812,7 @@ and nobody hand-authors ExternalSecrets.
 codefly deploy secrets --env staging --dry-run --metadata-only  # which keys exist; reads no value
 codefly deploy secrets --env staging --dry-run                  # full plan; reads the store in memory
 codefly deploy secrets --env staging                            # write it (confirms; --yes to skip)
-codefly deploy secrets --env staging --module runtime --dry-run  # one module's keys, plus its federation counterpart
+codefly deploy secrets --env staging --module runtime --dry-run  # one module's keys only
 ```
 
 It reads every `ExternalSecret` the render projected for `--env` under
@@ -879,7 +824,6 @@ resolves every remote property to a source, never printing a value:
 | action | source |
 | --- | --- |
 | `keep` | the store already holds it; nothing stored is ever rotated |
-| `derive` / `update` | a federation credential or the registrar's digests of them: a solution's registration secret, a consuming backend's `prefix:secret` map, a consumed module's identity secret. A credential the store already holds anywhere is reused; the registrar's digests are recomputed from the plaintexts, so both ends always agree |
 | `propagate` | a configuration value (`CODEFLY__WORKSPACE_SECRET_CONFIGURATION__…`, `CODEFLY__SERVICE_SECRET_CONFIGURATION__…`) is one value however many services read it, so it is copied from the remote key that holds it |
 | `generate` | declared random by `service-secrets.generate` (below) |
 | `require` | nothing produces it: the operator supplies it — an external credential, or a value its producing agent derives |
@@ -892,10 +836,10 @@ are the same string only when an environment files a key under its own name; one
 that maps keys to its store's own property names
 (`service-secrets.services.<svc>.remote-keys` with `property: postgres_user`)
 makes them differ for every key it maps. Every source above is named by the key —
-a federation derivation, one configuration value shared across remote keys, a
-`service-secrets.generate` declaration — so resolving by the property matched
-none of them there, and each of those values reported as `require`: a secret to
-type by hand for something the CLI derives itself. The plan reports both names,
+one configuration value shared across remote keys, a `service-secrets.generate`
+declaration — so resolving by the property matched none of them there, and each
+of those values reported as `require`: a secret to type by hand for something the
+CLI derives itself. The plan reports both names,
 and `Must be supplied` lists `remote-key#property (key)`.
 
 A property the render recorded no `secretKey` for is refused rather than read as
@@ -906,57 +850,30 @@ would be an accident of ordering.
 
 Properties connected through configuration-key aliases resolve as one value,
 including properties in the same remote document. Every existing holder must
-agree. Federation derivation uses the service/key bindings in each rendered
-entry, so separate services can store independent credentials in one document.
-A mapping that mixes federation and configured sources is refused.
+agree.
 
-Existing empty required properties and malformed federation encodings are
-errors: they never authorize minting a replacement. Missing externally supplied
+An existing empty required property is an error: it never authorizes generating
+a replacement. Missing externally supplied
 values fail apply even when there is nothing to write. `--dry-run` still reports
 requirements without writing, and `--allow-missing` permits only the remaining
 valid writes. Neither flag authorizes invalid stored values or conflicting
 sources. See [deployment secret safety](deployment-secret-safety.md) for migration,
 output handling, and the limits of validation.
 
-Apply writes plaintexts before the registrar digests that admit them — ordered by
-the credentials, so a key carrying both is still written in the right place —
-refuses while any property is `require` (`--allow-missing` writes the rest), and
-refuses a `--metadata-only` plan, which never saw what existing keys hold. Two
-keys holding one credential or one configuration value with different values are
-refused rather than reconciled, whether or not a third key needs it propagated.
-
-The federation is derived from the workspace and the keys from the render, so the
-two can disagree, and where they do the store is left alone rather than rewritten:
-
-- A credential no rendered `ExternalSecret` reads in plaintext is never minted —
-  its module renders for another environment, or has not been rendered yet.
-  Minting it would hand the registrar the digest of a secret no service will ever
-  hold and, because the digest list is recomputed whole, drop the digest that
-  module's running services are admitted by. It is reported as `require`: render
-  its module for this environment, then seed again.
-- A stored digest list that admits an identity this workspace no longer derives —
-  a consumed prefix renamed after the render — is `require` too, naming what the
-  rewrite would drop. Re-render the environment, or drop those identities from the
-  store deliberately.
+Apply writes the remote keys in the render's order, refuses while any property
+is `require` (`--allow-missing` writes the rest), and refuses a `--metadata-only`
+plan, which never saw what existing keys hold. Two keys holding one
+configuration value with different values are refused rather than reconciled,
+whether or not a third key needs it propagated.
 
 A managed service's remote keys (the environment's `managed-services.<svc>.secret-references`)
 are planned like any other: its projection is its bundle's base rather than an
 environment overlay, and both are read.
 
 `--module <m>[,<m>]` limits the plan to the remote keys the named modules'
-services read, plus their **federation counterpart**: the registrar's digest
-properties that encode a credential those keys hold (scoping to a solution also
-plans the registrar's digest of its registration secret, and nothing else of the
-registrar's key). The plan names each counterpart key and property as such.
-Every other remote key is still read, so a scoped key keeps agreeing with what
-the store already holds, but nothing outside the scope is planned or written. A
-scope that would mint a credential and store only its digest, its holder being
-outside the scope, is refused.
-
-A consumed API that the registrar's own module serves (a solution calling the
-host's accounts service) is not federated: the host routes it itself, so
-neither a registration secret for its prefix nor an identity credential is
-derived — the same rule a run and a render follow.
+services read. Every other remote key is still read, so a scoped key keeps
+agreeing with what the store already holds, but nothing outside the scope is
+planned or written.
 
 Which configuration keys are random is declared by the environment:
 

@@ -279,7 +279,9 @@ func inventoryRenderOptions(inventory *Inventory) *RenderOptions {
 		// the render recorded has to be carried back or it is dropped without
 		// a diff. Dropping this one stops Argo delivering the declared
 		// bindings on the next publish while the documents stay in the tree.
-		SolutionHostBindingPath: inventory.SolutionHostBindingPath,
+		SolutionHostBindingPath:       inventory.SolutionHostBindingPath,
+		Delivered:                     inventory.Delivery,
+		WorkspaceConfigurationDigests: inventory.WorkspaceConfigurationDigests,
 	}
 }
 

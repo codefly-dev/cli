@@ -409,6 +409,57 @@ func (world *World) producerInRun() func(unique string) bool {
 	return func(unique string) bool { return world.runProducers[unique] }
 }
 
+// workspaceConfigurationsFor resolves the workspace configurations one service
+// receives. ${endpoint:…} references resolve against that service's dependency
+// mappings, in the address family of its access, plus the mappings of every
+// producer in the run that a configuration the service declares names (see
+// referencedProducerMappings).
+func (world *World) workspaceConfigurationsFor(
+	ctx context.Context, service *resources.Service,
+	dependencyMappings []*basev0.NetworkMapping, access *basev0.NetworkAccess,
+) ([]*basev0.Configuration, error) {
+	dependencies := make([]string, 0, len(service.WorkspaceConfigurationDependencies))
+	for _, dependency := range service.WorkspaceConfigurationDependencies {
+		if !world.excludedWorkspaceConfigurations[dependency] {
+			dependencies = append(dependencies, dependency)
+		}
+	}
+	referenced, err := world.referencedProducerMappings(ctx, service, dependencies, dependencyMappings)
+	if err != nil {
+		return nil, err
+	}
+	mappings := append(slices.Clone(dependencyMappings), referenced...)
+	manager := world.ConfigurationManager.ForConsumer(mappings, access).WithRunProducers(world.producerInRun())
+	declared, err := manager.GetWorkspaceDependenciesConfigurations(ctx, dependencies...)
+	if err != nil {
+		return nil, err
+	}
+	// The composition root injects its own workspace configurations into every
+	// service, so a composed-module service resolves root-provided values
+	// without redeclaring them as dependencies. A service that declares a
+	// dependency on one of the root's own configurations (e.g. the root service
+	// itself) yields that name in both sets, so union by name to avoid emitting
+	// it twice.
+	root, err := manager.GetCompositionRootWorkspaceConfigurations(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(declared))
+	for _, conf := range declared {
+		for _, info := range conf.Infos {
+			seen[info.Name] = true
+		}
+	}
+	out := declared
+	for _, conf := range root {
+		if world.workspaceConfigurationExcluded(conf) || world.workspaceConfigurationSeen(conf, seen) {
+			continue
+		}
+		out = append(out, conf)
+	}
+	return out, nil
+}
+
 // referencedProducerMappings returns the network mappings of the producers the
 // workspace configurations a service declares reference by ${endpoint:…}, for
 // every referenced endpoint the service's own dependency mappings (have) do not
@@ -839,6 +890,49 @@ func (world *World) deploys() bool {
 	default:
 		return false
 	}
+}
+
+func setConfigurationValues(info *basev0.ConfigurationInformation, values map[string]string) {
+	for _, key := range slices.Sorted(maps.Keys(values)) {
+		replaced := false
+		for _, existing := range info.ConfigurationValues {
+			if existing.Key == key {
+				existing.Value = values[key]
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			info.ConfigurationValues = append(info.ConfigurationValues,
+				&basev0.ConfigurationValue{Key: key, Value: values[key]})
+		}
+	}
+}
+
+// workspaceConfigurationSeen reports whether every Info name in a resolved
+// workspace configuration is already present in seen (all Infos of a workspace
+// configuration share one name), i.e. the configuration was already emitted via
+// the declared-dependency set.
+func (world *World) workspaceConfigurationSeen(conf *basev0.Configuration, seen map[string]bool) bool {
+	for _, info := range conf.Infos {
+		if seen[info.Name] {
+			return true
+		}
+	}
+	return false
+}
+
+// workspaceConfigurationExcluded reports whether a resolved workspace
+// configuration is profile-excluded. Workspace configurations carry their name
+// on each Info (the Configuration.Origin is always "workspace"), and every Info
+// in a given configuration shares that name.
+func (world *World) workspaceConfigurationExcluded(conf *basev0.Configuration) bool {
+	for _, info := range conf.Infos {
+		if world.excludedWorkspaceConfigurations[info.Name] {
+			return true
+		}
+	}
+	return false
 }
 
 func (flow *Flow) WorkspaceConfigurationsFor(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error) {

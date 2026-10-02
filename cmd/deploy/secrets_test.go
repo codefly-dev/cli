@@ -9,7 +9,6 @@ import (
 	"github.com/codefly-dev/cli/pkg/deploysecrets"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
-	"github.com/codefly-dev/cli/pkg/solutionrun"
 )
 
 func withSecretsFlags(t *testing.T, dryRun, metadataOnly bool, modules []string) {
@@ -55,26 +54,6 @@ func TestResolveSecretStoreRequiresAClusterContext(t *testing.T) {
 	_, err := resolveSecretStore(context.Background(), &environments.Environment{Name: "staging"}, rendered)
 	if err == nil || !strings.Contains(err.Error(), "cluster.context") {
 		t.Fatalf("resolveSecretStore = %v, want a refusal naming cluster.context", err)
-	}
-}
-
-// A warning is a line an operator has to act on — a federation that cannot work.
-// Printing it as ordinary narration buries the one line that is a diagnosis.
-func TestPrintSecretsPlanDistinguishesAWarningFromANote(t *testing.T) {
-	var out bytes.Buffer
-	printSecretsPlan(&out, "staging", gitops.RenderedEnvironment{Modules: []string{"host"}}, &deploysecrets.Plan{
-		Store: "fake",
-		Notes: []solutionrun.Note{
-			{Message: "provisioned the usual things"},
-			{Warning: true, Message: "no service declares the federation group"},
-		},
-	})
-	rendered := out.String()
-	if !strings.Contains(rendered, "note: provisioned the usual things") {
-		t.Errorf("plan does not carry the note:\n%s", rendered)
-	}
-	if !strings.Contains(rendered, "warning: no service declares the federation group") {
-		t.Errorf("a warning printed as an ordinary note:\n%s", rendered)
 	}
 }
 
@@ -134,28 +113,5 @@ func TestSecretsCommandRefusesMissingNoOpBeforeConfirmation(t *testing.T) {
 	}
 	if err = finishSecretsPlan(context.Background(), plan, store, false, true, confirm); err != nil {
 		t.Fatal("explicit allow-missing should permit a no-op")
-	}
-}
-
-func TestStoredIdentityIsWithheldFromCLIOutput(t *testing.T) {
-	marker := solutionrun.MintCredential()
-	key := "CODEFLY__MODULE_REGISTRATION_SECRETS"
-	store := &outputSafetyStore{document: map[string]string{"mapped": marker + ":" + solutionrun.MintCredential()}}
-	rendered := gitops.RenderedEnvironment{Secrets: []gitops.RenderedServiceSecret{{RemoteKey: "remote", Services: []string{"app/api"}, Properties: []gitops.RenderedSecretProperty{{Property: "mapped", Keys: []string{key}}}}}}
-	federation := solutionrun.DeployedSecrets{Services: map[string]map[string]solutionrun.SecretDerivation{"app/api": {key: {Encoded: true, Credentials: []solutionrun.Credential{{Kind: solutionrun.ModuleRegistration, Identity: "module"}}}}}}
-	plan, err := deploysecrets.Build(context.Background(), &deploysecrets.Inputs{Rendered: rendered, Federation: federation, Store: store, ReadPayloads: true})
-	if err != nil {
-		t.Fatal("could not construct refusal plan")
-	}
-	var output bytes.Buffer
-	printSecretsPlan(&output, "staging", rendered, plan)
-	if strings.Contains(output.String(), marker) {
-		t.Fatal("stored identity reached CLI stdout")
-	}
-	if !strings.Contains(output.String(), "withheld") {
-		t.Fatal("output must explain that stored identities are withheld")
-	}
-	if err = finishSecretsPlan(context.Background(), plan, store, false, false, func() bool { return true }); err == nil || strings.Contains(err.Error(), marker) {
-		t.Fatal("command must refuse without disclosing payload")
 	}
 }

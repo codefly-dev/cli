@@ -1,23 +1,23 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-    name: solution-host-binding-obin.prod.crm
+    name: solution-host-binding-example.prod.crm
     namespace: crm
     labels:
         app.kubernetes.io/managed-by: codefly
-        codefly.dev/binding: obin.prod.crm
+        codefly.dev/binding: example.prod.crm
         codefly.dev/document: solution-host-binding
         codefly.dev/solution: crm
 data:
     solution-host-binding.codefly.yaml: |
         schema: codefly/solution-host-binding/v1
-        binding: obin.prod.crm
+        binding: example.prod.crm
         generation: 1
         host:
-            coordinate: obin/prod/eu-west-1
-            component: saas-host
+            coordinate: example/prod/region-a
+            component: platform-host
         release:
-            publisher: obin
+            publisher: example
             name: crm
             version: 1.4.0
         routes:
@@ -26,11 +26,11 @@ data:
         artifacts:
             - surface: backend
               name: api
-              release: obin/crm@1.4.0
+              release: example/crm@1.4.0
               digest: sha256:9176742fd9177b1efc917bbf81818ea6c1c8e5cc4c24bc566607fde43112561f
         modules:
             - module: crm
-              package: obin/crm
+              package: example/crm
               version: 1.4.0
         endpoints:
             - name: grpc
@@ -39,5 +39,5 @@ data:
               api: grpc
               visibility: internal
         workload:
-            audience: https://saas-host.obin.example
-            subject: crm@obin.iam.example
+            audience: accounts
+            subject: crm@example.iam.test

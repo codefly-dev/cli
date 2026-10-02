@@ -196,22 +196,61 @@ func validateManagedServiceKey(key string) error {
 // derived coordinate would be a guess that a host silently refuses at
 // reconcile time (core solutionhost.ErrWrongHost) rather than at render.
 //
-// The three are declared together because a binding needs all three at once:
-// Coordinate is matched by the host, Component names the component instance
-// within it, and Audience is what the host expects a workload's token to be
-// bound to. A partial declaration would render a document the host cannot use,
-// so UnmarshalYAML refuses an unknown key and Validate refuses a missing one.
+// The fields are declared together because a delivery document needs all of
+// them at once: Coordinate is matched by the host, Component names the
+// component instance within it, Domain is the ownership domain this
+// composition delivers under, Audience is what the host expects a workload's
+// token to be bound to, TrustDomain is the SPIFFE trust domain the host's
+// issuer puts in a workload's SVID, and EnvelopeRevision is the revision of
+// the host's envelope this composition was reviewed against. A partial
+// declaration would render a document the host cannot use, so UnmarshalYAML
+// refuses an unknown key and Validate refuses a missing one.
 type EnvironmentHost struct {
 	Coordinate string `yaml:"coordinate"`
 	Component  string `yaml:"component"`
-	Audience   string `yaml:"audience"`
+	// Domain is the ownership domain every document this composition renders
+	// for this environment speaks for. A host accepts delivery only from the
+	// domains it was told about, and refuses an unlisted one naming it; a
+	// delivery may add, change and remove bindings within its own domain and
+	// may say nothing at all about any other. It is stamped into the signed
+	// bytes of every document, so a carrier relaying a document cannot widen it.
+	Domain string `yaml:"domain"`
+	// Audience is the token audience the host verifies a workload's projected
+	// token against. It is the host's bare audience string, not an address.
+	Audience string `yaml:"audience"`
+	// TrustDomain is the SPIFFE trust domain of the host's workload identity
+	// issuer. A presence document names, per workload, the SPIFFE ID the host
+	// must verify on the connection: spiffe://<trust domain>/ns/<namespace>/sa/<account>.
+	TrustDomain string `yaml:"trust_domain"`
+	// EnvelopeRevision is the revision of the host's envelope — the ceiling a
+	// platform administrator writes at runtime — that this composition was
+	// reviewed against. Both delivery documents carry it inside their signed
+	// bytes and the host refuses a document naming another revision, so a
+	// composition pins the revision it was reviewed against here, and bumps it
+	// when the envelope is re-reviewed. Never derived: the render does not
+	// read the envelope.
+	EnvelopeRevision uint64 `yaml:"envelope_revision"`
+	// Delivery names the host's delivery API by composition identity —
+	// "<module>/<service>/<endpoint>" — the way api.consumes names a producing
+	// endpoint. The render resolves it to the in-cluster address the delivery
+	// Jobs POST to, exactly as it resolves every other consumed endpoint; a
+	// composition names which endpoint is the delivery API and never where it
+	// lives.
+	Delivery string `yaml:"delivery"`
 }
+
+// hostFields are the keys a host block may carry, in declaration order.
+var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "envelope_revision", "delivery"}
+
+// deliveryPattern is a composition identity: <module>/<service>/<endpoint>,
+// each a lowercase name.
+var deliveryPattern = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*/[a-z0-9]+(?:[._-][a-z0-9]+)*/[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
 
 // UnmarshalYAML refuses an unknown key rather than dropping it: workspace YAML
 // is lenient, and a mistyped `component` would otherwise leave a host block
 // that looks declared and renders nothing.
 func (host *EnvironmentHost) UnmarshalYAML(node *yaml.Node) error {
-	if err := rejectUnknownKeys(node, "host", "coordinate", "component", "audience"); err != nil {
+	if err := rejectUnknownKeys(node, "host", hostFields...); err != nil {
 		return err
 	}
 	type plain EnvironmentHost
@@ -219,10 +258,16 @@ func (host *EnvironmentHost) UnmarshalYAML(node *yaml.Node) error {
 }
 
 // hostNamePattern is core solutionhost's namePattern: the lowercase dotted or
-// slashed name a coordinate and a component are. It is restated here so a
-// malformed declaration fails at workspace load, naming the field, instead of
-// at render, naming a document.
+// slashed name a coordinate, a component and an ownership domain are. It is
+// restated here so a malformed declaration fails at workspace load, naming the
+// field, instead of at render, naming a document.
 var hostNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$`)
+
+// trustDomainPattern is a SPIFFE trust domain: a DNS-like lowercase name, no
+// scheme and no path. The SPIFFE ID the render derives from it must parse as
+// spiffe://<trust domain>/<path>, so the trust domain itself cannot carry a
+// scheme, a slash or an upper-case letter.
+var trustDomainPattern = regexp.MustCompile(`^[a-z0-9._-]+$`)
 
 // Validate checks a declared host names every part of its identity. A nil
 // receiver is a valid "not declared" state.
@@ -231,20 +276,45 @@ func (host *EnvironmentHost) Validate() error {
 		return nil
 	}
 	for _, part := range []struct{ label, value string }{
-		{"coordinate", host.Coordinate}, {"component", host.Component},
+		{"coordinate", host.Coordinate}, {"component", host.Component}, {"domain", host.Domain},
 	} {
 		if !hostNamePattern.MatchString(part.value) {
 			return fmt.Errorf("host %s %q is not a lowercase dotted or slashed name", part.label, part.value)
 		}
 	}
-	// The audience is an opaque identity the host chose (often a URI), so it is
-	// checked for shape rather than spelling: a single line, no whitespace. That
-	// is what core's WorkloadIdentity accepts, and it is not the shape of a
-	// pasted credential.
+	// The audience is the host's bare audience string. It is checked for
+	// shape rather than spelling: a single line, no whitespace. That is what
+	// core's WorkloadIdentity accepts, and it is not the shape of a pasted
+	// credential.
 	if host.Audience == "" || strings.ContainsFunc(host.Audience, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
 		return fmt.Errorf("host audience must be a single-line identity, got %q", host.Audience)
 	}
+	if !trustDomainPattern.MatchString(host.TrustDomain) {
+		return fmt.Errorf("host trust_domain %q is not a SPIFFE trust domain (lowercase DNS name, no scheme, no path)", host.TrustDomain)
+	}
+	if host.EnvelopeRevision == 0 {
+		return fmt.Errorf("host envelope_revision must be the revision (at least 1) of the host envelope this composition was reviewed against")
+	}
+	if !deliveryPattern.MatchString(host.Delivery) {
+		return fmt.Errorf("host delivery %q is not the composition identity <module>/<service>/<endpoint> of the host's delivery API", host.Delivery)
+	}
 	return nil
+}
+
+// DeliveryEndpoint splits the delivery API's composition identity into the
+// module, service and endpoint that name it.
+func (host *EnvironmentHost) DeliveryEndpoint() (module, service, endpoint string) {
+	parts := strings.SplitN(host.Delivery, "/", 3)
+	if len(parts) != 3 {
+		return "", "", ""
+	}
+	return parts[0], parts[1], parts[2]
+}
+
+// SPIFFEID is the SPIFFE ID of the workload running as account in namespace on
+// this host, as the host's issuer names it: spiffe://<trust domain>/ns/<namespace>/sa/<account>.
+func (host *EnvironmentHost) SPIFFEID(namespace, account string) string {
+	return "spiffe://" + host.TrustDomain + "/ns/" + namespace + "/sa/" + account
 }
 
 // EnvironmentWorkloadIdentity is the runtime principal a workload authenticates
@@ -974,13 +1044,16 @@ type Environment struct {
 	Ingress []EnvironmentIngressRoute `yaml:"ingress,omitempty"`
 
 	// Host names the deployment host this environment delivers to: the
-	// coordinate that identifies it, the component instance within it, and the
-	// audience a workload token presented to it must be bound to. It is what a
-	// rendered SolutionHostBinding declares as its target, and the CLI has no
-	// other durable record of it — `codefly environment import` reads the
-	// coordinate off a codefly/coordinate/v1 contract and keeps it only as a
-	// provenance comment. Absent, a render declares no solution host binding
-	// rather than inventing a host. CLI-side; not serialized to proto.
+	// coordinate that identifies it, the component instance within it, the
+	// ownership domain this composition delivers under, the audience a workload
+	// token presented to it must be bound to, the SPIFFE trust domain of its
+	// identity issuer, and the envelope revision this composition was reviewed
+	// against. It is what every rendered delivery document declares as its
+	// target, and the CLI has no other durable record of it — `codefly
+	// environment import` reads the coordinate off a codefly/coordinate/v1
+	// contract and keeps it only as a provenance comment. Absent, a render
+	// declares no presence and no authority rather than inventing a host.
+	// CLI-side; not serialized to proto.
 	Host *EnvironmentHost `yaml:"host,omitempty"`
 
 	// ManagedServices keys a replacement by the identity of the service it

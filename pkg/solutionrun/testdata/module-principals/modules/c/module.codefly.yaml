@@ -1,4 +1,0 @@
-kind: module
-name: c
-services:
-    - name: job

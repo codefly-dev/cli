@@ -182,6 +182,11 @@ func renderSolutionHostBindings(owned, destination string, opts *RenderOptions) 
 		if err != nil {
 			return nil, err
 		}
+		// Provisional: publish settles the generation against the delivery
+		// repository's base branch (see settlePresenceDelivery). The render
+		// still reads the tree it replaces so a local re-render reports the
+		// generation it would keep, but the destination is per module and per
+		// render, so the number here is a hint and never the settled one.
 		generation, err := nextGeneration(destination, opts.Environment, document)
 		if err != nil {
 			return nil, err
@@ -197,7 +202,7 @@ func renderSolutionHostBindings(owned, destination string, opts *RenderOptions) 
 		return nil, fmt.Errorf("rendered solution host bindings are not admissible: %w", err)
 	}
 	written := make([]DeclaredSolutionHostBinding, 0, len(documents))
-	names := make([]string, 0, len(documents))
+	names := make([]string, 0, len(documents)+1)
 	for index, document := range documents {
 		relative, err := writeSolutionHostBinding(owned, opts, document, instances[index].Alias)
 		if err != nil {
@@ -208,6 +213,15 @@ func renderSolutionHostBindings(owned, destination string, opts *RenderOptions) 
 		})
 		names = append(names, document.Binding+".yaml")
 	}
+	// The account the delivery Job runs as is rendered here, with the
+	// documents; the Job itself is written at publish, once the documents are
+	// settled and signed, because a Job that mounts a carrier no render has
+	// produced would fail to start.
+	account, err := renderDeliveryServiceAccount(filepath.Join(owned, filepath.FromSlash(solutionHostBindingOverlay(opts.Environment))), opts.Namespace)
+	if err != nil {
+		return nil, err
+	}
+	names = append(names, account)
 	if err := writeSolutionHostBindingKustomization(owned, opts.Environment, names); err != nil {
 		return nil, err
 	}

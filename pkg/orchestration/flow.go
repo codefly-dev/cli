@@ -349,13 +349,6 @@ type World struct {
 	// derived before that producer initializes (localProducerMappings).
 	temporaryPorts bool
 
-	// workspaceConfigurationValues are values the run path derives itself,
-	// keyed group -> key -> value. They are layered onto the resolved workspace
-	// configurations of every service declaring that group, so a derived value
-	// reaches a service through the same carrier a declared one does rather
-	// than through a raw process variable the service has no contract to read.
-	workspaceConfigurationValues map[string]map[string]string
-
 	// OutputSink receives narration otherwise printed directly via pkg/cli.
 	// Always non-nil: NewFlow defaults it to a no-op sink.
 	OutputSink OutputSink
@@ -2328,17 +2321,6 @@ func (flow *Flow) WithFixture(fixture string) {
 
 func (flow *Flow) WithOverrides(overrides map[string]map[string]string) {
 	flow.overrides = overrides
-}
-
-// WithWorkspaceConfigurationValues sets values the run path derives for named
-// workspace configuration groups (group -> key -> value). They reach only the
-// services that declare a dependency on the group, exactly as a declared value
-// would.
-func (flow *Flow) WithWorkspaceConfigurationValues(values map[string]map[string]string) {
-	if flow.world == nil {
-		return
-	}
-	flow.world.workspaceConfigurationValues = values
 }
 
 // overridesFor returns the runtime overrides targeting service, layering the

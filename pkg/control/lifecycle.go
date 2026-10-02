@@ -235,8 +235,7 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 		if err := f.WithRunProfile(profile); err != nil {
 			return err
 		}
-		derived, err := solutionrun.DerivedRunInputs(ctx, target.workspace, target.module, target.service,
-			resources.WithUnique(target.service).Unique())
+		derived, err := solutionrun.DerivedRunInputs(target.module, target.service, resources.WithUnique(target.service).Unique())
 		if err != nil {
 			return err
 		}
@@ -244,7 +243,6 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 		// JSON-RPC on stdout, where narration corrupts the stream; the plane has
 		// no terminal to write to, and the run command renders them instead.
 		f.WithOverrides(derived.Overrides)
-		f.WithWorkspaceConfigurationValues(derived.WorkspaceConfigurations)
 		if req.RuntimeContext != "" {
 			f.WithRuntimeContext(req.RuntimeContext)
 		}
