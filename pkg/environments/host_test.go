@@ -111,3 +111,46 @@ func TestHostDeclarationRefusesAPartialOrMalformedIdentity(t *testing.T) {
 		})
 	}
 }
+
+// TestEgressIsADeclarationCarriedNotDerived pins the per-service egress
+// declaration: module-qualified keys, bare host names, read back sorted.
+func TestEgressIsADeclarationCarriedNotDerived(t *testing.T) {
+	workspace, err := resources.LoadFromBytes[resources.Workspace]([]byte(`name: example
+environments:
+  - name: prod
+    namespace: example
+    egress:
+      platform/accounts: {hosts: [identity.example.test, api.github.com]}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := Select(workspace, "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(env.EgressHosts("platform", "accounts"), ","); got != "api.github.com,identity.example.test" {
+		t.Fatalf("egress hosts %q", got)
+	}
+	if env.EgressHosts("platform", "frontend") != nil {
+		t.Fatal("a service declaring no egress reaches nothing")
+	}
+	for name, table := range map[string]struct{ yaml, want string }{
+		"bare key":     {yaml: "      accounts: {hosts: [api.github.com]}\n", want: "module-qualified"},
+		"a URL":        {yaml: "      platform/accounts: {hosts: [https://api.github.com/v3]}\n", want: "bare DNS host name"},
+		"a port":       {yaml: "      platform/accounts: {hosts: [api.github.com:443]}\n", want: "bare DNS host name"},
+		"no host":      {yaml: "      platform/accounts: {hosts: []}\n", want: "declares no host"},
+		"an uppercase": {yaml: "      platform/accounts: {hosts: [API.github.com]}\n", want: "bare DNS host name"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			workspace, err := resources.LoadFromBytes[resources.Workspace]([]byte(
+				"name: example\nenvironments:\n  - name: prod\n    namespace: example\n    egress:\n" + table.yaml))
+			if err == nil {
+				_, err = Select(workspace, "prod")
+			}
+			if err == nil || !strings.Contains(err.Error(), table.want) {
+				t.Fatalf("declaration was accepted or refused wrongly: %v (want %q)", err, table.want)
+			}
+		})
+	}
+}

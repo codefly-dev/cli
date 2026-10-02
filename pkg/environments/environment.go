@@ -5,6 +5,7 @@ import (
 	"maps"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -189,6 +190,64 @@ func validateManagedServiceKey(key string) error {
 		return err
 	}
 	return validateResourcePathComponent("managed service", service)
+}
+
+// EnvironmentEgress is the external reach one service is declared to need: the
+// hosts it dials outside the cluster. It is a declaration the composition
+// states and the render carries into the cell file — never derived. The module
+// author knows that a service reaches an identity provider or a code host; only
+// the composition knows which provider and which region, so the two meet here,
+// keyed by service identity exactly as managed-services are. The platform
+// renders egress policy from it, so a host missing here is a workload that
+// cannot reach it, found at the workload rather than invented by the render.
+type EnvironmentEgress struct {
+	Hosts []string `yaml:"hosts"`
+}
+
+// egressHostPattern is a DNS host name: lowercase labels joined by dots, no
+// scheme, no port, no path. A URL here is a value copied from configuration,
+// which is what this declaration exists not to be.
+var egressHostPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`)
+
+// validateEgress checks every egress key names a service by module-qualified
+// identity and every host is a bare host name.
+func (env *Environment) validateEgress() error {
+	for key, egress := range env.Egress {
+		module, service, qualified := strings.Cut(key, "/")
+		if !qualified {
+			return fmt.Errorf("egress key %q must be the module-qualified identity <module>/<service> of the service that dials out", key)
+		}
+		if err := validateResourcePathComponent("egress module", module); err != nil {
+			return err
+		}
+		if err := validateResourcePathComponent("egress service", service); err != nil {
+			return err
+		}
+		if len(egress.Hosts) == 0 {
+			return fmt.Errorf("egress %s declares no host", key)
+		}
+		for _, host := range egress.Hosts {
+			if !egressHostPattern.MatchString(host) {
+				return fmt.Errorf("egress %s host %q is not a bare DNS host name (no scheme, port or path)", key, host)
+			}
+		}
+	}
+	return nil
+}
+
+// EgressHosts returns the hosts a service is declared to dial outside the
+// cluster, sorted, or nil when it declares none.
+func (env *Environment) EgressHosts(module, service string) []string {
+	if env == nil {
+		return nil
+	}
+	egress, declared := env.Egress[resources.ServiceUnique(module, service)]
+	if !declared {
+		return nil
+	}
+	hosts := append([]string(nil), egress.Hosts...)
+	sort.Strings(hosts)
+	return hosts
 }
 
 // EnvironmentHost is the deployment host an environment delivers to. Every
@@ -1065,6 +1124,11 @@ type Environment struct {
 	// a service nobody declared managed. Read it through ManagedService, never by
 	// indexing the map with a bare name.
 	ManagedServices map[string]EnvironmentManagedService `yaml:"managed-services,omitempty"`
+
+	// Egress declares, per module-qualified service, the hosts it dials
+	// outside the cluster. Carried into the cell file for the platform's egress
+	// policy; see EnvironmentEgress. CLI-side; not serialized to proto.
+	Egress map[string]EnvironmentEgress `yaml:"egress,omitempty"`
 
 	// DNS carries the environment's DNS contract. Its AppHostSuffix lets the network layer
 	// derive an external endpoint's public host from declared config instead of

@@ -66,6 +66,8 @@ environments:
         external-name: ledger.example.test
         port: 5432
         egress-cidrs: [203.0.113.0/24]
+    egress:
+      shop/api: {hosts: [identity.example.test, api.github.com]}
     host:
       coordinate: example/staging/region-a
       component: platform-host
@@ -78,7 +80,7 @@ environments:
 		filepath.Join("modules", "shop", resources.ModuleConfigurationName):                           "kind: module\nname: shop\nservices:\n  - name: api\n",
 		filepath.Join("modules", "shop", "services", "api", resources.ServiceConfigurationName):       cellServiceYAML("api", "shop"),
 		filepath.Join("modules", "billing", resources.ModuleConfigurationName):                        "kind: module\nname: billing\nservices:\n  - name: ledger\n",
-		filepath.Join("modules", "billing", "services", "ledger", resources.ServiceConfigurationName): cellServiceYAML("ledger", "shop"),
+		filepath.Join("modules", "billing", "services", "ledger", resources.ServiceConfigurationName): cellServiceYAML("ledger", "shop") + "service-dependencies:\n  - name: api\n    module: shop\n    endpoints:\n      - name: grpc\n        api: grpc\n",
 		filepath.Join("configurations", "staging", "shop.env"):                                        "MODE=prod\nTOKEN_LIMIT=4\n",
 	}
 	for rel, content := range files {
@@ -96,7 +98,13 @@ kind: Deployment
 metadata:
   name: api
 spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api
   template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api
     spec:
       serviceAccountName: api
       containers:
@@ -104,6 +112,22 @@ spec:
           image: registry.example.test/acme/api:1.2.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         - name: proxy
           image: registry.example.test/mesh/proxy@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: api-migrate
+spec:
+  template:
+    metadata:
+      labels:
+        codefly.dev/bootstrap-service: api
+    spec:
+      serviceAccountName: api
+      restartPolicy: OnFailure
+      containers:
+        - name: api
+          image: registry.example.test/acme/api-migrate@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 `
 
 // renderCellTree renders module's one-service tree for staging, the way a
@@ -159,11 +183,18 @@ func TestCellFileInventoriesEveryRenderedWorkload(t *testing.T) {
 	require.Equal(t, "acme-billing", cell.Namespaces[0].Name)
 	shop := cell.Namespaces[1]
 	require.Equal(t, "acme-shop", shop.Name)
-	require.Len(t, shop.Workloads, 1)
+	require.Len(t, shop.Workloads, 2, "the bootstrap Job is a declared workload with its own image")
 	api := shop.Workloads[0]
 	require.Equal(t, "api", api.Name)
+	require.Equal(t, kindDeployment, api.Kind)
+	require.Equal(t, map[string]string{"app.kubernetes.io/name": "api"}, api.Selector)
 	require.Equal(t, "shop/api", api.Service)
 	require.Equal(t, "api", api.ServiceAccount)
+	migrate := shop.Workloads[1]
+	require.Equal(t, "api-migrate", migrate.Name)
+	require.Equal(t, kindJob, migrate.Kind)
+	require.Equal(t, map[string]string{"codefly.dev/bootstrap-service": "api"}, migrate.Selector, "a Job's pods are selected by its template labels, never an assumed app label")
+	require.Equal(t, "sha256:"+strings.Repeat("d", 64), migrate.Containers[0].Image.Digest)
 	require.Equal(t, "spiffe://cluster.example/ns/acme-shop/sa/api", api.SPIFFEID)
 	require.Equal(t, []CellContainer{
 		{Name: "api", Image: CellImage{Repository: "registry.example.test/acme/api", Digest: "sha256:" + strings.Repeat("a", 64)}},
@@ -173,11 +204,11 @@ func TestCellFileInventoriesEveryRenderedWorkload(t *testing.T) {
 	require.True(t, strings.HasPrefix(api.Artifact.Digest, "sha256:"))
 	require.Equal(t, &CellRelease{Publisher: "acme", Name: "shop", Version: "1.2.0"}, api.Release)
 	require.Equal(t, []CellEndpoint{
-		{Name: "grpc", API: "grpc", Port: 9090, Visibility: "internal", AllowModules: []string{"billing"}},
+		{Name: "grpc", API: "grpc", Port: 9090, Visibility: "internal", AllowModules: []string{"billing"}, Consumers: []string{"billing/ledger"}},
 		{Name: "http", API: "http", Port: 8080, Visibility: "public"},
-	}, api.Endpoints)
+	}, api.Endpoints, "the grpc endpoint has a declared consumer; the http endpoint has none, visibly")
 	require.Equal(t, []CellIngress{{Endpoint: "http", Hosts: []string{"shop.example.test"}}}, api.Ingress)
-	require.Empty(t, shop.Egress)
+	require.Equal(t, []CellEgress{{Service: "shop/api", Hosts: []string{"api.github.com", "identity.example.test"}}}, shop.Egress, "egress hosts are the environment's declaration, carried not derived")
 	require.Equal(t, []CellEgress{{Service: "billing/ledger", CIDRs: []string{"203.0.113.0/24"}}}, cell.Namespaces[0].Egress)
 
 	// The file carries no generation, no domain and no tombstone: it is an
