@@ -222,6 +222,40 @@ references resolved against nothing.
 Both leave the **run** with less than the render, never the reverse, which is the
 direction that cannot produce "works locally, unconfigured once deployed".
 
+#### A partial root override of a composed module's group replaces it whole
+
+This is **core's** behaviour, not this package's, and it is a trap worth knowing
+about because it interacts with the rule above.
+
+A consuming workspace that declares a group a composed module also provides wins
+the name — that is the intended rule, so a solution can override a composed
+configuration without redeclaring everything the host brings. But the override is
+**wholesale, not per key**: `configurations.composeModuleWorkspaceConfigurations`
+(core `configurations/local_reader.go`) skips the module's information outright
+once the workspace declares the name, so
+
+- a key the root did not supply loses the module's default, and
+- a key the module declared `${profile}` loses its requirement with it, so
+  nothing reports the omission and `Load` succeeds — including when the root
+  supplies an **empty** value for such a key, which is precisely what the
+  `${profile}` marker exists to refuse.
+
+It also stops being composed, so it is reclassified as a composition-root group
+and this package then injects the truncated group into **every** service of the
+composition rather than only the ones that declared it. A partial override
+narrows a group's contents and widens its delivery at the same time.
+
+Until core changes it, declare **every** key of a composed module's group when
+overriding it, or override none of them.
+`TestAPartialRootOverrideReplacesAComposedModuleGroupWhole`
+(`pkg/orchestration`) pins the current behaviour and names the core function, so
+the CLI's expectations move when core's do. The semantics it should get already
+exist one function away — `profileOverlay.add` in core's
+`configurations/profile.go` overlays per key across profile derivation layers,
+keeps a `${profile}` marker an override did not discharge, and refuses a key the
+layer below never declared — they are simply not applied across the
+workspace/module boundary.
+
 #### The consequence an operator meets
 
 A root group's values are subject to the render's own rules, which is the point
