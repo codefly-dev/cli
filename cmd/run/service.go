@@ -17,6 +17,7 @@ import (
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/composition"
+	"github.com/codefly-dev/cli/pkg/control"
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
@@ -330,15 +331,6 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 
 		phase(tui.StateStarting)
 
-		// Drive dependency readiness off a real probe concurrently with the
-		// blocking run. The action loop can't emit a dependency's StateRunning
-		// until its own (blocking) Start returns, so while it is parked in the
-		// origin's go compile an already-listening dependency would otherwise
-		// stay silent. Mirrors the interactive TUI's ticker; printReady dedupes
-		// against the loop's eventual emit.
-		pollCtx, pollCancel := context.WithCancel(ctx)
-		var pollWg sync.WaitGroup
-
 		// In run mode runService blocks for the LIFETIME of the stack —
 		// the playbook action loop only returns on cancellation or a
 		// failure — so the "still starting" heartbeat below must be
@@ -358,30 +350,42 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 				hbCancel()
 			})
 		}
-		pollWg.Go(func() {
-			pollPromoted := map[string]bool{}
-			ticker := time.NewTicker(150 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-pollCtx.Done():
-					return
-				case <-ticker.C:
-					flow.PromoteReachable(pollCtx, serviceName, pollPromoted, printReady)
-					if hbCtx.Err() == nil && flow.Ready(pollCtx) {
-						markRunning()
-					}
-				}
-			}
-		})
+		// Flow.Start owns the stack for its whole lifetime. Give WaitReady its
+		// own copy of the result so it can diagnose an early exit without
+		// stealing the result the shutdown path must still join.
+		runCtx, runCancel := context.WithCancel(ctx)
+		defer runCancel()
+		started := make(chan error, 1)
+		startDone := make(chan error, 1)
+		go func() {
+			startErr := runService(runCtx, flow)
+			started <- startErr
+			startDone <- startErr
+		}()
 
-		// hbCtx only scopes the heartbeat TICKER; runService still runs
-		// under the real ctx.
+		// hbCtx only scopes the heartbeat ticker. The flow itself stays under
+		// runCtx until the run is stopped, fails, or misses its readiness
+		// deadline.
 		err = common.WithHeartbeat(hbCtx, "still starting "+serviceName, func() error {
-			return runService(ctx, flow)
+			if !shouldWaitForRun(loadOnly, initOnly) {
+				return <-startDone
+			}
+			promoted := map[string]bool{}
+			readinessErr := waitForServiceReadiness(runCtx, flow, started, readinessTimeout, func(probeCtx context.Context, _ *orchestration.ReadinessFailure) {
+				flow.PromoteReachable(probeCtx, serviceName, promoted, printReady)
+			})
+			if readinessErr != nil {
+				parentCanceled := runCtx.Err() != nil
+				runCancel()
+				startErr := <-startDone
+				if parentCanceled {
+					return startErr
+				}
+				return orFirst(readinessErr, startErr)
+			}
+			markRunning()
+			return <-startDone
 		})
-		pollCancel()
-		pollWg.Wait()
 		if err != nil {
 			// Attribute the failure to the service that actually failed (e.g. a
 			// dependency that couldn't start), not always to the origin.
@@ -390,6 +394,9 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 			}
 			return fmt.Errorf("cannot start service %s: %w", serviceName, err)
 		}
+		if ctx.Err() != nil {
+			return nil
+		}
 		if !shouldWaitForRun(loadOnly, initOnly) {
 			phase(tui.StateStopped)
 			return nil
@@ -397,10 +404,6 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		// runningOnce keeps this from double-printing when the poller already
 		// announced readiness.
 		markRunning()
-
-		if withCLIServer {
-			// Keep running with CLI server
-		}
 
 		<-ctx.Done()
 	} else {
@@ -506,18 +509,21 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 
 			t.SendState(serviceName, tui.StateStarting)
 
-			// flow.Start runs the playbook action loop and only returns
-			// once runCtx is cancelled (or start fails), so run it in the
-			// background and watch flow.Ready to flip "Starting" → "Running".
-			startErr := make(chan error, 1)
-			go func() { startErr <- runService(runCtx, flow) }()
+			// flow.Start runs the playbook action loop and only returns once
+			// runCtx is cancelled (or start fails). WaitReady receives one copy
+			// of that result, while startDone preserves a copy for the mandatory
+			// goroutine join before teardown.
+			started := make(chan error, 1)
+			startDone := make(chan error, 1)
+			go func() {
+				startErr := runService(runCtx, flow)
+				started <- startErr
+				startDone <- startErr
+			}()
 
 			// drainStart waits for the background flow.Start goroutine to
 			// return, so it is never still running when stopService begins.
-			drainStart := func() { runCancel(); runErr = orFirst(runErr, <-startErr) }
-
-			ticker := time.NewTicker(150 * time.Millisecond)
-			defer ticker.Stop()
+			drainStart := func() { runCancel(); runErr = orFirst(runErr, <-startDone) }
 
 			// While the action loop is blocked inside a long phase (the origin's
 			// go compile being the usual culprit), it can't emit a dependency's
@@ -529,24 +535,23 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 			// by this goroutine.
 			promoted := map[string]bool{}
 
-			for !flow.Ready(runCtx) {
-				select {
-				case <-runCtx.Done():
-					drainStart()
-					t.SendDone(runErr)
-					return
-				case err := <-startErr:
-					// flow.Start returned before readiness: a start failure
-					// or a clean early exit (init-only / immediate stop).
-					runErr = err
-					if err != nil {
-						t.SendError(err)
-					}
-					t.SendDone(err) // quit instead of spinning on "Starting"
-					return
-				case <-ticker.C:
-					flow.PromoteReachable(runCtx, serviceName, promoted, t.SendReady)
+			readinessErr := waitForServiceReadiness(runCtx, flow, started, readinessTimeout, func(probeCtx context.Context, _ *orchestration.ReadinessFailure) {
+				flow.PromoteReachable(probeCtx, serviceName, promoted, t.SendReady)
+			})
+			if readinessErr != nil {
+				parentCanceled := runCtx.Err() != nil
+				runCancel()
+				startErr := <-startDone
+				if parentCanceled {
+					runErr = startErr
+				} else {
+					runErr = orFirst(readinessErr, startErr)
 				}
+				if runErr != nil {
+					t.SendError(runErr)
+				}
+				t.SendDone(runErr)
+				return
 			}
 
 			t.SendReady(serviceName, 0)
@@ -558,7 +563,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 			}
 			select {
 			case <-runCtx.Done():
-			case err := <-startErr:
+			case err := <-startDone:
 				// flow.Start returned on its own after readiness — already
 				// drained, so don't call drainStart (it would block).
 				runErr = err
@@ -614,6 +619,21 @@ func loadRequiredServiceForRun(ctx context.Context, args []string, isHeadless bo
 
 func shouldWaitForRun(loadOnly, initOnly bool) bool {
 	return !loadOnly && !initOnly
+}
+
+// waitForServiceReadiness owns the command-level deadline. WaitReady owns the
+// diagnosis and retry policy, so headless and interactive runs cannot drift
+// into separate polling implementations again.
+func waitForServiceReadiness(
+	ctx context.Context,
+	flow *orchestration.Flow,
+	started <-chan error,
+	timeout time.Duration,
+	afterCheck func(context.Context, *orchestration.ReadinessFailure),
+) error {
+	readinessCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return control.WaitReady(readinessCtx, flow, started, afterCheck)
 }
 
 // shouldIsolateInvocation decides whether this run takes a generated identity
@@ -1071,5 +1091,6 @@ func init() {
 	ServiceCmd.Flags().StringSliceVar(&setOverrides, "set", nil, "Per-service runtime env override (repeatable), e.g. --set warden:CODEFLY__FIXTURE=dogfood")
 	ServiceCmd.Flags().StringSliceVar(&remotes, "remote", nil, "Remote services")
 	ServiceCmd.Flags().BoolVar(&headless, "headless", false, "Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)")
+	ServiceCmd.Flags().DurationVar(&readinessTimeout, "readiness-timeout", 5*time.Minute, "Maximum time to wait for the flow to become ready")
 	ServiceCmd.Flags().BoolVar(&startDocker, "start-docker", true, "Auto-start a local Docker engine (OrbStack/Docker Desktop/colima/…) if a service needs Docker and it isn't running; --start-docker=false to disable")
 }

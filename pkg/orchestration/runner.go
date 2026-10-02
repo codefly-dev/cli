@@ -1387,6 +1387,12 @@ func (runner *Runner) handleDesiredState(ctx context.Context, stage runtimev0.De
 	return nil
 }
 
+const runnerInformationTimeout = 5 * time.Second
+
+func runnerInformationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, runnerInformationTimeout)
+}
+
 // Follow monitors the agent for service lifecycle events:
 // - Handle restart
 // - Detect runner death (StartStatus → ERROR) and report up via failureSink
@@ -1404,7 +1410,9 @@ func (runner *Runner) Follow(ctx context.Context) error {
 			case <-runner.stopped:
 				return
 			case <-ticker.C:
-				info, err := runner.instance.Runtime.Information(ctx, &runtimev0.InformationRequest{})
+				infoCtx, cancel := runnerInformationContext(ctx)
+				info, err := runner.instance.Runtime.Information(infoCtx, &runtimev0.InformationRequest{})
+				cancel()
 				if err != nil {
 					if ContextCancelled(err) {
 						return

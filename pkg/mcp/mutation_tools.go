@@ -469,8 +469,7 @@ func (s *Server) runService(ctx context.Context, args map[string]string) ([]Cont
 // under s.runCtx regardless of how this wait ends — cancelling ctx only stops
 // the poll.
 func (s *Server) waitFlowRunning(ctx context.Context, flowID string) error {
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
+	delay := 250 * time.Millisecond
 	for {
 		status, err := s.plane.FlowStatus(ctx, flowID)
 		if err != nil {
@@ -479,11 +478,16 @@ func (s *Server) waitFlowRunning(ctx context.Context, flowID string) error {
 		if status.State == control.FlowRunning || status.State == control.FlowFailed || status.State == control.FlowStopped {
 			return nil
 		}
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
 			return nil
-		case <-ticker.C:
+		case <-timer.C:
 		}
+		delay = min(delay*2, 5*time.Second)
 	}
 }
 

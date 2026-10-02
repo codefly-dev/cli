@@ -4,14 +4,12 @@ import (
 	"testing"
 )
 
-// The solution verb delegates to runServiceCommand, which folds --naming-scope
-// into env.NamingScope (and thus every port hash) — but only if the flag is
-// actually registered on SolutionCmd, so a solution can boot on a disjoint port
-// set in parallel with another running stack. Both port-isolation flags must
-// also describe the same mechanism identically to their ServiceCmd twins, or
-// `--help` documents one flag two different ways.
-func TestSolutionCommandExposesPortIsolationFlags(t *testing.T) {
-	for _, name := range []string{"naming-scope", "temporary-ports"} {
+// The solution verb delegates to runServiceCommand, so every shared lifecycle
+// flag must be registered on SolutionCmd and described identically to its
+// ServiceCmd twin. This covers the port-isolation controls and the readiness
+// deadline that bounds the delegated run.
+func TestSolutionCommandExposesSharedRunFlags(t *testing.T) {
+	for _, name := range []string{"naming-scope", "temporary-ports", "readiness-timeout"} {
 		solutionFlag := SolutionCmd.Flags().Lookup(name)
 		if solutionFlag == nil {
 			t.Fatalf("run solution has no --%s flag", name)

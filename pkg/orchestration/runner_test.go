@@ -103,6 +103,14 @@ func TestHolderLookupContextImposesADeadline(t *testing.T) {
 	require.LessOrEqual(t, time.Until(deadline), portHolderLookupTimeout)
 }
 
+func TestRunnerInformationContextImposesADeadline(t *testing.T) {
+	ctx, cancel := runnerInformationContext(context.Background())
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	require.True(t, ok, "runner information calls must not inherit an open-ended flow context")
+	require.LessOrEqual(t, time.Until(deadline), runnerInformationTimeout)
+}
+
 // TestBoundNativePortsDegradesWhenHolderLookupFails covers the other half: when
 // the lookup cannot answer, the port report itself must still be produced —
 // losing the holder's name must never cost us the collision report.

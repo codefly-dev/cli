@@ -1,5 +1,7 @@
 package run
 
+import "time"
+
 // Run codefly frontend companion
 var withCLIServer bool
 
@@ -9,6 +11,10 @@ var openDashboard bool
 
 // Headless mode: no TUI, plain log output (auto-enabled when no TTY)
 var headless bool
+
+// Maximum time a service flow may remain not-ready before the run fails with
+// its last readiness diagnosis.
+var readinessTimeout time.Duration
 
 // Path where to find the service
 var servicePath string

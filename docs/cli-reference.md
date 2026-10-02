@@ -4032,6 +4032,7 @@ Flags:
       --output-env string              Write one service's full SDK/runtime environment to an owner-only file
       --output-env-service string      Service whose runtime environment to export (module/service; defaults to the root service)
       --profile string                 Named workspace run profile
+      --readiness-timeout duration     Maximum time to wait for the flow to become ready (default 5m0s)
       --remote strings                 Remote services
       --runtime-context string         Runtime context for the flow (native/container/nix/free; free picks the first advertised backend) (default "free")
       --service-path string            Path to the service
@@ -4059,6 +4060,7 @@ Flags:
       --headless                       Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)
       --naming-scope string            Runtime naming scope: fold a scope into port derivation for a disjoint port set (parallel runs / test encapsulation)
       --profile string                 Named workspace run profile
+      --readiness-timeout duration     Maximum time to wait for the flow to become ready (default 5m0s)
       --set strings                    Per-service runtime env override (repeatable), e.g. --set warden:CODEFLY__FIXTURE=dogfood
       --silent strings                 Silence services in CLI output
       --temporary-ports show network   Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all

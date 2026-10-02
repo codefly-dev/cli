@@ -137,6 +137,7 @@ codefly run service api --profile local           # Use a named workspace run pr
 codefly run service api --exclude-dependency infra/temporal  # Omit optional dependency
 codefly run service api --silent backend/db       # Suppress log output for a dependency
 codefly run service api --cli-server --open       # Run headless with the local dashboard and open it
+codefly run service api --readiness-timeout 10m   # Extend the startup readiness deadline
 ```
 
 **Key flags:**
@@ -160,6 +161,7 @@ codefly run service api --cli-server --open       # Run headless with the local 
 | `--open` | Open the dashboard in the browser (requires `--cli-server`) |
 | `--temporary-ports` | Run as a disposable invocation: ephemeral ports plus a generated naming scope isolating the run's agents, containers and runtime state. The Codefly SDK sets it for test-owned dependency stacks; see [disposable invocations](agent-ci-port-isolation.md#disposable-invocations) |
 | `--naming-scope` | Fold a caller-chosen label into port derivation and resource names. Wins over the scope `--temporary-ports` would generate; passing it empty asks for no scope at all |
+| `--readiness-timeout` | Maximum time the flow may remain not-ready (default `5m`). On expiry the run fails and names the service, endpoint, predicate, and last probe reason that held readiness. |
 
 Run profiles define intentional local runtime shapes in
 `workspace.codefly.yaml`:

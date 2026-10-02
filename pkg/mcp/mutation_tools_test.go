@@ -5,14 +5,41 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/blang/semver"
 	"github.com/codefly-dev/core/resources"
 
 	"github.com/codefly-dev/cli/pkg/conformance/conformancetest"
+	"github.com/codefly-dev/cli/pkg/control"
 )
+
+type alwaysStartingPlane struct {
+	control.Plane
+	calls atomic.Int64
+}
+
+func (plane *alwaysStartingPlane) FlowStatus(context.Context, string) (control.FlowStatus, error) {
+	plane.calls.Add(1)
+	return control.FlowStatus{State: control.FlowStarting}, nil
+}
+
+func TestWaitFlowRunningBacksOff(t *testing.T) {
+	plane := &alwaysStartingPlane{}
+	server := &Server{plane: plane}
+	ctx, cancel := context.WithTimeout(t.Context(), 850*time.Millisecond)
+	defer cancel()
+
+	if err := server.waitFlowRunning(ctx, "app/api"); err != nil {
+		t.Fatalf("waitFlowRunning() = %v", err)
+	}
+	if calls := plane.calls.Load(); calls < 2 || calls > 3 {
+		t.Fatalf("FlowStatus called %d times in 850ms, want 2..3 with exponential backoff", calls)
+	}
+}
 
 func TestAddServiceRejectsUnsafeName(t *testing.T) {
 	root := writeMCPWorkspace(t)
