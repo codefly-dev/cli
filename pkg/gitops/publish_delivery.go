@@ -2,7 +2,6 @@ package gitops
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -43,25 +42,9 @@ import (
 // document reaching a real host fails at the host, far from the cause.
 
 const (
-	// signedCarrierSchema is the schema of the carrier a delivery Job POSTs:
-	// the canonical bytes that were signed, verbatim, and the Sigstore bundle
-	// over them. It is what core's Carrier produces, and the Job sends it as
-	// the request body.
-	signedCarrierSchema = "codefly/solution-host-signed/v1"
-
 	deliveredPresence  = "presence"
 	deliveredAuthority = "authority"
 )
-
-// signedCarrier is the carrier of one signed document. Document is the
-// canonical bytes verbatim, because that is what the signature covers; Bundle
-// is the Sigstore bundle, a JSON object the host verifies against its trust
-// root and identity allowlist — evidence, never authority.
-type signedCarrier struct {
-	Schema   string          `json:"schema"`
-	Document json.RawMessage `json:"document"`
-	Bundle   json.RawMessage `json:"bundle"`
-}
 
 // deliveryPublishOptions is what settling needs beyond the tree.
 type deliveryPublishOptions struct {
@@ -136,6 +119,9 @@ func settlePresenceDelivery(
 	documents := make([]*solutionhost.SolutionHostBinding, 0, len(settled))
 	for _, binding := range names {
 		documents = append(documents, settled[binding].document)
+	}
+	if oneErr := solutionhost.OneDelivery(documents...); oneErr != nil {
+		return nil, fmt.Errorf("settled solution host bindings are not one delivery: %w", oneErr)
 	}
 	if _, admitErr := (solutionhost.Host{}).Admit(documents...); admitErr != nil {
 		return nil, fmt.Errorf("settled solution host bindings are not admissible: %w", admitErr)
@@ -213,7 +199,11 @@ func signPresenceSet(ctx context.Context, settled map[string]deliveredPresenceDo
 		bundle, signErr := signer.Sign(ctx, payload)
 		switch {
 		case signErr == nil:
-			carrier, encodeErr := json.Marshal(signedCarrier{Schema: signedCarrierSchema, Document: payload, Bundle: bundle})
+			signed, carrierErr := solutionhost.Carrier(payload, bundle)
+			if carrierErr != nil {
+				return nil, fmt.Errorf("assemble the signed carrier of binding %s: %w", binding, carrierErr)
+			}
+			carrier, encodeErr := solutionhost.MarshalSigned(signed)
 			if encodeErr != nil {
 				return nil, fmt.Errorf("encode the signed carrier of binding %s: %w", binding, encodeErr)
 			}
@@ -322,7 +312,7 @@ func tombstoneOf(prior *solutionhost.SolutionHostBinding) (*solutionhost.Solutio
 	tombstone := *prior
 	tombstone.Generation = prior.Generation + 1
 	tombstone.Removed = true
-	tombstone.Routes, tombstone.Artifacts, tombstone.Modules, tombstone.Endpoints = nil, nil, nil, nil
+	tombstone.Routes, tombstone.Artifacts, tombstone.Workloads, tombstone.Modules, tombstone.Endpoints = nil, nil, nil, nil, nil
 	if err := tombstone.Validate(); err != nil {
 		return nil, err
 	}
@@ -447,4 +437,357 @@ func writeSettledBinding(directory, namespace string, entry deliveredPresenceDoc
 		return "", fmt.Errorf("write binding %q: %w", entry.document.Binding, err)
 	}
 	return file, nil
+}
+
+// --- Settling authority documents at publish ---
+//
+// An authority document is settled the way a presence document is — generation
+// against the base branch, tombstone for what is no longer declared, signature
+// over the canonical bytes — with two rules of its own. It is effective from
+// the presence generation settled in the same publish, so the two halves of a
+// tuple always travel together. And a binding whose authority content changed
+// while its revision did not is refused: a credential seals the revision and is
+// refused when the live one moves, so a change that keeps the number keeps
+// every outstanding credential's old authority with nothing detecting it.
+
+// deliveredAuthorityDocument is one authority document after settling.
+type deliveredAuthorityDocument struct {
+	document *solutionhost.AuthorityDocument
+	module   string
+	carrier  []byte
+}
+
+// settleAuthorityDelivery settles the authority documents of the tree staged at
+// target against the base branch and the presence generations settled in this
+// publish, signs them, and rewrites the carriers, the authority Job and the
+// overlay's kustomization.
+func settleAuthorityDelivery(
+	ctx context.Context,
+	repo, baseBranch, target, targetPath, environment string,
+	inventory *Inventory,
+	presence *InventoryDelivery,
+	opts deliveryPublishOptions,
+) (*InventoryDelivery, error) {
+	overlay := solutionAuthorityOverlay(environment)
+	prior, err := priorDeliveredAuthorities(ctx, repo, baseBranch, filepath.ToSlash(filepath.Join(targetPath, overlay)))
+	if err != nil {
+		return nil, err
+	}
+	rendered := map[string]deliveredAuthorityDocument{}
+	if inventory.SolutionAuthorityPath != "" {
+		if rendered, err = renderedAuthorities(filepath.Join(target, filepath.FromSlash(overlay))); err != nil {
+			return nil, err
+		}
+	}
+	if len(rendered) == 0 && len(prior) == 0 {
+		return nil, nil
+	}
+	if len(rendered) == 0 && opts.Target == nil {
+		names := make([]string, 0, len(prior))
+		for authority := range prior {
+			names = append(names, authority)
+		}
+		sort.Strings(names)
+		return nil, fmt.Errorf(
+			"module %s delivered the authority documents %s to %s before and this render declares none and names no host; to withdraw them, render with the environment's host block in place, so publish writes their tombstones",
+			inventory.Module, strings.Join(names, ", "), environment)
+	}
+	settled, err := settledAuthoritySet(rendered, prior, presenceGenerations(presence))
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(settled))
+	for authority := range settled {
+		names = append(names, authority)
+	}
+	sort.Strings(names)
+	delivery, err := signAuthoritySet(ctx, settled, names, opts, environment)
+	if err != nil {
+		return nil, err
+	}
+	files, err := writeAuthoritySet(target, overlay, inventory, settled, names, opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeAuthorityKustomization(target, environment, files); err != nil {
+		return nil, err
+	}
+	inventory.SolutionAuthorityPath = solutionAuthorityDir
+	return delivery, nil
+}
+
+// presenceGenerations indexes the presence generations a publish settled, by
+// binding ID.
+func presenceGenerations(presence *InventoryDelivery) map[string]uint64 {
+	generations := map[string]uint64{}
+	if presence == nil {
+		return generations
+	}
+	for _, document := range presence.Documents {
+		if document.Kind == deliveredPresence && !document.Removed {
+			generations[document.ID] = document.Generation
+		}
+	}
+	return generations
+}
+
+// settledAuthoritySet settles each rendered authority document against what
+// was delivered, makes it effective from the presence generation settled for
+// its module, and tombstones what was delivered and is no longer rendered.
+func settledAuthoritySet(
+	rendered map[string]deliveredAuthorityDocument,
+	prior map[string]deliveredAuthorityDocument,
+	generations map[string]uint64,
+) (map[string]deliveredAuthorityDocument, error) {
+	settled := make(map[string]deliveredAuthorityDocument, len(rendered)+len(prior))
+	for authority, entry := range rendered {
+		binding, _, _ := strings.Cut(authority, ":")
+		effective, present := generations[binding]
+		if !present {
+			return nil, fmt.Errorf("authority %s is effective from the presence of binding %s, which this publish does not deliver", authority, binding)
+		}
+		entry.document.EffectiveFrom = effective
+		previous, delivered := prior[authority]
+		if !delivered {
+			entry.document.Generation = 1
+			settled[authority] = entry
+			continue
+		}
+		if err := refuseUnbumpedBindings(previous.document, entry.document); err != nil {
+			return nil, err
+		}
+		at := *entry.document
+		at.Generation = previous.document.Generation
+		current, err := at.Digest()
+		if err != nil {
+			return nil, err
+		}
+		before, err := previous.document.Digest()
+		if err != nil {
+			return nil, fmt.Errorf("digest the delivered authority %q: %w", authority, err)
+		}
+		if current == before && !previous.document.Removed {
+			entry.document.Generation = previous.document.Generation
+		} else {
+			entry.document.Generation = previous.document.Generation + 1
+		}
+		settled[authority] = entry
+	}
+	for authority, previous := range prior {
+		if _, present := rendered[authority]; present {
+			continue
+		}
+		tombstone := *previous.document
+		if !previous.document.Removed {
+			tombstone.Generation = previous.document.Generation + 1
+			tombstone.Removed = true
+			tombstone.ApprovedBuild, tombstone.EffectiveFrom, tombstone.Principals = "", 0, nil
+			if err := tombstone.Validate(); err != nil {
+				return nil, fmt.Errorf("withdraw authority %s: %w", authority, err)
+			}
+		}
+		settled[authority] = deliveredAuthorityDocument{document: &tombstone, module: previous.module}
+	}
+	return settled, nil
+}
+
+// refuseUnbumpedBindings refuses an authority document in which a binding's
+// content changed while its revision did not. The revision is what a sealed
+// credential is held against; a change that keeps it is a change no credential
+// can detect, and the author remembering to bump it is not enforcement.
+func refuseUnbumpedBindings(prior, candidate *solutionhost.AuthorityDocument) error {
+	previous := map[string]solutionhost.AuthorityBinding{}
+	for _, principal := range prior.Principals {
+		for _, binding := range principal.Bindings {
+			previous[binding.ID] = binding
+		}
+	}
+	var unbumped []string
+	for _, principal := range candidate.Principals {
+		for _, binding := range principal.Bindings {
+			before, delivered := previous[binding.ID]
+			if !delivered || before.Revision != binding.Revision {
+				continue
+			}
+			if before.Audience != binding.Audience || before.Scope != binding.Scope || before.Queue != binding.Queue || before.Namespace != binding.Namespace {
+				unbumped = append(unbumped, binding.ID)
+			}
+		}
+	}
+	if len(unbumped) == 0 {
+		return nil
+	}
+	sort.Strings(unbumped)
+	return fmt.Errorf(
+		"authority %s changes what the bindings %s grant without bumping their revision; a credential sealed to the old revision would keep the old authority undetected, so bump the binding's revision in the module contract",
+		candidate.Authority, strings.Join(unbumped, ", "))
+}
+
+// signAuthoritySet signs every settled authority document and assembles its
+// carrier, recording what was delivered.
+func signAuthoritySet(ctx context.Context, settled map[string]deliveredAuthorityDocument, names []string, opts deliveryPublishOptions, environment string) (*InventoryDelivery, error) {
+	signer := opts.Signer
+	if signer == nil {
+		signer = signing.FromEnvironment(nil)
+	}
+	delivery := &InventoryDelivery{Signed: true}
+	var unsigned []string
+	for _, authority := range names {
+		entry := settled[authority]
+		payload, err := solutionhost.SignedPayloadFor(entry.document)
+		if err != nil {
+			return nil, fmt.Errorf("canonicalize authority %s: %w", authority, err)
+		}
+		bundle, signErr := signer.Sign(ctx, payload)
+		switch {
+		case signErr == nil:
+			signed, carrierErr := solutionhost.Carrier(payload, bundle)
+			if carrierErr != nil {
+				return nil, fmt.Errorf("assemble the signed carrier of authority %s: %w", authority, carrierErr)
+			}
+			carrier, encodeErr := solutionhost.MarshalSigned(signed)
+			if encodeErr != nil {
+				return nil, fmt.Errorf("encode the signed carrier of authority %s: %w", authority, encodeErr)
+			}
+			entry.carrier = carrier
+			if delivery.Identity == "" {
+				if identity, readErr := signing.ReadIdentity(bundle); readErr == nil {
+					delivery.Identity = identity.Subject + " (" + identity.Issuer + ")"
+				}
+			}
+		case errors.Is(signErr, signing.ErrNoIdentity):
+			unsigned = append(unsigned, authority)
+			delivery.Signed = false
+		default:
+			return nil, fmt.Errorf("sign authority %s: %w", authority, signErr)
+		}
+		digest, err := entry.document.Digest()
+		if err != nil {
+			return nil, err
+		}
+		delivery.Documents = append(delivery.Documents, InventoryDeliveredDocument{
+			Kind: deliveredAuthority, ID: authority, Generation: entry.document.Generation, Removed: entry.document.Removed, Digest: digest,
+		})
+		settled[authority] = entry
+	}
+	if len(unsigned) > 0 && !opts.AllowUnsigned {
+		return nil, fmt.Errorf(
+			"%w: the authority documents %s cannot be delivered unsigned to %s; publish from the release workflow, whose OIDC identity signs them",
+			signing.ErrNoIdentity, strings.Join(unsigned, ", "), environment)
+	}
+	return delivery, nil
+}
+
+// writeAuthoritySet writes the settled documents and the Job that POSTs every
+// signed carrier from the authority namespace, and returns the overlay's files.
+// The account the Job runs as is the platform's: that namespace is not the
+// module's to populate.
+func writeAuthoritySet(target, overlay string, inventory *Inventory, settled map[string]deliveredAuthorityDocument, names []string, opts deliveryPublishOptions) ([]string, error) {
+	directory := filepath.Join(target, filepath.FromSlash(overlay))
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return nil, fmt.Errorf("create authority overlay: %w", err)
+	}
+	var files []string
+	var jobDocuments []deliveryDocument
+	for _, authority := range names {
+		entry := settled[authority]
+		file, err := writeAuthorityDocument(directory, entry.document, entry.module, entry.carrier)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, file)
+		if len(entry.carrier) > 0 {
+			jobDocuments = append(jobDocuments, deliveryDocument{
+				ConfigMap: authorityConfigMapName(authority), Key: authorityCarrierKey, Name: strings.TrimSuffix(file, ".yaml") + ".json",
+			})
+		}
+	}
+	if opts.Target == nil || len(jobDocuments) == 0 {
+		return files, nil
+	}
+	job, err := renderDeliveryJob(directory, deliveryJobName(deliveryAuthority, inventory.Module), authorityNamespace,
+		deliveryServiceAccount, deliveryAuthority, authorityDeliveryPath, opts.Target, jobDocuments)
+	if err != nil {
+		return nil, err
+	}
+	return append(files, job), nil
+}
+
+// renderedAuthorities reads the authority ConfigMaps a render wrote into its
+// overlay, keyed by authority ID.
+func renderedAuthorities(directory string) (map[string]deliveredAuthorityDocument, error) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil, fmt.Errorf("read the rendered authority documents: %w", err)
+	}
+	rendered := map[string]deliveredAuthorityDocument{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") || entry.Name() == kustomizationFile {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(directory, entry.Name())) //nolint:gosec // a file of the render this publish stages
+		if err != nil {
+			return nil, err
+		}
+		document, module, ok, err := authorityFromConfigMap(data)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", entry.Name(), err)
+		}
+		if !ok {
+			continue
+		}
+		rendered[document.Authority] = deliveredAuthorityDocument{document: document, module: module}
+	}
+	return rendered, nil
+}
+
+// authorityFromConfigMap parses the document out of a ConfigMap carrying one,
+// and reports false for any other manifest in the overlay.
+func authorityFromConfigMap(data []byte) (*solutionhost.AuthorityDocument, string, bool, error) {
+	var carrier solutionAuthorityConfigMap
+	if err := yaml.Unmarshal(data, &carrier); err != nil {
+		return nil, "", false, fmt.Errorf("decode: %w", err)
+	}
+	if carrier.Kind != kindConfigMap {
+		return nil, "", false, nil
+	}
+	encoded, held := carrier.Data[solutionhost.AuthorityFileName]
+	if !held {
+		return nil, "", false, nil
+	}
+	document, err := solutionhost.ParseAuthority([]byte(encoded))
+	if err != nil {
+		return nil, "", false, fmt.Errorf("the delivered authority document is not one this Core reads: %w", err)
+	}
+	return document, carrier.Metadata.Labels[solutionLabel], true, nil
+}
+
+// priorDeliveredAuthorities reads the authority documents the base branch
+// delivers under the overlay path, keyed by authority ID.
+func priorDeliveredAuthorities(ctx context.Context, repo, baseBranch, overlayPath string) (map[string]deliveredAuthorityDocument, error) {
+	ref := "refs/remotes/origin/" + baseBranch
+	listing, err := gitCommand(ctx, repo, "ls-tree", "--name-only", ref+":"+overlayPath)
+	if err != nil {
+		return map[string]deliveredAuthorityDocument{}, nil
+	}
+	prior := map[string]deliveredAuthorityDocument{}
+	for _, name := range strings.Split(strings.TrimSpace(listing), "\n") {
+		name = strings.TrimSpace(name)
+		if name == "" || !strings.HasSuffix(name, ".yaml") || name == kustomizationFile {
+			continue
+		}
+		data, err := gitCommandBytes(ctx, repo, "show", ref+":"+overlayPath+"/"+name)
+		if err != nil {
+			return nil, fmt.Errorf("read the delivered %s from %s: %w", name, baseBranch, err)
+		}
+		document, module, ok, err := authorityFromConfigMap(data)
+		if err != nil {
+			return nil, fmt.Errorf("the delivered %s on %s cannot be read, so no generation can be settled against it: %w", name, baseBranch, err)
+		}
+		if !ok {
+			continue
+		}
+		prior[document.Authority] = deliveredAuthorityDocument{document: document, module: module}
+	}
+	return prior, nil
 }

@@ -279,6 +279,7 @@ func preparePublish(
 		Module:         request.Module, Environment: request.Environment,
 		RenderDigest: inventory.Digest, SnapshotRevision: snapshotRevision,
 		Changed: changed, Diff: diff, ContractChecks: contractChecks,
+		Delivery: inventory.Delivery,
 	}
 	plan.ID, err = publishPlanID(&plan, restoreRevision)
 	if err != nil {
@@ -714,6 +715,7 @@ func prepareServicePublication(
 		Promotable:                    true,
 		CheckUnitDirectories:          true,
 		SolutionHostBindingPath:       renderedInventory.SolutionHostBindingPath,
+		SolutionAuthorityPath:         renderedInventory.SolutionAuthorityPath,
 		Delivered:                     delivery,
 		WorkspaceConfigurationDigests: renderedInventory.WorkspaceConfigurationDigests,
 	}
@@ -1088,6 +1090,9 @@ func validateBootstrapUnits(root, targetPath string, inventory *Inventory, envir
 	if inventory.SolutionHostBindingPath != "" {
 		expected[filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionHostBindingPath, "overlays", environment))] = struct{}{}
 	}
+	if inventory.SolutionAuthorityPath != "" {
+		expected[filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionAuthorityPath, "overlays", environment))] = struct{}{}
+	}
 	err := walkBootstrapApplications(root, func(path, _ string, sourcePath string) error {
 		if _, exists := expected[sourcePath]; !exists {
 			return fmt.Errorf("bootstrap Application %s targets unit path %q outside the rendered unit graph", path, sourcePath)
@@ -1367,6 +1372,7 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 		Commit: commit, Tree: tree, Signed: true,
 		PullRequest: prURL, PullRequestID: prID,
 		ContractChecks: prepared.plan.ContractChecks,
+		Delivery:       prepared.plan.Delivery,
 	}
 	if err := writeReceipt(workspace.Dir(), "publications", request.Module+"-"+request.Environment+jsonExtension, result); err != nil {
 		return PublishResult{}, err
@@ -1937,13 +1943,44 @@ func stageAndSettleDelivery(
 	if publication == nil {
 		return nil, nil
 	}
-	if inventory.SolutionHostBindingPath != "" {
-		source := filepath.Join(rendered, filepath.FromSlash(inventory.SolutionHostBindingPath))
-		if err := replaceCloneTree(source, repo, filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionHostBindingPath))); err != nil {
+	for _, path := range []string{inventory.SolutionHostBindingPath, inventory.SolutionAuthorityPath} {
+		if path == "" {
+			continue
+		}
+		source := filepath.Join(rendered, filepath.FromSlash(path))
+		if err := replaceCloneTree(source, repo, filepath.ToSlash(filepath.Join(targetPath, path))); err != nil {
 			return nil, fmt.Errorf("stage rendered delivery documents: %w", err)
 		}
 	}
-	return settlePresenceDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, publication.options)
+	presence, err := settlePresenceDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, publication.options)
+	if err != nil {
+		return nil, err
+	}
+	authority, err := settleAuthorityDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, presence, publication.options)
+	if err != nil {
+		return nil, err
+	}
+	return mergeDeliveries(presence, authority), nil
+}
+
+// mergeDeliveries joins what the two settlements delivered into one inventory
+// record: signed only when both halves are.
+func mergeDeliveries(parts ...*InventoryDelivery) *InventoryDelivery {
+	var merged *InventoryDelivery
+	for _, part := range parts {
+		if part == nil {
+			continue
+		}
+		if merged == nil {
+			merged = &InventoryDelivery{Signed: true}
+		}
+		merged.Signed = merged.Signed && part.Signed
+		if merged.Identity == "" {
+			merged.Identity = part.Identity
+		}
+		merged.Documents = append(merged.Documents, part.Documents...)
+	}
+	return merged
 }
 
 // stageCellFile copies the environment's cell file into the repository, outside

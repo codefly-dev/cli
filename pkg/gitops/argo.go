@@ -243,6 +243,12 @@ func generateArgoBootstrap(
 	project.Metadata.Namespace = argoNamespace
 	project.Spec.SourceRepos = []string{repository}
 	project.Spec.Destinations = []argoDestination{{Namespace: inventory.Namespace, Server: inClusterServer}}
+	if inventory.SolutionAuthorityPath != "" {
+		// Authority documents land in the platform's authority namespace, which
+		// is the one namespace outside the module's own that its Application may
+		// write to — and only for what the authority overlay carries.
+		project.Spec.Destinations = append(project.Spec.Destinations, argoDestination{Namespace: authorityNamespace, Server: inClusterServer})
+	}
 	project.Spec.ClusterResourceWhitelist = clusterResources
 	project.Spec.NamespaceResourceWhitelist = namespaceResources
 	if err := writeArgoYAML(filepath.Join(bootstrap, "project.yaml"), project); err != nil {
@@ -273,6 +279,13 @@ func generateArgoBootstrap(
 		components = append(components, argoBootstrapComponent{
 			Component: argoBoundedName(componentNameBudget, inventory.Module, "solution-host-bindings"),
 			Overlay:   filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionHostBindingPath, "overlays", environment)),
+			Wave:      solutionHostBindingWave,
+		})
+	}
+	if inventory.SolutionAuthorityPath != "" {
+		components = append(components, argoBootstrapComponent{
+			Component: argoBoundedName(componentNameBudget, inventory.Module, "solution-authority"),
+			Overlay:   filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionAuthorityPath, "overlays", environment)),
 			Wave:      solutionHostBindingWave,
 		})
 	}
@@ -351,6 +364,9 @@ func snapshotAuthority(target string, inventory *Inventory, environment string) 
 	}
 	if inventory.SolutionHostBindingPath != "" {
 		sources = append(sources, filepath.Join(target, filepath.FromSlash(inventory.SolutionHostBindingPath), "overlays", environment))
+	}
+	if inventory.SolutionAuthorityPath != "" {
+		sources = append(sources, filepath.Join(target, filepath.FromSlash(inventory.SolutionAuthorityPath), "overlays", environment))
 	}
 	cluster := make(map[string]argoResourceAuthority)
 	namespaced := make(map[string]argoResourceAuthority)

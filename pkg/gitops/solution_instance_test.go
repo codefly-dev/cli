@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"github.com/codefly-dev/core/solutionhost"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,23 +63,23 @@ func TestSolutionInstanceComesFromTheModuleTheRenderResolved(t *testing.T) {
 		Package: &InventoryPackage{ID: "obin/crm", Version: "1.4.0"},
 		Units:   promotableServiceGraph("crm", []string{"api"}),
 	}
-	instance, err := solutionInstanceOf(module, services, identityEnvironment(), options)
+	instance, undeclared, err := presenceInstanceOf(module, services, identityEnvironment(), options)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if instance == nil {
-		t.Fatal("a module shipping a solution manifest is not a solution instance")
+		t.Fatalf("a module shipping a solution manifest is not a solution instance: %s", undeclared)
 	}
-	if instance.Name != "crm" || instance.Alias != "crm" {
+	if instance.Kind != solutionhost.KindSolution || instance.Name != "crm" || instance.Alias != "crm" {
 		t.Fatalf("instance identity %+v", instance)
+	}
+	if !strings.HasPrefix(string(instance.ReleaseDigest), "sha256:") {
+		t.Fatalf("release digest %q", instance.ReleaseDigest)
 	}
 	if instance.Package != "obin/crm" || instance.Version != "1.4.0" {
 		t.Fatalf("instance release %+v", instance)
 	}
-	if instance.Subject != "crm@obin.iam.example" {
-		t.Fatalf("instance subject %q", instance.Subject)
-	}
-	if len(instance.Units) != 1 || instance.Units[0].Path != "services/api" {
+	if len(instance.Units) != 1 || instance.Units[0].Path != "services/api" || instance.Units[0].Subject != "crm@obin.iam.example" {
 		t.Fatalf("instance units %+v", instance.Units)
 	}
 	if len(instance.Endpoints) != 1 || instance.Endpoints[0].Module != "crm" || instance.Endpoints[0].Service != "api" {
@@ -89,15 +90,35 @@ func TestSolutionInstanceComesFromTheModuleTheRenderResolved(t *testing.T) {
 	}
 }
 
-func TestAModuleShippingNoSolutionManifestIsNotAnInstance(t *testing.T) {
+// TestAModuleShippingNoSolutionManifestIsAModuleInstance pins presence for
+// modules: an ordinary module declares its presence with kind module and no
+// route, and a module with no package manifest names no release and declares
+// nothing, with the reason reported.
+func TestAModuleShippingNoSolutionManifestIsAModuleInstance(t *testing.T) {
 	module := &resources.Module{Name: "payments"}
-	module.WithDir(t.TempDir())
-	instance, err := solutionInstanceOf(module, nil, identityEnvironment(), &RenderOptions{Module: "payments"})
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "module.codefly.yaml"), []byte("kind: module\nname: payments\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	module.WithDir(dir)
+	instance, undeclared, err := presenceInstanceOf(module, nil, identityEnvironment(), &RenderOptions{Module: "payments"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if instance != nil {
-		t.Fatalf("an ordinary module was declared a solution instance: %+v", instance)
+	if instance != nil || !strings.Contains(undeclared, "no package manifest") {
+		t.Fatalf("a module without a package was declared (%+v) or the reason was not reported (%q)", instance, undeclared)
+	}
+	instance, undeclared, err = presenceInstanceOf(module, nil, identityEnvironment(), &RenderOptions{
+		Module: "payments", Package: &InventoryPackage{ID: "example/payments", Version: "2.0.0"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance == nil || undeclared != "" {
+		t.Fatalf("a packaged module declares its presence: %+v %q", instance, undeclared)
+	}
+	if instance.Kind != solutionhost.KindModule || instance.Alias != "" || instance.Name != "payments" {
+		t.Fatalf("module instance %+v", instance)
 	}
 }
 
@@ -107,7 +128,7 @@ func TestSolutionInstanceRefusesAnEndpointWithNoDeclaredAPI(t *testing.T) {
 		Name:      "api",
 		Endpoints: []*resources.Endpoint{{Name: "mystery"}},
 	}}
-	_, err := solutionInstanceOf(module, services, identityEnvironment(), &RenderOptions{Module: "crm"})
+	_, _, err := presenceInstanceOf(module, services, identityEnvironment(), &RenderOptions{Module: "crm", Package: &InventoryPackage{ID: "obin/crm", Version: "1.4.0"}})
 	if err == nil || !strings.Contains(err.Error(), "declares no api") {
 		t.Fatalf("an endpoint with no protocol was declared to the host: %v", err)
 	}
@@ -119,11 +140,11 @@ func TestSolutionInstanceRefusesAnEndpointWithNoDeclaredAPI(t *testing.T) {
 func TestTwoInstancesOfOneSolutionAreTwoBindings(t *testing.T) {
 	env := identityEnvironment()
 	options := &RenderOptions{Environment: "prod", Workspace: "obin", Package: &InventoryPackage{ID: "obin/crm", Version: "1.4.0"}}
-	first, err := solutionInstanceOf(solutionModule(t, "crm", "api"), nil, env, options)
+	first, _, err := presenceInstanceOf(solutionModule(t, "crm", "api"), nil, env, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := solutionInstanceOf(solutionModule(t, "crm-eu", "api"), nil, env, options)
+	second, _, err := presenceInstanceOf(solutionModule(t, "crm-eu", "api"), nil, env, options)
 	if err != nil {
 		t.Fatal(err)
 	}

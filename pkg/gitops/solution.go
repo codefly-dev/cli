@@ -18,6 +18,7 @@ import (
 	solutionv0 "github.com/codefly-dev/core/generated/go/codefly/services/solution/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solution"
+	"github.com/codefly-dev/core/solutionhost"
 	"google.golang.org/grpc"
 )
 
@@ -152,12 +153,16 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 		// reports manifest paths and nothing about endpoints or module pins, so
 		// the binding declares none rather than inventing them.
 		options.SolutionInstances = []SolutionInstance{{
-			Name:    req.Name,
-			Alias:   req.Name,
-			Package: req.Agent.Publisher + "/" + req.Agent.Name,
-			Version: req.Agent.Version,
-			Subject: solutionWorkloadSubject(env, req.Name),
-			Units:   []SolutionArtifactUnit{{Name: req.Name, Path: filepath.ToSlash(filepath.Join(solutionUnitDir, req.Name))}},
+			Kind:          solutionhost.KindSolution,
+			Name:          req.Name,
+			Alias:         req.Name,
+			Package:       req.Agent.Publisher + "/" + req.Agent.Name,
+			Version:       req.Agent.Version,
+			ReleaseDigest: solutionhost.ReleaseDigest(packaged.GetArtifactDigest()),
+			Units: []SolutionArtifactUnit{{
+				Name: req.Name, Path: filepath.ToSlash(filepath.Join(solutionUnitDir, req.Name)),
+				Subject: solutionWorkloadSubject(env, req.Name),
+			}},
 		}}
 		return nil
 	})

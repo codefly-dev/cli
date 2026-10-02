@@ -105,6 +105,11 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 		return RenderResult{}, err
 	}
 	opts.SolutionHostBindingPath = deliveredBindingPath(bindings)
+	authorities, err := renderAuthorityDocuments(owned, opts)
+	if err != nil {
+		return RenderResult{}, err
+	}
+	opts.SolutionAuthorityPath = deliveredAuthorityPath(authorities)
 	manifests, err := validateTree(owned, opts)
 	if err != nil {
 		return RenderResult{}, err
@@ -137,6 +142,8 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 		Path: destination, Inventory: inventory, Sizing: sizing,
 		ElidedNamespaces: elided, ClearedDev: cleared,
 		SolutionHostBindings: bindings, UndeclaredSolutions: undeclaredSolutions(opts),
+		UndeclaredPresence:  opts.UndeclaredPresence,
+		SolutionAuthorities: authorities, UndeclaredAuthority: opts.UndeclaredAuthority,
 	}, nil
 }
 
@@ -1274,6 +1281,7 @@ func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
 		Namespace: opts.Namespace, AppProject: opts.AppProject, OwnedPath: filepath.ToSlash(opts.OwnedPath),
 		ModulePath: filepath.ToSlash(opts.ModulePath), Package: opts.Package,
 		SolutionHostBindingPath: filepath.ToSlash(opts.SolutionHostBindingPath),
+		SolutionAuthorityPath:   filepath.ToSlash(opts.SolutionAuthorityPath),
 		Units:                   append([]InventoryUnit(nil), opts.Units...),
 	}
 	inventory.Delivery = opts.Delivered

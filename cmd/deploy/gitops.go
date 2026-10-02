@@ -176,9 +176,30 @@ var gitOpsPublishCmd = &cobra.Command{
 		cli.Info("Service snapshot %s", result.SnapshotRevision)
 		cli.Info("Signed commit %s", result.Commit)
 		cli.Info("Tree %s", result.Tree)
+		printDelivery(result.Delivery)
 		cli.Info("Pull request %s", result.PullRequest)
 		return nil
 	},
+}
+
+// printDelivery reports the delivery documents a publish settled and signed,
+// and says plainly when they are unsigned: a host refuses those.
+func printDelivery(delivery *gitops.InventoryDelivery) {
+	if delivery == nil {
+		return
+	}
+	for _, document := range delivery.Documents {
+		state := "settled"
+		if document.Removed {
+			state = "withdrawn by a tombstone"
+		}
+		cli.Info("Delivered %s document %s at generation %d, %s", document.Kind, document.ID, document.Generation, state)
+	}
+	if delivery.Signed {
+		cli.Info("Delivery documents signed by %s", delivery.Identity)
+		return
+	}
+	cli.Warning("Delivery documents are UNSIGNED: no signing identity in this process; a host refuses them, and no Job delivers them. Publish from the release workflow.")
 }
 
 var gitOpsObserveCmd = &cobra.Command{
