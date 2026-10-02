@@ -104,6 +104,7 @@ already holds, but nothing outside the scope is planned or written.`,
 			Store:        store,
 			ReadPayloads: !secretsMetadataOnly,
 			Modules:      secretsModules,
+			MayBeEmpty:   env.ServiceSecrets.MayBeEmpty,
 		})
 		if err != nil {
 			return err

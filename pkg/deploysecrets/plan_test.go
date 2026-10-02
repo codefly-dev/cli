@@ -770,3 +770,92 @@ func TestPlanRefusesOnePropertyGeneratedTwoWays(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// An empty stored value is refused by default, because an empty credential is
+// almost always a half-finished seed rather than a decision.
+func TestBuildRefusesAPresentButEmptyProperty(t *testing.T) {
+	rendered, federation := fixture()
+	store := newFakeStore(withEmpty(seeded(), "host-accounts", clientSecret))
+	_, err := Build(context.Background(), &Inputs{Rendered: rendered, Federation: federation,
+		Generators: generators(), Services: []string{"tasks/store", "tasks/worker"},
+		Store: store, ReadPayloads: true})
+	if err == nil || !strings.Contains(err.Error(), "is empty") {
+		t.Fatalf("Build = %v, want the empty property refused", err)
+	}
+	if !strings.Contains(err.Error(), clientSecret) {
+		t.Errorf("the error does not name the property: %v", err)
+	}
+	// The refusal must say how to declare the exception, or the operator's only
+	// visible way out is to invent a value.
+	if !strings.Contains(err.Error(), "may-be-empty") {
+		t.Errorf("the error does not name the declaration: %v", err)
+	}
+}
+
+// Some keys have no value to hold: a Sentry DSN where there is no Sentry
+// project, a WebAuthn origin on a cell with no browser-facing origin.
+func TestBuildAcceptsAnEmptyPropertyTheEnvironmentDeclares(t *testing.T) {
+	rendered, federation := fixture()
+	store := newFakeStore(withEmpty(seeded(), "host-accounts", clientSecret))
+	if _, err := Build(context.Background(), &Inputs{Rendered: rendered, Federation: federation,
+		Generators: generators(), Services: []string{"tasks/store", "tasks/worker"},
+		Store: store, ReadPayloads: true, MayBeEmpty: []string{clientSecret}}); err != nil {
+		t.Fatalf("Build = %v, want the declared key accepted", err)
+	}
+}
+
+// Declaring one of a property's keys is not declaring the property: a property
+// two services read under two keys is only safely empty when neither needs one.
+func TestBuildStillRefusesWhenOnlySomeOfAPropertysKeysAreDeclared(t *testing.T) {
+	rendered, federation := fixture()
+	two := gitops.RenderedSecretProperty{
+		Property: "shared",
+		Keys:     []string{"NEEDS_A_VALUE", "HOLDS_NOTHING"},
+		Readers:  []gitops.RenderedSecretReader{{Service: "host/accounts", Key: "NEEDS_A_VALUE"}},
+	}
+	rendered.Secrets[0].Properties = append(rendered.Secrets[0].Properties, two)
+	documents := seeded()
+	documents["host-accounts"]["shared"] = ""
+	store := newFakeStore(documents)
+	_, err := Build(context.Background(), &Inputs{Rendered: rendered, Federation: federation,
+		Generators: generators(), Services: []string{"tasks/store", "tasks/worker"},
+		Store: store, ReadPayloads: true, MayBeEmpty: []string{"HOLDS_NOTHING"}})
+	if err == nil || !strings.Contains(err.Error(), "is empty") {
+		t.Fatalf("Build = %v, want the partly-declared property still refused", err)
+	}
+}
+
+// A scoped run reads every remote key so a scoped key keeps agreeing with the
+// store, but an out-of-scope key it will never write is not its business to
+// refuse -- otherwise one unrelated service's optional key makes --module
+// unusable, which is what happened on hosted-gcp-staging.
+func TestBuildIgnoresAnEmptyPropertyOutsideTheModuleScope(t *testing.T) {
+	rendered, federation := fixture()
+	store := newFakeStore(withEmpty(seeded(), "host-accounts", clientSecret))
+	if _, err := Build(context.Background(), &Inputs{Rendered: rendered, Federation: federation,
+		Generators: generators(), Services: []string{"tasks/store", "tasks/worker"},
+		Store: store, ReadPayloads: true, Modules: []string{"tasks"}}); err != nil {
+		t.Fatalf("Build = %v, want an out-of-scope empty key ignored", err)
+	}
+}
+
+// ...but an empty key the scoped run WOULD write is still refused, or scoping
+// would become a way to write a key whose stored value is half-finished.
+func TestBuildStillRefusesAnEmptyPropertyInsideTheModuleScope(t *testing.T) {
+	rendered, federation := fixture()
+	documents := seeded()
+	documents["tasks-store"] = map[string]string{migration: "", storePassword: "held"}
+	store := newFakeStore(documents)
+	_, err := Build(context.Background(), &Inputs{Rendered: rendered, Federation: federation,
+		Generators: generators(), Services: []string{"tasks/store", "tasks/worker"},
+		Store: store, ReadPayloads: true, Modules: []string{"tasks"}})
+	if err == nil || !strings.Contains(err.Error(), "is empty") {
+		t.Fatalf("Build = %v, want the in-scope empty key refused", err)
+	}
+}
+
+// withEmpty returns documents with one property blanked.
+func withEmpty(documents map[string]map[string]string, key, property string) map[string]map[string]string {
+	documents[key][property] = ""
+	return documents
+}

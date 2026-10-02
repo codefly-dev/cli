@@ -376,6 +376,19 @@ type EnvironmentServiceSecrets struct {
 	// derivation covers and no stored secret already holds is reported as one the
 	// operator must supply; it is never guessed.
 	Generate []EnvironmentSecretGenerator `yaml:"generate,omitempty"`
+	// MayBeEmpty names secret configuration keys whose correct value in this
+	// environment is the empty string. A stored property is otherwise refused
+	// when it is present and empty, because an empty credential is almost
+	// always a half-finished seed rather than a decision — but "almost always"
+	// is not always, and some keys have no value to hold: a Sentry DSN where
+	// there is no Sentry project, a WebAuthn relying-party origin on a cell
+	// with no browser-facing origin at all.
+	//
+	// Declared per key, never inferred, and never a pattern: an environment
+	// says which of its own keys mean nothing, and every other empty value
+	// still stops the plan. Matched on the secret KEY the render reads, like
+	// Generate, not on the property name a store happens to file it under.
+	MayBeEmpty []string `yaml:"may-be-empty,omitempty"`
 }
 
 // Secret generator scopes: which configuration a generator's keys belong to.

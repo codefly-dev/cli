@@ -199,6 +199,10 @@ type Inputs struct {
 	// scoped key keeps agreeing with — but nothing else is planned or written.
 	// Empty plans the whole environment.
 	Modules []string
+	// MayBeEmpty are the secret keys this environment declares as legitimately
+	// empty, from service-secrets.may-be-empty. A present-but-empty property is
+	// otherwise refused.
+	MayBeEmpty []string
 }
 
 // remoteState is one remote key as the plan sees it.
@@ -396,11 +400,29 @@ func readStates(ctx context.Context, in *Inputs) ([]*remoteState, error) {
 				}
 				state.document = document
 			}
+			// An empty stored value is refused, because an empty credential is
+			// almost always a half-finished seed. Two things narrow that:
+			//
+			//   - the environment may DECLARE a key as legitimately empty, for
+			//     a key that has no value to hold on this cell;
+			//   - only a key THIS run plans is checked. A scoped run reads every
+			//     remote key so a scoped key keeps agreeing with the store, but
+			//     an out-of-scope key it will never write is not its business to
+			//     refuse -- otherwise one unrelated service's optional key makes
+			//     `--module` unusable.
 			for _, property := range secret.Properties {
-				if value, present := state.document[property.Property]; present && strings.TrimSpace(value) == "" {
-					fail(fmt.Errorf("remote key %s property %s is empty: supply a nonempty value before planning", secret.RemoteKey, property.Property))
-					return
+				value, present := state.document[property.Property]
+				if !present || strings.TrimSpace(value) != "" {
+					continue
 				}
+				if declaredEmpty(property, in.MayBeEmpty) {
+					continue
+				}
+				if !planning(secret, in.Modules) {
+					continue
+				}
+				fail(fmt.Errorf("remote key %s property %s is empty: supply a nonempty value, or declare it in service-secrets.may-be-empty if this environment holds no value for it", secret.RemoteKey, property.Property))
+				return
 			}
 			states[i] = state
 		}(i)
@@ -418,6 +440,39 @@ func readStates(ctx context.Context, in *Inputs) ([]*remoteState, error) {
 		}
 	}
 	return states, nil
+}
+
+// declaredEmpty reports whether every secret key this property is read under is
+// declared legitimately empty. Every key, not any: a property two services read
+// under two keys is only safely empty when neither reader needs a value.
+func declaredEmpty(property gitops.RenderedSecretProperty, mayBeEmpty []string) bool {
+	if len(property.Keys) == 0 || len(mayBeEmpty) == 0 {
+		return false
+	}
+	for _, key := range property.Keys {
+		if !slices.Contains(mayBeEmpty, key) {
+			return false
+		}
+	}
+	return true
+}
+
+// planning reports whether this remote key is one the run would write. With no
+// --module every rendered key is in scope; with one, only the keys a listed
+// module's services read. Deliberately the same test planScope.owns applies,
+// on the same module/service uniques, so what a run refuses and what it writes
+// cannot drift apart.
+func planning(secret gitops.RenderedServiceSecret, modules []string) bool {
+	if len(modules) == 0 {
+		return true
+	}
+	for _, unique := range secret.Services {
+		module, _, _ := strings.Cut(unique, "/")
+		if slices.Contains(modules, module) {
+			return true
+		}
+	}
+	return false
 }
 
 // wrapKeyError names the key and the command that failed on it, and passes nil
