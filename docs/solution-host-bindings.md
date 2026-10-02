@@ -233,9 +233,16 @@ absence. Publish writes the tombstone (`removed: true`, prior + 1), carries an
 existing tombstone forward verbatim, and re-presenting a withdrawn binding
 starts a new generation after the tombstone. Nothing is ever withdrawn by a
 document disappearing: the host treats an empty or unreadable desired set as
-removing nothing. A render that names no host over a delivery that declared
-bindings is refused, not tombstoned — withdrawing everything the moment a host
-declaration is removed is not a publish to make silently.
+removing nothing, and infers no removal from absence anywhere — not within an
+ownership domain, not at a higher generation. What lets *publish* derive a
+tombstone where a host may not is that publish holds the one complete set:
+the current render is everything this module declares, and the previously
+delivered set is read from the base branch with an unreadable document being
+an error, never an absence — so a malformed document beside a sound one can
+never read as a withdrawal of the sound one. A render that names no host over
+a delivery that declared bindings is refused, not tombstoned — withdrawing
+everything the moment a host declaration is removed is not a publish to make
+silently.
 
 **Authority follows presence.** Each authority document is made effective from
 the presence generation settled for its module, so the two halves of a tuple
