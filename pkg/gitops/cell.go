@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -68,11 +69,22 @@ type CellNamespace struct {
 	Egress []CellEgress `yaml:"egress,omitempty"`
 }
 
-// CellWorkload is one thing the host runs: a Deployment or StatefulSet of a
-// rendered unit, with the identity it runs as and the endpoints it serves.
+// CellWorkload is one thing the host runs — every pod-producing object of a
+// rendered unit: a Deployment, StatefulSet or DaemonSet, and the Jobs and
+// CronJobs that bootstrap it, which run their own images and must be declared
+// or the platform's closed approved set refuses them — with the identity it
+// runs as and the endpoints it serves.
 type CellWorkload struct {
 	// Name is the workload's object name.
 	Name string `yaml:"name"`
+	// Kind is the workload's Kubernetes kind.
+	Kind string `yaml:"kind"`
+	// Selector is the exact label set that selects the workload's pods: the
+	// selector of a Deployment, StatefulSet or DaemonSet, the pod template's
+	// labels of a Job or CronJob. Carried explicitly, because a bootstrap Job
+	// carries no "app" label and a policy assuming one selects its pods with
+	// nothing.
+	Selector map[string]string `yaml:"selector"`
 	// Service is the module-qualified service the workload runs: <module>/<service>.
 	Service string `yaml:"service"`
 	// ServiceAccount is the account the pod runs as.
@@ -125,11 +137,21 @@ type CellRelease struct {
 
 // CellEndpoint is one declared endpoint of a workload's service.
 type CellEndpoint struct {
-	Name         string   `yaml:"name"`
-	API          string   `yaml:"api,omitempty"`
+	Name string `yaml:"name"`
+	API  string `yaml:"api,omitempty"`
+	// Port is the CONTAINER port the endpoint is served on — the port a
+	// connection lands on after Service resolution, which is what a mesh
+	// authorizes — as the service declares it under
+	// spec.deployment.endpoint-ports and the render verifies against the
+	// rendered Service's target.
 	Port         uint32   `yaml:"port,omitempty"`
 	Visibility   string   `yaml:"visibility,omitempty"`
 	AllowModules []string `yaml:"allow_modules,omitempty"`
+	// Consumers are the module-qualified services that declare a dependency
+	// on this endpoint, from every composed service's service-dependencies.
+	// Empty means no declared edge reaches it, which is visible here rather
+	// than found by an audit.
+	Consumers []string `yaml:"consumers,omitempty"`
 }
 
 // CellIngress is one ingress route into an endpoint.
@@ -138,10 +160,13 @@ type CellIngress struct {
 	Hosts    []string `yaml:"hosts"`
 }
 
-// CellEgress is the external reach a managed service grants.
+// CellEgress is the external reach one service is declared to need: the hosts
+// the environment declares it dials (a declaration, never derived), and the
+// CIDRs of a managed service that replaces it.
 type CellEgress struct {
 	Service string   `yaml:"service"`
-	CIDRs   []string `yaml:"cidrs"`
+	Hosts   []string `yaml:"hosts,omitempty"`
+	CIDRs   []string `yaml:"cidrs,omitempty"`
 }
 
 // CellResult reports what a cell render wrote and what it left out.
@@ -181,6 +206,10 @@ func RenderCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 	if env.Host != nil {
 		cell.Coordinate, cell.Component = env.Host.Coordinate, env.Host.Component
 	}
+	consumers, err := endpointConsumers(ctx, workspace)
+	if err != nil {
+		return CellResult{}, err
+	}
 	result := CellResult{}
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -198,7 +227,7 @@ func RenderCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 			result.Skipped = append(result.Skipped, inventory.Module)
 			continue
 		}
-		namespace, namespaceErr := cellNamespace(ctx, workspace, env, tree, &inventory)
+		namespace, namespaceErr := cellNamespace(ctx, workspace, env, tree, &inventory, consumers)
 		if namespaceErr != nil {
 			return CellResult{}, namespaceErr
 		}
@@ -223,7 +252,7 @@ func RenderCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 }
 
 // cellNamespace derives one module's namespace entry from its rendered tree.
-func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, tree string, inventory *Inventory) (CellNamespace, error) {
+func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, tree string, inventory *Inventory, consumers map[string][]string) (CellNamespace, error) {
 	namespace := CellNamespace{Name: inventory.Namespace, Module: inventory.Module}
 	var release *CellRelease
 	if inventory.Package != nil {
@@ -270,6 +299,7 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 				workload.Endpoints = append(workload.Endpoints, CellEndpoint{
 					Name: endpoint.Name, API: endpoint.API, Port: ports[endpoint.Name],
 					Visibility: endpoint.Visibility, AllowModules: append([]string(nil), endpoint.AllowModules...),
+					Consumers: consumers[workload.Service+"/"+endpoint.Name],
 				})
 			}
 			sort.Slice(workload.Endpoints, func(i, j int) bool { return workload.Endpoints[i].Name < workload.Endpoints[j].Name })
@@ -287,13 +317,14 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 		if unit.Kind != UnitKindService {
 			continue
 		}
-		managed, declared := env.ManagedService(inventory.Module, unit.Name)
-		if !declared || len(managed.EgressCIDRs) == 0 {
+		egress := CellEgress{Service: resources.ServiceUnique(inventory.Module, unit.Name), Hosts: env.EgressHosts(inventory.Module, unit.Name)}
+		if managed, declared := env.ManagedService(inventory.Module, unit.Name); declared {
+			egress.CIDRs = append([]string(nil), managed.EgressCIDRs...)
+		}
+		if len(egress.Hosts) == 0 && len(egress.CIDRs) == 0 {
 			continue
 		}
-		namespace.Egress = append(namespace.Egress, CellEgress{
-			Service: resources.ServiceUnique(inventory.Module, unit.Name), CIDRs: append([]string(nil), managed.EgressCIDRs...),
-		})
+		namespace.Egress = append(namespace.Egress, egress)
 	}
 	sort.Slice(namespace.Egress, func(i, j int) bool { return namespace.Egress[i].Service < namespace.Egress[j].Service })
 	return namespace, nil
@@ -311,7 +342,7 @@ func renderedWorkloads(unitDir, environment string) ([]CellWorkload, error) {
 	var workloads []CellWorkload
 	for _, item := range manifests {
 		switch item.kind {
-		case kindDeployment, kindStatefulSet, kindDaemonSet:
+		case kindDeployment, kindStatefulSet, kindDaemonSet, kindJob, kindCronJob:
 		default:
 			continue
 		}
@@ -319,7 +350,7 @@ func renderedWorkloads(unitDir, environment string) ([]CellWorkload, error) {
 		if !ok {
 			continue
 		}
-		workload := CellWorkload{Name: metadataString(item.value, "name")}
+		workload := CellWorkload{Name: metadataString(item.value, "name"), Kind: item.kind, Selector: podSelector(item)}
 		workload.ServiceAccount, _ = spec["serviceAccountName"].(string)
 		if workload.ServiceAccount == "" {
 			workload.ServiceAccount = "default"
@@ -398,4 +429,82 @@ func overlayManifests(overlay string) ([]manifest, error) {
 		manifests = append(manifests, decoded...)
 	}
 	return manifests, nil
+}
+
+// podSelector is the exact label set that selects a workload's pods: the
+// selector a Deployment, StatefulSet or DaemonSet declares, or the pod
+// template's own labels for a Job or CronJob, which carry no selector of their
+// own. Always non-nil: an empty selector is a declaration that the workload's
+// pods carry no label, which a policy must see rather than assume "app".
+func podSelector(item manifest) map[string]string {
+	selector := map[string]string{}
+	var labels map[string]any
+	switch item.kind {
+	case kindDeployment, kindStatefulSet, kindDaemonSet:
+		labels = mapField(mapField(mapField(item.value, "spec"), "selector"), "matchLabels")
+	default:
+		labels = mapField(mapField(podTemplate(item), "metadata"), "labels")
+	}
+	for key, value := range labels {
+		selector[key] = fmt.Sprint(value)
+	}
+	return selector
+}
+
+// endpointConsumers indexes, for every endpoint a composed service declares,
+// the module-qualified services that declare a dependency on it: a
+// service-dependencies entry naming endpoints reaches those, one naming none
+// reaches every endpoint of the service it names. A dependency the workspace
+// cannot resolve to a service is not an edge and is skipped.
+func endpointConsumers(ctx context.Context, workspace *resources.Workspace) (map[string][]string, error) {
+	consumers := map[string][]string{}
+	for _, reference := range workspace.Modules {
+		module, err := workspace.LoadModuleFromReference(ctx, reference)
+		if err != nil {
+			return nil, fmt.Errorf("load module %s to index its dependencies: %w", reference.Name, err)
+		}
+		for _, serviceReference := range module.ServiceReferences {
+			service, err := module.LoadServiceFromName(ctx, serviceReference.Name)
+			if err != nil {
+				return nil, fmt.Errorf("load service %s/%s to index its dependencies: %w", module.Name, serviceReference.Name, err)
+			}
+			consumer := resources.ServiceUnique(module.Name, service.Name)
+			for _, dependency := range service.ServiceDependencies {
+				if dependency == nil || dependency.Name == "" {
+					continue
+				}
+				targetModule := dependency.Module
+				if targetModule == "" {
+					targetModule = module.Name
+				}
+				target, err := workspace.LoadService(ctx, &resources.ServiceWithModule{Name: dependency.Name, Module: targetModule})
+				if err != nil {
+					continue
+				}
+				var names []string
+				for _, endpoint := range dependency.Endpoints {
+					if endpoint != nil && endpoint.Name != "" {
+						names = append(names, endpoint.Name)
+					}
+				}
+				if len(names) == 0 {
+					for _, endpoint := range target.Endpoints {
+						if endpoint != nil {
+							names = append(names, endpoint.Name)
+						}
+					}
+				}
+				for _, name := range names {
+					key := resources.ServiceUnique(targetModule, target.Name) + "/" + name
+					if !slices.Contains(consumers[key], consumer) {
+						consumers[key] = append(consumers[key], consumer)
+					}
+				}
+			}
+		}
+	}
+	for key := range consumers {
+		sort.Strings(consumers[key])
+	}
+	return consumers, nil
 }

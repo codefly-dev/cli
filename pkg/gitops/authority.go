@@ -192,20 +192,9 @@ func authorityDocument(owned string, opts *RenderOptions, instance *AuthorityIns
 	if err != nil {
 		return nil, err
 	}
-	workloads, err := presenceWorkloads(owned, opts, instance.Unit)
+	build, err := servingBuild(owned, opts, instance.Unit)
 	if err != nil {
 		return nil, fmt.Errorf("authority of %s/%s: %w", instance.Module, instance.Service, err)
-	}
-	builds := map[solutionhost.ImageDigest]struct{}{}
-	for index := range workloads {
-		builds[workloads[index].Image.Digest] = struct{}{}
-	}
-	if len(builds) != 1 {
-		return nil, fmt.Errorf("authority of %s/%s: its unit runs %d distinct builds, and an authority document approves exactly one", instance.Module, instance.Service, len(builds))
-	}
-	var build solutionhost.ImageDigest
-	for digest := range builds {
-		build = digest
 	}
 	document := &solutionhost.AuthorityDocument{
 		Schema:           solutionhost.SchemaAuthorityV1,
@@ -331,4 +320,39 @@ func deliveredAuthorityPath(declared []DeclaredAuthority) string {
 		return ""
 	}
 	return solutionAuthorityDir
+}
+
+// servingBuild is the one build an authority document approves for a unit: the
+// image of the authenticating container of the unit's serving workloads — its
+// Deployments, StatefulSets and DaemonSets. A bootstrap Job of the same unit
+// runs its own image and is declared in the presence document like every pod
+// the host runs, but it is not what mints under the module's principal, so it
+// does not decide the approved build. A unit whose serving workloads run two
+// distinct builds cannot be approved by one document and is refused.
+func servingBuild(owned string, opts *RenderOptions, unit SolutionArtifactUnit) (solutionhost.ImageDigest, error) {
+	rendered, err := renderedWorkloads(filepath.Join(owned, filepath.FromSlash(unit.Path)), opts.Environment)
+	if err != nil {
+		return "", err
+	}
+	builds := map[solutionhost.ImageDigest]struct{}{}
+	for index := range rendered {
+		workload := &rendered[index]
+		switch workload.Kind {
+		case kindDeployment, kindStatefulSet, kindDaemonSet:
+		default:
+			continue
+		}
+		authenticating, _, err := authenticatingContainer(unit.Name, workload)
+		if err != nil {
+			return "", fmt.Errorf("workload %s: %w", workload.Name, err)
+		}
+		builds[solutionhost.ImageDigest(authenticating.Image.Digest)] = struct{}{}
+	}
+	if len(builds) != 1 {
+		return "", fmt.Errorf("its unit runs %d distinct serving builds, and an authority document approves exactly one", len(builds))
+	}
+	for digest := range builds {
+		return digest, nil
+	}
+	return "", nil
 }

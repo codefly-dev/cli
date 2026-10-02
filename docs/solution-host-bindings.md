@@ -57,7 +57,25 @@ environments:
 Nothing here is derived. A derived coordinate is a guess a host silently
 refuses at reconcile time; an unlisted ownership domain is refused by the host
 with the domain named; a wrong envelope revision is refused at apply with both
-revisions named. `delivery` names the host's delivery API the way
+revisions named. `trust_domain` is the mesh's — `cluster.local` for a mesh
+that derives a workload's identity from (trust domain, namespace,
+ServiceAccount) — and the platform's loader refuses a SPIFFE ID it does not
+derive the same way, so a document naming any other value gets an identity the
+mesh never presents.
+
+The environment also declares the external reach of each service, keyed by
+module-qualified identity like `managed-services`:
+
+```yaml
+    egress:
+      platform/accounts: {hosts: [identity.example.test, api.github.com]}
+```
+
+A declaration the composition states and the render carries into the cell
+file, never derived: the module author knows a service reaches an identity
+provider or a code host, only the composition knows which, and a host left out
+here is a workload that cannot reach it. The render validates a bare host name
+and never parses one out of configuration. `delivery` names the host's delivery API the way
 `api.consumes` names a producing endpoint — by module, service and endpoint —
 and the render resolves it to the in-cluster address the delivery Jobs POST to
 (`<scheme>://<service>.<namespace>.svc.cluster.local:<port>`, the port being
@@ -98,7 +116,16 @@ principal the environment declares for the service, and the SPIFFE ID
 other container, init containers included, as one that must never be accepted
 as the workload. A unit with several containers and none named after the
 service is refused: "whichever one presented the token" is how a sidecar ends
-up holding a workload's authority.
+up holding a workload's authority. Every pod-producing object of a unit is a
+workload — the bootstrap Jobs and CronJobs included, which run their own
+images — so the host's approved set covers every pod it will see.
+
+Two approved builds of one ServiceAccount share one SVID: a mesh derives the
+identity from the account, not the image. Binding identity to the build is
+therefore not something the SVID does; the host does it by comparing the pod's
+resolved image to the approved build, and the platform by refusing a pod whose
+image is not approved at admission. The identity a document names is the
+account's.
 
 ## Authority
 
@@ -124,8 +151,11 @@ The derivation:
 
 - **authority ID** `<binding-id>:<service>`;
 - **approved build** the image digest of the service's authenticating
-  container, read off the presence workloads of the same render — a unit that
-  runs two distinct builds cannot be approved by one document and is refused;
+  container in its serving workloads (Deployments, StatefulSets, DaemonSets —
+  a bootstrap Job's image is declared in the presence document but does not
+  mint under the principal), read off the same render — a unit whose serving
+  workloads run two distinct builds cannot be approved by one document and is
+  refused;
 - **one unit of authority per (binding, operation)**, under the ID
   `<principal>:<binding>:<operation>`, with the operation's ceiling as a sorted,
   comma-joined list of `<resource kind>:<action>` and the binding's revision
@@ -230,15 +260,28 @@ operator.
 ## The cell file
 
 `deployments/cells/<environment>/cell.yaml` (schema `codefly/cell/v1`) is the
-inventory of the cell: one namespace per module rendered for the environment,
-each workload with its account, SPIFFE ID, pinned containers, artifact and
-release, the endpoints it serves with their ports, the ingress into them, and
-the egress a managed service grants. The platform derives its mesh policy from
-it rather than from a hand-written set. It is regenerated whole on every render
-and carries no generation, no domain and no tombstone — a workload absent from
-it is not delivered, which is the opposite of the presence document's rule.
-Publish copies it into the delivery repository at
-`<gitops path>/cells/<environment>/cell.yaml`, outside every module path.
+inventory of the cell, from which the platform derives its mesh policy rather
+than from a hand-written set. One namespace per module rendered for the
+environment; under it every pod-producing workload of every unit — Deployment,
+StatefulSet, DaemonSet, Job, CronJob — with its kind, the exact label set that
+**selects its pods** (the selector of a Deployment, the template labels of a
+Job: a bootstrap Job carries no `app` label, and a policy assuming one selects
+its pods with nothing), the account it runs as and its SPIFFE ID, its pinned
+containers and init containers, the artifact and release it comes from, the
+endpoints it serves with their **container** ports (the port a connection
+lands on after Service resolution, as the service declares and the render
+verifies), their visibility and `allow_modules`, and their **consumers** —
+every composed service whose `service-dependencies` reaches the endpoint, so a
+port no declared edge reaches is visible in the file rather than found by an
+audit. Per namespace, the egress each service is declared to need: the hosts
+from the environment's `egress` declaration and the CIDRs of a managed service.
+
+It is regenerated whole on every render and carries no generation, no domain
+and no tombstone — a workload absent from it is not delivered, which is the
+opposite of the presence document's rule. Publish copies it into the delivery
+repository at `<gitops path>/cells/<environment>/cell.yaml`, outside every
+module path and matched by no Argo overlay, where the platform reads it at
+build time.
 
 ## Workspace configuration groups a render bakes in
 
@@ -253,11 +296,20 @@ refuse whichever consumer publishes first.
 
 ## CI wiring
 
-The composition's deploy workflow renders, then publishes under its own
-identity. It needs `permissions: id-token: write`, and nothing else: no key, no
-secret.
+The signing identity is the composition repository's **own release workflow,
+running on a tag**. The host's allowlist pins three literals and one pattern —
+the OIDC issuer, the repository, the workflow path (`.github/workflows/release.yml`)
+and the ref (`refs/tags/v*`) — and refuses everything else: a branch build, a
+dispatch off a branch, another workflow file in the same repository, and a
+reusable workflow in another repository (whose certificate names the called
+workflow, not the caller). So the publish step lives in that file, needs
+`id-token: write` and nothing else, and no key or secret exists anywhere:
 
 ```yaml
+# .github/workflows/release.yml of the composition repository
+on:
+  push:
+    tags: ["v*"]
 jobs:
   deliver:
     runs-on: ubuntu-latest
@@ -270,8 +322,8 @@ jobs:
       - run: codefly deploy gitops publish --env production
 ```
 
-The host's identity allowlist pins this workflow: the repository, the workflow
-path and the ref pattern it may sign from, under the GitHub Actions issuer.
+A publish from any other identity produces documents the host refuses, by the
+same check that refuses any unlisted identity.
 
 ## Local runs
 
