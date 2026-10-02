@@ -179,6 +179,7 @@ func TestCellFileInventoriesEveryRenderedWorkload(t *testing.T) {
 	require.Equal(t, CellSchemaV1, cell.Schema)
 	require.Equal(t, "example/staging/region-a", cell.Coordinate)
 	require.Equal(t, "platform-host", cell.Component)
+	require.Equal(t, "cluster.example", cell.TrustDomain, "the trust domain is carried at the top level so a reader can re-derive every spiffe_id and refuse a mismatch")
 	require.Len(t, cell.Namespaces, 2)
 	require.Equal(t, "acme-billing", cell.Namespaces[0].Name)
 	shop := cell.Namespaces[1]
@@ -190,11 +191,14 @@ func TestCellFileInventoriesEveryRenderedWorkload(t *testing.T) {
 	require.Equal(t, map[string]string{"app.kubernetes.io/name": "api"}, api.Selector)
 	require.Equal(t, "shop/api", api.Service)
 	require.Equal(t, "api", api.ServiceAccount)
+	require.Equal(t, "api", api.Authenticating, "the container named after the service authenticates; the proxy is in the closed set that never does")
+	require.False(t, api.Verifier, "the host's delivery API is another module's service")
 	migrate := shop.Workloads[1]
 	require.Equal(t, "api-migrate", migrate.Name)
 	require.Equal(t, kindJob, migrate.Kind)
 	require.Equal(t, map[string]string{"codefly.dev/bootstrap-service": "api"}, migrate.Selector, "a Job's pods are selected by its template labels, never an assumed app label")
 	require.Equal(t, "sha256:"+strings.Repeat("d", 64), migrate.Containers[0].Image.Digest)
+	require.Equal(t, "api", migrate.Authenticating, "a single container is the authenticating one")
 	require.Equal(t, "spiffe://cluster.example/ns/acme-shop/sa/api", api.SPIFFEID)
 	require.Equal(t, []CellContainer{
 		{Name: "api", Image: CellImage{Repository: "registry.example.test/acme/api", Digest: "sha256:" + strings.Repeat("a", 64)}},
@@ -208,7 +212,8 @@ func TestCellFileInventoriesEveryRenderedWorkload(t *testing.T) {
 		{Name: "http", API: "http", Port: 8080, Visibility: "public"},
 	}, api.Endpoints, "the grpc endpoint has a declared consumer; the http endpoint has none, visibly")
 	require.Equal(t, []CellIngress{{Endpoint: "http", Hosts: []string{"shop.example.test"}}}, api.Ingress)
-	require.Equal(t, []CellEgress{{Service: "shop/api", Hosts: []string{"api.github.com", "identity.example.test"}}}, shop.Egress, "egress hosts are the environment's declaration, carried not derived")
+	require.Equal(t, []CellEgress{{Service: "shop/api", Hosts: []CellEgressHost{{Name: "api.github.com", Port: 443}, {Name: "identity.example.test", Port: 443}}}}, shop.Egress,
+		"egress hosts are the environment's declaration, carried not derived, each with the port it is reached on made explicit")
 	require.Equal(t, []CellEgress{{Service: "billing/ledger", CIDRs: []string{"203.0.113.0/24"}}}, cell.Namespaces[0].Egress)
 
 	// The file carries no generation, no domain and no tombstone: it is an
@@ -222,6 +227,81 @@ func TestCellFileInventoriesEveryRenderedWorkload(t *testing.T) {
 	same, err := os.ReadFile(again.Path)
 	require.NoError(t, err)
 	require.Equal(t, string(data), string(same))
+}
+
+// TestCellFileMarksTheVerifierAndCarriesTheGrants pins the fields the
+// platform derives policy from beyond the mesh edges: the serving workload of
+// the service the host block names as the delivery API is the verifier (its
+// bootstrap Job is not), the cell bindings and cloud identity the environment
+// declares per service ride on every workload of that service, and an egress
+// host declared on another port keeps it.
+func TestCellFileMarksTheVerifierAndCarriesTheGrants(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	manifest, err := os.ReadFile(filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName))
+	require.NoError(t, err)
+	patched := strings.Replace(string(manifest), "delivery: platform/accounts/rest", "delivery: shop/api/http", 1)
+	patched = strings.Replace(patched, "    egress:\n      shop/api: {hosts: [identity.example.test, api.github.com]}\n",
+		"    egress:\n      shop/api: {hosts: [identity.example.test, {name: smtp.example.test, port: 587}]}\n    cell:\n      shop/api: {bindings: [vault, audit], cloud-identity: true}\n", 1)
+	require.NotEqual(t, string(manifest), patched)
+	require.NoError(t, os.WriteFile(filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName), []byte(patched), 0o644))
+	workspace, err = resources.LoadWorkspaceFromDir(context.Background(), workspace.Dir())
+	require.NoError(t, err)
+	env := selectedEnvironment(t, workspace, "staging")
+	renderCellTree(t, workspace, "shop", "api", "acme-shop", nil)
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", nil)
+
+	result, err := RenderCell(context.Background(), workspace, env)
+	require.NoError(t, err)
+	data, err := os.ReadFile(result.Path)
+	require.NoError(t, err)
+	var cell CellFile
+	require.NoError(t, yaml.Unmarshal(data, &cell))
+	shop := cell.Namespaces[1]
+	require.Equal(t, "acme-shop", shop.Name)
+	api, migrate := shop.Workloads[0], shop.Workloads[1]
+	require.Equal(t, "api", api.Name)
+	require.True(t, api.Verifier, "the serving workload of the delivery API's service verifies delivered documents")
+	require.Equal(t, "api-migrate", migrate.Name)
+	require.False(t, migrate.Verifier, "a bootstrap Job of that service runs its own image and verifies nothing")
+	for _, workload := range []CellWorkload{api, migrate} {
+		require.Equal(t, []string{"audit", "vault"}, workload.Bindings, "the cell bindings the service declares ride on every workload of it, sorted")
+		require.True(t, workload.CloudIdentity)
+	}
+	ledger := cell.Namespaces[0].Workloads[0]
+	require.False(t, ledger.Verifier)
+	require.Nil(t, ledger.Bindings)
+	require.False(t, ledger.CloudIdentity)
+	require.Equal(t, []CellEgressHost{{Name: "identity.example.test", Port: 443}, {Name: "smtp.example.test", Port: 587}}, shop.Egress[0].Hosts)
+	// The YAML spells every one of them, so a reader never infers.
+	for _, want := range []string{"trust_domain: cluster.example", "verifier: true", "authenticating: api", "cloud_identity: true", "- vault", "port: 587"} {
+		require.Contains(t, string(data), want)
+	}
+}
+
+// TestCellFileRefusesAWorkloadWhoseAuthenticatingContainerCannotBeTold: several
+// containers and none named after the service is the sidecar ambiguity, named
+// in the refusal rather than resolved by a guess.
+func TestCellFileRefusesAWorkloadWhoseAuthenticatingContainerCannotBeTold(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
+		Destination: moduleRenderDestination(workspace, "shop"),
+		Module:      "shop", Environment: "staging", Namespace: "acme-shop", AppProject: "acme-staging",
+		Promotable: true, OwnedPath: "deployments/modules/shop",
+		Units:   promotableServiceGraph("shop", []string{"api"}),
+		Package: &InventoryPackage{ID: "acme/shop", Version: "1.2.0"},
+	}, func(_ context.Context, root string) error {
+		overlay := filepath.Join(root, "services", "api", "overlays", "staging")
+		if err := os.MkdirAll(overlay, 0o755); err != nil {
+			return err
+		}
+		ambiguous := strings.Replace(cellDeployment, "        - name: api\n          image: registry.example.test/acme/api:1.2.0", "        - name: web\n          image: registry.example.test/acme/api:1.2.0", 1)
+		return os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(ambiguous), 0o644)
+	})
+	require.NoError(t, err)
+	_, err = RenderCell(context.Background(), workspace, env)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "none of its containers (web, proxy) is named \"api\"")
 }
 
 func TestCellFileSkipsTreesRenderedForAnotherEnvironment(t *testing.T) {

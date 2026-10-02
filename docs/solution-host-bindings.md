@@ -64,18 +64,32 @@ derive the same way, so a document naming any other value gets an identity the
 mesh never presents.
 
 The environment also declares the external reach of each service, keyed by
-module-qualified identity like `managed-services`:
+module-qualified identity like `managed-services`, and what the cell must
+grant it beyond the mesh edges the render derives:
 
 ```yaml
     egress:
-      platform/accounts: {hosts: [identity.example.test, api.github.com]}
+      platform/accounts: {hosts: [identity.example.test, api.github.com, {name: smtp.example.test, port: 587}]}
+    cell:
+      platform/accounts: {bindings: [vault, audit]}
+      platform/model: {bindings: [model_gateway], cloud-identity: true}
 ```
 
-A declaration the composition states and the render carries into the cell
-file, never derived: the module author knows a service reaches an identity
-provider or a code host, only the composition knows which, and a host left out
-here is a workload that cannot reach it. The render validates a bare host name
-and never parses one out of configuration. `delivery` names the host's delivery API the way
+Both are declarations the composition states and the render carries into the
+cell file, never derived. Egress: the module author knows a service reaches an
+identity provider or a code host, only the composition knows which, and a host
+left out here is a workload that cannot reach it. A bare host name means port
+443; a host reached on another port says so, because the platform allows a
+(host, port) and a port it cannot see is a denial that looks like an
+application timeout. The render validates a bare host name and never parses
+one out of configuration. `cell`: the cell-provided resources a service binds —
+a vault, an object store, an audit sink; the vocabulary is the cell's and its
+loader refuses a name it does not provide — and whether the workload mints a
+cloud credential from the node's metadata server, a path no egress waypoint
+carries. Only the composition knows which of its workloads holds a binding;
+the cell provisions the resource and derives the grant, so a binding missing
+here is a workload refused at the resource rather than one granted by guess.
+`delivery` names the host's delivery API the way
 `api.consumes` names a producing endpoint — by module, service and endpoint —
 and the render resolves it to the in-cluster address the delivery Jobs POST to
 (`<scheme>://<service>.<namespace>.svc.cluster.local:<port>`, the port being
@@ -291,20 +305,35 @@ operator.
 
 `deployments/cells/<environment>/cell.yaml` (schema `codefly/cell/v1`) is the
 inventory of the cell, from which the platform derives its mesh policy rather
-than from a hand-written set. One namespace per module rendered for the
-environment; under it every pod-producing workload of every unit — Deployment,
-StatefulSet, DaemonSet, Job, CronJob — with its kind, the exact label set that
-**selects its pods** (the selector of a Deployment, the template labels of a
-Job: a bootstrap Job carries no `app` label, and a policy assuming one selects
-its pods with nothing), the account it runs as and its SPIFFE ID, its pinned
-containers and init containers, the artifact and release it comes from, the
-endpoints it serves with their **container** ports (the port a connection
-lands on after Service resolution, as the service declares and the render
-verifies), their visibility and `allow_modules`, and their **consumers** —
-every composed service whose `service-dependencies` reaches the endpoint, so a
-port no declared edge reaches is visible in the file rather than found by an
-audit. Per namespace, the egress each service is declared to need: the hosts
-from the environment's `egress` declaration and the CIDRs of a managed service.
+than from a hand-written set. At the top, the host's coordinate, component and
+`trust_domain` — carried as its own field as well as inside every SPIFFE ID,
+so the platform re-derives each identity and refuses a mismatch instead of
+parsing the domain out of the string it is checking. One namespace per module
+rendered for the environment; under it every pod-producing workload of every
+unit — Deployment, StatefulSet, DaemonSet, Job, CronJob — with its kind, the
+exact label set that **selects its pods** (the selector of a Deployment, the
+template labels of a Job: a bootstrap Job carries no `app` label, and a policy
+assuming one selects its pods with nothing), the account it runs as and its
+SPIFFE ID, the **authenticating** container (the one named after the service,
+or the only one; several with none so named is refused, naming them — the
+same designation the presence document carries, so an admission policy
+compares that container's image to the approved build and treats every other
+container as a closed set that never authenticates), its pinned containers
+and init containers, the artifact and release it comes from, the endpoints it
+serves with their **container** ports (the port a connection lands on after
+Service resolution, as the service declares and the render verifies), their
+visibility and `allow_modules`, and their **consumers** — every composed
+service whose `service-dependencies` reaches the endpoint, so a port no
+declared edge reaches is visible in the file rather than found by an audit.
+Three more fields the platform derives grants from: `verifier: true` on the
+serving workloads of the service `host.delivery` names (the one that verifies
+delivered documents, from which the platform derives its token-review and
+pod-read RBAC and the carrier's allow into it — a bootstrap Job of that
+service is not marked), and the `bindings` and `cloud_identity` the
+environment's `cell` declaration states for the service. Per namespace, the
+egress each service is declared to need: the hosts from the environment's
+`egress` declaration, each as `{name, port}` with the port always explicit,
+and the CIDRs of a managed service.
 
 It is regenerated whole on every render and carries no generation, no domain
 and no tombstone — a workload absent from it is not delivered, which is the
