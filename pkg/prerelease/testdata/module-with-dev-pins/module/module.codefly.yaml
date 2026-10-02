@@ -1,5 +1,5 @@
 kind: module
-name: saas-starter
+name: starter
 service-entry: frontend
 services:
     - name: accounts

@@ -1,4 +1,4 @@
-name: saas-starter-dev
+name: starter-dev
 layout: modules
 modules:
-    - name: saas-starter
+    - name: starter

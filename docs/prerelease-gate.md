@@ -4,29 +4,30 @@
 never contain one.** `codefly ci prerelease` is the check that enforces it, and this page is
 why it exists, what it refuses, and how each repository wires it in.
 
-The rule was a convention before it was a gate. It was written down in
-`obin-ai/platform-obin`'s `docs/release.md` and violated by two of six released modules anyway
-— not through carelessness, but because the person releasing a module has no reason to read a
-downstream composition's release document.
+The rule was a convention before it was a gate. It was written down in a composition's release
+document and violated anyway — not through carelessness, but because the person releasing a
+module has no reason to read a downstream consumer's release document.
+
+Nothing on this page names a repository that uses the CLI, and nothing in the implementation
+does either. The gate is told what to judge by the repository in front of it.
 
 ## What it cost, measured
 
-On 2026-09-30 six repositories were released and five module tags cut. Two of those tags turned
-out to contain prerelease agent pins:
+In one release round, six repositories were released and five module tags cut. Two of those tags
+turned out to contain prerelease agent pins — five service pins across three agents:
 
-| released tag | prerelease pin inside it |
-|---|---|
-| `codefly-dev/module-saas-starter` **v0.0.85** | `accounts`, `auth-gateway`, `telemetry` → `go-grpc = 0.1.48-dev.e87db5e08865` |
-| | `frontend`, `marketing` → `nextjs = 0.0.159-dev.1ed5001fd8b4` |
-| `obin-ai/module-runtime` **v0.1.5** | `runtime/store` → `postgres = 0.0.139-dev.9785d12f3700` |
+| agent | pinned at | released as |
+|---|---|---|
+| `codefly.dev/go-grpc` | `0.1.48-dev.e87db5e08865` | v0.1.50 |
+| `codefly.dev/nextjs` | `0.0.159-dev.1ed5001fd8b4` | v0.0.162 |
+| `codefly.dev/postgres` | `0.0.139-dev.9785d12f3700` | v0.0.141 |
 
-All three agents had already been released and verified — **service-go-grpc v0.1.50**,
-**service-nextjs v0.0.162**, **service-postgres v0.0.141** — so the pins were stale as well as
-unreleased.
+Every one of those agents had already been released and verified, so the pins were stale as well
+as unreleased.
 
-The consequence was not local. `platform-obin`'s release step 2 requires dropping every
+The consequence was not local. A composition downstream of those modules requires dropping every
 `agent-overrides` DEV PIN before it tags, on the stated basis that *"a module released after the
-agent fix pins the released agent itself"*. Because these modules did not, the composition could
+agent fix pins the released agent itself"*. Because those modules did not, the composition could
 not drop its overrides, and the fix was two more module release rounds. Each pin cost one line at
 the pull request that wrote it.
 
@@ -56,11 +57,29 @@ and needs no exception written into it.
 |---|---|---|
 | every `*.codefly.yaml` | every `version:` key, at any depth — a service's `agent.version`, a workspace's `modules[].version` and `solutions[].version`, a module's or library's own version | yes |
 | `workspace.codefly.yaml` | the top-level `agent-overrides` block, whose values are versions under an agent identity | only unlabelled, or under `--release` |
-| `go.mod` | first-party requires (`github.com/codefly-dev/`, `github.com/obin-ai/`) | reported; refused with `--go-modules` |
+| `go.mod` | requires under an owner this repository itself publishes under | reported; refused with `--go-modules` |
 
 The YAML scan walks for the `version:` **key** rather than reading a known schema, so a new
 versioned field is covered the day it is added instead of the day somebody notices the gate
 missed it.
+
+### Which owners count as first-party
+
+Derived from the repository, never carried by the CLI: the owner prefix of every `go.mod`'s own
+`module` path.
+
+```text
+module github.com/acme/widgets/services/api/code    ->    github.com/acme/
+```
+
+A run prints the owners it derived, and `--format json` reports them as `first_party_owners`. A
+repository whose siblings are published under an owner it does not itself publish under names
+them with `--first-party`.
+
+This replaced a hardcoded list of two GitHub organisations that shipped in v0.1.172. That was
+wrong in kind and not only in content: a generic tool cannot name the products that happen to use
+it, such a list is stale the moment somebody adds an organisation, and every repository that was
+not one of those two silently got a narrower check than the ones the gate was written against.
 
 `testdata/` trees are skipped — a fixture's job can be to carry a bad pin, and this repository
 tracks 138 `*.codefly.yaml` and `go.mod` files under `testdata` against one real `go.mod`.
@@ -69,10 +88,9 @@ tracks 138 `*.codefly.yaml` and `go.mod` files under `testdata` against one real
 ## The one exception, and the two scopes
 
 `agent-overrides` is the sanctioned prerelease carrier. `codefly publish dev` publishes an agent
-build for iteration, `codefly update workspace --agent-override <publisher>/<name>=<version>`
-writes it into the workspace, and
-[`platform-obin/docs/release.md`](https://github.com/obin-ai/platform-obin/blob/main/docs/release.md)
-documents that loop. A blanket "no `-` anywhere" would break it.
+build for iteration and `codefly update workspace --agent-override <publisher>/<name>=<version>`
+writes it into the workspace; a composition's release document describes that loop and requires
+the override be gone before it tags. A blanket "no `-` anywhere" would break it.
 
 So the gate has two scopes:
 
@@ -82,7 +100,7 @@ So the gate has two scopes:
 | release | `codefly ci prerelease --release` | refused, however well labelled | refused |
 
 The release scope is what guarantees the property that actually broke. It is the enforcement of
-`release.md` step 2 — "drop every dev override" — which nothing enforced before.
+the "drop every dev override" step, which a release document can ask for but cannot enforce.
 
 A label is a comment on the entry carrying an issue reference (`codefly-dev/service-go#117`, or
 a bare `#117`). The condition for removal is prose no gate can check; the issue reference is the
@@ -101,9 +119,9 @@ agent-overrides:
 
 That was the stricter alternative, and it is the wrong trade for two reasons.
 
-A dev agent build has to reach a **shared environment**, not just a laptop: `platform-obin`
-deploys dev renders to staging, and a staging render reads committed config. `codefly.local.yaml`
-is machine-local and gitignored, so moving the override there removes the ability to dogfood a dev
+A dev agent build has to reach a **shared environment**, not just a laptop: a composition deploys
+dev renders to staging, and a staging render reads committed config. `codefly.local.yaml` is
+machine-local and gitignored, so moving the override there removes the ability to dogfood a dev
 agent anywhere but one developer's machine.
 
 And `codefly.local.yaml` carries only `resolve:` — module locations. It has no agent-override
@@ -115,17 +133,11 @@ The gate never looks there.
 
 ### Why `go.mod` is reported rather than refused
 
-First-party Go pseudo-versions are pervasive in trees whose agent pins are perfectly clean.
-Measured on the four releases that were verified clean:
+First-party Go pseudo-versions are pervasive in trees whose agent pins are perfectly clean. Of
+four module releases verified to have correct agent pins, three carried them — **27, 9 and 3**
+respectively, and the fourth none.
 
-| release | first-party `go.mod` pseudo-versions |
-|---|---|
-| `obin-ai/module-robin` v0.1.7 | 27 |
-| `obin-ai/module-document-store` v0.0.24 | 9 |
-| `obin-ai/module-annotations` v0.2.9 | 3 |
-| `obin-ai/module-model-gateway` v0.1.12 | 0 |
-
-Refusing them by default would fail three of the gate's own clean fixtures, and many arrive as
+Refusing them by default would fail three of those four, and many arrive as
 `// indirect` entries that no change in the repository can move — they shift only when the
 dependency that requires them releases. A gate that fails every repository in the fleet on the day
 it lands is a gate that gets switched off in a week, so they are surfaced in the report and a
@@ -196,5 +208,5 @@ prerelease is one somebody has to remove.
   override, `codefly update service --agent-version` writes a service pin
 - [`codefly doctor workspace`](commands.md#codefly-doctor-workspace) — lists every override in
   force (`agent_override_active`) and every service running a dev build (`agent_dev_build`)
-- `obin-ai/handbook#179` — the operations page that says which command owns which operation. This
-  is its enforcement half: the doc tells you, the gate stops you.
+- The fleet operations page that says which command owns which operation. This is its enforcement
+  half: the doc tells you, the gate stops you.

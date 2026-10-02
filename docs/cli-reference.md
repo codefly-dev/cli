@@ -948,8 +948,9 @@ What is read, in files git tracks and nothing else:
                           version
   workspace.codefly.yaml  the top-level agent-overrides block, whose values are
                           versions under an agent identity
-  go.mod                  first-party requires (codefly-dev/*, obin-ai/*),
-                          reported but not refused unless --go-modules
+  go.mod                  requires under an owner this repository itself
+                          publishes under, derived from its own go.mod module
+                          paths; reported but not refused unless --go-modules
 
 testdata/ trees are skipped, because a fixture's job can be to carry a bad pin;
 --include-testdata reads them.
@@ -973,7 +974,7 @@ Flags:
 
 ```
       --dir string            Repository directory to scan (default: current directory)
-      --first-party strings   Go module path prefixes treated as first-party (default [github.com/codefly-dev/,github.com/obin-ai/])
+      --first-party strings   Go module path prefixes treated as first-party (default: the owners this repository's own go.mod module paths publish under)
       --format string         Report format: text or json (default "text")
       --go-modules            Also refuse first-party Go pseudo-versions in go.mod, instead of only reporting them
       --include-testdata      Also scan testdata/ trees, whose fixtures often carry a bad pin on purpose

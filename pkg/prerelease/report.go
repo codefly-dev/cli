@@ -16,6 +16,7 @@ type Report struct {
 	Dir           string    `json:"dir"`
 	FilesScanned  int       `json:"files_scanned"`
 	Tracked       bool      `json:"git_tracked_files"`
+	FirstParty    []string  `json:"first_party_owners"`
 	Blocking      []Finding `json:"blocking"`
 	Allowed       []Finding `json:"allowed"`
 }
@@ -32,6 +33,7 @@ func (result *Result) JSONReport() Report {
 		Dir:           result.Dir,
 		FilesScanned:  len(result.Files),
 		Tracked:       result.Tracked,
+		FirstParty:    result.FirstParty,
 		Blocking:      emptyNotNull(result.Blocking()),
 		Allowed:       emptyNotNull(result.Allowed()),
 	}

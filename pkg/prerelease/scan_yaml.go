@@ -129,7 +129,7 @@ func collectAgentOverrides(file string, block *yaml.Node, options Options, findi
 			// Labelling is not a way out of release scope, so it is not offered as
 			// one: the only thing that clears this is the released agent.
 			finding.Blocking = true
-			finding.Why = "release scope: a tag cannot be cut over a dev override, however well labelled — this is the step docs/release.md asks for and nothing enforced"
+			finding.Why = "release scope: a tag cannot be cut over a dev override, however well labelled — this is the step a release procedure asks for and could not enforce"
 			finding.Remedy = []string{
 				"release the agent, move this entry to the released version, then delete the entry",
 				"a module released after the agent fix pins the released agent itself; if one still does not, replace the dev version with the released one and say why in the commit",
