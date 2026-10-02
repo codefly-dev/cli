@@ -1,0 +1,11 @@
+kind: service
+name: worker
+version: 0.0.0
+module: payments
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.16
+    publisher: codefly.ai
+# Declares no group at all: whatever it receives is the composition root's, and
+# it is the service the two paths used to disagree about most plainly.

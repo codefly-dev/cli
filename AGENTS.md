@@ -181,6 +181,11 @@ relative paths.
   fleet pins or provider toolchains in CLI gates. Agent behavior is tested by its owner.
 - **The orchestration package is the most critical code.** Changes there affect every
   `codefly run`. Test thoroughly.
+- **A deployed service receives the same workspace configuration groups it receives
+  under `run`.** The set is declared ∪ the composition root's, resolved once in
+  `pkg/orchestration/workspace_configurations.go`; the render is the source of truth and
+  `run` matches it. Never resolve groups in a delivery path of your own. See
+  [docs/orchestration.md](docs/orchestration.md#workspace-configuration-groups).
 - **Configs flow as environment variables, not files.** Connection strings derived from network
   mappings are injected as `CODEFLY__SERVICE_...` env vars.
 - **Daemon state lives in `~/.codefly/`** (override with `CODEFLY_HOME`). PID file, logs, agent

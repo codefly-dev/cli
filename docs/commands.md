@@ -340,6 +340,24 @@ and its digest (the registrar's `federation` group, already delivered by
 reference) into the store, deriving both from one credential. A render that needs a secret but whose environment declares no
 secret store fails instead of rendering a dangling reference or a value.
 
+A render delivers a service the **same workspace configuration groups** `codefly
+run` delivers it: the groups it declares under
+`workspace-configuration-dependencies` unioned with the ones the composition root
+provides run-wide, so a service reading a root-provided value gets it in both or
+is refused in both. Only the addresses inside those groups differ — in-cluster
+here, loopback or the runtime context's family under `run`. The rule and its one
+deliberate exception (a run profile trims the run only) are in
+[the orchestration engine's workspace configuration
+groups](orchestration.md#workspace-configuration-groups).
+
+A credential-named value in a composition-root group therefore renders the way a
+declared group's always has — as a `secretKeyRef` on `secret-<service>`, never
+inline in a committed manifest — so the environment's `service-secrets` store must
+hold that key for the projected ExternalSecret to materialize it.
+`codefly deploy secrets` seeds the store from the render, so the key follows the
+next time it runs; a store seeded before a root group's values reached the render
+does not hold it yet.
+
 Every run and render also carries a service's **self endpoint** —
 `CODEFLY__SELF_ENDPOINT__<MODULE>__<SERVICE>__<ENDPOINT>__<API>`, core's carrier
 — beside its listen address `CODEFLY__ENDPOINT__…`: the in-cluster address in a

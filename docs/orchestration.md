@@ -135,6 +135,50 @@ The `World` holds shared state that all managers can access:
 - `RemoteNetworkManager` -- manages port-forwarding for remote services
 - `ConfigurationManager` -- loads and distributes service configurations
 
+### Workspace configuration groups
+
+Every path that delivers workspace configuration groups to a service resolves
+them in one place, `pkg/orchestration/workspace_configurations.go`, by one rule:
+
+    the groups a service receives = the groups it declares
+        (`workspace-configuration-dependencies`)
+      ∪ the groups the composition root provides run-wide
+      − the groups the selected run profile excludes
+
+The composition root's own `configurations/<profile>/*` (and any
+invocation-scoped override) reach **every** service of the composition, so a
+composed module's service reads a root-provided value without redeclaring it. A
+group a composed module ships reaches only the services that declare it.
+
+**The rendered deployment is the source of truth for that set, and the local run
+resolves the identical one.** `codefly run` and `codefly deploy gitops render`
+hand a given service the same group names, or refuse it for the same reason. Only
+the address family differs, and must: a value naming
+`${endpoint:<module>/<service>/<endpoint>}` resolves to the producer's loopback
+address for a local run and to its in-cluster address in a render.
+
+A render that resolved fewer groups than a run would make "works locally, dials
+something unconfigured once deployed" a property of the pipeline rather than a
+mistake anyone made — the root supplies a value every service can read, the run
+delivers it, and the deployed service starts without it, naming a key it never
+saw or, worse, not noticing. A run resolving fewer would hide the mirror-image
+fault equally well. `TestRenderAndRunDeliverTheSameWorkspaceConfigurationGroups`
+renders a fixture composition both ways and diffs the per-service group set; the
+diff must be empty.
+
+One asymmetry is deliberate and directional: a [run
+profile](commands.md#codefly-run-service)'s `exclude-workspace-configurations`
+trims the **run** only — build and deployment operations ignore profiles — so a
+profile can leave the run with fewer groups than the render, never the reverse.
+That is an operator's explicit choice about their local shape, and it cannot
+produce the fault above.
+
+A root group's values are then subject to the render's own rules, which is the
+point of there being one resolved set: a credential-named value is promoted to a
+`secretKeyRef` on the service's own Secret rather than rendered inline, so the
+environment's secret store must hold that key (`codefly deploy secrets` seeds it
+from the render).
+
 ## Playbook
 
 The `Playbook` is the execution engine. It receives actions, executes them through a policy, and produces follow-up actions.
