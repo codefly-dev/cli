@@ -1,8 +1,13 @@
 package run
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/codefly-dev/cli/pkg/orchestration"
 )
 
 func TestServiceCommandReturnsErrors(t *testing.T) {
@@ -47,6 +52,31 @@ func TestServiceCommandIncludesRunProfileFlag(t *testing.T) {
 	}
 	if flag.Usage != "Named workspace run profile" {
 		t.Fatalf("--profile help = %q", flag.Usage)
+	}
+}
+
+// TestServiceReadinessDeadlineNamesRequirement is the command regression: an
+// unready run must finish at its readiness deadline and preserve the
+// requirement that held it, rather than polling forever or returning only a
+// bare context error.
+func TestServiceReadinessDeadlineNamesRequirement(t *testing.T) {
+	started := make(chan error)
+	err := waitForServiceReadiness(
+		context.Background(),
+		&orchestration.Flow{},
+		started,
+		40*time.Millisecond,
+		nil,
+	)
+	if err == nil {
+		t.Fatal("expected an unready flow to reach its readiness deadline")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("readiness error = %v, want deadline exceeded", err)
+	}
+	if !strings.Contains(err.Error(), "flow not ready") ||
+		!strings.Contains(err.Error(), string(orchestration.PredicateRequirements)) {
+		t.Fatalf("readiness error %q does not name the unmet requirement", err)
 	}
 }
 

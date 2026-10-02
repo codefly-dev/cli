@@ -48,7 +48,7 @@ func TestWaitReadyNamesThePendingRequirement(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel()
 
-	err := waitReady(ctx, &orchestration.Flow{}, make(chan error))
+	err := WaitReady(ctx, &orchestration.Flow{}, make(chan error), nil)
 	if err == nil {
 		t.Fatal("expected waitReady to give up")
 	}
@@ -60,6 +60,25 @@ func TestWaitReadyNamesThePendingRequirement(t *testing.T) {
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error %q loses the deadline it wraps", err)
+	}
+}
+
+// TestWaitReadyBacksOffUnchangedFailure guards the probe-volume half of the
+// readiness contract. A permanently unready flow should be checked a handful
+// of times during this window, not every 150ms for its entire lifetime.
+func TestWaitReadyBacksOffUnchangedFailure(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancel()
+
+	checks := 0
+	err := WaitReady(ctx, &orchestration.Flow{}, make(chan error), func(context.Context, *orchestration.ReadinessFailure) {
+		checks++
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("WaitReady error = %v, want deadline exceeded", err)
+	}
+	if checks < 2 || checks > 4 {
+		t.Fatalf("WaitReady performed %d checks in 800ms, want 2..4 with exponential backoff", checks)
 	}
 }
 

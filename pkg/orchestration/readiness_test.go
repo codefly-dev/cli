@@ -26,13 +26,12 @@ import (
 // requires only transitively. Every dependency is a real server on a real
 // socket.
 type readinessStack struct {
-	flow          *Flow
-	health        *health.Server
-	store         *grpc.Server
-	admin         net.Listener
-	console       *httptest.Server
-	consoleStatus *atomic.Int64
-	mappings      map[string][]*basev0.NetworkMapping
+	flow         *Flow
+	health       *health.Server
+	store        *grpc.Server
+	admin        net.Listener
+	consoleCalls *atomic.Int64
+	mappings     map[string][]*basev0.NetworkMapping
 }
 
 func newReadinessStack(t *testing.T) *readinessStack {
@@ -56,10 +55,15 @@ func newReadinessStack(t *testing.T) *readinessStack {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = admin.Close() })
 
-	consoleStatus := &atomic.Int64{}
-	consoleStatus.Store(http.StatusOK)
-	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(int(consoleStatus.Load()))
+	consoleCalls := &atomic.Int64{}
+	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		consoleCalls.Add(1)
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(2 * readinessProbeTimeout):
+			w.WriteHeader(http.StatusOK)
+		}
 	}))
 	t.Cleanup(console.Close)
 
@@ -84,13 +88,12 @@ func newReadinessStack(t *testing.T) *readinessStack {
 		flow.emitState(dependency, tui.StateRunning, 0)
 	}
 	return &readinessStack{
-		flow:          flow,
-		health:        healthServer,
-		store:         store,
-		admin:         admin,
-		console:       console,
-		consoleStatus: consoleStatus,
-		mappings:      mappings,
+		flow:         flow,
+		health:       healthServer,
+		store:        store,
+		admin:        admin,
+		consoleCalls: consoleCalls,
+		mappings:     mappings,
 	}
 }
 
@@ -181,20 +184,21 @@ func TestReadinessAcceptsGRPCServerWithoutHealthServiceAsTransportOnly(t *testin
 	require.Nil(t, stack.flow.Readiness(ctx))
 }
 
-func TestReadinessRejectsUnsuccessfulHTTPStatus(t *testing.T) {
+// TestReadinessHTTPUsesTransportWithoutRequestingPageRoute is the regression
+// for the Next.js runaway: the handler answers slower than the probe budget,
+// but readiness only connects to the endpoint's transport. Repeated checks
+// must therefore produce no page requests at all, rather than a growing
+// collection of timed-out renders.
+func TestReadinessHTTPUsesTransportWithoutRequestingPageRoute(t *testing.T) {
 	stack := newReadinessStack(t)
 	ctx := context.Background()
 
-	stack.consoleStatus.Store(http.StatusServiceUnavailable)
-	failure := stack.flow.Readiness(ctx)
-	require.NotNil(t, failure)
-	require.Equal(t, "web/console", failure.Service)
-	require.Equal(t, "http", failure.Endpoint)
-	require.Equal(t, PredicateHTTPStatus, failure.Predicate)
-	require.Contains(t, failure.Reason, "503")
-
-	stack.consoleStatus.Store(http.StatusOK)
-	require.True(t, stack.flow.Ready(ctx))
+	requirement := endpointRequirement("web/console", stack.mappings["web/console"][0])
+	require.Equal(t, PredicateTransport, requirement.predicate)
+	for range 12 {
+		require.Nil(t, stack.flow.Readiness(ctx))
+	}
+	require.Zero(t, stack.consoleCalls.Load(), "readiness must never request an undeclared HTTP health route")
 }
 
 func TestReadinessRequiresLifecycleCompletionOfEndpointlessDependency(t *testing.T) {
@@ -370,27 +374,21 @@ func TestReadinessUsesDeclaredTransportSecurity(t *testing.T) {
 	require.Equal(t, PredicateGRPCHealth, failure.Predicate)
 }
 
-func TestReadinessAcceptsClientErrorsAndRejectsServerFailures(t *testing.T) {
-	stack := newReadinessStack(t)
-	ctx := context.Background()
+func TestDeclaredHTTPHealthProbeUsesHEAD(t *testing.T) {
+	var method, path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		path = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
 
-	// An endpoint's root is not a health surface: an authenticated or routed
-	// service answering 401/404 has proved it is up and routing.
-	for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound} {
-		stack.consoleStatus.Store(int64(code))
-		require.Nil(t, stack.flow.Readiness(ctx), "status %d must not block readiness", code)
-	}
-
-	for _, code := range []int{http.StatusInternalServerError, http.StatusServiceUnavailable} {
-		stack.consoleStatus.Store(int64(code))
-		failure := stack.flow.Readiness(ctx)
-		require.NotNil(t, failure, "status %d must block readiness", code)
-		require.Equal(t, PredicateHTTPStatus, failure.Predicate)
-	}
+	require.NoError(t, probeHTTPStatus(context.Background(), server.URL+"/healthz"))
+	require.Equal(t, http.MethodHead, method)
+	require.Equal(t, "/healthz", path)
 }
 
 func TestReadinessDoesNotFollowRedirects(t *testing.T) {
-	ctx := context.Background()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// A redirect to a port nothing listens on: readiness judges the
 		// endpoint that was probed, never where it points.
@@ -398,8 +396,7 @@ func TestReadinessDoesNotFollowRedirects(t *testing.T) {
 	}))
 	defer server.Close()
 
-	requirements := []readinessRequirement{endpointRequirement("web/console", testHTTPMapping("http", server.URL))}
-	require.Nil(t, evaluateReadinessProbes(ctx, requirements))
+	require.NoError(t, probeHTTPStatus(context.Background(), server.URL+"/healthz"))
 }
 
 func TestServiceReachableIgnoresEndpointNoConsumerDeclares(t *testing.T) {
@@ -504,20 +501,19 @@ func TestDependencyEndpointDeclarationsValidatedWhenRunSetIsBuilt(t *testing.T) 
 	}
 }
 
-// TestReadinessProbesBoltAndHTTPByDeclaredAPI replaces the endpoint-name
-// special case that used to give Neo4j its bolt+http treatment: the same pair
-// is now evaluated from what each endpoint declares, and the HTTP half must
-// answer successfully rather than merely answer.
+// TestReadinessProbesBoltAndHTTPByDeclaredAPI keeps both Neo4j endpoints on
+// transport readiness. HTTP has no declared health path, so its page route is
+// never requested.
 func TestReadinessProbesBoltAndHTTPByDeclaredAPI(t *testing.T) {
 	ctx := context.Background()
 	bolt, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	defer func() { _ = bolt.Close() }()
 
-	status := &atomic.Int64{}
-	status.Store(http.StatusServiceUnavailable)
+	requests := &atomic.Int64{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(int(status.Load()))
+		requests.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer server.Close()
 
@@ -526,17 +522,12 @@ func TestReadinessProbesBoltAndHTTPByDeclaredAPI(t *testing.T) {
 		endpointRequirement("graph/neo", testHTTPMapping("http", server.URL)),
 	}
 	require.Equal(t, PredicateTransport, requirements[0].predicate)
-	require.Equal(t, PredicateHTTPStatus, requirements[1].predicate)
-
-	failure := evaluateReadinessProbes(ctx, requirements)
-	require.NotNil(t, failure)
-	require.Equal(t, "http", failure.Endpoint)
-
-	status.Store(http.StatusOK)
+	require.Equal(t, PredicateTransport, requirements[1].predicate)
 	require.Nil(t, evaluateReadinessProbes(ctx, requirements))
+	require.Zero(t, requests.Load())
 
 	require.NoError(t, bolt.Close())
-	failure = evaluateReadinessProbes(ctx, requirements)
+	failure := evaluateReadinessProbes(ctx, requirements)
 	require.NotNil(t, failure)
 	require.Equal(t, "bolt", failure.Endpoint)
 }

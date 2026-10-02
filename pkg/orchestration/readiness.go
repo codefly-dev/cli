@@ -41,27 +41,24 @@ const (
 	// PredicateMapping requires a consumed endpoint to have a recorded network
 	// mapping with an address to probe.
 	PredicateMapping ReadinessPredicate = "endpoint-mapping"
-	// PredicateTransport is the legacy transport-only check: the endpoint
-	// accepts a TCP connection. It is what an endpoint declaring neither gRPC
-	// nor HTTP offers.
+	// PredicateTransport is the transport-only check: the endpoint accepts a
+	// TCP connection. It applies whenever the endpoint declares no standard
+	// functional health protocol, including HTTP without a health path.
 	PredicateTransport ReadinessPredicate = "tcp-connect"
 	// PredicateGRPCHealth requires the gRPC health service to report SERVING. A
 	// server that answers without implementing Health declares transport-only
 	// readiness and is accepted as such — Health is never assumed on an
 	// arbitrary server.
 	PredicateGRPCHealth ReadinessPredicate = "grpc-health"
-	// PredicateHTTPStatus requires the endpoint's own address to answer without
-	// a server-side failure. No health route and no health contract is
-	// invented: an endpoint's root is not a health surface, so a 401, 403 or
-	// 404 is proof the server is up and routing, while a 5xx (or nothing at
-	// all) is proof it cannot serve.
+	// PredicateHTTPStatus is reserved for an explicitly declared HTTP health
+	// URL. HTTP endpoints without that declaration use PredicateTransport: an
+	// endpoint's root is an application route, not a health surface.
 	PredicateHTTPStatus ReadinessPredicate = "http-status"
 )
 
 const (
-	// Probes are polled (every 150ms by the run loop), so they are budgeted to
-	// answer rather than to wait out a slow start: a service that has not
-	// answered yet is simply not ready yet, and the next poll asks again.
+	// Individual probes are budgeted to answer rather than to wait out a slow
+	// start. The readiness waiter retries them with backoff.
 	readinessTransportTimeout = 500 * time.Millisecond
 	readinessProbeTimeout     = time.Second
 	readinessProbeConcurrency = 8
@@ -333,8 +330,10 @@ func endpointConsumed(consumers []*resources.ServiceDependency, endpoint *basev0
 }
 
 // endpointRequirement turns a recorded mapping into the predicate its endpoint
-// declares: gRPC health for a gRPC API, a successful status for an HTTP API,
-// transport reachability for everything else.
+// declares. gRPC has a standard health protocol, so it gets a functional
+// health check. No equivalent health path is declared for HTTP endpoints yet:
+// probing their root would execute an application page, so HTTP and every
+// other API use transport reachability.
 func endpointRequirement(service string, mapping *basev0.NetworkMapping) readinessRequirement {
 	requirement := readinessRequirement{service: service, endpoint: mapping.GetEndpoint().GetName()}
 	instance := reachableNetworkInstance(mapping.GetInstances())
@@ -356,9 +355,6 @@ func endpointRequirement(service string, mapping *basev0.NetworkMapping) readine
 		requirement.predicate = PredicateGRPCHealth
 		requirement.secure = grpc.GetSecured()
 		requirement.grpcServices = declaredGRPCServices(grpc)
-	case standards.HTTP:
-		requirement.predicate = PredicateHTTPStatus
-		requirement.url = endpointProbeURL(endpoint, instance, requirement.address)
 	default:
 		requirement.predicate = PredicateTransport
 	}
@@ -386,22 +382,12 @@ func declaredGRPCServices(api *basev0.GrpcAPI) []string {
 	return services
 }
 
-func endpointProbeURL(endpoint *basev0.Endpoint, instance *basev0.NetworkInstance, address string) string {
-	if strings.HasPrefix(instance.GetAddress(), "http://") || strings.HasPrefix(instance.GetAddress(), "https://") {
-		return instance.GetAddress()
-	}
-	if resources.IsHTTP(context.Background(), endpoint).GetSecured() {
-		return "https://" + address
-	}
-	return "http://" + address
-}
-
 // evaluateReadinessProbes runs every network predicate with a bounded number of
 // concurrent probes and reports the first requirement, in order, that fails.
 // Results are collected in order and the rest are cancelled as soon as that
-// first failure is known: readiness is polled every 150ms, and a probe that
+// first failure is known: readiness is retried with backoff, and a probe that
 // answers only by timing out (a Docker userland proxy accepting for a container
-// that is not listening yet, say) would otherwise make every poll pay for every
+// that is not listening yet, say) must not make every check pay for every
 // endpoint behind it.
 func evaluateReadinessProbes(ctx context.Context, requirements []readinessRequirement) *ReadinessFailure {
 	if len(requirements) == 0 {
@@ -483,7 +469,7 @@ func probeTransport(ctx context.Context, address string) error {
 }
 
 func probeHTTPStatus(ctx context.Context, target string) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodHead, target, nil)
 	if err != nil {
 		return err
 	}
@@ -491,8 +477,8 @@ func probeHTTPStatus(ctx context.Context, target string) error {
 	if err != nil {
 		return err
 	}
-	// Drain before closing so the connection returns to the pool: this probe
-	// runs on every poll, and an undrained body costs a fresh socket each time.
+	// Drain before closing so the connection returns to the pool: an undrained
+	// body would cost a fresh socket if the declared health check is retried.
 	defer func() {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, readinessHTTPDrainLimit))
 		_ = response.Body.Close()

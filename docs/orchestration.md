@@ -415,11 +415,13 @@ The `Restrict()` method scopes the graph to only the services needed for a given
 
 ## Readiness
 
-`Flow.Ready(ctx)` gates everything that waits on a run: the TUI's Starting -> Running
-milestone, `codefly run --wait`, the SDK dependency stack's `GetFlowStatus`.
-`Flow.Readiness(ctx)` is the same evaluation returning the first requirement that does
-not hold (`*ReadinessFailure`: service, endpoint, predicate, last error) instead of a
-bool.
+`Flow.Readiness(ctx)` evaluates the gate and returns the first requirement that does
+not hold (`*ReadinessFailure`: service, endpoint, predicate, last error).
+`control.WaitReady` is the shared waiting seam used by interactive and headless runs:
+it preserves the last complete diagnosis, retries with exponential backoff (150ms up
+to 5s), and stops on the caller's deadline. `codefly run service` and `codefly run
+solution` apply a five-minute deadline by default; `--readiness-timeout` changes it.
+`Flow.Ready(ctx)` remains the bool projection for one-shot status surfaces.
 
 A run is ready when every one of these holds:
 
@@ -428,9 +430,9 @@ A run is ready when every one of these holds:
 | Lifecycle | `lifecycle` | The service's `RuntimeStart` returned successfully (the run emitted `StateRunning`). A dependency with no endpoints -- a one-shot job -- is satisfied by this alone. |
 | Runner | `runner` | No started runner has reported a failure. A process dying after start revokes readiness. |
 | Endpoint mapping | `endpoint-mapping` | A consumed endpoint has a recorded network mapping with an address. |
-| Transport | `tcp-connect` | The endpoint accepts a TCP connection. |
+| Transport | `tcp-connect` | The endpoint accepts a TCP connection. HTTP endpoints use this unless they declare a health path, so readiness never renders an application page. |
 | gRPC health | `grpc-health` | The endpoint's gRPC health service reports `SERVING`. A server that answers `Unimplemented` declares transport-only readiness and is accepted as such -- Health is never assumed on an arbitrary server. |
-| HTTP status | `http-status` | The endpoint's own address answers without a server-side failure. A 401/403/404 is proof the server is up and routing; a 5xx is proof it cannot serve. No health route and no health contract is invented, and redirects are not followed. |
+| HTTP status | `http-status` | An explicitly declared health URL answers `HEAD` without a server-side failure. Redirects are not followed. The current endpoint schema does not yet declare such a URL. |
 
 The endpoints that must be healthy are the ones the run's services actually
 declare (`service-dependencies[].endpoints`, empty meaning all of them), across
@@ -439,27 +441,26 @@ consumer declares cannot stand in for a required one, and an open admin port
 cannot mask a closed gRPC endpoint. The excluded target of an exclude-root run
 is still what selects those endpoints, but its own lifecycle is not required.
 
-The predicate comes from the endpoint's declared `api`, so a service keeps the
-capability it advertises: `grpc` gets gRPC health, `http` gets a status check,
-and everything else (`rest`, `tcp`, `connect`, undeclared) stays transport-only.
+The predicate comes from the endpoint's declared capability. `grpc` gets gRPC
+health; HTTP and everything else (`rest`, `tcp`, `connect`, undeclared) stay
+transport-only until the endpoint can declare a health URL. In particular, the HTTP
+API label is not permission to probe `/`: for a frontend that route may compile and
+server-render the full page.
 gRPC health asks about the protobuf services the endpoint declares
 (`api_details.grpc.rpcs[].service_name`, package-qualified) and falls back to
 the server-wide status when it declares none; TLS comes from the endpoint's
 `secured` declaration, never from guessing at its address.
 
-Migrating a service that relied on the older, permissive behavior: a run that
-now stays "Starting" is being held by a requirement `Flow.Readiness` names --
-`waitReady` prints it, and the CLI server logs it once per distinct reason for
-a polling SDK. Every predicate is satisfied by what the endpoint already
-advertises, so the fix is to make the service serve what it declares, never to
-relabel its `api` -- that field also drives address schemes, environment
-variable interpolation and client generation.
+When a run stays "Starting", `control.WaitReady` reports the requirement that held it
+when the readiness deadline expires. Every predicate is satisfied by what the
+endpoint already advertises, so the fix is to make the service serve what it
+declares, never to relabel its `api` -- that field also drives address schemes,
+environment variable interpolation and client generation.
 
 Until [core#418](https://github.com/codefly-dev/core/issues/418) lands there is
 no place to declare a health route, a success predicate or a body predicate, so
-the HTTP check deliberately asks only whether the server can serve: with no
-declaration to read, requiring a specific status at `/` would be inventing the
-health contract that issue is meant to define.
+HTTP readiness deliberately stops at TCP reachability. Probing `/` would invent a
+health contract and can itself keep a development server unready.
 ## Teardown
 
 `Stop()` and `Shutdown()` do not fan every manager out at once. Launch order is

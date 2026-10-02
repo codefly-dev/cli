@@ -304,7 +304,7 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 	}()
 
 	if req.Wait {
-		if err := waitReady(ctx, flow, started); err != nil {
+		if err := WaitReady(ctx, flow, started, nil); err != nil {
 			_, _ = flows.Stop(flowID, false)
 			// Tearing the flow down does not release the goroutine above, which
 			// would go on narrating after Run has already failed.
@@ -315,36 +315,74 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 	return RunHandle{FlowID: flowID}, nil
 }
 
-// waitReady blocks until the flow reports ready, the flow exits/fails, or ctx is
-// done. Giving up names the requirement that never held — which service, which
-// endpoint, which predicate — so a timeout is diagnosable.
-func waitReady(ctx context.Context, flow *orchestration.Flow, started <-chan error) error {
-	ticker := time.NewTicker(150 * time.Millisecond)
-	defer ticker.Stop()
+const (
+	readinessPollInitial = 150 * time.Millisecond
+	readinessPollMaximum = 5 * time.Second
+)
+
+// WaitReady blocks until the flow reports ready, the flow exits/fails, or ctx
+// is done. Giving up names the requirement that never held — which service,
+// which endpoint, which predicate — so a timeout is diagnosable. Checks back
+// off exponentially while the same flow remains unready instead of continually
+// loading the endpoint. afterCheck, when non-nil, observes each completed check
+// and lets a UI update dependency milestones without running a second readiness
+// loop.
+func WaitReady(ctx context.Context, flow *orchestration.Flow, started <-chan error, afterCheck func(context.Context, *orchestration.ReadinessFailure)) error {
 	var pending *orchestration.ReadinessFailure
+	delay := time.Duration(0)
 	for {
-		select {
-		case <-ctx.Done():
-			if pending != nil {
-				return fmt.Errorf("flow not ready (%s): %w", pending, ctx.Err())
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				if pending != nil {
+					return fmt.Errorf("flow not ready (%s): %w", pending, ctx.Err())
+				}
+				return ctx.Err()
+			case err := <-started:
+				if !timer.Stop() {
+					<-timer.C
+				}
+				if err != nil {
+					return fmt.Errorf("flow exited before becoming ready: %w", err)
+				}
+				return fmt.Errorf("flow stopped before becoming ready")
+			case <-timer.C:
 			}
-			return ctx.Err()
-		case err := <-started:
-			if err != nil {
-				return fmt.Errorf("flow exited before becoming ready: %w", err)
+		} else {
+			// Observe an already-finished start before the first readiness probe.
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case err := <-started:
+				if err != nil {
+					return fmt.Errorf("flow exited before becoming ready: %w", err)
+				}
+				return fmt.Errorf("flow stopped before becoming ready")
+			default:
 			}
-			return fmt.Errorf("flow stopped before becoming ready")
-		case <-ticker.C:
-			failure := flow.Readiness(ctx)
-			if failure == nil {
-				return nil
-			}
-			// A probe interrupted by this very ctx reports the interruption,
-			// not the requirement: keep the last diagnosis made while the
-			// deadline still had room.
-			if ctx.Err() == nil {
-				pending = failure
-			}
+		}
+
+		failure := flow.Readiness(ctx)
+		if afterCheck != nil {
+			afterCheck(ctx, failure)
+		}
+		if failure == nil {
+			return nil
+		}
+		// A probe interrupted by this very ctx reports the interruption,
+		// not the requirement: keep the last diagnosis made while the
+		// deadline still had room.
+		if ctx.Err() == nil {
+			pending = failure
+		}
+		if delay == 0 {
+			delay = readinessPollInitial
+		} else {
+			delay = min(delay*2, readinessPollMaximum)
 		}
 	}
 }
