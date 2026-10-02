@@ -26,7 +26,7 @@ scope_ceilings:
 bindings:
   - id: model
     operations: [invoke, lookup]
-    audience: {from: assistant/model-profile}
+    audience: {from: assistant/model-audience}
     resource_kind: {from: assistant/model-resource-kind}
     scope_ceiling:
       invoke: [invoke, read]
@@ -36,7 +36,11 @@ bindings:
     operations: [headless]
     audience: {from: assistant/annotations-prefix}
     scope_ceiling:
-      headless: [read, write]
+      headless:
+        - resource_kind: annotations.vocabularies
+          actions: [write]
+        - resource_kind: annotations.annotations
+          actions: [redact]
 destinations:
   - id: chat-http
     service: api
@@ -55,7 +59,7 @@ func writeAuthorityWorkspace(t *testing.T) (*resources.Workspace, *resources.Mod
 		filepath.Join("modules", "shop", "services", "api", resources.ServiceConfigurationName): cellServiceYAML("api", "shop") + "module-identity: true\n",
 		filepath.Join("modules", "shop", modulecontract.FileName):                               authorityContract,
 		filepath.Join("modules", "shop", "module.package.codefly.yaml"):                         "schema: codefly/module-package/v1\nid: acme/shop\nversion: 1.2.0\n",
-		filepath.Join("configurations", "staging", "assistant.env"):                             "MODEL_PROFILE=model-gateway\nMODEL_RESOURCE_KIND=modelservice.profiles\nANNOTATIONS_PREFIX=annotations\n",
+		filepath.Join("configurations", "staging", "assistant.env"):                             "MODEL_AUDIENCE=model-gateway\nMODEL_RESOURCE_KIND=modelservice.profiles\nANNOTATIONS_PREFIX=annotations\n",
 	}
 	for rel, content := range files {
 		full := filepath.Join(workspace.Dir(), rel)
@@ -135,7 +139,7 @@ func TestRenderDerivesAuthorityFromTheModuleContract(t *testing.T) {
 	require.Len(t, document.Principals, 1)
 	require.Equal(t, "assistant", document.Principals[0].Principal)
 	require.Equal(t, []solutionhost.AuthorityBinding{
-		{ID: "assistant:annotations:headless", Revision: 2, Audience: "annotations", Scope: "read,write", Namespace: "assistant"},
+		{ID: "assistant:annotations:headless", Revision: 2, Audience: "annotations", Scope: "annotations.annotations:redact,annotations.vocabularies:write", Namespace: "assistant"},
 		{ID: "assistant:model:invoke", Revision: 1, Audience: "model-gateway", Scope: "modelservice.profiles:invoke,modelservice.profiles:read", Namespace: "assistant"},
 		{ID: "assistant:model:lookup", Revision: 1, Audience: "model-gateway", Scope: "modelservice.profiles:read", Namespace: "assistant"},
 	}, document.Principals[0].Bindings)
@@ -174,7 +178,7 @@ func TestAuthorityRefusesAnUnresolvedSlot(t *testing.T) {
 	ctx := context.Background()
 	workspace, module := writeAuthorityWorkspace(t)
 	env := selectedEnvironment(t, workspace, "staging")
-	require.NoError(t, os.WriteFile(filepath.Join(workspace.Dir(), "configurations", "staging", "assistant.env"), []byte("MODEL_PROFILE=model-gateway\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workspace.Dir(), "configurations", "staging", "assistant.env"), []byte("MODEL_AUDIENCE=model-gateway\n"), 0o644))
 	services := loadServices(t, workspace, "shop", "api")
 	_, _, err := authorityInstancesOf(ctx, workspace, module, services, env, []SolutionArtifactUnit{{Name: "api", Path: "services/api"}})
 	require.ErrorIs(t, err, modulecontract.ErrUnresolvedSlot)

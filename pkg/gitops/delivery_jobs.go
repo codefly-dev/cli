@@ -33,11 +33,15 @@ import (
 // Reachability is a retry, not a sync wave. A per-module Application cannot
 // express "after the host's delivery API is reachable", because the host is
 // another module's Application; so the Job retries a transport failure or a
-// 5xx with backoff until the API answers, and the wave only orders it with the
-// module's own workloads. It sits in the consumer-unit wave, together with the
-// workloads whose presence it declares: an earlier wave would be applied
-// before the ConfigMaps it mounts exist, and a later one would wait for
-// workloads whose readiness may depend on the presence this Job delivers.
+// 5xx with backoff until the API answers. What the wave orders is narrower and
+// exact. The Job lives in the bindings (or authority) Application beside the
+// ConfigMaps it mounts and the ServiceAccount it runs as, which sit at the
+// default wave; it is annotated one wave later so it runs once they exist.
+// That Application is itself generated in the module-resources wave, before
+// any unit's Application, so delivery is never held behind the readiness of
+// workloads that may need the presence it delivers in order to become ready —
+// a later placement would be a deadlock the host's "no applied generation yet"
+// retry could not break.
 //
 // A terminal answer — a stale or rewritten generation (409), a document the
 // host refuses (422), a carrier it does not accept (401, 403) — fails the Job,

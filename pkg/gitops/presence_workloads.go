@@ -60,7 +60,10 @@ func presenceWorkloads(owned string, opts *RenderOptions, unit SolutionArtifactU
 				Subject:  unit.Subject,
 				SPIFFEID: opts.Host.SPIFFEID(opts.Namespace, workload.ServiceAccount),
 			},
-			NonAuthenticating: others,
+			// A pointer to a non-nil list: core refuses an absent (nil) list
+			// because it cannot be told from "there are none", and
+			// authenticatingContainer always returns a declaration.
+			NonAuthenticating: &others,
 		})
 	}
 	sort.Slice(workloads, func(i, j int) bool { return workloads[i].Name < workloads[j].Name })
