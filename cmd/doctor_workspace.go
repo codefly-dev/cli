@@ -907,6 +907,13 @@ type collapsedReference struct {
 // faults. Faults identical apart from the consumer collapse into one, which
 // names how many services are affected; a fault that genuinely differs by
 // consumer still gets its own line.
+//
+// The fault key includes core's reason text, so the grouping depends on core's
+// wording. That dependence is deliberate and safe in one direction only: if
+// core rewords a reason, previously merged entries stop merging and the report
+// grows a line per service — more noise, never fewer facts, and never two
+// different faults merged into one. Keying on anything coarser would risk the
+// opposite, hiding one consumer's visibility verdict behind another's.
 func collapseReferencesByFault(references []configurations.UnresolvedReference) []collapsedReference {
 	var out []collapsedReference
 	at := map[string]int{}
