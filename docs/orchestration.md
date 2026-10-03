@@ -151,11 +151,17 @@ composed module's service reads a root-provided value without redeclaring it. A
 group a composed module ships reaches only the services that declare it.
 
 **The rendered deployment is the source of truth for that set, and the local run
-resolves the identical one.** `codefly run` and `codefly deploy gitops render`
-hand a given service the same group names, and the same keys inside them. Only
-the address family differs, and must: a value naming
+resolves the identical one.** For a run of the whole composition, `codefly run`
+and `codefly deploy gitops render` hand a given service the same group names and
+the same keys inside them, and only the address family differs: a value naming
 `${endpoint:<module>/<service>/<endpoint>}` resolves to the producer's loopback
 address for a local run and to its in-cluster address in a render.
+
+Three named asymmetries remain, below, and they are the reason that sentence says
+*a run of the whole composition*. **Every one of them leaves the run with fewer
+values than the render, never the reverse** — the direction that cannot produce
+"works locally, dials something unconfigured once deployed". A deployed workload
+never loses a value because of how someone ran things locally.
 
 A render that resolved fewer groups than a run would make "works locally, dials
 something unconfigured once deployed" a property of the pipeline rather than a
@@ -197,6 +203,46 @@ Two things prevent it, and both are needed:
   deployment no address could be derived for: a deployed address is a pure
   function of identity and namespace, so there is no "not yet".
 
+#### A composition-root group is not a way around an export boundary
+
+Widening the set that resolves widens what must be *checked*, and the check did
+not follow at first. Core's plan-time check
+(`configurations.CheckEndpointReferences`) validates every reference a consumer
+receives — it is well formed, the producer is a service of the workspace, that
+producer declares the endpoint named, and the endpoint is visible to the
+consumer's module — but it iterates the consumer's
+`workspace-configuration-dependencies`, **the declared groups only**. Its own
+comment gives the reason the visibility rule is there at all: without it,
+*declaring the group instead of the dependency would be the way around
+visibility*.
+
+While the render resolved declared groups only, a service that did not declare a
+root group never had the producer's mappings bound, so the boundary held by
+accident. Once every root-referenced producer is bound for every service, two
+things would otherwise follow:
+
+- a root group carrying `${endpoint:platform/authority/admin}` where that
+  endpoint's visibility is `private` (or `internal` without the consumer's module
+  in `allow-modules`) would hand its address to **every** service of the
+  composition, with nothing refusing it;
+- a typo'd producer in a root group — the one kind of group no service declares,
+  so the plan check never saw it — would be dropped from **every** service in
+  silence, which is the cli#882 fault itself.
+
+Both are refused now, before any value is resolved, by handing core's own check
+the **effective** set in place of the consumer's declared one
+(`checkEffectiveWorkspaceConfigurationReferences`). It is core's rule reaching
+core's verdict over the wider set, so the two cannot disagree about what is
+legal.
+
+**The durable fix is in core,** and the above is a shim until it lands: let
+`configurations.CheckEndpointReferences` take the effective group set, so the
+plan-time check and this resolution stop being two selections of the same thing.
+A second core gap belongs with it — `configurations.Manager` accumulates the
+composition-root group names across **all** its loaders (in
+`LoadConfigurations`) but exposes no accessor for them, so the CLI binds the
+capability on the loader it registers instead of reading the manager's union.
+
 The root's group names come from the manager's own loaders (core's
 `configurations.Loader.CompositionRootWorkspaceConfigurationNames`) and are bound
 on the `World` at the one place a loader is registered. A `World` that cannot
@@ -204,25 +250,50 @@ name a root group would plan producer discovery without it, so
 `requireKnownRootGroup` refuses such a group rather than delivering it with its
 references resolved against nothing.
 
-#### The two asymmetries that remain, and why neither is the fault above
+#### The three asymmetries that remain, and why none is the fault above
 
 - A [run profile](commands.md#codefly-run-service)'s
   `exclude-workspace-configurations` trims the **run** only — build and
   deployment operations ignore profiles.
-- A root group's `${endpoint:…}` does not order the run. Core's dependency graph
-  orders a consumer after the producers of the groups it *declares*
+
+- **A root group's `${endpoint:…}` does not order the run**, so under
+  `--temporary-ports` its producer may have no address yet. Core's dependency
+  graph orders a consumer after the producers of the groups it *declares*
   (`ServiceDependencies.addConfigurationReferenceEdges`, core
   `architecture/service_dependencies.go`, reads a consumer's
-  `workspace-configuration-dependencies` and no more), so a consumer that starts
-  before the producer of a root group's reference sees core drop that value, and
-  the run is
-  not refused for it — refusing would fail a run whose service simply starts
-  first. `TestARunToleratesARootReferenceThatHasNotResolvedYet` pins it;
-  `TestARenderRefusesARootReferenceItCannotResolve` pins that the render does
-  not tolerate it.
+  `workspace-configuration-dependencies` and no more), so nothing puts the
+  producer of a root group's reference first.
 
-Both leave the **run** with less than the render, never the reverse, which is the
-direction that cannot produce "works locally, unconfigured once deployed".
+  Note what this does **not** mean, because the earlier wording here had the
+  mechanism wrong: with deterministic ports a consumer that merely starts early
+  still resolves, because a producer's address is derived from the endpoints it
+  recorded at **Load**, and every service of a run loads before any initializes.
+  The value is lost only where no address can exist yet — under
+  `--temporary-ports`, where each address is allocated at initialization
+  (`codefly ci`, `test --temporary-ports`), or where the producer recorded no
+  endpoint at all. There it is dropped; a *declared* group's reference is
+  ordered, so the same failure there stays a hard error.
+  `TestARunWithTemporaryPortsDropsARootReferenceItCannotPlaceYet` pins the drop,
+  and `TestARenderRefusesARootReferenceNoAddressCanBeDerivedFor` pins that the
+  render refuses rather than emitting a manifest with the value missing.
+
+- **A run of fewer services than the composition does not contain the producer**
+  a root group references. `codefly run payments/worker` runs the worker and its
+  dependency closure, and a root group's reference adds no edge to that closure,
+  so the producer is not in the run and has no local address: the value is
+  dropped. The render of that same one service derives the producer's address
+  anyway — a deployed address is a function of identity and namespace rather than
+  of run membership — so it delivers the value.
+  `TestASingleServiceRunDropsARootReferenceTheRenderResolves` pins both halves.
+
+All three leave the **run** with less than the render, never the reverse, which
+is the direction that cannot produce "works locally, unconfigured once
+deployed". None of them can make a deployed workload lose a value.
+
+A value dropped for any of these reasons is logged at **WARN**, naming the
+consumer, the producer and the reference. Core's own drop is a DEBUG line, and a
+configuration value going missing without a word is the fault this section exists
+to remove.
 
 #### A partial root override of a composed module's group replaces it whole
 
@@ -247,8 +318,10 @@ and this package then injects the truncated group into **every** service of the
 composition rather than only the ones that declared it. A partial override
 narrows a group's contents and widens its delivery at the same time.
 
-Until core changes it, declare **every** key of a composed module's group when
-overriding it, or override none of them.
+This is filed as [codefly-dev/core#693](https://github.com/codefly-dev/core/issues/693),
+with the reproduction and the per-key semantics it should get. Until it lands,
+declare **every** key of a composed module's group when overriding it, or
+override none of them.
 `TestAPartialRootOverrideReplacesAComposedModuleGroupWhole`
 (`pkg/orchestration`) pins the current behaviour and names the core function, so
 the CLI's expectations move when core's do. The semantics it should get already

@@ -22,9 +22,11 @@ import (
 // what makes this test about the key the render actually emits rather than about
 // a string that was true once. The render side of the same claim is pinned by
 // pkg/orchestration's TestACompositionRootGroupRendersItsCredentialsByReference,
-// which asserts the reference it produces equals this encoding; the packages
-// cannot import each other (gitops sits between them), so the two halves meet
-// on core's encoding rather than on a literal.
+// which asserts the reference it produces equals this encoding. The two halves
+// meet on core's encoding rather than on one shared call because orchestration's
+// promotion path (promotableDeploymentConfigurations) is unexported — not
+// because of the import graph: this package may import pkg/orchestration, and
+// only the reverse would cycle through pkg/gitops.
 func rootGroupCredentialKey(t *testing.T, group, key string) string {
 	t.Helper()
 	variables, err := resources.ConfigurationAsEnvironmentVariables(&basev0.Configuration{

@@ -63,6 +63,8 @@ func groupKeys(infos []*basev0.ConfigurationInformation, group string) []string 
 //     the ones that declared it. A partial override thus narrows the group's
 //     contents and widens its delivery at once.
 //
+// Filed as codefly-dev/core#693, with this reproduction and the three losses.
+//
 // What it must become, and where: core should overlay the consuming workspace's
 // values onto the module's group per key, the way `profileOverlay.add` already
 // does across profile derivation layers in `configurations/profile.go` — keys
@@ -77,8 +79,8 @@ func groupKeys(infos []*basev0.ConfigurationInformation, group string) []string 
 // only way to overlay here would be to re-walk every composed module's tree and
 // re-implement core's composition rule beside it, which is the second source of
 // truth AGENTS.md forbids. So this test exists to fail — loudly, naming the core
-// function — on the day core changes the behaviour, so the CLI's own expectations
-// are updated with it rather than silently left behind.
+// function and core#693 — on the day core changes the behaviour, so the CLI's own
+// expectations are updated with it rather than silently left behind.
 func TestAPartialRootOverrideReplacesAComposedModuleGroupWhole(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

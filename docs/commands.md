@@ -343,14 +343,28 @@ secret store fails instead of rendering a dangling reference or a value.
 A render delivers a service the **same workspace configuration groups** `codefly
 run` delivers it: the groups it declares under
 `workspace-configuration-dependencies` unioned with the ones the composition root
-provides run-wide. Only the addresses inside those groups differ — in-cluster
-here, loopback or the runtime context's family under `run`. The rule, how the set
-is selected before any reference is resolved, and the two asymmetries that remain
-(a run profile trims the run only; a root group's `${endpoint:…}` does not order
-the run, so a consumer starting before its producer sees that one value dropped
-locally and present in the render) are in [the orchestration engine's workspace
-configuration groups](orchestration.md#workspace-configuration-groups). Both
-asymmetries leave the run with less than the render, never the reverse.
+provides run-wide. For a run of the whole composition only the addresses inside
+those groups differ — in-cluster here, loopback or the runtime context's family
+under `run`.
+
+A root group's `${endpoint:…}` is held to the producer's export boundary exactly
+as a declared group's is: a reference to an endpoint whose visibility is
+`private`, or `internal` without your module in `allow-modules`, is refused
+rather than delivered, and a reference naming a producer the workspace does not
+have is refused by name rather than dropped. A root group is not a way to reach
+an endpoint a declared dependency on it would be refused.
+
+Three asymmetries remain, and **all three leave the run with fewer values than
+the render, never the reverse**, so a deployed workload never loses a value
+because of how you ran things locally: a run profile trims the run only; a root
+group's reference does not order the run, so under `--temporary-ports` its
+producer may have no address yet; and a run of fewer services than the
+composition does not contain the producer at all, so `codefly run
+payments/worker` drops a value the render of that same service resolves. Each
+drop is logged at WARN naming the consumer, the producer and the reference. The
+rule, the mechanisms and the tests that pin them are in [the orchestration
+engine's workspace configuration
+groups](orchestration.md#workspace-configuration-groups).
 
 <a id="codefly-deploy-gitops-render-secret-consequence"></a>
 

@@ -43,9 +43,10 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	// the set is the set `codefly run` resolves for the same service. A deployed
 	// service reaches its dependencies inside the cluster, so its ${endpoint:…}
 	// references resolve to their in-cluster addresses — its dependencies' and
-	// those of every producer its declared groups reference, derived as their own
-	// deploy records them. That address family is the only thing the render
-	// resolves differently.
+	// those of every producer its effective groups reference, the composition
+	// root's as well as its declared ones, derived from each producer's identity
+	// and namespace. That address family is the only thing the render resolves
+	// differently.
 	workspaceConfigurations, err := b.workspaceConfigurations(ctx, dependenciesNetworkMappings)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get workspace configurations")

@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
@@ -72,7 +73,14 @@ func (world *World) workspaceConfigurationsFor(
 	// declared resolves only if the producer it names was discovered, and only
 	// this set knows about it.
 	effective := world.effectiveWorkspaceConfigurationGroups(declared)
-	referenced, err := world.referencedProducerMappings(ctx, service, effective, dependencyMappings)
+	// Validity first, and by core's own rule: a malformed reference, a producer
+	// the workspace does not have, an endpoint it does not declare, or an
+	// endpoint the consumer's module may not see is refused here for the whole
+	// effective set — not only for the groups this service declared.
+	if err := world.checkEffectiveWorkspaceConfigurationReferences(ctx, service, effective); err != nil {
+		return nil, err
+	}
+	referenced, err := world.referencedProducerMappings(ctx, service, declared, effective, dependencyMappings)
 	if err != nil {
 		return nil, err
 	}
@@ -112,6 +120,119 @@ func (world *World) workspaceConfigurationsFor(
 		out = append(out, conf)
 	}
 	return world.applyWorkspaceConfigurationValues(out, declared), nil
+}
+
+// workspaceConfigurationInfos flattens a loader's configurations into the
+// information blocks core's reference check reads. Every workspace
+// configuration carries its group name on each Info.
+func workspaceConfigurationInfos(confs []*basev0.Configuration) []*basev0.ConfigurationInformation {
+	var out []*basev0.ConfigurationInformation
+	for _, conf := range confs {
+		if conf.GetOrigin() != resources.ConfigurationWorkspace {
+			continue
+		}
+		out = append(out, conf.GetInfos()...)
+	}
+	return out
+}
+
+// checkEffectiveWorkspaceConfigurationReferences holds every ${endpoint:…} in a
+// service's *effective* group set to the rules core applies to a declared
+// one: the reference is well formed, the producer is a service of the
+// workspace, it declares the endpoint named, and that endpoint is visible to
+// the consumer's module.
+//
+// This closes the hole this PR opened. Core's plan-time check
+// (configurations.CheckEndpointReferences, reached through
+// CheckConfigurationReferences) iterates consumer.WorkspaceConfigurationDependencies
+// — the DECLARED groups only. Its own comment gives the reason the visibility
+// rule is there at all: "without this, declaring the group instead of the
+// dependency would be the way around visibility". Before this PR a service that
+// did not declare a root group never had the producer's mappings bound, so the
+// value was dropped and the boundary held by accident. Now every root-referenced
+// producer is bound for every service, so a root group carrying
+// ${endpoint:platform/authority/admin} on an endpoint whose visibility is
+// `module` would reach every service of the composition with nothing refusing
+// it, and a typo'd producer in a root group would be dropped from every service
+// in silence — the #882 fault itself, in a new place.
+//
+// It is core's rule, not a second one: core's exported check is called, with the
+// consumer's declared set replaced by the effective set. That replacement is the
+// shim, and the durable fix is in core — let
+// configurations.CheckEndpointReferences take the effective group set, so the
+// plan-time check and this resolution stop being two selections. Named in
+// `docs/orchestration.md` and in the PR body; until then this is the same
+// function reaching the same verdict over the wider set, so the two cannot
+// disagree about what is legal.
+//
+// Run membership is deliberately NOT judged here: a producer the workspace has
+// but this run does not is a legitimate drop (excluded infrastructure, or a run
+// of one service), and that is what
+// refuseUnresolvedWorkspaceConfigurationReferences decides, with the address
+// family it can see. The lookup is therefore workspace-wide — the dependency
+// graph would report an excluded producer as "not a service of this workspace",
+// which is a different fault with a different fix.
+func (world *World) checkEffectiveWorkspaceConfigurationReferences(
+	ctx context.Context, service *resources.Service, effective []string,
+) error {
+	if world == nil || len(effective) == 0 || world.providedWorkspaceConfigurationInfos == nil {
+		return nil
+	}
+	infos := world.providedWorkspaceConfigurationInfos()
+	if len(infos) == 0 {
+		return nil
+	}
+	lookup := world.workspaceProducers(ctx)
+	if lookup == nil {
+		return nil
+	}
+	// A shallow copy: core reads WorkspaceConfigurationDependencies off the
+	// consumer, and the service it was handed must not be mutated — it is the
+	// workspace's own object, shared by every resolution.
+	consumer := *service
+	consumer.WorkspaceConfigurationDependencies = effective
+	// A zero profile excludes nothing: `effective` has already had the run
+	// profile's exclusions removed, and passing them twice would only hide a
+	// group from a check it has to pass.
+	return configurations.CheckEndpointReferences(infos, []*resources.Service{&consumer}, resources.RunProfile{}, lookup)
+}
+
+// workspaceProducers resolves <module>/<service> over the whole workspace,
+// memoized. It is the authority for "that producer does not exist", which the
+// run set and the dependency graph cannot give: both omit an excluded producer
+// exactly as they omit a service of another workspace.
+//
+// A World with no workspace (a unit test resolving a hand-built group) gets no
+// lookup and no check rather than a wrong verdict.
+func (world *World) workspaceProducers(ctx context.Context) configurations.ProducerLookup {
+	if world == nil || world.Workspace == nil {
+		return nil
+	}
+	world.workspaceProducerLookupOnce.Do(func() {
+		services, err := world.Workspace.LoadServices(ctx)
+		if err != nil {
+			wool.Get(ctx).In("World.workspaceProducers").Debug(
+				"cannot read the workspace's services, so a reference's producer cannot be checked for existence",
+				wool.Field("error", err.Error()))
+			return
+		}
+		byUnique := make(map[string]*resources.Service, len(services))
+		for _, service := range services {
+			identity, err := service.Identity()
+			if err != nil {
+				continue
+			}
+			byUnique[identity.Unique()] = service
+		}
+		world.workspaceProducerLookup = func(unique string) (*resources.Service, bool) {
+			service, ok := byUnique[unique]
+			return service, ok
+		}
+	})
+	if world.workspaceProducerLookup == nil {
+		return nil
+	}
+	return world.workspaceProducerLookup
 }
 
 // effectiveWorkspaceConfigurationGroups is the group set one service receives,
@@ -172,36 +293,40 @@ func (world *World) requireKnownRootGroup(conf *basev0.Configuration, effective 
 	return nil
 }
 
-// refuseUnresolvedWorkspaceConfigurationReferences refuses a ${endpoint:…}
-// reference carried by the effective group set that the mappings bound for this
-// consumer cannot resolve, where leaving it to core would be a silent omission
-// rather than a legitimate drop. Core's own rule tells those apart by the run
-// set (configurations.Manager.WithRunProducers): a reference naming a producer
-// this run does not contain — excluded infrastructure, or a run of one service
-// rather than the workspace — is dropped for the consumer, and no composition
-// change would make it resolvable. Those are left alone here.
+// refuseUnresolvedWorkspaceConfigurationReferences decides what happens to a
+// ${endpoint:…} in the effective group set that the mappings bound for this
+// consumer do not carry. Whether the reference is LEGAL is already settled
+// above, by core's own check over the same set
+// (checkEffectiveWorkspaceConfigurationReferences): a malformed reference, an
+// absent producer, an endpoint the producer does not declare and a visibility
+// violation never reach here. What is left is the one question core cannot
+// answer from a manifest — whether an address exists yet — and it has three
+// answers:
 //
-// Two cases are not that, and are refused:
-//
-//   - The mappings carry other endpoints of the producer but not the one named.
-//     The producer's addresses were derived and this endpoint is not among them,
-//     so the reference names an endpoint that does not exist. No ordering and no
-//     run shape changes that; it is a misreference, in either path.
+//   - The producer is not part of this run at all. A legitimate drop: excluded
+//     infrastructure, or a run of fewer services than the workspace. No
+//     composition change makes it resolvable, so the value is dropped — but with
+//     a WARN naming the consumer, the producer and the reference, because a
+//     value silently missing from a workload is the fault cli#882 is about.
+//     Core's own drop is a DEBUG line nobody reads.
 //   - A render (world.deploys()) derived nothing for a producer the run
-//     contains. A deployed address is a pure function of the producer's identity
-//     and namespace, so there is no "not yet": nothing to derive means the
-//     render would omit the value from a manifest, which is invisible until a
-//     client dials it.
+//     contains. Refused: a deployed address is a pure function of the producer's
+//     identity and namespace, so there is no "not yet", and the alternative is a
+//     committed manifest missing a value that stays invisible until a client
+//     dials it.
+//   - A local run derived nothing for an in-run producer. Dropped with a WARN.
+//     This is narrower than it reads: with deterministic ports a producer's
+//     address is derived from the endpoints it recorded at Load, and every
+//     service of a run loads before any initializes, so a consumer that merely
+//     starts early still resolves. It is reached when the producer recorded no
+//     endpoints at all, and under --temporary-ports, where no address can be
+//     known before the producer initializes and nothing orders a root group's
+//     reference (core's ServiceDependencies.addConfigurationReferenceEdges reads
+//     a consumer's declared groups and no more).
 //
-// A local run that derived nothing for an in-run producer is the one case left
-// to core's drop: a producer that has not initialized has recorded no endpoint,
-// and the graph only orders a consumer after the producers of the groups it
-// *declares* (core's architecture.addConfigurationReferenceEdges reads
-// WorkspaceConfigurationDependencies). A root group's reference therefore orders
-// nothing, so refusing here would fail a run whose service simply starts first.
-// The run can still deliver less than the render that way — the same direction a
-// profile exclusion may, and the direction that cannot produce "works locally,
-// unconfigured once deployed". It is stated in `docs/orchestration.md`.
+// Both drops leave the RUN with less than the render, never the reverse — the
+// direction that cannot produce "works locally, unconfigured once deployed".
+// They are stated as asymmetries in `docs/orchestration.md`.
 func (world *World) refuseUnresolvedWorkspaceConfigurationReferences(
 	ctx context.Context, service *resources.Service, groups []string, mappings []*basev0.NetworkMapping,
 ) error {
@@ -220,23 +345,32 @@ func (world *World) refuseUnresolvedWorkspaceConfigurationReferences(
 			continue
 		}
 		producer := info.Module + "/" + info.Service
-		if !inRun(producer) {
-			continue
-		}
 		consumer := consumerLabel(service)
-		if mappingsCarryProducer(mappings, info) {
-			return fmt.Errorf("the workspace configuration reference ${endpoint:%s} that %s receives names an endpoint %s does not serve: its other endpoints resolved, so the reference, not the run, is wrong",
-				reference, consumer, producer)
+		if !inRun(producer) {
+			warnDroppedWorkspaceConfigurationReference(ctx, consumer, producer, reference,
+				"its producer is not part of this run (excluded, or a run of fewer services than the workspace)")
+			continue
 		}
 		if world.deploys() {
 			return fmt.Errorf("cannot resolve the workspace configuration reference ${endpoint:%s} for %s: %s is part of this deployment but no address could be derived for it, so the value would be omitted from the rendered manifest without failing the render",
 				reference, consumer, producer)
 		}
-		wool.Get(ctx).In("World.refuseUnresolvedWorkspaceConfigurationReferences").Debug(
-			"a workspace configuration reference does not resolve yet for this consumer: its producer is part of the run and has recorded no endpoint",
-			wool.Field("consumer", consumer), wool.Field("producer", producer), wool.Field("reference", reference))
+		warnDroppedWorkspaceConfigurationReference(ctx, consumer, producer, reference,
+			"its producer is part of this run and no address could be derived for it yet (it recorded no endpoint, or --temporary-ports allocates its address at initialization)")
 	}
 	return nil
+}
+
+// warnDroppedWorkspaceConfigurationReference says, at WARN, that a value is
+// about to be missing from what a service receives. The level is the point: core
+// drops the same value at DEBUG, and a configuration value absent without a word
+// is the fault cli#882 exists to remove. The consumer, the producer and the
+// reference are all named, so the line is actionable on its own.
+func warnDroppedWorkspaceConfigurationReference(ctx context.Context, consumer, producer, reference, because string) {
+	wool.Get(ctx).In("World.refuseUnresolvedWorkspaceConfigurationReferences").Warn(
+		"a workspace configuration value will be missing for this service: "+because,
+		wool.Field("consumer", consumer), wool.Field("producer", producer),
+		wool.Field("reference", "${endpoint:"+reference+"}"))
 }
 
 // consumerLabel names the service a diagnostic is about. resources.WithUnique
@@ -249,23 +383,6 @@ func consumerLabel(service *resources.Service) string {
 		return service.Name
 	}
 	return identity.Unique()
-}
-
-// mappingsCarryProducer reports whether mappings hold any endpoint of the
-// producer a reference names, whatever the endpoint. It is what separates "the
-// producer's addresses were never derived" from "they were, and this endpoint is
-// not one of them".
-func mappingsCarryProducer(mappings []*basev0.NetworkMapping, info *resources.EndpointInformation) bool {
-	for _, mapping := range mappings {
-		endpoint := mapping.GetEndpoint()
-		if endpoint == nil {
-			continue
-		}
-		if endpoint.GetModule() == info.Module && endpoint.GetService() == info.Service {
-			return true
-		}
-	}
-	return false
 }
 
 // applyWorkspaceConfigurationValues layers the run's derived values onto the

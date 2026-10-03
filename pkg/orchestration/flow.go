@@ -289,6 +289,24 @@ type World struct {
 	// this never named.
 	compositionRootGroups func() []string
 
+	// providedWorkspaceConfigurationInfos is the workspace configurations as
+	// READ, before any ${endpoint:…} was interpolated — the only form in which a
+	// reference is still visible. It is what lets the resolution hand core's own
+	// configurations.CheckEndpointReferences the *effective* group set, so a
+	// root group's reference is held to the producer's export boundary and to
+	// the producer existing at all, exactly as a declared group's is
+	// (checkEffectiveWorkspaceConfigurationReferences). A function for the same
+	// reason as compositionRootGroups: the read happens after the World exists.
+	providedWorkspaceConfigurationInfos func() []*basev0.ConfigurationInformation
+
+	// workspaceProducerLookup answers "is this <module>/<service> a service of
+	// the workspace", which the dependency graph cannot: an excluded producer is
+	// absent from the graph exactly like a service of another workspace, and the
+	// two must not be reported as the same thing. Lazy and memoized — services
+	// resolve concurrently and this reads the whole workspace.
+	workspaceProducerLookup     func(unique string) (*resources.Service, bool)
+	workspaceProducerLookupOnce sync.Once
+
 	// runProducers is the run set, by <module>/<service>: every service this
 	// run starts or deploys. A workspace configuration reference naming one of
 	// them must resolve, so reading it without an address fails; a reference to
@@ -432,6 +450,17 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	// a world that cannot name it would resolve that group's references for
 	// nobody. Lazy, because Load (flow.Start) is what populates the names.
 	world.compositionRootGroups = localReader.CompositionRootWorkspaceConfigurationNames
+	// From the same loader, for the same reason, and pre-interpolation: the
+	// resolution hands these to core's CheckEndpointReferences over the
+	// effective group set, so a root group's reference is held to the producer's
+	// export boundary and to the producer existing at all. The loader rather
+	// than readWorkspaceConfigurationsForReferences above, because the loader
+	// has applied the invocation-scoped overrides (--set) and that plain read
+	// has not: a reference an operator supplies on the command line is checked
+	// too.
+	world.providedWorkspaceConfigurationInfos = func() []*basev0.ConfigurationInformation {
+		return workspaceConfigurationInfos(localReader.Configurations())
+	}
 
 	// A GitOps snapshot render is value-free: it emits secret references derived
 	// from the committed declarations and discards every secret value. Resolving

@@ -187,7 +187,11 @@ relative paths.
   `run` matches it. Never resolve groups in a delivery path of your own, and **select
   the whole set before resolving anything**: core drops a root group's unresolvable
   `${endpoint:…}` silently, so discovering producers from the declared groups alone
-  deletes values from every service that did not declare the group. See
+  deletes values from every service that did not declare the group. Widening what
+  resolves widens what must be **checked**: core's plan-time
+  `CheckEndpointReferences` validates visibility and producer existence over the
+  *declared* groups only, so the effective set is handed to that same check, or a
+  root group becomes the way around a producer's export boundary. See
   [docs/orchestration.md](docs/orchestration.md#workspace-configuration-groups).
 - **Configs flow as environment variables, not files.** Connection strings derived from network
   mappings are injected as `CODEFLY__SERVICE_...` env vars.

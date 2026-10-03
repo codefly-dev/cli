@@ -476,25 +476,46 @@ func (world *World) producerInRun() func(unique string) bool {
 // recorded nothing when the consumer reads the group, and a declaration may
 // name other endpoints of the producer than the one referenced. Only an
 // endpoint already in have is skipped. The service's own endpoints resolve the
-// same way. A reference whose producer is not a service of the workspace
-// contributes nothing, and core fails the read naming the key and the producer:
-// nothing is omitted silently. Only groups the service declares are considered:
-// the root's groups injected into every service never bind one service to
-// another.
+// same way. A reference whose producer is not a service of the workspace never
+// reaches here: core's check over the effective set
+// (checkEffectiveWorkspaceConfigurationReferences) has already refused it by
+// name.
+//
+// The groups considered are the EFFECTIVE set — the declared ones and the
+// composition root's alike — because a root group's reference is exactly what
+// #882 was about: the root supplies a value every service can read, and binding
+// only the declared groups' producers deletes it from every service that did not
+// declare the group. `declared` is still passed, and is not a second selection:
+// it is what separates a reference the dependency graph ORDERS from one it does
+// not, which is what decides whether a failure to derive is fatal.
 //
 // Failing to derive a producer's addresses is an error, not a warning: swallowing
 // it leaves the consumer's read to fail with core's "producer is not part of the
 // run", which names the wrong cause and buries the real one in a log line nobody
 // correlates.
 func (world *World) referencedProducerMappings(
-	ctx context.Context, service *resources.Service, groups []string, have []*basev0.NetworkMapping,
+	ctx context.Context, service *resources.Service, declared, effective []string, have []*basev0.NetworkMapping,
 ) ([]*basev0.NetworkMapping, error) {
-	if world == nil || world.ConfigurationManager == nil || world.SharedState == nil || world.Dependencies == nil || len(groups) == 0 {
+	if world == nil || world.ConfigurationManager == nil || world.SharedState == nil || world.Dependencies == nil || len(effective) == 0 {
 		return nil, nil
+	}
+	// A reference carried by a group this service DECLARES is ordered: core's
+	// graph puts the producer before the consumer, so failing to derive its
+	// address is a real fault and says so. A reference carried by a group only
+	// the composition root provides is ordered by nothing, so the same failure
+	// is the run simply being early — fatal there would break every run of a
+	// composition whose root group holds a reference, which is what
+	// --temporary-ports does (localProducerMappings cannot know an address
+	// allocated at initialization). Those are dropped, and
+	// refuseUnresolvedWorkspaceConfigurationReferences is where the drop is
+	// warned about and, in a render, refused.
+	fatal := make(map[string]bool)
+	for _, reference := range world.ConfigurationManager.WorkspaceEndpointReferences(declared...) {
+		fatal[reference] = true
 	}
 	var out []*basev0.NetworkMapping
 	collected := make(map[string]bool)
-	for _, reference := range world.ConfigurationManager.WorkspaceEndpointReferences(groups...) {
+	for _, reference := range world.ConfigurationManager.WorkspaceEndpointReferences(effective...) {
 		info, err := resources.ParseEndpoint(reference)
 		if err != nil {
 			continue
@@ -506,8 +527,15 @@ func (world *World) referencedProducerMappings(
 		collected[producer] = true
 		mappings, err := world.producerNetworkMappings(ctx, producer)
 		if err != nil {
+			if !fatal[reference] {
+				wool.Get(ctx).In("World.referencedProducerMappings").Warn(
+					"a workspace configuration value will be missing for this service: the composition root's group references a producer whose address cannot be derived yet, and a root group's reference orders nothing",
+					wool.Field("consumer", consumerLabel(service)), wool.Field("producer", producer),
+					wool.Field("reference", "${endpoint:"+reference+"}"), wool.Field("reason", err.Error()))
+				continue
+			}
 			return nil, fmt.Errorf("cannot derive the addresses of %s, named by the workspace configuration reference ${endpoint:%s} that %s declares: %w",
-				producer, reference, resources.WithUnique(service).Unique(), err)
+				producer, reference, consumerLabel(service), err)
 		}
 		out = append(out, mappings...)
 	}
@@ -543,9 +571,12 @@ func mappingsCarry(mappings []*basev0.NetworkMapping, info *resources.EndpointIn
 // two consumers of one group would each get a different one. Deriving there
 // would hand out a plausible address for a service that is not behind it, which
 // fails at connect time far from its cause — so say so instead. The producer
-// initializing first (which its reference orders, core's
-// architecture.WithConfigurationReferences) makes its recorded mappings
-// authoritative and never reaches this.
+// initializing first makes its recorded mappings authoritative and never reaches
+// this — but only a reference in a group the consumer DECLARES is ordered that
+// way (core's ServiceDependencies.addConfigurationReferenceEdges reads a
+// consumer's declared groups and no more), so a root group's reference can reach
+// here legitimately. referencedProducerMappings drops that case rather than
+// failing the run.
 func (world *World) localProducerMappings(ctx context.Context, service *resources.Service, identity *resources.ServiceIdentity, endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error) {
 	if world.LocalNetworkManager == nil || world.runtimeContextFor == nil {
 		return nil, nil
