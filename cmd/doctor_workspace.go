@@ -872,11 +872,29 @@ func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, 
 	}
 	// The composition root's groups are part of what every service receives, so
 	// the doctor checks their references too — not only the declared ones — and
-	// it checks the configurations as an invocation supplies them, so a `--set`
-	// override is diagnosed rather than skipped.
-	checked, rootGroups, invocationAware := orchestration.WorkspaceConfigurationsForChecking(ctx, ws, env)
-	if !invocationAware {
-		checked = provided
+	// it checks the configurations as an invocation supplies them, so an
+	// override carried in CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES is
+	// diagnosed rather than skipped.
+	//
+	// A read that fails says so and stops. It used to fall back to the plain
+	// disk read, which carries no composition-root names — so the check ran over
+	// declared groups only and then reported "every endpoint reference
+	// resolves… and in the composition root's own", which was a statement about
+	// a check that had not happened. One unsupplied ${profile} value in an
+	// unrelated group was enough to reach it, and the workspace was reported
+	// ready with a typo'd producer in a root group.
+	checked, rootGroups, err := orchestration.WorkspaceConfigurationsForChecking(ctx, ws, env)
+	if err != nil {
+		// A failure here is not only "the doctor could not look": the run
+		// resolves these configurations through the same loader, so a workspace
+		// whose configurations do not load has no working run either. It is a
+		// fault of the workspace, reported as one — unlike the branch above,
+		// where checkConfigurationSources has already reported the read failure
+		// and this is a note beside it.
+		report.add(codeConfigurationInvalid, "configuration references", "fail",
+			fmt.Sprintf("not checked: %v", err),
+			"fix the workspace configurations named above, then run the doctor again")
+		return
 	}
 	err = orchestration.CheckConfigurationReferences(ctx, ws, env, checked, dependencies, scope,
 		resources.RunProfile{}, nil, rootGroups)

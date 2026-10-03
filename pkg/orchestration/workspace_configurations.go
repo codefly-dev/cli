@@ -108,6 +108,7 @@ func (world *World) workspaceConfigurationsFor(
 		}
 	}
 	out := resolved
+	withheld := map[string]bool{}
 	for _, conf := range root {
 		if world.workspaceConfigurationExcluded(conf) || world.workspaceConfigurationSeen(conf, seen) {
 			continue
@@ -115,7 +116,14 @@ func (world *World) workspaceConfigurationsFor(
 		if err = world.requireKnownRootGroup(conf, effective); err != nil {
 			return nil, err
 		}
-		out = append(out, conf)
+		kept, held := withoutUndeclaredCredentials(ctx, conf, consumerLabel(service))
+		for _, key := range held {
+			withheld[key] = true
+		}
+		if kept == nil {
+			continue
+		}
+		out = append(out, kept)
 	}
 	out = world.applyWorkspaceConfigurationValues(out, declared)
 	// Last, because it reads the OUTCOME: every value that carried a reference
@@ -123,10 +131,96 @@ func (world *World) workspaceConfigurationsFor(
 	// what a consumer cannot satisfy, so this is the only place a drop is
 	// visible at all — and the only honest way to judge it, since whether
 	// core's interpolation succeeds is core's to know.
-	if err = world.refuseDroppedWorkspaceConfigurationValues(ctx, service, effective, out); err != nil {
+	//
+	// A credential withheld above is absent on purpose, so it is passed in
+	// rather than discovered missing: a root credential whose value carries an
+	// ${endpoint:…} would otherwise be reported as a lost value and refuse the
+	// render it was deliberately kept out of.
+	if err = world.refuseDroppedWorkspaceConfigurationValues(ctx, service, effective, out, withheld); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// withoutUndeclaredCredentials removes a composition-root group's CREDENTIAL
+// values from what a service that does not declare that group receives, and
+// names what it removed.
+//
+// It is reached only for a group the service did not declare: a declared group
+// resolves through GetWorkspaceDependenciesConfigurations above and never comes
+// through here, and a group that is both is skipped as already seen. So the rule
+// an operator meets is exactly: a root group's non-secret values reach every
+// service, and its credentials reach the services that ask for them.
+//
+// This is a deliberate narrowing of least privilege, and it is the one place
+// where this PR does NOT make a deployed service receive what a run gives it —
+// because it takes the value away from both. Making the render deliver the root's
+// groups (the #882 fix) would otherwise have handed every workload in the
+// composition every root credential as a mandatory secretKeyRef, so compromising
+// any one service would yield all of them, and the environment's store would
+// hold a copy of each credential per service. Before this PR a render delivered
+// declared groups only, so nothing was widened on the credential axis; the fix
+// must not widen it either. Parity is kept because both paths withhold: a
+// service that needs a root credential declares the group, in
+// `workspace-configuration-dependencies`, and gets it in the run and in the
+// render alike.
+//
+// "Credential" is the render's own classifier, not a new one: an explicit
+// `Secret` flag or a credential-named key (resources.IsSensitiveKey), which is
+// exactly what promotes a value to a secretKeyRef (restrictedRenderRejects,
+// promotableConfiguration) and what `deploy secrets` plans a store entry for. A
+// narrower test — the flag alone — would leave a credential-named value, which
+// is the shape an operator most often writes, reaching every workload as a
+// secret reference.
+//
+// The configuration is rebuilt rather than edited: it is core's, shared by every
+// service's resolution, and a value removed in place would be removed for the
+// consumer that declared the group too.
+func withoutUndeclaredCredentials(ctx context.Context, conf *basev0.Configuration, consumer string) (*basev0.Configuration, []string) {
+	var withheld []string
+	infos := make([]*basev0.ConfigurationInformation, 0, len(conf.GetInfos()))
+	for _, info := range conf.GetInfos() {
+		values := make([]*basev0.ConfigurationValue, 0, len(info.GetConfigurationValues()))
+		for _, value := range info.GetConfigurationValues() {
+			if !isCredentialValue(value) {
+				values = append(values, value)
+				continue
+			}
+			withheld = append(withheld, info.GetName()+"/"+value.GetKey())
+			wool.Get(ctx).In("World.workspaceConfigurationsFor").Debug(
+				"withholding a composition-root credential from a service that does not declare its group",
+				wool.Field("consumer", consumer), wool.Field("group", info.GetName()),
+				wool.Field("key", value.GetKey()),
+				wool.Field("remedy", "declare the group in workspace-configuration-dependencies to receive it"))
+		}
+		if len(values) == 0 {
+			// A group all of whose values are credentials is not delivered as an
+			// empty group: an empty information block is a group the service
+			// "has" with nothing in it, which reads as a configuration fault
+			// rather than as a boundary.
+			continue
+		}
+		infos = append(infos, &basev0.ConfigurationInformation{
+			Name:                info.GetName(),
+			Data:                info.GetData(),
+			ConfigurationValues: values,
+		})
+	}
+	if len(withheld) == 0 {
+		return conf, nil
+	}
+	if len(infos) == 0 {
+		return nil, withheld
+	}
+	return &basev0.Configuration{Origin: conf.GetOrigin(), Infos: infos}, withheld
+}
+
+// isCredentialValue reports whether a value is one the render would promote to a
+// secretKeyRef and `deploy secrets` would plan a store entry for: an explicit
+// Secret flag, or a credential-named key. See restrictedRenderRejects, which
+// mirrors core's own guard and keys off the same marker list.
+func isCredentialValue(value *basev0.ConfigurationValue) bool {
+	return value.GetSecret() || resources.IsSensitiveKey(value.GetKey())
 }
 
 // workspaceConfigurationInfos flattens a loader's configurations into the
@@ -171,9 +265,19 @@ func workspaceConfigurationInfos(confs []*basev0.Configuration) []*basev0.Config
 // shim, and the durable fix is in core — let
 // configurations.CheckEndpointReferences take the effective group set, so the
 // plan-time check and this resolution stop being two selections. Named in
-// `docs/orchestration.md` and in the PR body; until then this is the same
-// function reaching the same verdict over the wider set, so the two cannot
-// disagree about what is legal.
+// `docs/orchestration.md` and in the PR body.
+//
+// What this does NOT establish, and an earlier revision of this comment claimed
+// it did: that the check and the resolution cannot disagree about which endpoint
+// a reference names. They can. Core's check returns on the first manifest
+// endpoint a reference matches; core's interpolation takes the first bound
+// mapping that matches and has an instance for the consumer's access. A
+// reference naming an API can match several of a producer's endpoints, so the
+// check can pass on a public one while the resolution hands over a private
+// one's address. Holding the check to the effective set closes the group-as-a-way-
+// around-visibility hole and nothing else; the endpoint-selection hole is closed
+// on the binding side, in World.exportableTo, which is where the set the
+// resolution walks is built.
 //
 // Whether an address EXISTS is deliberately not judged here — that is
 // judgeDroppedValue's job, from the outcome, and it asks a different question
@@ -229,7 +333,8 @@ func (world *World) checkEffectiveWorkspaceConfigurationReferences(
 // the gate refused the plan, which is the division this package has for declared
 // groups. Dynamic review showed that to be a fail-open rather than a division,
 // because it makes the refusal depend on another gate having run over the same
-// values — and one does not always. A typo supplied through `--set` reached the
+// values — and one does not always. A typo supplied through an
+// invocation-scoped override reached the
 // resolution while the gate was still reading the pre-override configurations,
 // so nothing refused it anywhere and the value was simply dropped. The gate is
 // invocation-aware now (WorkspaceConfigurationsForChecking), but a guard that is
@@ -298,9 +403,11 @@ func (world *World) effectiveWorkspaceConfigurationGroups(declared []string) []s
 	for _, group := range declared {
 		seen[group] = true
 	}
-	// Cloned before sorting: the slice is the loader's own, and services
-	// initialize concurrently — sorting it in place would mutate shared state
-	// from several resolutions at once.
+	// Cloned before sorting: the slice is the loader's own, shared by every
+	// resolution of the run, and sorting in place would reorder the loader's
+	// state as a side effect of reading it. (Not a data race: the playbook
+	// executes its actions one at a time — playbook.go — so resolutions do not
+	// overlap. An earlier revision of this comment said they did.)
 	root := slices.Clone(world.compositionRootWorkspaceConfigurationGroups())
 	slices.Sort(root)
 	for _, group := range root {
@@ -401,6 +508,7 @@ func (world *World) referencingWorkspaceConfigurationValues(groups []string) map
 //     initializes and nothing orders a root group's reference.
 func (world *World) refuseDroppedWorkspaceConfigurationValues(
 	ctx context.Context, service *resources.Service, groups []string, delivered []*basev0.Configuration,
+	withheld map[string]bool,
 ) error {
 	if world == nil || len(groups) == 0 {
 		return nil
@@ -419,7 +527,7 @@ func (world *World) refuseDroppedWorkspaceConfigurationValues(
 	}
 	consumer := consumerLabel(service)
 	for _, qualified := range slices.Sorted(maps.Keys(referencing)) {
-		if present[qualified] {
+		if present[qualified] || withheld[qualified] {
 			continue
 		}
 		if err := world.judgeDroppedValue(ctx, consumer, qualified, referencing[qualified]); err != nil {
@@ -443,8 +551,11 @@ func (world *World) refuseDroppedWorkspaceConfigurationValues(
 //     reference adds no edge to. Judging a render by run membership therefore
 //     exempted exactly the #882 case: another module's producer, named by a root
 //     group, never in this flow's run set, value quietly absent from the
-//     manifest. Only a producer the workspace does not have is a legitimate drop
-//     here, and the plan gate refuses that by name.
+//     manifest. There is no excused drop left here: a producer the workspace does
+//     not have was the last one, and it is refused before any outcome is
+//     examined (checkEffectiveWorkspaceConfigurationReferences propagates core's
+//     verdict), so the branch below exists only to refuse rather than to warn if
+//     that ever changes.
 //   - A RUN asks whether the producer is part of the run, because a local
 //     address exists only for a service of this run. Both answers are drops: a
 //     producer outside the run could never resolve here, and one inside it may
@@ -459,14 +570,28 @@ func (world *World) judgeDroppedValue(ctx context.Context, consumer, qualified s
 	for _, reference := range references {
 		info, err := resources.ParseEndpoint(reference)
 		if err != nil {
-			continue
+			// Unreachable, and an error rather than a skip for that reason.
+			// checkEffectiveWorkspaceConfigurationReferences has already
+			// propagated core's verdict on every reference of the effective
+			// set, and core calls a reference it cannot parse malformed. If
+			// that ever stops being true, a reference nothing could read must
+			// not become a value nothing delivers in silence.
+			return fmt.Errorf("the workspace configuration value %s carries the reference ${endpoint:%s}, which cannot be read, and the value is missing for %s: %w",
+				qualified, reference, consumer, err)
 		}
 		producer := info.Module + "/" + info.Service
 		if world.deploys() {
 			if !world.workspaceHasProducer(ctx, producer) {
-				warnDroppedWorkspaceConfigurationReference(ctx, consumer, producer, qualified, []string{reference},
-					"its producer is not a service of this workspace, so no deployed address exists for it; `codefly` refuses this at the plan gate (CheckConfigurationReferences)")
-				continue
+				// Unreachable for the same reason: core's verdict on a producer
+				// the workspace does not have ("the producer is not a service
+				// of this workspace") is propagated before any outcome is
+				// examined, so this case never arrives here. It used to be the
+				// render's one excused drop; it is an error now, because
+				// excusing it is only correct while another guard refuses it,
+				// and the reason it is unreachable is precisely that that guard
+				// is here rather than only at the plan gate.
+				return fmt.Errorf("the workspace configuration value %s is missing for %s: it references %s, which is not a service of this workspace, and the reference check did not refuse it — a render must not emit a manifest whose value is silently absent. References: %s",
+					qualified, consumer, producer, endpointReferenceList(references))
 			}
 			return fmt.Errorf("the workspace configuration value %s was dropped for %s: it references %s, a service of this workspace whose deployed address is a function of its identity and namespace, so the value did not survive resolution for a reason the render cannot excuse — the manifest would simply lack it, which stays invisible until a client dials it. References: %s",
 				qualified, consumer, producer, endpointReferenceList(references))

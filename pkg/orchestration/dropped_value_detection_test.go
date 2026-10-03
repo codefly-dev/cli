@@ -206,8 +206,9 @@ func TestARenderRefusesALostRootValueWhoseProducerIsOutsideItsRunSet(t *testing.
 // that case, and the rule itself stays "the workspace has it".
 //
 // It is refused by core's verdict rather than dropped, because a drop here would
-// depend on the plan gate having run over the same values, and a `--set`
-// override reaches the resolution without the gate having seen it.
+// depend on the plan gate having run over the same values, and an
+// invocation-scoped override reaches the resolution without the gate having
+// seen it.
 func TestARenderRefusesARootValueWhoseProducerTheWorkspaceLacks(t *testing.T) {
 	_, err := droppedValueWorld(t, SnapshotMode, "${endpoint:absent/service/rest}", nil)
 	require.Error(t, err, "a reference naming a service the workspace does not have must be refused")

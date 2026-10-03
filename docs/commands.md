@@ -347,14 +347,36 @@ provides run-wide. For a run of the whole composition only the addresses inside
 those groups differ — in-cluster here, loopback or the runtime context's family
 under `run`.
 
+**A composition root's credentials go only to the services that declare its
+group.** A root group's ordinary values reach every service; a value of it that
+carries `secret:` or whose key is credential-named reaches the services that list
+the group in `workspace-configuration-dependencies`, and nothing else — under
+`run` and in a render alike. This is a **change in both paths**, and the reason
+is least privilege: a render now resolves root groups, so without this every
+workload of the composition would receive every root credential as a mandatory
+`secretKeyRef`, one compromised service would yield all of them, and the store
+would hold a copy of each credential per service. If a service needs a root
+credential, declare the group:
+
+```yaml
+workspace-configuration-dependencies:
+    - work-context
+```
+
+Nothing else changes for it — a declared group has always delivered its
+credentials by reference — and `codefly deploy secrets` plans a store entry only
+for the services that receive one.
+
 A root group's `${endpoint:…}` is held to the producer's export boundary exactly
 as a declared group's is: a reference to an endpoint whose visibility is
 `private`, or `internal` without your module in `allow-modules`, is refused
 rather than delivered. A root group is not a way to reach an endpoint a declared
 dependency on it would be refused. A reference naming a producer the workspace
 does not have is refused both when the plan is checked and when the value
-resolves — including one supplied with `--set`, which the plan check reads
-through a loaded configuration rather than off disk.
+resolves — including one supplied by an invocation-scoped override
+(`CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES`, which an integration harness
+sets; this is not `--set`, which is a per-service runtime environment override),
+because the plan check reads a loaded configuration rather than the directory.
 
 **This can refuse a composition that rendered before.** An endpoint with no
 `visibility:` declared defaults to `private`, so a composition-root group

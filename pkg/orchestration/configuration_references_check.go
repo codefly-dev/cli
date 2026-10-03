@@ -10,7 +10,6 @@ import (
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/wool"
 )
 
 // CheckConfigurationReferences refuses a plan whose workspace configurations
@@ -137,6 +136,14 @@ func consumersWithRootGroupsOnly(consumers []*resources.Service, rootGroups []st
 	if len(rootGroups) == 0 {
 		return nil
 	}
+	// The profile's exclusions, so a consumer whose only root-only groups are
+	// excluded yields nothing and the second check is skipped for it. Core
+	// applies the same exclusion inside CheckEndpointReferences, which is handed
+	// the profile, so removing this changes no verdict — it is a narrowing of
+	// what gets asked, not a guard. (Layer-5 round four reported the mutation as
+	// surviving; it survives because it is observationally equivalent, which is
+	// pinned end-to-end by
+	// TestARunProfileExclusionAlsoExcludesARootGroupFromThePlanGate.)
 	excluded := make(map[string]bool, len(profile.ExcludeWorkspaceConfigurations))
 	for _, group := range profile.ExcludeWorkspaceConfigurations {
 		excluded[group] = true
@@ -196,18 +203,20 @@ func workspaceProducerLookup(ctx context.Context, workspace *resources.Workspace
 //
 // It loads a configuration local reader rather than calling
 // configurations.ReadWorkspaceConfigurations, and the difference is the point:
-// the reader applies the **invocation-scoped overrides** (`--set`, carried in
-// CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES) and derives its
+// the reader applies the **invocation-scoped overrides** (carried in
+// CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES, core's SDK-to-CLI carrier, which
+// an integration harness sets — not `--set`, which is a per-service runtime
+// environment override the CLI applies elsewhere) and derives its
 // composition-root names from the result. Core applies them inside the loader
 // (applyWorkspaceConfigurationOverrides, unexported), so loading one is the only
 // way to see them from here.
 //
 // Both halves matter, and a plain read gets both wrong:
 //
-//   - A reference supplied by `--set` is invisible to a plain read, so a typo'd
-//     producer in an overridden value escaped the gate entirely and the
-//     resolution then dropped the value. The operator who typed the override got
-//     no error from the thing their own command line broke.
+//   - A reference supplied by an override is invisible to a plain read, so a
+//     typo'd producer in an overridden value escaped the gate entirely and the
+//     resolution then dropped the value. Whoever supplied the override got no
+//     error from the thing they had broken.
 //   - An override makes its group composition-root even on a name a composed
 //     module provides (the run itself is supplying the value, so it reaches every
 //     service), which a plain read cannot know — so the group's references went
@@ -215,31 +224,37 @@ func workspaceProducerLookup(ctx context.Context, workspace *resources.Workspace
 //
 // It is also the one place the composition-root names are derived, which is why
 // there is no longer a CLI-side "not ComposedBy ⇒ root" rule: this asks core's
-// own loader. A reader that cannot load answers false, and the caller falls back
-// to the plain read — narrower, never different, and the resolution-time check
-// still covers what the gate then misses.
+// own loader.
+//
+// A reader that cannot load returns its error, and every caller fails closed on
+// it. An earlier revision logged it at Debug and answered "not invocation-aware",
+// which let the caller fall back to a plain disk read — and the fallback carried
+// NO composition-root names, so a load failure in one group silently stopped
+// every root group's references being checked at all. `codefly doctor` then
+// printed "every endpoint reference resolves, in the groups each service
+// declares and in the composition root's own" over a workspace holding a
+// typo'd producer in a root group: an unrelated unsupplied ${profile} value was
+// enough to reach it. Failing closed costs nothing in a run or a render, where
+// the same Load runs again a moment later and fails the operation anyway; what it
+// buys is that a check never reports a pass it did not perform. The doctor turns
+// the error into "not checked: <reason>", which is its contract: nothing here
+// returns silently.
 func WorkspaceConfigurationsForChecking(
 	ctx context.Context, workspace *resources.Workspace, env *environments.Environment,
-) (*configurations.WorkspaceConfigurations, []string, bool) {
+) (*configurations.WorkspaceConfigurations, []string, error) {
 	if workspace == nil || env == nil {
-		return nil, nil, false
+		return nil, nil, nil
 	}
 	reader, err := configurations.NewConfigurationLocalReader(ctx, workspace)
 	if err != nil {
-		wool.Get(ctx).In("WorkspaceConfigurationsForChecking").Debug(
-			"cannot build a configuration reader, so the checked configurations will not include invocation overrides",
-			wool.Field("error", err.Error()))
-		return nil, nil, false
+		return nil, nil, fmt.Errorf("cannot build a configuration reader, so the workspace configurations this invocation resolves cannot be checked: %w", err)
 	}
 	if err := reader.Load(ctx, env.Runtime()); err != nil {
-		wool.Get(ctx).In("WorkspaceConfigurationsForChecking").Debug(
-			"cannot load the workspace configurations, so the checked configurations will not include invocation overrides",
-			wool.Field("error", err.Error()))
-		return nil, nil, false
+		return nil, nil, fmt.Errorf("cannot load the workspace configurations this invocation resolves, so their ${endpoint:…} references cannot be checked: %w", err)
 	}
 	return &configurations.WorkspaceConfigurations{
 		Infos: workspaceConfigurationInfos(reader.Configurations()),
-	}, reader.CompositionRootWorkspaceConfigurationNames(), true
+	}, reader.CompositionRootWorkspaceConfigurationNames(), nil
 }
 
 // withExcludedProducerReasons restates every unresolved reference whose producer
@@ -277,12 +292,14 @@ func PlanConfigurationReferences(ctx context.Context, workspace *resources.Works
 	if workspace == nil || env == nil || len(roots) == 0 {
 		return nil
 	}
-	// One read serves both the ordering option and the check below. The
-	// invocation-aware one when a reader can load — so a reference supplied by
-	// `--set` is checked like any other — and the plain disk read otherwise.
-	provided, rootGroups, invocationAware := WorkspaceConfigurationsForChecking(ctx, workspace, env)
-	if !invocationAware {
-		provided = readWorkspaceConfigurationsForReferences(ctx, workspace, env)
+	// One read serves both the ordering option and the check below: the
+	// configurations as this invocation will resolve them, overrides included,
+	// so a reference supplied through the override carrier is checked like any
+	// other. A read that fails refuses the plan rather than falling back to a
+	// narrower one — the fallback checked no composition-root group at all.
+	provided, rootGroups, err := WorkspaceConfigurationsForChecking(ctx, workspace, env)
+	if err != nil {
+		return err
 	}
 	var options []architecture.DependencyOption
 	if option := configurationReferenceOptionFrom(provided); option != nil {
@@ -365,9 +382,17 @@ func (flow *Flow) checkConfigurationReferences(ctx context.Context, required []s
 	// InitManagers; Load follows), which is why a reader is loaded here rather
 	// than read off the world — and why the names cannot come from
 	// world.compositionRootGroups, which would be empty.
-	provided, rootGroups, invocationAware := WorkspaceConfigurationsForChecking(ctx, flow.workspace, flow.world.Env)
-	if !invocationAware {
-		provided, rootGroups = flow.providedWorkspaceConfigurations, flow.world.compositionRootWorkspaceConfigurationGroups()
+	//
+	// A read that fails refuses the operation here too. The fallback that used
+	// to stand here (flow.providedWorkspaceConfigurations plus
+	// world.compositionRootWorkspaceConfigurationGroups) was worse than no
+	// check: the first cannot see an invocation override, and the second is
+	// empty at this point in the lifecycle, so a load failure anywhere in the
+	// configurations turned the gate into a declared-groups-only check without
+	// saying so.
+	provided, rootGroups, err := WorkspaceConfigurationsForChecking(ctx, flow.workspace, flow.world.Env)
+	if err != nil {
+		return err
 	}
 	return CheckConfigurationReferences(ctx, flow.workspace, flow.world.Env, provided,
 		flow.world.Dependencies, consumers, flow.runProfile, excludedProducers, rootGroups)

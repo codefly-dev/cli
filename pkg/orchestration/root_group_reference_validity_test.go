@@ -122,9 +122,10 @@ func recordParityEndpoints(t *testing.T, world *World, module, name string) {
 // root group carrying a reference to a private endpoint would reach every
 // service of the composition with nothing refusing it.
 //
-// `private` and `internal`-without-allow-modules are the two refused forms (the
-// review called the case `visibility: module`; core's values are external,
-// public, internal and private, and it is the latter two that refuse).
+// `private` and `internal`-without-allow-modules are the two refused forms.
+// `visibility: module`, which the first review named, is a core value — a
+// deprecated alias for internal with every module allow-listed (resources
+// endpoint.go) — so it permits rather than refuses and is not a case here.
 func TestARootGroupReferenceIsHeldToTheProducersExportBoundary(t *testing.T) {
 	for _, visibility := range []string{"private", "internal"} {
 		t.Run(visibility, func(t *testing.T) {
@@ -162,11 +163,13 @@ func TestARootGroupReferenceToAPublicEndpointResolves(t *testing.T) {
 // said anywhere. The gate now covers the effective set, so a root group's typo
 // gets the same answer a declared group's always had.
 //
-// It is refused HERE rather than inside the resolution on purpose. A producer
-// that is not a service of the workspace is a producer of no run, so the read
-// drops it for the consumer (and warns) while the gate refuses the plan — the
-// division this package already had for declared groups, and the one place an
-// operator can act on it instead of mid-run.
+// It is refused HERE because this is the one place an operator can act on it
+// instead of mid-run — before anything is built, pushed or started. It is NOT
+// the only place: the resolution refuses it too
+// (TestATypoedProducerInARootGroupIsRefusedByTheResolutionToo), because a guard
+// that is only correct while a second guard is also correct is not a guard. An
+// earlier revision had the read drop the value with a warning and left the
+// refusal to this gate alone, which a dynamic review showed to be a fail-open.
 func TestATypoedProducerInARootGroupIsRefusedByNameAtThePlanGate(t *testing.T) {
 	ctx := context.Background()
 	workspace := referenceValidityWorkspace(t, "platfrom/authority/admin", "public")
@@ -198,7 +201,7 @@ func TestATypoedProducerInARootGroupIsRefusedByNameAtThePlanGate(t *testing.T) {
 //
 // It used to drop: the read warned, the gate refused, and that division is the
 // one this package has for declared groups. A dynamic review showed it to be a
-// fail-open instead of a division — a typo supplied through `--set` reached the
+// fail-open instead of a division — a typo supplied through an override reached the
 // resolution while the gate was still reading the pre-override configurations,
 // so nothing refused it anywhere and the value was quietly absent. A guard that
 // is only correct while a second guard is also correct is not a guard, so core's
@@ -383,8 +386,13 @@ func TestAnUnreadableWorkspaceFailsTheReferenceCheckClosed(t *testing.T) {
 	require.Contains(t, err.Error(), "cannot be checked against the producers")
 }
 
-// A reference supplied by an invocation-scoped override (`--set`, carried in
-// CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES) is checked like any other.
+// A reference supplied by an invocation-scoped override is checked like any
+// other.
+//
+// The override is carried in CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES, core's
+// SDK-to-CLI carrier, which an integration harness sets. It is not `--set`: that
+// is a per-service runtime environment override, and a ${endpoint:…} written in
+// one of those is neither checked nor interpolated.
 //
 // It escaped entirely before. The plan gate read the configurations off disk,
 // which cannot see an override, so a typo'd producer an operator supplied on
@@ -410,8 +418,8 @@ func TestAnInvocationOverrideIsCheckedLikeAnyOtherReference(t *testing.T) {
 	t.Setenv(resources.WorkspaceConfigurationOverridesEnvironment, encoded)
 
 	// The plan gate must see the overridden value, not the correct one on disk.
-	checked, rootGroups, invocationAware := WorkspaceConfigurationsForChecking(ctx, workspace, env)
-	require.True(t, invocationAware, "a loaded reader is what makes the override visible")
+	checked, rootGroups, err := WorkspaceConfigurationsForChecking(ctx, workspace, env)
+	require.NoError(t, err, "a loaded reader is what makes the override visible")
 	require.Contains(t, rootGroups, "work-context")
 	var sawOverride bool
 	for _, info := range checked.Infos {
@@ -426,7 +434,7 @@ func TestAnInvocationOverrideIsCheckedLikeAnyOtherReference(t *testing.T) {
 	consumer, err := loadService(ctx, t, workspace, "payments", "worker")
 	require.NoError(t, err)
 	err = PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{consumer}, true)
-	require.Error(t, err, "a typo an operator supplied with --set must not pass the plan")
+	require.Error(t, err, "a typo supplied by an invocation override must not pass the plan")
 	require.Contains(t, err.Error(), "platfrom/authority")
 
 	// And the resolution refuses it too, so the gate is not the only guard.
@@ -434,4 +442,41 @@ func TestAnInvocationOverrideIsCheckedLikeAnyOtherReference(t *testing.T) {
 	_, err = world.workspaceConfigurationsFor(ctx, service, nil, resources.NewContainerNetworkAccess())
 	require.Error(t, err, "the resolution must not depend on the gate having run")
 	require.Contains(t, err.Error(), "not a service of this workspace")
+}
+
+// A RENDER refuses a root reference whose producer's addresses cannot be
+// derived, with the DERIVATION's own reason — it does not fall back to the
+// outcome check.
+//
+// The distinction matters because the outcome check would refuse this too, for a
+// different reason ("the value was dropped"), which is why making the derivation
+// non-fatal in a render survived every test: safety held, the claim did not. The
+// two differ in what they tell an operator. The derivation names the producer
+// whose address could not be computed and why; the outcome names a value that is
+// missing and leaves the cause to be guessed. A render must give the first, and
+// a reviewer must be able to tell which one fired.
+//
+// The failure is produced inside the real manager rather than by removing it:
+// a remote network manager with no DNS source cannot generate a mapping and says
+// so. TestARenderRefusesARootReferenceNoAddressCanBeDerivedFor above covers the
+// other shape — no manager at all, which returns no mappings and no error, so
+// the outcome check is what refuses there. Both must refuse; only this one
+// carries the derivation's reason.
+func TestARenderRefusesARootReferenceWithTheDerivationsOwnReason(t *testing.T) {
+	ctx := context.Background()
+	world, service := referenceValidityWorld(t,
+		referenceValidityWorkspace(t, "platform/authority/admin", "public"),
+		func(world *World) {
+			manager, err := remotenetwork.NewRemoteManager(ctx, nil)
+			require.NoError(t, err)
+			world.RemoteNetworkManager = manager
+		})
+	require.True(t, world.deploys(), "the mode is what makes a derivation failure fatal")
+
+	_, err := world.workspaceConfigurationsFor(ctx, service, nil, resources.NewContainerNetworkAccess())
+	require.Error(t, err, "a render must not emit a manifest with a root group's value silently missing")
+	require.Contains(t, err.Error(), "cannot derive the addresses of platform/authority",
+		"a render must refuse with the derivation's reason, not with the outcome check's")
+	require.NotContains(t, err.Error(), "did not survive resolution",
+		"the outcome check's refusal must not be what an operator reads here")
 }

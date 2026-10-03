@@ -191,7 +191,16 @@ relative paths.
   resolves widens what must be **checked**: core's plan-time
   `CheckEndpointReferences` validates visibility and producer existence over the
   *declared* groups only, so the effective set is handed to that same check, or a
-  root group becomes the way around a producer's export boundary. See
+  root group becomes the way around a producer's export boundary. Checking a
+  reference and resolving it are still two selections — the check stops at the
+  first manifest endpoint a reference matches, the resolution takes the first
+  bound mapping with an instance for the consumer's access — so the mappings
+  bound for a consumer are filtered by the same visibility rule
+  (`World.exportableTo`), or an API-name reference resolves to a private sibling
+  of the endpoint the check approved. And a root group's **credentials** are not
+  run-wide: they reach the services that declare the group, in run and in render,
+  so making the render resolve root groups does not hand every workload every
+  credential. See
   [docs/orchestration.md](docs/orchestration.md#workspace-configuration-groups).
 - **Configs flow as environment variables, not files.** Connection strings derived from network
   mappings are injected as `CODEFLY__SERVICE_...` env vars.

@@ -15,6 +15,11 @@ import (
 // rootGroupCredentialKey is the store key a GitOps render produces for a
 // credential-named value in a composition-root workspace configuration group.
 //
+// For a service that DECLARES the group: a root group's credentials are not
+// run-wide (pkg/orchestration withoutUndeclaredCredentials), so the store holds
+// an entry per service that asked for the credential rather than one per service
+// of the composition.
+//
 // It is derived, not written down: the render promotes such a value to a
 // `secretKeyRef` whose key is core's environment encoding of the group and the
 // key (pkg/orchestration promotableConfiguration →

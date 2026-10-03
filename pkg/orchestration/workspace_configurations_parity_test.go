@@ -248,23 +248,35 @@ func TestRenderAndRunDeliverTheSameWorkspaceConfigurationGroups(t *testing.T) {
 		module, name string
 		groups       []string
 		keys         map[string][]string
+		// withheld are the keys this service must NOT receive, in both paths.
+		// `authority-token` is a credential in a group only platform/gateway
+		// declares: a composition root's credentials reach the services that
+		// ask for them, not every workload of the composition. Asserted in both
+		// paths, because withholding in one of them would be the very asymmetry
+		// this test exists to catch.
+		withheld map[string][]string
 	}{
+		// The one declarer of `work-context`, so the one service the root's
+		// credential reaches.
 		{"platform", "gateway", []string{"work-context"},
-			map[string][]string{"work-context": {"authority-url", "authority-endpoint", "authority-token"}}},
+			map[string][]string{"work-context": {"authority-url", "authority-endpoint", "authority-token"}}, nil},
 		{"payments", "api", []string{"payments-store", "work-context"},
 			map[string][]string{
-				"work-context":   {"authority-url", "authority-endpoint", "authority-token"},
+				"work-context":   {"authority-url", "authority-endpoint"},
 				"payments-store": {"gateway-endpoint"},
-			}},
+			},
+			map[string][]string{"work-context": {"authority-token"}}},
 		{"payments", "worker", []string{"work-context"},
-			map[string][]string{"work-context": {"authority-url", "authority-endpoint", "authority-token"}}},
+			map[string][]string{"work-context": {"authority-url", "authority-endpoint"}},
+			map[string][]string{"work-context": {"authority-token"}}},
 		// The producer the root group references is itself a consumer of it: it
 		// declares no group, and the reference it receives names its own
 		// endpoint. Covered so no service of the fixture is left unasserted.
 		{"platform", "authority", []string{"work-context"},
-			map[string][]string{"work-context": {"authority-url", "authority-endpoint", "authority-token"}}},
+			map[string][]string{"work-context": {"authority-url", "authority-endpoint"}},
+			map[string][]string{"work-context": {"authority-token"}}},
 	} {
-		expected, expectedKeys := want.groups, want.keys
+		expected, expectedKeys, withheldKeys := want.groups, want.keys, want.withheld
 		t.Run(want.module+"/"+want.name, func(t *testing.T) {
 			service := parityService(t, workspace, want.module, want.name)
 			instance := parityInstance(t, workspace, service)
@@ -302,6 +314,21 @@ func TestRenderAndRunDeliverTheSameWorkspaceConfigurationGroups(t *testing.T) {
 					require.True(t, inRun, "the run did not deliver %s/%s", group, key)
 					_, inRender := groupValue(render, group, key)
 					require.True(t, inRender, "the render did not deliver %s/%s", group, key)
+				}
+			}
+
+			// And the keys this service must not receive, in both paths. A
+			// credential the root provides is not run-wide: it reaches the
+			// services that declare its group. Both halves are asserted
+			// because withholding it in the render alone would recreate #882
+			// on the credential axis, and in the run alone would leave a
+			// deployed workload holding a credential its own run never had.
+			for group, keys := range withheldKeys {
+				for _, key := range keys {
+					_, inRun := groupValue(run, group, key)
+					require.False(t, inRun, "the run delivered %s/%s to a service that does not declare %s", group, key, group)
+					_, inRender := groupValue(render, group, key)
+					require.False(t, inRender, "the render delivered %s/%s to a service that does not declare %s", group, key, group)
 				}
 			}
 		})
@@ -473,7 +500,7 @@ func TestRenderAndRunDifferOnlyInTheAddressFamily(t *testing.T) {
 // rootGroupWorld resolves one composition-root group, named `work-context`, into
 // a bare service's deployed set — the render's own entry point, so what comes
 // back is what the restricted render is handed.
-func rootGroupWorld(t *testing.T, values ...*basev0.ConfigurationValue) []*basev0.Configuration {
+func rootGroupWorld(t *testing.T, declared []string, values ...*basev0.ConfigurationValue) []*basev0.Configuration {
 	t.Helper()
 	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
 		confs: []*basev0.Configuration{{
@@ -488,8 +515,10 @@ func rootGroupWorld(t *testing.T, values ...*basev0.ConfigurationValue) []*basev
 		return []*basev0.ConfigurationInformation{{Name: "work-context", ConfigurationValues: values}}
 	}
 	builder := &Builder{
-		instance: &coreservices.Instance{Service: &resources.Service{}},
-		world:    world,
+		instance: &coreservices.Instance{
+			Service: &resources.Service{WorkspaceConfigurationDependencies: declared},
+		},
+		world: world,
 	}
 	confs, err := builder.workspaceConfigurations(context.Background(), nil)
 	require.NoError(t, err)
@@ -502,6 +531,16 @@ func rootGroupWorld(t *testing.T, values ...*basev0.ConfigurationValue) []*basev
 // promoted to a `secretKeyRef` on the service's own Secret, exactly as a
 // declared group's has always been, and never rendered inline into a committed
 // manifest.
+//
+// It reaches the services that DECLARE the group, which is the second half of
+// this test and a deliberate limit on the first. A root group's non-secret
+// values are run-wide; its credentials are not. Delivering them run-wide is what
+// making the render resolve root groups would have done on its own, and it would
+// have handed every workload of the composition every root credential as a
+// mandatory secretKeyRef — one compromised service yielding all of them, and one
+// copy per service in the environment's store. The run withholds them too, so
+// the parity this PR is about is not broken by the narrowing: see
+// withoutUndeclaredCredentials.
 //
 // The reference is asserted in full — the Secret it names, and the key inside
 // it — because that is what the projected ExternalSecret has to match. "Some
@@ -531,7 +570,7 @@ func TestACompositionRootGroupRendersItsCredentialsByReference(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			render := rootGroupWorld(t,
+			render := rootGroupWorld(t, []string{"work-context"},
 				&basev0.ConfigurationValue{Key: "authority-url", Value: "https://authority.example"},
 				test.secret,
 			)
@@ -580,6 +619,24 @@ func TestACompositionRootGroupRendersItsCredentialsByReference(t *testing.T) {
 				"a non-credential value stays inline")
 			_, inline := groupValue(safe, "work-context", test.secret.GetKey())
 			require.False(t, inline, "a credential must not survive into the rendered tree")
+
+			// The same group, the same render, for a service that does NOT
+			// declare it: the group's non-secret value still arrives — it is
+			// run-wide — and the credential is not there to promote, so no
+			// reference is rendered and no store entry is planned for it.
+			undeclared := rootGroupWorld(t, nil,
+				&basev0.ConfigurationValue{Key: "authority-url", Value: "https://authority.example"},
+				test.secret,
+			)
+			require.Equal(t, []string{"work-context"}, groupSet(undeclared),
+				"the root group's non-credential values stay run-wide")
+			_, hasCredential := groupValue(undeclared, "work-context", test.secret.GetKey())
+			require.False(t, hasCredential,
+				"a composition root's credential must not reach a service that does not declare its group")
+			_, _, undeclaredReferences, err := promotableDeploymentConfigurations(&basev0.Configuration{}, undeclared, "secret-worker")
+			require.NoError(t, err)
+			require.Empty(t, undeclaredReferences,
+				"no secretKeyRef may be rendered for a credential this service does not receive")
 		})
 	}
 }

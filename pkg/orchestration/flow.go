@@ -302,8 +302,10 @@ type World struct {
 	// workspaceProducerLookup answers "is this <module>/<service> a service of
 	// the workspace", which the dependency graph cannot: an excluded producer is
 	// absent from the graph exactly like a service of another workspace, and the
-	// two must not be reported as the same thing. Lazy and memoized — services
-	// resolve concurrently and this reads the whole workspace.
+	// two must not be reported as the same thing. Lazy and memoized because it reads
+	// the whole workspace and every service of the run asks the same question;
+	// sync.Once rather than a plain nil check so a World handed to concurrent
+	// readers answers once, whatever the playbook's scheduling.
 	workspaceProducerLookup     func(unique string) (*resources.Service, bool)
 	workspaceProducerLookupErr  error
 	workspaceProducerLookupOnce sync.Once

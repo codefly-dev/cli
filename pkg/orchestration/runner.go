@@ -555,9 +555,76 @@ func (world *World) referencedProducerMappings(
 			return nil, fmt.Errorf("cannot derive the addresses of %s, named by the workspace configuration reference ${endpoint:%s} that %s declares: %w",
 				producer, reference, consumerLabel(service), err)
 		}
-		out = append(out, mappings...)
+		out = append(out, world.exportableTo(ctx, service, mappings)...)
 	}
 	return out, nil
+}
+
+// exportableTo keeps the mappings whose endpoint the consumer's module may
+// reach, by core's own export rule (resources.ValidateEndpointVisibility — the
+// one body behind every "may this consumer depend on this endpoint" answer).
+//
+// Binding a producer's mappings is not the same act as checking a reference, and
+// that is the whole reason this exists. The check
+// (configurations.checkEndpointReference) returns on the FIRST manifest endpoint
+// a reference matches; the resolution
+// (resources.resolveEndpointReference) returns the first BOUND mapping that
+// matches AND has an instance for the consumer's network access, falling through
+// to the next match otherwise. A reference naming an API rather than an endpoint
+// name — ${endpoint:platform/authority/rest} where the producer declares two
+// `rest` endpoints — matches both, so the two can land on different endpoints:
+// the check passes on the public one, and the resolution hands over the private
+// one's address, either because it is bound first or because the public one has
+// no instance for this consumer's access. An earlier revision of this file
+// claimed the opposite ("the same function reaching the same verdict… the two
+// cannot disagree"); it was false, and the layer-5 review reproduced both
+// shapes.
+//
+// Filtering what is bound closes it from the consumer's side: an endpoint this
+// module may not reach is not in the set, so there is nothing to fall through
+// to, and the address it would have resolved to cannot be handed over whatever
+// order the mappings arrive in. It is core's rule, not a second one, and it
+// narrows only: within one module ValidateEndpointVisibility returns nil, so a
+// service reading its own module's endpoints is untouched.
+//
+// The durable fix belongs in core, in the two functions above: judge visibility
+// for EVERY endpoint a reference can match (or refuse a reference that matches
+// more than one as ambiguous), and resolve only to the endpoint that was
+// judged. Named in docs/orchestration.md and in the PR body. Until that ships
+// this is the consumer-side half, which is sound on its own: it can only remove
+// an address the consumer was never allowed to have.
+//
+// A visibility this core does not know is treated as refusing, because
+// ValidateEndpointVisibility refuses it — `module` is not that case (it is a
+// deprecated alias for internal with every module allowed, so it permits).
+func (world *World) exportableTo(ctx context.Context, consumer *resources.Service, mappings []*basev0.NetworkMapping) []*basev0.NetworkMapping {
+	// An unidentifiable consumer gets the strict answer rather than a lenient
+	// one: "" matches no producer module, so only endpoints that are visible to
+	// every module survive. NewFlow resolves nothing without an identity, so
+	// this is a floor, not a path.
+	consumerModule := ""
+	if identity, err := consumer.Identity(); err == nil {
+		consumerModule = identity.Module
+	}
+	out := make([]*basev0.NetworkMapping, 0, len(mappings))
+	for _, mapping := range mappings {
+		endpoint := mapping.GetEndpoint()
+		if endpoint == nil {
+			continue
+		}
+		err := resources.ValidateEndpointVisibility(consumerModule, endpoint.GetModule(), endpoint.GetService(),
+			endpoint.GetName(), endpoint.GetVisibility(), endpoint.GetAllowModules())
+		if err != nil {
+			wool.Get(ctx).In("World.referencedProducerMappings").Debug(
+				"not binding a producer endpoint this consumer's module may not reach",
+				wool.Field("consumer", consumerLabel(consumer)),
+				wool.Field("endpoint", resources.EndpointDestination(endpoint)),
+				wool.Field("reason", err.Error()))
+			continue
+		}
+		out = append(out, mapping)
+	}
+	return out
 }
 
 // mappingsCarry reports whether mappings already hold the endpoint a reference
