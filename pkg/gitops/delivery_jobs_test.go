@@ -52,7 +52,7 @@ func TestDeliveryJobIsASyncHookThatPostsEveryCarrier(t *testing.T) {
 		t.Fatalf("two environments must not share a Job name, got %q twice", staging)
 	}
 	for key, want := range map[string]string{
-		argoHookAnnotation: argoHookSync, argoHookDeletePolicy: argoHookBeforeHookCreation, argoSyncWaveAnnotation: consumerUnitWave,
+		argoHookAnnotation: argoHookSync, argoHookDeletePolicy: argoHookBeforeHookCreation, argoSyncWaveAnnotation: deliveryWave,
 	} {
 		if job.Metadata.Annotations[key] != want {
 			t.Fatalf("annotation %s = %q, want %q", key, job.Metadata.Annotations[key], want)

@@ -688,10 +688,9 @@ type EnvironmentServiceSecrets struct {
 	Services map[string]EnvironmentServiceSecretMapping `yaml:"services,omitempty"`
 	// Generate declares the secret configuration keys this environment's store
 	// holds as values minted at random rather than supplied from outside — the
-	// only thing `codefly deploy secrets` generates besides the federation
-	// credentials it derives itself. A key no generator names, no federation
-	// derivation covers and no stored secret already holds is reported as one the
-	// operator must supply; it is never guessed.
+	// only thing `codefly deploy secrets` generates. A key no generator names
+	// and no stored secret already holds is reported as one the operator must
+	// supply; it is never guessed.
 	Generate []EnvironmentSecretGenerator `yaml:"generate,omitempty"`
 	// MayBeEmpty names secret configuration keys whose correct value in this
 	// environment is the empty string. A stored property is otherwise refused

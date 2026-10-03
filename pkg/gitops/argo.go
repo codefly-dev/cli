@@ -99,19 +99,19 @@ const (
 	moduleResourcesWave = "-1"
 	bootstrapUnitWave   = "0"
 	consumerUnitWave    = "1"
-	// Declared presence lands with the module's own resources, before any unit.
+	// Delivery lands after every unit of the module. A delivery Application
+	// carries a Sync hook that POSTs to the host's delivery API, and the host
+	// is itself a module of the composition: on a cold bootstrap its own
+	// delivery would wait on a service that, ordered after it, never starts.
+	// The Applications an ApplicationSet stamps sync independently of each
+	// other, so the wave orders them only where a parent application syncs
+	// them by wave; there, delivery must be the last thing a module does.
 	//
-	// It was briefly placed last, on the reasoning that a binding pins the
-	// digests of this generation's artifacts and should not be declared before
-	// they are healthy. That reasoning is wrong twice over. The digests are
-	// taken over rendered bytes in the delivery repository, which exist at
-	// delivery time whatever the cluster is doing, so nothing about them needs
-	// the workload running first. And Argo only starts a wave once the previous
-	// one is healthy, so a solution whose Deployment crashloops would never
-	// have its binding applied — withholding the declaration of desired state
-	// exactly when actual state has diverged from it, which is when a host most
-	// needs it.
-	solutionHostBindingWave = moduleResourcesWave
+	// The cost is real and accepted: under such ordering, a module whose
+	// rollout is unhealthy has its new declaration withheld until the rollout
+	// is, and the host keeps the previous generation applied meanwhile. The
+	// alternative was a bootstrap that could not complete.
+	deliveryWave = "2"
 )
 
 func unitWave(unit *InventoryUnit) string {
@@ -309,14 +309,14 @@ func generateArgoBootstrap(
 		components = append(components, argoBootstrapComponent{
 			Component: argoBoundedName(componentNameBudget, inventory.Module, "solution-host-bindings"),
 			Overlay:   filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionHostBindingPath, "overlays", environment)),
-			Wave:      solutionHostBindingWave,
+			Wave:      deliveryWave,
 		})
 	}
 	if inventory.SolutionAuthorityPath != "" {
 		components = append(components, argoBootstrapComponent{
 			Component: argoBoundedName(componentNameBudget, inventory.Module, "solution-authority"),
 			Overlay:   filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionAuthorityPath, "overlays", environment)),
-			Wave:      solutionHostBindingWave,
+			Wave:      deliveryWave,
 			Project:   authorityProject,
 			Namespace: authorityNamespace,
 		})

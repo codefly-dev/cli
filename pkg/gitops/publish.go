@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/Masterminds/semver/v3"
+	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gh"
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
@@ -154,6 +155,23 @@ func preparePublish(
 	publication := &deliveryPublication{baseBranch: baseBranch, options: deliveryPublishOptions{
 		Signer: request.Signer, AllowUnsigned: request.Local, Module: request.Module,
 	}}
+	// A local qualification publish never signs — not "signs when it can":
+	// run from a workflow that holds an OIDC identity, it would otherwise
+	// deliver signed carriers and a Job to a qualification cluster under the
+	// release identity. The signer is the one a process with no identity gets,
+	// unless the caller supplied one.
+	if request.Local && request.Signer == nil {
+		publication.options.Signer = &signing.Unavailable{Reason: "a local qualification publish delivers its documents unsigned"}
+	}
+	// A release publish signs under the workflow's identity and checks each
+	// carrier the way a host will: a carrier a host would refuse is refused
+	// here, in front of whoever ran the release.
+	if !request.Local && request.Signer == nil {
+		publication.options.SelfCheck, err = signing.SelfCheckFromEnvironment(nil)
+		if err != nil {
+			return nil, err
+		}
+	}
 	// The environment's host block shapes delivery on every publish, a rollback
 	// included: what a rollback re-delivers is settled against the base branch
 	// and signed now, exactly as a render is, never restored as the bytes an
@@ -1974,11 +1992,11 @@ func resettleRestoredDelivery(ctx context.Context, repo, target, targetPath, env
 	if inventory.SolutionHostBindingPath == "" && inventory.SolutionAuthorityPath == "" {
 		return *inventory, nil
 	}
-	presence, err := settlePresenceDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, publication.options)
+	presence, err := settlePresenceDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, &publication.options)
 	if err != nil {
 		return Inventory{}, fmt.Errorf("settle the rollback's presence documents: %w", err)
 	}
-	authority, err := settleAuthorityDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, presence, publication.options)
+	authority, err := settleAuthorityDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, presence, &publication.options)
 	if err != nil {
 		return Inventory{}, fmt.Errorf("settle the rollback's authority documents: %w", err)
 	}
@@ -2026,11 +2044,11 @@ func stageAndSettleDelivery(
 			return nil, fmt.Errorf("stage rendered delivery documents: %w", err)
 		}
 	}
-	presence, err := settlePresenceDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, publication.options)
+	presence, err := settlePresenceDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, &publication.options)
 	if err != nil {
 		return nil, err
 	}
-	authority, err := settleAuthorityDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, presence, publication.options)
+	authority, err := settleAuthorityDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, presence, &publication.options)
 	if err != nil {
 		return nil, err
 	}

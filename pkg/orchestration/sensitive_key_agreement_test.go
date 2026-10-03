@@ -17,14 +17,9 @@ import (
 // must not refuse. A change in core that the CLI does not mirror fails here.
 func TestRestrictedRenderClassificationAgreesWithCore(t *testing.T) {
 	keys := []string{
-		// Federation carriers a composed solution's render references from the
-		// secret store — each must stay credential-classified.
-		"CODEFLY__MODULE_REGISTRATION_SECRETS",
+		// A module's identity secret, which a render references from the
+		// secret store — it must stay credential-classified.
 		"CODEFLY__MODULE_IDENTITY_SECRET",
-		"CODEFLY__MODULE_REGISTRATION_SECRET",
-		"CODEFLY__SOLUTION_REGISTRATION_SECRET",
-		"MODULE_REGISTRATION_SECRETS",
-		"SOLUTION_REGISTRATION_SECRETS",
 		// Federation carriers a render writes as values — each must stay public.
 		"CODEFLY__API_CONSUMES",
 		"CODEFLY__MODULE_IDENTITY_PREFIX",
@@ -61,7 +56,7 @@ func TestRestrictedRenderClassificationAgreesWithCore(t *testing.T) {
 		}
 	}
 
-	for _, key := range []string{"CODEFLY__MODULE_REGISTRATION_SECRETS", "CODEFLY__MODULE_IDENTITY_SECRET", "CODEFLY__MODULE_REGISTRATION_SECRET"} {
+	for _, key := range []string{"CODEFLY__MODULE_IDENTITY_SECRET"} {
 		require.True(t, resources.IsSensitiveKey(key), "%s must be credential-classified", key)
 	}
 	for _, key := range []string{"CODEFLY__API_CONSUMES", "CODEFLY__MODULE_IDENTITY_PREFIX"} {

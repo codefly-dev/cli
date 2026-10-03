@@ -114,7 +114,7 @@ func TestPublishSettlesGenerationsAgainstTheBaseBranch(t *testing.T) {
 	opts := deliveryPublishOptions{Signer: signer, Target: testDeliveryTarget(), Domain: "example", Module: "crm"}
 
 	inventory := repository.stageRender(t, "crm")
-	delivery, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, opts)
+	delivery, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, &opts)
 	require.NoError(t, err)
 	require.True(t, delivery.Signed)
 	require.Equal(t, 1, signer.signed)
@@ -148,11 +148,24 @@ func TestPublishSettlesGenerationsAgainstTheBaseBranch(t *testing.T) {
 	}
 	repository.deliver(t)
 
-	// Nothing changed: the generation holds.
+	// Nothing changed: the generation holds, the carrier is the one delivered
+	// before — nothing is re-signed, so a no-op promotion writes the same
+	// bytes, enters nothing in the log, and gives a re-sync nothing to do —
+	// and the Job that posts it keeps its name.
+	before := settledDocuments(t, repository)
+	jobBefore, err := os.ReadFile(filepath.Join(repository.target, filepath.FromSlash(solutionHostBindingOverlay("prod")), "deliver-presence.yaml"))
+	require.NoError(t, err)
 	inventory = repository.stageRender(t, "crm")
-	delivery, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, opts)
+	delivery, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, &opts)
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), delivery.Documents[0].Generation)
+	require.Equal(t, 1, signer.signed, "an unchanged document is not signed again")
+	require.True(t, delivery.Signed, "a reused carrier is a signed carrier")
+	after := settledDocuments(t, repository)
+	require.Equal(t, before["example.prod.crm"].Data[presenceCarrierKey], after["example.prod.crm"].Data[presenceCarrierKey], "the carrier is byte-identical")
+	jobAfter, err := os.ReadFile(filepath.Join(repository.target, filepath.FromSlash(solutionHostBindingOverlay("prod")), "deliver-presence.yaml"))
+	require.NoError(t, err)
+	require.Equal(t, string(jobBefore), string(jobAfter), "the same set is the same Job")
 	repository.deliver(t)
 
 	// The artifact changed: one bump.
@@ -162,7 +175,7 @@ func TestPublishSettlesGenerationsAgainstTheBaseBranch(t *testing.T) {
 	result, err := RenderOwnedTree(ctx, options, renderWorkload(strings.Replace(pinnedDeployment, "aaaa", "bbbb", 1)))
 	require.NoError(t, err)
 	changed := result.Inventory
-	delivery, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", &changed, opts)
+	delivery, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", &changed, &opts)
 	require.NoError(t, err)
 	require.Equal(t, uint64(2), delivery.Documents[0].Generation)
 }
@@ -179,12 +192,12 @@ func TestPublishTombstonesWhatThisModuleStoppedDeclaring(t *testing.T) {
 	opts := deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", Module: "crm"}
 
 	inventory := repository.stageRender(t, "crm", "billing")
-	_, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, opts)
+	_, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, &opts)
 	require.NoError(t, err)
 	repository.deliver(t)
 
 	inventory = repository.stageRender(t, "crm")
-	delivery, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, opts)
+	delivery, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, &opts)
 	require.NoError(t, err)
 	require.Len(t, delivery.Documents, 2)
 	byID := map[string]InventoryDeliveredDocument{}
@@ -204,7 +217,7 @@ func TestPublishTombstonesWhatThisModuleStoppedDeclaring(t *testing.T) {
 
 	// Still gone: the tombstone is carried forward at the same generation.
 	inventory = repository.stageRender(t, "crm")
-	delivery, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, opts)
+	delivery, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, &opts)
 	require.NoError(t, err)
 	for _, document := range delivery.Documents {
 		if document.ID == "example.prod.billing" {
@@ -218,7 +231,7 @@ func TestPublishTombstonesWhatThisModuleStoppedDeclaring(t *testing.T) {
 	// other system holds, so a later generation would read as continuity of
 	// what was withdrawn; a new instance needs a new name.
 	inventory = repository.stageRender(t, "crm", "billing")
-	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, opts)
+	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, &opts)
 	require.ErrorIs(t, err, solutionhost.ErrTombstoned)
 	require.Contains(t, err.Error(), "example.prod.billing")
 	require.Contains(t, err.Error(), "a new instance needs a new name")
@@ -228,6 +241,29 @@ func TestPublishTombstonesWhatThisModuleStoppedDeclaring(t *testing.T) {
 // that a release is signed only by CI: with no signing identity, publish
 // refuses and names the documents; only a local qualification publish may
 // deliver them unsigned, and then renders no Job to POST them.
+// TestPublishRefusesACarrierItsOwnCheckRefuses: the publisher verifies each
+// carrier right after signing it, as a host would; one the check refuses is
+// refused at publish, with nothing written for a Job to deliver.
+func TestPublishRefusesACarrierItsOwnCheckRefuses(t *testing.T) {
+	ctx := context.Background()
+	repository := newDeliveryRepository(t)
+	checked := 0
+	opts := deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", Module: "crm",
+		SelfCheck: func(_ context.Context, bundle, payload []byte) error {
+			checked++
+			if len(bundle) == 0 || len(payload) == 0 {
+				return errors.New("empty")
+			}
+			return errors.New("the certificate names another workflow")
+		}}
+	_, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), &opts)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "binding example.prod.crm: the certificate names another workflow")
+	require.Equal(t, 1, checked)
+	_, statErr := os.Stat(filepath.Join(repository.target, filepath.FromSlash(solutionHostBindingOverlay("prod")), "deliver-presence.yaml"))
+	require.True(t, os.IsNotExist(statErr), "a refused carrier is never written as a delivery")
+}
+
 func TestPublishRefusesUnsignedDocumentsOutsideLocalQualification(t *testing.T) {
 	ctx := context.Background()
 	repository := newDeliveryRepository(t)
@@ -235,13 +271,13 @@ func TestPublishRefusesUnsignedDocumentsOutsideLocalQualification(t *testing.T) 
 	inventory := repository.stageRender(t, "crm")
 
 	_, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory,
-		deliveryPublishOptions{Signer: unsigned, Target: testDeliveryTarget(), Domain: "example", Module: "crm"})
+		&deliveryPublishOptions{Signer: unsigned, Target: testDeliveryTarget(), Domain: "example", Module: "crm"})
 	require.True(t, errors.Is(err, signing.ErrNoIdentity), "got %v", err)
 	require.Contains(t, err.Error(), "example.prod.crm")
 	require.Contains(t, err.Error(), "release workflow")
 
 	delivery, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory,
-		deliveryPublishOptions{Signer: unsigned, Target: testDeliveryTarget(), Domain: "example", Module: "crm", AllowUnsigned: true})
+		&deliveryPublishOptions{Signer: unsigned, Target: testDeliveryTarget(), Domain: "example", Module: "crm", AllowUnsigned: true})
 	require.NoError(t, err)
 	require.False(t, delivery.Signed)
 	documents := settledDocuments(t, repository)
@@ -263,7 +299,7 @@ func TestPublishRefusesToWithdrawAnotherDomainsBinding(t *testing.T) {
 	ctx := context.Background()
 	repository := newDeliveryRepository(t)
 	opts := deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", Module: "crm"}
-	_, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), opts)
+	_, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), &opts)
 	require.NoError(t, err)
 	repository.deliver(t)
 
@@ -275,7 +311,7 @@ func TestPublishRefusesToWithdrawAnotherDomainsBinding(t *testing.T) {
 	result, err := RenderOwnedTree(ctx, options, renderWorkload(pinnedDeployment))
 	require.NoError(t, err)
 	none := result.Inventory
-	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", &none, moved)
+	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", &none, &moved)
 	require.ErrorIs(t, err, solutionhost.ErrWrongDomain)
 	require.Contains(t, err.Error(), `binding example.prod.crm was delivered under domain "example" and this environment declares "other"`)
 }
@@ -295,7 +331,7 @@ func TestRollbackResettlesWhatItRestores(t *testing.T) {
 
 	// Generation 1 delivered, and its tree kept as a rollback target.
 	inventory := repository.stageRender(t, "crm")
-	delivery, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, opts)
+	delivery, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, &opts)
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), documentByID(delivery, "example.prod.crm").Generation)
 	kept := t.TempDir()
@@ -308,7 +344,7 @@ func TestRollbackResettlesWhatItRestores(t *testing.T) {
 	data, err := os.ReadFile(bindingFile)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(bindingFile, []byte(strings.Replace(string(data), string(testReleaseDigest), string(otherReleaseDigest), 1)), 0o644))
-	delivery, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, opts)
+	delivery, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, &opts)
 	require.NoError(t, err)
 	require.Equal(t, uint64(2), documentByID(delivery, "example.prod.crm").Generation)
 	repository.deliver(t)
@@ -338,7 +374,7 @@ func TestRollbackResettlesWhatItRestores(t *testing.T) {
 	result, err := RenderOwnedTree(ctx, options, renderWorkload(pinnedDeployment))
 	require.NoError(t, err)
 	none := result.Inventory
-	delivery, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", &none, opts)
+	delivery, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", &none, &opts)
 	require.NoError(t, err)
 	require.True(t, documentByID(delivery, "example.prod.crm").Removed)
 	repository.deliver(t)
@@ -419,7 +455,7 @@ func TestPublishRefusesToWithdrawEverythingWhenTheHostDeclarationIsGone(t *testi
 	repository := newDeliveryRepository(t)
 	opts := deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", Module: "crm"}
 	inventory := repository.stageRender(t, "crm")
-	_, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, opts)
+	_, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, &opts)
 	require.NoError(t, err)
 	repository.deliver(t)
 
@@ -430,7 +466,7 @@ func TestPublishRefusesToWithdrawEverythingWhenTheHostDeclarationIsGone(t *testi
 	require.NoError(t, err)
 	hostless := result.Inventory
 	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", &hostless,
-		deliveryPublishOptions{Signer: &fakeSigner{}, Module: "crm"})
+		&deliveryPublishOptions{Signer: &fakeSigner{}, Module: "crm"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "example.prod.crm")
 	require.Contains(t, err.Error(), "tombstones")
@@ -512,7 +548,7 @@ func modelBinding(revision uint64, scopes ...string) modulecontract.ResolvedBind
 	}
 }
 
-func settleBoth(t *testing.T, repository *deliveryRepository, inventory *Inventory, opts deliveryPublishOptions) *InventoryDelivery {
+func settleBoth(t *testing.T, repository *deliveryRepository, inventory *Inventory, opts *deliveryPublishOptions) *InventoryDelivery {
 	t.Helper()
 	ctx := context.Background()
 	presence, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, opts)
@@ -538,7 +574,7 @@ func TestPublishSettlesAuthorityWithThePresenceItIsEffectiveFrom(t *testing.T) {
 	repository := newDeliveryRepository(t)
 	opts := deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", EnvelopeRevision: 1, Module: "crm"}
 
-	delivery := settleBoth(t, repository, repository.stageAuthorityRender(t, []modulecontract.ResolvedBinding{modelBinding(1, "modelservice.profiles:invoke")}), opts)
+	delivery := settleBoth(t, repository, repository.stageAuthorityRender(t, []modulecontract.ResolvedBinding{modelBinding(1, "modelservice.profiles:invoke")}), &opts)
 	require.True(t, delivery.Signed)
 	require.Equal(t, uint64(1), documentByID(delivery, "example.prod.crm").Generation)
 	require.Equal(t, uint64(1), documentByID(delivery, "example.prod.crm-authority").Generation)
@@ -571,7 +607,7 @@ func TestPublishSettlesAuthorityWithThePresenceItIsEffectiveFrom(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(data), string(testReleaseDigest))
 	require.NoError(t, os.WriteFile(bindingFile, []byte(strings.Replace(string(data), string(testReleaseDigest), string(otherReleaseDigest), 1)), 0o644))
-	delivery = settleBoth(t, repository, inventory, opts)
+	delivery = settleBoth(t, repository, inventory, &opts)
 	require.Equal(t, uint64(2), documentByID(delivery, "example.prod.crm").Generation)
 	require.Equal(t, uint64(2), documentByID(delivery, "example.prod.crm-authority").Generation)
 	document, _ = readDeliveredAuthority(t, repository.target, "prod", "example.prod.crm-authority.yaml")
@@ -588,7 +624,7 @@ func TestPublishSettlesAuthorityWithThePresenceItIsEffectiveFrom(t *testing.T) {
 	result, err := RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment))
 	require.NoError(t, err)
 	withoutAuthority := result.Inventory
-	delivery = settleBoth(t, repository, &withoutAuthority, opts)
+	delivery = settleBoth(t, repository, &withoutAuthority, &opts)
 	tombstone := documentByID(delivery, "example.prod.crm-authority")
 	require.True(t, tombstone.Removed)
 	require.Equal(t, uint64(3), tombstone.Generation)
@@ -599,9 +635,9 @@ func TestPublishSettlesAuthorityWithThePresenceItIsEffectiveFrom(t *testing.T) {
 	// withdrawn authority is terminal; the instance is renamed.
 	regranted := repository.stageAuthorityRender(t, []modulecontract.ResolvedBinding{modelBinding(1, "modelservice.profiles:invoke")})
 	ctx := context.Background()
-	presence, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", regranted, opts)
+	presence, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", regranted, &opts)
 	require.NoError(t, err, "the presence binding itself was never withdrawn")
-	_, err = settleAuthorityDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", regranted, presence, opts)
+	_, err = settleAuthorityDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", regranted, presence, &opts)
 	require.ErrorIs(t, err, solutionhost.ErrTombstoned)
 	require.Contains(t, err.Error(), "example.prod.crm-authority")
 }
@@ -613,30 +649,30 @@ func TestPublishSettlesAuthorityWithThePresenceItIsEffectiveFrom(t *testing.T) {
 func TestPublishRefusesABindingChangeThatKeepsItsRevision(t *testing.T) {
 	repository := newDeliveryRepository(t)
 	opts := deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", EnvelopeRevision: 1, Module: "crm"}
-	settleBoth(t, repository, repository.stageAuthorityRender(t, []modulecontract.ResolvedBinding{modelBinding(1, "modelservice.profiles:invoke")}), opts)
+	settleBoth(t, repository, repository.stageAuthorityRender(t, []modulecontract.ResolvedBinding{modelBinding(1, "modelservice.profiles:invoke")}), &opts)
 	repository.deliver(t)
 
 	ctx := context.Background()
 	widened := repository.stageAuthorityRender(t, []modulecontract.ResolvedBinding{modelBinding(1, "modelservice.profiles:invoke", "modelservice.profiles:read")})
-	presence, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", widened, opts)
+	presence, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", widened, &opts)
 	require.NoError(t, err)
-	_, err = settleAuthorityDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", widened, presence, opts)
+	_, err = settleAuthorityDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", widened, presence, &opts)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "crm:model:invoke")
 	require.Contains(t, err.Error(), "without bumping their revision")
 
 	// The same change with the revision bumped is a new generation.
 	bumped := repository.stageAuthorityRender(t, []modulecontract.ResolvedBinding{modelBinding(2, "modelservice.profiles:invoke", "modelservice.profiles:read")})
-	delivery := settleBoth(t, repository, bumped, opts)
+	delivery := settleBoth(t, repository, bumped, &opts)
 	require.Equal(t, uint64(2), documentByID(delivery, "example.prod.crm-authority").Generation)
 	repository.deliver(t)
 
 	// A revision never moves backwards, whatever the content: an old number
 	// must not acquire a new meaning under a credential sealed to it.
 	rewound := repository.stageAuthorityRender(t, []modulecontract.ResolvedBinding{modelBinding(1, "modelservice.profiles:invoke")})
-	presence, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", rewound, opts)
+	presence, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", rewound, &opts)
 	require.NoError(t, err)
-	_, err = settleAuthorityDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", rewound, presence, opts)
+	_, err = settleAuthorityDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", rewound, presence, &opts)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "moves the revision of the bindings example.prod.crm:model:invoke (1, delivered at 2) backwards")
 }
@@ -650,7 +686,7 @@ func TestPublishRefusesAPairTheHostWouldNotActivate(t *testing.T) {
 	repository := newDeliveryRepository(t)
 	opts := deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", EnvelopeRevision: 1, Module: "crm"}
 	bindings := []modulecontract.ResolvedBinding{modelBinding(1, "modelservice.profiles:invoke")}
-	settleAuthority := func(inventory *Inventory, opts deliveryPublishOptions) error {
+	settleAuthority := func(inventory *Inventory, opts *deliveryPublishOptions) error {
 		t.Helper()
 		presence, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, opts)
 		require.NoError(t, err)
@@ -671,14 +707,14 @@ func TestPublishRefusesAPairTheHostWouldNotActivate(t *testing.T) {
 	// agree with each other, which is not enough.
 	reviewed := opts
 	reviewed.EnvelopeRevision = 2
-	err := settleAuthority(repository.stageAuthorityRender(t, bindings), reviewed)
+	err := settleAuthority(repository.stageAuthorityRender(t, bindings), &reviewed)
 	require.ErrorIs(t, err, solutionhost.ErrNotActivated)
 	require.Contains(t, err.Error(), "envelope revision 1 and this is revision 2")
 
 	// The host block is gone from the composition: nothing names a revision.
 	hostless := opts
 	hostless.Target, hostless.EnvelopeRevision = nil, 0
-	err = settleAuthority(repository.stageAuthorityRender(t, bindings), hostless)
+	err = settleAuthority(repository.stageAuthorityRender(t, bindings), &hostless)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "example.prod.crm-authority")
 	require.Contains(t, err.Error(), "declares no host now")
@@ -687,7 +723,7 @@ func TestPublishRefusesAPairTheHostWouldNotActivate(t *testing.T) {
 	// runs: sound on its own, and activates nothing.
 	inventory := repository.stageAuthorityRender(t, bindings)
 	rewrite(authorityFile, "approved_build: sha256:aaaa", "approved_build: sha256:bbbb")
-	err = settleAuthority(inventory, opts)
+	err = settleAuthority(inventory, &opts)
 	require.ErrorIs(t, err, solutionhost.ErrNotActivated)
 	require.Contains(t, err.Error(), "example.prod.crm-authority and binding example.prod.crm")
 	require.Contains(t, err.Error(), "runs builds")
@@ -697,11 +733,11 @@ func TestPublishRefusesAPairTheHostWouldNotActivate(t *testing.T) {
 	// Delivered once under one domain, the authority does not migrate to
 	// another: the fold runs against what the base branch delivered. (The
 	// presence half moving domains is refused earlier, by its own settlement.)
-	require.NoError(t, settleAuthority(repository.stageAuthorityRender(t, bindings), opts))
+	require.NoError(t, settleAuthority(repository.stageAuthorityRender(t, bindings), &opts))
 	repository.deliver(t)
 	inventory = repository.stageAuthorityRender(t, bindings)
 	rewrite(authorityFile, "ownership_domain: example", "ownership_domain: other")
-	err = settleAuthority(inventory, opts)
+	err = settleAuthority(inventory, &opts)
 	require.ErrorIs(t, err, solutionhost.ErrWrongDomain)
 	require.Contains(t, err.Error(), `applied under domain "example"`)
 }
@@ -714,7 +750,7 @@ func TestPublishRefusesABindingThatMovesBetweenDomains(t *testing.T) {
 	ctx := context.Background()
 	repository := newDeliveryRepository(t)
 	opts := deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", Module: "crm"}
-	_, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), opts)
+	_, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), &opts)
 	require.NoError(t, err)
 	repository.deliver(t)
 
@@ -724,7 +760,7 @@ func TestPublishRefusesABindingThatMovesBetweenDomains(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(data), "ownership_domain: example")
 	require.NoError(t, os.WriteFile(file, []byte(strings.Replace(string(data), "ownership_domain: example", "ownership_domain: other", 1)), 0o644))
-	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, opts)
+	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, &opts)
 	require.ErrorIs(t, err, solutionhost.ErrWrongDomain)
 	require.Contains(t, err.Error(), `binding "example.prod.crm" was applied under domain "example"`)
 }
@@ -767,18 +803,18 @@ func TestPublishMovesTheAuthorityWithTheServicePresentingIt(t *testing.T) {
 	// Presence delivered first, on its own: the authority's first generation
 	// then folds against a presence record and no authority record, each half
 	// stated for what it is.
-	_, err := settlePresenceDelivery(context.Background(), repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageAuthorityRenderPresentedBy(t, "", nil), opts)
+	_, err := settlePresenceDelivery(context.Background(), repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageAuthorityRenderPresentedBy(t, "", nil), &opts)
 	require.NoError(t, err)
 	repository.deliver(t)
 
-	delivery := settleBoth(t, repository, repository.stageAuthorityRenderPresentedBy(t, "api", bindings), opts)
+	delivery := settleBoth(t, repository, repository.stageAuthorityRenderPresentedBy(t, "api", bindings), &opts)
 	require.Equal(t, uint64(1), documentByID(delivery, "example.prod.crm").Generation, "the presence is unchanged")
 	require.Equal(t, uint64(1), documentByID(delivery, "example.prod.crm-authority").Generation)
 	document, _ := readDeliveredAuthority(t, repository.target, "prod", "example.prod.crm-authority.yaml")
 	require.Equal(t, solutionhost.ImageDigest("sha256:"+strings.Repeat("a", 64)), document.ApprovedBuild)
 	repository.deliver(t)
 
-	delivery = settleBoth(t, repository, repository.stageAuthorityRenderPresentedBy(t, "worker", bindings), opts)
+	delivery = settleBoth(t, repository, repository.stageAuthorityRenderPresentedBy(t, "worker", bindings), &opts)
 	require.Equal(t, uint64(2), documentByID(delivery, "example.prod.crm-authority").Generation)
 	require.False(t, documentByID(delivery, "example.prod.crm-authority").Removed)
 	require.Len(t, delivery.Documents, 2, "one presence document and one authority document, nothing withdrawn")

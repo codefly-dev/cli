@@ -62,7 +62,7 @@ func TestActualInfraBaseValuesReachRenderedWorkload(t *testing.T) {
 	require.True(t, seen["ServiceAccount"])
 	require.True(t, seen["ExternalSecret"])
 	require.Empty(t, env.ManagedServices)
-	addProjectionPatch(t, root, env.Name, "ExternalSecret", "- op: replace\n  path: /spec/target/template/data/SOLUTION_REGISTRATION_SECRETS\n  value: wrong-value")
+	addProjectionPatch(t, root, env.Name, "ExternalSecret", "- op: replace\n  path: /spec/target/template/data/INTERNAL_AUTH_DIGEST\n  value: wrong-value")
 	require.ErrorContains(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "accounts"}, env, scopeOf(env), serviceInjection{}), "ExternalSecret")
 }
 

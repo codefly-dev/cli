@@ -57,21 +57,21 @@ func serviceIn(module string, name string) *resources.Service {
 }
 
 // When both forms name the same service they must layer, not compete: the run
-// path derives module-qualified overrides of its own (the federation secrets a
-// solution's registrar needs), so returning only the qualified map made
+// path derives module-qualified overrides of its own, so returning only the
+// qualified map made
 // `--set accounts:LOG_LEVEL=debug` vanish from a service the operator never
 // asked the CLI to touch. The qualified entry still wins key by key.
 func TestFlowOverridesForLayersBareNameUnderTheQualifiedKey(t *testing.T) {
 	flow := &Flow{overrides: map[string]map[string]string{
-		"accounts":      {"LOG_LEVEL": "debug", "MODULE_REGISTRATION_SECRETS": "operator-pinned"},
-		"host/accounts": {"MODULE_REGISTRATION_SECRETS": "documents:deadbeef"},
+		"accounts":      {"LOG_LEVEL": "debug", "MODULE_PIN": "operator-pinned"},
+		"host/accounts": {"MODULE_PIN": "documents:deadbeef"},
 	}}
 
 	got := flow.overridesFor(serviceIn("host", "accounts"))
 	if got["LOG_LEVEL"] != "debug" {
 		t.Errorf("--set by bare name was dropped by a derived qualified override: %v", got)
 	}
-	if got["MODULE_REGISTRATION_SECRETS"] != "documents:deadbeef" {
+	if got["MODULE_PIN"] != "documents:deadbeef" {
 		t.Errorf("qualified entry must win key by key, got %v", got)
 	}
 }
@@ -82,18 +82,18 @@ func TestFlowOverridesForLayersBareNameUnderTheQualifiedKey(t *testing.T) {
 func TestFlowOverridesForDoesNotMutateItsEntries(t *testing.T) {
 	flow := &Flow{overrides: map[string]map[string]string{
 		"accounts":      {"LOG_LEVEL": "debug"},
-		"host/accounts": {"MODULE_REGISTRATION_SECRETS": "documents:deadbeef"},
+		"host/accounts": {"MODULE_PIN": "documents:deadbeef"},
 	}}
 
 	flow.overridesFor(serviceIn("host", "accounts"))
 
-	if _, leaked := flow.overrides["accounts"]["MODULE_REGISTRATION_SECRETS"]; leaked {
+	if _, leaked := flow.overrides["accounts"]["MODULE_PIN"]; leaked {
 		t.Errorf("merge wrote through into the bare-name entry: %v", flow.overrides["accounts"])
 	}
 	if _, leaked := flow.overrides["host/accounts"]["LOG_LEVEL"]; leaked {
 		t.Errorf("merge wrote through into the qualified entry: %v", flow.overrides["host/accounts"])
 	}
-	if got := flow.overridesFor(serviceIn("solution", "accounts")); got["MODULE_REGISTRATION_SECRETS"] != "" {
+	if got := flow.overridesFor(serviceIn("solution", "accounts")); got["MODULE_PIN"] != "" {
 		t.Errorf("a same-named service in another module inherited the qualified value: %v", got)
 	}
 }

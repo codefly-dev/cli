@@ -606,15 +606,14 @@ func TestDeclaredBindingsReachArgo(t *testing.T) {
 	if !strings.Contains(set, "overlay: "+overlay) {
 		t.Fatalf("no Argo Application delivers the declared bindings:\n%s", set)
 	}
-	// With the module's own resources, before any unit. Argo starts a wave only
-	// once the previous is healthy, so a later wave would withhold the
-	// declaration of desired state from a solution whose workload is unhealthy
-	// — exactly when a host needs it.
-	if !strings.Contains(set, "wave: \""+solutionHostBindingWave+"\"") {
-		t.Fatalf("the bindings do not land in the module-resources wave:\n%s", set)
+	// After every unit of the module: the host is a module of the composition
+	// too, and under a parent that syncs by wave its own delivery must not
+	// wait on a service ordered after it.
+	if !strings.Contains(set, "wave: \""+deliveryWave+"\"") {
+		t.Fatalf("the bindings do not land in the delivery wave:\n%s", set)
 	}
-	if solutionHostBindingWave != moduleResourcesWave {
-		t.Fatalf("declared presence is gated behind the units it describes (wave %q)", solutionHostBindingWave)
+	if deliveryWave <= consumerUnitWave {
+		t.Fatalf("delivery is ordered before the units it may depend on (wave %q)", deliveryWave)
 	}
 	cluster, namespaced, err := snapshotAuthority(root, inventory, "prod")
 	if err != nil {

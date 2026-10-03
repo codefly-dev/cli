@@ -319,7 +319,7 @@ func renderDeliveryJob(directory, name, namespace, serviceAccount, kind, path st
 			Annotations: map[string]string{
 				argoHookAnnotation:     argoHookSync,
 				argoHookDeletePolicy:   argoHookBeforeHookCreation,
-				argoSyncWaveAnnotation: consumerUnitWave,
+				argoSyncWaveAnnotation: deliveryWave,
 			},
 		},
 		Spec: deliveryJobSpec{BackoffLimit: deliveryBackoffLimit, ActiveDeadlineSeconds: deliveryDeadlineSeconds},

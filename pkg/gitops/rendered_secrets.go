@@ -207,9 +207,8 @@ func projectedSecretPath(unit *InventoryUnit, environment string) string {
 // the render never derived, and seeding a store from it would hide the edit
 // rather than surface it. A projection the inventory records but that is no
 // longer on disk is refused for the same reason and a worse one — deleting it
-// takes its keys out of the plan silently, and a federation credential whose
-// only carrier left that way is one the registrar would then be handed a digest
-// of and no service the plaintext.
+// takes its keys out of the plan silently, and a secret whose only carrier
+// left that way is one no service is handed.
 func readProjectedSecret(root, relative string, inventory *Inventory) (*externalSecret, error) {
 	recorded := slices.IndexFunc(inventory.Files, func(file InventoryFile) bool { return file.Path == relative })
 	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relative)))

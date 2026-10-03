@@ -72,6 +72,12 @@ type deliveryPublishOptions struct {
 	Domain string
 	// Module is the module being published.
 	Module string
+	// SelfCheck verifies each carrier right after it is signed, as a host
+	// would — offline, against the trusted root, under the workflow's own
+	// identity — so a carrier the host would refuse never leaves the
+	// publisher. nil runs no check: a local publish signs nothing, and a test
+	// signer produces no bundle a root could verify.
+	SelfCheck signing.SelfCheck
 }
 
 // deliveredPresenceDocument is one presence document after settling.
@@ -90,7 +96,7 @@ func settlePresenceDelivery(
 	ctx context.Context,
 	repo, baseBranch, target, targetPath, environment string,
 	inventory *Inventory,
-	opts deliveryPublishOptions,
+	opts *deliveryPublishOptions,
 ) (*InventoryDelivery, error) {
 	overlay := solutionHostBindingOverlay(environment)
 	prior, err := priorDeliveredBindings(ctx, repo, baseBranch, filepath.ToSlash(filepath.Join(targetPath, overlay)))
@@ -121,7 +127,7 @@ func settlePresenceDelivery(
 		if _, present := rendered[binding]; present {
 			continue
 		}
-		if err = refuseForeignWithdrawal("binding", binding, previous.OwnershipDomain, opts.Domain); err != nil {
+		if err = refuseForeignWithdrawal("binding", binding, previous.document.OwnershipDomain, opts.Domain); err != nil {
 			return nil, err
 		}
 	}
@@ -178,7 +184,7 @@ func refuseForeignWithdrawal(what, id, delivered, declared string) error {
 		solutionhost.ErrWrongDomain, what, id, delivered, declared)
 }
 
-func sortedBindingNames(documents map[string]*solutionhost.SolutionHostBinding) []string {
+func sortedBindingNames(documents map[string]deliveredPresenceDocument) []string {
 	names := make([]string, 0, len(documents))
 	for binding := range documents {
 		names = append(names, binding)
@@ -189,16 +195,23 @@ func sortedBindingNames(documents map[string]*solutionhost.SolutionHostBinding) 
 
 // settledPresenceSet settles each rendered document against what was
 // delivered, and tombstones what was delivered and is no longer rendered.
-func settledPresenceSet(rendered map[string]deliveredPresenceDocument, prior map[string]*solutionhost.SolutionHostBinding) (map[string]deliveredPresenceDocument, error) {
+func settledPresenceSet(rendered map[string]deliveredPresenceDocument, prior map[string]deliveredPresenceDocument) (map[string]deliveredPresenceDocument, error) {
 	settled := make(map[string]deliveredPresenceDocument, len(rendered)+len(prior))
 	for binding, entry := range rendered {
 		previous, delivered := prior[binding]
 		if delivered {
-			generation, err := settledGeneration(previous, entry.document)
+			generation, err := settledGeneration(previous.document, entry.document)
 			if err != nil {
 				return nil, err
 			}
 			entry.document.Generation = generation
+			// Unchanged, the document keeps the carrier it was delivered as:
+			// the same bytes, the same signature, no new log entry, and a
+			// re-sync that finds nothing to do. Re-signing changed the carrier
+			// on every publish and made a no-op promotion impossible.
+			if generation == previous.document.Generation {
+				entry.carrier = previous.carrier
+			}
 		} else {
 			entry.document.Generation = 1
 		}
@@ -208,11 +221,16 @@ func settledPresenceSet(rendered map[string]deliveredPresenceDocument, prior map
 		if _, present := rendered[binding]; present {
 			continue
 		}
-		tombstone, err := tombstoneOf(previous)
+		tombstone, err := tombstoneOf(previous.document)
 		if err != nil {
 			return nil, fmt.Errorf("withdraw binding %s: %w", binding, err)
 		}
-		settled[binding] = deliveredPresenceDocument{document: tombstone}
+		entry := deliveredPresenceDocument{document: tombstone}
+		if previous.document.Removed {
+			// A tombstone carried forward verbatim keeps its carrier too.
+			entry.carrier = previous.carrier
+		}
+		settled[binding] = entry
 	}
 	return settled, nil
 }
@@ -220,7 +238,7 @@ func settledPresenceSet(rendered map[string]deliveredPresenceDocument, prior map
 // signPresenceSet signs every settled document's canonical bytes and assembles
 // its carrier, recording what was delivered. Documents the signer cannot sign
 // are left unsigned only when the publish allows it.
-func signPresenceSet(ctx context.Context, settled map[string]deliveredPresenceDocument, names []string, opts deliveryPublishOptions, environment string) (*InventoryDelivery, error) {
+func signPresenceSet(ctx context.Context, settled map[string]deliveredPresenceDocument, names []string, opts *deliveryPublishOptions, environment string) (*InventoryDelivery, error) {
 	signer := opts.Signer
 	if signer == nil {
 		signer = signing.FromEnvironment(nil)
@@ -229,6 +247,25 @@ func signPresenceSet(ctx context.Context, settled map[string]deliveredPresenceDo
 	var unsigned []string
 	for _, binding := range names {
 		entry := settled[binding]
+		if len(entry.carrier) > 0 {
+			// Delivered before as these exact bytes: the carrier is reused and
+			// nothing is signed. Its signer is still reported.
+			if delivery.Identity == "" {
+				if signed, parseErr := solutionhost.ParseSigned(entry.carrier); parseErr == nil {
+					if identity, readErr := signing.ReadIdentity(signed.Bundle); readErr == nil {
+						delivery.Identity = identity.Subject + " (" + identity.Issuer + ")"
+					}
+				}
+			}
+			digest, err := entry.document.Digest()
+			if err != nil {
+				return nil, err
+			}
+			delivery.Documents = append(delivery.Documents, InventoryDeliveredDocument{
+				Kind: deliveredPresence, ID: binding, Generation: entry.document.Generation, Removed: entry.document.Removed, Digest: digest,
+			})
+			continue
+		}
 		payload, err := entry.document.CanonicalBytes()
 		if err != nil {
 			return nil, fmt.Errorf("canonicalize binding %s: %w", binding, err)
@@ -236,6 +273,11 @@ func signPresenceSet(ctx context.Context, settled map[string]deliveredPresenceDo
 		bundle, signErr := signer.Sign(ctx, payload)
 		switch {
 		case signErr == nil:
+			if opts.SelfCheck != nil {
+				if checkErr := opts.SelfCheck(ctx, bundle, payload); checkErr != nil {
+					return nil, fmt.Errorf("binding %s: %w", binding, checkErr)
+				}
+			}
 			signed, carrierErr := solutionhost.Carrier(payload, bundle)
 			if carrierErr != nil {
 				return nil, fmt.Errorf("assemble the signed carrier of binding %s: %w", binding, carrierErr)
@@ -275,7 +317,7 @@ func signPresenceSet(ctx context.Context, settled map[string]deliveredPresenceDo
 
 // writePresenceSet writes the settled documents, the delivery account and the
 // Job that POSTs every signed carrier, and returns the overlay's file list.
-func writePresenceSet(target, overlay string, inventory *Inventory, settled map[string]deliveredPresenceDocument, names []string, opts deliveryPublishOptions) ([]string, error) {
+func writePresenceSet(target, overlay string, inventory *Inventory, settled map[string]deliveredPresenceDocument, names []string, opts *deliveryPublishOptions) ([]string, error) {
 	directory := filepath.Join(target, filepath.FromSlash(overlay))
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return nil, fmt.Errorf("create delivery overlay: %w", err)
@@ -392,7 +434,7 @@ func renderedBindings(directory string) (map[string]deliveredPresenceDocument, e
 		if err != nil {
 			return nil, err
 		}
-		document, alias, ok, err := bindingFromConfigMap(data)
+		document, alias, _, ok, err := bindingFromConfigMap(data)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", entry.Name(), err)
 		}
@@ -404,57 +446,89 @@ func renderedBindings(directory string) (map[string]deliveredPresenceDocument, e
 	return rendered, nil
 }
 
-// bindingFromConfigMap parses the document out of a ConfigMap carrying one, and
-// reports false for any other manifest in the overlay (the Job, the account).
-func bindingFromConfigMap(data []byte) (*solutionhost.SolutionHostBinding, string, bool, error) {
+// bindingFromConfigMap parses the document out of a ConfigMap carrying one,
+// with its signed carrier when it has one, and reports false for any other
+// manifest in the overlay (the Job, the account). A presence ConfigMap that
+// lost its document key is a corrupt carrier, not another manifest.
+func bindingFromConfigMap(data []byte) (*solutionhost.SolutionHostBinding, string, []byte, bool, error) {
 	var carrier solutionHostBindingConfigMap
 	if err := yaml.Unmarshal(data, &carrier); err != nil {
-		return nil, "", false, fmt.Errorf("decode: %w", err)
+		return nil, "", nil, false, fmt.Errorf("decode: %w", err)
 	}
 	if carrier.Kind != kindConfigMap {
-		return nil, "", false, nil
+		return nil, "", nil, false, nil
 	}
 	encoded, held := carrier.Data[solutionhost.FileName]
 	if !held {
-		return nil, "", false, nil
+		if carrier.Metadata.Labels[solutionHostBindingLabel] == solutionHostBindingKind {
+			return nil, "", nil, false, fmt.Errorf("the delivered ConfigMap %s is labelled a presence carrier and holds no %s", carrier.Metadata.Name, solutionhost.FileName)
+		}
+		return nil, "", nil, false, nil
 	}
 	document, err := solutionhost.Parse([]byte(encoded))
 	if err != nil {
-		return nil, "", false, fmt.Errorf("the delivered document is not one this Core reads: %w", err)
+		return nil, "", nil, false, fmt.Errorf("the delivered document is not one this Core reads: %w", err)
 	}
-	return document, carrier.Metadata.Labels[solutionLabel], true, nil
+	var signed []byte
+	if raw, present := carrier.Data[presenceCarrierKey]; present {
+		signed = []byte(raw)
+	}
+	return document, carrier.Metadata.Labels[solutionLabel], signed, true, nil
 }
 
-// priorDeliveredBindings reads the presence documents the base branch delivers
-// under the overlay path, keyed by binding ID. A path the base branch does not
-// have delivered nothing.
-func priorDeliveredBindings(ctx context.Context, repo, baseBranch, overlayPath string) (map[string]*solutionhost.SolutionHostBinding, error) {
+// deliveredOverlayFiles lists the YAML files an overlay holds on the base
+// branch. "Nothing delivered" is answered only by a base branch that exists
+// and holds no such path — the ordinary first publish — never by a listing
+// that failed for any other reason: an unreadable history read as empty would
+// restart the generation at 1 and lose every tombstone.
+func deliveredOverlayFiles(ctx context.Context, repo, baseBranch, overlayPath string) ([]string, error) {
 	ref := "refs/remotes/origin/" + baseBranch
+	if _, err := gitCommand(ctx, repo, "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err != nil {
+		return nil, fmt.Errorf("the base branch %s is not available in the publication checkout (%s), so what it delivers cannot be read and no generation can be settled: %w", baseBranch, ref, err)
+	}
+	if _, err := gitCommand(ctx, repo, "rev-parse", "--verify", "--quiet", ref+":"+overlayPath); err != nil {
+		// The branch exists and the path is not on it: nothing was delivered
+		// there. (--verify --quiet fails only for an unresolvable object.)
+		return nil, nil
+	}
 	listing, err := gitCommand(ctx, repo, "ls-tree", "--name-only", ref+":"+overlayPath)
 	if err != nil {
-		// git fails the listing when the path is absent from the branch, which
-		// is the ordinary first publish. Any other failure surfaces when the
-		// blob is shown below.
-		return map[string]*solutionhost.SolutionHostBinding{}, nil
+		return nil, fmt.Errorf("list what %s delivers under %s: %w", baseBranch, overlayPath, err)
 	}
-	prior := map[string]*solutionhost.SolutionHostBinding{}
+	var files []string
 	for _, name := range strings.Split(strings.TrimSpace(listing), "\n") {
 		name = strings.TrimSpace(name)
 		if name == "" || !strings.HasSuffix(name, ".yaml") || name == kustomizationFile {
 			continue
 		}
+		files = append(files, name)
+	}
+	return files, nil
+}
+
+// priorDeliveredBindings reads the presence documents the base branch delivers
+// under the overlay path, keyed by binding ID, each with the carrier it was
+// delivered as.
+func priorDeliveredBindings(ctx context.Context, repo, baseBranch, overlayPath string) (map[string]deliveredPresenceDocument, error) {
+	ref := "refs/remotes/origin/" + baseBranch
+	files, err := deliveredOverlayFiles(ctx, repo, baseBranch, overlayPath)
+	if err != nil {
+		return nil, err
+	}
+	prior := map[string]deliveredPresenceDocument{}
+	for _, name := range files {
 		data, err := gitCommandBytes(ctx, repo, "show", ref+":"+overlayPath+"/"+name)
 		if err != nil {
 			return nil, fmt.Errorf("read the delivered %s from %s: %w", name, baseBranch, err)
 		}
-		document, _, ok, err := bindingFromConfigMap(data)
+		document, alias, carrier, ok, err := bindingFromConfigMap(data)
 		if err != nil {
 			return nil, fmt.Errorf("the delivered %s on %s cannot be read, so no generation can be settled against it: %w", name, baseBranch, err)
 		}
 		if !ok {
 			continue
 		}
-		prior[document.Binding] = document
+		prior[document.Binding] = deliveredPresenceDocument{document: document, alias: alias, carrier: carrier}
 	}
 	return prior, nil
 }
@@ -523,7 +597,7 @@ func settleAuthorityDelivery(
 	repo, baseBranch, target, targetPath, environment string,
 	inventory *Inventory,
 	presence *InventoryDelivery,
-	opts deliveryPublishOptions,
+	opts *deliveryPublishOptions,
 ) (*InventoryDelivery, error) {
 	overlay := solutionAuthorityOverlay(environment)
 	prior, err := priorDeliveredAuthorities(ctx, repo, baseBranch, filepath.ToSlash(filepath.Join(targetPath, overlay)))
@@ -614,7 +688,7 @@ func refuseUnmatchedPairs(
 	settled map[string]deliveredAuthorityDocument,
 	names []string,
 	prior map[string]deliveredAuthorityDocument,
-	priorPresence map[string]*solutionhost.SolutionHostBinding,
+	priorPresence map[string]deliveredPresenceDocument,
 	envelopeRevision uint64,
 ) error {
 	var granted []string
@@ -665,7 +739,7 @@ func refuseUnmatchedPairs(
 			request.FirstAuthorityRecord = true
 		}
 		if applied, present := priorPresence[binding]; present {
-			if request.AppliedPresence, err = solutionhost.AppliedFrom(applied); err != nil {
+			if request.AppliedPresence, err = solutionhost.AppliedFrom(applied.document); err != nil {
 				return fmt.Errorf("record the delivered binding %s: %w", binding, err)
 			}
 		} else {
@@ -760,6 +834,8 @@ func settledAuthoritySet(
 		}
 		if current == before && !previous.document.Removed {
 			entry.document.Generation = previous.document.Generation
+			// Unchanged: delivered as the carrier it already has, unsigned anew.
+			entry.carrier = previous.carrier
 		} else {
 			entry.document.Generation = previous.document.Generation + 1
 		}
@@ -770,7 +846,10 @@ func settledAuthoritySet(
 			continue
 		}
 		tombstone := *previous.document
-		if !previous.document.Removed {
+		entry := deliveredAuthorityDocument{document: &tombstone, module: previous.module}
+		if previous.document.Removed {
+			entry.carrier = previous.carrier
+		} else {
 			tombstone.Generation = previous.document.Generation + 1
 			tombstone.Removed = true
 			tombstone.ApprovedBuild, tombstone.EffectiveFrom, tombstone.Principals = "", 0, nil
@@ -778,7 +857,7 @@ func settledAuthoritySet(
 				return nil, fmt.Errorf("withdraw authority %s: %w", authority, err)
 			}
 		}
-		settled[authority] = deliveredAuthorityDocument{document: &tombstone, module: previous.module}
+		settled[authority] = entry
 	}
 	return settled, nil
 }
@@ -832,7 +911,7 @@ func refuseUnbumpedBindings(prior, candidate *solutionhost.AuthorityDocument) er
 
 // signAuthoritySet signs every settled authority document and assembles its
 // carrier, recording what was delivered.
-func signAuthoritySet(ctx context.Context, settled map[string]deliveredAuthorityDocument, names []string, opts deliveryPublishOptions, environment string) (*InventoryDelivery, error) {
+func signAuthoritySet(ctx context.Context, settled map[string]deliveredAuthorityDocument, names []string, opts *deliveryPublishOptions, environment string) (*InventoryDelivery, error) {
 	signer := opts.Signer
 	if signer == nil {
 		signer = signing.FromEnvironment(nil)
@@ -841,6 +920,23 @@ func signAuthoritySet(ctx context.Context, settled map[string]deliveredAuthority
 	var unsigned []string
 	for _, authority := range names {
 		entry := settled[authority]
+		if len(entry.carrier) > 0 {
+			if delivery.Identity == "" {
+				if signed, parseErr := solutionhost.ParseSigned(entry.carrier); parseErr == nil {
+					if identity, readErr := signing.ReadIdentity(signed.Bundle); readErr == nil {
+						delivery.Identity = identity.Subject + " (" + identity.Issuer + ")"
+					}
+				}
+			}
+			digest, err := entry.document.Digest()
+			if err != nil {
+				return nil, err
+			}
+			delivery.Documents = append(delivery.Documents, InventoryDeliveredDocument{
+				Kind: deliveredAuthority, ID: authority, Generation: entry.document.Generation, Removed: entry.document.Removed, Digest: digest,
+			})
+			continue
+		}
 		payload, err := solutionhost.SignedPayloadFor(entry.document)
 		if err != nil {
 			return nil, fmt.Errorf("canonicalize authority %s: %w", authority, err)
@@ -848,6 +944,11 @@ func signAuthoritySet(ctx context.Context, settled map[string]deliveredAuthority
 		bundle, signErr := signer.Sign(ctx, payload)
 		switch {
 		case signErr == nil:
+			if opts.SelfCheck != nil {
+				if checkErr := opts.SelfCheck(ctx, bundle, payload); checkErr != nil {
+					return nil, fmt.Errorf("authority %s: %w", authority, checkErr)
+				}
+			}
 			signed, carrierErr := solutionhost.Carrier(payload, bundle)
 			if carrierErr != nil {
 				return nil, fmt.Errorf("assemble the signed carrier of authority %s: %w", authority, carrierErr)
@@ -889,7 +990,7 @@ func signAuthoritySet(ctx context.Context, settled map[string]deliveredAuthority
 // signed carrier from the authority namespace, and returns the overlay's files.
 // The account the Job runs as is the platform's: that namespace is not the
 // module's to populate.
-func writeAuthoritySet(target, overlay string, inventory *Inventory, settled map[string]deliveredAuthorityDocument, names []string, opts deliveryPublishOptions) ([]string, error) {
+func writeAuthoritySet(target, overlay string, inventory *Inventory, settled map[string]deliveredAuthorityDocument, names []string, opts *deliveryPublishOptions) ([]string, error) {
 	directory := filepath.Join(target, filepath.FromSlash(overlay))
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return nil, fmt.Errorf("create authority overlay: %w", err)
@@ -962,6 +1063,9 @@ func authorityFromConfigMap(data []byte) (*solutionhost.AuthorityDocument, strin
 	}
 	encoded, held := carrier.Data[solutionhost.AuthorityFileName]
 	if !held {
+		if carrier.Metadata.Labels[solutionHostBindingLabel] == solutionAuthorityKind {
+			return nil, "", false, fmt.Errorf("the delivered ConfigMap %s is labelled an authority carrier and holds no %s", carrier.Metadata.Name, solutionhost.AuthorityFileName)
+		}
 		return nil, "", false, nil
 	}
 	document, err := solutionhost.ParseAuthority([]byte(encoded))
@@ -971,20 +1075,29 @@ func authorityFromConfigMap(data []byte) (*solutionhost.AuthorityDocument, strin
 	return document, carrier.Metadata.Labels[solutionLabel], true, nil
 }
 
+// authorityCarrierOf reads the signed carrier out of a delivered authority
+// ConfigMap, nil when it was delivered unsigned.
+func authorityCarrierOf(data []byte) []byte {
+	var carrier solutionAuthorityConfigMap
+	if err := yaml.Unmarshal(data, &carrier); err != nil {
+		return nil
+	}
+	if raw, present := carrier.Data[authorityCarrierKey]; present {
+		return []byte(raw)
+	}
+	return nil
+}
+
 // priorDeliveredAuthorities reads the authority documents the base branch
 // delivers under the overlay path, keyed by authority ID.
 func priorDeliveredAuthorities(ctx context.Context, repo, baseBranch, overlayPath string) (map[string]deliveredAuthorityDocument, error) {
 	ref := "refs/remotes/origin/" + baseBranch
-	listing, err := gitCommand(ctx, repo, "ls-tree", "--name-only", ref+":"+overlayPath)
+	files, err := deliveredOverlayFiles(ctx, repo, baseBranch, overlayPath)
 	if err != nil {
-		return map[string]deliveredAuthorityDocument{}, nil
+		return nil, err
 	}
 	prior := map[string]deliveredAuthorityDocument{}
-	for _, name := range strings.Split(strings.TrimSpace(listing), "\n") {
-		name = strings.TrimSpace(name)
-		if name == "" || !strings.HasSuffix(name, ".yaml") || name == kustomizationFile {
-			continue
-		}
+	for _, name := range files {
 		data, err := gitCommandBytes(ctx, repo, "show", ref+":"+overlayPath+"/"+name)
 		if err != nil {
 			return nil, fmt.Errorf("read the delivered %s from %s: %w", name, baseBranch, err)
@@ -996,7 +1109,7 @@ func priorDeliveredAuthorities(ctx context.Context, repo, baseBranch, overlayPat
 		if !ok {
 			continue
 		}
-		prior[document.Authority] = deliveredAuthorityDocument{document: document, module: module}
+		prior[document.Authority] = deliveredAuthorityDocument{document: document, module: module, carrier: authorityCarrierOf(data)}
 	}
 	return prior, nil
 }
