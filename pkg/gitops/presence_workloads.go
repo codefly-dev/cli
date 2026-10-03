@@ -74,6 +74,16 @@ func presenceWorkloads(owned string, opts *RenderOptions, unit SolutionArtifactU
 // service, and lists every other container — init containers included — as one
 // that must never be accepted as it. An empty list is a declaration, so it is
 // always returned non-nil.
+//
+// It also refuses a pod template in which a token minted for an audience is
+// mounted by any container but the authenticating one. The host cannot close
+// that gap from the document: a projected token is the pod's, so a sidecar
+// mounting it presents it as the workload and the host cannot tell which
+// container asked. The cell's admission policy refuses such a pod — keyed on
+// the token's explicit audience, since the token the ServiceAccount plugin
+// injects is projected too and mounted everywhere — and refusing it here first
+// puts the failure in front of whoever wrote the pod template, at publish,
+// rather than in front of an operator reading a denial at rollout.
 func authenticatingContainer(service string, workload *CellWorkload) (CellContainer, []string, error) {
 	var chosen *CellContainer
 	for index := range workload.Containers {
@@ -102,7 +112,32 @@ func authenticatingContainer(service string, workload *CellWorkload) (CellContai
 		others = append(others, container.Name)
 	}
 	sort.Strings(others)
+	if err := refuseSharedTokens(chosen.Name, workload); err != nil {
+		return CellContainer{}, nil, err
+	}
 	return *chosen, others, nil
+}
+
+// refuseSharedTokens refuses a pod template in which a projected token minted
+// for an explicit audience is mounted by a container other than the one that
+// authenticates — a sidecar or an init container, which would present it as
+// the workload. It is the cell's admission rule, run at publish.
+func refuseSharedTokens(authenticating string, workload *CellWorkload) error {
+	var shared []string
+	for _, container := range append(append([]CellContainer(nil), workload.Containers...), workload.InitContainers...) {
+		if container.Name == authenticating {
+			continue
+		}
+		for _, mount := range container.tokenMounts {
+			shared = append(shared, fmt.Sprintf("%s mounts %s (audience %q)", container.Name, mount.volume, mount.audience))
+		}
+	}
+	if len(shared) == 0 {
+		return nil
+	}
+	sort.Strings(shared)
+	return fmt.Errorf("a projected token minted for an audience is mounted by a container other than the authenticating one, %q: %s; a token the pod shares is a token a sidecar can present as the workload, and the cell's admission refuses the pod for it, so mount it into %q alone",
+		authenticating, strings.Join(shared, ", "), authenticating)
 }
 
 // releaseDigest pins the release a module instance deploys: the content digest

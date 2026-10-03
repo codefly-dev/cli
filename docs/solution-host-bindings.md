@@ -145,6 +145,20 @@ up holding a workload's authority. Every pod-producing object of a unit is a
 workload — the bootstrap Jobs and CronJobs included, which run their own
 images — so the host's approved set covers every pod it will see.
 
+The document cannot close the sidecar gap on its own: a projected
+ServiceAccount token is the pod's, so a sidecar that mounts it presents it as
+the workload and the host cannot tell which container asked. The cell's
+admission policy closes it — a projected token minted for an explicit
+`audience` must be mounted by the authenticating container and no other — and
+the render refuses the same pod template first, at publish, so the failure
+lands on whoever wrote the template rather than on an operator reading a
+denial at rollout. The rule keys on the token's `audience`, as admission does:
+the token the ServiceAccount plugin injects (`kube-api-access-…`) is a
+projected token too, mounted into every container, and names none, so a rule
+keyed on "a projected token volume" would refuse every multi-container pod. A
+render check is not the boundary — a hand-built manifest skips the renderer —
+it is the same rule one step earlier.
+
 Two approved builds of one ServiceAccount share one SVID: a mesh derives the
 identity from the account, not the image. Binding identity to the build is
 therefore not something the SVID does; the host does it by comparing the pod's

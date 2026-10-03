@@ -147,6 +147,17 @@ type CellWorkload struct {
 type CellContainer struct {
 	Name  string    `yaml:"name"`
 	Image CellImage `yaml:"image"`
+	// tokenMounts are the projected ServiceAccount token volumes minted for an
+	// explicit audience that this container mounts. Not part of the cell file:
+	// read so the render can refuse a token a sidecar could present.
+	tokenMounts []tokenMount
+}
+
+// tokenMount is one projected ServiceAccount token volume carrying an
+// explicit audience, as a container mounts it.
+type tokenMount struct {
+	volume   string
+	audience string
 }
 
 // CellImage is an image reference split into the two things the platform
@@ -427,12 +438,13 @@ func renderedWorkloads(unitDir, environment string) ([]CellWorkload, error) {
 		if workload.ServiceAccount == "" {
 			workload.ServiceAccount = "default"
 		}
-		containers, err := renderedContainers(workload.Name, sliceField(spec, "containers"))
+		tokens := audienceTokenVolumes(sliceField(spec, "volumes"))
+		containers, err := renderedContainers(workload.Name, sliceField(spec, "containers"), tokens)
 		if err != nil {
 			return nil, err
 		}
 		workload.Containers = containers
-		if workload.InitContainers, err = renderedContainers(workload.Name, sliceField(spec, "initContainers")); err != nil {
+		if workload.InitContainers, err = renderedContainers(workload.Name, sliceField(spec, "initContainers"), tokens); err != nil {
 			return nil, err
 		}
 		workloads = append(workloads, workload)
@@ -440,8 +452,30 @@ func renderedWorkloads(unitDir, environment string) ([]CellWorkload, error) {
 	return workloads, nil
 }
 
-// renderedContainers reads a pod template's containers and their pinned images.
-func renderedContainers(workload string, raw []any) ([]CellContainer, error) {
+// audienceTokenVolumes indexes a pod template's projected volumes that carry a
+// ServiceAccount token minted for an explicit audience, by volume name. The
+// token the ServiceAccount admission plugin injects (kube-api-access-…) is a
+// projected token volume too, mounted into every container, and names no
+// audience — keying on the audience is what tells the two apart, and it is
+// what the cell's admission rule keys on.
+func audienceTokenVolumes(raw []any) map[string]string {
+	audiences := map[string]string{}
+	for _, entry := range raw {
+		volume, _ := entry.(map[string]any)
+		name, _ := volume["name"].(string)
+		for _, source := range sliceField(mapField(volume, "projected"), "sources") {
+			projected, _ := source.(map[string]any)
+			if audience, _ := mapField(projected, "serviceAccountToken")["audience"].(string); audience != "" && name != "" {
+				audiences[name] = audience
+			}
+		}
+	}
+	return audiences
+}
+
+// renderedContainers reads a pod template's containers, their pinned images
+// and the audience-bearing token volumes each mounts.
+func renderedContainers(workload string, raw []any, tokens map[string]string) ([]CellContainer, error) {
 	var containers []CellContainer
 	for _, entry := range raw {
 		container, _ := entry.(map[string]any)
@@ -456,7 +490,15 @@ func renderedContainers(workload string, raw []any) ([]CellContainer, error) {
 		if at := strings.LastIndex(repository, ":"); at > strings.LastIndex(repository, "/") {
 			repository = repository[:at]
 		}
-		containers = append(containers, CellContainer{Name: name, Image: CellImage{Repository: repository, Digest: digest}})
+		rendered := CellContainer{Name: name, Image: CellImage{Repository: repository, Digest: digest}}
+		for _, raw := range sliceField(container, "volumeMounts") {
+			mount, _ := raw.(map[string]any)
+			volume, _ := mount["name"].(string)
+			if audience, carries := tokens[volume]; carries {
+				rendered.tokenMounts = append(rendered.tokenMounts, tokenMount{volume: volume, audience: audience})
+			}
+		}
+		containers = append(containers, rendered)
 	}
 	return containers, nil
 }

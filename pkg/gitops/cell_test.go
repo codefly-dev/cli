@@ -305,6 +305,113 @@ func TestCellFileRefusesAWorkloadWhoseAuthenticatingContainerCannotBeTold(t *tes
 	require.Contains(t, err.Error(), "none of its containers (web, proxy) is named \"api\"")
 }
 
+// TestRenderRefusesATokenASidecarCouldPresent mirrors the cell's admission
+// rule at publish: a projected ServiceAccount token minted for an explicit
+// audience may be mounted by the authenticating container and no other. The
+// token the ServiceAccount plugin injects is projected too, mounted everywhere,
+// and names no audience, so the rule keys on the audience — a rule keyed on
+// "a projected token volume" would refuse every multi-container pod.
+func TestRenderRefusesATokenASidecarCouldPresent(t *testing.T) {
+	deployment := func(apiMounts, proxyMounts, initMounts string) string {
+		return `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api
+    spec:
+      serviceAccountName: api
+      initContainers:
+        - name: migrate
+          image: registry.example.test/acme/api-migrate@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+` + initMounts + `
+      containers:
+        - name: api
+          image: registry.example.test/acme/api:1.2.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+` + apiMounts + `
+        - name: proxy
+          image: registry.example.test/mesh/proxy@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+` + proxyMounts + `
+      volumes:
+        - name: kube-api-access-x7k2p
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+        - name: host-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: accounts
+                  expirationSeconds: 600
+                  path: token
+`
+	}
+	const injected = "          volumeMounts:\n            - name: kube-api-access-x7k2p\n              mountPath: /var/run/secrets/kubernetes.io/serviceaccount\n"
+	const audience = "          volumeMounts:\n            - name: host-token\n              mountPath: /var/run/secrets/codefly/host\n"
+	const both = "          volumeMounts:\n            - name: kube-api-access-x7k2p\n              mountPath: /var/run/secrets/kubernetes.io/serviceaccount\n            - name: host-token\n              mountPath: /var/run/secrets/codefly/host\n"
+	cases := []struct {
+		name             string
+		api, proxy, init string
+		refused          string
+	}{
+		{name: "the injected token in every container", api: injected, proxy: injected, init: injected},
+		{name: "the audience token in the authenticating container only", api: both, proxy: injected},
+		{name: "the audience token also in a sidecar", api: both, proxy: both, refused: `proxy mounts host-token (audience "accounts")`},
+		{name: "the audience token in the sidecar alone", api: injected, proxy: audience, refused: `proxy mounts host-token (audience "accounts")`},
+		{name: "the audience token in an init container", api: audience, init: audience, refused: `migrate mounts host-token (audience "accounts")`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			unit := t.TempDir()
+			overlay := filepath.Join(unit, "overlays", "staging")
+			require.NoError(t, os.MkdirAll(overlay, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(deployment(tc.api, tc.proxy, tc.init)), 0o644))
+			workloads, err := renderedWorkloads(unit, "staging")
+			require.NoError(t, err)
+			require.Len(t, workloads, 1)
+			authenticating, others, err := authenticatingContainer("api", &workloads[0])
+			if tc.refused == "" {
+				require.NoError(t, err)
+				require.Equal(t, "api", authenticating.Name)
+				require.Equal(t, []string{"migrate", "proxy"}, others)
+				return
+			}
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.refused)
+			require.Contains(t, err.Error(), `mount it into "api" alone`)
+		})
+	}
+
+	// The refusal reaches the cell file and the presence document alike, since
+	// both derive the authenticating container through the same function.
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
+		Destination: moduleRenderDestination(workspace, "shop"),
+		Module:      "shop", Environment: "staging", Namespace: "acme-shop", AppProject: "acme-staging",
+		Promotable: true, OwnedPath: "deployments/modules/shop",
+		Units:   promotableServiceGraph("shop", []string{"api"}),
+		Package: &InventoryPackage{ID: "acme/shop", Version: "1.2.0"},
+	}, func(_ context.Context, root string) error {
+		overlay := filepath.Join(root, "services", "api", "overlays", "staging")
+		if err := os.MkdirAll(overlay, 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(deployment(both, both, "")), 0o644)
+	})
+	require.NoError(t, err)
+	_, err = RenderCell(context.Background(), workspace, env)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `proxy mounts host-token (audience "accounts")`)
+}
+
 func TestCellFileSkipsTreesRenderedForAnotherEnvironment(t *testing.T) {
 	workspace := writeCellWorkspace(t)
 	env := selectedEnvironment(t, workspace, "staging")
