@@ -350,6 +350,70 @@ func TestRollbackResettlesWhatItRestores(t *testing.T) {
 	require.ErrorIs(t, err, solutionhost.ErrTombstoned)
 }
 
+// TestPublishMergesItsCellContributionIntoTheDeliveredCell: the local cell is
+// built from whatever module trees are on disk, so a publish takes only its
+// own module's entry from it and sets that into the cell the base branch
+// delivers, every other module's entry kept. One module's publish never
+// erases another from the platform's inventory, and a module rendered
+// locally but not published is not added on another's account.
+func TestPublishMergesItsCellContributionIntoTheDeliveredCell(t *testing.T) {
+	ctx := context.Background()
+	repository := newDeliveryRepository(t)
+	cellPath := "deployments/cells/prod/cell.yaml"
+	namespace := func(module, digest string) CellNamespace {
+		return CellNamespace{Name: "ns-" + module, Module: module, Workloads: []CellWorkload{{
+			Name: module, Kind: "Deployment", Service: module + "/api", ServiceAccount: "api",
+			Containers: []CellContainer{{Name: "api", Image: CellImage{Repository: "registry.example.test/" + module, Digest: "sha256:" + strings.Repeat(digest, 64)}}},
+			Artifact:   CellArtifact{Name: "api", Digest: "sha256:" + strings.Repeat(digest, 64)},
+		}}}
+	}
+	local := &CellFile{Schema: CellSchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example", Environment: "prod",
+		Namespaces: []CellNamespace{namespace("crm", "b"), namespace("shop", "c")}}
+
+	// No cell delivered yet: the publish contributes crm alone. shop, rendered
+	// locally but not the module being published, is not added.
+	merged, err := mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "crm")
+	require.NoError(t, err)
+	require.Equal(t, []string{"crm"}, cellModules(merged))
+	require.Equal(t, "example", merged.Domain)
+
+	// billing and an older crm delivered: crm is replaced, billing kept, shop
+	// still not added.
+	delivered := &CellFile{Schema: CellSchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example", Environment: "prod",
+		Namespaces: []CellNamespace{namespace("billing", "d"), namespace("crm", "a")}}
+	data, err := yaml.Marshal(delivered)
+	require.NoError(t, err)
+	full := filepath.Join(repository.repo, filepath.FromSlash(cellPath))
+	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+	require.NoError(t, os.WriteFile(full, data, 0o644))
+	for _, args := range [][]string{{"add", "-A", "--", cellPath}, {"commit", "-q", "-m", "cell"}, {"update-ref", "refs/remotes/origin/main", "HEAD"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repository.repo
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.test", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.test")
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
+	merged, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "crm")
+	require.NoError(t, err)
+	require.Equal(t, []string{"billing", "crm"}, cellModules(merged))
+	require.Equal(t, "sha256:"+strings.Repeat("b", 64), merged.Namespaces[1].Workloads[0].Artifact.Digest, "crm is this publish's render")
+	require.Equal(t, "sha256:"+strings.Repeat("d", 64), merged.Namespaces[0].Workloads[0].Artifact.Digest, "billing is as delivered")
+
+	// A publish of a module the local cell has no entry for is refused: its
+	// tree was not rendered for this environment.
+	_, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "ledger")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "carries no entry for module ledger")
+}
+
+func cellModules(cell *CellFile) []string {
+	modules := make([]string, 0, len(cell.Namespaces))
+	for _, namespace := range cell.Namespaces {
+		modules = append(modules, namespace.Module)
+	}
+	return modules
+}
+
 func TestPublishRefusesToWithdrawEverythingWhenTheHostDeclarationIsGone(t *testing.T) {
 	ctx := context.Background()
 	repository := newDeliveryRepository(t)
@@ -565,6 +629,16 @@ func TestPublishRefusesABindingChangeThatKeepsItsRevision(t *testing.T) {
 	bumped := repository.stageAuthorityRender(t, []modulecontract.ResolvedBinding{modelBinding(2, "modelservice.profiles:invoke", "modelservice.profiles:read")})
 	delivery := settleBoth(t, repository, bumped, opts)
 	require.Equal(t, uint64(2), documentByID(delivery, "example.prod.crm-authority").Generation)
+	repository.deliver(t)
+
+	// A revision never moves backwards, whatever the content: an old number
+	// must not acquire a new meaning under a credential sealed to it.
+	rewound := repository.stageAuthorityRender(t, []modulecontract.ResolvedBinding{modelBinding(1, "modelservice.profiles:invoke")})
+	presence, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", rewound, opts)
+	require.NoError(t, err)
+	_, err = settleAuthorityDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", rewound, presence, opts)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "moves the revision of the bindings example.prod.crm:model:invoke (1, delivered at 2) backwards")
 }
 
 // TestPublishRefusesAPairTheHostWouldNotActivate: before an authority document

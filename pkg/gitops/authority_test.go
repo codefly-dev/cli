@@ -16,13 +16,14 @@ import (
 
 // authorityContract is a module contract of the agreed shape, with every slot
 // pointing at the composition's configuration.
+// authorityContract is a contract the signed authority document carries
+// whole: one namespace, no queue, no module ceiling, no destination, no
+// binding key and no lookup method — see uncarriedContract for the rest.
 const authorityContract = `schema: codefly/module-contract/v1
-principal: assistant
-namespaces: [assistant]
+principal: shop
+namespaces: [shop]
 queues: []
-scope_ceilings:
-  - resource_kind: assistant.tasks
-    actions: [execute]
+scope_ceilings: []
 bindings:
   - id: model
     operations: [invoke, lookup]
@@ -41,6 +42,29 @@ bindings:
           actions: [write]
         - resource_kind: annotations.annotations
           actions: [redact]
+destinations: []
+`
+
+// uncarriedContract declares everything core's authority document has no
+// field for: a module ceiling, a destination, a second namespace, two queues,
+// a binding key and a lookup method.
+const uncarriedContract = `schema: codefly/module-contract/v1
+principal: shop
+namespaces: [shop, shop-audit]
+queues: [shop.default, shop.bulk]
+scope_ceilings:
+  - resource_kind: shop.tasks
+    actions: [execute]
+bindings:
+  - id: model
+    operations: [invoke, lookup]
+    audience: {from: assistant/model-audience}
+    resource_kind: {from: assistant/model-resource-kind}
+    binding_key: {from: assistant/model-binding}
+    lookup: {method: header}
+    scope_ceiling:
+      invoke: [invoke]
+      lookup: [read]
 destinations:
   - id: chat-http
     service: api
@@ -139,11 +163,13 @@ func TestRenderDerivesAuthorityFromTheModuleContract(t *testing.T) {
 	require.Equal(t, solutionhost.HostTarget{Coordinate: "example/staging/region-a", Component: "platform-host"}, document.Host)
 	require.Equal(t, solutionhost.ImageDigest("sha256:"+strings.Repeat("a", 64)), document.ApprovedBuild)
 	require.Len(t, document.Principals, 1)
-	require.Equal(t, "assistant", document.Principals[0].Principal)
+	require.Equal(t, "shop", document.Principals[0].Principal, "the principal is the module's own name")
 	require.Equal(t, []solutionhost.AuthorityBinding{
-		{ID: "assistant:annotations:headless", Revision: 2, Audience: "annotations", Scope: "annotations.annotations:redact,annotations.vocabularies:write", Namespace: "assistant"},
-		{ID: "assistant:model:invoke", Revision: 1, Audience: "model-gateway", Scope: "modelservice.profiles:invoke,modelservice.profiles:read", Namespace: "assistant"},
-		{ID: "assistant:model:lookup", Revision: 1, Audience: "model-gateway", Scope: "modelservice.profiles:read", Namespace: "assistant"},
+		// Unit IDs are scoped by the presence binding, so two instances of one
+		// module on one host hold distinct units.
+		{ID: "acme.staging.shop:annotations:headless", Revision: 2, Audience: "annotations", Scope: "annotations.annotations:redact,annotations.vocabularies:write", Namespace: "shop"},
+		{ID: "acme.staging.shop:model:invoke", Revision: 1, Audience: "model-gateway", Scope: "modelservice.profiles:invoke,modelservice.profiles:read", Namespace: "shop"},
+		{ID: "acme.staging.shop:model:lookup", Revision: 1, Audience: "model-gateway", Scope: "modelservice.profiles:read", Namespace: "shop"},
 	}, document.Principals[0].Bindings)
 	// Delivered to the authority namespace, labelled for the host, under the
 	// document's own data key; the carrier arrives at publish.
@@ -201,6 +227,46 @@ func TestAuthorityIsPresentedByOneService(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "module-identity on the services api, worker")
 	require.Contains(t, err.Error(), "one authority record per binding")
+}
+
+// TestAuthorityRefusesAPrincipalThatIsNotTheModule: the contract is written
+// in the module's repository, so a principal it names is self-asserted; a
+// module claiming another's principal would claim that principal's bindings.
+// The principal is the module's own name, and anything else is refused.
+func TestAuthorityRefusesAPrincipalThatIsNotTheModule(t *testing.T) {
+	ctx := context.Background()
+	workspace, module := writeAuthorityWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), modulecontract.FileName), []byte(strings.Replace(authorityContract, "principal: shop", "principal: billing", 1)), 0o644))
+	services := loadServices(t, workspace, "shop", "api")
+	_, _, err := authorityInstancesOf(ctx, workspace, module, services, env, []SolutionArtifactUnit{{Name: "api", Path: "services/api"}})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `principal is "billing"`)
+	require.Contains(t, err.Error(), "the contract declares principal: shop")
+}
+
+// TestAuthorityRefusesWhatTheDocumentCannotCarry: a declaration the signed
+// authority document has no field for is refused, by name, rather than dropped
+// between the contract and the document — a host cannot enforce what it never
+// receives, and a changed declaration that leaves the document unchanged is
+// enforced as before. Each names the field core's AuthorityBinding would need.
+func TestAuthorityRefusesWhatTheDocumentCannotCarry(t *testing.T) {
+	ctx := context.Background()
+	workspace, module := writeAuthorityWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	require.NoError(t, os.WriteFile(filepath.Join(workspace.Dir(), "configurations", "staging", "assistant.env"),
+		[]byte("MODEL_AUDIENCE=model-gateway\nMODEL_RESOURCE_KIND=modelservice.profiles\nMODEL_BINDING=model-binding\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), modulecontract.FileName), []byte(uncarriedContract), 0o644))
+	services := loadServices(t, workspace, "shop", "api")
+	_, _, err := authorityInstancesOf(ctx, workspace, module, services, env, []SolutionArtifactUnit{{Name: "api", Path: "services/api"}})
+	require.Error(t, err)
+	for _, want := range []string{
+		"2 queues", "2 namespaces", "scope_ceilings", "destinations",
+		"binding model binding_key", "binding model lookup.method",
+		"needs core's solutionhost.AuthorityBinding to grow those fields",
+	} {
+		require.Contains(t, err.Error(), want)
+	}
 }
 
 func TestAuthorityRefusesAnUnresolvedSlot(t *testing.T) {

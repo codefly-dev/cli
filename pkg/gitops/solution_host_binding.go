@@ -177,8 +177,16 @@ func renderSolutionHostBindings(owned, destination string, opts *RenderOptions) 
 	if opts.Host == nil {
 		// Declared presence names a host. Deriving one from the workspace or the
 		// environment would produce a coordinate a host silently refuses at
-		// reconcile time, far from the render that invented it.
-		return nil, nil
+		// reconcile time, far from the render that invented it — and rendering
+		// the instances' workloads with no declaration at all would deliver
+		// them present on no host, with only a warning saying so. An
+		// environment that composes a module declares the host it runs on.
+		names := make([]string, 0, len(opts.SolutionInstances))
+		for index := range opts.SolutionInstances {
+			names = append(names, opts.SolutionInstances[index].Name)
+		}
+		sort.Strings(names)
+		return nil, fmt.Errorf("environment %s composes %s but declares no host block (coordinate, component, domain, audience, trust_domain, envelope_revision, delivery), so nothing declares them present anywhere; declare the host the environment runs on", opts.Environment, strings.Join(names, ", "))
 	}
 	if err := opts.Host.Validate(); err != nil {
 		return nil, fmt.Errorf("environment %s host: %w", opts.Environment, err)
@@ -615,22 +623,6 @@ func deliveredBindingPath(bindings []DeclaredSolutionHostBinding) string {
 	return solutionHostBindingDir
 }
 
-// undeclaredSolutions names the solution instances this render delivered
-// workloads for without declaring a binding, because the environment names no
-// host. An empty SolutionHostBindings list alone cannot say that: a composition
-// with no solution produces the same empty list.
-func undeclaredSolutions(opts *RenderOptions) []string {
-	if opts.Host != nil || len(opts.SolutionInstances) == 0 {
-		return nil
-	}
-	names := make([]string, 0, len(opts.SolutionInstances))
-	for index := range opts.SolutionInstances {
-		names = append(names, opts.SolutionInstances[index].Name)
-	}
-	sort.Strings(names)
-	return names
-}
-
 // presenceInstanceOf resolves the instance a module render declares the
 // presence of: a composed solution when the module ships a solution manifest,
 // the module itself otherwise. It returns the reason when the module declares
@@ -670,9 +662,11 @@ func presenceInstanceOf(
 		return nil, "", fmt.Errorf("module %s: %w", module.Name, err)
 	}
 	for _, unit := range opts.Units {
-		// A managed service that rendered no bootstrap bundle has no path and
-		// no delivered bytes, so there is nothing to pin a digest to.
-		if unit.Path == "" {
+		// A managed service rendered at most a bootstrap bundle: a Job that
+		// prepares the managed resource, mints under no principal and is the
+		// cell's to admit, never a presence artifact. One with no path has no
+		// delivered bytes at all.
+		if unit.Path == "" || unit.Managed {
 			continue
 		}
 		entry := SolutionArtifactUnit{Name: unit.Name, Path: unit.Path}

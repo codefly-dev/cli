@@ -31,7 +31,7 @@ data:
             - surface: backend
               name: api
               release: example/crm@1.4.0
-              digest: sha256:9176742fd9177b1efc917bbf81818ea6c1c8e5cc4c24bc566607fde43112561f
+              digest: sha256:29192a79f6d9ae438743975bb79276ec21535cbb0108600650a78db65be0e543
         workloads:
             - name: api
               artifact: api
@@ -42,7 +42,7 @@ data:
               identity:
                 audience: accounts
                 subject: crm@example.iam.test
-                spiffe_id: spiffe://cluster.example/ns/crm/sa/default
+                spiffe_id: spiffe://cluster.example/ns/crm/sa/api
               non_authenticating: []
         modules:
             - module: crm

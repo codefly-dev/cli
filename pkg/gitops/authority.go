@@ -157,6 +157,17 @@ func authorityInstancesOf(
 	if err != nil {
 		return nil, "", fmt.Errorf("module %s: %w", module.Name, err)
 	}
+	// The principal is the module's own name — the contract says so of
+	// itself — and it is held to that here, because the contract is written in
+	// the module's repository: a module claiming another module's principal
+	// would claim that principal's bindings, and nothing downstream ties a
+	// principal to the module presenting it.
+	if resolved.Principal != module.Name {
+		return nil, "", fmt.Errorf("module %s publishes a contract whose principal is %q; the principal every credential of a module is issued to is the module's own name, so the contract declares principal: %s", module.Name, resolved.Principal, module.Name)
+	}
+	if err := refuseUncarriedAuthority(module.Name, resolved); err != nil {
+		return nil, "", err
+	}
 	instances := make([]AuthorityInstance, 0, len(identities))
 	for _, service := range identities {
 		index := -1
@@ -244,7 +255,7 @@ func authorityDocument(owned string, opts *RenderOptions, instance *AuthorityIns
 		EnvelopeRevision: opts.Host.EnvelopeRevision,
 		ApprovedBuild:    build,
 		EffectiveFrom:    1,
-		Principals:       []solutionhost.PrincipalAuthority{{Principal: instance.Contract.Principal, Bindings: authorityBindings(instance.Contract)}},
+		Principals:       []solutionhost.PrincipalAuthority{{Principal: instance.Contract.Principal, Bindings: authorityBindings(binding, instance.Contract)}},
 	}
 	if err := document.Validate(); err != nil {
 		return nil, fmt.Errorf("authority of %s/%s is invalid: %w", instance.Module, instance.Service, err)
@@ -254,12 +265,15 @@ func authorityDocument(owned string, opts *RenderOptions, instance *AuthorityIns
 
 // authorityBindings derives the units of authority a contract asks for: one per
 // (binding, operation), under an ID the host's envelope lists for exact
-// inclusion — <principal>:<binding>:<operation> — with the operation's scope
-// ceiling as one sorted, comma-joined value, and the module's queue and
-// namespace when it declares exactly one of each. A module declaring none
-// grants no queue- or namespace-scoped authority, which is a narrower grant and
-// never every queue.
-func authorityBindings(contract *modulecontract.Resolved) []solutionhost.AuthorityBinding {
+// inclusion — <presence binding>:<binding>:<operation>, scoped by the presence
+// binding so two instances of one module on one host hold distinct units and
+// withdrawing one instance's leaves the other's alone — with the operation's
+// scope ceiling as one sorted, comma-joined value, and the module's queue and
+// namespace when it declares one of each. A module declaring none grants no
+// queue- or namespace-scoped authority, which is a narrower grant and never
+// every queue; a module declaring several is refused before this, by
+// refuseUncarriedAuthority, rather than granted none.
+func authorityBindings(presenceBinding string, contract *modulecontract.Resolved) []solutionhost.AuthorityBinding {
 	var queue, namespace string
 	if len(contract.Queues) == 1 {
 		queue = contract.Queues[0]
@@ -271,7 +285,7 @@ func authorityBindings(contract *modulecontract.Resolved) []solutionhost.Authori
 	for _, binding := range contract.Bindings {
 		for _, operation := range binding.Operations {
 			bindings = append(bindings, solutionhost.AuthorityBinding{
-				ID:        contract.Principal + ":" + binding.ID + ":" + operation,
+				ID:        presenceBinding + ":" + binding.ID + ":" + operation,
 				Revision:  binding.Revision,
 				Audience:  binding.Audience,
 				Scope:     strings.Join(binding.Scopes[operation], ","),
@@ -282,6 +296,41 @@ func authorityBindings(contract *modulecontract.Resolved) []solutionhost.Authori
 	}
 	sort.Slice(bindings, func(i, j int) bool { return bindings[i].ID < bindings[j].ID })
 	return bindings
+}
+
+// refuseUncarriedAuthority refuses a contract declaring what core's authority
+// document cannot carry today, so nothing a module publishes is dropped between
+// the contract and the signed document: a host cannot enforce a declaration it
+// never receives, and a declaration that changed without the document
+// changing would be enforced as before. Each is named, with the field the
+// document would need. A module declaring none of them renders as it does;
+// one declaring any waits on core growing the document.
+func refuseUncarriedAuthority(module string, contract *modulecontract.Resolved) error {
+	var uncarried []string
+	if len(contract.Queues) > 1 {
+		uncarried = append(uncarried, fmt.Sprintf("%d queues (an AuthorityBinding carries one queue)", len(contract.Queues)))
+	}
+	if len(contract.Namespaces) > 1 {
+		uncarried = append(uncarried, fmt.Sprintf("%d namespaces (an AuthorityBinding carries one namespace)", len(contract.Namespaces)))
+	}
+	if len(contract.ScopeCeilings) > 0 {
+		uncarried = append(uncarried, "scope_ceilings (the document has no field for the module's own ceilings)")
+	}
+	if len(contract.Destinations) > 0 {
+		uncarried = append(uncarried, "destinations (the document has no field for the endpoints a module exposes, nor their kinds)")
+	}
+	for _, binding := range contract.Bindings {
+		if binding.BindingKey != "" {
+			uncarried = append(uncarried, fmt.Sprintf("binding %s binding_key (an AuthorityBinding carries no key)", binding.ID))
+		}
+		if binding.Lookup != nil && binding.Lookup.Method != "" {
+			uncarried = append(uncarried, fmt.Sprintf("binding %s lookup.method (an AuthorityBinding carries no lookup method)", binding.ID))
+		}
+	}
+	if len(uncarried) == 0 {
+		return nil
+	}
+	return fmt.Errorf("module %s declares in its contract what the signed authority document cannot carry, and nothing it declares is dropped on the way to the host: %s; this needs core's solutionhost.AuthorityBinding to grow those fields before the module can render authority", module, strings.Join(uncarried, "; "))
 }
 
 // solutionAuthorityConfigMap carries one authority document, written through a

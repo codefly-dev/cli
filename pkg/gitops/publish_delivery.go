@@ -784,9 +784,11 @@ func settledAuthoritySet(
 }
 
 // refuseUnbumpedBindings refuses an authority document in which a binding's
-// content changed while its revision did not. The revision is what a sealed
-// credential is held against; a change that keeps it is a change no credential
-// can detect, and the author remembering to bump it is not enforcement.
+// revision moved backwards, or its content changed while its revision did not.
+// The revision is what a sealed credential is held against: a change that
+// keeps it is a change no credential can detect, a revision that decreases
+// gives an old number a new meaning, and the author remembering to bump it is
+// not enforcement.
 func refuseUnbumpedBindings(prior, candidate *solutionhost.AuthorityDocument) error {
 	previous := map[string]solutionhost.AuthorityBinding{}
 	for _, principal := range prior.Principals {
@@ -794,17 +796,30 @@ func refuseUnbumpedBindings(prior, candidate *solutionhost.AuthorityDocument) er
 			previous[binding.ID] = binding
 		}
 	}
-	var unbumped []string
+	var unbumped, rewound []string
 	for _, principal := range candidate.Principals {
 		for _, binding := range principal.Bindings {
 			before, delivered := previous[binding.ID]
-			if !delivered || before.Revision != binding.Revision {
+			if !delivered {
+				continue
+			}
+			if binding.Revision < before.Revision {
+				rewound = append(rewound, fmt.Sprintf("%s (%d, delivered at %d)", binding.ID, binding.Revision, before.Revision))
+				continue
+			}
+			if before.Revision != binding.Revision {
 				continue
 			}
 			if before.Audience != binding.Audience || before.Scope != binding.Scope || before.Queue != binding.Queue || before.Namespace != binding.Namespace {
 				unbumped = append(unbumped, binding.ID)
 			}
 		}
+	}
+	if len(rewound) > 0 {
+		sort.Strings(rewound)
+		return fmt.Errorf(
+			"authority %s moves the revision of the bindings %s backwards; a binding's revision only increases, since a credential sealed to a revision holds it against the live one and an old number must not acquire a new meaning",
+			candidate.Authority, strings.Join(rewound, ", "))
 	}
 	if len(unbumped) == 0 {
 		return nil

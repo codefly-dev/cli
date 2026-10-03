@@ -120,9 +120,6 @@ func TestRenderDeclaresOneBindingPerSolutionInstance(t *testing.T) {
 		declared.Binding != "example.prod.crm" || declared.Generation != 1 {
 		t.Fatalf("declared binding %+v", declared)
 	}
-	if len(result.UndeclaredSolutions) != 0 {
-		t.Fatalf("declared a host yet reported undeclared solutions %v", result.UndeclaredSolutions)
-	}
 	document := deliveredBinding(t, destination, "example.prod.crm")
 	if document.Binding != "example.prod.crm" {
 		t.Fatalf("binding ID %q", document.Binding)
@@ -147,7 +144,7 @@ func TestRenderDeclaresOneBindingPerSolutionInstance(t *testing.T) {
 		t.Fatalf("workload image %+v", workload.Image)
 	}
 	if workload.Identity.Audience != "accounts" || workload.Identity.Subject != "crm@example.iam.test" ||
-		workload.Identity.SPIFFEID != "spiffe://cluster.example/ns/crm/sa/default" {
+		workload.Identity.SPIFFEID != "spiffe://cluster.example/ns/crm/sa/api" {
 		t.Fatalf("workload identity %+v", workload.Identity)
 	}
 	// Declared empty, never absent: core refuses a nil list because a host
@@ -307,21 +304,21 @@ func TestRenderRefusesASolutionWhoseWorkloadAuthenticatesAsNothing(t *testing.T)
 	}
 }
 
-func TestRenderDeclaresNoBindingWithoutADeclaredHost(t *testing.T) {
+// TestRenderRefusesACompositionWithNoHost: an environment that composes a
+// module declares the host it runs on. Rendering the instances' workloads
+// with no declaration delivered them present on no host, with a warning the
+// operator could miss; the render refuses instead, naming the instances and
+// the host block's fields.
+func TestRenderRefusesACompositionWithNoHost(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "modules", "crm")
 	options := solutionRenderOptions(destination)
 	options.Host = nil
-	result, err := RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment))
-	if err != nil {
-		t.Fatal(err)
+	_, err := RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment))
+	if err == nil || !strings.Contains(err.Error(), "composes crm but declares no host block") {
+		t.Fatalf("a composition with no host must be refused by name, got %v", err)
 	}
-	if len(result.SolutionHostBindings) != 0 {
-		t.Fatalf("a binding was rendered with no host: %+v", result.SolutionHostBindings)
-	}
-	// Silence is not the report: the render says which solution it could not
-	// declare, so an operator can tell this from a composition with none.
-	if len(result.UndeclaredSolutions) != 1 || result.UndeclaredSolutions[0] != "crm" {
-		t.Fatalf("undeclared solutions %v", result.UndeclaredSolutions)
+	if _, statErr := os.Stat(filepath.Join(destination, InventoryFilename)); !os.IsNotExist(statErr) {
+		t.Fatalf("a refused render must leave no tree behind: %v", statErr)
 	}
 }
 
@@ -511,7 +508,7 @@ func TestRenderSolutionDeclaresItsOwnPresence(t *testing.T) {
 		t.Fatalf("RenderSolution: %v", err)
 	}
 	if len(result.SolutionHostBindings) != 1 {
-		t.Fatalf("rendered bindings %+v (undeclared %v)", result.SolutionHostBindings, result.UndeclaredSolutions)
+		t.Fatalf("rendered bindings %+v", result.SolutionHostBindings)
 	}
 	document := deliveredBindingIn(t, result.Path, "local", "hello.local.lastlogin-go")
 	if document.Host.Coordinate != "example/local/dev" {
@@ -670,6 +667,32 @@ func TestRenderedTreeDeliversItsBindings(t *testing.T) {
 // in the tree while the next publish stops delivering them — a change with no
 // diff in the manifests and none in the render digest, since the digest covers
 // files and not inventory fields.
+// TestPresenceNamesOnlyTheWorkloadsThatMint: a bootstrap Job of a unit runs
+// its own image and never authenticates as the service, so the presence
+// document names the serving workloads and not it — listed, its image would
+// be one the host accepts a token from. The cell still inventories the Job
+// for admission, so the two files describe the same pods for different ends.
+func TestPresenceNamesOnlyTheWorkloadsThatMint(t *testing.T) {
+	destination := filepath.Join(t.TempDir(), "modules", "crm")
+	_, err := RenderOwnedTree(context.Background(), solutionRenderOptions(destination), renderWorkload(cellDeployment))
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := deliveredBinding(t, destination, "example.prod.crm")
+	if len(document.Workloads) != 1 {
+		t.Fatalf("presence workloads %+v, want the Deployment alone", document.Workloads)
+	}
+	workload := document.Workloads[0]
+	if workload.Name != "api" || workload.Container != "api" {
+		t.Fatalf("presence names %s/%s, want the serving Deployment api", workload.Name, workload.Container)
+	}
+	for _, build := range document.Builds() {
+		if strings.Contains(string(build), strings.Repeat("d", 64)) {
+			t.Fatalf("the migrate Job's image is an approved build: %v", document.Builds())
+		}
+	}
+}
+
 func TestInventoryRoundTripKeepsTheDeliveryPath(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "modules", "crm")
 	result, err := RenderOwnedTree(context.Background(), solutionRenderOptions(destination), renderWorkload(pinnedDeployment))
@@ -826,9 +849,9 @@ func TestARenderThatDeclaresNothingClearsTheDeliveryPath(t *testing.T) {
 	if first.Inventory.SolutionHostBindingPath != solutionHostBindingDir {
 		t.Fatalf("the first render recorded no delivery path: %q", first.Inventory.SolutionHostBindingPath)
 	}
-	// The operator removes the host declaration and re-renders with the same
-	// options, as a caller that holds one render's options would.
-	options.Host = nil
+	// The module stops composing a solution instance and re-renders with the
+	// same options, as a caller that holds one render's options would.
+	options.SolutionInstances = nil
 	second, err := RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment))
 	if err != nil {
 		t.Fatal(err)
@@ -842,8 +865,5 @@ func TestARenderThatDeclaresNothingClearsTheDeliveryPath(t *testing.T) {
 	// with a path that is present is covered by TestDeclaredBindingsReachArgo.)
 	if _, statErr := os.Stat(filepath.Join(destination, solutionHostBindingDir)); !os.IsNotExist(statErr) {
 		t.Fatalf("the binding directory survived a render that declared none: %v", statErr)
-	}
-	if len(second.UndeclaredSolutions) != 1 || second.UndeclaredSolutions[0] != "crm" {
-		t.Fatalf("the render did not report what it could not declare: %v", second.UndeclaredSolutions)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	corenetwork "github.com/codefly-dev/core/network"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -13,10 +14,12 @@ import (
 // identity the environment's host block names — <module>/<service>/<endpoint>
 // — to the in-cluster address the delivery Jobs POST to. Nothing about the
 // address is declared: the namespace is the one the composition gives the
-// host's module, the port is the one the host's service declares for the
-// endpoint, and the scheme follows the endpoint's secured flag. A host block
-// naming an endpoint the composition does not have, or one that declares no
-// port, is refused here, before anything is rendered against it.
+// host's module, the port is the SERVICE port the CLI allocates for that
+// endpoint (core's network.DeployedEndpointPorts, the same allocation the
+// agent renders its Service with — not the container port the service
+// declares, which is the pod's and may differ), and the scheme follows the
+// endpoint's secured flag. A host block naming an endpoint the composition
+// does not have is refused here, before anything is rendered against it.
 func resolveDeliveryTarget(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (*DeliveryTarget, error) {
 	if env == nil || env.Host == nil {
 		return nil, nil
@@ -36,19 +39,26 @@ func resolveDeliveryTarget(ctx context.Context, workspace *resources.Workspace, 
 	if endpoint == nil {
 		return nil, fmt.Errorf("environment %s names %s as its delivery API, but service %s/%s declares no endpoint %q", env.Name, env.Host.Delivery, module, serviceName, endpointName)
 	}
-	ports, err := declaredEndpointPorts(service)
+	endpoints, err := service.DependencyEndpoints()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("environment %s names %s as its delivery API, but its endpoints cannot be read: %w", env.Name, env.Host.Delivery, err)
 	}
-	port, declared := ports[endpointName]
-	if !declared {
-		return nil, fmt.Errorf("environment %s names %s as its delivery API, but service %s/%s declares no port for endpoint %q (spec.%s.%s); the Jobs that deliver to it cannot dial a port nobody declared",
-			env.Name, env.Host.Delivery, module, serviceName, endpointName, deploymentSpecKey, endpointPortsKey)
+	ports, err := corenetwork.DeployedEndpointPorts(ctx, module, serviceName, endpoints)
+	if err != nil {
+		return nil, fmt.Errorf("environment %s names %s as its delivery API, but its Service port cannot be allocated: %w", env.Name, env.Host.Delivery, err)
+	}
+	port, allocated := ports[endpointName]
+	if !allocated {
+		return nil, fmt.Errorf("environment %s names %s as its delivery API, but no Service port is allocated for endpoint %q", env.Name, env.Host.Delivery, endpointName)
 	}
 	namespace := env.ModuleNamespace(workspace, module)
 	if namespace == "" {
 		return nil, fmt.Errorf("environment %s declares no namespace, so the delivery API %s has no in-cluster address", env.Name, env.Host.Delivery)
 	}
+	// Plain HTTP inside the cluster: the mesh carries it over mTLS between the
+	// Job's pod and the host's, and the bearer token never leaves that
+	// tunnel. An endpoint the host serves over TLS itself is marked secured
+	// and dialled with https.
 	scheme := "http"
 	if endpoint.Secured {
 		scheme = httpsScheme

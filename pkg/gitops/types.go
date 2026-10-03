@@ -330,12 +330,6 @@ type RenderResult struct {
 	// declared: what it says should be present on the host, one per solution
 	// instance.
 	SolutionHostBindings []DeclaredSolutionHostBinding `json:"solutionHostBindings,omitempty"`
-	// UndeclaredSolutions are the solution instances this render delivered
-	// workloads for but declared no binding for, because the environment names
-	// no host. It is reported rather than inferred from an empty list: a
-	// missing declaration and a composition with no solution look the same
-	// otherwise.
-	UndeclaredSolutions []string `json:"undeclaredSolutions,omitempty"`
 	// UndeclaredPresence says why the module declares no presence when the
 	// reason is the module's own — no package manifest to name a release from.
 	UndeclaredPresence string `json:"undeclaredPresence,omitempty"`

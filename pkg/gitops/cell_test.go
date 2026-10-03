@@ -9,6 +9,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
@@ -419,6 +420,136 @@ spec:
 	_, err = RenderCell(context.Background(), workspace, env)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), `proxy mounts host-token (audience "accounts")`)
+}
+
+// TestCellFileInventoriesAManagedUnitsBootstrapJobAndQualifiesIngress: a
+// managed service's bootstrap Job is a pod the closed admission set refuses
+// unless the cell names it, so it is inventoried like any workload, with no
+// endpoints of its own; and an ingress route reaches the service it names
+// module-qualified, never every module's service of that bare name.
+func TestCellFileInventoriesAManagedUnitsBootstrapJobAndQualifiesIngress(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	ctx := context.Background()
+	// shop/api serves and has the public ingress; billing/ledger also runs
+	// a service named "api"-like enough to be confused — rendered under the
+	// bare name "api" in another module — and a managed "store" bootstrap.
+	renderCellTree(t, workspace, "shop", "api", "acme-shop", nil)
+	result, err := RenderOwnedTree(ctx, &RenderOptions{
+		Destination: moduleRenderDestination(workspace, "billing"),
+		Module:      "billing", Environment: "staging", Namespace: "acme-billing", AppProject: "acme-staging",
+		Promotable: true, OwnedPath: "deployments/modules/billing",
+		Units: append(promotableServiceGraph("billing", []string{"ledger"}),
+			InventoryUnit{Kind: UnitKindService, Module: "billing", Name: "store", Path: "services/store", Managed: true, Bootstrap: true}),
+		Package: &InventoryPackage{ID: "acme/billing", Version: "1.2.0"},
+	}, func(_ context.Context, root string) error {
+		for name, body := range map[string]string{
+			"ledger": strings.ReplaceAll(cellDeployment, "name: api", "name: ledger"),
+			"store": `apiVersion: batch/v1
+kind: Job
+metadata:
+  name: store-bootstrap
+spec:
+  template:
+    metadata:
+      labels:
+        codefly.dev/bootstrap-service: store
+    spec:
+      serviceAccountName: store-bootstrap
+      restartPolicy: OnFailure
+      containers:
+        - name: store-bootstrap
+          image: registry.example.test/managed/postgres-init@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+`,
+		} {
+			overlay := filepath.Join(root, "services", name, "overlays", "staging")
+			if err := os.MkdirAll(overlay, 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(body), 0o644); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Inventory.Units, 2)
+
+	cell, err := RenderCell(ctx, workspace, env)
+	require.NoError(t, err)
+	data, err := os.ReadFile(cell.Path)
+	require.NoError(t, err)
+	var file CellFile
+	require.NoError(t, yaml.Unmarshal(data, &file))
+	billing := file.Namespaces[0]
+	require.Equal(t, "acme-billing", billing.Name)
+	names := map[string]CellWorkload{}
+	for _, workload := range billing.Workloads {
+		names[workload.Name] = workload
+	}
+	bootstrap, declared := names["store-bootstrap"]
+	require.True(t, declared, "the managed unit's bootstrap Job is a pod admission must know: %v", names)
+	require.Equal(t, "Job", bootstrap.Kind)
+	require.Equal(t, "billing/store", bootstrap.Service)
+	require.Equal(t, "store-bootstrap", bootstrap.Authenticating)
+	require.Empty(t, bootstrap.Endpoints, "a managed unit declares no endpoints of its own")
+	require.Equal(t, "sha256:"+strings.Repeat("e", 64), bootstrap.Containers[0].Image.Digest)
+	for _, workload := range billing.Workloads {
+		require.Empty(t, workload.Ingress, "shop's public ingress names shop/api; nothing in billing inherits it")
+	}
+	shop := file.Namespaces[1]
+	require.Equal(t, "acme-shop", shop.Name)
+	require.Len(t, shop.Workloads[0].Ingress, 1)
+}
+
+// TestCellFileDeclaresThePresenceDeliveryJob: the Job that POSTs a module's
+// presence documents is a pod in the module's namespace, running as the
+// delivery account, that the closed admission set would refuse unless the
+// cell names it. Its name carries the settled set's digest and is decided at
+// publish, so it is declared by the labels its pods carry.
+func TestCellFileDeclaresThePresenceDeliveryJob(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	ctx := context.Background()
+	units := []SolutionArtifactUnit{{Name: "api", Path: "services/api", Subject: "shop-api@example.iam.test"}}
+	_, err := RenderOwnedTree(ctx, &RenderOptions{
+		Destination: moduleRenderDestination(workspace, "shop"),
+		Module:      "shop", Environment: "staging", Namespace: "acme-shop", AppProject: "acme-staging",
+		Promotable: true, OwnedPath: "deployments/modules/shop", Workspace: "acme", Host: env.Host,
+		Units:   promotableServiceGraph("shop", []string{"api"}),
+		Package: &InventoryPackage{ID: "acme/shop", Version: "1.2.0"},
+		SolutionInstances: []SolutionInstance{{
+			Kind: solutionhost.KindModule, Name: "shop", Package: "acme/shop", Version: "1.2.0",
+			ReleaseDigest: testReleaseDigest, Units: units,
+		}},
+	}, func(_ context.Context, root string) error {
+		overlay := filepath.Join(root, "services", "api", "overlays", "staging")
+		if err := os.MkdirAll(overlay, 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(cellDeployment), 0o644)
+	})
+	require.NoError(t, err)
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", nil)
+
+	cell, err := RenderCell(ctx, workspace, env)
+	require.NoError(t, err)
+	data, err := os.ReadFile(cell.Path)
+	require.NoError(t, err)
+	var file CellFile
+	require.NoError(t, yaml.Unmarshal(data, &file))
+	billing, shop := file.Namespaces[0], file.Namespaces[1]
+	require.Nil(t, billing.Delivery, "a module delivering no presence runs no delivery Job")
+	require.NotNil(t, shop.Delivery)
+	require.Equal(t, &CellDelivery{
+		Kind:           "Job",
+		Selector:       map[string]string{"app.kubernetes.io/managed-by": "codefly", "codefly.dev/delivery": "presence"},
+		ServiceAccount: "delivery",
+		SPIFFEID:       "spiffe://cluster.example/ns/acme-shop/sa/delivery",
+		Container:      "deliver",
+		Image:          CellImage{Repository: "curlimages/curl:8.18.0", Digest: "sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17"},
+	}, shop.Delivery)
+	require.Contains(t, string(data), "delivery:\n", "the YAML spells it, so a loader never infers it")
 }
 
 func TestCellFileSkipsTreesRenderedForAnotherEnvironment(t *testing.T) {

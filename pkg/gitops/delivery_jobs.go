@@ -59,6 +59,9 @@ const (
 	// record of what delivers.
 	deliveryImage = "curlimages/curl:8.18.0@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17"
 
+	// deliveryContainerName is the one container of a delivery Job.
+	deliveryContainerName = "deliver"
+
 	// deliveryServiceAccount is the ServiceAccount a delivery Job runs as. In a
 	// module's namespace the render creates it; in the authority namespace the
 	// platform does, because that namespace is not the module's to populate.
@@ -333,7 +336,7 @@ func renderDeliveryJob(directory, name, namespace, serviceAccount, kind, path st
 			"seccompProfile": map[string]any{"type": "RuntimeDefault"},
 		},
 		Containers: []deliveryContainer{{
-			Name:    "deliver",
+			Name:    deliveryContainerName,
 			Image:   deliveryImage,
 			Command: []string{"/bin/sh", "-ec", deliveryScript},
 			Env: []deliveryEnv{

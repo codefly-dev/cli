@@ -47,24 +47,29 @@ func TestDeliveryTargetIsResolvedFromTheCompositionNeverDeclared(t *testing.T) {
 	target, err := resolveDeliveryTarget(context.Background(), workspace, env)
 	require.NoError(t, err)
 	// Several modules: the host's module gets its own namespace, and the
-	// address follows it.
-	require.Equal(t, &DeliveryTarget{URL: "https://accounts.acme-platform.svc.cluster.local:8443", Audience: "accounts"}, target)
+	// address follows it. The port is the Service port the CLI allocates for
+	// a rest endpoint (8080), never the container port the service declares
+	// (8443): the Job dials the Service, and the Service publishes the
+	// allocated port in front of whatever the pod listens on.
+	require.Equal(t, &DeliveryTarget{URL: "https://accounts.acme-platform.svc.cluster.local:8080", Audience: "accounts"}, target)
 
 	plain := writeHostWorkspace(t, false, true)
 	target, err = resolveDeliveryTarget(context.Background(), plain, selectedEnvironment(t, plain, "staging"))
 	require.NoError(t, err)
-	require.Equal(t, "http://accounts.acme-platform.svc.cluster.local:8443", target.URL)
+	require.Equal(t, "http://accounts.acme-platform.svc.cluster.local:8080", target.URL)
+
+	// A service declaring no container port still has an allocated Service
+	// port: the container port is the pod's business.
+	noPort := writeHostWorkspace(t, true, false)
+	target, err = resolveDeliveryTarget(context.Background(), noPort, selectedEnvironment(t, noPort, "staging"))
+	require.NoError(t, err)
+	require.Equal(t, "https://accounts.acme-platform.svc.cluster.local:8080", target.URL)
 }
 
 func TestDeliveryTargetRefusesAnEndpointNobodyDeclared(t *testing.T) {
-	noPort := writeHostWorkspace(t, true, false)
-	_, err := resolveDeliveryTarget(context.Background(), noPort, selectedEnvironment(t, noPort, "staging"))
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "declares no port")
-
 	// The composition has no such module at all.
 	workspace := writeCellWorkspace(t)
-	_, err = resolveDeliveryTarget(context.Background(), workspace, selectedEnvironment(t, workspace, "staging"))
+	_, err := resolveDeliveryTarget(context.Background(), workspace, selectedEnvironment(t, workspace, "staging"))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "the composition does not have")
 

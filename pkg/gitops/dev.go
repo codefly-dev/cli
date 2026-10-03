@@ -187,6 +187,16 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 	if err != nil {
 		return DevResult{}, err
 	}
+	// A tree that declares presence or authority pins, in signed documents,
+	// the exact build each workload runs. A dev re-pin changes the build
+	// under those documents and leaves them describing bytes nobody runs: the
+	// host refuses the new pod, and publishing the tree would sign a false
+	// declaration. The declaration is re-derived by a render, so a render is
+	// what a delivering module gets.
+	if inventory.SolutionHostBindingPath != "" || inventory.SolutionAuthorityPath != "" {
+		return DevResult{}, fmt.Errorf("module %s declares presence or authority to a host in environment %s, and a dev deployment would re-pin %s's image under documents that declare the build it runs; render the module instead (codefly deploy gitops %s --env %s), which re-derives the declaration with the new build",
+			request.Module.Name, request.Environment.Name, request.Service, request.Module.Name, request.Environment.Name)
+	}
 	service, err := loadDevService(ctx, request.Module, request.Service, request.Source)
 	if err != nil {
 		return DevResult{}, err

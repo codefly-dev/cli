@@ -486,14 +486,6 @@ func printSolutionHostBindings(result *gitops.RenderResult) {
 	for _, group := range groups {
 		cli.Warning("Workspace configuration group %s changed since %s rendered it; render those modules next — publish refuses this one until they bake in the same value", group, strings.Join(result.StaleGroupConsumers[group], ", "))
 	}
-	if len(result.UndeclaredSolutions) == 0 {
-		return
-	}
-	cli.Warning("%d solution instance(s) rendered no host binding: environment %q declares no host block (coordinate, component, domain, audience, trust_domain, envelope_revision, delivery)",
-		len(result.UndeclaredSolutions), result.Inventory.Environment)
-	for _, name := range result.UndeclaredSolutions {
-		cli.Warning("  %s — nothing declares it to a host; it is present on none until the environment names one", name)
-	}
 }
 
 func printSizingReport(report gitops.SizingReport) {

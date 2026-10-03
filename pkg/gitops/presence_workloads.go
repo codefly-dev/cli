@@ -33,12 +33,24 @@ import (
 // none named like the service is refused rather than guessed: "whichever one
 // presented the token" is how a sidecar ends up holding a workload's authority.
 func presenceWorkloads(owned string, opts *RenderOptions, unit SolutionArtifactUnit) ([]solutionhost.Workload, error) {
-	rendered, err := renderedWorkloads(filepath.Join(owned, filepath.FromSlash(unit.Path)), opts.Environment)
+	all, err := renderedWorkloads(filepath.Join(owned, filepath.FromSlash(unit.Path)), opts.Environment)
 	if err != nil {
 		return nil, fmt.Errorf("artifact %s: %w", unit.Name, err)
 	}
+	// Presence names what MINTS under the service's principal: its serving
+	// workloads. A bootstrap Job or CronJob of the unit runs its own image and
+	// never authenticates as the service, so it is declared to the cell for
+	// admission and not here as an approved build — listed here, its image
+	// would be one the host accepts a token from.
+	var rendered []CellWorkload
+	for index := range all {
+		switch all[index].Kind {
+		case kindDeployment, kindStatefulSet, kindDaemonSet:
+			rendered = append(rendered, all[index])
+		}
+	}
 	if len(rendered) == 0 {
-		return nil, fmt.Errorf("artifact %s renders no workload, yet it is a backend artifact; a generation that renders something to run names what runs it", unit.Name)
+		return nil, fmt.Errorf("artifact %s renders no serving workload (a Deployment, StatefulSet or DaemonSet), yet it is a backend artifact; a generation that renders something to run names what runs it", unit.Name)
 	}
 	if unit.Subject == "" {
 		return nil, fmt.Errorf("artifact %s declares no workload identity in environment %s; a presence document names the principal the host must expect, and this workload authenticates as nothing (declare service-identity for %s)", unit.Name, opts.Environment, unit.Name)
@@ -46,6 +58,13 @@ func presenceWorkloads(owned string, opts *RenderOptions, unit SolutionArtifactU
 	workloads := make([]solutionhost.Workload, 0, len(rendered))
 	for index := range rendered {
 		workload := &rendered[index]
+		// The identity a document names is the account's, and the namespace's
+		// default account is every pod's that names none: a workload running as
+		// it would be declared under an identity any pod in the namespace can
+		// present. A serving workload names its own account.
+		if workload.ServiceAccount == defaultServiceAccount {
+			return nil, fmt.Errorf("artifact %s workload %s runs as the namespace's default ServiceAccount, whose identity every pod of the namespace that names no account shares; a workload a host admits names its own account (spec.template.spec.serviceAccountName)", unit.Name, workload.Name)
+		}
 		authenticating, others, err := authenticatingContainer(unit.Name, workload)
 		if err != nil {
 			return nil, fmt.Errorf("artifact %s workload %s: %w", unit.Name, workload.Name, err)

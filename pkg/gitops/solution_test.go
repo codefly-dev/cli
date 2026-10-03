@@ -107,13 +107,28 @@ func installFakeSolutionExecutor(t *testing.T, server solutionv0.SolutionServer)
 func loadSolutionWorkspace(t *testing.T, remote string) *resources.Workspace {
 	t.Helper()
 	root := t.TempDir()
+	// An environment that composes a solution names the host it runs on;
+	// one that names none is refused at render.
 	config := fmt.Sprintf(`name: hello
 layout: flat
+services:
+  - name: host
 environments:
   - name: local
     namespace: hello
     cluster:
       kind: k3d
+    host:
+      coordinate: example/local/dev
+      component: platform-host
+      domain: example
+      audience: accounts
+      trust_domain: cluster.local
+      envelope_revision: 1
+      delivery: hello/host/rest
+    service-identity:
+      default:
+        principal: lastlogin@example.iam.test
 gitops:
   repo-url: file://%s
   fetch-repo-url: https://host.k3d.internal/manifests.git
@@ -121,6 +136,16 @@ gitops:
   branch: main
 `, remote)
 	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The host's delivery API is a service of the composition — here the
+	// flat workspace's own "host", serving "rest" — or the host block is
+	// refused as naming an endpoint the composition does not have.
+	hostService := filepath.Join(root, "services", "host", resources.ServiceConfigurationName)
+	if err := os.MkdirAll(filepath.Dir(hostService), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hostService, []byte(devServiceYAML("host")+"endpoints:\n  - name: rest\n    api: rest\n    visibility: internal\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)

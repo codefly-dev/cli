@@ -258,6 +258,33 @@ func TestDeployDevRefusesWithoutAFullRenderOfThatEnvironment(t *testing.T) {
 	require.Zero(t, *calls, "nothing is built for a refused deployment")
 }
 
+// TestDeployDevRefusesAModuleThatDeclaresToAHost: a tree declaring presence
+// or authority pins, in documents publish signs, the build each workload runs.
+// A dev re-pin would change the build under them and leave them describing
+// bytes nobody runs — the host refuses the pod, and a publish would sign a
+// false declaration — so the module is refused and sent to a render, which
+// re-derives the declaration. Nothing is built for the refusal.
+func TestDeployDevRefusesAModuleThatDeclaresToAHost(t *testing.T) {
+	workspace, module := writeDevWorkspace(t)
+	calls := stubBuild(t, []string{"registry.example.com/acme/api@" + devNewDigest}, nil)
+	renderDevFixture(t, workspace)
+	// The rendered inventory records a presence overlay, as a render with a
+	// host block does; the Argo and unit checks above it are unchanged.
+	root := moduleRenderDestination(workspace, "shop")
+	inventory, err := LoadInventory(root)
+	require.NoError(t, err)
+	inventory.SolutionHostBindingPath = solutionHostBindingDir
+	require.NoError(t, writeCanonicalInventory(filepath.Join(root, InventoryFilename), &inventory))
+	request := &DevRequest{
+		Workspace: workspace, Module: module, Service: "api", Environment: environmentNamed("staging"),
+		Source: DevSource{Dir: t.TempDir(), Origin: DevSourceFlag},
+	}
+	_, err = DeployDev(context.Background(), request)
+	require.ErrorContains(t, err, "declares presence or authority to a host")
+	require.ErrorContains(t, err, "render the module instead (codefly deploy gitops shop --env staging)")
+	require.Zero(t, *calls, "nothing is built for a refused deployment")
+}
+
 func TestDeployDevRefusesAnImageTheRenderDoesNotPin(t *testing.T) {
 	workspace, module := writeDevWorkspace(t)
 	renderDevFixture(t, workspace)

@@ -24,6 +24,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/google/go-github/v89/github"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -249,7 +250,7 @@ func preparePublish(
 		if err != nil {
 			return fail(err)
 		}
-		if cellErr := stageCellFile(repo, publication); cellErr != nil {
+		if cellErr := stageCellFile(ctx, repo, publication); cellErr != nil {
 			return fail(cellErr)
 		}
 	} else {
@@ -2056,9 +2057,15 @@ func mergeDeliveries(parts ...*InventoryDelivery) *InventoryDelivery {
 	return merged
 }
 
-// stageCellFile copies the environment's cell file into the repository, outside
-// every module path, so the platform's derivation reads one file per cell.
-func stageCellFile(repo string, publication *deliveryPublication) error {
+// stageCellFile stages this module's contribution to the environment's cell
+// file: the namespace entry its render produced, merged into the cell the base
+// branch already holds, every other module's entry kept as delivered. The local
+// cell is built from whatever module trees are on disk, so copying it whole
+// let the last module published decide the platform's inventory for the whole
+// cell — a CI job rendering one module erased the others from policy input
+// while their workloads stayed deployed. A module is removed from the cell by
+// withdrawing it, never by another module's publish.
+func stageCellFile(ctx context.Context, repo string, publication *deliveryPublication) error {
 	if publication == nil || publication.cellSource == "" {
 		return nil
 	}
@@ -2070,6 +2077,17 @@ func stageCellFile(repo string, publication *deliveryPublication) error {
 	if err != nil {
 		return fmt.Errorf("read the cell file: %w", err)
 	}
+	var local CellFile
+	if err = yaml.Unmarshal(data, &local); err != nil {
+		return fmt.Errorf("decode the cell file: %w", err)
+	}
+	merged, err := mergeCellContribution(ctx, repo, publication.baseBranch, publication.cellPath, &local, publication.options.Module)
+	if err != nil {
+		return err
+	}
+	if data, err = yaml.Marshal(merged); err != nil {
+		return fmt.Errorf("encode the cell file: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		return fmt.Errorf("create the cell directory: %w", err)
 	}
@@ -2077,4 +2095,40 @@ func stageCellFile(repo string, publication *deliveryPublication) error {
 		return fmt.Errorf("stage the cell file: %w", err)
 	}
 	return nil
+}
+
+// mergeCellContribution takes the publishing module's namespace entry from the
+// locally rendered cell and sets it into the cell the base branch delivers,
+// keeping every other module's entry. The cell's own fields — schema,
+// coordinate, component, domain, trust domain — are the composition's
+// declaration and come from the local render. With no cell on the base
+// branch, the result holds this module's entry alone: the others join on
+// their own publishes.
+func mergeCellContribution(ctx context.Context, repo, baseBranch, cellPath string, local *CellFile, module string) (*CellFile, error) {
+	var contribution *CellNamespace
+	for index := range local.Namespaces {
+		if local.Namespaces[index].Module == module {
+			contribution = &local.Namespaces[index]
+			break
+		}
+	}
+	if contribution == nil {
+		return nil, fmt.Errorf("the cell file %s carries no entry for module %s; render %s for this environment before publishing it", local.Environment, module, module)
+	}
+	merged := *local
+	merged.Namespaces = nil
+	if data, showErr := gitCommandBytes(ctx, repo, "show", "refs/remotes/origin/"+baseBranch+":"+cellPath); showErr == nil {
+		var delivered CellFile
+		if decodeErr := yaml.Unmarshal(data, &delivered); decodeErr != nil {
+			return nil, fmt.Errorf("the cell file delivered on %s cannot be read, so this module's contribution cannot be merged into it: %w", baseBranch, decodeErr)
+		}
+		for _, namespace := range delivered.Namespaces {
+			if namespace.Module != module {
+				merged.Namespaces = append(merged.Namespaces, namespace)
+			}
+		}
+	}
+	merged.Namespaces = append(merged.Namespaces, *contribution)
+	sort.Slice(merged.Namespaces, func(i, j int) bool { return merged.Namespaces[i].Name < merged.Namespaces[j].Name })
+	return &merged, nil
 }

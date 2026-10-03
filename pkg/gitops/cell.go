@@ -40,6 +40,9 @@ import (
 // platform's derivation reads it.
 
 const (
+	// defaultServiceAccount is the account a pod template naming none runs as:
+	// shared by every such pod of the namespace, so never one presence names.
+	defaultServiceAccount = "default"
 	// CellSchemaV1 is the cell file's schema.
 	CellSchemaV1 = "codefly/cell/v1"
 	// CellFileName is the cell file's name within its environment directory.
@@ -80,6 +83,24 @@ type CellNamespace struct {
 	// namespace: the CIDRs of the managed services that replace its services.
 	// It is the only egress the render holds.
 	Egress []CellEgress `yaml:"egress,omitempty"`
+	// Delivery is the Job that POSTs this namespace's presence documents to the
+	// host, when the module delivers presence: a pod the closed admission set
+	// would refuse unless declared, and the one pod of the namespace that runs
+	// as the delivery account. Its name carries the settled set's digest and
+	// is decided at publish, so it is declared by its labels.
+	Delivery *CellDelivery `yaml:"delivery,omitempty"`
+}
+
+// CellDelivery is the presence delivery Job as admission must know it: the
+// labels its pods carry, the account they run as, and the one container and
+// image that deliver.
+type CellDelivery struct {
+	Kind           string            `yaml:"kind"`
+	Selector       map[string]string `yaml:"selector"`
+	ServiceAccount string            `yaml:"service_account"`
+	SPIFFEID       string            `yaml:"spiffe_id,omitempty"`
+	Container      string            `yaml:"container"`
+	Image          CellImage         `yaml:"image"`
 }
 
 // CellWorkload is one thing the host runs — every pod-producing object of a
@@ -316,16 +337,24 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 		}
 	}
 	for _, unit := range inventory.Units {
-		if unit.Kind != UnitKindService || unit.Path == "" || unit.Managed {
+		// Every pod-producing unit is inventoried: a managed service's
+		// bootstrap bundle runs a Job the closed admission set would refuse
+		// unless declared, and a solution unit runs the solution. What differs
+		// is only that a managed unit declares no endpoints of its own.
+		if unit.Path == "" {
 			continue
 		}
-		service, err := workspace.LoadService(ctx, &resources.ServiceWithModule{Name: unit.Name, Module: inventory.Module})
-		if err != nil {
-			return CellNamespace{}, fmt.Errorf("load service %s/%s of the rendered tree: %w", inventory.Module, unit.Name, err)
-		}
-		ports, err := declaredEndpointPorts(service)
-		if err != nil {
-			return CellNamespace{}, err
+		var service *resources.Service
+		var ports map[string]uint32
+		if !unit.Managed {
+			loaded, err := workspace.LoadService(ctx, &resources.ServiceWithModule{Name: unit.Name, Module: inventory.Module})
+			if err != nil {
+				return CellNamespace{}, fmt.Errorf("load service %s/%s of the rendered tree: %w", inventory.Module, unit.Name, err)
+			}
+			service = loaded
+			if ports, err = declaredEndpointPorts(service); err != nil {
+				return CellNamespace{}, err
+			}
 		}
 		digest, err := unitDigest(tree, unit.Path)
 		if err != nil {
@@ -355,6 +384,10 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 				workload.SPIFFEID = env.Host.SPIFFEID(inventory.Namespace, workload.ServiceAccount)
 				workload.Verifier = isDeliveryVerifier(env, workload)
 			}
+			if service == nil {
+				namespace.Workloads = append(namespace.Workloads, *workload)
+				continue
+			}
 			for _, endpoint := range service.Endpoints {
 				if endpoint == nil {
 					continue
@@ -366,8 +399,11 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 				})
 			}
 			sort.Slice(workload.Endpoints, func(i, j int) bool { return workload.Endpoints[i].Name < workload.Endpoints[j].Name })
+			// An ingress route names its service module-qualified. Matched on
+			// the bare name too, every module's "api" would inherit another
+			// module's public hosts.
 			for _, route := range env.Ingress {
-				if route.Service == unit.Name || route.Service == workload.Service {
+				if route.Service == workload.Service {
 					workload.Ingress = append(workload.Ingress, CellIngress{Endpoint: route.Endpoint, Hosts: append([]string(nil), route.Hosts...)})
 				}
 			}
@@ -376,6 +412,17 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 		}
 	}
 	sort.Slice(namespace.Workloads, func(i, j int) bool { return namespace.Workloads[i].Name < namespace.Workloads[j].Name })
+	if env.Host != nil && inventory.SolutionHostBindingPath != "" {
+		repository, digest, _ := strings.Cut(deliveryImage, "@")
+		namespace.Delivery = &CellDelivery{
+			Kind:           kindJob,
+			Selector:       map[string]string{managedByLabel: managedByCodefly, deliveryLabel: deliveryPresence},
+			ServiceAccount: deliveryServiceAccount,
+			SPIFFEID:       env.Host.SPIFFEID(inventory.Namespace, deliveryServiceAccount),
+			Container:      deliveryContainerName,
+			Image:          CellImage{Repository: repository, Digest: digest},
+		}
+	}
 	for _, unit := range inventory.Units {
 		if unit.Kind != UnitKindService {
 			continue
@@ -436,7 +483,7 @@ func renderedWorkloads(unitDir, environment string) ([]CellWorkload, error) {
 		workload := CellWorkload{Name: metadataString(item.value, "name"), Kind: item.kind, Selector: podSelector(item)}
 		workload.ServiceAccount, _ = spec["serviceAccountName"].(string)
 		if workload.ServiceAccount == "" {
-			workload.ServiceAccount = "default"
+			workload.ServiceAccount = defaultServiceAccount
 		}
 		tokens := audienceTokenVolumes(sliceField(spec, "volumes"))
 		containers, err := renderedContainers(workload.Name, sliceField(spec, "containers"), tokens)

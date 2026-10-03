@@ -151,9 +151,9 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	return RenderResult{
 		Path: destination, Inventory: inventory, Sizing: sizing,
 		ElidedNamespaces: elided, ClearedDev: cleared,
-		SolutionHostBindings: bindings, UndeclaredSolutions: undeclaredSolutions(opts),
-		UndeclaredPresence:  opts.UndeclaredPresence,
-		SolutionAuthorities: authorities, UndeclaredAuthority: opts.UndeclaredAuthority,
+		SolutionHostBindings: bindings,
+		UndeclaredPresence:   opts.UndeclaredPresence,
+		SolutionAuthorities:  authorities, UndeclaredAuthority: opts.UndeclaredAuthority,
 	}, nil
 }
 

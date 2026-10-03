@@ -19,6 +19,7 @@ metadata:
 spec:
   template:
     spec:
+      serviceAccountName: api
       containers:
         - name: api
           image: ghcr.io/codefly-dev/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
