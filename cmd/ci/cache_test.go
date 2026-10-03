@@ -16,8 +16,7 @@ func TestCIBuildPathsExposeCachePolicy(t *testing.T) {
 }
 
 func TestBuildCommandsForwardCacheFlags(t *testing.T) {
-	previous := buildCacheFlags
-	t.Cleanup(func() { buildCacheFlags = previous })
+	t.Cleanup(buildCacheFlags.Reset)
 	for _, cmd := range []*cobra.Command{BuildCmd, RunCmd} {
 		require.NoError(t, cmd.ParseFlags([]string{"--cache-from", "ghcr.io/org/cache", "--cache-to", "ghcr.io/org/cache", "--cache-scope", "app/api", "--cache-mode", "min"}))
 		cache, err := buildCacheFlags.Policy()

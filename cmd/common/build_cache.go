@@ -17,9 +17,23 @@ type BuildCacheFlags struct {
 	rebuild bool
 }
 
+// defaultCacheBackend is the one transport the registry cache has; the flag
+// default and Reset agree on it here.
+const defaultCacheBackend = "registry"
+
 // Rebuild reports whether the caller asked for every image to be built even
 // when no input of it changed.
 func (f *BuildCacheFlags) Rebuild() bool { return f.rebuild }
+
+// Reset returns the flags to the values Bind gives them, in place. It is what
+// a test that parsed arguments into package-level flags restores with: the
+// options are a proto message, so snapshotting the struct to restore it later
+// is the lock copy go vet refuses.
+func (f *BuildCacheFlags) Reset() {
+	f.rebuild = false
+	proto.Reset(&f.options)
+	f.options.Backend = defaultCacheBackend
+}
 
 func (f *BuildCacheFlags) Bind(cmd *cobra.Command) {
 	flags := cmd.Flags()
@@ -28,11 +42,11 @@ func (f *BuildCacheFlags) Bind(cmd *cobra.Command) {
 	flags.StringArrayVar(&f.options.Exports, "cache-to", nil, "Registry cache repository to publish (repeatable; omit for read-only builds)")
 	flags.StringVar(&f.options.Scope, "cache-scope", "", "Stable workspace and trust-domain cache scope; service, recipe and platform are added automatically")
 	flags.StringVar(&f.options.Mode, "cache-mode", "", "Exported layers: max (default, includes dependencies) or min")
-	flags.StringVar(&f.options.Backend, "cache-backend", "registry", "Cache transport backend (registry)")
+	flags.StringVar(&f.options.Backend, "cache-backend", defaultCacheBackend, "Cache transport backend (registry)")
 }
 
 func (f *BuildCacheFlags) Policy() (*builderv0.BuildCacheOptions, error) {
-	if len(f.options.Imports) == 0 && len(f.options.Exports) == 0 && f.options.Scope == "" && f.options.Mode == "" && f.options.Backend == "registry" {
+	if len(f.options.Imports) == 0 && len(f.options.Exports) == 0 && f.options.Scope == "" && f.options.Mode == "" && f.options.Backend == defaultCacheBackend {
 		return nil, nil
 	}
 	if _, err := dockerhelpers.CacheArguments(&f.options, []string{"linux/amd64"}); err != nil {
