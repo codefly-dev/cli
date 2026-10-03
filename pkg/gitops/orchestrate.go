@@ -83,6 +83,7 @@ func renderModuleTree(
 		Host:           env.Host,
 		DeliveryTarget: deliveryTarget,
 	}
+	var staleConsumers map[string][]string
 	result, err := RenderOwnedTree(ctx, options, func(ctx context.Context, stage string) error {
 		services := make([]*resources.Service, 0, len(module.ServiceReferences))
 		for _, reference := range module.ServiceReferences {
@@ -92,16 +93,19 @@ func renderModuleTree(
 			}
 			services = append(services, service)
 		}
-		// The workspace configuration groups this render bakes in, digested, so
-		// a sibling consumer rendered against another value is refused before
-		// this tree replaces its destination.
-		digests, digestErr := workspaceConfigurationDigests(ctx, workspace, env, services)
+		// The workspace configuration groups this render bakes in, digested.
+		// Publish holds this tree and its sibling consumers to them; the render
+		// only reports the siblings that are stale now, so they are rendered
+		// next rather than found at publish.
+		digests, digestErr := currentGroupDigests(ctx, workspace, env, module)
 		if digestErr != nil {
 			return digestErr
 		}
-		if staleErr := refuseStaleGroupConsumers(workspace.Dir(), module.Name, env.Name, digests); staleErr != nil {
+		stale, staleErr := staleGroupConsumers(workspace.Dir(), module.Name, env.Name, digests)
+		if staleErr != nil {
 			return staleErr
 		}
+		staleConsumers = stale
 		options.WorkspaceConfigurationDigests = digests
 		pkg, err := modulePackage(module.Dir())
 		if err != nil {
@@ -294,6 +298,7 @@ func renderModuleTree(
 	if err != nil {
 		return RenderResult{}, err
 	}
+	result.StaleGroupConsumers = staleConsumers
 	// The cell file describes every module tree rendered for this environment,
 	// this one included, so it is regenerated whole after the tree is in place.
 	if env.Host != nil {

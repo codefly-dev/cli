@@ -78,6 +78,16 @@ type argoBootstrapComponent struct {
 	Component string
 	Overlay   string
 	Wave      string
+	// Project and Namespace are the AppProject the component's Application
+	// belongs to and the namespace it is applied into. Every component of a
+	// module shares the module's, except the authority overlay, which is
+	// applied into the platform's authority namespace under a project of its
+	// own: an AppProject destination applies to every Application in the
+	// project, so letting the module's project reach that namespace would let
+	// any unit of the module run a pod there as the platform's delivery
+	// account. Empty means the module's.
+	Project   string
+	Namespace string
 }
 
 // Sync waves order reconciliation inside a module: namespace-level resources
@@ -166,6 +176,8 @@ type argoComponentElement struct {
 	Component string `yaml:"component"`
 	Overlay   string `yaml:"overlay"`
 	Wave      string `yaml:"wave"`
+	Project   string `yaml:"project"`
+	Namespace string `yaml:"namespace"`
 }
 
 type argoAppTemplate struct {
@@ -243,16 +255,34 @@ func generateArgoBootstrap(
 	project.Metadata.Namespace = argoNamespace
 	project.Spec.SourceRepos = []string{repository}
 	project.Spec.Destinations = []argoDestination{{Namespace: inventory.Namespace, Server: inClusterServer}}
-	if inventory.SolutionAuthorityPath != "" {
-		// Authority documents land in the platform's authority namespace, which
-		// is the one namespace outside the module's own that its Application may
-		// write to — and only for what the authority overlay carries.
-		project.Spec.Destinations = append(project.Spec.Destinations, argoDestination{Namespace: authorityNamespace, Server: inClusterServer})
-	}
 	project.Spec.ClusterResourceWhitelist = clusterResources
 	project.Spec.NamespaceResourceWhitelist = namespaceResources
 	if err := writeArgoYAML(filepath.Join(bootstrap, "project.yaml"), project); err != nil {
 		return err
+	}
+	bootstrapResources := []string{"project.yaml", "applicationset.yaml"}
+	authorityProject := ""
+	if inventory.SolutionAuthorityPath != "" {
+		// Authority documents land in the platform's authority namespace. That
+		// namespace is reachable from exactly one Application of the module —
+		// the authority overlay's — under a project of its own that admits one
+		// destination and two kinds, the carrier ConfigMap and the delivery
+		// Job. It is NOT a destination of the module's project: an AppProject
+		// destination applies to every Application in the project, so adding
+		// it there would let any unit overlay place a pod in the authority
+		// namespace running as the platform's delivery account.
+		authorityProject = argoAuthorityProjectName(inventory.AppProject)
+		isolated := argoProjectManifest{APIVersion: "argoproj.io/v1alpha1", Kind: "AppProject"}
+		isolated.Metadata.Name = authorityProject
+		isolated.Metadata.Namespace = argoNamespace
+		isolated.Spec.SourceRepos = []string{repository}
+		isolated.Spec.Destinations = []argoDestination{{Namespace: authorityNamespace, Server: inClusterServer}}
+		isolated.Spec.ClusterResourceWhitelist = []argoResourceAuthority{}
+		isolated.Spec.NamespaceResourceWhitelist = authorityNamespaceResources()
+		if err := writeArgoYAML(filepath.Join(bootstrap, authorityProjectFile), isolated); err != nil {
+			return err
+		}
+		bootstrapResources = []string{"project.yaml", authorityProjectFile, "applicationset.yaml"}
 	}
 
 	var components []argoBootstrapComponent
@@ -287,6 +317,8 @@ func generateArgoBootstrap(
 			Component: argoBoundedName(componentNameBudget, inventory.Module, "solution-authority"),
 			Overlay:   filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionAuthorityPath, "overlays", environment)),
 			Wave:      solutionHostBindingWave,
+			Project:   authorityProject,
+			Namespace: authorityNamespace,
 		})
 	}
 
@@ -310,8 +342,30 @@ func generateArgoBootstrap(
 	return writeArgoYAML(filepath.Join(bootstrap, "kustomization.yaml"), kustomizationManifest{
 		APIVersion: kustomizeAPIVersion,
 		Kind:       kindKustomization,
-		Resources:  []string{"project.yaml", "applicationset.yaml"},
+		Resources:  bootstrapResources,
 	})
+}
+
+// batchAPIGroup is the API group of a Job.
+const batchAPIGroup = "batch"
+
+// authorityProjectFile is the bootstrap file of the authority overlay's own
+// AppProject, beside the module's project.yaml.
+const authorityProjectFile = "authority-project.yaml"
+
+// argoAuthorityProjectName names the AppProject the authority overlay is
+// applied under: the module's project name with a suffix, bounded as Argo
+// names are.
+func argoAuthorityProjectName(project string) string {
+	return argoBoundedName(63, project, "authority")
+}
+
+// authorityNamespaceResources is the closed set of kinds the authority project
+// may apply into the authority namespace: the carrier ConfigMap and the
+// delivery Job, and nothing that runs otherwise — no Deployment, no CronJob, no
+// Secret — so a hand-edited authority overlay cannot put a workload there.
+func authorityNamespaceResources() []argoResourceAuthority {
+	return []argoResourceAuthority{{Group: "", Kind: kindConfigMap}, {Group: batchAPIGroup, Kind: kindJob}}
 }
 
 // argoRepository derives the Argo Application repoURL. localFetchHost, when
@@ -365,9 +419,8 @@ func snapshotAuthority(target string, inventory *Inventory, environment string) 
 	if inventory.SolutionHostBindingPath != "" {
 		sources = append(sources, filepath.Join(target, filepath.FromSlash(inventory.SolutionHostBindingPath), "overlays", environment))
 	}
-	if inventory.SolutionAuthorityPath != "" {
-		sources = append(sources, filepath.Join(target, filepath.FromSlash(inventory.SolutionAuthorityPath), "overlays", environment))
-	}
+	// The authority overlay is deliberately absent: its kinds belong to the
+	// authority project's own closed whitelist, not the module's.
 	cluster := make(map[string]argoResourceAuthority)
 	namespaced := make(map[string]argoResourceAuthority)
 	for _, source := range sources {
@@ -437,7 +490,14 @@ func writeArgoApplicationSet(
 ) error {
 	elements := make([]any, 0, len(components))
 	for _, component := range components {
-		elements = append(elements, argoComponentElement(component))
+		element := argoComponentElement(component)
+		if element.Project == "" {
+			element.Project = project
+		}
+		if element.Namespace == "" {
+			element.Namespace = namespace
+		}
+		elements = append(elements, element)
 	}
 	componentGenerator := func() argoLeafGenerator {
 		return argoLeafGenerator{List: &argoListGenerator{Elements: elements}}
@@ -472,13 +532,13 @@ func writeArgoApplicationSet(
 					Finalizers:  []string{"resources-finalizer.argocd.argoproj.io"},
 				},
 				Spec: argoAppTemplateSpec{
-					Project: project,
+					Project: "{{ .project }}",
 					Source: argoAppSource{
 						RepoURL:        repository,
 						TargetRevision: revision,
 						Path:           "{{ .overlay }}",
 					},
-					Destination: argoDestination{Namespace: namespace, Server: "{{ .server }}"},
+					Destination: argoDestination{Namespace: "{{ .namespace }}", Server: "{{ .server }}"},
 					SyncPolicy: argoSyncPolicy{
 						Automated:   argoSyncAutomated{Prune: true, SelfHeal: true},
 						SyncOptions: []string{"CreateNamespace=false", "PruneLast=true"},

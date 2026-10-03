@@ -437,38 +437,84 @@ func TestCellFileSkipsTreesRenderedForAnotherEnvironment(t *testing.T) {
 	require.Equal(t, []string{"billing"}, result.Skipped)
 }
 
-// TestRenderRefusesWhenASiblingConsumerBakedInAnotherGroupValue is the
-// acceptance case: change a workspace group consumed by another module, render
-// only one, and the render refuses, naming the stale consumer.
-func TestRenderRefusesWhenASiblingConsumerBakedInAnotherGroupValue(t *testing.T) {
+// TestGroupChangeIsReportedAtRenderAndRefusedAtPublish is the acceptance
+// case for a shared workspace configuration group, held to the rule that every
+// refusal is satisfiable: both consumers rendered against the old value, the
+// group changes, and the way out is to render each — never a refusal on a
+// sibling's account at render, which deadlocked (rendering A refused because
+// B's tree was stale, rendering B refused because A's still was).
+func TestGroupChangeIsReportedAtRenderAndRefusedAtPublish(t *testing.T) {
 	workspace := writeCellWorkspace(t)
 	env := selectedEnvironment(t, workspace, "staging")
 	ctx := context.Background()
 	shopServices := loadServices(t, workspace, "shop", "api")
-	before, err := workspaceConfigurationDigests(ctx, workspace, env, shopServices)
+	before, err := workspaceConfigurationDigests(ctx, workspace, env, shopServices, nil)
 	require.NoError(t, err)
 	require.Len(t, before, 1)
 	require.True(t, strings.HasPrefix(before["shop"], "sha256:"))
 	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", before)
+	renderCellTree(t, workspace, "shop", "api", "acme-shop", before)
 
-	// Nothing changed: the sibling agrees.
-	require.NoError(t, refuseStaleGroupConsumers(workspace.Dir(), "shop", "staging", before))
+	// Nothing changed: no sibling is stale, and the publish of either holds.
+	stale, err := staleGroupConsumers(workspace.Dir(), "shop", "staging", before)
+	require.NoError(t, err)
+	require.Empty(t, stale)
+	require.NoError(t, refuseStaleRender("shop", "staging", before, before))
 
-	// The group changes; billing was rendered against the old value.
+	// The group changes. Both trees are now rendered against the old value:
+	// publishing either is refused because ITS OWN render is stale — the
+	// action is to render it — and the render of shop then reports billing
+	// as stale rather than refusing on its account.
 	require.NoError(t, os.WriteFile(filepath.Join(workspace.Dir(), "configurations", "staging", "shop.env"), []byte("MODE=prod\nTOKEN_LIMIT=8\n"), 0o644))
-	after, err := workspaceConfigurationDigests(ctx, workspace, env, shopServices)
+	after, err := workspaceConfigurationDigests(ctx, workspace, env, shopServices, nil)
 	require.NoError(t, err)
 	require.NotEqual(t, before["shop"], after["shop"])
-	err = refuseStaleGroupConsumers(workspace.Dir(), "shop", "staging", after)
-	var stale *StaleGroupConsumersError
-	require.ErrorAs(t, err, &stale)
-	require.Equal(t, map[string][]string{"shop": {"billing"}}, stale.Stale)
-	require.Contains(t, err.Error(), "render those modules too")
+	err = refuseStaleRender("shop", "staging", before, after)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "render shop again")
+	stale, err = staleGroupConsumers(workspace.Dir(), "shop", "staging", after)
+	require.NoError(t, err)
+	require.Equal(t, map[string][]string{"shop": {"billing"}}, stale, "the render reports billing; it does not refuse")
 
-	// A sibling rendered for another environment is not this environment's
-	// consumer, and a sibling that does not consume the group has no opinion.
-	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", nil)
+	// shop rendered at the new value: its own render is current, and its
+	// publish is refused only until billing is rendered too — by name.
+	renderCellTree(t, workspace, "shop", "api", "acme-shop", after)
+	require.NoError(t, refuseStaleRender("shop", "staging", after, after))
+	err = refuseStaleGroupConsumers(workspace.Dir(), "shop", "staging", after)
+	var consumers *StaleGroupConsumersError
+	require.ErrorAs(t, err, &consumers)
+	require.Equal(t, map[string][]string{"shop": {"billing"}}, consumers.Stale)
+	require.Contains(t, err.Error(), "render those modules")
+
+	// billing rendered at the new value: both publishes hold. No deadlock.
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", after)
 	require.NoError(t, refuseStaleGroupConsumers(workspace.Dir(), "shop", "staging", after))
+	require.NoError(t, refuseStaleGroupConsumers(workspace.Dir(), "billing", "staging", after))
+
+	// An unreadable sibling inventory is an error, never "it agrees".
+	require.NoError(t, os.WriteFile(filepath.Join(workspace.Dir(), "deployments", "modules", "billing", InventoryFilename), []byte("{not json"), 0o644))
+	_, err = staleGroupConsumers(workspace.Dir(), "shop", "staging", after)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "the rendered tree of module billing cannot be read")
+}
+
+// TestGroupDigestsCoverContractSlots: a contract slot {from: <group>/<key>}
+// is baked into the delivered authority document, so its group is digested
+// as a service's dependency is — a change to it is a change the publish holds
+// the render to.
+func TestGroupDigestsCoverContractSlots(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	ctx := context.Background()
+	shopServices := loadServices(t, workspace, "shop", "api")
+	withoutSlots, err := workspaceConfigurationDigests(ctx, workspace, env, shopServices, nil)
+	require.NoError(t, err)
+	require.NotContains(t, withoutSlots, "assistant")
+	require.NoError(t, os.WriteFile(filepath.Join(workspace.Dir(), "configurations", "staging", "assistant.env"), []byte("MODEL_AUDIENCE=model-gateway\n"), 0o644))
+	withSlots, err := workspaceConfigurationDigests(ctx, workspace, env, shopServices, []string{"assistant"})
+	require.NoError(t, err)
+	require.Contains(t, withSlots, "assistant")
+	require.Equal(t, withoutSlots["shop"], withSlots["shop"])
 }
 
 func loadServices(t *testing.T, workspace *resources.Workspace, module string, names ...string) []*resources.Service {

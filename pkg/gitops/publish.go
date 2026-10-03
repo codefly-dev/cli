@@ -153,21 +153,39 @@ func preparePublish(
 	publication := &deliveryPublication{baseBranch: baseBranch, options: deliveryPublishOptions{
 		Signer: request.Signer, AllowUnsigned: request.Local, Module: request.Module,
 	}}
+	// The environment's host block shapes delivery on every publish, a rollback
+	// included: what a rollback re-delivers is settled against the base branch
+	// and signed now, exactly as a render is, never restored as the bytes an
+	// earlier publish signed.
+	env, envErr := orchestration.SelectEnvironment(workspace, request.Environment)
+	if envErr != nil {
+		return nil, envErr
+	}
+	publication.options.Target, err = resolveDeliveryTarget(ctx, workspace, env)
+	if err != nil {
+		return nil, err
+	}
+	if env.Host != nil {
+		publication.options.EnvelopeRevision = env.Host.EnvelopeRevision
+		publication.options.Domain = env.Host.Domain
+	}
 	if restoreRevision == "" {
 		inventory, err = loadPublicationInventory(ctx, workspace, request, rendered, pathRoot)
 		if err != nil {
 			return nil, err
 		}
-		env, envErr := orchestration.SelectEnvironment(workspace, request.Environment)
-		if envErr != nil {
-			return nil, envErr
+		// The groups this tree bakes in are held to the composition as it is
+		// now, and to the sibling consumers rendered beside it: each refusal is
+		// lifted by one render, named.
+		current, digestErr := recordedGroupsNow(ctx, workspace, env, inventory.WorkspaceConfigurationDigests)
+		if digestErr != nil {
+			return nil, digestErr
 		}
-		publication.options.Target, err = resolveDeliveryTarget(ctx, workspace, env)
-		if err != nil {
+		if err = refuseStaleRender(request.Module, request.Environment, inventory.WorkspaceConfigurationDigests, current); err != nil {
 			return nil, err
 		}
-		if env.Host != nil {
-			publication.options.EnvelopeRevision = env.Host.EnvelopeRevision
+		if err = refuseStaleGroupConsumers(workspace.Dir(), request.Module, request.Environment, inventory.WorkspaceConfigurationDigests); err != nil {
+			return nil, err
 		}
 		if _, statErr := os.Stat(cellPath(workspace.Dir(), request.Environment)); statErr == nil {
 			publication.cellSource = cellPath(workspace.Dir(), request.Environment)
@@ -252,6 +270,9 @@ func preparePublish(
 		if err != nil {
 			return fail(err)
 		}
+		if inventory, err = resettleRestoredDelivery(ctx, repo, target, targetPath, request.Environment, &inventory, publication); err != nil {
+			return fail(err)
+		}
 	}
 	publishedPaths := []string{targetPath}
 	if publication.cellPath != "" {
@@ -261,6 +282,10 @@ func preparePublish(
 		return fail(addErr)
 	}
 	contractChecks := checkContracts(inventory, resolveGitopsModuleInventory(ctx, repo, baseBranch, pathRoot), request.AllowUnresolvedContracts)
+	staleConsumers, err := staleBaseConsumers(ctx, repo, baseBranch, pathRoot, request.Module, inventory.WorkspaceConfigurationDigests)
+	if err != nil {
+		return fail(err)
+	}
 	changed, err := stagedPathsSince(ctx, repo, startRevision, publishedPaths...)
 	if err != nil {
 		return fail(err)
@@ -282,7 +307,8 @@ func preparePublish(
 		Module:         request.Module, Environment: request.Environment,
 		RenderDigest: inventory.Digest, SnapshotRevision: snapshotRevision,
 		Changed: changed, Diff: diff, ContractChecks: contractChecks,
-		Delivery: inventory.Delivery,
+		Delivery:       inventory.Delivery,
+		StaleConsumers: staleConsumers,
 	}
 	plan.ID, err = publishPlanID(&plan, restoreRevision)
 	if err != nil {
@@ -1933,9 +1959,53 @@ type deliveryPublication struct {
 	cellPath   string
 }
 
+// resettleRestoredDelivery settles the delivery documents of a restored tree
+// against the base branch, as a render's are, and rebuilds the inventory over
+// the result. A rollback restores the workloads an earlier revision delivered;
+// it must NOT restore the documents that revision signed: a host that applied
+// generation 5 refuses the generation-3 carrier as stale, and a tree restored
+// from before a withdrawal would carry the withdrawn binding as present and
+// have the next publish lose the tombstone. So the restored documents are the
+// render's input here — the old content at the next generation, signed now,
+// with the base branch's tombstones carried forward — and a rollback that
+// would reinstate a withdrawn binding is refused as any render is.
+func resettleRestoredDelivery(ctx context.Context, repo, target, targetPath, environment string, inventory *Inventory, publication *deliveryPublication) (Inventory, error) {
+	if inventory.SolutionHostBindingPath == "" && inventory.SolutionAuthorityPath == "" {
+		return *inventory, nil
+	}
+	presence, err := settlePresenceDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, publication.options)
+	if err != nil {
+		return Inventory{}, fmt.Errorf("settle the rollback's presence documents: %w", err)
+	}
+	authority, err := settleAuthorityDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, presence, publication.options)
+	if err != nil {
+		return Inventory{}, fmt.Errorf("settle the rollback's authority documents: %w", err)
+	}
+	options := &RenderOptions{
+		Module: inventory.Module, Unit: inventory.Unit, Environment: inventory.Environment,
+		Namespace: inventory.Namespace, AppProject: inventory.AppProject, OwnedPath: targetPath,
+		ModulePath: inventory.ModulePath, Units: inventory.Units, Package: inventory.Package,
+		Promotable: true, CheckUnitDirectories: true,
+		SolutionHostBindingPath:       inventory.SolutionHostBindingPath,
+		SolutionAuthorityPath:         inventory.SolutionAuthorityPath,
+		Delivered:                     mergeDeliveries(presence, authority),
+		WorkspaceConfigurationDigests: inventory.WorkspaceConfigurationDigests,
+	}
+	if _, err = validateTree(target, options); err != nil {
+		return Inventory{}, fmt.Errorf("validate the re-settled rollback: %w", err)
+	}
+	settled, err := buildInventory(target, options)
+	if err != nil {
+		return Inventory{}, err
+	}
+	if err := writeCanonicalInventory(filepath.Join(target, InventoryFilename), &settled); err != nil {
+		return Inventory{}, err
+	}
+	return settled, nil
+}
+
 // stageAndSettleDelivery copies the render's delivery documents into the
-// staged tree and settles them against the base branch. A rollback publish has
-// no publication and settles nothing: it restores what was delivered.
+// staged tree and settles them against the base branch.
 func stageAndSettleDelivery(
 	ctx context.Context,
 	repo, target, targetPath, rendered string,

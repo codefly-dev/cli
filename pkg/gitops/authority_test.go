@@ -214,10 +214,14 @@ func TestAuthorityRefusesAnUnresolvedSlot(t *testing.T) {
 	require.Contains(t, err.Error(), "assistant/model-resource-kind")
 }
 
-// TestAuthorityReachesArgoInTheAuthorityNamespace: the authority overlay is its
-// own Argo component and the AppProject admits the authority namespace as a
-// destination — the one namespace outside the module's own it may write to.
-func TestAuthorityReachesArgoInTheAuthorityNamespace(t *testing.T) {
+// TestAuthorityReachesArgoUnderItsOwnProject: the authority overlay is its own
+// Argo component, applied into the authority namespace under an AppProject of
+// its own that admits that one destination and two kinds — the carrier
+// ConfigMap and the delivery Job. The module's project never names the
+// authority namespace: a project destination applies to every Application in
+// the project, so it would let any unit overlay run a pod there as the
+// platform's delivery account. "Signed AND isolated" is this test.
+func TestAuthorityReachesArgoUnderItsOwnProject(t *testing.T) {
 	root := t.TempDir()
 	targetPath := "environments/deployments/modules/shop"
 	inventory := &Inventory{
@@ -229,12 +233,65 @@ func TestAuthorityReachesArgoInTheAuthorityNamespace(t *testing.T) {
 	writeOverlay(t, filepath.Join(root, solutionAuthorityDir, "overlays", "staging"))
 	config := &repositoryConfig{RepoURL: "https://github.com/example/manifests.git"}
 	require.NoError(t, generateArgoBootstrap(context.Background(), config, root, targetPath, inventory, "staging", strings.Repeat("c", 40), ""))
+
 	set, err := os.ReadFile(filepath.Join(root, "bootstrap", "applicationset.yaml"))
 	require.NoError(t, err)
-	require.Contains(t, string(set), "overlay: "+targetPath+"/"+solutionAuthorityDir+"/overlays/staging")
+	var applicationSet struct {
+		Spec struct {
+			Generators []struct {
+				Matrix struct {
+					Generators []struct {
+						List *struct {
+							Elements []argoComponentElement `yaml:"elements"`
+						} `yaml:"list"`
+					} `yaml:"generators"`
+				} `yaml:"matrix"`
+			} `yaml:"generators"`
+			Template struct {
+				Spec struct {
+					Project     string          `yaml:"project"`
+					Destination argoDestination `yaml:"destination"`
+				} `yaml:"spec"`
+			} `yaml:"template"`
+		} `yaml:"spec"`
+	}
+	require.NoError(t, yaml.Unmarshal(set, &applicationSet))
+	require.Equal(t, "{{ .project }}", applicationSet.Spec.Template.Spec.Project)
+	require.Equal(t, "{{ .namespace }}", applicationSet.Spec.Template.Spec.Destination.Namespace)
+	byComponent := map[string]argoComponentElement{}
+	for _, generator := range applicationSet.Spec.Generators {
+		for _, leaf := range generator.Matrix.Generators {
+			if leaf.List == nil {
+				continue
+			}
+			for _, element := range leaf.List.Elements {
+				byComponent[element.Component] = element
+			}
+		}
+	}
+	authority := byComponent["shop-solution-authority"]
+	require.Equal(t, targetPath+"/"+solutionAuthorityDir+"/overlays/staging", authority.Overlay)
+	require.Equal(t, "acme-staging-authority", authority.Project)
+	require.Equal(t, authorityNamespace, authority.Namespace)
+	unit := byComponent["shop-api"]
+	require.Equal(t, "acme-staging", unit.Project)
+	require.Equal(t, "acme-shop", unit.Namespace)
+
 	project, err := os.ReadFile(filepath.Join(root, "bootstrap", "project.yaml"))
 	require.NoError(t, err)
-	require.Contains(t, string(project), "namespace: "+authorityNamespace)
+	require.NotContains(t, string(project), authorityNamespace, "the module's project never reaches the authority namespace")
 	require.Contains(t, string(project), "namespace: acme-shop")
+	isolated, err := os.ReadFile(filepath.Join(root, "bootstrap", authorityProjectFile))
+	require.NoError(t, err)
+	var authorityProject argoProjectManifest
+	require.NoError(t, yaml.Unmarshal(isolated, &authorityProject))
+	require.Equal(t, "acme-staging-authority", authorityProject.Metadata.Name)
+	require.Equal(t, []argoDestination{{Namespace: authorityNamespace, Server: inClusterServer}}, authorityProject.Spec.Destinations)
+	require.Empty(t, authorityProject.Spec.ClusterResourceWhitelist)
+	require.Equal(t, []argoResourceAuthority{{Group: "", Kind: kindConfigMap}, {Group: "batch", Kind: kindJob}}, authorityProject.Spec.NamespaceResourceWhitelist,
+		"a Deployment, a CronJob or a Secret in the authority overlay is refused at apply")
+	kustomization, err := os.ReadFile(filepath.Join(root, "bootstrap", "kustomization.yaml"))
+	require.NoError(t, err)
+	require.Contains(t, string(kustomization), authorityProjectFile)
 	require.NoError(t, validateBootstrapUnits(filepath.Join(root, "bootstrap"), targetPath, inventory, "staging"))
 }

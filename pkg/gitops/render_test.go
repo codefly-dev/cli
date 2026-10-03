@@ -236,7 +236,11 @@ func TestRenderInventoryRecordsOwnedUnitGraph(t *testing.T) {
 	}
 }
 
-func TestLoadInventoryAcceptsPriorSchemaVersion(t *testing.T) {
+// TestLoadInventoryRefusesAnOlderSchema: a tree an older CLI rendered carries
+// no settled delivery record and no group digests; reading it would deliver
+// its documents unsettled and let a changed group through. The schema is
+// refused, with the number, rather than read as if nothing were missing.
+func TestLoadInventoryRefusesAnOlderSchema(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "owned")
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: destination, Module: "payments", Environment: "production", Promotable: true,
@@ -258,12 +262,8 @@ func TestLoadInventoryAcceptsPriorSchemaVersion(t *testing.T) {
 	if err := os.WriteFile(path, []byte(downgraded), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	inventory, err := LoadInventory(destination)
-	if err != nil {
-		t.Fatalf("prior schema version rejected: %v", err)
-	}
-	if inventory.SchemaVersion != priorSchemaVersion {
-		t.Fatalf("inventory.SchemaVersion = %d, want %d", inventory.SchemaVersion, priorSchemaVersion)
+	if _, err := LoadInventory(destination); err == nil || !strings.Contains(err.Error(), "unsupported") || !strings.Contains(err.Error(), "schema 6") {
+		t.Fatalf("an older schema must be refused by number, got %v", err)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/modulecontract"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/resources"
 )
@@ -26,29 +27,57 @@ import (
 // so: the one that was not re-rendered keeps serving the old value and looks
 // correctly configured.
 //
-// So every render records, per group its services consume, a digest of the
-// group as the environment provided it, and refuses to replace its tree while a
-// sibling module rendered for the same environment records a different digest
-// for a group they both consume. The check runs at render, over the module
-// trees beside this one, and deliberately not at publish: a publish-time check
-// against the delivery repository would refuse whichever consumer publishes
-// first, for ever, because the other is not published yet.
+// So every render records, per group its services and its contract's slots
+// consume, a digest of the group as the environment provided it. The rule is
+// enforced at PUBLISH, where each refusal has one action that satisfies it:
+//
+//   - a module whose recorded digest is not the composition's current value
+//     was rendered before the group changed, and is refused until rendered
+//     again;
+//   - a sibling consumer whose local tree records another digest has not been
+//     rendered since the group changed, and this publish is refused until it
+//     is — the render that lifts the refusal is the sibling's, which the
+//     publish names.
+//
+// A render never refuses on a sibling's account. It did once, symmetrically,
+// and that deadlocked: with A and B both rendered against the old value,
+// rendering A was refused because B's tree was stale and rendering B because
+// A's still was, and no sequence of renders got out. The render reports the
+// stale siblings instead, so the operator renders them next.
+//
+// What a publish cannot enforce is the delivery base: a consumer published
+// earlier at the old value is stale there until its own publish, and refusing
+// this one for it would be the same deadlock one repository over. So the base
+// branch's stale consumers are reported in the plan, by name, and are the next
+// publish to run.
 
 // workspaceConfigurationDigests digests, per group the module's services
 // consume, the group as the environment provides it. The digest covers each
 // key and its public value, and the key alone of a secret value: the rendered
 // tree carries a secret only as a reference, so the value is not part of what
 // the tree bakes in, while the key's presence is.
-func workspaceConfigurationDigests(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, services []*resources.Service) (map[string]string, error) {
+func workspaceConfigurationDigests(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, services []*resources.Service, slotGroups []string) (map[string]string, error) {
 	consumed := map[string]struct{}{}
 	for _, service := range services {
 		for _, group := range service.WorkspaceConfigurationDependencies {
 			consumed[group] = struct{}{}
 		}
 	}
+	// A contract slot {from: <group>/<key>} is consumed into a delivered
+	// document, so its group is baked in exactly as a service's is.
+	for _, group := range slotGroups {
+		consumed[group] = struct{}{}
+	}
 	if len(consumed) == 0 {
 		return nil, nil
 	}
+	return digestProvidedGroups(ctx, workspace, env, consumed)
+}
+
+// digestProvidedGroups digests the named groups as the environment provides
+// them now; a group the environment does not provide is absent from the
+// result.
+func digestProvidedGroups(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, consumed map[string]struct{}) (map[string]string, error) {
 	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime())
 	if err != nil {
 		return nil, fmt.Errorf("read the workspace configurations this render bakes in: %w", err)
@@ -73,6 +102,45 @@ func workspaceConfigurationDigests(ctx context.Context, workspace *resources.Wor
 	return digests, nil
 }
 
+// recordedGroupsNow re-digests the groups a rendered tree recorded, as the
+// environment provides them now: what a publish holds the render to. It reads
+// no service, so a publish needs only the tree and the composition.
+func recordedGroupsNow(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, recorded map[string]string) (map[string]string, error) {
+	if len(recorded) == 0 {
+		return nil, nil
+	}
+	consumed := make(map[string]struct{}, len(recorded))
+	for group := range recorded {
+		consumed[group] = struct{}{}
+	}
+	return digestProvidedGroups(ctx, workspace, env, consumed)
+}
+
+// currentGroupDigests digests the groups a module consumes as the environment
+// provides them NOW: its services' declared dependencies and its contract's
+// slots. A render records this; a publish re-digests the recorded groups and
+// refuses a render the composition has moved past.
+func currentGroupDigests(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, module *resources.Module) (map[string]string, error) {
+	services := make([]*resources.Service, 0, len(module.ServiceReferences))
+	for _, reference := range module.ServiceReferences {
+		service, err := module.LoadServiceFromName(ctx, reference.Name)
+		if err != nil {
+			return nil, fmt.Errorf("load service %s: %w", reference.Name, err)
+		}
+		services = append(services, service)
+	}
+	var slotGroups []string
+	contract, err := modulecontract.Load(module.Dir())
+	switch {
+	case err == nil:
+		slotGroups = contract.SlotGroups()
+	case errors.Is(err, os.ErrNotExist):
+	default:
+		return nil, err
+	}
+	return workspaceConfigurationDigests(ctx, workspace, env, services, slotGroups)
+}
+
 // StaleGroupConsumersError reports sibling modules whose rendered trees bake in
 // another value of a workspace configuration group this render consumes.
 type StaleGroupConsumersError struct {
@@ -93,25 +161,26 @@ func (err *StaleGroupConsumersError) Error() string {
 		parts = append(parts, fmt.Sprintf("%s (rendered by %s)", group, strings.Join(err.Stale[group], ", ")))
 	}
 	return fmt.Sprintf(
-		"workspace configuration groups consumed by %s changed since their other consumers were rendered for %s: %s; render those modules too, so the environment does not deliver two values of one group",
+		"workspace configuration groups consumed by %s changed since their other consumers were rendered for %s: %s; render those modules, so the environment does not deliver two values of one group",
 		err.Module, err.Environment, strings.Join(parts, "; "))
 }
 
-// refuseStaleGroupConsumers compares the group digests this render recorded
-// with the ones every sibling module tree under deployments/modules recorded
-// for the same environment, and refuses when any group they both consume
-// digests differently.
-func refuseStaleGroupConsumers(workspaceDir, module, environment string, digests map[string]string) error {
+// staleGroupConsumers compares the group digests a render recorded with the
+// ones every sibling module tree under deployments/modules recorded for the
+// same environment, and returns, per group they both consume, the siblings
+// whose digest differs. A sibling tree that cannot be read is an error, not
+// an absence: an unreadable inventory is no evidence that its module agrees.
+func staleGroupConsumers(workspaceDir, module, environment string, digests map[string]string) (map[string][]string, error) {
 	if len(digests) == 0 {
-		return nil
+		return nil, nil
 	}
 	modulesDir := filepath.Join(workspaceDir, "deployments", "modules")
 	entries, err := os.ReadDir(modulesDir)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		return fmt.Errorf("list rendered modules: %w", err)
+		return nil, fmt.Errorf("list rendered modules: %w", err)
 	}
 	stale := map[string][]string{}
 	for _, entry := range entries {
@@ -123,9 +192,7 @@ func refuseStaleGroupConsumers(workspaceDir, module, environment string, digests
 			continue
 		}
 		if err != nil {
-			// A sibling tree this CLI cannot read is not evidence either way;
-			// its own render will refuse it.
-			continue
+			return nil, fmt.Errorf("the rendered tree of module %s cannot be read, so whether it agrees about the groups %s consumes cannot be told: %w", entry.Name(), module, err)
 		}
 		if inventory.Environment != environment {
 			continue
@@ -137,11 +204,87 @@ func refuseStaleGroupConsumers(workspaceDir, module, environment string, digests
 			}
 		}
 	}
-	if len(stale) == 0 {
-		return nil
-	}
 	for group := range stale {
 		sort.Strings(stale[group])
 	}
+	return stale, nil
+}
+
+// refuseStaleGroupConsumers refuses a publish while a sibling consumer's local
+// tree records another value of a group this module consumes: the render that
+// lifts it is the sibling's, named in the error.
+func refuseStaleGroupConsumers(workspaceDir, module, environment string, digests map[string]string) error {
+	stale, err := staleGroupConsumers(workspaceDir, module, environment, digests)
+	if err != nil {
+		return err
+	}
+	if len(stale) == 0 {
+		return nil
+	}
 	return &StaleGroupConsumersError{Module: module, Environment: environment, Stale: stale}
+}
+
+// refuseStaleRender refuses a publish of a tree rendered against a value a
+// consumed group no longer has: the composition moved after the render, and
+// the fix is to render again. Recorded groups the composition no longer
+// provides, and provided groups the render did not record, are each a
+// difference too.
+func refuseStaleRender(module, environment string, recorded, current map[string]string) error {
+	var moved []string
+	for group, digest := range current {
+		if recorded[group] != digest {
+			moved = append(moved, group)
+		}
+	}
+	for group := range recorded {
+		if _, provided := current[group]; !provided {
+			moved = append(moved, group)
+		}
+	}
+	if len(moved) == 0 {
+		return nil
+	}
+	sort.Strings(moved)
+	return fmt.Errorf("the rendered tree of %s bakes in a value of the workspace configuration groups %s that %s no longer provides; render %s again before publishing it",
+		module, strings.Join(moved, ", "), environment, module)
+}
+
+// staleBaseConsumers names, per group this module consumes, the consumers the
+// delivery base branch holds at another digest: published before the group
+// changed, and the next publish to run. Reported, never refused — refusing
+// would hold every consumer's publish on every other's.
+func staleBaseConsumers(ctx context.Context, repo, baseBranch, pathRoot, module string, digests map[string]string) ([]string, error) {
+	if len(digests) == 0 {
+		return nil, nil
+	}
+	ref := "refs/remotes/origin/" + baseBranch
+	modulesPath := filepath.ToSlash(filepath.Join(pathRoot, "deployments", "modules"))
+	listing, err := gitCommand(ctx, repo, "ls-tree", "--name-only", ref+":"+modulesPath)
+	if err != nil {
+		// No modules directory on the base branch is the first publish of the
+		// composition; nothing is delivered to be stale.
+		return nil, nil
+	}
+	var stale []string
+	for _, name := range strings.Split(strings.TrimSpace(listing), "\n") {
+		name = strings.TrimSpace(name)
+		if name == "" || name == module {
+			continue
+		}
+		data, err := gitCommandBytes(ctx, repo, "show", ref+":"+modulesPath+"/"+name+"/"+InventoryFilename)
+		if err != nil {
+			continue
+		}
+		inventory, err := decodeInventory(data, name)
+		if err != nil {
+			return nil, fmt.Errorf("the delivered inventory of module %s on %s cannot be read: %w", name, baseBranch, err)
+		}
+		for group, digest := range digests {
+			if other, consumed := inventory.WorkspaceConfigurationDigests[group]; consumed && other != digest {
+				stale = append(stale, fmt.Sprintf("%s (group %s)", name, group))
+			}
+		}
+	}
+	sort.Strings(stale)
+	return stale, nil
 }

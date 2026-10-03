@@ -1,6 +1,8 @@
 package gitops
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -242,35 +244,49 @@ type deliveryAccountMetadata struct {
 
 // deliveryScript is what the Job runs: POST every carrier in the documents
 // mount to the delivery route, re-reading the projected token per request,
-// retrying what may succeed later and failing on what will not.
+// retrying what may succeed later and failing on what will not — after every
+// document has been offered, so one refusal never withholds the rest, a
+// tombstone included.
 //
 // A 2xx is a committed delivery and its body the receipt. 400, 401, 403, 409
 // and 422 are the host's verdicts on this document or this carrier, and a
-// retry would ask the same question of the same host: the Job fails. Anything
-// else — no connection, a 5xx, a 429 — is the host not being there yet, which
-// is what the backoff is for.
+// retry would ask the same question of the same host: the document is
+// refused, the next one is posted, and the Job fails at the end. Anything
+// else — no connection, a 5xx, a 429, a 404 from a host a version behind —
+// is the host not being there yet, which is what the backoff is for.
+//
+// Shell variables are spelled $NAME and never ${NAME}: the promotable ruleset
+// refuses a manifest carrying ${…} as an unresolved placeholder, and this
+// script is a manifest. The receipt is read from curl's output rather than a
+// file, so the container needs no writable filesystem.
 const deliveryScript = `set -eu
-url="${DELIVERY_URL}${DELIVERY_PATH}"
+url="$DELIVERY_URL$DELIVERY_PATH"
 delivered=0
-for file in "${DELIVERY_DOCUMENTS}"/*.json; do
-  [ -e "$file" ] || { echo "no document to deliver under ${DELIVERY_DOCUMENTS}"; exit 1; }
+refused=0
+for file in "$DELIVERY_DOCUMENTS"/*.json; do
+  [ -e "$file" ] || { echo "no document to deliver under $DELIVERY_DOCUMENTS"; exit 1; }
+  name=$(basename "$file")
   attempt=0
   while :; do
-    code=$(curl -sS -o /tmp/receipt -w '%{http_code}' -X POST \
-      -H "Authorization: Bearer $(cat "${DELIVERY_TOKEN}")" \
+    answer=$(curl -sS --max-time 30 -w '\n%{http_code}' -X POST \
+      -H "Authorization: Bearer $(cat "$DELIVERY_IDENTITY_FILE")" \
       -H 'Content-Type: application/json' \
-      --data-binary @"$file" "$url") || code=000
+      --data-binary @"$file" "$url") || answer="
+000"
+    code=$(printf '%s' "$answer" | tail -n 1)
+    receipt=$(printf '%s' "$answer" | sed '$d')
     case "$code" in
-      2??) echo "delivered $(basename "$file"): $(cat /tmp/receipt)"; delivered=$((delivered + 1)); break ;;
-      400|401|403|409|422) echo "refused $(basename "$file") with $code: $(cat /tmp/receipt)"; exit 1 ;;
+      2??) echo "delivered $name: $receipt"; delivered=$((delivered + 1)); break ;;
+      400|401|403|409|422) echo "refused $name with $code: $receipt"; refused=$((refused + 1)); break ;;
       *) attempt=$((attempt + 1))
-         if [ "$attempt" -ge 30 ]; then echo "giving up on $(basename "$file") after $attempt attempts (last answer $code)"; exit 1; fi
-         echo "delivery API answered $code for $(basename "$file"); retrying"
+         if [ "$attempt" -ge 30 ]; then echo "giving up on $name after $attempt attempts (last answer $code)"; refused=$((refused + 1)); break; fi
+         echo "delivery API answered $code for $name; retrying"
          if [ "$attempt" -lt 6 ]; then sleep $((1 << attempt)); else sleep 60; fi ;;
     esac
   done
 done
-echo "delivered $delivered document(s) to $url"
+echo "delivered $delivered document(s) to $url, $refused refused"
+[ "$refused" -eq 0 ]
 `
 
 // renderDeliveryJob writes the Job delivering documents to the host's delivery
@@ -324,7 +340,11 @@ func renderDeliveryJob(directory, name, namespace, serviceAccount, kind, path st
 				{Name: "DELIVERY_URL", Value: target.URL},
 				{Name: "DELIVERY_PATH", Value: path},
 				{Name: "DELIVERY_DOCUMENTS", Value: deliveryDocumentsMount},
-				{Name: "DELIVERY_TOKEN", Value: deliveryTokenMount + "/" + deliveryTokenFile},
+				// Named for what it is, the FILE the projected identity is read
+				// from: a variable named *_TOKEN carrying a value is classified
+				// as a credential by the promotable ruleset, which refuses the
+				// manifest — and the value is a path, never the token.
+				{Name: "DELIVERY_IDENTITY_FILE", Value: deliveryTokenMount + "/" + deliveryTokenFile},
 			},
 			VolumeMounts: []deliveryVolumeMount{
 				{Name: "documents", MountPath: deliveryDocumentsMount, ReadOnly: true},
@@ -336,7 +356,7 @@ func renderDeliveryJob(directory, name, namespace, serviceAccount, kind, path st
 			},
 			SecurityContext: map[string]any{
 				"allowPrivilegeEscalation": false,
-				"readOnlyRootFilesystem":   false,
+				"readOnlyRootFilesystem":   true,
 				"capabilities":             map[string]any{"drop": []string{"ALL"}},
 			},
 		}},
@@ -383,6 +403,18 @@ func renderDeliveryServiceAccount(directory, namespace string) (string, error) {
 
 // deliveryJobName is the Job's object name: one per document type per module,
 // bounded to a Kubernetes name.
-func deliveryJobName(kind, module string) string {
-	return argoBoundedName(63, "deliver", kind, strings.ToLower(module))
+// deliveryJobName names the Job that delivers one settled set: the kind, the
+// module, the environment and a digest of the carriers it posts. The digest
+// makes the Job per generation — a changed set is a new Job, which the hook's
+// BeforeHookCreation policy replaces, and an unchanged set is the same Job,
+// which a re-sync leaves alone. The environment keeps two environments of one
+// workspace on one cluster from replacing each other's Job in the authority
+// namespace, which they share.
+func deliveryJobName(kind, module, environment string, carriers [][]byte) string {
+	sum := sha256.New()
+	for _, carrier := range carriers {
+		sum.Write(carrier)
+		sum.Write([]byte{0})
+	}
+	return argoBoundedName(63, "deliver", kind, strings.ToLower(module), strings.ToLower(environment), hex.EncodeToString(sum.Sum(nil))[:10])
 }

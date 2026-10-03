@@ -181,7 +181,7 @@ func decodeInventory(data []byte, label string) (Inventory, error) {
 	if err := json.Unmarshal(data, &inventory); err != nil {
 		return Inventory{}, fmt.Errorf("decode %s inventory: %w", label, err)
 	}
-	if inventory.SchemaVersion != SchemaVersion && inventory.SchemaVersion != priorSchemaVersion {
+	if inventory.SchemaVersion != SchemaVersion {
 		return Inventory{}, fmt.Errorf("unsupported %s inventory schema %d", label, inventory.SchemaVersion)
 	}
 	canonical, err := json.MarshalIndent(inventory, "", "  ")
@@ -1009,10 +1009,66 @@ func validateApplicationSet(item manifest, contract *projectContract) error {
 	template, _ := spec["template"].(map[string]any)
 	templateSpec, _ := template["spec"].(map[string]any)
 	project, _ := templateSpec["project"].(string)
-	if contract != nil && project != contract.name {
-		return fmt.Errorf("ApplicationSet template project %q differs from selected AppProject %q", project, contract.name)
+	if contract != nil {
+		switch project {
+		case contract.name:
+		case "{{ .project }}":
+			// Stamped per component: every element names the selected project,
+			// or the authority project — and that one only into the authority
+			// namespace, which is the whole reason it is a separate project.
+			if err := validateComponentProjects(spec, contract.name); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("ApplicationSet template project %q differs from selected AppProject %q", project, contract.name)
+		}
 	}
 	return inspectTemplatedValue(item.value, nil)
+}
+
+// validateComponentProjects walks the list generators' elements of a bootstrap
+// ApplicationSet and holds each component's project and namespace to the two
+// projects a module may stamp.
+func validateComponentProjects(spec map[string]any, selected string) error {
+	authority := argoAuthorityProjectName(selected)
+	var walk func(value any) error
+	walk = func(value any) error {
+		switch typed := value.(type) {
+		case map[string]any:
+			if elements, ok := typed["elements"].([]any); ok {
+				for _, raw := range elements {
+					element, _ := raw.(map[string]any)
+					project, named := element["project"].(string)
+					if !named {
+						continue
+					}
+					namespace, _ := element["namespace"].(string)
+					switch project {
+					case selected:
+					case authority:
+						if namespace != authorityNamespace {
+							return fmt.Errorf("ApplicationSet component %q is stamped under the authority project into namespace %q; that project reaches %s only", element["component"], namespace, authorityNamespace)
+						}
+					default:
+						return fmt.Errorf("ApplicationSet component %q is stamped under project %q, which is neither the selected AppProject %q nor its authority project", element["component"], project, selected)
+					}
+				}
+			}
+			for _, child := range typed {
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+		case []any:
+			for _, child := range typed {
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return walk(spec["generators"])
 }
 
 // inspectTemplatedValue applies the authority and credential guards of

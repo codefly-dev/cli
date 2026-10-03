@@ -95,9 +95,12 @@ func TestRenderModuleScopesNamespacePerModule(t *testing.T) {
 		project, err := os.ReadFile(filepath.Join(bootstrap, "bootstrap", "project.yaml"))
 		require.NoError(t, err)
 		require.Contains(t, string(project), "namespace: "+namespace+"\n")
+		// The destination is stamped per component (the authority overlay's is
+		// the platform's namespace); a module with no component stamps none.
 		set, err := os.ReadFile(filepath.Join(bootstrap, "bootstrap", "applicationset.yaml"))
 		require.NoError(t, err)
-		require.Contains(t, string(set), "namespace: "+namespace+"\n")
+		require.Contains(t, string(set), "namespace: '{{ .namespace }}'\n")
+		require.NotContains(t, string(set), "namespace: platform-")
 	}
 }
 

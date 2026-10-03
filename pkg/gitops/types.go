@@ -12,17 +12,12 @@ import (
 const (
 	InventoryFilename = ".codefly-render.json"
 	SchemaVersion     = 7
-	// priorSchemaVersion is the last schema loadInventory still accepts: a
-	// render from before publish settled and signed the delivery documents,
-	// carrying no Delivery record and no WorkspaceConfigurationDigests.
-	//
-	// The bump is not cosmetic, either time. An older CLI publishing a newer
-	// tree would deliver its documents unsettled and unsigned — committed to the
-	// repository, refused by the host, with nothing at publish saying why — and
-	// would drop the group digests that keep two consumers of one value from
-	// being delivered apart. Refusing the schema is what turns that into an
-	// error the operator sees.
-	priorSchemaVersion    = 6
+	// There is no prior schema a loader still accepts. Schema 7 carries the
+	// settled, signed delivery record and the workspace configuration group
+	// digests; a tree without them is one an older CLI rendered, and reading
+	// it would deliver its documents unsettled and unsigned, and let a consumer
+	// of a changed group through with no digest to hold it against. The
+	// intermediate schema 6 was never released, so nothing is owed a read.
 	EvidenceSchemaVersion = 1
 )
 
@@ -352,6 +347,12 @@ type RenderResult struct {
 	// Cell is the environment's cell file this render regenerated, when the
 	// environment names a host.
 	Cell *CellResult `json:"cell,omitempty"`
+	// StaleGroupConsumers maps a workspace configuration group this render
+	// consumes to the sibling modules whose rendered trees bake in another
+	// value of it: rendered before the group changed, to be rendered next.
+	// Reported here and refused at publish, where the sibling's render is the
+	// action that lifts the refusal.
+	StaleGroupConsumers map[string][]string `json:"staleGroupConsumers,omitempty"`
 }
 
 // InventoryDelivery is what publish settled into a tree: the delivery documents
@@ -436,6 +437,12 @@ type PublishPlan struct {
 	ContractChecks   []ContractCheck `json:"contractChecks,omitempty"` // Delivery is what the publication settled and signed, for the plan's
 	// reader and the result.
 	Delivery *InventoryDelivery `json:"delivery,omitempty"`
+	// StaleConsumers names the modules the delivery base branch holds at
+	// another value of a workspace configuration group this publication bakes
+	// in — published before the group changed, and the next publish to run.
+	// Reported rather than refused: refusing would hold every consumer's
+	// publish on every other's.
+	StaleConsumers []string `json:"staleConsumers,omitempty"`
 }
 
 // ContractCheck reports the admission result of one consumed API contract

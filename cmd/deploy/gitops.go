@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -477,13 +478,21 @@ func printSolutionHostBindings(result *gitops.RenderResult) {
 			cli.Info("Cell file leaves out %s: rendered for another environment", strings.Join(result.Cell.Skipped, ", "))
 		}
 	}
+	groups := make([]string, 0, len(result.StaleGroupConsumers))
+	for group := range result.StaleGroupConsumers {
+		groups = append(groups, group)
+	}
+	sort.Strings(groups)
+	for _, group := range groups {
+		cli.Warning("Workspace configuration group %s changed since %s rendered it; render those modules next — publish refuses this one until they bake in the same value", group, strings.Join(result.StaleGroupConsumers[group], ", "))
+	}
 	if len(result.UndeclaredSolutions) == 0 {
 		return
 	}
-	cli.Warning("%d solution instance(s) rendered no host binding: environment %q declares no host (coordinate, component, audience)",
+	cli.Warning("%d solution instance(s) rendered no host binding: environment %q declares no host block (coordinate, component, domain, audience, trust_domain, envelope_revision, delivery)",
 		len(result.UndeclaredSolutions), result.Inventory.Environment)
 	for _, name := range result.UndeclaredSolutions {
-		cli.Warning("  %s — its presence on the host still depends on the runtime registering itself", name)
+		cli.Warning("  %s — nothing declares it to a host; it is present on none until the environment names one", name)
 	}
 }
 
@@ -537,6 +546,9 @@ func printPublishPlan(plan *gitops.PublishPlan) {
 	if len(plan.ContractChecks) > 0 {
 		cli.Info("Contract checks:")
 		cli.Info("%s", formatContractChecks(plan.ContractChecks))
+	}
+	for _, stale := range plan.StaleConsumers {
+		cli.Warning("Delivered consumer %s bakes in another value of a workspace configuration group this publication carries; publish it next, so %s does not keep delivering two values of one group", stale, plan.Environment)
 	}
 	if plan.Diff != "" {
 		cli.Info("%s", plan.Diff)

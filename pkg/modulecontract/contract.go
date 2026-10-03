@@ -268,6 +268,27 @@ type Slot struct {
 	From string `yaml:"from"`
 }
 
+// SlotGroups lists the workspace configuration groups the contract's slots
+// resolve from, each once, sorted: what a render of the module bakes into its
+// delivered authority document beside what its services consume.
+func (contract *Contract) SlotGroups() []string {
+	seen := map[string]struct{}{}
+	for _, binding := range contract.Bindings {
+		for _, slot := range []*Slot{&binding.Audience, binding.ResourceKind, binding.BindingKey} {
+			if slot == nil || slot.From == "" {
+				continue
+			}
+			seen[slot.Group()] = struct{}{}
+		}
+	}
+	groups := make([]string, 0, len(seen))
+	for group := range seen {
+		groups = append(groups, group)
+	}
+	sort.Strings(groups)
+	return groups
+}
+
 // UnmarshalYAML refuses anything that is not a mapping with exactly the key
 // "from": a bare scalar is a literal written where another module's vocabulary
 // belongs, and an extra key is a slot trying to carry a default.

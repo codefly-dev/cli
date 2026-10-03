@@ -63,7 +63,14 @@ type deliveryPublishOptions struct {
 	// against a revision the composition no longer declares is refused before
 	// it is written. Zero when the environment declares no host.
 	EnvelopeRevision uint64
-	// Audience is the host audience the presence Job's token is projected for.
+	// Domain is the ownership domain the environment declares at publish. A
+	// withdrawal is authored by the domain that delivered the binding: a prior
+	// document under another domain is never tombstoned by this publish, since
+	// a composition whose domain changed would otherwise sign away everything
+	// the old domain delivered the moment it rendered nothing. Empty when the
+	// environment declares no host.
+	Domain string
+	// Module is the module being published.
 	Module string
 }
 
@@ -110,6 +117,14 @@ func settlePresenceDelivery(
 			"module %s delivered the bindings %s to %s before and this render declares none and names no host; to withdraw them, render with the environment's host block in place and without the instances, so publish writes their tombstones",
 			inventory.Module, strings.Join(sortedBindingNames(prior), ", "), environment)
 	}
+	for binding, previous := range prior {
+		if _, present := rendered[binding]; present {
+			continue
+		}
+		if err = refuseForeignWithdrawal("binding", binding, previous.OwnershipDomain, opts.Domain); err != nil {
+			return nil, err
+		}
+	}
 	settled, err := settledPresenceSet(rendered, prior)
 	if err != nil {
 		return nil, err
@@ -148,6 +163,19 @@ func settlePresenceDelivery(
 	}
 	inventory.SolutionHostBindingPath = solutionHostBindingDir
 	return delivery, nil
+}
+
+// refuseForeignWithdrawal refuses to withdraw a document delivered under
+// another ownership domain than the one this publish declares. The tombstone
+// would be signed by an identity the host may let speak for both domains, so
+// agreement among the generated tombstones proves nothing; the scope has to be
+// held explicitly, here, against what the environment declares now.
+func refuseForeignWithdrawal(what, id, delivered, declared string) error {
+	if delivered == declared {
+		return nil
+	}
+	return fmt.Errorf("%w: %s %s was delivered under domain %q and this environment declares %q, so this publish cannot withdraw it; a withdrawal is authored by the domain that delivered the document",
+		solutionhost.ErrWrongDomain, what, id, delivered, declared)
 }
 
 func sortedBindingNames(documents map[string]*solutionhost.SolutionHostBinding) []string {
@@ -254,6 +282,7 @@ func writePresenceSet(target, overlay string, inventory *Inventory, settled map[
 	}
 	var files []string
 	var jobDocuments []deliveryDocument
+	var carriers [][]byte
 	for _, binding := range names {
 		entry := settled[binding]
 		file, err := writeSettledBinding(directory, inventory.Namespace, entry)
@@ -265,6 +294,7 @@ func writePresenceSet(target, overlay string, inventory *Inventory, settled map[
 			jobDocuments = append(jobDocuments, deliveryDocument{
 				ConfigMap: solutionHostBindingKind + "-" + binding, Key: presenceCarrierKey, Name: binding + ".json",
 			})
+			carriers = append(carriers, entry.carrier)
 		}
 	}
 	if opts.Target == nil {
@@ -276,7 +306,7 @@ func writePresenceSet(target, overlay string, inventory *Inventory, settled map[
 	}
 	files = append(files, account)
 	if len(jobDocuments) > 0 {
-		job, err := renderDeliveryJob(directory, deliveryJobName(deliveryPresence, inventory.Module), inventory.Namespace,
+		job, err := renderDeliveryJob(directory, deliveryJobName(deliveryPresence, inventory.Module, inventory.Environment, carriers), inventory.Namespace,
 			deliveryServiceAccount, deliveryPresence, presenceDeliveryPath, opts.Target, jobDocuments)
 		if err != nil {
 			return nil, err
@@ -518,6 +548,14 @@ func settleAuthorityDelivery(
 		return nil, fmt.Errorf(
 			"module %s delivered the authority documents %s to %s before and this render declares none and names no host; to withdraw them, render with the environment's host block in place, so publish writes their tombstones",
 			inventory.Module, strings.Join(names, ", "), environment)
+	}
+	for authority, previous := range prior {
+		if _, present := rendered[authority]; present {
+			continue
+		}
+		if err = refuseForeignWithdrawal("authority", authority, previous.document.OwnershipDomain, opts.Domain); err != nil {
+			return nil, err
+		}
 	}
 	settled, err := settledAuthoritySet(rendered, prior, presenceGenerations(presence))
 	if err != nil {
@@ -843,6 +881,7 @@ func writeAuthoritySet(target, overlay string, inventory *Inventory, settled map
 	}
 	var files []string
 	var jobDocuments []deliveryDocument
+	var carriers [][]byte
 	for _, authority := range names {
 		entry := settled[authority]
 		file, err := writeAuthorityDocument(directory, entry.document, entry.module, entry.carrier)
@@ -854,12 +893,13 @@ func writeAuthoritySet(target, overlay string, inventory *Inventory, settled map
 			jobDocuments = append(jobDocuments, deliveryDocument{
 				ConfigMap: authorityConfigMapName(authority), Key: authorityCarrierKey, Name: strings.TrimSuffix(file, ".yaml") + ".json",
 			})
+			carriers = append(carriers, entry.carrier)
 		}
 	}
 	if opts.Target == nil || len(jobDocuments) == 0 {
 		return files, nil
 	}
-	job, err := renderDeliveryJob(directory, deliveryJobName(deliveryAuthority, inventory.Module), authorityNamespace,
+	job, err := renderDeliveryJob(directory, deliveryJobName(deliveryAuthority, inventory.Module, inventory.Environment, carriers), authorityNamespace,
 		deliveryServiceAccount, deliveryAuthority, authorityDeliveryPath, opts.Target, jobDocuments)
 	if err != nil {
 		return nil, err
