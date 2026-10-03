@@ -57,7 +57,9 @@ environments:
 Nothing here is derived. A derived coordinate is a guess a host silently
 refuses at reconcile time; an unlisted ownership domain is refused by the host
 with the domain named; a wrong envelope revision is refused at apply with both
-revisions named. A document **asserts** its own `domain`, so the host also
+revisions named — and earlier, at publish, which holds every authority pair
+against the revision this block declares *then*, so a render made before the
+block was re-reviewed never leaves the publisher. A document **asserts** its own `domain`, so the host also
 holds a policy saying which **signer identity** may make that assertion
 (core's `Host.DomainsBySigner`, keyed by the certificate SAN the host's bundle
 verification names — for a release workflow,
@@ -237,9 +239,35 @@ parsed set, which takes no `Host` on purpose (nothing applied, no coordinate, no
 signer policy — those need an attestation to be checkable) and refuses what a
 host would refuse for reasons that need no host state: a document that breaks
 its own rules, a binding declared twice, route aliases claimed twice on one
-coordinate. `OneDelivery` is the other renderer check. Verifying the carriers
-publish assembles — the host's own check, run early against the signing
-identity — is not built yet.
+coordinate. `OneDelivery` is the other renderer check.
+
+Activation has the same split. Before an authority document is signed, publish
+holds it against the presence document it is granted over — the one it just
+wrote to the staged tree — with core's `ActivateRendered`, which runs every
+activation rule that needs no host state and answers a `RenderedMatch` that is
+deliberately not an `Activation`: the fold against what the base branch
+delivered (`AppliedAuthorityFrom` of the prior document, so an authority that
+would migrate across domains or bindings, or a rewritten generation, is
+refused), the target binding, host and domain agreeing, the approved build
+being one the presence says the binding runs, and the effective-from
+generation. Both halves must also name the envelope revision the environment's
+`host.envelope_revision` declares **at publish** — not merely agree with each
+other, which two documents stamped against a superseded ceiling do. A render
+made before the host block was re-reviewed is refused with both numbers named,
+and a composition that dropped its host block is refused rather than having
+its authority documents written for nobody to deliver. What stays the host's,
+because it needs host state: who signed either half, and whether the authority
+fits the ceiling — the envelope is the host's record (core refuses an envelope
+derived from the document under check as "a document declaring its own
+ceiling"), and the renderer holds only its revision.
+
+Verifying the carriers publish assembles — the host's own check, run early
+against the signing identity — is not built yet. Neither is the presence fold
+against the base branch with core's rules: `AdmitRendered` carries no applied
+state, so a presence document that changes its ownership domain under a
+delivered binding ID is settled as a new generation here and refused by the
+host at apply; a module that publishes a contract has the authority gate catch
+it first.
 
 ## What publish settles
 
