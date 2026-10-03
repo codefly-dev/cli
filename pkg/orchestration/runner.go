@@ -597,6 +597,14 @@ func (world *World) referencedProducerMappings(
 // A visibility this core does not know is treated as refusing, because
 // ValidateEndpointVisibility refuses it — `module` is not that case (it is a
 // deprecated alias for internal with every module allowed, so it permits).
+//
+// It cannot cost a consumer a value it was entitled to. A producer's mappings
+// are bound here once, for the whole producer, so a reference in a group the
+// consumer DECLARES resolves from the same set — but if that reference named an
+// endpoint this filter removes, checkEffectiveWorkspaceConfigurationReferences
+// has already refused the resolution by core's verdict over the effective set.
+// The only mappings this can remove are ones no reference the consumer receives
+// is allowed to name.
 func (world *World) exportableTo(ctx context.Context, consumer *resources.Service, mappings []*basev0.NetworkMapping) []*basev0.NetworkMapping {
 	// An unidentifiable consumer gets the strict answer rather than a lenient
 	// one: "" matches no producer module, so only endpoints that are visible to

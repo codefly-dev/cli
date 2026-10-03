@@ -272,6 +272,13 @@ override from outside core, because core applies them inside the loader
 override makes composition-root — the run itself is supplying the value, so it
 reaches every service — is recognised as one.
 
+**An invocation-scoped override must never be set in a render or CI-render
+environment.** The loader applies it before anything resolves, so its values are
+baked into the committed manifests, and an override makes its group
+composition-root even on a name a composed module provides — so it reaches every
+rendered service, not only the ones that declared the module's group. The
+carrier belongs to integration harnesses running against a throwaway workspace.
+
 **An invocation-scoped workspace configuration override is not `--set`.** It is
 carried in `CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES`, core's private
 SDK-to-CLI carrier, which an integration harness sets; the CLI itself sets it
