@@ -140,20 +140,37 @@ func settlePresenceDelivery(
 		names = append(names, binding)
 	}
 	sort.Strings(names)
-	// The whole set is checked again at its settled generations: a tombstone
-	// and a present document never collide, and this is the last check before
-	// the host's own. It is the renderer's share of admission over parsed
-	// documents (core's AdmitRendered): the carriers are assembled below, and
-	// verifying them here against the signing identity would be the host's
-	// own check run early — worth having, not built.
+	// The whole set is held at its settled generations against what the base
+	// branch delivered, with core's rendered fold: the zero host's checks over
+	// the set (a tombstone and a present document never collide), and per
+	// document the fold against its applied record — a withdrawn binding
+	// presented again, a domain the record was not applied under, a
+	// generation behind or rewritten — or the stated absence of one. This is
+	// the last check before the host's own, which runs the same fold over the
+	// same record from its own store.
 	documents := make([]*solutionhost.SolutionHostBinding, 0, len(settled))
+	sets := make([]solutionhost.RenderedSet, 0, len(settled))
 	for _, binding := range names {
 		documents = append(documents, settled[binding].document)
+		set := solutionhost.RenderedSet{Document: settled[binding].document}
+		if previous, delivered := prior[binding]; delivered {
+			if set.Applied, err = solutionhost.AppliedFrom(previous.document); err != nil {
+				return nil, fmt.Errorf("record the delivered binding %s: %w", binding, err)
+			}
+		} else {
+			set.FirstRecord = true
+		}
+		sets = append(sets, set)
 	}
 	if oneErr := solutionhost.OneDelivery(documents...); oneErr != nil {
 		return nil, fmt.Errorf("settled solution host bindings are not one delivery: %w", oneErr)
 	}
-	if _, admitErr := solutionhost.AdmitRendered(documents...); admitErr != nil {
+	if _, admitErr := solutionhost.AdmitRenderedSets(sets...); admitErr != nil {
+		if errors.Is(admitErr, solutionhost.ErrTombstoned) {
+			// The ID is the handle every other system holds, so the fix is
+			// one line away in the composition and is named here.
+			return nil, fmt.Errorf("settled solution host bindings are not admissible: %w; a withdrawn binding is never presented again under its ID — a new instance needs a new name, which gives it a new binding ID", admitErr)
+		}
 		return nil, fmt.Errorf("settled solution host bindings are not admissible: %w", admitErr)
 	}
 	delivery, err := signPresenceSet(ctx, settled, names, opts, environment)
@@ -363,27 +380,11 @@ func writePresenceSet(target, overlay string, inventory *Inventory, settled map[
 // prior + 1. "Unchanged" is decided by core's own canonical digest, so a byte
 // the host would read as a rewrite is a byte that bumps the generation.
 func settledGeneration(prior, candidate *solutionhost.SolutionHostBinding) (uint64, error) {
-	// A tombstone is terminal. The binding ID is the handle every other system
-	// holds — installations, operation bindings, team grants — so a later
-	// generation under the same ID is indistinguishable from continuity, which
-	// is the one thing a withdrawal exists to make distinguishable; the host
-	// refuses it (ErrTombstoned) and so does publish, where the rename that
-	// fixes it is one line away. A genuinely new instance has a genuinely new
-	// ID, because the ID is derived from the instance.
-	if prior.Removed {
-		return 0, fmt.Errorf("%w: binding %q was withdrawn at generation %d, so this render cannot present it again under that ID; a new instance needs a new name, which gives it a new binding ID",
-			solutionhost.ErrTombstoned, candidate.Binding, prior.Generation)
-	}
-	// The delivered domain is what says who may change this binding, so the
-	// host refuses a generation that arrives under another one whatever its
-	// number — the rule Host.admit holds against its applied record, held here
-	// against the base branch's, which is the record publish can see. Without
-	// it a changed host block settled as a new generation here and was refused
-	// only at apply.
-	if prior.OwnershipDomain != candidate.OwnershipDomain {
-		return 0, fmt.Errorf("%w: binding %q was applied under domain %q and this document declares %q; a binding does not move between ownership domains, so a module under a new domain is a new instance with a new binding ID",
-			solutionhost.ErrWrongDomain, candidate.Binding, prior.OwnershipDomain, candidate.OwnershipDomain)
-	}
+	// Only the NUMBER is chosen here. Whether the document may carry it — a
+	// withdrawn binding presented again (terminal), a domain the record was
+	// not applied under, a generation behind or rewritten — is core's fold,
+	// run over the whole settled set with each document's record below
+	// (AdmitRenderedSets); this package no longer restates those rules.
 	at := *candidate
 	at.Generation = prior.Generation
 	current, err := at.Digest()
@@ -668,7 +669,7 @@ func settleAuthorityDelivery(
 // refuseUnmatchedPairs holds every settled authority document against the
 // presence document it is granted over — the one this publish just wrote to the
 // staged tree — with core's ActivateRendered: the renderer's share of
-// activation, as AdmitRendered is its share of admission. It answers what needs
+// activation, as AdmitRenderedSets is its share of admission. It answers what needs
 // no host state: the fold of BOTH halves against what the base branch delivered
 // (a domain or binding either half would migrate across, a withdrawal, a
 // rewritten generation), the target binding, host and domain agreeing, both

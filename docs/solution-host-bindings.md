@@ -342,14 +342,17 @@ is the host's record (core refuses an envelope derived from the document under
 check as "a document declaring its own ceiling"), and the renderer holds only
 its revision.
 
-A module with no contract has only the presence half, and core exports no
-rendered fold for it (`AdmitRendered` carries no applied state), so publish
-folds it itself against the base branch — generation, rewritten generation,
-tombstone, and the ownership domain: a generation arriving under another
-domain than the delivered one is refused with the host's own reason, since the
-delivered domain is what says who may change the binding. That is the one
-place this package restates a rule core holds; it goes the day core exports
-the fold.
+The presence half is folded by core too: publish holds every settled
+document against the record the base branch delivered for its binding — or
+its stated absence — with `AdmitRenderedSets`, the renderer's entrypoint to
+the same fold a host runs from its own store (a withdrawn binding presented
+again is terminal; a generation behind, or rewritten, is refused; a document
+arriving under another domain than the record's is refused, since the
+delivered domain is what says who may change the binding). Publish chooses
+only the generation's number — unchanged keeps it, changed is prior + 1 —
+and restates none of the rules. At render, where no delivery record exists
+yet, each set says so (`FirstRecord`), which is true of a render and said
+rather than implied.
 
 Verifying the carriers publish assembles — the host's own check, run early
 against the signing identity — is not built yet.

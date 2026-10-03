@@ -212,19 +212,27 @@ func renderSolutionHostBindings(owned, destination string, opts *RenderOptions) 
 		document.Generation = generation
 		documents = append(documents, document)
 	}
-	// The renderer's share of admission, core's AdmitRendered: every check
+	// The renderer's share of admission, core's AdmitRenderedSets: every check
 	// that needs no host state runs over the parsed set, so an alias collision
 	// is refused where it was authored. It takes no Host on purpose — a host's
 	// Admit takes documents whose carrier was verified, and nothing here is
 	// signed yet (signing happens at publish, and a local qualification
-	// publish never signs). A refusal fails the render; a document a host
-	// would reject is never written. One delivery speaks for one ownership
-	// domain, and that is the renderer's check too: a host's mount is the
-	// union of every delivery that reached it, so it cannot be refused there.
+	// publish never signs). Each set states that it carries NO applied
+	// record, which is true of a render and said rather than implied: the
+	// delivered record lives on the delivery repository's base branch, which
+	// publish reads and folds against; the generation above is provisional.
+	// A refusal fails the render; a document a host would reject is never
+	// written. One delivery speaks for one ownership domain, and that is the
+	// renderer's check too: a host's mount is the union of every delivery
+	// that reached it, so it cannot be refused there.
 	if err := solutionhost.OneDelivery(documents...); err != nil {
 		return nil, fmt.Errorf("rendered solution host bindings are not one delivery: %w", err)
 	}
-	if _, err := solutionhost.AdmitRendered(documents...); err != nil {
+	sets := make([]solutionhost.RenderedSet, 0, len(documents))
+	for _, document := range documents {
+		sets = append(sets, solutionhost.RenderedSet{Document: document, FirstRecord: true})
+	}
+	if _, err := solutionhost.AdmitRenderedSets(sets...); err != nil {
 		return nil, fmt.Errorf("rendered solution host bindings are not admissible: %w", err)
 	}
 	written := make([]DeclaredSolutionHostBinding, 0, len(documents))

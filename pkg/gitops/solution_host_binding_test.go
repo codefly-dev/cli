@@ -377,7 +377,8 @@ func TestRenderedSetAdmissionRefusesCoreFixtures(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = solutionhost.AdmitRendered(valid, document); err == nil {
+			sets := []solutionhost.RenderedSet{{Document: valid, FirstRecord: true}, {Document: document, FirstRecord: true}}
+			if _, err = solutionhost.AdmitRenderedSets(sets...); err == nil {
 				t.Fatalf("the renderer's gate admitted %q", name)
 			} else if name == "duplicate-route-alias" && !errors.Is(err, composition.ErrCollision) {
 				t.Fatalf("duplicate-route-alias was refused for the wrong reason: %v", err)
