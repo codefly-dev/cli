@@ -19,6 +19,10 @@ import (
 // distinct from every rendered-bytes and image digest in the fixtures.
 const testReleaseDigest = solutionhost.ReleaseDigest("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
 
+// otherReleaseDigest is a second release of the same module: the smallest
+// change that moves a presence document's generation.
+const otherReleaseDigest = solutionhost.ReleaseDigest("sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
+
 func testHost() *environments.EnvironmentHost {
 	return &environments.EnvironmentHost{
 		Coordinate:       "example/prod/region-a",

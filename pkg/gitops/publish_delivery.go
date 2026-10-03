@@ -57,6 +57,12 @@ type deliveryPublishOptions struct {
 	// Target is the host's delivery API; the Jobs that POST the carriers are
 	// rewritten against it once the document set is settled.
 	Target *DeliveryTarget
+	// EnvelopeRevision is the revision of the host's envelope the environment
+	// declares at publish — the one number of the envelope a composition holds.
+	// Both halves of every authority pair must name it; a render stamped
+	// against a revision the composition no longer declares is refused before
+	// it is written. Zero when the environment declares no host.
+	EnvelopeRevision uint64
 	// Audience is the host audience the presence Job's token is projected for.
 	Module string
 }
@@ -512,6 +518,9 @@ func settleAuthorityDelivery(
 		names = append(names, authority)
 	}
 	sort.Strings(names)
+	if err = refuseUnmatchedPairs(target, environment, inventory.Module, settled, names, prior, opts.EnvelopeRevision); err != nil {
+		return nil, err
+	}
 	delivery, err := signAuthoritySet(ctx, settled, names, opts, environment)
 	if err != nil {
 		return nil, err
@@ -525,6 +534,70 @@ func settleAuthorityDelivery(
 	}
 	inventory.SolutionAuthorityPath = solutionAuthorityDir
 	return delivery, nil
+}
+
+// refuseUnmatchedPairs holds every settled authority document against the
+// presence document it is granted over — the one this publish just wrote to the
+// staged tree — with core's ActivateRendered: the renderer's share of
+// activation, as AdmitRendered is its share of admission. It answers what needs
+// no host state: the fold against what the base branch delivered (a domain or
+// binding the authority would migrate across, a rewritten generation), the
+// target binding, host and domain agreeing, both halves naming the envelope
+// revision the environment declares NOW, the approved build being one the
+// presence says the binding runs, and the effective-from generation. What it
+// cannot answer stays the host's: who signed either half, and whether the
+// authority fits the ceiling — the envelope is the host's record and a renderer
+// holds only its revision, so a RenderedMatch is not an Activation.
+func refuseUnmatchedPairs(
+	target, environment, module string,
+	settled map[string]deliveredAuthorityDocument,
+	names []string,
+	prior map[string]deliveredAuthorityDocument,
+	envelopeRevision uint64,
+) error {
+	var granted []string
+	for _, authority := range names {
+		if !settled[authority].document.Removed {
+			granted = append(granted, authority)
+		}
+	}
+	if len(granted) == 0 {
+		// Withdrawals activate nothing and have nothing to match.
+		return nil
+	}
+	if envelopeRevision == 0 {
+		return fmt.Errorf(
+			"module %s renders the authority documents %s for %s, but the environment declares no host now, so there is no envelope revision to hold them against; render again against the composition as it is",
+			module, strings.Join(granted, ", "), environment)
+	}
+	presence, err := renderedBindings(filepath.Join(target, filepath.FromSlash(solutionHostBindingOverlay(environment))))
+	if err != nil {
+		return err
+	}
+	for _, authority := range granted {
+		entry := settled[authority]
+		binding := entry.document.PresenceBinding
+		over, present := presence[binding]
+		if !present {
+			return fmt.Errorf("authority %s is granted over binding %s, which this publish does not deliver", authority, binding)
+		}
+		var applied solutionhost.AppliedAuthority
+		if previous, delivered := prior[authority]; delivered {
+			if applied, err = solutionhost.AppliedAuthorityFrom(previous.document); err != nil {
+				return fmt.Errorf("record the delivered authority %s: %w", authority, err)
+			}
+		}
+		if _, err := solutionhost.ActivateRendered(solutionhost.RenderedActivationRequest{
+			Authority:        entry.document,
+			Presence:         over.document,
+			Build:            entry.document.ApprovedBuild,
+			EnvelopeRevision: envelopeRevision,
+			Applied:          applied,
+		}); err != nil {
+			return fmt.Errorf("authority %s and binding %s are not a pair the host would activate: %w", authority, binding, err)
+		}
+	}
+	return nil
 }
 
 // presenceGenerations indexes the presence generations a publish settled, by

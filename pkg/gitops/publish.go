@@ -166,6 +166,9 @@ func preparePublish(
 		if err != nil {
 			return nil, err
 		}
+		if env.Host != nil {
+			publication.options.EnvelopeRevision = env.Host.EnvelopeRevision
+		}
 		if _, statErr := os.Stat(cellPath(workspace.Dir(), request.Environment)); statErr == nil {
 			publication.cellSource = cellPath(workspace.Dir(), request.Environment)
 			publication.cellPath = filepath.ToSlash(filepath.Join(pathRoot, cellsDir, request.Environment, CellFileName))
