@@ -130,6 +130,7 @@ func TestRenderDerivesAuthorityFromTheModuleContract(t *testing.T) {
 	document, carrier := readDeliveredAuthority(t, destination, "staging", "acme.staging.shop-api.yaml")
 	require.Equal(t, solutionhost.SchemaAuthorityV1, document.Schema)
 	require.Equal(t, "acme.staging.shop:api", document.Authority)
+	require.Equal(t, "acme.staging.shop", document.PresenceBinding, "granted over exactly this instance's presence binding")
 	require.Equal(t, uint64(1), document.Generation)
 	require.Equal(t, uint64(1), document.EffectiveFrom)
 	require.Equal(t, "acme", document.OwnershipDomain)

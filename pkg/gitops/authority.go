@@ -197,8 +197,13 @@ func authorityDocument(owned string, opts *RenderOptions, instance *AuthorityIns
 		return nil, fmt.Errorf("authority of %s/%s: %w", instance.Module, instance.Service, err)
 	}
 	document := &solutionhost.AuthorityDocument{
-		Schema:           solutionhost.SchemaAuthorityV1,
-		Authority:        binding + ":" + instance.Service,
+		Schema:    solutionhost.SchemaAuthorityV1,
+		Authority: binding + ":" + instance.Service,
+		// Granted over exactly this instance's presence binding, and over no
+		// other: without the target an authority document activated any
+		// binding on the host and domain running the same image, a replacement
+		// that took a withdrawn alias included.
+		PresenceBinding:  binding,
 		Generation:       1,
 		Host:             solutionhost.HostTarget{Coordinate: opts.Host.Coordinate, Component: opts.Host.Component},
 		OwnershipDomain:  opts.Host.Domain,

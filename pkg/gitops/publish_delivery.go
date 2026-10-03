@@ -113,9 +113,12 @@ func settlePresenceDelivery(
 		names = append(names, binding)
 	}
 	sort.Strings(names)
-	// The whole set is admitted again at its settled generations: a tombstone
+	// The whole set is checked again at its settled generations: a tombstone
 	// and a present document never collide, and this is the last check before
-	// the host's own.
+	// the host's own. It is the renderer's share of admission over parsed
+	// documents (core's AdmitRendered): the carriers are assembled below, and
+	// verifying them here against the signing identity would be the host's
+	// own check run early — worth having, not built.
 	documents := make([]*solutionhost.SolutionHostBinding, 0, len(settled))
 	for _, binding := range names {
 		documents = append(documents, settled[binding].document)
@@ -123,7 +126,7 @@ func settlePresenceDelivery(
 	if oneErr := solutionhost.OneDelivery(documents...); oneErr != nil {
 		return nil, fmt.Errorf("settled solution host bindings are not one delivery: %w", oneErr)
 	}
-	if _, admitErr := (solutionhost.Host{}).Admit(documents...); admitErr != nil {
+	if _, admitErr := solutionhost.AdmitRendered(documents...); admitErr != nil {
 		return nil, fmt.Errorf("settled solution host bindings are not admissible: %w", admitErr)
 	}
 	delivery, err := signPresenceSet(ctx, settled, names, opts, environment)
@@ -282,11 +285,19 @@ func writePresenceSet(target, overlay string, inventory *Inventory, settled map[
 // prior + 1. "Unchanged" is decided by core's own canonical digest, so a byte
 // the host would read as a rewrite is a byte that bumps the generation.
 func settledGeneration(prior, candidate *solutionhost.SolutionHostBinding) (uint64, error) {
+	// A tombstone is terminal. The binding ID is the handle every other system
+	// holds — installations, operation bindings, team grants — so a later
+	// generation under the same ID is indistinguishable from continuity, which
+	// is the one thing a withdrawal exists to make distinguishable; the host
+	// refuses it (ErrTombstoned) and so does publish, where the rename that
+	// fixes it is one line away. A genuinely new instance has a genuinely new
+	// ID, because the ID is derived from the instance.
+	if prior.Removed {
+		return 0, fmt.Errorf("%w: binding %q was withdrawn at generation %d, so this render cannot present it again under that ID; a new instance needs a new name, which gives it a new binding ID",
+			solutionhost.ErrTombstoned, candidate.Binding, prior.Generation)
+	}
 	at := *candidate
 	at.Generation = prior.Generation
-	// A binding delivered as a tombstone and declared again is a new
-	// generation of the same binding, never a resurrection of the old one: the
-	// tombstone keeps its generation and the re-presentation follows it.
 	current, err := at.Digest()
 	if err != nil {
 		return 0, err
@@ -552,6 +563,12 @@ func settledAuthoritySet(
 			entry.document.Generation = 1
 			settled[authority] = entry
 			continue
+		}
+		if previous.document.Removed {
+			// Terminal, as for presence: a withdrawn authority ID is never
+			// granted again, so the instance (and with it the ID) is renamed.
+			return nil, fmt.Errorf("%w: authority %q was withdrawn at generation %d, so this render cannot grant it again under that ID; a new instance needs a new name, which gives it a new authority ID",
+				solutionhost.ErrTombstoned, authority, previous.document.Generation)
 		}
 		if err := refuseUnbumpedBindings(previous.document, entry.document); err != nil {
 			return nil, err

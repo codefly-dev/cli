@@ -52,6 +52,14 @@ type CellFile struct {
 	Schema     string `yaml:"schema"`
 	Coordinate string `yaml:"coordinate,omitempty"`
 	Component  string `yaml:"component,omitempty"`
+	// Domain is the ownership domain this composition delivers under — the one
+	// every document it renders asserts. A host accepts a domain only from a
+	// signer it lets speak for it (core's Host.DomainsBySigner), and that
+	// policy is the platform's, keyed by the composition's release-workflow
+	// identity; carrying the domain here lets the platform hold its policy
+	// against what the composition declares at build time, rather than have
+	// the host refuse the first delivery.
+	Domain string `yaml:"domain,omitempty"`
 	// TrustDomain is the SPIFFE trust domain every workload's identity is
 	// issued under, carried at the top level as well as inside each spiffe_id
 	// so the platform can re-derive an identity and refuse a mismatch rather
@@ -239,7 +247,7 @@ func RenderCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 	}
 	cell := CellFile{Schema: CellSchemaV1, Environment: env.Name}
 	if env.Host != nil {
-		cell.Coordinate, cell.Component, cell.TrustDomain = env.Host.Coordinate, env.Host.Component, env.Host.TrustDomain
+		cell.Coordinate, cell.Component, cell.Domain, cell.TrustDomain = env.Host.Coordinate, env.Host.Component, env.Host.Domain, env.Host.TrustDomain
 	}
 	consumers, err := endpointConsumers(ctx, workspace)
 	if err != nil {

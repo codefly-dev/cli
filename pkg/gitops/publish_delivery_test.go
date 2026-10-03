@@ -163,7 +163,9 @@ func TestPublishSettlesGenerationsAgainstTheBaseBranch(t *testing.T) {
 // TestPublishTombstonesWhatThisModuleStoppedDeclaring is the removal rule: a
 // binding this module delivered before and no longer declares is withdrawn by
 // a tombstone at the next generation, carried forward verbatim on every later
-// publish, and re-presenting it starts a new generation after the tombstone.
+// publish — and a tombstone is terminal: presenting the binding again under
+// the same ID is refused at publish, where the rename that fixes it is one
+// line away, rather than at the host.
 func TestPublishTombstonesWhatThisModuleStoppedDeclaring(t *testing.T) {
 	ctx := context.Background()
 	repository := newDeliveryRepository(t)
@@ -205,16 +207,14 @@ func TestPublishTombstonesWhatThisModuleStoppedDeclaring(t *testing.T) {
 	}
 	repository.deliver(t)
 
-	// Re-presented: a new generation after the tombstone, never the old one.
+	// Re-presented under the same ID: refused. The ID is the handle every
+	// other system holds, so a later generation would read as continuity of
+	// what was withdrawn; a new instance needs a new name.
 	inventory = repository.stageRender(t, "crm", "billing")
-	delivery, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, opts)
-	require.NoError(t, err)
-	for _, document := range delivery.Documents {
-		if document.ID == "example.prod.billing" {
-			require.Equal(t, uint64(3), document.Generation)
-			require.False(t, document.Removed)
-		}
-	}
+	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, opts)
+	require.ErrorIs(t, err, solutionhost.ErrTombstoned)
+	require.Contains(t, err.Error(), "example.prod.billing")
+	require.Contains(t, err.Error(), "a new instance needs a new name")
 }
 
 // TestPublishRefusesUnsignedDocumentsOutsideLocalQualification pins the rule
@@ -378,6 +378,17 @@ func TestPublishSettlesAuthorityWithThePresenceItIsEffectiveFrom(t *testing.T) {
 	require.True(t, tombstone.Removed)
 	require.Equal(t, uint64(3), tombstone.Generation)
 	require.Equal(t, solutionAuthorityDir, withoutAuthority.SolutionAuthorityPath, "the tombstone is delivered through the authority overlay")
+	repository.deliver(t)
+
+	// Granted again under the same authority ID: refused, as for presence. A
+	// withdrawn authority is terminal; the instance is renamed.
+	regranted := repository.stageAuthorityRender(t, []modulecontract.ResolvedBinding{modelBinding(1, "modelservice.profiles:invoke")})
+	ctx := context.Background()
+	presence, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", regranted, opts)
+	require.NoError(t, err, "the presence binding itself was never withdrawn")
+	_, err = settleAuthorityDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", regranted, presence, opts)
+	require.ErrorIs(t, err, solutionhost.ErrTombstoned)
+	require.Contains(t, err.Error(), "example.prod.crm:api")
 }
 
 // TestPublishRefusesABindingChangeThatKeepsItsRevision: a credential seals the
