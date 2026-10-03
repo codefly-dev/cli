@@ -160,9 +160,12 @@ func workspaceConfigurationInfos(confs []*basev0.Configuration) []*basev0.Config
 // value was dropped and the boundary held by accident. Now every root-referenced
 // producer is bound for every service, so a root group carrying
 // ${endpoint:platform/authority/admin} on an endpoint whose visibility is
-// `module` would reach every service of the composition with nothing refusing
-// it, and a typo'd producer in a root group would be dropped from every service
-// in silence — the #882 fault itself, in a new place.
+// `private`, or `internal` without the consumer's module in `allow-modules`,
+// would reach every service of the composition with nothing refusing it, and a
+// typo'd producer in a root group would be dropped from every service in
+// silence — the #882 fault itself, in a new place. (Not `module`: core's
+// `module` is a deprecated alias for internal with every module allowed, so it
+// permits rather than refuses — resources.Endpoint.AllowsModule.)
 //
 // It is core's rule, not a second one: core's exported check is called, with the
 // consumer's declared set replaced by the effective set. That replacement is the
@@ -173,12 +176,13 @@ func workspaceConfigurationInfos(confs []*basev0.Configuration) []*basev0.Config
 // function reaching the same verdict over the wider set, so the two cannot
 // disagree about what is legal.
 //
-// Run membership is deliberately NOT judged here: a producer the workspace has
-// but this run does not is a legitimate drop (excluded infrastructure, or a run
-// of one service), and that is what
-// refuseDroppedWorkspaceConfigurationValues decides, from the outcome. The lookup is therefore workspace-wide — the dependency
-// graph would report an excluded producer as "not a service of this workspace",
-// which is a different fault with a different fix.
+// Whether an address EXISTS is deliberately not judged here — that is
+// judgeDroppedValue's job, from the outcome, and it asks a different question
+// per path: a render asks whether the workspace has the producer at all, a run
+// asks whether this run contains it. The lookup here is therefore workspace-wide
+// in both: the dependency graph would report an excluded producer, or one
+// outside a module-closure run, as "not a service of this workspace", which is a
+// different fault with a different fix.
 func (world *World) checkEffectiveWorkspaceConfigurationReferences(
 	ctx context.Context, service *resources.Service, effective []string,
 ) error {
@@ -202,7 +206,10 @@ func (world *World) checkEffectiveWorkspaceConfigurationReferences(
 	if len(infos) == 0 {
 		return nil
 	}
-	lookup := world.workspaceProducers(ctx)
+	lookup, err := world.workspaceProducers(ctx)
+	if err != nil {
+		return err
+	}
 	if lookup == nil {
 		return nil
 	}
@@ -214,8 +221,8 @@ func (world *World) checkEffectiveWorkspaceConfigurationReferences(
 	// A zero profile excludes nothing: `effective` has already had the run
 	// profile's exclusions removed, and passing them twice would only hide a
 	// group from a check it has to pass.
-	err := configurations.CheckEndpointReferences(infos, []*resources.Service{&consumer}, resources.RunProfile{}, lookup)
-	return world.toleratingProducersOutsideTheWorkspace(ctx, err, lookup)
+	problems := configurations.CheckEndpointReferences(infos, []*resources.Service{&consumer}, resources.RunProfile{}, lookup)
+	return world.toleratingProducersOutsideTheWorkspace(ctx, problems, lookup)
 }
 
 // toleratingProducersOutsideTheWorkspace keeps the one unresolved kind this
@@ -270,16 +277,14 @@ func (world *World) toleratingProducersOutsideTheWorkspace(
 //
 // A World with no workspace (a unit test resolving a hand-built group) gets no
 // lookup and no check rather than a wrong verdict.
-func (world *World) workspaceProducers(ctx context.Context) configurations.ProducerLookup {
+func (world *World) workspaceProducers(ctx context.Context) (configurations.ProducerLookup, error) {
 	if world == nil || world.Workspace == nil {
-		return nil
+		return nil, nil
 	}
 	world.workspaceProducerLookupOnce.Do(func() {
 		services, err := world.Workspace.LoadServices(ctx)
 		if err != nil {
-			wool.Get(ctx).In("World.workspaceProducers").Debug(
-				"cannot read the workspace's services, so a reference's producer cannot be checked for existence",
-				wool.Field("error", err.Error()))
+			world.workspaceProducerLookupErr = err
 			return
 		}
 		byUnique := make(map[string]*resources.Service, len(services))
@@ -295,10 +300,15 @@ func (world *World) workspaceProducers(ctx context.Context) configurations.Produ
 			return service, ok
 		}
 	})
-	if world.workspaceProducerLookup == nil {
-		return nil
+	if world.workspaceProducerLookupErr != nil {
+		// Fail closed, and keep failing: the failure is memoized for the whole
+		// world, so a Debug line here would silence every reference check of
+		// every service of the run from one unreadable workspace. A reference
+		// delivered unchecked is how a private endpoint's address reaches a
+		// service that may not see it.
+		return nil, fmt.Errorf("cannot read this workspace's services, so the ${endpoint:…} references a service receives cannot be checked against the producers it names: %w", world.workspaceProducerLookupErr)
 	}
-	return world.workspaceProducerLookup
+	return world.workspaceProducerLookup, nil
 }
 
 // effectiveWorkspaceConfigurationGroups is the group set one service receives,
@@ -429,12 +439,6 @@ func (world *World) refuseDroppedWorkspaceConfigurationValues(
 	if len(referencing) == 0 {
 		return nil
 	}
-	inRun := world.producerInRun()
-	if inRun == nil {
-		// Nothing is provably in the run, so no missing value is provably a
-		// fault — the same basis core requires before it may drop.
-		return nil
-	}
 	present := make(map[string]bool)
 	for _, conf := range delivered {
 		for _, info := range conf.GetInfos() {
@@ -448,43 +452,82 @@ func (world *World) refuseDroppedWorkspaceConfigurationValues(
 		if present[qualified] {
 			continue
 		}
-		references := referencing[qualified]
-		producer, outOfRun := firstOutOfRunProducer(references, inRun)
-		if outOfRun {
-			warnDroppedWorkspaceConfigurationReference(ctx, consumer, producer, qualified, references,
-				"its producer is not part of this run (excluded, or a run of fewer services than the workspace)")
-			continue
+		if err := world.judgeDroppedValue(ctx, consumer, qualified, referencing[qualified]); err != nil {
+			return err
 		}
-		if world.deploys() {
-			return fmt.Errorf("the workspace configuration value %s was dropped for %s: it references %s, which this deployment contains, but the value did not survive resolution — so the rendered manifest would simply lack it, which stays invisible until a client dials it. References: %s",
-				qualified, consumer, producer, endpointReferenceList(references))
-		}
-		warnDroppedWorkspaceConfigurationReference(ctx, consumer, producer, qualified, references,
-			"its producer is part of this run and no address could be derived for it yet (it recorded no endpoint, or --temporary-ports allocates its address at initialization)")
 	}
 	return nil
 }
 
-// firstOutOfRunProducer names the producer to report for a dropped value, and
-// says whether the drop is the legitimate out-of-run kind. A value may carry
-// several references; one naming a producer outside the run is enough to make
-// the drop legitimate, because that reference alone could never resolve here.
-func firstOutOfRunProducer(references []string, inRun func(string) bool) (string, bool) {
-	first := ""
+// judgeDroppedValue decides what one missing value means, per reference, and
+// refuses on the first reference that must not be lost.
+//
+// The two paths ask different questions, and conflating them is what made the
+// render's refusal unreachable in practice:
+//
+//   - A RENDER asks whether the producer is a service of the WORKSPACE. A
+//     deployed address is a pure function of identity and namespace, so it is
+//     derivable for any service the workspace has, whether or not this render's
+//     flow covers it — and a render flow covers one root service's build closure
+//     (Flow.managerDependencies → Dependencies.Restrict), which a root group's
+//     reference adds no edge to. Judging a render by run membership therefore
+//     exempted exactly the #882 case: another module's producer, named by a root
+//     group, never in this flow's run set, value quietly absent from the
+//     manifest. Only a producer the workspace does not have is a legitimate drop
+//     here, and the plan gate refuses that by name.
+//   - A RUN asks whether the producer is part of the run, because a local
+//     address exists only for a service of this run. Both answers are drops: a
+//     producer outside the run could never resolve here, and one inside it may
+//     simply have no address yet (--temporary-ports, or no recorded endpoint).
+//     Refusing either would fail a working local run.
+//
+// Every reference of the value is judged, not just the first: a value naming two
+// producers, one outside the run and one that failed inside it, would otherwise
+// be written off as a legitimate drop and hide the real fault.
+func (world *World) judgeDroppedValue(ctx context.Context, consumer, qualified string, references []string) error {
+	inRun := world.producerInRun()
 	for _, reference := range references {
 		info, err := resources.ParseEndpoint(reference)
 		if err != nil {
 			continue
 		}
 		producer := info.Module + "/" + info.Service
-		if first == "" {
-			first = producer
+		if world.deploys() {
+			if !world.workspaceHasProducer(ctx, producer) {
+				warnDroppedWorkspaceConfigurationReference(ctx, consumer, producer, qualified, []string{reference},
+					"its producer is not a service of this workspace, so no deployed address exists for it; `codefly` refuses this at the plan gate (CheckConfigurationReferences)")
+				continue
+			}
+			return fmt.Errorf("the workspace configuration value %s was dropped for %s: it references %s, a service of this workspace whose deployed address is a function of its identity and namespace, so the value did not survive resolution for a reason the render cannot excuse — the manifest would simply lack it, which stays invisible until a client dials it. References: %s",
+				qualified, consumer, producer, endpointReferenceList(references))
+		}
+		if inRun == nil {
+			// Nothing is provably in the run, so no missing value is provably a
+			// fault — the same basis core requires before it may drop.
+			continue
 		}
 		if !inRun(producer) {
-			return producer, true
+			warnDroppedWorkspaceConfigurationReference(ctx, consumer, producer, qualified, []string{reference},
+				"its producer is not part of this run (excluded, or a run of fewer services than the workspace), so no local address exists for it")
+			continue
 		}
+		warnDroppedWorkspaceConfigurationReference(ctx, consumer, producer, qualified, []string{reference},
+			"its producer is part of this run and no address could be derived for it yet (it recorded no endpoint, or --temporary-ports allocates its address at initialization)")
 	}
-	return first, false
+	return nil
+}
+
+// workspaceHasProducer reports whether <module>/<service> is a service of the
+// workspace. A world with no usable lookup answers true: the render then refuses
+// a dropped value rather than excusing it, which is the safe direction — a
+// refusal an operator can read beats a manifest missing a value nobody sees.
+func (world *World) workspaceHasProducer(ctx context.Context, producer string) bool {
+	lookup, err := world.workspaceProducers(ctx)
+	if err != nil || lookup == nil {
+		return true
+	}
+	_, ok := lookup(producer)
+	return ok
 }
 
 // warnDroppedWorkspaceConfigurationReference says, at WARN, that a value is

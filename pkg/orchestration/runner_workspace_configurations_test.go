@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/codefly-dev/core/architecture"
@@ -474,6 +475,15 @@ func copyConfigurationReferencesWorkspace(t *testing.T, platformEnv string) *res
 // A run refuses a configuration error when its flow is planned, before any
 // service of the run set is created or started, and lists every unresolved
 // reference of every service in the run at once.
+//
+// `platform` is the composition root's own group, so EVERY service of the run
+// receives it — the consumer that declares it and the producer that does not.
+// Both are listed below for that reason, and that is the behaviour under test as
+// much as the refusal is: this gate runs inside InitManagers, and until the
+// group names were sourced from a read rather than from the loader (which Load
+// populates afterwards) it saw no root group at all and checked declared groups
+// only. If this test ever reports one consumer again, the gate has gone back to
+// doing nothing for root groups.
 func TestRunRefusesUnresolvedConfigurationReferencesBeforeStartingAnything(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
@@ -498,10 +508,13 @@ func TestRunRefusesUnresolvedConfigurationReferencesBeforeStartingAnything(t *te
 	for _, reference := range unresolved.References {
 		got = append(got, reference.Consumer+" "+reference.Key+" "+reference.Producer)
 	}
+	slices.Sort(got)
 	require.Equal(t, []string{
 		"platform/relay accounts-admin saas/accounts",
 		"platform/relay documents-endpoint documents/store",
-	}, got)
+		"saas/accounts accounts-admin saas/accounts",
+		"saas/accounts documents-endpoint documents/store",
+	}, got, "a root group's faults are reported for every service that receives it")
 	require.Empty(t, flow.hub.managers, "no service of the run set was created")
 }
 
@@ -607,4 +620,83 @@ func TestRemoteBoundServiceIsNotCheckedForConfigurationReferences(t *testing.T) 
 	}})
 	err = remote.InitManagers(ctx)
 	require.False(t, errors.As(err, &unresolved), "a remote-bound service resolves no group, got %v", err)
+}
+
+// The flow's plan gate sees a composition-root group's visibility violation,
+// and sees it at plan time rather than mid-run.
+//
+// It is the half of the gate extension nothing covered: the gate runs inside
+// InitManagers, and sourcing its group names from the loader returned nothing
+// there, because Load populates them afterwards. So a root group's reference
+// was checked for nobody until each service reached its own Init. This drives
+// the real Flow.
+func TestTheFlowPlanGateRefusesARootGroupsVisibilityViolation(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	// `admin` is private to saas. The origin is platform/warden, whose run
+	// closure does not contain saas/codegen — but codegen declares NO group and
+	// receives the root's `platform` anyway, which is the only way this fault
+	// reaches the gate. A consumer that declared the group would be caught by
+	// the declared-group half and prove nothing about the extension.
+	workspace := copyConfigurationReferencesWorkspace(t,
+		"accounts-admin=${endpoint:saas/accounts/admin}\n")
+	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+	saas, err := workspace.LoadModuleFromName(ctx, "saas")
+	require.NoError(t, err)
+	codegen, err := saas.LoadServiceFromName(ctx, "codegen")
+	require.NoError(t, err)
+	require.Empty(t, codegen.WorkspaceConfigurationDependencies,
+		"the consumer must declare nothing for this to be about the effective set")
+	platform, err := workspace.LoadModuleFromName(ctx, "platform")
+	require.NoError(t, err)
+	relay, err := platform.LoadServiceFromName(ctx, "relay")
+	require.NoError(t, err)
+	_ = relay
+
+	flow, err := NewFlow(ctx, workspace, saas, codegen, env, RunMode)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = flow.Stop() })
+
+	err = flow.InitManagers(ctx)
+	var unresolved *configurations.UnresolvedReferencesError
+	require.True(t, errors.As(err, &unresolved), "want the plan-time refusal, got %v", err)
+	require.NotEmpty(t, unresolved.References)
+	require.Empty(t, flow.hub.managers, "no service of the run set was created")
+}
+
+// A module-closure run whose root group names a producer outside the closure is
+// NOT refused — the trap the gate had to avoid while being extended.
+//
+// The gate's lookup for a declared group is the plan's graph, where an excluded
+// producer is absent by design. A root group reaches every service of every run,
+// including a closure run (`--module`) whose graph is a slice of the workspace,
+// so judging a root group against that slice would report a perfectly real
+// producer as "not a service of this workspace" and refuse the run. Root groups
+// are therefore judged against the whole workspace: whether a producer is in
+// THIS run is not a plan-time question.
+func TestTheFlowPlanGateDoesNotRefuseARootProducerOutsideTheRunClosure(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	// A real producer, a real endpoint, visible: nothing about it is wrong
+	// except that a closure run need not contain it.
+	workspace := copyConfigurationReferencesWorkspace(t,
+		"accounts-endpoint=${endpoint:saas/accounts/connect}\n")
+	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+	saas, err := workspace.LoadModuleFromName(ctx, "saas")
+	require.NoError(t, err)
+	codegen, err := saas.LoadServiceFromName(ctx, "codegen")
+	require.NoError(t, err)
+	require.Empty(t, codegen.WorkspaceConfigurationDependencies,
+		"the consumer declares nothing: whatever it receives is the root's")
+
+	flow, err := NewFlow(ctx, workspace, saas, codegen, env, RunMode)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = flow.Stop() })
+
+	err = flow.InitManagers(ctx)
+	var unresolved *configurations.UnresolvedReferencesError
+	require.False(t, errors.As(err, &unresolved),
+		"a legal root reference must not refuse a run just because this run is smaller than the workspace: %v", err)
 }

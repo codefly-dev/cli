@@ -2,6 +2,8 @@ package orchestration
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/remotenetwork"
@@ -72,7 +74,16 @@ func referenceValidityWorld(t *testing.T, workspace *resources.Workspace, option
 			return workspaceConfigurationInfos(localReader.Configurations())
 		},
 	}
-	world.setRunProducers([]string{"platform/authority", "payments/worker"}, nil)
+	// The run set is the one a real flow computes for this origin: payments/worker
+	// and its dependency closure, which is payments/worker alone — a root group's
+	// reference adds no edge to it (Flow.managerDependencies). The producer is
+	// deliberately NOT in it.
+	//
+	// An earlier revision hand-set {platform/authority, payments/worker} here,
+	// and that is precisely what hid the blocker: the render's refusal was gated
+	// on run membership, which a real render never grants a root-only producer,
+	// so the test proved the refusal fired in a topology no render has.
+	world.setRunProducers([]string{"payments/worker"}, nil)
 	for _, option := range options {
 		option(world)
 	}
@@ -234,7 +245,7 @@ func TestARenderRefusesARootReferenceNoAddressCanBeDerivedFor(t *testing.T) {
 	require.Error(t, err, "a render must not emit a manifest with a root group's value silently missing")
 	require.Contains(t, err.Error(), "${endpoint:platform/authority/admin}")
 	require.Contains(t, err.Error(), "work-context/authority-endpoint", "the refusal must name the value that went missing")
-	require.Contains(t, err.Error(), "which this deployment contains")
+	require.Contains(t, err.Error(), "a service of this workspace")
 }
 
 // The same unresolved reference under `codefly run` is not refused — it is
@@ -249,7 +260,24 @@ func TestARenderRefusesARootReferenceNoAddressCanBeDerivedFor(t *testing.T) {
 // --temporary-ports at all (`codefly ci`, `test --temporary-ports`). The run
 // below sets exactly that flag.
 func TestARunWithTemporaryPortsDropsARootReferenceItCannotPlaceYet(t *testing.T) {
-	world, service := referenceValidityWorld(t,
+	for _, consumer := range []struct{ module, name string }{
+		{"payments", "worker"},
+		// The producer resolving its OWN root-group reference. It cannot be
+		// repaired by ordering something before it: Runner.Init resolves the
+		// workspace configurations before it generates its own proposed
+		// mappings, so under --temporary-ports a service genuinely cannot know
+		// its own ephemeral address at the moment it reads the group.
+		{"platform", "authority"},
+	} {
+		t.Run(consumer.module+"/"+consumer.name, func(t *testing.T) {
+			requireTemporaryPortsDropsTheRootReference(t, consumer.module, consumer.name)
+		})
+	}
+}
+
+func requireTemporaryPortsDropsTheRootReference(t *testing.T, module, name string) {
+	t.Helper()
+	world, _ := referenceValidityWorld(t,
 		referenceValidityWorkspace(t, "platform/authority/admin", "public"),
 		func(world *World) {
 			world.Mode = RunMode
@@ -262,6 +290,8 @@ func TestARunWithTemporaryPortsDropsARootReferenceItCannotPlaceYet(t *testing.T)
 			recordParityEndpoints(t, world, "platform", "authority")
 			world.temporaryPorts = true
 		})
+	service, err := loadService(context.Background(), t, world.Workspace, module, name)
+	require.NoError(t, err)
 
 	confs, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewNativeNetworkAccess())
 	require.NoError(t, err, "a run must not fail because a root group's reference is not placeable yet")
@@ -292,4 +322,55 @@ func TestRequireKnownRootGroupRefusesAGroupTheResolutionDidNotPlanFor(t *testing
 	require.Contains(t, err.Error(), "work-context")
 	require.Contains(t, err.Error(), "CompositionRootWorkspaceConfigurationNames",
 		"the refusal must name the binding whose absence caused it")
+}
+
+// A mixed group — one reference to a private endpoint, one to a producer that
+// does not exist — refuses the visibility violation and does not let the
+// tolerated typo swallow it.
+//
+// Both arrive from core's check as one UnresolvedReferencesError, and
+// toleratingProducersOutsideTheWorkspace drops only the entries whose producer
+// the workspace lacks. An earlier shape of this logic returned nil as soon as
+// any entry was tolerated, which would have delivered the private address.
+func TestAMixedRootGroupRefusesTheVisibilityViolationAndTolerantlyDropsTheTypo(t *testing.T) {
+	workspace := writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
+			"endpoints:\n    - name: admin\n      api: rest\n      visibility: private\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
+		"configurations/local/work-context.env": "typo=${endpoint:platfrom/authority/admin}\n" +
+			"private=${endpoint:platform/authority/admin}\n",
+	})
+	world, service := referenceValidityWorld(t, workspace)
+
+	_, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewContainerNetworkAccess())
+	require.Error(t, err, "a tolerated typo must not excuse a visibility violation in the same group")
+	require.Contains(t, err.Error(), "admin")
+	require.NotContains(t, err.Error(), "platfrom",
+		"the typo is dropped with a WARN and left to the plan gate, not reported here")
+}
+
+// An unreadable workspace fails the reference check CLOSED.
+//
+// The lookup is memoized for the whole world, so a Debug line and a nil lookup
+// would silence every reference check of every service of the run from one
+// unreadable workspace — and a reference delivered unchecked is how a private
+// endpoint's address reaches a service that may not see it. It is the same class
+// as the unbound-bindings hazard, at the binding next to it.
+func TestAnUnreadableWorkspaceFailsTheReferenceCheckClosed(t *testing.T) {
+	workspace := referenceValidityWorkspace(t, "platform/authority/admin", "public")
+	world, service := referenceValidityWorld(t, workspace)
+	// Make the workspace unreadable the way a broken checkout is: the module
+	// manifest its workspace file names is gone.
+	require.NoError(t, os.Remove(filepath.Join(workspace.Dir(), "modules", "platform", "module.codefly.yaml")))
+
+	_, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewContainerNetworkAccess())
+	require.Error(t, err, "an unreadable workspace must not mean references go unchecked")
+	require.Contains(t, err.Error(), "cannot be checked against the producers")
 }

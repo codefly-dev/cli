@@ -193,15 +193,31 @@ Two things prevent it, and both are needed:
 - `effectiveWorkspaceConfigurationGroups` selects declared ∪ root − excluded
   **before** `referencedProducerMappings` runs, so a reference carried by a group
   the service never declared still gets its producer's addresses bound.
-- `refuseUnresolvedWorkspaceConfigurationReferences` refuses a reference that
-  stayed unresolvable anyway, where core would drop it. A reference naming a
-  producer this run does not contain is still a legitimate drop — excluded
-  infrastructure, or a run of one service rather than the workspace, and no
-  composition change would make it resolvable. The two refused cases are a
-  reference naming an endpoint a derived producer does not serve (a
-  misreference, in either path) and, in a **render**, a producer of the
-  deployment no address could be derived for: a deployed address is a pure
-  function of identity and namespace, so there is no "not yet".
+- `refuseDroppedWorkspaceConfigurationValues` runs **after** resolution and
+  compares what was asked for with what arrived: every value whose loaded form
+  carried a reference must still be there. It reads the outcome rather than
+  predicting it, and that distinction is load-bearing — an earlier revision
+  predicted, asking whether the bound mappings held an endpoint of that identity
+  and treating yes as resolution, so a mapping with no instance for the
+  consumer's network access, an instance with an empty address, and a reference
+  missing its endpoint component all read as resolved while core dropped the
+  value and returned no error. Core's interpolation is the only thing that knows
+  whether it succeeded.
+
+  What a missing value means depends on the path, and in a render it does **not**
+  depend on run membership:
+
+  - A **render** refuses whenever the producer is a service of the workspace. A
+    deployed address is a pure function of identity and namespace, so it exists
+    for any service the workspace has — including one this render's flow does not
+    cover, which is the normal case: a render flow covers one root service's
+    build closure (`Flow.managerDependencies` → `Dependencies.Restrict`), and a
+    root group's reference adds no edge to it. Judging a render by run membership
+    exempted exactly the #882 case. A producer the workspace does not have is the
+    one legitimate drop here, and the plan gate refuses that by name.
+  - A **run** drops, with a WARN. A local address exists only for a service of
+    this run, so a producer outside it could never resolve here, and one inside
+    it may simply have no address yet.
 
 #### A composition-root group is not a way around an export boundary
 
@@ -229,11 +245,57 @@ things would otherwise follow:
   so the plan check never saw it — would be dropped from **every** service in
   silence, which is the cli#882 fault itself.
 
-Both are refused now, before any value is resolved, by handing core's own check
-the **effective** set in place of the consumer's declared one
-(`checkEffectiveWorkspaceConfigurationReferences`). It is core's rule reaching
-core's verdict over the wider set, so the two cannot disagree about what is
-legal.
+Both are checked now by handing core's own check the **effective** set in place
+of the consumer's declared one — core's rule reaching core's verdict over the
+wider set, so the two cannot disagree about what is legal. Where each is
+*refused* differs, deliberately:
+
+- **A visibility violation is refused everywhere**: at the plan gate
+  (`CheckConfigurationReferences`, before anything is built or started) and
+  again when the value resolves
+  (`checkEffectiveWorkspaceConfigurationReferences`).
+- **A producer the workspace does not have is refused at the plan gate only.**
+  The resolution drops it with a WARN, because such a producer is a producer of
+  no run: the gate is where an operator can act on it instead of mid-run. It is
+  the division this package already had for declared groups.
+
+The gate reaches the root's groups through a set it can name at the point it
+runs. It runs inside `InitManagers`, and a loader only populates its
+composition-root names in `Load`, which runs afterwards — so reading the loader
+there returned nothing and the gate quietly checked declared groups only. It now
+prefers the loader's set when populated and falls back to the read `NewFlow`
+already performed, which is a subset of it (that read cannot see an
+invocation-scoped `--set` override) and never something different.
+
+Root groups are judged against the **whole workspace**, not the plan's graph. A
+root group reaches every service of every run, including a module-closure run
+whose graph is a slice of the workspace, and judging it against that slice would
+report a real producer as "not a service of this workspace" and refuse the run.
+Whether a producer is in *this* run is not a plan-time question.
+
+##### What this refuses that used to be tolerated
+
+This is a **behaviour change for existing compositions**, and it can refuse a
+render or a run that worked before. Two shapes:
+
+- An endpoint with **no `visibility:` at all defaults to `private`** (core's
+  `Endpoint` post-load). So a composition-root group referencing such an
+  endpoint used to have that one value quietly dropped for every service outside
+  the producer's module, and now fails them by name — in `codefly run`, in a
+  render, in `codefly doctor` and in CI. The value was never reaching those
+  services; what changes is that they say so instead of starting without it,
+  which is the whole point of #882. The fix in the composition is to declare the
+  visibility the reference needs (`public`, or `internal` with the consuming
+  module in `allow-modules`), or to stop referencing a private endpoint from a
+  group every service receives.
+- Core's deprecated `visibility: module` **permits** rather than refuses — it is
+  an alias for `internal` with every module allowed
+  (`resources.Endpoint.AllowsModule`) — so a reference to one of those is
+  unaffected.
+
+A root group's reference to a producer the workspace does not have is also
+refused at the plan gate now, where before it was dropped for every service in
+silence.
 
 **The durable fix is in core,** and the above is a shim until it lands: let
 `configurations.CheckEndpointReferences` take the effective group set, so the
@@ -288,7 +350,9 @@ references resolved against nothing.
 
 All three leave the **run** with less than the render, never the reverse, which
 is the direction that cannot produce "works locally, unconfigured once
-deployed". None of them can make a deployed workload lose a value.
+deployed". None of them is a reason the **render** may lose a value: a render
+refuses a lost value whenever the workspace has the producer, whatever this
+render's flow happens to cover.
 
 A value dropped for any of these reasons is logged at **WARN**, naming the
 consumer, the producer and the reference. Core's own drop is a DEBUG line, and a

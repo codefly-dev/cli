@@ -350,9 +350,18 @@ under `run`.
 A root group's `${endpoint:…}` is held to the producer's export boundary exactly
 as a declared group's is: a reference to an endpoint whose visibility is
 `private`, or `internal` without your module in `allow-modules`, is refused
-rather than delivered, and a reference naming a producer the workspace does not
-have is refused by name rather than dropped. A root group is not a way to reach
-an endpoint a declared dependency on it would be refused.
+rather than delivered. A root group is not a way to reach an endpoint a declared
+dependency on it would be refused. A reference naming a producer the workspace
+does not have is refused when the plan is checked, and dropped with a WARN if
+resolution is reached anyway.
+
+**This can refuse a composition that rendered before.** An endpoint with no
+`visibility:` declared defaults to `private`, so a composition-root group
+referencing one used to have that value silently dropped for every service
+outside the producer's module and now fails them by name. Declare the visibility
+the reference needs, or stop referencing a private endpoint from a group every
+service receives. Core's deprecated `visibility: module` permits every module,
+so references to those are unaffected.
 
 Three asymmetries remain, and **all three leave the run with fewer values than
 the render, never the reverse**, so a deployed workload never loses a value

@@ -877,7 +877,7 @@ func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, 
 	var unresolved *configurations.UnresolvedReferencesError
 	switch {
 	case err == nil:
-		report.add("", "configuration references", "ok", "every endpoint reference in the declared workspace configurations resolves", "")
+		report.add("", "configuration references", "ok", "every endpoint reference resolves, in the groups each service declares and in the composition root's own", "")
 	case errors.As(err, &unresolved):
 		for _, reference := range collapseReferencesByFault(unresolved.References) {
 			report.add(codeConfigurationReference, "workspace configuration "+reference.Group, "fail",

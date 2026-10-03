@@ -44,37 +44,97 @@ func CheckConfigurationReferences(
 		}
 		provided = read
 	}
-	err := configurations.CheckEndpointReferences(provided.Infos,
-		consumersWithEffectiveGroups(consumers, rootGroups, profile), profile, func(unique string) (*resources.Service, bool) {
+	// Two calls, because the two halves of the effective set must be judged
+	// against different producer sets.
+	//
+	// A group the consumer DECLARES is judged against the plan's graph, exactly
+	// as it always was: a producer the caller excluded is absent from that graph,
+	// and withExcludedProducerReasons restates the refusal to name the exclusion
+	// rather than send the reader hunting for a missing composition.
+	//
+	// A group only the composition root provides is judged against the WHOLE
+	// workspace. It has to be: a root group reaches every service of every run,
+	// including a module-closure run (`--module`) whose graph is a slice of the
+	// workspace, and judging it against that slice would refuse every such run
+	// whose root group names a producer outside the closure — reported, wrongly,
+	// as "not a service of this workspace". Whether a producer is in THIS run is
+	// not a plan-time question; this gate answers only whether the reference is
+	// legal at all.
+	declaredProblems := configurations.CheckEndpointReferences(provided.Infos, consumers, profile,
+		func(unique string) (*resources.Service, bool) {
 			service, err := dependencies.ServiceFromUnique(unique)
 			return service, err == nil
 		})
-	return withExcludedProducerReasons(err, excludedProducers)
+	err := withExcludedProducerReasons(declaredProblems, excludedProducers)
+	rootConsumers := consumersWithRootGroupsOnly(consumers, rootGroups, profile)
+	if len(rootConsumers) == 0 {
+		return err
+	}
+	lookup, lookupErr := workspaceProducerLookup(ctx, workspace)
+	if lookupErr != nil {
+		return errors.Join(err, lookupErr)
+	}
+	rootProblems := configurations.CheckEndpointReferences(provided.Infos, rootConsumers, profile, lookup)
+	return mergeUnresolvedReferences(err, rootProblems)
 }
 
-// consumersWithEffectiveGroups restates each consumer with the group set it
-// actually receives — the groups it declares unioned with the composition
-// root's — because that is the set whose references get resolved
-// (pkg/orchestration/workspace_configurations.go).
+// mergeUnresolvedReferences returns the two checks' findings as ONE
+// UnresolvedReferencesError.
+//
+// errors.Join would not do: every caller reaches the findings through
+// errors.As, which stops at the first match in a joined tree, so the second
+// check's references would be carried in the error and read by nobody — the
+// `codefly doctor` listing, the render's refusal and every test would silently
+// report half of what was found. Anything that is not an
+// UnresolvedReferencesError (an unreadable workspace, say) is joined as a
+// separate cause, because it is not a finding about a reference.
+func mergeUnresolvedReferences(first, second error) error {
+	var left, right *configurations.UnresolvedReferencesError
+	switch {
+	case first == nil:
+		return second
+	case second == nil:
+		return first
+	case !errors.As(first, &left) || !errors.As(second, &right):
+		return errors.Join(first, second)
+	}
+	merged := &configurations.UnresolvedReferencesError{
+		References: make([]configurations.UnresolvedReference, 0, len(left.References)+len(right.References)),
+	}
+	seen := make(map[configurations.UnresolvedReference]bool, len(left.References)+len(right.References))
+	for _, reference := range slices.Concat(left.References, right.References) {
+		if seen[reference] {
+			continue
+		}
+		seen[reference] = true
+		merged.References = append(merged.References, reference)
+	}
+	return merged
+}
+
+// consumersWithRootGroupsOnly restates each consumer carrying ONLY the groups
+// the composition root provides that it did not declare — the half of the
+// effective set the plan gate did not use to cover.
 //
 // Core's check reads WorkspaceConfigurationDependencies off the consumer, so
-// handing it a copy carrying the effective set is how the plan gate comes to
-// cover a composition-root group at all. Without it the gate validated the
-// declared groups only: a root group's reference to a `private` endpoint, or to
-// a producer the workspace does not have, passed the plan and then went
-// unresolved at run time — a root group being, by definition, the one kind no
-// service declares.
+// handing it a copy carrying those names is how the gate comes to see a
+// composition-root group at all. Without it the gate validated declared groups
+// only: a root group's reference to a `private` endpoint, or to a producer the
+// workspace does not have, passed the plan and then failed (or was quietly
+// dropped) per service at run time — a root group being, by definition, the one
+// kind no service declares.
 //
 // The copies are shallow and the originals are never touched: they are the
-// workspace's own service objects.
+// workspace's own service objects. A consumer with no root-only group yields
+// nothing, so the second check is skipped entirely for a composition that has
+// none.
 //
 // The durable form of this is in core — let configurations.CheckEndpointReferences
 // take the effective set — so that the gate and the resolution stop being two
-// selections of one thing. Until then this is the same function reaching the
-// same verdict over the same set.
-func consumersWithEffectiveGroups(consumers []*resources.Service, rootGroups []string, profile resources.RunProfile) []*resources.Service {
+// selections of one thing.
+func consumersWithRootGroupsOnly(consumers []*resources.Service, rootGroups []string, profile resources.RunProfile) []*resources.Service {
 	if len(rootGroups) == 0 {
-		return consumers
+		return nil
 	}
 	excluded := make(map[string]bool, len(profile.ExcludeWorkspaceConfigurations))
 	for _, group := range profile.ExcludeWorkspaceConfigurations {
@@ -83,26 +143,78 @@ func consumersWithEffectiveGroups(consumers []*resources.Service, rootGroups []s
 	out := make([]*resources.Service, 0, len(consumers))
 	for _, consumer := range consumers {
 		if consumer == nil {
-			out = append(out, consumer)
 			continue
 		}
-		effective := slices.Clone(consumer.WorkspaceConfigurationDependencies)
-		declared := make(map[string]bool, len(effective))
-		for _, group := range effective {
+		declared := make(map[string]bool, len(consumer.WorkspaceConfigurationDependencies))
+		for _, group := range consumer.WorkspaceConfigurationDependencies {
 			declared[group] = true
 		}
+		var rootOnly []string
 		for _, group := range rootGroups {
 			if declared[group] || excluded[group] {
 				continue
 			}
-			declared[group] = true
-			effective = append(effective, group)
+			rootOnly = append(rootOnly, group)
+		}
+		if len(rootOnly) == 0 {
+			continue
 		}
 		restated := *consumer
-		restated.WorkspaceConfigurationDependencies = effective
+		restated.WorkspaceConfigurationDependencies = rootOnly
 		out = append(out, &restated)
 	}
 	return out
+}
+
+// workspaceProducerLookup resolves <module>/<service> over the whole workspace.
+// It fails closed: an unreadable workspace means no reference can be checked,
+// and a reference delivered unchecked is how a private endpoint's address
+// reaches a service that may not see it.
+func workspaceProducerLookup(ctx context.Context, workspace *resources.Workspace) (configurations.ProducerLookup, error) {
+	services, err := workspace.LoadServices(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read this workspace's services, so the ${endpoint:…} references its composition-root configurations carry cannot be checked against the producers they name: %w", err)
+	}
+	byUnique := make(map[string]*resources.Service, len(services))
+	for _, service := range services {
+		identity, err := service.Identity()
+		if err != nil {
+			continue
+		}
+		byUnique[identity.Unique()] = service
+	}
+	return func(unique string) (*resources.Service, bool) {
+		service, ok := byUnique[unique]
+		return service, ok
+	}, nil
+}
+
+// compositionRootGroupsForTheGate names the composition root's groups at a point
+// in the lifecycle where the loader cannot yet.
+//
+// This gate runs inside InitManagers, and the loader populates its
+// CompositionRootWorkspaceConfigurationNames in Load, which runs after
+// (cmd/run/service.go, pkg/control/lifecycle.go and pkg/gitops/orchestrate.go
+// all call InitManagers then Load). Reading the loader here therefore returned
+// NOTHING, and the gate silently checked declared groups only — a gate
+// extension that did nothing, which is worse than not having one, because the
+// code and the docs both claimed otherwise.
+//
+// So the loader's set is preferred when it is populated, and the read NewFlow
+// already performed is the fallback. Both describe the same thing; the loader's
+// is authoritative because it also treats an invocation-scoped override (--set)
+// as composition-root on a name a composed module provides, which a plain read
+// cannot see. The fallback therefore checks a subset, never something different,
+// and the resolution-time check covers what it misses.
+//
+// Core exposing the Manager's own union over every loader would remove both the
+// ordering problem and this derivation; it is named as a core change in
+// docs/orchestration.md.
+func (flow *Flow) compositionRootGroupsForTheGate() []string {
+	if groups := flow.world.compositionRootWorkspaceConfigurationGroups(); len(groups) > 0 {
+		return groups
+	}
+	return CompositionRootGroupNames(flow.providedWorkspaceConfigurations)
 }
 
 // CompositionRootGroupNames names the composition root's own groups as a read
@@ -245,5 +357,5 @@ func (flow *Flow) checkConfigurationReferences(ctx context.Context, required []s
 	}
 	return CheckConfigurationReferences(ctx, flow.workspace, flow.world.Env, flow.providedWorkspaceConfigurations,
 		flow.world.Dependencies, consumers, flow.runProfile, excludedProducers,
-		flow.world.compositionRootWorkspaceConfigurationGroups())
+		flow.compositionRootGroupsForTheGate())
 }

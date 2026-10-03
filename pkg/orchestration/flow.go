@@ -305,6 +305,7 @@ type World struct {
 	// two must not be reported as the same thing. Lazy and memoized — services
 	// resolve concurrently and this reads the whole workspace.
 	workspaceProducerLookup     func(unique string) (*resources.Service, bool)
+	workspaceProducerLookupErr  error
 	workspaceProducerLookupOnce sync.Once
 
 	// runProducers is the run set, by <module>/<service>: every service this

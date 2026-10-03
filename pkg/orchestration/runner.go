@@ -489,29 +489,47 @@ func (world *World) producerInRun() func(unique string) bool {
 // it is what separates a reference the dependency graph ORDERS from one it does
 // not, which is what decides whether a failure to derive is fatal.
 //
-// Failing to derive a producer's addresses is an error, not a warning: swallowing
-// it leaves the consumer's read to fail with core's "producer is not part of the
-// run", which names the wrong cause and buries the real one in a log line nobody
-// correlates.
+// Failing to derive a producer's addresses is an error wherever an address must
+// already exist — every reference in a render, and a declared group's reference
+// in a run — because swallowing it leaves the consumer's read to fail with core's
+// "producer is not part of the run", which names the wrong cause and buries the
+// real one in a log line nobody correlates. A root group's reference in a RUN is
+// the one exception, and it is a drop rather than a swallow: nothing ordered the
+// producer, so there is nothing to blame, and
+// refuseDroppedWorkspaceConfigurationValues warns by name.
 func (world *World) referencedProducerMappings(
 	ctx context.Context, service *resources.Service, declared, effective []string, have []*basev0.NetworkMapping,
 ) ([]*basev0.NetworkMapping, error) {
 	if world == nil || world.ConfigurationManager == nil || world.SharedState == nil || world.Dependencies == nil || len(effective) == 0 {
 		return nil, nil
 	}
-	// A reference carried by a group this service DECLARES is ordered: core's
-	// graph puts the producer before the consumer, so failing to derive its
-	// address is a real fault and says so. A reference carried by a group only
-	// the composition root provides is ordered by nothing, so the same failure
-	// is the run simply being early — fatal there would break every run of a
+	// Whether failing to derive a producer's addresses is fatal depends on
+	// whether anything guarantees the address exists yet, and that is a question
+	// about the MODE first and the group second.
+	//
+	// In a render, nothing is early: a deployed address is a pure function of the
+	// producer's identity and namespace, so a failure to derive one is a fault
+	// whatever group named it. Every reference is fatal there. (An earlier
+	// revision of this made root-only references non-fatal in every mode while
+	// fixing the run, which left a render swallowing the same failure it had
+	// refused the commit before — the regression this comment exists to stop
+	// coming back.)
+	//
+	// In a run, only a reference in a group the service DECLARES is ordered:
+	// core's graph puts that producer before the consumer
+	// (ServiceDependencies.addConfigurationReferenceEdges), so a failure there is
+	// a real fault. A root group's reference is ordered by nothing, so the same
+	// failure is the run simply being early — fatal would break every run of a
 	// composition whose root group holds a reference, which is what
-	// --temporary-ports does (localProducerMappings cannot know an address
+	// --temporary-ports guarantees (localProducerMappings cannot know an address
 	// allocated at initialization). Those are dropped, and
-	// refuseUnresolvedWorkspaceConfigurationReferences is where the drop is
-	// warned about and, in a render, refused.
+	// refuseDroppedWorkspaceConfigurationValues is where the drop is warned
+	// about.
 	fatal := make(map[string]bool)
-	for _, reference := range world.ConfigurationManager.WorkspaceEndpointReferences(declared...) {
-		fatal[reference] = true
+	if !world.deploys() {
+		for _, reference := range world.ConfigurationManager.WorkspaceEndpointReferences(declared...) {
+			fatal[reference] = true
+		}
 	}
 	var out []*basev0.NetworkMapping
 	collected := make(map[string]bool)
@@ -527,7 +545,7 @@ func (world *World) referencedProducerMappings(
 		collected[producer] = true
 		mappings, err := world.producerNetworkMappings(ctx, producer)
 		if err != nil {
-			if !fatal[reference] {
+			if !world.deploys() && !fatal[reference] {
 				wool.Get(ctx).In("World.referencedProducerMappings").Warn(
 					"a workspace configuration value will be missing for this service: the composition root's group references a producer whose address cannot be derived yet, and a root group's reference orders nothing",
 					wool.Field("consumer", consumerLabel(service)), wool.Field("producer", producer),

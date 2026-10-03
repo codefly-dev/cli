@@ -38,7 +38,11 @@ func droppedValueWorld(t *testing.T, mode Mode, reference string, mappings []*ba
 	world.providedWorkspaceConfigurationInfos = func() []*basev0.ConfigurationInformation {
 		return workspaceConfigurationInfos(loader.Configurations())
 	}
-	world.setRunProducers([]string{"platform/authority", "payments/worker"}, nil)
+	// The run set a real flow of this origin computes: payments/worker alone. A
+	// root group's reference adds no edge to the closure, so the producer it
+	// names is NOT in the run set — which is the topology every render has, and
+	// the one a hand-set run set hid.
+	world.setRunProducers([]string{"payments/worker"}, nil)
 
 	service := parityService(t, workspace, "payments", "worker")
 	instance := parityInstance(t, workspace, service)
@@ -156,4 +160,56 @@ func TestAWorldThatCannotValidateItsReferencesRefusesToResolveThem(t *testing.T)
 	confs, err := world.workspaceConfigurationsFor(context.Background(), &resources.Service{}, nil, resources.NewContainerNetworkAccess())
 	require.NoError(t, err)
 	require.Equal(t, []string{"work-context"}, groupSet(confs))
+}
+
+// The blocker this round found, pinned: a render refuses a lost root value even
+// though the producer is NOT in the render's run set — because a real render
+// never puts it there.
+//
+// A render flow covers one root service and its build closure
+// (Flow.managerDependencies → Dependencies.Restrict), and a root group's
+// reference adds no edge to that closure. So the producer a root group names is
+// outside the run set of every render that does not happen to be rendering it.
+// An earlier revision gated the render's refusal on run membership, which meant
+// the refusal could not fire for the #882 case at all: another module's
+// producer, named by a root group, value quietly absent from the manifest, two
+// WARN lines. The tests of that revision passed only because they hand-set the
+// producer into the run set.
+//
+// The render therefore judges by WORKSPACE membership: a deployed address is a
+// pure function of identity and namespace, so it exists for any service the
+// workspace has, whether or not this flow covers it.
+func TestARenderRefusesALostRootValueWhoseProducerIsOutsideItsRunSet(t *testing.T) {
+	ctx := context.Background()
+	world, workspace := parityWorld(t, SnapshotMode, "payments/worker")
+	require.Equal(t, []string{"payments/worker"},
+		parityRunClosure(t, world.Dependencies, workspace, []string{"payments/worker"}),
+		"the premise: a render of one service, whose closure does not contain platform/authority")
+	require.False(t, world.producerInRun()("platform/authority"),
+		"the producer a root group names is outside this render's run set, as it is in every real render")
+
+	// Nothing can derive a deployed address here, so the root group's reference
+	// cannot survive — the shape the render must refuse rather than ship.
+	world.RemoteNetworkManager = nil
+
+	service := parityService(t, workspace, "payments", "worker")
+	builder := &Builder{world: world, instance: parityInstance(t, workspace, service)}
+	_, err := builder.workspaceConfigurations(ctx, nil)
+	require.Error(t, err, "a render must refuse a lost root value, run-set membership notwithstanding")
+	require.Contains(t, err.Error(), "work-context/authority-endpoint")
+	require.Contains(t, err.Error(), "platform/authority")
+	require.Contains(t, err.Error(), "a service of this workspace")
+}
+
+// And a producer the workspace genuinely does not have is still a legitimate
+// drop in a render, so the rule above is "the workspace has it", not "refuse
+// every drop". The plan gate is what refuses that case, by name.
+func TestARenderToleratesALostRootValueWhoseProducerTheWorkspaceLacks(t *testing.T) {
+	confs, err := droppedValueWorld(t, SnapshotMode, "${endpoint:absent/service/rest}", nil)
+	require.NoError(t, err, "no deployed address exists for a service the workspace does not have")
+	_, delivered := groupValue(confs, "work-context", "authority-endpoint")
+	require.False(t, delivered)
+	literal, delivered := groupValue(confs, "work-context", "literal")
+	require.True(t, delivered, "the rest of the group is unaffected")
+	require.Equal(t, "present", literal)
 }
