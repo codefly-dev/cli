@@ -113,7 +113,14 @@ func TestARootReferenceMissingItsEndpointComponentIsRefusedAsMalformed(t *testin
 }
 
 // The same dropped value under `codefly run` is not refused: it is dropped, and
-// warned about. The run may legitimately be early or smaller than the
+// warned about.
+//
+// This tolerance also held before the PR, by accident rather than by rule — the
+// old code dropped the value silently — so the test survives a wholesale
+// rollback and is not differential evidence. What it guards is an intermediate
+// revision of this PR that made the refusal unconditional and broke working
+// local runs: making judgeDroppedValue refuse in every mode fails it.
+// The run may legitimately be early or smaller than the
 // composition, and failing it would break working local runs — the asymmetry
 // `docs/orchestration.md` states, in the direction that cannot produce "works
 // locally, unconfigured once deployed".

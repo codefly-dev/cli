@@ -78,6 +78,11 @@ func TestRenderModuleRefusesAnUnresolvedReferenceBeforeBuilding(t *testing.T) {
 
 // A dev deploy refuses a configuration error of the service it deploys before
 // building its image.
+//
+// `api` declares `shop`, so a gate reading declared groups only refuses this
+// too: the test documents the contract and survives a wholesale rollback of
+// this PR. The discriminating case is the one below it, which deploys a service
+// that declares nothing.
 func TestDeployDevRefusesAnUnresolvedReferenceBeforeBuilding(t *testing.T) {
 	workspace, module := writeUnresolvedReferenceWorkspace(t)
 	renderDevFixture(t, workspace)
@@ -91,5 +96,30 @@ func TestDeployDevRefusesAnUnresolvedReferenceBeforeBuilding(t *testing.T) {
 	// Stand-alone: the plan covers the service being deployed and nothing else,
 	// so only its own view of the root group is checked.
 	requireUnresolvedShopReferences(t, err, "shop/api")
+	require.Zero(t, *calls, "no image was built")
+}
+
+// A dev deploy of a service that declares NO group is refused by the
+// composition root's own group — the half of the gate a declared-only check
+// cannot reach.
+//
+// TestDeployDevRefusesAnUnresolvedReferenceBeforeBuilding above deploys `api`,
+// which declares `shop`, so a gate that reads declared groups only refuses it
+// too: that test documents the contract but cannot tell this change from the
+// behaviour before it. `worker` declares nothing. It receives `shop` because the
+// composition root provides it run-wide, which is precisely the case cli#882 is
+// about — and before this change the plan said nothing, the render emitted a
+// manifest, and the value was missing once deployed.
+func TestDeployDevRefusesARootGroupsUnresolvedReferenceForANonDeclarer(t *testing.T) {
+	workspace, module := writeUnresolvedReferenceWorkspace(t)
+	renderDevFixture(t, workspace)
+	calls := stubBuild(t, []string{"registry.example.com/acme/worker:0.0.1@" + devNewDigest}, nil)
+
+	source := filepath.Join(workspace.Dir(), "modules", "shop", "services", "worker")
+	_, err := DeployDev(context.Background(), &DevRequest{
+		Workspace: workspace, Module: module, Service: "worker", Environment: environmentNamed("staging"),
+		AppProject: "acme-staging", Source: DevSource{Dir: source, Origin: DevSourceOverride},
+	})
+	requireUnresolvedShopReferences(t, err, "shop/worker")
 	require.Zero(t, *calls, "no image was built")
 }

@@ -39,10 +39,28 @@ type Flow struct {
 	// rebuild of the graph carries it.
 	configurationReferences architecture.DependencyOption
 
-	// providedWorkspaceConfigurations is the read configurationReferences was
-	// derived from, kept so the plan-time reference check reuses it instead of
-	// walking the same configuration tree again.
+	// providedWorkspaceConfigurations is the configurations this invocation will
+	// RESOLVE — overrides included — read once at NewFlow and used for three
+	// things that must agree: the ordering edges configurationReferences
+	// carries, the plan-time reference check, and (through the loader bound on
+	// the World) the resolution itself.
+	//
+	// One snapshot, because two were a fault. The graph used to be ordered from
+	// a plain disk read while the gate validated the loaded, overridden values:
+	// an override that redirects a reference to a different producer then left
+	// the closure holding the OLD producer, the gate accepted the new reference
+	// as perfectly legal, and the resolution dropped the value because the
+	// producer it named was not in the run — delivered=false, err=nil, which is
+	// cli#882's own shape. (Layer-4 round four, E1.)
 	providedWorkspaceConfigurations *configurations.WorkspaceConfigurations
+
+	// providedWorkspaceConfigurationRootGroups names the composition root's
+	// groups in that same snapshot, and providedWorkspaceConfigurationsErr is
+	// why there is no snapshot when there is none. The gate fails closed on it;
+	// NewFlow does not, because a build or a sync resolves no configuration and
+	// must not be refused by a fault it will never meet.
+	providedWorkspaceConfigurationRootGroups []string
+	providedWorkspaceConfigurationsErr       error
 
 	workspace *resources.Workspace
 
@@ -418,8 +436,30 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	// Get dependency graph. A service reaching a producer only through a
 	// workspace configuration group the composition root writes is ordered
 	// after it, as for a declared dependency.
-	providedWorkspaceConfigurations := readWorkspaceConfigurationsForReferences(ctx, workspace, env)
-	configurationReferences := configurationReferenceOptionFrom(providedWorkspaceConfigurations)
+	//
+	// From the configurations this invocation will RESOLVE, not from the
+	// directory: an invocation-scoped override can redirect a reference to a
+	// different producer, and an edge drawn to the producer named on disk orders
+	// the wrong service — the closure ends up without the producer the value
+	// actually names, and the value is dropped with no error. The same snapshot
+	// is handed to the plan gate, so the graph, the check and the resolution are
+	// one selection rather than three.
+	//
+	// A snapshot that cannot be taken is not fatal HERE. Every mode that
+	// resolves a workspace configuration passes through
+	// flow.checkConfigurationReferences, which fails closed on the error kept
+	// below; the modes that skip that gate (build, sync) resolve no
+	// configuration at all, so ordering them from the directory read cannot hide
+	// anything. Refusing in NewFlow would instead fail `codefly build` on an
+	// unsupplied ${profile} value it never reads.
+	providedWorkspaceConfigurations, providedRootGroups, providedErr := WorkspaceConfigurationsForChecking(ctx, workspace, env)
+	graphConfigurations := providedWorkspaceConfigurations
+	if providedErr != nil {
+		w.Debug("ordering the run from the workspace configurations on disk: the ones this invocation resolves could not be read",
+			wool.ErrField(providedErr))
+		graphConfigurations = readWorkspaceConfigurationsForReferences(ctx, workspace, env)
+	}
+	configurationReferences := configurationReferenceOptionFrom(graphConfigurations)
 	var graphOptions []architecture.DependencyOption
 	if configurationReferences != nil {
 		graphOptions = append(graphOptions, configurationReferences)
@@ -509,6 +549,9 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 
 		configurationReferences:         configurationReferences,
 		providedWorkspaceConfigurations: providedWorkspaceConfigurations,
+
+		providedWorkspaceConfigurationRootGroups: providedRootGroups,
+		providedWorkspaceConfigurationsErr:       providedErr,
 
 		SharedState:          stateManager,
 		ConfigurationManager: configurationManager,

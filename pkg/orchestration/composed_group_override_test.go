@@ -104,6 +104,10 @@ func groupKeys(infos []*basev0.ConfigurationInformation, group string) []string 
 // truth AGENTS.md forbids. So this test exists to fail — loudly, naming the core
 // function and core#693 — on the day core changes the behaviour, so the CLI's own
 // expectations are updated with it rather than silently left behind.
+// It runs only core code, so it passes against any state of this repository and
+// is not differential evidence for anything in this PR — by construction. Its
+// job is to fail the day core's behaviour changes, so the CLI's expectations
+// move with core's instead of being silently left behind.
 func TestAPartialRootOverrideReplacesAComposedModuleGroupWhole(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

@@ -12,6 +12,13 @@ import (
 	"github.com/codefly-dev/core/resources"
 )
 
+// The three tests in this file exercise the secret PLANNER, which this PR does
+// not change: they document what `deploy secrets` does with a key whose shape
+// comes from a render, and they pass against the behaviour before this PR as
+// well. They are the docs' evidence, not the change's — the differential
+// evidence for the render half is pkg/orchestration's
+// TestACompositionRootGroupRendersItsCredentialsByReference.
+//
 // rootGroupCredentialKey is the store key a GitOps render produces for a
 // credential-named value in a composition-root workspace configuration group.
 //

@@ -78,6 +78,17 @@ func loadedWorkspaceManager(t *testing.T, loader staticWorkspaceLoader) *configu
 // resolution plans producer discovery against the root's group names, so a World
 // that cannot name a root group refuses it (requireKnownRootGroup) rather than
 // resolve its references against nothing.
+// The tests built on this helper are the RUN path's pre-existing contract,
+// carried forward onto the shared resolution unchanged: the union, the
+// deduplication, the profile exclusions, the address family a consumer's
+// mappings give a reference. They are expected to pass against the behaviour
+// before this PR as well — that is what "carried forward unchanged" means — so
+// they are regression guards, not evidence that this PR changes anything. The
+// differential evidence is the root-only fixture
+// (workspace_configurations_parity_test.go) and the refusal tests. Each of
+// these is still killed by the targeted mutation of the behaviour it names:
+// removing the union deduplication fails TestWorkspaceConfigurationsForDeduplicatesOverlap,
+// and so on.
 func loadedWorkspaceWorld(t *testing.T, loader staticWorkspaceLoader) *World {
 	t.Helper()
 	return &World{
@@ -173,7 +184,29 @@ func TestWorkspaceConfigurationsForResolvesEndpointsFromConsumerMappings(t *test
 			workspaceConfiguration("platform", "gateway-endpoint", "http://${endpoint:saas/auth-gateway/rest}"),
 		},
 	})
-	service := &resources.Service{WorkspaceConfigurationDependencies: []string{"platform"}}
+	// A real workspace holding the producer, because a resolution that carries a
+	// reference and has no workspace to check it against is refused now: the
+	// lookup is what answers "does this producer exist and may this consumer see
+	// that endpoint", and a World without one used to resolve the reference
+	// unchecked. Binding it also means this test exercises the lookup rather
+	// than skipping it.
+	world.Workspace = writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: acme\nlayout: modules\nmodules:\n    - name: saas\n    - name: platform\n",
+		"modules/saas/module.codefly.yaml": "kind: module\nname: saas\nproject: acme\n" +
+			"domain: github.com/codefly-ai/acme/saas\nservices:\n    - name: auth-gateway\n",
+		"modules/saas/services/auth-gateway/service.codefly.yaml": "kind: service\nname: auth-gateway\nversion: 0.0.0\nmodule: saas\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
+			"endpoints:\n    - name: rest\n      api: rest\n      visibility: public\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: acme\n" +
+			"domain: github.com/codefly-ai/acme/platform\nservices:\n    - name: relay\n",
+		"modules/platform/services/relay/service.codefly.yaml": "kind: service\nname: relay\nversion: 0.0.0\nmodule: platform\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
+	})
+	// The consumer is loaded from that workspace rather than hand-built: core's
+	// reference check reads its identity, and a service with no module has none.
+	service, err := loadService(context.Background(), t, world.Workspace, "platform", "relay")
+	require.NoError(t, err)
+	service.WorkspaceConfigurationDependencies = []string{"platform"}
 	mappings := []*basev0.NetworkMapping{{
 		Endpoint: &basev0.Endpoint{Module: "saas", Service: "auth-gateway", Name: "rest", Api: "rest"},
 		Instances: []*basev0.NetworkInstance{

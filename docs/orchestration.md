@@ -289,6 +289,19 @@ checked nor interpolated. An earlier revision of these docs named `--set` here;
 that was wrong, and an operator reading it would have believed a reference they
 typed on the command line was being checked.
 
+**One snapshot orders the run, checks it, and resolves it.** `NewFlow` takes that
+same invocation-aware read once and uses it for the dependency graph's ordering
+edges as well, because two reads were a fault: the graph used to be ordered from
+the directory while the gate validated the overridden values, so an override
+that redirects a reference to a *different* producer left the run's closure
+holding the producer named on disk. The gate then accepted the new reference —
+nothing is wrong with it — and the resolution dropped the value, because core
+drops a reference to a producer the run does not contain rather than failing the
+consumer. Delivered false, error nil: cli#882's own shape, reached through the
+mechanism added to check for it. A snapshot that cannot be taken is not fatal in
+`NewFlow` itself — every mode that resolves a configuration passes the gate,
+which fails closed, and the modes that skip the gate (build, sync) resolve none.
+
 Loading a reader is also what fixes the lifecycle: this gate runs inside
 `InitManagers`, and the loader the flow registers only populates its
 composition-root names in `Load`, which runs afterwards. Reading that loader
@@ -400,7 +413,15 @@ a store entry for.
 - let a run profile exclude a composition-root group that no service declares:
   `resources.ResolveRunProfile` builds its inventory of known group names from
   service declarations, so such a name is rejected as unknown and the group
-  cannot be excluded at all.
+  cannot be excluded at all;
+- make the shared configuration resolution safe for simultaneous readers.
+  `Manager.resolveWorkspaceConfiguration` mutates the loader's `Info` protos in
+  place and publishes into `resolvedWorkspace` without a lock
+  (`configurations/manager.go`), and the secret cache and value publication in
+  `configurations/secrets.go` do the same, so two concurrent cold reads of one
+  manager race. The CLI reaches it through this resolution and through
+  `pkg/control/checks.go`'s `Configurations()`; the normal playbook executes
+  serially, so no CLI path is known to trigger it today.
 
 The root's group names come from the manager's own loaders (core's
 `configurations.Loader.CompositionRootWorkspaceConfigurationNames`) and are bound

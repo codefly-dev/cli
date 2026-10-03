@@ -314,6 +314,19 @@ func (world *World) checkEffectiveWorkspaceConfigurationReferences(
 		return err
 	}
 	if lookup == nil {
+		// No workspace, so no producer can be looked up and no reference can be
+		// validated — and this is the last fail-open in this file. A World built
+		// without a workspace used to resolve reference-bearing groups with no
+		// check at all, so a mapping for a private endpoint of another module
+		// was delivered with err=nil: the same bypass as every other case here,
+		// reached by leaving out the thing that answers the question. NewFlow
+		// always binds a workspace, so this refuses a construction no production
+		// path takes rather than a real one — which is exactly why it should
+		// refuse instead of being trusted to stay unreachable.
+		if references := world.ConfigurationManager.WorkspaceEndpointReferences(effective...); len(references) > 0 {
+			return fmt.Errorf("cannot validate the workspace configuration references %s: this world resolves groups but has no workspace, so a reference naming a private endpoint or a producer that does not exist cannot be checked against anything (bind World.Workspace as NewFlow does)",
+				strings.Join(references, ", "))
+		}
 		return nil
 	}
 	// A shallow copy: core reads WorkspaceConfigurationDependencies off the

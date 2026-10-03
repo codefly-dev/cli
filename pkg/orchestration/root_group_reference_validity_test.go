@@ -270,6 +270,11 @@ func TestARenderRefusesARootReferenceNoAddressCanBeDerivedFor(t *testing.T) {
 // composition whose root group held a reference could not be run with
 // --temporary-ports at all (`codefly ci`, `test --temporary-ports`). The run
 // below sets exactly that flag.
+//
+// Being a guard against this PR's own intermediate state is the whole of its
+// claim: the tolerance also holds on the behaviour before the PR, so the test
+// survives a wholesale rollback and proves nothing about the delta. Making
+// root-only local derivation fatal again fails both subtests.
 func TestARunWithTemporaryPortsDropsARootReferenceItCannotPlaceYet(t *testing.T) {
 	for _, consumer := range []struct{ module, name string }{
 		{"payments", "worker"},
@@ -479,4 +484,49 @@ func TestARenderRefusesARootReferenceWithTheDerivationsOwnReason(t *testing.T) {
 		"a render must refuse with the derivation's reason, not with the outcome check's")
 	require.NotContains(t, err.Error(), "did not survive resolution",
 		"the outcome check's refusal must not be what an operator reads here")
+}
+
+// A World with no workspace refuses to resolve a group carrying a reference,
+// rather than resolving it unchecked.
+//
+// This is the last fail-open in this file, and it had the same shape as all the
+// others: the thing that answers the question was absent, so the question went
+// unasked. `workspaceProducers` returns no lookup without a workspace, and the
+// reference check then returned nil — so a mapping for a PRIVATE endpoint of
+// another module was interpolated into the value and delivered with err=nil,
+// which is the bypass TestARootGroupReferenceIsHeldToTheProducersExportBoundary
+// exists to prevent for every other World.
+//
+// NewFlow always binds a workspace, so no production path reaches this. That is
+// the argument for refusing rather than for trusting it to stay unreachable:
+// "unreachable" is a property of today's callers, and the cost of being wrong
+// about it is a private address delivered across a module boundary in silence.
+// (Layer-4 round four, E3.)
+func TestAWorldWithNoWorkspaceRefusesToResolveAReferenceBearingGroup(t *testing.T) {
+	world := loadedWorkspaceWorld(t, staticWorkspaceLoader{
+		confs: []*basev0.Configuration{
+			workspaceConfiguration("platform", "gateway-endpoint", "http://${endpoint:saas/auth-gateway/rest}"),
+		},
+	})
+	require.Nil(t, world.Workspace, "the case is a World with nothing to check references against")
+	// A consumer outside the producer's module, and a mapping for an endpoint
+	// the producer declares private: everything needed to deliver an address
+	// this consumer may not have.
+	consumer := &resources.Service{WorkspaceConfigurationDependencies: []string{"platform"}}
+	mappings := []*basev0.NetworkMapping{{
+		Endpoint: &basev0.Endpoint{
+			Module: "saas", Service: "auth-gateway", Name: "rest", Api: "rest", Visibility: "private",
+		},
+		Instances: []*basev0.NetworkInstance{
+			{Address: "localhost:38342", Access: resources.NewNativeNetworkAccess()},
+		},
+	}}
+
+	confs, err := world.workspaceConfigurationsFor(context.Background(), consumer, mappings, resources.NewNativeNetworkAccess())
+	require.Error(t, err, "a reference must not be resolved by a World that cannot check it")
+	require.Contains(t, err.Error(), "has no workspace")
+	require.Contains(t, err.Error(), "saas/auth-gateway/rest", "the refusal must name the reference it could not check")
+	value, delivered := groupValue(confs, "platform", "gateway-endpoint")
+	require.False(t, delivered, "nothing is delivered when nothing could be checked")
+	require.NotContains(t, value, "38342", "least of all the private endpoint's address")
 }

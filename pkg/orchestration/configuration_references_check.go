@@ -377,23 +377,24 @@ func (flow *Flow) checkConfigurationReferences(ctx context.Context, required []s
 		excludedProducers[excluded] = true
 	}
 	// The configurations this run will actually resolve, overrides included, and
-	// the root groups among them. The loader the flow itself registers has not
-	// Loaded yet at this point in the lifecycle (this gate runs inside
-	// InitManagers; Load follows), which is why a reader is loaded here rather
-	// than read off the world — and why the names cannot come from
-	// world.compositionRootGroups, which would be empty.
+	// the root groups among them — the snapshot NewFlow took, which is also what
+	// ordered the dependency graph. One selection, so the graph, this check and
+	// the resolution cannot disagree about which producer a reference names.
 	//
-	// A read that fails refuses the operation here too. The fallback that used
-	// to stand here (flow.providedWorkspaceConfigurations plus
+	// It is read at NewFlow rather than here because the loader the flow itself
+	// registers has not Loaded yet at this point in the lifecycle (this gate
+	// runs inside InitManagers; Load follows), so neither
+	// world.compositionRootGroups nor the manager can name a root group yet.
+	//
+	// A snapshot that could not be taken refuses the operation. The fallback
+	// that used to stand here (a plain disk read plus
 	// world.compositionRootWorkspaceConfigurationGroups) was worse than no
 	// check: the first cannot see an invocation override, and the second is
-	// empty at this point in the lifecycle, so a load failure anywhere in the
-	// configurations turned the gate into a declared-groups-only check without
-	// saying so.
-	provided, rootGroups, err := WorkspaceConfigurationsForChecking(ctx, flow.workspace, flow.world.Env)
-	if err != nil {
-		return err
+	// empty at this point, so a load failure anywhere in the configurations
+	// turned the gate into a declared-groups-only check without saying so.
+	if flow.providedWorkspaceConfigurationsErr != nil {
+		return flow.providedWorkspaceConfigurationsErr
 	}
-	return CheckConfigurationReferences(ctx, flow.workspace, flow.world.Env, provided,
-		flow.world.Dependencies, consumers, flow.runProfile, excludedProducers, rootGroups)
+	return CheckConfigurationReferences(ctx, flow.workspace, flow.world.Env, flow.providedWorkspaceConfigurations,
+		flow.world.Dependencies, consumers, flow.runProfile, excludedProducers, flow.providedWorkspaceConfigurationRootGroups)
 }
