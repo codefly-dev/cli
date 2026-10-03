@@ -74,18 +74,41 @@ func (world *World) workspaceConfigurationsFor(
 	// declared resolves only if the producer it names was discovered, and only
 	// this set knows about it.
 	effective := world.effectiveWorkspaceConfigurationGroups(declared)
-	// Validity first, and by core's own rule: a malformed reference, a producer
+	// What this service will NOT receive, decided BEFORE anything is checked or
+	// resolved. A composition root's credentials do not reach a service that
+	// does not declare the group, and a value nobody receives must not impose an
+	// obligation on them: deciding at delivery time meant a withheld
+	// credential's ${endpoint:…} was still validated and still had to resolve,
+	// so a reference this consumer could never read could refuse its render —
+	// its producer's address undiscoverable, or its endpoint private to another
+	// module. One decision, made once, used by the check, by discovery and by
+	// the delivery filter. (Layer-4 round-five F4.)
+	withheld := world.withheldRootCredentials(declared, effective)
+	// Validity next, and by core's own rule: a malformed reference, a producer
 	// the workspace does not have, an endpoint it does not declare, or an
 	// endpoint the consumer's module may not see is refused here for the whole
 	// effective set — not only for the groups this service declared.
-	if err := world.checkEffectiveWorkspaceConfigurationReferences(ctx, service, effective); err != nil {
+	if err := world.checkEffectiveWorkspaceConfigurationReferences(ctx, service, effective, withheld); err != nil {
 		return nil, err
 	}
-	referenced, err := world.referencedProducerMappings(ctx, service, declared, effective, dependencyMappings)
+	// The consumer's OWN dependency mappings are filtered too, and before
+	// discovery runs against them. A bare service dependency — one naming no
+	// endpoints — is handed every mapping its producer published, narrowed by
+	// the dependency's endpoint list and not by visibility
+	// (StateManager.GetDependenciesNetworkMappings), so a cross-module private
+	// endpoint's address was in the set a ${endpoint:…} resolves against. And
+	// because discovery skips a producer whose endpoint the dependency mappings
+	// already carry, filtering only what discovery binds meant the filter never
+	// ran at all for exactly that consumer. (Layer-5 round-five NEW-1.)
+	visible, err := world.exportableTo(ctx, service, dependencyMappings)
 	if err != nil {
 		return nil, err
 	}
-	mappings := append(slices.Clone(dependencyMappings), referenced...)
+	referenced, err := world.referencedProducerMappings(ctx, service, declared, effective, visible, withheld)
+	if err != nil {
+		return nil, err
+	}
+	mappings := append(slices.Clone(visible), referenced...)
 	manager := world.ConfigurationManager.ForConsumer(mappings, access).WithRunProducers(world.producerInRun())
 	resolved, err := manager.GetWorkspaceDependenciesConfigurations(ctx, declared...)
 	if err != nil {
@@ -108,7 +131,6 @@ func (world *World) workspaceConfigurationsFor(
 		}
 	}
 	out := resolved
-	withheld := map[string]bool{}
 	for _, conf := range root {
 		if world.workspaceConfigurationExcluded(conf) || world.workspaceConfigurationSeen(conf, seen) {
 			continue
@@ -116,10 +138,7 @@ func (world *World) workspaceConfigurationsFor(
 		if err = world.requireKnownRootGroup(conf, effective); err != nil {
 			return nil, err
 		}
-		kept, held := withoutUndeclaredCredentials(ctx, conf, consumerLabel(service))
-		for _, key := range held {
-			withheld[key] = true
-		}
+		kept := withheld.without(ctx, conf, consumerLabel(service))
 		if kept == nil {
 			continue
 		}
@@ -136,18 +155,20 @@ func (world *World) workspaceConfigurationsFor(
 	// rather than discovered missing: a root credential whose value carries an
 	// ${endpoint:…} would otherwise be reported as a lost value and refuse the
 	// render it was deliberately kept out of.
-	if err = world.refuseDroppedWorkspaceConfigurationValues(ctx, service, effective, out, withheld); err != nil {
+	if err = world.refuseDroppedWorkspaceConfigurationValues(ctx, service, effective, out, withheld.values); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// withoutUndeclaredCredentials removes a composition-root group's CREDENTIAL
-// values from what a service that does not declare that group receives, and
-// names what it removed.
+// withheldCredentials is what one service does NOT receive of the composition
+// root's groups: its credentials. Computed once, before anything is checked or
+// resolved, and then used by the reference check, by producer discovery, by the
+// delivery filter and by the drop detection — so the four cannot disagree about
+// which values this service is getting.
 //
 // It is reached only for a group the service did not declare: a declared group
-// resolves through GetWorkspaceDependenciesConfigurations above and never comes
+// resolves through GetWorkspaceDependenciesConfigurations and never comes
 // through here, and a group that is both is skipped as already seen. So the rule
 // an operator meets is exactly: a root group's non-secret values reach every
 // service, and its credentials reach the services that ask for them.
@@ -173,31 +194,106 @@ func (world *World) workspaceConfigurationsFor(
 // is the shape an operator most often writes, reaching every workload as a
 // secret reference.
 //
+// A STRUCTURED secret — `<name>.secret.yaml`, which core loads as an
+// information block carrying Data{Secret: true} and typically no values at all —
+// is withheld whole, by group name. Classifying values alone missed it
+// entirely: with no values there was nothing to withhold, so the group reached
+// every service in a run and in a render. It was also a render regression,
+// because promotableConfiguration refuses a structured secret ("requires typed
+// Kubernetes key references"), so a composition whose root `.secret.yaml` no
+// service declared could not render ANY service.
+type withheldCredentials struct {
+	// values are the "<group>/<key>" entries this service does not receive.
+	values map[string]bool
+	// groups are the information blocks withheld whole — the structured secrets.
+	groups map[string]bool
+}
+
+// any reports whether anything is withheld at all, so the common case costs
+// nothing.
+func (w withheldCredentials) any() bool {
+	return len(w.values) > 0 || len(w.groups) > 0
+}
+
+// withheldRootCredentials decides, from the configurations as they were LOADED,
+// which values of the effective set this service will not receive: the
+// credentials of the groups only the composition root provides.
+//
+// Read pre-interpolation, like every other judgement in this file that has to
+// know what a value IS rather than what it became.
+func (world *World) withheldRootCredentials(declared, effective []string) withheldCredentials {
+	out := withheldCredentials{values: map[string]bool{}, groups: map[string]bool{}}
+	if world == nil || world.providedWorkspaceConfigurationInfos == nil {
+		return out
+	}
+	rootOnly := make(map[string]bool, len(effective))
+	for _, group := range effective {
+		rootOnly[group] = true
+	}
+	for _, group := range declared {
+		delete(rootOnly, group)
+	}
+	if len(rootOnly) == 0 {
+		return out
+	}
+	for _, info := range world.providedWorkspaceConfigurationInfos() {
+		if !rootOnly[info.GetName()] {
+			continue
+		}
+		structured := info.GetData().GetSecret()
+		if structured {
+			out.groups[info.GetName()] = true
+		}
+		for _, value := range info.GetConfigurationValues() {
+			if structured || isCredentialValue(value) {
+				out.values[info.GetName()+"/"+value.GetKey()] = true
+			}
+		}
+	}
+	return out
+}
+
+// without returns conf as this service receives it: the withheld values and the
+// withheld information blocks removed.
+//
 // The configuration is rebuilt rather than edited: it is core's, shared by every
 // service's resolution, and a value removed in place would be removed for the
-// consumer that declared the group too.
-func withoutUndeclaredCredentials(ctx context.Context, conf *basev0.Configuration, consumer string) (*basev0.Configuration, []string) {
-	var withheld []string
+// consumer that declared the group too. nil means the whole configuration is
+// withheld.
+func (w withheldCredentials) without(ctx context.Context, conf *basev0.Configuration, consumer string) *basev0.Configuration {
+	if !w.any() {
+		return conf
+	}
+	removed := false
 	infos := make([]*basev0.ConfigurationInformation, 0, len(conf.GetInfos()))
 	for _, info := range conf.GetInfos() {
+		if w.groups[info.GetName()] {
+			removed = true
+			wool.Get(ctx).In("World.workspaceConfigurationsFor").Debug(
+				"withholding a composition-root structured secret from a service that does not declare its group",
+				wool.Field("consumer", consumer), wool.Field("group", info.GetName()),
+				wool.Field("remedy", "declare the group in workspace-configuration-dependencies to receive it"))
+			continue
+		}
 		values := make([]*basev0.ConfigurationValue, 0, len(info.GetConfigurationValues()))
 		for _, value := range info.GetConfigurationValues() {
-			if !isCredentialValue(value) {
+			if !w.values[info.GetName()+"/"+value.GetKey()] {
 				values = append(values, value)
 				continue
 			}
-			withheld = append(withheld, info.GetName()+"/"+value.GetKey())
+			removed = true
 			wool.Get(ctx).In("World.workspaceConfigurationsFor").Debug(
 				"withholding a composition-root credential from a service that does not declare its group",
 				wool.Field("consumer", consumer), wool.Field("group", info.GetName()),
 				wool.Field("key", value.GetKey()),
 				wool.Field("remedy", "declare the group in workspace-configuration-dependencies to receive it"))
 		}
-		if len(values) == 0 {
+		if len(values) == 0 && len(info.GetConfigurationValues()) > 0 {
 			// A group all of whose values are credentials is not delivered as an
 			// empty group: an empty information block is a group the service
 			// "has" with nothing in it, which reads as a configuration fault
 			// rather than as a boundary.
+			removed = true
 			continue
 		}
 		infos = append(infos, &basev0.ConfigurationInformation{
@@ -206,13 +302,70 @@ func withoutUndeclaredCredentials(ctx context.Context, conf *basev0.Configuratio
 			ConfigurationValues: values,
 		})
 	}
-	if len(withheld) == 0 {
-		return conf, nil
+	if !removed {
+		return conf
 	}
 	if len(infos) == 0 {
-		return nil, withheld
+		return nil
 	}
-	return &basev0.Configuration{Origin: conf.GetOrigin(), Infos: infos}, withheld
+	return &basev0.Configuration{Origin: conf.GetOrigin(), Infos: infos}
+}
+
+// received returns the information blocks as this service receives them, for
+// the checks that must judge only what it gets: the withheld blocks dropped and
+// the withheld values removed. The blocks are rebuilt, never edited — they are
+// the loader's own.
+func (w withheldCredentials) received(infos []*basev0.ConfigurationInformation) []*basev0.ConfigurationInformation {
+	if !w.any() {
+		return infos
+	}
+	out := make([]*basev0.ConfigurationInformation, 0, len(infos))
+	for _, info := range infos {
+		if w.groups[info.GetName()] {
+			continue
+		}
+		values := make([]*basev0.ConfigurationValue, 0, len(info.GetConfigurationValues()))
+		for _, value := range info.GetConfigurationValues() {
+			if w.values[info.GetName()+"/"+value.GetKey()] {
+				continue
+			}
+			values = append(values, value)
+		}
+		out = append(out, &basev0.ConfigurationInformation{
+			Name:                info.GetName(),
+			Data:                info.GetData(),
+			ConfigurationValues: values,
+		})
+	}
+	return out
+}
+
+// skips reports the ${endpoint:…} references no value this service receives
+// carries — the ones carried ONLY by withheld credentials. Producer discovery
+// and the reference check both leave those alone: a value this service will
+// never read must not be able to refuse its run or its render, which is what
+// imposing the obligation before deciding the delivery did.
+func (w withheldCredentials) skips(referencing map[string][]string) map[string]bool {
+	if !w.any() {
+		return nil
+	}
+	carried := map[string]int{}
+	byWithheld := map[string]int{}
+	for qualified, references := range referencing {
+		for _, reference := range references {
+			carried[reference]++
+			if w.values[qualified] {
+				byWithheld[reference]++
+			}
+		}
+	}
+	out := map[string]bool{}
+	for reference, count := range carried {
+		if count > 0 && count == byWithheld[reference] {
+			out[reference] = true
+		}
+	}
+	return out
 }
 
 // isCredentialValue reports whether a value is one the render would promote to a
@@ -287,7 +440,7 @@ func workspaceConfigurationInfos(confs []*basev0.Configuration) []*basev0.Config
 // outside a module-closure run, as "not a service of this workspace", which is a
 // different fault with a different fix.
 func (world *World) checkEffectiveWorkspaceConfigurationReferences(
-	ctx context.Context, service *resources.Service, effective []string,
+	ctx context.Context, service *resources.Service, effective []string, withheld withheldCredentials,
 ) error {
 	if world == nil || len(effective) == 0 {
 		return nil
@@ -305,7 +458,11 @@ func (world *World) checkEffectiveWorkspaceConfigurationReferences(
 		}
 		return nil
 	}
-	infos := world.providedWorkspaceConfigurationInfos()
+	// Only what this service receives. A withheld credential's reference is not
+	// this consumer's to satisfy, so validating it here would let a value it
+	// will never read refuse its run — on a private endpoint, say, that the
+	// service declaring the group may perfectly well reach.
+	infos := withheld.received(world.providedWorkspaceConfigurationInfos())
 	if len(infos) == 0 {
 		return nil
 	}
@@ -369,24 +526,12 @@ func (world *World) workspaceProducers(ctx context.Context) (configurations.Prod
 	if world == nil || world.Workspace == nil {
 		return nil, nil
 	}
+	// One implementation, memoized here: workspaceProducerLookup is the plan
+	// gate's lookup too, and two bodies answering "is this a service of the
+	// workspace" is how the gate and the resolution come to disagree about a
+	// producer.
 	world.workspaceProducerLookupOnce.Do(func() {
-		services, err := world.Workspace.LoadServices(ctx)
-		if err != nil {
-			world.workspaceProducerLookupErr = err
-			return
-		}
-		byUnique := make(map[string]*resources.Service, len(services))
-		for _, service := range services {
-			identity, err := service.Identity()
-			if err != nil {
-				continue
-			}
-			byUnique[identity.Unique()] = service
-		}
-		world.workspaceProducerLookup = func(unique string) (*resources.Service, bool) {
-			service, ok := byUnique[unique]
-			return service, ok
-		}
+		world.workspaceProducerLookup, world.workspaceProducerLookupErr = workspaceProducerLookup(ctx, world.Workspace)
 	})
 	if world.workspaceProducerLookupErr != nil {
 		// Fail closed, and keep failing: the failure is memoized for the whole
@@ -394,7 +539,7 @@ func (world *World) workspaceProducers(ctx context.Context) (configurations.Prod
 		// every service of the run from one unreadable workspace. A reference
 		// delivered unchecked is how a private endpoint's address reaches a
 		// service that may not see it.
-		return nil, fmt.Errorf("cannot read this workspace's services, so the ${endpoint:…} references a service receives cannot be checked against the producers it names: %w", world.workspaceProducerLookupErr)
+		return nil, world.workspaceProducerLookupErr
 	}
 	return world.workspaceProducerLookup, nil
 }

@@ -197,10 +197,14 @@ relative paths.
   bound mapping with an instance for the consumer's access — so the mappings
   bound for a consumer are filtered by the same visibility rule
   (`World.exportableTo`), or an API-name reference resolves to a private sibling
-  of the endpoint the check approved. And a root group's **credentials** are not
+  of the endpoint the check approved. The filter covers the consumer's own
+  dependency mappings as well — a **bare** dependency is handed every endpoint
+  its producer published — and judges from the producer's manifest, never from
+  the mapping an agent reported. And a root group's **credentials** are not
   run-wide: they reach the services that declare the group, in run and in render,
   so making the render resolve root groups does not hand every workload every
-  credential. See
+  credential; a value a service does not receive is decided **before** anything
+  is checked or resolved, so it imposes no obligation on that service. See
   [docs/orchestration.md](docs/orchestration.md#workspace-configuration-groups).
 - **Configs flow as environment variables, not files.** Connection strings derived from network
   mappings are injected as `CODEFLY__SERVICE_...` env vars.

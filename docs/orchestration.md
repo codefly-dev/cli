@@ -272,12 +272,15 @@ override from outside core, because core applies them inside the loader
 override makes composition-root — the run itself is supplying the value, so it
 reaches every service — is recognised as one.
 
-**An invocation-scoped override must never be set in a render or CI-render
-environment.** The loader applies it before anything resolves, so its values are
+**A render or a deploy refuses to start while an invocation-scoped override is
+set.** The loader applies it before anything resolves, so its values would be
 baked into the committed manifests, and an override makes its group
 composition-root even on a name a composed module provides — so it reaches every
-rendered service, not only the ones that declared the module's group. The
-carrier belongs to integration harnesses running against a throwaway workspace.
+rendered service, not only the ones that declared the module's group. The carrier
+belongs to integration harnesses running against a throwaway workspace, so
+`NewFlow` refuses it in snapshot and deploy modes and a local run is untouched
+(`refuseInvocationOverridesInARender`). Asking an operator not to set it was
+advice, not a guard.
 
 **An invocation-scoped workspace configuration override is not `--set`.** It is
 carried in `CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES`, core's private
@@ -390,7 +393,21 @@ each credential per service. Nothing about #882 asks for that.
 
 Both delivery paths withhold, so the parity this section is about is intact — the
 run does not give a service a credential its deployment lacks, and the render
-does not give it one the run lacked. What an operator meets is that a service
+does not give it one the run lacked.
+
+A **structured** secret — `configurations/<profile>/<name>.secret.yaml`, which
+core loads as an information block with no key/value entries — is withheld whole,
+by group. It also has to be: a promotable render refuses a structured secret
+outright ("requires typed Kubernetes key references"), so while the root's
+`.secret.yaml` reached every service, no service of the composition could be
+rendered at all.
+
+And the decision is made **before** anything is checked or resolved. A value a
+service does not receive imposes no obligation on it: a withheld credential whose
+`${endpoint:…}` names an endpoint private to the producer's module, or a producer
+whose address nothing can derive, used to refuse the render of every service that
+would never read it. The same reference still refuses the service that *declares*
+the group, which is where the obligation belongs. What an operator meets is that a service
 needing a root credential must say so, which is the same thing a declared group
 has always required. "Credential" is the render's own classifier: an explicit
 `secret:` flag, or a credential-named key (`resources.IsSensitiveKey`) — exactly
@@ -414,6 +431,16 @@ a store entry for.
   `resources.ResolveRunProfile` builds its inventory of known group names from
   service declarations, so such a name is rejected as unknown and the group
   cannot be excluded at all;
+- let the dependency mappings a consumer is handed be what
+  `PermittedDependencyEndpoints` grants. A **bare** service dependency — one
+  naming no endpoints — is handed every mapping its producer published
+  (`StateManager.GetDependenciesNetworkMappings` narrows by the dependency's
+  endpoint list, never by visibility), so a cross-module private endpoint's
+  address was in the set a `${endpoint:…}` resolves against. The CLI filters that
+  set now (`World.exportableTo`), which is the consumer-side half;
+- refuse `CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES` outside a local
+  environment in the loader itself, so the guard does not depend on every caller
+  having one;
 - make the shared configuration resolution safe for simultaneous readers.
   `Manager.resolveWorkspaceConfiguration` mutates the loader's `Info` protos in
   place and publishes into `resolvedWorkspace` without a lock

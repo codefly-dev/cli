@@ -176,3 +176,106 @@ func TestAPrivateEndpointStillResolvesForAConsumerInItsOwnModule(t *testing.T) {
 	require.True(t, delivered, "a consumer in the producer's own module may read its private endpoint")
 	require.Equal(t, "http://localhost:3333", address)
 }
+
+// A BARE service dependency is not a way around the export boundary either.
+//
+// This is the bypass the first revision of the filter left open, and it was the
+// more reachable of the two: a dependency naming no endpoints is handed every
+// mapping its producer published — StateManager.GetDependenciesNetworkMappings
+// narrows by the dependency's endpoint list, never by visibility — and those
+// mappings go straight into the set a ${endpoint:…} resolves against. Worse,
+// producer discovery SKIPS a producer whose endpoint the dependency mappings
+// already carry, so filtering only what discovery binds meant the filter never
+// ran for exactly this consumer.
+//
+// The reference below names `rest`, which is `api`'s API and `rest`'s name, so
+// it matches both of the producer's endpoints. Core's check passes on `api`
+// (public, first in the manifest); the resolution walks the bound mappings,
+// where the private one is first. (Layer-5 round-five NEW-1.)
+func TestABareServiceDependencyIsNotAWayAroundTheExportBoundary(t *testing.T) {
+	ctx := context.Background()
+	const privateAddress = "http://localhost:2222"
+	const publicAddress = "http://localhost:1111"
+
+	workspace := writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		// `api` first, so core's reference check passes on it.
+		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
+			"endpoints:\n    - name: api\n      api: rest\n      visibility: public\n" +
+			"    - name: rest\n      api: grpc\n      visibility: private\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		// A bare dependency: the service, with no endpoint list. And no
+		// workspace configuration group, so what it reads is the root's.
+		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
+			"service-dependencies:\n    - name: authority\n      module: platform\n",
+		"configurations/local/work-context.env": "authority-endpoint=${endpoint:platform/authority/rest}\n",
+	})
+
+	world, service := referenceValidityWorld(t, workspace, func(world *World) {
+		world.Mode = RunMode
+		recordMappings(t, world, "platform", "authority",
+			endpointMapping("platform", "authority", "rest", "grpc", "private", nativeInstance(privateAddress)),
+			endpointMapping("platform", "authority", "api", "rest", "public", nativeInstance(publicAddress)),
+		)
+	})
+	require.NotEmpty(t, service.ServiceDependencies, "the case is a declared dependency, not a discovered producer")
+
+	// The mappings a real resolution is handed: the consumer's own dependency
+	// mappings, as the shared state gives them.
+	dependencyMappings, err := world.SharedState.GetDependenciesNetworkMappings(ctx, service)
+	require.NoError(t, err)
+	require.Len(t, dependencyMappings, 2, "a bare dependency is handed every endpoint its producer published")
+
+	confs, err := world.workspaceConfigurationsFor(ctx, service, dependencyMappings, resources.NewNativeNetworkAccess())
+	require.NoError(t, err, "the reference is legal on the public endpoint: core's check passes it")
+	address, delivered := groupValue(confs, "work-context", "authority-endpoint")
+	require.True(t, delivered, "the value resolves — on the endpoint the consumer may reach")
+	require.Equal(t, publicAddress, address,
+		"a declared dependency does not widen what a reference may resolve to")
+	require.NotEqual(t, privateAddress, address)
+}
+
+// The producer's MANIFEST decides, not the mapping the agent published.
+//
+// In a run the mapping's endpoint is the agent's Load answer, recorded without
+// being checked against the manifest. Judging visibility from it would make the
+// export boundary a property of what a runtime agent says: an agent reporting a
+// private endpoint as `public` would reopen the hole above, and one that dropped
+// `allow-modules` would refuse a legitimate `internal` reference. Core's
+// reference check reads the manifest; so does the filter.
+//
+// Below, the manifest says `admin` is private and the published mapping claims
+// `public`. (Layer-5 round-five NEW-6.)
+func TestTheProducersManifestDecidesVisibilityNotThePublishedMapping(t *testing.T) {
+	ctx := context.Background()
+	world, service := referenceValidityWorld(t,
+		referenceValidityWorkspace(t, "platform/authority/admin", "private"),
+		func(world *World) {
+			world.Mode = RunMode
+			recordMappings(t, world, "platform", "authority",
+				endpointMapping("platform", "authority", "admin", "rest", "public",
+					nativeInstance("http://localhost:4444")),
+			)
+		})
+
+	// Core's check refuses the reference outright here, which is the first
+	// guard; the mappings the agent published are the second, and the point is
+	// that they cannot disagree with the manifest in the permissive direction.
+	_, err := world.workspaceConfigurationsFor(ctx, service, nil, resources.NewNativeNetworkAccess())
+	require.Error(t, err, "a private endpoint stays private however the agent reports it")
+	require.Contains(t, err.Error(), "is private to module")
+
+	// And directly, so the filter is exercised rather than only the check: the
+	// mapping claims public, the manifest says private, and nothing is bound.
+	mappings := []*basev0.NetworkMapping{
+		endpointMapping("platform", "authority", "admin", "rest", "public", nativeInstance("http://localhost:4444")),
+	}
+	visible, err := world.exportableTo(ctx, service, mappings)
+	require.NoError(t, err)
+	require.Empty(t, visible, "the filter must read the manifest, not the mapping's own visibility")
+}

@@ -178,10 +178,20 @@ func consumersWithRootGroupsOnly(consumers []*resources.Service, rootGroups []st
 // It fails closed: an unreadable workspace means no reference can be checked,
 // and a reference delivered unchecked is how a private endpoint's address
 // reaches a service that may not see it.
+//
+// It is the ONE implementation of that question. The resolution asks it through
+// World.workspaceProducers, which memoizes this for the whole world; a second
+// body would be how the plan gate and the resolution come to disagree about
+// whether a producer exists — and the lookup is also what decides whether an
+// endpoint may cross a module boundary (World.exportableTo), so a disagreement
+// is a security one.
 func workspaceProducerLookup(ctx context.Context, workspace *resources.Workspace) (configurations.ProducerLookup, error) {
+	if workspace == nil {
+		return nil, nil
+	}
 	services, err := workspace.LoadServices(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("cannot read this workspace's services, so the ${endpoint:…} references its composition-root configurations carry cannot be checked against the producers they name: %w", err)
+		return nil, fmt.Errorf("cannot read this workspace's services, so the ${endpoint:…} references a service receives cannot be checked against the producers they name: %w", err)
 	}
 	byUnique := make(map[string]*resources.Service, len(services))
 	for _, service := range services {

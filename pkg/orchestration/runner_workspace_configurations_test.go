@@ -757,6 +757,16 @@ func TestTheFlowPlanGateRefusesARootGroupsVisibilityViolation(t *testing.T) {
 
 // The same group with a visible endpoint passes the gate, so the test above is
 // about the boundary and not about root references refusing runs in general.
+//
+// It is a negative control, and that is a structural limit on what it can
+// prove: its assertion is the ABSENCE of a refusal, and the behaviour before
+// this PR refused nothing here either, so no rollback of this PR can make it
+// fail. The same is true of every "must not refuse" test in this package
+// (TestTheFlowPlanGateDoesNotRefuseARootProducerOutsideTheRunClosure,
+// TestARunDoesNotRefuseARootValueThatDidNotSurviveResolution,
+// TestARunWithTemporaryPortsDropsARootReferenceItCannotPlaceYet). What they
+// constrain is the refusal mechanism going too far, so they are killed by the
+// targeted mutation that widens it — not by removing it.
 func TestTheFlowPlanGateAcceptsAVisibleRootGroupReference(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
 	flow := referenceValidityFlow(t,

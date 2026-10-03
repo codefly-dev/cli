@@ -349,9 +349,11 @@ under `run`.
 
 **A composition root's credentials go only to the services that declare its
 group.** A root group's ordinary values reach every service; a value of it that
-carries `secret:` or whose key is credential-named reaches the services that list
-the group in `workspace-configuration-dependencies`, and nothing else — under
-`run` and in a render alike. This is a **change in both paths**, and the reason
+carries `secret:` or whose key is credential-named — and a whole
+`<name>.secret.yaml` group, which is a credential document rather than a key —
+reaches the services that list the group in
+`workspace-configuration-dependencies`, and nothing else, under `run` and in a
+render alike. This is a **change in both paths**, and the reason
 is least privilege: a render now resolves root groups, so without this every
 workload of the composition would receive every root credential as a mandatory
 `secretKeyRef`, one compromised service would yield all of them, and the store
@@ -370,8 +372,17 @@ for the services that receive one.
 A root group's `${endpoint:…}` is held to the producer's export boundary exactly
 as a declared group's is: a reference to an endpoint whose visibility is
 `private`, or `internal` without your module in `allow-modules`, is refused
-rather than delivered. A root group is not a way to reach an endpoint a declared
-dependency on it would be refused. A reference naming a producer the workspace
+rather than delivered. Neither a root group nor a **bare** service dependency is
+a way to reach an endpoint a declared dependency on that endpoint would be
+refused — the addresses a `${endpoint:…}` can resolve to are filtered by the
+producer's declared visibility, whichever way they were bound.
+
+**This can refuse less than it delivered before, in one case:** a cross-module
+bare dependency (`service-dependencies` naming the service and no endpoints) used
+to put *every* endpoint its producer published into the set a workspace
+configuration value could interpolate, including ones private to the producer's
+module. Those are no longer interpolatable. Name the endpoint you consume in the
+dependency and declare its visibility to permit your module. A reference naming a producer the workspace
 does not have is refused both when the plan is checked and when the value
 resolves — including one supplied by an invocation-scoped override
 (`CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES`, which an integration harness

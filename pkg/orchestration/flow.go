@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net"
 	"net/url"
+	"os"
 	"os/exec"
 	"slices"
 	"strconv"
@@ -420,6 +421,9 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	for _, opt := range opts {
 		opt(options)
 	}
+	if err := refuseInvocationOverridesInARender(mode); err != nil {
+		return nil, w.Wrap(err)
+	}
 	// Against the whole composition, not the run's closure: whether a bare
 	// managed-services key names one service is a property of the declaration, and
 	// a flow resolves managed services through env.ManagedService — the remote
@@ -445,21 +449,22 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	// is handed to the plan gate, so the graph, the check and the resolution are
 	// one selection rather than three.
 	//
-	// A snapshot that cannot be taken is not fatal HERE. Every mode that
-	// resolves a workspace configuration passes through
-	// flow.checkConfigurationReferences, which fails closed on the error kept
-	// below; the modes that skip that gate (build, sync) resolve no
-	// configuration at all, so ordering them from the directory read cannot hide
-	// anything. Refusing in NewFlow would instead fail `codefly build` on an
+	// A snapshot that cannot be taken is not fatal HERE, and it is not replaced
+	// by a second read of the same thing either. Every mode that resolves a
+	// workspace configuration passes through flow.checkConfigurationReferences,
+	// which fails closed on the error kept below; the modes that skip that gate
+	// (build, sync) resolve no configuration at all, and no configuration
+	// reference can order work that reads none. So the graph simply carries no
+	// reference edges, which is what it carries for a composition that has no
+	// references — rather than edges derived from values this invocation will not
+	// resolve. Refusing in NewFlow would instead fail `codefly build` on an
 	// unsupplied ${profile} value it never reads.
 	providedWorkspaceConfigurations, providedRootGroups, providedErr := WorkspaceConfigurationsForChecking(ctx, workspace, env)
-	graphConfigurations := providedWorkspaceConfigurations
 	if providedErr != nil {
-		w.Debug("ordering the run from the workspace configurations on disk: the ones this invocation resolves could not be read",
+		w.Debug("ordering the run with no workspace configuration reference edges: the configurations this invocation resolves could not be read",
 			wool.ErrField(providedErr))
-		graphConfigurations = readWorkspaceConfigurationsForReferences(ctx, workspace, env)
 	}
-	configurationReferences := configurationReferenceOptionFrom(graphConfigurations)
+	configurationReferences := configurationReferenceOptionFrom(providedWorkspaceConfigurations)
 	var graphOptions []architecture.DependencyOption
 	if configurationReferences != nil {
 		graphOptions = append(graphOptions, configurationReferences)
@@ -496,11 +501,11 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	// From the same loader, for the same reason, and pre-interpolation: the
 	// resolution hands these to core's CheckEndpointReferences over the
 	// effective group set, so a root group's reference is held to the producer's
-	// export boundary and to the producer existing at all. The loader rather
-	// than readWorkspaceConfigurationsForReferences above, because the loader
-	// has applied the invocation-scoped overrides (--set) and that plain read
-	// has not: a reference an operator supplies on the command line is checked
-	// too.
+	// export boundary and to the producer existing at all. The loader is what
+	// applies the invocation-scoped overrides
+	// (CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES, core's SDK-to-CLI carrier —
+	// not `--set`, which is a per-service runtime environment override), so a
+	// reference an override supplies is checked like any other.
 	world.providedWorkspaceConfigurationInfos = func() []*basev0.ConfigurationInformation {
 		return workspaceConfigurationInfos(localReader.Configurations())
 	}
@@ -2595,4 +2600,31 @@ func dockerEngineArchitecture() (string, error) {
 	default:
 		return "", fmt.Errorf("the container engine reports architecture %q, which this CLI does not map", architecture)
 	}
+}
+
+// refuseInvocationOverridesInARender refuses to build a render or a deploy flow
+// while CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES is set.
+//
+// The carrier is core's private SDK-to-CLI channel for invocation-scoped
+// workspace configuration overrides, meant for an integration harness running
+// against a throwaway workspace. Core applies it unconditionally, and this PR
+// makes an overridden group composition-root — the run itself is supplying the
+// value — so it reaches every service of the composition. In a render that means
+// a stray carrier in a CI job bakes its values into every committed manifest,
+// and in a deploy it means they reach every deployed workload. Documentation
+// asking an operator not to set it is not a guard; this is. (Layer-5 round-five
+// NEW-3.)
+//
+// A local run is untouched: that is what the carrier is for.
+func refuseInvocationOverridesInARender(mode Mode) error {
+	switch mode {
+	case SnapshotMode, DeployMode:
+	default:
+		return nil
+	}
+	if os.Getenv(resources.WorkspaceConfigurationOverridesEnvironment) == "" {
+		return nil
+	}
+	return fmt.Errorf("%s is set, and this is a %s: an invocation-scoped workspace configuration override is applied before anything resolves and reaches every service of the composition, so its values would be written into the manifests this operation commits (or delivered to every deployed workload). Unset it, or run the override against a local run, which is what it is for",
+		resources.WorkspaceConfigurationOverridesEnvironment, mode)
 }

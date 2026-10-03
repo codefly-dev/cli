@@ -14,6 +14,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/agents/contract"
+	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
@@ -499,6 +500,7 @@ func (world *World) producerInRun() func(unique string) bool {
 // refuseDroppedWorkspaceConfigurationValues warns by name.
 func (world *World) referencedProducerMappings(
 	ctx context.Context, service *resources.Service, declared, effective []string, have []*basev0.NetworkMapping,
+	withheld withheldCredentials,
 ) ([]*basev0.NetworkMapping, error) {
 	if world == nil || world.ConfigurationManager == nil || world.SharedState == nil || world.Dependencies == nil || len(effective) == 0 {
 		return nil, nil
@@ -531,9 +533,18 @@ func (world *World) referencedProducerMappings(
 			fatal[reference] = true
 		}
 	}
+	// A reference carried ONLY by values this service does not receive is not
+	// discovered for it: a withheld credential's producer does not have to have
+	// a derivable address, and treating it as fatal in a render refused the
+	// render of a service over a value it was deliberately not given.
+	// (Layer-4 round-five F4.)
+	skip := withheld.skips(world.referencingWorkspaceConfigurationValues(effective))
 	var out []*basev0.NetworkMapping
 	collected := make(map[string]bool)
 	for _, reference := range world.ConfigurationManager.WorkspaceEndpointReferences(effective...) {
+		if skip[reference] {
+			continue
+		}
 		info, err := resources.ParseEndpoint(reference)
 		if err != nil {
 			continue
@@ -555,61 +566,100 @@ func (world *World) referencedProducerMappings(
 			return nil, fmt.Errorf("cannot derive the addresses of %s, named by the workspace configuration reference ${endpoint:%s} that %s declares: %w",
 				producer, reference, consumerLabel(service), err)
 		}
-		out = append(out, world.exportableTo(ctx, service, mappings)...)
+		visible, err := world.exportableTo(ctx, service, mappings)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, visible...)
 	}
 	return out, nil
 }
 
 // exportableTo keeps the mappings whose endpoint the consumer's module may
 // reach, by core's own export rule (resources.ValidateEndpointVisibility — the
-// one body behind every "may this consumer depend on this endpoint" answer).
+// one body behind every "may this consumer depend on this endpoint" answer),
+// judged against the producer's MANIFEST.
 //
 // Binding a producer's mappings is not the same act as checking a reference, and
 // that is the whole reason this exists. The check
 // (configurations.checkEndpointReference) returns on the FIRST manifest endpoint
-// a reference matches; the resolution
-// (resources.resolveEndpointReference) returns the first BOUND mapping that
-// matches AND has an instance for the consumer's network access, falling through
-// to the next match otherwise. A reference naming an API rather than an endpoint
-// name — ${endpoint:platform/authority/rest} where the producer declares two
-// `rest` endpoints — matches both, so the two can land on different endpoints:
-// the check passes on the public one, and the resolution hands over the private
-// one's address, either because it is bound first or because the public one has
-// no instance for this consumer's access. An earlier revision of this file
-// claimed the opposite ("the same function reaching the same verdict… the two
-// cannot disagree"); it was false, and the layer-5 review reproduced both
-// shapes.
+// a reference matches; the resolution (resources.resolveEndpointReference)
+// returns the first BOUND mapping that matches AND has an instance for the
+// consumer's network access, falling through to the next match otherwise. A
+// reference naming an API rather than an endpoint name — or a name that is
+// another endpoint's API — matches several of a producer's endpoints, so the two
+// can land on different endpoints: the check passes on the public one, and the
+// resolution hands over the private one's address, either because it is bound
+// first or because the public one has no instance for this consumer's access. An
+// earlier revision of this file claimed the opposite ("the same function
+// reaching the same verdict… the two cannot disagree"); it was false, and the
+// layer-5 review reproduced it.
 //
 // Filtering what is bound closes it from the consumer's side: an endpoint this
 // module may not reach is not in the set, so there is nothing to fall through
-// to, and the address it would have resolved to cannot be handed over whatever
-// order the mappings arrive in. It is core's rule, not a second one, and it
-// narrows only: within one module ValidateEndpointVisibility returns nil, so a
-// service reading its own module's endpoints is untouched.
+// to. It is core's rule, not a second one, and it narrows only: within one
+// module ValidateEndpointVisibility returns nil, so a service reading its own
+// module's endpoints is untouched.
+//
+// It is applied to the WHOLE set a resolution walks — the consumer's own
+// dependency mappings as well as the ones producer discovery binds. Filtering
+// only the second was a bypass, not a fix: a bare service dependency (one naming
+// no endpoints) is handed every mapping its producer published
+// (StateManager.GetDependenciesNetworkMappings, which narrows by the dependency's
+// endpoint list and not by visibility), and when those already carry a match
+// discovery never re-binds the producer at all — so the filter never ran and the
+// interpolation walked the unfiltered set. Reported and reproduced as layer-5
+// round-five NEW-1.
+//
+// Visibility is read from the producer's manifest through the memoized
+// workspaceProducers lookup, NOT from the mapping. In a run the mapping's
+// endpoint is the agent's Load answer, recorded without being checked against
+// the manifest, so judging from it would let a runtime agent reporting a private
+// endpoint as public reopen the hole, and one that drops `allow-modules` refuse a
+// legitimate `internal` reference. Core's check reads the manifest; so does this.
+// (Layer-5 round-five NEW-6.)
+//
+// It cannot cost a consumer a value it was entitled to. Every reference in the
+// effective set has already been validated against the same manifest by core's
+// own check (checkEffectiveWorkspaceConfigurationReferences), so a reference
+// naming an endpoint this filter removes has already been refused; the only
+// mappings it can remove are ones no reference the consumer receives may name.
+// What it does change, deliberately, is a cross-module BARE dependency: an
+// address of the producer's private endpoint used to be interpolatable into a
+// workspace configuration value, and is not any more. Disclosed in
+// `docs/commands.md`.
 //
 // The durable fix belongs in core, in the two functions above: judge visibility
 // for EVERY endpoint a reference can match (or refuse a reference that matches
-// more than one as ambiguous), and resolve only to the endpoint that was
-// judged. Named in docs/orchestration.md and in the PR body. Until that ships
-// this is the consumer-side half, which is sound on its own: it can only remove
-// an address the consumer was never allowed to have.
+// more than one as ambiguous), and resolve only to the endpoint that was judged;
+// and let the dependency mappings a consumer is handed be what
+// PermittedDependencyEndpoints grants. Named in docs/orchestration.md and in the
+// PR body.
 //
 // A visibility this core does not know is treated as refusing, because
 // ValidateEndpointVisibility refuses it — `module` is not that case (it is a
 // deprecated alias for internal with every module allowed, so it permits).
-//
-// It cannot cost a consumer a value it was entitled to. A producer's mappings
-// are bound here once, for the whole producer, so a reference in a group the
-// consumer DECLARES resolves from the same set — but if that reference named an
-// endpoint this filter removes, checkEffectiveWorkspaceConfigurationReferences
-// has already refused the resolution by core's verdict over the effective set.
-// The only mappings this can remove are ones no reference the consumer receives
-// is allowed to name.
-func (world *World) exportableTo(ctx context.Context, consumer *resources.Service, mappings []*basev0.NetworkMapping) []*basev0.NetworkMapping {
+func (world *World) exportableTo(
+	ctx context.Context, consumer *resources.Service, mappings []*basev0.NetworkMapping,
+) ([]*basev0.NetworkMapping, error) {
+	if len(mappings) == 0 {
+		return mappings, nil
+	}
+	producers, err := world.workspaceProducers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if producers == nil {
+		// No workspace, so no manifest to judge against. A resolution carrying a
+		// reference is already refused for that reason
+		// (checkEffectiveWorkspaceConfigurationReferences), so what reaches here
+		// resolves no reference and has nothing to filter.
+		return mappings, nil
+	}
 	// An unidentifiable consumer gets the strict answer rather than a lenient
-	// one: "" matches no producer module, so only endpoints that are visible to
-	// every module survive. NewFlow resolves nothing without an identity, so
-	// this is a floor, not a path.
+	// one: "" matches no producer module, so only endpoints visible to every
+	// module survive. NewFlow resolves nothing without an identity, so this is a
+	// floor, not a path.
 	consumerModule := ""
 	if identity, err := consumer.Identity(); err == nil {
 		consumerModule = identity.Module
@@ -620,10 +670,18 @@ func (world *World) exportableTo(ctx context.Context, consumer *resources.Servic
 		if endpoint == nil {
 			continue
 		}
-		err := resources.ValidateEndpointVisibility(consumerModule, endpoint.GetModule(), endpoint.GetService(),
-			endpoint.GetName(), endpoint.GetVisibility(), endpoint.GetAllowModules())
-		if err != nil {
-			wool.Get(ctx).In("World.referencedProducerMappings").Debug(
+		unique := endpoint.GetModule() + "/" + endpoint.GetService()
+		declared, ok := manifestEndpoint(producers, unique, endpoint)
+		if !ok {
+			wool.Get(ctx).In("World.exportableTo").Debug(
+				"not binding a mapping for an endpoint the producer's manifest does not declare",
+				wool.Field("consumer", consumerLabel(consumer)),
+				wool.Field("endpoint", resources.EndpointDestination(endpoint)))
+			continue
+		}
+		if err := resources.ValidateEndpointVisibility(consumerModule, endpoint.GetModule(), endpoint.GetService(),
+			declared.Name, declared.Visibility, declared.AllowModules); err != nil {
+			wool.Get(ctx).In("World.exportableTo").Debug(
 				"not binding a producer endpoint this consumer's module may not reach",
 				wool.Field("consumer", consumerLabel(consumer)),
 				wool.Field("endpoint", resources.EndpointDestination(endpoint)),
@@ -632,7 +690,32 @@ func (world *World) exportableTo(ctx context.Context, consumer *resources.Servic
 		}
 		out = append(out, mapping)
 	}
-	return out
+	return out, nil
+}
+
+// manifestEndpoint finds the endpoint a mapping stands for in its producer's
+// manifest: by name, which core refuses to let a service declare twice, and by
+// API for a mapping that carries no name. A mapping whose endpoint the manifest
+// does not declare has no visibility anyone can check, so it is not bound.
+func manifestEndpoint(
+	producers configurations.ProducerLookup, unique string, endpoint *basev0.Endpoint,
+) (*resources.Endpoint, bool) {
+	producer, ok := producers(unique)
+	if !ok || producer == nil {
+		return nil, false
+	}
+	for _, declared := range producer.Endpoints {
+		if declared == nil {
+			continue
+		}
+		if endpoint.GetName() != "" && declared.Name == endpoint.GetName() {
+			return declared, true
+		}
+		if endpoint.GetName() == "" && endpoint.GetApi() != "" && declared.API == endpoint.GetApi() {
+			return declared, true
+		}
+	}
+	return nil, false
 }
 
 // mappingsCarry reports whether mappings already hold the endpoint a reference
