@@ -694,26 +694,41 @@ func (world *World) exportableTo(
 }
 
 // manifestEndpoint finds the endpoint a mapping stands for in its producer's
-// manifest: by name, which core refuses to let a service declare twice, and by
-// API for a mapping that carries no name. A mapping whose endpoint the manifest
-// does not declare has no visibility anyone can check, so it is not bound.
+// manifest, by CANONICAL IDENTITY: its name, which core refuses to let a service
+// declare twice, with the mapping's API checked for consistency against it.
+//
+// A mapping that carries no name is not identified and not bound, and that is
+// the point rather than a conservatism. An earlier revision fell back to
+// matching by API, which does not establish which endpoint a mapping
+// represents: with a public `api` and a private `admin` both on api `rest`, a
+// mapping of `{Name: "", Api: "rest"}` whose instance addresses `admin` was
+// judged against `api` — the first API match — approved as public, and then
+// returned admin's address by core's interpolator, which matches the retained
+// mapping by API. The visibility verdict has to be about the endpoint whose
+// address is in the mapping, so the mapping has to say which endpoint that is.
+// (Layer-2 round-six finding 2.)
+//
+// A mapping whose API disagrees with the manifest endpoint of that name is not
+// bound either: the two fields would then describe different endpoints, and
+// nothing here can say which one the address belongs to.
 func manifestEndpoint(
 	producers configurations.ProducerLookup, unique string, endpoint *basev0.Endpoint,
 ) (*resources.Endpoint, bool) {
+	if endpoint.GetName() == "" {
+		return nil, false
+	}
 	producer, ok := producers(unique)
 	if !ok || producer == nil {
 		return nil, false
 	}
 	for _, declared := range producer.Endpoints {
-		if declared == nil {
+		if declared == nil || declared.Name != endpoint.GetName() {
 			continue
 		}
-		if endpoint.GetName() != "" && declared.Name == endpoint.GetName() {
-			return declared, true
+		if endpoint.GetApi() != "" && declared.API != endpoint.GetApi() {
+			return nil, false
 		}
-		if endpoint.GetName() == "" && endpoint.GetApi() != "" && declared.API == endpoint.GetApi() {
-			return declared, true
-		}
+		return declared, true
 	}
 	return nil, false
 }

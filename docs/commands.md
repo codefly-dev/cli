@@ -377,6 +377,13 @@ a way to reach an endpoint a declared dependency on that endpoint would be
 refused — the addresses a `${endpoint:…}` can resolve to are filtered by the
 producer's declared visibility, whichever way they were bound.
 
+**A reference must name one endpoint.** Core's trailing token matches an
+endpoint's name *or* its API, so `${endpoint:platform/authority/rest}` matches an
+endpoint named `rest` and every endpoint whose api is `rest`. If more than one of
+them is visible to your module, the reference is refused and names the
+candidates: write the endpoint you mean. If exactly one is visible, it resolves
+as before.
+
 **This can refuse less than it delivered before, in one case:** a cross-module
 bare dependency (`service-dependencies` naming the service and no endpoints) used
 to put *every* endpoint its producer published into the set a workspace

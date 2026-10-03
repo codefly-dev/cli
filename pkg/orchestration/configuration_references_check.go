@@ -74,7 +74,22 @@ func CheckConfigurationReferences(
 	if lookupErr != nil {
 		return errors.Join(err, lookupErr)
 	}
-	rootProblems := configurations.CheckEndpointReferences(provided.Infos, rootConsumers, profile, lookup)
+	// Without the credentials those consumers will never receive. A root group's
+	// credentials reach only the services that declare it, and a value nobody
+	// receives must not refuse their plan: a credential referencing an endpoint
+	// private to the producer's module is perfectly legal for the service that
+	// declares the group and is not the others' to satisfy. The resolution
+	// already decided it this way; the gate has to agree, or it refuses a plan
+	// the resolution would have carried out. Every group in this call is one its
+	// consumers did not declare — that is what consumersWithRootGroupsOnly
+	// restates — so filtering by group name here is exactly per consumer.
+	// (Layer-2 round-six finding 3.)
+	rootOnly := make(map[string]bool, len(rootGroups))
+	for _, group := range rootGroups {
+		rootOnly[group] = true
+	}
+	rootInfos := credentialsOf(provided.Infos, rootOnly).received(provided.Infos)
+	rootProblems := configurations.CheckEndpointReferences(rootInfos, rootConsumers, profile, lookup)
 	return mergeUnresolvedReferences(err, rootProblems)
 }
 

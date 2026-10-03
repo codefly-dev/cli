@@ -373,9 +373,27 @@ fall through to. It narrows only, and never within a module:
 `ValidateEndpointVisibility` returns nil when the consumer and the producer share
 one, so a service reading its own module's endpoints is untouched.
 
-This is the consumer-side half. The durable fix is core's: judge visibility for
-**every** endpoint a reference can match (or refuse a reference that matches more
-than one as ambiguous), and resolve only to the endpoint that was judged.
+Two further rules make the choice disappear rather than constrain it:
+
+- **A reference more than one permitted endpoint satisfies is refused by name.**
+  Only the matches the consumer may *reach* are counted, so the common case still
+  works — with a public `api` and a private `admin` both on api `rest`, a
+  cross-module consumer has exactly one legal endpoint and the reference is
+  unambiguous for it, while a consumer in the producer's own module is told to
+  name the one it means.
+- **A mapping that does not say which endpoint it is does not get bound.** The
+  filter identifies a mapping by its endpoint's name, with the mapping's API
+  checked for consistency against the manifest. Matching a nameless mapping by
+  API cannot establish which endpoint carries the address: a mapping of
+  `{Name: "", Api: "rest"}` holding the private endpoint's address was judged
+  against the first API match, approved as public, and then returned by core's
+  interpolator, which matches the retained mapping by API.
+
+Together they leave exactly one legal endpoint per reference and one identified
+endpoint per mapping, so the check and the resolution cannot land on different
+ones. The durable fix is still core's: judge visibility for **every** endpoint a
+reference can match, refuse an ambiguous one, and resolve only to the endpoint
+that was judged.
 
 ##### A composition root's credentials are not run-wide
 
@@ -402,12 +420,25 @@ outright ("requires typed Kubernetes key references"), so while the root's
 `.secret.yaml` reached every service, no service of the composition could be
 rendered at all.
 
-And the decision is made **before** anything is checked or resolved. A value a
-service does not receive imposes no obligation on it: a withheld credential whose
-`${endpoint:…}` names an endpoint private to the producer's module, or a producer
-whose address nothing can derive, used to refuse the render of every service that
-would never read it. The same reference still refuses the service that *declares*
-the group, which is where the obligation belongs. What an operator meets is that a service
+And the decision is made **before** anything is checked or resolved, in the
+resolution **and at the plan gate**. A value a service does not receive imposes no
+obligation on it: a withheld credential whose `${endpoint:…}` names an endpoint
+private to the producer's module, or a producer whose address nothing can derive,
+used to refuse the render of every service that would never read it — and, while
+only the resolver was fixed, still refused their *plan*, which stops `codefly
+run`, a render, a dev deploy and `codefly doctor` alike. A guard that refuses
+what the thing it guards would have allowed is a contradiction, not a division of
+labour. The same reference still refuses the service that *declares* the group,
+which is where the obligation belongs.
+
+One step is **not** fixed here: core resolves every root group's secrets inside
+`GetCompositionRootWorkspaceConfigurations`, before the CLI can remove what this
+service does not receive. So a withheld credential is still read from the secret
+backend for a consumer that will never get it, and a missing backend or a failed
+authentication fails that consumer's resolution. The value is discarded before
+delivery — it reaches no workload, no manifest and no store plan — but the read
+happens. Fixing it needs a core API that resolves a named subset; it is listed
+with the other core changes below. What an operator meets is that a service
 needing a root credential must say so, which is the same thing a declared group
 has always required. "Credential" is the render's own classifier: an explicit
 `secret:` flag, or a credential-named key (`resources.IsSensitiveKey`) — exactly
@@ -441,6 +472,17 @@ a store entry for.
 - refuse `CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES` outside a local
   environment in the loader itself, so the guard does not depend on every caller
   having one;
+- let a caller resolve a NAMED SUBSET of the composition root's groups, or
+  filter before secret resolution:
+  `Manager.GetCompositionRootWorkspaceConfigurations` resolves every root group's
+  secrets before interpolation (`configurations/manager.go`,
+  `configurations/secrets.go`), so a credential the CLI is about to withhold is
+  read from the backend anyway and a backend failure fails a consumer that does
+  not receive it;
+- expose the manager's authoritative inventory of composition-root group names
+  (the same gap as the accessor above), so a World cannot resolve groups it
+  cannot classify — the CLI refuses that construction now, which is a guard on
+  the binding rather than on the inventory;
 - make the shared configuration resolution safe for simultaneous readers.
   `Manager.resolveWorkspaceConfiguration` mutates the loader's `Info` protos in
   place and publishes into `resolvedWorkspace` without a lock

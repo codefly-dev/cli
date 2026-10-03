@@ -279,3 +279,110 @@ func TestTheProducersManifestDecidesVisibilityNotThePublishedMapping(t *testing.
 	require.NoError(t, err)
 	require.Empty(t, visible, "the filter must read the manifest, not the mapping's own visibility")
 }
+
+// A mapping that does not say which endpoint it is does not get bound.
+//
+// The filter's verdict has to be about the endpoint whose address is in the
+// mapping. An earlier revision fell back to matching a nameless mapping by API,
+// which cannot establish that: with a public `api` and a private `admin` both on
+// api `rest`, a mapping of `{Name: "", Api: "rest"}` carrying admin's address was
+// judged against `api` — the first API match — approved as public, and core's
+// interpolator then matched the retained mapping by API and returned admin's
+// address. The visibility decision was about one endpoint and the address about
+// another. (Layer-2 round-six finding 2.)
+func TestAMappingWithNoEndpointNameIsNotBound(t *testing.T) {
+	ctx := context.Background()
+	const adminAddress = "http://localhost:2222"
+	world, service := referenceValidityWorld(t, apiReferenceWorkspace(t), func(world *World) {
+		world.Mode = RunMode
+	})
+
+	// Nameless, API-only, and the address is the private endpoint's.
+	mappings := []*basev0.NetworkMapping{{
+		Endpoint:  &basev0.Endpoint{Module: "platform", Service: "authority", Api: "rest"},
+		Instances: []*basev0.NetworkInstance{nativeInstance(adminAddress)},
+	}}
+	visible, err := world.exportableTo(ctx, service, mappings)
+	require.NoError(t, err)
+	require.Empty(t, visible,
+		"a mapping whose endpoint has no name cannot be judged, so it must not be bound")
+
+	// And a mapping whose API contradicts the manifest endpoint of that name is
+	// not bound either: the two fields would describe different endpoints.
+	inconsistent := []*basev0.NetworkMapping{{
+		Endpoint:  &basev0.Endpoint{Module: "platform", Service: "authority", Name: "api", Api: "grpc"},
+		Instances: []*basev0.NetworkInstance{nativeInstance(adminAddress)},
+	}}
+	visible, err = world.exportableTo(ctx, service, inconsistent)
+	require.NoError(t, err)
+	require.Empty(t, visible, "a mapping must agree with the manifest about the endpoint it names")
+
+	// The named, consistent mapping for the same endpoint is bound, so this is
+	// about identity and not about rejecting the producer.
+	named := []*basev0.NetworkMapping{{
+		Endpoint:  &basev0.Endpoint{Module: "platform", Service: "authority", Name: "api", Api: "rest"},
+		Instances: []*basev0.NetworkInstance{nativeInstance("http://localhost:1111")},
+	}}
+	visible, err = world.exportableTo(ctx, service, named)
+	require.NoError(t, err)
+	require.Len(t, visible, 1)
+}
+
+// A reference more than one permitted endpoint satisfies is refused by name.
+//
+// Core's trailing token matches an endpoint's name OR its API, so one reference
+// can match several of a producer's endpoints; core judges the first and its
+// interpolation takes the first bound mapping with an instance for the
+// consumer's access. Filtering the bound set keeps that choice inside what the
+// consumer may reach — it does not stop it choosing between two endpoints the
+// consumer may both reach, and a value quietly addressing a different endpoint
+// than its reference names is the fault this package exists to remove.
+//
+// The pair is the point: the same reference is unambiguous for a cross-module
+// consumer, which may reach exactly one of the two, and ambiguous for one in the
+// producer's own module, which may reach both.
+func TestAReferenceSeveralPermittedEndpointsSatisfyIsRefused(t *testing.T) {
+	ctx := context.Background()
+	workspace := writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n    - name: sidecar\n",
+		// Two endpoints a `rest` reference matches: one by API, one by name.
+		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
+			"endpoints:\n    - name: api\n      api: rest\n      visibility: public\n" +
+			"    - name: rest\n      api: grpc\n      visibility: private\n",
+		// In the producer's module, so both endpoints are reachable for it.
+		"modules/platform/services/sidecar/service.codefly.yaml": "kind: service\nname: sidecar\nversion: 0.0.0\nmodule: platform\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
+		"configurations/local/work-context.env": "authority-endpoint=${endpoint:platform/authority/rest}\n",
+	})
+	world, worker := referenceValidityWorld(t, workspace, func(world *World) {
+		world.Mode = RunMode
+		recordMappings(t, world, "platform", "authority",
+			endpointMapping("platform", "authority", "api", "rest", "public", nativeInstance("http://localhost:1111")),
+			endpointMapping("platform", "authority", "rest", "grpc", "private", nativeInstance("http://localhost:2222")),
+		)
+	})
+
+	// Cross-module: only `api` is reachable, so the reference names one endpoint.
+	confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
+	require.NoError(t, err, "one permitted match is not ambiguous")
+	address, delivered := groupValue(confs, "work-context", "authority-endpoint")
+	require.True(t, delivered)
+	require.Equal(t, "http://localhost:1111", address)
+
+	// Same module: both are reachable, so the reference must be refused rather
+	// than resolved to whichever is bound first.
+	sidecar, err := loadService(ctx, t, workspace, "platform", "sidecar")
+	require.NoError(t, err)
+	_, err = world.workspaceConfigurationsFor(ctx, sidecar, nil, resources.NewNativeNetworkAccess())
+	require.Error(t, err, "a reference two reachable endpoints satisfy must be refused")
+	require.Contains(t, err.Error(), "could be any of several endpoints")
+	require.Contains(t, err.Error(), "api")
+	require.Contains(t, err.Error(), "rest")
+}

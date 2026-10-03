@@ -2,7 +2,11 @@ package orchestration
 
 import (
 	"context"
+	"errors"
+	"path/filepath"
 	"testing"
+
+	"github.com/codefly-dev/core/configurations"
 
 	"github.com/codefly-dev/cli/pkg/remotenetwork"
 
@@ -162,8 +166,27 @@ func TestAWithheldRootCredentialIsNotJudgedAsALostValue(t *testing.T) {
 // silently absent. The guard was tested directly but its CALL SITE was not, so
 // deleting the call left every test green.
 func TestTheResolutionRefusesARootGroupItDidNotPlanFor(t *testing.T) {
+	for _, value := range []struct{ name, key, content string }{
+		// A literal survives interpolation, so the delivered information block
+		// is there to be inspected.
+		{"a group that survives interpolation", "authority-url", "https://authority.example"},
+		// And one that does not: a group whose only value is an unresolvable
+		// reference is erased WHOLE by core's run-wide interpolation, so there
+		// is no block left to inspect and no name in the effective set to miss
+		// it by. The guard that reads the outcome cannot see this at all; the
+		// one that reads the World's bindings can. (Layer-2 round-six finding 5.)
+		{"a group interpolation erases completely", "authority-endpoint", "${endpoint:platform/authority/admin}"},
+	} {
+		t.Run(value.name, func(t *testing.T) {
+			requireTheResolutionRefusesAnUnnamedRootGroup(t, value.key, value.content)
+		})
+	}
+}
+
+func requireTheResolutionRefusesAnUnnamedRootGroup(t *testing.T, key, content string) {
+	t.Helper()
 	loader := staticWorkspaceLoader{
-		confs:       []*basev0.Configuration{workspaceConfiguration("work-context", "authority-url", "https://authority.example")},
+		confs:       []*basev0.Configuration{workspaceConfiguration("work-context", key, content)},
 		rootConfigs: []string{"work-context"},
 	}
 	// The manager knows the group is composition-root; the World cannot name it.
@@ -274,4 +297,97 @@ func TestAWithheldCredentialsProducerIsNotDiscoveredForTheNonDeclarer(t *testing
 	_, err = world.workspaceConfigurationsFor(ctx, api, nil, resources.NewContainerNetworkAccess())
 	require.Error(t, err, "the service that receives the credential still needs its address")
 	require.Contains(t, err.Error(), "cannot derive the addresses of platform/authority")
+}
+
+// authorizedDeclarerWorkspace is the whole-composition control the withholding
+// needs: the credential's reference names an endpoint private to the producer's
+// module, and the service that DECLARES the group is in that module, so it may
+// legally read it. One service outside the module declares nothing.
+//
+// Both halves matter. Without an authorized declarer the composition is simply
+// broken and "the plan passes" would prove nothing; without an undeclaring
+// consumer there is nothing being withheld.
+func authorizedDeclarerWorkspace(t *testing.T) *resources.Workspace {
+	t.Helper()
+	return writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n    - name: vault-reader\n",
+		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
+			"endpoints:\n    - name: admin\n      api: rest\n      visibility: private\n",
+		// In the producer's module, and declares the group: authorized to read
+		// the credential and to reach the endpoint it references.
+		"modules/platform/services/vault-reader/service.codefly.yaml": "kind: service\nname: vault-reader\nversion: 0.0.0\nmodule: platform\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
+			"workspace-configuration-dependencies:\n    - work-context\n",
+		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"configurations/local/work-context.env": "authority-token=${endpoint:platform/authority/admin}\n" +
+			"authority-url=https://authority.example\n",
+	})
+}
+
+// The PLAN GATE agrees with the resolution about what a service receives.
+//
+// Round five moved the withholding decision ahead of the resolver's reference
+// check and producer discovery, and left the plan gate checking the unfiltered
+// root group — so the gate still refused a service for a credential the
+// resolution would never have given it. A guard that refuses what the thing it
+// guards would have allowed is not a division of labour, it is a contradiction:
+// `codefly run`, a render, a dev deploy and `codefly doctor` all stop on it.
+// (Layer-2 round-six finding 3.)
+//
+// Both gate entry points are exercised, because they are different call sites
+// and fixing one leaves the other.
+func TestThePlanGateDoesNotRefuseAConsumerForAWithheldCredential(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	workspace := authorizedDeclarerWorkspace(t)
+	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+
+	worker, err := loadService(ctx, t, workspace, "payments", "worker")
+	require.NoError(t, err)
+	declarer, err := loadService(ctx, t, workspace, "platform", "vault-reader")
+	require.NoError(t, err)
+	require.Empty(t, worker.WorkspaceConfigurationDependencies)
+	require.Equal(t, []string{"work-context"}, declarer.WorkspaceConfigurationDependencies)
+
+	// Standalone planning, over the whole composition.
+	require.NoError(t, PlanConfigurationReferences(ctx, workspace, env,
+		[]*resources.Service{worker, declarer}, true),
+		"a credential the worker never receives must not refuse the plan, and the declarer may reach the endpoint")
+
+	// And the flow's gate, which is the path `codefly run` takes.
+	payments, err := workspace.LoadModuleFromName(ctx, "payments")
+	require.NoError(t, err)
+	flow, err := NewFlow(ctx, workspace, payments, worker, env, RunMode)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = flow.Stop() })
+	var unresolved *configurations.UnresolvedReferencesError
+	require.False(t, errors.As(flow.InitManagers(ctx), &unresolved),
+		"the flow gate must not refuse the worker for a credential it does not receive")
+
+	// The resolution agrees: the worker gets the group without the credential.
+	world, _ := referenceValidityWorld(t, workspace)
+	confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewContainerNetworkAccess())
+	require.NoError(t, err)
+	_, hasCredential := groupValue(confs, "work-context", "authority-token")
+	require.False(t, hasCredential)
+	_, hasURL := groupValue(confs, "work-context", "authority-url")
+	require.True(t, hasURL)
+
+	// And the gate still refuses a consumer that is NOT authorized and declares
+	// the group, so the filtering has not turned the check off.
+	unauthorized := withheldCredentialWorkspace(t, "private")
+	unauthorizedEnv, err := SelectEnvironment(unauthorized, LocalEnvironmentName)
+	require.NoError(t, err)
+	api, err := loadService(ctx, t, unauthorized, "payments", "api")
+	require.NoError(t, err)
+	err = PlanConfigurationReferences(ctx, unauthorized, unauthorizedEnv, []*resources.Service{api}, true)
+	require.Error(t, err, "a service that declares the group is still held to the producer's export boundary")
+	require.Contains(t, err.Error(), "is private to module")
 }

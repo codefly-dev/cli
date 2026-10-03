@@ -83,6 +83,11 @@ func (world *World) workspaceConfigurationsFor(
 	// its producer's address undiscoverable, or its endpoint private to another
 	// module. One decision, made once, used by the check, by discovery and by
 	// the delivery filter. (Layer-4 round-five F4.)
+	// Before anything is resolved: a World that cannot say which of the groups
+	// it loaded are the composition root's cannot plan for them either.
+	if err := world.requireRootGroupSource(declared); err != nil {
+		return nil, err
+	}
 	withheld := world.withheldRootCredentials(declared, effective)
 	// Validity next, and by core's own rule: a malformed reference, a producer
 	// the workspace does not have, an endpoint it does not declare, or an
@@ -222,9 +227,8 @@ func (w withheldCredentials) any() bool {
 // Read pre-interpolation, like every other judgement in this file that has to
 // know what a value IS rather than what it became.
 func (world *World) withheldRootCredentials(declared, effective []string) withheldCredentials {
-	out := withheldCredentials{values: map[string]bool{}, groups: map[string]bool{}}
 	if world == nil || world.providedWorkspaceConfigurationInfos == nil {
-		return out
+		return withheldCredentials{values: map[string]bool{}, groups: map[string]bool{}}
 	}
 	rootOnly := make(map[string]bool, len(effective))
 	for _, group := range effective {
@@ -233,11 +237,20 @@ func (world *World) withheldRootCredentials(declared, effective []string) withhe
 	for _, group := range declared {
 		delete(rootOnly, group)
 	}
-	if len(rootOnly) == 0 {
+	return credentialsOf(world.providedWorkspaceConfigurationInfos(), rootOnly)
+}
+
+// credentialsOf is the one reading of "which values of these groups are
+// credentials", shared by the resolution and by the plan gate. Two readings
+// would be two answers to "what does this service receive", and the gate's
+// answer decides whether a plan is refused.
+func credentialsOf(infos []*basev0.ConfigurationInformation, groups map[string]bool) withheldCredentials {
+	out := withheldCredentials{values: map[string]bool{}, groups: map[string]bool{}}
+	if len(groups) == 0 {
 		return out
 	}
-	for _, info := range world.providedWorkspaceConfigurationInfos() {
-		if !rootOnly[info.GetName()] {
+	for _, info := range infos {
+		if !groups[info.GetName()] {
 			continue
 		}
 		structured := info.GetData().GetSecret()
@@ -494,7 +507,102 @@ func (world *World) checkEffectiveWorkspaceConfigurationReferences(
 	// A zero profile excludes nothing: `effective` has already had the run
 	// profile's exclusions removed, and passing them twice would only hide a
 	// group from a check it has to pass.
-	return configurations.CheckEndpointReferences(infos, []*resources.Service{&consumer}, resources.RunProfile{}, lookup)
+	if err := configurations.CheckEndpointReferences(infos, []*resources.Service{&consumer}, resources.RunProfile{}, lookup); err != nil {
+		return err
+	}
+	return refuseAmbiguousReferences(ctx, &consumer, infos, lookup)
+}
+
+// refuseAmbiguousReferences refuses a reference that more than one of its
+// producer's endpoints can legally satisfy for this consumer.
+//
+// Core's trailing reference token matches an endpoint's NAME or its API
+// (resources.EndpointMatchesReferenceInfo), so one reference can match several
+// of a producer's endpoints — `${endpoint:platform/authority/rest}` matches an
+// endpoint named `rest` and every endpoint whose api is `rest`. Core's check
+// then judges the first match and its interpolation takes the first bound
+// mapping that has an instance for the consumer's access, so the two can land
+// on different endpoints. Filtering the bound set by visibility
+// (World.exportableTo) stops that from crossing an export boundary; it does not
+// stop it choosing between two endpoints the consumer may both reach, and a
+// value silently addressing a different endpoint than its reference names is
+// the quiet kind of wrong this file exists to remove.
+//
+// So the reference is refused when more than one PERMITTED match remains. Only
+// permitted matches are counted, which is what keeps the common case working:
+// with a public `api` and a private `admin` both on api `rest`, a cross-module
+// consumer has exactly one endpoint it may reach and the reference is
+// unambiguous for it — while a consumer in the producer's own module, which may
+// reach both, is told to name the one it means. Zero permitted matches is core's
+// to refuse, and it already has above.
+//
+// This belongs in core, beside the check whose verdict it completes, and is
+// named with the other core changes in `docs/orchestration.md`.
+func refuseAmbiguousReferences(
+	ctx context.Context, consumer *resources.Service,
+	infos []*basev0.ConfigurationInformation, producers configurations.ProducerLookup,
+) error {
+	identity, err := consumer.Identity()
+	if err != nil {
+		return err
+	}
+	for _, info := range infos {
+		for _, value := range info.GetConfigurationValues() {
+			for _, reference := range resources.ConfigurationValueEndpointReferences(value) {
+				permitted, err := permittedReferenceMatches(reference, identity.Module, producers)
+				if err != nil {
+					return err
+				}
+				if len(permitted) < 2 {
+					continue
+				}
+				return fmt.Errorf("the workspace configuration value %s/%s references ${endpoint:%s}, which %s's endpoints %s all satisfy for %s: a reference whose address could be any of several endpoints is refused rather than resolved to whichever one is bound first. Name the endpoint it means",
+					info.GetName(), value.GetKey(), reference,
+					referenceProducer(reference), strings.Join(permitted, ", "), identity.Unique())
+			}
+		}
+	}
+	wool.Get(ctx).In("World.checkEffectiveWorkspaceConfigurationReferences").Debug("every reference names one endpoint")
+	return nil
+}
+
+// permittedReferenceMatches names the producer's endpoints a reference matches
+// and this consumer's module may reach, by core's own matcher and core's own
+// export rule.
+func permittedReferenceMatches(
+	reference, consumerModule string, producers configurations.ProducerLookup,
+) ([]string, error) {
+	info, err := resources.ParseEndpoint(reference)
+	if err != nil {
+		// Core's check has already refused a malformed reference by name.
+		return nil, nil
+	}
+	producer, ok := producers(info.Module + "/" + info.Service)
+	if !ok || producer == nil {
+		// Likewise "the producer is not a service of this workspace".
+		return nil, nil
+	}
+	var permitted []string
+	for _, endpoint := range producer.Endpoints {
+		if endpoint == nil || !resources.EndpointMatchesReferenceInfo(endpoint, info) {
+			continue
+		}
+		if resources.ValidateEndpointVisibility(consumerModule, info.Module, info.Service,
+			endpoint.Name, endpoint.Visibility, endpoint.AllowModules) != nil {
+			continue
+		}
+		permitted = append(permitted, endpoint.Name)
+	}
+	return permitted, nil
+}
+
+// referenceProducer is "<module>/<service>" of a reference, for a diagnostic.
+func referenceProducer(reference string) string {
+	info, err := resources.ParseEndpoint(reference)
+	if err != nil {
+		return reference
+	}
+	return info.Module + "/" + info.Service
 }
 
 // A nonexistent producer is refused here too, not left to the plan gate.
@@ -585,6 +693,43 @@ func (world *World) compositionRootWorkspaceConfigurationGroups() []string {
 		return nil
 	}
 	return world.compositionRootGroups()
+}
+
+// requireRootGroupSource refuses to resolve anything for a World that was built
+// without a composition-root group source while its loader holds groups this
+// service did not declare.
+//
+// It checks the CONDITION, where requireKnownRootGroup below checks a symptom —
+// and one symptom only. That guard inspects the information blocks the
+// resolution delivered, so a root group the World could not name AND whose every
+// value core's interpolation dropped leaves nothing to inspect: the block is
+// gone, `effective` never held the group, and the outcome check has no name to
+// miss it by either. A group that is nothing but an unresolvable ${endpoint:…}
+// is exactly that shape, and it is the shape most likely to matter.
+//
+// The two signals come from one loader in NewFlow — the configurations and the
+// root names — so a World holding the first without the second is the
+// inconsistency, not its consequences. Refusing it here covers every symptom at
+// once, before interpolation can erase the evidence. A World whose source is
+// bound and reports no root groups is a different thing and is fine: the
+// function pointer is what is checked, not its result. (Layer-2 round-six
+// finding 5.)
+func (world *World) requireRootGroupSource(declared []string) error {
+	if world == nil || world.compositionRootGroups != nil || world.providedWorkspaceConfigurationInfos == nil {
+		return nil
+	}
+	own := make(map[string]bool, len(declared))
+	for _, group := range declared {
+		own[group] = true
+	}
+	for _, info := range world.providedWorkspaceConfigurationInfos() {
+		if own[info.GetName()] {
+			continue
+		}
+		return fmt.Errorf("cannot resolve workspace configurations: this world was loaded with the group %q, which this service does not declare, but it has no composition-root group source, so it cannot tell whether that group is provided run-wide — and a root group it cannot name is one producer discovery never plans for, whose values go missing in silence. Bind World.compositionRootGroups as NewFlow does (configurations.Loader.CompositionRootWorkspaceConfigurationNames)",
+			info.GetName())
+	}
+	return nil
 }
 
 // requireKnownRootGroup refuses a root group the resolution delivered that the
