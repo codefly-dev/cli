@@ -2,7 +2,6 @@ package orchestration
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -221,54 +220,25 @@ func (world *World) checkEffectiveWorkspaceConfigurationReferences(
 	// A zero profile excludes nothing: `effective` has already had the run
 	// profile's exclusions removed, and passing them twice would only hide a
 	// group from a check it has to pass.
-	problems := configurations.CheckEndpointReferences(infos, []*resources.Service{&consumer}, resources.RunProfile{}, lookup)
-	return world.toleratingProducersOutsideTheWorkspace(ctx, problems, lookup)
+	return configurations.CheckEndpointReferences(infos, []*resources.Service{&consumer}, resources.RunProfile{}, lookup)
 }
 
-// toleratingProducersOutsideTheWorkspace keeps the one unresolved kind this
-// package has always left to the plan gate: a reference naming a producer the
-// workspace does not have.
+// A nonexistent producer is refused here too, not left to the plan gate.
 //
-// The division of labour predates this change and is worth keeping. A producer
-// that is not a service of the workspace is not a producer of any run, so the
-// READ drops the value for the consumer, and
-// CheckConfigurationReferences refuses it by name before anything is built or
-// started — which is where an operator can act on it, rather than mid-run. That
-// gate now covers the effective group set too, so a typo in a composition-root
-// group is refused there exactly as one in a declared group always was; before
-// this PR nothing refused it anywhere.
+// An earlier revision tolerated it: the read dropped the value with a WARN and
+// the gate refused the plan, which is the division this package has for declared
+// groups. Dynamic review showed that to be a fail-open rather than a division,
+// because it makes the refusal depend on another gate having run over the same
+// values — and one does not always. A typo supplied through `--set` reached the
+// resolution while the gate was still reading the pre-override configurations,
+// so nothing refused it anywhere and the value was simply dropped. The gate is
+// invocation-aware now (WorkspaceConfigurationsForChecking), but a guard that is
+// only correct while a second guard is also correct is not a guard.
 //
-// Everything else core reports still refuses here: a malformed reference, an
-// endpoint the producer does not declare, and a visibility violation are faults
-// no run shape excuses.
-//
-// The partition is made with this package's own workspace lookup rather than by
-// matching core's reason text, so core rewording a diagnostic cannot silently
-// turn a refusal into a tolerance.
-func (world *World) toleratingProducersOutsideTheWorkspace(
-	ctx context.Context, err error, lookup configurations.ProducerLookup,
-) error {
-	var unresolved *configurations.UnresolvedReferencesError
-	if err == nil || !errors.As(err, &unresolved) {
-		return err
-	}
-	kept := make([]configurations.UnresolvedReference, 0, len(unresolved.References))
-	for _, reference := range unresolved.References {
-		if reference.Producer != "" {
-			if _, inWorkspace := lookup(reference.Producer); !inWorkspace {
-				warnDroppedWorkspaceConfigurationReference(ctx, reference.Consumer, reference.Producer,
-					reference.Group+"/"+reference.Key, []string{reference.Reference},
-					"its producer is not a service of this workspace, so it is a producer of no run; `codefly` refuses this before a run starts (CheckConfigurationReferences)")
-				continue
-			}
-		}
-		kept = append(kept, reference)
-	}
-	if len(kept) == 0 {
-		return nil
-	}
-	return &configurations.UnresolvedReferencesError{References: kept}
-}
+// So core's verdict is propagated whole. What stays distinct is the thing that
+// genuinely differs: a producer that EXISTS but is outside this run or this
+// deployment, which judgeDroppedValue decides from the outcome — a drop in a
+// run, a refusal in a render. "The producer does not exist" is never that.
 
 // workspaceProducers resolves <module>/<service> over the whole workspace,
 // memoized. It is the authority for "that producer does not exist", which the

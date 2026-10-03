@@ -10,6 +10,7 @@ import (
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/wool"
 )
 
 // CheckConfigurationReferences refuses a plan whose workspace configurations
@@ -189,58 +190,56 @@ func workspaceProducerLookup(ctx context.Context, workspace *resources.Workspace
 	}, nil
 }
 
-// compositionRootGroupsForTheGate names the composition root's groups at a point
-// in the lifecycle where the loader cannot yet.
+// WorkspaceConfigurationsForChecking reads the workspace configurations the way
+// the run will actually resolve them, and names the composition root's groups
+// among them.
 //
-// This gate runs inside InitManagers, and the loader populates its
-// CompositionRootWorkspaceConfigurationNames in Load, which runs after
-// (cmd/run/service.go, pkg/control/lifecycle.go and pkg/gitops/orchestrate.go
-// all call InitManagers then Load). Reading the loader here therefore returned
-// NOTHING, and the gate silently checked declared groups only — a gate
-// extension that did nothing, which is worse than not having one, because the
-// code and the docs both claimed otherwise.
+// It loads a configuration local reader rather than calling
+// configurations.ReadWorkspaceConfigurations, and the difference is the point:
+// the reader applies the **invocation-scoped overrides** (`--set`, carried in
+// CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES) and derives its
+// composition-root names from the result. Core applies them inside the loader
+// (applyWorkspaceConfigurationOverrides, unexported), so loading one is the only
+// way to see them from here.
 //
-// So the loader's set is preferred when it is populated, and the read NewFlow
-// already performed is the fallback. Both describe the same thing; the loader's
-// is authoritative because it also treats an invocation-scoped override (--set)
-// as composition-root on a name a composed module provides, which a plain read
-// cannot see. The fallback therefore checks a subset, never something different,
-// and the resolution-time check covers what it misses.
+// Both halves matter, and a plain read gets both wrong:
 //
-// Core exposing the Manager's own union over every loader would remove both the
-// ordering problem and this derivation; it is named as a core change in
-// docs/orchestration.md.
-func (flow *Flow) compositionRootGroupsForTheGate() []string {
-	if groups := flow.world.compositionRootWorkspaceConfigurationGroups(); len(groups) > 0 {
-		return groups
+//   - A reference supplied by `--set` is invisible to a plain read, so a typo'd
+//     producer in an overridden value escaped the gate entirely and the
+//     resolution then dropped the value. The operator who typed the override got
+//     no error from the thing their own command line broke.
+//   - An override makes its group composition-root even on a name a composed
+//     module provides (the run itself is supplying the value, so it reaches every
+//     service), which a plain read cannot know — so the group's references went
+//     unchecked for every service that did not declare it.
+//
+// It is also the one place the composition-root names are derived, which is why
+// there is no longer a CLI-side "not ComposedBy ⇒ root" rule: this asks core's
+// own loader. A reader that cannot load answers false, and the caller falls back
+// to the plain read — narrower, never different, and the resolution-time check
+// still covers what the gate then misses.
+func WorkspaceConfigurationsForChecking(
+	ctx context.Context, workspace *resources.Workspace, env *environments.Environment,
+) (*configurations.WorkspaceConfigurations, []string, bool) {
+	if workspace == nil || env == nil {
+		return nil, nil, false
 	}
-	return CompositionRootGroupNames(flow.providedWorkspaceConfigurations)
-}
-
-// CompositionRootGroupNames names the composition root's own groups as a read
-// reports them: every group no composed module contributed.
-//
-// It is the plan-time counterpart of the loader capability the resolution uses
-// (configurations.Loader.CompositionRootWorkspaceConfigurationNames), for the
-// callers that have a read but no loader. One difference, stated rather than
-// hidden: a loader also treats an invocation-scoped override (--set) as
-// composition-root even on a name a composed module provides, and a plain read
-// cannot see those. The flow's own gate passes the loader's set, so the
-// narrower derivation here only ever checks less than that gate, never
-// something different.
-func CompositionRootGroupNames(provided *configurations.WorkspaceConfigurations) []string {
-	if provided == nil {
-		return nil
+	reader, err := configurations.NewConfigurationLocalReader(ctx, workspace)
+	if err != nil {
+		wool.Get(ctx).In("WorkspaceConfigurationsForChecking").Debug(
+			"cannot build a configuration reader, so the checked configurations will not include invocation overrides",
+			wool.Field("error", err.Error()))
+		return nil, nil, false
 	}
-	var out []string
-	for _, info := range provided.Infos {
-		if _, composed := provided.ComposedBy[info.GetName()]; composed {
-			continue
-		}
-		out = append(out, info.GetName())
+	if err := reader.Load(ctx, env.Runtime()); err != nil {
+		wool.Get(ctx).In("WorkspaceConfigurationsForChecking").Debug(
+			"cannot load the workspace configurations, so the checked configurations will not include invocation overrides",
+			wool.Field("error", err.Error()))
+		return nil, nil, false
 	}
-	slices.Sort(out)
-	return slices.Compact(out)
+	return &configurations.WorkspaceConfigurations{
+		Infos: workspaceConfigurationInfos(reader.Configurations()),
+	}, reader.CompositionRootWorkspaceConfigurationNames(), true
 }
 
 // withExcludedProducerReasons restates every unresolved reference whose producer
@@ -278,8 +277,13 @@ func PlanConfigurationReferences(ctx context.Context, workspace *resources.Works
 	if workspace == nil || env == nil || len(roots) == 0 {
 		return nil
 	}
-	// One read serves both the ordering option and the check below.
-	provided := readWorkspaceConfigurationsForReferences(ctx, workspace, env)
+	// One read serves both the ordering option and the check below. The
+	// invocation-aware one when a reader can load — so a reference supplied by
+	// `--set` is checked like any other — and the plain disk read otherwise.
+	provided, rootGroups, invocationAware := WorkspaceConfigurationsForChecking(ctx, workspace, env)
+	if !invocationAware {
+		provided = readWorkspaceConfigurationsForReferences(ctx, workspace, env)
+	}
 	var options []architecture.DependencyOption
 	if option := configurationReferenceOptionFrom(provided); option != nil {
 		options = append(options, option)
@@ -314,7 +318,7 @@ func PlanConfigurationReferences(ctx context.Context, workspace *resources.Works
 		}
 	}
 	return CheckConfigurationReferences(ctx, workspace, env, provided, dependencies, consumers,
-		resources.RunProfile{}, nil, CompositionRootGroupNames(provided))
+		resources.RunProfile{}, nil, rootGroups)
 }
 
 // checkConfigurationReferences runs the plan-time check for a flow whose run
@@ -355,7 +359,16 @@ func (flow *Flow) checkConfigurationReferences(ctx context.Context, required []s
 	for _, excluded := range flow.excludedDependencyServices {
 		excludedProducers[excluded] = true
 	}
-	return CheckConfigurationReferences(ctx, flow.workspace, flow.world.Env, flow.providedWorkspaceConfigurations,
-		flow.world.Dependencies, consumers, flow.runProfile, excludedProducers,
-		flow.compositionRootGroupsForTheGate())
+	// The configurations this run will actually resolve, overrides included, and
+	// the root groups among them. The loader the flow itself registers has not
+	// Loaded yet at this point in the lifecycle (this gate runs inside
+	// InitManagers; Load follows), which is why a reader is loaded here rather
+	// than read off the world — and why the names cannot come from
+	// world.compositionRootGroups, which would be empty.
+	provided, rootGroups, invocationAware := WorkspaceConfigurationsForChecking(ctx, flow.workspace, flow.world.Env)
+	if !invocationAware {
+		provided, rootGroups = flow.providedWorkspaceConfigurations, flow.world.compositionRootWorkspaceConfigurationGroups()
+	}
+	return CheckConfigurationReferences(ctx, flow.workspace, flow.world.Env, provided,
+		flow.world.Dependencies, consumers, flow.runProfile, excludedProducers, rootGroups)
 }

@@ -235,10 +235,19 @@ func configurationsCarryKey(confs []*basev0.Configuration, name, key string) boo
 // consumer does not depend on — the composition root binding the host by its
 // own name for it. Before the producer initializes, the reference resolves to
 // the mappings its Init proposes, derived from the endpoints it recorded at
-// Load. A producer that is not in the run, such as one that is not a service of
-// the workspace, is not for this run: the read drops it for the consumer, and
-// the plan-time check refuses it before anything starts
-// (TestPlanConfigurationReferences).
+// Load.
+//
+// A producer that EXISTS but is outside this run is not for this run: the read
+// drops it for the consumer, because no local address exists for a service the
+// run does not contain. That is `platform/warden` below — a real service, real
+// endpoint, simply not in this run set.
+//
+// A producer that is not a service of the workspace at all is a different thing
+// and is REFUSED, by core's verdict, wherever the value resolves. It used to be
+// dropped here and refused only at the plan gate, which a dynamic review showed
+// to be a fail-open: a typo supplied through `--set` reached the resolution
+// while the gate was still reading the pre-override configurations, so nothing
+// refused it anywhere. The two cases are asserted separately below.
 func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testing.T) {
 	ctx := context.Background()
 	workspace, err := resources.LoadWorkspaceFromDir(ctx, "testdata/excluded-root-visibility")
@@ -257,7 +266,7 @@ func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testin
 				Name: "platform",
 				ConfigurationValues: []*basev0.ConfigurationValue{
 					{Key: "accounts-endpoint", Value: "${endpoint:saas/accounts/connect}"},
-					{Key: "elsewhere", Value: "${endpoint:absent/service/http}"},
+					{Key: "elsewhere", Value: "${endpoint:platform/warden/rest}"},
 				},
 			}},
 		}},
@@ -296,7 +305,22 @@ func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testin
 	resolved, err := resources.GetConfigurationValue(ctx, mixed[0], "platform", "accounts-endpoint")
 	require.NoError(t, err)
 	require.Regexp(t, `^http://localhost:\d+$`, resolved)
-	require.False(t, configurationsCarryKey(mixed, "platform", "elsewhere"), "a producer outside the run is dropped for the consumer")
+	require.False(t, configurationsCarryKey(mixed, "platform", "elsewhere"),
+		"a producer that exists but is outside the run is dropped for the consumer")
+
+	// And the other case, which is not a drop: a producer the workspace does not
+	// have is refused by core's own verdict rather than left to another gate.
+	absentLoader := staticWorkspaceLoader{
+		confs: []*basev0.Configuration{workspaceConfiguration("platform", "nowhere", "${endpoint:absent/service/http}")},
+	}
+	refusing := *world
+	refusing.ConfigurationManager = loadedWorkspaceManager(t, absentLoader)
+	refusing.providedWorkspaceConfigurationInfos = func() []*basev0.ConfigurationInformation {
+		return workspaceConfigurationInfos(absentLoader.Configurations())
+	}
+	_, err = refusing.workspaceConfigurationsFor(ctx, consumer, nil, resources.NewNativeNetworkAccess())
+	require.Error(t, err, "a producer that is not a service of the workspace must be refused, not dropped")
+	require.Contains(t, err.Error(), "not a service of this workspace")
 
 	manager = loadedWorkspaceManager(t, staticWorkspaceLoader{
 		confs: []*basev0.Configuration{workspaceConfiguration("platform", "accounts-endpoint", "${endpoint:saas/accounts/connect}")},

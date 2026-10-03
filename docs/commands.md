@@ -352,8 +352,9 @@ as a declared group's is: a reference to an endpoint whose visibility is
 `private`, or `internal` without your module in `allow-modules`, is refused
 rather than delivered. A root group is not a way to reach an endpoint a declared
 dependency on it would be refused. A reference naming a producer the workspace
-does not have is refused when the plan is checked, and dropped with a WARN if
-resolution is reached anyway.
+does not have is refused both when the plan is checked and when the value
+resolves — including one supplied with `--set`, which the plan check reads
+through a loaded configuration rather than off disk.
 
 **This can refuse a composition that rendered before.** An endpoint with no
 `visibility:` declared defaults to `private`, so a composition-root group

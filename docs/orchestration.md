@@ -254,18 +254,30 @@ wider set, so the two cannot disagree about what is legal. Where each is
   (`CheckConfigurationReferences`, before anything is built or started) and
   again when the value resolves
   (`checkEffectiveWorkspaceConfigurationReferences`).
-- **A producer the workspace does not have is refused at the plan gate only.**
-  The resolution drops it with a WARN, because such a producer is a producer of
-  no run: the gate is where an operator can act on it instead of mid-run. It is
-  the division this package already had for declared groups.
+- **A producer the workspace does not have is refused in both places**, by
+  core's own verdict. It used to be refused at the gate and merely dropped by
+  the resolution — the division this package has for declared groups — until a
+  dynamic review showed that to be a fail-open rather than a division: a typo
+  supplied through `--set` reached the resolution while the gate was still
+  reading the configurations off disk, so nothing refused it anywhere and the
+  value was quietly absent. A guard that is only correct while a second guard is
+  also correct is not a guard.
 
-The gate reaches the root's groups through a set it can name at the point it
-runs. It runs inside `InitManagers`, and a loader only populates its
-composition-root names in `Load`, which runs afterwards — so reading the loader
-there returned nothing and the gate quietly checked declared groups only. It now
-prefers the loader's set when populated and falls back to the read `NewFlow`
-already performed, which is a subset of it (that read cannot see an
-invocation-scoped `--set` override) and never something different.
+The gate reads the configurations **the run will actually resolve**, through
+`WorkspaceConfigurationsForChecking`, which loads a configuration reader rather
+than reading the directory. That is the only way to see an invocation-scoped
+override from outside core, because core applies them inside the loader
+(`applyWorkspaceConfigurationOverrides`), and it matters twice over: a
+`${endpoint:…}` an operator supplies with `--set` is checked like any other, and
+a group an override makes composition-root — the run itself is supplying the
+value, so it reaches every service — is recognised as one.
+
+Loading a reader is also what fixes the lifecycle: this gate runs inside
+`InitManagers`, and the loader the flow registers only populates its
+composition-root names in `Load`, which runs afterwards. Reading that loader
+here returned nothing, so the gate quietly checked declared groups only. The
+same call is the single place the composition-root names are derived, so there
+is no CLI-side "not `ComposedBy` ⇒ root" rule any more: it asks core's loader.
 
 Root groups are judged against the **whole workspace**, not the plan's graph. A
 root group reaches every service of every run, including a module-closure run

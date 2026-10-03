@@ -193,16 +193,24 @@ func TestATypoedProducerInARootGroupIsRefusedByNameAtThePlanGate(t *testing.T) {
 	require.NoError(t, PlanConfigurationReferences(ctx, ok, okEnv, []*resources.Service{okConsumer}, true))
 }
 
-// The resolution, meanwhile, drops that same value rather than failing a run
-// mid-flight — and says so at WARN instead of core's DEBUG.
-func TestATypoedProducerInARootGroupIsDroppedByTheResolution(t *testing.T) {
+// The resolution refuses it too, rather than dropping it and relying on the gate
+// having run.
+//
+// It used to drop: the read warned, the gate refused, and that division is the
+// one this package has for declared groups. A dynamic review showed it to be a
+// fail-open instead of a division — a typo supplied through `--set` reached the
+// resolution while the gate was still reading the pre-override configurations,
+// so nothing refused it anywhere and the value was quietly absent. A guard that
+// is only correct while a second guard is also correct is not a guard, so core's
+// verdict is propagated here as well.
+func TestATypoedProducerInARootGroupIsRefusedByTheResolutionToo(t *testing.T) {
 	world, service := referenceValidityWorld(t,
 		referenceValidityWorkspace(t, "platfrom/authority/admin", "public"))
 
-	confs, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewContainerNetworkAccess())
-	require.NoError(t, err, "a producer of no run does not fail the read; the plan gate is what refuses it")
-	_, delivered := groupValue(confs, "work-context", "authority-endpoint")
-	require.False(t, delivered, "the value cannot resolve, so it is not delivered")
+	_, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewContainerNetworkAccess())
+	require.Error(t, err, "a producer that is not a service of the workspace must be refused wherever the value resolves")
+	require.Contains(t, err.Error(), "platfrom/authority")
+	require.Contains(t, err.Error(), "not a service of this workspace")
 }
 
 // An endpoint the producer does not declare is refused too, by core's own
@@ -325,14 +333,13 @@ func TestRequireKnownRootGroupRefusesAGroupTheResolutionDidNotPlanFor(t *testing
 }
 
 // A mixed group — one reference to a private endpoint, one to a producer that
-// does not exist — refuses the visibility violation and does not let the
-// tolerated typo swallow it.
+// does not exist — reports both faults in one error.
 //
-// Both arrive from core's check as one UnresolvedReferencesError, and
-// toleratingProducersOutsideTheWorkspace drops only the entries whose producer
-// the workspace lacks. An earlier shape of this logic returned nil as soon as
-// any entry was tolerated, which would have delivered the private address.
-func TestAMixedRootGroupRefusesTheVisibilityViolationAndTolerantlyDropsTheTypo(t *testing.T) {
+// They arrive from core's check as one UnresolvedReferencesError and are
+// propagated whole. An earlier shape filtered the nonexistent-producer entries
+// out and returned nil when nothing was left, which would have delivered the
+// private address whenever a typo sat beside it in the same group.
+func TestAMixedRootGroupReportsBothTheVisibilityViolationAndTheTypo(t *testing.T) {
 	workspace := writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
 		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
@@ -350,10 +357,11 @@ func TestAMixedRootGroupRefusesTheVisibilityViolationAndTolerantlyDropsTheTypo(t
 	world, service := referenceValidityWorld(t, workspace)
 
 	_, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewContainerNetworkAccess())
-	require.Error(t, err, "a tolerated typo must not excuse a visibility violation in the same group")
-	require.Contains(t, err.Error(), "admin")
-	require.NotContains(t, err.Error(), "platfrom",
-		"the typo is dropped with a WARN and left to the plan gate, not reported here")
+	require.Error(t, err, "a group with two faults must report both, not stop at one")
+	require.Contains(t, err.Error(), "is private to module",
+		"the visibility violation must be named")
+	require.Contains(t, err.Error(), "platfrom/authority",
+		"and so must the typo: core's verdict on each reference is propagated whole")
 }
 
 // An unreadable workspace fails the reference check CLOSED.
@@ -373,4 +381,57 @@ func TestAnUnreadableWorkspaceFailsTheReferenceCheckClosed(t *testing.T) {
 	_, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewContainerNetworkAccess())
 	require.Error(t, err, "an unreadable workspace must not mean references go unchecked")
 	require.Contains(t, err.Error(), "cannot be checked against the producers")
+}
+
+// A reference supplied by an invocation-scoped override (`--set`, carried in
+// CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES) is checked like any other.
+//
+// It escaped entirely before. The plan gate read the configurations off disk,
+// which cannot see an override, so a typo'd producer an operator supplied on
+// their own command line passed the plan; the resolution then dropped the value
+// with no error, because a nonexistent producer was tolerated there and left to
+// that gate. Two guards, each correct only while the other was, and the
+// combination silent.
+//
+// Both halves are fixed and this asserts both: the gate reads an invocation-aware
+// configuration (WorkspaceConfigurationsForChecking loads a reader, which is
+// where core applies the overrides), and the resolution propagates core's
+// verdict rather than deferring.
+func TestAnInvocationOverrideIsCheckedLikeAnyOtherReference(t *testing.T) {
+	ctx := context.Background()
+	// The group on disk is correct; the override is what breaks it.
+	workspace := referenceValidityWorkspace(t, "platform/authority/admin", "public")
+	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+	encoded, err := resources.EncodeWorkspaceConfigurationOverrides([]resources.WorkspaceConfigurationOverride{
+		{Name: "work-context", Key: "authority-endpoint", Value: "${endpoint:platfrom/authority/admin}"},
+	})
+	require.NoError(t, err)
+	t.Setenv(resources.WorkspaceConfigurationOverridesEnvironment, encoded)
+
+	// The plan gate must see the overridden value, not the correct one on disk.
+	checked, rootGroups, invocationAware := WorkspaceConfigurationsForChecking(ctx, workspace, env)
+	require.True(t, invocationAware, "a loaded reader is what makes the override visible")
+	require.Contains(t, rootGroups, "work-context")
+	var sawOverride bool
+	for _, info := range checked.Infos {
+		for _, value := range info.GetConfigurationValues() {
+			if value.GetValue() == "${endpoint:platfrom/authority/admin}" {
+				sawOverride = true
+			}
+		}
+	}
+	require.True(t, sawOverride, "the gate is reading the pre-override configuration again")
+
+	consumer, err := loadService(ctx, t, workspace, "payments", "worker")
+	require.NoError(t, err)
+	err = PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{consumer}, true)
+	require.Error(t, err, "a typo an operator supplied with --set must not pass the plan")
+	require.Contains(t, err.Error(), "platfrom/authority")
+
+	// And the resolution refuses it too, so the gate is not the only guard.
+	world, service := referenceValidityWorld(t, workspace)
+	_, err = world.workspaceConfigurationsFor(ctx, service, nil, resources.NewContainerNetworkAccess())
+	require.Error(t, err, "the resolution must not depend on the gate having run")
+	require.Contains(t, err.Error(), "not a service of this workspace")
 }

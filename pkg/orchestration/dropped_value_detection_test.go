@@ -201,15 +201,15 @@ func TestARenderRefusesALostRootValueWhoseProducerIsOutsideItsRunSet(t *testing.
 	require.Contains(t, err.Error(), "a service of this workspace")
 }
 
-// And a producer the workspace genuinely does not have is still a legitimate
-// drop in a render, so the rule above is "the workspace has it", not "refuse
-// every drop". The plan gate is what refuses that case, by name.
-func TestARenderToleratesALostRootValueWhoseProducerTheWorkspaceLacks(t *testing.T) {
-	confs, err := droppedValueWorld(t, SnapshotMode, "${endpoint:absent/service/rest}", nil)
-	require.NoError(t, err, "no deployed address exists for a service the workspace does not have")
-	_, delivered := groupValue(confs, "work-context", "authority-endpoint")
-	require.False(t, delivered)
-	literal, delivered := groupValue(confs, "work-context", "literal")
-	require.True(t, delivered, "the rest of the group is unaffected")
-	require.Equal(t, "present", literal)
+// A producer the workspace does not have is refused outright, before the
+// outcome is ever examined — so the render's "did it survive" rule never sees
+// that case, and the rule itself stays "the workspace has it".
+//
+// It is refused by core's verdict rather than dropped, because a drop here would
+// depend on the plan gate having run over the same values, and a `--set`
+// override reaches the resolution without the gate having seen it.
+func TestARenderRefusesARootValueWhoseProducerTheWorkspaceLacks(t *testing.T) {
+	_, err := droppedValueWorld(t, SnapshotMode, "${endpoint:absent/service/rest}", nil)
+	require.Error(t, err, "a reference naming a service the workspace does not have must be refused")
+	require.Contains(t, err.Error(), "not a service of this workspace")
 }

@@ -871,9 +871,15 @@ func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, 
 		return
 	}
 	// The composition root's groups are part of what every service receives, so
-	// the doctor checks their references too — not only the declared ones.
-	err = orchestration.CheckConfigurationReferences(ctx, ws, env, provided, dependencies, scope,
-		resources.RunProfile{}, nil, orchestration.CompositionRootGroupNames(provided))
+	// the doctor checks their references too — not only the declared ones — and
+	// it checks the configurations as an invocation supplies them, so a `--set`
+	// override is diagnosed rather than skipped.
+	checked, rootGroups, invocationAware := orchestration.WorkspaceConfigurationsForChecking(ctx, ws, env)
+	if !invocationAware {
+		checked = provided
+	}
+	err = orchestration.CheckConfigurationReferences(ctx, ws, env, checked, dependencies, scope,
+		resources.RunProfile{}, nil, rootGroups)
 	var unresolved *configurations.UnresolvedReferencesError
 	switch {
 	case err == nil:
