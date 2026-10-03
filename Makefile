@@ -14,8 +14,10 @@ GOLANGCI_LINT_VERSION ?= v2.13.1
 install-golangci-lint:
 	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}
 
-# Reproduce CI locally. CI only fails on newly introduced findings; running the
-# full report here surfaces the existing backlog too.
+# Reproduce CI locally. CI only fails on newly introduced findings — those since
+# the merge-base with main (`golangci-lint run --new-from-merge-base=origin/main
+# ./...` is the gate itself); running the full report here surfaces the existing
+# backlog too.
 .PHONY: lint
 lint: install-golangci-lint
 	${GOBIN}/golangci-lint run ./...
