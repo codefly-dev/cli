@@ -339,6 +339,21 @@ func TestLocalGitopsPublishSolutionGeneratesBootstrap(t *testing.T) {
 		!strings.Contains(appSet, "overlay: "+result.Path+"/solutions/lastlogin-go/overlays/local") {
 		t.Fatalf("published bootstrap does not stamp the solution Application:\n%s", appSet)
 	}
+	// Every Application reads the one immutable snapshot revision, the one
+	// delivering the bindings included — so the overlay it reads must be IN
+	// that revision, not only on the publication commit. It once was not:
+	// the overlays were settled after the snapshot was committed, and every
+	// delivery Application pointed at a revision where its path did not exist.
+	if !strings.Contains(appSet, "targetRevision: "+result.SnapshotRevision) {
+		t.Fatalf("the bootstrap does not target the snapshot %s:\n%s", result.SnapshotRevision, appSet)
+	}
+	overlay := result.Path + "/" + solutionHostBindingDir + "/overlays/local/"
+	snapshotOverlay := gitOutput(t, "", "--git-dir", remote, "ls-tree", "-r", "--name-only", result.SnapshotRevision, overlay)
+	for _, want := range []string{overlay + "hello.local.lastlogin-go.yaml", overlay + "kustomization.yaml"} {
+		if !strings.Contains(snapshotOverlay, want) {
+			t.Fatalf("the snapshot revision %s does not hold %s, so the delivery Application would read a path that does not exist:\n%s", result.SnapshotRevision, want, snapshotOverlay)
+		}
+	}
 	// The packaged solution's own Namespace is authorized by the generated
 	// AppProject: destination namespace plus a cluster-scoped Namespace whitelist.
 	// It is the solution's own namespace ("lastlogin-go"), not the shared host

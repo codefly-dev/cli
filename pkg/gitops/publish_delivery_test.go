@@ -354,12 +354,14 @@ func TestRollbackResettlesWhatItRestores(t *testing.T) {
 	require.NoError(t, os.RemoveAll(repository.target))
 	require.NoError(t, copyTree(kept, repository.target))
 	signed := signer.signed
+	// The rollback path hands the restored tree to the settlement as a
+	// render's output: staged over the target and settled against the base.
 	restored, err := LoadInventory(repository.target)
 	require.NoError(t, err)
-	resettled, err := resettleRestoredDelivery(ctx, repository.repo, repository.target, repository.targetPath, "prod", &restored, publication)
+	resettled, err := stageAndSettleDelivery(ctx, repository.repo, repository.target, repository.targetPath, kept, &restored, "prod", publication)
 	require.NoError(t, err)
-	require.Equal(t, uint64(3), documentByID(resettled.Delivery, "example.prod.crm").Generation)
-	require.False(t, documentByID(resettled.Delivery, "example.prod.crm").Removed)
+	require.Equal(t, uint64(3), documentByID(resettled, "example.prod.crm").Generation)
+	require.False(t, documentByID(resettled, "example.prod.crm").Removed)
 	require.Greater(t, signer.signed, signed, "the rollback signs what it delivers")
 	document := deliveredBinding(t, repository.target, "example.prod.crm")
 	require.Equal(t, uint64(3), document.Generation)
@@ -382,7 +384,7 @@ func TestRollbackResettlesWhatItRestores(t *testing.T) {
 	require.NoError(t, copyTree(kept, repository.target))
 	restored, err = LoadInventory(repository.target)
 	require.NoError(t, err)
-	_, err = resettleRestoredDelivery(ctx, repository.repo, repository.target, repository.targetPath, "prod", &restored, publication)
+	_, err = stageAndSettleDelivery(ctx, repository.repo, repository.target, repository.targetPath, kept, &restored, "prod", publication)
 	require.ErrorIs(t, err, solutionhost.ErrTombstoned)
 }
 

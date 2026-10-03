@@ -239,6 +239,13 @@ func ValidateServiceSnapshot(root string) error {
 		return err
 	}
 	allowed := map[string]struct{}{InventoryFilename: {}, moduleBundleDir: {}}
+	// The delivery overlays the inventory records are part of the snapshot:
+	// the Applications that deliver them read the snapshot revision.
+	for _, path := range []string{inventory.SolutionHostBindingPath, inventory.SolutionAuthorityPath} {
+		if path != "" {
+			allowed[path] = struct{}{}
+		}
+	}
 	rendered := renderedUnits(&inventory)
 	for _, unit := range rendered {
 		directory, ok := unitDirectory(unit.Kind)
@@ -303,6 +310,11 @@ func validateSnapshotCoverage(inventory *Inventory) error {
 	covered := make(map[string]bool)
 	if inventory.ModulePath != "" {
 		covered[inventory.ModulePath] = false
+	}
+	for _, path := range []string{inventory.SolutionHostBindingPath, inventory.SolutionAuthorityPath} {
+		if path != "" {
+			covered[path] = false
+		}
 	}
 	for _, unit := range inventory.Units {
 		if unit.Path != "" {

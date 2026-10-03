@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -550,6 +551,37 @@ func TestCellFileDeclaresThePresenceDeliveryJob(t *testing.T) {
 		Image:          CellImage{Repository: "curlimages/curl:8.18.0", Digest: "sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17"},
 	}, shop.Delivery)
 	require.Contains(t, string(data), "delivery:\n", "the YAML spells it, so a loader never infers it")
+}
+
+// TestCellFileRefusesASelectorItCannotCarry: the cell carries the exact label
+// set a policy selects pods by; a selector written with matchExpressions
+// would be reduced to its matchLabels — or to {} — and a policy derived from
+// that selects either nothing or everything. Refused at render, by name.
+func TestCellFileRefusesASelectorItCannotCarry(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
+		Destination: moduleRenderDestination(workspace, "shop"),
+		Module:      "shop", Environment: "staging", Namespace: "acme-shop", AppProject: "acme-staging",
+		Promotable: true, OwnedPath: "deployments/modules/shop",
+		Units:   promotableServiceGraph("shop", []string{"api"}),
+		Package: &InventoryPackage{ID: "acme/shop", Version: "1.2.0"},
+	}, func(_ context.Context, root string) error {
+		overlay := filepath.Join(root, "services", "api", "overlays", "staging")
+		if err := os.MkdirAll(overlay, 0o755); err != nil {
+			return err
+		}
+		expressions := strings.Replace(cellDeployment, "  selector:\n    matchLabels:\n      app.kubernetes.io/name: api\n",
+			"  selector:\n    matchExpressions:\n      - key: app.kubernetes.io/name\n        operator: In\n        values: [api]\n", 1)
+		if expressions == cellDeployment {
+			return errors.New("fixture selector not found")
+		}
+		return os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(expressions), 0o644)
+	})
+	require.NoError(t, err)
+	_, err = RenderCell(context.Background(), workspace, env)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "workload api selects its pods with matchExpressions, which the cell file cannot carry")
 }
 
 func TestCellFileSkipsTreesRenderedForAnotherEnvironment(t *testing.T) {

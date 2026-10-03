@@ -501,6 +501,17 @@ environments of one workspace on one cluster never replace each other's Job
 in the authority namespace they share. The file it is written to
 (`deliver-<kind>.yaml`) is stable.
 
+The overlays are part of the **immutable service snapshot**: every
+Application the bootstrap stamps reads the one snapshot revision, the delivery
+Applications included, so the overlays they read are settled and signed
+*before* the snapshot is committed and live in it beside the units. (They were
+once staged after the snapshot, which left every delivery Application pointing
+at a revision where its path did not exist — nothing delivered, and no gate
+said so until a test ran `ls-tree` on the snapshot.) A rollback is a publish
+whose render is the restored tree: it is snapshotted, settled and signed the
+same way, and the rollback mutation advertises its snapshot ref as a publish
+does.
+
 Each Job is an Argo CD **Sync hook** (`argocd.argoproj.io/hook: Sync`,
 `hook-delete-policy: BeforeHookCreation`), not a tracked resource: a tracked
 Job is applied once and, being complete, never re-synced, so after a restore

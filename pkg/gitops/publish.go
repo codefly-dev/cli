@@ -96,7 +96,7 @@ func Publish(ctx context.Context, workspace *resources.Workspace, mutation *Publ
 }
 
 func PlanRollback(ctx context.Context, workspace *resources.Workspace, request *RollbackRequest) (RollbackPlan, error) {
-	prepared, revision, err := prepareRollback(ctx, workspace, request)
+	prepared, revision, err := prepareRollback(ctx, workspace, request, false)
 	if err != nil {
 		return RollbackPlan{}, err
 	}
@@ -111,13 +111,26 @@ func Rollback(ctx context.Context, workspace *resources.Workspace, mutation *Rol
 	if mutation.PlanID == "" {
 		return PublishResult{}, fmt.Errorf("rollback requires an inspected plan ID")
 	}
-	prepared, _, err := prepareRollback(ctx, workspace, &mutation.Request)
+	inspected, _, err := prepareRollback(ctx, workspace, &mutation.Request, false)
+	if err != nil {
+		return PublishResult{}, err
+	}
+	if inspected.plan.ID != mutation.PlanID {
+		current := inspected.plan.ID
+		inspected.cleanup()
+		return PublishResult{}, fmt.Errorf("rollback plan is stale: prepared %s, current %s", mutation.PlanID, current)
+	}
+	inspected.cleanup()
+	// The rollback's snapshot — the restored workloads with their re-settled
+	// documents — is advertised as a publish's is, so the Applications can
+	// reach the revision they are stamped with.
+	prepared, _, err := prepareRollback(ctx, workspace, &mutation.Request, true)
 	if err != nil {
 		return PublishResult{}, err
 	}
 	defer prepared.cleanup()
 	if prepared.plan.ID != mutation.PlanID {
-		return PublishResult{}, fmt.Errorf("rollback plan is stale: prepared %s, current %s", mutation.PlanID, prepared.plan.ID)
+		return PublishResult{}, fmt.Errorf("rollback plan changed while advertising its snapshot: prepared %s, current %s", mutation.PlanID, prepared.plan.ID)
 	}
 	if violation := firstContractViolation(prepared.plan.ContractChecks); violation != "" {
 		return PublishResult{}, fmt.Errorf("gitops rollback blocked by contract admission: %s", violation)
@@ -272,24 +285,38 @@ func preparePublish(
 			return fail(cellErr)
 		}
 	} else {
+		// A rollback is a publish whose render is the tree an earlier revision
+		// delivered: restored, then snapshotted, settled and signed exactly as a
+		// render would be. Restoring the old bootstrap and the old carriers
+		// verbatim would point every Application at a snapshot holding the
+		// carriers that revision signed, which a host past them refuses.
 		if err := restoreCloneTree(ctx, repo, targetPath, restoreRevision); err != nil {
 			return fail(err)
 		}
-		snapshotRevision, err = bootstrapRevision(filepath.Join(target, "bootstrap"))
+		restored, tempErr := os.MkdirTemp("", "codefly-rollback-")
+		if tempErr != nil {
+			return fail(tempErr)
+		}
+		defer os.RemoveAll(restored)
+		if copyErr := copyTree(target, restored); copyErr != nil {
+			return fail(fmt.Errorf("copy the restored tree: %w", copyErr))
+		}
+		if validateErr := ValidateRenderedTree(restored, "", true); validateErr != nil {
+			return fail(fmt.Errorf("validate rollback render: %w", validateErr))
+		}
+		inventory, err = LoadInventory(restored)
 		if err != nil {
 			return fail(err)
 		}
-		if snapshotRevision == "" {
-			snapshotRevision = restoreRevision
+		generateBootstrap, bootstrapErr := publicationGeneratesBootstrap(ctx, workspace, request.Module, &inventory)
+		if bootstrapErr != nil {
+			return fail(bootstrapErr)
 		}
-		if err := ValidateRenderedTree(target, "", true); err != nil {
-			return fail(fmt.Errorf("validate rollback render: %w", err))
-		}
-		inventory, err = LoadInventory(target)
+		snapshotRevision, inventory, err = prepareServicePublication(
+			ctx, repo, target, targetPath, restored, &inventory, generateBootstrap,
+			request.Environment, config, promotionBranch, publishSnapshot, localFetchHost, publication,
+		)
 		if err != nil {
-			return fail(err)
-		}
-		if inventory, err = resettleRestoredDelivery(ctx, repo, target, targetPath, request.Environment, &inventory, publication); err != nil {
 			return fail(err)
 		}
 	}
@@ -693,23 +720,12 @@ func prepareServicePublication(
 		renderedInventory,
 		environment,
 		publishSnapshot,
+		publication,
 	)
 	if err != nil {
 		return "", Inventory{}, err
 	}
-	unitDirs, err := inventoryUnitDirectories(renderedInventory)
-	if err != nil {
-		return "", Inventory{}, err
-	}
-	if err = removePublicationRemainder(target, unitDirs); err != nil {
-		return "", Inventory{}, err
-	}
-	// The delivery documents are staged after the units and settled against the
-	// base branch: their generation and their signature are publish's to make.
-	delivery, err := stageAndSettleDelivery(ctx, repo, target, targetPath, rendered, renderedInventory, environment, publication)
-	if err != nil {
-		return "", Inventory{}, err
-	}
+	delivery := snapshot.delivery
 	if generateBootstrap {
 		if err := generateArgoBootstrap(
 			ctx,
@@ -787,6 +803,8 @@ type serviceSnapshotPreparation struct {
 	revision     string
 	services     []string
 	servicePaths []string
+	// delivery is what the snapshot's delivery overlays settled to.
+	delivery *InventoryDelivery
 }
 
 func prepareServiceSnapshot(
@@ -798,6 +816,7 @@ func prepareServiceSnapshot(
 	renderedInventory *Inventory,
 	environment string,
 	publishSnapshot bool,
+	publication *deliveryPublication,
 ) (serviceSnapshotPreparation, error) {
 	moduleName := renderedInventory.Module
 	unitDirs, dirErr := inventoryUnitDirectories(renderedInventory)
@@ -836,18 +855,31 @@ func prepareServiceSnapshot(
 	if err = removePublicationRemainder(target, unitDirs); err != nil {
 		return serviceSnapshotPreparation{}, err
 	}
+	// The delivery documents are part of the snapshot: every Application the
+	// bootstrap stamps reads the ONE immutable snapshot revision, the delivery
+	// Applications included, so the overlays they read must be in it. They
+	// were once staged after the snapshot was committed, which left every
+	// delivery Application pointing at a revision where its path did not
+	// exist. Settled here, against the base branch, before the commit.
+	delivery, err := stageAndSettleDelivery(ctx, repo, target, targetPath, rendered, renderedInventory, environment, publication)
+	if err != nil {
+		return serviceSnapshotPreparation{}, err
+	}
 	serviceNames := inventoryUnitNames(renderedInventory.Units)
 	snapshotOptions := &RenderOptions{
-		Module:      renderedInventory.Module,
-		UnitNames:   serviceNames,
-		OwnedPath:   targetPath,
-		ModulePath:  renderedInventory.ModulePath,
-		Units:       renderedInventory.Units,
-		Package:     renderedInventory.Package,
-		Environment: renderedInventory.Environment,
-		Namespace:   renderedInventory.Namespace,
-		AppProject:  renderedInventory.AppProject,
-		Promotable:  true,
+		Module:                  renderedInventory.Module,
+		UnitNames:               serviceNames,
+		OwnedPath:               targetPath,
+		ModulePath:              renderedInventory.ModulePath,
+		Units:                   renderedInventory.Units,
+		Package:                 renderedInventory.Package,
+		Environment:             renderedInventory.Environment,
+		Namespace:               renderedInventory.Namespace,
+		AppProject:              renderedInventory.AppProject,
+		Promotable:              true,
+		SolutionHostBindingPath: renderedInventory.SolutionHostBindingPath,
+		SolutionAuthorityPath:   renderedInventory.SolutionAuthorityPath,
+		Delivered:               delivery,
 	}
 	snapshotInventory, err := buildInventory(target, snapshotOptions)
 	if err != nil {
@@ -893,6 +925,7 @@ func prepareServiceSnapshot(
 		revision:     snapshotRevision,
 		services:     serviceNames,
 		servicePaths: servicePaths,
+		delivery:     delivery,
 	}, nil
 }
 
@@ -1289,7 +1322,7 @@ func validatePublishRequest(workspace *resources.Workspace, request *PublishRequ
 	return nil
 }
 
-func prepareRollback(ctx context.Context, workspace *resources.Workspace, request *RollbackRequest) (*preparedRepository, string, error) {
+func prepareRollback(ctx context.Context, workspace *resources.Workspace, request *RollbackRequest, publishSnapshot bool) (*preparedRepository, string, error) {
 	if request == nil {
 		return nil, "", fmt.Errorf("rollback request is required")
 	}
@@ -1327,7 +1360,7 @@ func prepareRollback(ctx context.Context, workspace *resources.Workspace, reques
 	if err != nil {
 		return nil, "", fmt.Errorf("resolve rollback revision: %w", err)
 	}
-	prepared, err := preparePublish(ctx, workspace, &request.PublishRequest, revision, false)
+	prepared, err := preparePublish(ctx, workspace, &request.PublishRequest, revision, publishSnapshot)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1976,51 +2009,6 @@ type deliveryPublication struct {
 	// Both empty when the workspace has rendered no cell for this environment.
 	cellSource string
 	cellPath   string
-}
-
-// resettleRestoredDelivery settles the delivery documents of a restored tree
-// against the base branch, as a render's are, and rebuilds the inventory over
-// the result. A rollback restores the workloads an earlier revision delivered;
-// it must NOT restore the documents that revision signed: a host that applied
-// generation 5 refuses the generation-3 carrier as stale, and a tree restored
-// from before a withdrawal would carry the withdrawn binding as present and
-// have the next publish lose the tombstone. So the restored documents are the
-// render's input here — the old content at the next generation, signed now,
-// with the base branch's tombstones carried forward — and a rollback that
-// would reinstate a withdrawn binding is refused as any render is.
-func resettleRestoredDelivery(ctx context.Context, repo, target, targetPath, environment string, inventory *Inventory, publication *deliveryPublication) (Inventory, error) {
-	if inventory.SolutionHostBindingPath == "" && inventory.SolutionAuthorityPath == "" {
-		return *inventory, nil
-	}
-	presence, err := settlePresenceDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, &publication.options)
-	if err != nil {
-		return Inventory{}, fmt.Errorf("settle the rollback's presence documents: %w", err)
-	}
-	authority, err := settleAuthorityDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, presence, &publication.options)
-	if err != nil {
-		return Inventory{}, fmt.Errorf("settle the rollback's authority documents: %w", err)
-	}
-	options := &RenderOptions{
-		Module: inventory.Module, Unit: inventory.Unit, Environment: inventory.Environment,
-		Namespace: inventory.Namespace, AppProject: inventory.AppProject, OwnedPath: targetPath,
-		ModulePath: inventory.ModulePath, Units: inventory.Units, Package: inventory.Package,
-		Promotable: true, CheckUnitDirectories: true,
-		SolutionHostBindingPath:       inventory.SolutionHostBindingPath,
-		SolutionAuthorityPath:         inventory.SolutionAuthorityPath,
-		Delivered:                     mergeDeliveries(presence, authority),
-		WorkspaceConfigurationDigests: inventory.WorkspaceConfigurationDigests,
-	}
-	if _, err = validateTree(target, options); err != nil {
-		return Inventory{}, fmt.Errorf("validate the re-settled rollback: %w", err)
-	}
-	settled, err := buildInventory(target, options)
-	if err != nil {
-		return Inventory{}, err
-	}
-	if err := writeCanonicalInventory(filepath.Join(target, InventoryFilename), &settled); err != nil {
-		return Inventory{}, err
-	}
-	return settled, nil
 }
 
 // stageAndSettleDelivery copies the render's delivery documents into the

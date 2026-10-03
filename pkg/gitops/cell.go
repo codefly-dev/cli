@@ -480,7 +480,11 @@ func renderedWorkloads(unitDir, environment string) ([]CellWorkload, error) {
 		if !ok {
 			continue
 		}
-		workload := CellWorkload{Name: metadataString(item.value, "name"), Kind: item.kind, Selector: podSelector(item)}
+		selector, err := podSelector(item)
+		if err != nil {
+			return nil, err
+		}
+		workload := CellWorkload{Name: metadataString(item.value, "name"), Kind: item.kind, Selector: selector}
 		workload.ServiceAccount, _ = spec["serviceAccountName"].(string)
 		if workload.ServiceAccount == "" {
 			workload.ServiceAccount = defaultServiceAccount
@@ -597,19 +601,29 @@ func overlayManifests(overlay string) ([]manifest, error) {
 // template's own labels for a Job or CronJob, which carry no selector of their
 // own. Always non-nil: an empty selector is a declaration that the workload's
 // pods carry no label, which a policy must see rather than assume "app".
-func podSelector(item manifest) map[string]string {
+// podSelector is the exact label set that selects a workload's pods. The cell
+// file carries a label set and nothing else, so a selector written with
+// matchExpressions is refused rather than reduced: an expression-only
+// selector would come out as {}, which a loader reads as "every pod of the
+// namespace" or as "no pod", and either is a security policy derived from a
+// constraint that was never carried.
+func podSelector(item manifest) (map[string]string, error) {
 	selector := map[string]string{}
 	var labels map[string]any
 	switch item.kind {
 	case kindDeployment, kindStatefulSet, kindDaemonSet:
-		labels = mapField(mapField(mapField(item.value, "spec"), "selector"), "matchLabels")
+		spec := mapField(mapField(item.value, "spec"), "selector")
+		if expressions := sliceField(spec, "matchExpressions"); len(expressions) > 0 {
+			return nil, fmt.Errorf("workload %s selects its pods with matchExpressions, which the cell file cannot carry as the exact label set a policy selects by; select the pods by labels alone", metadataString(item.value, "name"))
+		}
+		labels = mapField(spec, "matchLabels")
 	default:
 		labels = mapField(mapField(podTemplate(item), "metadata"), "labels")
 	}
 	for key, value := range labels {
 		selector[key] = fmt.Sprint(value)
 	}
-	return selector
+	return selector, nil
 }
 
 // endpointConsumers indexes, for every endpoint a composed service declares,
