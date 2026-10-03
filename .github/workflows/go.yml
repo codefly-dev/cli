@@ -238,12 +238,20 @@ jobs:
           if-no-files-found: warn
 
   # golangci-lint runs as its own job, not a quality gate, for two reasons:
-  # only-new-issues has a well-defined baseline only against a pull-request base
-  # branch (on push there is no diff to gate against), and a cold-cache
-  # whole-repository analysis needs more headroom than the 5-minute quality
-  # budget. Pinned to match the version documented in the Makefile (`make
-  # lint`). only-new-issues gates the PR on newly introduced findings so the
-  # pre-existing backlog does not block work while the standard is enforced.
+  # a new-issues baseline has a well-defined meaning only against a
+  # pull-request base branch (on push there is no diff to gate against), and a
+  # cold-cache whole-repository analysis needs more headroom than the 5-minute
+  # quality budget. Pinned to match the version documented in the Makefile
+  # (`make lint`). New issues gate the PR so the pre-existing backlog does not
+  # block work while the standard is enforced.
+  #
+  # The baseline is git's merge-base with main, computed by golangci-lint
+  # itself over a full checkout — NOT the action's only-new-issues, which
+  # fetches the PR's patch through the GitHub API and, when the diff exceeds
+  # the API's 20,000-line cap ("too_large"), gets no patch and reports every
+  # issue in the repository as new. A large PR then goes red on findings in
+  # files it never touched, and a rerun cannot help. This is the same
+  # baseline `golangci-lint run --new-from-rev=main` gives locally.
   lint:
     name: lint
     runs-on: ubuntu-latest
@@ -253,16 +261,7 @@ jobs:
       - name: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The whole history, so the linter can compute the merge-base
-          # itself. The action's own only-new-issues mode asks GitHub for the
-          # pull request's patch, and GitHub refuses one over 20,000 lines
-          # ("Sorry, the diff exceeded the maximum number of lines") -- at
-          # which point the action has no baseline and FALLS BACK TO REPORTING
-          # THE ENTIRE BACKLOG, 753 findings on a branch that introduced none.
-          # A gate that answers about the backlog on a large PR and about the
-          # diff on a small one is not a gate. --new-from-merge-base below
-          # needs the base commit present locally, which fetch-depth: 1 does
-          # not provide.
+          # The merge-base with main needs the history on both sides.
           fetch-depth: 0
 
       - name: Set up Go
@@ -285,12 +284,8 @@ jobs:
           # one ("the Go language version used to build golangci-lint is lower
           # than the targeted Go version"). Matches `make lint`.
           install-mode: goinstall
-          # Not only-new-issues: that mode fetches the PR patch from GitHub
-          # and silently reports everything when the patch is too large to
-          # serve (see the checkout step). The linter computes the merge-base
-          # against the PR's base branch itself, from the full history, which
-          # works for any diff size and is what `make lint` can reproduce.
-          args: --new-from-merge-base=origin/${{ github.base_ref }}
+          only-new-issues: false
+          args: --new-from-merge-base=origin/main
 
   # pkg/web/go-grpc/out is a committed, generated artifact: web/dashboard builds
   # into it and go:embed ships it inside the CLI binary (see the Makefile's
