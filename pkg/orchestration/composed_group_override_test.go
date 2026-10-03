@@ -63,7 +63,30 @@ func groupKeys(infos []*basev0.ConfigurationInformation, group string) []string 
 //     the ones that declared it. A partial override thus narrows the group's
 //     contents and widens its delivery at once.
 //
-// Filed as codefly-dev/core#693, with this reproduction and the three losses.
+// Filed as codefly-dev/core#693, with this reproduction and the three losses,
+// and FIXED in codefly-dev/core#694 (open and green, branch
+// issue-693-fix-configurations-a-workspace-override-of-a-composed, cut from
+// v0.7.1 — so the release carrying it is the next tag after v0.7.1).
+//
+// This test will fail the moment that release is pinned here, which is what it
+// was written to do. The invariant to flip it to, over this same fixture:
+//
+//   - CONFIG_DIR keeps the module's /etc/app — a key the root does not supply
+//     is no longer discarded;
+//   - CONFIG_MODE's undischarged ${profile} survives the override and is
+//     reported in Unsupplied, so Load FAILS naming app-config/CONFIG_MODE where
+//     it returns nil below;
+//   - a root value that empties a ${profile} key is refused by name
+//     (configurations.ErrEmptyProfileValue), and a key the module's group does
+//     not declare is refused by name (configurations.ErrUndeclaredProfileKey);
+//   - the group STAYS composed: ComposedBy keeps the name and it is absent from
+//     CompositionRootWorkspaceConfigurationNames, so consequence (3) below
+//     disappears — a partial override no longer widens the truncated group's
+//     delivery to every service of the composition.
+//
+// core#694 leaves a group inherited from a composed WORKSPACE replacing whole,
+// so the operator rule in docs/orchestration.md narrows to that case rather
+// than going away.
 //
 // What it must become, and where: core should overlay the consuming workspace's
 // values onto the module's group per key, the way `profileOverlay.add` already

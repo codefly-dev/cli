@@ -394,10 +394,24 @@ and this package then injects the truncated group into **every** service of the
 composition rather than only the ones that declared it. A partial override
 narrows a group's contents and widens its delivery at the same time.
 
-This is filed as [codefly-dev/core#693](https://github.com/codefly-dev/core/issues/693),
-with the reproduction and the per-key semantics it should get. Until it lands,
-declare **every** key of a composed module's group when overriding it, or
-override none of them.
+This is filed as [codefly-dev/core#693](https://github.com/codefly-dev/core/issues/693)
+and **fixed in [core#694](https://github.com/codefly-dev/core/pull/694)**, which
+is open and green but not yet released, so the CLI still pins `v0.7.1` and the
+behaviour above is what a composition meets today.
+
+Until that release is pinned here: declare **every** key of a composed module's
+group when overriding it, or override none of them.
+
+When it is pinned, three of the four statements above stop being true for a
+**module's** group — an override becomes exactly a partial override, an
+undischarged `${profile}` is reported rather than discarded, and the group stays
+composed, so its delivery stays scoped to the services that declared it instead
+of widening to every service of the composition. The interim rule then narrows
+rather than disappearing: core#694 deliberately leaves a group inherited from a
+composed **workspace** (the product model) replacing whole, because the
+precedence there has to be decided per key for the product model first. An
+operator's `--set` is unchanged either way — still attributed to the run, still
+composition-root even on a composed name.
 `TestAPartialRootOverrideReplacesAComposedModuleGroupWhole`
 (`pkg/orchestration`) pins the current behaviour and names the core function, so
 the CLI's expectations move when core's do. The semantics it should get already
