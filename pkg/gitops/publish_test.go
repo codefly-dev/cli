@@ -15,6 +15,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/solutionhost"
 )
 
 var preparedPermit = mutationauthority.NewPreparedPermit()
@@ -201,6 +202,117 @@ func TestLocalGitopsPublishPlansThenCreatesSignedExactRefs(t *testing.T) {
 	if receipt.SnapshotRevision != result.SnapshotRevision || receipt.Commit != result.Commit || receipt.Tree != result.Tree {
 		t.Fatalf("receipt = %+v, publication = %+v", receipt, result)
 	}
+}
+
+// TestLocalGitopsPublishDeliversSignedCarriersAndTheJob runs the whole
+// publish path over a tree that declares presence to a host: the plan is
+// prepared through preparePublish (the host block shaping the delivery
+// options, the delivery target resolved, the groups held), the documents are
+// settled against the base branch and signed, the carriers and the Job are
+// written and validated as part of the tree, and the commit carries them. It
+// is the path the settlement tests call into piecewise, run whole.
+func TestLocalGitopsPublishDeliversSignedCarriersAndTheJob(t *testing.T) {
+	ctx := context.Background()
+	remote := createBareRepository(t)
+	workspace := loadGitopsWorkspaceWithServices(t, remote, []string{"api", "host"})
+	config, err := os.ReadFile(filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hosted := strings.Replace(string(config), "  - name: production\n    cluster:\n      kind: k3d\n",
+		"  - name: production\n    namespace: payments\n    cluster:\n      kind: k3d\n    host:\n      coordinate: example/prod/region-a\n      component: platform-host\n      domain: example\n      audience: accounts\n      trust_domain: cluster.example\n      envelope_revision: 1\n      delivery: payments/host/rest\n", 1)
+	if hosted == string(config) {
+		t.Fatal("the fixture's environment was not found")
+	}
+	if err := os.WriteFile(filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName), []byte(hosted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hostService := filepath.Join(workspace.Dir(), "services", "host", resources.ServiceConfigurationName)
+	if err := os.MkdirAll(filepath.Dir(hostService), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hostService, []byte(devServiceYAML("host")+"endpoints:\n  - name: rest\n    api: rest\n    visibility: internal\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err = resources.LoadWorkspaceFromDir(ctx, workspace.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := selectedEnvironment(t, workspace, "production")
+	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
+	if _, err := RenderOwnedTree(ctx, &RenderOptions{
+		Destination: destination, Module: "payments", UnitNames: []string{"api", "host"},
+		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "deployments", "modules", "payments")),
+		Units:       promotableServiceGraph("payments", []string{"api", "host"}),
+		Environment: "production", Namespace: "payments", AppProject: "payments", Promotable: true,
+		Workspace: "payments", Host: env.Host,
+		SolutionInstances: []SolutionInstance{{
+			Kind: solutionhost.KindModule, Name: "payments", Package: "example/payments", Version: "1.0.0", ReleaseDigest: testReleaseDigest,
+			Units: []SolutionArtifactUnit{
+				{Name: "api", Path: "services/api", Subject: "payments@example.iam.test"},
+				{Name: "host", Path: "services/host", Subject: "payments@example.iam.test"},
+			},
+		}},
+	}, func(ctx context.Context, stage string) error {
+		for _, name := range []string{"api", "host"} {
+			overlay := filepath.Join(stage, "services", name, "overlays", "production")
+			if err := os.MkdirAll(overlay, 0o755); err != nil {
+				return err
+			}
+			manifest := strings.ReplaceAll(pinnedDeployment, "name: api", "name: "+name)
+			if err := os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(manifest), 0o644); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(overlay, "kustomization.yaml"), []byte("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.yaml\n"), 0o644); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	configureSSHSigning(t)
+
+	signer := &fakeSigner{}
+	request := PublishRequest{
+		Module: "payments", Environment: "production", Local: true, Signer: signer,
+		PromotionBranch: "codefly/promote-payments-production",
+	}
+	plan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Delivery == nil || !plan.Delivery.Signed || len(plan.Delivery.Documents) != 1 || plan.Delivery.Documents[0].ID != "payments.production.payments" {
+		t.Fatalf("the plan does not report the settled, signed delivery: %+v", plan.Delivery)
+	}
+	if signer.signed != 1 {
+		t.Fatalf("the plan signed %d documents, want the one presence document", signer.signed)
+	}
+	result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlay := result.Path + "/" + solutionHostBindingDir + "/overlays/production/"
+	job := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+overlay+"deliver-presence.yaml")
+	for _, want := range []string{
+		"name: deliver-presence-payments-production-", "serviceAccountName: delivery", "namespace: payments",
+		"DELIVERY_IDENTITY_FILE", "http://host.payments.svc.cluster.local:8080", "audience: accounts",
+		"argocd.argoproj.io/hook: Sync",
+	} {
+		if !strings.Contains(job, want) {
+			t.Fatalf("the published Job lacks %q:\n%s", want, job)
+		}
+	}
+	carrier := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+overlay+"payments.production.payments.yaml")
+	if !strings.Contains(carrier, presenceCarrierKey) || !strings.Contains(carrier, "generation: 1") {
+		t.Fatalf("the published carrier is not the signed generation-1 document:\n%s", carrier)
+	}
+	inventory := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+result.Path+"/"+InventoryFilename)
+	if !strings.Contains(inventory, `"signed": true`) {
+		t.Fatalf("the published inventory does not record a signed delivery:\n%s", inventory)
+	}
+	// (The Argo Application that delivers the overlay is pinned by
+	// TestDeclaredBindingsReachArgo; a flat workspace generates no bootstrap.)
 }
 
 func TestPlanPublishReportsOkContractCheckAgainstDeployedHost(t *testing.T) {

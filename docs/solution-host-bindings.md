@@ -74,6 +74,12 @@ ServiceAccount) — and the platform's loader refuses a SPIFFE ID it does not
 derive the same way, so a document naming any other value gets an identity the
 mesh never presents.
 
+An environment that composes a module **declares the host it runs on**, or
+the render is refused with the instances and the block's fields named.
+Rendering the instances' workloads with no declaration delivered them present
+on no host, with a warning the operator could miss; a composition with nothing
+to declare is one with no solution instance, not one that forgot its host.
+
 The environment also declares the external reach of each service, keyed by
 module-qualified identity like `managed-services`, and what the cell must
 grant it beyond the mesh edges the render derives:
@@ -141,9 +147,18 @@ principal the environment declares for the service, and the SPIFFE ID
 other container, init containers included, as one that must never be accepted
 as the workload. A unit with several containers and none named after the
 service is refused: "whichever one presented the token" is how a sidecar ends
-up holding a workload's authority. Every pod-producing object of a unit is a
-workload — the bootstrap Jobs and CronJobs included, which run their own
-images — so the host's approved set covers every pod it will see.
+up holding a workload's authority. Presence names what **mints** under the
+service's principal — its serving workloads — and not a unit's bootstrap Job
+or CronJob: those run their own images and never authenticate as the service,
+so they are declared to the cell for admission, where the closed approved set
+covers every pod the platform will see, and not here, where their image would
+be a build the host accepts a token for. A managed service's bootstrap bundle
+is the cell's for the same reason and is never a presence artifact.
+
+A serving workload names its own ServiceAccount: one running as the
+namespace's `default` account — every pod's that names none — is refused,
+because the identity a document names is the account's, and that one any pod
+of the namespace can present.
 
 The document cannot close the sidecar gap on its own: a projected
 ServiceAccount token is the pod's, so a sidecar that mounts it presents it as
@@ -173,12 +188,38 @@ A module that publishes `module.contract.codefly.yaml` (schema
 `codefly/module-contract/v1`) and declares `module-identity: true` on **one**
 service gets one authority document, into
 `solution-authority/overlays/<environment>/`, delivered to the platform's
-authority namespace (`platform-authority`) — the namespace only the delivery
-pipeline may create Jobs in. One service, because an authority document
-approves one build and a host keeps one authority record per binding: two
-services each claiming to be the module's identity would be two builds under
-one principal, of which the host could activate at most one, so the render
-refuses the pair and names both.
+authority namespace (`platform-authority`). One service, because an authority
+document approves one build and a host keeps one authority record per
+binding: two services each claiming to be the module's identity would be two
+builds under one principal, of which the host could activate at most one, so
+the render refuses the pair and names both.
+
+The authority overlay is applied under an **AppProject of its own**
+(`<project>-authority`, written beside the module's `project.yaml`): one
+destination, the authority namespace, and two kinds, ConfigMap and
+`batch/Job`, with no cluster resources. The module's own project never names
+the authority namespace — an AppProject destination applies to every
+Application in the project, so adding it there would let any unit overlay
+place a pod in the authority namespace running as the platform's `delivery`
+account. The ApplicationSet stamps the project and the destination per
+component, so the authority Application is the one Application of the module
+that reaches that namespace, and a Deployment, CronJob or Secret in the
+authority overlay is refused at apply. What that isolation does not cover is
+the authority Job itself: it runs as the platform's `delivery` account, whose
+only reach is the delivery API, which admits nothing unsigned.
+
+The contract's **principal is the module's own name** — the contract says so
+of itself, and it is held to that at render: the contract is written in the
+module's repository, so a principal it names is self-asserted, and a module
+claiming another's principal would claim that principal's bindings. And the
+contract is carried **whole or refused**: a declaration core's authority
+document has no field for — the module's own `scope_ceilings`, its
+`destinations`, a second queue or namespace, a binding's `binding_key` or
+`lookup.method` — is refused by name, with the field the document would need,
+rather than dropped between the contract and the signed document. A host
+cannot enforce a declaration it never receives, and a declaration that changed
+without the document changing would be enforced as before. A module declaring
+any of them waits on core growing `solutionhost.AuthorityBinding`.
 
 The contract declares the principal, the operation bindings the module redeems
 (each with the operations it needs and a scope ceiling per operation), the
@@ -243,11 +284,16 @@ The derivation:
   workloads run two distinct builds cannot be approved by one document and is
   refused;
 - **one unit of authority per (binding, operation)**, under the ID
-  `<principal>:<binding>:<operation>`, with the operation's ceiling as a sorted,
-  comma-joined list of `<resource kind>:<action>` and the binding's revision
-  from the contract (1 when omitted); the module's queue and namespace when it
-  declares exactly one of each — absence grants no queue- or namespace-scoped
-  authority, never every queue;
+  `<presence binding>:<binding>:<operation>` — scoped by the presence binding,
+  so two instances of one module on one host hold distinct units and
+  withdrawing one instance's leaves the other's alone — with the operation's
+  ceiling as a sorted, comma-joined list of `<resource kind>:<action>` and the
+  binding's revision from the contract (1 when omitted), which only ever
+  increases: a decrease is refused at publish, as is a change to what the
+  binding grants that keeps its revision; the module's queue and namespace
+  when it declares one of each — absence grants no queue- or namespace-scoped
+  authority, never every queue, and several are refused rather than granted
+  none;
 - **effective from** the presence generation settled in the same publish.
 
 The host's envelope must list the same binding IDs for core's exact-inclusion
@@ -348,6 +394,15 @@ a delivery that declared bindings is refused, not tombstoned — withdrawing
 everything the moment a host declaration is removed is not a publish to make
 silently.
 
+**A withdrawal is authored by the domain that delivered the binding.** A
+prior document delivered under another ownership domain than the one the
+environment declares now is never tombstoned by this publish: a composition
+whose domain moved renders nothing under the old one, and that absence must
+not sign the old domain's bindings away. The scope is held against what the
+environment declares, not inferred from the tombstones agreeing with each
+other. A presence document moving domains under a delivered binding ID is
+refused the same way, with the host's own reason.
+
 **Authority follows presence.** Each authority document is made effective from
 the presence generation settled for its module, so the two halves of a tuple
 always travel together, and a binding whose authority content changed while its
@@ -355,6 +410,29 @@ revision did not is refused at publish: a credential seals the revision and is
 refused when the live one moves, so a change that keeps the number keeps every
 outstanding credential's old authority with nothing detecting it. Bump the
 binding's revision in the contract.
+
+**Unchanged is delivered as it was.** A document whose settled generation is
+the delivered one keeps the carrier it was delivered as — the same bytes, the
+same signature, no new log entry — and the Job that posts it keeps its name,
+so a no-op promotion writes the same tree and gives a re-sync nothing to do.
+Re-signing on every publish made that impossible.
+
+**Rollback re-settles.** A rollback restores the workloads an earlier revision
+delivered and settles their documents anew against the base branch — the old
+content at the next generation, signed now, the base's tombstones carried
+forward — never the carriers that revision signed: a host past generation 3
+refuses the generation-3 carrier as stale, and a tree restored from before a
+withdrawal would carry the withdrawn binding as present. A rollback across a
+withdrawal is refused as terminal, as any render presenting a withdrawn
+binding is. The environment's host block shapes a rollback publish exactly as
+it shapes a render's.
+
+**What publish reads, it reads honestly.** The base branch must exist in the
+publication checkout; an overlay absent from it is told from an unreadable
+one by resolving the path, never by a listing that failed; a carrier
+ConfigMap that lost its document key is an error, not another manifest. An
+unreadable history read as "nothing delivered" would restart the generation
+at 1 and lose every tombstone.
 
 ## Signing
 
@@ -364,7 +442,20 @@ re-canonicalizes) with the publishing workflow's **Sigstore keyless** identity
 over GitHub Actions OIDC: an ephemeral key certified by Fulcio for the workflow
 identity, recorded in the transparency log, packaged as a Sigstore bundle
 (`application/vnd.dev.sigstore.bundle.v0.3+json`). The `codefly` binary holds
-no key, and there is no option to supply one (`pkg/delivery/signing`).
+no key, and there is no option to supply one (`pkg/delivery/signing`). A
+`--local` qualification publish **never signs** — not "signs when it can":
+its signer is the one a process with no identity gets, so a workflow holding
+an OIDC identity cannot deliver signed carriers to a qualification cluster
+under the release identity.
+
+A release publish **checks its own carriers**, right after signing each one,
+as a host will: offline, against the public-good trusted root fetched through
+TUF, under a policy admitting exactly this workflow's identity — repository,
+workflow path and ref, as GitHub Actions states them to the job
+(`GITHUB_REPOSITORY`, `GITHUB_WORKFLOW_REF`). A carrier a host would refuse —
+a certificate naming another workflow, a log entry the root cannot verify, a
+bundle with no transparency evidence — is refused at publish, in front of
+whoever ran the release, and nothing is written for a Job to deliver.
 
 The bundle is verifiable **offline**, which the host relies on: delivered
 namespaces egress nothing, so a verifier that looked up Rekor or Fulcio would
@@ -400,10 +491,15 @@ produces unsigned documents and says so.
 The ConfigMaps are the delivery-side durable desired state Argo keeps true in
 the cluster, surviving a host database restore. The host learns of a generation
 when its delivery API is POSTed the carrier: one Job per document type per
-module, rendered at publish once the carriers exist — the presence Job in the
-module's namespace, as the `delivery` ServiceAccount the render creates there;
-the authority Job in the authority namespace, as the `delivery` account the
-platform provisions.
+module **per settled set**, rendered at publish once the carriers exist — the
+presence Job in the module's namespace, as the `delivery` ServiceAccount the
+render creates there; the authority Job in the authority namespace, as the
+`delivery` account the platform provisions. A Job is named
+`deliver-<kind>-<module>-<environment>-<digest of the carriers it posts>`:
+a changed set is a new Job, an unchanged set the same one, and two
+environments of one workspace on one cluster never replace each other's Job
+in the authority namespace they share. The file it is written to
+(`deliver-<kind>.yaml`) is stable.
 
 Each Job is an Argo CD **Sync hook** (`argocd.argoproj.io/hook: Sync`,
 `hook-delete-policy: BeforeHookCreation`), not a tracked resource: a tracked
@@ -411,19 +507,39 @@ Job is applied once and, being complete, never re-synced, so after a restore
 nothing would re-POST. A hook runs on every sync of the Application from state
 that still exists, so a replay after a restore is an ordinary sync, and a sync
 that changes nothing else re-POSTs a generation the host answers "current" to.
-Its token is projected for the host's audience and re-read per request; it runs
-a digest-pinned `curl` image.
+Its token is projected for the host's audience and re-read per request; it
+runs a digest-pinned `curl` image, read-only, as a non-root user with every
+capability dropped. The script spells its variables `$NAME`, never `${NAME}`
+— the promotable ruleset refuses a manifest carrying `${…}` as an unresolved
+placeholder, and the script is a manifest — and the file the projected
+identity is read from is named `DELIVERY_IDENTITY_FILE`: a variable named
+`*_TOKEN` carrying a value is a credential to that ruleset, and the Job was
+once refused at publish for both.
+
+The Job dials `<service>.<namespace>.svc.cluster.local:<port>` where the port
+is the **Service port the CLI allocates** for the endpoint `host.delivery`
+names (core's `network.DeployedEndpointPorts`, the same allocation the agent
+renders its Service with) — not the container port the service declares, which
+is the pod's and may differ. The scheme is `http` unless the endpoint is
+`secured`: inside the cluster the mesh carries the request over mTLS between
+the Job's pod and the host's, and the bearer token never leaves that tunnel.
 
 Reachability is a retry, not a sync wave: a per-module Application cannot
 express "after the host's delivery API is reachable" (the host is another
-module's Application), so the Job retries transport failures, 429 and 5xx with
-backoff and sits in the consumer-unit wave with the workloads whose presence it
-declares. The host's verdicts — 400, 401, 403, 409 (stale or rewritten
-generation), 422 (invalid, or outside the envelope) — fail the Job, and with it
-the sync, so a refused delivery is visible where it happened. A 2xx is
-committed and durable; the host answers `awaiting_match` when the peer document
-of the tuple has not arrived, which is terminal for the Job and visible to an
-operator.
+module's Application), so the Job retries transport failures, 429, 5xx and a
+404 from a host a version behind, with backoff and `--max-time` per request,
+for about half an hour. The Applications an ApplicationSet stamps sync
+independently of each other; where a parent syncs them by wave, delivery is
+the **last** wave of a module, after every unit, because the host is a module
+of the composition too and on a cold bootstrap its own delivery must not wait
+on a service ordered after it. The host's verdicts — 400, 401 (the token
+review ran and refused this identity), 403, 409 (stale or rewritten
+generation), 422 (invalid, or outside the envelope) — refuse the document;
+the Job goes on to post every other document, a tombstone included, and fails
+at the end if any was refused, so a refused delivery is visible where it
+happened without withholding the rest. A 2xx is committed and durable; the
+host answers `awaiting_match` when the peer document of the tuple has not
+arrived, which is terminal for the Job and visible to an operator.
 
 ## The cell file
 
@@ -462,23 +578,47 @@ egress each service is declared to need: the hosts from the environment's
 `egress` declaration, each as `{name, port}` with the port always explicit,
 and the CIDRs of a managed service.
 
-It is regenerated whole on every render and carries no generation, no domain
-and no tombstone — a workload absent from it is not delivered, which is the
-opposite of the presence document's rule. Publish copies it into the delivery
-repository at `<gitops path>/cells/<environment>/cell.yaml`, outside every
-module path and matched by no Argo overlay, where the platform reads it at
-build time.
+A managed service's bootstrap bundle is inventoried too — its Job is a pod
+the closed admission set would refuse unless the cell names it — with no
+endpoints of its own, and so is the module's **presence delivery Job**, under
+`delivery` on the namespace: the labels its pods carry (its name holds the
+settled set's digest and is decided at publish), the `delivery` account, the
+one container and its pinned image. An ingress route reaches the
+module-qualified service it names and no other module's service of that bare
+name.
+
+It is regenerated whole on every render from the module trees on disk, and
+carries no generation and no tombstone — a workload absent from it is not
+delivered, which is the opposite of the presence document's rule. Publish
+stages **this module's contribution**: the namespace entry its render
+produced, merged into the cell the delivery repository already holds at
+`<gitops path>/cells/<environment>/cell.yaml` (outside every module path and
+matched by no Argo overlay), every other module's entry kept as delivered. The
+cell's own fields come from the publishing render. A module is removed from
+the cell by withdrawing it, never by another module's publish — copying the
+local file whole let the last module published decide the platform's
+inventory for the whole cell.
 
 ## Workspace configuration groups a render bakes in
 
-A render records, per workspace configuration group its services consume, a
-digest of the group as the environment provided it, and refuses to replace its
-tree while a sibling module rendered for the same environment records another
-digest for a group they both consume. Change a group and render only one of its
-consumers, and the refusal names the modules to render too, so the environment
-never delivers two values of one group. The check runs at render, over the
-module trees beside this one, and deliberately not at publish, where it would
-refuse whichever consumer publishes first.
+A render records, per workspace configuration group its services and its
+contract's slots consume, a digest of the group as the environment provided
+it, and **reports** the sibling modules rendered for the same environment that
+record another digest for a group they both consume. The rule is enforced at
+**publish**, where every refusal has one action that satisfies it: a module
+whose recorded digest is not the composition's current value was rendered
+before the group changed and is refused until rendered again; a sibling
+consumer whose local tree records another digest has not been rendered since
+and the publish is refused until it is, by name. A render never refuses on a
+sibling's account — it did once, symmetrically, and deadlocked: with A and B
+both rendered against the old value, rendering A was refused because B's tree
+was stale and rendering B because A's still was. What a publish cannot
+enforce is the delivery base: a consumer published earlier at the old value
+is stale there until its own publish, and refusing this one for it would be
+the same deadlock one repository over, so the plan names the base's stale
+consumers as the next publish to run. An unreadable sibling inventory is an
+error, never agreement, and the inventory schema a tree must carry is the
+current one — an older tree records no digests, and is refused by number.
 
 ## CI wiring
 
@@ -590,16 +730,37 @@ decides otherwise.
 
 ## Dev deployments
 
-`codefly deploy dev` re-pins a service's image inside an already-rendered tree
-to code no release describes. The documents are **not** re-rendered: declaring
-a release that does not describe the running code is a worse record than a
-stale digest. On such a tree the declared digests no longer match the delivered
-bytes; a full render re-derives both and clears the dev deployments.
+`codefly deploy dev` re-pins a service's image inside an already-rendered
+tree. On a module that declares presence or authority it is **refused** and
+sent to a render: the documents pin, in bytes publish signs, the exact build
+each workload runs, and a re-pin would leave them describing bytes nobody
+runs — the host refuses the new pod, and a publish would sign a false
+declaration. A render re-derives the declaration with the new build. On a
+module declaring neither, a dev deployment is what it was.
 
 ## What is not verified
 
 No cluster and no host have applied these documents: the shapes are agreed
 with the host's reconciler and the platform's issuer, but agreement is not a
-running system. Keyless signing against the public Sigstore instance is
-exercised only through an offline virtual Sigstore in tests. The packaged
-solution path (`RenderSolution`) runs through an in-process executor.
+running system. Keyless signing against the public Sigstore instance, and the
+publisher's self-check against the public-good root, are exercised only
+through an offline virtual Sigstore in tests. The packaged solution path
+(`RenderSolution`) runs through an in-process executor.
+
+Named and not built: a **withdrawal path for a whole module** — a module
+removed from the composition has no render and so no publish, and its
+presence and authority stay applied on the host until a publish of that
+module's path with no instances writes their tombstones; pruning gated on the
+host acknowledging them needs the host's acknowledgement, which the delivery
+API does not yet answer. The **release digest** is the content digest of the
+module package as the composition materialized it, computed over its files;
+it ties the declaration to those bytes and to nothing a registry attested, and
+nothing attests that the pinned image was built from them. The **cell file is
+unsigned**: it is read by the platform's own build from the delivery
+repository, under the same repository trust as the manifests Argo applies,
+and whether that is enough is the owner's call. The **module contract**
+(`codefly/module-contract/v1`) and the **cell file** (`codefly/cell/v1`) are
+schemas this repository defines; their other implementers — the runtimes
+publishing contracts, the platform loading cells — hold the shape by
+agreement, not by a core model with fixtures, and moving both to core is a
+seam named for the owner.
