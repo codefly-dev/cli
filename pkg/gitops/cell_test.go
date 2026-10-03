@@ -179,6 +179,7 @@ func TestCellFileInventoriesEveryRenderedWorkload(t *testing.T) {
 	require.Equal(t, CellSchemaV1, cell.Schema)
 	require.Equal(t, "example/staging/region-a", cell.Coordinate)
 	require.Equal(t, "platform-host", cell.Component)
+	require.Equal(t, "acme", cell.Domain, "the ownership domain the composition delivers under, for the platform to hold its signer policy against")
 	require.Equal(t, "cluster.example", cell.TrustDomain, "the trust domain is carried at the top level so a reader can re-derive every spiffe_id and refuse a mismatch")
 	require.Len(t, cell.Namespaces, 2)
 	require.Equal(t, "acme-billing", cell.Namespaces[0].Name)

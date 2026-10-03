@@ -341,9 +341,11 @@ func TestRenderRefusesAnUnreadableDeliveredBinding(t *testing.T) {
 
 // --- core's shipped conformance fixtures, as negative tests ---
 //
-// The CLI's admission gate is core's own Host.Admit over the set the render is
-// about to write. Driving it with the documents core ships is what proves the
-// gate is the contract rather than the CLI's reading of it.
+// The CLI's gate is core's own AdmitRendered over the set the render is about
+// to write — the renderer's share of admission, over parsed documents, since a
+// host's Admit takes documents whose carrier was verified and a render has not
+// produced one yet. Driving it with the documents core ships is what proves
+// the gate is the contract rather than the CLI's reading of it.
 
 func TestRenderedSetAdmissionRefusesCoreFixtures(t *testing.T) {
 	fixtures := map[string]solutionhost.Fixture{}
@@ -374,7 +376,7 @@ func TestRenderedSetAdmissionRefusesCoreFixtures(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = (solutionhost.Host{}).Admit(valid, document); err == nil {
+			if _, err = solutionhost.AdmitRendered(valid, document); err == nil {
 				t.Fatalf("the renderer's gate admitted %q", name)
 			} else if name == "duplicate-route-alias" && !errors.Is(err, composition.ErrCollision) {
 				t.Fatalf("duplicate-route-alias was refused for the wrong reason: %v", err)

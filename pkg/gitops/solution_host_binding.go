@@ -204,17 +204,19 @@ func renderSolutionHostBindings(owned, destination string, opts *RenderOptions) 
 		document.Generation = generation
 		documents = append(documents, document)
 	}
-	// The renderer's view of the host: no coordinate and nothing applied, so
-	// every check that does not need host state still runs and an alias
-	// collision is refused where it was authored. A refusal fails the render;
-	// a document a host would reject is never written. One delivery speaks for
-	// one ownership domain, and that is the renderer's check too: a host's
-	// mount is the union of every delivery that reached it, so it cannot be
-	// refused there.
+	// The renderer's share of admission, core's AdmitRendered: every check
+	// that needs no host state runs over the parsed set, so an alias collision
+	// is refused where it was authored. It takes no Host on purpose — a host's
+	// Admit takes documents whose carrier was verified, and nothing here is
+	// signed yet (signing happens at publish, and a local qualification
+	// publish never signs). A refusal fails the render; a document a host
+	// would reject is never written. One delivery speaks for one ownership
+	// domain, and that is the renderer's check too: a host's mount is the
+	// union of every delivery that reached it, so it cannot be refused there.
 	if err := solutionhost.OneDelivery(documents...); err != nil {
 		return nil, fmt.Errorf("rendered solution host bindings are not one delivery: %w", err)
 	}
-	if _, err := (solutionhost.Host{}).Admit(documents...); err != nil {
+	if _, err := solutionhost.AdmitRendered(documents...); err != nil {
 		return nil, fmt.Errorf("rendered solution host bindings are not admissible: %w", err)
 	}
 	written := make([]DeclaredSolutionHostBinding, 0, len(documents))

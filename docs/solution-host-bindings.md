@@ -57,7 +57,16 @@ environments:
 Nothing here is derived. A derived coordinate is a guess a host silently
 refuses at reconcile time; an unlisted ownership domain is refused by the host
 with the domain named; a wrong envelope revision is refused at apply with both
-revisions named. `trust_domain` is the mesh's — `cluster.local` for a mesh
+revisions named. A document **asserts** its own `domain`, so the host also
+holds a policy saying which **signer identity** may make that assertion
+(core's `Host.DomainsBySigner`, keyed by the certificate SAN the host's bundle
+verification names — for a release workflow,
+`https://github.com/<owner>/<repo>/.github/workflows/<file>@refs/tags/<tag>`).
+That policy is the platform's, provisioned beside the identity allowlist and
+never by a delivered document; the composition carries its domain (here, in
+every document it renders, and in the cell file) and nothing about who may
+sign for it. A document signed by an identity the host does not let speak for
+its domain is refused with the signer and the domain named. `trust_domain` is the mesh's — `cluster.local` for a mesh
 that derives a workload's identity from (trust domain, namespace,
 ServiceAccount) — and the platform's loader refuses a SPIFFE ID it does not
 derive the same way, so a document naming any other value gets an identity the
@@ -193,7 +202,11 @@ service the composition chooses stays a slot.
 
 The derivation:
 
-- **authority ID** `<binding-id>:<service>`;
+- **authority ID** `<binding-id>:<service>`, granted over exactly that
+  instance's presence binding (`binding: <binding-id>` in the document) and
+  activating no other — without the target, an authority document activated
+  any binding on the host and domain running the same image, a replacement
+  that took a withdrawn alias included;
 - **approved build** the image digest of the service's authenticating
   container in its serving workloads (Deployments, StatefulSets, DaemonSets —
   a bootstrap Job's image is declared in the presence document but does not
@@ -212,6 +225,22 @@ The host's envelope must list the same binding IDs for core's exact-inclusion
 check; the vocabulary of destination kinds (`module`, `host`,
 `platform-internal`) is the envelope's.
 
+### What the renderer checks before writing
+
+A host admits **delivered** documents: core's `Host.Admit` takes the type only
+its `VerifyDelivered` constructs, so no sequence of calls reaches a host's
+admission without an attestation having held over exactly those bytes. The
+renderer is the signer, and the set it is about to write is not signed yet —
+signing happens at publish, and a `--local` qualification publish never signs.
+So the render and the publish settlement run core's `AdmitRendered` over the
+parsed set, which takes no `Host` on purpose (nothing applied, no coordinate, no
+signer policy — those need an attestation to be checkable) and refuses what a
+host would refuse for reasons that need no host state: a document that breaks
+its own rules, a binding declared twice, route aliases claimed twice on one
+coordinate. `OneDelivery` is the other renderer check. Verifying the carriers
+publish assembles — the host's own check, run early against the signing
+identity — is not built yet.
+
 ## What publish settles
 
 A render declares; publish settles. Two things are only knowable where the
@@ -229,9 +258,14 @@ generation; the settled one is in the inventory's `delivery` record.
 
 **Removal.** Within this module's own delivery, a binding delivered before and
 absent from this render is removed — and removal is a generation, never an
-absence. Publish writes the tombstone (`removed: true`, prior + 1), carries an
-existing tombstone forward verbatim, and re-presenting a withdrawn binding
-starts a new generation after the tombstone. Nothing is ever withdrawn by a
+absence. Publish writes the tombstone (`removed: true`, prior + 1) and carries
+an existing tombstone forward verbatim. **A tombstone is terminal**, for a
+binding and for an authority alike: the ID is the handle every other system
+holds (installations, operation bindings, team grants), so a later generation
+under the same ID would be indistinguishable from continuity of what was
+withdrawn. The host refuses it (`ErrTombstoned`), and so does publish — where
+the fix is one line away: a genuinely new instance gets a new name, and with it
+a new binding ID and new authority IDs. Nothing is ever withdrawn by a
 document disappearing: the host treats an empty or unreadable desired set as
 removing nothing, and infers no removal from absence anywhere — not within an
 ownership domain, not at a higher generation. What lets *publish* derive a
@@ -312,8 +346,11 @@ operator.
 
 `deployments/cells/<environment>/cell.yaml` (schema `codefly/cell/v1`) is the
 inventory of the cell, from which the platform derives its mesh policy rather
-than from a hand-written set. At the top, the host's coordinate, component and
-`trust_domain` — carried as its own field as well as inside every SPIFFE ID,
+than from a hand-written set. At the top, the host's coordinate, component,
+the ownership `domain` the composition delivers under (so the platform can
+hold its signer policy against what the composition declares at build time,
+rather than have the host refuse the first delivery) and `trust_domain` —
+carried as its own field as well as inside every SPIFFE ID,
 so the platform re-derives each identity and refuses a mismatch instead of
 parsing the domain out of the string it is checking. One namespace per module
 rendered for the environment; under it every pod-producing workload of every
