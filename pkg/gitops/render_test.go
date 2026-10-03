@@ -217,7 +217,7 @@ func TestLoadInventoryAcceptsPriorSchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	downgraded := strings.Replace(string(data), `"schemaVersion": 5`, `"schemaVersion": 4`, 1)
+	downgraded := strings.Replace(string(data), `"schemaVersion": 7`, `"schemaVersion": 6`, 1)
 	if downgraded == string(data) {
 		t.Fatal("rendered inventory did not carry the current schema version")
 	}

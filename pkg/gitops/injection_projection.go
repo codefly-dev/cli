@@ -18,8 +18,8 @@ import (
 )
 
 // serviceInjection is what the CLI itself derives for one rendered service,
-// beside what its builder rendered: the composed-solution federation carriers
-// (solutionrun.DerivedDeployInputs) and the self-endpoint carrier
+// beside what its builder rendered: a composed solution's api.consumes
+// projection (solutionrun.DerivedDeployInputs) and the self-endpoint carrier
 // (orchestration.SelfEndpointEnvironmentVariables).
 type serviceInjection = solutionrun.ServiceInjection
 
@@ -34,17 +34,17 @@ func (injections renderInjections) forService(module, service string) serviceInj
 	return injections[resources.ServiceUnique(module, service)]
 }
 
-// deriveRenderInjections joins the federation carriers of the workspace's
+// deriveRenderInjections joins the api.consumes projection of the workspace's
 // composed solutions with the self-endpoint carriers of the services the render
 // deployed. Both are public/secret splits of the same shape; a key is never
 // derived by both, so the join is a plain union.
 func deriveRenderInjections(ctx context.Context, workspace *resources.Workspace, selfEndpoints map[string]map[string]string, sink orchestration.OutputSink) (renderInjections, error) {
-	federation, err := solutionrun.DerivedDeployInputs(ctx, workspace)
+	solutions, err := solutionrun.DerivedDeployInputs(ctx, workspace)
 	if err != nil {
 		return nil, err
 	}
 	if sink != nil {
-		for _, note := range federation.Notes {
+		for _, note := range solutions.Notes {
 			if note.Warning {
 				sink.Info("warning: %s", note.Message)
 			} else {
@@ -53,7 +53,7 @@ func deriveRenderInjections(ctx context.Context, workspace *resources.Workspace,
 		}
 	}
 	injections := renderInjections{}
-	for unique, injection := range federation.Services {
+	for unique, injection := range solutions.Services {
 		injections[unique] = injection
 	}
 	for unique, variables := range selfEndpoints {
@@ -70,10 +70,10 @@ func deriveRenderInjections(ctx context.Context, workspace *resources.Workspace,
 }
 
 // validateInjectionClassification refuses a public value whose key core
-// classifies as credential-bearing. The federation's public carriers name routes
-// and prefixes, never credentials, so a sensitive public key means a secret was
-// misfiled — and a render is committed to a repository, so the only safe answer
-// is to stop. Self-endpoint carriers are the one exception, because their names
+// classifies as credential-bearing. A solution's public carrier names routes,
+// never credentials, so a sensitive public key means a secret was misfiled —
+// and a render is committed to a repository, so the only safe answer is to
+// stop. Self-endpoint carriers are the one exception, because their names
 // embed module, service and endpoint names ("auth-gateway") that trip the broad
 // markers exactly as the builder's own CODEFLY__ENDPOINT__ carriers do; their
 // values are addresses, and an address carrying credentials is refused instead.
@@ -210,17 +210,12 @@ func projectServiceInjection(ctx context.Context, root, service string, env *env
 }
 
 // offeredOnly reports whether every carrier a service derives is one offered to
-// any Codefly-aware process of it — its own reachable address, or the consumed
-// module's identity every service of that module receives — rather than one the
-// render must deliver (a solution's consumed routes and registration secrets).
-// A container that declares no CODEFLY__SERVICE (a vendor image: postgres,
-// redis) reads none of them, so an unclaimed service may skip offered carriers.
+// any Codefly-aware process of it — its own reachable address — rather than one
+// the render must deliver (a solution's consumed routes). A container that
+// declares no CODEFLY__SERVICE (a vendor image: postgres, redis) reads none of
+// them, so an unclaimed service may skip offered carriers.
 func offeredOnly(injection serviceInjection) bool {
 	offered := func(key string) bool {
-		switch key {
-		case "CODEFLY__MODULE_IDENTITY_PREFIX", "CODEFLY__MODULE_IDENTITY_SECRET", "CODEFLY__MODULE_REGISTRATION_SECRET":
-			return true
-		}
 		return strings.HasPrefix(key, resources.SelfEndpointPrefix+"__")
 	}
 	for key := range injection.Public {

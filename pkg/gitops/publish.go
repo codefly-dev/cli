@@ -150,10 +150,28 @@ func preparePublish(
 	}
 	rendered := filepath.Join(workspace.Dir(), "deployments", "modules", request.Module)
 	var inventory Inventory
+	publication := &deliveryPublication{baseBranch: baseBranch, options: deliveryPublishOptions{
+		Signer: request.Signer, AllowUnsigned: request.Local, Module: request.Module,
+	}}
 	if restoreRevision == "" {
 		inventory, err = loadPublicationInventory(ctx, workspace, request, rendered, pathRoot)
 		if err != nil {
 			return nil, err
+		}
+		env, envErr := orchestration.SelectEnvironment(workspace, request.Environment)
+		if envErr != nil {
+			return nil, envErr
+		}
+		publication.options.Target, err = resolveDeliveryTarget(ctx, workspace, env)
+		if err != nil {
+			return nil, err
+		}
+		if env.Host != nil {
+			publication.options.EnvelopeRevision = env.Host.EnvelopeRevision
+		}
+		if _, statErr := os.Stat(cellPath(workspace.Dir(), request.Environment)); statErr == nil {
+			publication.cellSource = cellPath(workspace.Dir(), request.Environment)
+			publication.cellPath = filepath.ToSlash(filepath.Join(pathRoot, cellsDir, request.Environment, CellFileName))
 		}
 	}
 
@@ -180,7 +198,7 @@ func preparePublish(
 			return fail(err)
 		}
 		for _, changed := range existing {
-			if changed != targetPath && !strings.HasPrefix(changed, targetPath+"/") {
+			if changed != targetPath && !strings.HasPrefix(changed, targetPath+"/") && changed != publication.cellPath {
 				return fail(fmt.Errorf("promotion branch %s contains unrelated change %s", promotionBranch, changed))
 			}
 		}
@@ -208,9 +226,13 @@ func preparePublish(
 			promotionBranch,
 			publishSnapshot,
 			localFetchHost,
+			publication,
 		)
 		if err != nil {
 			return fail(err)
+		}
+		if cellErr := stageCellFile(repo, publication); cellErr != nil {
+			return fail(cellErr)
 		}
 	} else {
 		if err := restoreCloneTree(ctx, repo, targetPath, restoreRevision); err != nil {
@@ -231,11 +253,15 @@ func preparePublish(
 			return fail(err)
 		}
 	}
-	if _, err := gitCommand(ctx, repo, "add", "-A", "--", targetPath); err != nil {
-		return fail(err)
+	publishedPaths := []string{targetPath}
+	if publication.cellPath != "" {
+		publishedPaths = append(publishedPaths, publication.cellPath)
+	}
+	if _, addErr := gitCommand(ctx, repo, append([]string{gitAddVerb, "-A", "--"}, publishedPaths...)...); addErr != nil {
+		return fail(addErr)
 	}
 	contractChecks := checkContracts(inventory, resolveGitopsModuleInventory(ctx, repo, baseBranch, pathRoot), request.AllowUnresolvedContracts)
-	changed, err := stagedPathsSince(ctx, repo, startRevision, targetPath)
+	changed, err := stagedPathsSince(ctx, repo, startRevision, publishedPaths...)
 	if err != nil {
 		return fail(err)
 	}
@@ -244,7 +270,7 @@ func preparePublish(
 			return fail(fmt.Errorf("promotion has no changes"))
 		}
 	}
-	diff, err := gitCommand(ctx, repo, "diff", "--cached", "--binary", startRevision, "--", targetPath)
+	diff, err := gitCommand(ctx, repo, append([]string{"diff", "--cached", "--binary", startRevision, "--"}, publishedPaths...)...)
 	if err != nil {
 		return fail(err)
 	}
@@ -256,6 +282,7 @@ func preparePublish(
 		Module:         request.Module, Environment: request.Environment,
 		RenderDigest: inventory.Digest, SnapshotRevision: snapshotRevision,
 		Changed: changed, Diff: diff, ContractChecks: contractChecks,
+		Delivery: inventory.Delivery,
 	}
 	plan.ID, err = publishPlanID(&plan, restoreRevision)
 	if err != nil {
@@ -610,6 +637,7 @@ func prepareServicePublication(
 	promotionBranch string,
 	publishSnapshot bool,
 	localFetchHost string,
+	publication *deliveryPublication,
 ) (string, Inventory, error) {
 	snapshot, err := prepareServiceSnapshot(
 		ctx,
@@ -629,6 +657,12 @@ func prepareServicePublication(
 		return "", Inventory{}, err
 	}
 	if err = removePublicationRemainder(target, unitDirs); err != nil {
+		return "", Inventory{}, err
+	}
+	// The delivery documents are staged after the units and settled against the
+	// base branch: their generation and their signature are publish's to make.
+	delivery, err := stageAndSettleDelivery(ctx, repo, target, targetPath, rendered, renderedInventory, environment, publication)
+	if err != nil {
 		return "", Inventory{}, err
 	}
 	if generateBootstrap {
@@ -672,17 +706,21 @@ func prepareServicePublication(
 	}
 
 	options := &RenderOptions{
-		Module:               renderedInventory.Module,
-		UnitNames:            snapshot.services,
-		OwnedPath:            targetPath,
-		ModulePath:           renderedInventory.ModulePath,
-		Units:                renderedInventory.Units,
-		Package:              renderedInventory.Package,
-		Environment:          renderedInventory.Environment,
-		Namespace:            renderedInventory.Namespace,
-		AppProject:           renderedInventory.AppProject,
-		Promotable:           true,
-		CheckUnitDirectories: true,
+		Module:                        renderedInventory.Module,
+		UnitNames:                     snapshot.services,
+		OwnedPath:                     targetPath,
+		ModulePath:                    renderedInventory.ModulePath,
+		Units:                         renderedInventory.Units,
+		Package:                       renderedInventory.Package,
+		Environment:                   renderedInventory.Environment,
+		Namespace:                     renderedInventory.Namespace,
+		AppProject:                    renderedInventory.AppProject,
+		Promotable:                    true,
+		CheckUnitDirectories:          true,
+		SolutionHostBindingPath:       renderedInventory.SolutionHostBindingPath,
+		SolutionAuthorityPath:         renderedInventory.SolutionAuthorityPath,
+		Delivered:                     delivery,
+		WorkspaceConfigurationDigests: renderedInventory.WorkspaceConfigurationDigests,
 	}
 	if _, err = validateTree(target, options); err != nil {
 		return "", Inventory{}, fmt.Errorf("validate generated publication: %w", err)
@@ -1052,6 +1090,12 @@ func validateBootstrapUnits(root, targetPath string, inventory *Inventory, envir
 		path := filepath.ToSlash(filepath.Join(targetPath, unit.Path, "overlays", environment))
 		expected[path] = struct{}{}
 	}
+	if inventory.SolutionHostBindingPath != "" {
+		expected[filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionHostBindingPath, "overlays", environment))] = struct{}{}
+	}
+	if inventory.SolutionAuthorityPath != "" {
+		expected[filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionAuthorityPath, "overlays", environment))] = struct{}{}
+	}
 	err := walkBootstrapApplications(root, func(path, _ string, sourcePath string) error {
 		if _, exists := expected[sourcePath]; !exists {
 			return fmt.Errorf("bootstrap Application %s targets unit path %q outside the rendered unit graph", path, sourcePath)
@@ -1331,6 +1375,7 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 		Commit: commit, Tree: tree, Signed: true,
 		PullRequest: prURL, PullRequestID: prID,
 		ContractChecks: prepared.plan.ContractChecks,
+		Delivery:       prepared.plan.Delivery,
 	}
 	if err := writeReceipt(workspace.Dir(), "publications", request.Module+"-"+request.Environment+jsonExtension, result); err != nil {
 		return PublishResult{}, err
@@ -1873,4 +1918,93 @@ func commandWithEnvironment(
 		return "", fmt.Errorf("%s %s: %s", name, strings.Join(args, " "), message)
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+// deliveryPublication is what settling the delivery documents at publish needs
+// beyond the staged tree: the base branch they are settled against, the signer
+// and target, and the cell file to carry into the repository.
+type deliveryPublication struct {
+	baseBranch string
+	options    deliveryPublishOptions
+	// cellSource is the environment's cell file under the workspace, and
+	// cellPath where it lands in the repository, outside every module path.
+	// Both empty when the workspace has rendered no cell for this environment.
+	cellSource string
+	cellPath   string
+}
+
+// stageAndSettleDelivery copies the render's delivery documents into the
+// staged tree and settles them against the base branch. A rollback publish has
+// no publication and settles nothing: it restores what was delivered.
+func stageAndSettleDelivery(
+	ctx context.Context,
+	repo, target, targetPath, rendered string,
+	inventory *Inventory,
+	environment string,
+	publication *deliveryPublication,
+) (*InventoryDelivery, error) {
+	if publication == nil {
+		return nil, nil
+	}
+	for _, path := range []string{inventory.SolutionHostBindingPath, inventory.SolutionAuthorityPath} {
+		if path == "" {
+			continue
+		}
+		source := filepath.Join(rendered, filepath.FromSlash(path))
+		if err := replaceCloneTree(source, repo, filepath.ToSlash(filepath.Join(targetPath, path))); err != nil {
+			return nil, fmt.Errorf("stage rendered delivery documents: %w", err)
+		}
+	}
+	presence, err := settlePresenceDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, publication.options)
+	if err != nil {
+		return nil, err
+	}
+	authority, err := settleAuthorityDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, presence, publication.options)
+	if err != nil {
+		return nil, err
+	}
+	return mergeDeliveries(presence, authority), nil
+}
+
+// mergeDeliveries joins what the two settlements delivered into one inventory
+// record: signed only when both halves are.
+func mergeDeliveries(parts ...*InventoryDelivery) *InventoryDelivery {
+	var merged *InventoryDelivery
+	for _, part := range parts {
+		if part == nil {
+			continue
+		}
+		if merged == nil {
+			merged = &InventoryDelivery{Signed: true}
+		}
+		merged.Signed = merged.Signed && part.Signed
+		if merged.Identity == "" {
+			merged.Identity = part.Identity
+		}
+		merged.Documents = append(merged.Documents, part.Documents...)
+	}
+	return merged
+}
+
+// stageCellFile copies the environment's cell file into the repository, outside
+// every module path, so the platform's derivation reads one file per cell.
+func stageCellFile(repo string, publication *deliveryPublication) error {
+	if publication == nil || publication.cellSource == "" {
+		return nil
+	}
+	destination, err := confinedJoin(repo, publication.cellPath)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(publication.cellSource)
+	if err != nil {
+		return fmt.Errorf("read the cell file: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return fmt.Errorf("create the cell directory: %w", err)
+	}
+	if err := os.WriteFile(destination, data, 0o644); err != nil { //nolint:gosec // an inventory of public manifest identities
+		return fmt.Errorf("stage the cell file: %w", err)
+	}
+	return nil
 }

@@ -12,12 +12,11 @@ import (
 )
 
 const (
-	apiConsumesKey         = "CODEFLY__API_CONSUMES"
-	registrationSecretsKey = "CODEFLY__MODULE_REGISTRATION_SECRETS"
-	identityPrefixKey      = "CODEFLY__MODULE_IDENTITY_PREFIX"
-	identitySecretKey      = "CODEFLY__MODULE_IDENTITY_SECRET"
-	identityAliasKey       = "CODEFLY__MODULE_REGISTRATION_SECRET"
-	selfEndpointKey        = "CODEFLY__SELF_ENDPOINT__WIKI__BACKEND__HTTP__HTTP"
+	apiConsumesKey  = "CODEFLY__API_CONSUMES"
+	selfEndpointKey = "CODEFLY__SELF_ENDPOINT__WIKI__BACKEND__HTTP__HTTP"
+	// storedSecretKey stands for a secret carrier an injection references: the
+	// key the environment's store holds the value under, never the value.
+	storedSecretKey = "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__INTERNAL_AUTH__CODEFLY_INTERNAL_TOKEN"
 )
 
 // storeEnvironment is a restricted-render environment whose secrets resolve
@@ -39,9 +38,9 @@ func configMapData(t *testing.T, rendered []manifest) map[string]any {
 }
 
 // The deployed solution's entry: its api.consumes projection and its own
-// in-cluster address are public and land in the ConfigMap it loads; its
-// registration secrets are a secretKeyRef the ExternalSecret materializes from
-// the environment's store. No secret value exists anywhere in the tree.
+// in-cluster address are public and land in the ConfigMap it loads; a secret
+// carrier is a secretKeyRef the ExternalSecret materializes from the
+// environment's store. No secret value exists anywhere in the tree.
 func TestDerivedInjectionRendersPublicValuesAndSecretReferencesOnly(t *testing.T) {
 	env := storeEnvironment()
 	root := t.TempDir()
@@ -51,7 +50,7 @@ func TestDerivedInjectionRendersPublicValuesAndSecretReferencesOnly(t *testing.T
 			apiConsumesKey:  `[{"id":"documents","as":"documents"}]`,
 			selfEndpointKey: "http://backend.example-wiki.svc.cluster.local:8080",
 		},
-		Secrets: map[string]string{registrationSecretsKey: registrationSecretsKey},
+		Secrets: map[string]string{storedSecretKey: storedSecretKey},
 	}
 
 	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "backend"}, env, scopeOf(env), injection))
@@ -63,15 +62,15 @@ func TestDerivedInjectionRendersPublicValuesAndSecretReferencesOnly(t *testing.T
 	require.Equal(t, "backend", data[resources.ServicePrefix], "the builder's own ConfigMap values are kept")
 
 	values := containerEnvironment(t, rendered)
-	require.Equal(t, map[string]any{"secretKeyRef": map[string]any{"name": "secret-backend", "key": registrationSecretsKey, "optional": false}}, values[registrationSecretsKey]["valueFrom"])
+	require.Equal(t, map[string]any{"secretKeyRef": map[string]any{"name": "secret-backend", "key": storedSecretKey, "optional": false}}, values[storedSecretKey]["valueFrom"])
 	require.NotContains(t, values, apiConsumesKey, "a public value lives in the ConfigMap, never shadowed by the container env")
 
 	secret := manifestOfKind(t, rendered, kindExternalSecret)
 	spec := mapField(secret.value, "spec")
 	require.Equal(t, map[string]any{"name": "cell-secrets", "kind": "ClusterSecretStore"}, spec["secretStoreRef"])
 	require.Equal(t, []any{map[string]any{
-		"secretKey": registrationSecretsKey,
-		"remoteRef": map[string]any{"key": "platform-product-backend", "property": registrationSecretsKey},
+		"secretKey": storedSecretKey,
+		"remoteRef": map[string]any{"key": "platform-product-backend", "property": storedSecretKey},
 	}}, spec["data"])
 
 	for _, doc := range rendered {
@@ -79,32 +78,6 @@ func TestDerivedInjectionRendersPublicValuesAndSecretReferencesOnly(t *testing.T
 			t.Fatalf("the render wrote a Secret %v; only references may enter the tree", doc.value)
 		}
 	}
-}
-
-// A consumed module's services carry their prefix as a value and their identity
-// under both names — the canonical carrier and the deprecated alias — resolving
-// to the one stored identity secret, so the store holds it once and the alias
-// can never be pointed at the registration secret.
-func TestDerivedInjectionResolvesTheIdentityAliasToOneStoredSecret(t *testing.T) {
-	env := storeEnvironment()
-	root := t.TempDir()
-	writeConsumerTree(t, root, env.Name, env.Namespace, "api", "store.example-documents.svc.cluster.local:5432")
-	injection := serviceInjection{
-		Public:  map[string]string{identityPrefixKey: "documents"},
-		Secrets: map[string]string{identitySecretKey: identitySecretKey, identityAliasKey: identitySecretKey},
-	}
-
-	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env), injection))
-
-	rendered := buildOverlay(t, root, env.Name)
-	require.Equal(t, "documents", configMapData(t, rendered)[identityPrefixKey])
-	values := containerEnvironment(t, rendered)
-	for _, name := range []string{identitySecretKey, identityAliasKey} {
-		ref := mapField(mapField(values[name], "valueFrom"), "secretKeyRef")
-		require.Equal(t, identitySecretKey, ref["key"], "%s must resolve to the stored identity secret", name)
-	}
-	data := sliceField(mapField(manifestOfKind(t, rendered, kindExternalSecret).value, "spec"), "data")
-	require.Len(t, data, 1, "one stored identity secret, delivered under two names")
 }
 
 // A secret with no store cannot be delivered. Rendering the reference anyway
@@ -119,7 +92,7 @@ func TestDerivedInjectionRefusesASecretWithoutAStore(t *testing.T) {
 	require.NoError(t, err)
 
 	err = projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "backend"}, env, scopeOf(env),
-		serviceInjection{Secrets: map[string]string{registrationSecretsKey: registrationSecretsKey}})
+		serviceInjection{Secrets: map[string]string{storedSecretKey: storedSecretKey}})
 	require.ErrorContains(t, err, "declares no service secret store")
 
 	after, err := os.ReadFile(filepath.Join(root, "base", "deployment.yaml"))
@@ -133,7 +106,7 @@ func TestDerivedInjectionRefusesASecretWithoutAStore(t *testing.T) {
 // (an "auth-gateway" service trips the AUTH marker) but not by value.
 func TestDerivedInjectionRefusesACredentialAsAPublicValue(t *testing.T) {
 	for name, injection := range map[string]serviceInjection{
-		"credential-named key": {Public: map[string]string{"CODEFLY__MODULE_IDENTITY_SECRET": "plaintext"}},
+		"credential-named key": {Public: map[string]string{storedSecretKey: "plaintext"}},
 		"self endpoint with userinfo": {Public: map[string]string{
 			"CODEFLY__SELF_ENDPOINT__HOST__AUTH_GATEWAY__REST__REST": "http://user:pass@auth-gateway.example.svc.cluster.local:8080",
 		}},
@@ -182,7 +155,7 @@ func TestDerivedInjectionRejectsDisagreementAndOverlayOverrides(t *testing.T) {
 			addProjectionPatch(t, root, env.Name, patch.kind, patch.patch)
 			err := projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "backend"}, env, scopeOf(env), serviceInjection{
 				Public:  map[string]string{apiConsumesKey: `[{"id":"documents"}]`},
-				Secrets: map[string]string{registrationSecretsKey: registrationSecretsKey},
+				Secrets: map[string]string{storedSecretKey: storedSecretKey},
 			})
 			require.Error(t, err)
 			require.True(t, strings.Contains(err.Error(), "derived") || strings.Contains(err.Error(), "ExternalSecret"), err.Error())
@@ -211,7 +184,9 @@ func TestDerivedInjectionLeavesUntouchedFilesByteForByte(t *testing.T) {
 	require.Equal(t, string(commented), string(after))
 }
 
-func TestRenderInjectionsJoinSelfEndpointsWithFederation(t *testing.T) {
+// A workspace composing no solution derives nothing of its own, so the render's
+// injections are exactly the self-endpoint carriers of the services it deployed.
+func TestRenderInjectionsJoinSelfEndpoints(t *testing.T) {
 	injections, err := deriveRenderInjections(t.Context(), singleModuleWorkspace(), map[string]map[string]string{
 		"wiki/backend": {selfEndpointKey: "http://backend.example-wiki.svc.cluster.local:8080"},
 	}, nil)
@@ -223,7 +198,7 @@ func TestRenderInjectionsJoinSelfEndpointsWithFederation(t *testing.T) {
 // A vendor image (redis) declares no CODEFLY__SERVICE, so no container claims
 // the service. Its self endpoint has no Codefly-aware reader, so the render
 // leaves the tree untouched instead of refusing; a required carrier (a
-// federation secret) for the same unclaimed service still refuses.
+// solution's consumed routes) for the same unclaimed service still refuses.
 func TestDerivedInjectionSkipsOfferedCarriersNoContainerClaims(t *testing.T) {
 	env := storeEnvironment()
 	root := t.TempDir()
@@ -239,18 +214,7 @@ func TestDerivedInjectionSkipsOfferedCarriersNoContainerClaims(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, string(before), string(after))
 
-	// A consumed module's identity is offered to every service of that module;
-	// its postgres store reads none of it.
-	identity := serviceInjection{
-		Public:  map[string]string{identityPrefixKey: "documents"},
-		Secrets: map[string]string{identitySecretKey: identitySecretKey, identityAliasKey: identitySecretKey},
-	}
-	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "cache"}, env, scopeOf(env), identity))
-	after, err = os.ReadFile(filepath.Join(root, "base", "deployment.yaml"))
-	require.NoError(t, err)
-	require.Equal(t, string(before), string(after))
-
-	required := serviceInjection{Secrets: map[string]string{registrationSecretsKey: registrationSecretsKey}}
+	required := serviceInjection{Public: map[string]string{apiConsumesKey: `[{"id":"documents"}]`}}
 	err = projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "cache"}, env, scopeOf(env), required)
 	require.ErrorContains(t, err, "no rendered container declares")
 }

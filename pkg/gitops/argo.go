@@ -89,6 +89,19 @@ const (
 	moduleResourcesWave = "-1"
 	bootstrapUnitWave   = "0"
 	consumerUnitWave    = "1"
+	// Declared presence lands with the module's own resources, before any unit.
+	//
+	// It was briefly placed last, on the reasoning that a binding pins the
+	// digests of this generation's artifacts and should not be declared before
+	// they are healthy. That reasoning is wrong twice over. The digests are
+	// taken over rendered bytes in the delivery repository, which exist at
+	// delivery time whatever the cluster is doing, so nothing about them needs
+	// the workload running first. And Argo only starts a wave once the previous
+	// one is healthy, so a solution whose Deployment crashloops would never
+	// have its binding applied — withholding the declaration of desired state
+	// exactly when actual state has diverged from it, which is when a host most
+	// needs it.
+	solutionHostBindingWave = moduleResourcesWave
 )
 
 func unitWave(unit *InventoryUnit) string {
@@ -230,6 +243,12 @@ func generateArgoBootstrap(
 	project.Metadata.Namespace = argoNamespace
 	project.Spec.SourceRepos = []string{repository}
 	project.Spec.Destinations = []argoDestination{{Namespace: inventory.Namespace, Server: inClusterServer}}
+	if inventory.SolutionAuthorityPath != "" {
+		// Authority documents land in the platform's authority namespace, which
+		// is the one namespace outside the module's own that its Application may
+		// write to — and only for what the authority overlay carries.
+		project.Spec.Destinations = append(project.Spec.Destinations, argoDestination{Namespace: authorityNamespace, Server: inClusterServer})
+	}
 	project.Spec.ClusterResourceWhitelist = clusterResources
 	project.Spec.NamespaceResourceWhitelist = namespaceResources
 	if err := writeArgoYAML(filepath.Join(bootstrap, "project.yaml"), project); err != nil {
@@ -253,6 +272,21 @@ func generateArgoBootstrap(
 			Component: argoBoundedName(componentNameBudget, inventory.Module, unit.Name),
 			Overlay:   filepath.ToSlash(filepath.Join(targetPath, unit.Path, "overlays", environment)),
 			Wave:      unitWave(unit),
+		})
+	}
+
+	if inventory.SolutionHostBindingPath != "" {
+		components = append(components, argoBootstrapComponent{
+			Component: argoBoundedName(componentNameBudget, inventory.Module, "solution-host-bindings"),
+			Overlay:   filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionHostBindingPath, "overlays", environment)),
+			Wave:      solutionHostBindingWave,
+		})
+	}
+	if inventory.SolutionAuthorityPath != "" {
+		components = append(components, argoBootstrapComponent{
+			Component: argoBoundedName(componentNameBudget, inventory.Module, "solution-authority"),
+			Overlay:   filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionAuthorityPath, "overlays", environment)),
+			Wave:      solutionHostBindingWave,
 		})
 	}
 
@@ -327,6 +361,12 @@ func snapshotAuthority(target string, inventory *Inventory, environment string) 
 		if unit.Path != "" {
 			sources = append(sources, filepath.Join(target, filepath.FromSlash(unit.Path), "overlays", environment))
 		}
+	}
+	if inventory.SolutionHostBindingPath != "" {
+		sources = append(sources, filepath.Join(target, filepath.FromSlash(inventory.SolutionHostBindingPath), "overlays", environment))
+	}
+	if inventory.SolutionAuthorityPath != "" {
+		sources = append(sources, filepath.Join(target, filepath.FromSlash(inventory.SolutionAuthorityPath), "overlays", environment))
 	}
 	cluster := make(map[string]argoResourceAuthority)
 	namespaced := make(map[string]argoResourceAuthority)

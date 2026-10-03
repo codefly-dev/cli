@@ -1,0 +1,363 @@
+package gitops
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/modulecontract"
+	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/solutionhost"
+	"gopkg.in/yaml.v3"
+)
+
+// --- Declared authority ---
+//
+// A module holds authority on a host because a reviewed, signed document
+// granted it to one exact build — never because its process announced itself,
+// and never for a build other than the one approved. The render derives that
+// document from the module's published contract (module.contract.codefly.yaml):
+// the contract is the module's REQUEST, the host's envelope is the ceiling a
+// platform administrator writes at runtime, and the authority document is what
+// the render derives and the publish pipeline signs. The render does not read
+// the envelope: the host holds the document against it at apply, and a request
+// wider than the ceiling is refused there, with the binding named.
+//
+// One document per module-identity service. An authority document is effective
+// for ONE approved build — the OCI image manifest digest of the container that
+// authenticates — so a module whose two services each mint under the module's
+// principal runs two images and holds two documents. The approved build is read
+// off the presence workloads of the same render, which is the only place the
+// relationship between a service and the image it runs is verified.
+//
+// The documents are delivered to the platform's authority namespace, which only
+// the delivery pipeline may create Jobs in: signed AND isolated, the two halves
+// of the writer-trust decision.
+
+const (
+	// solutionAuthorityDir is the render subdirectory holding the authority
+	// documents, beside the presence documents and the units.
+	solutionAuthorityDir = "solution-authority"
+
+	solutionAuthorityKind  = "solution-authority"
+	solutionAuthorityLabel = "codefly.dev/authority"
+)
+
+// solutionAuthorityOverlay is the delivered overlay of the authority directory
+// for one environment.
+func solutionAuthorityOverlay(environment string) string {
+	return filepath.ToSlash(filepath.Join(solutionAuthorityDir, "overlays", environment))
+}
+
+// AuthorityInstance is one authority document's input: the module and the
+// module-identity service it grants to, the unit that renders that service,
+// and the module's resolved contract.
+type AuthorityInstance struct {
+	Module   string
+	Service  string
+	Unit     SolutionArtifactUnit
+	Contract *modulecontract.Resolved
+}
+
+// DeclaredAuthority is one rendered authority document: where it was written,
+// which authority it declares, for which build.
+type DeclaredAuthority struct {
+	Path      string `json:"path"`
+	Authority string `json:"authority"`
+	Build     string `json:"build"`
+}
+
+// workspaceValues resolves contract slots from the workspace configurations
+// the environment provides, matching keys in either spelling core accepts.
+type workspaceValues struct {
+	provided *configurations.WorkspaceConfigurations
+}
+
+func (values workspaceValues) Value(group, key string) (string, bool, bool) {
+	if values.provided == nil {
+		return "", false, false
+	}
+	normalized := strings.ToUpper(strings.ReplaceAll(key, "-", "_"))
+	for _, info := range values.provided.Infos {
+		if info.Name != group {
+			continue
+		}
+		for _, value := range info.ConfigurationValues {
+			if value.Key == key || strings.ToUpper(strings.ReplaceAll(value.Key, "-", "_")) == normalized {
+				return value.Value, value.Secret, true
+			}
+		}
+	}
+	return "", false, false
+}
+
+// authorityInstancesOf resolves the authority documents a module render
+// declares: none when the module publishes no contract, with the reason, or
+// one per service declaring module-identity, each with the contract's slots
+// resolved from the environment's public configuration.
+func authorityInstancesOf(
+	ctx context.Context,
+	workspace *resources.Workspace,
+	module *resources.Module,
+	services []*resources.Service,
+	env *environments.Environment,
+	units []SolutionArtifactUnit,
+) ([]AuthorityInstance, string, error) {
+	contract, err := modulecontract.Load(module.Dir())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Sprintf("module %s publishes no %s, so it asks for no authority", module.Name, modulecontract.FileName), nil
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	var identities []*resources.Service
+	for _, service := range services {
+		if service.ModuleIdentity {
+			identities = append(identities, service)
+		}
+	}
+	if len(identities) == 0 {
+		return nil, fmt.Sprintf("module %s publishes a contract but no service declares module-identity, so nothing would present the authority", module.Name), nil
+	}
+	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime())
+	if err != nil {
+		return nil, "", fmt.Errorf("read the workspace configurations the contract of %s resolves against: %w", module.Name, err)
+	}
+	resolved, err := contract.Resolve(workspaceValues{provided: provided})
+	if err != nil {
+		return nil, "", fmt.Errorf("module %s: %w", module.Name, err)
+	}
+	instances := make([]AuthorityInstance, 0, len(identities))
+	for _, service := range identities {
+		index := -1
+		for position := range units {
+			if units[position].Name == service.Name {
+				index = position
+				break
+			}
+		}
+		if index < 0 {
+			return nil, "", fmt.Errorf("module %s service %s declares module-identity but this render delivers no unit for it, so there is no build to approve", module.Name, service.Name)
+		}
+		instances = append(instances, AuthorityInstance{Module: module.Name, Service: service.Name, Unit: units[index], Contract: resolved})
+	}
+	return instances, "", nil
+}
+
+// renderAuthorityDocuments renders one authority document per instance into
+// the staged tree, each approving the build its service's workloads run, and
+// returns the tree-relative paths written.
+func renderAuthorityDocuments(owned string, opts *RenderOptions) ([]DeclaredAuthority, error) {
+	if len(opts.AuthorityInstances) == 0 || opts.Host == nil {
+		return nil, nil
+	}
+	instances := append([]AuthorityInstance(nil), opts.AuthorityInstances...)
+	sort.Slice(instances, func(i, j int) bool { return instances[i].Service < instances[j].Service })
+	directory := filepath.Join(owned, filepath.FromSlash(solutionAuthorityOverlay(opts.Environment)))
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return nil, fmt.Errorf("create authority directory: %w", err)
+	}
+	declared := make([]DeclaredAuthority, 0, len(instances))
+	names := make([]string, 0, len(instances))
+	for index := range instances {
+		document, err := authorityDocument(owned, opts, &instances[index])
+		if err != nil {
+			return nil, err
+		}
+		file, err := writeAuthorityDocument(directory, document, instances[index].Module)
+		if err != nil {
+			return nil, err
+		}
+		declared = append(declared, DeclaredAuthority{
+			Path: filepath.ToSlash(filepath.Join(solutionAuthorityOverlay(opts.Environment), file)), Authority: document.Authority, Build: string(document.ApprovedBuild),
+		})
+		names = append(names, file)
+	}
+	if err := writeAuthorityKustomization(owned, opts.Environment, names); err != nil {
+		return nil, err
+	}
+	return declared, nil
+}
+
+// authorityDocument derives one instance's document at generation 1, effective
+// from presence generation 1. Publish settles both against what was delivered.
+func authorityDocument(owned string, opts *RenderOptions, instance *AuthorityInstance) (*solutionhost.AuthorityDocument, error) {
+	binding, err := bindingID(opts.Workspace, opts.Environment, instance.Module)
+	if err != nil {
+		return nil, err
+	}
+	build, err := servingBuild(owned, opts, instance.Unit)
+	if err != nil {
+		return nil, fmt.Errorf("authority of %s/%s: %w", instance.Module, instance.Service, err)
+	}
+	document := &solutionhost.AuthorityDocument{
+		Schema:    solutionhost.SchemaAuthorityV1,
+		Authority: binding + ":" + instance.Service,
+		// Granted over exactly this instance's presence binding, and over no
+		// other: without the target an authority document activated any
+		// binding on the host and domain running the same image, a replacement
+		// that took a withdrawn alias included.
+		PresenceBinding:  binding,
+		Generation:       1,
+		Host:             solutionhost.HostTarget{Coordinate: opts.Host.Coordinate, Component: opts.Host.Component},
+		OwnershipDomain:  opts.Host.Domain,
+		EnvelopeRevision: opts.Host.EnvelopeRevision,
+		ApprovedBuild:    build,
+		EffectiveFrom:    1,
+		Principals:       []solutionhost.PrincipalAuthority{{Principal: instance.Contract.Principal, Bindings: authorityBindings(instance.Contract)}},
+	}
+	if err := document.Validate(); err != nil {
+		return nil, fmt.Errorf("authority of %s/%s is invalid: %w", instance.Module, instance.Service, err)
+	}
+	return document, nil
+}
+
+// authorityBindings derives the units of authority a contract asks for: one per
+// (binding, operation), under an ID the host's envelope lists for exact
+// inclusion — <principal>:<binding>:<operation> — with the operation's scope
+// ceiling as one sorted, comma-joined value, and the module's queue and
+// namespace when it declares exactly one of each. A module declaring none
+// grants no queue- or namespace-scoped authority, which is a narrower grant and
+// never every queue.
+func authorityBindings(contract *modulecontract.Resolved) []solutionhost.AuthorityBinding {
+	var queue, namespace string
+	if len(contract.Queues) == 1 {
+		queue = contract.Queues[0]
+	}
+	if len(contract.Namespaces) == 1 {
+		namespace = contract.Namespaces[0]
+	}
+	var bindings []solutionhost.AuthorityBinding
+	for _, binding := range contract.Bindings {
+		for _, operation := range binding.Operations {
+			bindings = append(bindings, solutionhost.AuthorityBinding{
+				ID:        contract.Principal + ":" + binding.ID + ":" + operation,
+				Revision:  binding.Revision,
+				Audience:  binding.Audience,
+				Scope:     strings.Join(binding.Scopes[operation], ","),
+				Queue:     queue,
+				Namespace: namespace,
+			})
+		}
+	}
+	sort.Slice(bindings, func(i, j int) bool { return bindings[i].ID < bindings[j].ID })
+	return bindings
+}
+
+// solutionAuthorityConfigMap carries one authority document, written through a
+// struct so the delivered YAML has a stable field order.
+type solutionAuthorityConfigMap struct {
+	APIVersion string                           `yaml:"apiVersion"`
+	Kind       string                           `yaml:"kind"`
+	Metadata   solutionHostBindingConfigMapMeta `yaml:"metadata"`
+	Data       map[string]string                `yaml:"data"`
+}
+
+// authorityConfigMapName is the ConfigMap's object name for an authority ID:
+// the ID's ":" is not a legal object name character, so it becomes a "-".
+func authorityConfigMapName(authority string) string {
+	return solutionAuthorityKind + "-" + strings.ReplaceAll(authority, ":", "-")
+}
+
+// writeAuthorityDocument writes one document's ConfigMap into the authority
+// namespace and returns its file name; carrier is the signed carrier when there
+// is one.
+func writeAuthorityDocument(directory string, document *solutionhost.AuthorityDocument, module string, carrier ...[]byte) (string, error) {
+	encoded, err := solutionhost.MarshalAuthority(document)
+	if err != nil {
+		return "", fmt.Errorf("marshal authority %q: %w", document.Authority, err)
+	}
+	configMap := solutionAuthorityConfigMap{
+		APIVersion: "v1",
+		Kind:       kindConfigMap,
+		Metadata: solutionHostBindingConfigMapMeta{
+			Name:      authorityConfigMapName(document.Authority),
+			Namespace: authorityNamespace,
+			Labels: map[string]string{
+				managedByLabel:           managedByCodefly,
+				solutionHostBindingLabel: solutionAuthorityKind,
+				solutionAuthorityLabel:   strings.ReplaceAll(document.Authority, ":", "-"),
+				solutionLabel:            module,
+			},
+		},
+		Data: map[string]string{solutionhost.AuthorityFileName: string(encoded)},
+	}
+	if len(carrier) > 0 && len(carrier[0]) > 0 {
+		configMap.Data[authorityCarrierKey] = string(carrier[0])
+	}
+	body, err := yaml.Marshal(configMap)
+	if err != nil {
+		return "", fmt.Errorf("encode authority %q: %w", document.Authority, err)
+	}
+	file := strings.ReplaceAll(document.Authority, ":", "-") + ".yaml"
+	if err := os.WriteFile(filepath.Join(directory, file), body, 0o644); err != nil { //nolint:gosec // a delivered manifest, readable beside the rest of the tree
+		return "", fmt.Errorf("write authority %q: %w", document.Authority, err)
+	}
+	return file, nil
+}
+
+// writeAuthorityKustomization lists the delivered documents so the overlay
+// builds, exactly as the presence overlay does.
+func writeAuthorityKustomization(owned, environment string, names []string) error {
+	sort.Strings(names)
+	body, err := yaml.Marshal(kustomizationManifest{APIVersion: kustomizeAPIVersion, Kind: kindKustomization, Resources: names})
+	if err != nil {
+		return fmt.Errorf("encode authority kustomization: %w", err)
+	}
+	path := filepath.Join(owned, filepath.FromSlash(solutionAuthorityOverlay(environment)), kustomizationFile)
+	if err := os.WriteFile(path, body, 0o644); err != nil { //nolint:gosec // a delivered manifest, readable beside the rest of the tree
+		return fmt.Errorf("write authority kustomization: %w", err)
+	}
+	return nil
+}
+
+// deliveredAuthorityPath is the render subdirectory the inventory records,
+// derived from what this render actually wrote, for the same reason
+// deliveredBindingPath is.
+func deliveredAuthorityPath(declared []DeclaredAuthority) string {
+	if len(declared) == 0 {
+		return ""
+	}
+	return solutionAuthorityDir
+}
+
+// servingBuild is the one build an authority document approves for a unit: the
+// image of the authenticating container of the unit's serving workloads — its
+// Deployments, StatefulSets and DaemonSets. A bootstrap Job of the same unit
+// runs its own image and is declared in the presence document like every pod
+// the host runs, but it is not what mints under the module's principal, so it
+// does not decide the approved build. A unit whose serving workloads run two
+// distinct builds cannot be approved by one document and is refused.
+func servingBuild(owned string, opts *RenderOptions, unit SolutionArtifactUnit) (solutionhost.ImageDigest, error) {
+	rendered, err := renderedWorkloads(filepath.Join(owned, filepath.FromSlash(unit.Path)), opts.Environment)
+	if err != nil {
+		return "", err
+	}
+	builds := map[solutionhost.ImageDigest]struct{}{}
+	for index := range rendered {
+		workload := &rendered[index]
+		switch workload.Kind {
+		case kindDeployment, kindStatefulSet, kindDaemonSet:
+		default:
+			continue
+		}
+		authenticating, _, err := authenticatingContainer(unit.Name, workload)
+		if err != nil {
+			return "", fmt.Errorf("workload %s: %w", workload.Name, err)
+		}
+		builds[solutionhost.ImageDigest(authenticating.Image.Digest)] = struct{}{}
+	}
+	if len(builds) != 1 {
+		return "", fmt.Errorf("its unit runs %d distinct serving builds, and an authority document approves exactly one", len(builds))
+	}
+	for digest := range builds {
+		return digest, nil
+	}
+	return "", nil
+}

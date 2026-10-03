@@ -64,16 +64,26 @@ func renderModuleTree(
 	// destinations derived from it, the quota and the secret projections all
 	// take it from here.
 	scope := moduleScope(env, workspace, module.Name)
-	options := &RenderOptions{
-		Destination: destination,
-		Module:      module.Name,
-		Environment: env.Name,
-		Namespace:   scope.Namespace,
-		AppProject:  project,
-		Promotable:  true,
-		OwnedPath:   ownedPath,
+	// The host's delivery API is resolved before anything renders: a host block
+	// naming an endpoint the composition does not have is refused here, not
+	// after images are built.
+	deliveryTarget, err := resolveDeliveryTarget(ctx, workspace, env)
+	if err != nil {
+		return RenderResult{}, err
 	}
-	return RenderOwnedTree(ctx, options, func(ctx context.Context, stage string) error {
+	options := &RenderOptions{
+		Destination:    destination,
+		Module:         module.Name,
+		Environment:    env.Name,
+		Namespace:      scope.Namespace,
+		AppProject:     project,
+		Promotable:     true,
+		OwnedPath:      ownedPath,
+		Workspace:      workspace.Name,
+		Host:           env.Host,
+		DeliveryTarget: deliveryTarget,
+	}
+	result, err := RenderOwnedTree(ctx, options, func(ctx context.Context, stage string) error {
 		services := make([]*resources.Service, 0, len(module.ServiceReferences))
 		for _, reference := range module.ServiceReferences {
 			service, err := module.LoadServiceFromName(ctx, reference.Name)
@@ -82,6 +92,17 @@ func renderModuleTree(
 			}
 			services = append(services, service)
 		}
+		// The workspace configuration groups this render bakes in, digested, so
+		// a sibling consumer rendered against another value is refused before
+		// this tree replaces its destination.
+		digests, digestErr := workspaceConfigurationDigests(ctx, workspace, env, services)
+		if digestErr != nil {
+			return digestErr
+		}
+		if staleErr := refuseStaleGroupConsumers(workspace.Dir(), module.Name, env.Name, digests); staleErr != nil {
+			return staleErr
+		}
+		options.WorkspaceConfigurationDigests = digests
 		pkg, err := modulePackage(module.Dir())
 		if err != nil {
 			return err
@@ -218,6 +239,27 @@ func renderModuleTree(
 		sort.Slice(options.Units, func(i, j int) bool {
 			return options.Units[i].Name < options.Units[j].Name
 		})
+		// Declared presence, from the resolution this render already holds:
+		// the module it is rendering, the services it loaded from it, the
+		// package it resolved, and the units it just assembled. Nothing is
+		// looked up again, so the binding cannot describe a composition the
+		// workloads did not come from.
+		instance, undeclared, err := presenceInstanceOf(module, services, env, options)
+		if err != nil {
+			return err
+		}
+		options.UndeclaredPresence = undeclared
+		if instance != nil {
+			options.SolutionInstances = []SolutionInstance{*instance}
+			// Authority is effective from a presence generation, so a module
+			// declaring no presence asks for none.
+			options.AuthorityInstances, options.UndeclaredAuthority, err = authorityInstancesOf(ctx, workspace, module, services, env, instance.Units)
+			if err != nil {
+				return err
+			}
+		} else {
+			options.UndeclaredAuthority = "the module declares no presence, so no authority can be effective from it"
+		}
 		if module.Agent != nil {
 			modulePath := filepath.Join(stage, moduleBundleDir)
 			if err = renderModuleBundle(ctx, workspace, module, env, modulePath, options.Units); err != nil {
@@ -249,6 +291,19 @@ func renderModuleTree(
 		}
 		return nil
 	})
+	if err != nil {
+		return RenderResult{}, err
+	}
+	// The cell file describes every module tree rendered for this environment,
+	// this one included, so it is regenerated whole after the tree is in place.
+	if env.Host != nil {
+		cell, cellErr := RenderCell(ctx, workspace, env)
+		if cellErr != nil {
+			return RenderResult{}, cellErr
+		}
+		result.Cell = &cell
+	}
+	return result, nil
 }
 
 func moduleRenderRoots(module string, services []*resources.Service) ([]*resources.Service, error) {

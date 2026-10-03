@@ -58,11 +58,6 @@ var derivedOverrides map[string]map[string]string
 // run's roots forward.
 var runCoRoots []string
 
-// Workspace configuration values the run path derives itself: group -> key ->
-// value. Assigned (never appended to) on every run, like derivedOverrides, so a
-// repeated in-process invocation cannot carry a previous run's value forward.
-var derivedWorkspaceConfigurations map[string]map[string]string
-
 // Scope for the runtime: affect ports to avoid conflict with run
 // Useful for testing/CI
 var namingScope string

@@ -112,6 +112,15 @@ func (env *Environment) Validate() error {
 	if err := env.ServiceIdentity.Validate(); err != nil {
 		return err
 	}
+	if err := env.Host.Validate(); err != nil {
+		return err
+	}
+	if err := env.validateEgress(); err != nil {
+		return err
+	}
+	if err := env.validateCell(); err != nil {
+		return err
+	}
 	if err := env.validateServiceKeyCollisions(); err != nil {
 		return err
 	}

@@ -60,6 +60,7 @@ var gitOpsRenderCmd = &cobra.Command{
 		cli.Info("Digest %s", result.Inventory.Digest)
 		printSizingReport(result.Sizing)
 		printElidedNamespaces(result.ElidedNamespaces)
+		printSolutionHostBindings(&result)
 		printClearedDev(result.ClearedDev)
 		return nil
 	},
@@ -95,6 +96,7 @@ var gitOpsSnapshotCmd = &cobra.Command{
 		cli.Info("Digest %s", result.Inventory.Digest)
 		printSizingReport(result.Sizing)
 		printElidedNamespaces(result.ElidedNamespaces)
+		printSolutionHostBindings(&result)
 		printClearedDev(result.ClearedDev)
 		return nil
 	},
@@ -174,9 +176,30 @@ var gitOpsPublishCmd = &cobra.Command{
 		cli.Info("Service snapshot %s", result.SnapshotRevision)
 		cli.Info("Signed commit %s", result.Commit)
 		cli.Info("Tree %s", result.Tree)
+		printDelivery(result.Delivery)
 		cli.Info("Pull request %s", result.PullRequest)
 		return nil
 	},
+}
+
+// printDelivery reports the delivery documents a publish settled and signed,
+// and says plainly when they are unsigned: a host refuses those.
+func printDelivery(delivery *gitops.InventoryDelivery) {
+	if delivery == nil {
+		return
+	}
+	for _, document := range delivery.Documents {
+		state := "settled"
+		if document.Removed {
+			state = "withdrawn by a tombstone"
+		}
+		cli.Info("Delivered %s document %s at generation %d, %s", document.Kind, document.ID, document.Generation, state)
+	}
+	if delivery.Signed {
+		cli.Info("Delivery documents signed by %s", delivery.Identity)
+		return
+	}
+	cli.Warning("Delivery documents are UNSIGNED: no signing identity in this process; a host refuses them, and no Job delivers them. Publish from the release workflow.")
 }
 
 var gitOpsObserveCmd = &cobra.Command{
@@ -436,6 +459,31 @@ func printElidedNamespaces(elided []string) {
 	cli.Warning("%d Namespace manifest(s) claiming the destination namespace were dropped: the namespace is provisioned outside this render (Argo Applications carry CreateNamespace=false)", len(elided))
 	for _, path := range elided {
 		cli.Warning("  %s — its service agent should elide the Namespace under a restricted output profile", path)
+	}
+}
+
+// printSolutionHostBindings reports what this render DECLARED should be
+// present on the host, and what it could not declare. The second half matters
+// as much as the first: a composition with no solution and one whose
+// environment names no host both render zero bindings, and only this tells
+// them apart.
+func printSolutionHostBindings(result *gitops.RenderResult) {
+	for _, declared := range result.SolutionHostBindings {
+		cli.Info("Declared solution host binding %s at provisional generation %d (%s); publish settles the generation against the delivery repository and signs the document", declared.Binding, declared.Generation, declared.Path)
+	}
+	if result.Cell != nil {
+		cli.Info("Cell file %s covers modules %s", result.Cell.Path, strings.Join(result.Cell.Modules, ", "))
+		if len(result.Cell.Skipped) > 0 {
+			cli.Info("Cell file leaves out %s: rendered for another environment", strings.Join(result.Cell.Skipped, ", "))
+		}
+	}
+	if len(result.UndeclaredSolutions) == 0 {
+		return
+	}
+	cli.Warning("%d solution instance(s) rendered no host binding: environment %q declares no host (coordinate, component, audience)",
+		len(result.UndeclaredSolutions), result.Inventory.Environment)
+	for _, name := range result.UndeclaredSolutions {
+		cli.Warning("  %s — its presence on the host still depends on the runtime registering itself", name)
 	}
 }
 

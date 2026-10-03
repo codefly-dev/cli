@@ -5,6 +5,7 @@ import (
 	"maps"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -189,6 +190,322 @@ func validateManagedServiceKey(key string) error {
 		return err
 	}
 	return validateResourcePathComponent("managed service", service)
+}
+
+// EnvironmentEgress is the external reach one service is declared to need: the
+// hosts it dials outside the cluster. It is a declaration the composition
+// states and the render carries into the cell file — never derived. The module
+// author knows that a service reaches an identity provider or a code host; only
+// the composition knows which provider and which region, so the two meet here,
+// keyed by service identity exactly as managed-services are. The platform
+// renders egress policy from it, so a host missing here is a workload that
+// cannot reach it, found at the workload rather than invented by the render.
+type EnvironmentEgress struct {
+	Hosts []EnvironmentEgressHost `yaml:"hosts"`
+}
+
+// EnvironmentEgressHost is one host a service dials, on one port. The port is
+// load-bearing for the policy the platform renders — a mesh allows a
+// (host, port), and a host declared without the port it is reached on is
+// denied with the symptom of an application timeout — so it is explicit here,
+// defaulting to EgressDefaultPort when a host is written as a bare name.
+type EnvironmentEgressHost struct {
+	Name string `yaml:"name"`
+	Port int    `yaml:"port,omitempty"`
+}
+
+// EgressDefaultPort is the port a bare egress host name means.
+const EgressDefaultPort = 443
+
+// UnmarshalYAML accepts a bare host name ("api.example.test", meaning port 443)
+// or an explicit {name, port} mapping.
+func (host *EnvironmentEgressHost) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		return node.Decode(&host.Name)
+	}
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i < len(node.Content); i += 2 {
+			if key := node.Content[i].Value; key != "name" && key != "port" {
+				return fmt.Errorf("unknown egress host field %q (a host is a bare name, or {name, port})", key)
+			}
+		}
+	}
+	type plain EnvironmentEgressHost
+	return node.Decode((*plain)(host))
+}
+
+// MarshalYAML emits the bare name when no port was declared, so a re-serialized
+// workspace keeps the terse declaration, and the mapping otherwise.
+func (host EnvironmentEgressHost) MarshalYAML() (any, error) {
+	if host.Port == 0 {
+		return host.Name, nil
+	}
+	type plain EnvironmentEgressHost
+	return plain(host), nil
+}
+
+// EffectivePort is the port the host is reached on: the declared one, or the
+// default for a bare name.
+func (host EnvironmentEgressHost) EffectivePort() int {
+	if host.Port == 0 {
+		return EgressDefaultPort
+	}
+	return host.Port
+}
+
+// egressHostPattern is a DNS host name: lowercase labels joined by dots, no
+// scheme, no port, no path. A URL here is a value copied from configuration,
+// which is what this declaration exists not to be.
+var egressHostPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`)
+
+// validateEgress checks every egress key names a service by module-qualified
+// identity, every host is a bare host name on a valid port, and no (host, port)
+// is declared twice for one service.
+func (env *Environment) validateEgress() error {
+	for key, egress := range env.Egress {
+		if err := validateServiceIdentityKey("egress", key); err != nil {
+			return err
+		}
+		if len(egress.Hosts) == 0 {
+			return fmt.Errorf("egress %s declares no host", key)
+		}
+		seen := make(map[string]struct{}, len(egress.Hosts))
+		for _, host := range egress.Hosts {
+			if !egressHostPattern.MatchString(host.Name) {
+				return fmt.Errorf("egress %s host %q is not a bare DNS host name (no scheme, port or path)", key, host.Name)
+			}
+			if host.Port < 0 || host.Port > 65535 {
+				return fmt.Errorf("egress %s host %s port %d is not a port", key, host.Name, host.Port)
+			}
+			id := fmt.Sprintf("%s:%d", host.Name, host.EffectivePort())
+			if _, exists := seen[id]; exists {
+				return fmt.Errorf("egress %s declares %s twice", key, id)
+			}
+			seen[id] = struct{}{}
+		}
+	}
+	return nil
+}
+
+// validateServiceIdentityKey checks a map key is the module-qualified identity
+// <module>/<service> of a composed service.
+func validateServiceIdentityKey(label, key string) error {
+	module, service, qualified := strings.Cut(key, "/")
+	if !qualified {
+		return fmt.Errorf("%s key %q must be the module-qualified identity <module>/<service> of the service it declares for", label, key)
+	}
+	if err := validateResourcePathComponent(label+" module", module); err != nil {
+		return err
+	}
+	return validateResourcePathComponent(label+" service", service)
+}
+
+// EgressHosts returns the hosts a service is declared to dial outside the
+// cluster, each with the port it is reached on, sorted by name then port, or
+// nil when it declares none.
+func (env *Environment) EgressHosts(module, service string) []EnvironmentEgressHost {
+	if env == nil {
+		return nil
+	}
+	egress, declared := env.Egress[resources.ServiceUnique(module, service)]
+	if !declared {
+		return nil
+	}
+	hosts := make([]EnvironmentEgressHost, 0, len(egress.Hosts))
+	for _, host := range egress.Hosts {
+		hosts = append(hosts, EnvironmentEgressHost{Name: host.Name, Port: host.EffectivePort()})
+	}
+	sort.Slice(hosts, func(i, j int) bool {
+		if hosts[i].Name != hosts[j].Name {
+			return hosts[i].Name < hosts[j].Name
+		}
+		return hosts[i].Port < hosts[j].Port
+	})
+	return hosts
+}
+
+// EnvironmentCellWorkload is what the cell must grant one service beyond the
+// mesh edges the render derives: the cell-provided resources the service binds
+// (a vault, an object store, an audit sink — the vocabulary is the cell's, and
+// its loader refuses a name it does not provide), and whether the workload
+// mints a cloud credential from the node's metadata server, which needs a
+// network path no egress waypoint carries. Only the composition knows which of
+// its workloads holds a binding; the cell provisions the resource and derives
+// the grant from this declaration, so a binding missing here is a workload
+// refused at the resource rather than one granted by guess.
+type EnvironmentCellWorkload struct {
+	Bindings      []string `yaml:"bindings,omitempty"`
+	CloudIdentity bool     `yaml:"cloud-identity,omitempty"`
+}
+
+// cellBindingPattern is one cell-provided resource name as the cell spells it:
+// lowercase, with the underscore and dash both admitted since the vocabulary
+// is the cell's.
+var cellBindingPattern = regexp.MustCompile(`^[a-z0-9]+(?:[_-][a-z0-9]+)*$`)
+
+// validateCell checks every cell key names a service by module-qualified
+// identity and every entry declares something.
+func (env *Environment) validateCell() error {
+	for key, workload := range env.Cell {
+		if err := validateServiceIdentityKey("cell", key); err != nil {
+			return err
+		}
+		if len(workload.Bindings) == 0 && !workload.CloudIdentity {
+			return fmt.Errorf("cell %s declares nothing: name the bindings the service holds, or cloud-identity, or drop the entry", key)
+		}
+		seen := make(map[string]struct{}, len(workload.Bindings))
+		for _, binding := range workload.Bindings {
+			if !cellBindingPattern.MatchString(binding) {
+				return fmt.Errorf("cell %s binding %q is not a lowercase resource name", key, binding)
+			}
+			if _, exists := seen[binding]; exists {
+				return fmt.Errorf("cell %s binding %q is declared twice", key, binding)
+			}
+			seen[binding] = struct{}{}
+		}
+	}
+	return nil
+}
+
+// CellWorkload returns what the cell must grant a service, or false when the
+// environment declares nothing for it. Bindings are returned sorted.
+func (env *Environment) CellWorkload(module, service string) (EnvironmentCellWorkload, bool) {
+	if env == nil {
+		return EnvironmentCellWorkload{}, false
+	}
+	workload, declared := env.Cell[resources.ServiceUnique(module, service)]
+	if !declared {
+		return EnvironmentCellWorkload{}, false
+	}
+	bindings := append([]string(nil), workload.Bindings...)
+	sort.Strings(bindings)
+	return EnvironmentCellWorkload{Bindings: bindings, CloudIdentity: workload.CloudIdentity}, true
+}
+
+// EnvironmentHost is the deployment host an environment delivers to. Every
+// field names an identity the host already has; none is derived, because a
+// derived coordinate would be a guess that a host silently refuses at
+// reconcile time (core solutionhost.ErrWrongHost) rather than at render.
+//
+// The fields are declared together because a delivery document needs all of
+// them at once: Coordinate is matched by the host, Component names the
+// component instance within it, Domain is the ownership domain this
+// composition delivers under, Audience is what the host expects a workload's
+// token to be bound to, TrustDomain is the SPIFFE trust domain the host's
+// issuer puts in a workload's SVID, and EnvelopeRevision is the revision of
+// the host's envelope this composition was reviewed against. A partial
+// declaration would render a document the host cannot use, so UnmarshalYAML
+// refuses an unknown key and Validate refuses a missing one.
+type EnvironmentHost struct {
+	Coordinate string `yaml:"coordinate"`
+	Component  string `yaml:"component"`
+	// Domain is the ownership domain every document this composition renders
+	// for this environment speaks for. A host accepts delivery only from the
+	// domains it was told about, and refuses an unlisted one naming it; a
+	// delivery may add, change and remove bindings within its own domain and
+	// may say nothing at all about any other. It is stamped into the signed
+	// bytes of every document, so a carrier relaying a document cannot widen it.
+	Domain string `yaml:"domain"`
+	// Audience is the token audience the host verifies a workload's projected
+	// token against. It is the host's bare audience string, not an address.
+	Audience string `yaml:"audience"`
+	// TrustDomain is the SPIFFE trust domain of the host's workload identity
+	// issuer. A presence document names, per workload, the SPIFFE ID the host
+	// must verify on the connection: spiffe://<trust domain>/ns/<namespace>/sa/<account>.
+	TrustDomain string `yaml:"trust_domain"`
+	// EnvelopeRevision is the revision of the host's envelope — the ceiling a
+	// platform administrator writes at runtime — that this composition was
+	// reviewed against. Both delivery documents carry it inside their signed
+	// bytes and the host refuses a document naming another revision, so a
+	// composition pins the revision it was reviewed against here, and bumps it
+	// when the envelope is re-reviewed. Never derived: the render does not
+	// read the envelope.
+	EnvelopeRevision uint64 `yaml:"envelope_revision"`
+	// Delivery names the host's delivery API by composition identity —
+	// "<module>/<service>/<endpoint>" — the way api.consumes names a producing
+	// endpoint. The render resolves it to the in-cluster address the delivery
+	// Jobs POST to, exactly as it resolves every other consumed endpoint; a
+	// composition names which endpoint is the delivery API and never where it
+	// lives.
+	Delivery string `yaml:"delivery"`
+}
+
+// hostFields are the keys a host block may carry, in declaration order.
+var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "envelope_revision", "delivery"}
+
+// deliveryPattern is a composition identity: <module>/<service>/<endpoint>,
+// each a lowercase name.
+var deliveryPattern = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*/[a-z0-9]+(?:[._-][a-z0-9]+)*/[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
+
+// UnmarshalYAML refuses an unknown key rather than dropping it: workspace YAML
+// is lenient, and a mistyped `component` would otherwise leave a host block
+// that looks declared and renders nothing.
+func (host *EnvironmentHost) UnmarshalYAML(node *yaml.Node) error {
+	if err := rejectUnknownKeys(node, "host", hostFields...); err != nil {
+		return err
+	}
+	type plain EnvironmentHost
+	return node.Decode((*plain)(host))
+}
+
+// hostNamePattern is core solutionhost's namePattern: the lowercase dotted or
+// slashed name a coordinate, a component and an ownership domain are. It is
+// restated here so a malformed declaration fails at workspace load, naming the
+// field, instead of at render, naming a document.
+var hostNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$`)
+
+// trustDomainPattern is a SPIFFE trust domain: a DNS-like lowercase name, no
+// scheme and no path. The SPIFFE ID the render derives from it must parse as
+// spiffe://<trust domain>/<path>, so the trust domain itself cannot carry a
+// scheme, a slash or an upper-case letter.
+var trustDomainPattern = regexp.MustCompile(`^[a-z0-9._-]+$`)
+
+// Validate checks a declared host names every part of its identity. A nil
+// receiver is a valid "not declared" state.
+func (host *EnvironmentHost) Validate() error {
+	if host == nil {
+		return nil
+	}
+	for _, part := range []struct{ label, value string }{
+		{"coordinate", host.Coordinate}, {"component", host.Component}, {"domain", host.Domain},
+	} {
+		if !hostNamePattern.MatchString(part.value) {
+			return fmt.Errorf("host %s %q is not a lowercase dotted or slashed name", part.label, part.value)
+		}
+	}
+	// The audience is the host's bare audience string. It is checked for
+	// shape rather than spelling: a single line, no whitespace. That is what
+	// core's WorkloadIdentity accepts, and it is not the shape of a pasted
+	// credential.
+	if host.Audience == "" || strings.ContainsFunc(host.Audience, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+		return fmt.Errorf("host audience must be a single-line identity, got %q", host.Audience)
+	}
+	if !trustDomainPattern.MatchString(host.TrustDomain) {
+		return fmt.Errorf("host trust_domain %q is not a SPIFFE trust domain (lowercase DNS name, no scheme, no path)", host.TrustDomain)
+	}
+	if host.EnvelopeRevision == 0 {
+		return fmt.Errorf("host envelope_revision must be the revision (at least 1) of the host envelope this composition was reviewed against")
+	}
+	if !deliveryPattern.MatchString(host.Delivery) {
+		return fmt.Errorf("host delivery %q is not the composition identity <module>/<service>/<endpoint> of the host's delivery API", host.Delivery)
+	}
+	return nil
+}
+
+// DeliveryEndpoint splits the delivery API's composition identity into the
+// module, service and endpoint that name it.
+func (host *EnvironmentHost) DeliveryEndpoint() (module, service, endpoint string) {
+	parts := strings.SplitN(host.Delivery, "/", 3)
+	if len(parts) != 3 {
+		return "", "", ""
+	}
+	return parts[0], parts[1], parts[2]
+}
+
+// SPIFFEID is the SPIFFE ID of the workload running as account in namespace on
+// this host, as the host's issuer names it: spiffe://<trust domain>/ns/<namespace>/sa/<account>.
+func (host *EnvironmentHost) SPIFFEID(namespace, account string) string {
+	return "spiffe://" + host.TrustDomain + "/ns/" + namespace + "/sa/" + account
 }
 
 // EnvironmentWorkloadIdentity is the runtime principal a workload authenticates
@@ -917,6 +1234,19 @@ type Environment struct {
 
 	Ingress []EnvironmentIngressRoute `yaml:"ingress,omitempty"`
 
+	// Host names the deployment host this environment delivers to: the
+	// coordinate that identifies it, the component instance within it, the
+	// ownership domain this composition delivers under, the audience a workload
+	// token presented to it must be bound to, the SPIFFE trust domain of its
+	// identity issuer, and the envelope revision this composition was reviewed
+	// against. It is what every rendered delivery document declares as its
+	// target, and the CLI has no other durable record of it — `codefly
+	// environment import` reads the coordinate off a codefly/coordinate/v1
+	// contract and keeps it only as a provenance comment. Absent, a render
+	// declares no presence and no authority rather than inventing a host.
+	// CLI-side; not serialized to proto.
+	Host *EnvironmentHost `yaml:"host,omitempty"`
+
 	// ManagedServices keys a replacement by the identity of the service it
 	// replaces: "<module>/<service>", or a bare "<service>" when exactly one
 	// module in the workspace declares that name. Composed modules routinely ship
@@ -926,6 +1256,18 @@ type Environment struct {
 	// a service nobody declared managed. Read it through ManagedService, never by
 	// indexing the map with a bare name.
 	ManagedServices map[string]EnvironmentManagedService `yaml:"managed-services,omitempty"`
+
+	// Egress declares, per module-qualified service, the hosts it dials
+	// outside the cluster. Carried into the cell file for the platform's egress
+	// policy; see EnvironmentEgress. CLI-side; not serialized to proto.
+	Egress map[string]EnvironmentEgress `yaml:"egress,omitempty"`
+
+	// Cell declares, per module-qualified service, what the cell must grant it
+	// beyond the mesh edges the render derives: the cell-provided resources it
+	// binds and whether it mints a cloud credential from the node's metadata
+	// server. Carried into the cell file; see EnvironmentCellWorkload.
+	// CLI-side; not serialized to proto.
+	Cell map[string]EnvironmentCellWorkload `yaml:"cell,omitempty"`
 
 	// DNS carries the environment's DNS contract. Its AppHostSuffix lets the network layer
 	// derive an external endpoint's public host from declared config instead of
