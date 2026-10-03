@@ -149,7 +149,8 @@ The document cannot close the sidecar gap on its own: a projected
 ServiceAccount token is the pod's, so a sidecar that mounts it presents it as
 the workload and the host cannot tell which container asked. The cell's
 admission policy closes it — a projected token minted for an explicit
-`audience` must be mounted by the authenticating container and no other — and
+`audience` must be mounted by the authenticating container and no other; a
+declared volume nobody mounts is inert and admitted, on both sides — and
 the render refuses the same pod template first, at publish, so the failure
 lands on whoever wrote the template rather than on an operator reading a
 denial at rollout. The rule keys on the token's `audience`, as admission does:

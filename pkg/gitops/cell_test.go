@@ -306,11 +306,12 @@ func TestCellFileRefusesAWorkloadWhoseAuthenticatingContainerCannotBeTold(t *tes
 }
 
 // TestRenderRefusesATokenASidecarCouldPresent mirrors the cell's admission
-// rule at publish: a projected ServiceAccount token minted for an explicit
-// audience may be mounted by the authenticating container and no other. The
-// token the ServiceAccount plugin injects is projected too, mounted everywhere,
-// and names no audience, so the rule keys on the audience — a rule keyed on
-// "a projected token volume" would refuse every multi-container pod.
+// rule at publish, case for case as the cell verified it against an API
+// server: a projected ServiceAccount token minted for an explicit audience may
+// be mounted by the authenticating container and no other. The token the
+// ServiceAccount plugin injects is projected too, mounted everywhere, and names
+// no audience, so the rule keys on the audience — a rule keyed on "a projected
+// token volume" would refuse every multi-container pod.
 func TestRenderRefusesATokenASidecarCouldPresent(t *testing.T) {
 	deployment := func(apiMounts, proxyMounts, initMounts string) string {
 		return `apiVersion: apps/v1
@@ -366,6 +367,14 @@ spec:
 		{name: "the audience token also in a sidecar", api: both, proxy: both, refused: `proxy mounts host-token (audience "accounts")`},
 		{name: "the audience token in the sidecar alone", api: injected, proxy: audience, refused: `proxy mounts host-token (audience "accounts")`},
 		{name: "the audience token in an init container", api: audience, init: audience, refused: `migrate mounts host-token (audience "accounts")`},
+		// A declared volume nobody mounts is projected into no filesystem, so no
+		// container can present it: inert, and ADMITTED. The cell's rule is
+		// one-sided by construction — the authenticating container is exempted
+		// and nothing requires it to mount the volume — and the render matches
+		// it exactly; "completing" either side into an equality would make the
+		// publisher and the enforcer disagree, and the failure would land on
+		// whoever deployed the pod rather than on either of us.
+		{name: "the audience token volume mounted by nobody", api: injected, proxy: injected},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
