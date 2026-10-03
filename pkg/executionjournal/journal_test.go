@@ -402,14 +402,17 @@ func receiptForStage(stage executionv1.ExecutionStage) *executionv1.ExecutionRec
 			AuthorizationRevision: 4, ReplayPolicy: "idempotent",
 			TenantId: "tenant-codefly", OwnerPrincipalId: "principal-antoine",
 			TaskId: "task-1", SessionId: "session-child", ParentSessionId: &parentSessionID,
+			Seal: &basev0.WorkSealV1{
+				// core#692 seals every capability to one installation and one attested
+				// execution; a host-minted context carries these, so the fixture does.
+				PrincipalEpoch: 1, InstallationId: "installation-1", InstallationRevision: 1,
+				BuildIncarnation: 1, ImageDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			},
 			AuthorityScopes: []*basev0.WorkScopeV1{{
 				ResourceKind: "evidence", Actions: []string{"append"}, ResourceIds: []string{"codefly.execution"},
 			}},
 			ActorChain: []*basev0.WorkActorV1{{
-				PrincipalId: "principal-claude", PrincipalKind: "agent", DelegationId: "delegation-1",
-				// Each hop of the chain carries its own epoch, so advancing one
-				// principal's epoch cuts off only that hop's capabilities.
-				PrincipalEpoch: 1,
+				PrincipalId: "principal-claude", PrincipalKind: "agent", DelegationId: "delegation-1", PrincipalEpoch: 1,
 				GrantedScopes: []*basev0.WorkScopeV1{{
 					ResourceKind: "evidence", Actions: []string{"append"}, ResourceIds: []string{"codefly.execution"},
 				}},

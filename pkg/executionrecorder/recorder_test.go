@@ -445,6 +445,28 @@ func testBeginInput() BeginInput {
 	}
 }
 
+func testClaims() *basev0.WorkContextV1 {
+	started := time.Date(2026, time.July, 23, 19, 0, 0, 0, time.UTC)
+	workspaceID := "workspace-codefly"
+	projectID := "project-warden"
+	return &basev0.WorkContextV1{
+		Typ: "codefly.work-context/v1", Algorithm: "Ed25519",
+		KeyId: "accounts-key-1", Issuer: "accounts", Audience: "codefly.execution",
+		NotBeforeUnix: started.Add(-time.Minute).Unix(), IssuedAtUnix: started.Add(-time.Minute).Unix(),
+		ExpiresAtUnix: started.Add(4 * time.Minute).Unix(), Nonce: "nonce-1",
+		AuthorizationRevision: 4, ReplayPolicy: "idempotent",
+		TenantId: "tenant-codefly", OwnerPrincipalId: "principal-antoine",
+		TaskId: "task-1", SessionId: "session-1",
+		WorkspaceId: &workspaceID, ProjectId: &projectID,
+		Seal: &basev0.WorkSealV1{
+			// core#692 seals every capability to one installation and one attested
+			// execution; a host-minted context carries these, so the fixture does.
+			PrincipalEpoch: 1, InstallationId: "installation-1", InstallationRevision: 1,
+			BuildIncarnation: 1, ImageDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+	}
+}
+
 type testClock struct {
 	mu   sync.Mutex
 	next time.Time

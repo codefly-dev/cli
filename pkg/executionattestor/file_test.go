@@ -146,15 +146,11 @@ func testReceipt() *executionv1.ExecutionReceiptV1 {
 			AuthorizationRevision: 4, ReplayPolicy: "idempotent",
 			TenantId: "tenant-codefly", OwnerPrincipalId: "principal-antoine",
 			TaskId: "task-1", SessionId: "session-1",
-			// Core v0.9.1 requires the seal: a capability names the
-			// installation it is held through and the execution it was minted
-			// for. The execution pair is optional but must be whole.
 			Seal: &basev0.WorkSealV1{
-				PrincipalEpoch:       1,
-				InstallationId:       "installation-warden",
-				InstallationRevision: 3,
-				BuildIncarnation:     uint64Pointer(7),
-				ImageDigest:          stringPointer("sha256:" + strings.Repeat("a", 64)),
+				// core#692 seals every capability to one installation and one attested
+				// execution; a host-minted context carries these, so the fixture does.
+				PrincipalEpoch: 1, InstallationId: "installation-1", InstallationRevision: 1,
+				BuildIncarnation: 1, ImageDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			},
 		},
 		WorkContextSha256: hex.EncodeToString(contextDigest[:]),
