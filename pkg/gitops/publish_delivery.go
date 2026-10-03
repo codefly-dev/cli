@@ -302,6 +302,16 @@ func settledGeneration(prior, candidate *solutionhost.SolutionHostBinding) (uint
 		return 0, fmt.Errorf("%w: binding %q was withdrawn at generation %d, so this render cannot present it again under that ID; a new instance needs a new name, which gives it a new binding ID",
 			solutionhost.ErrTombstoned, candidate.Binding, prior.Generation)
 	}
+	// The delivered domain is what says who may change this binding, so the
+	// host refuses a generation that arrives under another one whatever its
+	// number — the rule Host.admit holds against its applied record, held here
+	// against the base branch's, which is the record publish can see. Without
+	// it a changed host block settled as a new generation here and was refused
+	// only at apply.
+	if prior.OwnershipDomain != candidate.OwnershipDomain {
+		return 0, fmt.Errorf("%w: binding %q was applied under domain %q and this document declares %q; a binding does not move between ownership domains, so a module under a new domain is a new instance with a new binding ID",
+			solutionhost.ErrWrongDomain, candidate.Binding, prior.OwnershipDomain, candidate.OwnershipDomain)
+	}
 	at := *candidate
 	at.Generation = prior.Generation
 	current, err := at.Digest()
@@ -518,7 +528,14 @@ func settleAuthorityDelivery(
 		names = append(names, authority)
 	}
 	sort.Strings(names)
-	if err = refuseUnmatchedPairs(target, environment, inventory.Module, settled, names, prior, opts.EnvelopeRevision); err != nil {
+	// The presence half's applied record comes from the same place the
+	// authority half's does — what the base branch delivered — because that is
+	// the record the host folds the pair against, and the one publish can see.
+	priorPresence, err := priorDeliveredBindings(ctx, repo, baseBranch, filepath.ToSlash(filepath.Join(targetPath, solutionHostBindingOverlay(environment))))
+	if err != nil {
+		return nil, err
+	}
+	if err = refuseUnmatchedPairs(target, environment, inventory.Module, settled, names, prior, priorPresence, opts.EnvelopeRevision); err != nil {
 		return nil, err
 	}
 	delivery, err := signAuthoritySet(ctx, settled, names, opts, environment)
@@ -540,19 +557,26 @@ func settleAuthorityDelivery(
 // presence document it is granted over — the one this publish just wrote to the
 // staged tree — with core's ActivateRendered: the renderer's share of
 // activation, as AdmitRendered is its share of admission. It answers what needs
-// no host state: the fold against what the base branch delivered (a domain or
-// binding the authority would migrate across, a rewritten generation), the
-// target binding, host and domain agreeing, both halves naming the envelope
-// revision the environment declares NOW, the approved build being one the
-// presence says the binding runs, and the effective-from generation. What it
-// cannot answer stays the host's: who signed either half, and whether the
-// authority fits the ceiling — the envelope is the host's record and a renderer
-// holds only its revision, so a RenderedMatch is not an Activation.
+// no host state: the fold of BOTH halves against what the base branch delivered
+// (a domain or binding either half would migrate across, a withdrawal, a
+// rewritten generation), the target binding, host and domain agreeing, both
+// halves naming the envelope revision the environment declares NOW, the
+// approved build being one the presence says the binding runs, and the
+// effective-from generation. What it cannot answer stays the host's: who signed
+// either half, and whether the authority fits the ceiling — the envelope is the
+// host's record and a renderer holds only its revision, so a RenderedMatch is
+// not an Activation.
+//
+// Each half's applied record is the base branch's, and its absence is stated
+// rather than left to a zero value: core refuses a fold that was given neither
+// a record nor the statement that there is none, so a publish that forgot to
+// look is refused instead of passing as a first delivery.
 func refuseUnmatchedPairs(
 	target, environment, module string,
 	settled map[string]deliveredAuthorityDocument,
 	names []string,
 	prior map[string]deliveredAuthorityDocument,
+	priorPresence map[string]*solutionhost.SolutionHostBinding,
 	envelopeRevision uint64,
 ) error {
 	var granted []string
@@ -581,23 +605,63 @@ func refuseUnmatchedPairs(
 		if !present {
 			return fmt.Errorf("authority %s is granted over binding %s, which this publish does not deliver", authority, binding)
 		}
-		var applied solutionhost.AppliedAuthority
-		if previous, delivered := prior[authority]; delivered {
-			if applied, err = solutionhost.AppliedAuthorityFrom(previous.document); err != nil {
-				return fmt.Errorf("record the delivered authority %s: %w", authority, err)
-			}
-		}
-		if _, err := solutionhost.ActivateRendered(solutionhost.RenderedActivationRequest{
+		request := solutionhost.RenderedActivationRequest{
 			Authority:        entry.document,
 			Presence:         over.document,
 			Build:            entry.document.ApprovedBuild,
 			EnvelopeRevision: envelopeRevision,
-			Applied:          applied,
-		}); err != nil {
+		}
+		// The authority record is looked up by the binding the authority is
+		// granted over, not by its ID, because that is how the host folds: a
+		// withdrawal over a binding is terminal for every later authority ID
+		// over it, and a record found by ID would never see one.
+		previous, delivered, err := priorAuthorityOver(prior, binding)
+		if err != nil {
+			return err
+		}
+		if delivered {
+			if request.Applied, err = solutionhost.AppliedAuthorityFrom(previous.document); err != nil {
+				return fmt.Errorf("record the delivered authority %s: %w", previous.document.Authority, err)
+			}
+		} else {
+			request.FirstAuthorityRecord = true
+		}
+		if applied, present := priorPresence[binding]; present {
+			if request.AppliedPresence, err = solutionhost.AppliedFrom(applied); err != nil {
+				return fmt.Errorf("record the delivered binding %s: %w", binding, err)
+			}
+		} else {
+			request.FirstPresenceRecord = true
+		}
+		if _, err := solutionhost.ActivateRendered(request); err != nil {
 			return fmt.Errorf("authority %s and binding %s are not a pair the host would activate: %w", authority, binding, err)
 		}
 	}
 	return nil
+}
+
+// priorAuthorityOver is the authority document the base branch delivered over
+// a binding, if any. More than one is a tree no host could hold a record for,
+// since the host keeps one authority record per binding, and is refused rather
+// than folded against whichever came first. The render never writes two, so
+// this is a hand-edited tree; and since a withdrawal is terminal for the
+// binding, the way out is not to withdraw one but to grant over a new binding.
+func priorAuthorityOver(prior map[string]deliveredAuthorityDocument, binding string) (deliveredAuthorityDocument, bool, error) {
+	var found []string
+	for authority, entry := range prior {
+		if entry.document.PresenceBinding == binding {
+			found = append(found, authority)
+		}
+	}
+	switch len(found) {
+	case 0:
+		return deliveredAuthorityDocument{}, false, nil
+	case 1:
+		return prior[found[0]], true, nil
+	default:
+		sort.Strings(found)
+		return deliveredAuthorityDocument{}, false, fmt.Errorf("the base branch delivers the authority documents %s over binding %s, and a host holds one authority record per binding, so nothing settles against them; a new grant needs a new instance, which gives it a new binding ID", strings.Join(found, ", "), binding)
+	}
 }
 
 // presenceGenerations indexes the presence generations a publish settled, by
@@ -625,7 +689,7 @@ func settledAuthoritySet(
 ) (map[string]deliveredAuthorityDocument, error) {
 	settled := make(map[string]deliveredAuthorityDocument, len(rendered)+len(prior))
 	for authority, entry := range rendered {
-		binding, _, _ := strings.Cut(authority, ":")
+		binding := entry.document.PresenceBinding
 		effective, present := generations[binding]
 		if !present {
 			return nil, fmt.Errorf("authority %s is effective from the presence of binding %s, which this publish does not deliver", authority, binding)

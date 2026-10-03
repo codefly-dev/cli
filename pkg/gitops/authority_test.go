@@ -86,9 +86,10 @@ func readDeliveredAuthority(t *testing.T, destination, environment, file string)
 }
 
 // TestRenderDerivesAuthorityFromTheModuleContract pins the derivation: one
-// document per module-identity service, approving the build its unit runs,
-// granting the contract's principal one unit of authority per binding and
-// operation, with every slot resolved from the composition.
+// document for the module-identity service, named after the binding it is
+// granted over, approving the build its unit runs, granting the contract's
+// principal one unit of authority per binding and operation, with every slot
+// resolved from the composition.
 func TestRenderDerivesAuthorityFromTheModuleContract(t *testing.T) {
 	ctx := context.Background()
 	workspace, module := writeAuthorityWorkspace(t)
@@ -124,12 +125,12 @@ func TestRenderDerivesAuthorityFromTheModuleContract(t *testing.T) {
 	require.Equal(t, solutionAuthorityDir, result.Inventory.SolutionAuthorityPath)
 	require.Len(t, result.SolutionAuthorities, 1)
 	declared := result.SolutionAuthorities[0]
-	require.Equal(t, "acme.staging.shop:api", declared.Authority)
+	require.Equal(t, "acme.staging.shop-authority", declared.Authority)
 	require.Equal(t, "sha256:"+strings.Repeat("a", 64), declared.Build, "the approved build is the authenticating container's image, never the sidecar's")
 
-	document, carrier := readDeliveredAuthority(t, destination, "staging", "acme.staging.shop-api.yaml")
+	document, carrier := readDeliveredAuthority(t, destination, "staging", "acme.staging.shop-authority.yaml")
 	require.Equal(t, solutionhost.SchemaAuthorityV1, document.Schema)
-	require.Equal(t, "acme.staging.shop:api", document.Authority)
+	require.Equal(t, "acme.staging.shop-authority", document.Authority)
 	require.Equal(t, "acme.staging.shop", document.PresenceBinding, "granted over exactly this instance's presence binding")
 	require.Equal(t, uint64(1), document.Generation)
 	require.Equal(t, uint64(1), document.EffectiveFrom)
@@ -147,12 +148,13 @@ func TestRenderDerivesAuthorityFromTheModuleContract(t *testing.T) {
 	// Delivered to the authority namespace, labelled for the host, under the
 	// document's own data key; the carrier arrives at publish.
 	require.Equal(t, authorityNamespace, carrier.Metadata.Namespace)
-	require.Equal(t, "solution-authority-acme.staging.shop-api", carrier.Metadata.Name)
+	require.Equal(t, "solution-authority-acme.staging.shop-authority", carrier.Metadata.Name)
 	require.Equal(t, "shop", carrier.Metadata.Labels[solutionLabel])
+	require.Equal(t, "acme.staging.shop", carrier.Metadata.Labels[bindingLabel], "selected by the binding it is granted over, as the presence document is")
 	require.NotContains(t, carrier.Data, authorityCarrierKey)
 	kustomization, err := os.ReadFile(filepath.Join(destination, filepath.FromSlash(solutionAuthorityOverlay("staging")), kustomizationFile))
 	require.NoError(t, err)
-	require.Contains(t, string(kustomization), "acme.staging.shop-api.yaml")
+	require.Contains(t, string(kustomization), "acme.staging.shop-authority.yaml")
 }
 
 func TestAuthorityIsNotDerivedWithoutAContractOrAnIdentity(t *testing.T) {
@@ -173,6 +175,32 @@ func TestAuthorityIsNotDerivedWithoutAContractOrAnIdentity(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, instances)
 	require.Contains(t, undeclared, "module-identity")
+}
+
+// TestAuthorityIsPresentedByOneService: two services each declaring
+// module-identity would be two authority documents over one binding — two
+// builds under one principal — of which a host, holding one authority record
+// per binding, could activate at most one. The render refuses the pair and
+// names both, rather than letting the host refuse one of them at apply.
+func TestAuthorityIsPresentedByOneService(t *testing.T) {
+	ctx := context.Background()
+	workspace, module := writeAuthorityWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	worker := filepath.Join(module.Dir(), "services", "worker", resources.ServiceConfigurationName)
+	require.NoError(t, os.MkdirAll(filepath.Dir(worker), 0o755))
+	require.NoError(t, os.WriteFile(worker, []byte(cellServiceYAML("worker", "shop")+"module-identity: true\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), resources.ModuleConfigurationName), []byte("kind: module\nname: shop\nservices:\n  - name: api\n  - name: worker\n"), 0o644))
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, workspace.Dir())
+	require.NoError(t, err)
+	module, err = workspace.LoadModuleFromName(ctx, "shop")
+	require.NoError(t, err)
+	services := loadServices(t, workspace, "shop", "api", "worker")
+	units := []SolutionArtifactUnit{{Name: "api", Path: "services/api"}, {Name: "worker", Path: "services/worker"}}
+
+	_, _, err = authorityInstancesOf(ctx, workspace, module, services, env, units)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "module-identity on the services api, worker")
+	require.Contains(t, err.Error(), "one authority record per binding")
 }
 
 func TestAuthorityRefusesAnUnresolvedSlot(t *testing.T) {

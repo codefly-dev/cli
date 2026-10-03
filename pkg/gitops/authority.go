@@ -45,9 +45,19 @@ const (
 	// documents, beside the presence documents and the units.
 	solutionAuthorityDir = "solution-authority"
 
-	solutionAuthorityKind  = "solution-authority"
-	solutionAuthorityLabel = "codefly.dev/authority"
+	solutionAuthorityKind = "solution-authority"
 )
+
+// authorityID names the one authority document granted over a binding. There
+// is one per binding and it is named after the binding, because that is what
+// the host folds on: a withdrawal over a binding is terminal for every later
+// authority ID over it, so an ID that changed with the service presenting the
+// authority would turn a module moving its identity to another service into a
+// withdrawal nothing can reinstate. Named after the binding, that move is a
+// new generation approving a new build.
+func authorityID(binding string) string {
+	return binding + "-authority"
+}
 
 // solutionAuthorityOverlay is the delivered overlay of the authority directory
 // for one environment.
@@ -97,10 +107,16 @@ func (values workspaceValues) Value(group, key string) (string, bool, bool) {
 	return "", false, false
 }
 
-// authorityInstancesOf resolves the authority documents a module render
+// authorityInstancesOf resolves the authority document a module render
 // declares: none when the module publishes no contract, with the reason, or
-// one per service declaring module-identity, each with the contract's slots
+// one for the service declaring module-identity, with the contract's slots
 // resolved from the environment's public configuration.
+//
+// One service, because one authority document approves one build and the host
+// holds one authority record per binding: two services each claiming to be the
+// module's identity would be two executions under one principal, of which the
+// host could activate at most one, and the render is where the module can be
+// told which to keep.
 func authorityInstancesOf(
 	ctx context.Context,
 	workspace *resources.Workspace,
@@ -124,6 +140,14 @@ func authorityInstancesOf(
 	}
 	if len(identities) == 0 {
 		return nil, fmt.Sprintf("module %s publishes a contract but no service declares module-identity, so nothing would present the authority", module.Name), nil
+	}
+	if len(identities) > 1 {
+		names := make([]string, 0, len(identities))
+		for _, service := range identities {
+			names = append(names, service.Name)
+		}
+		sort.Strings(names)
+		return nil, "", fmt.Errorf("module %s declares module-identity on the services %s; a module presents its authority from one service, because its one authority document approves one build and the host keeps one authority record per binding, so keep module-identity on the service that authenticates as the module", module.Name, strings.Join(names, ", "))
 	}
 	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime())
 	if err != nil {
@@ -198,7 +222,7 @@ func authorityDocument(owned string, opts *RenderOptions, instance *AuthorityIns
 	}
 	document := &solutionhost.AuthorityDocument{
 		Schema:    solutionhost.SchemaAuthorityV1,
-		Authority: binding + ":" + instance.Service,
+		Authority: authorityID(binding),
 		// Granted over exactly this instance's presence binding, and over no
 		// other: without the target an authority document activated any
 		// binding on the host and domain running the same image, a replacement
@@ -259,10 +283,11 @@ type solutionAuthorityConfigMap struct {
 	Data       map[string]string                `yaml:"data"`
 }
 
-// authorityConfigMapName is the ConfigMap's object name for an authority ID:
-// the ID's ":" is not a legal object name character, so it becomes a "-".
+// authorityConfigMapName is the ConfigMap's object name for an authority ID.
+// The ID is derived from a binding ID the render already holds to one object
+// name label, so it is an object name as it stands.
 func authorityConfigMapName(authority string) string {
-	return solutionAuthorityKind + "-" + strings.ReplaceAll(authority, ":", "-")
+	return solutionAuthorityKind + "-" + authority
 }
 
 // writeAuthorityDocument writes one document's ConfigMap into the authority
@@ -279,10 +304,14 @@ func writeAuthorityDocument(directory string, document *solutionhost.AuthorityDo
 		Metadata: solutionHostBindingConfigMapMeta{
 			Name:      authorityConfigMapName(document.Authority),
 			Namespace: authorityNamespace,
+			// Labelled with the binding it is granted over, as the presence
+			// document is: there is one authority per binding, so the binding
+			// is what a host selects an authority document by — and it is the
+			// one of the two IDs the render holds to a label value's length.
 			Labels: map[string]string{
 				managedByLabel:           managedByCodefly,
 				solutionHostBindingLabel: solutionAuthorityKind,
-				solutionAuthorityLabel:   strings.ReplaceAll(document.Authority, ":", "-"),
+				bindingLabel:             document.PresenceBinding,
 				solutionLabel:            module,
 			},
 		},
@@ -295,7 +324,7 @@ func writeAuthorityDocument(directory string, document *solutionhost.AuthorityDo
 	if err != nil {
 		return "", fmt.Errorf("encode authority %q: %w", document.Authority, err)
 	}
-	file := strings.ReplaceAll(document.Authority, ":", "-") + ".yaml"
+	file := document.Authority + ".yaml"
 	if err := os.WriteFile(filepath.Join(directory, file), body, 0o644); err != nil { //nolint:gosec // a delivered manifest, readable beside the rest of the tree
 		return "", fmt.Errorf("write authority %q: %w", document.Authority, err)
 	}

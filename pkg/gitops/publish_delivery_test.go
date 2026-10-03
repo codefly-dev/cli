@@ -297,6 +297,50 @@ func (repository *deliveryRepository) stageAuthorityRender(t *testing.T, binding
 	return &inventory
 }
 
+// stageAuthorityRenderPresentedBy renders the module with two services, api
+// and worker, each running its own build, and the named one presenting the
+// module's authority — or no authority at all when no service is named.
+func (repository *deliveryRepository) stageAuthorityRenderPresentedBy(t *testing.T, service string, bindings []modulecontract.ResolvedBinding) *Inventory {
+	t.Helper()
+	require.NoError(t, os.RemoveAll(repository.target))
+	units := []SolutionArtifactUnit{
+		{Name: "api", Path: "services/api", Subject: "crm@example.iam.test"},
+		{Name: "worker", Path: "services/worker", Subject: "crm@example.iam.test"},
+	}
+	options := solutionRenderOptions(repository.target)
+	options.Units = promotableServiceGraph("crm", []string{"api", "worker"})
+	options.SolutionInstances = []SolutionInstance{{
+		Kind: solutionhost.KindModule, Name: "crm", Package: "example/crm", Version: "1.4.0", ReleaseDigest: testReleaseDigest, Units: units,
+	}}
+	options.AuthorityInstances = nil
+	for _, unit := range units {
+		if unit.Name == service {
+			options.AuthorityInstances = []AuthorityInstance{{
+				Module: "crm", Service: service, Unit: unit,
+				Contract: &modulecontract.Resolved{Principal: "crm", Namespaces: []string{"crm"}, Queues: []string{}, Bindings: bindings},
+			}}
+		}
+	}
+	result, err := RenderOwnedTree(context.Background(), options, func(_ context.Context, root string) error {
+		for name, body := range map[string]string{
+			"api":    pinnedDeployment,
+			"worker": strings.NewReplacer("name: api", "name: worker", "codefly-dev/api@sha256:"+strings.Repeat("a", 64), "codefly-dev/worker@sha256:"+strings.Repeat("b", 64)).Replace(pinnedDeployment),
+		} {
+			overlay := filepath.Join(root, "services", name, "overlays", "prod")
+			if err := os.MkdirAll(overlay, 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(body), 0o644); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	inventory := result.Inventory
+	return &inventory
+}
+
 func modelBinding(revision uint64, scopes ...string) modulecontract.ResolvedBinding {
 	return modulecontract.ResolvedBinding{
 		ID: "model", Revision: revision, Operations: []string{"invoke"}, Audience: "model-gateway",
@@ -333,9 +377,9 @@ func TestPublishSettlesAuthorityWithThePresenceItIsEffectiveFrom(t *testing.T) {
 	delivery := settleBoth(t, repository, repository.stageAuthorityRender(t, []modulecontract.ResolvedBinding{modelBinding(1, "modelservice.profiles:invoke")}), opts)
 	require.True(t, delivery.Signed)
 	require.Equal(t, uint64(1), documentByID(delivery, "example.prod.crm").Generation)
-	require.Equal(t, uint64(1), documentByID(delivery, "example.prod.crm:api").Generation)
+	require.Equal(t, uint64(1), documentByID(delivery, "example.prod.crm-authority").Generation)
 	directory := filepath.Join(repository.target, filepath.FromSlash(solutionAuthorityOverlay("prod")))
-	document, carrier := readDeliveredAuthority(t, repository.target, "prod", "example.prod.crm-api.yaml")
+	document, carrier := readDeliveredAuthority(t, repository.target, "prod", "example.prod.crm-authority.yaml")
 	require.Equal(t, uint64(1), document.EffectiveFrom)
 	require.Contains(t, carrier.Data, authorityCarrierKey)
 	signed, err := solutionhost.ParseSigned([]byte(carrier.Data[authorityCarrierKey]))
@@ -365,8 +409,8 @@ func TestPublishSettlesAuthorityWithThePresenceItIsEffectiveFrom(t *testing.T) {
 	require.NoError(t, os.WriteFile(bindingFile, []byte(strings.Replace(string(data), string(testReleaseDigest), string(otherReleaseDigest), 1)), 0o644))
 	delivery = settleBoth(t, repository, inventory, opts)
 	require.Equal(t, uint64(2), documentByID(delivery, "example.prod.crm").Generation)
-	require.Equal(t, uint64(2), documentByID(delivery, "example.prod.crm:api").Generation)
-	document, _ = readDeliveredAuthority(t, repository.target, "prod", "example.prod.crm-api.yaml")
+	require.Equal(t, uint64(2), documentByID(delivery, "example.prod.crm-authority").Generation)
+	document, _ = readDeliveredAuthority(t, repository.target, "prod", "example.prod.crm-authority.yaml")
 	require.Equal(t, uint64(2), document.EffectiveFrom)
 	repository.deliver(t)
 
@@ -381,7 +425,7 @@ func TestPublishSettlesAuthorityWithThePresenceItIsEffectiveFrom(t *testing.T) {
 	require.NoError(t, err)
 	withoutAuthority := result.Inventory
 	delivery = settleBoth(t, repository, &withoutAuthority, opts)
-	tombstone := documentByID(delivery, "example.prod.crm:api")
+	tombstone := documentByID(delivery, "example.prod.crm-authority")
 	require.True(t, tombstone.Removed)
 	require.Equal(t, uint64(3), tombstone.Generation)
 	require.Equal(t, solutionAuthorityDir, withoutAuthority.SolutionAuthorityPath, "the tombstone is delivered through the authority overlay")
@@ -395,7 +439,7 @@ func TestPublishSettlesAuthorityWithThePresenceItIsEffectiveFrom(t *testing.T) {
 	require.NoError(t, err, "the presence binding itself was never withdrawn")
 	_, err = settleAuthorityDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", regranted, presence, opts)
 	require.ErrorIs(t, err, solutionhost.ErrTombstoned)
-	require.Contains(t, err.Error(), "example.prod.crm:api")
+	require.Contains(t, err.Error(), "example.prod.crm-authority")
 }
 
 // TestPublishRefusesABindingChangeThatKeepsItsRevision: a credential seals the
@@ -420,7 +464,7 @@ func TestPublishRefusesABindingChangeThatKeepsItsRevision(t *testing.T) {
 	// The same change with the revision bumped is a new generation.
 	bumped := repository.stageAuthorityRender(t, []modulecontract.ResolvedBinding{modelBinding(2, "modelservice.profiles:invoke", "modelservice.profiles:read")})
 	delivery := settleBoth(t, repository, bumped, opts)
-	require.Equal(t, uint64(2), documentByID(delivery, "example.prod.crm:api").Generation)
+	require.Equal(t, uint64(2), documentByID(delivery, "example.prod.crm-authority").Generation)
 }
 
 // TestPublishRefusesAPairTheHostWouldNotActivate: before an authority document
@@ -439,7 +483,7 @@ func TestPublishRefusesAPairTheHostWouldNotActivate(t *testing.T) {
 		_, err = settleAuthorityDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, presence, opts)
 		return err
 	}
-	authorityFile := filepath.Join(repository.target, filepath.FromSlash(solutionAuthorityOverlay("prod")), "example.prod.crm-api.yaml")
+	authorityFile := filepath.Join(repository.target, filepath.FromSlash(solutionAuthorityOverlay("prod")), "example.prod.crm-authority.yaml")
 	rewrite := func(file, from, to string) {
 		t.Helper()
 		data, err := os.ReadFile(file)
@@ -462,7 +506,7 @@ func TestPublishRefusesAPairTheHostWouldNotActivate(t *testing.T) {
 	hostless.Target, hostless.EnvelopeRevision = nil, 0
 	err = settleAuthority(repository.stageAuthorityRender(t, bindings), hostless)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "example.prod.crm:api")
+	require.Contains(t, err.Error(), "example.prod.crm-authority")
 	require.Contains(t, err.Error(), "declares no host now")
 
 	// The authority approves a build the presence does not say the binding
@@ -471,19 +515,74 @@ func TestPublishRefusesAPairTheHostWouldNotActivate(t *testing.T) {
 	rewrite(authorityFile, "approved_build: sha256:aaaa", "approved_build: sha256:bbbb")
 	err = settleAuthority(inventory, opts)
 	require.ErrorIs(t, err, solutionhost.ErrNotActivated)
-	require.Contains(t, err.Error(), "example.prod.crm:api and binding example.prod.crm")
+	require.Contains(t, err.Error(), "example.prod.crm-authority and binding example.prod.crm")
 	require.Contains(t, err.Error(), "runs builds")
 	_, statErr := os.Stat(filepath.Join(repository.target, filepath.FromSlash(solutionAuthorityOverlay("prod")), "deliver-authority.yaml"))
 	require.True(t, os.IsNotExist(statErr), "a refused pair is never written as a delivery")
 
 	// Delivered once under one domain, the authority does not migrate to
-	// another: the fold runs against what the base branch delivered.
+	// another: the fold runs against what the base branch delivered. (The
+	// presence half moving domains is refused earlier, by its own settlement.)
 	require.NoError(t, settleAuthority(repository.stageAuthorityRender(t, bindings), opts))
 	repository.deliver(t)
 	inventory = repository.stageAuthorityRender(t, bindings)
-	rewrite(filepath.Join(repository.target, filepath.FromSlash(solutionHostBindingOverlay("prod")), "example.prod.crm.yaml"), "ownership_domain: example", "ownership_domain: other")
 	rewrite(authorityFile, "ownership_domain: example", "ownership_domain: other")
 	err = settleAuthority(inventory, opts)
 	require.ErrorIs(t, err, solutionhost.ErrWrongDomain)
 	require.Contains(t, err.Error(), `applied under domain "example"`)
+}
+
+// TestPublishRefusesABindingThatMovesBetweenDomains: the delivered domain is
+// what says who may change a binding, so a generation arriving under another
+// one is refused at publish with the host's own reason — for a module with no
+// contract too, whose presence is folded by publish alone.
+func TestPublishRefusesABindingThatMovesBetweenDomains(t *testing.T) {
+	ctx := context.Background()
+	repository := newDeliveryRepository(t)
+	opts := deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Module: "crm"}
+	_, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), opts)
+	require.NoError(t, err)
+	repository.deliver(t)
+
+	inventory := repository.stageRender(t, "crm")
+	file := filepath.Join(repository.target, filepath.FromSlash(solutionHostBindingOverlay("prod")), "example.prod.crm.yaml")
+	data, err := os.ReadFile(file)
+	require.NoError(t, err)
+	require.Contains(t, string(data), "ownership_domain: example")
+	require.NoError(t, os.WriteFile(file, []byte(strings.Replace(string(data), "ownership_domain: example", "ownership_domain: other", 1)), 0o644))
+	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, opts)
+	require.ErrorIs(t, err, solutionhost.ErrWrongDomain)
+	require.Contains(t, err.Error(), `binding "example.prod.crm" was applied under domain "example"`)
+}
+
+// TestPublishMovesTheAuthorityWithTheServicePresentingIt: the authority is
+// named after the binding, not the service, so a module moving its identity
+// from one service to another delivers a new generation approving the new
+// build — not a withdrawal, which the host holds terminal for the binding, plus
+// a grant it would therefore never activate.
+func TestPublishMovesTheAuthorityWithTheServicePresentingIt(t *testing.T) {
+	repository := newDeliveryRepository(t)
+	opts := deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), EnvelopeRevision: 1, Module: "crm"}
+	bindings := []modulecontract.ResolvedBinding{modelBinding(1, "modelservice.profiles:invoke")}
+
+	// Presence delivered first, on its own: the authority's first generation
+	// then folds against a presence record and no authority record, each half
+	// stated for what it is.
+	_, err := settlePresenceDelivery(context.Background(), repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageAuthorityRenderPresentedBy(t, "", nil), opts)
+	require.NoError(t, err)
+	repository.deliver(t)
+
+	delivery := settleBoth(t, repository, repository.stageAuthorityRenderPresentedBy(t, "api", bindings), opts)
+	require.Equal(t, uint64(1), documentByID(delivery, "example.prod.crm").Generation, "the presence is unchanged")
+	require.Equal(t, uint64(1), documentByID(delivery, "example.prod.crm-authority").Generation)
+	document, _ := readDeliveredAuthority(t, repository.target, "prod", "example.prod.crm-authority.yaml")
+	require.Equal(t, solutionhost.ImageDigest("sha256:"+strings.Repeat("a", 64)), document.ApprovedBuild)
+	repository.deliver(t)
+
+	delivery = settleBoth(t, repository, repository.stageAuthorityRenderPresentedBy(t, "worker", bindings), opts)
+	require.Equal(t, uint64(2), documentByID(delivery, "example.prod.crm-authority").Generation)
+	require.False(t, documentByID(delivery, "example.prod.crm-authority").Removed)
+	require.Len(t, delivery.Documents, 2, "one presence document and one authority document, nothing withdrawn")
+	document, _ = readDeliveredAuthority(t, repository.target, "prod", "example.prod.crm-authority.yaml")
+	require.Equal(t, solutionhost.ImageDigest("sha256:"+strings.Repeat("b", 64)), document.ApprovedBuild, "the worker's build is the approved one now")
 }

@@ -155,11 +155,15 @@ account's.
 ## Authority
 
 A module that publishes `module.contract.codefly.yaml` (schema
-`codefly/module-contract/v1`) and declares `module-identity: true` on a service
-gets one authority document per such service, into
+`codefly/module-contract/v1`) and declares `module-identity: true` on **one**
+service gets one authority document, into
 `solution-authority/overlays/<environment>/`, delivered to the platform's
 authority namespace (`platform-authority`) — the namespace only the delivery
-pipeline may create Jobs in.
+pipeline may create Jobs in. One service, because an authority document
+approves one build and a host keeps one authority record per binding: two
+services each claiming to be the module's identity would be two builds under
+one principal, of which the host could activate at most one, so the render
+refuses the pair and names both.
 
 The contract declares the principal, the operation bindings the module redeems
 (each with the operations it needs and a scope ceiling per operation), the
@@ -204,11 +208,19 @@ service the composition chooses stays a slot.
 
 The derivation:
 
-- **authority ID** `<binding-id>:<service>`, granted over exactly that
+- **authority ID** `<binding-id>-authority`, granted over exactly that
   instance's presence binding (`binding: <binding-id>` in the document) and
   activating no other — without the target, an authority document activated
   any binding on the host and domain running the same image, a replacement
-  that took a withdrawn alias included;
+  that took a withdrawn alias included. The ID is named after the binding and
+  not the service presenting it, because the host folds authority on the
+  binding and holds a withdrawal over it terminal for every later authority
+  ID: an ID carrying the service name would turn a module moving its identity
+  to another service into a withdrawal plus a grant the host never activates.
+  Named after the binding, that move is the next generation, approving the
+  new service's build. The delivered ConfigMap is labelled
+  `codefly.dev/binding: <binding-id>` — the one authority over a binding is
+  selected by the binding, as the presence document is;
 - **approved build** the image digest of the service's authenticating
   container in its serving workloads (Deployments, StatefulSets, DaemonSets —
   a bootstrap Job's image is declared in the presence document but does not
@@ -245,29 +257,41 @@ Activation has the same split. Before an authority document is signed, publish
 holds it against the presence document it is granted over — the one it just
 wrote to the staged tree — with core's `ActivateRendered`, which runs every
 activation rule that needs no host state and answers a `RenderedMatch` that is
-deliberately not an `Activation`: the fold against what the base branch
-delivered (`AppliedAuthorityFrom` of the prior document, so an authority that
-would migrate across domains or bindings, or a rewritten generation, is
+deliberately not an `Activation`: the fold of **both halves** against what the
+base branch delivered (`AppliedAuthorityFrom` and `AppliedFrom` of the prior
+documents, so a half that would migrate across domains, an authority that
+would migrate between bindings, a withdrawal, or a rewritten generation is
 refused), the target binding, host and domain agreeing, the approved build
 being one the presence says the binding runs, and the effective-from
-generation. Both halves must also name the envelope revision the environment's
-`host.envelope_revision` declares **at publish** — not merely agree with each
-other, which two documents stamped against a superseded ceiling do. A render
-made before the host block was re-reviewed is refused with both numbers named,
-and a composition that dropped its host block is refused rather than having
-its authority documents written for nobody to deliver. What stays the host's,
-because it needs host state: who signed either half, and whether the authority
-fits the ceiling — the envelope is the host's record (core refuses an envelope
-derived from the document under check as "a document declaring its own
-ceiling"), and the renderer holds only its revision.
+generation. The authority record is looked up by the **binding** the authority
+is granted over, as the host folds it: a withdrawal over a binding is terminal
+for every later authority ID over it. Where the base branch holds no record
+for a half, publish says so (`FirstAuthorityRecord`, `FirstPresenceRecord`)
+rather than passing a zero record, because core refuses a fold given neither —
+"nothing applied" is the most permissive input the call takes, and a publish
+that forgot to look must not read as a first delivery. Both halves must also
+name the envelope revision the environment's `host.envelope_revision` declares
+**at publish** — not merely agree with each other, which two documents stamped
+against a superseded ceiling do. A render made before the host block was
+re-reviewed is refused with both numbers named, and a composition that dropped
+its host block is refused rather than having its authority documents written
+for nobody to deliver. What stays the host's, because it needs host state: who
+signed either half, and whether the authority fits the ceiling — the envelope
+is the host's record (core refuses an envelope derived from the document under
+check as "a document declaring its own ceiling"), and the renderer holds only
+its revision.
+
+A module with no contract has only the presence half, and core exports no
+rendered fold for it (`AdmitRendered` carries no applied state), so publish
+folds it itself against the base branch — generation, rewritten generation,
+tombstone, and the ownership domain: a generation arriving under another
+domain than the delivered one is refused with the host's own reason, since the
+delivered domain is what says who may change the binding. That is the one
+place this package restates a rule core holds; it goes the day core exports
+the fold.
 
 Verifying the carriers publish assembles — the host's own check, run early
-against the signing identity — is not built yet. Neither is the presence fold
-against the base branch with core's rules: `AdmitRendered` carries no applied
-state, so a presence document that changes its ownership domain under a
-delivered binding ID is settled as a new generation here and refused by the
-host at apply; a module that publishes a contract has the authority gate catch
-it first.
+against the signing identity — is not built yet.
 
 ## What publish settles
 
@@ -291,9 +315,12 @@ an existing tombstone forward verbatim. **A tombstone is terminal**, for a
 binding and for an authority alike: the ID is the handle every other system
 holds (installations, operation bindings, team grants), so a later generation
 under the same ID would be indistinguishable from continuity of what was
-withdrawn. The host refuses it (`ErrTombstoned`), and so does publish — where
-the fix is one line away: a genuinely new instance gets a new name, and with it
-a new binding ID and new authority IDs. Nothing is ever withdrawn by a
+withdrawn. An authority's withdrawal is terminal for the **binding** it was
+granted over, not only for its ID — the host folds authority on the binding,
+so re-signing under a new authority ID reinstates nothing. The host refuses it
+(`ErrTombstoned`), and so does publish — where the fix is one line away: a
+genuinely new instance gets a new name, and with it a new binding ID and a new
+authority ID. Nothing is ever withdrawn by a
 document disappearing: the host treats an empty or unreadable desired set as
 removing nothing, and infers no removal from absence anywhere — not within an
 ownership domain, not at a higher generation. What lets *publish* derive a
