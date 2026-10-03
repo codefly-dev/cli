@@ -321,24 +321,28 @@ func (repository *deliveryRepository) stageAuthorityRenderPresentedBy(t *testing
 			}}
 		}
 	}
-	result, err := RenderOwnedTree(context.Background(), options, func(_ context.Context, root string) error {
-		for name, body := range map[string]string{
-			"api":    pinnedDeployment,
-			"worker": strings.NewReplacer("name: api", "name: worker", "codefly-dev/api@sha256:"+strings.Repeat("a", 64), "codefly-dev/worker@sha256:"+strings.Repeat("b", 64)).Replace(pinnedDeployment),
-		} {
-			overlay := filepath.Join(root, "services", name, "overlays", "prod")
-			if err := os.MkdirAll(overlay, 0o755); err != nil {
-				return err
-			}
-			if err := os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(body), 0o644); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	result, err := RenderOwnedTree(context.Background(), options, renderApiAndWorker)
 	require.NoError(t, err)
 	inventory := result.Inventory
 	return &inventory
+}
+
+// renderApiAndWorker renders a pinned Deployment for the api and the worker
+// services, each on its own build.
+func renderApiAndWorker(_ context.Context, root string) error {
+	for name, body := range map[string]string{
+		"api":    pinnedDeployment,
+		"worker": strings.NewReplacer("name: api", "name: worker", "codefly-dev/api@sha256:"+strings.Repeat("a", 64), "codefly-dev/worker@sha256:"+strings.Repeat("b", 64)).Replace(pinnedDeployment),
+	} {
+		overlay := filepath.Join(root, "services", name, "overlays", "prod")
+		if err := os.MkdirAll(overlay, 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(body), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func modelBinding(revision uint64, scopes ...string) modulecontract.ResolvedBinding {
@@ -553,6 +557,31 @@ func TestPublishRefusesABindingThatMovesBetweenDomains(t *testing.T) {
 	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, opts)
 	require.ErrorIs(t, err, solutionhost.ErrWrongDomain)
 	require.Contains(t, err.Error(), `binding "example.prod.crm" was applied under domain "example"`)
+}
+
+// TestRenderRefusesTwoAuthorityInstances: the instances are derived one per
+// module, and a caller handing the render two would get two documents under one
+// ID, the second overwriting the first — refused by name instead.
+func TestRenderRefusesTwoAuthorityInstances(t *testing.T) {
+	destination := t.TempDir()
+	options := solutionRenderOptions(destination)
+	options.Units = promotableServiceGraph("crm", []string{"api", "worker"})
+	units := []SolutionArtifactUnit{
+		{Name: "api", Path: "services/api", Subject: "crm@example.iam.test"},
+		{Name: "worker", Path: "services/worker", Subject: "crm@example.iam.test"},
+	}
+	options.SolutionInstances = []SolutionInstance{{
+		Kind: solutionhost.KindModule, Name: "crm", Package: "example/crm", Version: "1.4.0", ReleaseDigest: testReleaseDigest, Units: units,
+	}}
+	contract := &modulecontract.Resolved{Principal: "crm", Namespaces: []string{"crm"}, Queues: []string{}, Bindings: []modulecontract.ResolvedBinding{modelBinding(1, "modelservice.profiles:invoke")}}
+	options.AuthorityInstances = []AuthorityInstance{
+		{Module: "crm", Service: "api", Unit: units[0], Contract: contract},
+		{Module: "crm", Service: "worker", Unit: units[1], Contract: contract},
+	}
+	_, err := RenderOwnedTree(context.Background(), options, renderApiAndWorker)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "crm/api, crm/worker")
+	require.Contains(t, err.Error(), "one authority document from one service")
 }
 
 // TestPublishMovesTheAuthorityWithTheServicePresentingIt: the authority is

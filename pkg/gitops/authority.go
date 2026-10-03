@@ -174,15 +174,25 @@ func authorityInstancesOf(
 	return instances, "", nil
 }
 
-// renderAuthorityDocuments renders one authority document per instance into
-// the staged tree, each approving the build its service's workloads run, and
-// returns the tree-relative paths written.
+// renderAuthorityDocuments renders the module's authority document into the
+// staged tree, approving the build its presenting service's workloads run, and
+// returns the tree-relative paths written. A render is one module, and a module
+// has one binding and so one authority: two instances would be two documents
+// under one ID, the second silently overwriting the first, so the pair is
+// refused here as it is where the instances are derived.
 func renderAuthorityDocuments(owned string, opts *RenderOptions) ([]DeclaredAuthority, error) {
 	if len(opts.AuthorityInstances) == 0 || opts.Host == nil {
 		return nil, nil
 	}
 	instances := append([]AuthorityInstance(nil), opts.AuthorityInstances...)
 	sort.Slice(instances, func(i, j int) bool { return instances[i].Service < instances[j].Service })
+	if len(instances) > 1 {
+		services := make([]string, 0, len(instances))
+		for _, instance := range instances {
+			services = append(services, instance.Module+"/"+instance.Service)
+		}
+		return nil, fmt.Errorf("the render names %s as presenting an authority, and a module presents its one authority document from one service", strings.Join(services, ", "))
+	}
 	directory := filepath.Join(owned, filepath.FromSlash(solutionAuthorityOverlay(opts.Environment)))
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return nil, fmt.Errorf("create authority directory: %w", err)
