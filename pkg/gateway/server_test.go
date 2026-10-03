@@ -302,6 +302,12 @@ func enableGovernedGateway(
 		TenantId: "tenant-codefly", OwnerPrincipalId: "principal-antoine",
 		TaskId: "task-1", SessionId: "session-1",
 		WorkspaceId: &workspaceID, ProjectId: &projectID,
+		Seal: &basev0.WorkSealV1{
+			// core#692 seals every capability to one installation and one attested
+			// execution; a host-minted context carries these, so the fixture does.
+			PrincipalEpoch: 1, InstallationId: "installation-1", InstallationRevision: 1,
+			BuildIncarnation: 1, ImageDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
 	}
 	recorder, err := executionrecorder.New(executionrecorder.Config{
 		Journal:  journal,

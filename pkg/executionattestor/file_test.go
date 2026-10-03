@@ -145,6 +145,12 @@ func testReceipt() *executionv1.ExecutionReceiptV1 {
 			AuthorizationRevision: 4, ReplayPolicy: "idempotent",
 			TenantId: "tenant-codefly", OwnerPrincipalId: "principal-antoine",
 			TaskId: "task-1", SessionId: "session-1",
+			Seal: &basev0.WorkSealV1{
+				// core#692 seals every capability to one installation and one attested
+				// execution; a host-minted context carries these, so the fixture does.
+				PrincipalEpoch: 1, InstallationId: "installation-1", InstallationRevision: 1,
+				BuildIncarnation: 1, ImageDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			},
 		},
 		WorkContextSha256: hex.EncodeToString(contextDigest[:]),
 		Target:            &executionv1.ExecutionTargetV1{WorkspaceId: "workspace-codefly", Service: "warden"},
