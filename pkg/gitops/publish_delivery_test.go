@@ -125,12 +125,19 @@ func TestPublishSettlesGenerationsAgainstTheBaseBranch(t *testing.T) {
 	signed, err := solutionhost.ParseSigned([]byte(carrier.Data[presenceCarrierKey]))
 	require.NoError(t, err)
 	require.Equal(t, solutionhost.SchemaSignedV1, signed.Schema)
-	parsed, err := solutionhost.Parse(signed.Document)
+	// The host's own reader of a verified payload: it refuses any payload that
+	// is not the canonical encoding of the document it decodes to — the YAML
+	// written beside the carrier would be refused even under a genuine
+	// attestation, so the signed bytes are CanonicalBytes, never Marshal.
+	parsed, err := solutionhost.PresenceFromVerified(signed.Document)
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), parsed.Generation)
 	canonical, err := parsed.CanonicalBytes()
 	require.NoError(t, err)
 	require.Equal(t, string(canonical), string(signed.Document), "the carrier holds the canonical bytes verbatim")
+	yamlHalf := []byte(carrier.Data[solutionhost.FileName])
+	_, err = solutionhost.PresenceFromVerified(yamlHalf)
+	require.Error(t, err, "the YAML half is for the repository; the host refuses it as a signed payload")
 	require.Contains(t, string(signed.Bundle), signing.MediaTypeBundle)
 	// The Job delivers the carrier and the account exists; the kustomization
 	// lists all three.
