@@ -45,22 +45,90 @@ func rootGroupCredentialKey(t *testing.T, group, key string) string {
 	return variables[0].Key
 }
 
-// renderedRootCredential is one rendered ExternalSecret reading one key, filed
-// under a property of its own name — the shape an environment that declares no
-// remote-key mapping emits.
-func renderedRootCredential(storeKey string) gitops.RenderedEnvironment {
+// renderedRootCredential is one rendered ExternalSecret reading one key, with
+// the remote reference DERIVED from the environment's own declarations
+// (environments.EnvironmentServiceSecrets.RemoteRef) rather than hand-typed.
+//
+// That derivation is the point. An earlier revision of this test hand-built the
+// reference as remote key `payments-api` with the encoded key as its property,
+// called it "the shape an environment that declares no remote-key mapping
+// emits", and was wrong: with no mapping and no defaults, RemoteRef returns
+// `{Key: "<service>/<key>", Property: ""}` — a BARE VALUE. Build refuses that
+// before it ever chooses between require and generate, so the generator remedy
+// cannot apply to it. Deriving the shape is what makes the two cases below
+// about the real projection.
+func renderedRootCredential(t *testing.T, secrets *environments.EnvironmentServiceSecrets, storeKey string) gitops.RenderedEnvironment {
+	t.Helper()
+	remote := secrets.RemoteRef(environments.SecretScope{Workspace: "review", Module: "payments", Service: "api"}, storeKey)
 	return gitops.RenderedEnvironment{
 		Modules: []string{"payments"},
 		Secrets: []gitops.RenderedServiceSecret{{
-			Store:     environments.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"},
-			RemoteKey: "payments-api",
+			Store:     secrets.SecretStore,
+			RemoteKey: remote.Key,
 			Services:  []string{"payments/api"},
 			Properties: []gitops.RenderedSecretProperty{{
-				Property: storeKey,
+				Property: remote.Property,
 				Keys:     []string{storeKey},
 				Readers:  []gitops.RenderedSecretReader{{Service: "payments/api", Key: storeKey}},
 			}},
 		}},
+	}
+}
+
+// documentMappedEnvironment reads every key as a property of a JSON document,
+// which is the prerequisite for planning a key at all.
+func documentMappedEnvironment() *environments.EnvironmentServiceSecrets {
+	return &environments.EnvironmentServiceSecrets{
+		SecretStore: environments.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"},
+		Defaults:    &environments.EnvironmentSecretRemoteRef{Key: "{module}-{service}", Property: "{key}"},
+	}
+}
+
+// bareValueEnvironment declares no mapping at all, so each key falls back to
+// `<service>/<key>` read as a whole value.
+func bareValueEnvironment() *environments.EnvironmentServiceSecrets {
+	return &environments.EnvironmentServiceSecrets{
+		SecretStore: environments.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"},
+	}
+}
+
+// The prerequisite the generator remedy depends on, and which the render
+// documentation omitted: a key `deploy secrets` can plan at all must be read as
+// a PROPERTY of a JSON document in the store.
+//
+// With no `service-secrets.defaults` and no per-service `remote-keys`, a key
+// falls back to the remote key `<service>/<key>` read as a bare value, and
+// Build refuses it outright — before require, before generate. So an operator
+// who followed the old documentation, declared the generator and re-ran the
+// verb, got neither the value nor the `require` line that would have told them
+// to supply it: they got a refusal about a shape the documentation never
+// mentioned.
+func TestARootGroupCredentialCannotBePlannedAsABareValue(t *testing.T) {
+	ctx := context.Background()
+	storeKey := rootGroupCredentialKey(t, "work-context", "authority-token")
+	secrets := bareValueEnvironment()
+	remote := secrets.RemoteRef(environments.SecretScope{Workspace: "review", Module: "payments", Service: "api"}, storeKey)
+	if remote.Key != "api/"+storeKey || remote.Property != "" {
+		t.Fatalf("the no-mapping default = %q#%q, want %q read as a bare value: this test is about that shape",
+			remote.Key, remote.Property, "api/"+storeKey)
+	}
+
+	_, err := Build(ctx, &Inputs{
+		Rendered: renderedRootCredential(t, secrets, storeKey), Store: newFakeStore(map[string]map[string]string{}),
+		ReadPayloads: true, Services: []string{"payments/api"},
+		Generators: []environments.EnvironmentSecretGenerator{{
+			Scope:         environments.SecretGeneratorScopeWorkspace,
+			Configuration: "work-context",
+			Keys:          []string{"AUTHORITY_TOKEN"},
+		}},
+	})
+	if err == nil {
+		t.Fatal("a bare-value remote key cannot be planned, generator or not, but Build accepted it")
+	}
+	for _, want := range []string{"is read as a bare value", "only a JSON document read by property can be planned"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Build error = %q, want it to contain %q", err, want)
+		}
 	}
 }
 
@@ -87,7 +155,7 @@ func TestARootGroupCredentialWithNoSourceIsRequiredNotSeeded(t *testing.T) {
 	store := newFakeStore(map[string]map[string]string{})
 
 	plan, err := Build(ctx, &Inputs{
-		Rendered: renderedRootCredential(storeKey), Store: store,
+		Rendered: renderedRootCredential(t, documentMappedEnvironment(), storeKey), Store: store,
 		ReadPayloads: true, Services: []string{"payments/api"},
 	})
 	if err != nil {
@@ -127,7 +195,7 @@ func TestARootGroupCredentialTheEnvironmentDeclaresIsGenerated(t *testing.T) {
 	store := newFakeStore(map[string]map[string]string{})
 
 	plan, err := Build(ctx, &Inputs{
-		Rendered: renderedRootCredential(storeKey), Store: store,
+		Rendered: renderedRootCredential(t, documentMappedEnvironment(), storeKey), Store: store,
 		ReadPayloads: true, Services: []string{"payments/api"},
 		Generators: []environments.EnvironmentSecretGenerator{{
 			Scope:         environments.SecretGeneratorScopeWorkspace,

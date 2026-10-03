@@ -32,7 +32,7 @@ func CheckConfigurationReferences(
 	ctx context.Context, workspace *resources.Workspace, env *environments.Environment,
 	provided *configurations.WorkspaceConfigurations,
 	dependencies *architecture.ServiceDependencies, consumers []*resources.Service,
-	profile resources.RunProfile, excludedProducers map[string]bool,
+	profile resources.RunProfile, excludedProducers map[string]bool, rootGroups []string,
 ) error {
 	if workspace == nil || env == nil || dependencies == nil || len(consumers) == 0 {
 		return nil
@@ -44,11 +44,91 @@ func CheckConfigurationReferences(
 		}
 		provided = read
 	}
-	err := configurations.CheckEndpointReferences(provided.Infos, consumers, profile, func(unique string) (*resources.Service, bool) {
-		service, err := dependencies.ServiceFromUnique(unique)
-		return service, err == nil
-	})
+	err := configurations.CheckEndpointReferences(provided.Infos,
+		consumersWithEffectiveGroups(consumers, rootGroups, profile), profile, func(unique string) (*resources.Service, bool) {
+			service, err := dependencies.ServiceFromUnique(unique)
+			return service, err == nil
+		})
 	return withExcludedProducerReasons(err, excludedProducers)
+}
+
+// consumersWithEffectiveGroups restates each consumer with the group set it
+// actually receives — the groups it declares unioned with the composition
+// root's — because that is the set whose references get resolved
+// (pkg/orchestration/workspace_configurations.go).
+//
+// Core's check reads WorkspaceConfigurationDependencies off the consumer, so
+// handing it a copy carrying the effective set is how the plan gate comes to
+// cover a composition-root group at all. Without it the gate validated the
+// declared groups only: a root group's reference to a `private` endpoint, or to
+// a producer the workspace does not have, passed the plan and then went
+// unresolved at run time — a root group being, by definition, the one kind no
+// service declares.
+//
+// The copies are shallow and the originals are never touched: they are the
+// workspace's own service objects.
+//
+// The durable form of this is in core — let configurations.CheckEndpointReferences
+// take the effective set — so that the gate and the resolution stop being two
+// selections of one thing. Until then this is the same function reaching the
+// same verdict over the same set.
+func consumersWithEffectiveGroups(consumers []*resources.Service, rootGroups []string, profile resources.RunProfile) []*resources.Service {
+	if len(rootGroups) == 0 {
+		return consumers
+	}
+	excluded := make(map[string]bool, len(profile.ExcludeWorkspaceConfigurations))
+	for _, group := range profile.ExcludeWorkspaceConfigurations {
+		excluded[group] = true
+	}
+	out := make([]*resources.Service, 0, len(consumers))
+	for _, consumer := range consumers {
+		if consumer == nil {
+			out = append(out, consumer)
+			continue
+		}
+		effective := slices.Clone(consumer.WorkspaceConfigurationDependencies)
+		declared := make(map[string]bool, len(effective))
+		for _, group := range effective {
+			declared[group] = true
+		}
+		for _, group := range rootGroups {
+			if declared[group] || excluded[group] {
+				continue
+			}
+			declared[group] = true
+			effective = append(effective, group)
+		}
+		restated := *consumer
+		restated.WorkspaceConfigurationDependencies = effective
+		out = append(out, &restated)
+	}
+	return out
+}
+
+// CompositionRootGroupNames names the composition root's own groups as a read
+// reports them: every group no composed module contributed.
+//
+// It is the plan-time counterpart of the loader capability the resolution uses
+// (configurations.Loader.CompositionRootWorkspaceConfigurationNames), for the
+// callers that have a read but no loader. One difference, stated rather than
+// hidden: a loader also treats an invocation-scoped override (--set) as
+// composition-root even on a name a composed module provides, and a plain read
+// cannot see those. The flow's own gate passes the loader's set, so the
+// narrower derivation here only ever checks less than that gate, never
+// something different.
+func CompositionRootGroupNames(provided *configurations.WorkspaceConfigurations) []string {
+	if provided == nil {
+		return nil
+	}
+	var out []string
+	for _, info := range provided.Infos {
+		if _, composed := provided.ComposedBy[info.GetName()]; composed {
+			continue
+		}
+		out = append(out, info.GetName())
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // withExcludedProducerReasons restates every unresolved reference whose producer
@@ -121,7 +201,8 @@ func PlanConfigurationReferences(ctx context.Context, workspace *resources.Works
 			}
 		}
 	}
-	return CheckConfigurationReferences(ctx, workspace, env, provided, dependencies, consumers, resources.RunProfile{}, nil)
+	return CheckConfigurationReferences(ctx, workspace, env, provided, dependencies, consumers,
+		resources.RunProfile{}, nil, CompositionRootGroupNames(provided))
 }
 
 // checkConfigurationReferences runs the plan-time check for a flow whose run
@@ -163,5 +244,6 @@ func (flow *Flow) checkConfigurationReferences(ctx context.Context, required []s
 		excludedProducers[excluded] = true
 	}
 	return CheckConfigurationReferences(ctx, flow.workspace, flow.world.Env, flow.providedWorkspaceConfigurations,
-		flow.world.Dependencies, consumers, flow.runProfile, excludedProducers)
+		flow.world.Dependencies, consumers, flow.runProfile, excludedProducers,
+		flow.world.compositionRootWorkspaceConfigurationGroups())
 }

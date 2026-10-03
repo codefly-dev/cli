@@ -870,20 +870,68 @@ func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, 
 			fmt.Sprintf("cannot build the service graph to check endpoint references: %v", err), "")
 		return
 	}
-	err = orchestration.CheckConfigurationReferences(ctx, ws, env, provided, dependencies, scope, resources.RunProfile{}, nil)
+	// The composition root's groups are part of what every service receives, so
+	// the doctor checks their references too — not only the declared ones.
+	err = orchestration.CheckConfigurationReferences(ctx, ws, env, provided, dependencies, scope,
+		resources.RunProfile{}, nil, orchestration.CompositionRootGroupNames(provided))
 	var unresolved *configurations.UnresolvedReferencesError
 	switch {
 	case err == nil:
 		report.add("", "configuration references", "ok", "every endpoint reference in the declared workspace configurations resolves", "")
 	case errors.As(err, &unresolved):
-		for _, reference := range unresolved.References {
+		for _, reference := range collapseReferencesByFault(unresolved.References) {
 			report.add(codeConfigurationReference, "workspace configuration "+reference.Group, "fail",
-				reference.String(),
-				referenceRemediation(&reference, dependencies))
+				reference.message,
+				referenceRemediation(&reference.UnresolvedReference, dependencies))
 		}
 	default:
 		report.add(codeConfigurationInvalid, "configuration references", "fail", err.Error(), "")
 	}
+}
+
+// collapsedReference is one fault, with the consumers that meet it.
+type collapsedReference struct {
+	configurations.UnresolvedReference
+	message   string
+	consumers int
+}
+
+// collapseReferencesByFault reports one line per distinct fault rather than one
+// per consumer that meets it.
+//
+// The check is per consumer because visibility is per consumer: the same
+// reference can be legal for a service in the producer's own module and refused
+// for one outside it. But a composition-root group reaches EVERY service, so a
+// single typo in it produces one identical entry per service in the
+// composition — noise that grows with the workspace and buries the other
+// faults. Faults identical apart from the consumer collapse into one, which
+// names how many services are affected; a fault that genuinely differs by
+// consumer still gets its own line.
+func collapseReferencesByFault(references []configurations.UnresolvedReference) []collapsedReference {
+	var out []collapsedReference
+	at := map[string]int{}
+	for _, reference := range references {
+		fault := reference.Group + "\x00" + reference.Key + "\x00" + reference.Reference + "\x00" + reference.Reason
+		if index, seen := at[fault]; seen {
+			out[index].consumers++
+			out[index].message = out[index].describe()
+			continue
+		}
+		at[fault] = len(out)
+		collapsed := collapsedReference{UnresolvedReference: reference, consumers: 1}
+		collapsed.message = collapsed.describe()
+		out = append(out, collapsed)
+	}
+	return out
+}
+
+// describe is the fault's line: core's own rendering, plus how many other
+// services receive the same group and meet the same fault.
+func (c *collapsedReference) describe() string {
+	if c.consumers <= 1 {
+		return c.String()
+	}
+	return fmt.Sprintf("%s (and %d other service(s) receiving this group)", c.String(), c.consumers-1)
 }
 
 // referenceRemediation says what to do about one unresolved reference. The three

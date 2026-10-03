@@ -141,22 +141,57 @@ func TestARootGroupReferenceToAPublicEndpointResolves(t *testing.T) {
 	requireInClusterAddressIn(t, address, "boundary", "platform", "authority", LocalEnvironmentName)
 }
 
-// A typo'd producer in a composition-root group is refused by name, not dropped.
+// A typo'd producer in a composition-root group is refused by name, at the plan
+// gate, before anything is built or started.
 //
 // It was the worst case of the silent drop: a root group is the one kind no
-// service declares, so core's plan-time check never saw it, core's run-wide
-// interpolation drops what it cannot resolve at DEBUG, and the value went
-// missing from EVERY service of the composition with nothing said. For a
-// declared group the same typo has always been refused with "the producer is not
-// a service of this workspace"; now the effective set gets the same answer.
-func TestATypoedProducerInARootGroupIsRefusedByName(t *testing.T) {
+// service declares, so the plan gate — which read declared groups only — never
+// saw it, core's run-wide interpolation drops what it cannot resolve at DEBUG,
+// and the value went missing from EVERY service of the composition with nothing
+// said anywhere. The gate now covers the effective set, so a root group's typo
+// gets the same answer a declared group's always had.
+//
+// It is refused HERE rather than inside the resolution on purpose. A producer
+// that is not a service of the workspace is a producer of no run, so the read
+// drops it for the consumer (and warns) while the gate refuses the plan — the
+// division this package already had for declared groups, and the one place an
+// operator can act on it instead of mid-run.
+func TestATypoedProducerInARootGroupIsRefusedByNameAtThePlanGate(t *testing.T) {
+	ctx := context.Background()
+	workspace := referenceValidityWorkspace(t, "platfrom/authority/admin", "public")
+	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+
+	consumer, err := loadService(ctx, t, workspace, "payments", "worker")
+	require.NoError(t, err)
+	require.Empty(t, consumer.WorkspaceConfigurationDependencies,
+		"the case is a consumer that declares nothing, so only the effective set can reach the typo")
+
+	err = PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{consumer}, true)
+	require.Error(t, err, "a reference naming a producer the workspace does not have must not reach a run")
+	require.Contains(t, err.Error(), "platfrom/authority")
+	require.Contains(t, err.Error(), "not a service of this workspace")
+
+	// And the same plan passes once the producer name is right, so the refusal is
+	// about the typo and not about root groups reaching the gate at all.
+	ok := referenceValidityWorkspace(t, "platform/authority/admin", "public")
+	okEnv, err := SelectEnvironment(ok, LocalEnvironmentName)
+	require.NoError(t, err)
+	okConsumer, err := loadService(ctx, t, ok, "payments", "worker")
+	require.NoError(t, err)
+	require.NoError(t, PlanConfigurationReferences(ctx, ok, okEnv, []*resources.Service{okConsumer}, true))
+}
+
+// The resolution, meanwhile, drops that same value rather than failing a run
+// mid-flight — and says so at WARN instead of core's DEBUG.
+func TestATypoedProducerInARootGroupIsDroppedByTheResolution(t *testing.T) {
 	world, service := referenceValidityWorld(t,
 		referenceValidityWorkspace(t, "platfrom/authority/admin", "public"))
 
-	_, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewContainerNetworkAccess())
-	require.Error(t, err, "a reference naming a producer the workspace does not have must not be dropped in silence")
-	require.Contains(t, err.Error(), "platfrom/authority")
-	require.Contains(t, err.Error(), "not a service of this workspace")
+	confs, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewContainerNetworkAccess())
+	require.NoError(t, err, "a producer of no run does not fail the read; the plan gate is what refuses it")
+	_, delivered := groupValue(confs, "work-context", "authority-endpoint")
+	require.False(t, delivered, "the value cannot resolve, so it is not delivered")
 }
 
 // An endpoint the producer does not declare is refused too, by core's own
@@ -198,7 +233,8 @@ func TestARenderRefusesARootReferenceNoAddressCanBeDerivedFor(t *testing.T) {
 	_, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewContainerNetworkAccess())
 	require.Error(t, err, "a render must not emit a manifest with a root group's value silently missing")
 	require.Contains(t, err.Error(), "${endpoint:platform/authority/admin}")
-	require.Contains(t, err.Error(), "platform/authority is part of this deployment")
+	require.Contains(t, err.Error(), "work-context/authority-endpoint", "the refusal must name the value that went missing")
+	require.Contains(t, err.Error(), "which this deployment contains")
 }
 
 // The same unresolved reference under `codefly run` is not refused — it is

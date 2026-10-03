@@ -50,9 +50,10 @@ func parityWorld(t *testing.T, mode Mode, origins ...string) (*World, *resources
 	manager.WithLoader(localReader)
 	// `payments-store` is not named as composition-root: it is the group a
 	// composed module ships for the one service that declares it.
-	manager.WithLoader(staticWorkspaceLoader{confs: []*basev0.Configuration{
+	composedLoader := staticWorkspaceLoader{confs: []*basev0.Configuration{
 		workspaceConfiguration("payments-store", "gateway-endpoint", "${endpoint:platform/gateway/rest}"),
-	}})
+	}}
+	manager.WithLoader(composedLoader)
 	require.NoError(t, manager.Load(ctx, env.Runtime()))
 
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
@@ -73,6 +74,12 @@ func parityWorld(t *testing.T, mode Mode, origins ...string) (*World, *resources
 		// configurations/local/* are the composition root's groups, and the
 		// resolution plans producer discovery against their names.
 		compositionRootGroups: localReader.CompositionRootWorkspaceConfigurationNames,
+		// The same binding NewFlow makes from the same loader: the groups as
+		// loaded, so a reference can be validated and a dropped value noticed.
+		providedWorkspaceConfigurationInfos: func() []*basev0.ConfigurationInformation {
+			return append(workspaceConfigurationInfos(localReader.Configurations()),
+				workspaceConfigurationInfos(composedLoader.Configurations())...)
+		},
 	}
 	runSet := parityRunClosure(t, dependencies, workspace, origins)
 	world.setRunProducers(runSet, nil)
@@ -477,6 +484,9 @@ func rootGroupWorld(t *testing.T, values ...*basev0.ConfigurationValue) []*basev
 	})
 	world := &World{Mode: SnapshotMode, ConfigurationManager: manager}
 	world.compositionRootGroups = func() []string { return []string{"work-context"} }
+	world.providedWorkspaceConfigurationInfos = func() []*basev0.ConfigurationInformation {
+		return []*basev0.ConfigurationInformation{{Name: "work-context", ConfigurationValues: values}}
+	}
 	builder := &Builder{
 		instance: &coreservices.Instance{Service: &resources.Service{}},
 		world:    world,
@@ -549,6 +559,14 @@ func TestACompositionRootGroupRendersItsCredentialsByReference(t *testing.T) {
 			reference := references[test.storeKey]
 			require.Equal(t, "secret-api", reference.GetName(), "the reference must name this service's own Secret")
 			require.Equal(t, test.storeKey, reference.GetKey(), "the Secret key must be the one the ExternalSecret projects")
+			// Mandatory, not optional. An optional secretKeyRef lets the
+			// workload start with the value simply absent, which is the #882
+			// fault wearing a Kubernetes hat: the pod comes up, reads an empty
+			// credential and fails at its first authenticated call. HEAD
+			// already defaults this to false; asserting it is what stops a
+			// later "make it tolerant" change from passing silently.
+			require.False(t, reference.GetOptional(),
+				"a credential reference must be mandatory: an optional one lets the workload start without the value")
 
 			values := map[string]string{}
 			for _, conf := range safe {

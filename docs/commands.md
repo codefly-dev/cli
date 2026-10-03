@@ -394,8 +394,29 @@ never sees the configuration value, and the plan reports the property as
 --dry-run` lists every such property as `remote-key#property (key)`.
 
 So re-running `deploy secrets` after a root group's credential first reaches the
-render does not by itself make the workload startable. Either write the value
-into the store, or declare a generator for the key so the verb can mint it:
+render does not by itself make the workload startable.
+
+**First, a prerequisite the generator depends on: the key must be read as a
+property of a JSON document.** With no `service-secrets.defaults` and no
+per-service `remote-keys` entry, a key falls back to the remote key
+`<service>/<key>` read as a **bare value**, and the planner refuses that shape
+before it chooses any source at all — *"remote key … is read as a bare value;
+only a JSON document read by property can be planned"*. Declaring the generator
+without this gets you that refusal, not the value and not even the `require`
+line. One environment-wide declaration covers every service:
+
+```yaml
+service-secrets:
+  secret-store:
+    name: cell-secrets
+    kind: ClusterSecretStore
+  defaults:
+    key: "{module}-{service}"
+    property: "{key}"
+```
+
+With the key plannable, either write the value into the store, or declare a
+generator for it so the verb can mint it:
 
 ```yaml
 service-secrets:
@@ -410,7 +431,10 @@ rather than by the store property it is filed under, are under [`codefly deploy
 secrets`](#codefly-deploy-secrets--seed-the-store-from-the-render).
 `TestARootGroupCredentialWithNoSourceIsRequiredNotSeeded` and
 `TestARootGroupCredentialTheEnvironmentDeclaresIsGenerated`
-(`pkg/deploysecrets`) pin both outcomes against an empty store.
+(`pkg/deploysecrets`) pin both outcomes against an empty store, and
+`TestARootGroupCredentialCannotBePlannedAsABareValue` pins the prerequisite —
+each deriving the remote reference from the environment's own declarations
+rather than assuming a shape.
 
 Every run and render also carries a service's **self endpoint** —
 `CODEFLY__SELF_ENDPOINT__<MODULE>__<SERVICE>__<ENDPOINT>__<API>`, core's carrier

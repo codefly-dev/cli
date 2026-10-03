@@ -82,6 +82,13 @@ func loadedWorkspaceWorld(t *testing.T, loader staticWorkspaceLoader) *World {
 	return &World{
 		ConfigurationManager:  loadedWorkspaceManager(t, loader),
 		compositionRootGroups: loader.CompositionRootWorkspaceConfigurationNames,
+		// Also from the same loader: the configurations as loaded, pre
+		// interpolation. Without them the resolution can neither validate a
+		// reference nor notice a dropped value, so it refuses to resolve a
+		// group carrying one at all rather than do either silently.
+		providedWorkspaceConfigurationInfos: func() []*basev0.ConfigurationInformation {
+			return workspaceConfigurationInfos(loader.Configurations())
+		},
 	}
 }
 
@@ -242,7 +249,7 @@ func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testin
 	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
 	require.NoError(t, err)
 
-	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
+	loader := staticWorkspaceLoader{
 		confs: []*basev0.Configuration{{
 			Origin: resources.ConfigurationWorkspace,
 			Infos: []*basev0.ConfigurationInformation{{
@@ -253,7 +260,8 @@ func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testin
 				},
 			}},
 		}},
-	})
+	}
+	manager := loadedWorkspaceManager(t, loader)
 	localNetwork, err := network.NewRuntimeManager(ctx, manager)
 	require.NoError(t, err)
 	world := &World{
@@ -261,6 +269,9 @@ func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testin
 		ConfigurationManager: manager, SharedState: sharedState, Dependencies: dependencies,
 		LocalNetworkManager: localNetwork,
 		runtimeContextFor:   func(*resources.Service) string { return resources.RuntimeContextNative },
+		providedWorkspaceConfigurationInfos: func() []*basev0.ConfigurationInformation {
+			return workspaceConfigurationInfos(loader.Configurations())
+		},
 	}
 
 	saas, err := workspace.LoadModuleFromName(ctx, "saas")
@@ -375,9 +386,10 @@ func TestConfigurationReferencesToAProducerDeclaredExternal(t *testing.T) {
 
 	sharedState, err := NewStateManager(ctx, nil, dependencies)
 	require.NoError(t, err)
-	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
+	loader := staticWorkspaceLoader{
 		confs: []*basev0.Configuration{workspaceConfiguration("platform", "accounts-endpoint", "${endpoint:saas/accounts/connect}")},
-	})
+	}
+	manager := loadedWorkspaceManager(t, loader)
 	localNetwork, err := network.NewRuntimeManager(ctx, manager)
 	require.NoError(t, err)
 	world := &World{
@@ -385,6 +397,9 @@ func TestConfigurationReferencesToAProducerDeclaredExternal(t *testing.T) {
 		ConfigurationManager: manager, SharedState: sharedState, Dependencies: dependencies,
 		LocalNetworkManager: localNetwork,
 		runtimeContextFor:   func(*resources.Service) string { return resources.RuntimeContextNative },
+		providedWorkspaceConfigurationInfos: func() []*basev0.ConfigurationInformation {
+			return workspaceConfigurationInfos(loader.Configurations())
+		},
 	}
 	platform, err := workspace.LoadModuleFromName(ctx, "platform")
 	require.NoError(t, err)
