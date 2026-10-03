@@ -10,6 +10,7 @@ import (
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/wool"
 )
 
 // CheckConfigurationReferences refuses a plan whose workspace configurations
@@ -32,7 +33,7 @@ func CheckConfigurationReferences(
 	ctx context.Context, workspace *resources.Workspace, env *environments.Environment,
 	provided *configurations.WorkspaceConfigurations,
 	dependencies *architecture.ServiceDependencies, consumers []*resources.Service,
-	profile resources.RunProfile, excludedProducers map[string]bool,
+	profile resources.RunProfile, excludedProducers map[string]bool, rootGroups []string,
 ) error {
 	if workspace == nil || env == nil || dependencies == nil || len(consumers) == 0 {
 		return nil
@@ -44,11 +45,201 @@ func CheckConfigurationReferences(
 		}
 		provided = read
 	}
-	err := configurations.CheckEndpointReferences(provided.Infos, consumers, profile, func(unique string) (*resources.Service, bool) {
-		service, err := dependencies.ServiceFromUnique(unique)
-		return service, err == nil
-	})
-	return withExcludedProducerReasons(err, excludedProducers)
+	// Two calls, because the two halves of the effective set must be judged
+	// against different producer sets.
+	//
+	// A group the consumer DECLARES is judged against the plan's graph, exactly
+	// as it always was: a producer the caller excluded is absent from that graph,
+	// and withExcludedProducerReasons restates the refusal to name the exclusion
+	// rather than send the reader hunting for a missing composition.
+	//
+	// A group only the composition root provides is judged against the WHOLE
+	// workspace. It has to be: a root group reaches every service of every run,
+	// including a module-closure run (`--module`) whose graph is a slice of the
+	// workspace, and judging it against that slice would refuse every such run
+	// whose root group names a producer outside the closure — reported, wrongly,
+	// as "not a service of this workspace". Whether a producer is in THIS run is
+	// not a plan-time question; this gate answers only whether the reference is
+	// legal at all.
+	declaredProblems := configurations.CheckEndpointReferences(provided.Infos, consumers, profile,
+		func(unique string) (*resources.Service, bool) {
+			service, err := dependencies.ServiceFromUnique(unique)
+			return service, err == nil
+		})
+	err := withExcludedProducerReasons(declaredProblems, excludedProducers)
+	rootConsumers := consumersWithRootGroupsOnly(consumers, rootGroups, profile)
+	if len(rootConsumers) == 0 {
+		return err
+	}
+	lookup, lookupErr := workspaceProducerLookup(ctx, workspace)
+	if lookupErr != nil {
+		return errors.Join(err, lookupErr)
+	}
+	rootProblems := configurations.CheckEndpointReferences(provided.Infos, rootConsumers, profile, lookup)
+	return mergeUnresolvedReferences(err, rootProblems)
+}
+
+// mergeUnresolvedReferences returns the two checks' findings as ONE
+// UnresolvedReferencesError.
+//
+// errors.Join would not do: every caller reaches the findings through
+// errors.As, which stops at the first match in a joined tree, so the second
+// check's references would be carried in the error and read by nobody — the
+// `codefly doctor` listing, the render's refusal and every test would silently
+// report half of what was found. Anything that is not an
+// UnresolvedReferencesError (an unreadable workspace, say) is joined as a
+// separate cause, because it is not a finding about a reference.
+func mergeUnresolvedReferences(first, second error) error {
+	var left, right *configurations.UnresolvedReferencesError
+	switch {
+	case first == nil:
+		return second
+	case second == nil:
+		return first
+	case !errors.As(first, &left) || !errors.As(second, &right):
+		return errors.Join(first, second)
+	}
+	merged := &configurations.UnresolvedReferencesError{
+		References: make([]configurations.UnresolvedReference, 0, len(left.References)+len(right.References)),
+	}
+	seen := make(map[configurations.UnresolvedReference]bool, len(left.References)+len(right.References))
+	for _, reference := range slices.Concat(left.References, right.References) {
+		if seen[reference] {
+			continue
+		}
+		seen[reference] = true
+		merged.References = append(merged.References, reference)
+	}
+	return merged
+}
+
+// consumersWithRootGroupsOnly restates each consumer carrying ONLY the groups
+// the composition root provides that it did not declare — the half of the
+// effective set the plan gate did not use to cover.
+//
+// Core's check reads WorkspaceConfigurationDependencies off the consumer, so
+// handing it a copy carrying those names is how the gate comes to see a
+// composition-root group at all. Without it the gate validated declared groups
+// only: a root group's reference to a `private` endpoint, or to a producer the
+// workspace does not have, passed the plan and then failed (or was quietly
+// dropped) per service at run time — a root group being, by definition, the one
+// kind no service declares.
+//
+// The copies are shallow and the originals are never touched: they are the
+// workspace's own service objects. A consumer with no root-only group yields
+// nothing, so the second check is skipped entirely for a composition that has
+// none.
+//
+// The durable form of this is in core — let configurations.CheckEndpointReferences
+// take the effective set — so that the gate and the resolution stop being two
+// selections of one thing.
+func consumersWithRootGroupsOnly(consumers []*resources.Service, rootGroups []string, profile resources.RunProfile) []*resources.Service {
+	if len(rootGroups) == 0 {
+		return nil
+	}
+	excluded := make(map[string]bool, len(profile.ExcludeWorkspaceConfigurations))
+	for _, group := range profile.ExcludeWorkspaceConfigurations {
+		excluded[group] = true
+	}
+	out := make([]*resources.Service, 0, len(consumers))
+	for _, consumer := range consumers {
+		if consumer == nil {
+			continue
+		}
+		declared := make(map[string]bool, len(consumer.WorkspaceConfigurationDependencies))
+		for _, group := range consumer.WorkspaceConfigurationDependencies {
+			declared[group] = true
+		}
+		var rootOnly []string
+		for _, group := range rootGroups {
+			if declared[group] || excluded[group] {
+				continue
+			}
+			rootOnly = append(rootOnly, group)
+		}
+		if len(rootOnly) == 0 {
+			continue
+		}
+		restated := *consumer
+		restated.WorkspaceConfigurationDependencies = rootOnly
+		out = append(out, &restated)
+	}
+	return out
+}
+
+// workspaceProducerLookup resolves <module>/<service> over the whole workspace.
+// It fails closed: an unreadable workspace means no reference can be checked,
+// and a reference delivered unchecked is how a private endpoint's address
+// reaches a service that may not see it.
+func workspaceProducerLookup(ctx context.Context, workspace *resources.Workspace) (configurations.ProducerLookup, error) {
+	services, err := workspace.LoadServices(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read this workspace's services, so the ${endpoint:…} references its composition-root configurations carry cannot be checked against the producers they name: %w", err)
+	}
+	byUnique := make(map[string]*resources.Service, len(services))
+	for _, service := range services {
+		identity, err := service.Identity()
+		if err != nil {
+			continue
+		}
+		byUnique[identity.Unique()] = service
+	}
+	return func(unique string) (*resources.Service, bool) {
+		service, ok := byUnique[unique]
+		return service, ok
+	}, nil
+}
+
+// WorkspaceConfigurationsForChecking reads the workspace configurations the way
+// the run will actually resolve them, and names the composition root's groups
+// among them.
+//
+// It loads a configuration local reader rather than calling
+// configurations.ReadWorkspaceConfigurations, and the difference is the point:
+// the reader applies the **invocation-scoped overrides** (`--set`, carried in
+// CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES) and derives its
+// composition-root names from the result. Core applies them inside the loader
+// (applyWorkspaceConfigurationOverrides, unexported), so loading one is the only
+// way to see them from here.
+//
+// Both halves matter, and a plain read gets both wrong:
+//
+//   - A reference supplied by `--set` is invisible to a plain read, so a typo'd
+//     producer in an overridden value escaped the gate entirely and the
+//     resolution then dropped the value. The operator who typed the override got
+//     no error from the thing their own command line broke.
+//   - An override makes its group composition-root even on a name a composed
+//     module provides (the run itself is supplying the value, so it reaches every
+//     service), which a plain read cannot know — so the group's references went
+//     unchecked for every service that did not declare it.
+//
+// It is also the one place the composition-root names are derived, which is why
+// there is no longer a CLI-side "not ComposedBy ⇒ root" rule: this asks core's
+// own loader. A reader that cannot load answers false, and the caller falls back
+// to the plain read — narrower, never different, and the resolution-time check
+// still covers what the gate then misses.
+func WorkspaceConfigurationsForChecking(
+	ctx context.Context, workspace *resources.Workspace, env *environments.Environment,
+) (*configurations.WorkspaceConfigurations, []string, bool) {
+	if workspace == nil || env == nil {
+		return nil, nil, false
+	}
+	reader, err := configurations.NewConfigurationLocalReader(ctx, workspace)
+	if err != nil {
+		wool.Get(ctx).In("WorkspaceConfigurationsForChecking").Debug(
+			"cannot build a configuration reader, so the checked configurations will not include invocation overrides",
+			wool.Field("error", err.Error()))
+		return nil, nil, false
+	}
+	if err := reader.Load(ctx, env.Runtime()); err != nil {
+		wool.Get(ctx).In("WorkspaceConfigurationsForChecking").Debug(
+			"cannot load the workspace configurations, so the checked configurations will not include invocation overrides",
+			wool.Field("error", err.Error()))
+		return nil, nil, false
+	}
+	return &configurations.WorkspaceConfigurations{
+		Infos: workspaceConfigurationInfos(reader.Configurations()),
+	}, reader.CompositionRootWorkspaceConfigurationNames(), true
 }
 
 // withExcludedProducerReasons restates every unresolved reference whose producer
@@ -86,8 +277,13 @@ func PlanConfigurationReferences(ctx context.Context, workspace *resources.Works
 	if workspace == nil || env == nil || len(roots) == 0 {
 		return nil
 	}
-	// One read serves both the ordering option and the check below.
-	provided := readWorkspaceConfigurationsForReferences(ctx, workspace, env)
+	// One read serves both the ordering option and the check below. The
+	// invocation-aware one when a reader can load — so a reference supplied by
+	// `--set` is checked like any other — and the plain disk read otherwise.
+	provided, rootGroups, invocationAware := WorkspaceConfigurationsForChecking(ctx, workspace, env)
+	if !invocationAware {
+		provided = readWorkspaceConfigurationsForReferences(ctx, workspace, env)
+	}
 	var options []architecture.DependencyOption
 	if option := configurationReferenceOptionFrom(provided); option != nil {
 		options = append(options, option)
@@ -121,7 +317,8 @@ func PlanConfigurationReferences(ctx context.Context, workspace *resources.Works
 			}
 		}
 	}
-	return CheckConfigurationReferences(ctx, workspace, env, provided, dependencies, consumers, resources.RunProfile{}, nil)
+	return CheckConfigurationReferences(ctx, workspace, env, provided, dependencies, consumers,
+		resources.RunProfile{}, nil, rootGroups)
 }
 
 // checkConfigurationReferences runs the plan-time check for a flow whose run
@@ -162,6 +359,16 @@ func (flow *Flow) checkConfigurationReferences(ctx context.Context, required []s
 	for _, excluded := range flow.excludedDependencyServices {
 		excludedProducers[excluded] = true
 	}
-	return CheckConfigurationReferences(ctx, flow.workspace, flow.world.Env, flow.providedWorkspaceConfigurations,
-		flow.world.Dependencies, consumers, flow.runProfile, excludedProducers)
+	// The configurations this run will actually resolve, overrides included, and
+	// the root groups among them. The loader the flow itself registers has not
+	// Loaded yet at this point in the lifecycle (this gate runs inside
+	// InitManagers; Load follows), which is why a reader is loaded here rather
+	// than read off the world — and why the names cannot come from
+	// world.compositionRootGroups, which would be empty.
+	provided, rootGroups, invocationAware := WorkspaceConfigurationsForChecking(ctx, flow.workspace, flow.world.Env)
+	if !invocationAware {
+		provided, rootGroups = flow.providedWorkspaceConfigurations, flow.world.compositionRootWorkspaceConfigurationGroups()
+	}
+	return CheckConfigurationReferences(ctx, flow.workspace, flow.world.Env, provided,
+		flow.world.Dependencies, consumers, flow.runProfile, excludedProducers, rootGroups)
 }

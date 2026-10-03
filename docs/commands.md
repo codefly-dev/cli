@@ -340,6 +340,112 @@ and its digest (the registrar's `federation` group, already delivered by
 reference) into the store, deriving both from one credential. A render that needs a secret but whose environment declares no
 secret store fails instead of rendering a dangling reference or a value.
 
+A render delivers a service the **same workspace configuration groups** `codefly
+run` delivers it: the groups it declares under
+`workspace-configuration-dependencies` unioned with the ones the composition root
+provides run-wide. For a run of the whole composition only the addresses inside
+those groups differ — in-cluster here, loopback or the runtime context's family
+under `run`.
+
+A root group's `${endpoint:…}` is held to the producer's export boundary exactly
+as a declared group's is: a reference to an endpoint whose visibility is
+`private`, or `internal` without your module in `allow-modules`, is refused
+rather than delivered. A root group is not a way to reach an endpoint a declared
+dependency on it would be refused. A reference naming a producer the workspace
+does not have is refused both when the plan is checked and when the value
+resolves — including one supplied with `--set`, which the plan check reads
+through a loaded configuration rather than off disk.
+
+**This can refuse a composition that rendered before.** An endpoint with no
+`visibility:` declared defaults to `private`, so a composition-root group
+referencing one used to have that value silently dropped for every service
+outside the producer's module and now fails them by name. Declare the visibility
+the reference needs, or stop referencing a private endpoint from a group every
+service receives. Core's deprecated `visibility: module` permits every module,
+so references to those are unaffected.
+
+Three asymmetries remain, and **all three leave the run with fewer values than
+the render, never the reverse**, so a deployed workload never loses a value
+because of how you ran things locally: a run profile trims the run only; a root
+group's reference does not order the run, so under `--temporary-ports` its
+producer may have no address yet; and a run of fewer services than the
+composition does not contain the producer at all, so `codefly run
+payments/worker` drops a value the render of that same service resolves. Each
+drop is logged at WARN naming the consumer, the producer and the reference. The
+rule, the mechanisms and the tests that pin them are in [the orchestration
+engine's workspace configuration
+groups](orchestration.md#workspace-configuration-groups).
+
+<a id="codefly-deploy-gitops-render-secret-consequence"></a>
+
+#### A root group's credential, and what `deploy secrets` can and cannot seed
+
+A credential-named value in a composition-root group renders the way a declared
+group's always has — as a `secretKeyRef` on `secret-<service>`, never inline in a
+committed manifest — so the environment's `service-secrets` store must hold that
+key for the projected ExternalSecret to materialize it. The key is core's
+encoding of the group and the value, e.g.
+`CODEFLY__WORKSPACE_SECRET_CONFIGURATION__WORK_CONTEXT__AUTHORITY_TOKEN`.
+
+`codefly deploy secrets` **discovers** that key from the render. It supplies the
+value only from a source its planner can reach:
+
+- the store already holds the property (`keep`);
+- a federation derivation covers it (`derive`, `update`);
+- another remote key in the environment holds the same configuration value
+  (`propagate`);
+- the environment declares a generator for the key under
+  `service-secrets.generate` (`generate`).
+
+An arbitrary root-group credential is none of those. The render discarded its
+plaintext — that is what keeps it out of the committed manifest — so the planner
+never sees the configuration value, and the plan reports the property as
+`require`: a value **the operator must supply**. `codefly deploy secrets
+--dry-run` lists every such property as `remote-key#property (key)`.
+
+So re-running `deploy secrets` after a root group's credential first reaches the
+render does not by itself make the workload startable.
+
+**First, a prerequisite the generator depends on: the key must be read as a
+property of a JSON document.** With no `service-secrets.defaults` and no
+per-service `remote-keys` entry, a key falls back to the remote key
+`<service>/<key>` read as a **bare value**, and the planner refuses that shape
+before it chooses any source at all — *"remote key … is read as a bare value;
+only a JSON document read by property can be planned"*. Declaring the generator
+without this gets you that refusal, not the value and not even the `require`
+line. One environment-wide declaration covers every service:
+
+```yaml
+service-secrets:
+  secret-store:
+    name: cell-secrets
+    kind: ClusterSecretStore
+  defaults:
+    key: "{module}-{service}"
+    property: "{key}"
+```
+
+With the key plannable, either write the value into the store, or declare a
+generator for it so the verb can mint it:
+
+```yaml
+service-secrets:
+  generate:
+    - scope: workspace
+      configuration: work-context
+      keys: [AUTHORITY_TOKEN]
+```
+
+The full source table, and why each property is resolved by its secret key
+rather than by the store property it is filed under, are under [`codefly deploy
+secrets`](#codefly-deploy-secrets--seed-the-store-from-the-render).
+`TestARootGroupCredentialWithNoSourceIsRequiredNotSeeded` and
+`TestARootGroupCredentialTheEnvironmentDeclaresIsGenerated`
+(`pkg/deploysecrets`) pin both outcomes against an empty store, and
+`TestARootGroupCredentialCannotBePlannedAsABareValue` pins the prerequisite —
+each deriving the remote reference from the environment's own declarations
+rather than assuming a shape.
+
 Every run and render also carries a service's **self endpoint** —
 `CODEFLY__SELF_ENDPOINT__<MODULE>__<SERVICE>__<ENDPOINT>__<API>`, core's carrier
 — beside its listen address `CODEFLY__ENDPOINT__…`: the in-cluster address in a

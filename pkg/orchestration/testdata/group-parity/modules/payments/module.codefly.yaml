@@ -1,0 +1,7 @@
+kind: module
+name: payments
+project: group-parity
+domain: github.com/codefly-ai/group-parity/payments
+services:
+    - name: api
+    - name: worker

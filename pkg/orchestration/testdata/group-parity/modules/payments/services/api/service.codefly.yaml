@@ -1,0 +1,18 @@
+kind: service
+name: api
+version: 0.0.0
+module: payments
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.16
+    publisher: codefly.ai
+# A group only this service declares — one a composed module ships rather than
+# the composition root. It names an endpoint of a producer this service does not
+# depend on, so the group is what binds the two.
+workspace-configuration-dependencies:
+    - payments-store
+endpoints:
+    - name: rest
+      api: rest
+      visibility: public

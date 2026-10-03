@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"net"
 	"os"
 	"slices"
@@ -312,8 +311,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
 	}
 
-	workspaceConfigurations, err := runner.world.workspaceConfigurationsFor(cfgCtx, runner.instance.Service,
-		dependenciesNetworkMappings, resources.NetworkAccessFromRuntimeContext(runtimeContext))
+	workspaceConfigurations, err := runner.workspaceConfigurations(cfgCtx, dependenciesNetworkMappings, runtimeContext)
 	if err != nil {
 		if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
 			w.Warn("timeout waiting for workspace dependencies configurations after 30s; check that dependency services are reachable")
@@ -462,57 +460,6 @@ func (world *World) producerInRun() func(unique string) bool {
 	return func(unique string) bool { return world.runProducers[unique] }
 }
 
-// workspaceConfigurationsFor resolves the workspace configurations one service
-// receives. ${endpoint:…} references resolve against that service's dependency
-// mappings, in the address family of its access, plus the mappings of every
-// producer in the run that a configuration the service declares names (see
-// referencedProducerMappings).
-func (world *World) workspaceConfigurationsFor(
-	ctx context.Context, service *resources.Service,
-	dependencyMappings []*basev0.NetworkMapping, access *basev0.NetworkAccess,
-) ([]*basev0.Configuration, error) {
-	dependencies := make([]string, 0, len(service.WorkspaceConfigurationDependencies))
-	for _, dependency := range service.WorkspaceConfigurationDependencies {
-		if !world.excludedWorkspaceConfigurations[dependency] {
-			dependencies = append(dependencies, dependency)
-		}
-	}
-	referenced, err := world.referencedProducerMappings(ctx, service, dependencies, dependencyMappings)
-	if err != nil {
-		return nil, err
-	}
-	mappings := append(slices.Clone(dependencyMappings), referenced...)
-	manager := world.ConfigurationManager.ForConsumer(mappings, access).WithRunProducers(world.producerInRun())
-	declared, err := manager.GetWorkspaceDependenciesConfigurations(ctx, dependencies...)
-	if err != nil {
-		return nil, err
-	}
-	// The composition root injects its own workspace configurations into every
-	// service, so a composed-module service resolves root-provided values
-	// without redeclaring them as dependencies. A service that declares a
-	// dependency on one of the root's own configurations (e.g. the root service
-	// itself) yields that name in both sets, so union by name to avoid emitting
-	// it twice.
-	root, err := manager.GetCompositionRootWorkspaceConfigurations(ctx)
-	if err != nil {
-		return nil, err
-	}
-	seen := make(map[string]bool, len(declared))
-	for _, conf := range declared {
-		for _, info := range conf.Infos {
-			seen[info.Name] = true
-		}
-	}
-	out := declared
-	for _, conf := range root {
-		if world.workspaceConfigurationExcluded(conf) || world.workspaceConfigurationSeen(conf, seen) {
-			continue
-		}
-		out = append(out, conf)
-	}
-	return world.applyWorkspaceConfigurationValues(out, dependencies), nil
-}
-
 // referencedProducerMappings returns the network mappings of the producers the
 // workspace configurations a service declares reference by ${endpoint:…}, for
 // every referenced endpoint the service's own dependency mappings (have) do not
@@ -529,25 +476,64 @@ func (world *World) workspaceConfigurationsFor(
 // recorded nothing when the consumer reads the group, and a declaration may
 // name other endpoints of the producer than the one referenced. Only an
 // endpoint already in have is skipped. The service's own endpoints resolve the
-// same way. A reference whose producer is not a service of the workspace
-// contributes nothing, and core fails the read naming the key and the producer:
-// nothing is omitted silently. Only groups the service declares are considered:
-// the root's groups injected into every service never bind one service to
-// another.
+// same way. A reference whose producer is not a service of the workspace never
+// reaches here: core's check over the effective set
+// (checkEffectiveWorkspaceConfigurationReferences) has already refused it by
+// name.
 //
-// Failing to derive a producer's addresses is an error, not a warning: swallowing
-// it leaves the consumer's read to fail with core's "producer is not part of the
-// run", which names the wrong cause and buries the real one in a log line nobody
-// correlates.
+// The groups considered are the EFFECTIVE set — the declared ones and the
+// composition root's alike — because a root group's reference is exactly what
+// #882 was about: the root supplies a value every service can read, and binding
+// only the declared groups' producers deletes it from every service that did not
+// declare the group. `declared` is still passed, and is not a second selection:
+// it is what separates a reference the dependency graph ORDERS from one it does
+// not, which is what decides whether a failure to derive is fatal.
+//
+// Failing to derive a producer's addresses is an error wherever an address must
+// already exist — every reference in a render, and a declared group's reference
+// in a run — because swallowing it leaves the consumer's read to fail with core's
+// "producer is not part of the run", which names the wrong cause and buries the
+// real one in a log line nobody correlates. A root group's reference in a RUN is
+// the one exception, and it is a drop rather than a swallow: nothing ordered the
+// producer, so there is nothing to blame, and
+// refuseDroppedWorkspaceConfigurationValues warns by name.
 func (world *World) referencedProducerMappings(
-	ctx context.Context, service *resources.Service, groups []string, have []*basev0.NetworkMapping,
+	ctx context.Context, service *resources.Service, declared, effective []string, have []*basev0.NetworkMapping,
 ) ([]*basev0.NetworkMapping, error) {
-	if world == nil || world.ConfigurationManager == nil || world.SharedState == nil || world.Dependencies == nil || len(groups) == 0 {
+	if world == nil || world.ConfigurationManager == nil || world.SharedState == nil || world.Dependencies == nil || len(effective) == 0 {
 		return nil, nil
+	}
+	// Whether failing to derive a producer's addresses is fatal depends on
+	// whether anything guarantees the address exists yet, and that is a question
+	// about the MODE first and the group second.
+	//
+	// In a render, nothing is early: a deployed address is a pure function of the
+	// producer's identity and namespace, so a failure to derive one is a fault
+	// whatever group named it. Every reference is fatal there. (An earlier
+	// revision of this made root-only references non-fatal in every mode while
+	// fixing the run, which left a render swallowing the same failure it had
+	// refused the commit before — the regression this comment exists to stop
+	// coming back.)
+	//
+	// In a run, only a reference in a group the service DECLARES is ordered:
+	// core's graph puts that producer before the consumer
+	// (ServiceDependencies.addConfigurationReferenceEdges), so a failure there is
+	// a real fault. A root group's reference is ordered by nothing, so the same
+	// failure is the run simply being early — fatal would break every run of a
+	// composition whose root group holds a reference, which is what
+	// --temporary-ports guarantees (localProducerMappings cannot know an address
+	// allocated at initialization). Those are dropped, and
+	// refuseDroppedWorkspaceConfigurationValues is where the drop is warned
+	// about.
+	fatal := make(map[string]bool)
+	if !world.deploys() {
+		for _, reference := range world.ConfigurationManager.WorkspaceEndpointReferences(declared...) {
+			fatal[reference] = true
+		}
 	}
 	var out []*basev0.NetworkMapping
 	collected := make(map[string]bool)
-	for _, reference := range world.ConfigurationManager.WorkspaceEndpointReferences(groups...) {
+	for _, reference := range world.ConfigurationManager.WorkspaceEndpointReferences(effective...) {
 		info, err := resources.ParseEndpoint(reference)
 		if err != nil {
 			continue
@@ -559,8 +545,15 @@ func (world *World) referencedProducerMappings(
 		collected[producer] = true
 		mappings, err := world.producerNetworkMappings(ctx, producer)
 		if err != nil {
+			if !world.deploys() && !fatal[reference] {
+				wool.Get(ctx).In("World.referencedProducerMappings").Warn(
+					"a workspace configuration value will be missing for this service: the composition root's group references a producer whose address cannot be derived yet, and a root group's reference orders nothing",
+					wool.Field("consumer", consumerLabel(service)), wool.Field("producer", producer),
+					wool.Field("reference", "${endpoint:"+reference+"}"), wool.Field("reason", err.Error()))
+				continue
+			}
 			return nil, fmt.Errorf("cannot derive the addresses of %s, named by the workspace configuration reference ${endpoint:%s} that %s declares: %w",
-				producer, reference, resources.WithUnique(service).Unique(), err)
+				producer, reference, consumerLabel(service), err)
 		}
 		out = append(out, mappings...)
 	}
@@ -596,9 +589,12 @@ func mappingsCarry(mappings []*basev0.NetworkMapping, info *resources.EndpointIn
 // two consumers of one group would each get a different one. Deriving there
 // would hand out a plausible address for a service that is not behind it, which
 // fails at connect time far from its cause — so say so instead. The producer
-// initializing first (which its reference orders, core's
-// architecture.WithConfigurationReferences) makes its recorded mappings
-// authoritative and never reaches this.
+// initializing first makes its recorded mappings authoritative and never reaches
+// this — but only a reference in a group the consumer DECLARES is ordered that
+// way (core's ServiceDependencies.addConfigurationReferenceEdges reads a
+// consumer's declared groups and no more), so a root group's reference can reach
+// here legitimately. referencedProducerMappings drops that case rather than
+// failing the run.
 func (world *World) localProducerMappings(ctx context.Context, service *resources.Service, identity *resources.ServiceIdentity, endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error) {
 	if world.LocalNetworkManager == nil || world.runtimeContextFor == nil {
 		return nil, nil
@@ -664,101 +660,6 @@ func (world *World) deploys() bool {
 	default:
 		return false
 	}
-}
-
-// applyWorkspaceConfigurationValues layers the run's derived values onto the
-// resolved configurations, for the groups this service actually declares. A
-// derived value therefore arrives on the same CODEFLY__WORKSPACE_CONFIGURATION
-// carrier a declared one does, which is the contract a service reads — not a
-// raw process variable it would only see through an incidental os.Getenv
-// fallback.
-//
-// A derived value replaces a declared one for the same key: these are values
-// the run mints for this run (a per-run credential digest), so a stale
-// declaration must not win and leave the run's two halves unable to match.
-func (world *World) applyWorkspaceConfigurationValues(
-	resolved []*basev0.Configuration, dependencies []string,
-) []*basev0.Configuration {
-	if len(world.workspaceConfigurationValues) == 0 {
-		return resolved
-	}
-	for _, group := range dependencies {
-		values := world.workspaceConfigurationValues[group]
-		if len(values) == 0 {
-			continue
-		}
-		resolved = upsertWorkspaceConfigurationValues(resolved, group, values)
-	}
-	return resolved
-}
-
-// upsertWorkspaceConfigurationValues sets values on the named group, adding the
-// group (and the workspace-origin configuration carrying it) when the
-// composition declared none.
-func upsertWorkspaceConfigurationValues(
-	resolved []*basev0.Configuration, group string, values map[string]string,
-) []*basev0.Configuration {
-	for _, conf := range resolved {
-		if conf.Origin != resources.ConfigurationWorkspace {
-			continue
-		}
-		for _, info := range conf.Infos {
-			if info.Name != group {
-				continue
-			}
-			setConfigurationValues(info, values)
-			return resolved
-		}
-	}
-	info := &basev0.ConfigurationInformation{Name: group}
-	setConfigurationValues(info, values)
-	return append(resolved, &basev0.Configuration{
-		Origin: resources.ConfigurationWorkspace,
-		Infos:  []*basev0.ConfigurationInformation{info},
-	})
-}
-
-func setConfigurationValues(info *basev0.ConfigurationInformation, values map[string]string) {
-	for _, key := range slices.Sorted(maps.Keys(values)) {
-		replaced := false
-		for _, existing := range info.ConfigurationValues {
-			if existing.Key == key {
-				existing.Value = values[key]
-				replaced = true
-				break
-			}
-		}
-		if !replaced {
-			info.ConfigurationValues = append(info.ConfigurationValues,
-				&basev0.ConfigurationValue{Key: key, Value: values[key]})
-		}
-	}
-}
-
-// workspaceConfigurationSeen reports whether every Info name in a resolved
-// workspace configuration is already present in seen (all Infos of a workspace
-// configuration share one name), i.e. the configuration was already emitted via
-// the declared-dependency set.
-func (world *World) workspaceConfigurationSeen(conf *basev0.Configuration, seen map[string]bool) bool {
-	for _, info := range conf.Infos {
-		if seen[info.Name] {
-			return true
-		}
-	}
-	return false
-}
-
-// workspaceConfigurationExcluded reports whether a resolved workspace
-// configuration is profile-excluded. Workspace configurations carry their name
-// on each Info (the Configuration.Origin is always "workspace"), and every Info
-// in a given configuration shares that name.
-func (world *World) workspaceConfigurationExcluded(conf *basev0.Configuration) bool {
-	for _, info := range conf.Infos {
-		if world.excludedWorkspaceConfigurations[info.Name] {
-			return true
-		}
-	}
-	return false
 }
 
 func (flow *Flow) WorkspaceConfigurationsFor(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error) {
