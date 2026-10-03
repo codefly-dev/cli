@@ -347,9 +347,22 @@ A release is signed only by CI, never by a person. Publish signs each
 document's canonical bytes (`CanonicalBytes()`, the exact payload the host
 re-canonicalizes) with the publishing workflow's **Sigstore keyless** identity
 over GitHub Actions OIDC: an ephemeral key certified by Fulcio for the workflow
-identity, recorded in the transparency log, packaged as a Sigstore bundle. The
-`codefly` binary holds no key, and there is no option to supply one
-(`pkg/delivery/signing`).
+identity, recorded in the transparency log, packaged as a Sigstore bundle
+(`application/vnd.dev.sigstore.bundle.v0.3+json`). The `codefly` binary holds
+no key, and there is no option to supply one (`pkg/delivery/signing`).
+
+The bundle is verifiable **offline**, which the host relies on: delivered
+namespaces egress nothing, so a verifier that looked up Rekor or Fulcio would
+hang rather than fail. The signer is the Sigstore public-good instance (Fulcio
+and Rekor, no timestamp authority), and the bundle carries the log entry whole
+— the signed entry timestamp and the inclusion proof with its checkpoint — so
+a verifier needs only a mirrored trusted root holding the public-good Fulcio
+chain, Rekor key and CT log keys (`LoadTrustedRoot`), never the log. A bundle
+carrying no such evidence is refused by its own name (`ErrNoTransparency`),
+distinct from a signature that fails (`ErrSignature`), on both sides of the
+wire: a signer configured without a transparency log is fixed at the signer,
+a bad signature is investigated, and the two must not reach an operator
+looking alike.
 
 The carrier written beside each document (data key
 `solution-host-binding.signed.codefly.yaml` or

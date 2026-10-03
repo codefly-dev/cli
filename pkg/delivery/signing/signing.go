@@ -26,6 +26,16 @@ var ErrNoIdentity = errors.New("no signing identity: delivery documents are sign
 // bundle itself is not what the policy admits. The wrapped cause says which.
 var ErrSignature = errors.New("delivery document signature verification failed")
 
+// ErrNoTransparency reports a bundle that carries no transparency-log evidence at all — no
+// inclusion promise and no inclusion proof — so nothing in it can establish, offline, that the
+// signature was ever logged. That is a signer configured without a transparency log: a
+// misconfiguration to fix at the signer, never a bad signature to investigate, and the two
+// reach an operator looking identical unless they are named apart. So it is distinct from
+// ErrSignature, as ErrPolicy is; a signed timestamp does not stand in, since it establishes
+// when the signature was made and not that it was logged. The host refuses the same case by
+// the same name, so a refusal reads the same wherever it is seen.
+var ErrNoTransparency = errors.New("the bundle carries no transparency-log evidence (no inclusion promise or proof): the signer was not configured with a transparency log, which is fixed at the signer, not a signature that fails")
+
 // ErrBundle reports bytes that are not a Sigstore bundle this package can read. Verify wraps it
 // inside ErrSignature; ReadIdentity returns it on its own.
 var ErrBundle = errors.New("not a readable Sigstore bundle")

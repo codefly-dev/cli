@@ -190,6 +190,42 @@ func TestVerifyAcceptsASignedTimestampAsTheObserver(t *testing.T) {
 	}
 }
 
+// TestVerifyNamesAMissingTransparencyLog: a bundle with no transparency-log entry is what a
+// signer configured without a log produces — a misconfiguration to fix at the signer — and
+// never a bad signature to investigate, so it is refused by its own name and not as
+// ErrSignature. A signed timestamp does not stand in: it says when, not that it was logged.
+func TestVerifyNamesAMissingTransparencyLog(t *testing.T) {
+	for name, withTimestamp := range map[string]bool{"no timestamp": false, "a signed timestamp": true} {
+		release := signVirtually(t, releaseSubject, releaseIssuer, []byte("presence document"), withTimestamp)
+		_, err := Verify(withoutTransparencyLog(t, release.bundle), release.payload, release.trusted, exactPolicy(releaseIssuer, releaseSubject))
+		if !errors.Is(err, ErrNoTransparency) {
+			t.Errorf("%s: err = %v, want ErrNoTransparency", name, err)
+		}
+		if errors.Is(err, ErrSignature) {
+			t.Errorf("%s: a signer misconfiguration must not read as a bad signature: %v", name, err)
+		}
+		if _, err := Verify(release.bundle, release.payload, release.trusted, exactPolicy(releaseIssuer, releaseSubject)); err != nil {
+			t.Errorf("%s: the bundle with its log entry must still verify: %v", name, err)
+		}
+	}
+}
+
+// withoutTransparencyLog re-encodes a bundle with its transparency-log entries dropped, as a
+// signer with no TransparencyLogs configured would have written it.
+func withoutTransparencyLog(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	var bundle protobundle.Bundle
+	if err := protojson.Unmarshal(raw, &bundle); err != nil {
+		t.Fatalf("protojson.Unmarshal: %v", err)
+	}
+	bundle.VerificationMaterial.TlogEntries = nil
+	stripped, err := protojson.Marshal(&bundle)
+	if err != nil {
+		t.Fatalf("protojson.Marshal: %v", err)
+	}
+	return stripped
+}
+
 func TestVerifyRefusesIdentitiesThePolicyDoesNotAdmit(t *testing.T) {
 	release := signVirtually(t, releaseSubject, releaseIssuer, []byte("presence document"), false)
 	branch, err := GitHubActionsPolicy("codefly-dev/cli", ".github/workflows/release.yaml", "refs/heads/main")

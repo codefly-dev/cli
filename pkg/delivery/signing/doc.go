@@ -19,7 +19,12 @@
 // bundle against a mirrored trusted root (LoadTrustedRoot). The transparency
 // log entry, or a signed timestamp, establishes when the signature was made,
 // which is what lets a certificate valid for ten minutes vouch for a document
-// for years.
+// for years. The bundle carries the log entry whole — the signed entry
+// timestamp and the inclusion proof with its checkpoint — so verifying it
+// needs the log's key and never the log; a bundle carrying no such evidence is
+// refused by its own name (ErrNoTransparency), because a signer configured
+// without a log is fixed at the signer and a bad signature is investigated,
+// and the two must not reach an operator looking alike.
 //
 // Consequently this package holds no key material, offers no option to sign
 // with a private key, and never reads a key from disk or the environment. The

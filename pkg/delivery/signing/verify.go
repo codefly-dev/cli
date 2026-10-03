@@ -41,12 +41,16 @@ func PublicGoodTrustedRoot(ctx context.Context) (*root.TrustedRoot, error) {
 }
 
 // Verify verifies that bundle is a valid Sigstore bundle whose signature covers exactly payload,
-// signed under an identity the policy admits, with a transparency-log entry (or a signed
-// timestamp) establishing the signing time, against the trusted root. It returns the Identity.
+// signed under an identity the policy admits, with a transparency-log entry establishing that
+// the signature was logged and when (or a signed timestamp for the when), against the trusted
+// root — offline: nothing is fetched, the entry is verified against the log's key in the root.
+// It returns the Identity.
 //
 // A verification failure, including an unreadable bundle, is returned wrapped in ErrSignature.
-// A policy that could never admit a signer is a configuration error, wrapped in ErrPolicy and
-// never in ErrSignature, so an operator can tell a misconfigured verifier from a bad document.
+// Two refusals are named apart from it, because each is fixed somewhere else than a bad
+// document is investigated: a policy that could never admit a signer is wrapped in ErrPolicy
+// (the verifier's configuration), and a bundle with no transparency-log evidence in
+// ErrNoTransparency (the signer's).
 func Verify(bundle, payload []byte, trusted *root.TrustedRoot, policy Policy) (Identity, error) {
 	if trusted == nil {
 		return Identity{}, errors.New("signing: a trusted root is required to verify a delivery document")
@@ -58,6 +62,11 @@ func Verify(bundle, payload []byte, trusted *root.TrustedRoot, policy Policy) (I
 	entity, err := decodeBundle(bundle)
 	if err != nil {
 		return Identity{}, fmt.Errorf("%w: %w", ErrSignature, err)
+	}
+	// Checked before the verifier runs, because the verifier reports a missing entry as a
+	// threshold not met — the same words a bundle whose entry the root cannot verify gets.
+	if !entity.HasInclusionPromise() && !entity.HasInclusionProof() {
+		return Identity{}, fmt.Errorf("%w: the bundle has no transparency-log entry with an inclusion promise or proof", ErrNoTransparency)
 	}
 	verifier, err := verify.NewVerifier(trusted, verify.WithTransparencyLog(1), verify.WithObserverTimestamps(1))
 	if err != nil {
