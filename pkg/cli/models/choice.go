@@ -8,7 +8,7 @@ import (
 	"github.com/codefly-dev/core/tui"
 )
 
-func Choice(ctx context.Context, msg string, all []*Entry) (*Entry, error) {
+func Choice(_ context.Context, msg string, all []*Entry) (*Entry, error) {
 	if len(all) == 0 {
 		return nil, fmt.Errorf("no entries to choose from")
 	}
