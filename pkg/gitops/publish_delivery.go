@@ -53,10 +53,11 @@ type deliveryPublishOptions struct {
 	// Signer signs each document's canonical bytes. nil means the process
 	// environment decides (signing.FromEnvironment).
 	Signer signing.Signer
-	// Coordinate, Component and TrustDomain name the host the environment
-	// declares at publish; every rendered document must be stamped with them.
-	// Empty when the environment declares no host.
-	Coordinate, Component, TrustDomain string
+	// Coordinate, Component, TrustDomain and Audience name the host the
+	// environment declares at publish; every rendered document, and every
+	// workload identity in it, must be stamped with them. Empty when the
+	// environment declares no host.
+	Coordinate, Component, TrustDomain, Audience string
 	// ReuseCheck verifies a carrier signed BEFORE this publish — by the base
 	// branch's release, or by the plan this publish executes — under the
 	// release policy: the same workflow under any release tag. A carrier it
@@ -155,8 +156,19 @@ func refuseMovedDocument(what, id string, stamp hostStamp, opts *deliveryPublish
 	if opts.EnvelopeRevision != 0 && stamp.envelope != opts.EnvelopeRevision {
 		return fmt.Errorf("%s %s was rendered against envelope revision %d and the environment declares revision %d now; render again before publishing", what, id, stamp.envelope, opts.EnvelopeRevision)
 	}
-	if opts.TrustDomain != "" && stamp.trust != "" && stamp.trust != opts.TrustDomain {
-		return fmt.Errorf("%s %s was rendered for trust domain %q and the environment declares %q now; render again before publishing", what, id, stamp.trust, opts.TrustDomain)
+	if opts.TrustDomain != "" {
+		for _, trust := range stamp.trusts {
+			if trust != opts.TrustDomain {
+				return fmt.Errorf("%s %s was rendered for trust domain %q and the environment declares %q now; render again before publishing", what, id, trust, opts.TrustDomain)
+			}
+		}
+	}
+	if opts.Audience != "" {
+		for _, audience := range stamp.audiences {
+			if audience != opts.Audience {
+				return fmt.Errorf("%s %s was rendered for audience %q and the environment declares %q now; render again before publishing", what, id, audience, opts.Audience)
+			}
+		}
 	}
 	return nil
 }
@@ -247,18 +259,25 @@ type hostStamp struct {
 	domain   string
 	host     solutionhost.HostTarget
 	envelope uint64
-	trust    string
+	// trusts and audiences are what every workload identity of the document
+	// is issued under, one entry per workload — each is held, not the first.
+	trusts    []string
+	audiences []string
 }
 
 // presenceStamp reads the host stamp off a presence document: its ownership
-// domain, host and envelope revision, and the trust domain its workloads'
-// SPIFFE IDs are issued under.
+// domain, host and envelope revision, and the trust domain and audience each
+// of its workload identities is issued under.
 func presenceStamp(document *solutionhost.SolutionHostBinding) hostStamp {
 	stamp := hostStamp{domain: document.OwnershipDomain, host: document.Host, envelope: document.EnvelopeRevision}
 	for i := range document.Workloads {
-		if trust, ok := strings.CutPrefix(document.Workloads[i].Identity.SPIFFEID, "spiffe://"); ok {
-			stamp.trust, _, _ = strings.Cut(trust, "/")
-			break
+		identity := &document.Workloads[i].Identity
+		if trust, ok := strings.CutPrefix(identity.SPIFFEID, "spiffe://"); ok {
+			trust, _, _ = strings.Cut(trust, "/")
+			stamp.trusts = append(stamp.trusts, trust)
+		}
+		if identity.Audience != "" {
+			stamp.audiences = append(stamp.audiences, identity.Audience)
 		}
 	}
 	return stamp

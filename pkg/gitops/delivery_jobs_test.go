@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -76,6 +77,15 @@ func TestDeliveryJobIsASyncHookThatPostsEveryCarrier(t *testing.T) {
 	}
 	if env["DELIVERY_URL"] != "https://accounts.platform.svc.cluster.local:8443" || env["DELIVERY_PATH"] != presenceDeliveryPath {
 		t.Fatalf("delivery env %v", env)
+	}
+	// The script's budget is the manifest's, inside the Job's deadline with a
+	// pause to spare: the relationship the control flow relies on is held
+	// here, where the constants meet.
+	if env["DELIVERY_BUDGET_SECONDS"] != strconv.Itoa(deliveryBudgetSeconds) || env["DELIVERY_MAX_PAUSE_SECONDS"] != strconv.Itoa(deliveryMaxPause) {
+		t.Fatalf("delivery budget env %v", env)
+	}
+	if deliveryBudgetSeconds+deliveryMaxPause >= deliveryDeadlineSeconds {
+		t.Fatalf("budget %d + pause %d does not fit the Job's deadline %d", deliveryBudgetSeconds, deliveryMaxPause, deliveryDeadlineSeconds)
 	}
 	script := spec.Containers[0].Command[2]
 	for _, want := range []string{`"$DELIVERY_URL$DELIVERY_PATH"`, `Authorization: Bearer $(cat "$DELIVERY_IDENTITY_FILE")`, "--max-time 30", "400|401|403|409|422)", "2??)", "sleep", "round=$((round + 1))", `[ -n "$pending" ] || break`, `[ "$refused" -eq 0 ]`} {

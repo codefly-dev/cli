@@ -333,6 +333,7 @@ func (p *deliveryPublication) addressHost(ctx context.Context, workspace *resour
 		p.options.Coordinate = env.Host.Coordinate
 		p.options.Component = env.Host.Component
 		p.options.TrustDomain = env.Host.TrustDomain
+		p.options.Audience = env.Host.Audience
 	}
 	return nil
 }
@@ -529,6 +530,15 @@ func stageRollbackPublication(
 	defer os.RemoveAll(restored)
 	if err = copyTree(clone.target, restored); err != nil {
 		return "", Inventory{}, fmt.Errorf("copy the restored tree: %w", err)
+	}
+	// The restore put the historical revision in place whole, every
+	// environment's delivery overlay included; what the base branch delivered
+	// comes back before anything is settled, so another environment's
+	// tombstone is never replaced by that revision's live bytes. This
+	// environment's own historical overlay is in the copy above, and is
+	// staged and settled from it as a render's would be.
+	if err = restoreDeliveredOverlays(ctx, clone.repo, clone.publication.baseBranch, clone.targetPath); err != nil {
+		return "", Inventory{}, err
 	}
 	if err = ValidateRenderedTree(restored, "", true); err != nil {
 		return "", Inventory{}, fmt.Errorf("validate rollback render: %w", err)
@@ -1703,6 +1713,30 @@ func clonePromotionRepository(ctx context.Context, repository, baseBranch, promo
 	return repo, cleanup, baseRevision, branchRevision, nil
 }
 
+// restoreDeliveredOverlays puts the delivery directories of a module path back
+// as the base branch delivered them, after a restore put a historical revision
+// of them in place: a rollback is computed against delivered history exactly
+// as a forward publish is. A directory the base branch does not hold is left
+// absent.
+func restoreDeliveredOverlays(ctx context.Context, repo, baseBranch, targetPath string) error {
+	ref := "refs/remotes/origin/" + baseBranch
+	for _, directory := range []string{solutionHostBindingDir, solutionAuthorityDir} {
+		path := filepath.ToSlash(filepath.Join(targetPath, directory))
+		// The restore left the historical overlays staged; -f drops them
+		// whether staged or not.
+		if _, err := gitCommand(ctx, repo, "rm", "-r", "-f", "-q", "--ignore-unmatch", "--", path); err != nil {
+			return err
+		}
+		if _, err := gitCommand(ctx, repo, "checkout", ref, "--", path); err != nil {
+			if gitSaysAbsent(err) {
+				continue
+			}
+			return fmt.Errorf("restore the delivered %s from %s: %w", directory, baseBranch, err)
+		}
+	}
+	return nil
+}
+
 func restoreCloneTree(ctx context.Context, repo, targetPath, revision string) error {
 	if _, err := gitCommand(ctx, repo, "rm", "-r", "--ignore-unmatch", "--", targetPath); err != nil {
 		return err
@@ -2302,6 +2336,9 @@ func stageCellFile(ctx context.Context, repo string, publication *deliveryPublic
 	if err = yaml.Unmarshal(data, &local); err != nil {
 		return fmt.Errorf("decode the cell file: %w", err)
 	}
+	if err = refuseCellForAnotherHost(&local, &publication.options); err != nil {
+		return err
+	}
 	merged, err := mergeCellContribution(ctx, repo, publication.baseBranch, publication.cellPath, &local, publication.options.Module, consumedEndpoints(inventory))
 	if err != nil {
 		return err
@@ -2367,11 +2404,26 @@ func mergeCellContribution(ctx context.Context, repo, baseBranch, cellPath strin
 	return &merged, nil
 }
 
+// refuseCellForAnotherHost holds the rendered cell to the host the environment
+// declares at publish, as every delivered document is: a cell rendered before
+// the host block changed is refused by name, never merged under a declaration
+// it does not describe.
+func refuseCellForAnotherHost(cell *CellFile, opts *deliveryPublishOptions) error {
+	if opts.Coordinate == "" {
+		return nil
+	}
+	if cell.Coordinate != opts.Coordinate || cell.Component != opts.Component || cell.Domain != opts.Domain || cell.TrustDomain != opts.TrustDomain {
+		return fmt.Errorf("the cell file describes host %s/%s under domain %q (trust domain %q) and the environment declares %s/%s under %q (%q) now; render again before publishing",
+			cell.Coordinate, cell.Component, cell.Domain, cell.TrustDomain, opts.Coordinate, opts.Component, opts.Domain, opts.TrustDomain)
+	}
+	return nil
+}
+
 // gitSaysAbsent reports a git read that failed because the path or the ref
 // does not exist, as opposed to a repository that could not be read at all.
 func gitSaysAbsent(err error) bool {
 	message := err.Error()
-	for _, absent := range []string{"does not exist in", "exists on disk, but not in", "Not a valid object name", "invalid object name"} {
+	for _, absent := range []string{"does not exist in", "exists on disk, but not in", "Not a valid object name", "invalid object name", "did not match any file(s) known to git"} {
 		if strings.Contains(message, absent) {
 			return true
 		}

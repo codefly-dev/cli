@@ -231,7 +231,8 @@ that reaches that namespace, and a Deployment, CronJob or Secret in the
 authority overlay is refused at apply. The overlay, the project and the
 namespace name each other in the ApplicationSet, read from the `overlay`,
 `project`, `namespace` and `component` fields the Application template
-consumes, each required: a component stamped under
+consumes, each required (an element naming none of them is another
+generator's — the tenant matrix — and is not a component): a component stamped under
 the authority project must point at the authority overlay and at that
 namespace, and a component pointing at the authority overlay must be stamped
 under that project — no unit overlay can borrow the project. What that
@@ -449,10 +450,11 @@ binding's revision in the contract.
 
 **Held to the host declared now.** Every document the render declares is
 held, at publish, to the environment's host block as it is then: the
-ownership domain, the host coordinate and component, the envelope revision
-and the trust domain its workload identities are issued under must be the
-ones declared now (the audience is the delivery Job's, re-rendered from the
-target declared now, so it cannot be stale), and a render that declares documents for an
+ownership domain, the host coordinate and component, the envelope revision,
+and the trust domain and audience every one of its workload identities is
+issued under must be the ones declared now (the delivery Job's own token
+audience is re-rendered from the target declared now), and the rendered
+cell is held to the same host before it is merged, and a render that declares documents for an
 environment that names no host any more is refused outright — never signed
 and left for no Job to deliver. A render made before the host block changed
 is refused by name; the fix is to render again.
@@ -489,7 +491,12 @@ any signature, even where the delivered carrier was rejected — or refuses.
 **Rollback re-settles.** A rollback restores the workloads an earlier revision
 delivered and settles their documents anew against the base branch — the old
 content at the next generation, signed now, the base's tombstones carried
-forward — never the carriers that revision signed: a host past generation 3
+forward — never the carriers that revision signed; and the historical
+revision is restored whole only for a moment: every environment's delivery
+overlay comes back from the base branch before anything is settled, so
+another environment's tombstone is never replaced by that revision's live
+bytes, and only this environment's historical overlay is re-delivered. A
+host past generation 3
 refuses the generation-3 carrier as stale, and a tree restored from before a
 withdrawal would carry the withdrawn binding as present. A rollback across a
 withdrawal is refused as terminal, as any render presenting a withdrawn

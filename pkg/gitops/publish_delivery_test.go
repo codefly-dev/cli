@@ -890,6 +890,9 @@ func TestPublishHoldsEveryDocumentToTheHostDeclaredNow(t *testing.T) {
 	err = settle(&deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", Module: "crm", TrustDomain: "other.example"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "trust domain")
+	err = settle(&deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", Module: "crm", Audience: "https://other.example"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "audience")
 }
 
 // TestPublishRefusesAReusedCarrierThatSignsOtherBytes: a carrier delivered
@@ -1143,4 +1146,45 @@ func TestRenderRefusesAServingWorkloadOnTheDeliveryAccount(t *testing.T) {
 	_, err := RenderOwnedTree(context.Background(), options, renderWorkload(strings.Replace(pinnedDeployment, "serviceAccountName: api", "serviceAccountName: "+deliveryServiceAccount, 1)))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "reserved for the delivery Job")
+}
+
+// TestRollbackRestoresOtherEnvironmentsOverlaysAsDelivered: a rollback restores
+// a historical revision whole, which puts another environment's live bytes
+// back over the tombstone it has since delivered; the delivered overlays come
+// back from the base branch before anything is settled, so the tombstone
+// survives.
+func TestRollbackRestoresOtherEnvironmentsOverlaysAsDelivered(t *testing.T) {
+	ctx := context.Background()
+	repository := newDeliveryRepository(t)
+	opts := deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", Module: "crm"}
+	_, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), &opts)
+	require.NoError(t, err)
+	repository.deliver(t)
+	live, err := gitCommand(ctx, repository.repo, "rev-parse", "refs/remotes/origin/main")
+	require.NoError(t, err)
+	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t), &opts)
+	require.NoError(t, err)
+	repository.deliver(t)
+	require.True(t, deliveredBinding(t, repository.target, "example.prod.crm").Removed)
+
+	require.NoError(t, restoreCloneTree(ctx, repository.repo, repository.targetPath, strings.TrimSpace(live)))
+	require.False(t, deliveredBinding(t, repository.target, "example.prod.crm").Removed, "the historical revision holds the live document")
+	require.NoError(t, restoreDeliveredOverlays(ctx, repository.repo, "main", repository.targetPath))
+	require.True(t, deliveredBinding(t, repository.target, "example.prod.crm").Removed, "the tombstone the base branch delivered survives the restore")
+}
+
+// TestPublishRefusesACellRenderedForAnotherHost: the rendered cell is held to
+// the host the environment declares at publish, as every document is.
+func TestPublishRefusesACellRenderedForAnotherHost(t *testing.T) {
+	repository := newDeliveryRepository(t)
+	source := filepath.Join(t.TempDir(), "cell.yaml")
+	data, err := yaml.Marshal(&CellFile{Schema: CellSchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example",
+		Namespaces: []CellNamespace{{Name: "crm", Module: "crm"}}})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(source, data, 0o600))
+	publication := &deliveryPublication{baseBranch: "main", cellSource: source, cellPath: "deployments/cells/prod/cell.yaml",
+		options: deliveryPublishOptions{Module: "crm", Coordinate: "elsewhere/prod/x", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example"}}
+	err = stageCellFile(context.Background(), repository.repo, publication, &Inventory{Module: "crm"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "the cell file describes host example/prod/region-a")
 }

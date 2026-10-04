@@ -388,4 +388,11 @@ func TestComponentProjectsBindPathProjectAndNamespace(t *testing.T) {
 	err = validateComponentProjects(spec("deployments/modules/shop/services/api/overlays/prod", authority, authorityNamespace), "shop")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not the authority overlay")
+	// Every field the template consumes is required; another generator's
+	// elements (the tenant matrix) carry none of them and are not components.
+	err = validateComponentProjects(spec("deployments/modules/shop/services/api/overlays/prod", "", "shop"), "shop")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "lacks a component, overlay, project or namespace")
+	tenants := map[string]any{"generators": []any{map[string]any{"list": map[string]any{"elements": []any{map[string]any{"tenant": "acme", "server": "https://kubernetes.default.svc"}}}}}}
+	require.NoError(t, validateComponentProjects(tenants, "shop"))
 }

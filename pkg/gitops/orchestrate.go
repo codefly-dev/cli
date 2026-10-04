@@ -2,7 +2,9 @@ package gitops
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/codefly-dev/cli/pkg/modulecontract"
 	"os"
 	"path/filepath"
 	"sort"
@@ -383,6 +385,14 @@ func (r *moduleRender) declareInstances(ctx context.Context, services []*resourc
 	}
 	r.options.UndeclaredPresence = undeclared
 	if instance == nil {
+		// A module that publishes a contract asks for authority, and
+		// authority is effective from a presence generation: with no
+		// presence to declare, the request would be dropped silently.
+		if _, loadErr := modulecontract.Load(r.module.Dir()); loadErr == nil {
+			return fmt.Errorf("module %s publishes %s but declares no presence (%s); authority is effective from a presence generation, so a module with a contract must declare presence", r.module.Name, modulecontract.FileName, undeclared)
+		} else if !errors.Is(loadErr, os.ErrNotExist) {
+			return loadErr
+		}
 		r.options.UndeclaredAuthority = "the module declares no presence, so no authority can be effective from it"
 		return nil
 	}
