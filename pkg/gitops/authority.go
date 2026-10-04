@@ -309,6 +309,11 @@ func authorityBindings(presenceBinding string, contract *modulecontract.Resolved
 // changing would be enforced as before. Each is named, with the field the
 // document would need. A module declaring none of them renders as it does;
 // one declaring any waits on core growing the document.
+// errUncarriedAuthority is the refusal of a contract the reader accepted and
+// the signed authority document cannot carry whole: the renderer's verdict
+// past the reader, named so a conformance run can tell it from any other.
+var errUncarriedAuthority = errors.New("the contract declares what the signed authority document cannot carry")
+
 func refuseUncarriedAuthority(module string, contract *modulecontract.Resolved) error {
 	var uncarried []string
 	if len(contract.Queues) > 1 {
@@ -334,7 +339,7 @@ func refuseUncarriedAuthority(module string, contract *modulecontract.Resolved) 
 	if len(uncarried) == 0 {
 		return nil
 	}
-	return fmt.Errorf("module %s declares in its contract what the signed authority document cannot carry, and nothing it declares is dropped on the way to the host: %s; this needs core's solutionhost.AuthorityBinding to grow those fields before the module can render authority", module, strings.Join(uncarried, "; "))
+	return fmt.Errorf("%w: module %s declares %s, and nothing it declares is dropped on the way to the host; this needs core's solutionhost.AuthorityBinding to grow those fields before the module can render authority", errUncarriedAuthority, module, strings.Join(uncarried, "; "))
 }
 
 // solutionAuthorityConfigMap carries one authority document, written through a
