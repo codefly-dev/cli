@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
+	"github.com/codefly-dev/core/workcontext"
 )
 
 func TestDefaultStateDirIsStableAndWorkspaceIsolated(t *testing.T) {
@@ -36,10 +37,12 @@ func TestDefaultStateDirIsStableAndWorkspaceIsolated(t *testing.T) {
 
 func TestOpenWithoutExportersCreatesPrivateProductNeutralRuntime(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "execution")
-	runtime, err := Open(context.Background(), Config{
+	runtime, err := Open(context.Background(), &Config{
 		WorkDir:         t.TempDir(),
 		StateDir:        stateDir,
 		AuthorityIssuer: "https://accounts.example.test",
+		Revisions:       workcontext.FixedRevision(1),
+		Seals:           workcontext.NewMemorySealSource(),
 		Release:         "test",
 	})
 	if err != nil {
@@ -69,16 +72,33 @@ func TestOpenWithoutExportersCreatesPrivateProductNeutralRuntime(t *testing.T) {
 }
 
 func TestOpenRejectsIncompleteAuthorityBeforeState(t *testing.T) {
-	stateDir := filepath.Join(t.TempDir(), "must-not-exist")
-	_, err := Open(context.Background(), Config{
-		StateDir: stateDir,
-		Release:  "test",
-	})
-	if err == nil {
-		t.Fatal("expected invalid authority configuration")
-	}
-	if _, statErr := os.Stat(stateDir); !os.IsNotExist(statErr) {
-		t.Fatalf("invalid configuration created durable state: %v", statErr)
+	// An authority with no issuer, and one with an issuer but none of the
+	// live sources core's authenticator verifies against: both refuse before
+	// any durable state exists, because a gateway that cannot verify is not
+	// a gateway with a weaker verifier.
+	for name, config := range map[string]Config{
+		"no issuer": {Release: "test"},
+		"no live sources": {
+			AuthorityJWKS:   "https://accounts.example.test/.well-known/work-context-jwks.json",
+			AuthorityIssuer: "https://accounts.example.test",
+			Release:         "test",
+		},
+		"no seal source": {
+			AuthorityJWKS:   "https://accounts.example.test/.well-known/work-context-jwks.json",
+			AuthorityIssuer: "https://accounts.example.test",
+			Revisions:       workcontext.FixedRevision(1),
+			Release:         "test",
+		},
+	} {
+		stateDir := filepath.Join(t.TempDir(), "must-not-exist")
+		config.StateDir = stateDir
+		_, err := Open(context.Background(), &config)
+		if err == nil {
+			t.Fatalf("%s: expected invalid authority configuration", name)
+		}
+		if _, statErr := os.Stat(stateDir); !os.IsNotExist(statErr) {
+			t.Fatalf("%s: invalid configuration created durable state: %v", name, statErr)
+		}
 	}
 }
 

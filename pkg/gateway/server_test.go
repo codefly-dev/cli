@@ -36,8 +36,6 @@ import (
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	toolingv0 "github.com/codefly-dev/core/generated/go/codefly/services/tooling/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
-	workcontext "github.com/codefly-dev/sdk-go/workcontext"
-	workcontextgrpc "github.com/codefly-dev/sdk-go/workcontext/grpctransport"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -314,7 +312,7 @@ func enableGovernedGateway(
 		Attestor: attestor,
 		Authority: executionrecorder.AuthorityFunc(func(
 			_ context.Context,
-			_ *workcontext.Verified,
+			_ string,
 			admission executionrecorder.Admission,
 		) error {
 			if admission.OperationID != operationID {
@@ -338,17 +336,13 @@ func enableGovernedGateway(
 
 func incomingExecutionContext(t *testing.T, operationID string) context.Context {
 	t.Helper()
-	// A real capability from core's conformance kit. The hand-made `e30.` JSON
-	// carrier this used to build is refused outright now ("not a core token:
-	// the payload is a JSON object"), which is the cutover: the carrier is a
-	// deterministic protobuf encoding. This side still neither parses nor
-	// verifies it — it only has to be well formed enough to travel.
-	token := conformanceCarrier(t)
-	execution, err := workcontextgrpc.NewExecutionContext(token, operationID)
+	signature := make([]byte, 64)
+	token := "e30." + base64.RawURLEncoding.EncodeToString(signature)
+	execution, err := executionrecorder.NewExecutionContext(token, operationID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	outgoing, err := workcontextgrpc.WithGRPCExecutionContext(t.Context(), execution)
+	outgoing, err := executionrecorder.WithGRPCExecutionContext(t.Context(), execution)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,17 +467,58 @@ func TestSubscribeWorkspaceChangesStreamsExternalEditsAndReplaysReconnect(t *tes
 	}
 }
 
-// TestWriteFileAcceptsSDKExecutionContextOverRealGRPC stood here, and r15 was
-// right that it asserted the bypass: it registered a BARE grpc.NewServer with
-// no interceptors, presented a real capability to WriteFile, and required the
-// write to succeed. What it proved was that a chain without the effect
-// boundary has no effect boundary.
-//
-// Its replacement is TestTheServedChainRefusesAGovernedEffect in
-// effect_boundary_test.go, which serves through serverOptions() — the chain
-// Serve installs — and requires the refusal, the absent file, and the same
-// call succeeding when it is not governed. The SDK carrier still makes a real
-// gRPC hop there, so that coverage is kept rather than dropped.
+func TestWriteFileAcceptsSDKExecutionContextOverRealGRPC(t *testing.T) {
+	root := t.TempDir()
+	srv, err := NewServer(Config{WorkDir: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	listener := bufconn.Listen(1 << 20)
+	grpcServer := grpc.NewServer()
+	gatewayv1.RegisterGatewayServer(grpcServer, srv)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+	connection, err := grpc.NewClient(
+		"passthrough:///execution-context",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return listener.DialContext(ctx)
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+
+	workContext := "e30.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	execution, err := executionrecorder.NewExecutionContext(workContext, "operation-write-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := executionrecorder.WithGRPCExecutionContext(t.Context(), execution)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response, err := gatewayv1.NewGatewayClient(connection).WriteFile(
+		ctx,
+		&gatewayv1.WriteFileRequest{Path: "receipt.txt", Content: "executed\n"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !response.GetSuccess() {
+		t.Fatalf("WriteFile failed: %s", response.GetError())
+	}
+	content, err := os.ReadFile(filepath.Join(root, "receipt.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "executed\n" {
+		t.Fatalf("unexpected written content %q", content)
+	}
+}
 
 type gatewayWorkspaceReceiveResult struct {
 	event *gatewayv1.WorkspaceChangeEvent

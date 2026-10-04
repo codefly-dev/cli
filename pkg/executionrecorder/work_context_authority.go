@@ -3,10 +3,12 @@ package executionrecorder
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
+	"time"
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	workcontext "github.com/codefly-dev/sdk-go/workcontext"
+	"github.com/codefly-dev/core/workcontext"
 )
 
 const (
@@ -17,108 +19,155 @@ const (
 	executionEvidenceAction       = "append"
 )
 
-// WorkContextAuthorityConfig binds one Accounts issuer and exact audience to
-// the Gateway recorder.
+// Authenticator is core's, by alias. The Work Context is a core proto and
+// core/workcontext is its one implementation — the only mint and the only
+// verify; this package resolves to it rather than carrying a second one, and
+// the assertion below holds the alias to core's type at compile time so the
+// resolution cannot drift into a local copy. A party that verifies without
+// minting — this gateway — is what Authenticator is for: it assembles core's
+// Verifier and calls Verify, so there is one check path, and a capability
+// carrying a grant hop is refused (ErrNeedsIssuer) rather than accepted
+// unchecked.
+type Authenticator = workcontext.Authenticator
+
+var _ interface {
+	Authenticate(context.Context, string) (*workcontext.Authenticated, error)
+} = (*Authenticator)(nil)
+
+// WorkContextAuthorityConfig binds one issuer and exact audience to the
+// gateway recorder, with the LIVE state core's authenticator verifies every
+// capability against. None of it is optional: core refuses to assemble a
+// verifier without a seal source or a revision source, because a verifier
+// that could not tell a capability sealed to a superseded installation from
+// a current one would make the strongest check in the model the easiest one
+// to omit.
 type WorkContextAuthorityConfig struct {
 	Issuer   string
 	Audience string
+	// Keys are the issuer's published verification keys (a JWKS, or a fixed
+	// set).
+	Keys KeySource
+	// Revisions is the issuer's live authorization revision, per tenant.
+	Revisions workcontext.RevisionSource
+	// Seals is the issuer's live sealed state: installation, principal
+	// epoch, approved build and operation binding.
+	Seals workcontext.SealSource
+	// Replay consumes single-use capabilities. nil is a process-local store:
+	// a capability is consumed once per gateway process, which is the store
+	// a single gateway can hold.
+	Replay workcontext.ReplayStore
+	// Now is the clock, for tests.
+	Now func() time.Time
+	// TrustTheConformanceFixtureKey is copied into core's authenticator by
+	// the conformance test and nowhere else: the kit's key is derivable from
+	// core's source, and a production authenticator refuses it by default.
+	TrustTheConformanceFixtureKey bool
 }
 
-// WorkContextAuthority authorizes an ALREADY-VERIFIED capability for one
-// producer's evidence, and refuses when there is none.
-//
-// It does not verify, and there is no seam where verification could be added
-// back. Verification belongs to whoever can answer the four live questions
-// core's Verifier requires — the authorization revision, the replay store, the
-// grant source and the SEAL source — and this repository can answer none of
-// them. sdk-go's own core.go states the consequence: "A service that cannot
-// answer those four is not in a position to verify a capability itself; it
-// presents its own and lets the component that holds them decide."
-//
-// The JWKS verifier that stood here was from the JSON era. Keeping a seam for
-// it would have been worse than deleting it: a verifier handed invented
-// revision, grant or seal state does not fail, it PASSES — the one outcome the
-// seal check exists to prevent. So a caller without a *workcontext.Verified is
-// refused, never served by a weaker check.
-//
-// What remains is what this boundary genuinely owns: that the verified
-// capability was minted for THIS issuer and audience, and that the final
-// actor's effective authority names this producer's evidence EXPLICITLY.
+// WorkContextAuthority verifies identity with core's authenticator and
+// requires the actor's effective evidence authority to name this producer.
 type WorkContextAuthority struct {
-	issuer   string
-	audience string
+	issuer    string
+	audience  string
+	keys      KeySource
+	revisions workcontext.RevisionSource
+	seals     workcontext.SealSource
+	replay    workcontext.ReplayStore
+	now       func() time.Time
+	trustKit  bool
 }
 
 // NewWorkContextAuthority creates a fail-closed recorder authority.
-func NewWorkContextAuthority(config WorkContextAuthorityConfig) (*WorkContextAuthority, error) {
-	if strings.TrimSpace(config.Issuer) == "" {
+func NewWorkContextAuthority(config *WorkContextAuthorityConfig) (*WorkContextAuthority, error) {
+	switch {
+	case config == nil:
+		return nil, fmt.Errorf("%w: Work Context authority configuration is required", ErrInvalid)
+	case strings.TrimSpace(config.Issuer) == "":
 		return nil, fmt.Errorf("%w: Work Context issuer is required", ErrInvalid)
-	}
-	if strings.TrimSpace(config.Audience) == "" {
+	case strings.TrimSpace(config.Audience) == "":
 		return nil, fmt.Errorf("%w: Work Context audience is required", ErrInvalid)
+	case config.Keys == nil:
+		return nil, fmt.Errorf("%w: Work Context key source is required", ErrInvalid)
+	case config.Revisions == nil:
+		return nil, fmt.Errorf("%w: Work Context authorization-revision source is required; core's authenticator has no mode without the issuer's live revision", ErrInvalid)
+	case config.Seals == nil:
+		return nil, fmt.Errorf("%w: Work Context seal source is required; the seal comparison is never skipped", ErrInvalid)
 	}
-	return &WorkContextAuthority{issuer: config.Issuer, audience: config.Audience}, nil
+	replay := config.Replay
+	if replay == nil {
+		store := workcontext.NewMemoryReplayStore()
+		if config.Now != nil {
+			store.Now = config.Now
+		}
+		replay = store
+	}
+	return &WorkContextAuthority{
+		issuer: config.Issuer, audience: config.Audience, keys: config.Keys,
+		revisions: config.Revisions, seals: config.Seals, replay: replay,
+		now: config.Now, trustKit: config.TrustTheConformanceFixtureKey,
+	}, nil
 }
 
-// Authorize implements Authority.
-func (a *WorkContextAuthority) Authorize(
-	_ context.Context,
-	verified *workcontext.Verified,
-	admission Admission,
-) error {
+// Authenticate is the verification entrypoint, and it is core's: the keys the
+// issuer publishes now are handed to core's Authenticator, which makes every
+// check — issuer, signature, audience, window, structure, authorization
+// revision, seal, epoch, binding, build, replay. The key id the capability
+// names is read through core's Inspect only to let the key source refresh on
+// a key it does not hold; Inspect's verdict is not used, so a capability it
+// refuses is refused by Verify, with Verify's reason.
+func (a *WorkContextAuthority) Authenticate(ctx context.Context, encoded string) (*workcontext.Authenticated, error) {
 	if a == nil {
-		return fmt.Errorf("%w: Work Context authority is not initialized", ErrInvalid)
+		return nil, fmt.Errorf("%w: Work Context authority is not initialized", ErrInvalid)
 	}
-	if verified == nil {
-		return fmt.Errorf("%w: no verified Work Context was supplied; this component does not verify capabilities and will not accept an unverified one", ErrInvalid)
+	keyID := ""
+	if inspected, err := workcontext.Inspect(encoded); err == nil {
+		keyID = inspected.Context().GetKeyId()
+	}
+	keys, err := a.keys.Keys(ctx, keyID)
+	if err != nil {
+		return nil, fmt.Errorf("work context verification keys: %w", err)
+	}
+	authenticator := &Authenticator{
+		Issuer: a.issuer, Audience: a.audience, Keys: keys,
+		Revisions: a.revisions, Seals: a.seals, Replay: a.replay,
+		Now: a.now, TrustTheConformanceFixtureKey: a.trustKit,
+	}
+	return authenticator.Authenticate(ctx, encoded)
+}
+
+// Verify implements Authority: the capability is authenticated by core, and
+// the actor's effective scopes must grant evidence/append on THIS producer,
+// named explicitly.
+func (a *WorkContextAuthority) Verify(ctx context.Context, encoded string, admission Admission) (*basev0.WorkContextV1, error) {
+	if a == nil {
+		return nil, fmt.Errorf("%w: Work Context authority is not initialized", ErrInvalid)
 	}
 	if strings.TrimSpace(admission.ProducerID) == "" {
 		return fmt.Errorf("%w: execution producer ID is required", ErrInvalid)
 	}
-	claims := verified.Context()
-	if claims.GetIssuer() != a.issuer {
-		return fmt.Errorf("%w: capability was minted by issuer %q, not %q", ErrInvalid, claims.GetIssuer(), a.issuer)
+	authenticated, err := a.Authenticate(ctx, encoded)
+	if err != nil {
+		return nil, fmt.Errorf("verify Work Context: %w", err)
 	}
-	if claims.GetAudience() != a.audience {
-		return fmt.Errorf("%w: capability was minted for audience %q, not %q", ErrInvalid, claims.GetAudience(), a.audience)
+	if err := requireExplicitScope(authenticated.EffectiveScopes(), executionEvidenceResourceKind, executionEvidenceAction, admission.ProducerID); err != nil {
+		return nil, fmt.Errorf("authorize execution evidence producer: %w", err)
 	}
-	if err := requireExplicitEvidenceScope(verified.EffectiveScopes(), admission.ProducerID); err != nil {
-		return fmt.Errorf("authorize execution evidence producer: %w", err)
-	}
-	return nil
+	return authenticated.Context(), nil
 }
 
-// requireExplicitEvidenceScope demands that the final actor's effective
-// authority name this producer's evidence by id.
-//
-// EXPLICITLY: a scope listing no resource ids, or a wildcard, does not append
-// evidence for this producer. Evidence is the record of what ran, so authority
-// over it is granted per producer or not at all — a capability that may append
-// "evidence" everywhere is how one producer's receipts get written under
-// another's name. core's Verified exposes no scope predicate, so the rule
-// lives here, where it is enforced, rather than in a second place that could
-// drift from it.
-func requireExplicitEvidenceScope(scopes []*basev0.WorkScopeV1, producerID string) error {
+// requireExplicitScope holds the actor's effective scopes to one action on one
+// NAMED resource. Under core's containment rule a scope naming no resource ids
+// is a wildcard; the recorder does not take a wildcard for the evidence it
+// appends — the producer must be named, so a capability minted for "any
+// evidence" does not reach this one's journal.
+func requireExplicitScope(scopes []*basev0.WorkScopeV1, kind, action, resourceID string) error {
 	for _, scope := range scopes {
-		if scope.GetResourceKind() != executionEvidenceResourceKind {
+		if scope.GetResourceKind() != kind || !slices.Contains(scope.GetActions(), action) {
 			continue
 		}
-		if !namesExactly(scope.GetActions(), executionEvidenceAction) {
-			continue
-		}
-		if namesExactly(scope.GetResourceIds(), producerID) {
+		if slices.Contains(scope.GetResourceIds(), resourceID) {
 			return nil
 		}
 	}
-	return fmt.Errorf("%w: no effective scope appends %q evidence for producer %q by name",
-		ErrInvalid, executionEvidenceAction, producerID)
-}
-
-func namesExactly(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return fmt.Errorf("%w: the capability grants no %s %s naming %q", ErrInvalid, kind, action, resourceID)
 }

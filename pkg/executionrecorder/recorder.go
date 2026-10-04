@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -19,9 +20,6 @@ import (
 	"github.com/codefly-dev/core/executionreceipt"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
-	coreworkcontext "github.com/codefly-dev/core/workcontext"
-	workcontext "github.com/codefly-dev/sdk-go/workcontext"
-	workcontextgrpc "github.com/codefly-dev/sdk-go/workcontext/grpctransport"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -31,7 +29,7 @@ var (
 	ErrInvalid = errors.New("invalid Codefly execution recorder input")
 	// ErrConflict means one logical operation was reused with different
 	// authority, target, producer, or operation facts.
-	ErrConflict = errors.New("Codefly execution recorder conflict")
+	ErrConflict = errors.New("conflicting Codefly execution recorder operation")
 )
 
 // Admission describes the effect boundary an authority is asked to verify.
@@ -45,35 +43,22 @@ type Admission struct {
 	Target        *executionv1.ExecutionTargetV1
 }
 
-// Authority decides whether an ALREADY-VERIFIED capability may do this, and
-// returns nothing but that decision.
-//
-// It deliberately does NOT return claims. It used to, and the claims it
-// returned were then signed into the receipt beside verified.SHA256() — two
-// sources for one fact, so a receipt could attest to a tenant, workspace or
-// actor the capability never named, while its digest pointed at a capability
-// that said something else. Comparing the two before signing would have caught
-// that; not having a second source cannot be forgotten. The recorder reads the
-// claims from the capability itself.
-//
-// The parameter is a *workcontext.Verified, which only core's Verifier
-// constructs, so an unverified capability cannot reach this interface: there is
-// no token parameter to pass one through. See WorkContextAuthority for why this
-// component does not verify.
+// Authority verifies the opaque capability (the encoded Work Context) and
+// returns trusted claims.
 type Authority interface {
-	Authorize(context.Context, *workcontext.Verified, Admission) error
+	Verify(context.Context, string, Admission) (*basev0.WorkContextV1, error)
 }
 
 // AuthorityFunc adapts a function into Authority.
-type AuthorityFunc func(context.Context, *workcontext.Verified, Admission) error
+type AuthorityFunc func(context.Context, string, Admission) (*basev0.WorkContextV1, error)
 
 // Authorize implements Authority.
 func (fn AuthorityFunc) Authorize(
 	ctx context.Context,
-	verified *workcontext.Verified,
+	encoded string,
 	admission Admission,
-) error {
-	return fn(ctx, verified, admission)
+) (*basev0.WorkContextV1, error) {
+	return fn(ctx, encoded, admission)
 }
 
 // Journal is the minimal durable outbox contract used by the recorder.
@@ -142,7 +127,7 @@ func New(config Config) (*Recorder, error) {
 	if config.Producer == nil {
 		return nil, fmt.Errorf("%w: producer is required", ErrInvalid)
 	}
-	producer := proto.Clone(config.Producer).(*executionv1.ExecutionProducerV1)
+	producer := cloneProto(config.Producer)
 	if producer.GetId() == "" || producer.GetComponent() == "" || producer.GetRelease() == "" {
 		return nil, fmt.Errorf("%w: producer ID, component, and release are required", ErrInvalid)
 	}
@@ -159,13 +144,12 @@ func New(config Config) (*Recorder, error) {
 	}, nil
 }
 
-// Begin verifies the SDK carrier, detects operation replay before the effect,
+// Begin verifies the carried capability, detects operation replay before the effect,
 // and durably appends STARTED. A non-nil Existing means the caller must not
 // execute the effect again.
 func (r *Recorder) Begin(
 	ctx context.Context,
-	execution workcontextgrpc.ExecutionContext,
-	verified *workcontext.Verified,
+	execution ExecutionContext,
 	input BeginInput,
 ) (BeginResult, error) {
 	if r == nil {
@@ -190,7 +174,7 @@ func (r *Recorder) Begin(
 	if err != nil {
 		return BeginResult{}, err
 	}
-	target := proto.Clone(input.Target).(*executionv1.ExecutionTargetV1)
+	target := cloneProto(input.Target)
 	admission := Admission{
 		OperationID:   execution.OperationID(),
 		OperationKind: input.OperationKind,
@@ -237,7 +221,7 @@ func (r *Recorder) Begin(
 	if claims == nil {
 		return BeginResult{}, fmt.Errorf("%w: the verified Work Context carries no claims", ErrInvalid)
 	}
-	claims = proto.Clone(claims).(*basev0.WorkContextV1)
+	claims = cloneProto(claims)
 	claimsWorkspace := claims.GetWorkspaceId()
 	if claimsWorkspace == "" {
 		return BeginResult{}, fmt.Errorf("%w: Work Context workspace is required", ErrInvalid)
@@ -259,13 +243,13 @@ func (r *Recorder) Begin(
 	}
 	admission.Target = target
 	attemptID := stableAttemptID(claims.GetTenantId(), r.producer.GetId(), execution.OperationID())
-	// core computed this over the capability it verified, so the receipt's
-	// digest and the verification cannot describe different bytes.
-	tokenDigest := verified.SHA256()
+	tokenDigest := sha256.Sum256([]byte(execution.WorkContext()))
 
-	if existing, startedReceipt, found, err := r.findExisting(ctx, claims.GetTenantId(), execution.OperationID(), attemptID); err != nil {
-		return BeginResult{}, err
-	} else if found {
+	existing, startedReceipt, found, lookupErr := r.findExisting(ctx, claims.GetTenantId(), execution.OperationID(), attemptID)
+	if lookupErr != nil {
+		return BeginResult{}, lookupErr
+	}
+	if found {
 		if !sameAdmission(
 			startedReceipt,
 			claims,
@@ -287,11 +271,11 @@ func (r *Recorder) Begin(
 		AttemptId:         attemptID,
 		Stage:             executionv1.ExecutionStage_EXECUTION_STAGE_STARTED,
 		OperationKind:     input.OperationKind,
-		Producer:          proto.Clone(r.producer).(*executionv1.ExecutionProducerV1),
+		Producer:          cloneProto(r.producer),
 		Assurance:         input.Assurance,
 		WorkContext:       claims,
-		WorkContextSha256: tokenDigest,
-		Target:            proto.Clone(target).(*executionv1.ExecutionTargetV1),
+		WorkContextSha256: hex.EncodeToString(tokenDigest[:]),
+		Target:            cloneProto(target),
 		StartedAt:         timestamppb.New(r.now().UTC()),
 		Resources:         resources,
 	}
@@ -359,7 +343,7 @@ func (a *Attempt) Finish(
 	if completed.Before(a.started.GetStartedAt().AsTime()) {
 		return nil, fmt.Errorf("%w: completion precedes start", ErrInvalid)
 	}
-	terminalReceipt := proto.Clone(a.started).(*executionv1.ExecutionReceiptV1)
+	terminalReceipt := cloneProto(a.started)
 	terminalReceipt.ReceiptId = stableReceiptID(
 		terminalReceipt.GetWorkContext().GetTenantId(),
 		terminalReceipt.GetProducer().GetId(),
@@ -370,7 +354,7 @@ func (a *Attempt) Finish(
 	terminalReceipt.Stage = input.Stage
 	terminalReceipt.CompletedAt = timestamppb.New(completed)
 	terminalReceipt.Resources = resources
-	terminalReceipt.Result = proto.Clone(input.Result).(*executionv1.ExecutionResultV1)
+	terminalReceipt.Result = cloneProto(input.Result)
 	terminalReceipt.PayloadSha256 = ""
 	attestation, err := a.recorder.attestor.Attest(terminalReceipt)
 	if err != nil {
@@ -404,7 +388,7 @@ func (r *Recorder) RecoverIncomplete(ctx context.Context, batchLimit int) (int, 
 			if completed.Before(started.GetStartedAt().AsTime()) {
 				completed = started.GetStartedAt().AsTime()
 			}
-			receipt := proto.Clone(started).(*executionv1.ExecutionReceiptV1)
+			receipt := cloneProto(started)
 			receipt.ReceiptId = stableReceiptID(
 				receipt.GetWorkContext().GetTenantId(),
 				receipt.GetProducer().GetId(),
@@ -518,7 +502,13 @@ func digestParts(parts ...string) [sha256.Size]byte {
 	hash := sha256.New()
 	for _, part := range parts {
 		var length [4]byte
-		binary.BigEndian.PutUint32(length[:], uint32(len(part)))
+		// A part is a bounded identifier; one past the frame's width is a
+		// programming error, not a hash of something else.
+		size := len(part)
+		if size > math.MaxUint32 {
+			panic(fmt.Sprintf("digestParts: a %d-byte part does not fit the length frame", size))
+		}
+		binary.BigEndian.PutUint32(length[:], uint32(size))
 		_, _ = hash.Write(length[:])
 		_, _ = hash.Write([]byte(part))
 	}
@@ -531,7 +521,7 @@ func cloneResources(resources []*executionv1.ExecutionResourceV1) []*executionv1
 	if resources == nil {
 		return nil
 	}
-	return proto.Clone(&executionv1.ExecutionReceiptV1{Resources: resources}).(*executionv1.ExecutionReceiptV1).Resources
+	return cloneProto(&executionv1.ExecutionReceiptV1{Resources: resources}).Resources
 }
 
 const operationInputResourceKind = "operation.input"
@@ -601,12 +591,23 @@ func terminal(stage executionv1.ExecutionStage) bool {
 }
 
 func durationMillis(started, completed time.Time) uint64 {
-	if completed.Before(started) {
+	elapsed := completed.Sub(started) / time.Millisecond
+	if elapsed < 0 {
 		return 0
 	}
-	return uint64(completed.Sub(started) / time.Millisecond)
+	return uint64(elapsed)
 }
 
 func stringPointer(value string) *string {
 	return &value
+}
+
+// cloneProto is proto.Clone with its result typed: Clone returns the message's
+// own concrete type, so the assertion cannot fail for a non-nil message.
+func cloneProto[T proto.Message](message T) T {
+	cloned, ok := proto.Clone(message).(T)
+	if !ok {
+		panic(fmt.Sprintf("proto.Clone returned %T for %T", proto.Clone(message), message))
+	}
+	return cloned
 }

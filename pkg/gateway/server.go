@@ -55,8 +55,6 @@ import (
 	githubtoolbox "github.com/codefly-dev/core/toolbox/github"
 	"github.com/codefly-dev/core/wool"
 	wotel "github.com/codefly-dev/core/wool/otel"
-	workcontext "github.com/codefly-dev/sdk-go/workcontext"
-	workcontextgrpc "github.com/codefly-dev/sdk-go/workcontext/grpctransport"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -112,7 +110,7 @@ type Config struct {
 // ExecutionRecorder is the narrow neutral lifecycle capability used by the
 // Gateway. Warden and every other exporter stay behind Codefly's plugin API.
 type ExecutionRecorder interface {
-	Begin(context.Context, workcontextgrpc.ExecutionContext, *workcontext.Verified, executionrecorder.BeginInput) (executionrecorder.BeginResult, error)
+	Begin(context.Context, executionrecorder.ExecutionContext, executionrecorder.BeginInput) (executionrecorder.BeginResult, error)
 	RecoverIncomplete(context.Context, int) (int, error)
 }
 
@@ -2092,10 +2090,8 @@ func (s *Server) headRevision(ctx context.Context) string {
 // "no capability" as a fault, and must not treat "a capability that does not
 // parse" as absence either.
 func validateOptionalExecutionContext(ctx context.Context) error {
-	if !effect.Carried(ctx) {
-		return nil
-	}
-	if _, err := workcontextgrpc.GRPCExecutionContextFromIncoming(ctx); err != nil {
+	_, _, err := executionrecorder.ExecutionContextFromIncomingIfPresent(ctx)
+	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid Codefly execution context: %v", err)
 	}
 	return nil
@@ -2113,7 +2109,11 @@ func (s *Server) beginGovernedExecution(
 	ctx context.Context,
 	input executionrecorder.BeginInput,
 ) (*executionrecorder.Attempt, bool, error) {
-	if !effect.Carried(ctx) {
+	execution, present, err := executionrecorder.ExecutionContextFromIncomingIfPresent(ctx)
+	if err != nil {
+		return nil, false, status.Errorf(codes.InvalidArgument, "invalid Codefly execution context: %v", err)
+	}
+	if !present {
 		return nil, false, nil
 	}
 	if _, err := workcontextgrpc.GRPCExecutionContextFromIncoming(ctx); err != nil {

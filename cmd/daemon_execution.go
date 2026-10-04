@@ -59,7 +59,7 @@ func (options gatewayExecutionOptions) open(
 	if err != nil {
 		return nil, fmt.Errorf("resolve Codefly CLI release for execution receipts: %w", err)
 	}
-	runtime, err := executionruntime.Open(ctx, executionruntime.Config{
+	runtime, err := executionruntime.Open(ctx, &executionruntime.Config{
 		WorkDir:         workDir,
 		StateDir:        options.stateDir,
 		AuthorityIssuer: options.authorityIssuer,
@@ -92,7 +92,14 @@ func (options gatewayExecutionOptions) validate() error {
 			return fmt.Errorf("--execution-exporter cannot be empty")
 		}
 	}
-	return nil
+	// Core's Work Context authenticator verifies every capability against
+	// the issuer's LIVE state — its authorization revision and its seals
+	// (installation, principal epoch, approved build, operation binding) —
+	// and has no mode without those sources. This release carries no client
+	// for them, so governed execution cannot be configured from the command
+	// line until one exists: it refuses here, by name, rather than start a
+	// gateway that would verify nothing.
+	return fmt.Errorf("--governed-execution needs the Work Context issuer's live authorization-revision and seal sources, and this release has no client for them; governed execution is unavailable until one exists")
 }
 
 func (options gatewayExecutionOptions) hasConfiguration() bool {
