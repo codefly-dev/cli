@@ -102,10 +102,15 @@ func digestProvidedGroups(ctx context.Context, workspace *resources.Workspace, e
 	return digests, nil
 }
 
-// recordedGroupsNow re-digests the groups a rendered tree recorded, as the
-// environment provides them now: what a publish holds the render to. It reads
-// no service, so a publish needs only the tree and the composition.
-func recordedGroupsNow(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, recorded map[string]string) (map[string]string, error) {
+// currentGroupDigests digests the groups a module consumes as the environment
+// provides them NOW: its services' declared dependencies and its contract's
+// slots. A render records this; a publish re-digests the recorded groups and
+// refuses a render the composition has moved past.
+// digestRecordedGroups digests the groups a render recorded as the environment
+// provides them now. It is the hold for a module whose sources the workspace
+// does not have — a packaged solution — where nothing can say which groups
+// are consumed now beyond what the render wrote down.
+func digestRecordedGroups(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, recorded map[string]string) (map[string]string, error) {
 	if len(recorded) == 0 {
 		return nil, nil
 	}
@@ -116,10 +121,6 @@ func recordedGroupsNow(ctx context.Context, workspace *resources.Workspace, env 
 	return digestProvidedGroups(ctx, workspace, env, consumed)
 }
 
-// currentGroupDigests digests the groups a module consumes as the environment
-// provides them NOW: its services' declared dependencies and its contract's
-// slots. A render records this; a publish re-digests the recorded groups and
-// refuses a render the composition has moved past.
 func currentGroupDigests(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, module *resources.Module) (map[string]string, error) {
 	services := make([]*resources.Service, 0, len(module.ServiceReferences))
 	for _, reference := range module.ServiceReferences {

@@ -1510,6 +1510,18 @@ gitops:
 	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(config), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Every referenced service exists as a manifest: a publish derives the
+	// configuration groups the module consumes from its services, so a
+	// reference with nothing behind it is a broken workspace, not a fixture.
+	for _, service := range services {
+		manifest := filepath.Join(root, "services", service, resources.ServiceConfigurationName)
+		if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(manifest, []byte(devServiceYAML(service)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
@@ -1584,6 +1596,13 @@ services:
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(moduleDir, resources.ModuleConfigurationName), []byte(module), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest := filepath.Join(moduleDir, "services", "api", resources.ServiceConfigurationName)
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, []byte(devServiceYAML("api")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)

@@ -335,7 +335,24 @@ func loadRenderedPublication(
 	if err != nil {
 		return Inventory{}, err
 	}
-	current, err := recordedGroupsNow(ctx, workspace, env, inventory.WorkspaceConfigurationDigests)
+	// The groups held against are the ones the composition's services and
+	// contract consume NOW, derived from the composition at publish — not
+	// re-read from the digests the render recorded, which could not say
+	// that a group consumed since the render exists at all.
+	var current map[string]string
+	module, loadErr := workspace.LoadModuleFromName(ctx, request.Module)
+	switch {
+	case loadErr == nil:
+		current, err = currentGroupDigests(ctx, workspace, env, module)
+	case isModuleNotFound(loadErr):
+		// No sources for this module in the workspace — a packaged solution
+		// — so the groups held against are the ones its render recorded,
+		// digested as the environment provides them now; a group consumed
+		// since that render is not findable here, and the doc says so.
+		current, err = digestRecordedGroups(ctx, workspace, env, inventory.WorkspaceConfigurationDigests)
+	default:
+		return Inventory{}, fmt.Errorf("the module %s this publish delivers cannot be loaded from the workspace, so the configuration groups its services consume now are unknown: %w", request.Module, loadErr)
+	}
 	if err != nil {
 		return Inventory{}, err
 	}
@@ -363,6 +380,12 @@ func loadRenderedPublication(
 		return Inventory{}, fmt.Errorf("read the cell file %s: %w", cell, statErr)
 	}
 	return inventory, nil
+}
+
+// isModuleNotFound tells a workspace that holds no module of the name from a
+// module that exists and cannot be loaded; core reports the first by message.
+func isModuleNotFound(err error) bool {
+	return strings.Contains(err.Error(), "cannot find module")
 }
 
 // refuseUnrelatedPromotionChanges holds an existing promotion branch to the

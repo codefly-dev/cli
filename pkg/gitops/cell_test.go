@@ -716,3 +716,22 @@ func TestPublishRefusesAStaleConsumerWithoutItsCurrentRender(t *testing.T) {
 	require.NoError(t, writeCanonicalInventory(filepath.Join(dir, InventoryFilename), &inventory))
 	require.NoError(t, refuseStaleBaseConsumers(workspace, "prod", "main", stale))
 }
+
+// TestPublishHoldsTheRenderToTheGroupsConsumedNow: the groups a publish holds
+// the render to are derived from the composition at publish, so a group the
+// module's services consume now and the render did not record is a stale
+// render — the recorded digests alone could not say the group exists.
+func TestPublishHoldsTheRenderToTheGroupsConsumedNow(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	ctx := context.Background()
+	module, err := workspace.LoadModuleFromName(ctx, "shop")
+	require.NoError(t, err)
+	current, err := currentGroupDigests(ctx, workspace, env, module)
+	require.NoError(t, err)
+	require.Contains(t, current, "shop")
+	err = refuseStaleRender("shop", "staging", map[string]string{}, current)
+	require.Error(t, err, "a render that recorded no digest for a group consumed now is stale")
+	require.Contains(t, err.Error(), "shop")
+	require.NoError(t, refuseStaleRender("shop", "staging", current, current))
+}

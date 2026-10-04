@@ -666,7 +666,12 @@ it, and **reports** the sibling modules rendered for the same environment that
 record another digest for a group they both consume. The rule is enforced at
 **publish**, where every refusal has one action that satisfies it: a module
 whose recorded digest is not the composition's current value was rendered
-before the group changed and is refused until rendered again; a sibling
+before the group changed and is refused until rendered again — and the groups
+held against are the ones its services and contract consume **now**, derived
+from the composition at publish, so a group consumed since the render is a
+stale render too (a packaged solution, which has no sources in the workspace,
+is held to the groups its render recorded: the one case a group consumed
+since cannot be found at publish); a sibling
 consumer whose local tree records another digest has not been rendered since
 and the publish is refused until it is, by name. A render never refuses on a
 sibling's account — it did once, symmetrically, and deadlocked: with A and B
