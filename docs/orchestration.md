@@ -152,10 +152,16 @@ group a composed module ships reaches only the services that declare it.
 
 **The rendered deployment is the source of truth for that set, and the local run
 resolves the identical one.** For a run of the whole composition, `codefly run`
-and `codefly deploy gitops render` hand a given service the same group names and
-the same keys inside them, and only the address family differs: a value naming
+and `codefly deploy gitops render` hand a given service the same group names, and
+the same keys inside them *except where a rule below removes a key from both* —
+a credential the service does not declare is withheld in each path, not in one.
+Where a key reaches both, only the address family differs: a value naming
 `${endpoint:<module>/<service>/<endpoint>}` resolves to the producer's loopback
 address for a local run and to its in-cluster address in a render.
+
+The claim is about the two paths agreeing, not about every key arriving. An
+earlier wording said "the same keys inside them" without that qualification,
+which the credential rule and the three asymmetries both contradict.
 
 Three named asymmetries remain, below, and they are the reason that sentence says
 *a run of the whole composition*. **Every one of them leaves the run with fewer

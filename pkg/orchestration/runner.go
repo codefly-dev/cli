@@ -725,7 +725,12 @@ func manifestEndpoint(
 		if declared == nil || declared.Name != endpoint.GetName() {
 			continue
 		}
-		if endpoint.GetApi() != "" && declared.API != endpoint.GetApi() {
+		// The API has to agree too, in both directions: a mapping that omits it
+		// for an endpoint the manifest gives one is as unidentified as one that
+		// contradicts it. A real mapping carries the manifest's own endpoint
+		// proto (acceptNetworkInstances keeps the proposal's), so this only ever
+		// rejects a mapping nothing in the composition published.
+		if declared.API != endpoint.GetApi() {
 			return nil, false
 		}
 		return declared, true

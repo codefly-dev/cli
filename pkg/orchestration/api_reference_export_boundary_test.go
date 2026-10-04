@@ -386,3 +386,66 @@ func TestAReferenceSeveralPermittedEndpointsSatisfyIsRefused(t *testing.T) {
 	require.Contains(t, err.Error(), "api")
 	require.Contains(t, err.Error(), "rest")
 }
+
+// The ambiguity refusal judges the consumer's own groups and nothing else.
+//
+// This is the regression the first revision of it shipped, and it broke the rule
+// this package states everywhere else: a value a service does not receive
+// imposes no obligation on it. The check was handed every information block the
+// loader loaded — which includes groups a service never declared and the
+// composition root does not provide run-wide — so one ambiguous reference
+// anywhere in the workspace refused every consumer in it. (Layer-4 round-seven
+// B1.)
+//
+// The pair is the test: the same ambiguous reference must not refuse a consumer
+// that does not receive its group, and must refuse the one that does.
+func TestAnAmbiguousReferenceOnlyRefusesTheConsumersThatReceiveIt(t *testing.T) {
+	ctx := context.Background()
+	workspace := writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		// Two endpoints a `rest` reference matches, both visible to every
+		// module, so the reference is ambiguous for whoever receives it.
+		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
+			"endpoints:\n    - name: api\n      api: rest\n      visibility: public\n" +
+			"    - name: rest\n      api: grpc\n      visibility: public\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n    - name: reader\n",
+		// Declares a DIFFERENT group, so its effective set is non-empty and the
+		// check really runs for it — `authority-pool` is simply not in it.
+		// (With an empty effective set the check returns early and the test
+		// would pass for the wrong reason: that is how the first version of
+		// this fixture failed to catch the regression.)
+		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
+			"workspace-configuration-dependencies:\n    - work-context\n",
+		"modules/payments/services/reader/service.codefly.yaml": "kind: service\nname: reader\nversion: 0.0.0\nmodule: payments\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
+			"workspace-configuration-dependencies:\n    - authority-pool\n",
+		"configurations/local/authority-pool.env": "authority-endpoint=${endpoint:platform/authority/rest}\n",
+		"configurations/local/work-context.env":   "authority-url=https://authority.example\n",
+	})
+
+	// The group is composition-root by core's rule (nothing composed provides
+	// it), so narrow the world to make this about the DECLARATION rather than
+	// about the root set: excluding it leaves `worker` with no group at all and
+	// `reader` with the one it declares.
+	world, worker := referenceValidityWorld(t, workspace, func(world *World) {
+		world.compositionRootGroups = func() []string { return nil }
+	})
+
+	confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewContainerNetworkAccess())
+	require.NoError(t, err,
+		"an ambiguous reference in a group this service does not receive must not refuse it")
+	require.Equal(t, []string{"work-context"}, groupSet(confs),
+		"the check must have run over a non-empty effective set, or this proves nothing")
+
+	reader, err := loadService(ctx, t, workspace, "payments", "reader")
+	require.NoError(t, err)
+	_, err = world.workspaceConfigurationsFor(ctx, reader, nil, resources.NewContainerNetworkAccess())
+	require.Error(t, err, "the service that declares the group is held to the reference")
+	require.Contains(t, err.Error(), "could be any of several endpoints")
+	require.Contains(t, err.Error(), "authority-pool/authority-endpoint")
+}

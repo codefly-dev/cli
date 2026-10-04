@@ -510,7 +510,7 @@ func (world *World) checkEffectiveWorkspaceConfigurationReferences(
 	if err := configurations.CheckEndpointReferences(infos, []*resources.Service{&consumer}, resources.RunProfile{}, lookup); err != nil {
 		return err
 	}
-	return refuseAmbiguousReferences(ctx, &consumer, infos, lookup)
+	return refuseAmbiguousReferences(ctx, &consumer, infos, effective, lookup)
 }
 
 // refuseAmbiguousReferences refuses a reference that more than one of its
@@ -536,17 +536,32 @@ func (world *World) checkEffectiveWorkspaceConfigurationReferences(
 // reach both, is told to name the one it means. Zero permitted matches is core's
 // to refuse, and it already has above.
 //
+// It judges the consumer's EFFECTIVE groups and nothing else. The information
+// blocks handed in are everything the loader loaded, which includes groups this
+// service does not receive — a composed module's group it never declared, a
+// group another service's profile keeps. Judging those refused ordinary
+// consumers over values that are none of their business, which is the rule this
+// file states in three other places and which the first revision of this
+// function broke. (Layer-4 round-seven B1.)
+//
 // This belongs in core, beside the check whose verdict it completes, and is
 // named with the other core changes in `docs/orchestration.md`.
 func refuseAmbiguousReferences(
 	ctx context.Context, consumer *resources.Service,
-	infos []*basev0.ConfigurationInformation, producers configurations.ProducerLookup,
+	infos []*basev0.ConfigurationInformation, effective []string, producers configurations.ProducerLookup,
 ) error {
 	identity, err := consumer.Identity()
 	if err != nil {
 		return err
 	}
+	received := make(map[string]bool, len(effective))
+	for _, group := range effective {
+		received[group] = true
+	}
 	for _, info := range infos {
+		if !received[info.GetName()] {
+			continue
+		}
 		for _, value := range info.GetConfigurationValues() {
 			for _, reference := range resources.ConfigurationValueEndpointReferences(value) {
 				permitted, err := permittedReferenceMatches(reference, identity.Module, producers)
