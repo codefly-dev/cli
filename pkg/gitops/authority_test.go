@@ -204,6 +204,34 @@ func TestAuthorityIsNotDerivedWithoutAContractOrAnIdentity(t *testing.T) {
 	require.Contains(t, err.Error(), "module-identity")
 }
 
+// TestAModuleWithAContractMustDeclarePresence: the render declares the
+// module's presence before its authority, and a module with no resolved
+// package declares none — the path that used to return before authority
+// derivation ran, so a parseable contract was dropped silently and, over a
+// delivered declaration, read as a withdrawal. With a contract on disk the
+// render refuses instead; without one, the absence is recorded and the render
+// goes on.
+func TestAModuleWithAContractMustDeclarePresence(t *testing.T) {
+	ctx := context.Background()
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	module, err := workspace.LoadModuleFromName(ctx, "shop")
+	require.NoError(t, err)
+	services := loadServices(t, workspace, "shop", "api")
+
+	render := &moduleRender{workspace: workspace, module: module, env: env, options: &RenderOptions{}}
+	require.NoError(t, render.declareInstances(ctx, services))
+	require.Empty(t, render.options.SolutionInstances)
+	require.Contains(t, render.options.UndeclaredAuthority, "declares no presence")
+
+	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), modulecontract.FileName), []byte(authorityContract), 0o644))
+	render = &moduleRender{workspace: workspace, module: module, env: env, options: &RenderOptions{}}
+	err = render.declareInstances(ctx, services)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "publishes "+modulecontract.FileName+" but declares no presence")
+	require.Empty(t, render.options.SolutionInstances)
+}
+
 // TestAuthorityIsPresentedByOneService: two services each declaring
 // module-identity would be two authority documents over one binding — two
 // builds under one principal — of which a host, holding one authority record
