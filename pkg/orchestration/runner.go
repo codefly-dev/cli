@@ -2011,21 +2011,34 @@ func orderedForEachReference(
 			// B1.)
 			var named *retained
 			var others []string
-			namedServesAccess, siblingServesAccess := false, false
+			namedServesAccess := false
+			// What a SIBLING could hand over is a different question from
+			// whether it answers. Core stops at the first access-matching
+			// instance either way, so a sibling whose matching address is
+			// EMPTY ends the scan with an error — it never delivers an address
+			// the reference did not name, and refusing over it was a false
+			// refusal. Only the first matching sibling mapping can be reached,
+			// so only that one is asked. (Layer-4 round-eleven N1.)
+			siblingCanAnswer, sawSiblingMatch := false, false
+			siblingAnswering := ""
 			for i := range group {
 				if !resources.EndpointMatchesReferenceInfo(group[i].endpoint, ref.info) {
 					continue
 				}
-				serves := mappingServesAccess(group[i].mapping, access)
+				address, matched := mappingAnswersAccess(group[i].mapping, access)
 				if group[i].endpoint.Name == ref.info.Name {
 					if named == nil {
 						named = &group[i]
 					}
-					namedServesAccess = namedServesAccess || serves
+					namedServesAccess = namedServesAccess || matched
 					continue
 				}
 				others = append(others, group[i].endpoint.Name)
-				siblingServesAccess = siblingServesAccess || serves
+				if matched && !sawSiblingMatch {
+					sawSiblingMatch = true
+					siblingCanAnswer = address != ""
+					siblingAnswering = group[i].endpoint.Name
+				}
 			}
 			if len(others) == 0 {
 				// Nothing could answer this reference but the endpoint it names,
@@ -2054,7 +2067,7 @@ func orderedForEachReference(
 				continue
 			}
 			if !namedServesAccess {
-				if !siblingServesAccess {
+				if !siblingCanAnswer {
 					// Neither the named endpoint nor any sibling has an address
 					// for this access, so nothing can be handed over wrongly and
 					// there is nothing to refuse: the value simply drops.
@@ -2063,9 +2076,12 @@ func orderedForEachReference(
 					// R9-3.)
 					continue
 				}
+				// The sibling NAMED here is the one core would actually reach:
+				// the first of them with an address for this access. Listing
+				// every sibling claimed an address for ones that have none.
 				return nil, fmt.Errorf("the workspace configuration reference ${endpoint:%s} names %s's endpoint %q, which has no address for %s's network access, while %s also satisfies that reference and does: resolving it would hand over an endpoint the reference did not name, so it is refused. Give %q an address for this access, or reference the endpoint you mean",
 					referenceText(ref.info), unique, ref.info.Name, consumerLabel(consumer),
-					strings.Join(others, ", "), ref.info.Name)
+					siblingAnswering, ref.info.Name)
 			}
 			if before[named.endpoint.Name] == nil {
 				before[named.endpoint.Name] = map[string]bool{}
@@ -2110,24 +2126,29 @@ func orderedForEachReference(
 	return out, nil
 }
 
-// mappingServesAccess reports whether a mapping ANSWERS one network access —
-// which is the question core actually asks, and not the same as having a usable
-// address.
+// mappingAnswersAccess reports whether a mapping ANSWERS one network access,
+// and with which address — which is the question core actually asks, and not
+// the same as having a usable address.
 //
 // resources.resolveEndpointReference stops at the first instance whose access
 // matches: if that instance's address is empty it returns an error naming the
 // reference, and it does NOT continue to the next match. So an empty address is
 // this endpoint answering with nothing, never absence — a root-only consumer's
 // value then drops, which is the safe outcome, and treating it as absence made
-// this helper model a fall-through core would not perform. (Layer-4 round-ten
+// the caller model a fall-through core would not perform. (Layer-4 round-ten
 // B2.)
-func mappingServesAccess(mapping *basev0.NetworkMapping, access *basev0.NetworkAccess) bool {
+//
+// The address comes back with it because the two callers need different things
+// from the same scan: the endpoint a reference NAMES answers whenever an
+// instance matches, while a SIBLING can only hand over an address it actually
+// has. (Layer-4 round-eleven N1.)
+func mappingAnswersAccess(mapping *basev0.NetworkMapping, access *basev0.NetworkAccess) (string, bool) {
 	for _, instance := range mapping.GetInstances() {
 		if instance.GetAccess().GetKind() == access.GetKind() {
-			return true
+			return instance.GetAddress(), true
 		}
 	}
-	return false
+	return "", false
 }
 
 // endpointsInConstraintOrder returns names in an order satisfying every

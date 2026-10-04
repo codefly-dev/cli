@@ -199,6 +199,18 @@ func groupCounts(confs []*basev0.Configuration) map[string]int {
 // the key was delivered at all. resources.GetConfigurationValue answers "" and
 // no error for an absent key, which is precisely the omission these tests are
 // about: it cannot tell a dropped value from an empty one.
+// groupNames is the group names a service received, in the order they came, so
+// a test can tell "the group dropped" from "one of its values dropped".
+func groupNames(confs []*basev0.Configuration) []string {
+	var names []string
+	for _, conf := range confs {
+		for _, info := range conf.GetInfos() {
+			names = append(names, info.GetName())
+		}
+	}
+	return names
+}
+
 func groupValue(confs []*basev0.Configuration, group, key string) (string, bool) {
 	for _, conf := range confs {
 		for _, info := range conf.GetInfos() {

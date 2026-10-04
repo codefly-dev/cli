@@ -1133,16 +1133,91 @@ func TestAnEmptyAddressOnTheNamedEndpointIsNotAbsence(t *testing.T) {
 			)
 		})
 
+	// The promised outcome, enforced rather than permitted: no refusal, the
+	// group delivered, and this one value dropped. (Layer-4 round-eleven N2
+	// — the first version of this assertion accepted an error too, so it
+	// would have passed on a refusal it was written to forbid.)
 	confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
-	if err != nil {
-		require.NotContains(t, err.Error(), "also satisfies that reference",
-			"the ordering pass must not refuse over a sibling core cannot fall through to")
-		require.NotContains(t, err.Error(), "localhost:2222")
-		return
-	}
+	require.NoError(t, err, "nothing can be handed over wrongly here, so there is nothing to refuse")
+	require.Contains(t, groupNames(confs), "work-context",
+		"the group is still delivered: it is the one value that drops")
 	primary, delivered := groupValue(confs, "work-context", "primary-address")
-	require.NotEqual(t, "http://localhost:2222", primary,
-		"the sibling must never answer a reference that named the other endpoint")
-	require.False(t, delivered && primary != "",
+	require.False(t, delivered,
 		"the named endpoint answered with nothing, so the value drops")
+	require.Empty(t, primary)
+	// And the sibling's address reached nothing at all, under any key.
+	secondary, delivered := groupValue(confs, "work-context", "secondary-address")
+	require.True(t, delivered, "the reference that does name admin still gets it")
+	require.Equal(t, "http://localhost:2222", secondary)
+}
+
+// A sibling whose address for this access is EMPTY is not a competing answer.
+//
+// Round ten got half of core's semantics: an empty address on the endpoint a
+// reference NAMES is that endpoint answering with nothing (B2). The other half
+// is that the same emptiness on a SIBLING means the sibling cannot hand
+// anything over — core stops at the first access-matching instance and returns
+// an error, so no address the reference did not name is ever delivered. Treating
+// it as a competing answer refused a composition that needed no refusal.
+// (Layer-4 round-eleven N1.)
+func TestASiblingWithNoAddressIsNotACompetingAnswer(t *testing.T) {
+	ctx := context.Background()
+	const bothValues = "primary-address=${endpoint:platform/authority/grpc}\n" +
+		"secondary-address=${endpoint:platform/authority/admin}\n"
+
+	// The discriminating case: the named endpoint has NO instance for this
+	// access, and the sibling that matches the reference's API has one whose
+	// address is empty. Nothing can be handed over, so nothing is refused.
+	t.Run("the sibling cannot answer either", func(t *testing.T) {
+		world, worker := referenceValidityWorld(t, twoReferenceWorkspace(t, bothValues), func(world *World) {
+			world.Mode = RunMode
+			recordMappings(t, world, "platform", "authority",
+				endpointMapping("platform", "authority", "grpc", "grpc", "public", containerInstance("http://grpc:9090")),
+				endpointMapping("platform", "authority", "admin", "grpc", "public", nativeInstance("")),
+			)
+		})
+
+		confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
+		require.NoError(t, err,
+			"a sibling with no address for this access cannot hand one over, so there is nothing to refuse")
+		_, delivered := groupValue(confs, "work-context", "primary-address")
+		require.False(t, delivered, "the reference drops instead")
+	})
+
+	// The control the review asked for, which does not reach the sibling
+	// predicate at all — the named endpoint answers, so core never scans past
+	// it — and is kept because it states the outcome that matters: the named
+	// endpoint's own address, with the sibling's emptiness changing nothing.
+	t.Run("the named endpoint has the address", func(t *testing.T) {
+		world, worker := referenceValidityWorld(t, twoReferenceWorkspace(t, bothValues), func(world *World) {
+			world.Mode = RunMode
+			recordMappings(t, world, "platform", "authority",
+				endpointMapping("platform", "authority", "grpc", "grpc", "public", nativeInstance("http://localhost:1111")),
+				endpointMapping("platform", "authority", "admin", "grpc", "public", nativeInstance("")),
+			)
+		})
+
+		confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
+		require.NoError(t, err)
+		primary, delivered := groupValue(confs, "work-context", "primary-address")
+		require.True(t, delivered)
+		require.Equal(t, "http://localhost:1111", primary)
+	})
+
+	// And the refusal still stands where an address CAN be handed over, so the
+	// correction narrowed the rule rather than removing it.
+	t.Run("a sibling that does have an address is still refused", func(t *testing.T) {
+		world, worker := referenceValidityWorld(t, twoReferenceWorkspace(t, bothValues), func(world *World) {
+			world.Mode = RunMode
+			recordMappings(t, world, "platform", "authority",
+				endpointMapping("platform", "authority", "grpc", "grpc", "public", containerInstance("http://grpc:9090")),
+				endpointMapping("platform", "authority", "admin", "grpc", "public", nativeInstance("http://localhost:2222")),
+			)
+		})
+
+		_, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "also satisfies that reference")
+		require.Contains(t, err.Error(), "admin")
+	})
 }
