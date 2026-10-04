@@ -95,6 +95,13 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err != nil {
 		return RenderResult{}, err
 	}
+	// Every pod template carries labels before the artifacts are pinned: the
+	// cell names each workload by the exact label set that selects its pods,
+	// and a Job or CronJob rendered without any would leave it nothing to
+	// name. See labelPodTemplates.
+	if err = labelPodTemplates(ctx, owned); err != nil {
+		return RenderResult{}, err
+	}
 	// Declared presence, before anything validates or measures the tree: the
 	// binding pins the digest of every rendered artifact, so it is written once
 	// the artifacts are final, and it is written BEFORE validateTree so the

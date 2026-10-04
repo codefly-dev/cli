@@ -58,7 +58,7 @@ func (f *fakeSolutionExecutor) Render(_ context.Context, req *solutionv0.RenderR
 		"configmap.yaml":     fmt.Sprintf("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: hello\n  namespace: %s\ndata:\n  release: qualified\n", f.renderNamespace),
 		// The workload the solution runs, pinned by digest and running as its
 		// own account: what a presence document names.
-		"deployment.yaml": fmt.Sprintf("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: hello\n  namespace: %s\nspec:\n  template:\n    spec:\n      serviceAccountName: hello\n      containers:\n        - name: hello\n          image: ghcr.io/example/hello@sha256:%s\n", f.renderNamespace, strings.Repeat("b", 64)),
+		"deployment.yaml": fmt.Sprintf("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: hello\n  namespace: %s\nspec:\n  selector:\n    matchLabels:\n      app: hello\n  template:\n    metadata:\n      labels:\n        app: hello\n    spec:\n      serviceAccountName: hello\n      containers:\n        - name: hello\n          image: ghcr.io/example/hello@sha256:%s\n", f.renderNamespace, strings.Repeat("b", 64)),
 	}
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(overlay, name), []byte(body), 0o644); err != nil {

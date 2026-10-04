@@ -712,7 +712,10 @@ rendered for the environment; under it every pod-producing workload of every
 unit — Deployment, StatefulSet, DaemonSet, Job, CronJob — with its kind, the
 exact label set that **selects its pods** (the selector of a Deployment, the
 template labels of a Job: a bootstrap Job carries no `app` label, and a policy
-assuming one selects its pods with nothing), the account it runs as and its
+assuming one selects its pods with nothing; a Job or CronJob whose template
+carries no labels at all is given `codefly.dev/workload: <name>` and
+`codefly.dev/workload-kind: <job|cronjob>` by the render, so the set is never
+empty — an empty selector would select every pod or none), the account it runs as and its
 SPIFFE ID, the **authenticating** container (the one named after the service,
 or the only one; several with none so named is refused, naming them — the
 same designation the presence document carries, so an admission policy

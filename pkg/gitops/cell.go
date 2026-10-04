@@ -15,6 +15,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/shared"
 	"gopkg.in/yaml.v3"
 	"sigs.k8s.io/kustomize/api/krusty"
 	"sigs.k8s.io/kustomize/kyaml/filesys"
@@ -583,17 +584,90 @@ func overlayManifests(overlay string) ([]manifest, error) {
 	return manifests, nil
 }
 
+// The labels the render gives a Job or CronJob pod template that carries none,
+// so the cell can name the set a policy selects: the workload's name and its
+// kind, which together select that workload's pods and no other's.
+const (
+	workloadLabel     = "codefly.dev/workload"
+	workloadKindLabel = "codefly.dev/workload-kind"
+)
+
+// labelPodTemplates gives every Job and CronJob pod template under root that
+// carries no labels the workload labels, rewriting only the files it changes.
+// A Deployment, StatefulSet or DaemonSet selects its pods through its own
+// selector, which Kubernetes requires, so those templates are left as the
+// agent rendered them; a template that already carries labels keeps them,
+// since they already select its pods.
+func labelPodTemplates(ctx context.Context, root string) error {
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || (filepath.Ext(path) != ".yaml" && filepath.Ext(path) != ".yml") {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		data, err := readWithin(root, relative)
+		if err != nil {
+			return err
+		}
+		documents, _, err := decodeYAML(relative, data)
+		if err != nil {
+			// A file the render cannot read as manifests is validateTree's to
+			// refuse, with its reason; this pass only labels what it can read.
+			return nil
+		}
+		changed := false
+		for _, document := range documents {
+			if document.kind != kindJob && document.kind != kindCronJob {
+				continue
+			}
+			template := podTemplate(document)
+			if template == nil || len(mapField(mapField(template, "metadata"), "labels")) > 0 {
+				continue
+			}
+			metadata, _ := template["metadata"].(map[string]any)
+			if metadata == nil {
+				metadata = map[string]any{}
+				template["metadata"] = metadata
+			}
+			metadata["labels"] = map[string]any{
+				workloadLabel:     metadataString(document.value, "name"),
+				workloadKindLabel: strings.ToLower(document.kind),
+			}
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
+		var out strings.Builder
+		encoder := yaml.NewEncoder(&out)
+		encoder.SetIndent(2)
+		for _, document := range documents {
+			if err := encoder.Encode(document.value); err != nil {
+				return err
+			}
+		}
+		if err := encoder.Close(); err != nil {
+			return err
+		}
+		return shared.WriteFileAtomic(ctx, path, []byte(out.String()), 0o644)
+	})
+}
+
 // podSelector is the exact label set that selects a workload's pods: the
 // selector a Deployment, StatefulSet or DaemonSet declares, or the pod
 // template's own labels for a Job or CronJob, which carry no selector of their
-// own. Always non-nil: an empty selector is a declaration that the workload's
-// pods carry no label, which a policy must see rather than assume "app".
-// podSelector is the exact label set that selects a workload's pods. The cell
-// file carries a label set and nothing else, so a selector written with
-// matchExpressions is refused rather than reduced: an expression-only
-// selector would come out as {}, which a loader reads as "every pod of the
-// namespace" or as "no pod", and either is a security policy derived from a
-// constraint that was never carried.
+// own. The cell file carries a label set and nothing else, so a selector
+// written with matchExpressions is refused rather than reduced, and an empty
+// set is refused too: either would come out as {}, which a loader reads as
+// "every pod of the namespace" or as "no pod", and both are a security policy
+// derived from a constraint that was never carried. The render labels the
+// templates that would otherwise be empty (labelPodTemplates), so this names
+// what the render did not reach.
 func podSelector(item manifest) (map[string]string, error) {
 	selector := map[string]string{}
 	var labels map[string]any
@@ -609,6 +683,11 @@ func podSelector(item manifest) (map[string]string, error) {
 	}
 	for key, value := range labels {
 		selector[key] = fmt.Sprint(value)
+	}
+	if len(selector) == 0 {
+		// An empty set selects every pod of the namespace or none, either of
+		// which is a policy derived from a constraint nobody wrote.
+		return nil, fmt.Errorf("workload %s %s carries no label on its pods, so the cell cannot name the set a policy selects", item.kind, metadataString(item.value, "name"))
 	}
 	return selector, nil
 }

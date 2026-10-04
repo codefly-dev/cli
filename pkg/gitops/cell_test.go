@@ -507,6 +507,111 @@ spec:
 	require.Len(t, shop.Workloads[0].Ingress, 1)
 }
 
+// TestRenderLabelsAnUnlabelledJobTemplateSoTheCellCanSelectIt: a Job or
+// CronJob rendered without pod-template labels would give the cell an empty
+// selector, which selects every pod of the namespace or none — a policy
+// derived from a constraint nobody wrote. The render labels such a template
+// with the workload's name and kind, in the delivered manifest and so in the
+// cell; a template already carrying labels keeps them, since they select its
+// pods already.
+func TestRenderLabelsAnUnlabelledJobTemplateSoTheCellCanSelectIt(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	ctx := context.Background()
+	renderCellTree(t, workspace, "shop", "api", "acme-shop", nil)
+	result, err := RenderOwnedTree(ctx, &RenderOptions{
+		Destination: moduleRenderDestination(workspace, "billing"),
+		Module:      "billing", Environment: "staging", Namespace: "acme-billing", AppProject: "acme-staging",
+		Promotable: true, OwnedPath: "deployments/modules/billing",
+		Units: append(promotableServiceGraph("billing", []string{"ledger"}),
+			InventoryUnit{Kind: UnitKindService, Module: "billing", Name: "store", Path: "services/store", Managed: true, Bootstrap: true}),
+		Package: &InventoryPackage{ID: "acme/billing", Version: "1.2.0"},
+	}, func(_ context.Context, root string) error {
+		for name, body := range map[string]string{
+			"ledger": strings.ReplaceAll(cellDeployment, "name: api", "name: ledger"),
+			"store": `apiVersion: batch/v1
+kind: Job
+metadata:
+  name: store-bootstrap
+spec:
+  template:
+    spec:
+      serviceAccountName: store-bootstrap
+      restartPolicy: OnFailure
+      containers:
+        - name: store-bootstrap
+          image: registry.example.test/managed/postgres-init@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: store-sweep
+spec:
+  schedule: "0 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: store-sweep
+        spec:
+          serviceAccountName: store-bootstrap
+          restartPolicy: OnFailure
+          containers:
+            - name: store-bootstrap
+              image: registry.example.test/managed/postgres-init@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+`,
+		} {
+			overlay := filepath.Join(root, "services", name, "overlays", "staging")
+			if err := os.MkdirAll(overlay, 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(body), 0o644); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	require.NoError(t, err)
+
+	// The delivered manifest carries the labels the cell names.
+	delivered, err := os.ReadFile(filepath.Join(result.Path, "services", "store", "overlays", "staging", "deployment.yaml"))
+	require.NoError(t, err)
+	manifests, _, err := decodeYAML("deployment.yaml", delivered)
+	require.NoError(t, err)
+	require.Len(t, manifests, 2)
+	require.Equal(t, map[string]any{workloadLabel: "store-bootstrap", workloadKindLabel: "job"},
+		mapField(mapField(podTemplate(manifests[0]), "metadata"), "labels"))
+	require.Equal(t, map[string]any{"app": "store-sweep"},
+		mapField(mapField(podTemplate(manifests[1]), "metadata"), "labels"), "a template carrying labels keeps them")
+
+	cellFile, err := RenderCell(ctx, workspace, env)
+	require.NoError(t, err)
+	data, err := os.ReadFile(cellFile.Path)
+	require.NoError(t, err)
+	var file cell.File
+	require.NoError(t, yaml.Unmarshal(data, &file))
+	require.Equal(t, "acme-billing", file.Namespaces[0].Name)
+	selectors := map[string]map[string]string{}
+	for _, workload := range file.Namespaces[0].Workloads {
+		selectors[workload.Name] = workload.Selector
+	}
+	require.Equal(t, map[string]string{workloadLabel: "store-bootstrap", workloadKindLabel: "job"}, selectors["store-bootstrap"])
+	require.Equal(t, map[string]string{"app": "store-sweep"}, selectors["store-sweep"])
+}
+
+// TestPodSelectorRefusesAnEmptyLabelSet: the writer refuses what the reader
+// refuses, naming the workload, so a template the render did not label — a
+// Deployment selecting with nothing — fails at render, not at publish.
+func TestPodSelectorRefusesAnEmptyLabelSet(t *testing.T) {
+	_, err := podSelector(manifest{kind: kindJob, value: map[string]any{
+		"kind":     "Job",
+		"metadata": map[string]any{"name": "store-bootstrap"},
+		"spec":     map[string]any{"template": map[string]any{"spec": map[string]any{}}},
+	}})
+	require.ErrorContains(t, err, "workload Job store-bootstrap carries no label on its pods")
+}
+
 // TestCellFileDeclaresThePresenceDeliveryJob: the Job that POSTs a module's
 // presence documents is a pod in the module's namespace, running as the
 // delivery account, that the closed admission set would refuse unless the
