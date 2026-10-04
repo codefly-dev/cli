@@ -68,7 +68,7 @@ func NewRegistry() *Registry {
 
 // Register adds or atomically replaces a tool. Replacement preserves list
 // order, which keeps adapter output stable.
-func (r *Registry) Register(definition Tool, handler Handler) error {
+func (r *Registry) Register(definition *Tool, handler Handler) error {
 	if r == nil {
 		return fmt.Errorf("tool registry is unavailable")
 	}
@@ -86,7 +86,7 @@ func (r *Registry) Register(definition Tool, handler Handler) error {
 	if _, exists := r.entries[definition.Name]; !exists {
 		r.order = append(r.order, definition.Name)
 	}
-	r.entries[definition.Name] = entry{definition: definition, handler: handler}
+	r.entries[definition.Name] = entry{definition: *definition, handler: handler}
 	return nil
 }
 
@@ -99,7 +99,8 @@ func (r *Registry) Definitions() []Tool {
 	defer r.mu.RUnlock()
 	definitions := make([]Tool, 0, len(r.order))
 	for _, name := range r.order {
-		definitions = append(definitions, cloneTool(r.entries[name].definition))
+		registered := r.entries[name].definition
+		definitions = append(definitions, cloneTool(&registered))
 	}
 	return definitions
 }
@@ -132,8 +133,8 @@ func (r *Registry) Close() {
 	r.mu.Unlock()
 }
 
-func cloneTool(tool Tool) Tool {
-	clone := tool
+func cloneTool(tool *Tool) Tool {
+	clone := *tool
 	clone.InputSchema.Required = append([]string(nil), tool.InputSchema.Required...)
 	if tool.InputSchema.Properties != nil {
 		clone.InputSchema.Properties = make(map[string]PropertySchema, len(tool.InputSchema.Properties))

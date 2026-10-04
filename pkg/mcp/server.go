@@ -103,7 +103,7 @@ func NewServer(ctx context.Context, version string, opts ...func(*Server)) (*Ser
 
 // RegisterTool adds a tool to the shared registry.
 func (s *Server) RegisterTool(tool *Tool, handler ToolHandler) error {
-	return s.toolbox.Register(*tool, handler)
+	return s.toolbox.Register(tool, handler)
 }
 
 // register adds one of the server's own tools and keeps the first failure
