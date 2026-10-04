@@ -3,9 +3,11 @@ package orchestration
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -126,7 +128,66 @@ func TestGoPrefetchEnvKeepsHowTheHostReachesModules(t *testing.T) {
 		require.True(t, ok, key)
 		require.Equal(t, want, value, key)
 	}
-	require.Len(t, env, 6, "an overridden key appears once")
+	require.Len(t, env, 6+1+2*len(gitPrefetchConfig), "an overridden key appears once")
+}
+
+// TestGoPrefetchEnvStopsGitMaintainingTheCache pins the one thing the prefetch
+// imposes on git: the automatic maintenance a `git fetch` detaches must not run
+// in this cache, because it rewrites the shallow clone the next fetch of the
+// same repository is deepening — which is how a pseudo-version a render only
+// had to download failed the render (codefly-dev/cli#886).
+func TestGoPrefetchEnvStopsGitMaintainingTheCache(t *testing.T) {
+	settings := gitConfigSettings(goPrefetchEnv([]string{"GOPRIVATE=github.com/example-org/*"}, "/prefetch/0"))
+	require.Equal(t, map[string]string{"maintenance.auto": "false", "gc.auto": "0"}, settings)
+}
+
+// TestGoPrefetchEnvKeepsTheHostsGitConfigEntries pins the boundary the settings
+// above are added across: a host that already configures git through the
+// environment keeps every entry it declared, and the prefetch's own are read
+// after them — git applies them in index order, so the later one wins.
+func TestGoPrefetchEnvKeepsTheHostsGitConfigEntries(t *testing.T) {
+	env := goPrefetchEnv([]string{
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=url.https://token@github.com/.insteadOf",
+		"GIT_CONFIG_VALUE_0=https://github.com/",
+		"GIT_CONFIG_KEY_1=maintenance.auto",
+		"GIT_CONFIG_VALUE_1=true",
+		// Past the host's own count: git reads neither, and the prefetch's
+		// entries take those indices.
+		"GIT_CONFIG_KEY_2=core.editor",
+		"GIT_CONFIG_VALUE_2=vi",
+	}, "/prefetch/0")
+	settings := gitConfigSettings(env)
+	require.Equal(t, "https://github.com/", settings["url.https://token@github.com/.insteadOf"], "the host's rewrite survives")
+	require.Equal(t, "false", settings["maintenance.auto"], "the prefetch's entry is read after the host's")
+	require.Equal(t, "0", settings["gc.auto"])
+	require.NotContains(t, settings, "core.editor", "an entry the host's own count excluded is not promoted")
+	count, ok := envValue(env, "GIT_CONFIG_COUNT")
+	require.True(t, ok)
+	require.Equal(t, "4", count)
+}
+
+// gitConfigSettings reads an environment the way git does: GIT_CONFIG_COUNT
+// entries, by index, each later setting of a key winning.
+func gitConfigSettings(env []string) map[string]string {
+	raw, ok := envValue(env, "GIT_CONFIG_COUNT")
+	if !ok {
+		return nil
+	}
+	count, err := strconv.Atoi(raw)
+	if err != nil {
+		return nil
+	}
+	settings := map[string]string{}
+	for index := 0; index < count; index++ {
+		key, hasKey := envValue(env, fmt.Sprintf("GIT_CONFIG_KEY_%d", index))
+		value, hasValue := envValue(env, fmt.Sprintf("GIT_CONFIG_VALUE_%d", index))
+		if !hasKey || !hasValue {
+			continue
+		}
+		settings[key] = value
+	}
+	return settings
 }
 
 func TestGoModulePrefetchRefusesARootWithoutGoMod(t *testing.T) {

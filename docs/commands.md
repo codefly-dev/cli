@@ -3080,6 +3080,21 @@ fetched at its start.
   `GOPROXY`, `GONOSUMDB`, `NETRC` and git's configuration (credential helpers,
   `insteadOf` rewrites) are the host's. `go` must be on `PATH` when a recipe
   declares downloads.
+- One git setting is the CLI's, not the host's: automatic repository maintenance
+  is off in that cache (`maintenance.auto=false`, `gc.auto=0`, passed to git in
+  the environment after whatever the host already configures there). A `git
+  fetch` otherwise detaches `git maintenance run --auto`, which repacks the
+  clone it just fetched into — and the go tool deepens that clone in the next
+  fetch when it validates a pseudo-version (`--depth=1`, then every ref, then
+  `--unshallow`). The maintenance rewrites `.git/shallow` while the unshallow is
+  working from it, git refuses with `fatal: shallow file has changed since we
+  read it`, and the go tool reports `invalid pseudo-version` — failing a render
+  that was only downloading modules. The cache is deleted with the flow and each
+  clone is pruned as soon as its modules are in the proxy tree, so maintaining
+  it buys nothing and costs the fetch.
+- A failed fetch is logged where it happens, with the go tool's own output (the
+  git error, the missing credential, the incomplete `go.sum`), so the plain log
+  names the cause without a `--debug` re-run.
 - The build receives each fetched graph as the named build context the recipe
   declares (`--build-context gomodproxy=<cache>/cache/download`), which its
   Dockerfile reads as `GOPROXY=file://`. `GOPRIVATE`, which names module paths
