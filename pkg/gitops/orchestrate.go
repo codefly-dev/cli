@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/codefly-dev/cli/pkg/modulecontract"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/codefly-dev/cli/pkg/modulecontract"
 
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/environments"

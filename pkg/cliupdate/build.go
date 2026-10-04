@@ -31,7 +31,7 @@ func CurrentBuildInfo() BuildInfo {
 func (info BuildInfo) SemanticVersion() (releaseupdate.Version, error) {
 	parsed, err := releaseupdate.ParseVersion(info.Version)
 	if err != nil {
-		return releaseupdate.Version{}, fmt.Errorf("Codefly build version is not a release version: %w", err)
+		return releaseupdate.Version{}, fmt.Errorf("the Codefly build version is not a release version: %w", err)
 	}
 	return parsed, nil
 }

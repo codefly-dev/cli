@@ -146,7 +146,7 @@ func refuseAnotherHostsRecord(what, id string, host solutionhost.HostTarget, opt
 // stamped with must be the ones declared now. A render made before the host
 // block changed is refused here, named, rather than signed under a
 // declaration it does not describe.
-func refuseMovedDocument(what, id string, stamp hostStamp, opts *deliveryPublishOptions) error {
+func refuseMovedDocument(what, id string, stamp *hostStamp, opts *deliveryPublishOptions) error {
 	if stamp.domain != opts.Domain {
 		return fmt.Errorf("%s %s was rendered under ownership domain %q and the environment declares %q now; render again before publishing", what, id, stamp.domain, opts.Domain)
 	}
@@ -268,8 +268,8 @@ type hostStamp struct {
 // presenceStamp reads the host stamp off a presence document: its ownership
 // domain, host and envelope revision, and the trust domain and audience each
 // of its workload identities is issued under.
-func presenceStamp(document *solutionhost.SolutionHostBinding) hostStamp {
-	stamp := hostStamp{domain: document.OwnershipDomain, host: document.Host, envelope: document.EnvelopeRevision}
+func presenceStamp(document *solutionhost.SolutionHostBinding) *hostStamp {
+	stamp := &hostStamp{domain: document.OwnershipDomain, host: document.Host, envelope: document.EnvelopeRevision}
 	for i := range document.Workloads {
 		identity := &document.Workloads[i].Identity
 		if trust, ok := strings.CutPrefix(identity.SPIFFEID, "spiffe://"); ok {
@@ -853,7 +853,7 @@ func settleAuthorityDelivery(
 			return nil, err
 		}
 		for authority, entry := range rendered {
-			if err = refuseMovedDocument("authority", authority, hostStamp{domain: entry.document.OwnershipDomain, host: entry.document.Host, envelope: entry.document.EnvelopeRevision}, opts); err != nil {
+			if err = refuseMovedDocument("authority", authority, &hostStamp{domain: entry.document.OwnershipDomain, host: entry.document.Host, envelope: entry.document.EnvelopeRevision}, opts); err != nil {
 				return nil, err
 			}
 		}
