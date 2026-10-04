@@ -197,11 +197,11 @@ func TestABareServiceDependencyIsNotAWayAroundTheExportBoundary(t *testing.T) {
 	const privateAddress = "http://localhost:2222"
 	const publicAddress = "http://localhost:1111"
 
-	workspace := writeTempWorkspace(t, map[string]string{
+	files := map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
 		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
-		// `api` first, so core's reference check passes on it.
+		// `api` first, which used to be what made core's check pass on it.
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"endpoints:\n    - name: api\n      api: rest\n      visibility: public\n" +
@@ -214,9 +214,9 @@ func TestABareServiceDependencyIsNotAWayAroundTheExportBoundary(t *testing.T) {
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"service-dependencies:\n    - name: authority\n      module: platform\n",
 		"configurations/local/work-context.env": "authority-endpoint=${endpoint:platform/authority/rest}\n",
-	})
+	}
 
-	world, service := referenceValidityWorld(t, workspace, func(world *World) {
+	world, service := referenceValidityWorld(t, writeTempWorkspace(t, files), func(world *World) {
 		world.Mode = RunMode
 		recordMappings(t, world, "platform", "authority",
 			endpointMapping("platform", "authority", "rest", "grpc", "private", nativeInstance(privateAddress)),
@@ -231,12 +231,44 @@ func TestABareServiceDependencyIsNotAWayAroundTheExportBoundary(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, dependencyMappings, 2, "a bare dependency is handed every endpoint its producer published")
 
-	confs, err := world.workspaceConfigurationsFor(ctx, service, dependencyMappings, resources.NewNativeNetworkAccess())
-	require.NoError(t, err, "the reference is legal on the public endpoint: core's check passes it")
+	// Since core#702 this composition is REFUSED rather than answered. The
+	// reference names `rest` exactly, `rest` is private to the producer's
+	// module, and an exact name the consumer may not reach is a refusal — never
+	// a fallback to the public endpoint that merely shares its API. Answering it
+	// with `api`'s address would hand this consumer an address for an endpoint
+	// it asked for and was refused, under a different endpoint's identity.
+	//
+	// What the bare dependency can never do is still the point: it does not
+	// widen what a reference may resolve to, and the private address appears
+	// nowhere.
+	_, err = world.workspaceConfigurationsFor(ctx, service, dependencyMappings, resources.NewNativeNetworkAccess())
+	require.Error(t, err, "an exact name the consumer may not reach is refused, not substituted")
+	require.Contains(t, err.Error(), "private to module")
+	require.NotContains(t, err.Error(), privateAddress)
+	require.NotContains(t, err.Error(), publicAddress)
+
+	// And the same consumer, same bare dependency, referencing the endpoint it
+	// MAY reach — so the refusal is about the endpoint the reference named, not
+	// about this consumer or about the dependency being bare.
+	legalFiles := map[string]string{}
+	for path, content := range files {
+		legalFiles[path] = content
+	}
+	legalFiles["configurations/local/work-context.env"] = "authority-endpoint=${endpoint:platform/authority/api}\n"
+	legalWorld, legalService := referenceValidityWorld(t, writeTempWorkspace(t, legalFiles), func(world *World) {
+		world.Mode = RunMode
+		recordMappings(t, world, "platform", "authority",
+			endpointMapping("platform", "authority", "rest", "grpc", "private", nativeInstance(privateAddress)),
+			endpointMapping("platform", "authority", "api", "rest", "public", nativeInstance(publicAddress)),
+		)
+	})
+	legalMappings, err := legalWorld.SharedState.GetDependenciesNetworkMappings(ctx, legalService)
+	require.NoError(t, err)
+	confs, err := legalWorld.workspaceConfigurationsFor(ctx, legalService, legalMappings, resources.NewNativeNetworkAccess())
+	require.NoError(t, err)
 	address, delivered := groupValue(confs, "work-context", "authority-endpoint")
-	require.True(t, delivered, "the value resolves — on the endpoint the consumer may reach")
-	require.Equal(t, publicAddress, address,
-		"a declared dependency does not widen what a reference may resolve to")
+	require.True(t, delivered)
+	require.Equal(t, publicAddress, address)
 	require.NotEqual(t, privateAddress, address)
 }
 
@@ -385,7 +417,7 @@ func TestAReferenceSeveralPermittedEndpointsSatisfyIsRefused(t *testing.T) {
 	require.NoError(t, err)
 	_, err = world.workspaceConfigurationsFor(ctx, sidecar, nil, resources.NewNativeNetworkAccess())
 	require.Error(t, err, "a reference two reachable endpoints satisfy must be refused")
-	require.Contains(t, err.Error(), "could be any of several endpoints")
+	require.ErrorContains(t, err, "satisfied by more than one endpoint the consumer may reach")
 	require.Contains(t, err.Error(), "api")
 	require.Contains(t, err.Error(), "admin")
 
@@ -396,7 +428,7 @@ func TestAReferenceSeveralPermittedEndpointsSatisfyIsRefused(t *testing.T) {
 	require.NoError(t, err)
 	err = PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{sidecar}, true)
 	require.Error(t, err, "the gate must not pass a reference the resolution refuses")
-	require.Contains(t, err.Error(), "could be any of several endpoints")
+	require.ErrorContains(t, err, "satisfied by more than one endpoint the consumer may reach")
 }
 
 // The ambiguity refusal judges the consumer's own groups and nothing else.
@@ -458,7 +490,7 @@ func TestAnAmbiguousReferenceOnlyRefusesTheConsumersThatReceiveIt(t *testing.T) 
 	require.NoError(t, err)
 	_, err = world.workspaceConfigurationsFor(ctx, reader, nil, resources.NewContainerNetworkAccess())
 	require.Error(t, err, "the service that declares the group is held to the reference")
-	require.Contains(t, err.Error(), "could be any of several endpoints")
+	require.ErrorContains(t, err, "satisfied by more than one endpoint the consumer may reach")
 	require.Contains(t, err.Error(), "authority-pool/authority-endpoint")
 }
 
@@ -812,12 +844,21 @@ func TestTwoReferencesIntoOneProducerEachResolveToTheEndpointTheyName(t *testing
 			)
 		})
 
-		_, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
-		require.Error(t, err,
-			"a reference whose named endpoint has no address for this access must be refused, not answered by a sibling")
-		require.Contains(t, err.Error(), "no address for")
-		require.Contains(t, err.Error(), "grpc")
-		require.NotContains(t, err.Error(), "localhost:2222")
+		// Core binds only the endpoint the reference names, so a sibling cannot
+		// answer it and there is nothing to refuse: the value drops, reported
+		// by the outcome check. This used to be a CLI refusal, because core
+		// would have fallen through to the sibling if the CLI had handed it
+		// over; core#702 removed the fall-through, and the drop is the better
+		// outcome — the composition is told what is missing rather than
+		// refused for what might have happened.
+		confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
+		require.NoError(t, err)
+		primary, delivered := groupValue(confs, "work-context", "primary-address")
+		require.False(t, delivered, "the named endpoint has no address for this access, so the value drops")
+		require.Empty(t, primary)
+		secondary, delivered := groupValue(confs, "work-context", "secondary-address")
+		require.True(t, delivered, "and the reference that names admin still gets admin")
+		require.Equal(t, "http://localhost:2222", secondary)
 	})
 
 	for _, order := range []struct {
@@ -872,16 +913,24 @@ func requireRenderAnswersEachReference(t *testing.T, siblingFirst bool) {
 	}
 }
 
-// References whose orders contradict each other are refused rather than one of
-// them silently losing.
+// References whose orders contradicted each other now RESOLVE, each to the
+// endpoint it names.
 //
 // Endpoints (name `grpc`, api `rest`) and (name `rest`, api `grpc`) referenced
-// by both names need opposite orders in the one list core scans: `grpc` first to
-// answer `${…/grpc}`, `rest` first to answer `${…/rest}`. No ordering serves
-// both and removal cannot help, because each endpoint is the exact answer to one
-// of the references. Refusing names the pair; the alternative is one value
-// addressing the other's endpoint.
-func TestReferencesThatNeedOppositeOrdersAreRefused(t *testing.T) {
+// by both names needed opposite orders in the one list core scanned: `grpc`
+// first to answer `${…/grpc}`, `rest` first to answer `${…/rest}`. No ordering
+// served both, and removal could not help because each endpoint is the exact
+// answer to one of the references — so this package refused the pair, which was
+// the honest outcome available to it.
+//
+// It is not the right outcome, and this test is kept to say so. Nothing is
+// wrong with the composition: each reference names an endpoint that exists and
+// the consumer may reach. Ordering was only ever needed because core matched by
+// API and took the first match; now core selects per reference and binds only
+// the endpoint selected, so there is no order to contradict. The CLI refusing a
+// composition core can answer was the cost of modelling a scan it did not own.
+// (core#702.)
+func TestReferencesNamingEachOthersAPIsEachResolve(t *testing.T) {
 	ctx := context.Background()
 	workspace := writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
@@ -907,10 +956,30 @@ func TestReferencesThatNeedOppositeOrdersAreRefused(t *testing.T) {
 		)
 	})
 
-	_, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
-	require.Error(t, err, "no single mapping order answers both references, so neither is guessed")
-	require.Contains(t, err.Error(), "cannot all be answered from one set of network mappings")
-	require.Contains(t, err.Error(), "platform/authority")
+	confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
+	require.NoError(t, err, "each reference names an endpoint that exists and this consumer may reach")
+	one, delivered := groupValue(confs, "work-context", "one")
+	require.True(t, delivered)
+	require.Equal(t, "http://localhost:1111", one, "${…/grpc} is the endpoint NAMED grpc, not the one whose api is grpc")
+	two, delivered := groupValue(confs, "work-context", "two")
+	require.True(t, delivered)
+	require.Equal(t, "http://localhost:2222", two)
+
+	// And in the other mapping order, because the order is no longer part of
+	// the answer.
+	reversed, reversedWorker := referenceValidityWorld(t, workspace, func(world *World) {
+		world.Mode = RunMode
+		recordMappings(t, world, "platform", "authority",
+			endpointMapping("platform", "authority", "rest", "grpc", "public", nativeInstance("http://localhost:2222")),
+			endpointMapping("platform", "authority", "grpc", "rest", "public", nativeInstance("http://localhost:1111")),
+		)
+	})
+	confs, err = reversed.workspaceConfigurationsFor(ctx, reversedWorker, nil, resources.NewNativeNetworkAccess())
+	require.NoError(t, err)
+	one, _ = groupValue(confs, "work-context", "one")
+	require.Equal(t, "http://localhost:1111", one)
+	two, _ = groupValue(confs, "work-context", "two")
+	require.Equal(t, "http://localhost:2222", two)
 }
 
 // A reference whose named endpoint published NO mapping is answered by nothing,
@@ -1204,9 +1273,10 @@ func TestASiblingWithNoAddressIsNotACompetingAnswer(t *testing.T) {
 		require.Equal(t, "http://localhost:1111", primary)
 	})
 
-	// And the refusal still stands where an address CAN be handed over, so the
-	// correction narrowed the rule rather than removing it.
-	t.Run("a sibling that does have an address is still refused", func(t *testing.T) {
+	// And where a sibling COULD have answered, it still does not: core resolves
+	// the named endpoint or nothing. The CLI used to refuse this composition,
+	// having no way to stop core falling through; the outcome is now a drop.
+	t.Run("a sibling that does have an address still does not answer", func(t *testing.T) {
 		world, worker := referenceValidityWorld(t, twoReferenceWorkspace(t, bothValues), func(world *World) {
 			world.Mode = RunMode
 			recordMappings(t, world, "platform", "authority",
@@ -1215,10 +1285,12 @@ func TestASiblingWithNoAddressIsNotACompetingAnswer(t *testing.T) {
 			)
 		})
 
-		_, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "also satisfies that reference")
-		require.Contains(t, err.Error(), "admin")
+		confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
+		require.NoError(t, err)
+		primary, delivered := groupValue(confs, "work-context", "primary-address")
+		require.False(t, delivered)
+		require.NotEqual(t, "http://localhost:2222", primary,
+			"the sibling must never answer a reference that named the other endpoint")
 	})
 }
 

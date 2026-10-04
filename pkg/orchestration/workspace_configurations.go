@@ -114,16 +114,29 @@ func (world *World) workspaceConfigurationsFor(
 		return nil, err
 	}
 	mappings := append(slices.Clone(visible), referenced...)
-	// Exact-name PRECEDENCE, not merely exemption. The check lets a reference
-	// through when it names an endpoint exactly even though a sibling shares its
-	// API; without this the resolution could still bind the sibling, so the
-	// value would silently address the wrong endpoint — the exemption would have
-	// traded a refusal of clear compositions for a quiet mis-resolution.
-	mappings, err = world.withExactNamePrecedence(ctx, service, effective, withheld, access, mappings)
+	// Which endpoint a reference names is CORE's answer, not this package's.
+	//
+	// Core selects the endpoint per reference — the exact name wins, an exact
+	// name this consumer may not reach is refused rather than replaced by a
+	// permitted API sibling, an ambiguous reference is refused, and only the
+	// selected endpoint is bound — so the ordering, removal and verification
+	// this package used to run between discovery and resolution is gone. It
+	// could only ever model core's scan: each review round found the model
+	// diverging from it somewhere new, and the last one in an interaction
+	// between two individually-correct rules. core#702 moved the answer to
+	// where the scan lives, and this hands it the two inputs it cannot read off
+	// the mappings: who the consumer is, and what each producer declares.
+	consumerModule := ""
+	if identity, idErr := service.Identity(); idErr == nil {
+		consumerModule = identity.Module
+	}
+	declaredEndpoints, err := world.declaredEndpointsLookup(ctx)
 	if err != nil {
 		return nil, err
 	}
-	manager := world.ConfigurationManager.ForConsumer(mappings, access).WithRunProducers(world.producerInRun())
+	manager := world.ConfigurationManager.ForConsumer(mappings, access).
+		ForConsumerModule(consumerModule, declaredEndpoints).
+		WithRunProducers(world.producerInRun())
 	resolved, err := manager.GetWorkspaceDependenciesConfigurations(ctx, declared...)
 	if err != nil {
 		return nil, err
@@ -516,151 +529,15 @@ func (world *World) checkEffectiveWorkspaceConfigurationReferences(
 	// A zero profile excludes nothing: `effective` has already had the run
 	// profile's exclusions removed, and passing them twice would only hide a
 	// group from a check it has to pass.
-	if err := configurations.CheckEndpointReferences(infos, []*resources.Service{&consumer}, resources.RunProfile{}, lookup); err != nil {
-		return err
-	}
-	return refuseAmbiguousReferences(ctx, &consumer, infos, effective, lookup)
-}
-
-// refuseAmbiguousReferences refuses a reference that more than one of its
-// producer's endpoints can legally satisfy for this consumer.
-//
-// Core's trailing reference token matches an endpoint's NAME or its API
-// (resources.EndpointMatchesReferenceInfo), so one reference can match several
-// of a producer's endpoints — `${endpoint:platform/authority/rest}` matches an
-// endpoint named `rest` and every endpoint whose api is `rest`. Core's check
-// then judges the first match and its interpolation takes the first bound
-// mapping that has an instance for the consumer's access, so the two can land
-// on different endpoints. Filtering the bound set by visibility
-// (World.exportableTo) stops that from crossing an export boundary; it does not
-// stop it choosing between two endpoints the consumer may both reach, and a
-// value silently addressing a different endpoint than its reference names is
-// the quiet kind of wrong this file exists to remove.
-//
-// So the reference is refused when more than one PERMITTED match remains. Only
-// permitted matches are counted, which is what keeps the common case working:
-// with a public `api` and a private `admin` both on api `rest`, a cross-module
-// consumer has exactly one endpoint it may reach and the reference is
-// unambiguous for it — while a consumer in the producer's own module, which may
-// reach both, is told to name the one it means. Zero permitted matches is core's
-// to refuse, and it already has above.
-//
-// An EXACT NAME match wins, and that exemption is not a softening — without it
-// the rule refuses ordinary compositions. A producer with `grpc` (api grpc) and
-// `admin` (api grpc) makes `${endpoint:…/grpc}` match both, because core's
-// matcher is `Name == token || API == token` and naming the api explicitly does
-// not narrow the name branch. The reference says exactly which endpoint it
-// means, so refusing it would make a perfectly clear composition unresolvable.
-// What stays refused is ambiguity among API-token matches, where nothing in the
-// reference picks one.
-//
-// Core's resolution does not prefer the exact name either — it takes the first
-// bound mapping that matches and has an instance for the consumer's access — so
-// the exemption is only safe because the CLI makes the bound list answer each
-// reference with the endpoint it names: wrong answers removed where a reference
-// is alone (World.exportableTo's caller), ordered where two references into one
-// producer each need their own, and REFUSED where no single list can serve both
-// (orderedForEachReference). That is core's endpoint-identity gap, drafted as a
-// follow-up; until it is closed the CLI carries the selection, which is why the
-// exemption was the owner's call rather than mine.
-//
-// It judges the consumer's EFFECTIVE groups and nothing else. The information
-// blocks handed in are everything the loader loaded, which includes groups this
-// service does not receive — a composed module's group it never declared, a
-// group another service's profile keeps. Judging those refused ordinary
-// consumers over values that are none of their business, which is the rule this
-// file states in three other places and which the first revision of this
-// function broke. (Layer-4 round-seven B1.)
-//
-// This belongs in core, beside the check whose verdict it completes, and is
-// named with the other core changes in `docs/orchestration.md`.
-func refuseAmbiguousReferences(
-	ctx context.Context, consumer *resources.Service,
-	infos []*basev0.ConfigurationInformation, effective []string, producers configurations.ProducerLookup,
-) error {
-	identity, err := consumer.Identity()
-	if err != nil {
-		return err
-	}
-	received := make(map[string]bool, len(effective))
-	for _, group := range effective {
-		received[group] = true
-	}
-	// Every ambiguous reference, in ONE error, and as core's own structured
-	// finding rather than a bare string: the plan gate merges these with the
-	// faults core reports, and `codefly doctor` collapses them per fault and
-	// writes a remediation line for each. A plain error reaches both as a single
-	// opaque failure.
-	var ambiguous []configurations.UnresolvedReference
-	for _, info := range infos {
-		if !received[info.GetName()] {
-			continue
-		}
-		for _, value := range info.GetConfigurationValues() {
-			for _, reference := range resources.ConfigurationValueEndpointReferences(value) {
-				permitted, named, err := permittedReferenceMatches(reference, identity.Module, producers)
-				if err != nil {
-					return err
-				}
-				if named || len(permitted) < 2 {
-					continue
-				}
-				ambiguous = append(ambiguous, configurations.UnresolvedReference{
-					Consumer: identity.Unique(), Group: info.GetName(), Key: value.GetKey(),
-					Reference: reference, Producer: referenceProducer(reference),
-					Reason: fmt.Sprintf("the producer's endpoints %s all satisfy it for this consumer and none is named by it, so its address could be any of several endpoints: it is refused rather than resolved to whichever one is bound first. Name the endpoint it means",
-						strings.Join(permitted, ", ")),
-				})
-			}
-		}
-	}
-	if len(ambiguous) > 0 {
-		return &configurations.UnresolvedReferencesError{References: ambiguous}
-	}
-	wool.Get(ctx).In("World.checkEffectiveWorkspaceConfigurationReferences").Debug("every reference names one endpoint")
-	return nil
-}
-
-// permittedReferenceMatches names the producer's endpoints a reference matches
-// and this consumer's module may reach, by core's own matcher and core's own
-// export rule, and says whether one of them is the endpoint the reference names
-// EXACTLY. An exact name is an answer, so the caller stops there.
-func permittedReferenceMatches(
-	reference, consumerModule string, producers configurations.ProducerLookup,
-) (permitted []string, exactName bool, err error) {
-	info, parseErr := resources.ParseEndpoint(reference)
-	if parseErr != nil {
-		// Core's check has already refused a malformed reference by name.
-		return nil, false, nil
-	}
-	producer, ok := producers(info.Module + "/" + info.Service)
-	if !ok || producer == nil {
-		// Likewise "the producer is not a service of this workspace".
-		return nil, false, nil
-	}
-	for _, endpoint := range producer.Endpoints {
-		if endpoint == nil || !resources.EndpointMatchesReferenceInfo(endpoint, info) {
-			continue
-		}
-		if resources.ValidateEndpointVisibility(consumerModule, info.Module, info.Service,
-			endpoint.Name, endpoint.Visibility, endpoint.AllowModules) != nil {
-			continue
-		}
-		if info.Name != "" && endpoint.Name == info.Name {
-			exactName = true
-		}
-		permitted = append(permitted, endpoint.Name)
-	}
-	return permitted, exactName, nil
-}
-
-// referenceProducer is "<module>/<service>" of a reference, for a diagnostic.
-func referenceProducer(reference string) string {
-	info, err := resources.ParseEndpoint(reference)
-	if err != nil {
-		return reference
-	}
-	return info.Module + "/" + info.Service
+	// Core's check is the whole check. It refuses a malformed reference, a
+	// producer the workspace does not have, an endpoint the producer does not
+	// declare, an endpoint this consumer may not reach — and, since core#702,
+	// an ambiguous one, because it asks the same selection the resolution asks.
+	// This package used to run its own ambiguity rule beside it, from the days
+	// when core's check judged the FIRST matching endpoint and its resolution
+	// bound the first matching mapping; there is one answer now, and a second
+	// opinion here could only disagree with it.
+	return configurations.CheckEndpointReferences(infos, []*resources.Service{&consumer}, resources.RunProfile{}, lookup)
 }
 
 // A nonexistent producer is refused here too, not left to the plan gate.
@@ -688,6 +565,31 @@ func referenceProducer(reference string) string {
 //
 // A World with no workspace (a unit test resolving a hand-built group) gets no
 // lookup and no check rather than a wrong verdict.
+// declaredEndpointsLookup is what each producer of the workspace DECLARES, for
+// core's per-reference endpoint selection.
+//
+// It reads the same producer lookup the plan gate reads, so the manifest the
+// resolution selects against and the manifest the check judges against are one
+// source. Nil only when there is no workspace to read; a workspace that cannot
+// be read is an error, because a reference selected against no manifest is a
+// reference whose visibility nothing judged.
+func (world *World) declaredEndpointsLookup(ctx context.Context) (func(unique string) []*resources.Endpoint, error) {
+	producers, err := world.workspaceProducers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if producers == nil {
+		return nil, nil
+	}
+	return func(unique string) []*resources.Endpoint {
+		service, ok := producers(unique)
+		if !ok || service == nil {
+			return nil
+		}
+		return service.Endpoints
+	}, nil
+}
+
 func (world *World) workspaceProducers(ctx context.Context) (configurations.ProducerLookup, error) {
 	if world == nil || world.Workspace == nil {
 		return nil, nil

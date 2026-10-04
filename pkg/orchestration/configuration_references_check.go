@@ -79,7 +79,7 @@ func CheckConfigurationReferences(
 		if err != nil {
 			return err
 		}
-		return refuseAmbiguousPlanReferences(ctx, consumers, provided.Infos, rootGroups, profile, lookup)
+		return checkPlanReferencesPerConsumer(ctx, consumers, provided.Infos, rootGroups, profile, lookup)
 	}
 	// Without the credentials those consumers will never receive. A root group's
 	// credentials reach only the services that declare it, and a value nobody
@@ -104,7 +104,7 @@ func CheckConfigurationReferences(
 	// pass a reference the resolution will refuse by name. The alternative is a
 	// run that starts, builds and then stops at the first service to read the
 	// value — a worse place to learn it.
-	return refuseAmbiguousPlanReferences(ctx, consumers, provided.Infos, rootGroups, profile, lookup)
+	return checkPlanReferencesPerConsumer(ctx, consumers, provided.Infos, rootGroups, profile, lookup)
 }
 
 // mergeUnresolvedReferences returns the two checks' findings as ONE
@@ -438,16 +438,22 @@ func (flow *Flow) checkConfigurationReferences(ctx context.Context, required []s
 		flow.world.Dependencies, consumers, flow.runProfile, excludedProducers, flow.providedWorkspaceConfigurationRootGroups)
 }
 
-// refuseAmbiguousPlanReferences runs the resolution's ambiguity rule over every
-// consumer of the plan, against the groups that consumer receives.
+// checkPlanReferencesPerConsumer runs core's reference check over every
+// consumer of the plan, against the groups that consumer actually receives.
 //
 // Per consumer, because both halves of the question are: which groups it gets,
 // and which of a producer's endpoints its module may reach. The credentials of a
 // group it did not declare are removed first, exactly as the resolution removes
-// them — a value a service does not receive imposes no obligation on it, and
-// that includes this one.
-func refuseAmbiguousPlanReferences(
-	ctx context.Context, consumers []*resources.Service, infos []*basev0.ConfigurationInformation,
+// them — a value a service does not receive imposes no obligation on it.
+//
+// It used to run a CLI-side ambiguity rule here, because core's check judged the
+// first matching endpoint while its resolution bound the first matching mapping,
+// so neither answered "which endpoint does this reference name". core#702 made
+// that one question with one answer, and this calls it: the gate then refuses
+// exactly what the resolution would refuse, by construction rather than by two
+// implementations being kept in step.
+func checkPlanReferencesPerConsumer(
+	_ context.Context, consumers []*resources.Service, infos []*basev0.ConfigurationInformation,
 	rootGroups []string, profile resources.RunProfile, producers configurations.ProducerLookup,
 ) error {
 	if producers == nil {
@@ -483,7 +489,14 @@ func refuseAmbiguousPlanReferences(
 			continue
 		}
 		received := credentialsOf(infos, rootOnly).received(infos)
-		if err := refuseAmbiguousReferences(ctx, consumer, received, effective, producers); err != nil {
+		// The consumer as the resolution sees it: its effective group set,
+		// which is what core's check iterates. The workspace's own object is
+		// never mutated — it is shared by every consumer of this plan.
+		asResolved := *consumer
+		asResolved.WorkspaceConfigurationDependencies = effective
+		// A zero profile: `effective` already has the exclusions removed, and
+		// passing them twice would hide a group from a check it must pass.
+		if err := configurations.CheckEndpointReferences(received, []*resources.Service{&asResolved}, resources.RunProfile{}, producers); err != nil {
 			return err
 		}
 	}
