@@ -1,0 +1,25 @@
+schema: string
+principal: string
+namespaces: list of string
+queues: list of string
+scope_ceilings: list of object
+scope_ceilings.[]resource_kind: string
+scope_ceilings.[]actions: list of string
+bindings: list of object
+bindings.[]id: string
+bindings.[]revision: uint64 (optional)
+bindings.[]operations: list of string
+bindings.[]lookup: object (optional)
+bindings.[]lookup.method: string
+bindings.[]audience: object
+bindings.[]audience.from: string
+bindings.[]resource_kind: object (optional)
+bindings.[]resource_kind.from: string
+bindings.[]binding_key: object (optional)
+bindings.[]binding_key.from: string
+bindings.[]scope_ceiling: map of string to object
+destinations: list of object
+destinations.[]id: string
+destinations.[]service: string
+destinations.[]endpoint: string
+destinations.[]kind: string

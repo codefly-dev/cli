@@ -1,0 +1,62 @@
+schema: string
+coordinate: string (optional)
+component: string (optional)
+domain: string (optional)
+trust_domain: string (optional)
+environment: string
+namespaces: list of object
+namespaces.[]name: string
+namespaces.[]module: string
+namespaces.[]workloads: list of object
+namespaces.[]workloads.[]name: string
+namespaces.[]workloads.[]kind: string
+namespaces.[]workloads.[]selector: map of string to string
+namespaces.[]workloads.[]service: string
+namespaces.[]workloads.[]service_account: string
+namespaces.[]workloads.[]spiffe_id: string (optional)
+namespaces.[]workloads.[]authenticating: string
+namespaces.[]workloads.[]containers: list of object
+namespaces.[]workloads.[]containers.[]name: string
+namespaces.[]workloads.[]containers.[]image: object
+namespaces.[]workloads.[]containers.[]image.repository: string
+namespaces.[]workloads.[]containers.[]image.digest: string
+namespaces.[]workloads.[]init_containers: list of object (optional)
+namespaces.[]workloads.[]init_containers.[]name: string
+namespaces.[]workloads.[]init_containers.[]image: object
+namespaces.[]workloads.[]init_containers.[]image.repository: string
+namespaces.[]workloads.[]init_containers.[]image.digest: string
+namespaces.[]workloads.[]artifact: object
+namespaces.[]workloads.[]artifact.name: string
+namespaces.[]workloads.[]artifact.digest: string
+namespaces.[]workloads.[]release: object (optional)
+namespaces.[]workloads.[]release.publisher: string
+namespaces.[]workloads.[]release.name: string
+namespaces.[]workloads.[]release.version: string
+namespaces.[]workloads.[]endpoints: list of object (optional)
+namespaces.[]workloads.[]endpoints.[]name: string
+namespaces.[]workloads.[]endpoints.[]api: string (optional)
+namespaces.[]workloads.[]endpoints.[]port: uint32 (optional)
+namespaces.[]workloads.[]endpoints.[]visibility: string (optional)
+namespaces.[]workloads.[]endpoints.[]allow_modules: list of string (optional)
+namespaces.[]workloads.[]endpoints.[]consumers: list of string (optional)
+namespaces.[]workloads.[]ingress: list of object (optional)
+namespaces.[]workloads.[]ingress.[]endpoint: string
+namespaces.[]workloads.[]ingress.[]hosts: list of string
+namespaces.[]workloads.[]verifier: bool (optional)
+namespaces.[]workloads.[]bindings: list of string (optional)
+namespaces.[]workloads.[]cloud_identity: bool (optional)
+namespaces.[]egress: list of object (optional)
+namespaces.[]egress.[]service: string
+namespaces.[]egress.[]hosts: list of object (optional)
+namespaces.[]egress.[]hosts.[]name: string
+namespaces.[]egress.[]hosts.[]port: int
+namespaces.[]egress.[]cidrs: list of string (optional)
+namespaces.[]delivery: object (optional)
+namespaces.[]delivery.kind: string
+namespaces.[]delivery.selector: map of string to string
+namespaces.[]delivery.service_account: string
+namespaces.[]delivery.spiffe_id: string (optional)
+namespaces.[]delivery.container: string
+namespaces.[]delivery.image: object
+namespaces.[]delivery.image.repository: string
+namespaces.[]delivery.image.digest: string
