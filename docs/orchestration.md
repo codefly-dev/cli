@@ -379,57 +379,62 @@ fall through to. It narrows only, and never within a module:
 `ValidateEndpointVisibility` returns nil when the consumer and the producer share
 one, so a service reading its own module's endpoints is untouched.
 
-Two further rules make the choice disappear rather than constrain it:
+**Which endpoint a reference names is core's answer, not this package's.**
 
-- **A reference more than one permitted endpoint satisfies is refused by name.**
-  Only the matches the consumer may *reach* are counted, so the common case still
-  works — with a public `api` and a private `admin` both on api `rest`, a
-  cross-module consumer has exactly one legal endpoint and the reference is
-  unambiguous for it, while a consumer in the producer's own module is told to
-  name the one it means. **An endpoint named exactly as the reference wins**, so
-  a producer declaring `grpc` (api grpc) and `admin` (api grpc) does not
-  make `${endpoint:…/grpc}` unresolvable — core's matcher is
-  `Name == token || API == token`, and naming the api explicitly does not narrow
-  the name branch. That exemption comes with **precedence**, not only tolerance:
-  the mappings bound for a reference that names its endpoint exactly exclude the
-  siblings that merely share its API, so the value cannot silently address one of
-  them — by ordering, or because the named endpoint has no instance for this
-  consumer's access and core's interpolation would otherwise fall through.
-  **Two references into one producer** are handled by ORDER rather than removal,
-  because each one's exact answer is the other's wrong answer and neither can be
-  dropped: the list is arranged so every reference meets the endpoint it names
-  first. Two cases no list can serve are **refused** instead of guessed — a
-  reference whose named endpoint has no address for this consumer's access while
-  a sibling it also matches does (core falls through rather than stopping), and
-  references whose orders contradict each other, which endpoints
-  (name `grpc`, api `rest`) and (name `rest`, api `grpc`) produce when both are
-  referenced by name.
-  **The list is then verified, not predicted.** Every rule above reasons about
-  what core will scan; the pass ends by replaying that scan — the first matching
-  mapping with an instance for this access, which is where core stops — over the
-  list it is about to hand over, and refuses to emit one where a reference would
-  be given an address belonging to an endpoint it did not name. This exists
-  because the rules interact: the drop above removes a producer's other
-  endpoints when a reference names one that published no mapping, and if one of
-  those others is itself named exactly by a second reference, that second
-  reference is left with nothing but its own wrong answers. Each rule is right
-  alone and the pair is not. An endpoint that exists only as a wrong answer is
-  unbound and the list rebuilt; one a second reference names exactly cannot be
-  unbound without breaking that reference, so the pair is refused by name.
-  A sibling reached first with an **empty** address is not a violation — core
-  stops there with nothing and the value drops, which delivers no wrong address.
-  `TestNoCompositionAnswersAReferenceWithAnEndpointItDidNotName` asserts the
-  property over a deterministic search of small compositions, which is how the
-  stranded-reference case was found; the hand-written fixtures are each one case
-  of it.
+`resources.SelectEndpointForReference` (core#702) answers it once, and both
+core's plan-time check and core's resolution ask it:
 
-  Refused references arrive as core's own structured findings, so they carry a
-  consumer, a group, a key and a reason rather than one opaque message. They are
-  reported **after** the other reference faults rather than merged with them:
-  `CheckConfigurationReferences` returns core's findings first and reaches the
-  ambiguity rule only when there are none, so a plan with both kinds is fixed in
-  two passes. The `codefly doctor` line for an ambiguous finding also falls
-  through to the generic remediation. Both are follow-ups, named in the PR.
+- an endpoint whose **name** is the reference's token wins, and nothing else may
+  answer — not a sibling bound earlier, and not a sibling that has an address for
+  this consumer's access when the named endpoint does not;
+- an exact name the consumer may **not** reach is **refused** with the
+  visibility reason, never replaced by a permitted sibling sharing its API;
+- with no exact name, the candidates are the API matches the consumer may reach,
+  and the reference must come to exactly **one** — several are **ambiguous and
+  refused** rather than settled by declaration order;
+- candidates are scoped to the producer the reference names, so another
+  service's endpoint sharing the token is not a candidate.
+
+The resolution then binds **only the selected endpoint**, by name. So order is
+not part of the answer, a sibling can never answer, a producer publishing several
+mappings for one endpoint is simply several places to look, and an endpoint with
+no address for this access is reported as that rather than substituted.
+
+This package passes core the two inputs it cannot read off the mappings —
+`ForConsumerModule(consumerModule, declaredEndpoints)`: who the consumer is,
+which is the export boundary, and what each producer declares, which is the only
+input distinguishing *the endpoint you named is not running* from *you named an
+API*. The manifest comes from the same producer lookup the plan gate reads, so
+the manifest the resolution selects against and the one the check judges against
+are one source.
+
+It used to model this here instead, because core matched by API and took the
+first match: a removal pass that unbound a producer's endpoints that were only
+ever the wrong answer, an ordering pass that arranged one mapping list so every
+reference met its own endpoint first, refusals for the pairs no order could
+serve, and finally a verification pass that replayed core's scan over the list it
+was about to hand over. That is 615 lines, and it is gone. Four review rounds
+each found the model diverging from core somewhere new — the last in an
+interaction between two individually-correct rules, found by a random search
+rather than by reading. A caller can order and prune the mappings it hands over,
+but it cannot stop core matching by API, so every rule it writes to compensate is
+a second model of a scan it does not own.
+
+Two compositions changed outcome with the move, and both are improvements:
+
+- a reference naming an endpoint **private** to the producer's module is now
+  refused with the visibility reason, where it used to be answered quietly by the
+  public endpoint sharing its API. That case was named here as an open gap;
+- endpoints named after each other's APIs — (name `grpc`, api `rest`) and
+  (name `rest`, api `grpc`), both referenced by name — now both resolve. They
+  needed contradictory orders and so were refused; nothing was ever wrong with
+  that composition.
+
+Refused references arrive as core's own structured findings, so they carry a
+consumer, a group, a key and a reason rather than one opaque message. The
+`codefly doctor` line for an ambiguous finding still falls through to the generic
+remediation, which is a follow-up named in the PR.
+
 - **A mapping that does not say which endpoint it is does not get bound.** The
   filter identifies a mapping by its endpoint's name, with the mapping's API
   checked for consistency against the manifest. Matching a nameless mapping by

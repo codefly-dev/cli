@@ -192,15 +192,22 @@ relative paths.
   `CheckEndpointReferences` validates visibility and producer existence over the
   *declared* groups only, so the effective set is handed to that same check, or a
   root group becomes the way around a producer's export boundary. Checking a
-  reference and resolving it are still two selections — the check stops at the
-  first manifest endpoint a reference matches, the resolution takes the first
-  bound mapping with an instance for the consumer's access — so the mappings
-  bound for a consumer are filtered by the same visibility rule
-  (`World.exportableTo`), or an API-name reference resolves to a private sibling
-  of the endpoint the check approved. The filter covers the consumer's own
-  dependency mappings as well — a **bare** dependency is handed every endpoint
-  its producer published — and judges from the producer's manifest, never from
-  the mapping an agent reported. And a root group's **credentials** are not
+  reference and resolving it are **one** selection, in core
+  (`resources.SelectEndpointForReference`, core#702): the exact name wins, an
+  exact name the consumer may not reach is refused rather than replaced by a
+  permitted API sibling, an ambiguous reference is refused, and only the selected
+  endpoint is bound. They used to be two — the check stopping at the first
+  manifest endpoint a reference matched, the resolution taking the first bound
+  mapping with an instance for the consumer's access — and this package spent
+  615 lines ordering, pruning and finally replaying core's scan to keep them in
+  step. Pass core the consumer and the producer's manifest
+  (`Manager.ForConsumerModule`) instead of modelling its scan beside it. The
+  mappings bound for a consumer are still filtered by visibility
+  (`World.exportableTo`), which is assembly rather than selection: a private
+  address never enters the resolution at all. The filter covers the consumer's
+  own dependency mappings as well — a **bare** dependency is handed every
+  endpoint its producer published — and judges from the producer's manifest,
+  never from the mapping an agent reported. And a root group's **credentials** are not
   run-wide: they reach the services that declare the group, in run and in render,
   so making the render resolve root groups does not hand every workload every
   credential; a value a service does not receive is decided **before** anything
