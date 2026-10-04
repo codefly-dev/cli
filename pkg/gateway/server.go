@@ -692,12 +692,16 @@ func (s *Server) ListServices(_ context.Context, _ *gatewayv1.ListServicesReques
 	if my == nil {
 		return &gatewayv1.ListServicesResponse{}, nil
 	}
+	port, portErr := gatewayInt32(my.Config.Port, "service port")
+	if portErr != nil {
+		return nil, status.Error(codes.Internal, portErr.Error())
+	}
 	return &gatewayv1.ListServicesResponse{
 		Services: []*gatewayv1.ServiceInfo{{
 			Name:     my.Service,
 			Language: my.Config.Language,
 			Type:     my.Config.Type,
-			Port:     int32(my.Config.Port),
+			Port:     port,
 		}},
 	}, nil
 }
@@ -1344,7 +1348,7 @@ func (s *Server) BatchApplyEdits(ctx context.Context, req *gatewayv1.BatchApplyE
 				result.Error = "batch aborted because another edit failed validation"
 			}
 		}
-		return &gatewayv1.BatchApplyEditsResponse{Results: results, Failed: int32(len(results))}, nil
+		return &gatewayv1.BatchApplyEditsResponse{Results: results, Failed: editCount(len(results))}, nil
 	}
 
 	written := make([]stagedEdit, 0, len(staged))
@@ -1363,14 +1367,14 @@ func (s *Server) BatchApplyEdits(ctx context.Context, req *gatewayv1.BatchApplyE
 				result.Success = false
 				result.Error = fmt.Sprintf("batch commit failed and was rolled back: %v", err)
 			}
-			return &gatewayv1.BatchApplyEditsResponse{Results: results, Failed: int32(len(results))}, nil
+			return &gatewayv1.BatchApplyEditsResponse{Results: results, Failed: editCount(len(results))}, nil
 		}
 		written = append(written, edit)
 	}
 	for _, result := range results {
 		result.Success = true
 	}
-	return &gatewayv1.BatchApplyEditsResponse{Results: results, Succeeded: int32(len(results))}, nil
+	return &gatewayv1.BatchApplyEditsResponse{Results: results, Succeeded: editCount(len(results))}, nil
 }
 
 func (s *Server) Search(ctx context.Context, req *gatewayv1.SearchRequest) (*gatewayv1.SearchResponse, error) {
@@ -1420,6 +1424,27 @@ func (s *Server) Search(ctx context.Context, req *gatewayv1.SearchRequest) (*gat
 		TruncationReason:  gatewaySearchTruncationReason(result.TruncationReason),
 		ReturnedTextBytes: int64(result.ReturnedTextBytes),
 	}, nil
+}
+
+// editCount fits a batch's result count into the response; a batch is never
+// anywhere near that large.
+func editCount(count int) int32 {
+	switch {
+	case count < 0:
+		return 0
+	case count > math.MaxInt32:
+		return math.MaxInt32
+	}
+	return int32(count)
+}
+
+// diagnosticPosition fits a parsed line or column into the diagnostic; a
+// position past int32 is no position.
+func diagnosticPosition(position int) int32 {
+	if position < 0 || position > math.MaxInt32 {
+		return 0
+	}
+	return int32(position)
 }
 
 func gatewayInt32(value int, field string) (int32, error) {
@@ -2269,14 +2294,28 @@ func errorCode(value string) *string {
 // a run that never executed looks like, so an empty TestResponse reported
 // SUCCESS.
 func runtimeTestSuccess(resp *runtimev0.TestResponse) bool {
-	return testrun.Passed(resp)
+	if resp == nil {
+		return false
+	}
+	if result := resp.GetResult(); result != nil {
+		switch result.GetState() {
+		case runtimev0.TestRunResult_PASSED:
+			return true
+		case runtimev0.TestRunResult_FAILED, runtimev0.TestRunResult_ERRORED, runtimev0.TestRunResult_TIMED_OUT:
+			return false
+		}
+	}
+	if status := resp.GetStatus(); status != nil { //nolint:staticcheck // SA1019: the flat field is the fallback for agents that have not migrated to the structured tree
+		return status.GetState() == runtimev0.TestStatus_SUCCESS
+	}
+	return resp.GetTestsFailed() == 0 && len(resp.GetFailures()) == 0 //nolint:staticcheck // SA1019: the flat field is the fallback for agents that have not migrated to the structured tree
 }
 
 func runtimeTestOutput(resp *runtimev0.TestResponse, success bool) string {
 	if resp == nil {
 		return ""
 	}
-	output := resp.GetOutput()
+	output := resp.GetOutput() //nolint:staticcheck // SA1019: the flat field is the fallback for agents that have not migrated to the structured tree
 	if success {
 		return output
 	}
@@ -2291,7 +2330,7 @@ func runtimeTestOutput(resp *runtimev0.TestResponse, success bool) string {
 		msg = testrun.NoVerdictMessage
 	}
 	if msg == "" {
-		if status := resp.GetStatus(); status != nil {
+		if status := resp.GetStatus(); status != nil { //nolint:staticcheck // SA1019: the flat field is the fallback for agents that have not migrated to the structured tree
 			msg = status.GetMessage()
 		}
 	}
@@ -2311,7 +2350,7 @@ func runtimeTestCounts(resp *runtimev0.TestResponse) (run, passed, failed, skipp
 	if counts := resp.GetCounts(); counts != nil {
 		return counts.GetTotal(), counts.GetPassed(), counts.GetFailed() + counts.GetErrored(), counts.GetSkipped()
 	}
-	return resp.GetTestsRun(), resp.GetTestsPassed(), resp.GetTestsFailed(), resp.GetTestsSkipped()
+	return resp.GetTestsRun(), resp.GetTestsPassed(), resp.GetTestsFailed(), resp.GetTestsSkipped() //nolint:staticcheck // SA1019: the flat field is the fallback for agents that have not migrated to the structured tree
 }
 
 func runtimeTestCoverage(resp *runtimev0.TestResponse) float32 {
@@ -2321,13 +2360,14 @@ func runtimeTestCoverage(resp *runtimev0.TestResponse) float32 {
 	if coverage := resp.GetCoverage(); coverage != nil {
 		return coverage.GetTotalPct()
 	}
-	return resp.GetCoveragePct()
+	return resp.GetCoveragePct() //nolint:staticcheck // SA1019: the flat field is the fallback for agents that have not migrated to the structured tree
 }
 
 func runtimeTestFailures(resp *runtimev0.TestResponse) []string {
 	if resp == nil {
 		return nil
 	}
+	//nolint:staticcheck // SA1019: the flat field is the fallback for agents that have not migrated to the structured tree
 	if len(resp.GetFailures()) > 0 {
 		return append([]string(nil), resp.GetFailures()...)
 	}
@@ -2400,7 +2440,7 @@ func (s *Server) RunCommand(ctx context.Context, req *gatewayv1.RunCommandReques
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
-	cmd := exec.CommandContext(ctx, req.Command, req.Args...)
+	cmd := exec.CommandContext(ctx, req.Command, req.Args...) //nolint:gosec // G204: the request names the command; this RPC is the boundary that runs it, in the resolved directory
 	cmd.Dir = dir
 
 	// Optional single-shot stdin. CONTRACT: the full payload is written
@@ -3055,7 +3095,7 @@ func (s *Server) forgeToolbox() *githubtoolbox.Server {
 // ═══════════════════════════════════════════════════════════════
 
 func (s *Server) runCommandCheck(ctx context.Context, name string, ch *gatewayv1.CommandCheck) *gatewayv1.CheckResult {
-	cmd := exec.CommandContext(ctx, "sh", "-c", ch.Run)
+	cmd := exec.CommandContext(ctx, "sh", "-c", ch.Run) //nolint:gosec // G204: the command line is the service's own configured check
 	cmd.Dir = s.serviceRoot()
 
 	stdout := newBoundedCommandBuffer()
@@ -3253,8 +3293,8 @@ func parseBuildErrors(output string) []*gatewayv1.BuildError {
 			if lineNum > 0 {
 				errors = append(errors, &gatewayv1.BuildError{
 					File:     parts[0],
-					Line:     int32(lineNum),
-					Column:   int32(col),
+					Line:     diagnosticPosition(lineNum),
+					Column:   diagnosticPosition(col),
 					Message:  strings.TrimSpace(parts[3]),
 					Severity: diagnosticSeverityError,
 				})
@@ -3318,7 +3358,7 @@ func writePortFile(port int) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(fmt.Sprintf("%d", port)), 0o644)
+	return os.WriteFile(path, []byte(fmt.Sprintf("%d", port)), 0o600)
 }
 
 // ReadPortFile reads the gateway port from the port file.

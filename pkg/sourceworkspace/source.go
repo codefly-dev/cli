@@ -274,10 +274,13 @@ func writeNormalizedGoWorkspace(source, destination string) error {
 	}
 	workspace.Cleanup()
 	workspace.SortBlocks()
-	if err := os.WriteFile(destination, modfile.Format(workspace.Syntax), 0o600); err != nil {
-		return err
+	// The workspace file is written from its own directory.
+	directory, openErr := os.OpenRoot(filepath.Dir(destination))
+	if openErr != nil {
+		return openErr
 	}
-	return nil
+	defer func() { _ = directory.Close() }()
+	return directory.WriteFile(filepath.Base(destination), modfile.Format(workspace.Syntax), 0o600)
 }
 
 func physicalWorkspacePath(base, value string) (string, error) {

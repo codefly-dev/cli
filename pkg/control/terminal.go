@@ -121,7 +121,7 @@ func (p *planeImpl) OpenTerminal(ctx context.Context, req OpenTerminalRequest) (
 	if err != nil {
 		return "", err
 	}
-	cmd := exec.Command(shell)
+	cmd := exec.Command(shell) //nolint:gosec // G702: the shell is the one the request or $SHELL names; a terminal runs it by definition
 	cmd.Dir = dir
 	f, err := pty.Start(cmd)
 	if err != nil {

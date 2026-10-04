@@ -113,7 +113,7 @@ func OpenFile(ctx context.Context, path string) (*FileAttestor, error) {
 	if err != nil {
 		return nil, err
 	}
-	payload, err := json.Marshal(key)
+	payload, err := json.Marshal(key) //nolint:gosec // G117: this is the attestor's own key file; the private key is what it holds
 	if err != nil {
 		return nil, fmt.Errorf("encode execution attestor key: %w", err)
 	}

@@ -113,7 +113,7 @@ func isOurDaemon(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	out, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+	out, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // G204: ps with a fixed argv; the only variable is the numeric pid
 	if err != nil {
 		return true // can't introspect — fall back to liveness-only
 	}

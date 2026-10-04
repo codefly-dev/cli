@@ -138,83 +138,24 @@ func (s *Server) PrepareMutation(ctx context.Context, req *gatewayv1.PrepareMuta
 	if (edit == nil) == (symbolPatch == nil) {
 		return prepareFailure("exactly one apply_edit or symbol_patch mutation is required"), nil
 	}
-	var path, strategy, symbolID string
-	var fixActions []string
-	var after []byte
-	var previewBeforeHash, previewAfterHash string
-	var previewBeforeSize, previewAfterSize uint64
+	var preview *preparedPreview
+	var failure *gatewayv1.PrepareMutationResponse
 	if edit != nil {
-		path, err = cleanGatewayPath(edit.GetFile())
-		if err != nil || path == "" {
-			if err == nil {
-				err = errors.New("edit file is required")
-			}
-			return prepareFailure(err.Error()), nil
-		}
-		if edit.GetFind() == "" {
-			return prepareFailure("apply_edit find text is required"), nil
-		}
-		preview, previewErr := s.ApplyEdit(ctx, &gatewayv1.ApplyEditRequest{
-			Service: service, File: path, Find: edit.GetFind(), Replace: edit.GetReplace(),
-			FixMode: edit.GetFixMode(), DryRun: true,
-		})
-		if previewErr != nil {
-			return prepareFailure(previewErr.Error()), nil
-		}
-		if preview == nil || !preview.GetSuccess() {
-			return prepareFailure(preview.GetError()), nil
-		}
-		if preview.GetWrote() || !preview.GetChanged() {
-			return prepareFailure("prepared edit must change bytes without writing them"), nil
-		}
-		after = []byte(preview.GetContent())
-		strategy, fixActions = preview.GetStrategy(), append([]string(nil), preview.GetFixActions()...)
-		previewBeforeHash, previewAfterHash = preview.GetBeforeSha256(), preview.GetAfterSha256()
-		previewBeforeSize, previewAfterSize = preview.GetBeforeSizeBytes(), preview.GetAfterSizeBytes()
+		preview, failure = s.previewTextEdit(ctx, service, edit)
 	} else {
-		path, err = cleanGatewayPath(symbolPatch.GetFile())
-		if err != nil || path == "" {
-			if err == nil {
-				err = errors.New("symbol patch file is required")
-			}
-			return prepareFailure(err.Error()), nil
-		}
-		symbolID = strings.TrimSpace(symbolPatch.GetSymbolId())
-		qualifiedName := strings.TrimSpace(symbolPatch.GetQualifiedName())
-		if symbolID == "" || symbolID != symbolPatch.GetSymbolId() || qualifiedName == "" || qualifiedName != symbolPatch.GetQualifiedName() || !validSHA256(symbolPatch.GetExpectedDeclarationSha256()) {
-			return prepareFailure("symbol_patch symbol_id, qualified_name, and expected_declaration_sha256 are required and must be canonical"), nil
-		}
-		raw, previewErr := s.executeSymbolPatch(ctx, &gatewayv1.ApplySymbolPatchRequest{
-			Service: service, File: path, QualifiedName: qualifiedName,
-			ExpectedDeclarationSha256: symbolPatch.GetExpectedDeclarationSha256(),
-			NewSource:                 symbolPatch.GetNewSource(), FixMode: symbolPatch.GetFixMode(), DryRun: true,
-		}, path)
-		if previewErr != nil {
-			return prepareFailure(previewErr.Error()), nil
-		}
-		preview := raw.GetApplySymbolPatch()
-		if preview == nil || !preview.GetSuccess() {
-			projected := gatewaySymbolPatchResponse(raw)
-			return &gatewayv1.PrepareMutationResponse{
-				Success: false, Error: projected.GetError(), Failure: failures.Clone(projected.GetFailure()),
-				SymbolPatchFailureReason: projected.GetFailureReason(),
-			}, nil
-		}
-		if preview.GetWrote() || !preview.GetChanged() {
-			return prepareFailure("prepared symbol patch must change bytes without writing them"), nil
-		}
-		after = []byte(preview.GetContent())
-		strategy, fixActions = preview.GetStrategy(), append([]string(nil), preview.GetFixActions()...)
-		previewBeforeHash, previewAfterHash = preview.GetBeforeSha256(), preview.GetAfterSha256()
-		previewBeforeSize, previewAfterSize = preview.GetBeforeSizeBytes(), preview.GetAfterSizeBytes()
+		preview, failure = s.previewSymbolPatch(ctx, service, symbolPatch)
 	}
+	if failure != nil {
+		return failure, nil
+	}
+	path, after := preview.path, preview.after
 	current, err := s.fileOps().ReadFile(ctx, path)
 	if err != nil {
 		return prepareFailure(fmt.Sprintf("read prepared target: %v", err)), nil
 	}
 	beforeHash := contentSHA256(current)
 	afterHash := contentSHA256(after)
-	if previewBeforeHash != beforeHash || previewAfterHash != afterHash || previewBeforeSize != uint64(len(current)) || previewAfterSize != uint64(len(after)) {
+	if preview.beforeHash != beforeHash || preview.afterHash != afterHash || preview.beforeSize != uint64(len(current)) || preview.afterSize != uint64(len(after)) {
 		return prepareFailure("language agent preview identities do not match authoritative project bytes"), nil
 	}
 	prepared := &gatewayv1.PreparedMutation{
@@ -228,7 +169,7 @@ func (s *Server) PrepareMutation(ctx context.Context, req *gatewayv1.PrepareMuta
 			Path: path, Operation: gatewayv1.PreparedFileOperation_PREPARED_FILE_OPERATION_MODIFY,
 			BeforeSha256: beforeHash, AfterSha256: afterHash,
 			BeforeSizeBytes: uint64(len(current)), AfterSizeBytes: uint64(len(after)),
-			Strategy: strategy, FixActions: fixActions, SymbolId: symbolID,
+			Strategy: preview.strategy, FixActions: preview.fixActions, SymbolId: preview.symbolID,
 		}},
 		PreparedAt: timestamppb.Now(), ExpiresAt: timestamppb.New(time.Now().UTC().Add(preparedMutationLifetime)),
 	}
@@ -243,6 +184,92 @@ func (s *Server) PrepareMutation(ctx context.Context, req *gatewayv1.PrepareMuta
 		return prepareFailure(err.Error()), nil
 	}
 	return &gatewayv1.PrepareMutationResponse{Success: true, Prepared: prepared}, nil
+}
+
+// preparedPreview is what a dry-run edit or symbol patch resolved: the bytes
+// after it and the identities the preview reported.
+type preparedPreview struct {
+	path, strategy, symbolID string
+	fixActions               []string
+	after                    []byte
+	beforeHash, afterHash    string
+	beforeSize, afterSize    uint64
+}
+
+// previewTextEdit runs the text edit in dry-run mode through the real
+// language agent; a non-nil response is the failure to return.
+func (s *Server) previewTextEdit(ctx context.Context, service string, edit *gatewayv1.PrepareApplyEditMutation) (*preparedPreview, *gatewayv1.PrepareMutationResponse) {
+	path, err := cleanGatewayPath(edit.GetFile())
+	if err != nil || path == "" {
+		if err == nil {
+			err = errors.New("edit file is required")
+		}
+		return nil, prepareFailure(err.Error())
+	}
+	if edit.GetFind() == "" {
+		return nil, prepareFailure("apply_edit find text is required")
+	}
+	preview, previewErr := s.ApplyEdit(ctx, &gatewayv1.ApplyEditRequest{
+		Service: service, File: path, Find: edit.GetFind(), Replace: edit.GetReplace(),
+		FixMode: edit.GetFixMode(), DryRun: true,
+	})
+	if previewErr != nil {
+		return nil, prepareFailure(previewErr.Error())
+	}
+	if preview == nil || !preview.GetSuccess() {
+		return nil, prepareFailure(preview.GetError())
+	}
+	if preview.GetWrote() || !preview.GetChanged() {
+		return nil, prepareFailure("prepared edit must change bytes without writing them")
+	}
+	return &preparedPreview{
+		path: path, after: []byte(preview.GetContent()),
+		strategy: preview.GetStrategy(), fixActions: append([]string(nil), preview.GetFixActions()...),
+		beforeHash: preview.GetBeforeSha256(), afterHash: preview.GetAfterSha256(),
+		beforeSize: preview.GetBeforeSizeBytes(), afterSize: preview.GetAfterSizeBytes(),
+	}, nil
+}
+
+// previewSymbolPatch runs the symbol patch in dry-run mode through the engine
+// that owns the parser; a non-nil response is the failure to return.
+func (s *Server) previewSymbolPatch(ctx context.Context, service string, symbolPatch *gatewayv1.PrepareSymbolPatchMutation) (*preparedPreview, *gatewayv1.PrepareMutationResponse) {
+	path, err := cleanGatewayPath(symbolPatch.GetFile())
+	if err != nil || path == "" {
+		if err == nil {
+			err = errors.New("symbol patch file is required")
+		}
+		return nil, prepareFailure(err.Error())
+	}
+	symbolID := strings.TrimSpace(symbolPatch.GetSymbolId())
+	qualifiedName := strings.TrimSpace(symbolPatch.GetQualifiedName())
+	if symbolID == "" || symbolID != symbolPatch.GetSymbolId() || qualifiedName == "" || qualifiedName != symbolPatch.GetQualifiedName() || !validSHA256(symbolPatch.GetExpectedDeclarationSha256()) {
+		return nil, prepareFailure("symbol_patch symbol_id, qualified_name, and expected_declaration_sha256 are required and must be canonical")
+	}
+	raw, previewErr := s.executeSymbolPatch(ctx, &gatewayv1.ApplySymbolPatchRequest{
+		Service: service, File: path, QualifiedName: qualifiedName,
+		ExpectedDeclarationSha256: symbolPatch.GetExpectedDeclarationSha256(),
+		NewSource:                 symbolPatch.GetNewSource(), FixMode: symbolPatch.GetFixMode(), DryRun: true,
+	}, path)
+	if previewErr != nil {
+		return nil, prepareFailure(previewErr.Error())
+	}
+	preview := raw.GetApplySymbolPatch()
+	if preview == nil || !preview.GetSuccess() {
+		projected := gatewaySymbolPatchResponse(raw)
+		return nil, &gatewayv1.PrepareMutationResponse{
+			Success: false, Error: projected.GetError(), Failure: failures.Clone(projected.GetFailure()),
+			SymbolPatchFailureReason: projected.GetFailureReason(),
+		}
+	}
+	if preview.GetWrote() || !preview.GetChanged() {
+		return nil, prepareFailure("prepared symbol patch must change bytes without writing them")
+	}
+	return &preparedPreview{
+		path: path, symbolID: symbolID, after: []byte(preview.GetContent()),
+		strategy: preview.GetStrategy(), fixActions: append([]string(nil), preview.GetFixActions()...),
+		beforeHash: preview.GetBeforeSha256(), afterHash: preview.GetAfterSha256(),
+		beforeSize: preview.GetBeforeSizeBytes(), afterSize: preview.GetAfterSizeBytes(),
+	}, nil
 }
 
 // ApplyPreparedMutation is the only coordinated project write. It verifies

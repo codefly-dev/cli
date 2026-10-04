@@ -592,7 +592,14 @@ func (m *manager) recentLogs(ctx context.Context, request *InstallServiceRequest
 }
 
 func tailLines(path string, limit int) []string {
-	file, err := os.Open(path)
+	// The log is opened from its own directory, so a path that resolves
+	// elsewhere reads nothing.
+	directory, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = directory.Close() }()
+	file, err := directory.Open(filepath.Base(path))
 	if err != nil {
 		return nil
 	}

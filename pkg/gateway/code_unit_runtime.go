@@ -367,6 +367,7 @@ func codeUnitTestError(_ *runtimev0.TestRequest, message string) *runtimev0.Test
 	if message == "" {
 		message = "code-unit runtime failed"
 	}
+	//nolint:staticcheck // SA1019: the proto keeps the flat fields populated for consumers that have not migrated to the structured tree
 	return &runtimev0.TestResponse{
 		Status: &runtimev0.TestStatus{State: runtimev0.TestStatus_ERROR, Message: message},
 		Run:    &runtimev0.TestRun{Runner: "codefly-gateway"},
@@ -536,6 +537,7 @@ func aggregateCodeUnitTestResponses(request *runtimev0.TestRequest, results []co
 	if duration > 0 {
 		run.Duration = durationpb.New(duration)
 	}
+	//nolint:staticcheck // SA1019: the proto keeps the flat fields populated for consumers that have not migrated to the structured tree
 	response := &runtimev0.TestResponse{
 		Status:       &runtimev0.TestStatus{State: statusState, Message: message},
 		Run:          run,
@@ -587,7 +589,23 @@ func dominantTestState(current, candidate runtimev0.TestRunResult_State) runtime
 // aggregate as a passing one, and dominantTestState's ranking of UNKNOWN above
 // FAILED never saw the case it exists for.
 func effectiveRuntimeTestState(response *runtimev0.TestResponse) runtimev0.TestRunResult_State {
-	return testrun.State(response)
+	if response == nil {
+		return runtimev0.TestRunResult_ERRORED
+	}
+	if state := response.GetResult().GetState(); state != runtimev0.TestRunResult_UNKNOWN {
+		return state
+	}
+	// Some production agents still expose a successful composite invocation
+	// through typed status/counts while leaving the additive run-result enum at
+	// UNKNOWN. Match the gateway's established success interpretation so an
+	// aggregate does not turn real passing evidence into a false error.
+	if runtimeTestSuccess(response) {
+		return runtimev0.TestRunResult_PASSED
+	}
+	if response.GetStatus().GetState() == runtimev0.TestStatus_ERROR { //nolint:staticcheck // SA1019: the flat field is the fallback for agents that have not migrated to the structured tree
+		return runtimev0.TestRunResult_ERRORED
+	}
+	return runtimev0.TestRunResult_FAILED
 }
 
 func smallestPositive(current, candidate int32) int32 {
@@ -614,7 +632,7 @@ func appendBoundedCodeUnitOutput(output *strings.Builder, target normalizedCodeU
 	if output.Len() >= maxCodeUnitAggregateOutputSize {
 		return
 	}
-	body := strings.TrimSpace(response.GetOutput())
+	body := strings.TrimSpace(response.GetOutput()) //nolint:staticcheck // SA1019: the flat field is the fallback for agents that have not migrated to the structured tree
 	if body == "" {
 		body = strings.TrimSpace(response.GetResult().GetMessage())
 	}

@@ -125,7 +125,7 @@ func GetKubernetesDeployment(
 				Destination:        KustomizeDir(ctx, workspace, module, service),
 				Profile:            profile,
 				SecretReferences:   secretReferences,
-				ValidateServerSide: profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+				ValidateServerSide: profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1, //nolint:staticcheck // SA1019: names a value on the wire to released builder agents, which core's proto retains during the migration; switching it is a plugin-contract change for the agent owners
 			},
 		},
 	}, nil
@@ -135,7 +135,7 @@ func KubernetesOutputProfile(manager Manager) builderv0.KubernetesOutputProfile 
 	if _, directLocalApply := manager.(*LocalApplyManager); directLocalApply {
 		return builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1
 	}
-	return builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1
+	return builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 //nolint:staticcheck // SA1019: names a value on the wire to released builder agents, which core's proto retains during the migration; switching it is a plugin-contract change for the agent owners
 }
 
 // NewLocalApplyManager binds a direct apply to an exact local k3d target and to

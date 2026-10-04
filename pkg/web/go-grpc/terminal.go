@@ -71,7 +71,7 @@ func (s *TerminalServer) Open(_ context.Context, req *cliv0.OpenTerminalRequest)
 	}
 
 	// Create command
-	cmd := exec.Command(shell)
+	cmd := exec.Command(shell) //nolint:gosec // G702: the shell is the one the request or $SHELL names; a terminal runs it by definition
 	cmd.Dir = workDir
 	cmd.Env = os.Environ()
 
