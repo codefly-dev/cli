@@ -42,7 +42,7 @@ func TestNativeUserManagerLifecycle(t *testing.T) {
 			StderrPath: filepath.Join(logDirectory, "stderr.log"),
 		},
 	}
-	installed, err := installation.InstallService(context.Background(), request)
+	installed, err := installation.InstallService(context.Background(), &request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestNativeUserManagerLifecycle(t *testing.T) {
 	request.Environment = []EnvironmentVariable{{
 		Name: "CODEFLY_INTEGRATION_VERSION", Value: "2", Classification: ValuePublic,
 	}}
-	updated, err := installation.InstallService(context.Background(), request)
+	updated, err := installation.InstallService(context.Background(), &request)
 	if err != nil {
 		t.Fatal(err)
 	}

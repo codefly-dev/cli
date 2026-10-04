@@ -15,7 +15,7 @@ import (
 
 const contractMarker = "codefly-service-contract:"
 
-func renderDefinition(platform string, request InstallServiceRequest) ([]byte, error) {
+func renderDefinition(platform string, request *InstallServiceRequest) ([]byte, error) {
 	if err := validateRequest(request); err != nil {
 		return nil, err
 	}
@@ -25,16 +25,16 @@ func renderDefinition(platform string, request InstallServiceRequest) ([]byte, e
 	}
 	encoded := base64.RawStdEncoding.EncodeToString(contract)
 	switch platform {
-	case "darwin":
+	case platformDarwin:
 		return renderLaunchAgent(request, encoded)
-	case "linux":
+	case platformLinux:
 		return renderSystemdUnit(request, encoded), nil
 	default:
 		return nil, unsupportedPlatform(platform)
 	}
 }
 
-func renderLaunchAgent(request InstallServiceRequest, encodedContract string) ([]byte, error) {
+func renderLaunchAgent(request *InstallServiceRequest, encodedContract string) ([]byte, error) {
 	var out bytes.Buffer
 	out.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
 	out.WriteString(`<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">` + "\n")
@@ -108,7 +108,7 @@ func writePlistValue(out *bytes.Buffer, indent, value string) error {
 	return nil
 }
 
-func renderSystemdUnit(request InstallServiceRequest, encodedContract string) []byte {
+func renderSystemdUnit(request *InstallServiceRequest, encodedContract string) []byte {
 	var out strings.Builder
 	fmt.Fprintf(&out, "# %s%s\n", contractMarker, encodedContract)
 	out.WriteString("[Unit]\n")
@@ -182,7 +182,7 @@ func systemdExecQuote(value string) string {
 	return strings.ReplaceAll(systemdQuote(value), "$", "$$")
 }
 
-func restartDelaySeconds(request InstallServiceRequest) int64 {
+func restartDelaySeconds(request *InstallServiceRequest) int64 {
 	seconds := int64(request.RestartDelay / time.Second)
 	if seconds < 1 {
 		return 5
@@ -215,7 +215,7 @@ func validateDefinition(platform string, definition []byte) (InstallServiceReque
 	if err != nil {
 		return InstallServiceRequest{}, err
 	}
-	expected, err := renderDefinition(platform, request)
+	expected, err := renderDefinition(platform, &request)
 	if err != nil {
 		return InstallServiceRequest{}, err
 	}
@@ -226,7 +226,7 @@ func validateDefinition(platform string, definition []byte) (InstallServiceReque
 }
 
 func definitionName(platform, label string) string {
-	if platform == "darwin" {
+	if platform == platformDarwin {
 		return label + ".plist"
 	}
 	return label + ".service"

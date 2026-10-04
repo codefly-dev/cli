@@ -51,7 +51,7 @@ func (p *planeImpl) InstallService(ctx context.Context, request *InstallServiceR
 	if err != nil {
 		return InstalledService{}, err
 	}
-	return installation.InstallService(ctx, *request)
+	return installation.InstallService(ctx, request)
 }
 
 func (p *planeImpl) StartService(ctx context.Context, ref ServiceRef) (InstalledServiceStatus, error) {

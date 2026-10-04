@@ -11,7 +11,7 @@ import (
 // Implementations use launchd LaunchAgents on macOS and systemd user units on
 // Linux. The managed process must remain in the foreground.
 type Installation interface {
-	InstallService(context.Context, InstallServiceRequest) (InstalledService, error)
+	InstallService(context.Context, *InstallServiceRequest) (InstalledService, error)
 	StartService(context.Context, ServiceRef) (ServiceStatus, error)
 	StopService(context.Context, ServiceRef) (ServiceStatus, error)
 	RestartService(context.Context, ServiceRef) (ServiceStatus, error)

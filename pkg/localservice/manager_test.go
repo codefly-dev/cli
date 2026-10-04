@@ -28,7 +28,7 @@ func TestSystemdLifecycleUsesUserManagerAndPreservesProductData(t *testing.T) {
 	request := testRequest(t)
 	request.StartAtLogin = true
 	request.Logs = LogRouting{Mode: LogNative}
-	installed, err := manager.InstallService(context.Background(), request)
+	installed, err := manager.InstallService(context.Background(), &request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestLaunchdLifecycleUsesModernPerUserCommands(t *testing.T) {
 		StdoutPath: filepath.Join(home, "logs", "stdout.log"),
 		StderrPath: filepath.Join(home, "logs", "stderr.log"),
 	}
-	if _, err := manager.InstallService(context.Background(), request); err != nil {
+	if _, err := manager.InstallService(context.Background(), &request); err != nil {
 		t.Fatal(err)
 	}
 	status, err := manager.StartService(context.Background(), request.Ref)
@@ -158,11 +158,11 @@ func TestInstallRequiresVersionChangeForMaterializedChanges(t *testing.T) {
 	manager := newManager("linux", home, os.Getuid(), executeCommand)
 	request := testRequest(t)
 	request.Logs = LogRouting{Mode: LogNative}
-	first, err := manager.InstallService(context.Background(), request)
+	first, err := manager.InstallService(context.Background(), &request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	unchanged, err := manager.InstallService(context.Background(), request)
+	unchanged, err := manager.InstallService(context.Background(), &request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,11 +174,11 @@ func TestInstallRequiresVersionChangeForMaterializedChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.Executable = changedExecutable
-	if _, err := manager.InstallService(context.Background(), request); err == nil {
+	if _, err := manager.InstallService(context.Background(), &request); err == nil {
 		t.Fatal("same-version executable rebind was accepted")
 	}
 	request.Version = "2"
-	second, err := manager.InstallService(context.Background(), request)
+	second, err := manager.InstallService(context.Background(), &request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestConcurrentInstallsSerializeVersionValidation(t *testing.T) {
 	initial := testRequest(t)
 	initial.Version = "0"
 	initial.Logs = LogRouting{Mode: LogNative}
-	if _, err := manager.InstallService(context.Background(), initial); err != nil {
+	if _, err := manager.InstallService(context.Background(), &initial); err != nil {
 		t.Fatal(err)
 	}
 
@@ -228,12 +228,12 @@ func TestConcurrentInstallsSerializeVersionValidation(t *testing.T) {
 	firstResult := make(chan error, 1)
 	secondResult := make(chan error, 1)
 	go func() {
-		_, err := manager.InstallService(context.Background(), first)
+		_, err := manager.InstallService(context.Background(), &first)
 		firstResult <- err
 	}()
 	<-entered
 	go func() {
-		_, err := manager.InstallService(context.Background(), second)
+		_, err := manager.InstallService(context.Background(), &second)
 		secondResult <- err
 	}()
 
@@ -260,7 +260,7 @@ func TestInstallRollsBackDefinitionWhenSupervisorRejectsIt(t *testing.T) {
 	request.StartAtLogin = true
 	request.Logs = LogRouting{Mode: LogNative}
 
-	if _, err := manager.InstallService(context.Background(), request); err == nil {
+	if _, err := manager.InstallService(context.Background(), &request); err == nil {
 		t.Fatal("installation succeeded despite supervisor rejection")
 	}
 	path, err := manager.definitionPath(request.Ref)
@@ -284,7 +284,7 @@ func TestInstallReconcilesLoadedServiceWhenDefinitionIsMissing(t *testing.T) {
 	request := testRequest(t)
 	request.Logs = LogRouting{Mode: LogNative}
 
-	installed, err := manager.InstallService(context.Background(), request)
+	installed, err := manager.InstallService(context.Background(), &request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +297,7 @@ func TestInstallReconcilesLoadedServiceWhenDefinitionIsMissing(t *testing.T) {
 
 	request.Version = "2"
 	request.Arguments = publicArguments("updated")
-	if _, err := manager.InstallService(context.Background(), request); err != nil {
+	if _, err := manager.InstallService(context.Background(), &request); err != nil {
 		t.Fatal(err)
 	}
 	if trace := readFile(t, tracePath); !strings.Contains(trace, "--user try-restart dev.codefly.test.service") {
@@ -317,7 +317,7 @@ func TestStatusAndUninstallReconcileLoadedServiceWhenDefinitionIsMissing(t *test
 	request := testRequest(t)
 	request.Logs = LogRouting{Mode: LogNative}
 
-	installed, err := manager.InstallService(context.Background(), request)
+	installed, err := manager.InstallService(context.Background(), &request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +379,7 @@ func TestSystemdStartAndRestartRecoverTargetFromStartLimit(t *testing.T) {
 	})
 	request := testRequest(t)
 	request.Logs = LogRouting{Mode: LogNative}
-	if _, err := manager.InstallService(context.Background(), request); err != nil {
+	if _, err := manager.InstallService(context.Background(), &request); err != nil {
 		t.Fatal(err)
 	}
 
@@ -420,7 +420,7 @@ func TestSystemdUninstallDoesNotResetUnrelatedFailedUnits(t *testing.T) {
 	})
 	request := testRequest(t)
 	request.Logs = LogRouting{Mode: LogNative}
-	if _, err := manager.InstallService(context.Background(), request); err != nil {
+	if _, err := manager.InstallService(context.Background(), &request); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.UninstallService(context.Background(), UninstallServiceRequest{Ref: request.Ref}); err != nil {
@@ -464,7 +464,7 @@ func TestExplicitStopSurvivesReinstallUntilExplicitStart(t *testing.T) {
 	request := testRequest(t)
 	request.StartAtLogin = true
 	request.Logs = LogRouting{Mode: LogNative}
-	if _, err := manager.InstallService(context.Background(), request); err != nil {
+	if _, err := manager.InstallService(context.Background(), &request); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := manager.StartService(context.Background(), request.Ref); err != nil {
@@ -478,7 +478,7 @@ func TestExplicitStopSurvivesReinstallUntilExplicitStart(t *testing.T) {
 		t.Fatalf("status after explicit stop = %#v, enabled = %t", status, enabled)
 	}
 
-	if _, err := manager.InstallService(context.Background(), request); err != nil {
+	if _, err := manager.InstallService(context.Background(), &request); err != nil {
 		t.Fatal(err)
 	}
 	status, err = manager.ServiceStatus(context.Background(), request.Ref)
@@ -520,7 +520,7 @@ func TestServiceStatusDetectsUnsafeAndCorruptDefinitions(t *testing.T) {
 	manager := newManager("linux", home, os.Getuid(), executeCommand)
 	request := testRequest(t)
 	request.Logs = LogRouting{Mode: LogNative}
-	installed, err := manager.InstallService(context.Background(), request)
+	installed, err := manager.InstallService(context.Background(), &request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -610,9 +610,9 @@ func TestNativeStatusMappings(t *testing.T) {
 			"Result=start-limit-hit",
 		}, "\n"), nil
 	}
-	status, err := manager.systemdStatus(context.Background(), InstallServiceRequest{
+	status, err := manager.systemdStatus(context.Background(), &InstallServiceRequest{
 		Ref: ServiceRef{Label: "dev.codefly.test"},
-	}, base)
+	}, &base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -624,9 +624,9 @@ func TestNativeStatusMappings(t *testing.T) {
 	manager.run = func(_ context.Context, _ string, _ ...string) (string, error) {
 		return "state = waiting\nruns = 6\nlast exit code = 78\n", nil
 	}
-	status, err = manager.launchdStatus(context.Background(), InstallServiceRequest{
+	status, err = manager.launchdStatus(context.Background(), &InstallServiceRequest{
 		Ref: ServiceRef{Label: "dev.codefly.test"},
-	}, base)
+	}, &base)
 	if err != nil {
 		t.Fatal(err)
 	}

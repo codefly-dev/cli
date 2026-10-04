@@ -24,7 +24,7 @@ func TestRenderLaunchAgentRoundTripsMaterializedContract(t *testing.T) {
 		StderrPath: filepath.Join(t.TempDir(), "stderr.log"),
 	}
 
-	definition, err := renderDefinition("darwin", request)
+	definition, err := renderDefinition("darwin", &request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestRenderSystemdUnitUsesForegroundAndCrashOnlyRestart(t *testing.T) {
 	}}
 	request.Logs = LogRouting{Mode: LogNative}
 
-	definition, err := renderDefinition("linux", request)
+	definition, err := renderDefinition("linux", &request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestRenderSystemdNeverPolicyAndFileLogs(t *testing.T) {
 		StdoutPath: filepath.Join(logDirectory, "stdout.log"),
 		StderrPath: filepath.Join(logDirectory, "stderr.log"),
 	}
-	definition, err := renderDefinition("linux", request)
+	definition, err := renderDefinition("linux", &request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestRenderRejectsSensitiveEnvironment(t *testing.T) {
 		Value:          "must-not-appear",
 		Classification: ValueSensitive,
 	}}
-	definition, err := renderDefinition("linux", request)
+	definition, err := renderDefinition("linux", &request)
 	if err == nil {
 		t.Fatalf("sensitive environment was rendered:\n%s", definition)
 	}
@@ -141,7 +141,7 @@ func TestRenderRejectsSensitiveEnvironment(t *testing.T) {
 	request.Arguments = []ServiceArgument{{
 		Value: "must-not-appear", Classification: ValueSensitive,
 	}}
-	definition, err = renderDefinition("linux", request)
+	definition, err = renderDefinition("linux", &request)
 	if err == nil {
 		t.Fatalf("sensitive argument was rendered:\n%s", definition)
 	}
@@ -153,7 +153,7 @@ func TestRenderRejectsSensitiveEnvironment(t *testing.T) {
 func TestDefinitionValidationDetectsTampering(t *testing.T) {
 	request := testRequest(t)
 	request.Logs = LogRouting{Mode: LogNative}
-	definition, err := renderDefinition("linux", request)
+	definition, err := renderDefinition("linux", &request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestRenderRejectsUnsupportedControlCharacters(t *testing.T) {
 	request := testRequest(t)
 	request.Logs = LogRouting{Mode: LogNative}
 	request.Arguments = publicArguments("invalid\x00argument")
-	if _, err := renderDefinition("linux", request); err == nil {
+	if _, err := renderDefinition("linux", &request); err == nil {
 		t.Fatal("argument containing NUL was accepted")
 	}
 }
@@ -176,7 +176,7 @@ func TestRenderRejectsSubsecondRestartDelay(t *testing.T) {
 	request := testRequest(t)
 	request.Logs = LogRouting{Mode: LogNative}
 	request.RestartDelay = 1500 * time.Millisecond
-	if _, err := renderDefinition("linux", request); err == nil {
+	if _, err := renderDefinition("linux", &request); err == nil {
 		t.Fatal("subsecond restart delay was silently rounded")
 	}
 }
@@ -185,12 +185,12 @@ func TestRenderRequiresClassificationForEveryMaterializedValue(t *testing.T) {
 	request := testRequest(t)
 	request.Logs = LogRouting{Mode: LogNative}
 	request.Arguments = []ServiceArgument{{Value: "unclassified"}}
-	if _, err := renderDefinition("linux", request); err == nil {
+	if _, err := renderDefinition("linux", &request); err == nil {
 		t.Fatal("unclassified argument was accepted")
 	}
 	request.Arguments = nil
 	request.Environment = []EnvironmentVariable{{Name: "SETTING", Value: "unclassified"}}
-	if _, err := renderDefinition("linux", request); err == nil {
+	if _, err := renderDefinition("linux", &request); err == nil {
 		t.Fatal("unclassified environment value was accepted")
 	}
 }
