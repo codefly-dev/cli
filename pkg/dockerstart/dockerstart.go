@@ -34,6 +34,10 @@ type provider struct {
 	start        func(context.Context) error
 }
 
+// colimaRuntime is the Colima runtime's name: its binary, its docker context
+// and its entry in the runtime list.
+const colimaRuntime = "colima"
+
 func onPath(bin string) func() bool {
 	return func() bool { _, err := exec.LookPath(bin); return err == nil }
 }
@@ -81,10 +85,10 @@ func providers() []provider {
 				start:        openApp("Docker"),
 			},
 			{
-				name:         "colima",
-				contextHints: []string{"colima"},
-				detect:       onPath("colima"),
-				start:        runCmd("colima", "start"),
+				name:         colimaRuntime,
+				contextHints: []string{colimaRuntime},
+				detect:       onPath(colimaRuntime),
+				start:        runCmd(colimaRuntime, "start"),
 			},
 			{
 				name:         "Rancher Desktop",
@@ -103,10 +107,10 @@ func providers() []provider {
 		// No sudo/systemd assumptions: only rootless engines we can start as the user.
 		return []provider{
 			{
-				name:         "colima",
-				contextHints: []string{"colima"},
-				detect:       onPath("colima"),
-				start:        runCmd("colima", "start"),
+				name:         colimaRuntime,
+				contextHints: []string{colimaRuntime},
+				detect:       onPath(colimaRuntime),
+				start:        runCmd(colimaRuntime, "start"),
 			},
 			{
 				name:         "Podman",
