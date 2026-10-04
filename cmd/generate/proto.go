@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -618,8 +619,8 @@ func publishProtoOutputs(ctx context.Context, staging string, outs []string, cle
 	// cannot matter.
 	if clean {
 		for _, out := range outs {
-			if err := os.RemoveAll(out); err != nil {
-				return fmt.Errorf("cannot clean generation output %s: %w", out, err)
+			if err := cleanProtoOutput(out, staging); err != nil {
+				return err
 			}
 		}
 	}
@@ -630,11 +631,74 @@ func publishProtoOutputs(ctx context.Context, staging string, outs []string, cle
 		if _, err := shared.CheckDirectoryOrCreate(ctx, out); err != nil {
 			return fmt.Errorf("cannot create generation output %s: %w", out, err)
 		}
-		slot := protoStagingSlot(staging, i)
-		for _, rel := range emitted[i] {
-			if err := publishProtoFile(slot, out, rel); err != nil {
-				return err
-			}
+		if err := publishProtoSlot(protoStagingSlot(staging, i), out, emitted[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// cleanProtoOutput empties a declared output ahead of publication, which is
+// what a template's `clean: true` asks for.
+//
+// It leaves a staging tree that happens to live inside the output alone.
+// generateProtoCode cannot produce that — staging is created outside the
+// generation mount, and every `out` is under it — but publication deleting its
+// own evidence and then failing to read it is a trap worth closing in the
+// function rather than only in its caller.
+func cleanProtoOutput(out, staging string) error {
+	if filepath.Clean(out) == filepath.Clean(staging) {
+		return fmt.Errorf("generation output %s is the staging tree itself; cleaning it would delete what was generated", out)
+	}
+	if !pathWithin(out, staging) {
+		if err := os.RemoveAll(out); err != nil {
+			return fmt.Errorf("cannot clean generation output %s: %w", out, err)
+		}
+		return nil
+	}
+	rel, err := filepath.Rel(out, staging)
+	if err != nil {
+		return fmt.Errorf("cannot locate the staging tree under generation output %s: %w", out, err)
+	}
+	keep := strings.Split(rel, string(filepath.Separator))[0]
+	entries, err := os.ReadDir(out)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("cannot clean generation output %s: %w", out, err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == keep {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(out, entry.Name())); err != nil {
+			return fmt.Errorf("cannot clean generation output %s: %w", out, err)
+		}
+	}
+	return nil
+}
+
+// publishProtoSlot writes one output's generated files into it, through an
+// os.Root rooted at the output.
+//
+// The root is what stops the output's own contents redirecting the write. A
+// directory in the published tree that is a symlink out of the output —
+// `gen/nested` pointing at somewhere else entirely — would otherwise have
+// publication overwrite a file the template never declared, on a host path
+// outside every `out`. os.Root resolves every name beneath the output and
+// refuses one that leaves it, absolute symlinks included, so the escape is an
+// error instead of a write. (A symlinked `out` itself is still honoured: that
+// is the caller's own declaration, and buf followed it too.)
+func publishProtoSlot(slot, out string, emitted []string) error {
+	output, err := os.OpenRoot(out)
+	if err != nil {
+		return fmt.Errorf("cannot open generation output %s: %w", out, err)
+	}
+	defer func() { _ = output.Close() }()
+	for _, rel := range emitted {
+		if err := publishProtoFile(output, slot, out, rel); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -642,39 +706,44 @@ func publishProtoOutputs(ctx context.Context, staging string, outs []string, cle
 
 // publishProtoFile writes one generated file, named by its path relative to
 // the staging slot, into the declared output. A destination that already holds
-// those bytes is left alone.
+// those bytes is left alone, so an unchanged replay changes neither content
+// nor modification time.
 //
-// Both ends are re-checked against their roots rather than trusted: rel comes
-// from a walk of the staging slot, which cannot ascend and skips anything that
-// is not a regular file, but the whole point of publishing from the host is
-// that nothing the companion produced decides where the host writes.
-func publishProtoFile(slot, out, rel string) error {
-	from, to := filepath.Join(slot, rel), filepath.Join(out, rel)
-	if !pathWithin(slot, from) || !pathWithin(out, to) {
-		return fmt.Errorf("generated file %q does not stay under the output %s it was generated for", rel, out)
+// The staging side is re-checked too: rel comes from a walk of the slot, which
+// cannot ascend and skips everything that is not a regular file — filepath
+// .WalkDir does not descend into symlinked directories — but the whole point
+// of publishing from the host is that nothing the companion produced decides
+// where the host writes.
+func publishProtoFile(output *os.Root, slot, out, rel string) error {
+	from := filepath.Join(slot, rel)
+	if !pathWithin(slot, from) {
+		return fmt.Errorf("generated file %q does not stay under the staging tree it was generated into", rel)
 	}
 	generated, err := os.ReadFile(from)
 	if err != nil {
 		return fmt.Errorf("cannot read generated file %s: %w", from, err)
 	}
-	published, readErr := os.ReadFile(to)
+	published, readErr := output.ReadFile(rel)
 	if readErr == nil && bytes.Equal(published, generated) {
 		return nil
 	}
-	if readErr != nil && !os.IsNotExist(readErr) {
-		return fmt.Errorf("cannot read %s: %w", to, readErr)
+	if readErr != nil && !errors.Is(readErr, fs.ErrNotExist) {
+		return fmt.Errorf("cannot publish %s into %s (a path in the output that leaves it, such as a symlink pointing elsewhere, is refused rather than followed): %w", rel, out, readErr)
 	}
 	info, err := os.Stat(from)
 	if err != nil {
 		return fmt.Errorf("cannot inspect generated file %s: %w", from, err)
 	}
-	// A generated source tree is read by the tooling of whoever owns it, so it
-	// keeps the mode the generator gave it rather than being narrowed here.
-	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil { //nolint:gosec // G301: a generated source tree its own tooling must read
-		return fmt.Errorf("cannot create %s: %w", filepath.Dir(to), err)
+	if dir := filepath.Dir(rel); dir != "." {
+		// A generated source tree is read by the tooling of whoever owns it,
+		// so it keeps the mode the generator gave it rather than being
+		// narrowed here.
+		if err := output.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: a generated source tree its own tooling must read
+			return fmt.Errorf("cannot create %s inside %s (a path that leaves the output is refused): %w", dir, out, err)
+		}
 	}
-	if err := os.WriteFile(to, generated, info.Mode().Perm()); err != nil { //nolint:gosec // G703: rel is walked from slot and both ends are checked against their roots above
-		return fmt.Errorf("cannot write %s: %w", to, err)
+	if err := output.WriteFile(rel, generated, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("cannot publish %s into %s (a path that leaves the output is refused): %w", rel, out, err)
 	}
 	return nil
 }

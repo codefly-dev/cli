@@ -512,6 +512,89 @@ func TestNewProtoStagingIsExclusiveAndEmpty(t *testing.T) {
 	}
 }
 
+// Publication must not be redirected by the output's own contents. A directory
+// in the published tree that is a symlink out of the output would otherwise
+// have the host overwrite a file the template never declared, on a path
+// outside every `out`.
+func TestPublishProtoOutputsCannotFollowASymlinkOutOfTheOutput(t *testing.T) {
+	out, staging, outside := t.TempDir(), t.TempDir(), t.TempDir()
+	guarded := filepath.Join(outside, "value.ts")
+	writeTestFile(t, guarded, "preserve")
+	if err := os.Symlink(outside, filepath.Join(out, "nested")); err != nil {
+		t.Fatal(err)
+	}
+	stageFile(t, staging, 0, "nested/value.ts", "overwritten")
+
+	err := publishProtoOutputs(context.Background(), staging, []string{out}, false, "buf.gen.yaml")
+	if err == nil {
+		t.Fatal("published through a symlink leaving the declared output")
+	}
+	if !strings.Contains(err.Error(), out) {
+		t.Fatalf("error does not name the output: %v", err)
+	}
+	got, readErr := os.ReadFile(guarded)
+	if readErr != nil || string(got) != "preserve" {
+		t.Fatalf("a file outside the declared output was overwritten: %q, %v", got, readErr)
+	}
+}
+
+// A relative symlink that stays inside the output is the output's own
+// business, and publication writes through it as buf did.
+func TestPublishProtoOutputsFollowsASymlinkThatStaysInsideTheOutput(t *testing.T) {
+	out, staging := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(out, "real"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real", filepath.Join(out, "nested")); err != nil {
+		t.Fatal(err)
+	}
+	stageFile(t, staging, 0, "nested/value.ts", "published")
+
+	if err := publishProtoOutputs(context.Background(), staging, []string{out}, false, "buf.gen.yaml"); err != nil {
+		t.Fatalf("refused a symlink that stays inside the output: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(out, "real", "value.ts"))
+	if err != nil || string(got) != "published" {
+		t.Fatalf("value.ts = %q, %v; want \"published\"", got, err)
+	}
+}
+
+// Publication must never delete its own evidence. generateProtoCode cannot
+// produce a staging tree inside a declared output — staging is created outside
+// the generation mount — but the trap is worth closing in the function too,
+// since a `clean: true` over that output would otherwise remove the staged
+// files and then fail to read them.
+func TestPublishProtoOutputsCleanKeepsAStagingTreeInsideTheOutput(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "gen")
+	staging := filepath.Join(out, ".stage")
+	stageFile(t, staging, 0, "api_pb.ts", "export const api = 1;\n")
+	writeTestFile(t, filepath.Join(out, "gone_pb.ts"), "export {};\n")
+
+	if err := publishProtoOutputs(context.Background(), staging, []string{out}, true, "buf.gen.yaml"); err != nil {
+		t.Fatalf("clean deleted the staged source it was about to publish: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(out, "api_pb.ts"))
+	if err != nil || string(got) != "export const api = 1;\n" {
+		t.Fatalf("api_pb.ts = %q, %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "gone_pb.ts")); !os.IsNotExist(err) {
+		t.Fatalf("clean kept a file this run did not generate: %v", err)
+	}
+}
+
+// An output that IS the staging tree has no sane clean, and silently emptying
+// it would destroy the generation.
+func TestPublishProtoOutputsRefusesAnOutputThatIsTheStagingTree(t *testing.T) {
+	staging := t.TempDir()
+	stageFile(t, staging, 0, "api_pb.ts", "export {};\n")
+	if err := publishProtoOutputs(context.Background(), staging, []string{staging}, true, "buf.gen.yaml"); err == nil {
+		t.Fatal("accepted an output that is the staging tree itself")
+	}
+	if _, err := os.Stat(filepath.Join(protoStagingSlot(staging, 0), "api_pb.ts")); err != nil {
+		t.Fatalf("the refusal still destroyed the staged generation: %v", err)
+	}
+}
+
 func protoOutputFixture(t *testing.T) (root string, outs []string) {
 	t.Helper()
 	root = t.TempDir()

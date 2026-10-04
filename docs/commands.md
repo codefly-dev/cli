@@ -2338,7 +2338,9 @@ is created exclusively rather than reused. And it must sit where no `out` can
 name it: an `out` can resolve to the generation mount's own root (`out: .` in a
 template that is its own output directory), and `clean: true` over that would
 delete the staging tree along with the output, destroying the evidence
-publication reads.
+publication reads. (A `clean` that is nonetheless handed a staging tree inside
+an output leaves it alone rather than deleting its own evidence, and an output
+that *is* the staging tree is refused.)
 
 The staged tree is what the run emitted, which makes each question separately
 answerable:
@@ -2368,6 +2370,13 @@ answerable:
   `out: gen` publishes it to the path `out: gen/nested` owns, so cleaning each
   output just before copying it would delete what a sibling had already
   published.
+- **Publication cannot be redirected out of the declared output.** It writes
+  through an `os.Root` rooted at each `out`, so a directory in the published
+  tree that is a symlink leaving the output — `gen/nested` pointing somewhere
+  else entirely — is an error rather than a write to a path no `out` names. A
+  relative symlink that stays inside the output is still followed, and a
+  symlinked `out` itself is still honoured: that is the caller's own
+  declaration.
 
 The Go lane was never an exception to buf's sync; it only looked like one
 because `goimports` runs after generation and leaves a shape buf never emits,
