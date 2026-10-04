@@ -20,7 +20,7 @@ var WorkspaceCmd = &cobra.Command{
 	Use:   "workspace",
 	Short: "Apply semver-safe dependency upgrades to every workspace service",
 	Args:  cobra.NoArgs,
-	RunE: func(_ *cobra.Command, _ []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		ctx, stop := common.SignalContext(ctx)

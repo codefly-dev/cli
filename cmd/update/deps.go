@@ -63,7 +63,7 @@ Examples:
   codefly update deps --companions    # also rebuild companion images (--pull)
   codefly update deps --audit=false   # skip the post-update audit`,
 	Args: cobra.NoArgs,
-	RunE: func(_ *cobra.Command, _ []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		ctx, stop := common.SignalContext(ctx)

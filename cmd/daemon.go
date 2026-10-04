@@ -88,7 +88,7 @@ var daemonStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop the active background daemon and its services",
 	Args:  cobra.NoArgs,
-	RunE: func(_ *cobra.Command, _ []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		status, err := daemon.GetStatus()
 		if err != nil {
 			return fmt.Errorf("cannot check daemon status: %w", err)
@@ -113,7 +113,7 @@ var daemonStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Report whether the Codefly daemon is running",
 	Args:  cobra.NoArgs,
-	RunE: func(_ *cobra.Command, _ []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		status, err := daemon.GetStatus()
 		if err != nil {
 			return fmt.Errorf("cannot check daemon status: %w", err)

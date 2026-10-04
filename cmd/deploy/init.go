@@ -13,7 +13,7 @@ var InitCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize version-controlled deployment manifests for the workspace",
 	Args:  cobra.NoArgs,
-	RunE: func(_ *cobra.Command, _ []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		return setup()
 	},
 }

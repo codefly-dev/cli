@@ -19,7 +19,7 @@ var DeployCmd = &cobra.Command{
 	Use:   "deploy",
 	Short: "Deploy workspace services as a CI stage",
 	Args:  cobra.NoArgs,
-	RunE: func(_ *cobra.Command, _ []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 

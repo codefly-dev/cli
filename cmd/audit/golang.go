@@ -50,7 +50,7 @@ the command so the rationale gets re-verified.
 
 This replaces scripts/govulncheck.sh; CI calls it after building the CLI.`,
 	Args: cobra.NoArgs,
-	RunE: func(_ *cobra.Command, _ []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		// The go audit needs no workspace/agent/tracing machinery, so it
 		// stays usable from a plain repo checkout in
 		// CI (no workspace.codefly.yaml required).

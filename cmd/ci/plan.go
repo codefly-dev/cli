@@ -34,7 +34,7 @@ var PlanCmd = &cobra.Command{
 	Short: "List directly changed services and their transitive dependents",
 	Args:  cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
-		if planReplay && !strings.EqualFold(strings.TrimSpace(planFormat), prereleaseFormatJSON) {
+		if planReplay && !strings.EqualFold(strings.TrimSpace(planFormat), "json") {
 			return fmt.Errorf("--replay requires --format json")
 		}
 		ctx, done := common.NewContext()

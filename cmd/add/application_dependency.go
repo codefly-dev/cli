@@ -17,7 +17,7 @@ var ApplicationDependencyCmd = &cobra.Command{
 	Use:   "application-dependency",
 	Short: "Link an application to another application or service",
 	Args:  cobra.NoArgs,
-	RunE: func(_ *cobra.Command, _ []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		if interactive {
 			return fmt.Errorf("interactive mode not implemented yet")
 		}

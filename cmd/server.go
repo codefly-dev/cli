@@ -28,7 +28,7 @@ Otherwise, start an inventory-only dashboard: the Services, Logs and Config
 tabs show declared inventory but no live runtime state, since no run is
 attached.`,
 	Args: cobra.NoArgs,
-	RunE: func(_ *cobra.Command, _ []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		ctx, stop := common.SignalContext(ctx)

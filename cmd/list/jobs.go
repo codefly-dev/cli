@@ -24,7 +24,7 @@ Examples:
 	codefly list jobs --module=backend
 `,
 	Args: cobra.NoArgs,
-	RunE: func(_ *cobra.Command, _ []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		return listJobs()
 	},
 }

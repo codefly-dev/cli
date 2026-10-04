@@ -11,7 +11,7 @@ var ModuleCmd = &cobra.Command{
 	Use:    "modules",
 	Short:  "List modules declared by the current workspace",
 	Hidden: true, // not implemented yet
-	RunE: func(_ *cobra.Command, _ []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		return errors.New("`codefly list modules` is not implemented yet")
 	},
 }
