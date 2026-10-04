@@ -20,6 +20,11 @@ import (
 // once, not once per endpoint.
 var containerRecoveryOnce sync.Once
 
+// containerRecoveryProjected records whether the one resolution above
+// succeeded, so every caller — not only the first — learns whether a container
+// this command leaves behind is anyone's to collect.
+var containerRecoveryProjected bool
+
 // projectContainerRecovery stamps this process's container-recovery ownership
 // before `generate` builds a container.
 //
@@ -42,12 +47,18 @@ var containerRecoveryOnce sync.Once
 // sweep (ReapDisposableContainers). That namespace covers home and workspace
 // only, so any later run in this workspace collects a leftover whatever naming
 // scope it picked.
-func projectContainerRecovery(ctx context.Context) {
+//
+// It reports whether ownership was projected. A caller that cannot remove its
+// own container needs to know: with ownership, the leftover is collected by a
+// later run's sweep and the failure is housekeeping; without it, the container
+// is nobody's and the failure is the command's.
+func projectContainerRecovery(ctx context.Context) bool {
 	containerRecoveryOnce.Do(func() {
 		scope, err := containerRecoveryScope(ctx)
 		if err == nil {
 			err = dockerrun.SetContainerRecoveryScope(scope)
 		}
+		containerRecoveryProjected = err == nil
 		if err != nil {
 			// A directory outside any workspace, an unwritable home, no readable
 			// PID namespace: these all have to keep generating. Core degrades the
@@ -57,6 +68,7 @@ func projectContainerRecovery(ctx context.Context) {
 			cli.Warning("cannot project container recovery ownership: containers this command creates will not be recoverable by scope (%v)", err)
 		}
 	})
+	return containerRecoveryProjected
 }
 
 // containerRecoveryScope resolves the ownership identity without projecting it.

@@ -187,7 +187,9 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 		return w.Wrapf(err, "cannot write the staged generation template")
 	}
 
-	projectContainerRecovery(ctx)
+	// Whether a container this run cannot remove is anyone's to collect; see
+	// protoTeardownOutcome.
+	recoverable := projectContainerRecovery(ctx)
 
 	// Create Docker runner
 	runner, err := runners.NewDockerEnvironment(ctx, image, protoDir, name)
@@ -218,7 +220,7 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	defer func() {
 		cleanupCtx := context.WithoutCancel(ctx)
 		if err := runner.Shutdown(cleanupCtx); err != nil {
-			result = errors.Join(result, w.Wrapf(err, "cannot shutdown proto runner"))
+			result = errors.Join(result, protoTeardownOutcome(err, name, recoverable))
 		}
 	}()
 
@@ -275,6 +277,48 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 		return w.Wrapf(err, "cannot format generated Go")
 	}
 
+	return nil
+}
+
+// protoTeardownOutcome decides what a failed teardown means for the command.
+//
+// Removing the container is housekeeping, not generation, and this command has
+// already arranged for a leftover to be collected: the container is marked
+// ephemeral (WithEphemeral) and this process projected the recovery ownership
+// that a later run's sweep matches. A removal that fails therefore leaves
+// exactly the state an interrupted generate leaves — which
+// TestAnInterruptedGenerateLeavesARecoverableContainer qualifies against a real
+// daemon in CI. Folding it into the command's result reports a correct
+// generation as a failed one, and a consumer's drift gate
+// (`generate proto && git diff --exit-code`) cannot tell the two apart.
+//
+// So with ownership projected the failure is a warning that names the
+// container, which keeps the leftover visible to whoever wants to remove it
+// now rather than at the next run. Without ownership — outside a workspace, an
+// unwritable home — nothing will collect it, and then the leak is the
+// command's to report.
+//
+// What this is NOT is a blanket downgrade. The removal timeouts are core's,
+// fixed at ten seconds per Docker call in its own fresh contexts
+// (runners/dockerrun/docker_runner.go, Stop and remove), so nothing the CLI
+// passes down shortens them: `context.WithoutCancel` carries no deadline.
+// Measured idle on the companion image with both of this command's mounts,
+// stop takes ~3.2s — the full SIGTERM grace, because the paused container's
+// PID 1 does not handle it — and force-remove ~0.1s, so the ten seconds are
+// breached only under daemon load, which is why the failure is intermittent.
+// Raising them is core's call, not this command's.
+//
+// One residual, stated rather than papered over: the cross-scope sweep that
+// makes a leftover collectible whatever naming scope a later run picks needs a
+// durable host identity, which core resolves and warns about separately and
+// does not expose. With ownership projected but no durable identity, only the
+// exact-scope sweep runs, and that one can miss a leftover — core says so when
+// it happens.
+func protoTeardownOutcome(err error, container string, recoverable bool) error {
+	if !recoverable {
+		return fmt.Errorf("cannot shut down the generation container %s, and this run projected no container recovery ownership, so nothing will collect it: %w", container, err)
+	}
+	cli.Warning("could not remove the generation container %s (%v); it is marked ephemeral and owned by this workspace's recovery scope, so a later run collects it — `docker rm -f %s` removes it now", container, err, container)
 	return nil
 }
 

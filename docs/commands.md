@@ -2392,6 +2392,29 @@ because `goimports` runs after generation and leaves a shape buf never emits,
 so the next run finds every Go file different. Publication is content-based, so
 that churn no longer decides anything.
 
+**Teardown is housekeeping, not generation.** The container `generate proto`
+builds is created, driven once and thrown away: it is marked ephemeral and the
+command projects the container-recovery ownership a later run's sweep matches,
+so a container it cannot remove is left in exactly the state an interrupted
+`generate` leaves — one a later run collects. A removal that fails is therefore
+a **warning naming the container**, not a failed command: folding it in would
+report a correct generation as a failed one, and a drift gate
+(`codefly generate proto && git diff --exit-code`) cannot tell those apart. The
+warning names the container so it can be removed now rather than at the next
+run. If the command could *not* project ownership — outside a workspace, an
+unwritable home, which it already warns about — nothing will collect the
+leftover, and the failure is then reported as the command's. A generation that
+actually failed still fails, either way.
+
+The removal deadlines themselves are Core's, fixed per Docker call in its own
+fresh contexts, so nothing the CLI passes down shortens them. Measured idle on
+the companion image with both of this command's mounts, stopping one of these
+containers takes about the full SIGTERM grace — its paused PID 1 does not
+handle the signal — and force-removing it is near-instant, so those deadlines
+are breached only under daemon load. That is why the failure is intermittent
+rather than systematic, and why raising them is Core's call rather than this
+command's.
+
 #### generate client
 
 `codefly generate client` produces a **codefly library** — generated bindings plus

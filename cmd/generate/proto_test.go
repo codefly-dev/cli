@@ -2,6 +2,7 @@ package generate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -651,6 +652,57 @@ func TestPublishProtoOutputsCleanCannotDeleteThroughAnEscapingSymlink(t *testing
 	got, err := os.ReadFile(guarded)
 	if err != nil || string(got) != "preserve" {
 		t.Fatalf("clean deleted a tree outside the boundary: %q, %v", got, err)
+	}
+}
+
+// Teardown is housekeeping, not generation. A removal that fails leaves the
+// state an interrupted generate leaves, which the recovery sweep collects — so
+// with ownership projected it must not turn a correct generation into a failed
+// one, and the leftover must stay visible. Without ownership nothing collects
+// it, and then the leak is the command's to report.
+func TestProtoTeardownOutcome(t *testing.T) {
+	teardown := errors.New("Docker.Shutdown: cannot remove container: context deadline exceeded")
+
+	if err := protoTeardownOutcome(teardown, "proto-gen-1", true); err != nil {
+		t.Fatalf("a recoverable leftover failed the command: %v", err)
+	}
+
+	err := protoTeardownOutcome(teardown, "proto-gen-2", false)
+	if err == nil {
+		t.Fatal("an unrecoverable leftover was not reported")
+	}
+	// The report has to be actionable: it names the container nothing will
+	// collect, and keeps the cause.
+	if !strings.Contains(err.Error(), "proto-gen-2") {
+		t.Fatalf("error does not name the leftover container: %v", err)
+	}
+	if !errors.Is(err, teardown) {
+		t.Fatalf("error does not preserve the teardown cause: %v", err)
+	}
+}
+
+// The companion piece: a generation that actually failed must still fail,
+// whatever teardown did. generateProtoCode joins the teardown outcome onto the
+// result rather than replacing it, so a nil teardown outcome cannot mask a
+// generation error — this pins the join, which is the part a refactor could
+// quietly invert.
+func TestProtoTeardownOutcomeNeverMasksAGenerationError(t *testing.T) {
+	generation := errors.New("cannot generate proto code")
+	teardown := errors.New("cannot remove container")
+
+	// What the defer computes, for a recoverable leftover: nothing to add.
+	joined := errors.Join(generation, protoTeardownOutcome(teardown, "proto-gen-3", true))
+	if !errors.Is(joined, generation) {
+		t.Fatalf("a successful-teardown join dropped the generation error: %v", joined)
+	}
+	if errors.Is(joined, teardown) {
+		t.Fatalf("a recoverable teardown failure was reported as a command failure: %v", joined)
+	}
+
+	// And for an unrecoverable one: both survive, so neither cause is lost.
+	joined = errors.Join(generation, protoTeardownOutcome(teardown, "proto-gen-4", false))
+	if !errors.Is(joined, generation) || !errors.Is(joined, teardown) {
+		t.Fatalf("join lost a cause: %v", joined)
 	}
 }
 
