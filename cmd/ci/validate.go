@@ -66,11 +66,11 @@ func runValidationCommand(selection *SelectionFlags, action Action, phase string
 }
 
 func runLintService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) error {
-	return validation.RunServiceWithOptions(ctx, workspace, module, service, orchestration.LintMode, "lint", runtimeContext, validation.Options{Disposable: disposableRuntime})
+	return validation.RunServiceWithOptions(ctx, workspace, module, service, orchestration.LintMode, "lint", runtimeContext, validationOptions(ctx, reportReasonAgentNoLintCapability))
 }
 
 func runCompileService(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service) error {
-	return validation.RunServiceWithOptions(ctx, workspace, module, service, orchestration.CompileMode, "compile", runtimeContext, validation.Options{Disposable: disposableRuntime})
+	return validation.RunServiceWithOptions(ctx, workspace, module, service, orchestration.CompileMode, "compile", runtimeContext, validationOptions(ctx, reportReasonAgentNoCompileCapability))
 }
 
 func init() {
@@ -81,5 +81,12 @@ func init() {
 		command.Flags().StringVar(&runtimeContext, "runtime-context", "free", "Runtime context for validation")
 		bindSchedulingFlags(command)
 		bindReportFlags(command)
+	}
+}
+
+func validationOptions(ctx context.Context, reason string) validation.Options {
+	return validation.Options{
+		Disposable: disposableRuntime,
+		OnSkip:     func() { recordCIReportSkip(ctx, reason) },
 	}
 }

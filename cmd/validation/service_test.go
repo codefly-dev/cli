@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestValidationRequiresRuntimeDependencyBeforeTarget(t *testing.T) {
+func TestValidationDiscoversTargetCapabilitiesBeforeDependencies(t *testing.T) {
 	for _, mode := range []orchestration.Mode{orchestration.LintMode, orchestration.CompileMode} {
 		t.Run(string(mode), func(t *testing.T) {
 			t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
@@ -31,8 +31,8 @@ func TestValidationRequiresRuntimeDependencyBeforeTarget(t *testing.T) {
 			require.NoError(t, err)
 			err = RunServiceWithOptions(ctx, workspace, module, service, mode, string(mode), resources.RuntimeContextNative, Options{Disposable: true})
 			require.Error(t, err)
-			require.Contains(t, err.Error(), "missing-prerequisite",
-				"validation must resolve the runtime prerequisite before initializing its consumer")
+			require.Contains(t, err.Error(), "missing-consumer",
+				"validation must discover the target capability before initializing any prerequisite")
 		})
 	}
 }

@@ -77,7 +77,18 @@ func (d *discovery) GetAgentInformation(ctx context.Context, req *agentv0.AgentI
 	case "future":
 		declaration.ProtocolVersion++
 	}
-	return &agentv0.AgentInformation{Contract: declaration, Capabilities: []*agentv0.Capability{{Type: agentv0.Capability_RUNTIME}, {Type: agentv0.Capability_BUILDER}}}, nil
+	info := &agentv0.AgentInformation{Contract: declaration, Capabilities: []*agentv0.Capability{{Type: agentv0.Capability_RUNTIME}, {Type: agentv0.Capability_BUILDER}}}
+	switch os.Getenv("CODEFLY_TEST_PEER_VALIDATION") {
+	case "unsupported":
+		info.Validation = &agentv0.ValidationCapabilities{}
+	case "supported":
+		info.Validation = &agentv0.ValidationCapabilities{
+			Lint:    &agentv0.ValidationOperationCapability{Supported: true},
+			Compile: &agentv0.ValidationOperationCapability{Supported: true},
+			Test:    &agentv0.TestValidationCapability{Supported: true, Suites: []*agentv0.TestSuiteCapability{{Name: "unit", DefaultSuite: true, DependencyMode: agentv0.TestDependencyMode_TEST_DEPENDENCY_MODE_NONE}}},
+		}
+	}
+	return info, nil
 }
 
 func (d *discovery) ListCommands(_ context.Context, req *agentv0.ListCommandsRequest) (*agentv0.ListCommandsResponse, error) {
@@ -142,6 +153,9 @@ func (r *runtimePeer) Load(ctx context.Context, req *runtimev0.LoadRequest) (*ru
 func (r *runtimePeer) Init(_ context.Context, req *runtimev0.InitRequest) (*runtimev0.InitResponse, error) {
 	if err := r.p.record("Runtime.Init", req); err != nil {
 		return nil, err
+	}
+	if message := os.Getenv("CODEFLY_TEST_PEER_INIT_ERROR"); message != "" {
+		return nil, fmt.Errorf("%s", message)
 	}
 	r.p.mu.Lock()
 	defer r.p.mu.Unlock()

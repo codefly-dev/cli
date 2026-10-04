@@ -508,3 +508,18 @@ no runtime to stop; `Stop()` returns immediately for them.
 - **Context cancellation:** All gRPC calls check for `codes.Canceled` and return gracefully.
 - **Partial failures:** Every manager is torn down during `Flow.Stop()`, including ones a partial `InitManagers()` created but never started. Errors are collected via `go-multierror` and returned together; a resource the teardown budget forced is additionally narrated through the flow's `OutputSink`, since it may still be running and some callers discard the returned error.
 - **Init failure:** If `Init` returns a non-READY status, the output manager marks the result as failing, triggering a pause and retry from the Load phase.
+
+## Validation capability preflight
+
+Lint, native compile and test inspect the origin agent's authoritative validation
+advertisement before initializing its runtime or any runtime dependency. An
+explicitly unsupported operation stops after discovery: no Load, Init, validation
+RPC or disposable Destroy is sent, and no Docker backend is required. The flow
+still owns and closes the discovered agent connection.
+
+Supported operations retain their initialization and dependency requirements.
+Agents without a validation advertisement retain compatibility probing; an absent
+advertisement never grants a skip. A supported operation that returns Unimplemented
+remains a contract failure. CI records unsupported operations as skipped with
+`agent_no_lint_capability`, `agent_no_compile_capability`, or
+`agent_no_test_capability`, rather than reporting a successful check.

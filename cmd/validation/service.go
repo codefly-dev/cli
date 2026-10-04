@@ -56,10 +56,15 @@ func newServiceCommand(short, operation string, mode orchestration.Mode, runtime
 			if err != nil {
 				return fmt.Errorf("cannot load required service: %w", err)
 			}
-			if err := RunService(ctx, workspace, module, service, mode, operation, *runtimeContext); err != nil {
+			skipped := false
+			if err := RunServiceWithOptions(ctx, workspace, module, service, mode, operation, *runtimeContext, Options{OnSkip: func() { skipped = true }}); err != nil {
 				return err
 			}
-			cli.Header(1, "%s passed for %s", operation, resources.WithUnique(service).Unique())
+			if skipped {
+				cli.Header(1, "%s skipped for %s: agent advertises no capability", operation, resources.WithUnique(service).Unique())
+			} else {
+				cli.Header(1, "%s passed for %s", operation, resources.WithUnique(service).Unique())
+			}
 			return nil
 		},
 	}
@@ -87,6 +92,8 @@ type Options struct {
 	// Disposable uses a fresh scope and destroys it after validation. This is
 	// for disposable CI fixtures, never an existing development scope.
 	Disposable bool
+	// OnSkip records an explicitly unsupported operation, distinct from success.
+	OnSkip func()
 }
 
 // RunServiceWithOptions also supports disposable callers such as agent CI.
@@ -140,6 +147,9 @@ func RunServiceWithOptions(
 	flow.WithTemporaryPorts(options.Disposable)
 	if err := flow.InitManagers(ctx); err != nil {
 		return w.Wrap(err)
+	}
+	if flow.OriginValidationSkipped() && options.OnSkip != nil {
+		options.OnSkip()
 	}
 	if err := flow.Load(ctx); err != nil {
 		return w.Wrap(err)
