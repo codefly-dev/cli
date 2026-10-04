@@ -606,8 +606,9 @@ narrows a group's contents and widens its delivery at the same time.
 
 This is filed as [codefly-dev/core#693](https://github.com/codefly-dev/core/issues/693)
 and **fixed in [core#694](https://github.com/codefly-dev/core/pull/694)**, which
-is open and green but not yet released, so the CLI still pins `v0.7.1` and the
-behaviour above is what a composition meets today.
+is open and green but not yet released — `v0.8.1`, pinned here, does not carry
+it (its `offer` closure still skips a composed module's information outright) —
+so the behaviour above is what a composition meets today.
 
 Until that release is pinned here: declare **every** key of a composed module's
 group when overriding it, or override none of them.

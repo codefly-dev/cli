@@ -43,7 +43,7 @@ func groupKeys(infos []*basev0.ConfigurationInformation, group string) []string 
 // reader, not an endorsement of what it pins.
 //
 // The behaviour is core's, in `configurations.composeModuleWorkspaceConfigurations`
-// (core v0.7.1 `configurations/local_reader.go`): its `offer` closure skips a
+// (core v0.8.1 `configurations/local_reader.go`): its `offer` closure skips a
 // composed module's information outright when `fromWorkspace[info.Name]` holds,
 // so the module's keys never reach any object this repository sees. The
 // requirements follow the same path — `unsuppliedByGroup` is keyed by group, and
@@ -65,8 +65,9 @@ func groupKeys(infos []*basev0.ConfigurationInformation, group string) []string 
 //
 // Filed as codefly-dev/core#693, with this reproduction and the three losses,
 // and FIXED in codefly-dev/core#694 (open and green, branch
-// issue-693-fix-configurations-a-workspace-override-of-a-composed, cut from
-// v0.7.1 — so the release carrying it is the next tag after v0.7.1).
+// issue-693-fix-configurations-a-workspace-override-of-a-composed). It is in no
+// release yet: the pin here is v0.8.1, and v0.9.0 does not carry it either —
+// so the release that does is a later tag.
 //
 // This test will fail the moment that release is pinned here, which is what it
 // was written to do. The invariant to flip it to, over this same fixture:

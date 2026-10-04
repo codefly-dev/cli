@@ -2003,21 +2003,29 @@ func orderedForEachReference(
 			if !ref.exactName || ref.info.Module+"/"+ref.info.Service != unique {
 				continue
 			}
+			// Access is judged over EVERY mapping of a name, not the last one
+			// seen. A producer can publish more than one mapping for one
+			// endpoint, and core scans them all — so keeping only the last
+			// `named` rejected an answerable set whenever the earlier mapping
+			// was the one carrying this consumer's access. (Layer-4 round-ten
+			// B1.)
 			var named *retained
 			var others []string
-			siblingServesAccess := false
+			namedServesAccess, siblingServesAccess := false, false
 			for i := range group {
 				if !resources.EndpointMatchesReferenceInfo(group[i].endpoint, ref.info) {
 					continue
 				}
+				serves := mappingServesAccess(group[i].mapping, access)
 				if group[i].endpoint.Name == ref.info.Name {
-					named = &group[i]
+					if named == nil {
+						named = &group[i]
+					}
+					namedServesAccess = namedServesAccess || serves
 					continue
 				}
 				others = append(others, group[i].endpoint.Name)
-				if mappingServesAccess(group[i].mapping, access) {
-					siblingServesAccess = true
-				}
+				siblingServesAccess = siblingServesAccess || serves
 			}
 			if len(others) == 0 {
 				// Nothing could answer this reference but the endpoint it names,
@@ -2045,7 +2053,7 @@ func orderedForEachReference(
 				}
 				continue
 			}
-			if !mappingServesAccess(named.mapping, access) {
+			if !namedServesAccess {
 				if !siblingServesAccess {
 					// Neither the named endpoint nor any sibling has an address
 					// for this access, so nothing can be handed over wrongly and
@@ -2102,11 +2110,20 @@ func orderedForEachReference(
 	return out, nil
 }
 
-// mappingServesAccess reports whether a mapping has an address for one network
-// access — the question core asks before it accepts a match.
+// mappingServesAccess reports whether a mapping ANSWERS one network access —
+// which is the question core actually asks, and not the same as having a usable
+// address.
+//
+// resources.resolveEndpointReference stops at the first instance whose access
+// matches: if that instance's address is empty it returns an error naming the
+// reference, and it does NOT continue to the next match. So an empty address is
+// this endpoint answering with nothing, never absence — a root-only consumer's
+// value then drops, which is the safe outcome, and treating it as absence made
+// this helper model a fall-through core would not perform. (Layer-4 round-ten
+// B2.)
 func mappingServesAccess(mapping *basev0.NetworkMapping, access *basev0.NetworkAccess) bool {
 	for _, instance := range mapping.GetInstances() {
-		if instance.GetAccess().GetKind() == access.GetKind() && instance.GetAddress() != "" {
+		if instance.GetAccess().GetKind() == access.GetKind() {
 			return true
 		}
 	}

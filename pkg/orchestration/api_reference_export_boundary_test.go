@@ -709,14 +709,31 @@ func TestAnEndpointNameCoresSchemaRefusesFailsTheRender(t *testing.T) {
 // same producer.
 func twoReferenceWorkspace(t *testing.T, values string) *resources.Workspace {
 	t.Helper()
+	return twoReferenceWorkspaceOrdered(t, values, false)
+}
+
+// twoReferenceWorkspaceOrdered is the same composition with the producer's two
+// endpoints declared in either order.
+//
+// The manifest order is what a RENDER derives its mapping order from, so it is
+// the only way to make a render's fixture unfavourable — and a favourable one
+// passes with the ordering pass removed, which is what made the first render
+// regression test non-discriminating. (Layer-4 round-ten B3.)
+func twoReferenceWorkspaceOrdered(t *testing.T, values string, siblingFirst bool) *resources.Workspace {
+	t.Helper()
+	endpoints := "endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n" +
+		"    - name: admin\n      api: grpc\n      visibility: public\n"
+	if siblingFirst {
+		endpoints = "endpoints:\n    - name: admin\n      api: grpc\n      visibility: public\n" +
+			"    - name: grpc\n      api: grpc\n      visibility: public\n"
+	}
 	return writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
 		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
-			"endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n" +
-			"    - name: admin\n      api: grpc\n      visibility: public\n",
+			endpoints,
 		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
@@ -786,8 +803,47 @@ func TestTwoReferencesIntoOneProducerEachResolveToTheEndpointTheyName(t *testing
 
 	// A render counterpart, where the addresses are derived rather than
 	// published, so the same selection runs over the deploy path.
-	t.Run("a render resolves each reference to its own endpoint", func(t *testing.T) {
-		world, worker := referenceValidityWorld(t, twoReferenceWorkspace(t, bothValues))
+	t.Run("the named endpoint has no address for this access", func(t *testing.T) {
+		world, worker := referenceValidityWorld(t, twoReferenceWorkspace(t, bothValues), func(world *World) {
+			world.Mode = RunMode
+			recordMappings(t, world, "platform", "authority",
+				endpointMapping("platform", "authority", "admin", "grpc", "public", nativeInstance("http://localhost:2222")),
+				endpointMapping("platform", "authority", "grpc", "grpc", "public", containerInstance("http://grpc:9090")),
+			)
+		})
+
+		_, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
+		require.Error(t, err,
+			"a reference whose named endpoint has no address for this access must be refused, not answered by a sibling")
+		require.Contains(t, err.Error(), "no address for")
+		require.Contains(t, err.Error(), "grpc")
+		require.NotContains(t, err.Error(), "localhost:2222")
+	})
+
+	for _, order := range []struct {
+		name         string
+		siblingFirst bool
+	}{
+		{"manifest order", false},
+		// The unfavourable one: a render derives its mappings in manifest
+		// order, so with the sibling declared FIRST an unordered set hands it
+		// to the reference that names the other endpoint. The favourable order
+		// passes with the ordering pass removed, which is why both are here.
+		{"sibling declared first", true},
+	} {
+		t.Run("a render resolves each reference to its own endpoint, "+order.name, func(t *testing.T) {
+			requireRenderAnswersEachReference(t, order.siblingFirst)
+		})
+	}
+}
+
+func requireRenderAnswersEachReference(t *testing.T, siblingFirst bool) {
+	t.Helper()
+	ctx := context.Background()
+	const bothValues = "primary-address=${endpoint:platform/authority/grpc}\n" +
+		"secondary-address=${endpoint:platform/authority/admin}\n"
+	{
+		world, worker := referenceValidityWorld(t, twoReferenceWorkspaceOrdered(t, bothValues, siblingFirst))
 		require.True(t, world.deploys())
 
 		confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewContainerNetworkAccess())
@@ -806,35 +862,14 @@ func TestTwoReferencesIntoOneProducerEachResolveToTheEndpointTheyName(t *testing
 		// which endpoint answers the first, these differ — and asserting only
 		// that the two values differ from each other would not see it.
 		alone, aloneWorker := referenceValidityWorld(t,
-			twoReferenceWorkspace(t, "primary-address=${endpoint:platform/authority/grpc}\n"))
+			twoReferenceWorkspaceOrdered(t, "primary-address=${endpoint:platform/authority/grpc}\n", siblingFirst))
 		aloneConfs, err := alone.workspaceConfigurationsFor(ctx, aloneWorker, nil, resources.NewContainerNetworkAccess())
 		require.NoError(t, err)
 		aloneAddress, delivered := groupValue(aloneConfs, "work-context", "primary-address")
 		require.True(t, delivered)
 		require.Equal(t, aloneAddress, primary,
 			"the endpoint answering a reference must not depend on what else references its producer")
-	})
-
-	// And the access fall-through, which no ordering can fix: the endpoint a
-	// reference names has no address for this consumer's access, while the
-	// sibling it also matches does. Core does not stop at a match without an
-	// instance — it falls through — so the only honest answer is to refuse.
-	t.Run("the named endpoint has no address for this access", func(t *testing.T) {
-		world, worker := referenceValidityWorld(t, twoReferenceWorkspace(t, bothValues), func(world *World) {
-			world.Mode = RunMode
-			recordMappings(t, world, "platform", "authority",
-				endpointMapping("platform", "authority", "admin", "grpc", "public", nativeInstance("http://localhost:2222")),
-				endpointMapping("platform", "authority", "grpc", "grpc", "public", containerInstance("http://grpc:9090")),
-			)
-		})
-
-		_, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
-		require.Error(t, err,
-			"a reference whose named endpoint has no address for this access must be refused, not answered by a sibling")
-		require.Contains(t, err.Error(), "no address for")
-		require.Contains(t, err.Error(), "grpc")
-		require.NotContains(t, err.Error(), "localhost:2222")
-	})
+	}
 }
 
 // References whose orders contradict each other are refused rather than one of
@@ -1032,4 +1067,82 @@ func TestTwoReferencesOverDistinctAPIsResolve(t *testing.T) {
 		_, delivered := groupValue(confs, "work-context", "primary-address")
 		require.False(t, delivered, "the value drops instead")
 	})
+}
+
+// Access is judged over EVERY mapping an endpoint published, not the last one.
+//
+// A producer may publish more than one mapping for one endpoint — two instances
+// recorded separately, a re-publish — and core scans them all. The ordering
+// pass kept only the LAST matching mapping as `named` and asked that one
+// whether it served the consumer's access, so a set whose EARLIER mapping
+// carried the access read as "the named endpoint cannot answer" and the whole
+// reference was refused. Nothing is wrong with this composition: `grpc` has a
+// native address and the reference naming it must get it. (Layer-4 round-ten
+// B1.)
+//
+// Both references are needed for the misread to be reachable: with only the one
+// naming `grpc`, the sibling is removed as a wrong answer before the ordering
+// pass runs and there is no sibling left to prefer.
+func TestAnEarlierMappingOfTheNamedEndpointCarriesTheAccess(t *testing.T) {
+	ctx := context.Background()
+	world, worker := referenceValidityWorld(t,
+		twoReferenceWorkspace(t, "primary-address=${endpoint:platform/authority/grpc}\n"+
+			"secondary-address=${endpoint:platform/authority/admin}\n"),
+		func(world *World) {
+			world.Mode = RunMode
+			recordMappings(t, world, "platform", "authority",
+				// The access this consumer needs is on the FIRST of the two
+				// mappings for `grpc`; the second carries only the other one.
+				endpointMapping("platform", "authority", "grpc", "grpc", "public", nativeInstance("http://localhost:1111")),
+				endpointMapping("platform", "authority", "grpc", "grpc", "public", containerInstance("http://grpc:9090")),
+				endpointMapping("platform", "authority", "admin", "grpc", "public", nativeInstance("http://localhost:2222")),
+			)
+		})
+
+	confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
+	require.NoError(t, err,
+		"the named endpoint does serve this access, on its first mapping: there is nothing to refuse")
+	primary, delivered := groupValue(confs, "work-context", "primary-address")
+	require.True(t, delivered)
+	require.Equal(t, "http://localhost:1111", primary,
+		"and it resolves to the named endpoint's own address, not the sibling's")
+	secondary, delivered := groupValue(confs, "work-context", "secondary-address")
+	require.True(t, delivered)
+	require.Equal(t, "http://localhost:2222", secondary)
+}
+
+// An endpoint that answers with an EMPTY address has answered: it is not absent.
+//
+// resources.resolveEndpointReference stops at the first instance whose access
+// matches and, if its address is empty, returns an error naming that reference —
+// it does not continue to the next match. Treating an empty address as absence
+// made the ordering pass model a fall-through core will not perform, and refuse
+// a reference set over a sibling core could never have reached. The honest
+// outcome is the one core produces for the endpoint the reference names, with no
+// mention of the sibling. (Layer-4 round-ten B2.)
+func TestAnEmptyAddressOnTheNamedEndpointIsNotAbsence(t *testing.T) {
+	ctx := context.Background()
+	world, worker := referenceValidityWorld(t,
+		twoReferenceWorkspace(t, "primary-address=${endpoint:platform/authority/grpc}\n"+
+			"secondary-address=${endpoint:platform/authority/admin}\n"),
+		func(world *World) {
+			world.Mode = RunMode
+			recordMappings(t, world, "platform", "authority",
+				endpointMapping("platform", "authority", "grpc", "grpc", "public", nativeInstance("")),
+				endpointMapping("platform", "authority", "admin", "grpc", "public", nativeInstance("http://localhost:2222")),
+			)
+		})
+
+	confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
+	if err != nil {
+		require.NotContains(t, err.Error(), "also satisfies that reference",
+			"the ordering pass must not refuse over a sibling core cannot fall through to")
+		require.NotContains(t, err.Error(), "localhost:2222")
+		return
+	}
+	primary, delivered := groupValue(confs, "work-context", "primary-address")
+	require.NotEqual(t, "http://localhost:2222", primary,
+		"the sibling must never answer a reference that named the other endpoint")
+	require.False(t, delivered && primary != "",
+		"the named endpoint answered with nothing, so the value drops")
 }
