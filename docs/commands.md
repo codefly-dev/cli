@@ -716,6 +716,10 @@ environments:
           reason: the theme files are a build artifact of the host, reviewed in handbook#215
 ```
 
+An allowance covers **one rule for one service**, so a workload allowed to carry
+peer TLS material in a mounted Secret is still held to `non-scratch-mount` and
+needs an allowance there too — two decisions, stated separately.
+
 An allowance is never a silent skip: **every declared allowance is printed on
 every deployed render**, whether or not that run needed it, and a render whose
 exception has become unnecessary says so until the declaration is removed.

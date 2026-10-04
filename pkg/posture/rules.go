@@ -152,7 +152,10 @@ func Validate(document map[string]any, subject Subject, location string, declara
 }
 
 // reporter turns a rule, a field path and a detail into a violation, or into nil
-// when the environment allows that rule for this subject.
+// when the environment allows that rule for this subject. A caller keeps looking
+// after a nil: an allowance covers one rule for one service, so a workload that
+// is allowed to mount a TLS Secret under peer-transport-material is still held to
+// the mount rule, and needs its own allowance there too.
 type reporter func(rule, field, detail string) error
 
 // pathedSpec is a pod specification and the field path it was found at.
@@ -193,18 +196,24 @@ func checkPeerTransportMaterial(spec pathedSpec, report reporter) error {
 	for _, container := range containers(spec) {
 		for _, entry := range container.environment() {
 			if marker, found := transportMaterial(entry.name); found {
-				return report(RulePeerTransportMaterial, entry.namePath,
-					fmt.Sprintf("%s declares %s (%s)", entry.name, marker, detail))
+				if err := report(RulePeerTransportMaterial, entry.namePath,
+					fmt.Sprintf("%s declares %s (%s)", entry.name, marker, detail)); err != nil {
+					return err
+				}
 			}
 			if marker, found := transportMaterial(entry.value); found {
-				return report(RulePeerTransportMaterial, entry.valuePath,
-					fmt.Sprintf("%s points at %s (%s)", entry.name, marker, detail))
+				if err := report(RulePeerTransportMaterial, entry.valuePath,
+					fmt.Sprintf("%s points at %s (%s)", entry.name, marker, detail)); err != nil {
+					return err
+				}
 			}
 		}
 		for _, token := range container.arguments() {
 			if marker, found := transportMaterial(token.value); found {
-				return report(RulePeerTransportMaterial, token.path,
-					fmt.Sprintf("the command line declares %s (%s)", marker, detail))
+				if err := report(RulePeerTransportMaterial, token.path,
+					fmt.Sprintf("the command line declares %s (%s)", marker, detail)); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -213,8 +222,10 @@ func checkPeerTransportMaterial(spec pathedSpec, report reporter) error {
 			continue
 		}
 		if marker, found := volumeTransportMaterial(volume.name, volume.value[volume.source]); found {
-			return report(RulePeerTransportMaterial, volume.sourcePath,
-				fmt.Sprintf("volume %q delivers %s as files (%s)", volume.name, marker, detail))
+			if err := report(RulePeerTransportMaterial, volume.sourcePath,
+				fmt.Sprintf("volume %q delivers %s as files (%s)", volume.name, marker, detail)); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -228,10 +239,12 @@ func checkVolumeSources(spec pathedSpec, report reporter) error {
 		case scratchVolumeSource, durableVolumeSource, "":
 			continue
 		}
-		return report(RuleNonScratchMount, volume.sourcePath, fmt.Sprintf(
+		if err := report(RuleNonScratchMount, volume.sourcePath, fmt.Sprintf(
 			"volume %q takes its contents from a %s source, and a deployed workload mounts only the standard scratch volume (%s) or a durable data claim (%s); "+
 				"configuration and credentials reach a service as values and secrets in the environment variables the render already projects, so a mount means something reads a file the platform never delivers",
-			volume.name, volume.source, scratchVolumeSource, durableVolumeSource))
+			volume.name, volume.source, scratchVolumeSource, durableVolumeSource)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -244,23 +257,30 @@ func checkDevelopmentMode(spec pathedSpec, report reporter) error {
 		"for the life of the process: the next restart or node replacement loses them"
 	for _, container := range containers(spec) {
 		for _, token := range container.arguments() {
-			if developmentSwitch(token.value) {
-				return report(RuleInMemoryStateStore, token.path,
-					fmt.Sprintf("the command line passes %q, a development-mode switch; %s", token.value, detail))
+			if !developmentSwitch(token.value) {
+				continue
+			}
+			if err := report(RuleInMemoryStateStore, token.path,
+				fmt.Sprintf("the command line passes %q, a development-mode switch; %s", token.value, detail)); err != nil {
+				return err
 			}
 		}
 		for _, entry := range container.environment() {
 			names := nameWords(entry.name)
+			var field, reason string
 			switch {
 			case anyWord(names, inMemoryWords):
-				return report(RuleInMemoryStateStore, entry.namePath,
-					fmt.Sprintf("%s selects in-memory storage; %s", entry.name, detail))
+				field, reason = entry.namePath, fmt.Sprintf("%s selects in-memory storage", entry.name)
 			case anyWord(names, developmentWords) && anyWord(names, credentialWords):
-				return report(RuleInMemoryStateStore, entry.namePath,
-					fmt.Sprintf("%s is a development-mode credential, so the workload runs its development server; %s", entry.name, detail))
+				field, reason = entry.namePath, fmt.Sprintf(
+					"%s is a development-mode credential, so the workload runs its development server", entry.name)
 			case anyWord(names, storageWords) && ephemeralStorageValues[strings.ToLower(strings.TrimSpace(entry.value))]:
-				return report(RuleInMemoryStateStore, entry.valuePath,
-					fmt.Sprintf("%s selects %q storage; %s", entry.name, entry.value, detail))
+				field, reason = entry.valuePath, fmt.Sprintf("%s selects %q storage", entry.name, entry.value)
+			default:
+				continue
+			}
+			if err := report(RuleInMemoryStateStore, field, reason+"; "+detail); err != nil {
+				return err
 			}
 		}
 	}
