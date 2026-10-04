@@ -21,7 +21,7 @@ func TestGatewayRoutesEveryDeclaredCodeUnitToItsSelectedPeer(t *testing.T) {
 	writeCodeUnitFixture(t, root, "backend/test_backend.txt", "opaque backend input\n")
 	writeCodeUnitFixture(t, root, "frontend/test_frontend.txt", "opaque frontend input\n")
 
-	server, err := NewServer(Config{WorkDir: root})
+	server, err := NewServer(&Config{WorkDir: root})
 	if err != nil {
 		t.Fatal(err)
 	}

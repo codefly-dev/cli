@@ -367,7 +367,7 @@ func (s *Server) storePreparedMutation(prepared *gatewayv1.PreparedMutation, aft
 		storedByteCount += len(content)
 		storedBytes[file.GetPath()] = append([]byte(nil), content...)
 	}
-	clone := proto.Clone(prepared).(*gatewayv1.PreparedMutation)
+	clone := cloneProto(prepared)
 	expiresAt := clone.GetExpiresAt().AsTime().UTC()
 	s.preparedMutationMu.Lock()
 	defer s.preparedMutationMu.Unlock()
@@ -408,7 +408,7 @@ func (s *Server) loadPreparedMutation(preparationID, mutationDigest string) (*ga
 	if stored.prepared.GetMutationDigest() != mutationDigest {
 		return nil, nil, errors.New("prepared mutation digest does not match its Codefly handle")
 	}
-	prepared := proto.Clone(stored.prepared).(*gatewayv1.PreparedMutation)
+	prepared := cloneProto(stored.prepared)
 	afterByPath := make(map[string][]byte, len(stored.afterByPath))
 	for path, content := range stored.afterByPath {
 		afterByPath[path] = append([]byte(nil), content...)

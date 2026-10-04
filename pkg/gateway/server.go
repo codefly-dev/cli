@@ -19,7 +19,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -122,7 +121,17 @@ type ExecutionDispatcher interface {
 }
 
 // bindHost returns the interface to listen on, defaulting to local-only.
-func (c Config) bindHost() string {
+// Execution and build outcome words the gateway reports, each once.
+const (
+	outcomeFailed             = "failed"
+	outcomeUncertain          = "uncertain"
+	diagnosticSeverityError   = "error"
+	resourceKindTestSelection = "test.selection"
+	gitTool                   = "git"
+	buildShortcut             = "build"
+)
+
+func (c *Config) bindHost() string {
 	if strings.TrimSpace(c.Host) == "" {
 		return "127.0.0.1"
 	}
@@ -220,7 +229,7 @@ type SvcConfig struct {
 // cfg.WorkDir but starts successfully without it — plugin-dependent RPCs
 // will return a clear error until a mind.yaml is present or the config is
 // provided at runtime.
-func NewServer(cfg Config) (*Server, error) {
+func NewServer(cfg *Config) (*Server, error) {
 	remote := !isLoopbackHost(cfg.bindHost())
 	if remote && strings.TrimSpace(cfg.Token) == "" {
 		return nil, fmt.Errorf("gateway authentication token is required for non-loopback host %q", cfg.bindHost())
@@ -243,13 +252,13 @@ func NewServer(cfg Config) (*Server, error) {
 	host := cfg.WorkspaceHost
 	ownsHost := false
 	if host == nil {
-		var err error
-		host, err = engine.NewWorkspaceHost(engine.Config{
+		var hostErr error
+		host, hostErr = engine.NewWorkspaceHost(engine.Config{
 			Root:      cfg.WorkDir,
 			LogWriter: os.Stderr,
 		})
-		if err != nil {
-			return nil, fmt.Errorf("create workspace host: %w", err)
+		if hostErr != nil {
+			return nil, fmt.Errorf("create workspace host: %w", hostErr)
 		}
 		ownsHost = true
 	} else if !withinRoot(host.Root(), cfg.WorkDir) {
@@ -259,7 +268,7 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("gateway work directory %s is not within the supplied workspace host root %s", cfg.WorkDir, host.Root())
 	}
 	s := &Server{
-		cfg:                 cfg,
+		cfg:                 *cfg,
 		tlsConfig:           tlsConfig,
 		host:                host,
 		ownsHost:            ownsHost,
@@ -299,7 +308,7 @@ func NewServer(cfg Config) (*Server, error) {
 	return s, nil
 }
 
-func loadGatewayTLSConfig(cfg Config) (*tls.Config, error) {
+func loadGatewayTLSConfig(cfg *Config) (*tls.Config, error) {
 	certFile := strings.TrimSpace(cfg.TLSCertFile)
 	keyFile := strings.TrimSpace(cfg.TLSKeyFile)
 	caFile := strings.TrimSpace(cfg.TLSClientCAFile)
@@ -336,16 +345,6 @@ func loadGatewayTLSConfig(cfg Config) (*tls.Config, error) {
 	tlsConfig.ClientCAs = clientCAs
 	tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
 	return tlsConfig, nil
-}
-
-// requireConfig returns an error if mind.yaml was not loaded.
-// Call this before any operation that needs the service/plugin config.
-func (s *Server) requireConfig() error {
-	if s.mindYAML == nil {
-		return status.Errorf(codes.FailedPrecondition,
-			"no mind.yaml found in %s — create one or run 'mind init' first", s.cfg.WorkDir)
-	}
-	return nil
 }
 
 // Serve starts the gRPC server and blocks until stopped.
@@ -744,7 +743,7 @@ func (s *Server) WriteFile(ctx context.Context, req *gatewayv1.WriteFileRequest)
 	return &gatewayv1.WriteFileResponse{Success: true}, nil
 }
 
-func (s *Server) ListFiles(ctx context.Context, req *gatewayv1.ListFilesRequest) (*gatewayv1.ListFilesResponse, error) {
+func (s *Server) ListFiles(_ context.Context, req *gatewayv1.ListFilesRequest) (*gatewayv1.ListFilesResponse, error) {
 	if err := s.validateService(req.GetService()); err != nil {
 		return nil, err
 	}
@@ -1106,7 +1105,7 @@ func (s *Server) applyEditWithReceipt(
 				pathExecutionResource(rel, beforeSHA256, "", false),
 			},
 			Result: &executionv1.ExecutionResultV1{
-				Status: "uncertain", ErrorCode: errorCode("gateway-rpc-outcome-unknown"),
+				Status: outcomeUncertain, ErrorCode: errorCode("gateway-rpc-outcome-unknown"),
 				DurationMs: durationMilliseconds(effectStarted),
 			},
 		})
@@ -1120,7 +1119,7 @@ func (s *Server) applyEditWithReceipt(
 				pathExecutionResource(rel, beforeSHA256, "", false),
 			},
 			Result: &executionv1.ExecutionResultV1{
-				Status: "failed", ErrorCode: errorCode("invalid-plugin-response"),
+				Status: outcomeFailed, ErrorCode: errorCode("invalid-plugin-response"),
 				DurationMs: durationMilliseconds(effectStarted),
 			},
 		})
@@ -1134,7 +1133,7 @@ func (s *Server) applyEditWithReceipt(
 		BeforeSizeBytes: rawResult.GetBeforeSizeBytes(), AfterSizeBytes: rawResult.GetAfterSizeBytes(),
 	}
 	stage := executionv1.ExecutionStage_EXECUTION_STAGE_FAILED
-	statusValue := "failed"
+	statusValue := outcomeFailed
 	errorCodeValue := (*string)(nil)
 	if response.GetSuccess() {
 		stage = executionv1.ExecutionStage_EXECUTION_STAGE_SUCCEEDED
@@ -1252,13 +1251,13 @@ func (s *Server) applySymbolPatchWithReceipt(ctx context.Context, req *gatewayv1
 			Resources: []*executionv1.ExecutionResourceV1{
 				pathExecutionResource(rel, beforeSHA256, "", false),
 			},
-			Result: &executionv1.ExecutionResultV1{Status: "uncertain", ErrorCode: errorCode("gateway-rpc-outcome-unknown"), DurationMs: durationMilliseconds(effectStarted)},
+			Result: &executionv1.ExecutionResultV1{Status: outcomeUncertain, ErrorCode: errorCode("gateway-rpc-outcome-unknown"), DurationMs: durationMilliseconds(effectStarted)},
 		})
 		return &gatewayv1.ApplySymbolPatchResponse{Success: false, Error: err.Error()}, nil
 	}
 	response := gatewaySymbolPatchResponse(raw)
 	stage := executionv1.ExecutionStage_EXECUTION_STAGE_FAILED
-	statusValue := "failed"
+	statusValue := outcomeFailed
 	errorCodeValue := (*string)(nil)
 	if response.GetSuccess() {
 		stage = executionv1.ExecutionStage_EXECUTION_STAGE_SUCCEEDED
@@ -1894,7 +1893,7 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 		Assurance:            executionv1.ExecutionAssurance_EXECUTION_ASSURANCE_PLUGIN_EXECUTED,
 		Target:               executionTarget(s.executionService(requestedService)),
 		Resources: []*executionv1.ExecutionResourceV1{{
-			Kind: "test.selection", Reference: selectionReference,
+			Kind: resourceKindTestSelection, Reference: selectionReference,
 		}},
 	})
 	if err != nil {
@@ -1915,10 +1914,10 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 		finishGovernedExecution(ctx, attempt, executionrecorder.FinishInput{
 			Stage: executionv1.ExecutionStage_EXECUTION_STAGE_UNCERTAIN,
 			Resources: []*executionv1.ExecutionResourceV1{{
-				Kind: "test.selection", Reference: selectionReference,
+				Kind: resourceKindTestSelection, Reference: selectionReference,
 			}},
 			Result: &executionv1.ExecutionResultV1{
-				Status: "uncertain", ErrorCode: errorCode("plugin-rpc-outcome-unknown"),
+				Status: outcomeUncertain, ErrorCode: errorCode("plugin-rpc-outcome-unknown"),
 				DurationMs: durationMilliseconds(effectStarted),
 			},
 		})
@@ -1939,7 +1938,7 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 		RuntimeResponse: resp,
 	}
 	stage := executionv1.ExecutionStage_EXECUTION_STAGE_FAILED
-	statusValue := "failed"
+	statusValue := outcomeFailed
 	errorCodeValue := errorCode("test-failed")
 	if success {
 		stage = executionv1.ExecutionStage_EXECUTION_STAGE_SUCCEEDED
@@ -1949,7 +1948,7 @@ func (s *Server) Test(ctx context.Context, req *gatewayv1.TestRequest) (*gateway
 	finishGovernedExecution(ctx, attempt, executionrecorder.FinishInput{
 		Stage: stage,
 		Resources: []*executionv1.ExecutionResourceV1{{
-			Kind: "test.selection", Reference: selectionReference,
+			Kind: resourceKindTestSelection, Reference: selectionReference,
 		}},
 		Result: &executionv1.ExecutionResultV1{
 			Status: statusValue, ErrorCode: errorCodeValue, DurationMs: durationMilliseconds(effectStarted),
@@ -2002,7 +2001,7 @@ func (s *Server) Format(ctx context.Context, req *gatewayv1.FormatRequest) (*gat
 		if err != nil {
 			return &gatewayv1.FormatResponse{Success: false, Output: fmt.Sprintf("discover changed files: %v", err)}, nil
 		}
-		paths = append(paths, formattableChangedPaths(gitStatus)...)
+		paths = append(paths, formattableChangedPaths(&gitStatus)...)
 	}
 	changed := make([]string, 0, len(paths))
 	var diagnostics []*gatewayv1.BuildError
@@ -2013,7 +2012,7 @@ func (s *Server) Format(ctx context.Context, req *gatewayv1.FormatRequest) (*gat
 			if err == nil {
 				err = fmt.Errorf("format path cannot be empty")
 			}
-			diagnostics = append(diagnostics, &gatewayv1.BuildError{File: requested, Message: err.Error(), Severity: "error"})
+			diagnostics = append(diagnostics, &gatewayv1.BuildError{File: requested, Message: err.Error(), Severity: diagnosticSeverityError})
 			continue
 		}
 		result, err := s.Fix(ctx, &gatewayv1.FixRequest{
@@ -2022,11 +2021,11 @@ func (s *Server) Format(ctx context.Context, req *gatewayv1.FormatRequest) (*gat
 			Mode:    basev0.FixMode_FIX_MODE_SAFE,
 		})
 		if err != nil {
-			diagnostics = append(diagnostics, &gatewayv1.BuildError{File: path, Message: err.Error(), Severity: "error"})
+			diagnostics = append(diagnostics, &gatewayv1.BuildError{File: path, Message: err.Error(), Severity: diagnosticSeverityError})
 			continue
 		}
 		if !result.GetSuccess() {
-			diagnostics = append(diagnostics, &gatewayv1.BuildError{File: path, Message: result.GetError(), Severity: "error"})
+			diagnostics = append(diagnostics, &gatewayv1.BuildError{File: path, Message: result.GetError(), Severity: diagnosticSeverityError})
 			continue
 		}
 		if result.GetChanged() {
@@ -2037,7 +2036,7 @@ func (s *Server) Format(ctx context.Context, req *gatewayv1.FormatRequest) (*gat
 		}
 	}
 	sort.Strings(changed)
-	state := "failed"
+	state := outcomeFailed
 	if len(diagnostics) == 0 {
 		state = "formatted"
 		if len(changed) == 0 {
@@ -2056,7 +2055,7 @@ func (s *Server) Format(ctx context.Context, req *gatewayv1.FormatRequest) (*gat
 // formattableChangedPaths selects the working-tree paths a formatter can act on
 // from a git status: deletions have nothing on disk to format, and renames are
 // reported as "old -> new", so the destination is the file that now exists.
-func formattableChangedPaths(st control.GitStatus) []string {
+func formattableChangedPaths(st *control.GitStatus) []string {
 	paths := make([]string, 0, len(st.Files))
 	for _, f := range st.Files {
 		if strings.ContainsRune(f.Code, 'D') {
@@ -2356,11 +2355,12 @@ func runtimeTestSuiteFailures(out []string, suites []*runtimev0.TestSuite) []str
 			if msg == "" {
 				msg = failure.GetDetail()
 			}
-			if name != "" && msg != "" {
+			switch {
+			case name != "" && msg != "":
 				out = append(out, name+": "+msg)
-			} else if name != "" {
+			case name != "":
 				out = append(out, name)
-			} else if msg != "" {
+			case msg != "":
 				out = append(out, msg)
 			}
 		}
@@ -2469,11 +2469,11 @@ func (s *Server) ListAllCommands(ctx context.Context, _ *gatewayv1.ListAllComman
 	var commands []*gatewayv1.AvailableCommand
 
 	builtins := []*gatewayv1.AvailableCommand{
-		{Name: "gs", Description: "Git status", Aliases: []string{"git status"}, Tags: []string{"git"}},
-		{Name: "gd", Description: "Git diff", Aliases: []string{"git diff"}, Tags: []string{"git"}},
-		{Name: "gl", Description: "Git log", Aliases: []string{"git log"}, Tags: []string{"git"}},
-		{Name: "gc", Description: "Git commit", Aliases: []string{"git commit"}, Tags: []string{"git"}},
-		{Name: "build", Description: "Build the project", Tags: []string{"build"}},
+		{Name: "gs", Description: "Git status", Aliases: []string{"git status"}, Tags: []string{gitTool}},
+		{Name: "gd", Description: "Git diff", Aliases: []string{"git diff"}, Tags: []string{gitTool}},
+		{Name: "gl", Description: "Git log", Aliases: []string{"git log"}, Tags: []string{gitTool}},
+		{Name: "gc", Description: "Git commit", Aliases: []string{"git commit"}, Tags: []string{gitTool}},
+		{Name: buildShortcut, Description: "Build the project", Tags: []string{buildShortcut}},
 		{Name: "test", Description: "Run tests", Tags: []string{"test"}},
 		{Name: "lint", Description: "Run linter", Tags: []string{"lint"}},
 	}
@@ -2503,7 +2503,7 @@ func (s *Server) ListAllCommands(ctx context.Context, _ *gatewayv1.ListAllComman
 // ─── Runtime / Checks ────────────────────────────────────────
 
 func (s *Server) RunChecks(ctx context.Context, req *gatewayv1.RunChecksRequest) (*gatewayv1.RunChecksResponse, error) {
-	var results []*gatewayv1.CheckResult
+	results := make([]*gatewayv1.CheckResult, 0, len(req.Checks))
 	serviceURL := ""
 	if s.mindYAML.Config.Port > 0 {
 		serviceURL = fmt.Sprintf("http://localhost:%d", s.mindYAML.Config.Port)
@@ -2966,7 +2966,7 @@ func (s *Server) Release(ctx context.Context, req *gatewayv1.ReleaseRequest) (*g
 	}
 	return &gatewayv1.ReleaseResponse{
 		Success: true, Tag: result.Tag, Revision: result.Revision, Units: released,
-		Act: actReceipt("release.published", result.Tag, "applied", result.Revision, "git"),
+		Act: actReceipt("release.published", result.Tag, "applied", result.Revision, gitTool),
 	}, nil
 }
 
@@ -3027,7 +3027,7 @@ func (s *Server) ForgeNormalizeWebhook(_ context.Context, req *gatewayv1.ForgeNo
 }
 
 func gitActReceipt(kind, target, revision string) *gatewayv1.ActReceipt {
-	return actReceipt(kind, target, "applied", revision, "git")
+	return actReceipt(kind, target, "applied", revision, gitTool)
 }
 
 func actReceipt(kind, target, state, revision, source string) *gatewayv1.ActReceipt {
@@ -3214,7 +3214,7 @@ func authenticateGatewayRequest(ctx context.Context, token string) error {
 }
 
 func gatewayAuthUnaryInterceptor(token string) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	return func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if err := authenticateGatewayRequest(ctx, token); err != nil {
 			return nil, err
 		}
@@ -3223,7 +3223,7 @@ func gatewayAuthUnaryInterceptor(token string) grpc.UnaryServerInterceptor {
 }
 
 func gatewayAuthStreamInterceptor(token string) grpc.StreamServerInterceptor {
-	return func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	return func(srv any, stream grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		if err := authenticateGatewayRequest(stream.Context(), token); err != nil {
 			return err
 		}
@@ -3256,7 +3256,7 @@ func parseBuildErrors(output string) []*gatewayv1.BuildError {
 					Line:     int32(lineNum),
 					Column:   int32(col),
 					Message:  strings.TrimSpace(parts[3]),
-					Severity: "error",
+					Severity: diagnosticSeverityError,
 				})
 			}
 		}
@@ -3295,31 +3295,6 @@ func gitStatusString(xy string) string {
 	default:
 		return "modified"
 	}
-}
-
-func parseGoDeps(jsonOutput string) []*gatewayv1.Dependency {
-	type goMod struct {
-		Path    string `json:"Path"`
-		Version string `json:"Version"`
-		Main    bool   `json:"Main"`
-		Dir     string `json:"Dir"`
-	}
-
-	var deps []*gatewayv1.Dependency
-	decoder := json.NewDecoder(strings.NewReader(jsonOutput))
-	for {
-		var m goMod
-		if err := decoder.Decode(&m); err != nil {
-			break
-		}
-		if m.Main {
-			continue
-		}
-		deps = append(deps, &gatewayv1.Dependency{
-			Name: m.Path, Version: m.Version, Direct: m.Dir != "",
-		})
-	}
-	return deps
 }
 
 // ─── Port file management ────────────────────────────────────

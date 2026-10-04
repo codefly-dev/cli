@@ -16,7 +16,7 @@ func TestConfigureServiceForwardsOpaqueChangesAndReusesSession(t *testing.T) {
 	root := t.TempDir()
 	selected := protocoltest.Install(t, "configuration-peer")[0]
 	writeCodeUnitFixture(t, root, "mind.yaml", "service: source\nplugin: "+selected+"\n")
-	server, err := NewServer(Config{WorkDir: root})
+	server, err := NewServer(&Config{WorkDir: root})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, server.Close()) })
 	changes := []*builderv0.ConfigChange{{Path: "opaque.option", Value: "selected-value", Op: builderv0.ConfigChange_SET}}

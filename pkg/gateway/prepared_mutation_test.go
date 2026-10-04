@@ -251,7 +251,7 @@ func TestPreparedMutationRejectsWrongSignatureBindingExpiryAndAuthorityReplaceme
 }
 
 func TestPreparedMutationRetentionRejectsOversizedResults(t *testing.T) {
-	server, err := NewServer(Config{WorkDir: t.TempDir()})
+	server, err := NewServer(&Config{WorkDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func newPreparedMutationGateway(t *testing.T) (*Server, ed25519.PrivateKey, stri
 	root := t.TempDir()
 	selected := protocoltest.Install(t, "mutation-peer")[0]
 	writeCodeUnitFixture(t, root, "mind.yaml", "service: app\nplugin: "+selected+"\n")
-	server, err := NewServer(Config{WorkDir: root})
+	server, err := NewServer(&Config{WorkDir: root})
 	if err != nil {
 		t.Fatal(err)
 	}

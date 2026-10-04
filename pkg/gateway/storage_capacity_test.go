@@ -12,7 +12,7 @@ import (
 func TestEvaluateStorageCapacityUsesRealGatewayFilesystem(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("CODEFLY_HOME", t.TempDir())
-	server, err := NewServer(Config{WorkDir: root})
+	server, err := NewServer(&Config{WorkDir: root})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestEvaluateStorageCapacityUsesRealGatewayFilesystem(t *testing.T) {
 }
 
 func TestEvaluateStorageCapacityReturnsTypedResourceExhaustion(t *testing.T) {
-	server, err := NewServer(Config{WorkDir: t.TempDir()})
+	server, err := NewServer(&Config{WorkDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestEvaluateStorageCapacityReturnsTypedResourceExhaustion(t *testing.T) {
 }
 
 func TestEvaluateStorageCapacityRejectsAmbiguousRequirements(t *testing.T) {
-	server, err := NewServer(Config{WorkDir: t.TempDir()})
+	server, err := NewServer(&Config{WorkDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestEvaluateStorageCapacityRejectsAmbiguousRequirements(t *testing.T) {
 }
 
 func TestEvaluateStorageCapacityRejectsPerAuthorityOverflow(t *testing.T) {
-	server, err := NewServer(Config{WorkDir: t.TempDir()})
+	server, err := NewServer(&Config{WorkDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

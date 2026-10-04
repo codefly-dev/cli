@@ -38,7 +38,7 @@ class Ads {}
 </Project>`)
 	writeCodeUnitFixture(t, root, "src/cart/src/Program.cs", "using Grpc.Core;\nclass Program {}\n")
 
-	server, err := NewServer(Config{WorkDir: root})
+	server, err := NewServer(&Config{WorkDir: root})
 	if err != nil {
 		t.Fatal(err)
 	}

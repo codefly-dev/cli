@@ -264,7 +264,7 @@ var daemonGatewayCmd = &cobra.Command{
 			executionRecorder = execution.Recorder
 			executionDispatcher = execution.Dispatcher
 		}
-		srv, err := gateway.NewServer(gateway.Config{
+		srv, err := gateway.NewServer(&gateway.Config{
 			WorkDir:             absDir,
 			Port:                gatewayPort,
 			Host:                os.Getenv("CODEFLY_GATEWAY_HOST"),

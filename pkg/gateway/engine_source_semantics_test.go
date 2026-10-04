@@ -29,7 +29,7 @@ func newSourceSemanticsGateway(t *testing.T) (*Server, string) {
 	root := t.TempDir()
 	selected := protocoltest.Install(t, "semantics-peer")[0]
 	writeCodeUnitFixture(t, root, "mind.yaml", "service: app\nplugin: "+selected+"\n")
-	server, err := NewServer(Config{WorkDir: root})
+	server, err := NewServer(&Config{WorkDir: root})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +365,7 @@ func newSourceDirGateway(t *testing.T, relative, content string) (*Server, strin
 	writeCodeUnitFixture(t, root, filepath.Join("src", relative), content)
 	writeCodeUnitFixture(t, root, relative, content)
 
-	server, err := NewServer(Config{WorkDir: root})
+	server, err := NewServer(&Config{WorkDir: root})
 	if err != nil {
 		t.Fatal(err)
 	}
