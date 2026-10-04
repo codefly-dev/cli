@@ -62,6 +62,13 @@ func presenceWorkloads(owned string, opts *RenderOptions, unit SolutionArtifactU
 		// default account is every pod's that names none: a workload running as
 		// it would be declared under an identity any pod in the namespace can
 		// present. A serving workload names its own account.
+		if workload.ServiceAccount == deliveryServiceAccount {
+			// The delivery account is the delivery Job's: a serving workload
+			// presenting its identity would be a deployment caller and a
+			// runtime caller under one account, the collision the host's
+			// distinction between the two assumes absent.
+			return nil, fmt.Errorf("artifact %s workload %s runs as the %q ServiceAccount, which is reserved for the delivery Job; a serving workload names an account of its own", unit.Name, workload.Name, deliveryServiceAccount)
+		}
 		if workload.ServiceAccount == defaultServiceAccount {
 			return nil, fmt.Errorf("artifact %s workload %s runs as the namespace's default ServiceAccount, whose identity every pod of the namespace that names no account shares; a workload a host admits names its own account (spec.template.spec.serviceAccountName)", unit.Name, workload.Name)
 		}

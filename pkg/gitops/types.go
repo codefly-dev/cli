@@ -414,6 +414,10 @@ type PublishRequest struct {
 	// that executes the plan to deliver as they are. Set from the plan by
 	// the command; never part of a request's own JSON.
 	Carriers map[string][]byte `json:"-"`
+	// Resign lets the plan sign again a document whose delivered carrier the
+	// release policy no longer admits — after a signing identity rotated.
+	// Deliberate: without it such a carrier refuses the publish by name.
+	Resign bool `json:"resign,omitempty"`
 }
 
 type PublishPlan struct {

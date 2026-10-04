@@ -66,6 +66,14 @@ type deliveryPublishOptions struct {
 	// carrierKey, for the publish that executes the plan to deliver exactly
 	// those bytes rather than signing again.
 	Reuse map[string][]byte
+	// Executing marks the publish that executes an inspected plan: it signs
+	// nothing the plan did not, and refuses rather than produce a signature
+	// the plan compared without.
+	Executing bool
+	// Resign lets a plan sign a document again whose delivered carrier the
+	// release policy no longer admits — a rotated signing identity — which
+	// is deliberate, never implied: without it such a carrier refuses.
+	Resign bool
 	// Carriers collects every carrier this settlement delivers, keyed by
 	// carrierKey, so a plan can hand them to the publish that executes it.
 	Carriers map[string][]byte
@@ -118,6 +126,18 @@ func refuseUnaddressedDocuments(what string, names []string, environment string,
 		return nil
 	}
 	return fmt.Errorf("the render declares the %s documents %s for %s but the environment names no host now; render again against the environment as it is, or declare the host they are delivered to", what, strings.Join(names, ", "), environment)
+}
+
+// refuseAnotherHostsRecord holds what the base branch delivered under this
+// environment's name to the host the environment declares now: a document
+// delivered to another host coordinate is another host's record, and a
+// publish never settles over it — a host change is a new environment, not a
+// generation of the old one's bindings.
+func refuseAnotherHostsRecord(what, id string, host solutionhost.HostTarget, opts *deliveryPublishOptions) error {
+	if opts.Coordinate == "" || (host.Coordinate == opts.Coordinate && host.Component == opts.Component) {
+		return nil
+	}
+	return fmt.Errorf("%s %s was delivered to host %s/%s and this environment delivers to %s/%s now; a host change is a new environment with a delivery path of its own, never a publish over another host's record", what, id, host.Coordinate, host.Component, opts.Coordinate, opts.Component)
 }
 
 // refuseMovedDocument holds a rendered document to the host the environment
@@ -176,6 +196,51 @@ func verifyReusedCarrier(ctx context.Context, what string, carrier, payload []by
 	return named.Subject + " (" + named.Issuer + ")", true, nil
 }
 
+// reuseCarrier decides what carries a settled document before any signature
+// is produced: the carrier the base branch delivered, then the one the
+// inspected plan signed, each held to the document and to the release policy.
+// A local publish ignores the base branch's carrier (it delivers what its own
+// signer gives). When neither carries it, the publish that executes a plan
+// refuses rather than sign what the plan compared without, and a plan whose
+// delivered carrier the policy no longer admits signs again only when told to
+// (Resign): a signature is produced once, deliberately, and reused after.
+// The chosen carrier is left in *carrier; reused reports whether one was.
+func reuseCarrier(ctx context.Context, what string, carrier *[]byte, planned, payload []byte, opts *deliveryPublishOptions) (identity string, reused bool, err error) {
+	delivered := *carrier
+	if opts.AllowUnsigned {
+		delivered = nil
+	}
+	// The delivered carrier is held to the release policy; the plan's was
+	// signed by this release and checked as it was signed, so it is held to
+	// the document only.
+	planChecked := *opts
+	planChecked.ReuseCheck = nil
+	for _, candidate := range []struct {
+		carrier []byte
+		under   *deliveryPublishOptions
+	}{{delivered, opts}, {planned, &planChecked}} {
+		if len(candidate.carrier) == 0 {
+			continue
+		}
+		identity, verified, verifyErr := verifyReusedCarrier(ctx, what, candidate.carrier, payload, candidate.under)
+		if verifyErr != nil {
+			return "", false, verifyErr
+		}
+		if verified {
+			*carrier = candidate.carrier
+			return identity, true, nil
+		}
+	}
+	*carrier = nil
+	switch {
+	case opts.Executing && !opts.AllowUnsigned:
+		return "", false, fmt.Errorf("%s has no carrier the inspected plan signed and none the release policy admits; a publish signs nothing its plan did not — plan again", what)
+	case len(delivered) > 0 && !opts.Resign:
+		return "", false, fmt.Errorf("%s was signed by an identity the release policy no longer admits; signing it again is deliberate: plan and publish with --resign", what)
+	}
+	return "", false, nil
+}
+
 // hostStamp is what a rendered document says about the host it was rendered
 // for, held to the environment's declaration at publish.
 type hostStamp struct {
@@ -229,6 +294,14 @@ func settlePresenceDelivery(
 		return nil, fmt.Errorf(
 			"module %s delivered the bindings %s to %s before and this render declares none and names no host; to withdraw them, render with the environment's host block in place and without the instances, so publish writes their tombstones",
 			inventory.Module, strings.Join(sortedBindingNames(prior), ", "), environment)
+	}
+	// What the base branch delivered under this environment's name is held
+	// to the host declared now before anything else: another host's record
+	// is never published over.
+	for binding, previous := range prior {
+		if err = refuseAnotherHostsRecord("binding", binding, previous.document.Host, opts); err != nil {
+			return nil, err
+		}
 	}
 	if len(rendered) > 0 {
 		if err = refuseUnaddressedDocuments("binding", sortedBindingNames(rendered), environment, opts); err != nil {
@@ -385,47 +458,28 @@ func signPresenceSet(ctx context.Context, settled map[string]deliveredPresenceDo
 	for _, binding := range names {
 		entry := settled[binding]
 		key := carrierKey(deliveredPresence, binding, entry.document.Generation)
-		if len(entry.carrier) > 0 && opts.AllowUnsigned {
-			// A local publish never reuses a carrier the base branch holds:
-			// it delivers what its own signer gives, so the set reads
-			// signed: false as one when that signer has no identity.
-			entry.carrier = nil
-		}
-		if len(entry.carrier) == 0 {
-			// The plan this publish executes signed it once; the publish
-			// delivers those exact bytes, held to the document below like
-			// any carrier signed before.
-			entry.carrier = opts.Reuse[key]
-		}
 		payload, err := entry.document.CanonicalBytes()
 		if err != nil {
 			return nil, fmt.Errorf("canonicalize binding %s: %w", binding, err)
 		}
-		if len(entry.carrier) > 0 {
-			// Signed before as these exact bytes: the carrier is reused
-			// rather than re-signed, once it is held to this document —
-			// readable, signing exactly these canonical bytes — and only
-			// while the release policy still admits its signer.
-			identity, verified, reuseErr := verifyReusedCarrier(ctx, "binding "+binding, entry.carrier, payload, opts)
-			if reuseErr != nil {
-				return nil, reuseErr
+		identity, reused, err := reuseCarrier(ctx, "binding "+binding, &entry.carrier, opts.Reuse[key], payload, opts)
+		if err != nil {
+			return nil, err
+		}
+		if reused {
+			if delivery.Identity == "" {
+				delivery.Identity = identity
 			}
-			if verified {
-				if delivery.Identity == "" {
-					delivery.Identity = identity
-				}
-				digest, digestErr := entry.document.Digest()
-				if digestErr != nil {
-					return nil, digestErr
-				}
-				delivery.Documents = append(delivery.Documents, InventoryDeliveredDocument{
-					Kind: deliveredPresence, ID: binding, Generation: entry.document.Generation, Removed: entry.document.Removed, Digest: digest,
-				})
-				opts.Carriers[key] = entry.carrier
-				settled[binding] = entry
-				continue
+			digest, digestErr := entry.document.Digest()
+			if digestErr != nil {
+				return nil, digestErr
 			}
-			entry.carrier = nil
+			delivery.Documents = append(delivery.Documents, InventoryDeliveredDocument{
+				Kind: deliveredPresence, ID: binding, Generation: entry.document.Generation, Removed: entry.document.Removed, Digest: digest,
+			})
+			opts.Carriers[key] = entry.carrier
+			settled[binding] = entry
+			continue
 		}
 		bundle, signErr := signer.Sign(ctx, payload)
 		switch {
@@ -765,6 +819,11 @@ func settleAuthorityDelivery(
 			"module %s delivered the authority documents %s to %s before and this render declares none and names no host; to withdraw them, render with the environment's host block in place, so publish writes their tombstones",
 			inventory.Module, strings.Join(names, ", "), environment)
 	}
+	for authority, previous := range prior {
+		if err = refuseAnotherHostsRecord("authority", authority, previous.document.Host, opts); err != nil {
+			return nil, err
+		}
+	}
 	if len(rendered) > 0 {
 		declared := make([]string, 0, len(rendered))
 		for authority := range rendered {
@@ -1081,37 +1140,28 @@ func signAuthoritySet(ctx context.Context, settled map[string]deliveredAuthority
 	for _, authority := range names {
 		entry := settled[authority]
 		key := carrierKey(deliveredAuthority, authority, entry.document.Generation)
-		if len(entry.carrier) > 0 && opts.AllowUnsigned {
-			entry.carrier = nil
-		}
-		if len(entry.carrier) == 0 {
-			entry.carrier = opts.Reuse[key]
-		}
 		payload, err := solutionhost.SignedPayloadFor(entry.document)
 		if err != nil {
 			return nil, fmt.Errorf("canonicalize authority %s: %w", authority, err)
 		}
-		if len(entry.carrier) > 0 {
-			identity, verified, reuseErr := verifyReusedCarrier(ctx, "authority "+authority, entry.carrier, payload, opts)
-			if reuseErr != nil {
-				return nil, reuseErr
+		identity, reused, err := reuseCarrier(ctx, "authority "+authority, &entry.carrier, opts.Reuse[key], payload, opts)
+		if err != nil {
+			return nil, err
+		}
+		if reused {
+			if delivery.Identity == "" {
+				delivery.Identity = identity
 			}
-			if verified {
-				if delivery.Identity == "" {
-					delivery.Identity = identity
-				}
-				digest, digestErr := entry.document.Digest()
-				if digestErr != nil {
-					return nil, digestErr
-				}
-				delivery.Documents = append(delivery.Documents, InventoryDeliveredDocument{
-					Kind: deliveredAuthority, ID: authority, Generation: entry.document.Generation, Removed: entry.document.Removed, Digest: digest,
-				})
-				opts.Carriers[key] = entry.carrier
-				settled[authority] = entry
-				continue
+			digest, digestErr := entry.document.Digest()
+			if digestErr != nil {
+				return nil, digestErr
 			}
-			entry.carrier = nil
+			delivery.Documents = append(delivery.Documents, InventoryDeliveredDocument{
+				Kind: deliveredAuthority, ID: authority, Generation: entry.document.Generation, Removed: entry.document.Removed, Digest: digest,
+			})
+			opts.Carriers[key] = entry.carrier
+			settled[authority] = entry
+			continue
 		}
 		bundle, signErr := signer.Sign(ctx, payload)
 		switch {

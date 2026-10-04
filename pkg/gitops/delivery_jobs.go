@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -100,7 +101,13 @@ const (
 	// deliveryDeadlineSeconds bounds one Job run: long enough for the host to
 	// come up behind it, short enough that a sync does not hang for ever.
 	deliveryDeadlineSeconds = 1800
-	deliveryBackoffLimit    = 6
+	// deliveryBudgetSeconds is how long the script keeps posting before it
+	// gives up on what the host never answered, inside the Job's deadline so
+	// the report is written rather than the pod killed; deliveryMaxPause caps
+	// the doubling pause between rounds.
+	deliveryBudgetSeconds = 1500
+	deliveryMaxPause      = 60
+	deliveryBackoffLimit  = 6
 
 	argoHookAnnotation         = "argocd.argoproj.io/hook"
 	argoHookDeletePolicy       = "argocd.argoproj.io/hook-delete-policy"
@@ -256,7 +263,12 @@ type deliveryAccountMetadata struct {
 // retry would ask the same question of the same host: the document is
 // refused, the next one is posted, and the Job fails at the end. Anything
 // else — no connection, a 5xx, a 429, a 404 from a host a version behind —
-// is the host not being there yet, which is what the backoff is for.
+// is the host not being there yet, which is what the backoff is for. The
+// documents are posted in ROUNDS: every pending document once per round,
+// then a pause that doubles up to a cap, rounds until each is answered or
+// the budget is spent — so a document the host keeps failing never keeps a
+// later one, a tombstone among them, from its first attempt, and the budget
+// is spread over every document rather than spent on the first.
 //
 // Shell variables are spelled $NAME and never ${NAME}: the promotable ruleset
 // refuses a manifest carrying ${…} as an unresolved placeholder, and this
@@ -264,13 +276,22 @@ type deliveryAccountMetadata struct {
 // file, so the container needs no writable filesystem.
 const deliveryScript = `set -eu
 url="$DELIVERY_URL$DELIVERY_PATH"
-delivered=0
-refused=0
+budget="$DELIVERY_BUDGET_SECONDS"
+pending=""
 for file in "$DELIVERY_DOCUMENTS"/*.json; do
   [ -e "$file" ] || { echo "no document to deliver under $DELIVERY_DOCUMENTS"; exit 1; }
-  name=$(basename "$file")
-  attempt=0
-  while :; do
+  pending="$pending $file"
+done
+started=$(date +%s)
+delivered=0
+refused=0
+round=0
+pause=1
+while [ -n "$pending" ]; do
+  round=$((round + 1))
+  remaining=""
+  for file in $pending; do
+    name=$(basename "$file")
     answer=$(curl -sS --max-time 30 -w '\n%{http_code}' -X POST \
       -H "Authorization: Bearer $(cat "$DELIVERY_IDENTITY_FILE")" \
       -H 'Content-Type: application/json' \
@@ -279,16 +300,25 @@ for file in "$DELIVERY_DOCUMENTS"/*.json; do
     code=$(printf '%s' "$answer" | tail -n 1)
     receipt=$(printf '%s' "$answer" | sed '$d')
     case "$code" in
-      2??) echo "delivered $name: $receipt"; delivered=$((delivered + 1)); break ;;
-      400|401|403|409|422) echo "refused $name with $code: $receipt"; refused=$((refused + 1)); break ;;
-      *) attempt=$((attempt + 1))
-         if [ "$attempt" -ge 30 ]; then echo "giving up on $name after $attempt attempts (last answer $code)"; refused=$((refused + 1)); break; fi
-         echo "delivery API answered $code for $name; retrying"
-         if [ "$attempt" -lt 6 ]; then sleep $((1 << attempt)); else sleep 60; fi ;;
+      2??) echo "delivered $name: $receipt"; delivered=$((delivered + 1)) ;;
+      400|401|403|409|422) echo "refused $name with $code: $receipt"; refused=$((refused + 1)) ;;
+      *) echo "delivery API answered $code for $name in round $round; it is tried again next round"; remaining="$remaining $file" ;;
     esac
   done
+  pending="$remaining"
+  [ -n "$pending" ] || break
+  now=$(date +%s)
+  if [ $((now - started)) -ge "$budget" ]; then
+    for file in $pending; do
+      echo "giving up on $(basename "$file") after $round rounds within $budget seconds"
+      refused=$((refused + 1))
+    done
+    break
+  fi
+  sleep "$pause"
+  if [ "$pause" -lt "$DELIVERY_MAX_PAUSE_SECONDS" ]; then pause=$((pause * 2)); fi
 done
-echo "delivered $delivered document(s) to $url, $refused refused"
+echo "delivered $delivered document(s) to $url in $round round(s), $refused refused"
 [ "$refused" -eq 0 ]
 `
 
@@ -343,6 +373,8 @@ func renderDeliveryJob(directory, name, namespace, serviceAccount, kind, path st
 				{Name: "DELIVERY_URL", Value: target.URL},
 				{Name: "DELIVERY_PATH", Value: path},
 				{Name: "DELIVERY_DOCUMENTS", Value: deliveryDocumentsMount},
+				{Name: "DELIVERY_BUDGET_SECONDS", Value: strconv.Itoa(deliveryBudgetSeconds)},
+				{Name: "DELIVERY_MAX_PAUSE_SECONDS", Value: strconv.Itoa(deliveryMaxPause)},
 				// Named for what it is, the FILE the projected identity is read
 				// from: a variable named *_TOKEN carrying a value is classified
 				// as a credential by the promotable ruleset, which refuses the

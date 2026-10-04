@@ -1,9 +1,14 @@
 package gitops
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -73,7 +78,7 @@ func TestDeliveryJobIsASyncHookThatPostsEveryCarrier(t *testing.T) {
 		t.Fatalf("delivery env %v", env)
 	}
 	script := spec.Containers[0].Command[2]
-	for _, want := range []string{`"$DELIVERY_URL$DELIVERY_PATH"`, `Authorization: Bearer $(cat "$DELIVERY_IDENTITY_FILE")`, "--max-time 30", "400|401|403|409|422)", "2??)", "sleep", `[ "$refused" -eq 0 ]`} {
+	for _, want := range []string{`"$DELIVERY_URL$DELIVERY_PATH"`, `Authorization: Bearer $(cat "$DELIVERY_IDENTITY_FILE")`, "--max-time 30", "400|401|403|409|422)", "2??)", "sleep", "round=$((round + 1))", `[ -n "$pending" ] || break`, `[ "$refused" -eq 0 ]`} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("script lacks %q:\n%s", want, script)
 		}
@@ -138,5 +143,65 @@ func TestDeliveryServiceAccountMountsNoDefaultToken(t *testing.T) {
 	}
 	if metadataString(account, "name") != deliveryServiceAccount || metadataString(account, "namespace") != "crm" {
 		t.Fatalf("service account identity %v", account["metadata"])
+	}
+}
+
+// TestDeliveryScriptAttemptsEveryDocumentEveryRound runs the Job's script
+// against a host that keeps failing the first document and accepts the
+// second: the second — a tombstone, say — gets its first attempt in the first
+// round rather than behind the first document's retries, and the Job still
+// fails at the end for the document that never landed.
+func TestDeliveryScriptAttemptsEveryDocumentEveryRound(t *testing.T) {
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl is not installed")
+	}
+	var mu sync.Mutex
+	hits := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		hits[string(body)]++
+		mu.Unlock()
+		if string(body) == "first" {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	documents := filepath.Join(dir, "documents")
+	if err := os.MkdirAll(documents, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"a.json": "first", "b.json": "second"} {
+		if err := os.WriteFile(filepath.Join(documents, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	identity := filepath.Join(dir, "token")
+	if err := os.WriteFile(identity, []byte("t"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", "-ec", deliveryScript)
+	cmd.Env = append(os.Environ(),
+		"DELIVERY_URL="+server.URL, "DELIVERY_PATH=/deliver", "DELIVERY_DOCUMENTS="+documents, "DELIVERY_IDENTITY_FILE="+identity,
+		"DELIVERY_BUDGET_SECONDS=3", "DELIVERY_MAX_PAUSE_SECONDS=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("a document that never landed did not fail the Job:\n%s", out)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if hits["second"] != 1 {
+		t.Fatalf("the second document was posted %d times, want once in the first round:\n%s", hits["second"], out)
+	}
+	if hits["first"] < 2 {
+		t.Fatalf("the first document was posted %d times, want retries across rounds:\n%s", hits["first"], out)
+	}
+	for _, want := range []string{"delivered b.json", "giving up on a.json"} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("script output lacks %q:\n%s", want, out)
+		}
 	}
 }

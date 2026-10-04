@@ -1002,23 +1002,145 @@ func TestCellMergeReconcilesEdgesAndRefusesAnotherHostsCell(t *testing.T) {
 func TestPublishResignsAReusedCarrierTheReleasePolicyNoLongerAdmits(t *testing.T) {
 	ctx := context.Background()
 	repository := newDeliveryRepository(t)
-	signer := &fakeSigner{}
+	signer := &fakeSigner{nonce: true}
 	opts := deliveryPublishOptions{Signer: signer, Target: testDeliveryTarget(), Domain: "example", Module: "crm"}
 	_, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), &opts)
 	require.NoError(t, err)
 	require.Equal(t, 1, signer.signed)
 	repository.deliver(t)
 
+	// The signing identity rotated: signing again is deliberate, so the
+	// plan refuses by name until told to.
 	opts.ReuseCheck = func(context.Context, []byte, []byte) error { return errors.New("the signing identity rotated") }
+	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), &opts)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "--resign")
+	require.Equal(t, 1, signer.signed)
+	opts.Resign = true
 	delivery, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), &opts)
 	require.NoError(t, err)
 	require.True(t, delivery.Signed)
-	require.Equal(t, 2, signer.signed, "the carrier was re-signed rather than reused or refused")
+	require.Equal(t, 2, signer.signed, "the plan signed the document again, once")
 	require.Equal(t, uint64(1), documentByID(delivery, "example.prod.crm").Generation, "re-signing is not a new generation")
+
+	// The publish executing that plan meets the same rejected delivered
+	// carrier and reuses the plan's replacement; it signs nothing, and a
+	// signer whose every bundle differs would otherwise have shown it.
+	executing := opts
+	executing.Reuse, executing.Executing, executing.Carriers = opts.Carriers, true, nil
+	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), &executing)
+	require.NoError(t, err)
+	require.Equal(t, 2, signer.signed, "the publish reused the plan's carrier")
 
 	// Admitted again, the delivered carrier is reused and nothing is signed.
 	opts.ReuseCheck = nil
+	opts.Resign = false
 	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), &opts)
 	require.NoError(t, err)
 	require.Equal(t, 2, signer.signed)
+}
+
+// TestPublishExecutesThePlanItInspectedForBothHalves: after a signing identity
+// rotates, the plan re-signs both the presence and the authority document
+// once, and the publish that executes it reuses both — with a signer whose
+// every bundle differs, so a second signature would be visible.
+func TestPublishExecutesThePlanItInspectedForBothHalves(t *testing.T) {
+	ctx := context.Background()
+	repository := newDeliveryRepository(t)
+	signer := &fakeSigner{nonce: true}
+	opts := deliveryPublishOptions{Signer: signer, Target: testDeliveryTarget(), Domain: "example", EnvelopeRevision: 1, Module: "crm"}
+	bindings := []modulecontract.ResolvedBinding{modelBinding(1, "modelservice.profiles:invoke")}
+	settleBoth := func(opts *deliveryPublishOptions) {
+		t.Helper()
+		inventory := repository.stageAuthorityRender(t, bindings)
+		presence, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, opts)
+		require.NoError(t, err)
+		_, err = settleAuthorityDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, presence, opts)
+		require.NoError(t, err)
+	}
+	settleBoth(&opts)
+	require.Equal(t, 2, signer.signed)
+	repository.deliver(t)
+
+	rotated := opts
+	rotated.ReuseCheck = func(context.Context, []byte, []byte) error { return errors.New("rotated") }
+	rotated.Resign = true
+	rotated.Carriers = nil
+	settleBoth(&rotated)
+	require.Equal(t, 4, signer.signed, "the plan signed both halves again, once each")
+	require.Len(t, rotated.Carriers, 2)
+
+	executing := rotated
+	executing.Reuse, executing.Executing, executing.Carriers = rotated.Carriers, true, nil
+	settleBoth(&executing)
+	require.Equal(t, 4, signer.signed, "the publish signed nothing; it delivered the plan's carriers")
+}
+
+// TestPublishKeepsAnotherEnvironmentsDeliveredHistory: a path holding another
+// environment's delivered documents — a terminal tombstone among them, from
+// an environment that may no longer be in the configuration — is published
+// into beside them: a publish stages its own environment's overlay only and
+// removes nothing it did not author. And a document delivered under this
+// environment's name to another host is never published over.
+func TestPublishKeepsAnotherEnvironmentsDeliveredHistory(t *testing.T) {
+	ctx := context.Background()
+	repository := newDeliveryRepository(t)
+	opts := deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", Module: "crm"}
+	publication := &deliveryPublication{baseBranch: "main", options: opts}
+	_, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), &opts)
+	require.NoError(t, err)
+	repository.deliver(t)
+	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t), &opts)
+	require.NoError(t, err)
+	require.True(t, deliveredBinding(t, repository.target, "example.prod.crm").Removed)
+	repository.deliver(t)
+
+	// staging, rendered elsewhere, publishes to the same path.
+	rendered := filepath.Join(t.TempDir(), "tree")
+	options := solutionRenderOptions(rendered)
+	options.Environment = "staging"
+	options.SolutionInstances = []SolutionInstance{{
+		Kind: solutionhost.KindSolution, Name: "crm", Alias: "crm", Package: "example/crm", Version: "1.4.0",
+		ReleaseDigest: solutionhost.ReleaseDigest("sha256:" + strings.Repeat("c", 64)),
+		Units:         []SolutionArtifactUnit{{Name: "api", Path: "services/api", Subject: "crm@example.iam.test"}},
+	}}
+	result, err := RenderOwnedTree(ctx, options, func(ctx context.Context, root string) error {
+		// The fixture lays the workload out under prod's overlay; staging's
+		// render carries it under its own.
+		if err := renderWorkload(pinnedDeployment)(ctx, root); err != nil {
+			return err
+		}
+		overlays := filepath.Join(root, "services", "api", "overlays")
+		return os.Rename(filepath.Join(overlays, "prod"), filepath.Join(overlays, "staging"))
+	})
+	require.NoError(t, err)
+	inventory := result.Inventory
+	require.NoError(t, removePublicationRemainder(repository.target, []string{"services"}))
+	_, err = stageAndSettleDelivery(ctx, repository.repo, repository.target, repository.targetPath, rendered, &inventory, "staging", publication)
+	require.NoError(t, err)
+	require.True(t, deliveredBinding(t, repository.target, "example.prod.crm").Removed, "prod's tombstone survives staging's publish")
+	require.NotNil(t, deliveredBindingIn(t, repository.target, "staging", "example.staging.crm"))
+
+	// A record delivered to another host under this environment's name.
+	moved := opts
+	moved.Coordinate, moved.Component = "elsewhere/prod/x", "host"
+	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), &moved)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "delivered to host")
+}
+
+// TestRenderRefusesAServingWorkloadOnTheDeliveryAccount: the delivery
+// ServiceAccount is the delivery Job's; a serving workload naming it would
+// present the deployment caller's identity as a runtime caller.
+func TestRenderRefusesAServingWorkloadOnTheDeliveryAccount(t *testing.T) {
+	repository := newDeliveryRepository(t)
+	options := solutionRenderOptions(repository.target)
+	options.SolutionInstances = []SolutionInstance{{
+		Kind: solutionhost.KindSolution, Name: "crm", Alias: "crm", Package: "example/crm", Version: "1.4.0",
+		ReleaseDigest: solutionhost.ReleaseDigest("sha256:" + strings.Repeat("c", 64)),
+		Units:         []SolutionArtifactUnit{{Name: "api", Path: "services/api", Subject: "crm@example.iam.test"}},
+	}}
+	_, err := RenderOwnedTree(context.Background(), options, renderWorkload(strings.Replace(pinnedDeployment, "serviceAccountName: api", "serviceAccountName: "+deliveryServiceAccount, 1)))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "reserved for the delivery Job")
 }

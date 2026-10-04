@@ -383,6 +383,9 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 			workload.Service = resources.ServiceUnique(inventory.Module, unit.Name)
 			workload.Artifact = CellArtifact{Name: unit.Name, Digest: digest}
 			workload.Release = release
+			if workload.ServiceAccount == deliveryServiceAccount {
+				return CellNamespace{}, fmt.Errorf("unit %s/%s workload %s runs as the %q ServiceAccount, which is reserved for the delivery Job", inventory.Module, unit.Name, workload.Name, deliveryServiceAccount)
+			}
 			authenticating, _, err := authenticatingContainer(unit.Name, workload)
 			if err != nil {
 				return CellNamespace{}, fmt.Errorf("unit %s/%s workload %s: %w", inventory.Module, unit.Name, workload.Name, err)

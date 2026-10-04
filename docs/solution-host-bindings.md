@@ -120,7 +120,14 @@ other's module trees whole, so a publish of one would turn the other's
 delivered generations and tombstones into absence — a replay would hold no
 record of what was withdrawn. An environment that declares a host is refused,
 at publish, while another environment of the workspace delivers to the same
-path; each hosted environment needs a path of its own.
+path; each hosted environment needs a path of its own. What a path already
+holds is kept whatever the configuration says now: a publish stages its own
+environment's overlay beside every other environment's delivered documents
+and removes nothing it did not author under its own environment — an
+environment removed from the configuration keeps its delivered generations
+and tombstones where they are. And a document delivered under this
+environment's name to another host coordinate refuses the publish: a host
+change is a new environment, never a publish over another host's record.
 
 ## Presence
 
@@ -188,6 +195,12 @@ therefore not something the SVID does; the host does it by comparing the pod's
 resolved image to the approved build, and the platform by refusing a pod whose
 image is not approved at admission. The identity a document names is the
 account's.
+
+The `delivery` ServiceAccount is the delivery Job's and nothing else's: a
+serving workload naming it is refused at render, in the presence document and
+in the cell alike, since a deployment caller and a runtime caller under one
+account is the collision the host's distinction between the two assumes
+absent.
 
 ## Authority
 
@@ -467,7 +480,11 @@ to its document the way any carrier signed before is held. A carrier signed
 by an earlier release is reused under the **release policy** — the same
 repository and workflow, any release tag — and one the policy no longer
 admits (a rotated signing identity, a run that was never a release) is
-re-signed by this release: not reused, not refused, not a new generation.
+signed again only **deliberately**: a plan made with `--resign` signs it
+once, the publish executing that plan reuses that signature, and without
+`--resign` the plan refuses and names the carrier. A publish never produces a
+signature the plan it executes did not: it reuses the plan's — tried before
+any signature, even where the delivered carrier was rejected — or refuses.
 
 **Rollback re-settles.** A rollback restores the workloads an earlier revision
 delivered and settles their documents anew against the base branch — the old
@@ -605,6 +622,14 @@ at the end if any was refused, so a refused delivery is visible where it
 happened without withholding the rest. A 2xx is committed and durable; the
 host answers `awaiting_match` when the peer document of the tuple has not
 arrived, which is terminal for the Job and visible to an operator.
+
+The Job posts in **rounds**: every pending document once per round, terminal
+refusals (400, 401, 403, 409, 422) recorded and never retried, rounds until
+each document is answered or the budget is spent (`DELIVERY_BUDGET_SECONDS`,
+1500 of the Job's 1800-second deadline), with a pause between rounds that
+doubles up to `DELIVERY_MAX_PAUSE_SECONDS`. A document the host keeps failing
+never keeps a later one — a tombstone among them — from its first attempt,
+and the Job fails at the end for whatever never landed.
 
 ## The cell file
 

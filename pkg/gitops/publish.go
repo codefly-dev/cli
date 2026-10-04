@@ -313,6 +313,8 @@ func newDeliveryPublication(request *PublishRequest, baseBranch string) (*delive
 	// delivers those exact bytes, so the plan it compares against is the one
 	// it was given — signing is once, in the plan, and reuse is verified.
 	publication.options.Reuse = request.Carriers
+	publication.options.Executing = request.Carriers != nil
+	publication.options.Resign = request.Resign
 	return publication, nil
 }
 
@@ -1299,7 +1301,9 @@ func serviceSnapshotBranch(module, environment string) string {
 }
 
 func removePublicationRemainder(target string, unitDirs []string) error {
-	keep := map[string]struct{}{moduleBundleDir: {}}
+	// The delivery directories are kept whole: they hold every environment's
+	// delivered overlay, and a publish stages its own environment's only.
+	keep := map[string]struct{}{moduleBundleDir: {}, solutionHostBindingDir: {}, solutionAuthorityDir: {}}
 	for _, directory := range unitDirs {
 		keep[directory] = struct{}{}
 	}
@@ -2220,13 +2224,27 @@ func stageAndSettleDelivery(
 	if publication == nil {
 		return nil, nil
 	}
-	for _, path := range []string{inventory.SolutionHostBindingPath, inventory.SolutionAuthorityPath} {
-		if path == "" {
-			continue
-		}
-		source := filepath.Join(rendered, filepath.FromSlash(path))
-		if err := replaceCloneTree(source, repo, filepath.ToSlash(filepath.Join(targetPath, path))); err != nil {
-			return nil, fmt.Errorf("stage rendered delivery documents: %w", err)
+	// Only this environment's overlay is staged, into a delivery directory
+	// that keeps every other environment's as delivered: a publish never
+	// removes a document it did not author under its own environment, so a
+	// path another environment delivered to — one no longer in the
+	// configuration included — keeps its generations and its tombstones. A
+	// render that declares none here clears its own overlay for the
+	// tombstones the settlement writes from the base branch's record.
+	for _, directory := range []string{solutionHostBindingDir, solutionAuthorityDir} {
+		overlay := filepath.ToSlash(filepath.Join(directory, "overlays", environment))
+		source := filepath.Join(rendered, filepath.FromSlash(overlay))
+		switch _, err := os.Stat(source); {
+		case err == nil:
+			if err = replaceCloneTree(source, repo, filepath.ToSlash(filepath.Join(targetPath, overlay))); err != nil {
+				return nil, fmt.Errorf("stage rendered delivery documents: %w", err)
+			}
+		case errors.Is(err, fs.ErrNotExist):
+			if err = os.RemoveAll(filepath.Join(target, filepath.FromSlash(overlay))); err != nil {
+				return nil, fmt.Errorf("clear the delivery overlay the render no longer declares: %w", err)
+			}
+		default:
+			return nil, fmt.Errorf("read the rendered delivery overlay: %w", err)
 		}
 	}
 	presence, err := settlePresenceDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, &publication.options)

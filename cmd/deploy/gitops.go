@@ -441,6 +441,7 @@ func publishRequest(module string) gitops.PublishRequest {
 		PromotionBranch: gitOpsBranch, CommitMessage: gitOpsMessage,
 		Title: gitOpsTitle, Body: gitOpsBody, Local: gitOpsLocal,
 		AllowUnresolvedContracts: gitOpsAllowUnresolvedContracts,
+		Resign:                   gitOpsResign,
 	}
 }
 
@@ -561,6 +562,7 @@ var (
 	gitOpsYes                      bool
 	gitOpsLocal                    bool
 	gitOpsAllowUnresolvedContracts bool
+	gitOpsResign                   bool
 	gitOpsValidateCluster          bool
 	gitOpsRebuild                  bool
 )
@@ -593,6 +595,8 @@ func init() {
 	for _, command := range []*cobra.Command{gitOpsPlanCmd, gitOpsPublishCmd, gitOpsRollbackCmd} {
 		command.Flags().BoolVar(&gitOpsAllowUnresolvedContracts, "allow-unresolved-contracts", false,
 			"Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering")
+		command.Flags().BoolVar(&gitOpsResign, "resign", false,
+			"Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied")
 	}
 	for _, command := range []*cobra.Command{gitOpsPublishCmd, gitOpsRollbackCmd} {
 		command.Flags().StringVar(&gitOpsMessage, "message", "", "Signed commit message")
