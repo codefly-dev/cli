@@ -28,12 +28,14 @@ const (
 	reportStatusCancelled = "cancelled"
 	reportStatusReused    = "reused"
 
-	reportReasonFailedPrerequisite    = "failed_prerequisite"
-	reportReasonFailFast              = "fail_fast"
-	reportReasonRunCancelled          = "run_cancelled"
-	reportReasonNotScheduled          = "not_scheduled"
-	reportReasonAgentNoSyncCapability = "agent_no_sync_capability"
-	reportReasonAgentNoTestCapability = "agent_no_test_capability"
+	reportReasonFailedPrerequisite       = "failed_prerequisite"
+	reportReasonFailFast                 = "fail_fast"
+	reportReasonRunCancelled             = "run_cancelled"
+	reportReasonNotScheduled             = "not_scheduled"
+	reportReasonAgentNoSyncCapability    = "agent_no_sync_capability"
+	reportReasonAgentNoTestCapability    = "agent_no_test_capability"
+	reportReasonAgentNoLintCapability    = "agent_no_lint_capability"
+	reportReasonAgentNoCompileCapability = "agent_no_compile_capability"
 
 	// artifactSubjectSource is evidence about the checked-out source and its
 	// declared dependencies; artifactSubjectImage is evidence about a runtime

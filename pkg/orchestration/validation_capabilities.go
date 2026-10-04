@@ -60,3 +60,25 @@ func validationSupport(info *agentv0.AgentInformation, action ActionType) (adver
 		return false, false
 	}
 }
+
+// OriginValidationSkipped distinguishes an unsupported validation from a pass.
+func (flow *Flow) OriginValidationSkipped() bool {
+	return flow != nil && flow.validationSkipped
+}
+
+func validationOperationForMode(mode Mode) ValidationOperation {
+	switch mode {
+	case LintMode:
+		return ValidationLint
+	case CompileMode:
+		return ValidationCompile
+	case TestMode:
+		return ValidationTest
+	default:
+		return ""
+	}
+}
+
+func isRuntimeValidationMode(mode Mode) bool {
+	return validationOperationForMode(mode) != ""
+}
