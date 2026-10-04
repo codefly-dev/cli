@@ -26,7 +26,7 @@ func indexConfigurationMaps(documents []manifest) (configurationMaps, error) {
 		if _, exists := index[key]; exists {
 			return nil, fmt.Errorf("configuration binding repeats ConfigMap %s/%s", key.namespace, key.name)
 		}
-		index[key] = mapField(doc.value, "data")
+		index[key] = mapField(doc.value, dataKey)
 	}
 	return index, nil
 }

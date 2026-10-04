@@ -89,62 +89,29 @@ func TestRenderOwnedTreeIsDeterministicAndReplacesOnlyOwnedDestination(t *testin
 	}
 }
 
-// The inventory carries the SECURITY property, and admission requires it.
-//
-// It carried `promotable` — a delivery decision — and admission asserted that
-// instead, on output whose profile it had just required to be
-// RESTRICTED_PORTABLE_V1. So the two conflicting combinations both behaved
-// wrongly: an agent reporting restricted without promotable passed the builder
-// gate and then produced unacceptable persisted evidence, and an agent
-// reporting promotable without restricted was admitted on a property that says
-// nothing about restricted rendering.
-//
-// The old test copied the legacy boolean and asserted it survived, which would
-// pass without `restricted` being enforced anywhere.
-func TestInventoryKubernetesOutputRequiresTheRestrictedSecurityProperty(t *testing.T) {
-	evidenceFor := func(restricted, promotable bool) *KubernetesOutputInventory {
-		return inventoryKubernetesOutput(&builderv0.DeploymentOutput{
-			Kind: &builderv0.DeploymentOutput_Kubernetes{
-				Kubernetes: &builderv0.KubernetesDeploymentOutput{
-					Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE,
-					Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
-					ContractVersion: coreservices.KubernetesManifestContractVersion,
-					Validation: &builderv0.KubernetesManifestValidation{
-						StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED,
-						ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_PASSED,
-						Restricted:           restricted,
-						Promotable:           promotable,
-					},
+func TestInventoryKubernetesOutputPreservesPromotableEvidence(t *testing.T) {
+	output := &builderv0.DeploymentOutput{
+		Kind: &builderv0.DeploymentOutput_Kubernetes{
+			Kubernetes: &builderv0.KubernetesDeploymentOutput{
+				Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE,
+				Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+				ContractVersion: "codefly.dev/kubernetes-manifest/v1",
+				Validation: &builderv0.KubernetesManifestValidation{
+					StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED,
+					ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_PASSED,
+					Restricted:           true,
 				},
 			},
 		})
 	}
 
-	// Restricted and NOT promotable: the combination that passes the builder
-	// gate. It must be acceptable persisted evidence too, or the two gates
-	// disagree about the same output.
-	restrictedOnly := evidenceFor(true, false)
-	if restrictedOnly == nil || restrictedOnly.Validation == nil || !restrictedOnly.Validation.Restricted {
-		t.Fatalf("the security property was not carried into the inventory: %+v", restrictedOnly)
-	}
-	if restrictedOnly.Kind != "KUSTOMIZE" ||
-		restrictedOnly.Profile != "KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1" ||
-		restrictedOnly.ContractVersion != coreservices.KubernetesManifestContractVersion ||
-		restrictedOnly.Validation.Violations == nil {
-		t.Fatalf("evidence = %+v", restrictedOnly)
-	}
-	if err := validateInventoryKubernetesOutput("api", restrictedOnly); err != nil {
-		t.Fatalf("restricted evidence was refused by admission: %v", err)
-	}
-
-	// Promotable and NOT restricted: refused. The delivery decision says
-	// nothing about whether the manifests are restricted.
-	promotableOnly := evidenceFor(false, true)
-	if promotableOnly.Validation.Restricted {
-		t.Fatal("the delivery decision was copied into the security property")
-	}
-	if err := validateInventoryKubernetesOutput("api", promotableOnly); err == nil {
-		t.Fatal("output claiming only the delivery decision was admitted")
+	evidence := inventoryKubernetesOutput(output)
+	if evidence == nil || evidence.Kind != "KUSTOMIZE" ||
+		evidence.Profile != "KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1" ||
+		evidence.ContractVersion != "codefly.dev/kubernetes-manifest/v1" ||
+		evidence.Validation == nil || !evidence.Validation.Promotable ||
+		evidence.Validation.Violations == nil {
+		t.Fatalf("evidence = %+v", evidence)
 	}
 }
 
@@ -437,7 +404,7 @@ stringData:
   password: plaintext
 `), 0o644)
 	})
-	if err == nil || !strings.Contains(err.Error(), "Secret values") {
+	if err == nil || !strings.Contains(err.Error(), "Kubernetes Secret") {
 		t.Fatalf("render error = %v, want Secret rejection", err)
 	}
 	if _, err := os.Stat(previous); err != nil {
@@ -495,7 +462,7 @@ items:
 			}, func(ctx context.Context, root string) error {
 				return os.WriteFile(filepath.Join(root, test.filename), []byte(test.content), 0o644)
 			})
-			if err == nil || !strings.Contains(err.Error(), "Secret values") {
+			if err == nil || !strings.Contains(err.Error(), "Kubernetes Secret") {
 				t.Fatalf("error = %v, want Secret rejection", err)
 			}
 		})

@@ -179,10 +179,10 @@ func projectServiceInjection(ctx context.Context, root, service string, env *env
 					return fmt.Errorf("service %q has no ConfigMap bound through envFrom to render %s into", service, strings.Join(sortedKeys(injection.Public), ", "))
 				}
 				configMap := configMapDocuments[bound]
-				data := mapField(configMap, "data")
+				data := mapField(configMap, dataKey)
 				if data == nil {
 					data = map[string]any{}
-					configMap["data"] = data
+					configMap[dataKey] = data
 				}
 				if err := bindPublicInjection(container, data, service, injection.Public); err != nil {
 					return err

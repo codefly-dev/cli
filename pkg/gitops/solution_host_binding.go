@@ -414,7 +414,7 @@ func unitDigest(root, relative string) (string, error) {
 	}
 	var entries []entry
 	err = walkRegularFiles(unitRoot, func(path, name string, info os.FileInfo) error {
-		file, openErr := os.Open(path)
+		file, openErr := openWithin(unitRoot, name)
 		if openErr != nil {
 			return fmt.Errorf("open %s: %w", name, openErr)
 		}
@@ -506,8 +506,7 @@ func nextGeneration(destination, environment string, candidate *solutionhost.Sol
 // resetting the generation would deliver a document every host that has applied
 // this binding refuses, and it would do so without saying anything.
 func priorSolutionHostBinding(destination, environment, binding string) (*solutionhost.SolutionHostBinding, error) {
-	path := filepath.Join(destination, filepath.FromSlash(solutionHostBindingOverlay(environment)), binding+".yaml")
-	data, err := os.ReadFile(path) //nolint:gosec // a path derived from the render destination and a validated binding ID
+	data, err := readWithin(destination, filepath.Join(filepath.FromSlash(solutionHostBindingOverlay(environment)), binding+".yaml"))
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -587,7 +586,7 @@ func writeSolutionHostBinding(owned string, opts *RenderOptions, document *solut
 		return "", fmt.Errorf("create solution host binding directory: %w", err)
 	}
 	relative := filepath.ToSlash(filepath.Join(overlay, document.Binding+".yaml"))
-	if err = os.WriteFile(filepath.Join(directory, document.Binding+".yaml"), body, 0o644); err != nil { //nolint:gosec // a delivered manifest, readable beside the rest of the tree
+	if err = os.WriteFile(filepath.Join(directory, document.Binding+".yaml"), body, 0o600); err != nil {
 		return "", fmt.Errorf("write solution host binding %q: %w", document.Binding, err)
 	}
 	return relative, nil
@@ -608,7 +607,7 @@ func writeSolutionHostBindingKustomization(owned, environment string, names []st
 		return fmt.Errorf("encode solution host binding kustomization: %w", err)
 	}
 	path := filepath.Join(owned, filepath.FromSlash(solutionHostBindingOverlay(environment)), "kustomization.yaml")
-	if err = os.WriteFile(path, body, 0o644); err != nil { //nolint:gosec // a delivered manifest, readable beside the rest of the tree
+	if err = os.WriteFile(path, body, 0o600); err != nil {
 		return fmt.Errorf("write solution host binding kustomization: %w", err)
 	}
 	return nil

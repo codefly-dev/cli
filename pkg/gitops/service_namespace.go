@@ -120,7 +120,7 @@ func elideProvisionedNamespace(root, namespace string) ([]string, error) {
 	}
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {
 		// A managed or otherwise unrendered unit has no staged tree.
-		return nil, nil //nolint:nilerr // absence is not a failure here
+		return nil, nil
 	}
 	var elided []string
 	removedByDirectory := make(map[string][]string)
@@ -128,7 +128,7 @@ func elideProvisionedNamespace(root, namespace string) ([]string, error) {
 		if !isManifestFile(relative) || isKustomizationFile(relative) {
 			return nil
 		}
-		data, err := os.ReadFile(path)
+		data, err := readWithin(root, relative)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", relative, err)
 		}
@@ -141,7 +141,7 @@ func elideProvisionedNamespace(root, namespace string) ([]string, error) {
 		}
 		elided = append(elided, filepath.ToSlash(relative))
 		if len(kept) == 0 {
-			if removeErr := os.Remove(path); removeErr != nil {
+			if removeErr := removeWithin(root, relative); removeErr != nil {
 				return fmt.Errorf("remove %s: %w", relative, removeErr)
 			}
 			directory := filepath.Dir(path)
@@ -152,7 +152,7 @@ func elideProvisionedNamespace(root, namespace string) ([]string, error) {
 		if err != nil {
 			return fmt.Errorf("re-encode %s: %w", relative, err)
 		}
-		if err := os.WriteFile(path, encoded, 0o644); err != nil { //nolint:gosec // manifests are world-readable by design
+		if err := writeWithin(root, relative, encoded); err != nil {
 			return fmt.Errorf("write %s: %w", relative, err)
 		}
 		return nil
@@ -274,7 +274,7 @@ func dropKustomizationResources(directory string, names []string) error {
 		if err != nil {
 			return fmt.Errorf("re-encode %s: %w", path, err)
 		}
-		if err := os.WriteFile(path, encoded, 0o644); err != nil { //nolint:gosec // manifests are world-readable by design
+		if err := os.WriteFile(path, encoded, 0o600); err != nil {
 			return fmt.Errorf("write %s: %w", path, err)
 		}
 	}

@@ -33,6 +33,7 @@ const (
 
 	kindApplication    = "Application"
 	kindApplicationSet = "ApplicationSet"
+	kindAppProject     = "AppProject"
 	kindKustomization  = "Kustomization"
 	kindNamespace      = "Namespace"
 
@@ -41,6 +42,8 @@ const (
 	kustomizationFile    = "kustomization.yaml"
 	kustomizationFileAlt = "kustomization.yml"
 	resourcesKey         = "resources"
+	// dataKey is the data map of a ConfigMap or a Secret.
+	dataKey = "data"
 )
 
 // kustomizeFileListKeys are the kustomization keys whose values are paths to
@@ -232,10 +235,10 @@ func generateArgoBootstrap(
 	localFetchHost string,
 ) error {
 	if inventory.AppProject == "" {
-		return fmt.Errorf("Argo promotion requires an AppProject name")
+		return fmt.Errorf("promotion to Argo requires an AppProject name")
 	}
 	if inventory.Namespace == "" {
-		return fmt.Errorf("Argo promotion requires an exact destination namespace")
+		return fmt.Errorf("promotion to Argo requires an exact destination namespace")
 	}
 	repository, err := argoRepository(config, localFetchHost)
 	if err != nil {
@@ -250,7 +253,7 @@ func generateArgoBootstrap(
 		return err
 	}
 
-	project := argoProjectManifest{APIVersion: "argoproj.io/v1alpha1", Kind: "AppProject"}
+	project := argoProjectManifest{APIVersion: "argoproj.io/v1alpha1", Kind: kindAppProject}
 	project.Metadata.Name = inventory.AppProject
 	project.Metadata.Namespace = argoNamespace
 	project.Spec.SourceRepos = []string{repository}
@@ -272,7 +275,7 @@ func generateArgoBootstrap(
 		// it there would let any unit overlay place a pod in the authority
 		// namespace running as the platform's delivery account.
 		authorityProject = argoAuthorityProjectName(inventory.AppProject)
-		isolated := argoProjectManifest{APIVersion: "argoproj.io/v1alpha1", Kind: "AppProject"}
+		isolated := argoProjectManifest{APIVersion: "argoproj.io/v1alpha1", Kind: kindAppProject}
 		isolated.Metadata.Name = authorityProject
 		isolated.Metadata.Namespace = argoNamespace
 		isolated.Spec.SourceRepos = []string{repository}
@@ -558,7 +561,7 @@ func writeArgoYAML(path string, value any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return os.WriteFile(path, data, 0o600)
 }
 
 func argoObjectName(parts ...string) string {

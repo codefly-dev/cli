@@ -163,65 +163,26 @@ func preparePublish(
 	if err != nil {
 		return nil, err
 	}
-	rendered := filepath.Join(workspace.Dir(), "deployments", "modules", request.Module)
-	var inventory Inventory
-	publication := &deliveryPublication{baseBranch: baseBranch, options: deliveryPublishOptions{
-		Signer: request.Signer, AllowUnsigned: request.Local, Module: request.Module,
-	}}
-	// A local qualification publish never signs — not "signs when it can":
-	// run from a workflow that holds an OIDC identity, it would otherwise
-	// deliver signed carriers and a Job to a qualification cluster under the
-	// release identity. The signer is the one a process with no identity gets,
-	// unless the caller supplied one.
-	if request.Local && request.Signer == nil {
-		publication.options.Signer = &signing.Unavailable{Reason: "a local qualification publish delivers its documents unsigned"}
-	}
-	// A release publish signs under the workflow's identity and checks each
-	// carrier the way a host will: a carrier a host would refuse is refused
-	// here, in front of whoever ran the release.
-	if !request.Local && request.Signer == nil {
-		publication.options.SelfCheck, err = signing.SelfCheckFromEnvironment(nil)
-		if err != nil {
-			return nil, err
-		}
+	publication, err := newDeliveryPublication(request, baseBranch)
+	if err != nil {
+		return nil, err
 	}
 	// The environment's host block shapes delivery on every publish, a rollback
 	// included: what a rollback re-delivers is settled against the base branch
 	// and signed now, exactly as a render is, never restored as the bytes an
 	// earlier publish signed.
-	env, envErr := orchestration.SelectEnvironment(workspace, request.Environment)
-	if envErr != nil {
-		return nil, envErr
-	}
-	publication.options.Target, err = resolveDeliveryTarget(ctx, workspace, env)
+	env, err := orchestration.SelectEnvironment(workspace, request.Environment)
 	if err != nil {
 		return nil, err
 	}
-	if env.Host != nil {
-		publication.options.EnvelopeRevision = env.Host.EnvelopeRevision
-		publication.options.Domain = env.Host.Domain
+	if err = publication.addressHost(ctx, workspace, env); err != nil {
+		return nil, err
 	}
+	rendered := filepath.Join(workspace.Dir(), "deployments", "modules", request.Module)
+	var inventory Inventory
 	if restoreRevision == "" {
-		inventory, err = loadPublicationInventory(ctx, workspace, request, rendered, pathRoot)
-		if err != nil {
+		if inventory, err = loadRenderedPublication(ctx, workspace, request, env, rendered, pathRoot, publication); err != nil {
 			return nil, err
-		}
-		// The groups this tree bakes in are held to the composition as it is
-		// now, and to the sibling consumers rendered beside it: each refusal is
-		// lifted by one render, named.
-		current, digestErr := recordedGroupsNow(ctx, workspace, env, inventory.WorkspaceConfigurationDigests)
-		if digestErr != nil {
-			return nil, digestErr
-		}
-		if err = refuseStaleRender(request.Module, request.Environment, inventory.WorkspaceConfigurationDigests, current); err != nil {
-			return nil, err
-		}
-		if err = refuseStaleGroupConsumers(workspace.Dir(), request.Module, request.Environment, inventory.WorkspaceConfigurationDigests); err != nil {
-			return nil, err
-		}
-		if _, statErr := os.Stat(cellPath(workspace.Dir(), request.Environment)); statErr == nil {
-			publication.cellSource = cellPath(workspace.Dir(), request.Environment)
-			publication.cellPath = filepath.ToSlash(filepath.Join(pathRoot, cellsDir, request.Environment, CellFileName))
 		}
 	}
 
@@ -243,82 +204,26 @@ func preparePublish(
 		return fail(err)
 	}
 	if branchRevision != "" {
-		existing, err := changedPathsBetween(ctx, repo, baseRevision, branchRevision)
-		if err != nil {
+		if err = refuseUnrelatedPromotionChanges(ctx, repo, baseRevision, branchRevision, promotionBranch, targetPath, publication.cellPath); err != nil {
 			return fail(err)
-		}
-		for _, changed := range existing {
-			if changed != targetPath && !strings.HasPrefix(changed, targetPath+"/") && changed != publication.cellPath {
-				return fail(fmt.Errorf("promotion branch %s contains unrelated change %s", promotionBranch, changed))
-			}
 		}
 	}
 	startRevision := baseRevision
 	if branchRevision != "" {
 		startRevision = branchRevision
 	}
+	clone := &publicationClone{
+		repo: repo, target: target, targetPath: targetPath, config: config,
+		publishSnapshot: publishSnapshot, localFetchHost: localFetchHost, publication: publication,
+	}
 	var snapshotRevision string
 	if restoreRevision == "" {
-		generateBootstrap, bootstrapErr := publicationGeneratesBootstrap(ctx, workspace, request.Module, &inventory)
-		if bootstrapErr != nil {
-			return fail(bootstrapErr)
-		}
-		snapshotRevision, inventory, err = prepareServicePublication(
-			ctx,
-			repo,
-			target,
-			targetPath,
-			rendered,
-			&inventory,
-			generateBootstrap,
-			request.Environment,
-			config,
-			promotionBranch,
-			publishSnapshot,
-			localFetchHost,
-			publication,
-		)
-		if err != nil {
-			return fail(err)
-		}
-		if cellErr := stageCellFile(ctx, repo, publication); cellErr != nil {
-			return fail(cellErr)
-		}
+		snapshotRevision, inventory, err = stageRenderedPublication(ctx, workspace, request, clone, rendered, &inventory)
 	} else {
-		// A rollback is a publish whose render is the tree an earlier revision
-		// delivered: restored, then snapshotted, settled and signed exactly as a
-		// render would be. Restoring the old bootstrap and the old carriers
-		// verbatim would point every Application at a snapshot holding the
-		// carriers that revision signed, which a host past them refuses.
-		if err := restoreCloneTree(ctx, repo, targetPath, restoreRevision); err != nil {
-			return fail(err)
-		}
-		restored, tempErr := os.MkdirTemp("", "codefly-rollback-")
-		if tempErr != nil {
-			return fail(tempErr)
-		}
-		defer os.RemoveAll(restored)
-		if copyErr := copyTree(target, restored); copyErr != nil {
-			return fail(fmt.Errorf("copy the restored tree: %w", copyErr))
-		}
-		if validateErr := ValidateRenderedTree(restored, "", true); validateErr != nil {
-			return fail(fmt.Errorf("validate rollback render: %w", validateErr))
-		}
-		inventory, err = LoadInventory(restored)
-		if err != nil {
-			return fail(err)
-		}
-		generateBootstrap, bootstrapErr := publicationGeneratesBootstrap(ctx, workspace, request.Module, &inventory)
-		if bootstrapErr != nil {
-			return fail(bootstrapErr)
-		}
-		snapshotRevision, inventory, err = prepareServicePublication(
-			ctx, repo, target, targetPath, restored, &inventory, generateBootstrap,
-			request.Environment, config, promotionBranch, publishSnapshot, localFetchHost, publication,
-		)
-		if err != nil {
-			return fail(err)
-		}
+		snapshotRevision, inventory, err = stageRollbackPublication(ctx, workspace, request, clone, restoreRevision)
+	}
+	if err != nil {
+		return fail(err)
 	}
 	publishedPaths := []string{targetPath}
 	if publication.cellPath != "" {
@@ -327,7 +232,7 @@ func preparePublish(
 	if _, addErr := gitCommand(ctx, repo, append([]string{gitAddVerb, "-A", "--"}, publishedPaths...)...); addErr != nil {
 		return fail(addErr)
 	}
-	contractChecks := checkContracts(inventory, resolveGitopsModuleInventory(ctx, repo, baseBranch, pathRoot), request.AllowUnresolvedContracts)
+	contractChecks := checkContracts(&inventory, resolveGitopsModuleInventory(ctx, repo, baseBranch, pathRoot), request.AllowUnresolvedContracts)
 	staleConsumers, err := staleBaseConsumers(ctx, repo, baseBranch, pathRoot, request.Module, inventory.WorkspaceConfigurationDigests)
 	if err != nil {
 		return fail(err)
@@ -363,6 +268,174 @@ func preparePublish(
 	return &preparedRepository{
 		dir: repo, cleanup: cleanup, plan: plan,
 	}, nil
+}
+
+// newDeliveryPublication shapes how a publish signs and checks what it
+// delivers. A local qualification publish never signs — not "signs when it
+// can": run from a workflow that holds an OIDC identity, it would otherwise
+// deliver signed carriers and a Job to a qualification cluster under the
+// release identity. The signer is the one a process with no identity gets,
+// unless the caller supplied one. A release publish signs under the
+// workflow's identity and checks each carrier the way a host will: a carrier
+// a host would refuse is refused here, in front of whoever ran the release.
+func newDeliveryPublication(request *PublishRequest, baseBranch string) (*deliveryPublication, error) {
+	publication := &deliveryPublication{baseBranch: baseBranch, options: deliveryPublishOptions{
+		Signer: request.Signer, AllowUnsigned: request.Local, Module: request.Module,
+	}}
+	if request.Local && request.Signer == nil {
+		publication.options.Signer = &signing.Unavailable{Reason: "a local qualification publish delivers its documents unsigned"}
+	}
+	if !request.Local && request.Signer == nil {
+		selfCheck, err := signing.SelfCheckFromEnvironment(nil)
+		if err != nil {
+			return nil, err
+		}
+		publication.options.SelfCheck = selfCheck
+	}
+	return publication, nil
+}
+
+// addressHost points the publication at the environment's host: the delivery
+// API its Jobs post to, and the envelope revision and the domain its
+// documents must declare.
+func (p *deliveryPublication) addressHost(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) error {
+	target, err := resolveDeliveryTarget(ctx, workspace, env)
+	if err != nil {
+		return err
+	}
+	p.options.Target = target
+	if env.Host != nil {
+		p.options.EnvelopeRevision = env.Host.EnvelopeRevision
+		p.options.Domain = env.Host.Domain
+	}
+	return nil
+}
+
+// loadRenderedPublication reads the tree the render left in the workspace and
+// holds the groups it bakes in to the composition as it is now, and to the
+// sibling consumers rendered beside it: each refusal is lifted by one render,
+// named. A cell file rendered for the environment is staged with the tree.
+func loadRenderedPublication(
+	ctx context.Context,
+	workspace *resources.Workspace,
+	request *PublishRequest,
+	env *environments.Environment,
+	rendered, pathRoot string,
+	publication *deliveryPublication,
+) (Inventory, error) {
+	inventory, err := loadPublicationInventory(ctx, workspace, request, rendered, pathRoot)
+	if err != nil {
+		return Inventory{}, err
+	}
+	current, err := recordedGroupsNow(ctx, workspace, env, inventory.WorkspaceConfigurationDigests)
+	if err != nil {
+		return Inventory{}, err
+	}
+	if err = refuseStaleRender(request.Module, request.Environment, inventory.WorkspaceConfigurationDigests, current); err != nil {
+		return Inventory{}, err
+	}
+	if err = refuseStaleGroupConsumers(workspace.Dir(), request.Module, request.Environment, inventory.WorkspaceConfigurationDigests); err != nil {
+		return Inventory{}, err
+	}
+	if _, statErr := os.Stat(cellPath(workspace.Dir(), request.Environment)); statErr == nil {
+		publication.cellSource = cellPath(workspace.Dir(), request.Environment)
+		publication.cellPath = filepath.ToSlash(filepath.Join(pathRoot, cellsDir, request.Environment, CellFileName))
+	}
+	return inventory, nil
+}
+
+// refuseUnrelatedPromotionChanges holds an existing promotion branch to the
+// module's own path and its cell: anything else on it is someone else's work,
+// which this publish must neither carry nor overwrite.
+func refuseUnrelatedPromotionChanges(ctx context.Context, repo, baseRevision, branchRevision, promotionBranch, targetPath, cell string) error {
+	existing, err := changedPathsBetween(ctx, repo, baseRevision, branchRevision)
+	if err != nil {
+		return err
+	}
+	for _, changed := range existing {
+		if changed != targetPath && !strings.HasPrefix(changed, targetPath+"/") && changed != cell {
+			return fmt.Errorf("promotion branch %s contains unrelated change %s", promotionBranch, changed)
+		}
+	}
+	return nil
+}
+
+// publicationClone is the promotion clone a publication is staged into, with
+// what snapshotting a tree there needs.
+type publicationClone struct {
+	repo, target, targetPath string
+	config                   *repositoryConfig
+	publishSnapshot          bool
+	localFetchHost           string
+	publication              *deliveryPublication
+}
+
+// stageRenderedPublication publishes the tree the render left in the
+// workspace: snapshotted, settled and signed, with its cell contribution
+// staged beside it.
+func stageRenderedPublication(
+	ctx context.Context,
+	workspace *resources.Workspace,
+	request *PublishRequest,
+	clone *publicationClone,
+	rendered string,
+	inventory *Inventory,
+) (string, Inventory, error) {
+	generateBootstrap, err := publicationGeneratesBootstrap(ctx, workspace, request.Module, inventory)
+	if err != nil {
+		return "", Inventory{}, err
+	}
+	snapshotRevision, published, err := prepareServicePublication(
+		ctx, clone.repo, clone.target, clone.targetPath, rendered, inventory, generateBootstrap,
+		request.Environment, clone.config, clone.publishSnapshot, clone.localFetchHost, clone.publication,
+	)
+	if err != nil {
+		return "", Inventory{}, err
+	}
+	if err = stageCellFile(ctx, clone.repo, clone.publication); err != nil {
+		return "", Inventory{}, err
+	}
+	return snapshotRevision, published, nil
+}
+
+// stageRollbackPublication publishes the tree an earlier revision delivered:
+// restored into the clone, then snapshotted, settled and signed exactly as a
+// render would be. Restoring the old bootstrap and the old carriers verbatim
+// would point every Application at a snapshot holding the carriers that
+// revision signed, which a host past them refuses.
+func stageRollbackPublication(
+	ctx context.Context,
+	workspace *resources.Workspace,
+	request *PublishRequest,
+	clone *publicationClone,
+	restoreRevision string,
+) (string, Inventory, error) {
+	if err := restoreCloneTree(ctx, clone.repo, clone.targetPath, restoreRevision); err != nil {
+		return "", Inventory{}, err
+	}
+	restored, err := os.MkdirTemp("", "codefly-rollback-")
+	if err != nil {
+		return "", Inventory{}, err
+	}
+	defer os.RemoveAll(restored)
+	if err = copyTree(clone.target, restored); err != nil {
+		return "", Inventory{}, fmt.Errorf("copy the restored tree: %w", err)
+	}
+	if err = ValidateRenderedTree(restored, "", true); err != nil {
+		return "", Inventory{}, fmt.Errorf("validate rollback render: %w", err)
+	}
+	inventory, err := LoadInventory(restored)
+	if err != nil {
+		return "", Inventory{}, err
+	}
+	generateBootstrap, err := publicationGeneratesBootstrap(ctx, workspace, request.Module, &inventory)
+	if err != nil {
+		return "", Inventory{}, err
+	}
+	return prepareServicePublication(
+		ctx, clone.repo, clone.target, clone.targetPath, restored, &inventory, generateBootstrap,
+		request.Environment, clone.config, clone.publishSnapshot, clone.localFetchHost, clone.publication,
+	)
 }
 
 // resolveGitopsModuleInventory resolves a consumed contract's exposing module
@@ -416,10 +489,12 @@ func resolveGitopsModuleInventory(ctx context.Context, repo, baseBranch, gitopsP
 // module name, a corrupt or non-canonical host inventory, an unsupported
 // schema) stays a hard violation and carries resolve's real error text,
 // regardless of the flag.
-func checkContracts(consumer Inventory, resolve func(module string) (*Inventory, error), allowUnresolved bool) []ContractCheck { //nolint:gocritic // by-value consumer keeps this the pure, hand-buildable admission entry point tests exercise directly
+func checkContracts(consumer *Inventory, resolve func(module string) (*Inventory, error), allowUnresolved bool) []ContractCheck {
 	var checks []ContractCheck
-	for _, unit := range consumer.Units {
-		for _, contract := range unit.Contracts { //nolint:gocritic // admission runs once per publish over a small unit/contract graph, not a hot path
+	for i := range consumer.Units {
+		unit := &consumer.Units[i]
+		for j := range unit.Contracts {
+			contract := &unit.Contracts[j]
 			if contract.Role != ContractRoleConsumes {
 				continue
 			}
@@ -429,7 +504,7 @@ func checkContracts(consumer Inventory, resolve func(module string) (*Inventory,
 	return checks
 }
 
-func checkContract(unitName string, contract InventoryContract, resolve func(string) (*Inventory, error), allowUnresolved bool) ContractCheck { //nolint:gocritic // called once per consumed contract in checkContracts' loop, not a hot path
+func checkContract(unitName string, contract *InventoryContract, resolve func(string) (*Inventory, error), allowUnresolved bool) ContractCheck {
 	check := ContractCheck{Unit: unitName, Module: contract.Module, Service: contract.Service, Endpoint: contract.Endpoint}
 	host, err := resolve(contract.Module)
 	if err == nil && host == nil {
@@ -706,7 +781,6 @@ func prepareServicePublication(
 	generateBootstrap bool,
 	environment string,
 	config *repositoryConfig,
-	promotionBranch string,
 	publishSnapshot bool,
 	localFetchHost string,
 	publication *deliveryPublication,
@@ -727,7 +801,7 @@ func prepareServicePublication(
 	}
 	delivery := snapshot.delivery
 	if generateBootstrap {
-		if err := generateArgoBootstrap(
+		if err = generateArgoBootstrap(
 			ctx,
 			config,
 			target,
@@ -742,7 +816,7 @@ func prepareServicePublication(
 	} else {
 		renderedBootstrap := filepath.Join(rendered, "bootstrap")
 		if info, statErr := os.Stat(renderedBootstrap); statErr == nil && info.IsDir() {
-			if err := copyTree(renderedBootstrap, filepath.Join(target, "bootstrap")); err != nil {
+			if err = copyTree(renderedBootstrap, filepath.Join(target, "bootstrap")); err != nil {
 				return "", Inventory{}, fmt.Errorf("stage rendered bootstrap: %w", err)
 			}
 		} else if statErr != nil && !os.IsNotExist(statErr) {
@@ -752,7 +826,7 @@ func prepareServicePublication(
 	if err = verifyServiceSnapshotBinding(ctx, repo, snapshot.revision, snapshot.servicePaths); err != nil {
 		return "", Inventory{}, err
 	}
-	if err := validateBootstrapRevision(filepath.Join(target, "bootstrap"), snapshot.revision); err != nil {
+	if err = validateBootstrapRevision(filepath.Join(target, "bootstrap"), snapshot.revision); err != nil {
 		return "", Inventory{}, err
 	}
 	if generateBootstrap {
@@ -885,13 +959,13 @@ func prepareServiceSnapshot(
 	if err != nil {
 		return serviceSnapshotPreparation{}, err
 	}
-	if err := writeCanonicalInventory(filepath.Join(target, InventoryFilename), &snapshotInventory); err != nil {
+	if err = writeCanonicalInventory(filepath.Join(target, InventoryFilename), &snapshotInventory); err != nil {
 		return serviceSnapshotPreparation{}, fmt.Errorf("write service snapshot inventory: %w", err)
 	}
-	if err := ValidateServiceSnapshot(target); err != nil {
+	if err = ValidateServiceSnapshot(target); err != nil {
 		return serviceSnapshotPreparation{}, fmt.Errorf("validate service snapshot: %w", err)
 	}
-	if _, err := gitCommand(ctx, repo, "add", "-A", "--", targetPath); err != nil {
+	if _, err = gitCommand(ctx, repo, "add", "-A", "--", targetPath); err != nil {
 		return serviceSnapshotPreparation{}, err
 	}
 	snapshotChanged := existingSnapshot == ""
@@ -1206,12 +1280,12 @@ func walkBootstrapApplications(root string, visit func(path, revision, sourcePat
 	if !info.IsDir() {
 		return fmt.Errorf("module bootstrap is not a directory")
 	}
-	return walkRegularFiles(root, func(path, relative string, _ os.FileInfo) error {
+	return walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
 		extension := strings.ToLower(filepath.Ext(relative))
-		if extension != ".yaml" && extension != ".yml" && extension != jsonExtension {
+		if extension != yamlExtension && extension != ymlExtension && extension != jsonExtension {
 			return nil
 		}
-		data, err := os.ReadFile(path)
+		data, err := readWithin(root, relative)
 		if err != nil {
 			return err
 		}
@@ -1353,7 +1427,7 @@ func prepareRollback(ctx context.Context, workspace *resources.Workspace, reques
 		return nil, "", err
 	}
 	defer os.RemoveAll(temp)
-	if _, err := gitCommand(ctx, temp, "clone", "--quiet", "--no-checkout", "--", config.RepoURL, "repo"); err != nil {
+	if _, err = gitCommand(ctx, temp, "clone", "--quiet", "--no-checkout", "--", config.RepoURL, "repo"); err != nil {
 		return nil, "", err
 	}
 	revision, err := gitCommand(ctx, filepath.Join(temp, "repo"), "rev-parse", request.ToRevision+"^{commit}")
@@ -1430,7 +1504,7 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 	}
 	if len(prepared.plan.Changed) > 0 {
 		refspec := "refs/heads/" + prepared.plan.PromotionBranch + ":refs/heads/" + prepared.plan.PromotionBranch
-		if _, err := gitCommand(ctx, prepared.dir, "push", "--porcelain", "--set-upstream", "--", "origin", refspec); err != nil {
+		if _, err = gitCommand(ctx, prepared.dir, "push", "--porcelain", "--set-upstream", "--", "origin", refspec); err != nil {
 			return PublishResult{}, fmt.Errorf("push promotion branch without force: %w", err)
 		}
 	}
@@ -1468,11 +1542,11 @@ func clonePromotionRepository(ctx context.Context, repository, baseBranch, promo
 	}
 	cleanup := func() { _ = os.RemoveAll(temp) }
 	repo := filepath.Join(temp, "repo")
-	if _, err := gitCommand(ctx, temp, "clone", "--quiet", "--no-checkout", "--", repository, repo); err != nil {
+	if _, err = gitCommand(ctx, temp, "clone", "--quiet", "--no-checkout", "--", repository, repo); err != nil {
 		cleanup()
 		return "", nil, "", "", err
 	}
-	if _, err := gitCommand(ctx, repo, "check-ref-format", "--branch", baseBranch); err != nil {
+	if _, err = gitCommand(ctx, repo, "check-ref-format", "--branch", baseBranch); err != nil {
 		cleanup()
 		return "", nil, "", "", fmt.Errorf("invalid configured GitOps branch %q: %w", baseBranch, err)
 	}
@@ -1482,20 +1556,20 @@ func clonePromotionRepository(ctx context.Context, repository, baseBranch, promo
 		cleanup()
 		return "", nil, "", "", fmt.Errorf("resolve configured GitOps branch %q: %w", baseBranch, err)
 	}
-	if _, err := gitCommand(ctx, repo, "check-ref-format", "--branch", promotionBranch); err != nil {
+	if _, err = gitCommand(ctx, repo, "check-ref-format", "--branch", promotionBranch); err != nil {
 		cleanup()
 		return "", nil, "", "", fmt.Errorf("invalid promotion branch %q: %w", promotionBranch, err)
 	}
 	remoteRef := "refs/remotes/origin/" + promotionBranch
 	branchRevision, branchErr := gitCommand(ctx, repo, "rev-parse", "--verify", remoteRef+"^{commit}")
 	if branchErr == nil {
-		if _, err := gitCommand(ctx, repo, "checkout", "--quiet", "-b", promotionBranch, remoteRef); err != nil {
+		if _, err = gitCommand(ctx, repo, "checkout", "--quiet", "-b", promotionBranch, remoteRef); err != nil {
 			cleanup()
 			return "", nil, "", "", err
 		}
 	} else {
 		branchRevision = ""
-		if _, err := gitCommand(ctx, repo, "checkout", "--quiet", "-b", promotionBranch, baseRef); err != nil {
+		if _, err = gitCommand(ctx, repo, "checkout", "--quiet", "-b", promotionBranch, baseRef); err != nil {
 			cleanup()
 			return "", nil, "", "", err
 		}
@@ -2097,7 +2171,7 @@ func stageCellFile(ctx context.Context, repo string, publication *deliveryPublic
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		return fmt.Errorf("create the cell directory: %w", err)
 	}
-	if err := os.WriteFile(destination, data, 0o644); err != nil { //nolint:gosec // an inventory of public manifest identities
+	if err := os.WriteFile(destination, data, 0o600); err != nil {
 		return fmt.Errorf("stage the cell file: %w", err)
 	}
 	return nil

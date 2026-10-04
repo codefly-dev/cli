@@ -384,7 +384,7 @@ func writeAuthorityDocument(directory string, document *solutionhost.AuthorityDo
 		return "", fmt.Errorf("encode authority %q: %w", document.Authority, err)
 	}
 	file := document.Authority + ".yaml"
-	if err := os.WriteFile(filepath.Join(directory, file), body, 0o644); err != nil { //nolint:gosec // a delivered manifest, readable beside the rest of the tree
+	if err := os.WriteFile(filepath.Join(directory, file), body, 0o600); err != nil {
 		return "", fmt.Errorf("write authority %q: %w", document.Authority, err)
 	}
 	return file, nil
@@ -399,7 +399,7 @@ func writeAuthorityKustomization(owned, environment string, names []string) erro
 		return fmt.Errorf("encode authority kustomization: %w", err)
 	}
 	path := filepath.Join(owned, filepath.FromSlash(solutionAuthorityOverlay(environment)), kustomizationFile)
-	if err := os.WriteFile(path, body, 0o644); err != nil { //nolint:gosec // a delivered manifest, readable beside the rest of the tree
+	if err := os.WriteFile(path, body, 0o600); err != nil {
 		return fmt.Errorf("write authority kustomization: %w", err)
 	}
 	return nil

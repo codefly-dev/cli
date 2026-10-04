@@ -130,7 +130,7 @@ func writeCloudComponent(root string, profile CloudProfile) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("encode cloud component: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(directory, "kustomization.yaml"), data, 0o644); err != nil { //nolint:gosec
+	if err := os.WriteFile(filepath.Join(directory, "kustomization.yaml"), data, 0o600); err != nil {
 		return "", fmt.Errorf("write cloud component: %w", err)
 	}
 	return filepath.ToSlash(relative), nil

@@ -68,7 +68,7 @@ func TestCheckContractsAcceptsExactPinAtMatchingDigest(t *testing.T) {
 	host := hostInventory("0.1.0", testContractDigestA)
 	consumer := consumerInventory("0.1.0", "", testContractDigestA)
 
-	checks := checkContracts(consumer, resolverFor(&host), false)
+	checks := checkContracts(&consumer, resolverFor(&host), false)
 	if len(checks) != 1 || checks[0].Status != ContractCheckOK {
 		t.Fatalf("checks = %+v", checks)
 	}
@@ -78,7 +78,7 @@ func TestCheckContractsReportsDriftForCompatibleNewerHostWithDifferentDigest(t *
 	host := hostInventory("0.1.3", testContractDigestB)
 	consumer := consumerInventory("0.1.0", ">=0.1.0 <0.2.0", testContractDigestA)
 
-	checks := checkContracts(consumer, resolverFor(&host), false)
+	checks := checkContracts(&consumer, resolverFor(&host), false)
 	if len(checks) != 1 || checks[0].Status != ContractCheckDrift {
 		t.Fatalf("checks = %+v", checks)
 	}
@@ -94,7 +94,7 @@ func TestCheckContractsRejectsOlderHostEvenWhenConstraintSatisfied(t *testing.T)
 	host := hostInventory("1.0.0", testContractDigestB)
 	consumer := consumerInventory("1.5.0", ">=0.1.0 <2.0.0", testContractDigestA)
 
-	checks := checkContracts(consumer, resolverFor(&host), false)
+	checks := checkContracts(&consumer, resolverFor(&host), false)
 	if len(checks) != 1 || checks[0].Status != ContractCheckViolation || !strings.Contains(checks[0].Message, "does not match") {
 		t.Fatalf("checks = %+v, want a violation for an older host with a different digest", checks)
 	}
@@ -104,7 +104,7 @@ func TestCheckContractsRejectsHostViolatingConstraint(t *testing.T) {
 	host := hostInventory("0.1.3", testContractDigestA)
 	consumer := consumerInventory("0.1.0", ">=0.2.0", testContractDigestA)
 
-	checks := checkContracts(consumer, resolverFor(&host), false)
+	checks := checkContracts(&consumer, resolverFor(&host), false)
 	if len(checks) != 1 || checks[0].Status != ContractCheckViolation || !strings.Contains(checks[0].Message, "does not satisfy") {
 		t.Fatalf("checks = %+v", checks)
 	}
@@ -113,7 +113,7 @@ func TestCheckContractsRejectsHostViolatingConstraint(t *testing.T) {
 func TestCheckContractsRejectsUndeployedModule(t *testing.T) {
 	consumer := consumerInventory("0.1.0", "", testContractDigestA)
 
-	checks := checkContracts(consumer, resolverFor(nil), false)
+	checks := checkContracts(&consumer, resolverFor(nil), false)
 	if len(checks) != 1 || checks[0].Status != ContractCheckViolation || !strings.Contains(checks[0].Message, "is not deployed") {
 		t.Fatalf("checks = %+v", checks)
 	}
@@ -125,7 +125,7 @@ func TestCheckContractsRejectsUndeployedModule(t *testing.T) {
 func TestCheckContractsSkipsUndeployedModuleWhenAllowed(t *testing.T) {
 	consumer := consumerInventory("0.1.0", "", testContractDigestA)
 
-	checks := checkContracts(consumer, resolverFor(nil), true)
+	checks := checkContracts(&consumer, resolverFor(nil), true)
 	if len(checks) != 1 || checks[0].Status != ContractCheckSkipped {
 		t.Fatalf("checks = %+v, want skipped", checks)
 	}
@@ -143,7 +143,7 @@ func TestCheckContractsNeverDowngradesACorruptHostInventoryEvenWhenAllowed(t *te
 	}
 
 	for _, allow := range []bool{false, true} {
-		checks := checkContracts(consumer, resolve, allow)
+		checks := checkContracts(&consumer, resolve, allow)
 		if len(checks) != 1 || checks[0].Status != ContractCheckViolation {
 			t.Fatalf("allow=%v: checks = %+v, want a violation regardless of the flag", allow, checks)
 		}
@@ -161,7 +161,7 @@ func TestCheckContractsRejectsWhenEndpointNoLongerExposed(t *testing.T) {
 	host.Units[0].Contracts[0].Endpoint = "disconnect"
 	consumer := consumerInventory("0.1.0", "", testContractDigestA)
 
-	checks := checkContracts(consumer, resolverFor(&host), false)
+	checks := checkContracts(&consumer, resolverFor(&host), false)
 	if len(checks) != 1 || checks[0].Status != ContractCheckViolation || !strings.Contains(checks[0].Message, "no longer exposes") {
 		t.Fatalf("checks = %+v", checks)
 	}
@@ -177,7 +177,7 @@ func TestCheckContractsRejectsWhenExposedProtoPackageChanged(t *testing.T) {
 	host.Units[0].Contracts[0].Package = "saas.notifications.v1"
 	consumer := consumerInventory("0.1.0", "", testContractDigestA)
 
-	checks := checkContracts(consumer, resolverFor(&host), false)
+	checks := checkContracts(&consumer, resolverFor(&host), false)
 	if len(checks) != 1 || checks[0].Status != ContractCheckViolation || !strings.Contains(checks[0].Message, "not the consumed package") {
 		t.Fatalf("checks = %+v", checks)
 	}
@@ -208,7 +208,7 @@ func TestCheckContractsHandlesPriorSchemaInventoryWithNoContracts(t *testing.T) 
 		t.Fatalf("schema-4 JSON unexpectedly decoded provenance fields: %+v", consumer)
 	}
 
-	checks := checkContracts(consumer, resolverFor(nil), false)
+	checks := checkContracts(&consumer, resolverFor(nil), false)
 	if len(checks) != 0 {
 		t.Fatalf("checks = %+v, want none", checks)
 	}

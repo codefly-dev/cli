@@ -91,7 +91,7 @@ const (
 	deliveryAuthority = "authority"
 
 	deliveryDocumentsMount = "/delivery/documents"
-	deliveryTokenMount     = "/var/run/secrets/codefly/delivery" //nolint:gosec // a mount path, not a credential
+	deliveryIdentityMount  = "/var/run/secrets/codefly/delivery"
 	deliveryTokenFile      = "token"
 	// deliveryTokenSeconds is the projected token's lifetime. The kubelet
 	// rotates it at 80%, and the Job re-reads the file on every request, so a
@@ -347,11 +347,11 @@ func renderDeliveryJob(directory, name, namespace, serviceAccount, kind, path st
 				// from: a variable named *_TOKEN carrying a value is classified
 				// as a credential by the promotable ruleset, which refuses the
 				// manifest — and the value is a path, never the token.
-				{Name: "DELIVERY_IDENTITY_FILE", Value: deliveryTokenMount + "/" + deliveryTokenFile},
+				{Name: "DELIVERY_IDENTITY_FILE", Value: deliveryIdentityMount + "/" + deliveryTokenFile},
 			},
 			VolumeMounts: []deliveryVolumeMount{
 				{Name: "documents", MountPath: deliveryDocumentsMount, ReadOnly: true},
-				{Name: "token", MountPath: deliveryTokenMount, ReadOnly: true},
+				{Name: "token", MountPath: deliveryIdentityMount, ReadOnly: true},
 			},
 			Resources: deliveryResources{
 				Requests: deliveryAmounts{CPU: "10m", Memory: "32Mi"},
@@ -375,7 +375,7 @@ func renderDeliveryJob(directory, name, namespace, serviceAccount, kind, path st
 		return "", fmt.Errorf("encode %s delivery job: %w", kind, err)
 	}
 	file := "deliver-" + kind + ".yaml"
-	if err := os.WriteFile(filepath.Join(directory, file), body, 0o644); err != nil { //nolint:gosec // a delivered manifest, readable beside the rest of the tree
+	if err := os.WriteFile(filepath.Join(directory, file), body, 0o600); err != nil {
 		return "", fmt.Errorf("write %s delivery job: %w", kind, err)
 	}
 	return file, nil
@@ -398,7 +398,7 @@ func renderDeliveryServiceAccount(directory, namespace string) (string, error) {
 		return "", fmt.Errorf("encode delivery service account: %w", err)
 	}
 	const file = "delivery-service-account.yaml"
-	if err := os.WriteFile(filepath.Join(directory, file), body, 0o644); err != nil { //nolint:gosec // a delivered manifest, readable beside the rest of the tree
+	if err := os.WriteFile(filepath.Join(directory, file), body, 0o600); err != nil {
 		return "", fmt.Errorf("write delivery service account: %w", err)
 	}
 	return file, nil

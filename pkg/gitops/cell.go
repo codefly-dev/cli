@@ -320,7 +320,7 @@ func RenderCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 	if err := os.MkdirAll(filepath.Dir(result.Path), 0o755); err != nil {
 		return CellResult{}, fmt.Errorf("create cell directory: %w", err)
 	}
-	if err := os.WriteFile(result.Path, body, 0o644); err != nil { //nolint:gosec // an inventory of public manifest identities, readable beside the rendered trees
+	if err := os.WriteFile(result.Path, body, 0o600); err != nil {
 		return CellResult{}, fmt.Errorf("write cell file: %w", err)
 	}
 	return result, nil
@@ -583,7 +583,7 @@ func overlayManifests(overlay string) ([]manifest, error) {
 		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), yamlExtension) && !strings.HasSuffix(entry.Name(), ymlExtension)) {
 			continue
 		}
-		data, readErr := os.ReadFile(filepath.Join(overlay, entry.Name())) //nolint:gosec // a file of the overlay being read
+		data, readErr := readWithin(overlay, entry.Name())
 		if readErr != nil {
 			return nil, readErr
 		}

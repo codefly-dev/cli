@@ -431,7 +431,7 @@ func renderedBindings(directory string) (map[string]deliveredPresenceDocument, e
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") || entry.Name() == kustomizationFile {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(directory, entry.Name())) //nolint:gosec // a file of the render this publish stages
+		data, err := readWithin(directory, entry.Name())
 		if err != nil {
 			return nil, err
 		}
@@ -565,7 +565,7 @@ func writeSettledBinding(directory, namespace string, entry deliveredPresenceDoc
 		return "", fmt.Errorf("encode binding %q: %w", entry.document.Binding, err)
 	}
 	file := entry.document.Binding + ".yaml"
-	if err := os.WriteFile(filepath.Join(directory, file), body, 0o644); err != nil { //nolint:gosec // a delivered manifest, readable beside the rest of the tree
+	if err := os.WriteFile(filepath.Join(directory, file), body, 0o600); err != nil {
 		return "", fmt.Errorf("write binding %q: %w", entry.document.Binding, err)
 	}
 	return file, nil
@@ -1036,7 +1036,7 @@ func renderedAuthorities(directory string) (map[string]deliveredAuthorityDocumen
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") || entry.Name() == kustomizationFile {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(directory, entry.Name())) //nolint:gosec // a file of the render this publish stages
+		data, err := readWithin(directory, entry.Name())
 		if err != nil {
 			return nil, err
 		}

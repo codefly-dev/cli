@@ -352,7 +352,15 @@ type Destination struct {
 // contract that cannot be read: the first is a module with nothing to ask, the
 // second is a module whose request is unreadable.
 func Load(moduleDir string) (*Contract, error) {
-	data, err := os.ReadFile(filepath.Join(moduleDir, FileName)) //nolint:gosec // the module directory the composition resolved, under a constant file name
+	// The module directory is one the composition resolved; the file is read
+	// through it rather than by a path, so a FileName that resolved outside it
+	// would be refused.
+	root, err := os.OpenRoot(moduleDir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	data, err := root.ReadFile(FileName)
 	if err != nil {
 		return nil, err
 	}

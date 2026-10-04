@@ -198,7 +198,7 @@ func releaseDigest(moduleDir string) (solutionhost.ReleaseDigest, error) {
 		if !item.Type().IsRegular() {
 			return nil
 		}
-		file, openErr := os.Open(path) //nolint:gosec // a file of the module directory being digested
+		file, openErr := openWithin(moduleDir, relative)
 		if openErr != nil {
 			return openErr
 		}

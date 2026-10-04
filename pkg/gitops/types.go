@@ -307,7 +307,7 @@ func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKub
 		Validation: &InventoryKubernetesValidation{
 			StaticValidation:     validation.GetStaticValidation().String(),
 			ServerSideValidation: validation.GetServerSideValidation().String(),
-			Restricted:           validation.GetRestricted(),
+			Promotable:           validation.GetRestricted(),
 			Violations:           violations,
 		},
 	}

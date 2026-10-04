@@ -155,8 +155,8 @@ var imageLinePattern = regexp.MustCompile(`(?m)^\s*(?:-\s*)?image:\s*["']?([^\s"
 // digestImages collects the distinct digest-pinned image references under root.
 func digestImages(root string) ([]string, error) {
 	seen := map[string]bool{}
-	err := walkRegularFiles(root, func(path, _ string, _ os.FileInfo) error {
-		data, err := os.ReadFile(path)
+	err := walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
+		data, err := readWithin(root, relative)
 		if err != nil {
 			return err
 		}
@@ -348,8 +348,8 @@ func applyDevImages(root string, inventory *Inventory, unit *InventoryUnit, imag
 		rewrites = append(rewrites, &rewrite{pattern: imageRepositoryPattern(image), image: image})
 	}
 	var changed []string
-	err := walkRegularFiles(unitRoot, func(path, relative string, info os.FileInfo) error {
-		data, err := os.ReadFile(path)
+	err := walkRegularFiles(unitRoot, func(_, relative string, _ os.FileInfo) error {
+		data, err := readWithin(unitRoot, relative)
 		if err != nil {
 			return err
 		}
@@ -364,8 +364,9 @@ func applyDevImages(root string, inventory *Inventory, unit *InventoryUnit, imag
 		if string(updated) == string(data) {
 			return nil
 		}
-		// path is a regular file found by walking the rendered unit itself.
-		if err := os.WriteFile(path, updated, info.Mode().Perm()); err != nil { //nolint:gosec
+		// A regular file found by walking the rendered unit itself, written
+		// back through the unit's root.
+		if err := writeWithin(unitRoot, relative, updated); err != nil {
 			return err
 		}
 		changed = append(changed, filepath.ToSlash(filepath.Join(unit.Path, relative)))
@@ -403,7 +404,7 @@ func applyDevImages(root string, inventory *Inventory, unit *InventoryUnit, imag
 		return nil, err
 	}
 	// The inventory is public and inspectable beside the rendered files, as a render writes it.
-	if err := os.WriteFile(filepath.Join(root, InventoryFilename), data, 0o644); err != nil { //nolint:gosec
+	if err := os.WriteFile(filepath.Join(root, InventoryFilename), data, 0o600); err != nil {
 		return nil, fmt.Errorf("write render inventory: %w", err)
 	}
 	*inventory = rebuilt
