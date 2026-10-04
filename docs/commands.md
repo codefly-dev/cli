@@ -2026,6 +2026,11 @@ sync with `origin/main`, target tag free locally and remotely. Nothing is ever
 pushed with `--force`. A service-agent repository additionally runs release-grade
 agent CI against the bumped version, then creates the GitHub release, uploads the
 loader archives and SBOMs, and verifies each resolves through the install URL.
+That final read uses the publisher's authenticated GitHub client through Core's
+agent-download path, so private release archives are verified without requiring
+public access. Asset-CDN requests do not receive the GitHub API credential.
+Installing private agents requires `GITHUB_TOKEN` or `GH_TOKEN` in the install
+process; public agent downloads continue to work without either.
 A module-agent repository publishes only the immutable Git tag. If the release
 pull request merged but the tag push failed, re-run: the untagged release commit
 is recognised and finished rather than bumped again.
@@ -2480,8 +2485,108 @@ declares, so a template whose outputs sit beside the proto directory
 regenerates on the host. An `out` that escapes the workspace owning `--proto`
 (outside a workspace: the directory `--proto`, `--output` and the template share)
 is refused, as is an absolute `out`, which names a path the companion cannot see.
-A run whose template declares outputs but which writes no file under any of them
-fails instead of reporting success.
+That escape test resolves symlinks on both sides: a lexical one is bypassed by a
+symlinked component in the output's own path — `out: ../link/gen` where `link`
+points outside the workspace reads as inside it — and everything anchored on
+that conclusion, publication and `clean: true` included, would then act outside
+the boundary the caller was promised. Only existing components can be symlinks,
+so an output buf has yet to create is resolved as far as it exists.
+
+**The output validation contract: generation is staged.** buf *syncs* an output
+tree rather than rewriting it — it compares the bytes it generated against what
+is already under each `out` and writes only the files that are new or
+different, and with `clean: true` it additionally prunes what it no longer
+generates while still leaving byte-identical files untouched. So nothing
+observable about the output tree after a run separates "the generator emitted
+exactly what was already there" from "the generator emitted nothing" or "the
+generation never reached the host", and a file that was already on disk is not
+evidence that the run produced it.
+
+So buf generates into a staging tree, through a derived template that redirects
+every `out` into it, and **the CLI publishes to the declared outputs**. The
+caller's template is otherwise unchanged — same plugins, options, managed-mode
+block and version — and buf's own `--output` cannot be used for this: it is
+prepended to each `out`, so `out: ../code/pkg/gen` under `-o /stage` resolves
+straight back out of the staging directory.
+
+The staging tree is created fresh for each run under the codefly home
+(`~/.codefly/generate-proto/`, or `$CODEFLY_HOME`) and bind-mounted separately
+from the generation mount, for two reasons. It must be **empty**, or a leftover
+could supply files the run never generated — the whole point of staging — so it
+is created exclusively rather than reused. And it must sit where no `out` can
+name it: an `out` can resolve to the generation mount's own root (`out: .` in a
+template that is its own output directory), and `clean: true` over that would
+delete the staging tree along with the output, destroying the evidence
+publication reads. (A `clean` that is nonetheless handed a staging tree inside
+an output leaves it alone rather than deleting its own evidence, and an output
+that *is* the staging tree is refused.)
+
+The staged tree is what the run emitted, which makes each question separately
+answerable:
+
+- **A generation that emitted no file fails**, and the refusal is decided from
+  staging before anything is published, so the declared outputs are left
+  exactly as they were found — including under `clean: true`, which never gets
+  to empty a tree on behalf of a generator that produced nothing.
+- **An unchanged replay publishes byte-identical content** and succeeds. A file
+  whose bytes are already on disk is left untouched, so content *and*
+  modification times are unchanged, which is what a CI drift gate
+  (`git diff --exit-code` over the generated tree) reads.
+- **Generation into a tree the host cannot see is no longer possible**, because
+  buf no longer writes the output. A staging directory the companion does not
+  share with the host is caught before generation by a probe the host writes
+  and the companion deletes — which also catches a mount that reads but
+  discards writes, where the command exits 0 and the probe survives.
+- **Publication adds and overwrites; it does not prune.** An `out` may be a
+  broad source root holding handwritten files beside generated ones, and a
+  generator that stops emitting a file leaves the old one in place, exactly as
+  buf does. `clean: true` is the caller asking for the opposite and replaces
+  the output with what the run emitted. One plugin with nothing to emit for a
+  given input — openapiv2 over a contract carrying no REST annotations — is not
+  a failed generation and does not disturb that output.
+- **Under `clean: true`, every destination is cleaned before anything is
+  published.** Outputs nest: a plugin writing `nested/x.ts` into the tree for
+  `out: gen` publishes it to the path `out: gen/nested` owns, so cleaning each
+  output just before copying it would delete what a sibling had already
+  published.
+- **Publication cannot be redirected out of the boundary.** Every host
+  mutation — the clean, the output directories, the files — goes through one
+  `os.Root` anchored at the boundary above, so a directory in the published
+  tree that is a symlink leaving it, or a symlinked component in an output's
+  own path, is an error rather than a write to a path no `out` names.
+  Resolving the outputs up front establishes that they are inside the
+  boundary; anchoring the writes there keeps it true, which a check alone
+  cannot — a symlink swapped in between the check and the write would escape
+  it, and `clean: true` deletes before it writes. A symlink that stays inside
+  the boundary is still followed: that is the tree's own business.
+
+The Go lane was never an exception to buf's sync; it only looked like one
+because `goimports` runs after generation and leaves a shape buf never emits,
+so the next run finds every Go file different. Publication is content-based, so
+that churn no longer decides anything.
+
+**Teardown is housekeeping, not generation.** The container `generate proto`
+builds is created, driven once and thrown away: it is marked ephemeral and the
+command projects the container-recovery ownership a later run's sweep matches,
+so a container it cannot remove is left in exactly the state an interrupted
+`generate` leaves, eligible for scoped recovery. A removal that fails is therefore
+a **warning naming the container's immutable ID**, not a failed command: folding it in would
+report a correct generation as a failed one, and a drift gate
+(`codefly generate proto && git diff --exit-code`) cannot tell those apart. The
+warning supplies a removal command using that ID. Recovery across naming scopes
+requires a durable host identity; without one, only a matching scope can collect
+the leftover. If the command could *not* project ownership — outside a workspace, an
+unwritable home, which it already warns about — nothing will collect the
+leftover, and the failure is then reported as the command's. A generation that
+actually failed still fails, either way.
+
+The removal deadlines themselves are Core's, fixed per Docker call in its own
+fresh contexts, so nothing the CLI passes down shortens them. Measured idle on
+the companion image with both of this command's mounts, stopping one of these
+containers takes about the full SIGTERM grace — its paused PID 1 does not
+handle the signal — and force-removing it is near-instant. Removal timeouts were
+intermittent in local qualification; those idle timings do not establish why the
+daemon sometimes exceeds its deadline. Raising that deadline is Core's call.
 
 #### generate client
 

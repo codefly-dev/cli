@@ -417,7 +417,7 @@ func uploadReleaseAsset(ctx context.Context, client *github.Client, owner, repo 
 // through the exact URL `codefly agent install` requests. For the host
 // platform it asserts the URL matches manager.DownloadURL byte-for-byte,
 // so the upload names can never silently drift from the resolver.
-func verifyReleaseAssets(ctx context.Context, reg *resources.AgentKindRegistration, publisher, name, version string, assets []loaderAsset) error {
+func verifyReleaseAssets(ctx context.Context, client *github.Client, reg *resources.AgentKindRegistration, publisher, name, version string, assets []loaderAsset) error {
 	for _, asset := range assets {
 		url := loaderDownloadURL(reg, publisher, name, version, asset.platform)
 		if asset.platform.os == runtime.GOOS && asset.platform.arch == runtime.GOARCH {
@@ -430,34 +430,25 @@ func verifyReleaseAssets(ctx context.Context, reg *resources.AgentKindRegistrati
 				return fmt.Errorf("uploaded asset URL %s does not match install resolver %s", url, resolver)
 			}
 		}
-		if err := assertAssetReachable(ctx, url); err != nil {
+		if err := assertAssetReachable(ctx, client, url); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// assertAssetReachable GETs url and expects 200. GitHub can take a moment
-// to make a freshly uploaded asset downloadable, so it retries a few times
-// with backoff before giving up.
-func assertAssetReachable(ctx context.Context, url string) error {
+// assertAssetReachable opens the exact loader asset through Core's authenticated
+// read path. A private repository's public download URL intentionally returns 404.
+// GitHub can take a moment to expose a new asset, so transient failures are retried.
+func assertAssetReachable(ctx context.Context, client *github.Client, url string) error {
 	const attempts = 5
 	var lastErr error
 	for attempt := range attempts {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return err
+		body, _, err := manager.OpenReleaseAsset(ctx, url, client)
+		if err == nil {
+			return body.Close()
 		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			lastErr = err
-		} else {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return nil
-			}
-			lastErr = fmt.Errorf("unexpected status %d for %s", resp.StatusCode, url)
-		}
+		lastErr = err
 		if attempt == attempts-1 {
 			break
 		}
@@ -682,7 +673,7 @@ func (r *agentReleaser) afterPush(ctx context.Context, newTag string) error {
 	if err := publishReleaseAssets(ctx, client, owner, repo, releaseRequest(newTag, r.dev), r.assets); err != nil {
 		return err
 	}
-	return verifyReleaseAssets(ctx, r.reg, r.publisher, r.name, version, r.assets)
+	return verifyReleaseAssets(ctx, client, r.reg, r.publisher, r.name, version, r.assets)
 }
 
 // sourceTagReleaser publishes an immutable source release: it runs

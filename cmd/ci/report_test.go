@@ -391,3 +391,28 @@ func TestCIReportRecordsAgentWithoutTestCapabilityAsSkipped(t *testing.T) {
 		t.Fatalf("status = %s, want %s", report.Status, reportStatusPassed)
 	}
 }
+
+func TestCIReportRecordsUnsupportedStaticValidationAsSkipped(t *testing.T) {
+	for _, phase := range []string{"lint", "compile"} {
+		t.Run(phase, func(t *testing.T) {
+			_, workspace := loadSchedulerFixture(t)
+			plan := &Plan{SchemaVersion: planSchemaVersion, Workspace: workspace.Name, ChangedFiles: []string{}, Services: []PlannedService{{Service: "management/worker"}}}
+			reporter := fixedCIReporter(t, plan)
+			options := ScheduleOptions{Jobs: 1, Phase: phase, Reporter: reporter}
+			if err := prepareCIReportTasks(context.Background(), workspace, plan, options); err != nil {
+				t.Fatal(err)
+			}
+			id := reportTaskID(phase, "", "management/worker")
+			reporter.startTask(id)
+			ctx := withCIReportTask(context.Background(), reporter, id)
+			reason := reportReasonAgentNoLintCapability
+			if phase == "compile" {
+				reason = reportReasonAgentNoCompileCapability
+			}
+			validationOptions(ctx, reason).OnSkip()
+			reporter.finishTask(id, nil)
+			report := reporter.Finalize(nil)
+			assertReportTask(t, report.Tasks[0], reportStatusSkipped, reason)
+		})
+	}
+}

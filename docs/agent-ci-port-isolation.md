@@ -102,3 +102,11 @@ already holds the address keeps it, and keeps serving its own flow.
 
 > This stops a leak from *propagating* to the next agent. Reliably *reaping*
 > the leaked processes themselves is a separate concern (codefly-dev/cli#429).
+
+Generated-service conformance uses the same validation capability preflight as
+ordinary CI. A recipe consumer with no lint, compile or test operation does not
+need runtime configuration just to record those operations as unsupported. Source
+validation, audits, SBOM generation and artifact builds still run through their
+existing gates. An agent that advertises runtime validation still needs a valid
+configured fixture; capability preflight does not supply execution limits or
+choose a runtime image.

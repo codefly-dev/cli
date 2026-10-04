@@ -147,6 +147,9 @@ type Flow struct {
 	// to the origin runner when the flow is in TestMode. Dependency
 	// runners ignore it — they only need to be Started, not tested.
 	testRequest *runtimev0.TestRequest
+	// validationSkipped is resolved from the origin advertisement before any
+	// dependency manager or runtime lifecycle is invoked.
+	validationSkipped bool
 	// testDependencyMode is resolved from the origin agent's authoritative
 	// suite advertisement before dependency managers are selected. Legacy
 	// agents retain the dependency-free behavior they had before the contract.
@@ -789,6 +792,9 @@ func (flow *Flow) reportBackendResolution(w *wool.Wool, fellBack, nixFallbacks, 
 }
 
 func (flow *Flow) Load(ctx context.Context) error {
+	if flow.validationSkipped {
+		return nil
+	}
 	w := wool.Get(ctx).In("NewFlow")
 
 	if flow.standAlone {
@@ -856,6 +862,9 @@ func (flow *Flow) Start(ctx context.Context) error {
 	if flow == nil {
 		return w.NewError("cannot execute nil flow")
 	}
+	if flow.validationSkipped {
+		return nil
+	}
 	// In stand-alone Mode, we set an ignore policy
 	if flow.standAlone {
 		flow.playbook.WithIgnore(func(_ context.Context, action Action) bool {
@@ -887,6 +896,9 @@ func (flow *Flow) Test(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.Begin")
 	if flow == nil {
 		return w.NewError("cannot execute nil flow")
+	}
+	if flow.validationSkipped {
+		return nil
 	}
 	// In stand-alone Mode, we set an ignore policy
 	if flow.standAlone {
@@ -925,6 +937,9 @@ func (flow *Flow) OriginTestResponse() *runtimev0.TestResponse {
 // because its agent advertises no test capability. An agent that owns no suites
 // is neither a pass nor a failure: there was nothing to run.
 func (flow *Flow) OriginTestSkipped() bool {
+	if flow != nil && flow.world != nil && flow.world.Mode == TestMode && flow.validationSkipped {
+		return true
+	}
 	if flow == nil || flow.hub == nil {
 		return false
 	}
@@ -1510,7 +1525,7 @@ func (flow *Flow) newTeardownContext() (context.Context, func()) {
 }
 
 func (flow *Flow) Stop() error {
-	if flow == nil || flow.hub == nil {
+	if flow == nil || flow.hub == nil || flow.validationSkipped {
 		return nil
 	}
 	if flow.world != nil {
@@ -1527,7 +1542,7 @@ func (flow *Flow) Stop() error {
 }
 
 func (flow *Flow) Shutdown() error {
-	if flow == nil || flow.hub == nil {
+	if flow == nil || flow.hub == nil || flow.validationSkipped {
 		return nil
 	}
 	return flow.runTeardown("Shutdown", defaultShutdownPhaseBudget, IManager.RunnerDoDestroy)
@@ -1791,10 +1806,17 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		return w.Wrap(err)
 	}
 
+	// Validation support and test dependency policy are advertised by the
+	// origin agent, so load that manager first as a preflight. It is retained
+	// and moved behind dependency managers once the run set is known, preserving
+	// target-first teardown.
 	flow.hub = &Hub{}
-	preloadedOrigin, err := flow.preloadOriginForTestPolicy(ctx, remotes)
+	preloadedOrigin, validationSkipped, err := flow.preloadOriginForValidation(ctx, remotes)
 	if err != nil {
 		return w.Wrap(err)
+	}
+	if validationSkipped {
+		return nil
 	}
 
 	// Create manager for every service required by this service when the
@@ -1964,28 +1986,42 @@ func (flow *Flow) rebuildDependencyGraph(ctx context.Context, options []architec
 	return nil
 }
 
-// preloadOriginForTestPolicy loads the origin's manager first in test mode,
-// because test dependency policy is advertised by the origin agent. It is
-// retained and moved behind the dependency managers once the run set is known,
-// preserving target-first teardown.
-func (flow *Flow) preloadOriginForTestPolicy(ctx context.Context, remotes map[string]*Remote) (*Manager, error) {
-	if flow.world.Mode != TestMode || flow.excludeRoot {
-		return nil, nil
+// preloadOriginForValidation loads the origin's manager first for the modes that
+// need what the origin agent advertises — validation support and test
+// dependency policy are both advertised there. It is retained and moved behind
+// the dependency managers once the run set is known, preserving target-first
+// teardown.
+//
+// The second return says the whole operation is skipped: an agent that
+// advertises a validation operation it cannot support stops the flow here,
+// before any runtime initialization, rather than failing later.
+func (flow *Flow) preloadOriginForValidation(ctx context.Context, remotes map[string]*Remote) (*Manager, bool, error) {
+	if !isRuntimeValidationMode(flow.world.Mode) || flow.excludeRoot {
+		return nil, false, nil
 	}
 	manager, err := New(ctx, flow.originModule, flow.originService, flow.world)
 	flow.output().RegisterLoggingResource(resources.WithUnique(flow.originService).Unique())
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	flow.hub.managers = append(flow.hub.managers, manager)
 	flow.configureRunner(manager.Runner, flow.originService)
 	if remote, ok := remotes[resources.WithUnique(flow.originService).Unique()]; ok {
 		manager.Runner.WithRemote(remote.Environment)
 	}
-	if err := flow.configureTestExecution(manager.Runner); err != nil {
-		return nil, err
+	if flow.world.Mode == TestMode {
+		if err := flow.configureTestExecution(manager.Runner); err != nil {
+			return nil, false, err
+		}
 	}
-	return manager, nil
+	operation := validationOperationForMode(flow.world.Mode)
+	if advertised, supported := ValidationOperationSupport(manager.Runner.instance.Info, operation); advertised && !supported {
+		flow.validationSkipped = true
+		flow.services = append(flow.services, flow.originService)
+		flow.output().Info("Agent for <%s> advertises no %s capability; skipping before runtime initialization", manager.Unique(), operation)
+		return manager, true, nil
+	}
+	return manager, false, nil
 }
 
 // validateDependencyEndpointDeclarations rejects a run whose services declare a

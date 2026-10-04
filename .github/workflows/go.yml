@@ -198,6 +198,15 @@ jobs:
         if: matrix.gate == 'control-integration'
         run: go test -tags=integration -run '^TestAnInterruptedGenerateLeavesARecoverableContainer$' ./cmd/generate -v
 
+      # `generate proto` stages generation and publishes from the staged tree,
+      # so what a run emitted is known independently of what its outputs
+      # already held (#885). That rests on the companion and the host sharing
+      # one staging directory, which only a real daemon can prove. Shares the
+      # alpine image pulled above.
+      - name: Qualify the generate-proto staging mount against a real bind mount
+        if: matrix.gate == 'control-integration'
+        run: go test -tags=integration -run '^TestProtoStagingMountIsQualifiedAgainstARealBindMount$' ./cmd/generate -v
+
       - name: Verify source attachment across the generic protocol
         if: matrix.gate == 'control-integration'
         run: go test -tags=integration -run '^TestSourceAttachmentPreservesSelectionAndBuilderIdentity$' ./pkg/sourceworkspace -v
