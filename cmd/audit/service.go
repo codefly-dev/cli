@@ -40,7 +40,7 @@ language's canonical scanner (govulncheck, npm audit, uv/pip-audit,
 OSV Scanner, or Trivy) plus available dependency releases. Read-only — never
 modifies code.`,
 	Args: cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		defer services.ClearAgents()

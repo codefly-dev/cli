@@ -89,7 +89,7 @@ Examples:
   codefly agent build --dir ./agents/services/go-generic
   cd agents/services && codefly agent build --all`,
 	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		ctx, stop := common.SignalContext(ctx)

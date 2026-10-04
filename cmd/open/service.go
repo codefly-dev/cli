@@ -16,7 +16,7 @@ var ServiceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Open the active service in your configured editor",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx := cmd.Context()
 
 		provider := wool.New(ctx, resources.CLI.AsResource())

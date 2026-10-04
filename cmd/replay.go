@@ -13,7 +13,7 @@ import (
 var ReplayCmd = &cobra.Command{
 	Use:   "replay",
 	Short: "Re-run operations recorded in a Codefly action track",
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		if track == "" {
 			return fmt.Errorf("you must provide a track to replay")
 		}

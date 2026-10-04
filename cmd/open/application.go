@@ -16,7 +16,7 @@ var ModuleCmd = &cobra.Command{
 	Use:   "module",
 	Short: "Open the active module in your configured editor",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx := cmd.Context()
 
 		provider := wool.New(ctx, resources.CLI.AsResource())

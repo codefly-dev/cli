@@ -15,7 +15,7 @@ var ModuleCmd = &cobra.Command{
 	Short: "Remove a module and its reference from the workspace",
 	Args:  cobra.ExactArgs(1),
 
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		return deleteModule(args[0])
 	},
 }

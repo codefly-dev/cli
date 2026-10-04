@@ -37,7 +37,7 @@ var ServiceCmd = &cobra.Command{
 patch+minor (semver-safe) bumps. Pass --major to allow breaking
 upgrades. Pass --dry-run to preview without writing the lockfile.`,
 	Args: cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		ctx, stop := common.SignalContext(ctx)

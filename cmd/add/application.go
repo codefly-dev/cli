@@ -23,7 +23,7 @@ var ApplicationCmd = &cobra.Command{
 	Use:   "application",
 	Short: "Create an agent-backed application in a module",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		if interactive {
 			return fmt.Errorf("interactive mode not implemented yet")
 		}

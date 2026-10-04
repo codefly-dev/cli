@@ -50,7 +50,7 @@ Examples:
   codefly self pull --remote upstream
   codefly self pull --dir ~/Development/deus/codefly.dev`,
 	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		ctx, stop := common.SignalContext(ctx)

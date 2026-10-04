@@ -183,7 +183,7 @@ var VersionsCmd = &cobra.Command{
 	Use:   "versions <publisher/name>",
 	Short: "List an agent's versions and whether each is resolvable",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 
@@ -218,7 +218,7 @@ var ListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List every agent pinned in the workspace and its resolvability",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, _ []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 

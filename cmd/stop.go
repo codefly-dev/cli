@@ -41,7 +41,7 @@ var StopCmd = &cobra.Command{
 	Use:     "stop [name-filter...]",
 	Short:   "Stop this workspace's Codefly processes, preserving stateful containers for reuse",
 	Aliases: []string{"down", "kill"},
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		ctx, stop := common.SignalContext(ctx)

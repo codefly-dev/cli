@@ -56,7 +56,7 @@ is the CI drift gate: it regenerates into a temporary directory and compares
 against what's on disk, without writing anything.
 `,
 	Args: cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		ctx, stop := common.SignalContext(ctx)

@@ -35,7 +35,7 @@ Examples:
   codefly daemon start
   codefly daemon start -- --runtime-context nix
   codefly daemon start -- -d --service-path ./my-svc`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		var childArgs []string
 
 		// Propagate global log-level flags to the child process so the
@@ -88,7 +88,7 @@ var daemonStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop the active background daemon and its services",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		status, err := daemon.GetStatus()
 		if err != nil {
 			return fmt.Errorf("cannot check daemon status: %w", err)
@@ -113,7 +113,7 @@ var daemonStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Report whether the Codefly daemon is running",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		status, err := daemon.GetStatus()
 		if err != nil {
 			return fmt.Errorf("cannot check daemon status: %w", err)
@@ -139,7 +139,7 @@ var daemonLogsCmd = &cobra.Command{
 	Use:   "logs",
 	Short: "Read or follow output from the background daemon",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		logPath, err := daemon.LogFile()
 		if err != nil {
 			return fmt.Errorf("cannot determine log path: %w", err)
@@ -223,7 +223,7 @@ var daemonGatewayCmd = &cobra.Command{
 	Long:   "Starts the Mind Gateway gRPC server in the foreground. Typically invoked by 'daemon start --gateway' or by Mind automatically.",
 	Hidden: false,
 	Args:   cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		// Catch SIGTERM too: `daemon stop` sends SIGTERM for graceful shutdown.
 		// Listening only for SIGINT meant SIGTERM killed the gateway by default
 		// disposition, skipping the deferred RemovePortFile and the server's
@@ -294,7 +294,7 @@ var daemonGatewayCmd = &cobra.Command{
 var daemonRestartCmd = &cobra.Command{
 	Use:   "restart",
 	Short: "Restart the background daemon with its previous arguments",
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		// Stop if running.
 		status, err := daemon.GetStatus()
 		if err != nil {
@@ -349,7 +349,7 @@ var daemonMonitorCmd = &cobra.Command{
 Use -w/--watch for continuous monitoring.
 Use --kill-orphans to clean up orphaned agent processes.`,
 	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		cfg := daemon.DefaultMonitorConfig()
 
 		if monitorKill {

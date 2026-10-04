@@ -39,7 +39,7 @@ type AgentStatus struct {
 	Issues     []string
 }
 
-func runRelease(cmd *cobra.Command, args []string) error {
+func runRelease(cmd *cobra.Command, _ []string) error {
 	baseDir := os.Getenv("CODEFLY_DEV_DIR")
 	if baseDir == "" {
 		baseDir = filepath.Join(os.Getenv("HOME"), "development/deus")

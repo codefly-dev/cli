@@ -34,7 +34,7 @@ Examples:
   codefly agent install go-grpc:0.1.4
   codefly agent install python:0.0.1 --kind=runnable`,
 	Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 

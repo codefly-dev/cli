@@ -55,7 +55,7 @@ var TestCmd = &cobra.Command{
 	Use:   "test",
 	Short: "Test affected services and emit CI reports",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 

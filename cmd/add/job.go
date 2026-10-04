@@ -41,7 +41,7 @@ Examples:
   codefly add job data-import --module=backend --timeout=1h
 `,
 	Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		return addJob(args[0])
 	},
 }

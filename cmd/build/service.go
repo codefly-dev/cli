@@ -20,7 +20,7 @@ var ServiceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Build a service container image for a target environment",
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 

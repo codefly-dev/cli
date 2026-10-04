@@ -13,7 +13,7 @@ var ServiceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Load a service agent and print its reported capabilities",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		ctx, stop := common.SignalContext(ctx)

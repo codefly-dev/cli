@@ -37,7 +37,7 @@ var ModuleCmd = &cobra.Command{
 	Use:   "module [name]",
 	Short: "Deploy every module service and apply its Kustomize configuration",
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 

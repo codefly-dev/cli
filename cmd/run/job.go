@@ -30,7 +30,7 @@ Examples:
   codefly run job db-migration --module=backend --with-services
 `,
 	Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		return runJob(args[0])
 	},
 }

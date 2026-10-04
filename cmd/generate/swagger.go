@@ -15,7 +15,7 @@ var OpenAPICmd = &cobra.Command{
 	Hidden:  true,
 	Short:   "Deprecated: use `generate client --no-facade` instead",
 	Args:    cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		return runLegacyClientAlias(cmd, "openapi")
 	},
 }

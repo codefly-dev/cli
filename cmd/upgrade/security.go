@@ -54,7 +54,7 @@ Examples:
   codefly upgrade security --all           # fix every module in the monorepo
   codefly upgrade security --all --dry-run # preview the monorepo-wide plan`,
 	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		ctx, stop := common.SignalContext(ctx)

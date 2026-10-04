@@ -63,7 +63,7 @@ Examples:
   codefly self build --dir ./cli
   codefly self build --output /usr/local/bin/codefly`,
 	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		ctx, stop := common.SignalContext(ctx)

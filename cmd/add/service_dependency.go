@@ -19,7 +19,7 @@ var ServiceDependencyCmd = &cobra.Command{
 	Use:   "dependency",
 	Short: "Link a service to another service it requires",
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		if interactive {
 			return fmt.Errorf("interactive mode not implemented yet")
 		}

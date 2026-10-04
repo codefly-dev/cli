@@ -176,7 +176,7 @@ Examples:
   codefly clear neo4j postgres      # both
   codefly clear --keep-processes neo4j  # only the container, leave running codefly alone
   codefly clear --dry-run           # list what would be removed without doing it`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		ctx, stop := common.SignalContext(ctx)

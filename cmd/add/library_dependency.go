@@ -39,7 +39,7 @@ Examples:
   codefly add library-dependency shared-models --service=api --module=backend --languages=go
 `,
 	Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		return addLibraryDependency(args[0])
 	},
 }
