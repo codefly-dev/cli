@@ -12,6 +12,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// The two kinds of dependency a module can declare.
+const (
+	applicationDependency = "application"
+	serviceDependency     = "service"
+)
+
 // ApplicationDependencyCmd represents the add application dependency command
 var ApplicationDependencyCmd = &cobra.Command{
 	Use:   "application-dependency",
@@ -82,18 +88,18 @@ func addApplicationDependency(ctx context.Context) error {
 
 	// Choose dependency type
 	depTypeEntries := []*models.Entry{
-		{Identifier: "application", Description: "Another Application"},
-		{Identifier: "service", Description: "A Service"},
+		{Identifier: applicationDependency, Description: "Another Application"},
+		{Identifier: serviceDependency, Description: "A Service"},
 	}
 	depType, err := models.Select("What type of dependency?", depTypeEntries)
 	if err != nil {
 		return fmt.Errorf("cannot select dependency type: %w", err)
 	}
 
-	if depType.Identifier == "application" {
+	if depType.Identifier == applicationDependency {
 		return addAppToAppDependency(ctx, workspace, mod, application)
 	}
-	if depType.Identifier == "service" {
+	if depType.Identifier == serviceDependency {
 		return addAppToServiceDependency(ctx, workspace, application)
 	}
 	return fmt.Errorf("unsupported dependency type %q", depType.Identifier)

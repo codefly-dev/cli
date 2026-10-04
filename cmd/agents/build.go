@@ -543,9 +543,9 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 	}
 	packageOutput := filepath.Join(temporary, "artifacts")
 	arguments := []string{
-		"--timestamps=false",
+		withoutTimestamps,
 		"package", "service", "source",
-		"--format", "json",
+		"--format", formatJSON,
 		"--output-dir", packageOutput,
 		"--name", binaryName,
 		"--publisher", ag.Publisher,
@@ -554,7 +554,7 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 		"--target", runtime.GOOS + "/" + runtime.GOARCH,
 	}
 	if !nativeOnly {
-		arguments = append(arguments, "--target", "linux/amd64")
+		arguments = append(arguments, "--target", containerPlatform)
 	}
 	started := time.Now()
 	command := exec.CommandContext(ctx, executable, arguments...)
@@ -786,7 +786,7 @@ func installAgentPackageArtifacts(artifacts []*builderv0.PackageArtifact, result
 				destinations = append(destinations, result.nativePath+".cdx.json")
 			}
 		}
-		if result.containerPath != "" && target == "linux/amd64" {
+		if result.containerPath != "" && target == containerPlatform {
 			if artifact.GetKind() == builderv0.PackageArtifact_EXECUTABLE {
 				destinations = append(destinations, result.containerPath)
 				installedLinux = true
@@ -951,7 +951,7 @@ func runAgentSourceAudit(ctx context.Context, dir string, manifest *agentYAML) (
 
 func agentSourceAuditCommand(ctx context.Context, executable, directory, home string) *exec.Cmd {
 	command := exec.CommandContext(ctx, executable,
-		"--timestamps=false",
+		withoutTimestamps,
 		"audit", "service", "source",
 		"--json",
 		"--outdated=true",

@@ -23,7 +23,7 @@ func TestSummarizeAuditResponseCountsTypedEvidence(t *testing.T) {
 		},
 		Outdated: []*builderv0.OutdatedDep{{Package: "one"}, {Package: "two"}},
 	}
-	want := CIReportAudit{
+	want := ReportAudit{
 		State: "FINDINGS", Tool: "scanner", Language: "typescript",
 		Findings: 4, Low: 1, Medium: 1, High: 1, Critical: 1, Outdated: 2,
 	}

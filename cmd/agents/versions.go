@@ -597,11 +597,11 @@ func fetchOCITagsFromRegistry(ctx context.Context, agent *resources.Agent) (bool
 		}
 	}
 	url := fmt.Sprintf("%s://%s/v2/agents/%s/%s/tags/list", scheme, registry, agent.Publisher, agent.Name)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil) //nolint:gosec // G704: the registry is the operator's AGENT_REGISTRY; listing its tags is this request
 	if err != nil {
 		return true, nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // G704: the same request
 	if err != nil {
 		return true, nil, err
 	}

@@ -78,7 +78,7 @@ var TestCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("cannot build affected-service plan: %w", err)
 		}
-		return runWithCIReport(ctx, workspace, plan, "codefly ci test", func(reporter *CIReporter) error {
+		return runWithCIReport(ctx, workspace, plan, "codefly ci test", func(reporter *Reporter) error {
 			return executeCIPhase(ctx, reporter, workspace, plan, ciPhaseTest, normalizeTestSuites(testSuites), ciFailFast)
 		})
 	},

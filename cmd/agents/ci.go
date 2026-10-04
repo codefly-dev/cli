@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +32,42 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/structpb"
 	"gopkg.in/yaml.v3"
+)
+
+// withoutTimestamps strips the timestamps from every public CLI line a
+// conformance run captures, so its output reads and compares the same.
+const withoutTimestamps = "--timestamps=false"
+
+// formatJSON is the machine-readable report format.
+const formatJSON = "json"
+
+// containerPlatform is the platform the container build targets.
+const containerPlatform = "linux/amd64"
+
+// The statuses an agent CI report and its stages carry.
+const (
+	statusPending = "pending"
+	statusRunning = "running"
+	statusPassed  = "passed"
+	statusFailed  = "failed"
+	statusSkipped = "skipped"
+)
+
+// The stages of an agent CI run, in the order the report lists them.
+const (
+	stageManifest    = "manifest"
+	stageSource      = "source"
+	stageBuild       = "build"
+	stageAudit       = "audit"
+	stageConformance = "conformance"
+	stageDrift       = "drift"
+)
+
+// The fixture workspace every conformance run creates through the public CLI:
+// one module holding one subject the agent under test backs.
+const (
+	conformanceModule  = "app"
+	conformanceSubject = "subject"
 )
 
 const (
@@ -95,10 +132,10 @@ var AgentCICmd = &cobra.Command{
 			return err
 		}
 		format = strings.ToLower(strings.TrimSpace(format))
-		if format != "text" && format != "json" {
+		if format != "text" && format != formatJSON {
 			return fmt.Errorf("unsupported agent CI format %q (use text or json)", format)
 		}
-		if format == "json" {
+		if format == formatJSON {
 			cmd.SilenceErrors = true
 			cmd.SilenceUsage = true
 			cli.SuppressOutput()
@@ -149,7 +186,7 @@ var AgentCICmd = &cobra.Command{
 			marshalErr = atomicWrite(filepath.Join(output, agentCIReportFilename), payload, 0o644)
 		}
 		runErr = errors.Join(runErr, marshalErr)
-		if format == "json" && len(payload) > 0 {
+		if format == formatJSON && len(payload) > 0 {
 			_, _ = os.Stdout.Write(payload)
 			if runErr != nil {
 				return machineReadableAgentCIError{error: runErr}
@@ -218,16 +255,16 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 				FailOnVuln:         options.failOnVuln,
 				ConformanceEnabled: !options.skipConformance,
 			},
-			Status:    "running",
+			Status:    statusRunning,
 			StartedAt: started.Format(time.RFC3339Nano),
 			Summary:   &civ0.AgentCISummary{},
 			Stages: []*civ0.AgentCIStage{
-				{Name: "manifest", Status: "pending"},
-				{Name: "source", Status: "pending"},
-				{Name: "build", Status: "pending"},
-				{Name: "audit", Status: "pending"},
-				{Name: "conformance", Status: "pending"},
-				{Name: "drift", Status: "pending"},
+				{Name: stageManifest, Status: statusPending},
+				{Name: stageSource, Status: statusPending},
+				{Name: stageBuild, Status: statusPending},
+				{Name: stageAudit, Status: statusPending},
+				{Name: stageConformance, Status: statusPending},
+				{Name: stageDrift, Status: statusPending},
 			},
 		},
 	}
@@ -253,7 +290,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 		return state.runStage(name, action)
 	}
 
-	if err = runStage("manifest", func() error {
+	if err = runStage(stageManifest, func() error {
 		manifest, manifestErr := loadAgentCIManifest(options.dir, options.skipConformance)
 		if manifestErr != nil {
 			return manifestErr
@@ -271,7 +308,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 			_ = source.prepared.Close()
 		}
 	}()
-	if err = runStage("source", func() error {
+	if err = runStage(stageSource, func() error {
 		// Resolve against the original home once, before isolating CI. Both
 		// validation and packaging use this same private executable selection.
 		source, err = prepareAgentCISource(ctx, options.dir, &state.manifest, state.temporary)
@@ -285,7 +322,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 	}); err != nil {
 		return finalizeAgentCI(state, err), err
 	}
-	if err := runStage("build", func() error {
+	if err := runStage(stageBuild, func() error {
 		log := &agentLogger{}
 		result := compileAgent(ctx, options.dir, log, options.nativeOnly, true, source)
 		state.build = result
@@ -312,8 +349,8 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 		return finalizeAgentCI(state, err), err
 	}
 	if options.skipAudit {
-		state.skipStage("audit")
-	} else if err := runStage("audit", func() error {
+		state.skipStage(stageAudit)
+	} else if err := runStage(stageAudit, func() error {
 		// Audit the same source selection used for validation and packaging.
 		// The candidate's isolated home need not contain a source auditor.
 		response, err := runPreparedAgentSourceAudit(ctx, source.prepared, source.home)
@@ -325,8 +362,8 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 		return finalizeAgentCI(state, err), err
 	}
 	if options.skipConformance || !state.conformanceApplicable {
-		state.skipStage("conformance")
-	} else if err := runStage("conformance", func() error {
+		state.skipStage(stageConformance)
+	} else if err := runStage(stageConformance, func() error {
 		workspaceReport, conformanceDir, err := runAgentConformance(ctx, state.temporary, state.agentHome, options.dir, &state.manifest)
 		state.workspaceRaw = workspaceReport
 		state.conformance = conformanceDir
@@ -334,7 +371,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 	}); err != nil {
 		return finalizeAgentCI(state, err), err
 	}
-	if err := runStage("drift", func() error {
+	if err := runStage(stageDrift, func() error {
 		after, err := snapshotAgentWorktree(ctx, options.dir)
 		if err != nil {
 			return err
@@ -399,7 +436,7 @@ func (state *agentCIState) runStage(name string, action func() error) error {
 		return fmt.Errorf("unknown agent CI stage %q", name)
 	}
 	started := time.Now().UTC()
-	stage.Status = "running"
+	stage.Status = statusRunning
 	startedAt := started.Format(time.RFC3339Nano)
 	stage.StartedAt = &startedAt
 	err := action()
@@ -408,19 +445,19 @@ func (state *agentCIState) runStage(name string, action func() error) error {
 	stage.FinishedAt = &finishedAt
 	stage.DurationMs = agentCIDurationMS(finished.Sub(started))
 	if err != nil {
-		stage.Status = "failed"
+		stage.Status = statusFailed
 		stageError := err.Error()
 		stage.Error = &stageError
 		stage.Failure = failures.FromError("agent-ci."+name, err)
 		return fmt.Errorf("agent CI stage %s failed: %w", name, err)
 	}
-	stage.Status = "passed"
+	stage.Status = statusPassed
 	return nil
 }
 
 func (state *agentCIState) skipStage(name string) {
-	if stage := state.stage(name); stage != nil && stage.Status == "pending" {
-		stage.Status = "skipped"
+	if stage := state.stage(name); stage != nil && stage.Status == statusPending {
+		stage.Status = statusSkipped
 	}
 }
 
@@ -435,27 +472,27 @@ func (state *agentCIState) stage(name string) *civ0.AgentCIStage {
 
 func finalizeAgentCI(state *agentCIState, runErr error) *civ0.AgentCIReport {
 	for _, stage := range state.report.Stages {
-		if stage.GetStatus() == "pending" || stage.GetStatus() == "running" {
-			stage.Status = "skipped"
+		if stage.GetStatus() == statusPending || stage.GetStatus() == statusRunning {
+			stage.Status = statusSkipped
 		}
 	}
 	finished := time.Now().UTC()
 	state.report.FinishedAt = finished.Format(time.RFC3339Nano)
 	state.report.DurationMs = agentCIDurationMS(finished.Sub(state.started))
-	state.report.Status = "passed"
-	state.report.Summary.Total = uint32(len(state.report.Stages))
+	state.report.Status = statusPassed
+	state.report.Summary.Total = reportCount(len(state.report.Stages))
 	for _, stage := range state.report.Stages {
 		switch stage.GetStatus() {
-		case "passed":
+		case statusPassed:
 			state.report.Summary.Passed++
-		case "failed":
+		case statusFailed:
 			state.report.Summary.Failed++
-		case "skipped":
+		case statusSkipped:
 			state.report.Summary.Skipped++
 		}
 	}
 	if runErr != nil {
-		state.report.Status = "failed"
+		state.report.Status = statusFailed
 		reportError := runErr.Error()
 		state.report.Error = &reportError
 		state.report.Failure = failures.FromError("agent-ci", runErr)
@@ -479,6 +516,18 @@ func marshalAgentCIReport(report *civ0.AgentCIReport) ([]byte, error) {
 		return nil, fmt.Errorf("encode agent CI report: %w", err)
 	}
 	return append(payload, '\n'), nil
+}
+
+// reportCount fits a stage count into the report's uint32 counters; a run
+// declares six stages, so the saturation is only the conversion's guard.
+func reportCount(count int) uint32 {
+	if count <= 0 {
+		return 0
+	}
+	if count > math.MaxUint32 {
+		return math.MaxUint32
+	}
+	return uint32(count)
 }
 
 func agentCIDurationMS(duration time.Duration) int32 {
@@ -605,7 +654,7 @@ func validateAgentSource(ctx context.Context, source *agentSourceInvocation) err
 		return fmt.Errorf("resolve Codefly executable: %w", err)
 	}
 	command := exec.CommandContext(ctx, executable,
-		"--timestamps=false",
+		withoutTimestamps,
 		"test", "source",
 		"--dir", source.directory,
 		"--runtime-context", "free",
@@ -716,15 +765,30 @@ func runAgentConformance(ctx context.Context, temporary, agentHome, agentDir str
 	return runGeneratedServiceConformance(ctx, temporary, agentHome, manifest)
 }
 
-//nolint:goconst // Keep public CLI command lines recognizable as complete argv vectors.
+// conformanceWorkspaceArguments creates the fixture workspace.
+func conformanceWorkspaceArguments(workspace string) []string {
+	return []string{withoutTimestamps, "init", "workspace", workspace, "--layout", "modules", "--default"}
+}
+
+// conformanceModuleArguments creates the fixture module.
+func conformanceModuleArguments() []string {
+	return []string{withoutTimestamps, "add", "module", conformanceModule, "--yes"}
+}
+
+// localAgentsArguments prefixes a public CLI command line that resolves the
+// agent under test from the local agent home.
+func localAgentsArguments(arguments ...string) []string {
+	return append([]string{withoutTimestamps, "--local-agents"}, arguments...)
+}
+
 func runnableConformanceArguments(manifest *agentYAML, output string) [][]string {
 	commands := [][]string{
-		{"--timestamps=false", "init", "workspace", "runnable-conformance", "--layout", "modules", "--default"},
-		{"--timestamps=false", "add", "module", "app", "--yes"},
-		{"--timestamps=false", "--local-agents", "add", "runnable", "subject", "--module", "app", "--agent", manifest.Publisher + "/" + manifest.Name + ":" + manifest.Version, "--handler", manifest.Conformance.Handler},
+		conformanceWorkspaceArguments("runnable-conformance"),
+		conformanceModuleArguments(),
+		localAgentsArguments("add", "runnable", conformanceSubject, "--module", conformanceModule, "--agent", manifest.Publisher+"/"+manifest.Name+":"+manifest.Version, "--handler", manifest.Conformance.Handler),
 	}
 	if conformanceMode(manifest) == conformanceModeRunnablePackage {
-		commands = append(commands, []string{"--timestamps=false", "--local-agents", "build", "runnable", "app/subject", "--output", output, "--json"})
+		commands = append(commands, localAgentsArguments("build", "runnable", conformanceModule+"/"+conformanceSubject, "--output", output, "--json"))
 	}
 	return commands
 }
@@ -774,9 +838,9 @@ func runGeneratedServiceConformance(ctx context.Context, temporary, agentHome st
 		dir   string
 		args  []string
 	}{
-		{label: "create workspace", dir: temporary, args: []string{"--timestamps=false", "init", "workspace", workspaceName, "--layout", "modules", "--default"}},
-		{label: "create module", dir: workspaceDir, args: []string{"--timestamps=false", "add", "module", "app", "--yes"}},
-		{label: "generate service", dir: workspaceDir, args: []string{"--timestamps=false", "--local-agents", "add", "service", "app/subject", "--agent", manifest.Publisher + "/" + manifest.Name + ":" + manifest.Version, "--default"}},
+		{label: "create workspace", dir: temporary, args: conformanceWorkspaceArguments(workspaceName)},
+		{label: "create module", dir: workspaceDir, args: conformanceModuleArguments()},
+		{label: "generate service", dir: workspaceDir, args: localAgentsArguments("add", "service", conformanceModule+"/"+conformanceSubject, "--agent", manifest.Publisher+"/"+manifest.Name+":"+manifest.Version, "--default")},
 	}
 	for _, item := range setup {
 		command := exec.CommandContext(ctx, executable, item.args...)
@@ -831,17 +895,22 @@ func runAttachSourceConformance(ctx context.Context, temporary, agentHome, agent
 // other pin would silently exercise nothing, so we reject it up front with a
 // targeted message instead of a generic downstream "agent not found".
 func assertFixtureTargetsAgent(fixtureDir, fixture string, manifest *agentYAML) error {
+	root, err := os.OpenRoot(fixtureDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
 	referenced := false
-	err := filepath.WalkDir(fixtureDir, func(path string, entry fs.DirEntry, walkErr error) error {
+	err = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if entry.IsDir() || entry.Name() != resources.ServiceConfigurationName {
 			return nil
 		}
-		payload, err := os.ReadFile(path)
-		if err != nil {
-			return err
+		payload, readErr := root.ReadFile(path)
+		if readErr != nil {
+			return readErr
 		}
 		var declaration struct {
 			Agent struct {
@@ -850,8 +919,8 @@ func assertFixtureTargetsAgent(fixtureDir, fixture string, manifest *agentYAML) 
 				Publisher string `yaml:"publisher"`
 			} `yaml:"agent"`
 		}
-		if err := yaml.Unmarshal(payload, &declaration); err != nil {
-			return fmt.Errorf("parse fixture service %s: %w", path, err)
+		if parseErr := yaml.Unmarshal(payload, &declaration); parseErr != nil {
+			return fmt.Errorf("parse fixture service %s: %w", filepath.Join(fixtureDir, path), parseErr)
 		}
 		agent := declaration.Agent
 		if agent.Publisher != manifest.Publisher || agent.Name != manifest.Name {
@@ -920,10 +989,11 @@ func prepareConformanceBaseline(ctx context.Context, workspaceDir string) (strin
 		}
 		return output, nil
 	}
-	for _, args := range [][]string{{"init", "--template="}, {"commit", "--allow-empty", "-m", "Empty conformance baseline"}} {
-		if _, err := run(args...); err != nil {
-			return "", err
-		}
+	if _, err := run("init", "--template="); err != nil {
+		return "", err
+	}
+	if _, err := run("commit", "--allow-empty", "-m", "Empty conformance baseline"); err != nil {
+		return "", err
 	}
 	baseline, err := run("rev-parse", "HEAD")
 	if err != nil {
@@ -939,11 +1009,11 @@ func prepareConformanceBaseline(ctx context.Context, workspaceDir string) (strin
 
 func agentConformanceGateArguments() []string {
 	return []string{
-		"--timestamps=false",
+		withoutTimestamps,
 		"--local-agents",
 		"ci", "run",
 		"--all",
-		"--format", "json",
+		"--format", formatJSON,
 		"--output", ".codefly/ci",
 		// Every agent's conformance workspace has the identical
 		// agent-conformance/app/subject identity, so the deterministic port
@@ -991,9 +1061,9 @@ func persistAgentCIArtifacts(options agentCIOptions, state *agentCIState) error 
 			kind   string
 		}{
 			{source: state.build.nativePath, target: runtime.GOOS + "/" + runtime.GOARCH, kind: "agent-binary"},
-			{source: state.build.containerPath, target: "linux/amd64", kind: "agent-binary"},
+			{source: state.build.containerPath, target: containerPlatform, kind: "agent-binary"},
 			{source: state.build.nativePath + ".cdx.json", target: runtime.GOOS + "/" + runtime.GOARCH, kind: "cyclonedx-sbom"},
-			{source: state.build.containerPath + ".cdx.json", target: "linux/amd64", kind: "cyclonedx-sbom"},
+			{source: state.build.containerPath + ".cdx.json", target: containerPlatform, kind: "cyclonedx-sbom"},
 		}
 		// On a linux/amd64 host the native and container builds share a
 		// target, so both would map to the same release path; publish the

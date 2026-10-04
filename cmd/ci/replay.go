@@ -99,7 +99,7 @@ func buildReplayPlan(ctx context.Context, workspace *resources.Workspace, plan *
 		// resolveScheduledTasks, which validates Core's stage graphs and supplies
 		// the exact prerequisite edges executed and fingerprinted below.
 		draft.Edges = nil
-		if err := draft.Validate(); err != nil {
+		if err = draft.Validate(); err != nil {
 			return nil, err
 		}
 	}
@@ -215,13 +215,13 @@ func replayInputs(ctx context.Context, workspace *resources.Workspace, root stri
 	if len(tracked) == 0 && (os.IsNotExist(statErr) || (statErr == nil && info.IsDir())) {
 		snapshot.output = cleanAbs(output)
 	}
-	digests := make([]CICacheResourceDigest, 0, len(inputs))
+	digests := make([]CacheResourceDigest, 0, len(inputs))
 	for _, input := range inputs {
 		digest, hashErr := snapshot.digest(ctx, input.Path)
 		if hashErr != nil {
 			return "", fmt.Errorf("hash %s: %w", input.Label, hashErr)
 		}
-		digests = append(digests, CICacheResourceDigest{Resource: input.Label, Digest: digest})
+		digests = append(digests, CacheResourceDigest{Resource: input.Label, Digest: digest})
 	}
 	return aggregateCacheDigests(digests), nil
 }

@@ -45,7 +45,7 @@ func recordImageSBOMEvidence(ctx context.Context, workspace *resources.Workspace
 		if err != nil {
 			return err
 		}
-		recordCIReportArtifact(ctx, &CIReportArtifact{
+		recordCIReportArtifact(ctx, &ReportArtifact{
 			Kind:         "cyclonedx-image-sbom",
 			Subject:      artifactSubjectImage,
 			Path:         relative,
@@ -140,7 +140,7 @@ func runSBOMService(ctx context.Context, workspace *resources.Workspace, module 
 	if err != nil {
 		return w.Wrap(err)
 	}
-	recordCIReportArtifact(ctx, &CIReportArtifact{
+	recordCIReportArtifact(ctx, &ReportArtifact{
 		Kind:      "cyclonedx-sbom",
 		Subject:   artifactSubjectSource,
 		Path:      relative,
@@ -169,8 +169,8 @@ func loadCIBuilder(ctx context.Context, workspace *resources.Workspace, module *
 	return instance, nil
 }
 
-func summarizeAuditResponse(response *builderv0.AuditResponse) CIReportAudit {
-	summary := CIReportAudit{}
+func summarizeAuditResponse(response *builderv0.AuditResponse) ReportAudit {
+	summary := ReportAudit{}
 	if response == nil {
 		return summary
 	}

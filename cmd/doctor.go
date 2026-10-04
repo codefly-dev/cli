@@ -114,7 +114,7 @@ func checkCodeflyHome(_ context.Context) checkResult {
 	}
 	// Confirm writability with a temp file.
 	probe := filepath.Join(home, ".doctor-probe")
-	if err := os.WriteFile(probe, []byte("ok"), 0o644); err != nil {
+	if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil {
 		r.status = statusFail
 		r.detail = fmt.Sprintf("%s is not writable: %v", home, err)
 		r.fix = "check permissions on " + home

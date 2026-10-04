@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"sync"
@@ -120,8 +121,8 @@ func terminalCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	if err == nil {
 		_, _ = client.Resize(ctx, &cliv0.ResizeTerminalRequest{
 			SessionId: sessionID,
-			Rows:      uint32(height),
-			Cols:      uint32(width),
+			Rows:      terminalCells(height),
+			Cols:      terminalCells(width),
 		})
 	}
 
@@ -171,8 +172,8 @@ func terminalCommand(cmd *cobra.Command, args []string) (returnErr error) {
 				if err == nil {
 					_, _ = client.Resize(resizeCtx, &cliv0.ResizeTerminalRequest{
 						SessionId: sessionID,
-						Rows:      uint32(h),
-						Cols:      uint32(w),
+						Rows:      terminalCells(h),
+						Cols:      terminalCells(w),
 					})
 				}
 			}
@@ -260,13 +261,38 @@ func terminalCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	}
 }
 
+// terminalCells fits a terminal dimension into the resize request; the
+// terminal reports no negative size and none is that wide.
+func terminalCells(size int) uint32 {
+	switch {
+	case size < 0:
+		return 0
+	case size > math.MaxUint32:
+		return math.MaxUint32
+	}
+	return uint32(size)
+}
+
+// pollDescriptor fits the descriptor into poll's int32; a negative one is no
+// descriptor at all.
+func pollDescriptor(fd int) (int32, error) {
+	if fd < 0 || fd > math.MaxInt32 {
+		return 0, fmt.Errorf("terminal descriptor %d is outside poll's range", fd)
+	}
+	return int32(fd), nil
+}
+
 func readTerminalInput(ctx context.Context, fd int, buffer []byte) (int, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
-		fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
-		_, err := unix.Poll(fds, 250)
+		descriptor, err := pollDescriptor(fd)
+		if err != nil {
+			return 0, err
+		}
+		fds := []unix.PollFd{{Fd: descriptor, Events: unix.POLLIN}}
+		_, err = unix.Poll(fds, 250)
 		if err != nil {
 			if errors.Is(err, unix.EINTR) {
 				continue

@@ -64,7 +64,7 @@ var RunCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runWithCIReport(ctx, workspace, plan, "codefly ci run", func(reporter *CIReporter) error {
+		return runWithCIReport(ctx, workspace, plan, "codefly ci run", func(reporter *Reporter) error {
 			if err := validateAgentVersions(ctx, workspace, plan); err != nil {
 				return err
 			}
@@ -143,7 +143,7 @@ func runCIPhases(ctx context.Context, phases []string, failFast bool, execute fu
 // executeCIPhase runs a single phase. The test phase fans out over its named
 // suites, applying the same fail-fast continuation across suites that
 // runCIPhases applies across phases.
-func executeCIPhase(ctx context.Context, reporter *CIReporter, workspace *resources.Workspace, plan *Plan, phase string, suites []string, failFast bool) error {
+func executeCIPhase(ctx context.Context, reporter *Reporter, workspace *resources.Workspace, plan *Plan, phase string, suites []string, failFast bool) error {
 	switch phase {
 	case ciPhaseTest:
 		var errs error

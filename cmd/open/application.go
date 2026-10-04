@@ -2,7 +2,6 @@ package open
 
 import (
 	"fmt"
-	"os/exec"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -29,7 +28,7 @@ var ModuleCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("cannot load module: %w", err)
 		}
-		if err := exec.CommandContext(ctx, editor, module.Dir()).Run(); err != nil {
+		if err := openInEditor(ctx, editor, module.Dir()); err != nil {
 			return fmt.Errorf("cannot open module: %w", err)
 		}
 		return nil

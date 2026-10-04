@@ -47,7 +47,7 @@ func TestCIReportPreservesPlanOrderAndDependencyIdentity(t *testing.T) {
 	if report.Status != reportStatusPassed {
 		t.Fatalf("report status = %q, want passed", report.Status)
 	}
-	if got, want := report.Summary, (CIReportSummary{Total: 2, Passed: 2}); !reflect.DeepEqual(got, want) {
+	if got, want := report.Summary, (ReportSummary{Total: 2, Passed: 2}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("summary = %#v, want %#v", got, want)
 	}
 	if got := []string{report.Tasks[0].Service, report.Tasks[1].Service}; !reflect.DeepEqual(got, []string{"web/frontend", "management/organization"}) {
@@ -93,7 +93,7 @@ func TestCIReportRecordsFailedPrerequisiteAndIndependentSuccess(t *testing.T) {
 		t.Fatalf("accounts blocked_by = %v", report.Tasks[1].BlockedBy)
 	}
 	assertReportTask(t, report.Tasks[2], reportStatusPassed, "")
-	if got, want := report.Summary, (CIReportSummary{Total: 3, Passed: 1, Failed: 1, Skipped: 1}); !reflect.DeepEqual(got, want) {
+	if got, want := report.Summary, (ReportSummary{Total: 3, Passed: 1, Failed: 1, Skipped: 1}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("summary = %#v, want %#v", got, want)
 	}
 }
@@ -168,7 +168,7 @@ func TestCIReportMarksRunningAndPendingTasksCancelled(t *testing.T) {
 	for _, task := range report.Tasks {
 		assertReportTask(t, task, reportStatusCancelled, reportReasonRunCancelled)
 	}
-	if got, want := report.Summary, (CIReportSummary{Total: 2, Cancelled: 2}); !reflect.DeepEqual(got, want) {
+	if got, want := report.Summary, (ReportSummary{Total: 2, Cancelled: 2}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("summary = %#v, want %#v", got, want)
 	}
 }
@@ -239,13 +239,13 @@ func TestCIReportRecordsWorkspaceTaskAndTypedEvidence(t *testing.T) {
 	id := reportTaskID("audit", "", "management/worker")
 	reporter.startTask(id)
 	ctx := withCIReportTask(context.Background(), reporter, id)
-	recordCIReportAudit(ctx, &CIReportAudit{State: "FINDINGS", Tool: "scanner", Findings: 2, High: 1})
+	recordCIReportAudit(ctx, &ReportAudit{State: "FINDINGS", Tool: "scanner", Findings: 2, High: 1})
 	recordCIReportDrift(ctx, []string{"b.ts", "a.ts"})
-	recordCIReportArtifact(ctx, &CIReportArtifact{Kind: "cyclonedx-sbom", Subject: artifactSubjectSource, Path: "sbom/worker.cdx.json", SHA256: "sha256:abc"})
+	recordCIReportArtifact(ctx, &ReportArtifact{Kind: "cyclonedx-sbom", Subject: artifactSubjectSource, Path: "sbom/worker.cdx.json", SHA256: "sha256:abc"})
 	// A producer that names no subject must still yield a report that states one:
 	// the "absent means unknown" rule belongs in the data, not in a convention a
 	// report.json consumer cannot see.
-	recordCIReportArtifact(ctx, &CIReportArtifact{Kind: "cyclonedx-sbom", Path: "sbom/unnamed.cdx.json", SHA256: "sha256:def"})
+	recordCIReportArtifact(ctx, &ReportArtifact{Kind: "cyclonedx-sbom", Path: "sbom/unnamed.cdx.json", SHA256: "sha256:def"})
 	reporter.finishTask(id, nil)
 
 	report := reporter.Finalize(nil)
@@ -306,7 +306,7 @@ func TestCIReportRecordsWorkspaceTaskAndTypedEvidence(t *testing.T) {
 }
 
 func TestCloneCIReportArtifactsDoesNotShareImageAssociations(t *testing.T) {
-	original := []CIReportArtifact{{
+	original := []ReportArtifact{{
 		Kind:         "cyclonedx-image-sbom",
 		Subject:      artifactSubjectImage,
 		Digest:       "sha256:abc",
@@ -339,7 +339,7 @@ func TestCIReportSkipMarksRunningTaskSkipped(t *testing.T) {
 
 	report := reporter.Finalize(nil)
 	assertReportTask(t, report.Tasks[0], reportStatusSkipped, reportReasonAgentNoSyncCapability)
-	if got, want := report.Summary, (CIReportSummary{Total: 1, Skipped: 1}); !reflect.DeepEqual(got, want) {
+	if got, want := report.Summary, (ReportSummary{Total: 1, Skipped: 1}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("summary = %#v, want %#v", got, want)
 	}
 	if report.Status != reportStatusPassed {
@@ -347,7 +347,7 @@ func TestCIReportSkipMarksRunningTaskSkipped(t *testing.T) {
 	}
 }
 
-func fixedCIReporter(t *testing.T, plan *Plan) *CIReporter {
+func fixedCIReporter(t *testing.T, plan *Plan) *Reporter {
 	t.Helper()
 	fixed := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
 	reporter, err := newCIReporter(plan, "codefly ci run", "test-version", func() time.Time { return fixed })
@@ -357,7 +357,7 @@ func fixedCIReporter(t *testing.T, plan *Plan) *CIReporter {
 	return reporter
 }
 
-func assertReportTask(t *testing.T, task CIReportTask, status, reason string) {
+func assertReportTask(t *testing.T, task ReportTask, status, reason string) {
 	t.Helper()
 	if task.Status != status || task.StatusReason != reason {
 		t.Fatalf("task %s outcome = %s/%s, want %s/%s", task.ID, task.Status, task.StatusReason, status, reason)
@@ -384,7 +384,7 @@ func TestCIReportRecordsAgentWithoutTestCapabilityAsSkipped(t *testing.T) {
 
 	report := reporter.Finalize(nil)
 	assertReportTask(t, report.Tasks[0], reportStatusSkipped, reportReasonAgentNoTestCapability)
-	if got, want := report.Summary, (CIReportSummary{Total: 1, Skipped: 1}); !reflect.DeepEqual(got, want) {
+	if got, want := report.Summary, (ReportSummary{Total: 1, Skipped: 1}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("summary = %#v, want %#v", got, want)
 	}
 	if report.Status != reportStatusPassed {

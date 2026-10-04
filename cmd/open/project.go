@@ -2,7 +2,6 @@ package open
 
 import (
 	"fmt"
-	"os/exec"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -29,7 +28,7 @@ var WorkspaceCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("cannot load workspace: %w", err)
 		}
-		if err := exec.CommandContext(ctx, editor, workspace.Dir()).Run(); err != nil {
+		if err := openInEditor(ctx, editor, workspace.Dir()); err != nil {
 			return fmt.Errorf("cannot open workspace: %w", err)
 		}
 		return nil

@@ -36,55 +36,55 @@ const (
 	cacheStatusHit             = "hit"
 )
 
-// CICacheIdentity is a content-addressed description of a CI task. Schema
+// CacheIdentity is a content-addressed description of a CI task. Schema
 // version 2 binds every repository byte that is not attributed to an unrelated
 // resource, so a matching key cannot hide an undeclared input. Status is this
 // run's reuse outcome for the task; Stored is the separate question of whether
 // this run published its own result for a later one.
-type CICacheIdentity struct {
-	SchemaVersion int                  `json:"schema_version"`
-	Algorithm     string               `json:"algorithm"`
-	Key           string               `json:"key,omitempty"`
-	Status        string               `json:"status"`
-	StatusReason  string               `json:"status_reason,omitempty"`
-	Stored        bool                 `json:"stored"`
-	Inputs        CICacheIdentityInput `json:"inputs"`
-	Limitations   []string             `json:"limitations,omitempty"`
-	Reuse         *CacheReuse          `json:"reuse,omitempty"`
+type CacheIdentity struct {
+	SchemaVersion int                `json:"schema_version"`
+	Algorithm     string             `json:"algorithm"`
+	Key           string             `json:"key,omitempty"`
+	Status        string             `json:"status"`
+	StatusReason  string             `json:"status_reason,omitempty"`
+	Stored        bool               `json:"stored"`
+	Inputs        CacheIdentityInput `json:"inputs"`
+	Limitations   []string           `json:"limitations,omitempty"`
+	Reuse         *CacheReuse        `json:"reuse,omitempty"`
 }
 
 // CacheReuse records which previously verified execution a reused task stands
 // in for. It is written only after the record's signature, input identity and
 // every restored artifact digest have been verified.
 type CacheReuse struct {
-	Reference  string             `json:"reference"`
-	Run        string             `json:"run"`
-	Revision   string             `json:"revision,omitempty"`
-	Identity   string             `json:"identity"`
-	RecordedAt string             `json:"recorded_at"`
-	Artifacts  []CIReportArtifact `json:"artifacts,omitempty"`
+	Reference  string           `json:"reference"`
+	Run        string           `json:"run"`
+	Revision   string           `json:"revision,omitempty"`
+	Identity   string           `json:"identity"`
+	RecordedAt string           `json:"recorded_at"`
+	Artifacts  []ReportArtifact `json:"artifacts,omitempty"`
 }
 
-type CICacheIdentityInput struct {
-	CodeflyVersion  string                  `json:"codefly_version"`
-	CoreVersion     string                  `json:"core_version"`
-	Platform        string                  `json:"platform"`
-	RuntimeContext  string                  `json:"runtime_context"`
-	Phase           string                  `json:"phase"`
-	Suite           string                  `json:"suite,omitempty"`
-	Service         string                  `json:"service"`
-	Environment     string                  `json:"environment"`
-	Agent           CICacheAgentInput       `json:"agent"`
-	CLIDigest       string                  `json:"cli_digest,omitempty"`
-	RepositoryRest  string                  `json:"repository_rest_digest,omitempty"`
-	WorkspaceDigest string                  `json:"workspace_digest"`
-	ModuleDigest    string                  `json:"module_digest"`
-	ServiceDigest   string                  `json:"service_digest"`
-	Dependencies    []CICacheResourceDigest `json:"dependencies"`
-	Libraries       []CICacheResourceDigest `json:"libraries"`
+type CacheIdentityInput struct {
+	CodeflyVersion  string                `json:"codefly_version"`
+	CoreVersion     string                `json:"core_version"`
+	Platform        string                `json:"platform"`
+	RuntimeContext  string                `json:"runtime_context"`
+	Phase           string                `json:"phase"`
+	Suite           string                `json:"suite,omitempty"`
+	Service         string                `json:"service"`
+	Environment     string                `json:"environment"`
+	Agent           CacheAgentInput       `json:"agent"`
+	CLIDigest       string                `json:"cli_digest,omitempty"`
+	RepositoryRest  string                `json:"repository_rest_digest,omitempty"`
+	WorkspaceDigest string                `json:"workspace_digest"`
+	ModuleDigest    string                `json:"module_digest"`
+	ServiceDigest   string                `json:"service_digest"`
+	Dependencies    []CacheResourceDigest `json:"dependencies"`
+	Libraries       []CacheResourceDigest `json:"libraries"`
 }
 
-type CICacheAgentInput struct {
+type CacheAgentInput struct {
 	Kind      string `json:"kind"`
 	Publisher string `json:"publisher"`
 	Name      string `json:"name"`
@@ -92,7 +92,7 @@ type CICacheAgentInput struct {
 	Digest    string `json:"digest,omitempty"`
 }
 
-type CICacheResourceDigest struct {
+type CacheResourceDigest struct {
 	Resource string `json:"resource"`
 	Digest   string `json:"digest"`
 }
@@ -112,7 +112,7 @@ type ciCacheIdentityBuilder struct {
 // ciCacheAgentResolution memoizes one pinned agent's binding, so a workspace
 // whose services share a pin resolves and installs it once per run.
 type ciCacheAgentResolution struct {
-	input       CICacheAgentInput
+	input       CacheAgentInput
 	limitations []string
 }
 
@@ -192,12 +192,12 @@ func gitCacheFiles(ctx context.Context, repoRoot string) ([]string, error) {
 	return files, nil
 }
 
-func (builder *ciCacheIdentityBuilder) identity(ctx context.Context, options ScheduleOptions, planned *PlannedService) CICacheIdentity {
-	identity := CICacheIdentity{
+func (builder *ciCacheIdentityBuilder) identity(ctx context.Context, options ScheduleOptions, planned *PlannedService) CacheIdentity {
+	identity := CacheIdentity{
 		SchemaVersion: cacheIdentitySchemaVersion,
 		Algorithm:     cacheIdentityAlgorithm,
 		Status:        cacheStatusIdentityOnly,
-		Inputs: CICacheIdentityInput{
+		Inputs: CacheIdentityInput{
 			CodeflyVersion: builder.codeflyVersion,
 			CoreVersion:    resources.CLI.Version,
 			Platform:       runtime.GOOS + "/" + runtime.GOARCH,
@@ -206,8 +206,8 @@ func (builder *ciCacheIdentityBuilder) identity(ctx context.Context, options Sch
 			Suite:          normalizedCacheSuite(options.Phase, options.Suite),
 			Service:        planned.Service,
 			Environment:    builder.environment,
-			Dependencies:   []CICacheResourceDigest{},
-			Libraries:      []CICacheResourceDigest{},
+			Dependencies:   []CacheResourceDigest{},
+			Libraries:      []CacheResourceDigest{},
 		},
 	}
 	inputs, limitations, err := builder.inputs(ctx, &identity.Inputs, planned.Service)
@@ -230,12 +230,12 @@ func (builder *ciCacheIdentityBuilder) identity(ctx context.Context, options Sch
 	return identity
 }
 
-func (builder *ciCacheIdentityBuilder) workspaceIdentity(options ScheduleOptions, workspaceName string) CICacheIdentity {
-	identity := CICacheIdentity{
+func (builder *ciCacheIdentityBuilder) workspaceIdentity(options ScheduleOptions, workspaceName string) CacheIdentity {
+	identity := CacheIdentity{
 		SchemaVersion: cacheIdentitySchemaVersion,
 		Algorithm:     cacheIdentityAlgorithm,
 		Status:        cacheStatusIdentityOnly,
-		Inputs: CICacheIdentityInput{
+		Inputs: CacheIdentityInput{
 			CodeflyVersion: builder.codeflyVersion,
 			CoreVersion:    resources.CLI.Version,
 			Platform:       runtime.GOOS + "/" + runtime.GOARCH,
@@ -244,8 +244,8 @@ func (builder *ciCacheIdentityBuilder) workspaceIdentity(options ScheduleOptions
 			Suite:          normalizedCacheSuite(options.Phase, options.Suite),
 			Service:        "workspace:" + workspaceName,
 			Environment:    builder.environment,
-			Dependencies:   []CICacheResourceDigest{},
-			Libraries:      []CICacheResourceDigest{},
+			Dependencies:   []CacheResourceDigest{},
+			Libraries:      []CacheResourceDigest{},
 		},
 	}
 	if builder.workspace == nil {
@@ -292,7 +292,7 @@ func normalizedCacheSuite(phase, suite string) string {
 	return suite
 }
 
-func (builder *ciCacheIdentityBuilder) inputs(ctx context.Context, inputs *CICacheIdentityInput, serviceUnique string) (CICacheIdentityInput, []string, error) {
+func (builder *ciCacheIdentityBuilder) inputs(ctx context.Context, inputs *CacheIdentityInput, serviceUnique string) (CacheIdentityInput, []string, error) {
 	if builder.workspace == nil {
 		return *inputs, nil, fmt.Errorf("cache identity workspace is nil")
 	}
@@ -345,13 +345,13 @@ func (builder *ciCacheIdentityBuilder) inputs(ctx context.Context, inputs *CICac
 		if serviceDigestErr != nil {
 			return *inputs, limitations, fmt.Errorf("hash dependency %s: %w", dependency.Unique, serviceDigestErr)
 		}
-		moduleDigest, err := builder.moduleDigest(dependencyModule)
-		if err != nil {
-			return *inputs, limitations, fmt.Errorf("hash dependency module %s: %w", dependencyModule.Name, err)
+		moduleDigest, moduleDigestErr := builder.moduleDigest(dependencyModule)
+		if moduleDigestErr != nil {
+			return *inputs, limitations, fmt.Errorf("hash dependency module %s: %w", dependencyModule.Name, moduleDigestErr)
 		}
-		inputs.Dependencies = append(inputs.Dependencies, CICacheResourceDigest{
+		inputs.Dependencies = append(inputs.Dependencies, CacheResourceDigest{
 			Resource: dependency.Unique,
-			Digest:   aggregateCacheDigests([]CICacheResourceDigest{{Resource: "service", Digest: serviceDigest}, {Resource: "module", Digest: moduleDigest}}),
+			Digest:   aggregateCacheDigests([]CacheResourceDigest{{Resource: "service", Digest: serviceDigest}, {Resource: "module", Digest: moduleDigest}}),
 		})
 	}
 	sortCacheResourceDigests(inputs.Dependencies)
@@ -438,7 +438,7 @@ func installAgentRelease(ctx context.Context, agent *resources.Agent) error {
 // has been spawned here would leave a fresh machine permanently ineligible for
 // reuse. Resolving it is not extra work: an executed task resolves the same
 // binary moments later, by the same route.
-func (builder *ciCacheIdentityBuilder) agentInput(ctx context.Context, pinned *resources.Agent) (CICacheAgentInput, []string) {
+func (builder *ciCacheIdentityBuilder) agentInput(ctx context.Context, pinned *resources.Agent) (CacheAgentInput, []string) {
 	if resolution, ok := builder.agentInputs[pinned.Unique()]; ok {
 		return resolution.input, resolution.limitations
 	}
@@ -448,7 +448,7 @@ func (builder *ciCacheIdentityBuilder) agentInput(ctx context.Context, pinned *r
 	return input, limitations
 }
 
-func (builder *ciCacheIdentityBuilder) resolveAgentInput(ctx context.Context, agent *resources.Agent) (CICacheAgentInput, []string) {
+func (builder *ciCacheIdentityBuilder) resolveAgentInput(ctx context.Context, agent *resources.Agent) (CacheAgentInput, []string) {
 	if _, err := resolveAgentLatest(ctx, agent); err != nil {
 		return cacheAgentInput(agent), []string{"pinned agent version cannot be resolved"}
 	}
@@ -464,8 +464,8 @@ func (builder *ciCacheIdentityBuilder) resolveAgentInput(ctx context.Context, ag
 	return input, nil
 }
 
-func cacheAgentInput(agent *resources.Agent) CICacheAgentInput {
-	return CICacheAgentInput{
+func cacheAgentInput(agent *resources.Agent) CacheAgentInput {
+	return CacheAgentInput{
 		Kind:      string(agent.Kind),
 		Publisher: agent.Publisher,
 		Name:      agent.Name,
@@ -543,7 +543,7 @@ func (builder *ciCacheIdentityBuilder) moduleDigest(module *resources.Module) (s
 	return builder.digestComponents(paths)
 }
 
-func (builder *ciCacheIdentityBuilder) libraryDigests(ctx context.Context, services []*resources.Service) ([]CICacheResourceDigest, error) {
+func (builder *ciCacheIdentityBuilder) libraryDigests(ctx context.Context, services []*resources.Service) ([]CacheResourceDigest, error) {
 	pending := map[string]bool{}
 	for _, service := range services {
 		for _, dependency := range service.LibraryDependencies {
@@ -575,23 +575,23 @@ func (builder *ciCacheIdentityBuilder) libraryDigests(ctx context.Context, servi
 			}
 		}
 	}
-	result := make([]CICacheResourceDigest, 0, len(loaded))
+	result := make([]CacheResourceDigest, 0, len(loaded))
 	for name, library := range loaded {
 		digest, err := builder.digestPath(library.Dir())
 		if err != nil {
 			return nil, fmt.Errorf("hash library %s: %w", name, err)
 		}
-		result = append(result, CICacheResourceDigest{Resource: name, Digest: digest})
+		result = append(result, CacheResourceDigest{Resource: name, Digest: digest})
 	}
 	sortCacheResourceDigests(result)
 	return result, nil
 }
 
-func sortCacheResourceDigests(values []CICacheResourceDigest) {
+func sortCacheResourceDigests(values []CacheResourceDigest) {
 	sort.Slice(values, func(i, j int) bool { return values[i].Resource < values[j].Resource })
 }
 
-func aggregateCacheDigests(values []CICacheResourceDigest) string {
+func aggregateCacheDigests(values []CacheResourceDigest) string {
 	sortCacheResourceDigests(values)
 	payload, _ := json.Marshal(values)
 	return "sha256:" + resources.Hash(payload)
@@ -604,13 +604,13 @@ type cacheDigestPath struct {
 
 func (builder *ciCacheIdentityBuilder) digestComponents(paths []cacheDigestPath) (string, error) {
 	sort.Slice(paths, func(i, j int) bool { return paths[i].Label < paths[j].Label })
-	values := make([]CICacheResourceDigest, 0, len(paths))
+	values := make([]CacheResourceDigest, 0, len(paths))
 	for _, component := range paths {
 		digest, err := builder.digestPath(component.Path)
 		if err != nil {
 			return "", err
 		}
-		values = append(values, CICacheResourceDigest{Resource: component.Label, Digest: digest})
+		values = append(values, CacheResourceDigest{Resource: component.Label, Digest: digest})
 	}
 	return aggregateCacheDigests(values), nil
 }
@@ -834,7 +834,7 @@ var cachedCLIDigest = sync.OnceValues(func() (string, error) {
 // reuseEligibility reports whether a verified successful result may stand in for
 // executing this task. Every input a rerun would consume must be bound by the
 // key; anything Codefly could not resolve keeps the task executing.
-func (identity *CICacheIdentity) reuseEligibility() (bool, string) {
+func (identity *CacheIdentity) reuseEligibility() (bool, string) {
 	switch {
 	case identity.SchemaVersion != cacheIdentitySchemaVersion:
 		return false, "identity schema is not the reuse contract version"

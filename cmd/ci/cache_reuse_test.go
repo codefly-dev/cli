@@ -129,7 +129,7 @@ func TestVerifiedReuseRestoresAndVerifiesRequiredArtifacts(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		recordCIReportArtifact(ctx, &CIReportArtifact{Kind: "cyclonedx-sbom", Subject: artifactSubjectSource, Path: relative, MediaType: "application/vnd.cyclonedx+json", SHA256: artifactDigest(payload)})
+		recordCIReportArtifact(ctx, &ReportArtifact{Kind: "cyclonedx-sbom", Subject: artifactSubjectSource, Path: relative, MediaType: "application/vnd.cyclonedx+json", SHA256: artifactDigest(payload)})
 		return nil
 	}
 	cold := runReuseGate(t, workspace, plan, newReuseTestEngine(t, workspace, store, "runner@sha256:aaa", reuseTestReference), withReuseAction(produce), withReusePhase("sbom"))
@@ -251,7 +251,7 @@ func TestVerifiedReuseFallsBackToExecutionWhenEvidenceIsUnusable(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				recordCIReportArtifact(ctx, &CIReportArtifact{Kind: "cyclonedx-sbom", Path: relative, SHA256: artifactDigest(payload)})
+				recordCIReportArtifact(ctx, &ReportArtifact{Kind: "cyclonedx-sbom", Path: relative, SHA256: artifactDigest(payload)})
 				return nil
 			}
 			cold := runReuseGate(t, workspace, plan, newReuseTestEngine(t, workspace, store, "runner@sha256:aaa", reuseTestReference), withReuseAction(produce))
@@ -509,7 +509,7 @@ func TestCIResultStorePublishesCompleteRecordsUnderConcurrency(t *testing.T) {
 				Outcome:        ciResultOutcomePass,
 				RecordedAt:     formatReportTime(time.Now()),
 				Run:            string(rune('a' + index)),
-				Evidence:       ciResultEvidence{Artifacts: []CIReportArtifact{{Path: "a.json", SHA256: artifactDigest(payload)}}},
+				Evidence:       ciResultEvidence{Artifacts: []ReportArtifact{{Path: "a.json", SHA256: artifactDigest(payload)}}},
 			}
 			if err := store.publish(record, map[string][]byte{artifactDigest(payload): payload}); err != nil {
 				t.Error(err)
@@ -543,11 +543,11 @@ func TestCIResultStoreRefusesArtifactsThatDoNotMatchTheirDigest(t *testing.T) {
 }
 
 type reuseGateResult struct {
-	report   CIReport
+	report   Report
 	executed int
 }
 
-func (result reuseGateResult) task(t *testing.T) CIReportTask {
+func (result reuseGateResult) task(t *testing.T) ReportTask {
 	t.Helper()
 	if len(result.report.Tasks) != 1 {
 		t.Fatalf("report task count = %d, want 1", len(result.report.Tasks))
@@ -680,7 +680,7 @@ func readReuseRecord(t *testing.T, store, identity string) *ciResultRecord {
 	return record
 }
 
-// legacyResultArtifact is CIReportArtifact as it was encoded before evidence
+// legacyResultArtifact is ReportArtifact as it was encoded before evidence
 // named a subject, and legacyResultRecord is the record that carried it.
 type legacyResultArtifact struct {
 	Kind      string `json:"kind"`
@@ -690,8 +690,8 @@ type legacyResultArtifact struct {
 }
 
 type legacyResultEvidence struct {
-	Audit     *CIReportAudit         `json:"audit,omitempty"`
-	Drift     *CIReportDrift         `json:"drift,omitempty"`
+	Audit     *ReportAudit           `json:"audit,omitempty"`
+	Drift     *ReportDrift           `json:"drift,omitempty"`
 	Artifacts []legacyResultArtifact `json:"artifacts"`
 }
 
@@ -827,34 +827,34 @@ func TestVerifiedReuseNeverReplacesWorkspaceVerification(t *testing.T) {
 }
 
 func TestReuseEligibilityRejectsAnyUnboundInput(t *testing.T) {
-	complete := CICacheIdentity{
+	complete := CacheIdentity{
 		SchemaVersion: cacheIdentitySchemaVersion,
 		Key:           "sha256:complete",
 		Status:        cacheStatusIdentityOnly,
-		Inputs: CICacheIdentityInput{
+		Inputs: CacheIdentityInput{
 			Environment:    "runner@sha256:aaa",
 			CLIDigest:      "sha256:cli",
 			RepositoryRest: "sha256:rest",
-			Agent:          CICacheAgentInput{Digest: "sha256:agent"},
+			Agent:          CacheAgentInput{Digest: "sha256:agent"},
 		},
 	}
 	if eligible, reason := complete.reuseEligibility(); !eligible {
 		t.Fatalf("complete identity rejected: %s", reason)
 	}
-	for name, mutate := range map[string]func(identity *CICacheIdentity){
-		"older identity contract": func(identity *CICacheIdentity) {
+	for name, mutate := range map[string]func(identity *CacheIdentity){
+		"older identity contract": func(identity *CacheIdentity) {
 			identity.SchemaVersion = cacheIdentitySchemaVersion - 1
 		},
-		"unavailable key": func(identity *CICacheIdentity) { identity.Key = "" },
-		"unresolved input": func(identity *CICacheIdentity) {
+		"unavailable key": func(identity *CacheIdentity) { identity.Key = "" },
+		"unresolved input": func(identity *CacheIdentity) {
 			identity.Limitations = []string{"resolved agent binary is not installed"}
 		},
-		"unnamed environment": func(identity *CICacheIdentity) { identity.Inputs.Environment = "" },
-		"unbound repository remainder": func(identity *CICacheIdentity) {
+		"unnamed environment": func(identity *CacheIdentity) { identity.Inputs.Environment = "" },
+		"unbound repository remainder": func(identity *CacheIdentity) {
 			identity.Inputs.RepositoryRest = ""
 		},
-		"unbound CLI binary":   func(identity *CICacheIdentity) { identity.Inputs.CLIDigest = "" },
-		"unbound agent binary": func(identity *CICacheIdentity) { identity.Inputs.Agent.Digest = "" },
+		"unbound CLI binary":   func(identity *CacheIdentity) { identity.Inputs.CLIDigest = "" },
+		"unbound agent binary": func(identity *CacheIdentity) { identity.Inputs.Agent.Digest = "" },
 	} {
 		identity := complete
 		mutate(&identity)

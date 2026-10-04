@@ -23,7 +23,7 @@ func TestCIWithPlanRunsOnlyPlannedServicesInPlanOrder(t *testing.T) {
 		{Service: "web/frontend", Classification: "dependent"},
 	}}
 	var got []string
-	err := CIWithPlan(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
+	err := WithPlan(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
 		got = append(got, resources.WithUnique(service).Unique())
 		return nil
 	})

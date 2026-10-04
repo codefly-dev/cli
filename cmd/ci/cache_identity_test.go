@@ -389,7 +389,7 @@ func cacheTestPlan(workspace *resources.Workspace, service string) *Plan {
 	}
 }
 
-func preparedCacheIdentity(t *testing.T, workspace *resources.Workspace, plan *Plan, options ScheduleOptions, version string) CICacheIdentity {
+func preparedCacheIdentity(t *testing.T, workspace *resources.Workspace, plan *Plan, options ScheduleOptions, version string) CacheIdentity {
 	t.Helper()
 	fixed := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
 	reporter, err := newCIReporter(plan, "codefly ci run", version, func() time.Time { return fixed })

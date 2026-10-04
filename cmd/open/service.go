@@ -2,7 +2,6 @@ package open
 
 import (
 	"fmt"
-	"os/exec"
 
 	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/cli"
@@ -29,7 +28,7 @@ var ServiceCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("cannot load service: %w", err)
 		}
-		if err := exec.CommandContext(ctx, editor, service.Dir()).Run(); err != nil {
+		if err := openInEditor(ctx, editor, service.Dir()); err != nil {
 			return fmt.Errorf("cannot open service: %w", err)
 		}
 		return nil

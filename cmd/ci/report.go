@@ -49,28 +49,28 @@ const (
 	artifactSubjectUnknown = "unknown"
 )
 
-// CIReport is Codefly's provider-neutral record of one CI command. Task order
+// Report is Codefly's provider-neutral record of one CI command. Task order
 // is invocation order, then affected-service plan order; it never depends on
 // concurrent completion order.
-type CIReport struct {
-	SchemaVersion  int             `json:"schema_version"`
-	Command        string          `json:"command"`
-	CodeflyVersion string          `json:"codefly_version"`
-	Plan           Plan            `json:"plan"`
-	Phases         []string        `json:"phases"`
-	Status         string          `json:"status"`
-	StartedAt      string          `json:"started_at"`
-	FinishedAt     string          `json:"finished_at"`
-	DurationMS     int64           `json:"duration_ms"`
-	Summary        CIReportSummary `json:"summary"`
-	Tasks          []CIReportTask  `json:"tasks"`
-	Error          string          `json:"error,omitempty"`
+type Report struct {
+	SchemaVersion  int           `json:"schema_version"`
+	Command        string        `json:"command"`
+	CodeflyVersion string        `json:"codefly_version"`
+	Plan           Plan          `json:"plan"`
+	Phases         []string      `json:"phases"`
+	Status         string        `json:"status"`
+	StartedAt      string        `json:"started_at"`
+	FinishedAt     string        `json:"finished_at"`
+	DurationMS     int64         `json:"duration_ms"`
+	Summary        ReportSummary `json:"summary"`
+	Tasks          []ReportTask  `json:"tasks"`
+	Error          string        `json:"error,omitempty"`
 }
 
-// CIReportSummary keeps executed success and verified reuse apart: Passed
+// ReportSummary keeps executed success and verified reuse apart: Passed
 // counts tasks this run actually executed, Reused counts tasks that stood on a
 // verified earlier execution, and Skipped never means either.
-type CIReportSummary struct {
+type ReportSummary struct {
 	Total     int `json:"total"`
 	Passed    int `json:"passed"`
 	Reused    int `json:"reused"`
@@ -79,35 +79,35 @@ type CIReportSummary struct {
 	Cancelled int `json:"cancelled"`
 }
 
-// CIReportTask describes the logical operation even when it never executes.
+// ReportTask describes the logical operation even when it never executes.
 // ID is stable for a given phase, optional suite, and service; a future cache
 // content digest can therefore attach to the task without changing identity.
-type CIReportTask struct {
-	ID               string             `json:"id"`
-	Scope            string             `json:"scope"`
-	Resource         string             `json:"resource"`
-	Phase            string             `json:"phase"`
-	Stage            resources.Stage    `json:"stage,omitempty"`
-	Suite            string             `json:"suite,omitempty"`
-	Service          string             `json:"service,omitempty"`
-	Classification   string             `json:"classification,omitempty"`
-	SelectionReasons []string           `json:"selection_reasons"`
-	Prerequisites    []string           `json:"prerequisites"`
-	RuntimeResources []string           `json:"runtime_resources"`
-	Cache            CICacheIdentity    `json:"cache"`
-	Audit            *CIReportAudit     `json:"audit,omitempty"`
-	Drift            *CIReportDrift     `json:"drift,omitempty"`
-	Artifacts        []CIReportArtifact `json:"artifacts,omitempty"`
-	Status           string             `json:"status"`
-	StatusReason     string             `json:"status_reason,omitempty"`
-	BlockedBy        []string           `json:"blocked_by,omitempty"`
-	StartedAt        string             `json:"started_at,omitempty"`
-	FinishedAt       string             `json:"finished_at,omitempty"`
-	DurationMS       int64              `json:"duration_ms"`
-	Error            string             `json:"error,omitempty"`
+type ReportTask struct {
+	ID               string           `json:"id"`
+	Scope            string           `json:"scope"`
+	Resource         string           `json:"resource"`
+	Phase            string           `json:"phase"`
+	Stage            resources.Stage  `json:"stage,omitempty"`
+	Suite            string           `json:"suite,omitempty"`
+	Service          string           `json:"service,omitempty"`
+	Classification   string           `json:"classification,omitempty"`
+	SelectionReasons []string         `json:"selection_reasons"`
+	Prerequisites    []string         `json:"prerequisites"`
+	RuntimeResources []string         `json:"runtime_resources"`
+	Cache            CacheIdentity    `json:"cache"`
+	Audit            *ReportAudit     `json:"audit,omitempty"`
+	Drift            *ReportDrift     `json:"drift,omitempty"`
+	Artifacts        []ReportArtifact `json:"artifacts,omitempty"`
+	Status           string           `json:"status"`
+	StatusReason     string           `json:"status_reason,omitempty"`
+	BlockedBy        []string         `json:"blocked_by,omitempty"`
+	StartedAt        string           `json:"started_at,omitempty"`
+	FinishedAt       string           `json:"finished_at,omitempty"`
+	DurationMS       int64            `json:"duration_ms"`
+	Error            string           `json:"error,omitempty"`
 }
 
-type CIReportAudit struct {
+type ReportAudit struct {
 	State    string `json:"state"`
 	Tool     string `json:"tool,omitempty"`
 	Language string `json:"language,omitempty"`
@@ -119,25 +119,25 @@ type CIReportAudit struct {
 	Outdated int    `json:"outdated"`
 }
 
-type CIReportDrift struct {
+type ReportDrift struct {
 	ChangedFiles []string `json:"changed_files"`
 }
 
-// CIReportArtifact names one piece of evidence a task produced. Subject states
+// ReportArtifact names one piece of evidence a task produced. Subject states
 // what the evidence describes: a source inventory and a runtime-image inventory
 // are different claims, and a consumer that cannot tell them apart reads a
 // lockfile scan as proof the shipped image was scanned. Subject is always
 // written, never omitted — evidence whose producer named no subject is recorded
 // as artifactSubjectUnknown, so "unknown" is a value a consumer can read rather
 // than a missing key it has to interpret. It is deliberately not called "scope":
-// CIReportTask.Scope is resource ownership, and one report must not use the
+// ReportTask.Scope is resource ownership, and one report must not use the
 // same key for two vocabularies.
 //
 // Image evidence additionally carries the digest and platform it was scanned
 // from. One scan can satisfy several services at once, so an identical digest is
 // scanned and stored once and Associations is what keeps every service's claim
 // on it rather than collapsing them.
-type CIReportArtifact struct {
+type ReportArtifact struct {
 	Kind         string             `json:"kind"`
 	Subject      string             `json:"subject"`
 	Path         string             `json:"path"`
@@ -159,11 +159,11 @@ type ImageAssociation struct {
 // cloneCIReportArtifacts deep-copies recorded evidence. Artifacts were all
 // scalar until image evidence added a slice, so a plain copy would leave a
 // finalized report sharing associations with live reporter state.
-func cloneCIReportArtifacts(artifacts []CIReportArtifact) []CIReportArtifact {
+func cloneCIReportArtifacts(artifacts []ReportArtifact) []ReportArtifact {
 	if artifacts == nil {
 		return nil
 	}
-	cloned := append([]CIReportArtifact(nil), artifacts...)
+	cloned := append([]ReportArtifact(nil), artifacts...)
 	for index := range artifacts {
 		cloned[index].Associations = append([]ImageAssociation(nil), artifacts[index].Associations...)
 	}
@@ -173,7 +173,7 @@ func cloneCIReportArtifacts(artifacts []CIReportArtifact) []CIReportArtifact {
 // normalizeCIReportSubject guarantees the subject invariant at every boundary
 // where evidence enters a report, so the report can state the invariant without
 // depending on each producer to remember it.
-func normalizeCIReportSubject(artifact *CIReportArtifact) {
+func normalizeCIReportSubject(artifact *ReportArtifact) {
 	if strings.TrimSpace(artifact.Subject) == "" {
 		artifact.Subject = artifactSubjectUnknown
 	}
@@ -182,7 +182,7 @@ func normalizeCIReportSubject(artifact *CIReportArtifact) {
 // normalizedCIReportArtifacts copies and normalizes recorded evidence. Reused
 // tasks reach the report through this path instead of recordCIReportArtifact,
 // and they must satisfy the same invariant.
-func normalizedCIReportArtifacts(artifacts []CIReportArtifact) []CIReportArtifact {
+func normalizedCIReportArtifacts(artifacts []ReportArtifact) []ReportArtifact {
 	if artifacts == nil {
 		return nil
 	}
@@ -202,18 +202,18 @@ type machineReadableCIError struct {
 func (machineReadableCIError) MachineReadable() bool { return true }
 
 type ciReportTaskContext struct {
-	reporter *CIReporter
+	reporter *Reporter
 	id       string
 }
 
-func withCIReportTask(ctx context.Context, reporter *CIReporter, id string) context.Context {
+func withCIReportTask(ctx context.Context, reporter *Reporter, id string) context.Context {
 	if reporter == nil || id == "" {
 		return ctx
 	}
 	return context.WithValue(ctx, ciReportTaskContextKey{}, ciReportTaskContext{reporter: reporter, id: id})
 }
 
-func recordCIReportAudit(ctx context.Context, audit *CIReportAudit) {
+func recordCIReportAudit(ctx context.Context, audit *ReportAudit) {
 	task, ok := ctx.Value(ciReportTaskContextKey{}).(ciReportTaskContext)
 	if !ok || task.reporter == nil {
 		return
@@ -221,8 +221,8 @@ func recordCIReportAudit(ctx context.Context, audit *CIReportAudit) {
 	task.reporter.mu.Lock()
 	defer task.reporter.mu.Unlock()
 	if reportTask, found := task.reporter.task(task.id); found {
-		audited := audit
-		reportTask.Audit = audited
+		audited := *audit
+		reportTask.Audit = &audited
 	}
 }
 
@@ -234,7 +234,7 @@ func recordCIReportDrift(ctx context.Context, changed []string) {
 	task.reporter.mu.Lock()
 	defer task.reporter.mu.Unlock()
 	if reportTask, found := task.reporter.task(task.id); found {
-		reportTask.Drift = &CIReportDrift{ChangedFiles: cloneStrings(changed)}
+		reportTask.Drift = &ReportDrift{ChangedFiles: cloneStrings(changed)}
 	}
 }
 
@@ -250,7 +250,7 @@ func recordCIReportSkip(ctx context.Context, reason string) {
 	task.reporter.markSkipped(task.id, reason)
 }
 
-func recordCIReportArtifact(ctx context.Context, artifact *CIReportArtifact) {
+func recordCIReportArtifact(ctx context.Context, artifact *ReportArtifact) {
 	task, ok := ctx.Value(ciReportTaskContextKey{}).(ciReportTaskContext)
 	if !ok || task.reporter == nil {
 		return
@@ -265,17 +265,17 @@ func recordCIReportArtifact(ctx context.Context, artifact *CIReportArtifact) {
 
 type reportClock func() time.Time
 
-type CIReporter struct {
+type Reporter struct {
 	mu           sync.Mutex
 	now          reportClock
 	startedAt    time.Time
-	report       CIReport
+	report       Report
 	taskIndex    map[string]int
 	cacheBuilder *ciCacheIdentityBuilder
 	reuse        *ciResultReuse
 }
 
-func NewCIReporter(plan *Plan, command string) (*CIReporter, error) {
+func NewCIReporter(plan *Plan, command string) (*Reporter, error) {
 	version, err := cli.GetCurrentVersion()
 	if err != nil {
 		return nil, fmt.Errorf("read Codefly version for CI report: %w", err)
@@ -283,7 +283,7 @@ func NewCIReporter(plan *Plan, command string) (*CIReporter, error) {
 	return newCIReporter(plan, command, version, time.Now)
 }
 
-func newCIReporter(plan *Plan, command, version string, now reportClock) (*CIReporter, error) {
+func newCIReporter(plan *Plan, command, version string, now reportClock) (*Reporter, error) {
 	if plan == nil {
 		return nil, fmt.Errorf("CI report plan is nil")
 	}
@@ -291,11 +291,11 @@ func newCIReporter(plan *Plan, command, version string, now reportClock) (*CIRep
 		return nil, fmt.Errorf("CI report clock is nil")
 	}
 	startedAt := now().UTC()
-	reporter := &CIReporter{
+	reporter := &Reporter{
 		now:       now,
 		startedAt: startedAt,
 		taskIndex: map[string]int{},
-		report: CIReport{
+		report: Report{
 			SchemaVersion:  reportSchemaVersion,
 			Command:        strings.TrimSpace(command),
 			CodeflyVersion: strings.TrimSpace(version),
@@ -303,7 +303,7 @@ func newCIReporter(plan *Plan, command, version string, now reportClock) (*CIRep
 			Phases:         []string{},
 			Status:         reportStatusRunning,
 			StartedAt:      formatReportTime(startedAt),
-			Tasks:          []CIReportTask{},
+			Tasks:          []ReportTask{},
 		},
 	}
 	return reporter, nil
@@ -342,7 +342,7 @@ func reportTaskID(phase, suite, service string) string {
 	return phase + ":" + suite + ":" + service
 }
 
-func (reporter *CIReporter) registerTasks(ctx context.Context, workspace *resources.Workspace, options ScheduleOptions, tasks []ciScheduledTask) ([]string, error) {
+func (reporter *Reporter) registerTasks(ctx context.Context, workspace *resources.Workspace, options ScheduleOptions, tasks []ciScheduledTask) ([]string, error) {
 	reporter.mu.Lock()
 	defer reporter.mu.Unlock()
 
@@ -358,7 +358,8 @@ func (reporter *CIReporter) registerTasks(ctx context.Context, workspace *resour
 	}
 
 	ids := make([]string, len(tasks))
-	for index, task := range tasks {
+	for index := range tasks {
+		task := &tasks[index]
 		id := reportTaskID(phase, options.Suite, task.planned.Service)
 		if _, exists := reporter.taskIndex[id]; exists {
 			ids[index] = id
@@ -367,7 +368,7 @@ func (reporter *CIReporter) registerTasks(ctx context.Context, workspace *resour
 		ids[index] = id
 		reporter.taskIndex[id] = len(reporter.report.Tasks)
 		cacheIdentity := reporter.cacheBuilder.identity(ctx, options, &task.planned)
-		reporter.report.Tasks = append(reporter.report.Tasks, CIReportTask{
+		reporter.report.Tasks = append(reporter.report.Tasks, ReportTask{
 			ID:               id,
 			Scope:            "service",
 			Resource:         task.planned.Service,
@@ -386,7 +387,7 @@ func (reporter *CIReporter) registerTasks(ctx context.Context, workspace *resour
 	return ids, nil
 }
 
-func (reporter *CIReporter) registerWorkspaceTask(ctx context.Context, workspace *resources.Workspace, phase string) (string, error) {
+func (reporter *Reporter) registerWorkspaceTask(ctx context.Context, workspace *resources.Workspace, phase string) (string, error) {
 	reporter.mu.Lock()
 	defer reporter.mu.Unlock()
 	phase = strings.TrimSpace(phase)
@@ -409,7 +410,7 @@ func (reporter *CIReporter) registerWorkspaceTask(ctx context.Context, workspace
 	options := ScheduleOptions{Phase: phase, RuntimeContext: runtimeContext}
 	cacheIdentity := reporter.cacheBuilder.workspaceIdentity(options, workspace.Name)
 	reporter.taskIndex[id] = len(reporter.report.Tasks)
-	reporter.report.Tasks = append(reporter.report.Tasks, CIReportTask{
+	reporter.report.Tasks = append(reporter.report.Tasks, ReportTask{
 		ID:               id,
 		Scope:            "workspace",
 		Resource:         workspace.Name,
@@ -423,7 +424,7 @@ func (reporter *CIReporter) registerWorkspaceTask(ctx context.Context, workspace
 	return id, nil
 }
 
-func runReportedWorkspacePhase(ctx context.Context, reporter *CIReporter, workspace *resources.Workspace, phase string, action func(context.Context) error) error {
+func runReportedWorkspacePhase(ctx context.Context, reporter *Reporter, workspace *resources.Workspace, phase string, action func(context.Context) error) error {
 	id, err := reporter.registerWorkspaceTask(ctx, workspace, phase)
 	if err != nil {
 		return err
@@ -464,7 +465,7 @@ func containsString(values []string, value string) bool {
 	return false
 }
 
-func (reporter *CIReporter) startTask(id string) {
+func (reporter *Reporter) startTask(id string) {
 	reporter.mu.Lock()
 	defer reporter.mu.Unlock()
 	task, ok := reporter.task(id)
@@ -476,7 +477,7 @@ func (reporter *CIReporter) startTask(id string) {
 	task.StartedAt = formatReportTime(now)
 }
 
-func (reporter *CIReporter) finishTask(id string, err error) {
+func (reporter *Reporter) finishTask(id string, err error) {
 	reporter.mu.Lock()
 	defer reporter.mu.Unlock()
 	task, ok := reporter.task(id)
@@ -514,7 +515,7 @@ func reportDurationMS(startedAt string, finishedAt time.Time) int64 {
 // markSkipped downgrades a running task to skipped, stamping completion so the
 // subsequent finishTask call (which only acts on running tasks) leaves it
 // untouched.
-func (reporter *CIReporter) markSkipped(id, reason string) {
+func (reporter *Reporter) markSkipped(id, reason string) {
 	reporter.mu.Lock()
 	defer reporter.mu.Unlock()
 	task, ok := reporter.task(id)
@@ -528,7 +529,7 @@ func (reporter *CIReporter) markSkipped(id, reason string) {
 	task.StatusReason = reason
 }
 
-func (reporter *CIReporter) skipTask(id, reason string, blockedBy []string) {
+func (reporter *Reporter) skipTask(id, reason string, blockedBy []string) {
 	reporter.mu.Lock()
 	defer reporter.mu.Unlock()
 	task, ok := reporter.task(id)
@@ -540,7 +541,7 @@ func (reporter *CIReporter) skipTask(id, reason string, blockedBy []string) {
 	task.BlockedBy = append([]string(nil), blockedBy...)
 }
 
-func (reporter *CIReporter) cancelPendingTask(id string) {
+func (reporter *Reporter) cancelPendingTask(id string) {
 	reporter.mu.Lock()
 	defer reporter.mu.Unlock()
 	task, ok := reporter.task(id)
@@ -551,7 +552,7 @@ func (reporter *CIReporter) cancelPendingTask(id string) {
 	task.StatusReason = reportReasonRunCancelled
 }
 
-func (reporter *CIReporter) task(id string) (*CIReportTask, bool) {
+func (reporter *Reporter) task(id string) (*ReportTask, bool) {
 	index, ok := reporter.taskIndex[id]
 	if !ok || index < 0 || index >= len(reporter.report.Tasks) {
 		return nil, false
@@ -559,7 +560,7 @@ func (reporter *CIReporter) task(id string) (*CIReportTask, bool) {
 	return &reporter.report.Tasks[index], true
 }
 
-func (reporter *CIReporter) Finalize(runErr error) CIReport {
+func (reporter *Reporter) Finalize(runErr error) Report {
 	reporter.mu.Lock()
 	defer reporter.mu.Unlock()
 
@@ -601,8 +602,8 @@ func (reporter *CIReporter) Finalize(runErr error) CIReport {
 	return cloneCIReport(&reporter.report)
 }
 
-func summarizeReportTasks(tasks []CIReportTask) CIReportSummary {
-	summary := CIReportSummary{Total: len(tasks)}
+func summarizeReportTasks(tasks []ReportTask) ReportSummary {
+	summary := ReportSummary{Total: len(tasks)}
 	for index := range tasks {
 		task := &tasks[index]
 		switch task.Status {
@@ -621,21 +622,22 @@ func summarizeReportTasks(tasks []CIReportTask) CIReportSummary {
 	return summary
 }
 
-func cloneCIReport(report *CIReport) CIReport {
+func cloneCIReport(report *Report) Report {
 	// A copy of the report, not a view of it: the reporter keeps writing the
 	// original, and the clone replaces every slice the original holds.
 	cloned := *report
 	cloned.Plan = clonePlan(&report.Plan)
 	cloned.Phases = append([]string(nil), report.Phases...)
-	cloned.Tasks = make([]CIReportTask, len(report.Tasks))
-	for index, task := range report.Tasks {
-		cloned.Tasks[index] = task
+	cloned.Tasks = make([]ReportTask, len(report.Tasks))
+	for index := range report.Tasks {
+		task := &report.Tasks[index]
+		cloned.Tasks[index] = *task
 		cloned.Tasks[index].SelectionReasons = cloneStrings(task.SelectionReasons)
 		cloned.Tasks[index].Prerequisites = cloneStrings(task.Prerequisites)
 		cloned.Tasks[index].RuntimeResources = cloneStrings(task.RuntimeResources)
 		cloned.Tasks[index].BlockedBy = append([]string(nil), task.BlockedBy...)
-		cloned.Tasks[index].Cache.Inputs.Dependencies = append([]CICacheResourceDigest{}, task.Cache.Inputs.Dependencies...)
-		cloned.Tasks[index].Cache.Inputs.Libraries = append([]CICacheResourceDigest{}, task.Cache.Inputs.Libraries...)
+		cloned.Tasks[index].Cache.Inputs.Dependencies = append([]CacheResourceDigest{}, task.Cache.Inputs.Dependencies...)
+		cloned.Tasks[index].Cache.Inputs.Libraries = append([]CacheResourceDigest{}, task.Cache.Inputs.Libraries...)
 		cloned.Tasks[index].Cache.Limitations = append([]string(nil), task.Cache.Limitations...)
 		if task.Cache.Reuse != nil {
 			reuse := *task.Cache.Reuse
@@ -647,14 +649,14 @@ func cloneCIReport(report *CIReport) CIReport {
 			cloned.Tasks[index].Audit = &audit
 		}
 		if task.Drift != nil {
-			cloned.Tasks[index].Drift = &CIReportDrift{ChangedFiles: cloneStrings(task.Drift.ChangedFiles)}
+			cloned.Tasks[index].Drift = &ReportDrift{ChangedFiles: cloneStrings(task.Drift.ChangedFiles)}
 		}
 		cloned.Tasks[index].Artifacts = cloneCIReportArtifacts(task.Artifacts)
 	}
 	return cloned
 }
 
-func marshalCIReport(report *CIReport) ([]byte, error) {
+func marshalCIReport(report *Report) ([]byte, error) {
 	payload, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode CI report: %w", err)
@@ -662,7 +664,7 @@ func marshalCIReport(report *CIReport) ([]byte, error) {
 	return append(payload, '\n'), nil
 }
 
-func writeCIReport(workspace *resources.Workspace, outputDirectory string, report *CIReport) (string, []byte, error) {
+func writeCIReport(workspace *resources.Workspace, outputDirectory string, report *Report) (string, []byte, error) {
 	if workspace == nil {
 		return "", nil, fmt.Errorf("write CI report: workspace is nil")
 	}
@@ -734,7 +736,7 @@ func writeCIReportAtomic(destination string, payload []byte) error {
 
 // runWithCIReport owns output suppression, finalization, atomic artifact
 // writing, and rendering for every executable CI command.
-func runWithCIReport(ctx context.Context, workspace *resources.Workspace, plan *Plan, command string, operation func(*CIReporter) error) (result error) {
+func runWithCIReport(ctx context.Context, workspace *resources.Workspace, plan *Plan, command string, operation func(*Reporter) error) (result error) {
 	format, err := normalizeCIReportFormat(ciReportFormat)
 	if err != nil {
 		return err
@@ -795,7 +797,7 @@ func normalizeCIReportFormat(value string) (string, error) {
 	}
 }
 
-func (reporter *CIReporter) reuseEnvironment() string {
+func (reporter *Reporter) reuseEnvironment() string {
 	if reporter.reuse == nil {
 		return ""
 	}
@@ -806,7 +808,7 @@ func (reporter *CIReporter) reuseEnvironment() string {
 // verified execution, and restores its artifacts when it may. Any rejection —
 // missing, stale, untrusted, unreadable or unrestorable — leaves the task
 // running so the caller executes it.
-func (reporter *CIReporter) attemptReuse(id string) bool {
+func (reporter *Reporter) attemptReuse(id string) bool {
 	reporter.mu.Lock()
 	reuse := reporter.reuse
 	task, ok := reporter.task(id)
@@ -857,7 +859,7 @@ func (reporter *CIReporter) attemptReuse(id string) bool {
 // publishResult records a task this run actually executed and passed. Publishing
 // is an optimization for later runs: a storage failure is reported against the
 // task's cache status and never turns a real success into a failure.
-func (reporter *CIReporter) publishResult(id string) {
+func (reporter *Reporter) publishResult(id string) {
 	reporter.mu.Lock()
 	reuse := reporter.reuse
 	task, ok := reporter.task(id)
@@ -897,7 +899,7 @@ func (reporter *CIReporter) publishResult(id string) {
 // noteCacheDecision records what this run decided about the task's cache entry.
 // An empty status or reason leaves the recorded one in place, so publishing a
 // freshly executed result does not erase why its predecessor was not reusable.
-func (reporter *CIReporter) noteCacheDecision(id, status, reason string) {
+func (reporter *Reporter) noteCacheDecision(id, status, reason string) {
 	reporter.mu.Lock()
 	defer reporter.mu.Unlock()
 	task, ok := reporter.task(id)

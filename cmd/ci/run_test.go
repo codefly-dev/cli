@@ -186,7 +186,7 @@ func TestTestCommandSuiteFailurePolicy(t *testing.T) {
 			if readErr != nil {
 				t.Fatal(readErr)
 			}
-			var report CIReport
+			var report Report
 			if err := json.Unmarshal(payload, &report); err != nil {
 				t.Fatal(err)
 			}

@@ -56,7 +56,7 @@ func runValidationCommand(selection *SelectionFlags, action Action, phase string
 	if err != nil {
 		return fmt.Errorf("cannot build affected-service plan: %w", err)
 	}
-	return runWithCIReport(ctx, workspace, plan, "codefly ci "+phase, func(reporter *CIReporter) error {
+	return runWithCIReport(ctx, workspace, plan, "codefly ci "+phase, func(reporter *Reporter) error {
 		options := commandScheduleOptions(false, phase, "", reporter)
 		if err := CIWithPlanOptions(ctx, workspace, plan, action, options); err != nil {
 			return fmt.Errorf("cannot run CI %s: %w", phase, err)

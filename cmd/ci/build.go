@@ -44,7 +44,7 @@ var BuildCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("cannot build affected-service plan: %w", err)
 		}
-		return runWithCIReport(ctx, workspace, plan, "codefly ci build", func(reporter *CIReporter) error {
+		return runWithCIReport(ctx, workspace, plan, "codefly ci build", func(reporter *Reporter) error {
 			options := commandScheduleOptions(false, "build", "", reporter)
 			if err := CIWithPlanOptions(ctx, workspace, plan, runBuildService, options); err != nil {
 				return fmt.Errorf("cannot run CI build: %w", err)

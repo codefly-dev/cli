@@ -7,7 +7,7 @@ func bindSchedulingFlags(command *cobra.Command) {
 	command.Flags().BoolVar(&ciFailFast, "fail-fast", true, "Stop native tests and service scheduling after the first failure")
 }
 
-func commandScheduleOptions(lockDependencyClosure bool, phase, suite string, reporter *CIReporter) ScheduleOptions {
+func commandScheduleOptions(lockDependencyClosure bool, phase, suite string, reporter *Reporter) ScheduleOptions {
 	return ScheduleOptions{
 		Jobs:                  ciJobs,
 		FailFast:              ciFailFast,

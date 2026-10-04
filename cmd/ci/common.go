@@ -182,12 +182,12 @@ type ScheduleOptions struct {
 	Phase                 string
 	Suite                 string
 	RuntimeContext        string
-	Reporter              *CIReporter
+	Reporter              *Reporter
 }
 
-// CIWithPlan retains the serial, fail-fast behavior expected by older callers.
+// WithPlan retains the serial, fail-fast behavior expected by older callers.
 // User-facing CI commands call CIWithPlanOptions with their scheduler flags.
-func CIWithPlan(ctx context.Context, workspace *resources.Workspace, plan *Plan, action Action) error {
+func WithPlan(ctx context.Context, workspace *resources.Workspace, plan *Plan, action Action) error {
 	return CIWithPlanOptions(ctx, workspace, plan, action, ScheduleOptions{Jobs: 1, FailFast: true})
 }
 
@@ -495,11 +495,13 @@ func resolveScheduledTasks(ctx context.Context, workspace *resources.Workspace, 
 	// Preserve transitive ordering even when an intermediate service is not in
 	// the affected set (for example two library consumers separated by a
 	// non-selected gateway).
-	for dependent, dependentTask := range tasks {
-		for prerequisite, prerequisiteTask := range tasks {
+	for dependent := range tasks {
+		dependentTask := &tasks[dependent]
+		for prerequisite := range tasks {
 			if dependent == prerequisite {
 				continue
 			}
+			prerequisiteTask := &tasks[prerequisite]
 			depends, err := dependencies.DependsOn(dependentTask.planned.Service, prerequisiteTask.planned.Service)
 			if err != nil {
 				return nil, fmt.Errorf("resolve scheduler ordering between %s and %s: %w", dependentTask.planned.Service, prerequisiteTask.planned.Service, err)
@@ -539,7 +541,7 @@ func firstRunnableTask(ready []int, tasks []ciScheduledTask, activeResources map
 // eligible and fully restorable, and otherwise executes it. Reuse replaces the
 // execution only after its artifacts are on disk and verified, so a dependent
 // released by this task reads the same bytes either way.
-func runScheduledTask(ctx context.Context, reporter *CIReporter, reportID string, workspace *resources.Workspace, planned *PlannedService, action Action) error {
+func runScheduledTask(ctx context.Context, reporter *Reporter, reportID string, workspace *resources.Workspace, planned *PlannedService, action Action) error {
 	if reporter != nil && reporter.attemptReuse(reportID) {
 		wool.Get(ctx).In("affectedCI").Info("Reusing verified result",
 			wool.Field("task", reportID),

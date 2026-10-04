@@ -789,7 +789,9 @@ func resolveDockerHost(ctx context.Context) (contextName, endpoint string) {
 	if name == "" || name == "default" {
 		return name, ""
 	}
-	out, err := exec.CommandContext(ctx, "docker", "context", "inspect", name, "--format", "{{ .Endpoints.docker.Host }}").Output()
+	// docker resolves the active context itself (DOCKER_CONTEXT, then the
+	// configured current context), so the inspect names none.
+	out, err := exec.CommandContext(ctx, "docker", "context", "inspect", "--format", "{{ .Endpoints.docker.Host }}").Output()
 	if err != nil {
 		return name, ""
 	}

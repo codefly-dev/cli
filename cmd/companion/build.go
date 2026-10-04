@@ -18,6 +18,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// The two ways a companion image is built.
+const (
+	buildMethodDocker = "docker"
+	buildMethodNix    = "nix"
+)
+
+// The architectures a companion platform names.
+const (
+	archAMD64 = "amd64"
+	archARM64 = "arm64"
+)
+
 // baseCompanionName is the companion every other companion builds on: it
 // is built first and its failure aborts the run.
 const baseCompanionName = "codefly"
@@ -301,11 +313,11 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) ([]pu
 			fmt.Printf("==> Skipping %s (no Dockerfile or flake.nix — not an image companion)\n", c.Name)
 			continue
 		}
-		method := "docker"
+		method := buildMethodDocker
 		if c.HasFlake && !opts.ForceDocker && nixOnPath() {
-			method = "nix"
+			method = buildMethodNix
 		}
-		if multiPlatform && method == "nix" {
+		if multiPlatform && method == buildMethodNix {
 			return published, fmt.Errorf("multi-platform companion %s must use Docker; pass --force-docker", c.Name)
 		}
 		fmt.Printf("==> Building %s (%s) via %s\n", c.Tag(), c.Dir, method)
@@ -317,7 +329,7 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) ([]pu
 		buildDigest := ""
 		var buildErr error
 		switch method {
-		case "nix":
+		case buildMethodNix:
 			buildErr = buildWithNix(c)
 		default:
 			if companionBase, err = base.referenceFor(c); err != nil {
@@ -703,7 +715,7 @@ func resolveDockerPlatforms(value string) ([]dockerPlatform, error) {
 		candidate = strings.TrimSpace(candidate)
 		parts := strings.Split(candidate, "/")
 		if len(parts) != 2 || parts[0] != "linux" ||
-			(parts[1] != "amd64" && parts[1] != "arm64") {
+			(parts[1] != archAMD64 && parts[1] != archARM64) {
 			return nil, fmt.Errorf("unsupported companion platform %q; expected linux/amd64 or linux/arm64", candidate)
 		}
 		if _, duplicate := seen[candidate]; duplicate {
@@ -855,10 +867,10 @@ func nixOnPath() bool {
 // already in Docker's preferred form for amd64 and arm64.
 func dockerArch() string {
 	switch runtime.GOARCH {
-	case "amd64":
-		return "amd64"
-	case "arm64":
-		return "arm64"
+	case archAMD64:
+		return archAMD64
+	case archARM64:
+		return archARM64
 	default:
 		return runtime.GOARCH
 	}
