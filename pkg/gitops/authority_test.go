@@ -195,12 +195,13 @@ func TestAuthorityIsNotDerivedWithoutAContractOrAnIdentity(t *testing.T) {
 	require.Nil(t, instances)
 	require.Contains(t, undeclared, modulecontract.FileName)
 
-	// A contract with no module-identity service has nothing to present it.
+	// A contract with no module-identity service is a request nothing would
+	// present: refused, never dropped.
 	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), modulecontract.FileName), []byte(authorityContract), 0o644))
-	instances, undeclared, err = authorityInstancesOf(ctx, workspace, module, services, env, nil)
-	require.NoError(t, err)
+	instances, _, err = authorityInstancesOf(ctx, workspace, module, services, env, nil)
+	require.Error(t, err)
 	require.Nil(t, instances)
-	require.Contains(t, undeclared, "module-identity")
+	require.Contains(t, err.Error(), "module-identity")
 }
 
 // TestAuthorityIsPresentedByOneService: two services each declaring
@@ -360,4 +361,25 @@ func TestAuthorityReachesArgoUnderItsOwnProject(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(kustomization), authorityProjectFile)
 	require.NoError(t, validateBootstrapUnits(filepath.Join(root, "bootstrap"), targetPath, inventory, "staging"))
+}
+
+// TestComponentProjectsBindPathProjectAndNamespace: the authority overlay is
+// delivered under the authority project only, and the authority project
+// delivers nothing but the authority overlay, into its namespace — the three
+// name each other, so no component can borrow the project for another path.
+func TestComponentProjectsBindPathProjectAndNamespace(t *testing.T) {
+	spec := func(path, project, namespace string) map[string]any {
+		return map[string]any{"generators": []any{map[string]any{"list": map[string]any{"elements": []any{
+			map[string]any{"component": "c", "path": path, "project": project, "namespace": namespace},
+		}}}}}
+	}
+	authority := argoAuthorityProjectName("shop")
+	require.NoError(t, validateComponentProjects(spec("deployments/modules/shop/solution-authority/overlays/prod", authority, authorityNamespace), "shop"))
+	require.NoError(t, validateComponentProjects(spec("deployments/modules/shop/services/api/overlays/prod", "shop", "shop"), "shop"))
+	err := validateComponentProjects(spec("deployments/modules/shop/solution-authority/overlays/prod", "shop", "shop"), "shop")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "authority overlay")
+	err = validateComponentProjects(spec("deployments/modules/shop/services/api/overlays/prod", authority, authorityNamespace), "shop")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not the authority overlay")
 }

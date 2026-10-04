@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -410,7 +411,7 @@ func TestPublishMergesItsCellContributionIntoTheDeliveredCell(t *testing.T) {
 
 	// No cell delivered yet: the publish contributes crm alone. shop, rendered
 	// locally but not the module being published, is not added.
-	merged, err := mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "crm")
+	merged, err := mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "crm", nil)
 	require.NoError(t, err)
 	require.Equal(t, []string{"crm"}, cellModules(merged))
 	require.Equal(t, "example", merged.Domain)
@@ -431,7 +432,7 @@ func TestPublishMergesItsCellContributionIntoTheDeliveredCell(t *testing.T) {
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, "git %v: %s", args, out)
 	}
-	merged, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "crm")
+	merged, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "crm", nil)
 	require.NoError(t, err)
 	require.Equal(t, []string{"billing", "crm"}, cellModules(merged))
 	require.Equal(t, "sha256:"+strings.Repeat("b", 64), merged.Namespaces[1].Workloads[0].Artifact.Digest, "crm is this publish's render")
@@ -439,7 +440,7 @@ func TestPublishMergesItsCellContributionIntoTheDeliveredCell(t *testing.T) {
 
 	// A publish of a module the local cell has no entry for is refused: its
 	// tree was not rendered for this environment.
-	_, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "ledger")
+	_, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "ledger", nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "carries no entry for module ledger")
 }
@@ -713,12 +714,13 @@ func TestPublishRefusesAPairTheHostWouldNotActivate(t *testing.T) {
 	require.ErrorIs(t, err, solutionhost.ErrNotActivated)
 	require.Contains(t, err.Error(), "envelope revision 1 and this is revision 2")
 
-	// The host block is gone from the composition: nothing names a revision.
+	// The host block is gone from the composition: the presence half is
+	// refused for it before the authority half is reached.
 	hostless := opts
 	hostless.Target, hostless.EnvelopeRevision = nil, 0
-	err = settleAuthority(repository.stageAuthorityRender(t, bindings), &hostless)
+	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageAuthorityRender(t, bindings), &hostless)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "example.prod.crm-authority")
+	require.Contains(t, err.Error(), "names no host now")
 	require.Contains(t, err.Error(), "declares no host now")
 
 	// The authority approves a build the presence does not say the binding
@@ -737,9 +739,17 @@ func TestPublishRefusesAPairTheHostWouldNotActivate(t *testing.T) {
 	// presence half moving domains is refused earlier, by its own settlement.)
 	require.NoError(t, settleAuthority(repository.stageAuthorityRender(t, bindings), &opts))
 	repository.deliver(t)
+	// The environment moved domains and the render followed, both halves:
+	// the delivered records were applied under the old one, which core's fold
+	// refuses at the presence half before the authority half is reached. A
+	// half moved on its own never reaches the fold — publish holds every
+	// document to the domain declared now first.
 	inventory = repository.stageAuthorityRender(t, bindings)
 	rewrite(authorityFile, "ownership_domain: example", "ownership_domain: other")
-	err = settleAuthority(inventory, &opts)
+	rewrite(filepath.Join(repository.target, filepath.FromSlash(solutionHostBindingOverlay("prod")), "example.prod.crm.yaml"), "ownership_domain: example", "ownership_domain: other")
+	moved := opts
+	moved.Domain = "other"
+	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, &moved)
 	require.ErrorIs(t, err, solutionhost.ErrWrongDomain)
 	require.Contains(t, err.Error(), `applied under domain "example"`)
 }
@@ -762,7 +772,11 @@ func TestPublishRefusesABindingThatMovesBetweenDomains(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(data), "ownership_domain: example")
 	require.NoError(t, os.WriteFile(file, []byte(strings.Replace(string(data), "ownership_domain: example", "ownership_domain: other", 1)), 0o644))
-	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, &opts)
+	// The environment moved domains with the render; the delivered record
+	// was applied under the old one.
+	moved := opts
+	moved.Domain = "other"
+	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, &moved)
 	require.ErrorIs(t, err, solutionhost.ErrWrongDomain)
 	require.Contains(t, err.Error(), `binding "example.prod.crm" was applied under domain "example"`)
 }
@@ -822,4 +836,130 @@ func TestPublishMovesTheAuthorityWithTheServicePresentingIt(t *testing.T) {
 	require.Len(t, delivery.Documents, 2, "one presence document and one authority document, nothing withdrawn")
 	document, _ = readDeliveredAuthority(t, repository.target, "prod", "example.prod.crm-authority.yaml")
 	require.Equal(t, solutionhost.ImageDigest("sha256:"+strings.Repeat("b", 64)), document.ApprovedBuild, "the worker's build is the approved one now")
+}
+
+// TestPublishHoldsEveryDocumentToTheHostDeclaredNow: a render made under one
+// host declaration is refused by a publish under another — the ownership
+// domain, or the host coordinate and component — and a render that declares
+// documents is refused outright when the environment names no host now, so
+// nothing is signed for no Job to deliver.
+func TestPublishHoldsEveryDocumentToTheHostDeclaredNow(t *testing.T) {
+	ctx := context.Background()
+	repository := newDeliveryRepository(t)
+	inventory := repository.stageRender(t, "crm")
+	settle := func(opts *deliveryPublishOptions) error {
+		_, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, opts)
+		return err
+	}
+	err := settle(&deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "other", Module: "crm"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `ownership domain "example"`)
+	err = settle(&deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", Module: "crm", Coordinate: "elsewhere/prod/x", Component: "host"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "elsewhere/prod/x")
+	err = settle(&deliveryPublishOptions{Signer: &fakeSigner{}, Domain: "example", Module: "crm"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "names no host now")
+}
+
+// TestPublishRefusesAReusedCarrierThatSignsOtherBytes: a carrier delivered
+// before is reused only once it is held to the document it would carry. Here
+// the delivered carrier signs other bytes than the document beside it, and a
+// publish that changes nothing is refused rather than republishing it as
+// signed.
+func TestPublishRefusesAReusedCarrierThatSignsOtherBytes(t *testing.T) {
+	ctx := context.Background()
+	repository := newDeliveryRepository(t)
+	opts := deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", Module: "crm"}
+	inventory := repository.stageRender(t, "crm")
+	_, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, &opts)
+	require.NoError(t, err)
+	repository.deliver(t)
+
+	// The delivered carrier's signed bytes are altered in place; the readable
+	// document beside it is untouched, so only the carrier disagrees.
+	overlay := filepath.Join(repository.target, filepath.FromSlash(solutionHostBindingOverlay("prod")))
+	entries, err := os.ReadDir(overlay)
+	require.NoError(t, err)
+	tampered := 0
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == kustomizationFile || !strings.HasSuffix(entry.Name(), yamlExtension) {
+			continue
+		}
+		path := filepath.Join(overlay, entry.Name())
+		data, readErr := os.ReadFile(path)
+		require.NoError(t, readErr)
+		// The carrier is JSON inside a YAML scalar, quoted one way or the
+		// other by the encoder; the readable document beside it spells the
+		// generation as YAML, so neither pattern touches it.
+		altered := bytes.Replace(data, []byte(`"generation":1`), []byte(`"generation":7`), 1)
+		if bytes.Equal(altered, data) {
+			altered = bytes.Replace(data, []byte(`\"generation\":1`), []byte(`\"generation\":7`), 1)
+		}
+		if bytes.Equal(altered, data) {
+			continue
+		}
+		require.NoError(t, os.WriteFile(path, altered, 0o600))
+		tampered++
+	}
+	require.Equal(t, 1, tampered, "the delivered carrier was not found to alter")
+	for _, args := range [][]string{{"add", "-A", "--", repository.targetPath}, {"commit", "-q", "-m", "tamper"}, {"update-ref", "refs/remotes/origin/main", "HEAD"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repository.repo
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.test", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.test")
+		out, runErr := cmd.CombinedOutput()
+		require.NoError(t, runErr, string(out))
+	}
+
+	inventory = repository.stageRender(t, "crm")
+	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, &opts)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "signs other bytes")
+}
+
+// TestCellMergeReconcilesEdgesAndRefusesAnotherHostsCell: the publishing
+// module's consumer edges in other modules' delivered entries follow its
+// render — dropped where it no longer consumes, added where it does now —
+// and a contribution made under another host declaration is refused rather
+// than relabelling entries it does not own.
+func TestCellMergeReconcilesEdgesAndRefusesAnotherHostsCell(t *testing.T) {
+	ctx := context.Background()
+	repository := newDeliveryRepository(t)
+	cellPath := "deployments/cells/prod/cell.yaml"
+	provider := CellNamespace{Name: "ns-billing", Module: "billing", Workloads: []CellWorkload{{
+		Name: "billing", Kind: "Deployment", Service: "billing/api", ServiceAccount: "api",
+		Endpoints: []CellEndpoint{{Name: "grpc", Consumers: []string{"crm/api", "crm/worker", "shop/api"}}},
+	}}}
+	delivered := &CellFile{Schema: CellSchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example",
+		Namespaces: []CellNamespace{provider, {Name: "ns-crm", Module: "crm"}}}
+	data, err := yaml.Marshal(delivered)
+	require.NoError(t, err)
+	full := filepath.Join(repository.repo, filepath.FromSlash(cellPath))
+	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+	require.NoError(t, os.WriteFile(full, data, 0o600))
+	for _, args := range [][]string{{"add", "-A", "--", cellPath}, {"commit", "-q", "-m", "cell"}, {"update-ref", "refs/remotes/origin/main", "HEAD"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repository.repo
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.test", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.test")
+		out, runErr := cmd.CombinedOutput()
+		require.NoError(t, runErr, string(out))
+	}
+	local := &CellFile{Schema: CellSchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example",
+		Namespaces: []CellNamespace{{Name: "ns-crm", Module: "crm"}}}
+	merged, err := mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "crm", []consumedEndpoint{{Provider: "billing/api", Endpoint: "grpc", Consumer: "crm/api"}})
+	require.NoError(t, err)
+	var billing *CellNamespace
+	for i := range merged.Namespaces {
+		if merged.Namespaces[i].Module == "billing" {
+			billing = &merged.Namespaces[i]
+		}
+	}
+	require.NotNil(t, billing)
+	require.Equal(t, []string{"crm/api", "shop/api"}, billing.Workloads[0].Endpoints[0].Consumers)
+
+	moved := *local
+	moved.Domain = "other"
+	_, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, &moved, "crm", nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), `domain "example"`)
 }

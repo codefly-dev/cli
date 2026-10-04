@@ -692,3 +692,25 @@ func loadServices(t *testing.T, workspace *resources.Workspace, module string, n
 }
 
 var _ = environments.ComposesSeveralModules
+
+// TestPublishRefusesAStaleConsumerWithoutItsCurrentRender: a consumer the
+// base branch delivers at a stale group digest is refused unless this
+// workspace holds its current render; a current render lifts it.
+func TestPublishRefusesAStaleConsumerWithoutItsCurrentRender(t *testing.T) {
+	workspace := t.TempDir()
+	stale := []staleBaseConsumer{{Module: "billing", Group: "shared", Current: "abc"}}
+	err := refuseStaleBaseConsumers(workspace, "prod", "main", stale)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "billing (group shared)")
+
+	dir := filepath.Join(workspace, "deployments", "modules", "billing")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	inventory := Inventory{SchemaVersion: SchemaVersion, Module: "billing", Environment: "prod", WorkspaceConfigurationDigests: map[string]string{"shared": "old"}}
+	require.NoError(t, writeCanonicalInventory(filepath.Join(dir, InventoryFilename), &inventory))
+	err = refuseStaleBaseConsumers(workspace, "prod", "main", stale)
+	require.Error(t, err, "a stale local render is no evidence")
+
+	inventory.WorkspaceConfigurationDigests["shared"] = "abc"
+	require.NoError(t, writeCanonicalInventory(filepath.Join(dir, InventoryFilename), &inventory))
+	require.NoError(t, refuseStaleBaseConsumers(workspace, "prod", "main", stale))
+}

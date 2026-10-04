@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -233,10 +234,14 @@ func preparePublish(
 		return fail(addErr)
 	}
 	contractChecks := checkContracts(&inventory, resolveGitopsModuleInventory(ctx, repo, baseBranch, pathRoot), request.AllowUnresolvedContracts)
-	staleConsumers, err := staleBaseConsumers(ctx, repo, baseBranch, pathRoot, request.Module, inventory.WorkspaceConfigurationDigests)
+	staleOnBase, err := staleBaseConsumers(ctx, repo, baseBranch, pathRoot, request.Module, inventory.WorkspaceConfigurationDigests)
 	if err != nil {
 		return fail(err)
 	}
+	if err = refuseStaleBaseConsumers(workspace.Dir(), request.Environment, baseBranch, staleOnBase); err != nil {
+		return fail(err)
+	}
+	staleConsumers := describeStaleConsumers(staleOnBase)
 	changed, err := stagedPathsSince(ctx, repo, startRevision, publishedPaths...)
 	if err != nil {
 		return fail(err)
@@ -307,6 +312,8 @@ func (p *deliveryPublication) addressHost(ctx context.Context, workspace *resour
 	if env.Host != nil {
 		p.options.EnvelopeRevision = env.Host.EnvelopeRevision
 		p.options.Domain = env.Host.Domain
+		p.options.Coordinate = env.Host.Coordinate
+		p.options.Component = env.Host.Component
 	}
 	return nil
 }
@@ -392,7 +399,7 @@ func stageRenderedPublication(
 	if err != nil {
 		return "", Inventory{}, err
 	}
-	if err = stageCellFile(ctx, clone.repo, clone.publication); err != nil {
+	if err = stageCellFile(ctx, clone.repo, clone.publication, &published); err != nil {
 		return "", Inventory{}, err
 	}
 	return snapshotRevision, published, nil
@@ -2145,7 +2152,7 @@ func mergeDeliveries(parts ...*InventoryDelivery) *InventoryDelivery {
 // cell — a CI job rendering one module erased the others from policy input
 // while their workloads stayed deployed. A module is removed from the cell by
 // withdrawing it, never by another module's publish.
-func stageCellFile(ctx context.Context, repo string, publication *deliveryPublication) error {
+func stageCellFile(ctx context.Context, repo string, publication *deliveryPublication, inventory *Inventory) error {
 	if publication == nil || publication.cellSource == "" {
 		return nil
 	}
@@ -2161,7 +2168,7 @@ func stageCellFile(ctx context.Context, repo string, publication *deliveryPublic
 	if err = yaml.Unmarshal(data, &local); err != nil {
 		return fmt.Errorf("decode the cell file: %w", err)
 	}
-	merged, err := mergeCellContribution(ctx, repo, publication.baseBranch, publication.cellPath, &local, publication.options.Module)
+	merged, err := mergeCellContribution(ctx, repo, publication.baseBranch, publication.cellPath, &local, publication.options.Module, consumedEndpoints(inventory))
 	if err != nil {
 		return err
 	}
@@ -2184,7 +2191,7 @@ func stageCellFile(ctx context.Context, repo string, publication *deliveryPublic
 // declaration and come from the local render. With no cell on the base
 // branch, the result holds this module's entry alone: the others join on
 // their own publishes.
-func mergeCellContribution(ctx context.Context, repo, baseBranch, cellPath string, local *CellFile, module string) (*CellFile, error) {
+func mergeCellContribution(ctx context.Context, repo, baseBranch, cellPath string, local *CellFile, module string, consumed []consumedEndpoint) (*CellFile, error) {
 	var contribution *CellNamespace
 	for index := range local.Namespaces {
 		if local.Namespaces[index].Module == module {
@@ -2193,22 +2200,115 @@ func mergeCellContribution(ctx context.Context, repo, baseBranch, cellPath strin
 		}
 	}
 	if contribution == nil {
-		return nil, fmt.Errorf("the cell file %s carries no entry for module %s; render %s for this environment before publishing it", local.Environment, module, module)
+		return nil, fmt.Errorf("the rendered cell file carries no entry for module %s; render %s for this environment before publishing it", module, module)
 	}
 	merged := *local
 	merged.Namespaces = nil
-	if data, showErr := gitCommandBytes(ctx, repo, "show", "refs/remotes/origin/"+baseBranch+":"+cellPath); showErr == nil {
+	data, showErr := gitCommandBytes(ctx, repo, "show", "refs/remotes/origin/"+baseBranch+":"+cellPath)
+	switch {
+	case showErr == nil:
 		var delivered CellFile
 		if decodeErr := yaml.Unmarshal(data, &delivered); decodeErr != nil {
 			return nil, fmt.Errorf("the cell file delivered on %s cannot be read, so this module's contribution cannot be merged into it: %w", baseBranch, decodeErr)
 		}
-		for _, namespace := range delivered.Namespaces {
-			if namespace.Module != module {
-				merged.Namespaces = append(merged.Namespaces, namespace)
-			}
+		if err := refuseCellHeaderChange(&delivered, local, baseBranch); err != nil {
+			return nil, err
 		}
+		for index := range delivered.Namespaces {
+			if delivered.Namespaces[index].Module == module {
+				continue
+			}
+			namespace := delivered.Namespaces[index]
+			reconcileConsumers(&namespace, module, consumed)
+			merged.Namespaces = append(merged.Namespaces, namespace)
+		}
+	case gitSaysAbsent(showErr):
+		// No cell delivered for this environment yet: this contribution is
+		// the first, and the file is this module's entry alone.
+	default:
+		return nil, fmt.Errorf("the cell file delivered on %s cannot be read, so this module's contribution cannot be merged into it: %w", baseBranch, showErr)
 	}
 	merged.Namespaces = append(merged.Namespaces, *contribution)
 	sort.Slice(merged.Namespaces, func(i, j int) bool { return merged.Namespaces[i].Name < merged.Namespaces[j].Name })
 	return &merged, nil
+}
+
+// gitSaysAbsent reports a git read that failed because the path or the ref
+// does not exist, as opposed to a repository that could not be read at all.
+func gitSaysAbsent(err error) bool {
+	message := err.Error()
+	for _, absent := range []string{"does not exist in", "exists on disk, but not in", "Not a valid object name", "invalid object name"} {
+		if strings.Contains(message, absent) {
+			return true
+		}
+	}
+	return false
+}
+
+// refuseCellHeaderChange keeps a cell one host's record: the delivered cell's
+// schema, coordinate, component, domain and trust domain are what every other
+// module's entry was written under, so a contribution made under another
+// declaration is refused rather than relabelling entries it does not own.
+func refuseCellHeaderChange(delivered, local *CellFile, baseBranch string) error {
+	if delivered.Schema == local.Schema && delivered.Coordinate == local.Coordinate && delivered.Component == local.Component &&
+		delivered.Domain == local.Domain && delivered.TrustDomain == local.TrustDomain {
+		return nil
+	}
+	return fmt.Errorf("the cell delivered on %s is the %s record of host %s/%s under domain %q (trust domain %q); this render describes host %s/%s under domain %q (trust domain %q), and a cell is one host's record: withdraw the delivered cell, or render against the declaration it was made under",
+		baseBranch, delivered.Schema, delivered.Coordinate, delivered.Component, delivered.Domain, delivered.TrustDomain,
+		local.Coordinate, local.Component, local.Domain, local.TrustDomain)
+}
+
+// consumedEndpoint is one edge a module's render declares: a unit of the
+// module consuming an endpoint of another module's service.
+type consumedEndpoint struct {
+	Provider, Endpoint, Consumer string
+}
+
+// consumedEndpoints lists the edges the render's inventory declares.
+func consumedEndpoints(inventory *Inventory) []consumedEndpoint {
+	var edges []consumedEndpoint
+	for i := range inventory.Units {
+		unit := &inventory.Units[i]
+		for j := range unit.Contracts {
+			contract := &unit.Contracts[j]
+			if contract.Role != ContractRoleConsumes {
+				continue
+			}
+			edges = append(edges, consumedEndpoint{
+				Provider: resources.ServiceUnique(contract.Module, contract.Service),
+				Endpoint: contract.Endpoint,
+				Consumer: resources.ServiceUnique(inventory.Module, unit.Name),
+			})
+		}
+	}
+	return edges
+}
+
+// reconcileConsumers rewrites, in another module's delivered entry, the
+// consumer lists that belong to the publishing module: every consumer of that
+// module is dropped and the ones its render declares now are added, so an
+// edge the module grew or dropped reaches the provider's entry even when the
+// provider is not rendered in this workspace.
+func reconcileConsumers(namespace *CellNamespace, module string, consumed []consumedEndpoint) {
+	prefix := module + "/"
+	for w := range namespace.Workloads {
+		workload := &namespace.Workloads[w]
+		for e := range workload.Endpoints {
+			endpoint := &workload.Endpoints[e]
+			var kept []string
+			for _, consumer := range endpoint.Consumers {
+				if !strings.HasPrefix(consumer, prefix) {
+					kept = append(kept, consumer)
+				}
+			}
+			for _, edge := range consumed {
+				if edge.Provider == workload.Service && edge.Endpoint == endpoint.Name && !slices.Contains(kept, edge.Consumer) {
+					kept = append(kept, edge.Consumer)
+				}
+			}
+			sort.Strings(kept)
+			endpoint.Consumers = kept
+		}
+	}
 }

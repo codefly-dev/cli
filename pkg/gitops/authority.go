@@ -139,7 +139,11 @@ func authorityInstancesOf(
 		}
 	}
 	if len(identities) == 0 {
-		return nil, fmt.Sprintf("module %s publishes a contract but no service declares module-identity, so nothing would present the authority", module.Name), nil
+		// The contract is the module's request for authority. With no service
+		// declaring module-identity nothing would present it, and the request
+		// would be dropped rather than refused: the composition is inconsistent
+		// and is told so here, before slot resolution or any document.
+		return nil, "", fmt.Errorf("module %s publishes %s, which asks for authority, but no service declares module-identity, so nothing would present it; declare module-identity on the service that presents the module's identity, or withdraw the contract", module.Name, modulecontract.FileName)
 	}
 	if len(identities) > 1 {
 		names := make([]string, 0, len(identities))

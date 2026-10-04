@@ -253,7 +253,53 @@ func refuseStaleRender(module, environment string, recorded, current map[string]
 // delivery base branch holds at another digest: published before the group
 // changed, and the next publish to run. Reported, never refused — refusing
 // would hold every consumer's publish on every other's.
-func staleBaseConsumers(ctx context.Context, repo, baseBranch, pathRoot, module string, digests map[string]string) ([]string, error) {
+// staleBaseConsumer is a module delivered on the base branch whose render
+// bakes in a workspace configuration group at a digest the publishing module
+// no longer agrees with.
+type staleBaseConsumer struct {
+	Module, Group string
+	// Current is the digest the publishing module bakes in now.
+	Current string
+}
+
+// describeStaleConsumers names stale consumers the way the plan reports them.
+func describeStaleConsumers(stale []staleBaseConsumer) []string {
+	named := make([]string, 0, len(stale))
+	for _, consumer := range stale {
+		named = append(named, fmt.Sprintf("%s (group %s)", consumer.Module, consumer.Group))
+	}
+	return named
+}
+
+// refuseStaleBaseConsumers refuses to publish past a consumer the base branch
+// delivers at a stale digest unless this workspace holds a current render of
+// it: then the base branch would carry a consumer of a value its provider no
+// longer gives, with nothing queued to replace it. A current local render is
+// what the render step reports as needed, so the refusal is lifted by
+// rendering the named module beside this one and publishing both.
+func refuseStaleBaseConsumers(workspaceDir, environment, baseBranch string, stale []staleBaseConsumer) error {
+	var unrendered []string
+	for _, consumer := range stale {
+		inventory, err := LoadInventory(filepath.Join(workspaceDir, "deployments", "modules", consumer.Module))
+		if errors.Is(err, fs.ErrNotExist) {
+			unrendered = append(unrendered, fmt.Sprintf("%s (group %s)", consumer.Module, consumer.Group))
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("the rendered tree of module %s cannot be read, so whether it bakes in group %s as provided now is unknown: %w", consumer.Module, consumer.Group, err)
+		}
+		if inventory.Environment != environment || inventory.WorkspaceConfigurationDigests[consumer.Group] != consumer.Current {
+			unrendered = append(unrendered, fmt.Sprintf("%s (group %s)", consumer.Module, consumer.Group))
+		}
+	}
+	if len(unrendered) == 0 {
+		return nil
+	}
+	sort.Strings(unrendered)
+	return fmt.Errorf("the modules %s delivered on %s bake in a value of a workspace configuration group this render changes, and this workspace holds no current render of them; render them for %s and publish them with this one", strings.Join(unrendered, ", "), baseBranch, environment)
+}
+
+func staleBaseConsumers(ctx context.Context, repo, baseBranch, pathRoot, module string, digests map[string]string) ([]staleBaseConsumer, error) {
 	if len(digests) == 0 {
 		return nil, nil
 	}
@@ -265,7 +311,7 @@ func staleBaseConsumers(ctx context.Context, repo, baseBranch, pathRoot, module 
 		// composition; nothing is delivered to be stale.
 		return nil, nil
 	}
-	var stale []string
+	var stale []staleBaseConsumer
 	for _, name := range strings.Split(strings.TrimSpace(listing), "\n") {
 		name = strings.TrimSpace(name)
 		if name == "" || name == module {
@@ -281,10 +327,15 @@ func staleBaseConsumers(ctx context.Context, repo, baseBranch, pathRoot, module 
 		}
 		for group, digest := range digests {
 			if other, consumed := inventory.WorkspaceConfigurationDigests[group]; consumed && other != digest {
-				stale = append(stale, fmt.Sprintf("%s (group %s)", name, group))
+				stale = append(stale, staleBaseConsumer{Module: name, Group: group, Current: digest})
 			}
 		}
 	}
-	sort.Strings(stale)
+	sort.Slice(stale, func(i, j int) bool {
+		if stale[i].Module != stale[j].Module {
+			return stale[i].Module < stale[j].Module
+		}
+		return stale[i].Group < stale[j].Group
+	})
 	return stale, nil
 }

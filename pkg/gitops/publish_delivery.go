@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -51,6 +52,10 @@ type deliveryPublishOptions struct {
 	// Signer signs each document's canonical bytes. nil means the process
 	// environment decides (signing.FromEnvironment).
 	Signer signing.Signer
+	// Coordinate and Component name the host the environment declares at
+	// publish; every rendered document must be stamped with them. Empty when
+	// the environment declares no host.
+	Coordinate, Component string
 	// AllowUnsigned lets a publish deliver unsigned documents — a local
 	// qualification environment only.
 	AllowUnsigned bool
@@ -92,6 +97,56 @@ type deliveredPresenceDocument struct {
 // delivered before and no longer declares, signs every document, rewrites the
 // carriers, the delivery Job and the overlay's kustomization, and returns what
 // it delivered for the inventory.
+// refuseUnaddressedDocuments refuses a render that declares documents for a
+// host the environment no longer names: nothing would deliver them, and
+// signing them would still record them as delivered.
+func refuseUnaddressedDocuments(what string, names []string, environment string, opts *deliveryPublishOptions) error {
+	if opts.Target != nil {
+		return nil
+	}
+	return fmt.Errorf("the render declares the %s documents %s for %s but the environment names no host now; render again against the environment as it is, or declare the host they are delivered to", what, strings.Join(names, ", "), environment)
+}
+
+// refuseMovedDocument holds a rendered document to the host the environment
+// declares at publish: the ownership domain, coordinate and component it was
+// stamped with must be the ones declared now. A render made before the host
+// block changed is refused here, named, rather than signed under a
+// declaration it does not describe.
+func refuseMovedDocument(what, id, domain string, host solutionhost.HostTarget, opts *deliveryPublishOptions) error {
+	if domain != opts.Domain {
+		return fmt.Errorf("%s %s was rendered under ownership domain %q and the environment declares %q now; render again before publishing", what, id, domain, opts.Domain)
+	}
+	if opts.Coordinate != "" && (host.Coordinate != opts.Coordinate || host.Component != opts.Component) {
+		return fmt.Errorf("%s %s was rendered for host %s/%s and the environment declares %s/%s now; render again before publishing", what, id, host.Coordinate, host.Component, opts.Coordinate, opts.Component)
+	}
+	return nil
+}
+
+// verifyReusedCarrier holds a carrier delivered before to the document it is
+// about to be reused for: it must parse, its signed bytes must be exactly the
+// document's canonical bytes, and on a release publish it must still pass the
+// check a host will run. It answers the signer identity the carrier names,
+// when it names one.
+func verifyReusedCarrier(ctx context.Context, what string, carrier, payload []byte, opts *deliveryPublishOptions) (string, error) {
+	signed, err := solutionhost.ParseSigned(carrier)
+	if err != nil {
+		return "", fmt.Errorf("the carrier delivered before for %s cannot be read, so it is not reused: %w", what, err)
+	}
+	if !bytes.Equal(signed.Document, payload) {
+		return "", fmt.Errorf("the carrier delivered before for %s signs other bytes than the document being delivered now; the delivered tree and its carrier disagree, so neither is trusted", what)
+	}
+	if opts.SelfCheck != nil {
+		if err = opts.SelfCheck(ctx, signed.Bundle, payload); err != nil {
+			return "", fmt.Errorf("%s, delivered before: %w", what, err)
+		}
+	}
+	identity, err := signing.ReadIdentity(signed.Bundle)
+	if err != nil {
+		return "", nil
+	}
+	return identity.Subject + " (" + identity.Issuer + ")", nil
+}
+
 func settlePresenceDelivery(
 	ctx context.Context,
 	repo, baseBranch, target, targetPath, environment string,
@@ -122,6 +177,16 @@ func settlePresenceDelivery(
 		return nil, fmt.Errorf(
 			"module %s delivered the bindings %s to %s before and this render declares none and names no host; to withdraw them, render with the environment's host block in place and without the instances, so publish writes their tombstones",
 			inventory.Module, strings.Join(sortedBindingNames(prior), ", "), environment)
+	}
+	if len(rendered) > 0 {
+		if err = refuseUnaddressedDocuments("binding", sortedBindingNames(rendered), environment, opts); err != nil {
+			return nil, err
+		}
+		for binding, entry := range rendered {
+			if err = refuseMovedDocument("binding", binding, entry.document.OwnershipDomain, entry.document.Host, opts); err != nil {
+				return nil, err
+			}
+		}
 	}
 	for binding, previous := range prior {
 		if _, present := rendered[binding]; present {
@@ -264,15 +329,27 @@ func signPresenceSet(ctx context.Context, settled map[string]deliveredPresenceDo
 	var unsigned []string
 	for _, binding := range names {
 		entry := settled[binding]
+		if len(entry.carrier) > 0 && opts.AllowUnsigned {
+			// A local publish never reuses a signed carrier: it delivers
+			// unsigned whatever the base branch holds, so the set reads
+			// signed: false as one.
+			entry.carrier = nil
+		}
 		if len(entry.carrier) > 0 {
-			// Delivered before as these exact bytes: the carrier is reused and
-			// nothing is signed. Its signer is still reported.
+			// Delivered before as these exact bytes: the carrier is reused
+			// rather than re-signed, once it is held to this document —
+			// readable, signing exactly these canonical bytes, and on a
+			// release publish still passing the check a host will run.
+			payload, err := entry.document.CanonicalBytes()
+			if err != nil {
+				return nil, fmt.Errorf("canonicalize binding %s: %w", binding, err)
+			}
+			identity, err := verifyReusedCarrier(ctx, "binding "+binding, entry.carrier, payload, opts)
+			if err != nil {
+				return nil, err
+			}
 			if delivery.Identity == "" {
-				if signed, parseErr := solutionhost.ParseSigned(entry.carrier); parseErr == nil {
-					if identity, readErr := signing.ReadIdentity(signed.Bundle); readErr == nil {
-						delivery.Identity = identity.Subject + " (" + identity.Issuer + ")"
-					}
-				}
+				delivery.Identity = identity
 			}
 			digest, err := entry.document.Digest()
 			if err != nil {
@@ -624,6 +701,21 @@ func settleAuthorityDelivery(
 			"module %s delivered the authority documents %s to %s before and this render declares none and names no host; to withdraw them, render with the environment's host block in place, so publish writes their tombstones",
 			inventory.Module, strings.Join(names, ", "), environment)
 	}
+	if len(rendered) > 0 {
+		declared := make([]string, 0, len(rendered))
+		for authority := range rendered {
+			declared = append(declared, authority)
+		}
+		sort.Strings(declared)
+		if err = refuseUnaddressedDocuments("authority", declared, environment, opts); err != nil {
+			return nil, err
+		}
+		for authority, entry := range rendered {
+			if err = refuseMovedDocument("authority", authority, entry.document.OwnershipDomain, entry.document.Host, opts); err != nil {
+				return nil, err
+			}
+		}
+	}
 	for authority, previous := range prior {
 		if _, present := rendered[authority]; present {
 			continue
@@ -921,13 +1013,20 @@ func signAuthoritySet(ctx context.Context, settled map[string]deliveredAuthority
 	var unsigned []string
 	for _, authority := range names {
 		entry := settled[authority]
+		if len(entry.carrier) > 0 && opts.AllowUnsigned {
+			entry.carrier = nil
+		}
 		if len(entry.carrier) > 0 {
+			payload, err := solutionhost.SignedPayloadFor(entry.document)
+			if err != nil {
+				return nil, fmt.Errorf("canonicalize authority %s: %w", authority, err)
+			}
+			identity, err := verifyReusedCarrier(ctx, "authority "+authority, entry.carrier, payload, opts)
+			if err != nil {
+				return nil, err
+			}
 			if delivery.Identity == "" {
-				if signed, parseErr := solutionhost.ParseSigned(entry.carrier); parseErr == nil {
-					if identity, readErr := signing.ReadIdentity(signed.Bundle); readErr == nil {
-						delivery.Identity = identity.Subject + " (" + identity.Issuer + ")"
-					}
-				}
+				delivery.Identity = identity
 			}
 			digest, err := entry.document.Digest()
 			if err != nil {

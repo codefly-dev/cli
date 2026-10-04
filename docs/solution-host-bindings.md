@@ -192,7 +192,11 @@ authority namespace (`platform-authority`). One service, because an authority
 document approves one build and a host keeps one authority record per
 binding: two services each claiming to be the module's identity would be two
 builds under one principal, of which the host could activate at most one, so
-the render refuses the pair and names both.
+the render refuses the pair and names both. A contract with **no** service
+declaring `module-identity` is refused too, not passed over: the contract is
+the module's request for authority, and with nothing to present it the
+request would be dropped on the floor — the composition is inconsistent and
+is told so, before any slot is resolved.
 
 The authority overlay is applied under an **AppProject of its own**
 (`<project>-authority`, written beside the module's `project.yaml`): one
@@ -204,9 +208,16 @@ place a pod in the authority namespace running as the platform's `delivery`
 account. The ApplicationSet stamps the project and the destination per
 component, so the authority Application is the one Application of the module
 that reaches that namespace, and a Deployment, CronJob or Secret in the
-authority overlay is refused at apply. What that isolation does not cover is
-the authority Job itself: it runs as the platform's `delivery` account, whose
-only reach is the delivery API, which admits nothing unsigned.
+authority overlay is refused at apply. The overlay, the project and the
+namespace name each other in the ApplicationSet: a component stamped under
+the authority project must point at the authority overlay and at that
+namespace, and a component pointing at the authority overlay must be stamped
+under that project — no unit overlay can borrow the project. What that
+isolation does not cover is the Job's pod itself: the CLI's project admits a
+`batch/Job` kind, and which image, account and mounts a Job in that namespace
+may run with is the platform's admission (the authority Job runs as the
+platform's `delivery` account, whose only reach is the delivery API, which
+admits nothing unsigned) — the one boundary this render cannot enforce.
 
 The contract's **principal is the module's own name** — the contract says so
 of itself, and it is held to that at render: the contract is written in the
@@ -414,11 +425,27 @@ refused when the live one moves, so a change that keeps the number keeps every
 outstanding credential's old authority with nothing detecting it. Bump the
 binding's revision in the contract.
 
-**Unchanged is delivered as it was.** A document whose settled generation is
-the delivered one keeps the carrier it was delivered as — the same bytes, the
-same signature, no new log entry — and the Job that posts it keeps its name,
-so a no-op promotion writes the same tree and gives a re-sync nothing to do.
-Re-signing on every publish made that impossible.
+**Held to the host declared now.** Every document the render declares is
+held, at publish, to the environment's host block as it is then: the
+ownership domain, the host coordinate and the component it was stamped with
+must be the ones declared now, and a render that declares documents for an
+environment that names no host any more is refused outright — never signed
+and left for no Job to deliver. A render made before the host block changed
+is refused by name; the fix is to render again.
+
+**Unchanged is delivered as it was, once it is checked.** A document whose
+settled generation is the delivered one keeps the carrier it was delivered
+as — the same bytes, the same signature, no new log entry — and the Job that
+posts it keeps its name, so a no-op promotion writes the same tree and gives
+a re-sync nothing to do. Re-signing on every publish made that impossible.
+A carrier is reused only once it is held to the document it would carry: it
+must parse, its signed bytes must be exactly the document's canonical bytes,
+and on a release publish it must still pass the self-check a host will run —
+a carrier the base branch holds that disagrees with the document beside it,
+or that cannot be read, refuses the publish rather than being republished as
+signed. A local qualification publish never reuses a signed carrier: it
+delivers unsigned whatever the base branch holds, so `signed: false` holds
+for the whole set.
 
 **Rollback re-settles.** A rollback restores the workloads an earlier revision
 delivered and settles their documents anew against the base branch — the old
@@ -607,11 +634,22 @@ delivered, which is the opposite of the presence document's rule. Publish
 stages **this module's contribution**: the namespace entry its render
 produced, merged into the cell the delivery repository already holds at
 `<gitops path>/cells/<environment>/cell.yaml` (outside every module path and
-matched by no Argo overlay), every other module's entry kept as delivered. The
-cell's own fields come from the publishing render. A module is removed from
-the cell by withdrawing it, never by another module's publish — copying the
-local file whole let the last module published decide the platform's
-inventory for the whole cell.
+matched by no Argo overlay), every other module's entry kept as delivered.
+Three rules keep the merge honest. The cell is **one host's record**: the
+delivered cell's schema, coordinate, component, domain and trust domain are
+what every other module's entry was written under, so a contribution made
+under another declaration is refused rather than relabelling entries it does
+not own. The publishing module's **edges follow its render**: in every other
+module's delivered entry, the consumers that belong to this module are
+dropped and the ones its inventory declares now (the contracts its units
+consume) are added, so an edge the module grew or dropped reaches the
+provider's entry even when the provider is not rendered in this workspace. And
+a base branch with **no cell** for the environment is a first contribution,
+while a cell that cannot be read is an error — the two are told apart by what
+git says, never conflated into an empty baseline. A module is removed from the
+cell by withdrawing it, never by another module's publish — copying the local
+file whole let the last module published decide the platform's inventory for
+the whole cell.
 
 ## Workspace configuration groups a render bakes in
 
@@ -626,13 +664,17 @@ consumer whose local tree records another digest has not been rendered since
 and the publish is refused until it is, by name. A render never refuses on a
 sibling's account — it did once, symmetrically, and deadlocked: with A and B
 both rendered against the old value, rendering A was refused because B's tree
-was stale and rendering B because A's still was. What a publish cannot
-enforce is the delivery base: a consumer published earlier at the old value
-is stale there until its own publish, and refusing this one for it would be
-the same deadlock one repository over, so the plan names the base's stale
-consumers as the next publish to run. An unreadable sibling inventory is an
-error, never agreement, and the inventory schema a tree must carry is the
-current one — an older tree records no digests, and is refused by number.
+was stale and rendering B because A's still was. The delivery base is held
+the same way, without the deadlock: a consumer the base branch delivers at
+the old value is refused **unless this workspace holds its current render** —
+the render step already names it as needed — so the base branch never
+carries a consumer of a value its provider no longer gives with nothing
+queued to replace it, and the way through is always the same one action:
+render the named module beside this one and publish both. A consumer current
+in this workspace but still stale on the base is named in the plan as the
+next publish to run. An unreadable sibling inventory is an error, never
+agreement, and the inventory schema a tree must carry is the current one — an
+older tree records no digests, and is refused by number.
 
 ## CI wiring
 

@@ -1054,11 +1054,23 @@ func validateComponentProjects(spec map[string]any, selected string) error {
 						continue
 					}
 					namespace, _ := element["namespace"].(string)
+					path, _ := element["path"].(string)
+					// The authority overlay, the authority project and the
+					// authority namespace name each other: a component under
+					// the module's project may not point at the overlay, and
+					// one under the authority project may point at nothing else.
+					underAuthority := strings.Contains("/"+path+"/", "/"+solutionAuthorityDir+"/")
 					switch project {
 					case selected:
+						if underAuthority {
+							return fmt.Errorf("ApplicationSet component %q points at the authority overlay %s but is stamped under the module project %q; the authority overlay is delivered under %q only", element["component"], path, selected, authority)
+						}
 					case authority:
 						if namespace != authorityNamespace {
 							return fmt.Errorf("ApplicationSet component %q is stamped under the authority project into namespace %q; that project reaches %s only", element["component"], namespace, authorityNamespace)
+						}
+						if !underAuthority {
+							return fmt.Errorf("ApplicationSet component %q is stamped under the authority project %q but points at %s, which is not the authority overlay; that project delivers the authority overlay only", element["component"], authority, path)
 						}
 					default:
 						return fmt.Errorf("ApplicationSet component %q is stamped under project %q, which is neither the selected AppProject %q nor its authority project", element["component"], project, selected)
