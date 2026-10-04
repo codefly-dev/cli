@@ -466,16 +466,15 @@ func renderDeliveryServiceAccount(directory, namespace string) (string, error) {
 	return file, nil
 }
 
-// deliveryJobName is the Job's object name: one per document type per module,
-// bounded to a Kubernetes name.
 // deliveryJobName names the Job that delivers one settled set: the kind, the
-// module, the environment and a digest of the carriers it posts. The digest
-// makes the Job per generation — a changed set is a new Job under a new name
-// (the previous one stays, completed, until pruned: BeforeHookCreation
-// replaces a hook of the same name only), and an unchanged set is the same
-// Job, which a re-sync leaves alone. The environment keeps two environments of one
-// workspace on one cluster from replacing each other's Job in the authority
-// namespace, which they share.
+// module, the environment and a digest of the carriers it posts, bounded to a
+// Kubernetes name. The digest makes the Job per generation — a changed set is
+// a new Job under a new name (the previous one stays, completed, until pruned:
+// BeforeHookCreation replaces a hook of the same name only), and an unchanged
+// set is the same Job, which every sync RE-RUNS as a Sync hook: a re-sync
+// re-POSTs a generation the host answers "current" to. The environment keeps
+// two environments of one workspace on one cluster from replacing each other's
+// Job in the authority namespace, which they share.
 func deliveryJobName(kind, module, environment string, carriers [][]byte) string {
 	sum := sha256.New()
 	for _, carrier := range carriers {

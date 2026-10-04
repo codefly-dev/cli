@@ -223,9 +223,6 @@ func reuseCarrier(ctx context.Context, what string, carrier *[]byte, planned, pa
 	if opts.AllowUnsigned {
 		delivered = nil
 	}
-	// The delivered carrier is held to the release policy; the plan's was
-	// signed by this release and checked as it was signed, so it is held to
-	// the document only.
 	// The plan's carrier is held to the release policy AS IT IS NOW, like a
 	// delivered one: a plan records reused carriers as well as fresh
 	// signatures, and a policy tightened between the plan and the publish
