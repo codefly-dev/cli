@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -81,14 +83,17 @@ func TestDeliveryJobIsASyncHookThatPostsEveryCarrier(t *testing.T) {
 	// The script's budget is the manifest's, inside the Job's deadline with a
 	// pause to spare: the relationship the control flow relies on is held
 	// here, where the constants meet.
-	if env["DELIVERY_BUDGET_SECONDS"] != strconv.Itoa(deliveryBudgetSeconds) || env["DELIVERY_MAX_PAUSE_SECONDS"] != strconv.Itoa(deliveryMaxPause) {
+	if env["DELIVERY_BUDGET_SECONDS"] != strconv.Itoa(deliveryBudgetSeconds) || env["DELIVERY_MAX_PAUSE_SECONDS"] != strconv.Itoa(deliveryMaxPause) || env["DELIVERY_REQUEST_SECONDS"] != strconv.Itoa(deliveryRequestSeconds) {
 		t.Fatalf("delivery budget env %v", env)
 	}
 	if deliveryBudgetSeconds+deliveryMaxPause >= deliveryDeadlineSeconds {
 		t.Fatalf("budget %d + pause %d does not fit the Job's deadline %d", deliveryBudgetSeconds, deliveryMaxPause, deliveryDeadlineSeconds)
 	}
+	if deliveryDocumentBound*deliveryRequestSeconds > deliveryBudgetSeconds {
+		t.Fatalf("%d documents at %d seconds each do not fit the first round's budget %d", deliveryDocumentBound, deliveryRequestSeconds, deliveryBudgetSeconds)
+	}
 	script := spec.Containers[0].Command[2]
-	for _, want := range []string{`"$DELIVERY_URL$DELIVERY_PATH"`, `Authorization: Bearer $(cat "$DELIVERY_IDENTITY_FILE")`, "--max-time 30", "400|401|403|409|422)", "2??)", "sleep", "round=$((round + 1))", `[ -n "$pending" ] || break`, `[ "$refused" -eq 0 ]`} {
+	for _, want := range []string{`"$DELIVERY_URL$DELIVERY_PATH"`, `Authorization: Bearer $(cat "$DELIVERY_IDENTITY_FILE")`, `--max-time "$timeout"`, "400|401|403|409|422)", "2??)", "sleep", "round=$((round + 1))", `[ -n "$pending" ] || break`, `[ "$refused" -eq 0 ]`} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("script lacks %q:\n%s", want, script)
 		}
@@ -196,7 +201,7 @@ func TestDeliveryScriptAttemptsEveryDocumentEveryRound(t *testing.T) {
 	cmd := exec.Command("/bin/sh", "-ec", deliveryScript)
 	cmd.Env = append(os.Environ(),
 		"DELIVERY_URL="+server.URL, "DELIVERY_PATH=/deliver", "DELIVERY_DOCUMENTS="+documents, "DELIVERY_IDENTITY_FILE="+identity,
-		"DELIVERY_BUDGET_SECONDS=3", "DELIVERY_MAX_PAUSE_SECONDS=1")
+		"DELIVERY_BUDGET_SECONDS=3", "DELIVERY_REQUEST_SECONDS=1", "DELIVERY_MAX_PAUSE_SECONDS=1")
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("a document that never landed did not fail the Job:\n%s", out)
@@ -213,5 +218,85 @@ func TestDeliveryScriptAttemptsEveryDocumentEveryRound(t *testing.T) {
 		if !strings.Contains(string(out), want) {
 			t.Fatalf("script output lacks %q:\n%s", want, out)
 		}
+	}
+}
+
+// TestDeliveryScriptBoundsEveryRequestAndSleepToTheBudget: a host that never
+// answers one document does not spend the budget on it — each request is
+// clamped to the request timeout and to the budget left, the next document
+// gets its first attempt in the same round, the pause is clamped to the
+// budget left too, and the Job ends inside the budget rather than at the
+// deadline.
+func TestDeliveryScriptBoundsEveryRequestAndSleepToTheBudget(t *testing.T) {
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl is not installed")
+	}
+	var mu sync.Mutex
+	hits := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		hits[string(body)]++
+		mu.Unlock()
+		if string(body) == "slow" {
+			time.Sleep(5 * time.Second)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	documents := filepath.Join(dir, "documents")
+	if err := os.MkdirAll(documents, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"a.json": "slow", "b.json": "fast"} {
+		if err := os.WriteFile(filepath.Join(documents, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	identity := filepath.Join(dir, "token")
+	if err := os.WriteFile(identity, []byte("t"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", "-ec", deliveryScript)
+	cmd.Env = append(os.Environ(),
+		"DELIVERY_URL="+server.URL, "DELIVERY_PATH=/deliver", "DELIVERY_DOCUMENTS="+documents, "DELIVERY_IDENTITY_FILE="+identity,
+		"DELIVERY_BUDGET_SECONDS=3", "DELIVERY_REQUEST_SECONDS=1", "DELIVERY_MAX_PAUSE_SECONDS=60")
+	started := time.Now()
+	out, err := cmd.CombinedOutput()
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatalf("a document the host never answered did not fail the Job:\n%s", out)
+	}
+	if elapsed > 6*time.Second {
+		t.Fatalf("the Job ran %s on a 3-second budget; a request or a sleep was not clamped:\n%s", elapsed, out)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if hits["fast"] != 1 {
+		t.Fatalf("the fast document was posted %d times, want its first attempt in the first round behind the slow one:\n%s", hits["fast"], out)
+	}
+	for _, want := range []string{"delivered b.json", "giving up on a.json"} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("script output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestDeliveryJobRefusesASetPastItsBound: more documents than one Job can
+// attempt once within its budget are refused at publish, by name, rather than
+// carried with a first-attempt promise the Job cannot keep.
+func TestDeliveryJobRefusesASetPastItsBound(t *testing.T) {
+	documents := make([]deliveryDocument, deliveryDocumentBound+1)
+	for i := range documents {
+		documents[i] = deliveryDocument{ConfigMap: fmt.Sprintf("doc-%d", i), Key: "carrier", Name: fmt.Sprintf("doc-%d.json", i)}
+	}
+	_, err := renderDeliveryJob(t.TempDir(), "deliver", "crm", deliveryServiceAccount, deliveryPresence, presenceDeliveryPath, testDeliveryTarget(), documents)
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("attempts at most %d", deliveryDocumentBound)) {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := renderDeliveryJob(t.TempDir(), "deliver", "crm", deliveryServiceAccount, deliveryPresence, presenceDeliveryPath, testDeliveryTarget(), documents[:deliveryDocumentBound]); err != nil {
+		t.Fatal(err)
 	}
 }

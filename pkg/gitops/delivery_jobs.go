@@ -101,6 +101,13 @@ const (
 	// deliveryDeadlineSeconds bounds one Job run: long enough for the host to
 	// come up behind it, short enough that a sync does not hang for ever.
 	deliveryDeadlineSeconds = 1800
+	// deliveryRequestSeconds bounds one POST; deliveryDocumentBound is how many
+	// documents one Job may carry, so that every document gets its first
+	// attempt inside the budget even when the host is slow on all of them:
+	// bound × request ≤ budget. A set past the bound is refused at publish
+	// rather than delivered with a promise the Job cannot keep.
+	deliveryRequestSeconds = 30
+	deliveryDocumentBound  = deliveryBudgetSeconds / deliveryRequestSeconds
 	// deliveryBudgetSeconds is how long the script keeps posting before it
 	// gives up on what the host never answered, inside the Job's deadline so
 	// the report is written rather than the pod killed; deliveryMaxPause caps
@@ -267,7 +274,11 @@ type deliveryAccountMetadata struct {
 // documents are posted in ROUNDS: every pending document once per round,
 // then a pause that doubles up to a cap, rounds until each is answered or
 // the budget is spent — so a document the host keeps failing never keeps a
-// later one, a tombstone among them, from its first attempt, and the budget
+// later one, a tombstone among them, from its first attempt. Every request
+// and every sleep is clamped to the budget LEFT, read from the clock before
+// each, and the set is bounded at publish (deliveryDocumentBound) so the
+// first round's requests fit the budget even when each one runs to its
+// timeout; a Job never outlives its deadline, and the budget
 // is spread over every document rather than spent on the first.
 //
 // Shell variables are spelled $NAME and never ${NAME}: the promotable ruleset
@@ -277,12 +288,15 @@ type deliveryAccountMetadata struct {
 const deliveryScript = `set -eu
 url="$DELIVERY_URL$DELIVERY_PATH"
 budget="$DELIVERY_BUDGET_SECONDS"
+request="$DELIVERY_REQUEST_SECONDS"
+maxpause="$DELIVERY_MAX_PAUSE_SECONDS"
 pending=""
 for file in "$DELIVERY_DOCUMENTS"/*.json; do
   [ -e "$file" ] || { echo "no document to deliver under $DELIVERY_DOCUMENTS"; exit 1; }
   pending="$pending $file"
 done
 started=$(date +%s)
+left() { echo $((budget - ($(date +%s) - started))); }
 delivered=0
 refused=0
 round=0
@@ -292,7 +306,11 @@ while [ -n "$pending" ]; do
   remaining=""
   for file in $pending; do
     name=$(basename "$file")
-    answer=$(curl -sS --max-time 30 -w '\n%{http_code}' -X POST \
+    budgetleft=$(left)
+    if [ "$budgetleft" -le 0 ]; then remaining="$remaining $file"; continue; fi
+    timeout="$request"
+    if [ "$timeout" -gt "$budgetleft" ]; then timeout="$budgetleft"; fi
+    answer=$(curl -sS --max-time "$timeout" -w '\n%{http_code}' -X POST \
       -H "Authorization: Bearer $(cat "$DELIVERY_IDENTITY_FILE")" \
       -H 'Content-Type: application/json' \
       --data-binary @"$file" "$url") || answer="
@@ -307,16 +325,19 @@ while [ -n "$pending" ]; do
   done
   pending="$remaining"
   [ -n "$pending" ] || break
-  now=$(date +%s)
-  if [ $((now - started)) -ge "$budget" ]; then
+  budgetleft=$(left)
+  if [ "$budgetleft" -le 0 ]; then
     for file in $pending; do
       echo "giving up on $(basename "$file") after $round rounds within $budget seconds"
       refused=$((refused + 1))
     done
     break
   fi
-  sleep "$pause"
-  if [ "$pause" -lt "$DELIVERY_MAX_PAUSE_SECONDS" ]; then pause=$((pause * 2)); fi
+  nap="$pause"
+  if [ "$nap" -gt "$budgetleft" ]; then nap="$budgetleft"; fi
+  sleep "$nap"
+  pause=$((pause * 2))
+  if [ "$pause" -gt "$maxpause" ]; then pause="$maxpause"; fi
 done
 echo "delivered $delivered document(s) to $url in $round round(s), $refused refused"
 [ "$refused" -eq 0 ]
@@ -325,6 +346,10 @@ echo "delivered $delivered document(s) to $url in $round round(s), $refused refu
 // renderDeliveryJob writes the Job delivering documents to the host's delivery
 // route into the overlay directory, and returns the manifest's file name.
 func renderDeliveryJob(directory, name, namespace, serviceAccount, kind, path string, target *DeliveryTarget, documents []deliveryDocument) (string, error) {
+	if len(documents) > deliveryDocumentBound {
+		return "", fmt.Errorf("the %s set carries %d documents and one delivery Job attempts at most %d within its budget (%d seconds, %d per request); the set does not shrink until the host acknowledges its tombstones, which the delivery API does not offer yet",
+			kind, len(documents), deliveryDocumentBound, deliveryBudgetSeconds, deliveryRequestSeconds)
+	}
 	if target == nil || target.URL == "" {
 		return "", fmt.Errorf("the environment names no delivery endpoint, so nothing can deliver the %s documents it renders", kind)
 	}
@@ -374,6 +399,7 @@ func renderDeliveryJob(directory, name, namespace, serviceAccount, kind, path st
 				{Name: "DELIVERY_PATH", Value: path},
 				{Name: "DELIVERY_DOCUMENTS", Value: deliveryDocumentsMount},
 				{Name: "DELIVERY_BUDGET_SECONDS", Value: strconv.Itoa(deliveryBudgetSeconds)},
+				{Name: "DELIVERY_REQUEST_SECONDS", Value: strconv.Itoa(deliveryRequestSeconds)},
 				{Name: "DELIVERY_MAX_PAUSE_SECONDS", Value: strconv.Itoa(deliveryMaxPause)},
 				// Named for what it is, the FILE the projected identity is read
 				// from: a variable named *_TOKEN carrying a value is classified
