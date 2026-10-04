@@ -2390,6 +2390,15 @@ func stageCellFile(ctx context.Context, repo string, publication *deliveryPublic
 	if publication == nil || publication.cellPath == "" || publication.env == nil || publication.env.Host == nil {
 		return nil
 	}
+	if packagedSolution(inventory) {
+		// A packaged solution has no derivation yet: RenderSolution emits
+		// no cell, and the module derivation loads every non-managed unit
+		// as a composition service, which a packaged unit is not. Its cell
+		// is the workspace's file, hand-written, held to the host declared
+		// now and merged as a contribution — the carried limitation the doc
+		// names, not a path this derivation covers.
+		return stageWorkspaceCellFile(ctx, repo, publication, inventory)
+	}
 	contribution, err := deriveCellContribution(ctx, publication.workspace, publication.env, tree, inventory)
 	if err != nil {
 		return err
@@ -2400,6 +2409,35 @@ func stageCellFile(ctx context.Context, repo string, publication *deliveryPublic
 		}
 	}
 	return stageCellContribution(ctx, repo, publication, contribution, inventory)
+}
+
+// packagedSolution reports whether an inventory is a packaged solution's — a
+// unit of the solution kind, run by an executor rather than rendered from
+// composition services.
+func packagedSolution(inventory *Inventory) bool {
+	for _, unit := range inventory.Units {
+		if unit.Kind == UnitKindSolution {
+			return true
+		}
+	}
+	return false
+}
+
+// stageWorkspaceCellFile stages the workspace's cell file as the contribution,
+// for the one kind of publication that has no derivation to hold it to.
+func stageWorkspaceCellFile(ctx context.Context, repo string, publication *deliveryPublication, inventory *Inventory) error {
+	if publication.cellSource == "" {
+		return nil
+	}
+	data, err := os.ReadFile(publication.cellSource)
+	if err != nil {
+		return fmt.Errorf("read the cell file: %w", err)
+	}
+	var local CellFile
+	if err = yaml.Unmarshal(data, &local); err != nil {
+		return fmt.Errorf("decode the cell file: %w", err)
+	}
+	return stageCellContribution(ctx, repo, publication, &local, inventory)
 }
 
 // deriveCellContribution is the render's own cell derivation applied to one

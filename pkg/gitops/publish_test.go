@@ -1810,6 +1810,29 @@ func writeTestCell(t *testing.T, workspace *resources.Workspace, env *environmen
 	}
 }
 
+// writeHandCell writes a minimal cell file by hand, for the one publication
+// that has no derivation to hold it to: a packaged solution, whose render
+// emits no cell.
+func writeHandCell(t *testing.T, workspace *resources.Workspace, env *environments.Environment, environment, module string) {
+	t.Helper()
+	cell := CellFile{
+		Schema: CellSchemaV1, Coordinate: env.Host.Coordinate, Component: env.Host.Component,
+		Domain: env.Host.Domain, TrustDomain: env.Host.TrustDomain,
+		Namespaces: []CellNamespace{{Name: module, Module: module}},
+	}
+	data, err := yaml.Marshal(cell)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := cellPath(workspace.Dir(), environment)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestPublishRefusesEnvironmentsSharingADeliveryPath: two environments
 // delivering to one repository, branch and path replace each other's module
 // trees whole, so the one declaring a host is refused until it has a path of

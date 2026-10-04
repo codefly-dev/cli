@@ -820,10 +820,6 @@ func settleAuthorityDelivery(
 	if err != nil {
 		return nil, err
 	}
-	ledger, err := priorBindingLedger(ctx, repo, baseBranch, filepath.ToSlash(filepath.Join(targetPath, overlay)))
-	if err != nil {
-		return nil, err
-	}
 	rendered := map[string]deliveredAuthorityDocument{}
 	if inventory.SolutionAuthorityPath != "" {
 		if rendered, err = renderedAuthorities(filepath.Join(target, filepath.FromSlash(overlay))); err != nil {
@@ -894,28 +890,18 @@ func settleAuthorityDelivery(
 	if err != nil {
 		return nil, err
 	}
-	for _, authority := range names {
-		if entry := settled[authority]; !entry.document.Removed {
-			if err := ledger.refuseRewinds(entry.document); err != nil {
-				return nil, err
-			}
-		}
+	ledger, err := holdBindingLedger(ctx, repo, baseBranch, filepath.ToSlash(filepath.Join(targetPath, overlay)), settled, names)
+	if err != nil {
+		return nil, err
 	}
 	files, err := writeAuthoritySet(target, overlay, inventory, settled, names, opts)
 	if err != nil {
 		return nil, err
 	}
-	if err := writeAuthorityKustomization(target, environment, files); err != nil {
+	if err = writeAuthorityKustomization(target, environment, files); err != nil {
 		return nil, err
 	}
-	// The ledger travels with the overlay: every live document raises its
-	// marks, a withdrawn one leaves them standing.
-	for _, authority := range names {
-		if entry := settled[authority]; !entry.document.Removed {
-			ledger.record(entry.document)
-		}
-	}
-	if err := writeBindingLedger(filepath.Join(target, filepath.FromSlash(overlay)), ledger); err != nil {
+	if err = recordBindingLedger(filepath.Join(target, filepath.FromSlash(overlay)), ledger, settled, names); err != nil {
 		return nil, err
 	}
 	inventory.SolutionAuthorityPath = solutionAuthorityDir
@@ -1436,6 +1422,35 @@ func (ledger bindingLedger) record(document *solutionhost.AuthorityDocument) {
 			ledger[binding.ID] = ledgerEntry{Authority: document.Authority, Revision: binding.Revision, Audience: binding.Audience, Scope: binding.Scope, Queue: binding.Queue, Namespace: binding.Namespace}
 		}
 	}
+}
+
+// holdBindingLedger reads the ledger the base branch delivered and holds every
+// live settled document's bindings to it.
+func holdBindingLedger(ctx context.Context, repo, baseBranch, overlayPath string, settled map[string]deliveredAuthorityDocument, names []string) (bindingLedger, error) {
+	ledger, err := priorBindingLedger(ctx, repo, baseBranch, overlayPath)
+	if err != nil {
+		return nil, err
+	}
+	for _, authority := range names {
+		if entry := settled[authority]; !entry.document.Removed {
+			if err := ledger.refuseRewinds(entry.document); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return ledger, nil
+}
+
+// recordBindingLedger raises the ledger's marks for every live document and
+// writes it beside the overlay it travels with; a withdrawn document leaves
+// its marks standing.
+func recordBindingLedger(directory string, ledger bindingLedger, settled map[string]deliveredAuthorityDocument, names []string) error {
+	for _, authority := range names {
+		if entry := settled[authority]; !entry.document.Removed {
+			ledger.record(entry.document)
+		}
+	}
+	return writeBindingLedger(directory, ledger)
 }
 
 func writeBindingLedger(directory string, ledger bindingLedger) error {

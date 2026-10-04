@@ -323,7 +323,7 @@ func TestLocalGitopsPublishSolutionGeneratesBootstrap(t *testing.T) {
 	// A hosted environment publishes nothing without its cell. A packaged
 	// solution renders none yet (RenderSolution emits no cell; see the doc's
 	// "What is not verified"), so this test supplies the entry by hand.
-	writeTestCell(t, workspace, env, "local", "lastlogin-go")
+	writeHandCell(t, workspace, env, "local", "lastlogin-go")
 
 	request := PublishRequest{
 		Module: "lastlogin-go", Environment: "local", Local: true,

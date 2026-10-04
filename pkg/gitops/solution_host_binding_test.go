@@ -619,6 +619,9 @@ func TestDeclaredBindingsReachArgo(t *testing.T) {
 	// The host's own module posts to the API its units serve, so its delivery
 	// follows them.
 	hostRoot := t.TempDir()
+	if err := copyTree(root, hostRoot); err != nil {
+		t.Fatal(err)
+	}
 	hostInventory := *inventory
 	hostInventory.HostsDelivery = true
 	if err := generateArgoBootstrap(context.Background(), config, hostRoot, targetPath, &hostInventory, "prod", strings.Repeat("c", 40), ""); err != nil {
