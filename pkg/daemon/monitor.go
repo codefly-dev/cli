@@ -212,20 +212,20 @@ func RunMonitorLoop(ctx context.Context, cfg MonitorConfig) error {
 // FormatStatus returns a human-readable status string.
 func FormatStatus(result *MonitorResult) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Codefly Process Monitor — %s\n", result.Timestamp.Format("15:04:05")))
-	sb.WriteString(fmt.Sprintf("Total: %d processes, %.1f%% CPU, %.0fMB memory\n\n",
-		len(result.Processes), result.TotalCPU, result.TotalMemMB))
+	fmt.Fprintf(&sb, "Codefly Process Monitor — %s\n", result.Timestamp.Format("15:04:05"))
+	fmt.Fprintf(&sb, "Total: %d processes, %.1f%% CPU, %.0fMB memory\n\n",
+		len(result.Processes), result.TotalCPU, result.TotalMemMB)
 
 	if len(result.Processes) == 0 {
 		sb.WriteString("No codefly processes running.\n")
 		return sb.String()
 	}
 
-	sb.WriteString(fmt.Sprintf("%-8s %-6s %-8s %s\n", "PID", "CPU%", "MEM(MB)", "PROCESS"))
+	fmt.Fprintf(&sb, "%-8s %-6s %-8s %s\n", "PID", "CPU%", "MEM(MB)", "PROCESS")
 	sb.WriteString(strings.Repeat("─", 50) + "\n")
 	for _, p := range result.Processes {
-		sb.WriteString(fmt.Sprintf("%-8d %-6.1f %-8d %s\n",
-			p.PID, p.CPU, p.MemRSS/1024, p.Name))
+		fmt.Fprintf(&sb, "%-8d %-6.1f %-8d %s\n",
+			p.PID, p.CPU, p.MemRSS/1024, p.Name)
 	}
 
 	if len(result.Warnings) > 0 {
