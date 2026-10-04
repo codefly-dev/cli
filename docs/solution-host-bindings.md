@@ -52,7 +52,22 @@ environments:
       trust_domain: cluster.example             # the SPIFFE trust domain of the host's identity issuer
       envelope_revision: 3                      # the envelope revision this composition was reviewed against
       delivery: platform/accounts/rest          # the host's delivery API, by composition identity
+      release:                                  # the identity the host accepts delivered carriers from
+        repository: example/payments            # the release workflow's repository
+        workflow: .github/workflows/release.yml # its path in that repository
+        refs:                                   # the refs it may run at (anchored regular expressions)
+          - refs/tags/v[0-9]+[.][0-9]+[.][0-9]+
 ```
+
+`release` is the host's **reviewed allowlist**, stated here so it is reviewed
+with the composition and read by nothing else: a release publish holds the
+workflow identity it runs under to it before it signs anything — another
+repository, another workflow, a branch, a tag outside the pattern never sign —
+and reuses a carrier delivered earlier only when the identity that signed it
+is within it. The host publishes the same literal and enforces it
+independently; a hosted environment that states no `release` cannot be
+released to. It is optional in the schema only because a `--local` publish
+never signs.
 
 Nothing here is derived. A derived coordinate is a guess a host silently
 refuses at reconcile time; an unlisted ownership domain is refused by the host
@@ -323,8 +338,16 @@ The derivation:
   withdrawing one instance's leaves the other's alone — with the operation's
   ceiling as a sorted, comma-joined list of `<resource kind>:<action>` and the
   binding's revision from the contract (1 when omitted), which only ever
-  increases: a decrease is refused at publish, as is a change to what the
-  binding grants that keeps its revision; the module's queue and namespace
+  increases **across the binding's whole history under the environment**: a
+  decrease is refused at publish, as is a change to what the binding grants
+  that keeps its revision — against the document delivered just before, and
+  against a ledger beside the delivered authority documents
+  (`solution-authority/overlays/<env>/bindings.ledger`) that keeps every
+  binding ID's highest revision and the meaning it carried, so a binding
+  removed from one generation and reintroduced later cannot come back below
+  that revision, or at it with another meaning. The ledger is the
+  publisher's own record under the repository's trust, like the cell;
+  nothing signs it and no Job reads it; the module's queue and namespace
   when it declares one of each — absence grants no queue- or namespace-scoped
   authority, never every queue, and several are refused rather than granted
   none;
@@ -528,15 +551,18 @@ under the release identity.
 
 A release publish **checks its own carriers**, right after signing each one,
 as a host will: offline, against the public-good trusted root fetched through
-TUF, under a policy admitting exactly this workflow's identity — repository,
+TUF, under a policy pinning exactly this workflow's identity — repository,
 workflow path and ref, as GitHub Actions states them to the job
-(`GITHUB_REPOSITORY`, `GITHUB_WORKFLOW_REF`). Both checks — this one, and
-the release policy a carrier delivered earlier is held to before it is reused —
-are built from those two variables and exist only where they are set, local
-or not; so a hosted release publish run without them (from a laptop, or from
-a workflow that does not expose them) is **refused before it reads a
+(`GITHUB_REPOSITORY`, `GITHUB_WORKFLOW_REF`) — and that identity is held to
+the environment's reviewed `host.release` policy **first**, so a workflow or
+a ref the host would refuse never signs. A carrier delivered earlier is held
+to the policy itself (its repository and workflow at any of its refs) before
+it is reused. The workflow identity exists only where those two variables are
+set, local or not; a hosted release publish run without it (from a laptop, or
+from a workflow that does not expose it) is **refused before it reads a
 document**, rather than signing unchecked or reusing delivered carriers under
-no policy at all. A `--local` publish never signs and needs no identity. A
+no policy at all. A publish to an environment with no host needs no identity
+— it delivers nothing signed — and a `--local` publish never signs. A
 carrier a host would refuse —
 a certificate naming another workflow, a log entry the root cannot verify, a
 bundle with no transparency evidence — is refused at publish, in front of
@@ -598,7 +624,11 @@ same way, and the rollback mutation advertises its snapshot ref as a publish
 does.
 
 Each Job is an Argo CD **Sync hook** (`argocd.argoproj.io/hook: Sync`,
-`hook-delete-policy: BeforeHookCreation`), not a tracked resource: a tracked
+`hook-delete-policy: BeforeHookCreation` — which deletes a hook of the *same
+name* before creating it again; the Job's name carries its set's content, so
+a new generation is a new name and completed Jobs of earlier generations
+accumulate until an operator prunes them, which is operational work this
+renderer does not do), not a tracked resource: a tracked
 Job is applied once and, being complete, never re-synced, so after a restore
 nothing would re-POST. A hook runs on every sync of the Application from state
 that still exists, so a replay after a restore is an ordinary sync, and a sync
@@ -625,10 +655,17 @@ express "after the host's delivery API is reachable" (the host is another
 module's Application), so the Job retries transport failures, 429, 5xx and a
 404 from a host a version behind, with backoff and `--max-time` per request,
 for about half an hour. The Applications an ApplicationSet stamps sync
-independently of each other; where a parent syncs them by wave, delivery is
-the **last** wave of a module, after every unit, because the host is a module
-of the composition too and on a cold bootstrap its own delivery must not wait
-on a service ordered after it. The host's verdicts — 400, 401 (the token
+independently of each other, so the sync wave orders them only where a
+parent syncs them by wave; there, delivery goes **beside the module's
+consumers**, in their wave, after its bootstrap units — not after them: a
+consumer whose readiness waits on its activation would otherwise wait on a
+declaration that waits on it. Neither waits for the other; the Job retries
+until the host answers and the consumer becomes ready once activated. The
+one exception is the module that serves the delivery API itself (its
+inventory records `hostsDelivery`): its delivery follows its units, or on a
+cold bootstrap it would wait on a service ordered after it. What is not
+verified: no parent application has run this ordering against a real
+readiness model; the waves are emitted, not exercised. The host's verdicts — 400, 401 (the token
 review ran and refused this identity), 403, 409 (stale or rewritten
 generation), 422 (invalid, or outside the envelope) — refuse the document;
 the Job goes on to post every other document, a tombstone included, and fails
@@ -641,9 +678,17 @@ The Job posts in **rounds**: every pending document once per round, terminal
 refusals (400, 401, 403, 409, 422) recorded and never retried, rounds until
 each document is answered or the budget is spent (`DELIVERY_BUDGET_SECONDS`,
 1500 of the Job's 1800-second deadline), with a pause between rounds that
-doubles up to `DELIVERY_MAX_PAUSE_SECONDS`. A document the host keeps failing
-never keeps a later one — a tombstone among them — from its first attempt,
-and the Job fails at the end for whatever never landed.
+doubles up to `DELIVERY_MAX_PAUSE_SECONDS`. The budget is **enforced by the
+clock, not promised by the constants**: the budget left is read before every
+request and every sleep, each request is clamped to `DELIVERY_REQUEST_SECONDS`
+(30) and to what is left, each sleep to what is left, and the set a Job
+carries is bounded at publish to `budget ÷ request` documents (50), so the
+first round's attempts fit the budget even when the host runs every one of
+them to its timeout — a set past the bound is refused at publish by name,
+and it shrinks only when the host acknowledges tombstones, which the delivery
+API does not offer yet. A document the host keeps failing never keeps a later
+one — a tombstone among them — from its first attempt, and the Job fails at
+the end for whatever never landed.
 
 ## The cell file
 
@@ -697,8 +742,15 @@ the cell grants a Job the service's reachability.
 It is regenerated whole on every render from the module trees on disk, and
 carries no generation and no tombstone — a workload absent from it is not
 delivered, which is the opposite of the presence document's rule. Publish
-stages **this module's contribution**: the namespace entry its render
-produced, merged into the cell the delivery repository already holds at
+stages **this module's contribution**: the namespace entry **derived from the
+exact tree it publishes** — the render's own derivation applied to the staged
+tree and its inventory, for a forward publish and for a rollback alike, which
+contributes the restored tree's cell — never read from a file that could
+describe another tree. The workspace's cell file, the render's output, is
+held to that derivation on a forward publish and refused when its entry does
+not describe the rendered tree (workloads, selectors, accounts, identities,
+endpoints, release), and the contribution is held to the host declared now
+before it is merged into the cell the delivery repository already holds at
 `<gitops path>/cells/<environment>/cell.yaml` (outside every module path and
 matched by no Argo overlay), every other module's entry kept as delivered.
 Three rules keep the merge honest. The cell is **one host's record**: the
