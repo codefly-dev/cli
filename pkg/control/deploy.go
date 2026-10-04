@@ -13,14 +13,14 @@ import (
 // action, so under prepared authority it is refused directly — the caller must
 // PrepareMutation(Mutation{Kind: MutationDeploy, Payload: req}) then
 // ApplyPreparedMutation. Under open (trusted-local) authority it runs directly.
-func (p *planeImpl) Deploy(ctx context.Context, req DeployRequest) (DeployResult, error) {
+func (p *planeImpl) Deploy(ctx context.Context, req *DeployRequest) (DeployResult, error) {
 	if p.gate.currentMode() == AuthorityPrepared {
 		return DeployResult{}, fmt.Errorf("deploy requires preparation under prepared authority; use PrepareMutation then ApplyPreparedMutation")
 	}
 	return p.runDeploy(ctx, req)
 }
 
-func (p *planeImpl) runDeploy(ctx context.Context, req DeployRequest) (DeployResult, error) {
+func (p *planeImpl) runDeploy(ctx context.Context, req *DeployRequest) (DeployResult, error) {
 	// Deploy builds its flow directly instead of going through buildFlow, so it
 	// is the one lifecycle driver the contract is not installed for there. The
 	// render, the workspace load and the apply manager all narrate, and all of
@@ -76,7 +76,7 @@ func (p *planeImpl) runDeploy(ctx context.Context, req DeployRequest) (DeployRes
 		deploymentManager = manager
 		evidenceProvider = manager
 	} else {
-		manager, managerErr := deployments.NewLocalApplyManager(ctx, ws, env, deployCompletion(&req))
+		manager, managerErr := deployments.NewLocalApplyManager(ctx, ws, env, deployCompletion(req))
 		if managerErr != nil {
 			return DeployResult{}, managerErr
 		}
@@ -88,16 +88,16 @@ func (p *planeImpl) runDeploy(ctx context.Context, req DeployRequest) (DeployRes
 	if err != nil {
 		return DeployResult{}, fmt.Errorf("create flow: %w", err)
 	}
-	if err := flow.InitManagers(ctx); err != nil {
+	if err = flow.InitManagers(ctx); err != nil {
 		return DeployResult{}, fmt.Errorf("init managers: %w", err)
 	}
-	if err := flow.Load(ctx); err != nil {
+	if err = flow.Load(ctx); err != nil {
 		return DeployResult{}, fmt.Errorf("load flow: %w", err)
 	}
 	flow.WithDeploymentManager(deploymentManager)
 	defer stopFlow(flow)
 
-	if err := flow.Deploy(ctx); err != nil {
+	if err = flow.Deploy(ctx); err != nil {
 		result, _ := deployResult(false, evidenceProvider)
 		return result, fmt.Errorf("deploy %s: %w", req.Service, err)
 	}

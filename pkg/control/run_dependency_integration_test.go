@@ -208,7 +208,7 @@ func TestRunProfilesThroughProtocolPeers(t *testing.T) {
 
 			// Exercise the host lifecycle and accepted mappings, not a provider's
 			// installation or runtime packaging behavior.
-			if _, err := plane.Run(ctx, RunRequest{
+			if _, err := plane.Run(ctx, &RunRequest{
 				Service:        "app/api",
 				Profile:        tt.profile,
 				RuntimeContext: resources.RuntimeContextNative,
@@ -324,7 +324,7 @@ func TestRunProfilesThroughProtocolPeers(t *testing.T) {
 			require.NoError(t, err)
 			defer plane.Close()
 			output := filepath.Join(t.TempDir(), "runtime.env")
-			_, err = plane.Run(t.Context(), RunRequest{Service: "app/api", Profile: "local", RuntimeContext: resources.RuntimeContextNative, ExcludeRoot: true, Wait: true, OutputEnv: output})
+			_, err = plane.Run(t.Context(), &RunRequest{Service: "app/api", Profile: "local", RuntimeContext: resources.RuntimeContextNative, ExcludeRoot: true, Wait: true, OutputEnv: output})
 			require.ErrorContains(t, err, "incompatible agent contract")
 			_, err = os.Stat(output)
 			require.ErrorIs(t, err, os.ErrNotExist)

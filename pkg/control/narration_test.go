@@ -86,7 +86,7 @@ func TestDeployNarrationReachesTheEmbedder(t *testing.T) {
 	// The fixture's agent cannot load, so this fails partway through — after
 	// the resolution it narrates, which is the part under test.
 	escaped.reset()
-	if _, deployErr := plane.Deploy(context.Background(), DeployRequest{
+	if _, deployErr := plane.Deploy(context.Background(), &DeployRequest{
 		Service: "wiki/backend",
 		DryRun:  true,
 	}); deployErr == nil {

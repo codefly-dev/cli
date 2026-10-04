@@ -168,7 +168,7 @@ func (p *planeImpl) Build(ctx context.Context, req BuildRequest) (BuildResult, e
 // Test runs a service's tests (TestMode). It drives the flow with Start — the
 // TestMode playbook stops after the origin's Test RPC — then reads the origin
 // test response, exactly like `codefly test service`.
-func (p *planeImpl) Test(ctx context.Context, req TestRequest) (CheckResult, error) {
+func (p *planeImpl) Test(ctx context.Context, req *TestRequest) (CheckResult, error) {
 	testRequest := &runtimev0.TestRequest{Suite: req.Suite}
 	if req.Filter != "" {
 		testRequest.Filters = []string{req.Filter}
@@ -219,7 +219,7 @@ func (p *planeImpl) Test(ctx context.Context, req TestRequest) (CheckResult, err
 // WorkspaceHost owns the flow so later status/stop calls do not depend on
 // process-global state. The caller MUST pass a context that governs the run's
 // lifetime — cancelling it stops the stack.
-func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) {
+func (p *planeImpl) Run(ctx context.Context, req *RunRequest) (RunHandle, error) {
 	if p.host == nil || p.host.Flows() == nil {
 		return RunHandle{}, fmt.Errorf("control plane has no workspace host")
 	}
@@ -232,7 +232,7 @@ func (p *planeImpl) Run(ctx context.Context, req RunRequest) (RunHandle, error) 
 		if err != nil {
 			return err
 		}
-		if err := f.WithRunProfile(profile); err != nil {
+		if err = f.WithRunProfile(profile); err != nil {
 			return err
 		}
 		derived, err := solutionrun.DerivedRunInputs(target.module, target.service, resources.WithUnique(target.service).Unique())

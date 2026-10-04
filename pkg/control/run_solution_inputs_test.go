@@ -128,7 +128,7 @@ func startExcludedRootRun(t *testing.T, root string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	t.Cleanup(cancel)
 
-	if _, runErr := plane.Run(ctx, RunRequest{
+	if _, runErr := plane.Run(ctx, &RunRequest{
 		Service:        "wiki/backend",
 		RuntimeContext: resources.RuntimeContextNative,
 		ExcludeRoot:    true,
@@ -264,7 +264,7 @@ func TestStopJoinsTheRunGoroutine(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	t.Cleanup(cancel)
 
-	if _, runErr := plane.Run(ctx, RunRequest{
+	if _, runErr := plane.Run(ctx, &RunRequest{
 		Service:        "wiki/backend",
 		RuntimeContext: resources.RuntimeContextNative,
 		ExcludeRoot:    true,
@@ -501,7 +501,7 @@ lifecycle:`, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	_, err = plane.Run(ctx, RunRequest{
+	_, err = plane.Run(ctx, &RunRequest{
 		Service:        "wiki/backend",
 		RuntimeContext: resources.RuntimeContextNative,
 		ExcludeRoot:    true,

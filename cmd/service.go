@@ -55,7 +55,7 @@ only non-sensitive configuration, and remain authoritative across CLI runs.`,
 			}
 			plane := control.New()
 			defer plane.Close()
-			installed, err := plane.InstallService(command.Context(), request)
+			installed, err := plane.InstallService(command.Context(), &request)
 			if err != nil {
 				return err
 			}

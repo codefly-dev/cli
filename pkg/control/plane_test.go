@@ -212,7 +212,7 @@ run-profiles:
 // message, and confirms the plane is left idle (no flow was started).
 func assertRunRejected(t *testing.T, plane Plane, request RunRequest, want string) {
 	t.Helper()
-	_, err := plane.Run(context.Background(), request)
+	_, err := plane.Run(context.Background(), &request)
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("Run error = %v, want %q", err, want)
 	}

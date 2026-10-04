@@ -329,7 +329,7 @@ func gitBranchAt(ctx context.Context, repo string, req GitBranchRequest) (GitAct
 	}
 	startPoint := strings.TrimSpace(req.StartPoint)
 	if startPoint == "" {
-		startPoint = "HEAD"
+		startPoint = headRevision
 	}
 	if err := validateRevision(startPoint); err != nil {
 		return GitAct{}, err
@@ -429,7 +429,7 @@ func gitPushAt(ctx context.Context, repo string, req GitPushRequest) (GitPushRes
 	}
 	refspec := "refs/heads/" + branch + ":refs/heads/" + branch
 	args = append(args, "--", remote, refspec)
-	if _, err := git(ctx, repo, args...); err != nil {
+	if _, err = git(ctx, repo, args...); err != nil {
 		return GitPushResult{}, err
 	}
 	remoteLine, err := git(ctx, repo, "ls-remote", "--exit-code", "--refs", remote, "refs/heads/"+branch)
@@ -462,7 +462,7 @@ func gitTagAt(ctx context.Context, repo string, req GitTagRequest) (GitAct, erro
 	}
 	revision := strings.TrimSpace(req.Revision)
 	if revision == "" {
-		revision = "HEAD"
+		revision = headRevision
 	}
 	if err := validateRevision(revision); err != nil {
 		return GitAct{}, err
@@ -543,7 +543,7 @@ func gitRevertAt(ctx context.Context, repo string, req GitRevertRequest) (GitAct
 	if err != nil {
 		return GitAct{}, err
 	}
-	if _, err := git(ctx, repo, "revert", "--no-edit", "--", revision); err != nil {
+	if _, err = git(ctx, repo, "revert", "--no-edit", "--", revision); err != nil {
 		// Keep the act atomic: abort a conflicted/partial revert instead of
 		// leaving the sequencer mid-operation for the next act to trip over.
 		_, _ = git(ctx, repo, "revert", "--abort")
@@ -565,7 +565,7 @@ func gitRevertAt(ctx context.Context, repo string, req GitRevertRequest) (GitAct
 // supplies identities and relative cache locations; it never implements Git.
 func (p *planeImpl) MaterializeRepositorySnapshot(
 	ctx context.Context,
-	req MaterializeRepositorySnapshotRequest,
+	req *MaterializeRepositorySnapshotRequest,
 ) (MaterializedRepositorySnapshot, error) {
 	root, err := p.gitDir(ctx, req.Dir)
 	if err != nil {
@@ -577,7 +577,7 @@ func (p *planeImpl) MaterializeRepositorySnapshot(
 func materializeRepositorySnapshotAt(
 	ctx context.Context,
 	root string,
-	req MaterializeRepositorySnapshotRequest,
+	req *MaterializeRepositorySnapshotRequest,
 ) (MaterializedRepositorySnapshot, error) {
 	prepared, err := prepareRepositoryRevisionAt(ctx, root, req.RepositoryURL, req.CacheDirectory, req.Revision, req.FetchIdentity, req.RemoteAccess)
 	if err != nil {
@@ -591,10 +591,10 @@ func materializeRepositorySnapshotAt(
 		return MaterializedRepositorySnapshot{}, fmt.Errorf("repository cache and snapshot directories must not overlap")
 	}
 	snapshotPath := filepath.Join(root, snapshotDirectory)
-	if err := os.MkdirAll(filepath.Dir(snapshotPath), 0o700); err != nil {
+	if err = os.MkdirAll(filepath.Dir(snapshotPath), 0o700); err != nil {
 		return MaterializedRepositorySnapshot{}, fmt.Errorf("prepare repository snapshot parent: %w", err)
 	}
-	if _, err := gitWithEnvironment(ctx, prepared.cachePath, prepared.environment, "worktree", "prune"); err != nil {
+	if _, err = gitWithEnvironment(ctx, prepared.cachePath, prepared.environment, "worktree", "prune"); err != nil {
 		return MaterializedRepositorySnapshot{}, fmt.Errorf("prune repository snapshots before materialization: %w", err)
 	}
 	registered, err := repositoryWorktreeRegistered(ctx, prepared.cachePath, snapshotPath, prepared.environment)
@@ -602,16 +602,16 @@ func materializeRepositorySnapshotAt(
 		return MaterializedRepositorySnapshot{}, err
 	}
 	if registered {
-		existingRevision, err := gitWithEnvironment(ctx, snapshotPath, prepared.environment, "rev-parse", "HEAD^{commit}")
-		if err != nil {
-			return MaterializedRepositorySnapshot{}, fmt.Errorf("resolve existing repository snapshot: %w", err)
+		existingRevision, revisionErr := gitWithEnvironment(ctx, snapshotPath, prepared.environment, "rev-parse", "HEAD^{commit}")
+		if revisionErr != nil {
+			return MaterializedRepositorySnapshot{}, fmt.Errorf("resolve existing repository snapshot: %w", revisionErr)
 		}
 		if existingRevision != prepared.revision {
 			return MaterializedRepositorySnapshot{}, fmt.Errorf("repository snapshot already resolves %s, want %s", existingRevision, prepared.revision)
 		}
 		return inspectMaterializedRepositorySnapshot(ctx, snapshotPath, prepared.revision, snapshotDirectory)
 	}
-	if _, err := gitWithEnvironment(ctx, prepared.cachePath, prepared.environment, "worktree", "add", "--detach", snapshotPath, prepared.revision); err != nil {
+	if _, err = gitWithEnvironment(ctx, prepared.cachePath, prepared.environment, "worktree", "add", "--detach", snapshotPath, prepared.revision); err != nil {
 		return MaterializedRepositorySnapshot{}, fmt.Errorf("create repository snapshot: %w", err)
 	}
 	result, err := inspectMaterializedRepositorySnapshot(ctx, snapshotPath, prepared.revision, snapshotDirectory)
@@ -677,9 +677,9 @@ func prepareRepositoryRevisionAt(
 	}
 	revision := strings.TrimSpace(requestedRevision)
 	if revision == "" {
-		revision = "HEAD"
+		revision = headRevision
 	}
-	if err := validateRevision(revision); err != nil {
+	if err = validateRevision(revision); err != nil {
 		return preparedRepositoryRevision{}, err
 	}
 	fetchIdentity := strings.TrimSpace(requestedFetchIdentity)
@@ -687,7 +687,7 @@ func prepareRepositoryRevisionAt(
 		return preparedRepositoryRevision{}, fmt.Errorf("repository fetch identity %q is not a stable token", fetchIdentity)
 	}
 	cachePath := filepath.Join(root, cacheDirectory)
-	if _, err := gitWithEnvironment(ctx, cachePath, environment, "rev-parse", "--git-dir"); err != nil {
+	if _, err = gitWithEnvironment(ctx, cachePath, environment, "rev-parse", "--git-dir"); err != nil {
 		// rev-parse can fail for reasons other than "not a repository" — a
 		// cancelled context or a missing/broken git binary among them. Treating
 		// those as "incomplete projection" would delete a perfectly good cache.
@@ -703,7 +703,7 @@ func prepareRepositoryRevisionAt(
 		if statErr := removeIncompleteRepositoryCache(cachePath); statErr != nil {
 			return preparedRepositoryRevision{}, statErr
 		}
-		if _, err := gitWithEnvironment(ctx, root, environment, "clone", "--", repositoryURL, cacheDirectory); err != nil {
+		if _, err = gitWithEnvironment(ctx, root, environment, "clone", "--", repositoryURL, cacheDirectory); err != nil {
 			return preparedRepositoryRevision{}, fmt.Errorf("clone repository: %w", err)
 		}
 	}
@@ -723,13 +723,13 @@ func prepareRepositoryRevisionAt(
 		return preparedRepositoryRevision{}, fmt.Errorf("inspect repository depth: %w", err)
 	}
 	if shallow == "true" {
-		if _, err := gitWithEnvironment(ctx, cachePath, environment, "fetch", "--unshallow", "origin"); err != nil {
+		if _, err = gitWithEnvironment(ctx, cachePath, environment, "fetch", "--unshallow", "origin"); err != nil {
 			return preparedRepositoryRevision{}, fmt.Errorf("unshallow repository: %w", err)
 		}
 	}
 
 	temporaryRef := "refs/mind/fetch/" + fetchIdentity
-	if _, err := gitWithEnvironment(
+	if _, err = gitWithEnvironment(
 		ctx,
 		cachePath,
 		environment,
@@ -843,7 +843,7 @@ func repositoryCacheHasGitMetadata(cachePath string) bool {
 // boundary, then resets the cache worktree to a clean mutable checkout.
 func (p *planeImpl) PrepareRepositoryCheckout(
 	ctx context.Context,
-	req PrepareRepositoryCheckoutRequest,
+	req *PrepareRepositoryCheckoutRequest,
 ) (PreparedRepositoryCheckout, error) {
 	root, err := p.gitDir(ctx, req.Dir)
 	if err != nil {
@@ -1066,6 +1066,9 @@ func validateBranchName(ctx context.Context, repo, branch string) error {
 	}
 	return nil
 }
+
+// headRevision is the revision an act defaults to when its request names none.
+const headRevision = "HEAD"
 
 func validateRevision(revision string) error {
 	if revision == "" {

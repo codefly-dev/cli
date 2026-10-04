@@ -2844,7 +2844,7 @@ func (s *Server) MaterializeRepositorySnapshot(
 	default:
 		return nil, status.Error(codes.InvalidArgument, "repository remote access is required")
 	}
-	result, err := s.controlScope().MaterializeRepositorySnapshot(ctx, control.MaterializeRepositorySnapshotRequest{
+	result, err := s.controlScope().MaterializeRepositorySnapshot(ctx, &control.MaterializeRepositorySnapshotRequest{
 		RepositoryURL: req.GetRepositoryUrl(), CacheDirectory: cacheDirectory,
 		Revision: req.GetRevision(), FetchIdentity: req.GetFetchIdentity(),
 		SnapshotDirectory: snapshotDirectory, RemoteAccess: access,
@@ -2886,7 +2886,7 @@ func (s *Server) PrepareRepositoryCheckout(
 	default:
 		return nil, status.Error(codes.InvalidArgument, "repository remote access is required")
 	}
-	result, err := s.controlScope().PrepareRepositoryCheckout(ctx, control.PrepareRepositoryCheckoutRequest{
+	result, err := s.controlScope().PrepareRepositoryCheckout(ctx, &control.PrepareRepositoryCheckoutRequest{
 		RepositoryURL: req.GetRepositoryUrl(), CacheDirectory: cacheDirectory,
 		Revision: req.GetRevision(), FetchIdentity: req.GetFetchIdentity(), RemoteAccess: access,
 	})

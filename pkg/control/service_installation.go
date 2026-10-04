@@ -46,12 +46,12 @@ const (
 	ServiceStaleCorrupt     = localservice.ServiceStaleCorrupt
 )
 
-func (p *planeImpl) InstallService(ctx context.Context, request InstallServiceRequest) (InstalledService, error) {
+func (p *planeImpl) InstallService(ctx context.Context, request *InstallServiceRequest) (InstalledService, error) {
 	installation, err := localservice.New()
 	if err != nil {
 		return InstalledService{}, err
 	}
-	return installation.InstallService(ctx, request)
+	return installation.InstallService(ctx, *request)
 }
 
 func (p *planeImpl) StartService(ctx context.Context, ref ServiceRef) (InstalledServiceStatus, error) {

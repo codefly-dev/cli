@@ -432,7 +432,7 @@ func (s *Server) runService(ctx context.Context, args map[string]string) ([]Cont
 	}
 	ref := serviceRef(args)
 	wait := args["wait"] != "false"
-	handle, err := s.plane.Run(s.runCtx, control.RunRequest{
+	handle, err := s.plane.Run(s.runCtx, &control.RunRequest{
 		Service:        ref,
 		RuntimeContext: args["runtime_context"],
 		Profile:        args["profile"],
@@ -507,7 +507,7 @@ func (s *Server) testService(ctx context.Context, args map[string]string) ([]Con
 	if args[fieldModule] == "" || args[fieldService] == "" {
 		return []Content{TextContent("module and service are required")}, nil
 	}
-	result, err := s.plane.Test(ctx, control.TestRequest{
+	result, err := s.plane.Test(ctx, &control.TestRequest{
 		Service:        serviceRef(args),
 		Suite:          args["suite"],
 		Filter:         args["filter"],

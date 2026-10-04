@@ -30,7 +30,7 @@ func TestRunDeployRejectsRemoteTargetBeforeStartingFlow(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = plane.Close() })
 
-	_, err = plane.Deploy(context.Background(), DeployRequest{
+	_, err = plane.Deploy(context.Background(), &DeployRequest{
 		Service: "backend/api",
 		Env:     "production",
 	})
@@ -140,7 +140,7 @@ func TestDryRunRefusesACompletionItCannotEstablish(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = plane.Close() })
 
-	_, err = plane.Deploy(context.Background(), DeployRequest{
+	_, err = plane.Deploy(context.Background(), &DeployRequest{
 		Service:    "backend/api",
 		DryRun:     true,
 		Completion: deployments.StageHealthy,
