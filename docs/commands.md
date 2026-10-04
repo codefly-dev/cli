@@ -2312,8 +2312,31 @@ declares, so a template whose outputs sit beside the proto directory
 regenerates on the host. An `out` that escapes the workspace owning `--proto`
 (outside a workspace: the directory `--proto`, `--output` and the template share)
 is refused, as is an absolute `out`, which names a path the companion cannot see.
-A run whose template declares outputs but which writes no file under any of them
-fails instead of reporting success.
+
+**The output validation contract.** buf *syncs* each output tree rather than
+rewriting it: it compares the bytes it generated against what is already under
+each `out` and writes only the files that are new or different. With
+`clean: true` it additionally deletes the files it no longer generates — and
+still leaves byte-identical ones untouched. So an unchanged regeneration
+legitimately writes nothing, and whether a file was written says nothing about
+whether generation reached the host. Two checks bracket the run instead:
+
+- **Before generating,** every declared `out` is proved to be the host
+  directory the CLI resolved and writable from inside the companion: the host
+  drops a uniquely named probe in each one, the companion deletes it, and the
+  host checks every probe is gone. An `out` the companion resolves inside its
+  own filesystem, one outside the mount, and a mount that discards what the
+  companion writes all fail here, before any plugin runs.
+- **After generating,** at least one declared `out` must hold a regular file.
+  A template whose plugins produced nothing fails. Any output rather than every
+  output: a plugin with nothing to emit for the given input — openapiv2 over a
+  contract carrying no REST annotations — is not a failed generation.
+
+An unchanged replay therefore succeeds and leaves the tree byte-identical,
+which is what a CI drift gate (`git diff --exit-code` over the generated tree)
+needs. The Go lane is no exception: it only appeared to need a write because
+`goimports` runs after generation and leaves a shape buf never emits, so the
+next run rewrites every Go file.
 
 #### generate client
 
