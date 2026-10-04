@@ -62,7 +62,7 @@ const (
 	// Job runs is what was reviewed. A codefly-owned delivery image would
 	// replace it; until one is published, the pinned digest is the honest
 	// record of what delivers.
-	deliveryImage = "curlimages/curl:8.18.0@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17"
+	deliveryImage = "docker.io/curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17"
 
 	// deliveryContainerName is the one container of a delivery Job.
 	deliveryContainerName = "deliver"

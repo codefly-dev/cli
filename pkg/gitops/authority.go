@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -89,22 +90,38 @@ type workspaceValues struct {
 	provided *configurations.WorkspaceConfigurations
 }
 
-func (values workspaceValues) Value(group, key string) (string, bool, bool) {
+// Value implements modulecontract.Values over the configurations the
+// composition provides: the key is matched in either spelling core accepts,
+// and a group supplying it in two spellings is an error, never a choice —
+// the same contract would otherwise resolve to whichever a reader met first.
+func (values workspaceValues) Value(group, key string) (string, bool, bool, error) {
 	if values.provided == nil {
-		return "", false, false
+		return "", false, false, nil
 	}
 	normalized := strings.ToUpper(strings.ReplaceAll(key, "-", "_"))
+	var spellings []string
+	var foundValue string
+	var foundSecret, found bool
 	for _, info := range values.provided.Infos {
 		if info.Name != group {
 			continue
 		}
 		for _, value := range info.ConfigurationValues {
 			if value.Key == key || strings.ToUpper(strings.ReplaceAll(value.Key, "-", "_")) == normalized {
-				return value.Value, value.Secret, true
+				if !slices.Contains(spellings, value.Key) {
+					spellings = append(spellings, value.Key)
+				}
+				if !found {
+					foundValue, foundSecret, found = value.Value, value.Secret, true
+				}
 			}
 		}
 	}
-	return "", false, false
+	if len(spellings) > 1 {
+		sort.Strings(spellings)
+		return "", false, false, fmt.Errorf("group %q supplies it as %s", group, strings.Join(spellings, " and "))
+	}
+	return foundValue, foundSecret, found, nil
 }
 
 // authorityInstancesOf resolves the authority document a module render

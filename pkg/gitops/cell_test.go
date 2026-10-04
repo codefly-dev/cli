@@ -552,7 +552,7 @@ func TestCellFileDeclaresThePresenceDeliveryJob(t *testing.T) {
 		ServiceAccount: "delivery",
 		SPIFFEID:       "spiffe://cluster.example/ns/acme-shop/sa/delivery",
 		Container:      "deliver",
-		Image:          cell.Image{Repository: "curlimages/curl:8.18.0", Digest: "sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17"},
+		Image:          cell.Image{Repository: "docker.io/curlimages/curl", Digest: "sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17"},
 	}, shop.Delivery)
 	require.Contains(t, string(data), "delivery:\n", "the YAML spells it, so a loader never infers it")
 }
