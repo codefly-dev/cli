@@ -347,11 +347,14 @@ func TestAReferenceSeveralPermittedEndpointsSatisfyIsRefused(t *testing.T) {
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
 		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n    - name: sidecar\n",
-		// Two endpoints a `rest` reference matches: one by API, one by name.
+		// Two endpoints a `rest` reference matches, BOTH by API and neither by
+		// name: nothing in the reference picks one. (If either were named
+		// `rest` the reference would name it exactly and resolve — see
+		// TestAnExactEndpointNameWinsOverAnAPISibling.)
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"endpoints:\n    - name: api\n      api: rest\n      visibility: public\n" +
-			"    - name: rest\n      api: grpc\n      visibility: private\n",
+			"    - name: admin\n      api: rest\n      visibility: private\n",
 		// In the producer's module, so both endpoints are reachable for it.
 		"modules/platform/services/sidecar/service.codefly.yaml": "kind: service\nname: sidecar\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
@@ -365,7 +368,7 @@ func TestAReferenceSeveralPermittedEndpointsSatisfyIsRefused(t *testing.T) {
 		world.Mode = RunMode
 		recordMappings(t, world, "platform", "authority",
 			endpointMapping("platform", "authority", "api", "rest", "public", nativeInstance("http://localhost:1111")),
-			endpointMapping("platform", "authority", "rest", "grpc", "private", nativeInstance("http://localhost:2222")),
+			endpointMapping("platform", "authority", "admin", "rest", "private", nativeInstance("http://localhost:2222")),
 		)
 	})
 
@@ -384,7 +387,16 @@ func TestAReferenceSeveralPermittedEndpointsSatisfyIsRefused(t *testing.T) {
 	require.Error(t, err, "a reference two reachable endpoints satisfy must be refused")
 	require.Contains(t, err.Error(), "could be any of several endpoints")
 	require.Contains(t, err.Error(), "api")
-	require.Contains(t, err.Error(), "rest")
+	require.Contains(t, err.Error(), "admin")
+
+	// And the PLAN GATE refuses it too, so an operator learns at plan time
+	// rather than when the first service reads the value mid-run. The gate runs
+	// the same rule over the groups each consumer receives.
+	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+	err = PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{sidecar}, true)
+	require.Error(t, err, "the gate must not pass a reference the resolution refuses")
+	require.Contains(t, err.Error(), "could be any of several endpoints")
 }
 
 // The ambiguity refusal judges the consumer's own groups and nothing else.
@@ -405,12 +417,12 @@ func TestAnAmbiguousReferenceOnlyRefusesTheConsumersThatReceiveIt(t *testing.T) 
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
 		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
-		// Two endpoints a `rest` reference matches, both visible to every
-		// module, so the reference is ambiguous for whoever receives it.
+		// Two endpoints a `rest` reference matches by API, neither by name, both
+		// visible to every module: ambiguous for whoever receives the group.
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"endpoints:\n    - name: api\n      api: rest\n      visibility: public\n" +
-			"    - name: rest\n      api: grpc\n      visibility: public\n",
+			"    - name: admin\n      api: rest\n      visibility: public\n",
 		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n    - name: reader\n",
 		// Declares a DIFFERENT group, so its effective set is non-empty and the
@@ -448,4 +460,60 @@ func TestAnAmbiguousReferenceOnlyRefusesTheConsumersThatReceiveIt(t *testing.T) 
 	require.Error(t, err, "the service that declares the group is held to the reference")
 	require.Contains(t, err.Error(), "could be any of several endpoints")
 	require.Contains(t, err.Error(), "authority-pool/authority-endpoint")
+}
+
+// An endpoint named exactly as the reference wins over a sibling that only
+// matches its API.
+//
+// This is the over-refusal the ambiguity rule shipped with, and it refused
+// ordinary compositions. A producer declaring `grpc` (api grpc) and
+// `grpc-admin` (api grpc) makes `${endpoint:platform/authority/grpc}` match
+// BOTH, because core's matcher is `Name == token || API == token` — and naming
+// the api explicitly does not narrow the name branch. The reference says which
+// endpoint it means, so refusing it makes a clear composition unresolvable.
+//
+// What stays refused is ambiguity among API-token matches, where nothing in the
+// reference picks one: TestAReferenceSeveralPermittedEndpointsSatisfyIsRefused.
+//
+// Not closed here, and the reason the exemption is a decision rather than a
+// detail: core's resolution does not prefer the exact name either — it takes the
+// first bound mapping that matches — so in this shape the address can still come
+// from the sibling. That is core's endpoint-identity gap, carried as a follow-up.
+func TestAnExactEndpointNameWinsOverAnAPISibling(t *testing.T) {
+	ctx := context.Background()
+	workspace := writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		// `grpc` by name, `grpc-admin` by API: the reference matches both.
+		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
+			"endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n" +
+			"    - name: grpc-admin\n      api: grpc\n      visibility: public\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
+		"configurations/local/work-context.env": "authority-endpoint=${endpoint:platform/authority/grpc}\n",
+	})
+	world, worker := referenceValidityWorld(t, workspace, func(world *World) {
+		world.Mode = RunMode
+		recordMappings(t, world, "platform", "authority",
+			endpointMapping("platform", "authority", "grpc", "grpc", "public", nativeInstance("http://localhost:1111")),
+			endpointMapping("platform", "authority", "grpc-admin", "grpc", "public", nativeInstance("http://localhost:2222")),
+		)
+	})
+
+	confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
+	require.NoError(t, err,
+		"a reference that names an endpoint exactly must resolve, whatever shares its API")
+	address, delivered := groupValue(confs, "work-context", "authority-endpoint")
+	require.True(t, delivered)
+	require.Equal(t, "http://localhost:1111", address, "and it resolves to the endpoint it names")
+
+	// The same holds at the plan gate, which runs the same rule.
+	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+	require.NoError(t, PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{worker}, true),
+		"the gate must not refuse what the resolution resolves")
 }

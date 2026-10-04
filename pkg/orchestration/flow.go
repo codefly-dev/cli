@@ -364,31 +364,12 @@ type World struct {
 	AnswerProvider AnswerProvider
 }
 
-// readWorkspaceConfigurationsForReferences reads what env provides to the
-// workspace — the same read a run provisions from. A read that fails is not
-// fatal here: the caller orders nothing and the run reports the configuration
-// fault itself when it loads.
-func readWorkspaceConfigurationsForReferences(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) *configurations.WorkspaceConfigurations {
-	if workspace == nil || env == nil {
-		return nil
-	}
-	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime())
-	if err != nil {
-		wool.Get(ctx).In("readWorkspaceConfigurationsForReferences").Debug("cannot read workspace configurations; no reference orders the run", wool.Field("error", err.Error()))
-		return nil
-	}
-	return provided
-}
-
-// configurationReferenceOption orders every service declaring a workspace
-// configuration after the services its ${endpoint:…} references name.
-func configurationReferenceOption(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) architecture.DependencyOption {
-	return configurationReferenceOptionFrom(readWorkspaceConfigurationsForReferences(ctx, workspace, env))
-}
-
-// configurationReferenceOptionFrom is configurationReferenceOption for a read
-// the caller already has, so one operation never reads the same configuration
-// tree twice.
+// configurationReferenceOptionFrom orders every service declaring a workspace
+// configuration after the services its ${endpoint:…} references name, from a
+// read the caller already has — which is the only form there is: the read must
+// be the invocation-aware one every gate uses
+// (WorkspaceConfigurationsForChecking), and a helper that took its own would be
+// the second source this package keeps removing.
 func configurationReferenceOptionFrom(provided *configurations.WorkspaceConfigurations) architecture.DependencyOption {
 	if provided == nil {
 		return nil

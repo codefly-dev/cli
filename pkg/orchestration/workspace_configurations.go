@@ -536,6 +536,21 @@ func (world *World) checkEffectiveWorkspaceConfigurationReferences(
 // reach both, is told to name the one it means. Zero permitted matches is core's
 // to refuse, and it already has above.
 //
+// An EXACT NAME match wins, and that exemption is not a softening — without it
+// the rule refuses ordinary compositions. A producer with `grpc` (api grpc) and
+// `grpc-admin` (api grpc) makes `${endpoint:…/grpc}` match both, because core's
+// matcher is `Name == token || API == token` and naming the api explicitly does
+// not narrow the name branch. The reference says exactly which endpoint it
+// means, so refusing it would make a perfectly clear composition unresolvable.
+// What stays refused is ambiguity among API-token matches, where nothing in the
+// reference picks one.
+//
+// The residual, stated because it is not closed here: core's resolution does not
+// prefer the exact name either — it takes the first bound mapping that matches —
+// so in the `grpc`/`grpc-admin` shape the address can still come from the
+// sibling. That is core's endpoint-identity gap, drafted as a follow-up, and it
+// is the reason this exemption is the owner's call rather than mine.
+//
 // It judges the consumer's EFFECTIVE groups and nothing else. The information
 // blocks handed in are everything the loader loaded, which includes groups this
 // service does not receive — a composed module's group it never declared, a
@@ -564,11 +579,11 @@ func refuseAmbiguousReferences(
 		}
 		for _, value := range info.GetConfigurationValues() {
 			for _, reference := range resources.ConfigurationValueEndpointReferences(value) {
-				permitted, err := permittedReferenceMatches(reference, identity.Module, producers)
+				permitted, named, err := permittedReferenceMatches(reference, identity.Module, producers)
 				if err != nil {
 					return err
 				}
-				if len(permitted) < 2 {
+				if named || len(permitted) < 2 {
 					continue
 				}
 				return fmt.Errorf("the workspace configuration value %s/%s references ${endpoint:%s}, which %s's endpoints %s all satisfy for %s: a reference whose address could be any of several endpoints is refused rather than resolved to whichever one is bound first. Name the endpoint it means",
@@ -583,21 +598,21 @@ func refuseAmbiguousReferences(
 
 // permittedReferenceMatches names the producer's endpoints a reference matches
 // and this consumer's module may reach, by core's own matcher and core's own
-// export rule.
+// export rule, and says whether one of them is the endpoint the reference names
+// EXACTLY. An exact name is an answer, so the caller stops there.
 func permittedReferenceMatches(
 	reference, consumerModule string, producers configurations.ProducerLookup,
-) ([]string, error) {
-	info, err := resources.ParseEndpoint(reference)
-	if err != nil {
+) (permitted []string, exactName bool, err error) {
+	info, parseErr := resources.ParseEndpoint(reference)
+	if parseErr != nil {
 		// Core's check has already refused a malformed reference by name.
-		return nil, nil
+		return nil, false, nil
 	}
 	producer, ok := producers(info.Module + "/" + info.Service)
 	if !ok || producer == nil {
 		// Likewise "the producer is not a service of this workspace".
-		return nil, nil
+		return nil, false, nil
 	}
-	var permitted []string
 	for _, endpoint := range producer.Endpoints {
 		if endpoint == nil || !resources.EndpointMatchesReferenceInfo(endpoint, info) {
 			continue
@@ -606,9 +621,12 @@ func permittedReferenceMatches(
 			endpoint.Name, endpoint.Visibility, endpoint.AllowModules) != nil {
 			continue
 		}
+		if info.Name != "" && endpoint.Name == info.Name {
+			exactName = true
+		}
 		permitted = append(permitted, endpoint.Name)
 	}
-	return permitted, nil
+	return permitted, exactName, nil
 }
 
 // referenceProducer is "<module>/<service>" of a reference, for a diagnostic.

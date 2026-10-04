@@ -401,7 +401,9 @@ func TestConfigurationReferencesOrderTheRun(t *testing.T) {
 	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
 	require.NoError(t, err)
 
-	option := configurationReferenceOption(ctx, workspace, env)
+	provided, _, err := WorkspaceConfigurationsForChecking(ctx, workspace, env)
+	require.NoError(t, err)
+	option := configurationReferenceOptionFrom(provided)
 	require.NotNil(t, option)
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace, option)
 	require.NoError(t, err)
@@ -443,7 +445,9 @@ func TestConfigurationReferencesToAProducerDeclaredExternal(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, order, "the external declaration alone orders nothing")
 
-	option := configurationReferenceOption(ctx, workspace, env)
+	provided, _, err := WorkspaceConfigurationsForChecking(ctx, workspace, env)
+	require.NoError(t, err)
+	option := configurationReferenceOptionFrom(provided)
 	require.NotNil(t, option)
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace, option)
 	require.NoError(t, err)

@@ -540,7 +540,7 @@ func rootGroupWorld(t *testing.T, declared []string, values ...*basev0.Configura
 // mandatory secretKeyRef — one compromised service yielding all of them, and one
 // copy per service in the environment's store. The run withholds them too, so
 // the parity this PR is about is not broken by the narrowing: see
-// withoutUndeclaredCredentials.
+// withheldCredentials.
 //
 // The reference is asserted in full — the Secret it names, and the key inside
 // it — because that is what the projected ExternalSecret has to match. "Some

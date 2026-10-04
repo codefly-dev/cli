@@ -9,6 +9,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -38,11 +39,14 @@ func CheckConfigurationReferences(
 		return nil
 	}
 	if provided == nil {
-		read, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime())
-		if err != nil {
-			return fmt.Errorf("cannot read the workspace configurations to check their references: %w", err)
-		}
-		provided = read
+		// Refused rather than read here. Every caller now hands in the
+		// configurations this invocation will RESOLVE
+		// (WorkspaceConfigurationsForChecking), and a plain read taken at this
+		// point would be a second, narrower source: blind to invocation
+		// overrides and carrying no composition-root names, which is exactly
+		// the fallback that let a load failure turn this gate into a
+		// declared-groups-only check without saying so.
+		return fmt.Errorf("cannot check workspace configuration references: no configurations were supplied to check, and this gate must not read a second, narrower source of its own (pass the result of WorkspaceConfigurationsForChecking)")
 	}
 	// Two calls, because the two halves of the effective set must be judged
 	// against different producer sets.
@@ -66,13 +70,16 @@ func CheckConfigurationReferences(
 			return service, err == nil
 		})
 	err := withExcludedProducerReasons(declaredProblems, excludedProducers)
-	rootConsumers := consumersWithRootGroupsOnly(consumers, rootGroups, profile)
-	if len(rootConsumers) == 0 {
-		return err
-	}
 	lookup, lookupErr := workspaceProducerLookup(ctx, workspace)
 	if lookupErr != nil {
 		return errors.Join(err, lookupErr)
+	}
+	rootConsumers := consumersWithRootGroupsOnly(consumers, rootGroups, profile)
+	if len(rootConsumers) == 0 {
+		if err != nil {
+			return err
+		}
+		return refuseAmbiguousPlanReferences(ctx, consumers, provided.Infos, rootGroups, profile, lookup)
 	}
 	// Without the credentials those consumers will never receive. A root group's
 	// credentials reach only the services that declare it, and a value nobody
@@ -90,7 +97,14 @@ func CheckConfigurationReferences(
 	}
 	rootInfos := credentialsOf(provided.Infos, rootOnly).received(provided.Infos)
 	rootProblems := configurations.CheckEndpointReferences(rootInfos, rootConsumers, profile, lookup)
-	return mergeUnresolvedReferences(err, rootProblems)
+	if merged := mergeUnresolvedReferences(err, rootProblems); merged != nil {
+		return merged
+	}
+	// And the same ambiguity rule the resolution applies, so the gate does not
+	// pass a reference the resolution will refuse by name. The alternative is a
+	// run that starts, builds and then stops at the first service to read the
+	// value — a worse place to learn it.
+	return refuseAmbiguousPlanReferences(ctx, consumers, provided.Infos, rootGroups, profile, lookup)
 }
 
 // mergeUnresolvedReferences returns the two checks' findings as ONE
@@ -422,4 +436,56 @@ func (flow *Flow) checkConfigurationReferences(ctx context.Context, required []s
 	}
 	return CheckConfigurationReferences(ctx, flow.workspace, flow.world.Env, flow.providedWorkspaceConfigurations,
 		flow.world.Dependencies, consumers, flow.runProfile, excludedProducers, flow.providedWorkspaceConfigurationRootGroups)
+}
+
+// refuseAmbiguousPlanReferences runs the resolution's ambiguity rule over every
+// consumer of the plan, against the groups that consumer receives.
+//
+// Per consumer, because both halves of the question are: which groups it gets,
+// and which of a producer's endpoints its module may reach. The credentials of a
+// group it did not declare are removed first, exactly as the resolution removes
+// them — a value a service does not receive imposes no obligation on it, and
+// that includes this one.
+func refuseAmbiguousPlanReferences(
+	ctx context.Context, consumers []*resources.Service, infos []*basev0.ConfigurationInformation,
+	rootGroups []string, profile resources.RunProfile, producers configurations.ProducerLookup,
+) error {
+	if producers == nil {
+		return nil
+	}
+	excluded := make(map[string]bool, len(profile.ExcludeWorkspaceConfigurations))
+	for _, group := range profile.ExcludeWorkspaceConfigurations {
+		excluded[group] = true
+	}
+	for _, consumer := range consumers {
+		if consumer == nil {
+			continue
+		}
+		declared := make([]string, 0, len(consumer.WorkspaceConfigurationDependencies))
+		own := make(map[string]bool, len(consumer.WorkspaceConfigurationDependencies))
+		for _, group := range consumer.WorkspaceConfigurationDependencies {
+			if excluded[group] {
+				continue
+			}
+			declared = append(declared, group)
+			own[group] = true
+		}
+		effective := slices.Clone(declared)
+		rootOnly := map[string]bool{}
+		for _, group := range rootGroups {
+			if own[group] || excluded[group] {
+				continue
+			}
+			rootOnly[group] = true
+			effective = append(effective, group)
+		}
+		if len(effective) == 0 {
+			continue
+		}
+		received := credentialsOf(infos, rootOnly).received(infos)
+		if err := refuseAmbiguousReferences(ctx, consumer, received, effective, producers); err != nil {
+			return err
+		}
+	}
+	return nil
 }

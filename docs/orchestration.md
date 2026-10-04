@@ -405,7 +405,8 @@ that was judged.
 
 A root group's non-secret values reach every service. **Its credentials reach
 only the services that declare the group** (`workspace-configuration-dependencies`),
-in a run and in a render alike — `withoutUndeclaredCredentials`.
+in a run and in a render alike — `withheldCredentials`, decided once per service
+and used by the reference check, producer discovery, the plan gate and delivery.
 
 The reason is that making the render resolve root groups, which is the #882 fix,
 would otherwise have widened least privilege as a side effect. Before it, a

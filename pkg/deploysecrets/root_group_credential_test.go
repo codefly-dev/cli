@@ -23,7 +23,7 @@ import (
 // credential-named value in a composition-root workspace configuration group.
 //
 // For a service that DECLARES the group: a root group's credentials are not
-// run-wide (pkg/orchestration withoutUndeclaredCredentials), so the store holds
+// run-wide (pkg/orchestration withheldCredentials), so the store holds
 // an entry per service that asked for the credential rather than one per service
 // of the composition.
 //
