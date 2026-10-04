@@ -1995,12 +1995,17 @@ func orderedForEachReference(
 		// The ordering constraints this producer's references impose, and the
 		// access fall-through each of them would suffer.
 		before := make(map[string]map[string]bool, len(group))
+		// Endpoints that may not be bound at all for this producer: they would
+		// answer a reference that names a different endpoint of it, one that
+		// published no mapping.
+		unanswerable := map[string]bool{}
 		for _, ref := range references {
 			if !ref.exactName || ref.info.Module+"/"+ref.info.Service != unique {
 				continue
 			}
 			var named *retained
 			var others []string
+			siblingServesAccess := false
 			for i := range group {
 				if !resources.EndpointMatchesReferenceInfo(group[i].endpoint, ref.info) {
 					continue
@@ -2010,12 +2015,47 @@ func orderedForEachReference(
 					continue
 				}
 				others = append(others, group[i].endpoint.Name)
+				if mappingServesAccess(group[i].mapping, access) {
+					siblingServesAccess = true
+				}
 			}
-			if named == nil || len(others) == 0 {
+			if len(others) == 0 {
+				// Nothing could answer this reference but the endpoint it names,
+				// whether or not that endpoint is bound. A missing mapping is a
+				// drop, which core reports and refuseDroppedWorkspaceConfigurationValues
+				// judges.
+				continue
+			}
+			if named == nil {
+				// The endpoint the reference NAMES has no mapping, and a sibling
+				// that would answer it does. No order helps: core's first match
+				// would be the sibling, so the value would address an endpoint
+				// the reference did not name. The siblings are dropped for this
+				// producer instead — the reference then resolves to nothing,
+				// which is a WARN drop in a run and refused in a render by the
+				// outcome check. A reference that cannot be answered correctly
+				// is answered not at all. (Layer-4 round-nine R9-1.)
+				wool.Get(ctx).In("World.orderedForEachReference").Debug(
+					"not binding a producer's other endpoints: a reference names one that published no mapping, and binding the rest would answer it with the wrong endpoint",
+					wool.Field("consumer", consumerLabel(consumer)),
+					wool.Field("reference", "${endpoint:"+referenceText(ref.info)+"}"),
+					wool.Field("instead", strings.Join(others, ", ")))
+				for _, other := range others {
+					unanswerable[other] = true
+				}
 				continue
 			}
 			if !mappingServesAccess(named.mapping, access) {
-				return nil, fmt.Errorf("the workspace configuration reference ${endpoint:%s} names %s's endpoint %q, which has no address for %s's network access, while %s also satisfies that reference: resolving it would hand over an endpoint the reference did not name, so it is refused. Give %q an address for this access, or reference the endpoint you mean",
+				if !siblingServesAccess {
+					// Neither the named endpoint nor any sibling has an address
+					// for this access, so nothing can be handed over wrongly and
+					// there is nothing to refuse: the value simply drops.
+					// Refusing here rejected reference sets that could not
+					// possibly return a sibling's address. (Layer-4 round-nine
+					// R9-3.)
+					continue
+				}
+				return nil, fmt.Errorf("the workspace configuration reference ${endpoint:%s} names %s's endpoint %q, which has no address for %s's network access, while %s also satisfies that reference and does: resolving it would hand over an endpoint the reference did not name, so it is refused. Give %q an address for this access, or reference the endpoint you mean",
 					referenceText(ref.info), unique, ref.info.Name, consumerLabel(consumer),
 					strings.Join(others, ", "), ref.info.Name)
 			}
@@ -2026,8 +2066,16 @@ func orderedForEachReference(
 				before[named.endpoint.Name][other] = true
 			}
 		}
+		// Deduplicated: a producer can publish more than one mapping for one
+		// endpoint name, and counting a name twice made the ordering report a
+		// cycle that does not exist. (Layer-4 round-nine R9-2.)
 		names := make([]string, 0, len(group))
+		seenName := make(map[string]bool, len(group))
 		for _, item := range group {
+			if seenName[item.endpoint.Name] {
+				continue
+			}
+			seenName[item.endpoint.Name] = true
 			names = append(names, item.endpoint.Name)
 		}
 		sorted, err := endpointsInConstraintOrder(names, before)
@@ -2044,6 +2092,9 @@ func orderedForEachReference(
 			return at[a.endpoint.Name] - at[b.endpoint.Name]
 		})
 		for _, item := range ordered {
+			if unanswerable[item.endpoint.Name] {
+				continue
+			}
 			out = append(out, item.mapping)
 		}
 	}
