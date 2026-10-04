@@ -14,6 +14,7 @@ require (
 	github.com/codefly-dev/core v0.9.0
 	github.com/codefly-dev/golor v0.1.3
 	github.com/codefly-dev/llm v0.1.7
+	github.com/codefly-dev/sdk-go/workcontext v0.0.0-20261004150844-cc237a0e1aef
 	github.com/compose-spec/compose-go v1.20.2
 	github.com/creack/pty v1.1.24
 	github.com/docker/docker v28.5.2+incompatible

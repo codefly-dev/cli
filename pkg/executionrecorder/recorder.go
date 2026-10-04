@@ -20,6 +20,7 @@ import (
 	"github.com/codefly-dev/core/executionreceipt"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
+	workcontextgrpc "github.com/codefly-dev/sdk-go/workcontext/grpctransport"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -149,7 +150,7 @@ func New(config Config) (*Recorder, error) {
 // execute the effect again.
 func (r *Recorder) Begin(
 	ctx context.Context,
-	execution ExecutionContext,
+	execution workcontextgrpc.ExecutionContext,
 	input BeginInput,
 ) (BeginResult, error) {
 	if r == nil {
@@ -182,13 +183,9 @@ func (r *Recorder) Begin(
 		Assurance:     input.Assurance,
 		Target:        target,
 	}
-	// Refused here, before the authority, because the receipt this call writes
-	// carries the capability's digest: without a verified capability there is
-	// nothing to digest, and a receipt attesting to an unverified execution is
-	// worse than no receipt. An Authority implementation could also refuse, but
-	// the recorder must not depend on every implementation remembering to.
-	if verified == nil {
-		return BeginResult{}, fmt.Errorf("%w: a governed execution requires a verified Work Context; this recorder does not verify capabilities and will not attest to an unverified one", ErrInvalid)
+	claims, err := r.authority.Verify(ctx, execution.Capability(), admission)
+	if err != nil {
+		return BeginResult{}, fmt.Errorf("%w: verify Work Context: %v", ErrInvalid, err)
 	}
 	if authorizeErr := r.authority.Authorize(ctx, verified, admission); authorizeErr != nil {
 		return BeginResult{}, fmt.Errorf("%w: authorize Work Context: %v", ErrInvalid, authorizeErr)
@@ -243,7 +240,7 @@ func (r *Recorder) Begin(
 	}
 	admission.Target = target
 	attemptID := stableAttemptID(claims.GetTenantId(), r.producer.GetId(), execution.OperationID())
-	tokenDigest := sha256.Sum256([]byte(execution.WorkContext()))
+	tokenDigest := sha256.Sum256([]byte(execution.Capability()))
 
 	existing, startedReceipt, found, lookupErr := r.findExisting(ctx, claims.GetTenantId(), execution.OperationID(), attemptID)
 	if lookupErr != nil {

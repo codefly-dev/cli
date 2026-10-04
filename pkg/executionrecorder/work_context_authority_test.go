@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -160,17 +161,28 @@ func TestWorkContextAuthorityRefusesStaleIssuerState(t *testing.T) {
 }
 
 // TestNoSecondWorkContextImplementation is the import gate core's README asks
-// a consumer to hold: the Work Context has one implementation, in core, and
-// this module neither requires the SDK's copy nor imports it anywhere.
+// a consumer to hold. The Work Context has one implementation, core's. The
+// SDK's leaf re-exports it and owns the carriers — but only from the commit
+// that deleted its own second implementation (a hand-written JSON payload
+// signed beside core's proto encoding), so this module pins that leaf at or
+// after that commit, by its pseudo-version, and nothing in the module names
+// the deleted verifier's surface.
 func TestNoSecondWorkContextImplementation(t *testing.T) {
 	root := moduleRoot(t)
 	modFile, err := os.ReadFile(filepath.Join(root, "go.mod"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(modFile, []byte("codefly-dev/sdk-go")) {
-		t.Fatal("go.mod requires the SDK's Work Context implementation; core/workcontext is the only one")
+	pin := regexp.MustCompile(`github\.com/codefly-dev/sdk-go/workcontext v0\.0\.0-(\d{14})-[0-9a-f]{12}`).FindSubmatch(modFile)
+	if pin == nil {
+		t.Fatal("go.mod does not pin github.com/codefly-dev/sdk-go/workcontext at a commit; the leaf has no tag by design, and the carrier comes from it")
 	}
+	const cutover = "20261004150844" // sdk-go cc237a0e1: the second implementation deleted, core v0.9.0 re-exported
+	if string(pin[1]) < cutover {
+		t.Fatalf("sdk-go/workcontext is pinned at %s, before the commit that deleted its second implementation (%s)", pin[1], cutover)
+	}
+	// Built by concatenation so this file does not name what it refuses.
+	deleted := []string{"WorkContext" + "JWKSVerifier", "ParseWorkContext" + "Token", "WorkContext" + "Expectations", "NewWorkContext" + "Verifier", "WorkContext" + "Signer", "RequireWorkContext" + "Scope"}
 	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -188,8 +200,10 @@ func TestNoSecondWorkContextImplementation(t *testing.T) {
 		if readErr != nil {
 			return readErr
 		}
-		if bytes.Contains(content, []byte(`"github.com/codefly-dev/`+`sdk-go/workcontext`)) {
-			t.Errorf("%s imports the SDK's Work Context implementation", path)
+		for _, name := range deleted {
+			if bytes.Contains(content, []byte(name)) {
+				t.Errorf("%s names %s, the SDK's deleted second implementation of the Work Context", path, name)
+			}
 		}
 		return nil
 	})

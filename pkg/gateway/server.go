@@ -55,6 +55,8 @@ import (
 	githubtoolbox "github.com/codefly-dev/core/toolbox/github"
 	"github.com/codefly-dev/core/wool"
 	wotel "github.com/codefly-dev/core/wool/otel"
+	"github.com/codefly-dev/sdk-go/workcontext"
+	workcontextgrpc "github.com/codefly-dev/sdk-go/workcontext/grpctransport"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -110,7 +112,7 @@ type Config struct {
 // ExecutionRecorder is the narrow neutral lifecycle capability used by the
 // Gateway. Warden and every other exporter stay behind Codefly's plugin API.
 type ExecutionRecorder interface {
-	Begin(context.Context, executionrecorder.ExecutionContext, executionrecorder.BeginInput) (executionrecorder.BeginResult, error)
+	Begin(context.Context, workcontextgrpc.ExecutionContext, executionrecorder.BeginInput) (executionrecorder.BeginResult, error)
 	RecoverIncomplete(context.Context, int) (int, error)
 }
 
@@ -2080,18 +2082,32 @@ func (s *Server) headRevision(ctx context.Context) string {
 	return commits[0].SHA
 }
 
-// validateOptionalExecutionContext rejects a malformed execution context while
-// leaving a request that carries none alone.
-//
-// Presence is no longer a library question: sdk-go's grpctransport dropped the
-// three-value form, so absence is simply its error path. The two cases are told
-// apart HERE, by looking for the carrier in the metadata, and that has to be
-// this package's business — a gateway serving ungoverned callers cannot treat
-// "no capability" as a fault, and must not treat "a capability that does not
-// parse" as absence either.
+// executionCarrierPresent reports whether the call carries a Work Context at
+// all, by the carrier names the SDK exports — the capability's, and the two
+// installation pre-checks that travel beside it. The SDK deleted its own
+// "if present" extraction on purpose: a capability-bearing path requires the
+// capability, and a call carrying half the carriers is refused like one
+// carrying none. What stays optional here is attribution on paths that are
+// not governed effects (a dry run, a file write outside the recorder): a
+// carrier that is presented must be whole, and none may be presented.
+func executionCarrierPresent(ctx context.Context) bool {
+	values, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return false
+	}
+	for _, name := range []string{workcontext.HeaderName, workcontext.InstallationIDHeaderName, workcontext.InstallationRevisionHeaderName} {
+		if len(values.Get(name)) != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 func validateOptionalExecutionContext(ctx context.Context) error {
-	_, _, err := executionrecorder.ExecutionContextFromIncomingIfPresent(ctx)
-	if err != nil {
+	if !executionCarrierPresent(ctx) {
+		return nil
+	}
+	if _, err := workcontextgrpc.GRPCExecutionContextFromIncoming(ctx); err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid Codefly execution context: %v", err)
 	}
 	return nil
@@ -2109,27 +2125,53 @@ func (s *Server) beginGovernedExecution(
 	ctx context.Context,
 	input executionrecorder.BeginInput,
 ) (*executionrecorder.Attempt, bool, error) {
-	execution, present, err := executionrecorder.ExecutionContextFromIncomingIfPresent(ctx)
-	if err != nil {
-		return nil, false, status.Errorf(codes.InvalidArgument, "invalid Codefly execution context: %v", err)
-	}
-	if !present {
-		return nil, false, nil
-	}
-	if _, err := workcontextgrpc.GRPCExecutionContextFromIncoming(ctx); err != nil {
-		return nil, false, status.Errorf(codes.InvalidArgument, "invalid Codefly execution context: %v", err)
-	}
+	present := executionCarrierPresent(ctx)
 	if s.executionRecorder == nil {
+		if !present {
+			return nil, false, nil
+		}
 		return nil, true, status.Error(
 			codes.FailedPrecondition,
 			"Codefly execution authority was supplied but governed execution is not configured",
 		)
 	}
-	// REFUSED, not admitted — through effect.RefuseGoverned, which is the one
-	// refusal and carries the reasoning. The admission path that used to
-	// follow is deleted rather than left unreachable behind it: a
-	// compatibility path nobody takes is still a path somebody can re-enable.
-	return nil, true, effect.RefuseGoverned()
+	// With governed execution configured, every governed effect needs the
+	// carrier: a call carrying none used to run the effect ungoverned, which
+	// is the optional-carrier escape hatch the SDK closed on its side.
+	if !present {
+		return nil, true, status.Error(
+			codes.Unauthenticated,
+			"governed execution requires a Codefly Work Context on every governed effect, and this call carries none",
+		)
+	}
+	execution, err := workcontextgrpc.GRPCExecutionContextFromIncoming(ctx)
+	if err != nil {
+		return nil, true, status.Errorf(codes.InvalidArgument, "invalid Codefly execution context: %v", err)
+	}
+	result, err := s.executionRecorder.Begin(ctx, execution, input)
+	if err != nil {
+		if errors.Is(err, executionrecorder.ErrConflict) {
+			return nil, true, status.Errorf(
+				codes.AlreadyExists,
+				"governed operation identity conflict: %v",
+				err,
+			)
+		}
+		return nil, true, status.Errorf(codes.PermissionDenied, "governed execution admission failed: %v", err)
+	}
+	if result.Existing != nil {
+		receipt := result.Existing.Attestation.GetReceipt()
+		return nil, true, status.Errorf(
+			codes.AlreadyExists,
+			"operation %q already has durable stage %s; effect was not re-executed",
+			receipt.GetOperationId(),
+			receipt.GetStage(),
+		)
+	}
+	if result.Attempt == nil {
+		return nil, true, status.Error(codes.Internal, "governed execution admission returned no attempt")
+	}
+	return result.Attempt, true, nil
 }
 
 func finishGovernedExecution(

@@ -17,6 +17,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/executiondispatcher"
 	"github.com/codefly-dev/cli/pkg/executionjournal"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
+	workcontextgrpc "github.com/codefly-dev/sdk-go/workcontext/grpctransport"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 )
@@ -279,7 +280,7 @@ func appendStartedBeforeProcessLoss(stateDir string) error {
 	}
 	signature := make([]byte, 64)
 	token := "e30." + base64.RawURLEncoding.EncodeToString(signature)
-	execution, err := NewExecutionContext(token, "operation-process-loss")
+	execution, err := workcontextgrpc.NewExecutionContext(token, "operation-process-loss")
 	if err != nil {
 		return err
 	}
@@ -365,7 +366,7 @@ type recorderFixture struct {
 	attestor    *executionattestor.FileAttestor
 	authority   Authority
 	producer    *executionv1.ExecutionProducerV1
-	execution   ExecutionContext
+	execution   workcontextgrpc.ExecutionContext
 	clock       *testClock
 }
 
@@ -385,7 +386,7 @@ func newRecorderFixture(t *testing.T) *recorderFixture {
 
 	signature := make([]byte, 64)
 	token := "e30." + base64.RawURLEncoding.EncodeToString(signature)
-	execution, err := NewExecutionContext(token, "operation-1")
+	execution, err := workcontextgrpc.NewExecutionContext(token, "operation-1")
 	if err != nil {
 		t.Fatal(err)
 	}

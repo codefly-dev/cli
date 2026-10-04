@@ -13,10 +13,25 @@ The Work Context is a core proto (`codefly.base.v0.WorkContextV1`), and
 `github.com/codefly-dev/core/workcontext` is its **only** mint and its only
 verify — the deterministic proto marshal, Ed25519 over those bytes. The CLI
 does not carry a second one. `pkg/executionrecorder` resolves to core's
-`Authenticator` by alias, pinned by a compile-time assertion, and
-`TestNoSecondWorkContextImplementation` refuses a module that requires or
-imports the SDK's earlier copy (which signed a hand-written JSON payload and
-is what core's `ErrNotACoreToken` exists to name).
+`Authenticator` by alias, pinned by a compile-time assertion.
+
+The SDK's leaf, `github.com/codefly-dev/sdk-go/workcontext`, is the **client
+side** of the capability and the owner of its **carriers** — the HTTP header
+and the gRPC metadata the capability travels in, with the sealed installation
+beside it as a pre-check (`x-codefly-work-context`,
+`x-codefly-installation-id`, `x-codefly-installation-revision`, and the
+operation id). It mints nothing and verifies nothing: what it exports as a
+verification entry point is core's, by alias, and it deliberately does not
+re-export core's verify-only `Authenticator` (a client holds no issuer
+sources). The gateway reads the carrier through
+`sdk-go/workcontext/grpctransport` and verifies through core — one carrier,
+one verifier, each in the repository that owns it. The leaf has no tag by
+design; it is pinned by commit, and only from the commit where its own
+earlier second implementation (a hand-written JSON payload signed beside
+core's proto encoding, what core's `ErrNotACoreToken` exists to name) was
+deleted. `TestNoSecondWorkContextImplementation` holds both: the pin at or
+after that commit, and nothing in this module naming the deleted verifier's
+surface.
 
 `Authenticator` is the entrypoint for a party that verifies **without
 minting**. It assembles core's `Verifier` and calls `Verify`, so there is one
@@ -48,6 +63,16 @@ The recorder adds one requirement of its own, at the use site: the actor's
 effective scopes must grant `evidence`/`append` **naming this producer**
 explicitly. Under core's containment rule a scope naming no resource is a
 wildcard; the recorder does not take a wildcard for the evidence it appends.
+
+The carrier is whole or absent, never half. The SDK deleted its "extract if
+present" entry point on purpose — a capability-bearing path requires the
+capability, and a call carrying half the carriers is refused like one
+carrying none — and the gateway follows it: with governed execution
+configured, a governed effect carrying no Work Context is **refused**
+(`Unauthenticated`) instead of running ungoverned, which was the
+optional-carrier escape hatch on this side. Paths that are not governed
+effects (a dry run, a file write outside the recorder) still take a call
+with no carrier, and refuse a presented carrier that is not whole.
 
 ## What is unavailable, and why it refuses rather than degrades
 
