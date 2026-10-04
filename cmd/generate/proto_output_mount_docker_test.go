@@ -44,6 +44,49 @@ func TestProtoStagingMountIsQualifiedAgainstARealBindMount(t *testing.T) {
 		}
 	})
 
+	// The mount probe alone cannot establish that what a run emitted is the
+	// invoking user's to publish. buf creates its output directories 0700, and
+	// on Linux a bind mount preserves the identity that created a file, so an
+	// unmapped companion emits a tree its caller cannot read or clean up — what
+	// document-store PR429 hit against v0.1.174. Desktop Docker maps container
+	// ownership onto the host user and hides this entirely, so the publication
+	// below only fails on Linux; the identity assert holds everywhere.
+	t.Run("private emissions can be published and removed by the host", func(t *testing.T) {
+		staging := t.TempDir()
+		companion := mountedCompanion(t, staging, protoStagingRoot)
+		// The identity is recorded before the umask so it stays readable whoever
+		// emitted it: a mapping regression then reports the identity the
+		// companion ran as instead of failing to read its own evidence. It sits
+		// at the staging root, outside the slot publication reads.
+		script := `id -u > /staging/identity && id -g >> /staging/identity && umask 077 && mkdir -p /staging/0/nested && printf emitted > /staging/0/nested/value.txt`
+		if err := companion(t.Context(), "sh", "-c", script); err != nil {
+			t.Fatalf("emit a private tree into the staging mount: %v", err)
+		}
+		// Publication is the first half of what PR429 reported: buf generated,
+		// and the host could not inspect the slot to find out what.
+		root := t.TempDir()
+		out := filepath.Join(root, "gen")
+		if err := publishProtoOutputs(staging, root, []string{out}, false, "buf.gen.yaml"); err != nil {
+			t.Fatalf("publish a private container emission: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(out, "nested", "value.txt"))
+		if err != nil || string(got) != "emitted" {
+			t.Fatalf("published content = %q, %v", got, err)
+		}
+		// The second half: generateProtoCode removes the staging tree in a
+		// defer, and that failed on the same permission in the same run.
+		if err := os.RemoveAll(filepath.Join(staging, "0")); err != nil {
+			t.Fatalf("host cannot remove a private emission: %v", err)
+		}
+		identity, err := os.ReadFile(filepath.Join(staging, "identity"))
+		if err != nil {
+			t.Fatalf("read the emitting identity: %v", err)
+		}
+		if want := fmt.Sprintf("%d\n%d\n", os.Getuid(), os.Getgid()); string(identity) != want {
+			t.Fatalf("companion emitted as %q, want the invoking host user %q", identity, want)
+		}
+	})
+
 	// What #836 was about, in the shape it now takes: the companion resolves
 	// its staging path inside its own filesystem, writes a complete tree
 	// there, exits 0, and the host sees nothing. Mounting a different
@@ -75,6 +118,7 @@ func mountedCompanion(t *testing.T, hostRoot, containerRoot string) protoCommand
 	if err != nil {
 		t.Fatalf("create docker environment: %v", err)
 	}
+	configureProtoRunnerUser(runner)
 	runner.WithEphemeral()
 	runner.WithMount(hostRoot, containerRoot)
 	runner.WithPause()
