@@ -226,8 +226,12 @@ func reuseCarrier(ctx context.Context, what string, carrier *[]byte, planned, pa
 	// The delivered carrier is held to the release policy; the plan's was
 	// signed by this release and checked as it was signed, so it is held to
 	// the document only.
+	// The plan's carrier is held to the release policy AS IT IS NOW, like a
+	// delivered one: a plan records reused carriers as well as fresh
+	// signatures, and a policy tightened between the plan and the publish
+	// must reach both. A plan the policy no longer admits is stale, and the
+	// publish refuses it rather than signing anything.
 	planChecked := *opts
-	planChecked.ReuseCheck = nil
 	for _, candidate := range []struct {
 		carrier []byte
 		under   *deliveryPublishOptions
@@ -247,7 +251,7 @@ func reuseCarrier(ctx context.Context, what string, carrier *[]byte, planned, pa
 	*carrier = nil
 	switch {
 	case opts.Executing && !opts.AllowUnsigned:
-		return "", false, fmt.Errorf("%s has no carrier the inspected plan signed and none the release policy admits; a publish signs nothing its plan did not — plan again", what)
+		return "", false, fmt.Errorf("%s has no carrier the release policy admits now — not the one delivered, not the one the inspected plan carries; the plan is stale under the policy as it is, and a publish signs nothing its plan did not: plan again", what)
 	case len(delivered) > 0 && !opts.Resign:
 		return "", false, fmt.Errorf("%s was signed by an identity the release policy no longer admits; signing it again is deliberate: plan and publish with --resign", what)
 	}

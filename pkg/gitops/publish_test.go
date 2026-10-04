@@ -20,7 +20,6 @@ import (
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 )
 
 var preparedPermit = mutationauthority.NewPreparedPermit()
@@ -248,38 +247,7 @@ func hostedPublishWorkspace(t *testing.T) (ctx context.Context, workspace *resou
 		t.Fatal(err)
 	}
 	env = selectedEnvironment(t, workspace, "production")
-	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
-	if _, err := RenderOwnedTree(ctx, &RenderOptions{
-		Destination: destination, Module: "payments", UnitNames: []string{"api", "host"},
-		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "deployments", "modules", "payments")),
-		Units:       promotableServiceGraph("payments", []string{"api", "host"}),
-		Environment: "production", Namespace: "payments", AppProject: "payments", Promotable: true,
-		Workspace: "payments", Host: env.Host,
-		SolutionInstances: []SolutionInstance{{
-			Kind: solutionhost.KindModule, Name: "payments", Package: "example/payments", Version: "1.0.0", ReleaseDigest: testReleaseDigest,
-			Units: []SolutionArtifactUnit{
-				{Name: "api", Path: "services/api", Subject: "payments@example.iam.test"},
-				{Name: "host", Path: "services/host", Subject: "payments@example.iam.test"},
-			},
-		}},
-	}, func(ctx context.Context, stage string) error {
-		for _, name := range []string{"api", "host"} {
-			overlay := filepath.Join(stage, "services", name, "overlays", "production")
-			if err := os.MkdirAll(overlay, 0o755); err != nil {
-				return err
-			}
-			manifest := strings.ReplaceAll(pinnedDeployment, "name: api", "name: "+name)
-			if err := os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(manifest), 0o644); err != nil {
-				return err
-			}
-			if err := os.WriteFile(filepath.Join(overlay, "kustomization.yaml"), []byte("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.yaml\n"), 0o644); err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
+	renderHostedPayments(t, workspace, env, pinnedDeployment, hostedPaymentsInstances())
 	configureSSHSigning(t)
 	return ctx, workspace, env, remote
 }

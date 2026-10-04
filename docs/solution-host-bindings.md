@@ -557,7 +557,11 @@ workflow path and ref, as GitHub Actions states them to the job
 the environment's reviewed `host.release` policy **first**, so a workflow or
 a ref the host would refuse never signs. A carrier delivered earlier is held
 to the policy itself (its repository and workflow at any of its refs) before
-it is reused. The workflow identity exists only where those two variables are
+it is reused — and so is the carrier an inspected plan carries, under the
+policy **as it is at publish**: a plan records reused carriers as well as
+fresh signatures, and a policy tightened between the plan and the publish
+reaches both; a plan the policy no longer admits is stale and refused by
+name, with nothing signed. The workflow identity exists only where those two variables are
 set, local or not; a hosted release publish run without it (from a laptop, or
 from a workflow that does not expose it) is **refused before it reads a
 document**, rather than signing unchecked or reusing delivered carriers under
@@ -742,15 +746,30 @@ the cell grants a Job the service's reachability.
 It is regenerated whole on every render from the module trees on disk, and
 carries no generation and no tombstone — a workload absent from it is not
 delivered, which is the opposite of the presence document's rule. Publish
-stages **this module's contribution**: the namespace entry **derived from the
-exact tree it publishes** — the render's own derivation applied to the staged
-tree and its inventory, for a forward publish and for a rollback alike, which
-contributes the restored tree's cell — never read from a file that could
-describe another tree. The workspace's cell file, the render's output, is
-held to that derivation on a forward publish and refused when its entry does
-not describe the rendered tree (workloads, selectors, accounts, identities,
-endpoints, release), and the contribution is held to the host declared now
-before it is merged into the cell the delivery repository already holds at
+stages **this module's contribution**: the namespace entry derived by the
+render's own derivation applied to the tree it publishes — for a forward
+publish and for a rollback alike, which contributes the restored tree's cell
+— never read from a file that could describe another tree. What the tree
+says is read off the tree: the workloads, their images, selectors, accounts,
+identities, artifacts and release. What the composition says is **the
+composition's declaration as it stands at publish**, not a record the tree
+carries: the endpoints and their ports, ingress, bindings, cloud identity,
+egress, and the consumer edges — so a rollback restores the workloads and
+re-reads those declarations, and a declaration changed since the render is
+what the cell carries. Persisting them in the render's inventory, so a publish
+derives from immutable inputs and refuses drift, is owed and named. The
+workspace's cell file, the render's output, is held on a forward publish to a
+derivation over the inventory **as rendered** (the render cannot know the
+tombstones a publish synthesizes) and refused when its entry does not match;
+the delivered cell is then derived from the **settled** inventory, delivery
+Job included, so a publish that withdraws the last declaration describes the
+Job that delivers its tombstones. The consumer edges a publish reconciles
+into other modules' entries come from the same dependency graph the cell
+render builds (every composed service's `service-dependencies`, a dependency
+naming no endpoint reaching every endpoint of its target), so the edges do
+not depend on which module publishes first. The contribution is held to the
+host declared now before it is merged into the cell the delivery repository
+already holds at
 `<gitops path>/cells/<environment>/cell.yaml` (outside every module path and
 matched by no Argo overlay), every other module's entry kept as delivered.
 Three rules keep the merge honest. The cell is **one host's record**: the

@@ -30,21 +30,25 @@ import (
 // nothing re-POSTs it. A hook runs on every sync of the Application, from state
 // that still exists — the ConfigMaps — so a replay after a restore is an
 // ordinary `argocd app sync`, and a sync that changes nothing else re-POSTs a
-// generation the host answers "current" to. BeforeHookCreation deletes the
-// previous run before the next, so completed Jobs do not accumulate.
+// generation the host answers "current" to. BeforeHookCreation deletes a hook
+// of the SAME NAME before creating it again; the Job's name carries its set's
+// content, so a changed set is a new name, and completed Jobs of earlier
+// generations accumulate until an operator prunes them — retention this
+// renderer does not do.
 //
 // Reachability is a retry, not a sync wave. A per-module Application cannot
 // express "after the host's delivery API is reachable", because the host is
 // another module's Application; so the Job retries a transport failure or a
-// 5xx with backoff until the API answers. What the wave orders is narrower and
-// exact. The Job lives in the bindings (or authority) Application beside the
-// ConfigMaps it mounts and the ServiceAccount it runs as, which sit at the
-// default wave; it is annotated one wave later so it runs once they exist.
-// That Application is itself generated in the module-resources wave, before
-// any unit's Application, so delivery is never held behind the readiness of
-// workloads that may need the presence it delivers in order to become ready —
-// a later placement would be a deadlock the host's "no applied generation yet"
-// retry could not break.
+// 5xx with backoff until the API answers, inside its budget. What the wave
+// orders is narrower: the Job lives in the bindings (or authority)
+// Application beside the ConfigMaps it mounts and the ServiceAccount it runs
+// as, which sit at the default wave, and is annotated one wave later so it
+// runs once they exist. Where a parent syncs the module's Applications by
+// wave, that Application lands beside the module's consumers (after its
+// bootstrap units) — neither waits for the other — except for the module
+// that serves the delivery API itself, whose delivery follows its units; see
+// deliveryWaveFor. The Applications an ApplicationSet stamps otherwise sync
+// independently, and no real readiness model has run this ordering.
 //
 // A terminal answer — a stale or rewritten generation (409), a document the
 // host refuses (422), a carrier it does not accept (401, 403) — fails the Job,
@@ -466,9 +470,10 @@ func renderDeliveryServiceAccount(directory, namespace string) (string, error) {
 // bounded to a Kubernetes name.
 // deliveryJobName names the Job that delivers one settled set: the kind, the
 // module, the environment and a digest of the carriers it posts. The digest
-// makes the Job per generation — a changed set is a new Job, which the hook's
-// BeforeHookCreation policy replaces, and an unchanged set is the same Job,
-// which a re-sync leaves alone. The environment keeps two environments of one
+// makes the Job per generation — a changed set is a new Job under a new name
+// (the previous one stays, completed, until pruned: BeforeHookCreation
+// replaces a hook of the same name only), and an unchanged set is the same
+// Job, which a re-sync leaves alone. The environment keeps two environments of one
 // workspace on one cluster from replacing each other's Job in the authority
 // namespace, which they share.
 func deliveryJobName(kind, module, environment string, carriers [][]byte) string {

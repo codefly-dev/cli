@@ -1021,7 +1021,15 @@ func TestPublishResignsAReusedCarrierTheReleasePolicyNoLongerAdmits(t *testing.T
 
 	// The signing identity rotated: signing again is deliberate, so the
 	// plan refuses by name until told to.
-	opts.ReuseCheck = func(context.Context, []byte, []byte) error { return errors.New("the signing identity rotated") }
+	// The policy rotates: the carrier delivered under the earlier identity
+	// (the signer's first bundle) is refused; what the current identity
+	// signs is admitted.
+	opts.ReuseCheck = func(_ context.Context, bundle, _ []byte) error {
+		if bytes.Contains(bundle, []byte(`"nonce":1,`)) {
+			return errors.New("the signing identity rotated")
+		}
+		return nil
+	}
 	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), &opts)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "--resign")
@@ -1073,7 +1081,15 @@ func TestPublishExecutesThePlanItInspectedForBothHalves(t *testing.T) {
 	repository.deliver(t)
 
 	rotated := opts
-	rotated.ReuseCheck = func(context.Context, []byte, []byte) error { return errors.New("rotated") }
+	// The policy rotates: the two delivered carriers (the signer's first
+	// two bundles, one per half) are refused; what the current identity signs
+	// is admitted.
+	rotated.ReuseCheck = func(_ context.Context, bundle, _ []byte) error {
+		if bytes.Contains(bundle, []byte(`"nonce":1,`)) || bytes.Contains(bundle, []byte(`"nonce":2,`)) {
+			return errors.New("rotated")
+		}
+		return nil
+	}
 	rotated.Resign = true
 	rotated.Carriers = nil
 	settleBoth(&rotated)
@@ -1193,7 +1209,7 @@ func TestPublishRefusesACellRenderedForAnotherHost(t *testing.T) {
 		options: deliveryPublishOptions{Module: "crm", Coordinate: "elsewhere/prod/x", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example"}}
 	var contribution cell.File
 	require.NoError(t, yaml.Unmarshal(data, &contribution))
-	err = stageCellContribution(context.Background(), repository.repo, publication, &contribution, &Inventory{Module: "crm"})
+	err = stageCellContribution(context.Background(), repository.repo, publication, &contribution, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "the cell file describes host example/prod/region-a")
 }
@@ -1288,4 +1304,29 @@ func TestPublishHoldsABindingToItsRevisionAcrossRemovalAndReintroduction(t *test
 	require.Contains(t, err.Error(), "another meaning")
 	// Above it: a new generation.
 	require.NoError(t, settle(other, modelBinding(6, "modelservice.profiles:read")))
+}
+
+// TestPublishRefusesAPlanWhoseCarrierThePolicyNoLongerAdmits: the plan's
+// carrier is held to the release policy as it is at publish, like a
+// delivered one — a plan records reused carriers as well as fresh signatures,
+// and a policy tightened between the plan and the publish reaches both. A
+// stale plan is refused by name and nothing is signed.
+func TestPublishRefusesAPlanWhoseCarrierThePolicyNoLongerAdmits(t *testing.T) {
+	ctx := context.Background()
+	repository := newDeliveryRepository(t)
+	signer := &fakeSigner{nonce: true}
+	opts := deliveryPublishOptions{Signer: signer, Target: testDeliveryTarget(), Domain: "example", Module: "crm"}
+	_, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), &opts)
+	require.NoError(t, err)
+	require.Equal(t, 1, signer.signed)
+	require.NotEmpty(t, opts.Carriers, "the plan recorded what it signed")
+
+	// The policy tightens after the plan: it admits nothing the plan carries.
+	executing := opts
+	executing.Reuse, executing.Executing, executing.Carriers = opts.Carriers, true, nil
+	executing.ReuseCheck = func(context.Context, []byte, []byte) error { return errors.New("the release policy was tightened") }
+	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), &executing)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "plan again")
+	require.Equal(t, 1, signer.signed, "an executing publish signs nothing")
 }
