@@ -2056,6 +2056,7 @@ Flags:
       --env string                                                                        Environment to promote (default "local")
       --local                                                                             Use a disposable local file Git remote for k3d qualification
       --promotion-branch string                                                           Promotion branch (deterministic default when empty)
+      --resign                                                                            Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied
       --skip-workspace-readiness codefly doctor workspace --env <env> --module <module>   Proceed even when codefly doctor workspace --env <env> --module <module> says the workspace is not ready (for an operator mid-repair; the skip is announced in the output)
 ```
 
@@ -2076,6 +2077,7 @@ Flags:
       --local                                                                             Use a disposable local file Git remote for k3d qualification
       --message string                                                                    Signed commit message
       --promotion-branch string                                                           Promotion branch (deterministic default when empty)
+      --resign                                                                            Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied
       --skip-workspace-readiness codefly doctor workspace --env <env> --module <module>   Proceed even when codefly doctor workspace --env <env> --module <module> says the workspace is not ready (for an operator mid-repair; the skip is announced in the output)
       --title string                                                                      Promotion pull request title
   -y, --yes                                                                               Publish the inspected plan without an interactive confirmation
@@ -2188,6 +2190,7 @@ Flags:
       --local                        Use a disposable local file Git remote for k3d qualification
       --message string               Signed commit message
       --promotion-branch string      Promotion branch (deterministic default when empty)
+      --resign                       Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied
       --title string                 Promotion pull request title
       --to-revision string           Previously reviewed Git revision to re-promote
   -y, --yes                          Publish the inspected plan without an interactive confirmation
