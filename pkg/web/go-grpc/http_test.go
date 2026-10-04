@@ -21,7 +21,7 @@ func TestHandlerServesConnectUnary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := (&HttpServer{config: &Configuration{}, impl: server}).handler()
+	h, err := (&HTTPServer{config: &Configuration{}, impl: server}).handler()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestHandlerServesConnectUnary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	graphHandler, err := (&HttpServer{config: &Configuration{}, impl: graphServer}).handler()
+	graphHandler, err := (&HTTPServer{config: &Configuration{}, impl: graphServer}).handler()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestHandlerServesConnectUnary(t *testing.T) {
 // "/" and that its hashed asset bundle is reachable, so the go:embed wiring and
 // the SPA output stay in sync.
 func TestHandlerServesDashboard(t *testing.T) {
-	h, err := (&HttpServer{config: &Configuration{}}).handler()
+	h, err := (&HTTPServer{config: &Configuration{}}).handler()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func get(t *testing.T, url string) string {
 func TestConnectSessionHandshakeDelegatesToServer(t *testing.T) {
 	server, err := NewServer(&Configuration{EndpointGrpc: "127.0.0.1:0"}, nil, nil)
 	require.NoError(t, err)
-	handler, err := (&HttpServer{config: &Configuration{}, impl: server}).handler()
+	handler, err := (&HTTPServer{config: &Configuration{}, impl: server}).handler()
 	require.NoError(t, err)
 	httpServer := httptest.NewServer(handler)
 	defer httpServer.Close()
