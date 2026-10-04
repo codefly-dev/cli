@@ -58,6 +58,9 @@ func TestWireShapesArePinnedByDigest(t *testing.T) {
 			t.Fatalf("the wire shape %s changed; a wire contract changes deliberately: regenerate with -update-wire and tell the host and infra-base sessions the new digest\n--- pinned\n%s\n--- now\n%s", name, pinned, description)
 		}
 	}
+	// What the digest pins is stated beside it, so the stopgap is never read
+	// as more than it is.
+	readme += "\nWhat the digest pins, and what it does not: the descriptions are read off the\nGo types' YAML tags, so the digest is a **structural drift detector** for the\ntagged fields — it pins the descriptions, not the behaviour. A custom decoder\nis outside it: `Ceiling.Actions` and `Ceiling.Scopes` carry no tags because\n`Ceiling.UnmarshalYAML` implements the scope-ceiling union itself (the object\nspelling and the two sequence spellings, with their refusals), so a change to\nthe forms that decoder accepts, or to any refusal rule, leaves the digest\nunchanged. Those rules are held by `pkg/modulecontract`'s tests here and by\nnothing shared; the shared fixtures arrive with the move to core, which is\nthe item this stopgap stands in for.\n"
 	if *updateWire {
 		if err := os.WriteFile(filepath.Join(root, "README.md"), []byte(readme), 0o600); err != nil {
 			t.Fatal(err)
