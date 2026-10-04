@@ -85,7 +85,7 @@ func prepare(ctx context.Context, absoluteSource string, plugin *resources.Agent
 
 	workspaceDir := filepath.Join(temporary, "workspace")
 	serviceDir := filepath.Join(workspaceDir, "services", "source")
-	if err := os.MkdirAll(serviceDir, 0o755); err != nil {
+	if err = os.MkdirAll(serviceDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create source service: %w", err)
 	}
 	workspace := &resources.Workspace{
@@ -96,7 +96,7 @@ func prepare(ctx context.Context, absoluteSource string, plugin *resources.Agent
 		}},
 	}
 	workspace.WithDir(workspaceDir)
-	if err := workspace.Save(ctx); err != nil {
+	if err = workspace.Save(ctx); err != nil {
 		return nil, fmt.Errorf("write source workspace: %w", err)
 	}
 	spec := map[string]any{"source-dir": "code"}
@@ -104,7 +104,7 @@ func prepare(ctx context.Context, absoluteSource string, plugin *resources.Agent
 	if _, statErr := os.Stat(filepath.Join(absoluteSource, "go.mod")); statErr == nil {
 		if sourceGoWorkFile := goWorkspaceFile(absoluteSource); sourceGoWorkFile != "" {
 			goWorkFile = filepath.Join(workspaceDir, "go.work")
-			if err := writeNormalizedGoWorkspace(sourceGoWorkFile, goWorkFile); err != nil {
+			if err = writeNormalizedGoWorkspace(sourceGoWorkFile, goWorkFile); err != nil {
 				return nil, fmt.Errorf("prepare Go workspace: %w", err)
 			}
 		}
@@ -117,10 +117,10 @@ func prepare(ctx context.Context, absoluteSource string, plugin *resources.Agent
 		Spec:    spec,
 	}
 	service.WithDir(serviceDir)
-	if err := service.Save(ctx); err != nil {
+	if err = service.Save(ctx); err != nil {
 		return nil, fmt.Errorf("write source service: %w", err)
 	}
-	if err := os.Symlink(absoluteSource, filepath.Join(serviceDir, "code")); err != nil {
+	if err = os.Symlink(absoluteSource, filepath.Join(serviceDir, "code")); err != nil {
 		return nil, fmt.Errorf("link source checkout: %w", err)
 	}
 
@@ -274,7 +274,7 @@ func writeNormalizedGoWorkspace(source, destination string) error {
 	}
 	workspace.Cleanup()
 	workspace.SortBlocks()
-	if err := os.WriteFile(destination, modfile.Format(workspace.Syntax), 0o644); err != nil {
+	if err := os.WriteFile(destination, modfile.Format(workspace.Syntax), 0o600); err != nil {
 		return err
 	}
 	return nil
