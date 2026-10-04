@@ -151,13 +151,13 @@ func TestDeployedRenderRefusesAMountBeyondTheScratchVolume(t *testing.T) {
 	workload := workloadWith("api", `        - name: data
           persistentVolumeClaim:
             claimName: api-data`,
-		`        - name: settings
+		`        - name: config
           configMap:
-            name: api-settings`)
+            name: api-config`)
 	_, destination, err := renderWorkloads(t, meshedStaging(), true, map[string]string{"api": workload})
 	require.ErrorContains(t, err, "deployed render refuses service shop/api")
 	require.ErrorContains(t, err, posture.RuleNonScratchMount)
-	require.ErrorContains(t, err, `volume "settings" takes its contents from a configMap source`)
+	require.ErrorContains(t, err, `volume "config" takes its contents from a configMap source`)
 	require.ErrorContains(t, err, "spec.template.spec.volumes[1].configMap")
 	_, statErr := os.Stat(destination)
 	require.True(t, os.IsNotExist(statErr), "a refused render installs nothing")
@@ -191,9 +191,9 @@ func TestLocalRenderIsNotHeldToTheDeployedPosture(t *testing.T) {
 	mounted := workloadWith("api", `        - name: data
           persistentVolumeClaim:
             claimName: api-data`,
-		`        - name: settings
+		`        - name: config
           configMap:
-            name: api-settings`)
+            name: api-config`)
 	development := workloadWith("store", `        - name: store
           image:`,
 		`        - name: store
@@ -209,13 +209,13 @@ func TestADeclaredAllowanceIsHonouredAndPrintedOnEveryRun(t *testing.T) {
 	mounted := workloadWith("api", `        - name: data
           persistentVolumeClaim:
             claimName: api-data`,
-		`        - name: settings
+		`        - name: config
           configMap:
-            name: api-settings`)
+            name: api-config`)
 	declaration := meshedStaging(
 		posture.Allowance{
 			Rule: posture.RuleNonScratchMount, Service: "shop/api",
-			Reason: "the theme files are a build artifact of the host, reviewed in handbook#215",
+			Reason: "the asset bundle is built into the image, reviewed by the platform owner",
 		},
 		posture.Allowance{
 			Rule: posture.RulePeerTransportMaterial, Service: "shop/store",
@@ -228,7 +228,7 @@ func TestADeclaredAllowanceIsHonouredAndPrintedOnEveryRun(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{
 		"security posture: service shop/api is allowed to break rule non-scratch-mount — " +
-			"the theme files are a build artifact of the host, reviewed in handbook#215",
+			"the asset bundle is built into the image, reviewed by the platform owner",
 		"security posture: service shop/store is allowed to break rule peer-transport-material — " +
 			"an external peer pins its own CA",
 	}, result.PostureAllowances)
@@ -264,9 +264,9 @@ spec:
   template:
     spec:
       volumes:
-        - name: settings
+        - name: config
           configMap:
-            name: api-settings
+            name: api-config
 `,
 		}
 		for path, content := range files {
@@ -278,7 +278,7 @@ spec:
 	})
 	require.ErrorContains(t, err, "deployed render refuses service shop/api")
 	require.ErrorContains(t, err, posture.RuleNonScratchMount)
-	require.ErrorContains(t, err, `volume "settings" takes its contents from a configMap source`)
+	require.ErrorContains(t, err, `volume "config" takes its contents from a configMap source`)
 }
 
 // The environment's own declaration is what reaches the render: a module render
@@ -291,9 +291,9 @@ func TestRenderModuleIsHeldToTheEnvironmentsDeclaredPosture(t *testing.T) {
 			return workload
 		}
 		return workload + `      volumes:
-        - name: settings
+        - name: config
           configMap:
-            name: store-settings
+            name: store-config
 `
 	}
 	workspace, module, env := posturedFixture(t, `    posture:
@@ -311,12 +311,12 @@ func TestRenderModuleIsHeldToTheEnvironmentsDeclaredPosture(t *testing.T) {
       allowances:
         - rule: non-scratch-mount
           service: shop/store
-          reason: reviewed in handbook#215
+          reason: reviewed by the platform owner
 `)
 	result, err := RenderModule(context.Background(), allowed, module, env, "acme-staging", nil)
 	require.NoError(t, err)
 	require.Equal(t, []string{
-		"security posture: service shop/store is allowed to break rule non-scratch-mount — reviewed in handbook#215",
+		"security posture: service shop/store is allowed to break rule non-scratch-mount — reviewed by the platform owner",
 	}, result.PostureAllowances)
 }
 

@@ -140,7 +140,7 @@ implemented. Don't rely on a list kept here — it drifts the moment a command l
   (deployed) render refuses a workload for, the facts an environment asserts about
   its platform, and the reviewed allowances that except one service. Written
   against the shape of a rendered workload, never against a product's names. See
-  [docs/commands.md](docs/commands.md#codefly-deploy-service-name).
+  [docs/commands.md](docs/commands.md#the-deployed-security-posture).
 - **pkg/runnables/** — the one projection of a `resources.Runnable` that every listing
   surface emits (`list runnables --json`, `show runnable --json`, MCP `list_runnables`).
 - **pkg/cli/**, **pkg/builder/**, **pkg/deployments/**, **pkg/generators/**, **pkg/imports/**,

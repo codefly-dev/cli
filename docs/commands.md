@@ -659,16 +659,22 @@ Pass `--allow-unresolved-contracts` to downgrade a violation caused by the
 exposing module not being deployed yet to a skipped check, for bootstrap
 ordering — every other violation still blocks publication.
 
-**The deployed security posture.** A deployed render — any restricted profile:
-`deploy gitops render`, `deploy gitops snapshot`, `deploy module`/`deploy service
---render-only`, `deploy solution`, and the service build behind [`deploy
-dev`](#codefly-deploy-devmoduleservice--the-dev-escape-hatch) — refuses a
-rendered workload that breaks one of three rules. Each refusal names the
-service, the rule and the field that triggered it. A local or ephemeral render
-is not a cell and is not held to them. The posture itself is the platform
-owner's decision, recorded in obin-ai/handbook `decisions/security-posture.md`;
-the render is where it cannot be forgotten, because it is the last door before a
-cell and the one every module, solution and agent passes through.
+#### The deployed security posture
+
+A deployed render — any restricted profile: `deploy gitops render`, `deploy gitops
+snapshot`, `deploy module`/`deploy service --render-only`, `deploy solution`, and
+the service build behind [`deploy
+dev`](#codefly-deploy-devmoduleservice--the-dev-escape-hatch) — refuses a rendered
+workload that breaks one of three rules. Each refusal names the service, the rule
+and the field that triggered it, and points back at this section. A local or
+ephemeral render is not a cell and is not held to them.
+
+**Why the render.** It is the last door before a cell and the one every module,
+solution and agent passes through, so it is the only place a rule of this kind
+cannot be forgotten by one service template, one agent or one environment. Which
+rules a platform holds its cells to is the platform owner's decision; these three
+are the ones codefly ships, and an environment says in its own declaration
+(below) which of them apply to it and who is excepted from them.
 
 | Rule | Refused when |
 | --- | --- |
@@ -684,17 +690,18 @@ hands its container as a single argument is that agent's program, not a field th
 render holds to a rule.
 
 ```
-Error: deployed render refuses service shop/frontend: non-scratch-mount — volume
-"settings" takes its contents from a configMap source, and a deployed workload
+Error: deployed render refuses service shop/web: non-scratch-mount — volume
+"config" takes its contents from a configMap source, and a deployed workload
 mounts only the standard scratch volume (emptyDir) or a durable data claim
 (persistentVolumeClaim); configuration and credentials reach a service as values
 and secrets in the environment variables the render already projects, so a mount
 means something reads a file the platform never delivers
-(services/frontend/base/deployment.yaml: Deployment/frontend
+(services/web/base/deployment.yaml: Deployment/web
 spec.template.spec.volumes[1].configMap). Declare a deliberate exception as an
 environment-level posture allowance (posture.allowances: rule non-scratch-mount,
-service shop/frontend, and the reason), which the render then prints on every
-run. The rule is obin-ai/handbook decisions/security-posture.md
+service shop/web, and the reason), which the render then prints on every
+run. The rule and the allowance mechanism are in docs/commands.md ("The deployed
+security posture")
 ```
 
 **The environment declares the posture**, including the exceptions:
@@ -712,8 +719,8 @@ environments:
       # whichever module renders it) and says why; the reason is required.
       allowances:
         - rule: non-scratch-mount
-          service: saas/frontend
-          reason: the theme files are a build artifact of the host, reviewed in handbook#215
+          service: shop/web
+          reason: the asset bundle is built into the image, reviewed by the platform owner
 ```
 
 An allowance covers **one rule for one service**, so a workload allowed to carry
@@ -725,9 +732,9 @@ every deployed render**, whether or not that run needed it, and a render whose
 exception has become unnecessary says so until the declaration is removed.
 
 ```
-Warning: security posture: service saas/frontend is allowed to break rule
-non-scratch-mount — the theme files are a build artifact of the host, reviewed in
-handbook#215
+Warning: security posture: service shop/web is allowed to break rule
+non-scratch-mount — the asset bundle is built into the image, reviewed by the
+platform owner
 ```
 
 An environment with no `posture` block asserts nothing and allows nothing:
@@ -965,7 +972,7 @@ codefly deploy dev payments/api --env staging --commit --push
    login), the snapshot flow driving the service agent's Build and Deploy with
    push, and the same `@sha256:` digest capture. `DOCKER_HOST` is honoured the
    way every build honours it. That render is held to [the deployed security
-   posture](#codefly-deploy-service-name) exactly as a full one is: a service
+   posture](#the-deployed-security-posture) exactly as a full one is: a service
    whose current code renders a non-scratch mount, its own peer TLS on a
    mesh-protected environment, or a development-mode store is refused before its
    image reaches the cell, naming the service, the rule and the field.

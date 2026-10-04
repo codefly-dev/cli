@@ -3,16 +3,18 @@
 // environment asserts about the platform it deploys onto, and the explicit
 // allowances an owner declares to make an exception of one service.
 //
-// The rules themselves are the owner's decision, recorded in
-// obin-ai/handbook decisions/security-posture.md (handbook#215). This package is
-// where they are enforced, because the render is the last door before a cell and
-// the one every module, solution and agent passes through. Each refusal names
-// three things — the service, the rule, and the field that triggered it — so the
-// person reading it knows what to change without reading this code.
+// Which rules a platform holds its cells to is the platform owner's decision.
+// This package is where a render enforces the ones codefly ships, because the
+// render is the last door before a cell and the one every module, solution and
+// agent passes through. docs/commands.md ("The deployed security posture") states
+// each rule for the person who hits one, and every refusal points there; each
+// refusal also names three things — the service, the rule, and the field that
+// triggered it — so that person knows what to change without reading this code.
 //
-// Nothing here is product-specific: a rule is written against the shape of a
-// rendered Kubernetes workload, never against the name of a service, module or
-// product that happens to break it today.
+// Nothing here is specific to anything codefly deploys: a rule is written against
+// the shape of a rendered Kubernetes workload, never against the name of a
+// service, module, solution or product that happens to break it today, and
+// neither is any example in its tests or docs.
 package posture
 
 import (
@@ -208,7 +210,7 @@ func (violation *Violation) Error() string {
 		"deployed render refuses service %s: %s — %s (%s). "+
 			"Declare a deliberate exception as an environment-level posture allowance "+
 			"(posture.allowances: rule %s, service %s, and the reason), which the render then prints on every run. "+
-			"The rule is obin-ai/handbook decisions/security-posture.md",
+			"The rule and the allowance mechanism are in docs/commands.md (\"The deployed security posture\")",
 		violation.Subject, violation.Rule, violation.Detail, where,
 		violation.Rule, violation.Subject)
 }

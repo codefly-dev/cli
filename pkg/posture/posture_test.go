@@ -159,13 +159,13 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
-        - name: settings
+        - name: config
           configMap:
-            name: store-settings
+            name: store-config
 `,
 			rule:   RuleNonScratchMount,
 			field:  "spec.template.spec.volumes[1].configMap",
-			detail: `volume "settings" takes its contents from a configMap source`,
+			detail: `volume "config" takes its contents from a configMap source`,
 		},
 		{
 			name: "a projected volume",
@@ -276,13 +276,13 @@ spec:
           containers:
             - name: compact
           volumes:
-            - name: settings
+            - name: config
               configMap:
-                name: store-settings
+                name: store-config
 `,
 			rule:   RuleNonScratchMount,
 			field:  "spec.jobTemplate.spec.template.spec.volumes[0].configMap",
-			detail: `volume "settings" takes its contents from a configMap source`,
+			detail: `volume "config" takes its contents from a configMap source`,
 		},
 		{
 			name: "an init container is held to the same rules",
@@ -319,7 +319,7 @@ spec:
 			require.Contains(t, message, test.detail)
 			require.Contains(t, message, "services/store/base/workload.yaml")
 			require.Contains(t, message, "posture.allowances")
-			require.Contains(t, message, "decisions/security-posture.md")
+			require.Contains(t, message, `docs/commands.md ("The deployed security posture")`)
 		})
 	}
 }
@@ -383,23 +383,23 @@ func TestAnAllowanceExcusesExactlyItsRuleAndService(t *testing.T) {
 	manifest := document(t, `apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: frontend
+  name: web
 spec:
   template:
     spec:
       containers:
-        - name: frontend
+        - name: web
       volumes:
-        - name: settings
+        - name: config
           configMap:
-            name: frontend-settings
+            name: web-config
 `)
-	subject := Subject{Module: "shop", Service: "frontend"}
+	subject := Subject{Module: "shop", Service: "web"}
 	bare := &Declaration{Allowances: []Allowance{{
-		Rule: RuleNonScratchMount, Service: "frontend", Reason: "the theme is a build artifact of the host",
+		Rule: RuleNonScratchMount, Service: "web", Reason: "the asset bundle is built into the image",
 	}}}
 	qualified := &Declaration{Allowances: []Allowance{{
-		Rule: RuleNonScratchMount, Service: "shop/frontend", Reason: "the theme is a build artifact of the host",
+		Rule: RuleNonScratchMount, Service: "shop/web", Reason: "the asset bundle is built into the image",
 	}}}
 	require.NoError(t, Validate(manifest, subject, "workload.yaml", bare))
 	require.NoError(t, Validate(manifest, subject, "workload.yaml", qualified))
@@ -408,7 +408,7 @@ spec:
 		Rule: RuleNonScratchMount, Service: "shop/api", Reason: "unrelated",
 	}}}
 	otherRule := &Declaration{Allowances: []Allowance{{
-		Rule: RuleInMemoryStateStore, Service: "shop/frontend", Reason: "unrelated",
+		Rule: RuleInMemoryStateStore, Service: "shop/web", Reason: "unrelated",
 	}}}
 	require.Error(t, Validate(manifest, subject, "workload.yaml", otherService))
 	require.Error(t, Validate(manifest, subject, "workload.yaml", otherRule))
@@ -418,7 +418,7 @@ func TestDeclarationValidationRefusesWhatARenderCouldNotActOn(t *testing.T) {
 	require.NoError(t, (*Declaration)(nil).Validate())
 	require.NoError(t, (&Declaration{
 		Asserts:    map[string]bool{AssertMeshProtectedTransport: true},
-		Allowances: []Allowance{{Rule: RuleNonScratchMount, Service: "shop/frontend", Reason: "reviewed in handbook#215"}},
+		Allowances: []Allowance{{Rule: RuleNonScratchMount, Service: "shop/web", Reason: "reviewed by the platform owner"}},
 	}).Validate())
 
 	require.ErrorContains(t,
@@ -439,11 +439,11 @@ func TestDeclarationValidationRefusesWhatARenderCouldNotActOn(t *testing.T) {
 // needing one must still say the exception stands.
 func TestReportNamesEveryDeclaredAllowance(t *testing.T) {
 	declaration := &Declaration{Allowances: []Allowance{
-		{Rule: RuleNonScratchMount, Service: "shop/frontend", Reason: "the theme is a build artifact"},
+		{Rule: RuleNonScratchMount, Service: "shop/web", Reason: "the theme is a build artifact"},
 		{Rule: RulePeerTransportMaterial, Service: "shop/api", Reason: "an external peer pins its own CA"},
 	}}
 	require.Equal(t, []string{
-		"security posture: service shop/frontend is allowed to break rule non-scratch-mount — the theme is a build artifact",
+		"security posture: service shop/web is allowed to break rule non-scratch-mount — the theme is a build artifact",
 		"security posture: service shop/api is allowed to break rule peer-transport-material — an external peer pins its own CA",
 	}, declaration.Report())
 	require.Nil(t, (*Declaration)(nil).Report())
