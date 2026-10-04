@@ -43,7 +43,7 @@ func TestCIWithPlanOptionsPreservesTransitivePrerequisiteOrder(t *testing.T) {
 		{Service: "management/organization"},
 	}}
 	var organizationDone atomic.Bool
-	err := CIWithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
+	err := WithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
 		switch resources.WithUnique(service).Unique() {
 		case "management/organization":
 			time.Sleep(20 * time.Millisecond)
@@ -67,7 +67,7 @@ func TestCIWithPlanOptionsRunsIndependentTargetsConcurrently(t *testing.T) {
 	release := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- CIWithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
+		done <- WithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
 			entered <- resources.WithUnique(service).Unique()
 			<-release
 			return nil
@@ -97,7 +97,7 @@ func TestCIWithPlanOptionsSerializesSharedRuntimeClosure(t *testing.T) {
 	var active atomic.Int32
 	var maximum atomic.Int32
 	go func() {
-		done <- CIWithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
+		done <- WithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
 			current := active.Add(1)
 			for observed := maximum.Load(); current > observed && !maximum.CompareAndSwap(observed, current); observed = maximum.Load() {
 			}
@@ -142,7 +142,7 @@ func TestCIWithPlanOptionsContinuesIndependentWorkAndBlocksDependents(t *testing
 	}}
 	var ranAccounts atomic.Bool
 	var ranWorker atomic.Bool
-	err := CIWithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
+	err := WithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
 		switch resources.WithUnique(service).Unique() {
 		case "management/organization":
 			return errors.New("organization failed")
@@ -168,7 +168,7 @@ func TestCIWithPlanOptionsFailFastStopsUnscheduledWork(t *testing.T) {
 	_, workspace := loadSchedulerFixture(t)
 	plan := &Plan{Services: []PlannedService{{Service: "management/organization"}, {Service: "management/worker"}}}
 	var workerRan atomic.Bool
-	err := CIWithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
+	err := WithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
 		if resources.WithUnique(service).Unique() == "management/organization" {
 			return errors.New("stop now")
 		}
@@ -183,7 +183,7 @@ func TestCIWithPlanOptionsFailFastStopsUnscheduledWork(t *testing.T) {
 func TestCIWithPlanOptionsReportsConcurrentFailuresInPlanOrder(t *testing.T) {
 	_, workspace := loadSchedulerFixture(t)
 	plan := &Plan{Services: []PlannedService{{Service: "management/consumer"}, {Service: "management/worker"}}}
-	err := CIWithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
+	err := WithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
 		unique := resources.WithUnique(service).Unique()
 		if unique == "management/consumer" {
 			time.Sleep(20 * time.Millisecond)
@@ -244,7 +244,7 @@ func TestCIWithPlanOptionsDrainsRunningTasksOnCancellation(t *testing.T) {
 	var finished atomic.Int32
 	done := make(chan error, 1)
 	go func() {
-		done <- CIWithPlanOptions(ctx, workspace, plan, func(ctx context.Context, _ *resources.Workspace, _ *resources.Module, _ *resources.Service) error {
+		done <- WithPlanOptions(ctx, workspace, plan, func(ctx context.Context, _ *resources.Workspace, _ *resources.Module, _ *resources.Service) error {
 			started <- struct{}{}
 			<-ctx.Done()
 			finished.Add(1)
@@ -371,7 +371,7 @@ func TestCIBuildPreservesPrerequisites(t *testing.T) {
 				}
 				var mu sync.Mutex
 				completed := map[string]bool{}
-				err = CIWithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
+				err = WithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
 					unique := resources.WithUnique(service).Unique()
 					mu.Lock()
 					defer mu.Unlock()
@@ -409,7 +409,7 @@ func TestCIBuildFailureBlocksConsumersAndPreservesIndependentWork(t *testing.T) 
 	if err := prepareCIReportTasks(context.Background(), workspace, plan, options); err != nil {
 		t.Fatal(err)
 	}
-	err := CIWithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
+	err := WithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
 		if service.Name == "organization" {
 			return errors.New("image build failed")
 		}
@@ -459,7 +459,7 @@ func TestCICancelledPlanDoesNotStartTasks(t *testing.T) {
 	cancel()
 	plan := &Plan{Services: []PlannedService{{Service: "management/organization"}}}
 	var ran atomic.Bool
-	err := CIWithPlanOptions(ctx, workspace, plan, func(context.Context, *resources.Workspace, *resources.Module, *resources.Service) error {
+	err := WithPlanOptions(ctx, workspace, plan, func(context.Context, *resources.Workspace, *resources.Module, *resources.Service) error {
 		ran.Store(true)
 		return nil
 	}, ScheduleOptions{Jobs: 1, Phase: "build"})
@@ -595,7 +595,7 @@ func TestCIReportsAllFailedPrerequisites(t *testing.T) {
 	}
 	plan := &Plan{Services: []PlannedService{{Service: "management/organization"}, {Service: "management/worker"}, {Service: "web/frontend"}}}
 	reporter := fixedCIReporter(t, plan)
-	err = CIWithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
+	err = WithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
 		if service.Name == "frontend" {
 			t.Error("blocked task executed")
 		}

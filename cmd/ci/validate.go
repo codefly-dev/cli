@@ -58,7 +58,7 @@ func runValidationCommand(selection *SelectionFlags, action Action, phase string
 	}
 	return runWithCIReport(ctx, workspace, plan, "codefly ci "+phase, func(reporter *Reporter) error {
 		options := commandScheduleOptions(false, phase, "", reporter)
-		if err := CIWithPlanOptions(ctx, workspace, plan, action, options); err != nil {
+		if err := WithPlanOptions(ctx, workspace, plan, action, options); err != nil {
 			return fmt.Errorf("cannot run CI %s: %w", phase, err)
 		}
 		return ctx.Err()

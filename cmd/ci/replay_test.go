@@ -251,7 +251,7 @@ func TestReplayBindsTasksAndDispatchesBuildPrerequisites(t *testing.T) {
 	artifacts := t.TempDir()
 	required := map[string][]string{"accounts": {"organization"}, "gateway": {"organization", "accounts"}, "frontend": {"gateway"}}
 	executed := []string{}
-	err = CIWithPlanOptions(ctx, workspace, actual, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
+	err = WithPlanOptions(ctx, workspace, actual, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
 		for _, name := range required[service.Name] {
 			if _, err := os.Stat(filepath.Join(artifacts, name)); err != nil {
 				return err

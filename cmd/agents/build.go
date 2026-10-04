@@ -227,10 +227,10 @@ func buildAllAgents(ctx context.Context, root string, opts buildOptions) error {
 	return buildAgents(ctx, root, dirs, opts)
 }
 
-func buildAgents(ctx context.Context, root string, dirs []string, opts buildOptions) error {
-	var agents []string
-	var quarantined []quarantinedAgent
-	var discoveryFailures []error
+// discoverBuildableAgents reads each directory's manifest and sorts the
+// agents into buildable and quarantined; a directory without a manifest is
+// not an agent, and an unreadable manifest is a discovery failure.
+func discoverBuildableAgents(dirs []string) (agents []string, quarantined []quarantinedAgent, discoveryFailures []error) {
 	for _, dir := range dirs {
 		name := filepath.Base(dir)
 		yamlPath := filepath.Join(dir, "agent.codefly.yaml")
@@ -257,18 +257,58 @@ func buildAgents(ctx context.Context, root string, dirs []string, opts buildOpti
 		}
 		agents = append(agents, dir)
 	}
+	return agents, quarantined, discoveryFailures
+}
 
-	if len(quarantined) > 0 {
-		cli.Header(2, "Skipping %d quarantined agent(s) (not migrated to the new style):", len(quarantined))
-		for _, q := range quarantined {
-			if q.reason != "" {
-				cli.Info("  - %s — %s", q.name, q.reason)
-			} else {
-				cli.Info("  - %s", q.name)
-			}
-		}
-		cli.Info("  (build one explicitly with `codefly agent build --dir <path>` to work on it)")
+// reportQuarantined names the agents a bulk build skips.
+func reportQuarantined(quarantined []quarantinedAgent) {
+	if len(quarantined) == 0 {
+		return
 	}
+	cli.Header(2, "Skipping %d quarantined agent(s) (not migrated to the new style):", len(quarantined))
+	for _, q := range quarantined {
+		if q.reason != "" {
+			cli.Info("  - %s — %s", q.name, q.reason)
+		} else {
+			cli.Info("  - %s", q.name)
+		}
+	}
+	cli.Info("  (build one explicitly with `codefly agent build --dir <path>` to work on it)")
+}
+
+// summarizeAgentBuilds prints the build summary and returns the labels of
+// the builds that failed.
+func summarizeAgentBuilds(results []*agentBuildResult, elapsed time.Duration) []string {
+	var failed []string
+	var seq time.Duration
+	built := 0
+	for _, res := range results {
+		if res.err != nil {
+			failed = append(failed, res.label)
+			continue
+		}
+		built++
+		seq += res.native + res.linux
+	}
+
+	cli.Header(1, "Build summary")
+	for _, res := range results {
+		if res.err != nil {
+			cli.Error("  ✗ %s — %v", res.label, res.err)
+		}
+	}
+	speedup := ""
+	if elapsed > 0 && seq > elapsed {
+		speedup = fmt.Sprintf(", ~%.1f× faster than sequential (%s)",
+			float64(seq)/float64(elapsed), seq.Round(100*time.Millisecond))
+	}
+	cli.Info("  %d built, %d failed in %s%s", built, len(failed), elapsed.Round(100*time.Millisecond), speedup)
+	return failed
+}
+
+func buildAgents(ctx context.Context, root string, dirs []string, opts buildOptions) error {
+	agents, quarantined, discoveryFailures := discoverBuildableAgents(dirs)
+	reportQuarantined(quarantined)
 
 	if len(agents) == 0 {
 		if len(quarantined) > 0 {
@@ -340,33 +380,7 @@ func buildAgents(ctx context.Context, root string, dirs []string, opts buildOpti
 		}
 	}
 
-	var failed []string
-	var seq time.Duration
-	built := 0
-	for _, res := range results {
-		if res.err != nil {
-			failed = append(failed, res.label)
-			continue
-		}
-		built++
-		seq += res.native + res.linux
-	}
-
-	cli.Header(1, "Build summary")
-	if len(failed) > 0 {
-		for _, res := range results {
-			if res.err != nil {
-				cli.Error("  ✗ %s — %v", res.label, res.err)
-			}
-		}
-	}
-	speedup := ""
-	if elapsed > 0 && seq > elapsed {
-		speedup = fmt.Sprintf(", ~%.1f× faster than sequential (%s)",
-			float64(seq)/float64(elapsed), seq.Round(100*time.Millisecond))
-	}
-	cli.Info("  %d built, %d failed in %s%s", built, len(failed), elapsed.Round(100*time.Millisecond), speedup)
-
+	failed := summarizeAgentBuilds(results, elapsed)
 	if len(failed) > 0 {
 		discoveryFailures = append(discoveryFailures, fmt.Errorf("%d agent(s) failed to build: %s", len(failed), strings.Join(failed, ", ")))
 	}

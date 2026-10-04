@@ -141,15 +141,7 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 		return nil, fmt.Errorf("%w; add an interface: block to module.codefly.yaml to export API contracts", err)
 	}
 
-	var serviceNames []string
-	byService := map[string][]*basev0.Endpoint{}
-	for _, endpoint := range endpoints {
-		if _, seen := byService[endpoint.Service]; !seen {
-			serviceNames = append(serviceNames, endpoint.Service)
-		}
-		byService[endpoint.Service] = append(byService[endpoint.Service], endpoint)
-	}
-	sort.Strings(serviceNames)
+	serviceNames, byService := exportedEndpointsByService(endpoints)
 
 	if _, err = shared.CheckDirectoryOrCreate(ctx, opts.writeDir); err != nil {
 		return nil, fmt.Errorf("cannot create output directory: %w", err)
@@ -159,14 +151,7 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 	for _, serviceName := range serviceNames {
 		exported := byService[serviceName]
 
-		hasContractAPI := false
-		for _, endpoint := range exported {
-			if endpointCarriesContract(endpoint.Api) {
-				hasContractAPI = true
-				break
-			}
-		}
-		if !hasContractAPI {
+		if !anyCarriesContract(exported) {
 			for _, endpoint := range exported {
 				cli.Info("endpoint %s/%s (api %s) has no contract; skipped", serviceName, endpoint.Name, endpoint.Api)
 			}
@@ -191,19 +176,7 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 		// error (surfaced by writeProtobufContract).
 		serviceHasProto, _ := shared.FileExists(ctx, filepath.Join(service.Dir(), "proto", "buf.yaml"))
 
-		var carriers []*basev0.Endpoint
-		for _, endpoint := range exported {
-			switch {
-			case !endpointCarriesContract(endpoint.Api):
-				cli.Info("endpoint %s/%s (api %s) has no contract; skipped", serviceName, endpoint.Name, endpoint.Api)
-			case endpoint.Api == standards.CONNECT && !serviceHasProto:
-				cli.Info("endpoint %s/%s (api connect) has no proto; skipped", serviceName, endpoint.Name)
-			case endpoint.Api == standards.REST && restWithoutOpenAPI(ctx, endpoint):
-				cli.Info("endpoint %s/%s (api rest) has no OpenAPI document; exported for reachability only, skipped", serviceName, endpoint.Name)
-			default:
-				carriers = append(carriers, endpoint)
-			}
-		}
+		carriers := contractCarriers(ctx, serviceName, exported, serviceHasProto)
 		if len(carriers) == 0 {
 			continue
 		}
@@ -231,6 +204,55 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 		}
 	}
 
+	return writeContractCatalog(ctx, module, contractEndpoints, opts)
+}
+
+// exportedEndpointsByService groups the exported endpoints by owning service,
+// the services sorted.
+func exportedEndpointsByService(endpoints []*basev0.Endpoint) ([]string, map[string][]*basev0.Endpoint) {
+	var serviceNames []string
+	byService := map[string][]*basev0.Endpoint{}
+	for _, endpoint := range endpoints {
+		if _, seen := byService[endpoint.Service]; !seen {
+			serviceNames = append(serviceNames, endpoint.Service)
+		}
+		byService[endpoint.Service] = append(byService[endpoint.Service], endpoint)
+	}
+	sort.Strings(serviceNames)
+	return serviceNames, byService
+}
+
+func anyCarriesContract(exported []*basev0.Endpoint) bool {
+	for _, endpoint := range exported {
+		if endpointCarriesContract(endpoint.Api) {
+			return true
+		}
+	}
+	return false
+}
+
+// contractCarriers keeps the exported endpoints that carry a machine-readable
+// contract, saying why each of the others is skipped.
+func contractCarriers(ctx context.Context, serviceName string, exported []*basev0.Endpoint, serviceHasProto bool) []*basev0.Endpoint {
+	var carriers []*basev0.Endpoint
+	for _, endpoint := range exported {
+		switch {
+		case !endpointCarriesContract(endpoint.Api):
+			cli.Info("endpoint %s/%s (api %s) has no contract; skipped", serviceName, endpoint.Name, endpoint.Api)
+		case endpoint.Api == standards.CONNECT && !serviceHasProto:
+			cli.Info("endpoint %s/%s (api connect) has no proto; skipped", serviceName, endpoint.Name)
+		case endpoint.Api == standards.REST && restWithoutOpenAPI(ctx, endpoint):
+			cli.Info("endpoint %s/%s (api rest) has no OpenAPI document; exported for reachability only, skipped", serviceName, endpoint.Name)
+		default:
+			carriers = append(carriers, endpoint)
+		}
+	}
+	return carriers
+}
+
+// writeContractCatalog assembles the catalog, validates it, writes it and,
+// when requested, the package manifest's api-contracts.
+func writeContractCatalog(ctx context.Context, module *resources.Module, contractEndpoints []composition.APIContractEndpoint, opts generateOptions) (*composition.APIContractCatalog, error) {
 	pkg, version, manifest, err := resolvePackageIdentity(module)
 	if err != nil {
 		return nil, err

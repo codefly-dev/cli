@@ -186,9 +186,9 @@ type ScheduleOptions struct {
 }
 
 // WithPlan retains the serial, fail-fast behavior expected by older callers.
-// User-facing CI commands call CIWithPlanOptions with their scheduler flags.
+// User-facing CI commands call WithPlanOptions with their scheduler flags.
 func WithPlan(ctx context.Context, workspace *resources.Workspace, plan *Plan, action Action) error {
-	return CIWithPlanOptions(ctx, workspace, plan, action, ScheduleOptions{Jobs: 1, FailFast: true})
+	return WithPlanOptions(ctx, workspace, plan, action, ScheduleOptions{Jobs: 1, FailFast: true})
 }
 
 type ciScheduledTask struct {
@@ -212,11 +212,11 @@ type ciTaskFailure struct {
 	err     error
 }
 
-// CIWithPlanOptions executes each affected service once, allowing independent
+// WithPlanOptions executes each affected service once, allowing independent
 // graph nodes to run concurrently while every selected prerequisite completes
 // first. Failures and blocked dependents are reported in deterministic plan
 // order regardless of goroutine completion order.
-func CIWithPlanOptions(ctx context.Context, workspace *resources.Workspace, plan *Plan, action Action, options ScheduleOptions) error {
+func WithPlanOptions(ctx context.Context, workspace *resources.Workspace, plan *Plan, action Action, options ScheduleOptions) error {
 	w := wool.Get(ctx).In("affectedCI")
 	if plan == nil {
 		return w.NewError("CI plan is nil")
@@ -254,164 +254,195 @@ func CIWithPlanOptions(ctx context.Context, workspace *resources.Workspace, plan
 		}
 	}
 
-	ready := make([]int, 0, len(tasks))
+	scheduler := &ciScheduler{
+		workspace:       workspace,
+		action:          action,
+		options:         options,
+		jobs:            jobs,
+		tasks:           tasks,
+		reportTaskIDs:   reportTaskIDs,
+		results:         make(chan ciTaskResult, len(tasks)),
+		activeResources: map[string]bool{},
+	}
 	for i := range tasks {
 		if tasks[i].remaining == 0 {
-			ready = append(ready, i)
-		}
-	}
-	results := make(chan ciTaskResult, len(tasks))
-	activeResources := map[string]bool{}
-	running := 0
-	settled := 0
-	stopScheduling := false
-	contextErr := error(nil)
-	var failures []ciTaskFailure
-	var blocked []string
-
-	settle := func(index int, success bool, blockers []string) {
-		queue := []struct {
-			index    int
-			success  bool
-			blockers []string
-		}{{index: index, success: success, blockers: blockers}}
-		for len(queue) > 0 {
-			current := queue[0]
-			queue = queue[1:]
-			settled++
-			for _, dependent := range tasks[current.index].dependents {
-				task := &tasks[dependent]
-				task.remaining--
-				if !current.success {
-					task.failedRequired = append(task.failedRequired, current.blockers...)
-				}
-				if task.remaining != 0 {
-					continue
-				}
-				if len(task.failedRequired) > 0 {
-					blockers := sortedUnique(task.failedRequired)
-					blocked = append(blocked, fmt.Sprintf("%s (failed prerequisite: %s)", task.planned.Service, strings.Join(blockers, ", ")))
-					if options.Reporter != nil {
-						options.Reporter.skipTask(reportTaskIDs[dependent], reportReasonFailedPrerequisite, blockers)
-					}
-					queue = append(queue, struct {
-						index    int
-						success  bool
-						blockers []string
-					}{index: dependent, blockers: blockers})
-					continue
-				}
-				ready = append(ready, dependent)
-				sort.Ints(ready)
-			}
+			scheduler.ready = append(scheduler.ready, i)
 		}
 	}
 
-	for settled < len(tasks) {
-		for running < jobs && !stopScheduling {
-			if err := ctx.Err(); err != nil {
-				contextErr = err
-				stopScheduling = true
-				break
-			}
-			position := firstRunnableTask(ready, tasks, activeResources)
-			if position < 0 {
-				break
-			}
-			index := ready[position]
-			ready = append(ready[:position], ready[position+1:]...)
-			for _, resource := range tasks[index].resources {
-				activeResources[resource] = true
-			}
-			running++
-			task := tasks[index]
-			taskContext := ctx
-			reportID := ""
-			if options.Reporter != nil {
-				reportID = reportTaskIDs[index]
-				options.Reporter.startTask(reportID)
-				taskContext = withCIReportTask(ctx, options.Reporter, reportID)
-			}
-			go func() {
-				results <- ciTaskResult{index: task.index, err: runScheduledTask(taskContext, options.Reporter, reportID, workspace, &task.planned, action)}
-			}()
-		}
+	for scheduler.settled < len(tasks) {
+		scheduler.launchRunnable(ctx)
 
-		if running == 0 {
-			if stopScheduling {
+		if scheduler.running == 0 {
+			if scheduler.stopScheduling {
 				break
 			}
-			if len(ready) == 0 {
+			if len(scheduler.ready) == 0 {
 				return fmt.Errorf("affected-service scheduler stalled: selected dependency graph is cyclic or incomplete")
 			}
 			return fmt.Errorf("affected-service scheduler stalled on resource ownership")
 		}
 
 		select {
-		case result := <-results:
-			running--
-			if options.Reporter != nil {
-				options.Reporter.finishTask(reportTaskIDs[result.index], result.err)
-				options.Reporter.publishResult(reportTaskIDs[result.index])
+		case result := <-scheduler.results:
+			scheduler.collect(result)
+			if result.err != nil && options.FailFast {
+				scheduler.stopScheduling = true
 			}
-			for _, resource := range tasks[result.index].resources {
-				delete(activeResources, resource)
-			}
-			if result.err != nil {
-				failures = append(failures, ciTaskFailure{index: result.index, service: tasks[result.index].planned.Service, err: result.err})
-				if options.FailFast {
-					stopScheduling = true
-				}
-			}
-			settle(result.index, result.err == nil, []string{tasks[result.index].planned.Service})
+			scheduler.settle(result.index, result.err == nil, []string{tasks[result.index].planned.Service})
 		case <-ctx.Done():
-			if contextErr == nil {
-				contextErr = ctx.Err()
+			if scheduler.contextErr == nil {
+				scheduler.contextErr = ctx.Err()
 			}
-			stopScheduling = true
+			scheduler.stopScheduling = true
 		}
 	}
 
 	// A cancellation can win the select repeatedly while workers are cleaning
 	// up. Drain every running action before returning so no flow or agent is
 	// left behind after the command exits.
-	for running > 0 {
-		result := <-results
-		running--
-		if options.Reporter != nil {
-			options.Reporter.finishTask(reportTaskIDs[result.index], result.err)
-			options.Reporter.publishResult(reportTaskIDs[result.index])
-		}
-		for _, resource := range tasks[result.index].resources {
-			delete(activeResources, resource)
-		}
-		if result.err != nil {
-			failures = append(failures, ciTaskFailure{index: result.index, service: tasks[result.index].planned.Service, err: result.err})
-		}
+	for scheduler.running > 0 {
+		scheduler.collect(<-scheduler.results)
 	}
 
-	if len(blocked) > 0 {
-		sort.Strings(blocked)
-		w.Warn("Skipping services whose selected prerequisites failed", wool.Field("services", blocked))
+	return scheduler.conclude(w)
+}
+
+// ciScheduler is the state of one WithPlanOptions run: the tasks, which of
+// them are ready, running or settled, and what the run owes the reporter.
+type ciScheduler struct {
+	workspace     *resources.Workspace
+	action        Action
+	options       ScheduleOptions
+	jobs          int
+	tasks         []ciScheduledTask
+	reportTaskIDs []string
+
+	ready           []int
+	results         chan ciTaskResult
+	activeResources map[string]bool
+	running         int
+	settled         int
+	stopScheduling  bool
+	contextErr      error
+	failures        []ciTaskFailure
+	blocked         []string
+}
+
+// launchRunnable starts ready tasks until the job limit, a resource conflict
+// or a stop is reached.
+func (scheduler *ciScheduler) launchRunnable(ctx context.Context) {
+	for scheduler.running < scheduler.jobs && !scheduler.stopScheduling {
+		if err := ctx.Err(); err != nil {
+			scheduler.contextErr = err
+			scheduler.stopScheduling = true
+			return
+		}
+		position := firstRunnableTask(scheduler.ready, scheduler.tasks, scheduler.activeResources)
+		if position < 0 {
+			return
+		}
+		index := scheduler.ready[position]
+		scheduler.ready = append(scheduler.ready[:position], scheduler.ready[position+1:]...)
+		for _, resource := range scheduler.tasks[index].resources {
+			scheduler.activeResources[resource] = true
+		}
+		scheduler.running++
+		task := scheduler.tasks[index]
+		taskContext := ctx
+		reportID := ""
+		if scheduler.options.Reporter != nil {
+			reportID = scheduler.reportTaskIDs[index]
+			scheduler.options.Reporter.startTask(reportID)
+			taskContext = withCIReportTask(ctx, scheduler.options.Reporter, reportID)
+		}
+		go func() {
+			scheduler.results <- ciTaskResult{index: task.index, err: runScheduledTask(taskContext, scheduler.options.Reporter, reportID, scheduler.workspace, &task.planned, scheduler.action)}
+		}()
 	}
-	if stopScheduling && options.FailFast && settled < len(tasks) {
-		w.Info("Fail-fast stopped unscheduled CI tasks", wool.Field("count", len(tasks)-settled))
+}
+
+// collect records one finished task: its report, its released resources and
+// its failure.
+func (scheduler *ciScheduler) collect(result ciTaskResult) {
+	scheduler.running--
+	if scheduler.options.Reporter != nil {
+		scheduler.options.Reporter.finishTask(scheduler.reportTaskIDs[result.index], result.err)
+		scheduler.options.Reporter.publishResult(scheduler.reportTaskIDs[result.index])
+	}
+	for _, resource := range scheduler.tasks[result.index].resources {
+		delete(scheduler.activeResources, resource)
+	}
+	if result.err != nil {
+		scheduler.failures = append(scheduler.failures, ciTaskFailure{index: result.index, service: scheduler.tasks[result.index].planned.Service, err: result.err})
+	}
+}
+
+// settle marks a task settled and releases or blocks its dependents, walking
+// the blocked ones transitively.
+func (scheduler *ciScheduler) settle(index int, success bool, blockers []string) {
+	queue := []struct {
+		index    int
+		success  bool
+		blockers []string
+	}{{index: index, success: success, blockers: blockers}}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		scheduler.settled++
+		for _, dependent := range scheduler.tasks[current.index].dependents {
+			task := &scheduler.tasks[dependent]
+			task.remaining--
+			if !current.success {
+				task.failedRequired = append(task.failedRequired, current.blockers...)
+			}
+			if task.remaining != 0 {
+				continue
+			}
+			if len(task.failedRequired) > 0 {
+				blockers := sortedUnique(task.failedRequired)
+				scheduler.blocked = append(scheduler.blocked, fmt.Sprintf("%s (failed prerequisite: %s)", task.planned.Service, strings.Join(blockers, ", ")))
+				if scheduler.options.Reporter != nil {
+					scheduler.options.Reporter.skipTask(scheduler.reportTaskIDs[dependent], reportReasonFailedPrerequisite, blockers)
+				}
+				queue = append(queue, struct {
+					index    int
+					success  bool
+					blockers []string
+				}{index: dependent, blockers: blockers})
+				continue
+			}
+			scheduler.ready = append(scheduler.ready, dependent)
+			sort.Ints(scheduler.ready)
+		}
+	}
+}
+
+// conclude reports what the run skipped and joins its failures in plan order.
+func (scheduler *ciScheduler) conclude(w *wool.Wool) error {
+	options, tasks := scheduler.options, scheduler.tasks
+	if len(scheduler.blocked) > 0 {
+		sort.Strings(scheduler.blocked)
+		w.Warn("Skipping services whose selected prerequisites failed", wool.Field("services", scheduler.blocked))
+	}
+	if scheduler.stopScheduling && options.FailFast && scheduler.settled < len(tasks) {
+		w.Info("Fail-fast stopped unscheduled CI tasks", wool.Field("count", len(tasks)-scheduler.settled))
 	}
 	if options.Reporter != nil {
-		for _, id := range reportTaskIDs {
-			if contextErr != nil {
+		for _, id := range scheduler.reportTaskIDs {
+			if scheduler.contextErr != nil {
 				options.Reporter.cancelPendingTask(id)
 				continue
 			}
-			if stopScheduling && options.FailFast {
+			if scheduler.stopScheduling && options.FailFast {
 				options.Reporter.skipTask(id, reportReasonFailFast, nil)
 				continue
 			}
 		}
 	}
-	sort.Slice(failures, func(i, j int) bool { return failures[i].index < failures[j].index })
-	joined := contextErr
-	for _, failure := range failures {
+	sort.Slice(scheduler.failures, func(i, j int) bool { return scheduler.failures[i].index < scheduler.failures[j].index })
+	joined := scheduler.contextErr
+	for _, failure := range scheduler.failures {
 		joined = errors.Join(joined, fmt.Errorf("service %s: %w", failure.service, failure.err))
 	}
 	return joined

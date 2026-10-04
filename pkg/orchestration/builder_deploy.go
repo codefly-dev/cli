@@ -58,25 +58,9 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	}
 	dependenciesConfigurations = append(workspaceConfigurations, dependenciesConfigurations...)
 	profile := kubernetesOutputProfile(b.world)
-	var secretReferences map[string]*builderv0.KubernetesSecretKeyReference
-	//nolint:staticcheck // SA1019 deliberately: this names a value on the wire to a released builder agent, and core's own proto says the deprecated form is retained so existing callers keep rendering the identical bundle during migration. Switching it is a plugin-contract change that needs the agent owners, and nothing in CI would catch a released agent rejecting the new value. Tracked as a follow-up.
-	if profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
-		secretName := "secret-" + b.instance.Service.Name
-		conf, dependenciesConfigurations, secretReferences, err = promotableDeploymentConfigurations(
-			conf,
-			dependenciesConfigurations,
-			secretName,
-		)
-		if err != nil {
-			return nil, w.Wrapf(err, "cannot prepare promotable configuration")
-		}
-		// Key names only: this records which secret keys this service's own
-		// ExternalSecret fetches, never any value.
-		b.deployedSecretKeys = make([]string, 0, len(secretReferences))
-		for key := range secretReferences {
-			b.deployedSecretKeys = append(b.deployedSecretKeys, key)
-		}
-		sort.Strings(b.deployedSecretKeys)
+	conf, dependenciesConfigurations, secretReferences, err := b.profileConfigurations(profile, conf, dependenciesConfigurations)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot prepare promotable configuration")
 	}
 
 	networkMappings, err := b.world.RemoteNetworkManager.GenerateNetworkMappings(ctx, b.world.Env, b.world.Workspace, b.instance.Identity, b.endpoints)
@@ -117,20 +101,10 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if b.world.DeploymentDestination != nil {
 		deploy.GetKubernetes().Destination = b.world.DeploymentDestination(b.instance.Module, b.instance.Service)
 	}
-	validation, err := resolveClusterValidation(ctx, b.world, profile, namespace)
+	validationContext, err := b.applyClusterValidation(ctx, w, deploy, profile, namespace)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot resolve promotable GitOps validation target")
+		return nil, err
 	}
-	if validation.Skipped != "" {
-		w.Warn(validation.Skipped)
-		if b.world.OutputSink != nil {
-			b.world.OutputSink.Info("%s", validation.Skipped)
-		}
-	}
-	deploy.GetKubernetes().ValidateServerSide = validation.Enabled()
-	deploy.GetKubernetes().ValidationKubeconfig = validation.Kubeconfig
-	deploy.GetKubernetes().ValidationContext = validation.Context
-	validationContext := validation.Context
 
 	w.Debug("deployments", wool.Field("deployments", deploy))
 
@@ -145,7 +119,60 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot deploy service instance")
 	}
+	return b.recordDeployment(ctx, w, resp, profile, validationContext)
+}
 
+// profileConfigurations prepares the configurations the output profile needs:
+// a promotable GitOps deployment carries secret references in place of the
+// values, and records which keys its own ExternalSecret fetches.
+func (b *Builder) profileConfigurations(profile builderv0.KubernetesOutputProfile, conf *basev0.Configuration, dependenciesConfigurations []*basev0.Configuration) (*basev0.Configuration, []*basev0.Configuration, map[string]*builderv0.KubernetesSecretKeyReference, error) {
+	//nolint:staticcheck // SA1019 deliberately: this names a value on the wire to a released builder agent, and core's own proto says the deprecated form is retained so existing callers keep rendering the identical bundle during migration. Switching it is a plugin-contract change that needs the agent owners, and nothing in CI would catch a released agent rejecting the new value. Tracked as a follow-up.
+	if profile != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
+		return conf, dependenciesConfigurations, nil, nil
+	}
+	secretName := "secret-" + b.instance.Service.Name
+	conf, dependenciesConfigurations, secretReferences, err := promotableDeploymentConfigurations(
+		conf,
+		dependenciesConfigurations,
+		secretName,
+	)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	// Key names only: this records which secret keys this service's own
+	// ExternalSecret fetches, never any value.
+	b.deployedSecretKeys = make([]string, 0, len(secretReferences))
+	for key := range secretReferences {
+		b.deployedSecretKeys = append(b.deployedSecretKeys, key)
+	}
+	sort.Strings(b.deployedSecretKeys)
+	return conf, dependenciesConfigurations, secretReferences, nil
+}
+
+// applyClusterValidation resolves the server-side validation target of a
+// promotable deployment, records it on the deployment and returns the
+// validation context.
+func (b *Builder) applyClusterValidation(ctx context.Context, w *wool.Wool, deploy *builderv0.Deployment, profile builderv0.KubernetesOutputProfile, namespace string) (string, error) {
+	validation, err := resolveClusterValidation(ctx, b.world, profile, namespace)
+	if err != nil {
+		return "", w.Wrapf(err, "cannot resolve promotable GitOps validation target")
+	}
+	if validation.Skipped != "" {
+		w.Warn(validation.Skipped)
+		if b.world.OutputSink != nil {
+			b.world.OutputSink.Info("%s", validation.Skipped)
+		}
+	}
+	deploy.GetKubernetes().ValidateServerSide = validation.Enabled()
+	deploy.GetKubernetes().ValidationKubeconfig = validation.Kubeconfig
+	deploy.GetKubernetes().ValidationContext = validation.Context
+	return validation.Context, nil
+}
+
+// recordDeployment verifies the agent's deployment response, keeps what the
+// sync needs of it, exposes the configuration and hands the deployment to the
+// remote manager.
+func (b *Builder) recordDeployment(ctx context.Context, w *wool.Wool, resp *builderv0.DeploymentResponse, profile builderv0.KubernetesOutputProfile, validationContext string) (*OutputProperty, error) {
 	if resp.State != nil && resp.State.State != builderv0.DeploymentStatus_SUCCESS {
 		return nil, w.NewError("cant deploy service instance")
 	}
@@ -164,7 +191,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if resp.Configuration != nil {
 		b.deployedConfiguration = proto.CloneOf(resp.Configuration)
 	}
-	err = b.world.ConfigurationManager.ExposeConfiguration(ctx, b.instance.Identity, resp.Configuration)
+	err := b.world.ConfigurationManager.ExposeConfiguration(ctx, b.instance.Identity, resp.Configuration)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record shared configuration configurations")
 	}

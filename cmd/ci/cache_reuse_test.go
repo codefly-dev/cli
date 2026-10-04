@@ -596,7 +596,7 @@ func runReuseGate(t *testing.T, workspace *resources.Workspace, plan *Plan, reus
 	}
 	reporter.reuse = reuse
 	scheduleOptions := ScheduleOptions{Jobs: 1, FailFast: true, Phase: settings.phase, Suite: settings.suite, RuntimeContext: "native", Reporter: reporter}
-	if err := CIWithPlanOptions(context.Background(), workspace, plan, wrapped, scheduleOptions); err != nil {
+	if err := WithPlanOptions(context.Background(), workspace, plan, wrapped, scheduleOptions); err != nil {
 		t.Fatal(err)
 	}
 	return reuseGateResult{report: reporter.Finalize(nil), executed: executed}

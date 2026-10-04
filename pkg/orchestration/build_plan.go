@@ -215,37 +215,13 @@ func (b *Builder) buildRecipe(
 			wool.Field("recipe", recipe.GetName()), wool.ErrField(identityErr))
 	}
 	imageCache := b.imageBuildCache()
-	if identity.Key != "" && !b.world.RebuildImages {
-		entry, found := imageCache.lookup(identity.Key, b.instance.Unique(), shouldPush)
-		switch {
-		case found && imageStillExists(ctx, entry, probeBuilder):
-			w.Info("no image input changed; keeping the built image",
-				wool.Field("image", entry.Image), wool.Field("digest", entry.Digest),
-				wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
-			b.adoptCachedImage(recipe, entry, captureDigest, resolveEvidence)
-			return nil
-		case found:
-			w.Debug("an image was built from these inputs but no longer exists; building",
-				wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
-		default:
-			w.Debug("no image has been built from these inputs; building",
-				wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
-		}
+	if b.reuseBuiltImage(ctx, w, recipe, identity, imageCache, probeBuilder, shouldPush, captureDigest, resolveEvidence) {
+		return nil
 	}
 
-	// A caller-provided builder (e.g. a native amd64 buildkit) is authoritative:
-	// it owns whatever platforms the recipe declares, so the CLI neither
-	// provisions nor selects the local emulating builder.
-	builderName := b.world.BuildxBuilder
-	if multiArch && b.world.BuildCache == nil && builderName == "" {
-		if provisionErr := ensureBuildxBuilder(ctx); provisionErr != nil {
-			return w.Wrapf(provisionErr, "cannot provision image builder for %s", b.instance.Unique())
-		}
-		builderName = buildxBuilderName
-	}
-
-	if b.world.BuildCache != nil && builderName == "" {
-		builderName = buildxBuilderName
+	builderName, err := b.selectBuildxBuilder(ctx, w, multiArch)
+	if err != nil {
+		return err
 	}
 
 	// A pushed build also resolves its digest when it has an entry to record:
@@ -274,38 +250,83 @@ func (b *Builder) buildRecipe(
 	command := exec.CommandContext(ctx, "docker", args...)
 	command.Stdout = os.Stderr
 	command.Stderr = os.Stderr
-	if buildErr := command.Run(); buildErr != nil {
-		return w.Wrapf(buildErr, "cannot build %s", recipe.GetImage())
+	if runErr := command.Run(); runErr != nil {
+		return w.Wrapf(runErr, "cannot build %s", recipe.GetImage())
 	}
 
 	w.Info("image build completed", wool.Field("image", recipe.GetImage()), wool.Field("duration", time.Since(started)))
 
-	pushedDigest, err := b.resolvePushedDigest(w, metadataFile, recipe, captureDigest)
-	if err != nil {
-		return err
+	var pushedDigest, loadedImageID string
+	if metadataFile != "" {
+		pushedDigest, err = b.recordPushedDigest(w, recipe, metadataFile, captureDigest)
+		if err != nil {
+			return err
+		}
 	}
-	loadedImageID, err := b.resolveLoadedImage(ctx, w, recipe, shouldPush, resolveEvidence, recordable)
-	if err != nil {
-		return err
+
+	if !shouldPush && (resolveEvidence || recordable) {
+		loadedImageID, err = b.recordLoadedImageID(ctx, w, recipe, resolveEvidence)
+		if err != nil {
+			return err
+		}
+	}
+
+	if recordable {
+		b.recordImageReuse(ctx, w, recipe, scope, identity, imageCache, shouldPush, pushedDigest, loadedImageID)
 	}
 	b.recordImageForReuse(ctx, w, recipe, scope, identity, imageCache, shouldPush, pushedDigest, loadedImageID, recordable)
 	return nil
 }
 
-// resolvePushedDigest reads the immutable manifest digest of a pushed build from
-// the metadata file, when one was staged.
-//
-// Failing to resolve it is fatal for a snapshot and reported for anything else:
-// a snapshot's manifest pins this digest, so without it the snapshot cannot be
-// produced, while elsewhere the image is already pushed and failing the build
-// would wrongly signal that the push failed. Evidence derivation refuses the
-// unpinned subject on its own.
-func (b *Builder) resolvePushedDigest(
-	w *wool.Wool, metadataFile string, recipe *builderv0.DockerBuildRecipe, captureDigest bool,
-) (string, error) {
-	if metadataFile == "" {
-		return "", nil
+// reuseBuiltImage adopts the image a previous build produced from the same
+// inputs, when one is recorded and still exists, and reports whether it did.
+func (b *Builder) reuseBuiltImage(ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, identity imageIdentity, imageCache *imageBuildCache, probeBuilder string, shouldPush, captureDigest, resolveEvidence bool) bool {
+	if identity.Key == "" || b.world.RebuildImages {
+		return false
 	}
+	entry, found := imageCache.lookup(identity.Key, b.instance.Unique(), shouldPush)
+	switch {
+	case found && imageStillExists(ctx, entry, probeBuilder):
+		w.Info("no image input changed; keeping the built image",
+			wool.Field("image", entry.Image), wool.Field("digest", entry.Digest),
+			wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
+		b.adoptCachedImage(recipe, entry, captureDigest, resolveEvidence)
+		return true
+	case found:
+		w.Debug("an image was built from these inputs but no longer exists; building",
+			wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
+	default:
+		w.Debug("no image has been built from these inputs; building",
+			wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
+	}
+	return false
+}
+
+// selectBuildxBuilder names the builder the build runs on. A caller-provided
+// builder (e.g. a native amd64 buildkit) is authoritative: it owns whatever
+// platforms the recipe declares, so the CLI neither provisions nor selects
+// the local emulating builder.
+func (b *Builder) selectBuildxBuilder(ctx context.Context, w *wool.Wool, multiArch bool) (string, error) {
+	builderName := b.world.BuildxBuilder
+	if multiArch && b.world.BuildCache == nil && builderName == "" {
+		if provisionErr := ensureBuildxBuilder(ctx); provisionErr != nil {
+			return "", w.Wrapf(provisionErr, "cannot provision image builder for %s", b.instance.Unique())
+		}
+		builderName = buildxBuilderName
+	}
+	if b.world.BuildCache != nil && builderName == "" {
+		builderName = buildxBuilderName
+	}
+	return builderName, nil
+}
+
+// recordPushedDigest reads the digest the push resolved and records it. A
+// snapshot's manifest pins this digest, so failing to resolve it means the
+// snapshot cannot be produced — a hard error; any other build is already
+// pushed, so its digest is only reported, since failing the build here would
+// wrongly signal that the push failed (evidence derivation refuses the
+// unpinned subject on its own).
+func (b *Builder) recordPushedDigest(w *wool.Wool, recipe *builderv0.DockerBuildRecipe, metadataFile string, captureDigest bool) (string, error) {
 	digest, err := readPushedImageDigest(metadataFile)
 	switch {
 	case err != nil && b.world.Mode == SnapshotMode:
@@ -321,18 +342,11 @@ func (b *Builder) resolvePushedDigest(
 	return digest, nil
 }
 
-// resolveLoadedImage identifies the image a non-pushed build loaded locally,
-// which is the only identity a later run could stand in for.
-//
-// Fatal when evidence was asked for and merely noted otherwise: without an
-// identity there is nothing to record, so no later run may reuse this build.
-func (b *Builder) resolveLoadedImage(
-	ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe,
-	shouldPush, resolveEvidence, recordable bool,
-) (string, error) {
-	if shouldPush || (!resolveEvidence && !recordable) {
-		return "", nil
-	}
+// recordLoadedImageID identifies the image a non-pushed build loaded, which
+// evidence requires and reuse records. An image that cannot be identified is
+// built and loaded all the same; there is simply nothing to record, so no
+// later run may stand in for this build.
+func (b *Builder) recordLoadedImageID(ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, resolveEvidence bool) (string, error) {
 	imageID, err := inspectLocalImageID(ctx, recipe.GetImage())
 	switch {
 	case err != nil && resolveEvidence:
@@ -347,16 +361,12 @@ func (b *Builder) resolveLoadedImage(
 	return imageID, nil
 }
 
-// recordImageForReuse writes the reuse entry for a build whose inputs held
-// still. A failed write is a warning, never a build failure: the image is
-// built, and the next run simply rebuilds, which is the behaviour without a
-// cache at all.
-func (b *Builder) recordImageForReuse(
-	ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, scope imageBuildScope,
-	identity imageIdentity, imageCache *imageBuildCache, shouldPush bool,
-	pushedDigest, loadedImageID string, recordable bool,
-) {
-	if !recordable || !b.contextHeldStill(ctx, w, recipe, scope, identity) {
+// recordImageReuse records the build for reuse when its context held still
+// while it ran. The image is built; failing here would report a build failure
+// for a bookkeeping write, so a failed record is only said, and the next run
+// rebuilds, which is the behaviour without a cache at all.
+func (b *Builder) recordImageReuse(ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, scope imageBuildScope, identity imageIdentity, imageCache *imageBuildCache, shouldPush bool, pushedDigest, loadedImageID string) {
+	if !b.contextHeldStill(ctx, w, recipe, scope, identity) {
 		return
 	}
 	entry := cachedImageEntry(identity.Key, b.instance.Unique(), recipe, shouldPush, pushedDigest, loadedImageID)

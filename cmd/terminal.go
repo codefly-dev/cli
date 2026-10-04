@@ -45,7 +45,7 @@ Examples:
 	RunE: terminalCommand,
 }
 
-func terminalCommand(cmd *cobra.Command, args []string) (returnErr error) {
+func terminalCommand(_ *cobra.Command, _ []string) (returnErr error) {
 	ctx, done := common.NewContext()
 	defer done()
 	ctx, stop := common.SignalContext(ctx)
@@ -57,21 +57,9 @@ func terminalCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		return fmt.Errorf("terminal requires an interactive stdin TTY")
 	}
 
-	// Resolve the server address. By default it is derived from the
-	// workspace name (the CLI server binds a deterministic per-workspace
-	// port in [20000,29900]); the legacy fixed `localhost:10000` is no
-	// longer listened on, so a hard-coded default always failed. --server
-	// still overrides for unusual setups.
-	serverAddress := termServer
-	if serverAddress == "" {
-		ws, wsErr := resources.FindWorkspaceUp(ctx)
-		if wsErr != nil {
-			return fmt.Errorf("cannot find workspace to locate the codefly server (pass --server host:port): %w", wsErr)
-		}
-		if ws == nil {
-			return fmt.Errorf("cannot find workspace to locate the codefly server (pass --server host:port)")
-		}
-		serverAddress = fmt.Sprintf("127.0.0.1:%d", network.CLIServerPort(ws.Name))
+	serverAddress, err := resolveTerminalServer(ctx)
+	if err != nil {
+		return err
 	}
 
 	// Connect to the daemon gRPC server
@@ -149,97 +137,18 @@ func terminalCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	}
 	keepSession = true
 
-	// Handle SIGWINCH (terminal resize). Stop + close on exit so both
-	// the signal registration and the listener goroutine are released.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGWINCH)
-	resizeCtx, resizeCancel := context.WithCancel(ctx)
-	var resizeWG sync.WaitGroup
-	resizeWG.Add(1)
-	defer func() {
-		signal.Stop(sigCh)
-		resizeCancel()
-		resizeWG.Wait()
-	}()
-	go func() {
-		defer resizeWG.Done()
-		for {
-			select {
-			case <-resizeCtx.Done():
-				return
-			case <-sigCh:
-				w, h, err := term.GetSize(int(os.Stdin.Fd()))
-				if err == nil {
-					_, _ = client.Resize(resizeCtx, &cliv0.ResizeTerminalRequest{
-						SessionId: sessionID,
-						Rows:      terminalCells(h),
-						Cols:      terminalCells(w),
-					})
-				}
-			}
-		}
-	}()
+	stopResizing := followTerminalResize(ctx, client, sessionID)
+	defer stopResizing()
 
 	receiveDone := make(chan error, 1)
+	go receiveTerminalOutput(stream, receiveDone)
 
-	// Read from server, write to stdout
-	go func() {
-		for {
-			msg, err := stream.Recv()
-			if err != nil {
-				if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
-					receiveDone <- nil
-				} else {
-					receiveDone <- fmt.Errorf("receive terminal output: %w", err)
-				}
-				return
-			}
-			if len(msg.Data) > 0 {
-				n, writeErr := os.Stdout.Write(msg.Data)
-				if writeErr != nil {
-					receiveDone <- fmt.Errorf("write terminal output: %w", writeErr)
-					return
-				}
-				if n != len(msg.Data) {
-					receiveDone <- io.ErrShortWrite
-					return
-				}
-			}
-			if msg.Done {
-				receiveDone <- nil
-				return
-			}
-		}
-	}()
-
-	// Read from stdin, send to server. If this reader exits (stdin error or
-	// send failure), cancel the context so stream.Recv() in the stdout
-	// reader unblocks and that goroutine can close done — otherwise the
-	// main goroutine would hang forever on <-done.
+	// If the stdin reader exits (stdin error or send failure), cancel the
+	// context so stream.Recv() in the stdout reader unblocks and that
+	// goroutine can close done — otherwise the main goroutine would hang
+	// forever on <-done.
 	sendDone := make(chan error, 1)
-	go func() {
-		buf := make([]byte, 1024)
-		for {
-			n, err := readTerminalInput(ctx, int(os.Stdin.Fd()), buf)
-			if n > 0 {
-				if sendErr := stream.Send(&cliv0.TerminalInput{
-					SessionId: sessionID,
-					Data:      buf[:n],
-				}); sendErr != nil {
-					sendDone <- fmt.Errorf("send terminal input: %w", sendErr)
-					return
-				}
-			}
-			if err != nil {
-				if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
-					sendDone <- nil
-				} else {
-					sendDone <- fmt.Errorf("read terminal input: %w", err)
-				}
-				return
-			}
-		}
-	}()
+	go sendTerminalInput(ctx, stream, sessionID, sendDone)
 
 	select {
 	case err := <-receiveDone:
@@ -258,6 +167,116 @@ func terminalCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		<-receiveDone
 		<-sendDone
 		return ctx.Err()
+	}
+}
+
+// resolveTerminalServer resolves the server address. By default it is
+// derived from the workspace name (the CLI server binds a deterministic
+// per-workspace port in [20000,29900]); the legacy fixed `localhost:10000` is
+// no longer listened on, so a hard-coded default always failed. --server
+// still overrides for unusual setups.
+func resolveTerminalServer(ctx context.Context) (string, error) {
+	if termServer != "" {
+		return termServer, nil
+	}
+	ws, err := resources.FindWorkspaceUp(ctx)
+	if err != nil {
+		return "", fmt.Errorf("cannot find workspace to locate the codefly server (pass --server host:port): %w", err)
+	}
+	if ws == nil {
+		return "", fmt.Errorf("cannot find workspace to locate the codefly server (pass --server host:port)")
+	}
+	return fmt.Sprintf("127.0.0.1:%d", network.CLIServerPort(ws.Name)), nil
+}
+
+// followTerminalResize forwards SIGWINCH (terminal resize) to the session
+// until the returned stop is called, which releases both the signal
+// registration and the listener goroutine.
+func followTerminalResize(ctx context.Context, client cliv0.TerminalServiceClient, sessionID string) func() {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGWINCH)
+	resizeCtx, resizeCancel := context.WithCancel(ctx)
+	var resizeWG sync.WaitGroup
+	resizeWG.Add(1)
+	go func() {
+		defer resizeWG.Done()
+		for {
+			select {
+			case <-resizeCtx.Done():
+				return
+			case <-sigCh:
+				w, h, err := term.GetSize(int(os.Stdin.Fd()))
+				if err == nil {
+					_, _ = client.Resize(resizeCtx, &cliv0.ResizeTerminalRequest{
+						SessionId: sessionID,
+						Rows:      terminalCells(h),
+						Cols:      terminalCells(w),
+					})
+				}
+			}
+		}
+	}()
+	return func() {
+		signal.Stop(sigCh)
+		resizeCancel()
+		resizeWG.Wait()
+	}
+}
+
+// receiveTerminalOutput writes what the server sends to stdout and reports
+// on done once the stream ends.
+func receiveTerminalOutput(stream cliv0.TerminalService_AttachClient, done chan<- error) {
+	for {
+		msg, err := stream.Recv()
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+				done <- nil
+			} else {
+				done <- fmt.Errorf("receive terminal output: %w", err)
+			}
+			return
+		}
+		if len(msg.Data) > 0 {
+			n, writeErr := os.Stdout.Write(msg.Data)
+			if writeErr != nil {
+				done <- fmt.Errorf("write terminal output: %w", writeErr)
+				return
+			}
+			if n != len(msg.Data) {
+				done <- io.ErrShortWrite
+				return
+			}
+		}
+		if msg.Done {
+			done <- nil
+			return
+		}
+	}
+}
+
+// sendTerminalInput reads stdin and sends it to the session, reporting on
+// done when stdin ends or a send fails.
+func sendTerminalInput(ctx context.Context, stream cliv0.TerminalService_AttachClient, sessionID string, done chan<- error) {
+	buf := make([]byte, 1024)
+	for {
+		n, err := readTerminalInput(ctx, int(os.Stdin.Fd()), buf)
+		if n > 0 {
+			if sendErr := stream.Send(&cliv0.TerminalInput{
+				SessionId: sessionID,
+				Data:      buf[:n],
+			}); sendErr != nil {
+				done <- fmt.Errorf("send terminal input: %w", sendErr)
+				return
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+				done <- nil
+			} else {
+				done <- fmt.Errorf("read terminal input: %w", err)
+			}
+			return
+		}
 	}
 }
 

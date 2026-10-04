@@ -28,7 +28,7 @@ func TestCIReportPreservesPlanOrderAndDependencyIdentity(t *testing.T) {
 	}
 	reporter := fixedCIReporter(t, plan)
 	var prerequisiteDone atomic.Bool
-	err := CIWithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
+	err := WithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
 		switch resources.WithUnique(service).Unique() {
 		case "management/organization":
 			prerequisiteDone.Store(true)
@@ -73,7 +73,7 @@ func TestCIReportRecordsFailedPrerequisiteAndIndependentSuccess(t *testing.T) {
 		{Service: "management/worker"},
 	}}
 	reporter := fixedCIReporter(t, plan)
-	runErr := CIWithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
+	runErr := WithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
 		if resources.WithUnique(service).Unique() == "management/organization" {
 			return errors.New("organization validation failed")
 		}
@@ -114,7 +114,7 @@ func TestCIReportIncludesLaterPhasesAfterFailFast(t *testing.T) {
 		}
 	}
 
-	runErr := CIWithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, _ *resources.Service) error {
+	runErr := WithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, _ *resources.Service) error {
 		return errors.New("lint failed")
 	}, lint)
 	if runErr == nil {
@@ -148,7 +148,7 @@ func TestCIReportMarksRunningAndPendingTasksCancelled(t *testing.T) {
 	started := make(chan struct{}, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- CIWithPlanOptions(ctx, workspace, plan, func(ctx context.Context, _ *resources.Workspace, _ *resources.Module, _ *resources.Service) error {
+		done <- WithPlanOptions(ctx, workspace, plan, func(ctx context.Context, _ *resources.Workspace, _ *resources.Module, _ *resources.Service) error {
 			started <- struct{}{}
 			<-ctx.Done()
 			return ctx.Err()
@@ -179,7 +179,7 @@ func TestCIReportJSONIsStableAndWrittenRelativeToWorkspace(t *testing.T) {
 		{Service: "management/worker", Reasons: []string{}},
 	}}
 	reporter := fixedCIReporter(t, plan)
-	err := CIWithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, _ *resources.Service) error {
+	err := WithPlanOptions(context.Background(), workspace, plan, func(_ context.Context, _ *resources.Workspace, _ *resources.Module, _ *resources.Service) error {
 		return nil
 	}, ScheduleOptions{Jobs: 1, FailFast: true, Phase: "test", Reporter: reporter})
 	if err != nil {

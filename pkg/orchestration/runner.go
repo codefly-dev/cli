@@ -280,15 +280,49 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 
 	inputs, err := runner.gatherInitInputs(ctx, cfgCtx, w)
 	if err != nil {
-		return nil, err
+		return nil, initReadError(cfgCtx, w, err, "dependencies endpoints", "dependencies endpoints")
 	}
-	dependenciesEndpoints := inputs.dependenciesEndpoints
-	dependenciesNetworkMappings := inputs.dependenciesNetworkMappings
-	conf := inputs.conf
-	runtimeContext := inputs.runtimeContext
-	workspaceConfigurations := inputs.workspaceConfigurations
-	dependenciesConfigurations := inputs.dependenciesConfigurations
-	networkMappings := inputs.networkMappings
+	dependenciesNetworkMappings, err := runner.world.SharedState.GetDependenciesNetworkMappings(cfgCtx, runner.instance.Service)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot get initialized dependency network mappings")
+	}
+	if runner.testRequest != nil && !runner.serviceRunningForTest && len(dependenciesNetworkMappings) > 0 &&
+		!slices.Contains(runner.instance.Info.GetContract().GetCapabilities(), contract.RuntimeInitDependencyMappings) {
+		return nil, w.NewError("dependency-only tests require agent capability %s to consume accepted addresses at Init", contract.RuntimeInitDependencyMappings)
+	}
+
+	conf, err := runner.world.ConfigurationManager.GetServiceConfiguration(cfgCtx, runner.instance.Identity)
+	if err != nil {
+		return nil, initReadError(cfgCtx, w, err, "service configuration", "service configuration")
+	}
+
+	runtimeContext, err := resources.NewRuntimeContext(runner.runtimeContext)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
+	}
+
+	workspaceConfigurations, err := runner.world.workspaceConfigurationsFor(cfgCtx, runner.instance.Service,
+		dependenciesNetworkMappings, resources.NetworkAccessFromRuntimeContext(runtimeContext))
+	if err != nil {
+		return nil, initReadError(cfgCtx, w, err, "workspace dependencies configurations", "project configurations")
+	}
+
+	dependenciesConfigurations, err := runner.world.SharedState.GetDependentConfigurationsFor(cfgCtx, runner.instance.Identity)
+	if err != nil {
+		return nil, initReadError(cfgCtx, w, err, "dependencies configurations", "configuration for dependencies")
+	}
+
+	networkMappings, err := runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env.Runtime(), runner.world.Workspace, runner.instance.Identity, runner.endpoints, runtimeContext)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
+	}
+
+	w.Debug("configuration",
+		wool.Field("network mappings", resources.MakeManyNetworkMappingSummary(networkMappings)),
+		wool.Field("service configuration", resources.MakeConfigurationSummary(conf)),
+		wool.Field("dependencies endpoints", resources.MakeManyEndpointSummary(dependenciesEndpoints)),
+		wool.Field("project configurations", resources.MakeManyConfigurationSummary(workspaceConfigurations)),
+		wool.Field("dependencies configurations", resources.MakeManyConfigurationSummary(dependenciesConfigurations)))
 
 	// Init is the only lifecycle call guaranteed to reach a service under test:
 	// a test policy replaces the origin's Start with a barrier or skips it
@@ -322,17 +356,39 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.NewError("cannot initialize %s: agent returned no status", runner.instance.Unique())
 	}
 	if resp.Status.State != runtimev0.InitStatus_READY {
-		message := statusDiagnostic(resp.Status.Message, "agent reported initialization failure")
-		w.Warn(fmt.Sprintf("initialization failed for %s: %s", runner.instance.Unique(), message))
-		if runner.outputPropertyForInit.processed == nil {
-			return nil, w.NewError("cannot initialize %s: %s", runner.instance.Unique(), message)
-		}
-		if err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{failing: true}); err != nil {
-			return nil, w.Wrapf(err, "cannot set failed init output for %s", runner.instance.Unique())
-		}
-		return runner.outputPropertyForInit.Process(ctx)
+		return runner.failedInit(ctx, w, resp.Status.Message)
 	}
+	return runner.recordInit(ctx, w, runtimeContext, conf, workspaceConfigurations, networkMappings, resp)
+}
 
+// initReadError names a bounded Init read's failure: a stalled provider is
+// reported as the timeout it is, anything else as what it is.
+func initReadError(cfgCtx context.Context, w *wool.Wool, err error, timeoutWhat, what string) error {
+	if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
+		w.Warn(fmt.Sprintf("timeout waiting for %s after 30s; check that dependency services are reachable", timeoutWhat))
+		return w.Wrapf(err, "init timeout: %s not available within 30s", timeoutWhat)
+	}
+	return w.Wrapf(err, "cannot get %s", what)
+}
+
+// failedInit reports the agent's initialization failure: as the error when
+// nothing consumes the init output, else as a failing output.
+func (runner *Runner) failedInit(ctx context.Context, w *wool.Wool, statusMessage string) (*OutputProperty, error) {
+	message := statusDiagnostic(statusMessage, "agent reported initialization failure")
+	w.Warn(fmt.Sprintf("initialization failed for %s: %s", runner.instance.Unique(), message))
+	if runner.outputPropertyForInit.processed == nil {
+		return nil, w.NewError("cannot initialize %s: %s", runner.instance.Unique(), message)
+	}
+	if err := runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{failing: true}); err != nil {
+		return nil, w.Wrapf(err, "cannot set failed init output for %s", runner.instance.Unique())
+	}
+	return runner.outputPropertyForInit.Process(ctx)
+}
+
+// recordInit publishes what the agent accepted — its network mappings, its
+// runtime configurations and, when requested, the process environment file —
+// and produces the init output.
+func (runner *Runner) recordInit(ctx context.Context, w *wool.Wool, runtimeContext *basev0.RuntimeContext, conf *basev0.Configuration, workspaceConfigurations []*basev0.Configuration, networkMappings []*basev0.NetworkMapping, resp *runtimev0.InitResponse) (*OutputProperty, error) {
 	// The agent, not the proposal, decides the addresses this service serves.
 	// The validated accepted set is the only one published: runner, shared
 	// state and the exported environment must never hold different views of
