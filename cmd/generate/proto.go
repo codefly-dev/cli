@@ -188,20 +188,7 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	}
 
 	// Whether a container this run cannot remove is anyone's to collect; see
-	// newProtoRunner keeps generated directories and private files owned by the
-// invoking user. Buf creates output directories with mode 0700, so root-owned
-// emissions cannot be published or cleaned up by a non-root Linux caller.
-// The proto companion sets HOME=/tmp to support arbitrary host UIDs.
-func newProtoRunner(ctx context.Context, image *resources.DockerImage, dir, name string) (*runners.DockerEnvironment, error) {
-	runner, err := runners.NewDockerEnvironment(ctx, image, dir, name)
-	if err != nil {
-		return nil, err
-	}
-	runner.WithUser(fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()))
-	return runner, nil
-}
-
-// protoTeardownOutcome.
+	// protoTeardownOutcome.
 	recoverable := projectContainerRecovery(ctx)
 
 	// Create Docker runner
@@ -298,6 +285,19 @@ func newProtoRunner(ctx context.Context, image *resources.DockerImage, dir, name
 	}
 
 	return nil
+}
+
+// newProtoRunner keeps generated directories and private files owned by the
+// invoking user. Buf creates output directories with mode 0700, so root-owned
+// emissions cannot be published or cleaned up by a non-root Linux caller.
+// The proto companion sets HOME=/tmp to support arbitrary host UIDs.
+func newProtoRunner(ctx context.Context, image *resources.DockerImage, dir, name string) (*runners.DockerEnvironment, error) {
+	runner, err := runners.NewDockerEnvironment(ctx, image, dir, name)
+	if err != nil {
+		return nil, err
+	}
+	runner.WithUser(fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()))
+	return runner, nil
 }
 
 // protoTeardownOutcome decides what a failed teardown means for the command.
