@@ -404,6 +404,25 @@ Two further rules make the choice disappear rather than constrain it:
   references whose orders contradict each other, which endpoints
   (name `grpc`, api `rest`) and (name `rest`, api `grpc`) produce when both are
   referenced by name.
+  **The list is then verified, not predicted.** Every rule above reasons about
+  what core will scan; the pass ends by replaying that scan — the first matching
+  mapping with an instance for this access, which is where core stops — over the
+  list it is about to hand over, and refuses to emit one where a reference would
+  be given an address belonging to an endpoint it did not name. This exists
+  because the rules interact: the drop above removes a producer's other
+  endpoints when a reference names one that published no mapping, and if one of
+  those others is itself named exactly by a second reference, that second
+  reference is left with nothing but its own wrong answers. Each rule is right
+  alone and the pair is not. An endpoint that exists only as a wrong answer is
+  unbound and the list rebuilt; one a second reference names exactly cannot be
+  unbound without breaking that reference, so the pair is refused by name.
+  A sibling reached first with an **empty** address is not a violation — core
+  stops there with nothing and the value drops, which delivers no wrong address.
+  `TestNoCompositionAnswersAReferenceWithAnEndpointItDidNotName` asserts the
+  property over a deterministic search of small compositions, which is how the
+  stranded-reference case was found; the hand-written fixtures are each one case
+  of it.
+
   Refused references arrive as core's own structured findings, so they carry a
   consumer, a group, a key and a reason rather than one opaque message. They are
   reported **after** the other reference faults rather than merged with them:

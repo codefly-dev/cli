@@ -2017,10 +2017,21 @@ func orderedForEachReference(
 			// instance either way, so a sibling whose matching address is
 			// EMPTY ends the scan with an error — it never delivers an address
 			// the reference did not name, and refusing over it was a false
-			// refusal. Only the first matching sibling mapping can be reached,
-			// so only that one is asked. (Layer-4 round-eleven N1.)
-			siblingCanAnswer, sawSiblingMatch := false, false
-			siblingAnswering := ""
+			// refusal. (Layer-4 round-eleven N1.)
+			//
+			// EVERY matching sibling is asked, not the first one in the order
+			// the mappings were recorded. The list core finally scans is the
+			// SORTED one, and this reference adds no ordering constraint when
+			// its named endpoint cannot answer — so another reference's
+			// constraint can put any sibling first. Asking only the first
+			// recorded sibling made the verdict depend on an order this pass
+			// had not computed yet, and with two siblings the one that answers
+			// could be moved ahead of the one that was asked: core's first
+			// match then delivered a sibling's address for an explicitly named
+			// endpoint, with nothing refused. Whether ANY sibling has an
+			// address is order-independent, which is why the question is asked
+			// that way. (Layer-4 round-twelve.)
+			var answeringSiblings []string
 			for i := range group {
 				if !resources.EndpointMatchesReferenceInfo(group[i].endpoint, ref.info) {
 					continue
@@ -2034,10 +2045,8 @@ func orderedForEachReference(
 					continue
 				}
 				others = append(others, group[i].endpoint.Name)
-				if matched && !sawSiblingMatch {
-					sawSiblingMatch = true
-					siblingCanAnswer = address != ""
-					siblingAnswering = group[i].endpoint.Name
+				if matched && address != "" && !slices.Contains(answeringSiblings, group[i].endpoint.Name) {
+					answeringSiblings = append(answeringSiblings, group[i].endpoint.Name)
 				}
 			}
 			if len(others) == 0 {
@@ -2067,7 +2076,7 @@ func orderedForEachReference(
 				continue
 			}
 			if !namedServesAccess {
-				if !siblingCanAnswer {
+				if len(answeringSiblings) == 0 {
 					// Neither the named endpoint nor any sibling has an address
 					// for this access, so nothing can be handed over wrongly and
 					// there is nothing to refuse: the value simply drops.
@@ -2076,12 +2085,14 @@ func orderedForEachReference(
 					// R9-3.)
 					continue
 				}
-				// The sibling NAMED here is the one core would actually reach:
-				// the first of them with an address for this access. Listing
-				// every sibling claimed an address for ones that have none.
+				// The siblings NAMED here are the ones that could be reached:
+				// every one with an address for this access. Listing all of
+				// `others` claimed an address for ones that have none, and
+				// listing one of them described a single ordering out of
+				// several this pass does not choose between.
 				return nil, fmt.Errorf("the workspace configuration reference ${endpoint:%s} names %s's endpoint %q, which has no address for %s's network access, while %s also satisfies that reference and does: resolving it would hand over an endpoint the reference did not name, so it is refused. Give %q an address for this access, or reference the endpoint you mean",
 					referenceText(ref.info), unique, ref.info.Name, consumerLabel(consumer),
-					siblingAnswering, ref.info.Name)
+					strings.Join(answeringSiblings, ", "), ref.info.Name)
 			}
 			if before[named.endpoint.Name] == nil {
 				before[named.endpoint.Name] = map[string]bool{}
@@ -2102,10 +2113,72 @@ func orderedForEachReference(
 			seenName[item.endpoint.Name] = true
 			names = append(names, item.endpoint.Name)
 		}
+		producerReferences := referencesInto(references, unique)
+		// The list is VERIFIED, not predicted. Every rule above reasons about
+		// what core will scan; this replays the scan over the list that will
+		// actually be handed over and refuses to emit one where a reference
+		// would be answered by an endpoint it did not name. Prediction is where
+		// every round of this review found a hole, and the holes were never in
+		// the same place twice — so the answer is checked instead of argued.
+		//
+		// It is also the only thing that catches the INTERACTIONS between the
+		// rules. The drop above (R9-1) removes a producer's other endpoints when
+		// a reference names one that published no mapping; if one of those
+		// others is itself named exactly by a second reference, that second
+		// reference is left with nothing but its own wrong answers, and core's
+		// first match delivered one of them silently. A random search over
+		// small compositions found this in a composition no hand-written
+		// fixture had reached. (Layer-4 round-twelve.)
+		ordered, err := answerableOrder(unique, consumerLabel(consumer), group, names, before, unanswerable, producerReferences, access)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ordered...)
+	}
+	wool.Get(ctx).In("World.orderedForEachReference").Debug("every reference can be answered by the endpoint it names")
+	return out, nil
+}
+
+// referencesInto is the exact-name references this consumer receives that name
+// an endpoint of one producer.
+func referencesInto(references []referenceIntent, unique string) []referenceIntent {
+	var out []referenceIntent
+	for _, ref := range references {
+		if !ref.exactName || ref.info.Module+"/"+ref.info.Service != unique {
+			continue
+		}
+		out = append(out, ref)
+	}
+	return out
+}
+
+// answerableOrder returns the mappings of one producer in an order where core
+// answers every reference with the endpoint it names — or says why no such
+// order exists.
+//
+// It builds the ordered, pruned list the rest of the pass decided on and then
+// REPLAYS core's scan over it. A reference whose first answering mapping is not
+// its own endpoint is a silent mis-resolution, so the offending endpoint is
+// dropped and the list rebuilt; dropping can expose another violation, which is
+// why this iterates. An endpoint a second reference names EXACTLY cannot be
+// dropped — that would answer this reference by breaking that one — so the pair
+// is refused by name instead.
+func answerableOrder(
+	unique, consumer string, group []retained, names []string,
+	before map[string]map[string]bool, unanswerable map[string]bool,
+	references []referenceIntent, access *basev0.NetworkAccess,
+) ([]*basev0.NetworkMapping, error) {
+	namedExactly := make(map[string]bool, len(references))
+	for _, ref := range references {
+		namedExactly[ref.info.Name] = true
+	}
+	// Each pass drops at most one endpoint, so the loop is bounded by the
+	// producer's endpoint count.
+	for attempt := 0; attempt <= len(names); attempt++ {
 		sorted, err := endpointsInConstraintOrder(names, before)
 		if err != nil {
 			return nil, fmt.Errorf("the workspace configuration references into %s cannot all be answered from one set of network mappings for %s: %w. Reference the endpoints you mean by name, so no reference depends on the order another one needs",
-				unique, consumerLabel(consumer), err)
+				unique, consumer, err)
 		}
 		at := make(map[string]int, len(sorted))
 		for i, name := range sorted {
@@ -2115,15 +2188,61 @@ func orderedForEachReference(
 		slices.SortStableFunc(ordered, func(a, b retained) int {
 			return at[a.endpoint.Name] - at[b.endpoint.Name]
 		})
+		kept := make([]retained, 0, len(ordered))
 		for _, item := range ordered {
 			if unanswerable[item.endpoint.Name] {
 				continue
 			}
-			out = append(out, item.mapping)
+			kept = append(kept, item)
+		}
+
+		reference, offender, found := firstMisansweredReference(kept, references, access)
+		if !found {
+			out := make([]*basev0.NetworkMapping, 0, len(kept))
+			for _, item := range kept {
+				out = append(out, item.mapping)
+			}
+			return out, nil
+		}
+		if namedExactly[offender] {
+			return nil, fmt.Errorf("the workspace configuration reference ${endpoint:%s} would be answered by %s's endpoint %q, which it does not name, and %q cannot be unbound because another reference names it exactly: no one set of network mappings answers both for %s. Give the endpoints distinct APIs, or reference them from separate services",
+				referenceText(reference.info), unique, offender, offender, consumer)
+		}
+		unanswerable[offender] = true
+	}
+	return nil, fmt.Errorf("the workspace configuration references into %s cannot all be answered from one set of network mappings for %s: every candidate ordering answers some reference with an endpoint it does not name", unique, consumer)
+}
+
+// firstMisansweredReference replays core's scan — the first matching mapping
+// with an instance for this access, which is where core STOPS — and reports the
+// first reference that would be handed an address belonging to an endpoint it
+// did not name.
+//
+// Stopping is the whole point: once a mapping matches and has an instance for
+// the access, nothing after it is consulted. So a sibling reached first with an
+// EMPTY address is not a mis-answer — core ends there with nothing, the value
+// drops, and no address the reference did not name is delivered. Only a sibling
+// with a real address is a violation.
+func firstMisansweredReference(
+	kept []retained, references []referenceIntent, access *basev0.NetworkAccess,
+) (referenceIntent, string, bool) {
+	for _, ref := range references {
+		for _, item := range kept {
+			if !resources.EndpointMatchesReferenceInfo(item.endpoint, ref.info) {
+				continue
+			}
+			address, matched := mappingAnswersAccess(item.mapping, access)
+			if !matched {
+				continue
+			}
+			if item.endpoint.Name != ref.info.Name && address != "" {
+				return ref, item.endpoint.Name, true
+			}
+			// Core stops at this mapping either way.
+			break
 		}
 	}
-	wool.Get(ctx).In("World.orderedForEachReference").Debug("every reference can be answered by the endpoint it names")
-	return out, nil
+	return referenceIntent{}, "", false
 }
 
 // mappingAnswersAccess reports whether a mapping ANSWERS one network access,

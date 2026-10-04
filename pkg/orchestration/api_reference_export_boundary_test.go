@@ -1221,3 +1221,156 @@ func TestASiblingWithNoAddressIsNotACompetingAnswer(t *testing.T) {
 		require.Contains(t, err.Error(), "admin")
 	})
 }
+
+// twoSiblingWorkspace is one producer declaring the endpoint a reference names
+// plus TWO API siblings, in the order given.
+//
+// Two siblings is the shape that makes an order-dependent verdict visible: one
+// is enough to tell "a sibling can answer" from "none can", but not enough for
+// the sibling that WAS asked and the sibling core would REACH to be different
+// endpoints. (Layer-4 round-twelve.)
+func twoSiblingWorkspace(t *testing.T, values string, siblings []string) *resources.Workspace {
+	t.Helper()
+	endpoints := "endpoints:\n"
+	for _, name := range append([]string{"grpc"}, siblings...) {
+		endpoints += "    - name: " + name + "\n      api: grpc\n      visibility: public\n"
+	}
+	return writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
+			endpoints,
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
+		"configurations/local/work-context.env": values,
+	})
+}
+
+// A sibling's address is never delivered for an explicitly named endpoint, in
+// any order the producer's mappings happen to arrive in.
+//
+// This is the hole the round-eleven correction left. Whether a sibling could
+// hand over an address was decided over the FIRST matching sibling in the
+// recorded order, but the list core finally scans is the SORTED one — and a
+// reference whose named endpoint cannot answer adds no ordering constraint, so
+// another reference's constraint is free to move a different sibling to the
+// front. With one sibling the two are the same endpoint and the bug is
+// invisible. With two, `admin` was asked (no address for this access, so
+// "nothing can be handed over wrongly, let it drop") while `metrics` was moved
+// ahead of everything by the reference that names it — and core's first match
+// gave `metrics`'s address to the reference that named `grpc`, silently.
+//
+// The verdict is now "does ANY matching sibling have an address", which no
+// ordering can change. Both recorded orders are run: under the old code one of
+// them refuses and the other delivers the wrong address. (Layer-4 round-twelve.)
+func TestNoOrderingLetsASiblingAnswerAReferenceThatNamedAnother(t *testing.T) {
+	ctx := context.Background()
+	const values = "primary-address=${endpoint:platform/authority/grpc}\n" +
+		"metrics-address=${endpoint:platform/authority/metrics}\n"
+
+	for _, order := range []struct {
+		name     string
+		siblings []string
+	}{
+		// `admin` first: the sibling with no address is the one the old code
+		// asked, so it concluded nothing could answer and refused nothing.
+		{"the sibling with no address is recorded first", []string{"admin", "metrics"}},
+		// And the other way, where the old code happened to ask the right one.
+		{"the sibling with an address is recorded first", []string{"metrics", "admin"}},
+	} {
+		t.Run(order.name, func(t *testing.T) {
+			world, worker := referenceValidityWorld(t, twoSiblingWorkspace(t, values, order.siblings),
+				func(world *World) {
+					world.Mode = RunMode
+					mappings := map[string]*basev0.NetworkMapping{
+						// The endpoint the first reference names has no address
+						// for a native consumer.
+						"grpc": endpointMapping("platform", "authority", "grpc", "grpc", "public",
+							containerInstance("http://grpc:9090")),
+						// A sibling that answers the access with nothing.
+						"admin": endpointMapping("platform", "authority", "admin", "grpc", "public",
+							nativeInstance("")),
+						// And one that answers it with a real address.
+						"metrics": endpointMapping("platform", "authority", "metrics", "grpc", "public",
+							nativeInstance("http://localhost:3333")),
+					}
+					recorded := []*basev0.NetworkMapping{mappings["grpc"]}
+					for _, name := range order.siblings {
+						recorded = append(recorded, mappings[name])
+					}
+					recordMappings(t, world, "platform", "authority", recorded...)
+				})
+
+			confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
+			if err == nil {
+				// A drop is an acceptable outcome; a sibling's address is not.
+				primary, delivered := groupValue(confs, "work-context", "primary-address")
+				require.False(t, delivered && primary != "",
+					"the reference named grpc, which has no address for this access: it must drop, not take a sibling's")
+				require.NotEqual(t, "http://localhost:3333", primary)
+				return
+			}
+			require.Contains(t, err.Error(), "${endpoint:platform/authority/grpc}",
+				"the refusal names the reference that cannot be answered correctly")
+			require.Contains(t, err.Error(), "metrics",
+				"and the sibling that would otherwise have answered it")
+		})
+	}
+}
+
+// The same two-sibling shape under a RENDER, where every endpoint does have an
+// address and the ordering pass is what keeps each reference on its own.
+//
+// A render derives its mappings from the manifest, so the manifest order is the
+// only lever on what core scans first — and with two siblings there are two
+// ways for a reference to be answered by the wrong endpoint rather than one.
+// Both orders must give each reference the endpoint it names.
+func TestARenderWithTwoSiblingsKeepsEachReferenceOnItsOwnEndpoint(t *testing.T) {
+	ctx := context.Background()
+	const values = "primary-address=${endpoint:platform/authority/grpc}\n" +
+		"metrics-address=${endpoint:platform/authority/metrics}\n"
+
+	for _, order := range []struct {
+		name     string
+		siblings []string
+	}{
+		{"metrics declared before admin", []string{"metrics", "admin"}},
+		{"admin declared before metrics", []string{"admin", "metrics"}},
+	} {
+		t.Run(order.name, func(t *testing.T) {
+			world, worker := referenceValidityWorld(t, twoSiblingWorkspace(t, values, order.siblings))
+			require.True(t, world.deploys())
+
+			confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewContainerNetworkAccess())
+			require.NoError(t, err)
+			primary, delivered := groupValue(confs, "work-context", "primary-address")
+			require.True(t, delivered)
+			metrics, delivered := groupValue(confs, "work-context", "metrics-address")
+			require.True(t, delivered)
+			require.NotEqual(t, primary, metrics,
+				"two references naming different endpoints must not resolve to one address")
+
+			// The discriminating half: each reference resolved alone, in the
+			// same manifest order, must give the same address. Asserting only
+			// that the two differ cannot see both of them shifting.
+			for key, reference := range map[string]string{
+				"primary-address": "${endpoint:platform/authority/grpc}",
+				"metrics-address": "${endpoint:platform/authority/metrics}",
+			} {
+				alone, aloneWorker := referenceValidityWorld(t,
+					twoSiblingWorkspace(t, key+"="+reference+"\n", order.siblings))
+				aloneConfs, err := alone.workspaceConfigurationsFor(ctx, aloneWorker, nil, resources.NewContainerNetworkAccess())
+				require.NoError(t, err)
+				aloneAddress, delivered := groupValue(aloneConfs, "work-context", key)
+				require.True(t, delivered)
+				together, _ := groupValue(confs, "work-context", key)
+				require.Equal(t, aloneAddress, together,
+					"the endpoint answering "+reference+" must not depend on what else references its producer")
+			}
+		})
+	}
+}
