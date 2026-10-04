@@ -69,11 +69,12 @@ func runRelease(cmd *cobra.Command, _ []string) error {
 
 	for _, status := range statuses {
 		deltaStr := fmt.Sprintf("%+d", status.Delta)
-		if status.Delta > 50 {
+		switch {
+		case status.Delta > 50:
 			deltaStr = color.RedString(deltaStr)
-		} else if status.Delta > 20 {
+		case status.Delta > 20:
 			deltaStr = color.YellowString(deltaStr)
-		} else {
+		default:
 			deltaStr = color.GreenString(deltaStr)
 		}
 
