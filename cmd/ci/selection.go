@@ -104,20 +104,20 @@ func BuildPlan(ctx context.Context, workspace *resources.Workspace, opts PlanOpt
 
 	if opts.All {
 		plan.SelectionReason = "explicit --all"
-		selectAll("global", plan.SelectionReason)
+		selectAll(classificationGlobal, plan.SelectionReason)
 	}
 
 	changed := append([]string(nil), opts.ChangedFiles...)
 	if len(changed) == 0 {
 		if plan.Base == "" && isCIEnvironment() {
 			plan.SelectionReason = "CI change bounds were not supplied; selected all services conservatively"
-			selectAll("global", plan.SelectionReason)
+			selectAll(classificationGlobal, plan.SelectionReason)
 			return finalizePlan(ctx, workspace, plan, services, selected)
 		}
 		changed, err = discoverGitChanges(ctx, repoRoot, plan.Base, plan.Head)
 		if err != nil {
 			plan.SelectionReason = fmt.Sprintf("change discovery failed (%v); selected all services conservatively", err)
-			selectAll("global", plan.SelectionReason)
+			selectAll(classificationGlobal, plan.SelectionReason)
 			return finalizePlan(ctx, workspace, plan, services, selected)
 		}
 	}
@@ -246,7 +246,7 @@ func classifyChangedPath(repoRoot string, workspace *resources.Workspace, change
 
 	for _, record := range services {
 		if pathWithin(absPath, record.dir) {
-			addPlanSelection(selected, record.unique, "direct", "service input changed", changedPath)
+			addPlanSelection(selected, record.unique, classificationDirect, "service input changed", changedPath)
 			return
 		}
 	}
@@ -265,7 +265,7 @@ func classifyChangedPath(repoRoot string, workspace *resources.Workspace, change
 				consumers, known := libraryConsumers[library]
 				if known {
 					for _, service := range consumers {
-						addPlanSelection(selected, service, "direct", "consumes changed library "+library, changedPath)
+						addPlanSelection(selected, service, classificationDirect, "consumes changed library "+library, changedPath)
 					}
 					return
 				}
@@ -273,34 +273,34 @@ func classifyChangedPath(repoRoot string, workspace *resources.Workspace, change
 		}
 		// ChangedFiles already carries the complete global input set. Do not
 		// duplicate every global path into every selected service record.
-		selectAllRecords(selected, services, "global", "unclassified library change", "")
+		selectAllRecords(selected, services, classificationGlobal, "unclassified library change", "")
 		return
 	}
 
 	if absPath == filepath.Join(workspaceDir, resources.WorkspaceConfigurationName) ||
 		pathWithin(absPath, filepath.Join(workspaceDir, "configurations")) ||
 		pathWithin(absPath, filepath.Join(workspaceDir, "environments")) {
-		selectAllRecords(selected, services, "global", "workspace-level input changed", "")
+		selectAllRecords(selected, services, classificationGlobal, "workspace-level input changed", "")
 		return
 	}
 
 	for _, module := range modules {
 		if pathWithin(absPath, module.dir) {
 			for _, service := range module.services {
-				addPlanSelection(selected, service, "direct", "module-level input changed", changedPath)
+				addPlanSelection(selected, service, classificationDirect, "module-level input changed", changedPath)
 			}
 			return
 		}
 	}
 
 	if pathWithin(absPath, workspaceDir) {
-		selectAllRecords(selected, services, "global", "workspace-level input changed", "")
+		selectAllRecords(selected, services, classificationGlobal, "workspace-level input changed", "")
 		return
 	}
 
 	// Provider metadata and documentation were handled above. Any other change
 	// outside a nested workspace can affect shared build/configuration inputs.
-	selectAllRecords(selected, services, "global", "unclassified repository input changed", "")
+	selectAllRecords(selected, services, classificationGlobal, "unclassified repository input changed", "")
 }
 
 func finalizePlan(ctx context.Context, workspace *resources.Workspace, plan *Plan, services []serviceRecord, selected map[string]*mutablePlanService) (*Plan, error) {
@@ -319,7 +319,7 @@ func finalizePlan(ctx context.Context, workspace *resources.Workspace, plan *Pla
 	for unique, service := range selected {
 		// Global changes already selected the complete inventory. Expanding each
 		// global service would only add noisy "depends on" reasons.
-		if service.classification == "direct" {
+		if service.classification == classificationDirect {
 			direct = append(direct, unique)
 		}
 	}
@@ -336,7 +336,7 @@ func finalizePlan(ctx context.Context, workspace *resources.Workspace, plan *Pla
 			if node.ID == origin {
 				continue
 			}
-			addPlanSelection(selected, node.ID, "dependent", "depends on "+origin, "")
+			addPlanSelection(selected, node.ID, classificationDependent, "depends on "+origin, "")
 		}
 	}
 
@@ -394,14 +394,14 @@ func addPlanSelection(selected map[string]*mutablePlanService, unique, classific
 	}
 	if classificationRank(classification) > classificationRank(service.classification) {
 		service.classification = classification
-		if classification == "global" {
+		if classification == classificationGlobal {
 			service.reasons = nil
 			service.paths = nil
 		}
 	}
 	// Once a global input selected a service, resource-specific details are
 	// redundant and can make plans enormous in a dirty workspace.
-	if service.classification == "global" && classification != "global" {
+	if service.classification == classificationGlobal && classification != classificationGlobal {
 		return
 	}
 	if reason != "" {
@@ -412,13 +412,22 @@ func addPlanSelection(selected map[string]*mutablePlanService, unique, classific
 	}
 }
 
+// The selection classifications, strongest first. classificationRank orders
+// them and a service never moves to a weaker one, so naming them keeps the
+// vocabulary in one place instead of spelled out at every call site.
+const (
+	classificationGlobal    = "global"
+	classificationDirect    = "direct"
+	classificationDependent = "dependent"
+)
+
 func classificationRank(classification string) int {
 	switch classification {
-	case "global":
+	case classificationGlobal:
 		return 3
-	case "direct":
+	case classificationDirect:
 		return 2
-	case "dependent":
+	case classificationDependent:
 		return 1
 	default:
 		return 0

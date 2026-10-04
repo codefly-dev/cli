@@ -333,7 +333,7 @@ func reportTaskID(phase, suite, service string) string {
 	phase = strings.TrimSpace(phase)
 	suite = strings.TrimSpace(suite)
 	if suite == "" {
-		if phase == "test" {
+		if phase == ciPhaseTest {
 			suite = "default"
 		} else {
 			return phase + ":" + service
@@ -745,7 +745,7 @@ func runWithCIReport(ctx context.Context, workspace *resources.Workspace, plan *
 		return err
 	}
 
-	if format == "json" {
+	if format == prereleaseFormatJSON {
 		cli.SuppressOutput()
 		cli.SetOutputSink(func(wool.Loglevel, string) {})
 		defer func() {
@@ -764,7 +764,7 @@ func runWithCIReport(ctx context.Context, workspace *resources.Workspace, plan *
 	destination, payload, reportErr := writeCIReport(workspace, ciReportOutput, report)
 	result = errors.Join(result, reportErr)
 
-	if format == "json" {
+	if format == prereleaseFormatJSON {
 		if len(payload) > 0 {
 			_, _ = os.Stdout.Write(payload)
 		}
@@ -783,10 +783,10 @@ func runWithCIReport(ctx context.Context, workspace *resources.Workspace, plan *
 
 func normalizeCIReportFormat(value string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "text":
-		return "text", nil
-	case "json":
-		return "json", nil
+	case "", prereleaseFormatText:
+		return prereleaseFormatText, nil
+	case prereleaseFormatJSON:
+		return prereleaseFormatJSON, nil
 	default:
 		return "", fmt.Errorf("unsupported CI report format %q (use text or json)", value)
 	}

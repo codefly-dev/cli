@@ -286,7 +286,7 @@ func normalizedCacheRuntimeContext(value string) string {
 
 func normalizedCacheSuite(phase, suite string) string {
 	suite = strings.TrimSpace(suite)
-	if strings.TrimSpace(phase) == "test" && suite == "" {
+	if strings.TrimSpace(phase) == ciPhaseTest && suite == "" {
 		return "default"
 	}
 	return suite
