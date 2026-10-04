@@ -884,3 +884,10 @@ schemas this repository defines; their other implementers — the runtimes
 publishing contracts, the platform loading cells — hold the shape by
 agreement, not by a core model with fixtures, and moving both to core is a
 seam named for the owner.
+Until core owns them, both shapes are **pinned by digest** under
+`docs/wire/` — every field by wire name and type, read off the Go types, with
+the SHA-256 of each description in `docs/wire/README.md` — and
+`TestWireShapesArePinnedByDigest` refuses a change to either until the
+description is regenerated and the new digest is republished to the host and
+infra-base sessions, which pin the same digests against their readers. A
+stopgap, stated as one: the single implementation is still here.
