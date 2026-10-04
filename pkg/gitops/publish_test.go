@@ -3,14 +3,16 @@ package gitops
 import (
 	"context"
 	"fmt"
-	"gopkg.in/yaml.v3"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
@@ -212,10 +214,14 @@ func TestLocalGitopsPublishPlansThenCreatesSignedExactRefs(t *testing.T) {
 // settled against the base branch and signed, the carriers and the Job are
 // written and validated as part of the tree, and the commit carries them. It
 // is the path the settlement tests call into piecewise, run whole.
-func TestLocalGitopsPublishDeliversSignedCarriersAndTheJob(t *testing.T) {
-	ctx := context.Background()
-	remote := createBareRepository(t)
-	workspace := loadGitopsWorkspaceWithServices(t, remote, []string{"api", "host"})
+// hostedPublishWorkspace is a workspace whose production environment declares
+// a host, with the payments module rendered for it: the fixture every publish
+// that delivers signed carriers starts from.
+func hostedPublishWorkspace(t *testing.T) (ctx context.Context, workspace *resources.Workspace, env *environments.Environment, remote string) {
+	t.Helper()
+	ctx = context.Background()
+	remote = createBareRepository(t)
+	workspace = loadGitopsWorkspaceWithServices(t, remote, []string{"api", "host"})
 	config, err := os.ReadFile(filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName))
 	if err != nil {
 		t.Fatal(err)
@@ -239,7 +245,7 @@ func TestLocalGitopsPublishDeliversSignedCarriersAndTheJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := selectedEnvironment(t, workspace, "production")
+	env = selectedEnvironment(t, workspace, "production")
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
 	if _, err := RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination, Module: "payments", UnitNames: []string{"api", "host"},
@@ -273,7 +279,57 @@ func TestLocalGitopsPublishDeliversSignedCarriersAndTheJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	configureSSHSigning(t)
+	return ctx, workspace, env, remote
+}
 
+// TestReleasePublishRefusesToDeliverWithoutItsWorkflowIdentity: a hosted
+// environment is delivered signed carriers, and a release publish signs and
+// checks them under the workflow identity it runs with. With no such
+// identity — the checks the self-check and the reuse policy are built from
+// are nil wherever the workflow metadata is absent, local or not — the
+// publish refuses before it reads a document; with the identity it proceeds
+// to the signer.
+func TestReleasePublishRefusesToDeliverWithoutItsWorkflowIdentity(t *testing.T) {
+	ctx, workspace, env, remote := hostedPublishWorkspace(t)
+	// A release publish is refused a file repository, so the fixture's bare
+	// repository answers for a GitHub one, the way git itself rewrites it.
+	repository := "https://github.com/codefly-test/manifests.git"
+	gitopsDefaults, err := environments.WorkspaceGitops(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitopsDefaults.RepoURL = repository
+	setWorkspaceGitops(t, workspace, gitopsDefaults)
+	configured, err := strconv.Atoi(os.Getenv("GIT_CONFIG_COUNT"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_COUNT", strconv.Itoa(configured+1))
+	t.Setenv(fmt.Sprintf("GIT_CONFIG_KEY_%d", configured), "url.file://"+remote+".insteadOf")
+	t.Setenv(fmt.Sprintf("GIT_CONFIG_VALUE_%d", configured), repository)
+	env = selectedEnvironment(t, workspace, "production")
+	writeTestCell(t, workspace, env, "production", "payments")
+	for _, name := range []string{"GITHUB_REPOSITORY", "GITHUB_WORKFLOW_REF"} {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := PublishRequest{Module: "payments", Environment: "production", PromotionBranch: "codefly/promote-payments-production"}
+	_, err = PlanPublish(ctx, workspace, &request)
+	if err == nil || !strings.Contains(err.Error(), "run it from the release workflow") {
+		t.Fatalf("a hosted release publish with no workflow identity was not refused: %v", err)
+	}
+	t.Setenv("GITHUB_REPOSITORY", "codefly-test/manifests")
+	t.Setenv("GITHUB_WORKFLOW_REF", "codefly-test/manifests/.github/workflows/release.yml@refs/tags/v1.0.0")
+	_, err = PlanPublish(ctx, workspace, &request)
+	if err == nil || strings.Contains(err.Error(), "run it from the release workflow") {
+		t.Fatalf("with the workflow identity the publish must reach its signer, which this process does not hold: %v", err)
+	}
+}
+
+func TestLocalGitopsPublishDeliversSignedCarriersAndTheJob(t *testing.T) {
+	ctx, workspace, env, remote := hostedPublishWorkspace(t)
 	signer := &fakeSigner{nonce: true}
 	request := PublishRequest{
 		Module: "payments", Environment: "production", Local: true, Signer: signer,

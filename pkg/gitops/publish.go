@@ -318,10 +318,29 @@ func newDeliveryPublication(request *PublishRequest, baseBranch string) (*delive
 	return publication, nil
 }
 
+// requireReleaseIdentity: an environment that declares a host is delivered
+// signed carriers, so a release publish to it needs the identity it signs and
+// checks under — the workflow's, as GitHub Actions states it to the job. The
+// checks are built from that environment and are nil wherever it is absent,
+// local or not; without them an unchanged render could reuse delivered
+// carriers under no verification policy at all and a fresh signature would
+// go unchecked, so a hosted release publish with no identity refuses before
+// it reads a document. A local qualification publish never signs, and a
+// caller-supplied signer is the test seam that brings its own checks.
+func (p *deliveryPublication) requireReleaseIdentity() error {
+	if p.options.AllowUnsigned || p.options.Signer != nil || p.options.SelfCheck != nil && p.options.ReuseCheck != nil {
+		return nil
+	}
+	return errors.New("the environment declares a host, so this publish delivers signed carriers; a release publish signs and checks them under the workflow identity it runs with, and this process has none (GITHUB_REPOSITORY and GITHUB_WORKFLOW_REF are not both set): run it from the release workflow, or publish --local to a qualification cluster")
+}
+
 // addressHost points the publication at the environment's host: the delivery
 // API its Jobs post to, and the envelope revision and the domain its
 // documents must declare.
 func (p *deliveryPublication) addressHost(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) error {
+	if err := p.requireReleaseIdentity(); err != nil {
+		return err
+	}
 	target, err := resolveDeliveryTarget(ctx, workspace, env)
 	if err != nil {
 		return err

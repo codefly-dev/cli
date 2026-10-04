@@ -530,7 +530,14 @@ A release publish **checks its own carriers**, right after signing each one,
 as a host will: offline, against the public-good trusted root fetched through
 TUF, under a policy admitting exactly this workflow's identity — repository,
 workflow path and ref, as GitHub Actions states them to the job
-(`GITHUB_REPOSITORY`, `GITHUB_WORKFLOW_REF`). A carrier a host would refuse —
+(`GITHUB_REPOSITORY`, `GITHUB_WORKFLOW_REF`). Both checks — this one, and
+the release policy a carrier delivered earlier is held to before it is reused —
+are built from those two variables and exist only where they are set, local
+or not; so a hosted release publish run without them (from a laptop, or from
+a workflow that does not expose them) is **refused before it reads a
+document**, rather than signing unchecked or reusing delivered carriers under
+no policy at all. A `--local` publish never signs and needs no identity. A
+carrier a host would refuse —
 a certificate naming another workflow, a log entry the root cannot verify, a
 bundle with no transparency evidence — is refused at publish, in front of
 whoever ran the release, and nothing is written for a Job to deliver.

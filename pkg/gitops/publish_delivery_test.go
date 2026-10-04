@@ -1188,3 +1188,21 @@ func TestPublishRefusesACellRenderedForAnotherHost(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "the cell file describes host example/prod/region-a")
 }
+
+func TestReleasePublishRequiresTheWorkflowIdentityToDeliver(t *testing.T) {
+	check := signing.SelfCheck(func(context.Context, []byte, []byte) error { return nil })
+	for name, options := range map[string]deliveryPublishOptions{
+		"local":              {AllowUnsigned: true},
+		"supplied signer":    {Signer: &fakeSigner{}},
+		"workflow identity":  {SelfCheck: check, ReuseCheck: check},
+		"self-check only":    {SelfCheck: check},
+		"reuse policy only":  {ReuseCheck: check},
+		"no identity at all": {},
+	} {
+		err := (&deliveryPublication{options: options}).requireReleaseIdentity()
+		refused := err != nil
+		if want := name == "self-check only" || name == "reuse policy only" || name == "no identity at all"; refused != want {
+			t.Fatalf("%s: err = %v", name, err)
+		}
+	}
+}
