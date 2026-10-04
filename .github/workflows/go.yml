@@ -245,13 +245,12 @@ jobs:
   # (`make lint`). New issues gate the PR so the pre-existing backlog does not
   # block work while the standard is enforced.
   #
-  # The baseline is git's merge-base with main, computed by golangci-lint
-  # itself over a full checkout — NOT the action's only-new-issues, which
-  # fetches the PR's patch through the GitHub API and, when the diff exceeds
-  # the API's 20,000-line cap ("too_large"), gets no patch and reports every
-  # issue in the repository as new. A large PR then goes red on findings in
-  # files it never touched, and a rerun cannot help. This is the same
-  # baseline `golangci-lint run --new-from-rev=main` gives locally.
+  # No baseline: the whole repository is linted, and the rule is that the
+  # full run is clean at the head — pre-existing findings are fixed in the
+  # PR that meets them, never hidden behind "new issues only". (The action's
+  # only-new-issues stays off for a second reason: it fetches the PR's patch
+  # through a GitHub API that refuses diffs past 20,000 lines and then
+  # reports every issue as new.) `make lint` runs the same gate locally.
   lint:
     name: lint
     runs-on: ubuntu-latest
@@ -260,9 +259,6 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # The merge-base with main needs the history on both sides.
-          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -285,7 +281,6 @@ jobs:
           # than the targeted Go version"). Matches `make lint`.
           install-mode: goinstall
           only-new-issues: false
-          args: --new-from-merge-base=origin/main
 
   # pkg/web/go-grpc/out is a committed, generated artifact: web/dashboard builds
   # into it and go:embed ships it inside the CLI binary (see the Makefile's

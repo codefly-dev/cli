@@ -16,9 +16,8 @@ one speculative branch and merging the whole batch off one CI run.
 All five required contexts — `bootstrap-audit`, `control-integration`,
 `coverage`, `race`, `dashboard` — are the `matrix.gate` legs of the single
 `Go CLI` workflow (`.github/workflows/go.yml`). `lint` is deliberately **not**
-required: it gates on findings new since the merge-base with `main`
-(`golangci-lint --new-from-merge-base=origin/main` over a full checkout) and
-runs only on `pull_request` events, so a `merge_group` run never reports a
+required: it lints the whole repository (no baseline; the rule is that the
+full run is clean at the head) and runs only on `pull_request` events, so a `merge_group` run never reports a
 `lint` context — and a required context that never reports ejects every entry
 when `check_response_timeout_minutes` expires.
 

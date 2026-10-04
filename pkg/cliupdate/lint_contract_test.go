@@ -54,31 +54,6 @@ type golangciExclusions struct {
 	Paths []string `yaml:"paths"`
 }
 
-func checkoutStep(job goWorkflowJob) (goWorkflowStep, bool) {
-	for _, step := range job.Steps {
-		if regexp.MustCompile(`^actions/checkout`).MatchString(step.Uses) {
-			return step, true
-		}
-	}
-	return goWorkflowStep{}, false
-}
-
-// checkoutStepText returns the lint job's text so an explicit "fetch-depth: 0"
-// can be told from the zero value an omitted key decodes to.
-func checkoutStepText(t *testing.T) string {
-	t.Helper()
-	data, err := os.ReadFile(repositoryPath(".github/workflows/go.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(data)
-	start := strings.Index(text, "\n  lint:\n")
-	if start < 0 {
-		t.Fatal("lint job not found in go.yml")
-	}
-	return text[start:]
-}
-
 func lintStep(job goWorkflowJob) (goWorkflowStep, bool) {
 	for _, step := range job.Steps {
 		if regexp.MustCompile(`^golangci/golangci-lint-action`).MatchString(step.Uses) {
@@ -168,24 +143,16 @@ func TestLintVersionPinnedConsistently(t *testing.T) {
 	if !found {
 		t.Fatal("lint job has no golangci-lint-action step")
 	}
-	// New findings only, with a baseline that holds for any pull request:
-	// golangci-lint's own merge-base against main over a full checkout. The
-	// action's only-new-issues fetches the pull request's patch through the
-	// GitHub API and, past the API's 20,000-line cap, gets no patch and
-	// reports every issue in the repository as new — a large PR went red on
-	// findings in files it never touched. That mode stays off by name.
+	// No baseline of any kind: the whole repository is linted and the rule is
+	// that the full run is clean at the head. Neither the action's
+	// only-new-issues (which fetches the PR's patch through a GitHub API that
+	// refuses large diffs, then reports every issue as new) nor a
+	// --new-from-* baseline of golangci-lint's own is admitted.
 	if step.With.OnlyNewIssues {
-		t.Fatal("golangci-lint step must not rely on only-new-issues: the action's PR patch is refused past the API's 20,000-line cap, and every issue then reads as new")
+		t.Fatal("golangci-lint step must not rely on only-new-issues: the whole repository is the gate")
 	}
-	if !strings.Contains(step.With.Args, "--new-from-merge-base=origin/main") {
-		t.Fatalf("golangci-lint step args %q must gate on new findings against the merge-base with main", step.With.Args)
-	}
-	checkout, found := checkoutStep(workflow.Jobs["lint"])
-	if !found {
-		t.Fatal("lint job has no checkout step")
-	}
-	if checkout.With.FetchDepth != 0 || !strings.Contains(checkoutStepText(t), "fetch-depth: 0") {
-		t.Fatal("the lint job's checkout must fetch the full history (fetch-depth: 0), or the merge-base with main cannot be computed")
+	if strings.Contains(step.With.Args, "--new-from") || strings.Contains(step.With.Args, "--new") {
+		t.Fatalf("golangci-lint step args %q carry a baseline; the whole repository is the gate", step.With.Args)
 	}
 
 	makefile, err := os.ReadFile(repositoryPath("Makefile"))
