@@ -94,6 +94,50 @@ func MaterializePinnedModules(ctx context.Context, workspace *resources.Workspac
 
 // materializePinnedModulesLocked is MaterializePinnedModules' body, run while
 // WithFileLock holds the overlay lock for writeDir.
+// noteUnresolvedModule records a module whose materialization failed: with
+// nothing materialized before, a warning and nothing else; with a stale path
+// selected, the overlay is left naming a strategy rather than a location, so
+// the module is unresolved instead of resolved-to-the-previous-answer. It
+// returns the unresolved errors and the overlay's changed flag, extended.
+func noteUnresolvedModule(overlay *resources.LocalOverlay, ref *resources.ModuleReference, receipt *ResolutionReceipt, directive *resources.ModuleResolveDirective, mode ResolutionMode, err error, unresolved []error, changed bool) ([]error, bool) {
+	if directive == nil || directive.Path == "" {
+		// Nothing was materialized for this module, so nothing stale can be
+		// selected: leave it unresolved for core to report if the run needs it.
+		cli.Warning("cannot pull pinned module <%s>: %v (it will be resolved when the run loads it, if needed)", ref.Name, err)
+		return unresolved, changed
+	}
+	unresolved = append(unresolved, staleResolutionError(ref, receipt, directive.Path, err))
+	// The overlay is left naming a strategy rather than a location, so the
+	// module is unresolved instead of resolved-to-the-previous-answer. An
+	// overlay git opt-out is restored rather than dropped: without it the
+	// module would silently return to verified resolution on the next run.
+	// A committed declaration needs no such restoration — it is not in
+	// this file, and writing it here would forge a machine-local opt-out the
+	// user never asked for and would have to delete by hand.
+	// Service overrides survive either way: they are the user's own intent
+	// about individual services, independent of where the module resolves,
+	// and dropping them here would silently discard an edit that is still
+	// valid. An entry left carrying only services is a valid overlay entry.
+	replacement := &resources.ModuleResolveDirective{Git: mode == ResolutionModeGit}
+	if directive != nil {
+		replacement.Services = directive.Services
+	}
+	if replacement.Git || len(replacement.Services) > 0 {
+		overlay.Resolve[ref.Name] = replacement
+	} else {
+		delete(overlay.Resolve, ref.Name)
+	}
+	// The receipt is deliberately kept. Outside a cache root — a clone
+	// written before CODEFLY_HOME moved — it is the *only* thing that
+	// identifies this path as machine output, so dropping it here would
+	// strand the path as an apparent user checkout the moment the overlay
+	// write below did not land (a failed .gitignore write, a failed save, a
+	// kill), and pinnedManaged would then skip the module forever with the
+	// stale checkout still selected. It answers no current request, so
+	// keeping it makes nothing eligible; it only preserves ownership.
+	return unresolved, true
+}
+
 func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Workspace, writeDir string) error {
 	// Resolve against the same overlay core will use: LoadLocalOverlay searches
 	// upward, so a directive in an ancestor codefly.local.yaml (the shared-monorepo
@@ -136,7 +180,7 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 	}
 	changed := false
 	recorded := false
-	var unresolved []error
+	unresolved := make([]error, 0, len(workspace.Modules))
 	for _, ref := range workspace.Modules {
 		directive := overlay.Resolve[ref.Name]
 		receipt := receipts[ref.Name]
@@ -155,42 +199,7 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 		}
 		resolved, err := materializeModule(ctx, workspace.Dir(), ref, roots.clone, mode)
 		if err != nil {
-			if directive == nil || directive.Path == "" {
-				// Nothing was materialized for this module, so nothing stale can be
-				// selected: leave it unresolved for core to report if the run needs it.
-				cli.Warning("cannot pull pinned module <%s>: %v (it will be resolved when the run loads it, if needed)", ref.Name, err)
-				continue
-			}
-			unresolved = append(unresolved, staleResolutionError(ref, receipt, directive.Path, err))
-			// The overlay is left naming a strategy rather than a location, so the
-			// module is unresolved instead of resolved-to-the-previous-answer. An
-			// overlay git opt-out is restored rather than dropped: without it the
-			// module would silently return to verified resolution on the next run.
-			// A committed declaration needs no such restoration — it is not in
-			// this file, and writing it here would forge a machine-local opt-out the
-			// user never asked for and would have to delete by hand.
-			// Service overrides survive either way: they are the user's own intent
-			// about individual services, independent of where the module resolves,
-			// and dropping them here would silently discard an edit that is still
-			// valid. An entry left carrying only services is a valid overlay entry.
-			replacement := &resources.ModuleResolveDirective{Git: mode == ResolutionModeGit}
-			if directive != nil {
-				replacement.Services = directive.Services
-			}
-			if replacement.Git || len(replacement.Services) > 0 {
-				overlay.Resolve[ref.Name] = replacement
-			} else {
-				delete(overlay.Resolve, ref.Name)
-			}
-			// The receipt is deliberately kept. Outside a cache root — a clone
-			// written before CODEFLY_HOME moved — it is the *only* thing that
-			// identifies this path as machine output, so dropping it here would
-			// strand the path as an apparent user checkout the moment the overlay
-			// write below did not land (a failed .gitignore write, a failed save, a
-			// kill), and pinnedManaged would then skip the module forever with the
-			// stale checkout still selected. It answers no current request, so
-			// keeping it makes nothing eligible; it only preserves ownership.
-			changed = true
+			unresolved, changed = noteUnresolvedModule(overlay, ref, receipt, directive, mode, err, unresolved, changed)
 			continue
 		}
 		if updateReceipt(receipts, ref.Name, &ResolutionReceipt{

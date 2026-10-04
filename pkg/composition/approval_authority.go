@@ -257,7 +257,7 @@ func (authority *approvalAuthority) unchanged() error {
 	if home != filepath.Dir(filepath.Dir(authority.path)) {
 		return errors.New("approval authority home changed during admission")
 	}
-	if err := protectedAuthorityDirectory(filepath.Dir(authority.path)); err != nil {
+	if err = protectedAuthorityDirectory(filepath.Dir(authority.path)); err != nil {
 		return err
 	}
 	data, err := readAuthorityDocument(authority.path)

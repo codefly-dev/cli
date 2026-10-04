@@ -68,10 +68,10 @@ func TestOCIArtifactRequiresExactReferenceBeforeCacheUse(t *testing.T) {
 	require.NoError(t, os.MkdirAll(dir, 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, strings.TrimPrefix(digest, "sha256:")), data, 0o600))
 	for _, uri := range []string{"oci://example.test/team/app:latest", "oci://example.test/team/app", "oci://example.test/team/app@" + contentDigest(nil), "oci://user:secret@example.test/team/app@" + digest} {
-		_, err := session.acquireArtifact(t.Context(), nil, core.ReleaseArtifact{URI: uri, Digest: digest, MediaType: "application/octet-stream"})
+		_, err := session.acquireArtifact(t.Context(), nil, &core.ReleaseArtifact{URI: uri, Digest: digest, MediaType: "application/octet-stream"})
 		require.Error(t, err, uri)
 	}
-	_, err := session.acquireArtifact(t.Context(), nil, core.ReleaseArtifact{URI: "oci://example.test/team/app@" + digest, Digest: digest})
+	_, err := session.acquireArtifact(t.Context(), nil, &core.ReleaseArtifact{URI: "oci://example.test/team/app@" + digest, Digest: digest})
 	require.ErrorContains(t, err, "media type")
 }
 
@@ -90,7 +90,7 @@ func TestOCIAuthRefusesPlaintextTokenEndpoint(t *testing.T) {
 	t.Cleanup(registry.Close)
 	value := contentDigest([]byte("selected"))
 	session := &SelectionSession{Root: t.TempDir()}
-	_, err := session.acquireArtifact(t.Context(), registry.Client(), core.ReleaseArtifact{URI: "oci://" + strings.TrimPrefix(registry.URL, "https://") + "/team/app@" + value, Digest: value, MediaType: "application/octet-stream"})
+	_, err := session.acquireArtifact(t.Context(), registry.Client(), &core.ReleaseArtifact{URI: "oci://" + strings.TrimPrefix(registry.URL, "https://") + "/team/app@" + value, Digest: value, MediaType: "application/octet-stream"})
 	require.Error(t, err)
 	require.Zero(t, contacted.Load(), "registry challenges cannot downgrade token requests to plaintext")
 }
@@ -131,29 +131,29 @@ func TestOCIArtifactAcquisitionRealRegistry(t *testing.T) {
 	require.Len(t, entries, 1, "must not recursively collect config, layers or source")
 
 	blob := core.ReleaseArtifact{Name: "raw", URI: "oci://" + endpoint + "/team/app@" + descriptor.Digest.String(), Digest: descriptor.Digest.String(), MediaType: descriptor.MediaType}
-	path, err := session.acquireArtifact(t.Context(), client, blob)
+	path, err := session.acquireArtifact(t.Context(), client, &blob)
 	require.NoError(t, err)
 	retained, err = os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, data, retained)
 	require.NoError(t, os.WriteFile(path, []byte("private patch"), 0o600))
-	_, err = session.acquireArtifact(t.Context(), client, blob)
+	_, err = session.acquireArtifact(t.Context(), client, &blob)
 	require.NoError(t, err)
 	require.True(t, artifactMatches(t.Context(), path, blob.Digest))
 	missing := blob
 	missing.Digest = contentDigest([]byte("missing"))
 	missing.URI = "oci://" + endpoint + "/team/app@" + missing.Digest
-	_, err = session.acquireArtifact(t.Context(), client, missing)
+	_, err = session.acquireArtifact(t.Context(), client, &missing)
 	require.Error(t, err)
 	require.NoError(t, os.Remove(path))
 	t.Setenv("DOCKER_CONFIG", t.TempDir())
-	_, err = session.acquireArtifact(t.Context(), client, blob)
+	_, err = session.acquireArtifact(t.Context(), client, &blob)
 	require.ErrorContains(t, err, "authorization")
 	_, err = os.Stat(path)
 	require.ErrorIs(t, err, os.ErrNotExist)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	_, err = session.acquireArtifact(ctx, client, blob)
+	_, err = session.acquireArtifact(ctx, client, &blob)
 	require.ErrorIs(t, err, context.Canceled)
 	entries, err = os.ReadDir(cache)
 	require.NoError(t, err)

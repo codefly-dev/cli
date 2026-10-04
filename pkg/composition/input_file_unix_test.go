@@ -121,7 +121,7 @@ func TestAcquisitionReplacesFIFOWithoutBlockingSelection(t *testing.T) {
 	require.NoError(t, syscall.Mkfifo(path, 0o600))
 	err := rejectFIFOWithoutWaiting(t, path, func(ctx context.Context) error {
 		return session.locked(ctx, func() error {
-			_, acquireErr := session.acquireArtifact(ctx, r.artifacts.Client(), artifact)
+			_, acquireErr := session.acquireArtifact(ctx, r.artifacts.Client(), &artifact)
 			return acquireErr
 		})
 	})
@@ -136,7 +136,7 @@ func TestContractArtifactRejectsFIFOAfterAcquisition(t *testing.T) {
 	r := newSelectionRegistry(t)
 	artifact := r.artifact("contracts", core.ArtifactContracts, []byte(`{"module":"team/module"}`))
 	session := &SelectionSession{Root: t.TempDir(), Engine: &core.Engine{}}
-	path, err := session.acquireArtifact(t.Context(), r.artifacts.Client(), artifact)
+	path, err := session.acquireArtifact(t.Context(), r.artifacts.Client(), &artifact)
 	require.NoError(t, err)
 	data, err := readContractArtifact(t.Context(), path)
 	require.NoError(t, err)

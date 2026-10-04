@@ -147,7 +147,10 @@ func (s *AgentSupervisor) acquire(ctx context.Context, target ServiceTarget) (*A
 	// Serialize only identical service sessions. Different services can start
 	// their agents concurrently instead of waiting behind one global mutex.
 	value, _ := s.keyLocks.LoadOrStore(key, &sync.Mutex{})
-	keyLock := value.(*sync.Mutex)
+	keyLock, ok := value.(*sync.Mutex)
+	if !ok {
+		return nil, fmt.Errorf("the session lock of %s is a %T", key, value)
+	}
 	keyLock.Lock()
 	defer keyLock.Unlock()
 
@@ -167,7 +170,7 @@ func (s *AgentSupervisor) acquire(ctx context.Context, target ServiceTarget) (*A
 	if err != nil {
 		return nil, fmt.Errorf("parse agent %q: %w", agentName, err)
 	}
-	if _, err := manager.ResolveLatest(ctx, agent); err != nil {
+	if _, err = manager.ResolveLatest(ctx, agent); err != nil {
 		return nil, fmt.Errorf("resolve agent %s version: %w", agentName, err)
 	}
 
@@ -288,11 +291,11 @@ func initializeRuntime(ctx context.Context, session *AgentSession) error {
 		return fmt.Errorf("runtime Load did not become ready: %s", loadResponse.GetStatus().GetMessage())
 	}
 	if descriptor.workspace == nil {
-		initResponse, err := session.runtime.Init(ctx, &runtimev0.InitRequest{
+		initResponse, initErr := session.runtime.Init(ctx, &runtimev0.InitRequest{
 			RuntimeContext: resources.NewRuntimeContextNative(),
 		})
-		if err != nil {
-			return fmt.Errorf("runtime Init: %w", err)
+		if initErr != nil {
+			return fmt.Errorf("runtime Init: %w", initErr)
 		}
 		if initResponse == nil || initResponse.GetStatus().GetState() != runtimev0.InitStatus_READY {
 			return fmt.Errorf("runtime Init did not become ready: %s", initResponse.GetStatus().GetMessage())

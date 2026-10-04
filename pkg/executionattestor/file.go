@@ -258,7 +258,10 @@ func parseKey(payload []byte) (*FileAttestor, error) {
 	if err != nil || len(privateKey) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("%w: private key is malformed", ErrInvalid)
 	}
-	derived := ed25519.PrivateKey(privateKey).Public().(ed25519.PublicKey)
+	derived, ok := ed25519.PrivateKey(privateKey).Public().(ed25519.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("%w: private key derives no ed25519 public key", ErrInvalid)
+	}
 	if !bytes.Equal(publicKey, derived) {
 		return nil, fmt.Errorf("%w: public/private key mismatch", ErrInvalid)
 	}
@@ -281,7 +284,7 @@ func ensurePrivateDirectory(path string) error {
 	info, err := os.Lstat(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		if err := os.MkdirAll(path, 0o700); err != nil {
+		if err = os.MkdirAll(path, 0o700); err != nil {
 			return fmt.Errorf("create execution attestor directory: %w", err)
 		}
 		info, err = os.Lstat(path)

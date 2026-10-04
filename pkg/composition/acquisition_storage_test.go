@@ -24,7 +24,7 @@ func TestAcquisitionCannotWriteThroughEscapedCacheAncestors(t *testing.T) {
 			link := filepath.Join(session.Root, ancestor)
 			require.NoError(t, os.MkdirAll(filepath.Dir(link), 0o700))
 			require.NoError(t, os.Symlink(outside, link))
-			_, err := session.acquireArtifact(t.Context(), registry.artifacts.Client(), artifact)
+			_, err := session.acquireArtifact(t.Context(), registry.artifacts.Client(), &artifact)
 			require.Error(t, err)
 			data, err := os.ReadFile(original)
 			require.NoError(t, err)

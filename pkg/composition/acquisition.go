@@ -34,7 +34,7 @@ func (session *SelectionSession) Acquire(ctx context.Context, client *http.Clien
 		requirements := resolved.Record().Acquisitions
 		for i := range requirements {
 			requirement := &requirements[i]
-			path, err := session.acquireArtifact(ctx, client, requirement.Artifact)
+			path, err := session.acquireArtifact(ctx, client, &requirement.Artifact)
 			if err != nil {
 				return fmt.Errorf("%s/%s: %w", requirement.Target, requirement.Artifact.Name, err)
 			}
@@ -70,7 +70,7 @@ func artifactMatchesAt(ctx context.Context, directory *os.Root, path, digest str
 	return fmt.Sprintf("sha256:%x", hash.Sum(nil)) == digest
 }
 
-func (session *SelectionSession) acquireArtifact(ctx context.Context, client *http.Client, artifact core.ReleaseArtifact) (string, error) {
+func (session *SelectionSession) acquireArtifact(ctx context.Context, client *http.Client, artifact *core.ReleaseArtifact) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -79,7 +79,7 @@ func (session *SelectionSession) acquireArtifact(ctx context.Context, client *ht
 		return "", errors.New("artifact requires an HTTPS or OCI location without credentials, query or fragment")
 	}
 	if location.Scheme == "oci" {
-		if _, err = artifactRepository(&artifact); err != nil {
+		if _, err = artifactRepository(artifact); err != nil {
 			return "", err
 		}
 	}
@@ -98,7 +98,7 @@ func (session *SelectionSession) acquireArtifact(ctx context.Context, client *ht
 	if artifactMatchesAt(ctx, directory, digest, artifact.Digest) {
 		return path, nil
 	}
-	reader, err := fetchArtifact(ctx, client, &artifact)
+	reader, err := fetchArtifact(ctx, client, artifact)
 	if err != nil {
 		return "", err
 	}
