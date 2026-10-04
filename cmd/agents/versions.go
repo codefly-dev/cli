@@ -90,7 +90,7 @@ type inventory struct {
 }
 
 func (inv inventory) versionResolvable(version string) bool {
-	if version == "latest" {
+	if version == latestAgentVersion {
 		return inv.LatestResolvable != ""
 	}
 	for _, entry := range inv.Versions {
