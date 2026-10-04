@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"io/fs"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -344,9 +345,22 @@ func loadRenderedPublication(
 	if err = refuseStaleGroupConsumers(workspace.Dir(), request.Module, request.Environment, inventory.WorkspaceConfigurationDigests); err != nil {
 		return Inventory{}, err
 	}
-	if _, statErr := os.Stat(cellPath(workspace.Dir(), request.Environment)); statErr == nil {
-		publication.cellSource = cellPath(workspace.Dir(), request.Environment)
+	// The cell is the platform's inventory of what this publish delivers:
+	// where the environment declares a host, a render without it is not
+	// publishable, and a cell that cannot be read is an error, never an
+	// absent one.
+	cell := cellPath(workspace.Dir(), request.Environment)
+	_, statErr := os.Stat(cell)
+	switch {
+	case statErr == nil:
+		publication.cellSource = cell
 		publication.cellPath = filepath.ToSlash(filepath.Join(pathRoot, cellsDir, request.Environment, CellFileName))
+	case errors.Is(statErr, fs.ErrNotExist):
+		if env.Host != nil {
+			return Inventory{}, fmt.Errorf("the environment %s declares a host but no cell file is rendered for it at %s; render %s for %s before publishing", request.Environment, cell, request.Module, request.Environment)
+		}
+	default:
+		return Inventory{}, fmt.Errorf("read the cell file %s: %w", cell, statErr)
 	}
 	return inventory, nil
 }

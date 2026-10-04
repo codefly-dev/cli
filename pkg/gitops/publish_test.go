@@ -3,6 +3,7 @@ package gitops
 import (
 	"context"
 	"fmt"
+	"gopkg.in/yaml.v3"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -278,6 +279,12 @@ func TestLocalGitopsPublishDeliversSignedCarriersAndTheJob(t *testing.T) {
 		Module: "payments", Environment: "production", Local: true, Signer: signer,
 		PromotionBranch: "codefly/promote-payments-production",
 	}
+	// A hosted environment publishes nothing without its cell: the platform's
+	// inventory of what this publish delivers.
+	if _, err := PlanPublish(ctx, workspace, &request); err == nil || !strings.Contains(err.Error(), "no cell file") {
+		t.Fatalf("a hosted environment without its cell was not refused: %v", err)
+	}
+	writeTestCell(t, workspace, env, "production", "payments")
 	plan, err := PlanPublish(ctx, workspace, &request)
 	if err != nil {
 		t.Fatal(err)
@@ -1687,4 +1694,28 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
 	}
 	return strings.TrimSpace(string(output))
+}
+
+// writeTestCell writes the cell a hosted publish requires, with the module's
+// entry alone. These tests exercise delivery, not the cell's derivation: that
+// is RenderCell's, from module trees on disk, and the flat fixture here is
+// not laid out as a module tree.
+func writeTestCell(t *testing.T, workspace *resources.Workspace, env *environments.Environment, environment, module string) {
+	t.Helper()
+	cell := CellFile{
+		Schema: CellSchemaV1, Coordinate: env.Host.Coordinate, Component: env.Host.Component,
+		Domain: env.Host.Domain, TrustDomain: env.Host.TrustDomain,
+		Namespaces: []CellNamespace{{Name: module, Module: module}},
+	}
+	data, err := yaml.Marshal(cell)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := cellPath(workspace.Dir(), environment)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }

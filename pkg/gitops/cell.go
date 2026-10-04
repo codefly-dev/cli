@@ -255,6 +255,16 @@ type CellResult struct {
 	Skipped []string
 }
 
+// servesTraffic reports whether a workload of this kind is one a service's
+// endpoints are served from.
+func servesTraffic(kind string) bool {
+	switch kind {
+	case "Deployment", "StatefulSet", "DaemonSet":
+		return true
+	}
+	return false
+}
+
 // cellPath is the cell file of one environment under the workspace's
 // deployments directory.
 func cellPath(workspaceDir, environment string) string {
@@ -384,7 +394,12 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 				workload.SPIFFEID = env.Host.SPIFFEID(inventory.Namespace, workload.ServiceAccount)
 				workload.Verifier = isDeliveryVerifier(env, workload)
 			}
-			if service == nil {
+			// Endpoints, their consumers and ingress belong to the workloads
+			// that serve them. A service's own bootstrap Job or CronJob runs
+			// its image once and listens on nothing, so it declares none —
+			// a policy derived from it would grant a Job the service's
+			// reachability.
+			if service == nil || !servesTraffic(workload.Kind) {
 				namespace.Workloads = append(namespace.Workloads, *workload)
 				continue
 			}

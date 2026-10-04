@@ -198,6 +198,8 @@ func TestCellFileInventoriesEveryRenderedWorkload(t *testing.T) {
 	require.False(t, api.Verifier, "the host's delivery API is another module's service")
 	migrate := shop.Workloads[1]
 	require.Equal(t, "api-migrate", migrate.Name)
+	require.Empty(t, migrate.Endpoints, "a bootstrap Job serves none of the service's endpoints")
+	require.Empty(t, migrate.Ingress, "and reaches none of its ingress")
 	require.Equal(t, kindJob, migrate.Kind)
 	require.Equal(t, map[string]string{"codefly.dev/bootstrap-service": "api"}, migrate.Selector, "a Job's pods are selected by its template labels, never an assumed app label")
 	require.Equal(t, "sha256:"+strings.Repeat("d", 64), migrate.Containers[0].Image.Digest)

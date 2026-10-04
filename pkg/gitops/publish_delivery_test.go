@@ -387,6 +387,18 @@ func TestRollbackResettlesWhatItRestores(t *testing.T) {
 	require.NoError(t, err)
 	_, err = stageAndSettleDelivery(ctx, repository.repo, repository.target, repository.targetPath, kept, &restored, "prod", publication)
 	require.ErrorIs(t, err, solutionhost.ErrTombstoned)
+	// A tree with no delivery paths restored over a delivered one — a
+	// revision from before this module declared anything — settles too: the
+	// delivered binding is withdrawn as a tombstone, never dropped from
+	// history by a settlement that did not run.
+	empty := repository.stageRender(t)
+	require.Empty(t, empty.SolutionHostBindingPath)
+	bare := t.TempDir()
+	require.NoError(t, copyTree(repository.target, bare))
+	withdrawn, err := stageAndSettleDelivery(ctx, repository.repo, repository.target, repository.targetPath, bare, empty, "prod", publication)
+	require.NoError(t, err)
+	require.True(t, documentByID(withdrawn, "example.prod.crm").Removed, "restoring a tree from before the declaration withdraws it")
+
 }
 
 // TestPublishMergesItsCellContributionIntoTheDeliveredCell: the local cell is

@@ -455,7 +455,9 @@ refuses the generation-3 carrier as stale, and a tree restored from before a
 withdrawal would carry the withdrawn binding as present. A rollback across a
 withdrawal is refused as terminal, as any render presenting a withdrawn
 binding is. The environment's host block shapes a rollback publish exactly as
-it shapes a render's.
+it shapes a render's. A tree from before the module declared anything settles the same way: the
+delivered documents are withdrawn as tombstones, never dropped from history
+by a settlement that did not run.
 
 **What publish reads, it reads honestly.** The base branch must exist in the
 publication checkout; an overlay absent from it is told from an unreadable
@@ -626,7 +628,10 @@ endpoints of its own, and so is the module's **presence delivery Job**, under
 settled set's digest and is decided at publish), the `delivery` account, the
 one container and its pinned image. An ingress route reaches the
 module-qualified service it names and no other module's service of that bare
-name.
+name. A service's own bootstrap Job or
+CronJob is inventoried the same way, with no endpoints, consumers or ingress:
+a workload that serves nothing declares nothing, so no policy derived from
+the cell grants a Job the service's reachability.
 
 It is regenerated whole on every render from the module trees on disk, and
 carries no generation and no tombstone — a workload absent from it is not
@@ -649,7 +654,9 @@ while a cell that cannot be read is an error — the two are told apart by what
 git says, never conflated into an empty baseline. A module is removed from the
 cell by withdrawing it, never by another module's publish — copying the local
 file whole let the last module published decide the platform's inventory for
-the whole cell.
+the whole cell. A hosted environment publishes nothing
+without it: a render that has no cell file is refused by name, and a cell
+file that cannot be read is an error, never an absent one.
 
 ## Workspace configuration groups a render bakes in
 
