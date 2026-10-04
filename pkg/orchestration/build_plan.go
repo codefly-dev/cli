@@ -252,16 +252,11 @@ func (b *Builder) buildRecipe(
 	// the digest is the only identity a later run can verify the pushed image
 	// against, so a build that does not resolve one cannot be reused.
 	recordable := identity.Key != "" && imageCache.enabled()
-	var metadataFile string
-	if captureDigest || (shouldPush && (resolveEvidence || recordable)) {
-		file, createErr := os.CreateTemp("", "codefly-build-metadata-*.json")
-		if createErr != nil {
-			return w.Wrapf(createErr, "cannot stage build metadata for %s", b.instance.Unique())
-		}
-		metadataFile = file.Name()
-		_ = file.Close()
-		defer os.Remove(metadataFile)
+	metadataFile, removeMetadata, err := b.stageBuildMetadata(captureDigest || (shouldPush && (resolveEvidence || recordable)))
+	if err != nil {
+		return w.Wrapf(err, "cannot stage build metadata for %s", b.instance.Unique())
 	}
+	defer removeMetadata()
 
 	args, err := cachedBuildxArgs(recipe, dockerfile, contextDir, shouldPush, multiArch, metadataFile, builderName, cache, private)
 	if err != nil {
@@ -273,63 +268,99 @@ func (b *Builder) buildRecipe(
 	command := exec.CommandContext(ctx, "docker", args...)
 	command.Stdout = os.Stderr
 	command.Stderr = os.Stderr
-	if err := command.Run(); err != nil {
-		return w.Wrapf(err, "cannot build %s", recipe.GetImage())
+	if buildErr := command.Run(); buildErr != nil {
+		return w.Wrapf(buildErr, "cannot build %s", recipe.GetImage())
 	}
 
 	w.Info("image build completed", wool.Field("image", recipe.GetImage()), wool.Field("duration", time.Since(started)))
 
-	var pushedDigest, loadedImageID string
-	if metadataFile != "" {
-		digest, err := readPushedImageDigest(metadataFile)
-		switch {
-		case err != nil && b.world.Mode == SnapshotMode:
-			// A snapshot's manifest pins this digest, so failing to resolve it
-			// means the snapshot cannot be produced — a hard error.
-			return w.Wrapf(err, "cannot resolve immutable image for %s", b.instance.Unique())
-		case err != nil:
-			// The image is already pushed; the digest is only reported. Failing
-			// the build here would wrongly signal that the push failed. Evidence
-			// derivation refuses the unpinned subject on its own.
-			w.Warn("built and pushed but could not resolve image digest", wool.ErrField(err))
-		default:
-			pushedDigest = digest
-			if captureDigest {
-				b.imageDigest = digest
-			}
-			b.recordPushedImage(recipe, digest)
-		}
+	pushedDigest, err := b.resolvePushedDigest(w, metadataFile, recipe, captureDigest)
+	if err != nil {
+		return err
 	}
-
-	if !shouldPush && (resolveEvidence || recordable) {
-		imageID, err := inspectLocalImageID(ctx, recipe.GetImage())
-		switch {
-		case err != nil && resolveEvidence:
-			return w.Wrapf(err, "cannot resolve the loaded image of recipe %s for %s", recipe.GetName(), b.instance.Unique())
-		case err != nil:
-			// Nothing to record: the image is built and loaded, it simply cannot
-			// be identified, so no later run may stand in for this build.
-			w.Debug("built image cannot be identified; recording no reuse entry", wool.ErrField(err))
-		default:
-			loadedImageID = imageID
-			if resolveEvidence {
-				b.recordLoadedImage(recipe, imageID)
-			}
-		}
+	loadedImageID, err := b.resolveLoadedImage(ctx, w, recipe, shouldPush, resolveEvidence, recordable)
+	if err != nil {
+		return err
 	}
-
-	if recordable && b.contextHeldStill(ctx, w, recipe, scope, identity) {
-		if entry := cachedImageEntry(identity.Key, b.instance.Unique(), recipe, shouldPush, pushedDigest, loadedImageID); entry != nil {
-			if err := imageCache.store(ctx, entry); err != nil {
-				// The image is built; failing here would report a build failure
-				// for a bookkeeping write. The next run rebuilds, which is the
-				// behaviour without a cache at all.
-				w.Warn("cannot record the image build for reuse", wool.ErrField(err))
-			}
-			w.Debug("recorded the image build for reuse", wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
-		}
-	}
+	b.recordImageForReuse(ctx, w, recipe, scope, identity, imageCache, shouldPush, pushedDigest, loadedImageID, recordable)
 	return nil
+}
+
+// resolvePushedDigest reads the immutable manifest digest of a pushed build from
+// the metadata file, when one was staged.
+//
+// Failing to resolve it is fatal for a snapshot and reported for anything else:
+// a snapshot's manifest pins this digest, so without it the snapshot cannot be
+// produced, while elsewhere the image is already pushed and failing the build
+// would wrongly signal that the push failed. Evidence derivation refuses the
+// unpinned subject on its own.
+func (b *Builder) resolvePushedDigest(
+	w *wool.Wool, metadataFile string, recipe *builderv0.DockerBuildRecipe, captureDigest bool,
+) (string, error) {
+	if metadataFile == "" {
+		return "", nil
+	}
+	digest, err := readPushedImageDigest(metadataFile)
+	switch {
+	case err != nil && b.world.Mode == SnapshotMode:
+		return "", w.Wrapf(err, "cannot resolve immutable image for %s", b.instance.Unique())
+	case err != nil:
+		w.Warn("built and pushed but could not resolve image digest", wool.ErrField(err))
+		return "", nil
+	}
+	if captureDigest {
+		b.imageDigest = digest
+	}
+	b.recordPushedImage(recipe, digest)
+	return digest, nil
+}
+
+// resolveLoadedImage identifies the image a non-pushed build loaded locally,
+// which is the only identity a later run could stand in for.
+//
+// Fatal when evidence was asked for and merely noted otherwise: without an
+// identity there is nothing to record, so no later run may reuse this build.
+func (b *Builder) resolveLoadedImage(
+	ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe,
+	shouldPush, resolveEvidence, recordable bool,
+) (string, error) {
+	if shouldPush || (!resolveEvidence && !recordable) {
+		return "", nil
+	}
+	imageID, err := inspectLocalImageID(ctx, recipe.GetImage())
+	switch {
+	case err != nil && resolveEvidence:
+		return "", w.Wrapf(err, "cannot resolve the loaded image of recipe %s for %s", recipe.GetName(), b.instance.Unique())
+	case err != nil:
+		w.Debug("built image cannot be identified; recording no reuse entry", wool.ErrField(err))
+		return "", nil
+	}
+	if resolveEvidence {
+		b.recordLoadedImage(recipe, imageID)
+	}
+	return imageID, nil
+}
+
+// recordImageForReuse writes the reuse entry for a build whose inputs held
+// still. A failed write is a warning, never a build failure: the image is
+// built, and the next run simply rebuilds, which is the behaviour without a
+// cache at all.
+func (b *Builder) recordImageForReuse(
+	ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe, scope imageBuildScope,
+	identity imageIdentity, imageCache *imageBuildCache, shouldPush bool,
+	pushedDigest, loadedImageID string, recordable bool,
+) {
+	if !recordable || !b.contextHeldStill(ctx, w, recipe, scope, identity) {
+		return
+	}
+	entry := cachedImageEntry(identity.Key, b.instance.Unique(), recipe, shouldPush, pushedDigest, loadedImageID)
+	if entry == nil {
+		return
+	}
+	if err := imageCache.store(ctx, entry); err != nil {
+		w.Warn("cannot record the image build for reuse", wool.ErrField(err))
+	}
+	w.Debug("recorded the image build for reuse", wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
 }
 
 // contextHeldStill reports whether the build context is still the tree the
@@ -729,4 +760,21 @@ func recipeBuildsPlatform(platforms []string, platform string) bool {
 		}
 	}
 	return false
+}
+
+// stageBuildMetadata stages the file buildx writes its result to, when this
+// build has a reason to read one: a digest to capture, evidence to derive, or a
+// reuse entry to record. It returns the path and the cleanup, which is a no-op
+// when no file was wanted.
+func (b *Builder) stageBuildMetadata(wanted bool) (string, func(), error) {
+	if !wanted {
+		return "", func() {}, nil
+	}
+	file, err := os.CreateTemp("", "codefly-build-metadata-*.json")
+	if err != nil {
+		return "", func() {}, err
+	}
+	path := file.Name()
+	_ = file.Close()
+	return path, func() { _ = os.Remove(path) }, nil
 }

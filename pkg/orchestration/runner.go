@@ -278,66 +278,17 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	cfgCtx, cfgCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cfgCancel()
 
-	dependenciesEndpoints, err := runner.world.SharedState.GetDependenciesEndpoints(cfgCtx, runner.instance.Service)
+	inputs, err := runner.gatherInitInputs(ctx, cfgCtx, w)
 	if err != nil {
-		if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
-			w.Warn("timeout waiting for dependency endpoints after 30s; check that dependency services are reachable")
-			return nil, w.Wrapf(err, "init timeout: dependencies endpoints not available within 30s")
-		}
-		return nil, w.Wrapf(err, "cannot get dependencies endpoints")
+		return nil, err
 	}
-	dependenciesNetworkMappings, err := runner.world.SharedState.GetDependenciesNetworkMappings(cfgCtx, runner.instance.Service)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot get initialized dependency network mappings")
-	}
-	if runner.testRequest != nil && !runner.serviceRunningForTest && len(dependenciesNetworkMappings) > 0 &&
-		!slices.Contains(runner.instance.Info.GetContract().GetCapabilities(), contract.RuntimeInitDependencyMappings) {
-		return nil, w.NewError("dependency-only tests require agent capability %s to consume accepted addresses at Init", contract.RuntimeInitDependencyMappings)
-	}
-
-	conf, err := runner.world.ConfigurationManager.GetServiceConfiguration(cfgCtx, runner.instance.Identity)
-	if err != nil {
-		if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
-			w.Warn("timeout waiting for service configuration after 30s; check that dependency services are reachable")
-			return nil, w.Wrapf(err, "init timeout: service configuration not available within 30s")
-		}
-		return nil, w.Wrapf(err, "cannot get service configuration")
-	}
-
-	runtimeContext, err := resources.NewRuntimeContext(runner.runtimeContext)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
-	}
-
-	workspaceConfigurations, err := runner.workspaceConfigurations(cfgCtx, dependenciesNetworkMappings, runtimeContext)
-	if err != nil {
-		if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
-			w.Warn("timeout waiting for workspace dependencies configurations after 30s; check that dependency services are reachable")
-			return nil, w.Wrapf(err, "init timeout: workspace dependencies configurations not available within 30s")
-		}
-		return nil, w.Wrapf(err, "cannot get project configurations")
-	}
-
-	dependenciesConfigurations, err := runner.world.SharedState.GetDependentConfigurationsFor(cfgCtx, runner.instance.Identity)
-	if err != nil {
-		if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
-			w.Warn("timeout waiting for dependencies configurations after 30s; check that dependency services are reachable")
-			return nil, w.Wrapf(err, "init timeout: dependencies configurations not available within 30s")
-		}
-		return nil, w.Wrapf(err, "cannot get configuration for dependencies")
-	}
-
-	networkMappings, err := runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env.Runtime(), runner.world.Workspace, runner.instance.Identity, runner.endpoints, runtimeContext)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
-	}
-
-	w.Debug("configuration",
-		wool.Field("network mappings", resources.MakeManyNetworkMappingSummary(networkMappings)),
-		wool.Field("service configuration", resources.MakeConfigurationSummary(conf)),
-		wool.Field("dependencies endpoints", resources.MakeManyEndpointSummary(dependenciesEndpoints)),
-		wool.Field("project configurations", resources.MakeManyConfigurationSummary(workspaceConfigurations)),
-		wool.Field("dependencies configurations", resources.MakeManyConfigurationSummary(dependenciesConfigurations)))
+	dependenciesEndpoints := inputs.dependenciesEndpoints
+	dependenciesNetworkMappings := inputs.dependenciesNetworkMappings
+	conf := inputs.conf
+	runtimeContext := inputs.runtimeContext
+	workspaceConfigurations := inputs.workspaceConfigurations
+	dependenciesConfigurations := inputs.dependenciesConfigurations
+	networkMappings := inputs.networkMappings
 
 	// Init is the only lifecycle call guaranteed to reach a service under test:
 	// a test policy replaces the origin's Start with a barrier or skips it
@@ -2177,4 +2128,71 @@ func referenceText(info *resources.EndpointInformation) string {
 		out += "::" + info.API
 	}
 	return out
+}
+
+// runnerInitInputs is everything Runner.Init reads before it calls the agent:
+// the dependency views, this service's own configuration, and the addresses it
+// proposes to serve.
+type runnerInitInputs struct {
+	dependenciesEndpoints       []*basev0.Endpoint
+	dependenciesNetworkMappings []*basev0.NetworkMapping
+	conf                        *basev0.Configuration
+	runtimeContext              *basev0.RuntimeContext
+	workspaceConfigurations     []*basev0.Configuration
+	dependenciesConfigurations  []*basev0.Configuration
+	networkMappings             []*basev0.NetworkMapping
+}
+
+// gatherInitInputs performs the reads Init needs, each bounded by cfgCtx.
+//
+// They are gathered in one place because they share one failure mode: a
+// configuration read can block on a stalled provider — a dependency that failed
+// to export its configuration — and a timeout there is a different diagnosis
+// from a real fault, which initReadFailure is what says so.
+func (runner *Runner) gatherInitInputs(ctx, cfgCtx context.Context, w *wool.Wool) (*runnerInitInputs, error) {
+	out := &runnerInitInputs{}
+	var err error
+	out.dependenciesEndpoints, err = runner.world.SharedState.GetDependenciesEndpoints(cfgCtx, runner.instance.Service)
+	if err != nil {
+		return nil, runner.initReadFailure(cfgCtx, w, err, "dependencies endpoints")
+	}
+	out.dependenciesNetworkMappings, err = runner.world.SharedState.GetDependenciesNetworkMappings(cfgCtx, runner.instance.Service)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot get initialized dependency network mappings")
+	}
+	if runner.testRequest != nil && !runner.serviceRunningForTest && len(out.dependenciesNetworkMappings) > 0 &&
+		!slices.Contains(runner.instance.Info.GetContract().GetCapabilities(), contract.RuntimeInitDependencyMappings) {
+		return nil, w.NewError("dependency-only tests require agent capability %s to consume accepted addresses at Init", contract.RuntimeInitDependencyMappings)
+	}
+	out.conf, err = runner.world.ConfigurationManager.GetServiceConfiguration(cfgCtx, runner.instance.Identity)
+	if err != nil {
+		return nil, runner.initReadFailure(cfgCtx, w, err, "service configuration")
+	}
+	out.runtimeContext, err = resources.NewRuntimeContext(runner.runtimeContext)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
+	}
+	out.workspaceConfigurations, err = runner.workspaceConfigurations(cfgCtx, out.dependenciesNetworkMappings, out.runtimeContext)
+	if err != nil {
+		return nil, runner.initReadFailure(cfgCtx, w, err, "workspace dependencies configurations")
+	}
+	out.dependenciesConfigurations, err = runner.world.SharedState.GetDependentConfigurationsFor(cfgCtx, runner.instance.Identity)
+	if err != nil {
+		return nil, runner.initReadFailure(cfgCtx, w, err, "dependencies configurations")
+	}
+	out.networkMappings, err = runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env.Runtime(), runner.world.Workspace, runner.instance.Identity, runner.endpoints, out.runtimeContext)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
+	}
+	return out, nil
+}
+
+// initReadFailure tells a stalled provider apart from a real fault, in the one
+// wording every bounded Init read used to repeat.
+func (runner *Runner) initReadFailure(cfgCtx context.Context, w *wool.Wool, err error, what string) error {
+	if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
+		w.Warn(fmt.Sprintf("timeout waiting for %s after 30s; check that dependency services are reachable", what))
+		return w.Wrapf(err, "init timeout: %s not available within 30s", what)
+	}
+	return w.Wrapf(err, "cannot get %s", what)
 }
