@@ -190,8 +190,8 @@ type hostStamp struct {
 // SPIFFE IDs are issued under.
 func presenceStamp(document *solutionhost.SolutionHostBinding) hostStamp {
 	stamp := hostStamp{domain: document.OwnershipDomain, host: document.Host, envelope: document.EnvelopeRevision}
-	for _, workload := range document.Workloads {
-		if trust, ok := strings.CutPrefix(workload.Identity.SPIFFEID, "spiffe://"); ok {
+	for i := range document.Workloads {
+		if trust, ok := strings.CutPrefix(document.Workloads[i].Identity.SPIFFEID, "spiffe://"); ok {
 			stamp.trust, _, _ = strings.Cut(trust, "/")
 			break
 		}
