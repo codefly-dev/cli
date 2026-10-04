@@ -581,56 +581,55 @@ consumer, the producer and the reference. Core's own drop is a DEBUG line, and a
 configuration value going missing without a word is the fault this section exists
 to remove.
 
-#### A partial root override of a composed module's group replaces it whole
+#### A root override of a composed group: per key for a module, wholesale for a workspace
 
-This is **core's** behaviour, not this package's, and it is a trap worth knowing
-about because it interacts with the rule above.
+This is **core's** behaviour, not this package's, and the two halves differ in a
+way worth knowing because it interacts with the rule above.
 
 A consuming workspace that declares a group a composed module also provides wins
 the name — that is the intended rule, so a solution can override a composed
-configuration without redeclaring everything the host brings. But the override is
-**wholesale, not per key**: `configurations.composeModuleWorkspaceConfigurations`
-(core `configurations/local_reader.go`) skips the module's information outright
-once the workspace declares the name, so
+configuration without redeclaring everything the host brings. For a composed
+**module's** group it wins **per key**
+(`configurations.composeModuleWorkspaceConfigurations`, core
+`configurations/local_reader.go`):
 
-- a key the root did not supply loses the module's default, and
-- a key the module declared `${profile}` loses its requirement with it, so
-  nothing reports the omission and `Load` succeeds — including when the root
-  supplies an **empty** value for such a key, which is precisely what the
-  `${profile}` marker exists to refuse.
+- a key the root does not supply keeps the module's value;
+- a `${profile}` requirement the root does not discharge survives the override
+  and is reported, so `Load` fails naming it;
+- a root value that **empties** a `${profile}` key is refused by name
+  (`configurations.ErrEmptyProfileValue`), and a key the module's group does not
+  declare is refused by name (`configurations.ErrUndeclaredProfileKey`) — the
+  root is overriding nothing, which is a typo rather than a declaration;
+- the group **stays composed**, so this package delivers it to the services that
+  declared it and not to every service of the composition.
 
-It also stops being composed, so it is reclassified as a composition-root group
-and this package then injects the truncated group into **every** service of the
-composition rather than only the ones that declared it. A partial override
-narrows a group's contents and widens its delivery at the same time.
+That is a change: until `core v0.9.1` the override was wholesale, which lost the
+module's defaults for every key the root did not mention, discarded the
+`${profile}` markers among them (so an empty override discharged a value that
+must differ per environment — exactly what the marker exists to refuse) and
+reclassified the group as the composition root's own, widening its delivery to
+every service. It was filed as
+[codefly-dev/core#693](https://github.com/codefly-dev/core/issues/693) and fixed
+in [core#694](https://github.com/codefly-dev/core/pull/694), released as
+`v0.9.1` and pinned here. The interim operator rule that stood in this section —
+declare every key of the group or none — is gone with it.
 
-This is filed as [codefly-dev/core#693](https://github.com/codefly-dev/core/issues/693)
-and **fixed in [core#694](https://github.com/codefly-dev/core/pull/694)**, which
-is open and green but not yet released — `v0.8.1`, pinned here, does not carry
-it (its `offer` closure still skips a composed module's information outright) —
-so the behaviour above is what a composition meets today.
-
-Until that release is pinned here: declare **every** key of a composed module's
-group when overriding it, or override none of them.
-
-When it is pinned, three of the four statements above stop being true for a
-**module's** group — an override becomes exactly a partial override, an
-undischarged `${profile}` is reported rather than discarded, and the group stays
-composed, so its delivery stays scoped to the services that declared it instead
-of widening to every service of the composition. The interim rule then narrows
-rather than disappearing: core#694 deliberately leaves a group inherited from a
-composed **workspace** (the product model) replacing whole, because the
-precedence there has to be decided per key for the product model first. An
+One case still replaces whole: a group inherited from a composed **workspace**
+(the product model), because the precedence there has to be decided per key for
+the product model first. So when a *workspace* is the thing you compose, declare
+**every** key of the group you override, or override none of them. An
 invocation-scoped override is unchanged either way — still attributed to the run,
 still composition-root even on a composed name.
-`TestAPartialRootOverrideReplacesAComposedModuleGroupWhole`
-(`pkg/orchestration`) pins the current behaviour and names the core function, so
-the CLI's expectations move when core's do. The semantics it should get already
-exist one function away — `profileOverlay.add` in core's
-`configurations/profile.go` overlays per key across profile derivation layers,
-keeps a `${profile}` marker an override did not discharge, and refuses a key the
-layer below never declared — they are simply not applied across the
-workspace/module boundary.
+
+`TestAPartialRootOverrideOverlaysAComposedModuleGroupPerKey`
+(`pkg/orchestration`) pins all of this against core directly and names the core
+function, so the CLI's expectations move when core's do.
+
+One reporting gap follows from the provenance rule and is not yet addressed: an
+overridden group stays attributed to its module, so `codefly doctor workspace`
+credits the module and lists nothing under the workspace's own configurations,
+even though the operator's file is sitting in `configurations/<env>`. The
+override is applied; only the report is quiet about where it came from.
 
 #### The consequence an operator meets
 

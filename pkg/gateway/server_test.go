@@ -302,6 +302,16 @@ func enableGovernedGateway(
 		TenantId: "tenant-codefly", OwnerPrincipalId: "principal-antoine",
 		TaskId: "task-1", SessionId: "session-1",
 		WorkspaceId: &workspaceID, ProjectId: &projectID,
+		// Core v0.9.1 requires the seal: a capability names the installation it
+		// is held through and the execution it was minted for. The execution
+		// pair is optional but must be whole.
+		Seal: &basev0.WorkSealV1{
+			PrincipalEpoch:       1,
+			InstallationId:       "installation-gateway",
+			InstallationRevision: 2,
+			BuildIncarnation:     uint64Pointer(5),
+			ImageDigest:          stringPointer("sha256:" + strings.Repeat("b", 64)),
+		},
 	}
 	recorder, err := executionrecorder.New(executionrecorder.Config{
 		Journal:  journal,
@@ -1858,3 +1868,7 @@ func TestFormattableChangedPaths(t *testing.T) {
 		}
 	}
 }
+
+func uint64Pointer(value uint64) *uint64 { return &value }
+
+func stringPointer(value string) *string { return &value }

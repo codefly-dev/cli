@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -462,8 +463,21 @@ func testClaims() *basev0.WorkContextV1 {
 		TenantId: "tenant-codefly", OwnerPrincipalId: "principal-antoine",
 		TaskId: "task-1", SessionId: "session-1",
 		WorkspaceId: &workspaceID, ProjectId: &projectID,
+		// The seal binds the capability to one installation and one execution.
+		// Core requires it as of v0.9.1; the execution pair below is optional
+		// but must be whole, and this fixture sets it because the receipts it
+		// signs describe a plugin that actually ran.
+		Seal: &basev0.WorkSealV1{
+			PrincipalEpoch:       1,
+			InstallationId:       "installation-warden",
+			InstallationRevision: 3,
+			BuildIncarnation:     uint64Pointer(7),
+			ImageDigest:          stringPointer("sha256:" + strings.Repeat("a", 64)),
+		},
 	}
 }
+
+func uint64Pointer(value uint64) *uint64 { return &value }
 
 type testClock struct {
 	mu   sync.Mutex
