@@ -159,8 +159,8 @@ func buildRenderedServiceImages(
 	// in that image expects of the platform. Only the image reaches the cell, but
 	// a service whose render mounts its configuration from a file is a service
 	// whose code reads a file the platform never delivers. See pkg/posture.
-	if err := posture.ValidateTree(scratch, posture.Subject{Module: module.Name, Service: service.Name}, env.Posture); err != nil {
-		return nil, err
+	if postureErr := posture.ValidateTree(scratch, posture.Subject{Module: module.Name, Service: service.Name}, env.Posture); postureErr != nil {
+		return nil, postureErr
 	}
 	return digestImages(destinations(module, service))
 }

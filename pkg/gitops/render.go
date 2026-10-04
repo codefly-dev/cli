@@ -99,8 +99,10 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err != nil {
 		return RenderResult{}, err
 	}
-	if err := enforceDeployedPosture(manifests, opts); err != nil {
-		return RenderResult{}, err
+	// postureErr, not err: the lint gate's shadow check refuses a nested err here
+	// while the outer one is still read below.
+	if postureErr := enforceDeployedPosture(manifests, opts); postureErr != nil {
+		return RenderResult{}, postureErr
 	}
 	sizing := computeSizing(manifests)
 	inventory, err := buildInventory(owned, opts)
