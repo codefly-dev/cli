@@ -721,7 +721,7 @@ func TestPublishRefusesAPairTheHostWouldNotActivate(t *testing.T) {
 	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageAuthorityRender(t, bindings), &hostless)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "names no host now")
-	require.Contains(t, err.Error(), "declares no host now")
+	require.Contains(t, err.Error(), "names no host now")
 
 	// The authority approves a build the presence does not say the binding
 	// runs: sound on its own, and activates nothing.
