@@ -28,9 +28,19 @@ import (
 // protoContainerRoot is where the companion sees the mounted host tree.
 const protoContainerRoot = "/workspace"
 
+// protoStagingRoot is where the companion sees this run's staging tree, bound
+// from a directory of its own rather than from inside the generation mount;
+// see newProtoStaging.
+const protoStagingRoot = "/staging"
+
 // protoStagedTemplateName is the derived template the companion generates
 // through; see protoStagingTemplate.
 const protoStagedTemplateName = "buf.gen.staged.yaml"
+
+// protoMountProbe is the file the host writes and the companion deletes to
+// prove they share the staging tree. The tree is exclusive to the run, so
+// nothing stale can be mistaken for it.
+const protoMountProbe = ".codefly-mount-probe"
 
 var protoDir string
 var outputDir string
@@ -152,23 +162,22 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 
 	// buf generates into a staging tree and the CLI publishes from it, so what
 	// this run emitted is knowable independently of what the outputs already
-	// held. Staging lives under the mount — that is the only way both sides
-	// see it — and is this run's alone.
+	// held. The tree is this run's alone and sits outside the generation
+	// mount, where no `out` can name it.
 	clean, err := protoTemplateClean(templatePath)
 	if err != nil {
 		return err
 	}
-	staging := filepath.Join(commonRoot, protoStagingDir(name))
-	containerStaging := path.Join(protoContainerRoot, protoStagingDir(name))
-	if err = os.MkdirAll(staging, 0o750); err != nil {
-		return w.Wrapf(err, "cannot create the generation staging directory %s", staging)
+	staging, err := newProtoStaging()
+	if err != nil {
+		return err
 	}
 	defer func() {
 		if removeErr := os.RemoveAll(staging); removeErr != nil {
 			result = errors.Join(result, w.Wrapf(removeErr, "cannot remove the generation staging directory %s", staging))
 		}
 	}()
-	stagedTemplate, err := protoStagingTemplate(templatePath, outs, containerStaging)
+	stagedTemplate, err := protoStagingTemplate(templatePath, outs, protoStagingRoot)
 	if err != nil {
 		return err
 	}
@@ -197,6 +206,10 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	// Mount the common ancestor so both proto and output paths are accessible.
 	// Work from the template directory so custom output paths retain their meaning.
 	runner.WithMount(commonRoot, protoContainerRoot)
+	// Staging is mounted separately so it is reachable without being inside
+	// any tree a template can declare as an output, and so `clean: true`
+	// cannot delete the evidence publication reads.
+	runner.WithMount(staging, protoStagingRoot)
 	runner.WithWorkDir(containerTemplateDir)
 	runner.WithPause()
 
@@ -215,7 +228,7 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	// Prove the companion's staging directory is the host's before anything
 	// runs in it, so a mount that never reaches the host is reported as that
 	// rather than as a generator that produced nothing.
-	if err = verifyProtoStagingMount(ctx, protoRunnerCommand(runner), staging, containerStaging, "."+name+"-probe"); err != nil {
+	if err = verifyProtoStagingMount(ctx, protoRunnerCommand(runner), staging, protoStagingRoot, protoMountProbe); err != nil {
 		return err
 	}
 
@@ -237,7 +250,7 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	// live outside the proto directory, and the staged template always does.
 	pathArgs := protoGenerationPathArgs(containerProto, true)
 	args := make([]string, 0, 4+len(pathArgs))
-	args = append(args, "generate", containerProto, "--template", path.Join(containerStaging, protoStagedTemplateName))
+	args = append(args, "generate", containerProto, "--template", path.Join(protoStagingRoot, protoStagedTemplateName))
 	args = append(args, pathArgs...)
 	proc, err = runner.NewProcess("buf", args...)
 	if err != nil {
@@ -394,8 +407,29 @@ func protoRunnerCommand(runner protoProcessRunner) protoCommand {
 // writes `/sibling/gen`, exactly where it writes without the flag. An
 // absolute `out` lands where it says, and that is what the derived template
 // carries.
-func protoStagingDir(run string) string {
-	return "." + run + "-staging"
+// newProtoStaging creates the directory buf generates into: exclusive to this
+// run, and empty, because that is what makes it evidence. os.MkdirAll would
+// accept a directory that already exists, so a leftover from a killed run — or
+// a run that started in the same millisecond — could supply files this run
+// never generated, which is the one thing staging exists to rule out.
+//
+// It lives under the codefly home rather than inside the generation mount.
+// An `out` can resolve to the mount root itself (`out: .` in a template that
+// is its own output directory), and `clean: true` then deletes that tree —
+// taking the staging directory with it, and with it the evidence publication
+// reads. Somewhere no `out` can name is the only place it is safe. The codefly
+// home rather than the OS temp directory because this path is bind-mounted,
+// and the home is already a directory the CLI mounts from.
+func newProtoStaging() (string, error) {
+	root := filepath.Join(resources.CodeflyHomeDir(), "generate-proto")
+	if err := os.MkdirAll(root, 0o750); err != nil {
+		return "", fmt.Errorf("cannot create %s: %w", root, err)
+	}
+	staging, err := os.MkdirTemp(root, "staging-")
+	if err != nil {
+		return "", fmt.Errorf("cannot create a generation staging directory under %s: %w", root, err)
+	}
+	return staging, nil
 }
 
 func protoStagingSlot(staging string, out int) string {
@@ -576,14 +610,22 @@ func publishProtoOutputs(ctx context.Context, staging string, outs []string, cle
 	if total == 0 {
 		return fmt.Errorf("generation produced no file for any output declared by %s (%s); nothing was generated", templatePath, strings.Join(outs, ", "))
 	}
-	for i, out := range outs {
-		if len(emitted[i]) == 0 && !clean {
-			continue
-		}
-		if clean {
+	// Every destination is cleaned before anything is published, never
+	// interleaved. Outputs nest — a plugin writing `nested/x.ts` into the slot
+	// for `out: gen` publishes it to the same path `out: gen/nested` owns — so
+	// cleaning one output after publishing another would delete files this run
+	// had already published. With no copy yet made, the order of the cleans
+	// cannot matter.
+	if clean {
+		for _, out := range outs {
 			if err := os.RemoveAll(out); err != nil {
 				return fmt.Errorf("cannot clean generation output %s: %w", out, err)
 			}
+		}
+	}
+	for i, out := range outs {
+		if len(emitted[i]) == 0 && !clean {
+			continue
 		}
 		if _, err := shared.CheckDirectoryOrCreate(ctx, out); err != nil {
 			return fmt.Errorf("cannot create generation output %s: %w", out, err)

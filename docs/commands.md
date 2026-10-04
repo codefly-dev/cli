@@ -2323,12 +2323,22 @@ exactly what was already there" from "the generator emitted nothing" or "the
 generation never reached the host", and a file that was already on disk is not
 evidence that the run produced it.
 
-So buf generates into a staging tree under the mount, through a derived
-template that redirects every `out` into it, and **the CLI publishes to the
-declared outputs**. The caller's template is otherwise unchanged — same
-plugins, options, managed-mode block and version — and buf's own `--output`
-cannot be used for this: it is prepended to each `out`, so `out: ../code/pkg/gen`
-under `-o /stage` resolves straight back out of the staging directory.
+So buf generates into a staging tree, through a derived template that redirects
+every `out` into it, and **the CLI publishes to the declared outputs**. The
+caller's template is otherwise unchanged — same plugins, options, managed-mode
+block and version — and buf's own `--output` cannot be used for this: it is
+prepended to each `out`, so `out: ../code/pkg/gen` under `-o /stage` resolves
+straight back out of the staging directory.
+
+The staging tree is created fresh for each run under the codefly home
+(`~/.codefly/generate-proto/`, or `$CODEFLY_HOME`) and bind-mounted separately
+from the generation mount, for two reasons. It must be **empty**, or a leftover
+could supply files the run never generated — the whole point of staging — so it
+is created exclusively rather than reused. And it must sit where no `out` can
+name it: an `out` can resolve to the generation mount's own root (`out: .` in a
+template that is its own output directory), and `clean: true` over that would
+delete the staging tree along with the output, destroying the evidence
+publication reads.
 
 The staged tree is what the run emitted, which makes each question separately
 answerable:
@@ -2353,6 +2363,11 @@ answerable:
   the output with what the run emitted. One plugin with nothing to emit for a
   given input — openapiv2 over a contract carrying no REST annotations — is not
   a failed generation and does not disturb that output.
+- **Under `clean: true`, every destination is cleaned before anything is
+  published.** Outputs nest: a plugin writing `nested/x.ts` into the tree for
+  `out: gen` publishes it to the path `out: gen/nested` owns, so cleaning each
+  output just before copying it would delete what a sibling had already
+  published.
 
 The Go lane was never an exception to buf's sync; it only looked like one
 because `goimports` runs after generation and leaves a shape buf never emits,

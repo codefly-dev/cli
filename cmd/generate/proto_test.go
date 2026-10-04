@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
 )
 
@@ -406,6 +407,108 @@ func TestPublishProtoOutputsToleratesOneOutputWithNothingToEmit(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(outs[1], "api.swagger.json")); err != nil {
 		t.Fatalf("an output with nothing emitted was disturbed: %v", err)
+	}
+}
+
+// Staging must survive `clean: true` over an output that would have contained
+// it. An `out` can resolve to the generation mount's own root (`out: .` in a
+// template that is its own output directory), so a staging tree inside that
+// mount is deleted along with the output — and publication then reads files
+// that no longer exist. Staging therefore lives where no `out` can name it,
+// and this pins that a clean of the whole tree still publishes.
+func TestPublishProtoOutputsSurvivesACleanOfTheTreeThatWouldHaveHeldStaging(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	root := t.TempDir()
+	out := root // `out: .` — the output IS the tree staging used to live under
+	staging, err := newProtoStaging()
+	if err != nil {
+		t.Fatalf("staging: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(staging) })
+	// The invariant that makes the clean below survivable, asserted directly:
+	// staging is somewhere no `out` can name.
+	if pathWithin(out, staging) {
+		t.Fatalf("staging %s is inside the output %s; a clean of the output would delete the evidence", staging, out)
+	}
+	stageFile(t, staging, 0, "api_pb.ts", "export const api = 1;\n")
+	writeTestFile(t, filepath.Join(out, "gone_pb.ts"), "export {};\n")
+
+	if err := publishProtoOutputs(context.Background(), staging, []string{out}, true, "buf.gen.yaml"); err != nil {
+		t.Fatalf("clean of the output holding the mount root broke publication: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "api_pb.ts")); err != nil {
+		t.Fatalf("nothing was published after the clean: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "gone_pb.ts")); !os.IsNotExist(err) {
+		t.Fatalf("clean kept a file this run did not generate: %v", err)
+	}
+}
+
+// Outputs nest: a plugin writing `nested/x.ts` into the slot for `out: gen`
+// publishes it to the path `out: gen/nested` owns. Cleaning each output just
+// before copying it therefore deletes what a sibling already published, so
+// every destination is cleaned before anything is published.
+func TestPublishProtoOutputsCleansEveryNestedOutputBeforePublishingAny(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "gen")
+	nested := filepath.Join(parent, "nested")
+	staging := t.TempDir()
+	stageFile(t, staging, 0, "nested/fromparent_pb.ts", "export const a = 1;\n")
+	stageFile(t, staging, 1, "fromnested_pb.ts", "export const b = 2;\n")
+	writeTestFile(t, filepath.Join(parent, "gone_pb.ts"), "export {};\n")
+	writeTestFile(t, filepath.Join(nested, "gone_too_pb.ts"), "export {};\n")
+
+	if err := publishProtoOutputs(context.Background(), staging, []string{parent, nested}, true, "buf.gen.yaml"); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	// Both outputs' files must be present: the nested clean must not have
+	// erased what the parent slot published into it, nor the reverse.
+	for path, want := range map[string]string{
+		filepath.Join(nested, "fromparent_pb.ts"): "export const a = 1;\n",
+		filepath.Join(nested, "fromnested_pb.ts"): "export const b = 2;\n",
+	} {
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != want {
+			t.Fatalf("%s = %q, %v; want %q", path, got, err, want)
+		}
+	}
+	for _, gone := range []string{filepath.Join(parent, "gone_pb.ts"), filepath.Join(nested, "gone_too_pb.ts")} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Fatalf("clean kept %s: %v", gone, err)
+		}
+	}
+}
+
+// Staging is evidence only if it starts empty and belongs to one run. A
+// directory that already exists cannot be either, so creation is exclusive —
+// two runs in the same millisecond get different trees, and a leftover from a
+// killed run can never supply files this run did not generate.
+func TestNewProtoStagingIsExclusiveAndEmpty(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	first, err := newProtoStaging()
+	if err != nil {
+		t.Fatalf("staging: %v", err)
+	}
+	second, err := newProtoStaging()
+	if err != nil {
+		t.Fatalf("staging: %v", err)
+	}
+	if first == second {
+		t.Fatalf("two runs were handed the same staging tree %s", first)
+	}
+	for _, staging := range []string{first, second} {
+		entries, err := os.ReadDir(staging)
+		if err != nil {
+			t.Fatalf("read %s: %v", staging, err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("staging tree %s is not empty: %v", staging, entries)
+		}
+		// Outside any generation mount, so no `out` can name it and
+		// `clean: true` can never reach it.
+		if files, err := protoStagedFiles(protoStagingSlot(staging, 0)); err != nil || len(files) != 0 {
+			t.Fatalf("a fresh staging slot reported %v, %v", files, err)
+		}
 	}
 }
 

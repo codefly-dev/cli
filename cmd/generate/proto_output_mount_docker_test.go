@@ -32,13 +32,9 @@ func TestProtoStagingMountIsQualifiedAgainstARealBindMount(t *testing.T) {
 	requireDockerDaemon(t)
 
 	t.Run("a staging directory the host shares is accepted", func(t *testing.T) {
-		root := t.TempDir()
-		staging := filepath.Join(root, ".proto-gen-live-staging")
-		if err := os.MkdirAll(staging, 0o750); err != nil {
-			t.Fatal(err)
-		}
-		containerStaging := protoContainerRoot + "/.proto-gen-live-staging"
-		companion := mountedCompanion(t, root, protoContainerRoot)
+		staging := t.TempDir()
+		containerStaging := protoStagingRoot
+		companion := mountedCompanion(t, staging, containerStaging)
 		probe := fmt.Sprintf(".probe-%d", time.Now().UnixMilli())
 		if err := verifyProtoStagingMount(context.Background(), companion, staging, containerStaging, probe); err != nil {
 			t.Fatalf("refused a live staging mount: %v", err)
@@ -53,13 +49,9 @@ func TestProtoStagingMountIsQualifiedAgainstARealBindMount(t *testing.T) {
 	// there, exits 0, and the host sees nothing. Mounting a different
 	// directory at the container root reproduces exactly that view.
 	t.Run("a staging directory the host cannot see is refused", func(t *testing.T) {
-		root := t.TempDir()
-		staging := filepath.Join(root, ".proto-gen-blind-staging")
-		if err := os.MkdirAll(staging, 0o750); err != nil {
-			t.Fatal(err)
-		}
-		containerStaging := protoContainerRoot + "/.proto-gen-blind-staging"
-		companion := mountedCompanion(t, t.TempDir(), protoContainerRoot)
+		staging := t.TempDir()
+		containerStaging := protoStagingRoot
+		companion := mountedCompanion(t, t.TempDir(), containerStaging)
 		probe := fmt.Sprintf(".probe-%d", time.Now().UnixMilli())
 		err := verifyProtoStagingMount(context.Background(), companion, staging, containerStaging, probe)
 		if err == nil {
@@ -75,7 +67,7 @@ func TestProtoStagingMountIsQualifiedAgainstARealBindMount(t *testing.T) {
 }
 
 // mountedCompanion drives a real container with hostRoot bound at
-// containerRoot, the way generateProtoCode mounts the generation tree.
+// containerRoot, the way generateProtoCode mounts the staging tree.
 func mountedCompanion(t *testing.T, hostRoot, containerRoot string) protoCommand {
 	t.Helper()
 	ctx := context.Background()
