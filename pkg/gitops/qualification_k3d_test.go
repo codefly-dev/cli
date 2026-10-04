@@ -110,11 +110,16 @@ gitops:
 	t.Setenv("CODEFLY_TEST_KUBECTL_CALLED", kubectlCalled)
 	t.Setenv("GITHUB_TOKEN", "test-token")
 	t.Setenv("GITHUB_API_URL", server.URL)
-	// A release publish to a hosted environment runs from the release
-	// workflow, whose identity it signs and checks under; this one delivers
-	// no document, and still needs to be that publish.
-	t.Setenv("GITHUB_REPOSITORY", "codefly-test/manifests")
-	t.Setenv("GITHUB_WORKFLOW_REF", "codefly-test/manifests/.github/workflows/release.yml@refs/tags/v1.0.0")
+	// This environment declares no host, so the publish delivers nothing
+	// signed and needs no workflow identity: it runs with none, which is the
+	// public guard against the release-identity gate reaching hostless
+	// publication (it did, for one round).
+	for _, name := range []string{"GITHUB_REPOSITORY", "GITHUB_WORKFLOW_REF"} {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	request := PublishRequest{

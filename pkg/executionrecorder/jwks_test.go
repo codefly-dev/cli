@@ -178,3 +178,47 @@ func TestJWKSKeysDoNotServeAnAgedCacheWhenTheIssuerIsUnreachable(t *testing.T) {
 		t.Fatalf("aged cache with the issuer unreachable: err = %v", err)
 	}
 }
+
+// TestJWKSKeysRefuseEveryRedirect: an accepted HTTPS endpoint cannot hand the
+// fetch to HTTP, and an accepted loopback endpoint cannot hand it out of the
+// loopback — a redirect is refused on every hop, and on a caller-supplied
+// client that follows redirects elsewhere.
+func TestJWKSKeysRefuseEveryRedirect(t *testing.T) {
+	issuer := newTestIssuer(t)
+	published := &jwksIssuer{}
+	published.publish(issuer.keyID, issuer.public)
+	plain := httptest.NewServer(published) // http://127.0.0.1: a loopback issuer
+	t.Cleanup(plain.Close)
+	downgrade := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+"/keys", http.StatusFound)
+	}))
+	t.Cleanup(downgrade.Close)
+	escape := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://accounts.example.test/keys", http.StatusMovedPermanently)
+	}))
+	t.Cleanup(escape.Close)
+
+	for name, url := range map[string]string{"https to http": downgrade.URL + "/keys", "loopback out": escape.URL + "/keys"} {
+		// The caller's client follows redirects, as http.Client does by
+		// default; the source refuses them on its copy of it.
+		keys, err := NewJWKSKeys(url, JWKSOptions{HTTPClient: downgrade.Client()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = keys.Keys(t.Context(), issuer.keyID)
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "redirected") {
+			t.Fatalf("%s: err = %v", name, err)
+		}
+	}
+	if downgrade.Client().CheckRedirect != nil {
+		t.Fatal("the caller's client was modified")
+	}
+	// The issuer answering at its configured URL is still fetched.
+	keys, err := NewJWKSKeys(plain.URL+"/keys", JWKSOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := keys.Keys(t.Context(), issuer.keyID); err != nil {
+		t.Fatal(err)
+	}
+}

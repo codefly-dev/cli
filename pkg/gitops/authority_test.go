@@ -423,4 +423,18 @@ func TestComponentProjectsBindPathProjectAndNamespace(t *testing.T) {
 	require.Contains(t, err.Error(), "lacks a component, overlay, project or namespace")
 	tenants := map[string]any{"generators": []any{map[string]any{"list": map[string]any{"elements": []any{map[string]any{"tenant": "acme", "server": "https://kubernetes.default.svc"}}}}}}
 	require.NoError(t, validateComponentProjects(tenants, "shop"))
+	// A component element is one that names a component field: a missing
+	// key and a mistyped value are both refused, and an element whose four
+	// fields are all malformed is refused rather than mistaken for the
+	// tenant matrix.
+	for name, element := range map[string]map[string]any{
+		"project key missing": {"component": "api", "overlay": "deployments/modules/shop/services/api/overlays/prod", "namespace": "shop"},
+		"project mistyped":    {"component": "api", "overlay": "deployments/modules/shop/services/api/overlays/prod", "namespace": "shop", "project": 7},
+		"all malformed":       {"component": 1, "overlay": true, "project": nil, "namespace": []any{"shop"}},
+	} {
+		malformed := map[string]any{"generators": []any{map[string]any{"list": map[string]any{"elements": []any{element}}}}}
+		err = validateComponentProjects(malformed, "shop")
+		require.Error(t, err, name)
+		require.Contains(t, err.Error(), "every stamped Application needs all four", name)
+	}
 }

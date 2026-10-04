@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/modulecontract"
 	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
@@ -1205,4 +1206,24 @@ func TestReleasePublishRequiresTheWorkflowIdentityToDeliver(t *testing.T) {
 			t.Fatalf("%s: err = %v", name, err)
 		}
 	}
+}
+
+// TestOnlyHostedDeliveryNeedsTheWorkflowIdentity: addressing the host is
+// where the release identity is required, and only an environment that
+// declares a host is addressed — a hostless publication or rollback goes
+// through the same preparation and must not be refused for an identity it
+// has no use for.
+func TestOnlyHostedDeliveryNeedsTheWorkflowIdentity(t *testing.T) {
+	ctx := context.Background()
+	hostless := &deliveryPublication{baseBranch: "main"}
+	require.NoError(t, hostless.addressHost(ctx, nil, &environments.Environment{Name: "production"}))
+	require.Nil(t, hostless.options.Target)
+
+	hosted := &deliveryPublication{baseBranch: "main"}
+	err := hosted.addressHost(ctx, nil, &environments.Environment{Name: "production", Host: &environments.EnvironmentHost{
+		Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", Audience: "accounts",
+		TrustDomain: "cluster.example", EnvelopeRevision: 1, Delivery: "payments/host/rest",
+	}})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "run it from the release workflow")
 }

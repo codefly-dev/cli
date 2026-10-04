@@ -338,8 +338,14 @@ func (p *deliveryPublication) requireReleaseIdentity() error {
 // API its Jobs post to, and the envelope revision and the domain its
 // documents must declare.
 func (p *deliveryPublication) addressHost(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) error {
-	if err := p.requireReleaseIdentity(); err != nil {
-		return err
+	// Hosted delivery is what needs the release identity; a publication with
+	// no host delivers nothing signed and needs none. (An environment that
+	// dropped its host while documents are rendered for it is refused later,
+	// by refuseUnaddressedDocuments, not admitted here.)
+	if env.Host != nil {
+		if err := p.requireReleaseIdentity(); err != nil {
+			return err
+		}
 	}
 	target, err := resolveDeliveryTarget(ctx, workspace, env)
 	if err != nil {

@@ -87,12 +87,21 @@ func NewJWKSKeys(rawURL string, options JWKSOptions) (*JWKSKeys, error) {
 		return nil, fmt.Errorf("%w: Work Context JWKS URL %q must be https (http only for a loopback host)", ErrInvalid, rawURL)
 	}
 	source := &JWKSKeys{
-		url: parsed.String(), client: options.HTTPClient, ttl: options.CacheTTL,
+		url: parsed.String(), ttl: options.CacheTTL,
 		timeout: options.RequestTimeout, now: options.Now,
 	}
-	if source.client == nil {
-		source.client = http.DefaultClient
+	// The key set comes from the configured URL and nowhere else: a redirect
+	// is refused on every hop, so an HTTPS endpoint cannot hand the fetch to
+	// HTTP and a loopback test issuer cannot hand it out of the loopback. The
+	// policy is set on a copy of the caller's client, so a client that
+	// follows redirects elsewhere does not follow them here.
+	client := http.DefaultClient
+	if options.HTTPClient != nil {
+		client = options.HTTPClient
 	}
+	redirectFree := *client
+	redirectFree.CheckRedirect = refuseJWKSRedirect
+	source.client = &redirectFree
 	if source.ttl <= 0 {
 		source.ttl = defaultJWKSCacheTTL
 	}
@@ -129,6 +138,11 @@ func (source *JWKSKeys) Keys(ctx context.Context, keyID string) (map[string]ed25
 	}
 	source.keys, source.fetched, source.refreshed = keys, now, now
 	return maps.Clone(keys), nil
+}
+
+// refuseJWKSRedirect is the redirect policy of every JWKS fetch: none.
+func refuseJWKSRedirect(request *http.Request, _ []*http.Request) error {
+	return fmt.Errorf("%w: the Work Context JWKS endpoint redirected to %s; the key set is fetched from the configured URL only", ErrInvalid, request.URL.Redacted())
 }
 
 func (source *JWKSKeys) fetch(ctx context.Context) (map[string]ed25519.PublicKey, error) {

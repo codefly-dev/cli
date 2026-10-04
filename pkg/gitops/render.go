@@ -1053,15 +1053,21 @@ func validateComponentProjects(spec map[string]any, selected string) error {
 					// one required: the overlay is the path Argo syncs, the
 					// project its authority. An element naming none of them
 					// is another generator's — the tenant matrix — and skipped.
+					named := 0
+					for _, key := range []string{"component", "overlay", "project", "namespace"} {
+						if _, present := element[key]; present {
+							named++
+						}
+					}
+					if named == 0 {
+						continue
+					}
 					project, _ := element["project"].(string)
 					component, _ := element["component"].(string)
 					overlay, _ := element["overlay"].(string)
 					namespace, _ := element["namespace"].(string)
-					if component == "" && overlay == "" && project == "" && namespace == "" {
-						continue
-					}
 					if component == "" || overlay == "" || project == "" || namespace == "" {
-						return fmt.Errorf("ApplicationSet component %q (overlay %q, project %q, namespace %q) lacks a component, overlay, project or namespace; every stamped Application needs all four", component, overlay, project, namespace)
+						return fmt.Errorf("ApplicationSet component %q (overlay %q, project %q, namespace %q) lacks a component, overlay, project or namespace, or carries one that is not a string; every stamped Application needs all four", component, overlay, project, namespace)
 					}
 					// The authority overlay, the authority project and the
 					// authority namespace name each other: a component under
