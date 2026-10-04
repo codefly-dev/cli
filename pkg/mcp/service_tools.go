@@ -36,7 +36,7 @@ func (s *Server) getServiceOnly(ctx context.Context, moduleName, serviceName str
 }
 
 func (s *Server) serviceScope(ctx context.Context, args map[string]string) (control.ServiceScope, error) {
-	if args["module"] == "" || args["service"] == "" {
+	if args[fieldModule] == "" || args[fieldService] == "" {
 		return nil, errors.New(serviceModuleService)
 	}
 	return s.plane.Service(ctx, serviceRef(args))
@@ -44,22 +44,19 @@ func (s *Server) serviceScope(ctx context.Context, args map[string]string) (cont
 
 // describe returns service metadata (name, type, language, file list) for Mind.
 func (s *Server) describe(ctx context.Context, args map[string]string) ([]Content, error) {
-	svc, err := s.getServiceOnly(ctx, args["module"], args["service"])
+	svc, err := s.getServiceOnly(ctx, args[fieldModule], args[fieldService])
 	if err != nil {
 		return nil, err
 	}
-	// "name"/"module"/"version" below already recur ~20 times across this
-	// package's other JSON-shaping code; deduplicating them here alone would
-	// be a package-wide refactor out of scope for this change.
 	info := map[string]any{
-		"name":   svc.Name,       //nolint:goconst
-		"module": args["module"], //nolint:goconst
+		fieldName:   svc.Name,
+		fieldModule: args[fieldModule],
 	}
 	if svc.Agent != nil {
-		info["agent"] = map[string]string{
-			"name":       svc.Agent.Name,
+		info[fieldAgent] = map[string]string{
+			fieldName:    svc.Agent.Name,
 			"publisher":  svc.Agent.Publisher,
-			"version":    svc.Agent.Version, //nolint:goconst
+			fieldVersion: svc.Agent.Version,
 			agentKindArg: string(svc.Agent.Kind),
 		}
 		info["hint"] = "call agent_info with this agent for languages, protocols and capabilities"
@@ -91,7 +88,7 @@ func fileList(dir string) ([]string, error) {
 
 // readFile reads a file from the service directory (path relative to service).
 func (s *Server) readFile(ctx context.Context, args map[string]string) ([]Content, error) {
-	path := args["path"]
+	path := args[fieldPath]
 	if path == "" {
 		return nil, fmt.Errorf("path is required")
 	}
@@ -106,7 +103,7 @@ func (s *Server) readFile(ctx context.Context, args map[string]string) ([]Conten
 		}
 		return []Content{TextContent(string(data))}, nil
 	}
-	svc, err := s.getServiceOnly(ctx, args["module"], args["service"])
+	svc, err := s.getServiceOnly(ctx, args[fieldModule], args[fieldService])
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +125,7 @@ func (s *Server) readFile(ctx context.Context, args map[string]string) ([]Conten
 
 // writeFile writes content to a file in the service directory.
 func (s *Server) writeFile(ctx context.Context, args map[string]string) ([]Content, error) {
-	path := args["path"]
+	path := args[fieldPath]
 	content := args["content"]
 	if path == "" {
 		return nil, fmt.Errorf("path is required")
@@ -143,7 +140,7 @@ func (s *Server) writeFile(ctx context.Context, args map[string]string) ([]Conte
 		}
 		return []Content{TextContent("ok")}, nil
 	}
-	svc, err := s.getServiceOnly(ctx, args["module"], args["service"])
+	svc, err := s.getServiceOnly(ctx, args[fieldModule], args[fieldService])
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +183,7 @@ func (s *Server) runChecks(ctx context.Context, args map[string]string) ([]Conte
 	if err != nil {
 		return nil, err
 	}
-	command := args["command"]
+	command := args[fieldCommand]
 	if command == "" {
 		command = "go test ./..."
 	}
@@ -243,7 +240,7 @@ func (s *Server) listServiceCommands(ctx context.Context, args map[string]string
 // runServiceCommand executes a command on the service agent (via the control
 // plane).
 func (s *Server) runServiceCommand(ctx context.Context, args map[string]string) ([]Content, error) {
-	command := args["command"]
+	command := args[fieldCommand]
 	if command == "" {
 		return nil, fmt.Errorf("command is required")
 	}
@@ -271,7 +268,7 @@ func (s *Server) runServiceCommand(ctx context.Context, args map[string]string) 
 // serviceRef joins the module/service args into the "module/service" reference
 // the control plane resolves.
 func serviceRef(args map[string]string) string {
-	module, service := args["module"], args["service"]
+	module, service := args[fieldModule], args[fieldService]
 	if module == "" {
 		return service
 	}

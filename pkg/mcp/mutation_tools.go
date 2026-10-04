@@ -32,10 +32,9 @@ const trustedAgentPublisher = "codefly.dev"
 // hang indefinitely on a stalled network call or a slow agent.
 const addServiceTimeout = 10 * time.Minute
 
-// add_service field names and its schema's "string" property type. Each of
-// these strings recurs often enough elsewhere in this package that
-// golangci-lint's goconst check flags a bare literal wherever one of these
-// lines changes.
+// The field names the tools share — argument keys, schema properties and the
+// keys of the JSON they shape — and the schema property types, named once so
+// a tool's argument and the schema that declares it cannot drift apart.
 const (
 	fieldModule      = "module"
 	fieldName        = "name"
@@ -43,6 +42,16 @@ const (
 	fieldDescription = "description"
 	fieldPath        = "path"
 	schemaTypeString = "string"
+	schemaTypeObject = "object"
+	fieldService     = "service"
+	fieldAPI         = "api"
+	fieldVisibility  = "visibility"
+	fieldCommand     = "command"
+	fieldSessionID   = "session_id"
+
+	describeModuleName      = "Module name"
+	describeServiceName     = "Service name"
+	describeTerminalSession = "Terminal session ID"
 )
 
 // flowIDArg is the shared "flow_id" tool argument name: the value run_service
@@ -71,11 +80,11 @@ func currentCLI() (string, error) {
 
 // registerMutationTools adds tools that modify the workspace (create services, add deps, etc.)
 func (s *Server) registerMutationTools() {
-	_ = s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "add_service",
 		Description: "Create a new service in a module by running the agent's Create flow (same as 'codefly add service'). Scaffolds the service directory and manifest non-interactively using the agent's declared defaults.",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
 				fieldModule:      {Type: schemaTypeString, Description: "Module to add the service to"},
 				fieldName:        {Type: schemaTypeString, Description: "Service name (kebab-case)"},
@@ -86,11 +95,11 @@ func (s *Server) registerMutationTools() {
 		},
 	}, s.addService)
 
-	_ = s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "add_dependency",
 		Description: "Add a service dependency to a service's service.codefly.yaml",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
 				fieldModule:     {Type: schemaTypeString, Description: moduleContainingServiceDesc},
 				serviceSegment:  {Type: schemaTypeString, Description: "Service to add the dependency to"},
@@ -100,11 +109,11 @@ func (s *Server) registerMutationTools() {
 		},
 	}, s.addDependency)
 
-	_ = s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "generate_proto",
 		Description: "Regenerate code from proto files using the codefly proto companion. Generates Go gRPC, REST gateway, OpenAPI, and TypeScript types.",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
 				fieldModule:    {Type: schemaTypeString, Description: moduleContainingServiceDesc},
 				serviceSegment: {Type: schemaTypeString, Description: "Service with proto files"},
@@ -113,11 +122,11 @@ func (s *Server) registerMutationTools() {
 		},
 	}, s.generateProto)
 
-	_ = s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "run_service",
 		Description: "Run a service with its dependency graph in-process (same orchestration as 'codefly run service --headless'). Returns once the flow is running unless wait=false.",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
 				fieldModule:       {Type: schemaTypeString, Description: moduleContainingServiceDesc},
 				serviceSegment:    {Type: schemaTypeString, Description: "Service to run"},
@@ -130,11 +139,11 @@ func (s *Server) registerMutationTools() {
 		},
 	}, s.runService)
 
-	_ = s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "test_service",
 		Description: "Run tests for a service with all dependencies started (equivalent to 'codefly test service').",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
 				fieldModule:       {Type: schemaTypeString, Description: moduleContainingServiceDesc},
 				serviceSegment:    {Type: schemaTypeString, Description: "Service to test"},
@@ -148,22 +157,22 @@ func (s *Server) registerMutationTools() {
 		},
 	}, s.testService)
 
-	_ = s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "flow_status",
 		Description: "Report the state of a flow started by run_service (idle, starting, running, stopped, failed) and its services. Without flow_id, reports the most recently started run — pass the flow_id from run_service's response if more than one run may be active, otherwise you may see a different run's state.",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
 				flowIDArg: {Type: schemaTypeString, Description: "flow_id from a run_service response (optional; defaults to the most recently started run)"},
 			},
 		},
 	}, s.flowStatus)
 
-	_ = s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "stop_flow",
 		Description: "Stop a flow started by run_service. Without flow_id, stops the most recently started run — pass the flow_id from run_service's response if more than one run may be active, otherwise you may stop the wrong one. Set destroy=true to also remove stateful containers (databases lose data).",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
 				flowIDArg: {Type: schemaTypeString, Description: "flow_id from a run_service response (optional; defaults to the most recently started run)"},
 				"destroy": {Type: schemaTypeString, Description: "Also remove stateful containers, e.g. databases (true/false, default false)"},
@@ -171,11 +180,11 @@ func (s *Server) registerMutationTools() {
 		},
 	}, s.stopFlow)
 
-	_ = s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "install_agent",
 		Description: "Install or update a codefly agent (e.g. go-grpc, nextjs, postgres)",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
 				fieldName:    {Type: schemaTypeString, Description: "Agent name (e.g. go-grpc)"},
 				fieldVersion: {Type: schemaTypeString, Description: "Version to install (optional, defaults to latest)"},
@@ -213,7 +222,7 @@ func (s *Server) addService(ctx context.Context, args map[string]string) ([]Cont
 		return nil, err
 	}
 
-	moduleName, serviceName, agentInput := args["module"], args["name"], args["agent"]
+	moduleName, serviceName, agentInput := args[fieldModule], args[fieldName], args[fieldAgent]
 	if moduleName == "" || serviceName == "" || agentInput == "" {
 		return []Content{TextContent("module, name, and agent are required")}, nil
 	}
@@ -279,7 +288,7 @@ func (s *Server) addService(ctx context.Context, args map[string]string) ([]Cont
 	input := &actionsservice.AddService{
 		Name:        serviceName,
 		Agent:       agentProto,
-		Description: args["description"],
+		Description: args[fieldDescription],
 	}
 	output, err := services.Add(addCtx, ws, mod, input, communicate.NewHeadlessPrompt())
 	if err != nil {
@@ -292,12 +301,12 @@ func (s *Server) addService(ctx context.Context, args map[string]string) ([]Cont
 	}
 
 	result := map[string]any{
-		"status":  "created",
-		"module":  moduleName,
-		"service": serviceName,
-		"agent":   agent.Identifier(),
-		fieldPath: svc.Dir(),
-		"readme":  truncate(output.ReadMe, 4000),
+		"status":     "created",
+		fieldModule:  moduleName,
+		fieldService: serviceName,
+		fieldAgent:   agent.Identifier(),
+		fieldPath:    svc.Dir(),
+		"readme":     truncate(output.ReadMe, 4000),
 	}
 	data, _ := json.MarshalIndent(result, "", "  ")
 	return []Content{TextContent(string(data))}, nil
@@ -323,8 +332,8 @@ func (s *Server) addDependency(ctx context.Context, args map[string]string) ([]C
 		return nil, err
 	}
 
-	moduleName := args["module"]
-	serviceName := args["service"]
+	moduleName := args[fieldModule]
+	serviceName := args[fieldService]
 	depName := args["dependency"]
 
 	mod, err := ws.LoadModuleFromName(ctx, moduleName)
@@ -361,7 +370,7 @@ func (s *Server) addDependency(ctx context.Context, args map[string]string) ([]C
 
 	result := map[string]any{
 		"status":     "added",
-		"service":    serviceName,
+		fieldService: serviceName,
 		"dependency": depName,
 	}
 	data, _ := json.MarshalIndent(result, "", "  ")
@@ -374,8 +383,8 @@ func (s *Server) generateProto(ctx context.Context, args map[string]string) ([]C
 		return nil, err
 	}
 
-	moduleName := args["module"]
-	serviceName := args["service"]
+	moduleName := args[fieldModule]
+	serviceName := args[fieldService]
 
 	mod, err := ws.LoadModuleFromName(ctx, moduleName)
 	if err != nil {
@@ -418,7 +427,7 @@ func (s *Server) runService(ctx context.Context, args map[string]string) ([]Cont
 	if _, err := s.requireWorkspace(); err != nil {
 		return nil, err
 	}
-	if args["module"] == "" || args["service"] == "" {
+	if args[fieldModule] == "" || args[fieldService] == "" {
 		return []Content{TextContent("module and service are required")}, nil
 	}
 	ref := serviceRef(args)
@@ -495,7 +504,7 @@ func (s *Server) testService(ctx context.Context, args map[string]string) ([]Con
 	if _, err := s.requireWorkspace(); err != nil {
 		return nil, err
 	}
-	if args["module"] == "" || args["service"] == "" {
+	if args[fieldModule] == "" || args[fieldService] == "" {
 		return []Content{TextContent("module and service are required")}, nil
 	}
 	result, err := s.plane.Test(ctx, control.TestRequest{

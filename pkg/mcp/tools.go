@@ -26,11 +26,11 @@ const agentKindArg = "kind"
 // registerTools sets up all available MCP tools
 func (s *Server) registerTools() {
 	// Workspace information tools
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "workspace_info",
 		Description: "Get information about the current codefly workspace including modules and services",
 		InputSchema: InputSchema{
-			Type:       "object",
+			Type:       schemaTypeObject,
 			Properties: map[string]PropertySchema{},
 		},
 	}, s.workspaceInfo)
@@ -39,13 +39,11 @@ func (s *Server) registerTools() {
 	// the prerelease gate, and this lets it check its own edit before a human
 	// reviews the pull request. Read-only — it reads committed text and changes
 	// nothing.
-	// Registration cannot fail for a distinct name, and the neighbours here do not
-	// check it either; discarded explicitly rather than silently.
-	_ = s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "check_prerelease_versions",
 		Description: "Check the workspace repository for prerelease version pins that must not reach the default branch (semver prereleases like 0.1.48-dev.abc, Go pseudo-versions). Returns the same report as `codefly ci prerelease`. Pass release=true for the stricter scope a tag is cut in, where even a labelled agent-overrides dev pin is refused.",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
 				"release": {
 					Type:        schemaTypeString,
@@ -59,75 +57,75 @@ func (s *Server) registerTools() {
 		},
 	}, s.checkPrereleaseVersions)
 
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "list_modules",
 		Description: "List all modules in the workspace",
 		InputSchema: InputSchema{
-			Type:       "object",
+			Type:       schemaTypeObject,
 			Properties: map[string]PropertySchema{},
 		},
 	}, s.listModules)
 
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "list_services",
 		Description: "List services in a module or all services in the workspace",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
-				"module": {
-					Type:        "string",
+				fieldModule: {
+					Type:        schemaTypeString,
 					Description: "Module name (optional, lists all if not provided)",
 				},
 			},
 		},
 	}, s.listServices)
 
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "service_info",
 		Description: "Get detailed information about a specific service",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
-				"module": {
-					Type:        "string",
+				fieldModule: {
+					Type:        schemaTypeString,
 					Description: "Module containing the service",
 				},
-				"service": {
-					Type:        "string",
-					Description: "Service name",
+				fieldService: {
+					Type:        schemaTypeString,
+					Description: describeServiceName,
 				},
 			},
-			Required: []string{"module", "service"},
+			Required: []string{fieldModule, fieldService},
 		},
 	}, s.serviceInfo)
 
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "service_dependencies",
 		Description: "Get dependencies of a service",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
-				"module": {
-					Type:        "string",
+				fieldModule: {
+					Type:        schemaTypeString,
 					Description: "Module containing the service",
 				},
-				"service": {
-					Type:        "string",
-					Description: "Service name",
+				fieldService: {
+					Type:        schemaTypeString,
+					Description: describeServiceName,
 				},
 			},
-			Required: []string{"module", "service"},
+			Required: []string{fieldModule, fieldService},
 		},
 	}, s.serviceDependencies)
 
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "list_agents",
 		Description: "List agents known to this machine: agents pinned by workspace services plus agents installed in the local cache. Offline; for languages, protocols and capabilities call agent_info.",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
 				agentKindArg: {
-					Type:        "string",
+					Type:        schemaTypeString,
 					Description: "Filter by agent kind",
 					Enum:        agentKindEnumValues,
 				},
@@ -135,145 +133,143 @@ func (s *Server) registerTools() {
 		},
 	}, s.listAgents)
 
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "list_jobs",
 		Description: "List jobs in a module or all jobs in the workspace",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
-				"module": {
-					Type:        "string",
+				fieldModule: {
+					Type:        schemaTypeString,
 					Description: "Module name (optional, lists all if not provided)",
 				},
 			},
 		},
 	}, s.listJobs)
 
-	if err := s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "list_runnables",
 		Description: "List runnables (typed finite operations) in a module or all runnables in the workspace, with their immutable module/name@version identity, pinned agent and execution bounds. Includes the operations a module derives from the gRPC methods its contracts mark, which carry the service facility and name their source method",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
 				fieldModule: {
-					Type:        "string",
+					Type:        schemaTypeString,
 					Description: "Module to list runnables from (optional; lists every module when omitted)",
 				},
 			},
 		},
-	}, s.listRunnables); err != nil {
-		panic(fmt.Errorf("register list_runnables tool: %w", err))
-	}
+	}, s.listRunnables)
 
 	// Per-service tools for Mind (design 013)
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "describe",
 		Description: "Get service metadata: name, type, language, file list (for Mind agent)",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
-				"module":  {Type: "string", Description: "Module name"},
-				"service": {Type: "string", Description: "Service name"},
+				fieldModule:  {Type: schemaTypeString, Description: describeModuleName},
+				fieldService: {Type: schemaTypeString, Description: describeServiceName},
 			},
-			Required: []string{"module", "service"},
+			Required: []string{fieldModule, fieldService},
 		},
 	}, s.describe)
 
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "read_file",
 		Description: "Read a file from the service directory (path relative to service)",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
-				"module":  {Type: "string", Description: "Module name"},
-				"service": {Type: "string", Description: "Service name"},
-				"path":    {Type: "string", Description: "Relative path within the service"},
+				fieldModule:  {Type: schemaTypeString, Description: describeModuleName},
+				fieldService: {Type: schemaTypeString, Description: describeServiceName},
+				fieldPath:    {Type: schemaTypeString, Description: "Relative path within the service"},
 			},
-			Required: []string{"module", "service", "path"},
+			Required: []string{fieldModule, fieldService, fieldPath},
 		},
 	}, s.readFile)
 
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "write_file",
 		Description: "Write content to a file in the service directory",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
-				"module":  {Type: "string", Description: "Module name"},
-				"service": {Type: "string", Description: "Service name"},
-				"path":    {Type: "string", Description: "Relative path within the service"},
-				"content": {Type: "string", Description: "File content"},
+				fieldModule:  {Type: schemaTypeString, Description: describeModuleName},
+				fieldService: {Type: schemaTypeString, Description: describeServiceName},
+				fieldPath:    {Type: schemaTypeString, Description: "Relative path within the service"},
+				"content":    {Type: schemaTypeString, Description: "File content"},
 			},
-			Required: []string{"module", "service", "path", "content"},
+			Required: []string{fieldModule, fieldService, fieldPath, "content"},
 		},
 	}, s.writeFile)
 
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "build",
 		Description: "Build the service via the plugin (builder)",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
-				"module":  {Type: "string", Description: "Module name"},
-				"service": {Type: "string", Description: "Service name"},
+				fieldModule:  {Type: schemaTypeString, Description: describeModuleName},
+				fieldService: {Type: schemaTypeString, Description: describeServiceName},
 			},
-			Required: []string{"module", "service"},
+			Required: []string{fieldModule, fieldService},
 		},
 	}, s.build)
 
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "run_checks",
 		Description: "Run a command in the service directory (e.g. go test ./...). Optional 'command' arg; default: go test ./...",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
-				"module":  {Type: "string", Description: "Module name"},
-				"service": {Type: "string", Description: "Service name"},
-				"command": {Type: "string", Description: "Command to run (default: go test ./...)"},
+				fieldModule:  {Type: schemaTypeString, Description: describeModuleName},
+				fieldService: {Type: schemaTypeString, Description: describeServiceName},
+				fieldCommand: {Type: schemaTypeString, Description: "Command to run (default: go test ./...)"},
 			},
-			Required: []string{"module", "service"},
+			Required: []string{fieldModule, fieldService},
 		},
 	}, s.runChecks)
 
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "stop",
 		Description: "Stop the service runtime if running",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
-				"module":  {Type: "string", Description: "Module name"},
-				"service": {Type: "string", Description: "Service name"},
+				fieldModule:  {Type: schemaTypeString, Description: describeModuleName},
+				fieldService: {Type: schemaTypeString, Description: describeServiceName},
 			},
-			Required: []string{"module", "service"},
+			Required: []string{fieldModule, fieldService},
 		},
 	}, s.stop)
 
 	// Agent command tools — expose agent-registered commands to MCP
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "list_service_commands",
 		Description: "List commands available on a service agent (e.g. test, lint, screenshot, health)",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
-				"module":  {Type: "string", Description: "Module name"},
-				"service": {Type: "string", Description: "Service name"},
+				fieldModule:  {Type: schemaTypeString, Description: describeModuleName},
+				fieldService: {Type: schemaTypeString, Description: describeServiceName},
 			},
-			Required: []string{"module", "service"},
+			Required: []string{fieldModule, fieldService},
 		},
 	}, s.listServiceCommands)
 
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "run_service_command",
 		Description: "Run a command on a service agent (e.g. test, lint, screenshot, health, proto)",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
-				"module":  {Type: "string", Description: "Module name"},
-				"service": {Type: "string", Description: "Service name"},
-				"command": {Type: "string", Description: "Command name"},
-				"args":    {Type: "string", Description: "Command arguments (space-separated)"},
+				fieldModule:  {Type: schemaTypeString, Description: describeModuleName},
+				fieldService: {Type: schemaTypeString, Description: describeServiceName},
+				fieldCommand: {Type: schemaTypeString, Description: "Command name"},
+				"args":       {Type: schemaTypeString, Description: "Command arguments (space-separated)"},
 			},
-			Required: []string{"module", "service", "command"},
+			Required: []string{fieldModule, fieldService, fieldCommand},
 		},
 	}, s.runServiceCommand)
 }
@@ -302,7 +298,7 @@ func (s *Server) checkPrereleaseVersions(_ context.Context, args map[string]stri
 	return []Content{TextContent(string(payload))}, nil
 }
 
-func (s *Server) workspaceInfo(ctx context.Context, args map[string]string) ([]Content, error) {
+func (s *Server) workspaceInfo(ctx context.Context, _ map[string]string) ([]Content, error) {
 	inv, err := s.plane.Inventory(ctx)
 	if err != nil {
 		return []Content{TextContent("No workspace loaded. Run this command from a codefly workspace directory.")}, nil
@@ -314,9 +310,9 @@ func (s *Server) workspaceInfo(ctx context.Context, args map[string]string) ([]C
 	svcList := make([]map[string]string, 0, len(services))
 	for _, svc := range services {
 		svcList = append(svcList, map[string]string{
-			"module":  svc.Module,
-			"service": svc.Name,
-			"agent":   svc.Agent,
+			fieldModule:  svc.Module,
+			fieldService: svc.Name,
+			fieldAgent:   svc.Agent,
 		})
 	}
 	modules := inv.Modules
@@ -324,17 +320,17 @@ func (s *Server) workspaceInfo(ctx context.Context, args map[string]string) ([]C
 		modules = []string{}
 	}
 	info := map[string]any{
-		"name":        inv.Workspace,
-		"description": inv.Description,
-		"modules":     modules,
-		"services":    svcList,
+		fieldName:        inv.Workspace,
+		fieldDescription: inv.Description,
+		"modules":        modules,
+		"services":       svcList,
 	}
 	data, _ := json.MarshalIndent(info, "", "  ")
 	return []Content{TextContent(string(data))}, nil
 }
 
 // listModules returns all modules in the workspace (via the control plane).
-func (s *Server) listModules(ctx context.Context, args map[string]string) ([]Content, error) {
+func (s *Server) listModules(ctx context.Context, _ map[string]string) ([]Content, error) {
 	modules, err := s.plane.Modules(ctx)
 	if err != nil {
 		return []Content{TextContent("No workspace loaded.")}, nil
@@ -342,8 +338,8 @@ func (s *Server) listModules(ctx context.Context, args map[string]string) ([]Con
 	result := make([]map[string]any, 0, len(modules))
 	for _, m := range modules {
 		result = append(result, map[string]any{
-			"name":        m.Name,
-			"description": m.Description,
+			fieldName:        m.Name,
+			fieldDescription: m.Description,
 		})
 	}
 	data, _ := json.MarshalIndent(result, "", "  ")
@@ -353,7 +349,7 @@ func (s *Server) listModules(ctx context.Context, args map[string]string) ([]Con
 // listServices returns services (via the control plane), optionally filtered by
 // module.
 func (s *Server) listServices(ctx context.Context, args map[string]string) ([]Content, error) {
-	services, err := s.plane.Services(ctx, args["module"])
+	services, err := s.plane.Services(ctx, args[fieldModule])
 	if err != nil {
 		return []Content{TextContent("No workspace loaded.")}, nil
 	}
@@ -362,18 +358,18 @@ func (s *Server) listServices(ctx context.Context, args map[string]string) ([]Co
 		endpoints := make([]map[string]string, 0, len(svc.Endpoints))
 		for _, ep := range svc.Endpoints {
 			endpoints = append(endpoints, map[string]string{
-				"name":       ep.Name,
-				"api":        ep.API,
-				"visibility": ep.Visibility,
+				fieldName:       ep.Name,
+				fieldAPI:        ep.API,
+				fieldVisibility: ep.Visibility,
 			})
 		}
 		result = append(result, map[string]any{
-			"name":        svc.Name,
-			"module":      svc.Module,
-			"description": svc.Description,
-			"agent":       svc.Agent,
-			"version":     svc.Version,
-			"endpoints":   endpoints,
+			fieldName:        svc.Name,
+			fieldModule:      svc.Module,
+			fieldDescription: svc.Description,
+			fieldAgent:       svc.Agent,
+			fieldVersion:     svc.Version,
+			"endpoints":      endpoints,
 		})
 	}
 	data, _ := json.MarshalIndent(result, "", "  ")
@@ -386,8 +382,8 @@ func (s *Server) serviceInfo(ctx context.Context, args map[string]string) ([]Con
 		return []Content{TextContent("No workspace loaded.")}, nil
 	}
 
-	moduleName := args["module"]
-	serviceName := args["service"]
+	moduleName := args[fieldModule]
+	serviceName := args[fieldService]
 
 	if moduleName == "" || serviceName == "" {
 		return []Content{TextContent("Both 'module' and 'service' arguments are required.")}, nil
@@ -404,15 +400,15 @@ func (s *Server) serviceInfo(ctx context.Context, args map[string]string) ([]Con
 	}
 
 	info := map[string]any{
-		"name":        svc.Name,
-		"module":      moduleName,
-		"description": svc.Description,
-		"version":     svc.Version,
-		"agent": map[string]string{
-			"name":      svc.Agent.Name,
-			"kind":      string(svc.Agent.Kind),
-			"publisher": svc.Agent.Publisher,
-			"version":   svc.Agent.Version,
+		fieldName:        svc.Name,
+		fieldModule:      moduleName,
+		fieldDescription: svc.Description,
+		fieldVersion:     svc.Version,
+		fieldAgent: map[string]string{
+			fieldName:    svc.Agent.Name,
+			"kind":       string(svc.Agent.Kind),
+			"publisher":  svc.Agent.Publisher,
+			fieldVersion: svc.Agent.Version,
 		},
 	}
 
@@ -420,9 +416,9 @@ func (s *Server) serviceInfo(ctx context.Context, args map[string]string) ([]Con
 	endpoints := make([]map[string]any, 0)
 	for _, ep := range svc.Endpoints {
 		endpoints = append(endpoints, map[string]any{
-			"name":       ep.Name,
-			"api":        ep.API,
-			"visibility": ep.Visibility,
+			fieldName:       ep.Name,
+			fieldAPI:        ep.API,
+			fieldVisibility: ep.Visibility,
 		})
 	}
 	info["endpoints"] = endpoints
@@ -431,8 +427,8 @@ func (s *Server) serviceInfo(ctx context.Context, args map[string]string) ([]Con
 	deps := make([]map[string]any, 0)
 	for _, dep := range svc.ServiceDependencies {
 		depInfo := map[string]any{
-			"name":   dep.Name,
-			"module": dep.Module,
+			fieldName:   dep.Name,
+			fieldModule: dep.Module,
 		}
 		if len(dep.Endpoints) > 0 {
 			depInfo["endpoints"] = dep.Endpoints
@@ -451,8 +447,8 @@ func (s *Server) serviceDependencies(ctx context.Context, args map[string]string
 		return []Content{TextContent("No workspace loaded.")}, nil
 	}
 
-	moduleName := args["module"]
-	serviceName := args["service"]
+	moduleName := args[fieldModule]
+	serviceName := args[fieldService]
 
 	if moduleName == "" || serviceName == "" {
 		return []Content{TextContent("Both 'module' and 'service' arguments are required.")}, nil
@@ -471,8 +467,8 @@ func (s *Server) serviceDependencies(ctx context.Context, args map[string]string
 	deps := make([]map[string]any, 0)
 	for _, dep := range svc.ServiceDependencies {
 		depInfo := map[string]any{
-			"name":      dep.Name,
-			"module":    dep.Module,
+			fieldName:   dep.Name,
+			fieldModule: dep.Module,
 			"endpoints": dep.Endpoints,
 		}
 		deps = append(deps, depInfo)
@@ -702,7 +698,7 @@ func (s *Server) listJobs(ctx context.Context, args map[string]string) ([]Conten
 		return nil, err
 	}
 
-	moduleFilter := args["module"]
+	moduleFilter := args[fieldModule]
 	result := make([]map[string]any, 0)
 
 	for _, m := range modules {
@@ -712,16 +708,16 @@ func (s *Server) listJobs(ctx context.Context, args map[string]string) ([]Conten
 
 		jobs, err := m.LoadJobs(ctx)
 		if err != nil {
-			w.Warn("failed to load jobs", wool.Field("module", m.Name), wool.ErrField(err))
+			w.Warn("failed to load jobs", wool.Field(fieldModule, m.Name), wool.ErrField(err))
 			continue
 		}
 
 		for _, job := range jobs {
 			jobInfo := map[string]any{
-				"name":        job.Name,
-				"module":      m.Name,
-				"description": job.Description,
-				"version":     job.Version,
+				fieldName:        job.Name,
+				fieldModule:      m.Name,
+				fieldDescription: job.Description,
+				fieldVersion:     job.Version,
 			}
 
 			// Add execution info
@@ -736,7 +732,7 @@ func (s *Server) listJobs(ctx context.Context, args map[string]string) ([]Conten
 
 			// Add agent info
 			if job.Agent != nil {
-				jobInfo["agent"] = job.Agent.Name
+				jobInfo[fieldAgent] = job.Agent.Name
 			}
 
 			// Add service dependencies
@@ -744,8 +740,8 @@ func (s *Server) listJobs(ctx context.Context, args map[string]string) ([]Conten
 				deps := make([]map[string]string, 0)
 				for _, dep := range job.ServiceDependencies {
 					deps = append(deps, map[string]string{
-						"name":   dep.Name,
-						"module": dep.Module,
+						fieldName:   dep.Name,
+						fieldModule: dep.Module,
 					})
 				}
 				jobInfo["service_dependencies"] = deps

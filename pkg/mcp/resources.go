@@ -131,7 +131,7 @@ func (s *Server) listConcreteResources(ctx context.Context) []Resource {
 	for _, ref := range s.workspace.Modules {
 		mod, err := s.workspace.LoadModuleFromReference(ctx, ref)
 		if err != nil {
-			w.Debug("failed to load module", wool.Field("module", ref.Name), wool.ErrField(err))
+			w.Debug("failed to load module", wool.Field(fieldModule, ref.Name), wool.ErrField(err))
 			continue
 		}
 
@@ -145,7 +145,7 @@ func (s *Server) listConcreteResources(ctx context.Context) []Resource {
 		for _, svcRef := range mod.ServiceReferences {
 			svc, err := mod.LoadServiceFromReference(ctx, svcRef)
 			if err != nil {
-				w.Debug("failed to load service", wool.Field("module", mod.Name), wool.Field("service", svcRef.Name), wool.ErrField(err))
+				w.Debug("failed to load service", wool.Field(fieldModule, mod.Name), wool.Field(fieldService, svcRef.Name), wool.ErrField(err))
 				continue
 			}
 			out = append(out,
@@ -189,7 +189,7 @@ func (s *Server) workspaceResource(ctx context.Context) ([]ResourceContents, err
 
 	return []ResourceContents{{
 		URI:      "codefly://workspace",
-		MimeType: "application/x-yaml",
+		MimeType: yamlMimeType,
 		Text:     string(data),
 	}}, nil
 }
@@ -218,7 +218,7 @@ func (s *Server) moduleResource(ctx context.Context, moduleName string) ([]Resou
 
 	return []ResourceContents{{
 		URI:      fmt.Sprintf("codefly://module/%s", moduleName),
-		MimeType: "application/x-yaml",
+		MimeType: yamlMimeType,
 		Text:     string(data),
 	}}, nil
 }
@@ -255,7 +255,7 @@ func (s *Server) serviceResource(ctx context.Context, moduleName, serviceName st
 
 	return []ResourceContents{{
 		URI:      fmt.Sprintf("codefly://service/%s/%s", moduleName, serviceName),
-		MimeType: "application/x-yaml",
+		MimeType: yamlMimeType,
 		Text:     string(data),
 	}}, nil
 }
@@ -285,9 +285,9 @@ func (s *Server) endpointsResource(ctx context.Context, moduleName, serviceName 
 	endpoints := make([]map[string]any, 0)
 	for _, ep := range svc.Endpoints {
 		endpoints = append(endpoints, map[string]any{
-			"name":       ep.Name,
-			"api":        ep.API,
-			"visibility": ep.Visibility,
+			fieldName:       ep.Name,
+			fieldAPI:        ep.API,
+			fieldVisibility: ep.Visibility,
 		})
 	}
 
