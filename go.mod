@@ -11,7 +11,7 @@ require (
 	github.com/asottile/dockerfile v3.1.0+incompatible
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/briandowns/spinner v1.23.2
-	github.com/codefly-dev/core v0.9.1-0.20261004160827-273cd90e5d9a
+	github.com/codefly-dev/core v0.9.2-0.20261004190742-d1c192fdb11e
 	github.com/codefly-dev/golor v0.1.3
 	github.com/codefly-dev/llm v0.1.7
 	github.com/codefly-dev/sdk-go/workcontext v0.0.0-20261004150844-cc237a0e1aef
