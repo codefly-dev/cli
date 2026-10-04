@@ -190,7 +190,9 @@ func staleGroupConsumers(workspaceDir, module, environment string, digests map[s
 		}
 		inventory, err := LoadInventory(filepath.Join(modulesDir, entry.Name()))
 		if errors.Is(err, fs.ErrNotExist) {
-			continue
+			// A module directory with no inventory is not a render that can
+			// be read, and silence here would read as agreement.
+			return nil, fmt.Errorf("the rendered tree of module %s carries no inventory, so whether it agrees about the groups it consumes is unknown; render it again", entry.Name())
 		}
 		if err != nil {
 			return nil, fmt.Errorf("the rendered tree of module %s cannot be read, so whether it agrees about the groups %s consumes cannot be told: %w", entry.Name(), module, err)
@@ -308,9 +310,12 @@ func staleBaseConsumers(ctx context.Context, repo, baseBranch, pathRoot, module 
 	modulesPath := filepath.ToSlash(filepath.Join(pathRoot, "deployments", "modules"))
 	listing, err := gitCommand(ctx, repo, "ls-tree", "--name-only", ref+":"+modulesPath)
 	if err != nil {
-		// No modules directory on the base branch is the first publish of the
-		// composition; nothing is delivered to be stale.
-		return nil, nil
+		if gitSaysAbsent(err) {
+			// No modules directory on the base branch is the first publish
+			// of the composition; nothing is delivered to be stale.
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list the modules delivered on %s: %w", baseBranch, err)
 	}
 	var stale []staleBaseConsumer
 	for _, name := range strings.Split(strings.TrimSpace(listing), "\n") {
@@ -320,7 +325,10 @@ func staleBaseConsumers(ctx context.Context, repo, baseBranch, pathRoot, module 
 		}
 		data, err := gitCommandBytes(ctx, repo, "show", ref+":"+modulesPath+"/"+name+"/"+InventoryFilename)
 		if err != nil {
-			continue
+			// A delivered module tree always carries its inventory; one that
+			// cannot be read is unreadable history, never a consumer that
+			// agrees.
+			return nil, fmt.Errorf("the delivered inventory of module %s on %s cannot be read, so whether it consumes a group this render changes is unknown: %w", name, baseBranch, err)
 		}
 		inventory, err := decodeInventory(data, name)
 		if err != nil {

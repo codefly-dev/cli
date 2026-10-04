@@ -1053,24 +1053,30 @@ func validateComponentProjects(spec map[string]any, selected string) error {
 					if !named {
 						continue
 					}
+					// The fields the Application template consumes, every
+					// one required: the overlay is the path Argo syncs.
+					component, _ := element["component"].(string)
+					overlay, _ := element["overlay"].(string)
 					namespace, _ := element["namespace"].(string)
-					path, _ := element["path"].(string)
+					if component == "" || overlay == "" || namespace == "" {
+						return fmt.Errorf("ApplicationSet component %q under project %q lacks a component, overlay or namespace; every stamped Application needs all three", component, project)
+					}
 					// The authority overlay, the authority project and the
 					// authority namespace name each other: a component under
 					// the module's project may not point at the overlay, and
 					// one under the authority project may point at nothing else.
-					underAuthority := strings.Contains("/"+path+"/", "/"+solutionAuthorityDir+"/")
+					underAuthority := strings.Contains("/"+overlay+"/", "/"+solutionAuthorityDir+"/")
 					switch project {
 					case selected:
 						if underAuthority {
-							return fmt.Errorf("ApplicationSet component %q points at the authority overlay %s but is stamped under the module project %q; the authority overlay is delivered under %q only", element["component"], path, selected, authority)
+							return fmt.Errorf("ApplicationSet component %q points at the authority overlay %s but is stamped under the module project %q; the authority overlay is delivered under %q only", component, overlay, selected, authority)
 						}
 					case authority:
 						if namespace != authorityNamespace {
-							return fmt.Errorf("ApplicationSet component %q is stamped under the authority project into namespace %q; that project reaches %s only", element["component"], namespace, authorityNamespace)
+							return fmt.Errorf("ApplicationSet component %q is stamped under the authority project into namespace %q; that project reaches %s only", component, namespace, authorityNamespace)
 						}
 						if !underAuthority {
-							return fmt.Errorf("ApplicationSet component %q is stamped under the authority project %q but points at %s, which is not the authority overlay; that project delivers the authority overlay only", element["component"], authority, path)
+							return fmt.Errorf("ApplicationSet component %q is stamped under the authority project %q but points at %s, which is not the authority overlay; that project delivers the authority overlay only", component, authority, overlay)
 						}
 					default:
 						return fmt.Errorf("ApplicationSet component %q is stamped under project %q, which is neither the selected AppProject %q nor its authority project", element["component"], project, selected)

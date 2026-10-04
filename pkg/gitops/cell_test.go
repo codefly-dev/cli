@@ -715,6 +715,13 @@ func TestPublishRefusesAStaleConsumerWithoutItsCurrentRender(t *testing.T) {
 	inventory.WorkspaceConfigurationDigests["shared"] = "abc"
 	require.NoError(t, writeCanonicalInventory(filepath.Join(dir, InventoryFilename), &inventory))
 	require.NoError(t, refuseStaleBaseConsumers(workspace, "prod", "main", stale))
+
+	// A sibling directory with no inventory is unreadable evidence, never
+	// agreement.
+	require.NoError(t, os.MkdirAll(filepath.Join(workspace, "deployments", "modules", "ledger"), 0o755))
+	_, err = staleGroupConsumers(workspace, "billing", "prod", map[string]string{"shared": "abc"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "ledger carries no inventory")
 }
 
 // TestPublishHoldsTheRenderToTheGroupsConsumedNow: the groups a publish holds

@@ -410,6 +410,10 @@ type PublishRequest struct {
 	// process environment decides: the publishing workflow's OIDC identity, or
 	// none — in which case only a Local publish may deliver unsigned.
 	Signer signing.Signer `json:"-"`
+	// Carriers are the carriers an inspected plan signed, for the publish
+	// that executes the plan to deliver as they are. Set from the plan by
+	// the command; never part of a request's own JSON.
+	Carriers map[string][]byte `json:"-"`
 }
 
 type PublishPlan struct {
@@ -437,6 +441,10 @@ type PublishPlan struct {
 	// Reported rather than refused: refusing would hold every consumer's
 	// publish on every other's.
 	StaleConsumers []string `json:"staleConsumers,omitempty"`
+	// Carriers are the carriers this plan signed, keyed by kind, ID and
+	// generation. The publish that executes the plan delivers exactly these
+	// bytes — signing is once, here — after holding each to its document.
+	Carriers map[string][]byte `json:"carriers,omitempty"`
 }
 
 // ContractCheck reports the admission result of one consumed API contract
@@ -453,6 +461,10 @@ type ContractCheck struct {
 type PublishMutation struct {
 	Request PublishRequest `json:"request"`
 	PlanID  string         `json:"planId"`
+	// Carriers are the carriers the inspected plan signed, delivered by this
+	// publish as they are; without them a release publish would sign again
+	// and its tree would no longer be the plan's.
+	Carriers map[string][]byte `json:"carriers,omitempty"`
 }
 
 type PublishResult struct {
@@ -486,8 +498,9 @@ type RollbackPlan struct {
 }
 
 type RollbackMutation struct {
-	Request RollbackRequest `json:"request"`
-	PlanID  string          `json:"planId"`
+	Request  RollbackRequest   `json:"request"`
+	PlanID   string            `json:"planId"`
+	Carriers map[string][]byte `json:"carriers,omitempty"`
 }
 
 type ObserveRequest struct {

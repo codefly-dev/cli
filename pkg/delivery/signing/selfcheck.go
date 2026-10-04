@@ -36,6 +36,23 @@ type SelfCheck func(ctx context.Context, bundle, payload []byte) error
 // would prove. The trusted root is the public-good root fetched through TUF on
 // first use, which is the root a host mirrors.
 func SelfCheckFromEnvironment(lookup func(string) (string, bool)) (SelfCheck, error) {
+	return workflowCheck(lookup, regexp.QuoteMeta)
+}
+
+// ReleaseCheckFromEnvironment is the check a carrier signed by an EARLIER
+// release passes: the same repository and workflow path as this one, under
+// any release tag. A carrier delivered by release tag A is carried forward by
+// release tag B unchanged, as a host whose allowlist names the workflow and
+// the tag pattern accepts it; a carrier from a branch run, or from another
+// workflow, does not pass and is re-signed by this release.
+func ReleaseCheckFromEnvironment(lookup func(string) (string, bool)) (SelfCheck, error) {
+	return workflowCheck(lookup, func(string) string { return releaseRefPattern })
+}
+
+// releaseRefPattern admits every release tag of the repository.
+const releaseRefPattern = `refs/tags/[^/]+`
+
+func workflowCheck(lookup func(string) (string, bool), refPattern func(ref string) string) (SelfCheck, error) {
 	if lookup == nil {
 		lookup = os.LookupEnv
 	}
@@ -53,7 +70,7 @@ func SelfCheckFromEnvironment(lookup func(string) (string, bool)) (SelfCheck, er
 	if !found || workflowPath == "" {
 		return nil, fmt.Errorf("signing: %s=%q does not start with the repository %s", envGitHubWorkflowRef, workflowRef, repository)
 	}
-	policy, err := GitHubActionsPolicy(repository, workflowPath, regexp.QuoteMeta(ref))
+	policy, err := GitHubActionsPolicy(repository, workflowPath, refPattern(ref))
 	if err != nil {
 		return nil, err
 	}

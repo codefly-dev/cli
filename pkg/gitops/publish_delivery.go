@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
@@ -52,10 +53,22 @@ type deliveryPublishOptions struct {
 	// Signer signs each document's canonical bytes. nil means the process
 	// environment decides (signing.FromEnvironment).
 	Signer signing.Signer
-	// Coordinate and Component name the host the environment declares at
-	// publish; every rendered document must be stamped with them. Empty when
-	// the environment declares no host.
-	Coordinate, Component string
+	// Coordinate, Component and TrustDomain name the host the environment
+	// declares at publish; every rendered document must be stamped with them.
+	// Empty when the environment declares no host.
+	Coordinate, Component, TrustDomain string
+	// ReuseCheck verifies a carrier signed BEFORE this publish — by the base
+	// branch's release, or by the plan this publish executes — under the
+	// release policy: the same workflow under any release tag. A carrier it
+	// refuses is re-signed, never reused. nil skips the policy.
+	ReuseCheck signing.SelfCheck
+	// Reuse holds the carriers an inspected plan signed, keyed by
+	// carrierKey, for the publish that executes the plan to deliver exactly
+	// those bytes rather than signing again.
+	Reuse map[string][]byte
+	// Carriers collects every carrier this settlement delivers, keyed by
+	// carrierKey, so a plan can hand them to the publish that executes it.
+	Carriers map[string][]byte
 	// AllowUnsigned lets a publish deliver unsigned documents — a local
 	// qualification environment only.
 	AllowUnsigned bool
@@ -112,39 +125,78 @@ func refuseUnaddressedDocuments(what string, names []string, environment string,
 // stamped with must be the ones declared now. A render made before the host
 // block changed is refused here, named, rather than signed under a
 // declaration it does not describe.
-func refuseMovedDocument(what, id, domain string, host solutionhost.HostTarget, opts *deliveryPublishOptions) error {
-	if domain != opts.Domain {
-		return fmt.Errorf("%s %s was rendered under ownership domain %q and the environment declares %q now; render again before publishing", what, id, domain, opts.Domain)
+func refuseMovedDocument(what, id string, stamp hostStamp, opts *deliveryPublishOptions) error {
+	if stamp.domain != opts.Domain {
+		return fmt.Errorf("%s %s was rendered under ownership domain %q and the environment declares %q now; render again before publishing", what, id, stamp.domain, opts.Domain)
 	}
-	if opts.Coordinate != "" && (host.Coordinate != opts.Coordinate || host.Component != opts.Component) {
-		return fmt.Errorf("%s %s was rendered for host %s/%s and the environment declares %s/%s now; render again before publishing", what, id, host.Coordinate, host.Component, opts.Coordinate, opts.Component)
+	if opts.Coordinate != "" && (stamp.host.Coordinate != opts.Coordinate || stamp.host.Component != opts.Component) {
+		return fmt.Errorf("%s %s was rendered for host %s/%s and the environment declares %s/%s now; render again before publishing", what, id, stamp.host.Coordinate, stamp.host.Component, opts.Coordinate, opts.Component)
+	}
+	if opts.EnvelopeRevision != 0 && stamp.envelope != opts.EnvelopeRevision {
+		return fmt.Errorf("%s %s was rendered against envelope revision %d and the environment declares revision %d now; render again before publishing", what, id, stamp.envelope, opts.EnvelopeRevision)
+	}
+	if opts.TrustDomain != "" && stamp.trust != "" && stamp.trust != opts.TrustDomain {
+		return fmt.Errorf("%s %s was rendered for trust domain %q and the environment declares %q now; render again before publishing", what, id, stamp.trust, opts.TrustDomain)
 	}
 	return nil
 }
 
-// verifyReusedCarrier holds a carrier delivered before to the document it is
-// about to be reused for: it must parse, its signed bytes must be exactly the
-// document's canonical bytes, and on a release publish it must still pass the
-// check a host will run. It answers the signer identity the carrier names,
-// when it names one.
-func verifyReusedCarrier(ctx context.Context, what string, carrier, payload []byte, opts *deliveryPublishOptions) (string, error) {
+// carrierKey names one delivered document's carrier: its kind, ID and
+// generation, which is what a carrier signs.
+func carrierKey(kind, id string, generation uint64) string {
+	return kind + ":" + id + ":" + strconv.FormatUint(generation, 10)
+}
+
+// verifyReusedCarrier holds a carrier signed before this publish — by the
+// base branch's release or by the plan being executed — to the document it
+// is about to carry: it must parse, and its signed bytes must be exactly the
+// document's canonical bytes; either failing refuses the publish, since the
+// record and its carrier disagree. Whether it still passes the release policy
+// decides reuse only: a carrier the policy no longer admits (signed by a
+// workflow identity that rotated, or by a run the policy never admitted) is
+// re-signed by this release rather than delivered. It answers the signer
+// identity the carrier names, when it names one.
+func verifyReusedCarrier(ctx context.Context, what string, carrier, payload []byte, opts *deliveryPublishOptions) (identity string, verified bool, err error) {
 	signed, err := solutionhost.ParseSigned(carrier)
 	if err != nil {
-		return "", fmt.Errorf("the carrier delivered before for %s cannot be read, so it is not reused: %w", what, err)
+		return "", false, fmt.Errorf("the carrier delivered before for %s cannot be read, so it is not reused: %w", what, err)
 	}
 	if !bytes.Equal(signed.Document, payload) {
-		return "", fmt.Errorf("the carrier delivered before for %s signs other bytes than the document being delivered now; the delivered tree and its carrier disagree, so neither is trusted", what)
+		return "", false, fmt.Errorf("the carrier delivered before for %s signs other bytes than the document being delivered now; the delivered tree and its carrier disagree, so neither is trusted", what)
 	}
-	if opts.SelfCheck != nil {
-		if err = opts.SelfCheck(ctx, signed.Bundle, payload); err != nil {
-			return "", fmt.Errorf("%s, delivered before: %w", what, err)
+	if opts.ReuseCheck != nil {
+		if err = opts.ReuseCheck(ctx, signed.Bundle, payload); err != nil {
+			return "", false, nil
 		}
 	}
-	identity, err := signing.ReadIdentity(signed.Bundle)
+	named, err := signing.ReadIdentity(signed.Bundle)
 	if err != nil {
-		return "", nil
+		return "", true, nil
 	}
-	return identity.Subject + " (" + identity.Issuer + ")", nil
+	return named.Subject + " (" + named.Issuer + ")", true, nil
+}
+
+// hostStamp is what a rendered document says about the host it was rendered
+// for, held to the environment's declaration at publish.
+type hostStamp struct {
+	domain   string
+	host     solutionhost.HostTarget
+	envelope uint64
+	trust    string
+}
+
+// presenceStamp reads the host stamp off a presence document: its ownership
+// domain, host and envelope revision, and the trust domain its workloads'
+// SPIFFE IDs are issued under.
+func presenceStamp(document *solutionhost.SolutionHostBinding) hostStamp {
+	stamp := hostStamp{domain: document.OwnershipDomain, host: document.Host, envelope: document.EnvelopeRevision}
+	for _, workload := range document.Workloads {
+		if trust, ok := strings.CutPrefix(workload.Identity.SPIFFEID, "spiffe://"); ok {
+			stamp.trust, _, _ = strings.Cut(trust, "/")
+			break
+		}
+	}
+	return stamp
 }
 
 func settlePresenceDelivery(
@@ -183,7 +235,7 @@ func settlePresenceDelivery(
 			return nil, err
 		}
 		for binding, entry := range rendered {
-			if err = refuseMovedDocument("binding", binding, entry.document.OwnershipDomain, entry.document.Host, opts); err != nil {
+			if err = refuseMovedDocument("binding", binding, presenceStamp(entry.document), opts); err != nil {
 				return nil, err
 			}
 		}
@@ -327,42 +379,53 @@ func signPresenceSet(ctx context.Context, settled map[string]deliveredPresenceDo
 	}
 	delivery := &InventoryDelivery{Signed: true}
 	var unsigned []string
+	if opts.Carriers == nil {
+		opts.Carriers = map[string][]byte{}
+	}
 	for _, binding := range names {
 		entry := settled[binding]
+		key := carrierKey(deliveredPresence, binding, entry.document.Generation)
 		if len(entry.carrier) > 0 && opts.AllowUnsigned {
-			// A local publish never reuses a signed carrier: it delivers
-			// unsigned whatever the base branch holds, so the set reads
-			// signed: false as one.
+			// A local publish never reuses a carrier the base branch holds:
+			// it delivers what its own signer gives, so the set reads
+			// signed: false as one when that signer has no identity.
 			entry.carrier = nil
 		}
-		if len(entry.carrier) > 0 {
-			// Delivered before as these exact bytes: the carrier is reused
-			// rather than re-signed, once it is held to this document —
-			// readable, signing exactly these canonical bytes, and on a
-			// release publish still passing the check a host will run.
-			payload, err := entry.document.CanonicalBytes()
-			if err != nil {
-				return nil, fmt.Errorf("canonicalize binding %s: %w", binding, err)
-			}
-			identity, err := verifyReusedCarrier(ctx, "binding "+binding, entry.carrier, payload, opts)
-			if err != nil {
-				return nil, err
-			}
-			if delivery.Identity == "" {
-				delivery.Identity = identity
-			}
-			digest, err := entry.document.Digest()
-			if err != nil {
-				return nil, err
-			}
-			delivery.Documents = append(delivery.Documents, InventoryDeliveredDocument{
-				Kind: deliveredPresence, ID: binding, Generation: entry.document.Generation, Removed: entry.document.Removed, Digest: digest,
-			})
-			continue
+		if len(entry.carrier) == 0 {
+			// The plan this publish executes signed it once; the publish
+			// delivers those exact bytes, held to the document below like
+			// any carrier signed before.
+			entry.carrier = opts.Reuse[key]
 		}
 		payload, err := entry.document.CanonicalBytes()
 		if err != nil {
 			return nil, fmt.Errorf("canonicalize binding %s: %w", binding, err)
+		}
+		if len(entry.carrier) > 0 {
+			// Signed before as these exact bytes: the carrier is reused
+			// rather than re-signed, once it is held to this document —
+			// readable, signing exactly these canonical bytes — and only
+			// while the release policy still admits its signer.
+			identity, verified, reuseErr := verifyReusedCarrier(ctx, "binding "+binding, entry.carrier, payload, opts)
+			if reuseErr != nil {
+				return nil, reuseErr
+			}
+			if verified {
+				if delivery.Identity == "" {
+					delivery.Identity = identity
+				}
+				digest, digestErr := entry.document.Digest()
+				if digestErr != nil {
+					return nil, digestErr
+				}
+				delivery.Documents = append(delivery.Documents, InventoryDeliveredDocument{
+					Kind: deliveredPresence, ID: binding, Generation: entry.document.Generation, Removed: entry.document.Removed, Digest: digest,
+				})
+				opts.Carriers[key] = entry.carrier
+				settled[binding] = entry
+				continue
+			}
+			entry.carrier = nil
 		}
 		bundle, signErr := signer.Sign(ctx, payload)
 		switch {
@@ -381,6 +444,7 @@ func signPresenceSet(ctx context.Context, settled map[string]deliveredPresenceDo
 				return nil, fmt.Errorf("encode the signed carrier of binding %s: %w", binding, encodeErr)
 			}
 			entry.carrier = carrier
+			opts.Carriers[key] = carrier
 			if delivery.Identity == "" {
 				if identity, readErr := signing.ReadIdentity(bundle); readErr == nil {
 					delivery.Identity = identity.Subject + " (" + identity.Issuer + ")"
@@ -711,7 +775,7 @@ func settleAuthorityDelivery(
 			return nil, err
 		}
 		for authority, entry := range rendered {
-			if err = refuseMovedDocument("authority", authority, entry.document.OwnershipDomain, entry.document.Host, opts); err != nil {
+			if err = refuseMovedDocument("authority", authority, hostStamp{domain: entry.document.OwnershipDomain, host: entry.document.Host, envelope: entry.document.EnvelopeRevision}, opts); err != nil {
 				return nil, err
 			}
 		}
@@ -1011,35 +1075,43 @@ func signAuthoritySet(ctx context.Context, settled map[string]deliveredAuthority
 	}
 	delivery := &InventoryDelivery{Signed: true}
 	var unsigned []string
+	if opts.Carriers == nil {
+		opts.Carriers = map[string][]byte{}
+	}
 	for _, authority := range names {
 		entry := settled[authority]
+		key := carrierKey(deliveredAuthority, authority, entry.document.Generation)
 		if len(entry.carrier) > 0 && opts.AllowUnsigned {
 			entry.carrier = nil
 		}
-		if len(entry.carrier) > 0 {
-			payload, err := solutionhost.SignedPayloadFor(entry.document)
-			if err != nil {
-				return nil, fmt.Errorf("canonicalize authority %s: %w", authority, err)
-			}
-			identity, err := verifyReusedCarrier(ctx, "authority "+authority, entry.carrier, payload, opts)
-			if err != nil {
-				return nil, err
-			}
-			if delivery.Identity == "" {
-				delivery.Identity = identity
-			}
-			digest, err := entry.document.Digest()
-			if err != nil {
-				return nil, err
-			}
-			delivery.Documents = append(delivery.Documents, InventoryDeliveredDocument{
-				Kind: deliveredAuthority, ID: authority, Generation: entry.document.Generation, Removed: entry.document.Removed, Digest: digest,
-			})
-			continue
+		if len(entry.carrier) == 0 {
+			entry.carrier = opts.Reuse[key]
 		}
 		payload, err := solutionhost.SignedPayloadFor(entry.document)
 		if err != nil {
 			return nil, fmt.Errorf("canonicalize authority %s: %w", authority, err)
+		}
+		if len(entry.carrier) > 0 {
+			identity, verified, reuseErr := verifyReusedCarrier(ctx, "authority "+authority, entry.carrier, payload, opts)
+			if reuseErr != nil {
+				return nil, reuseErr
+			}
+			if verified {
+				if delivery.Identity == "" {
+					delivery.Identity = identity
+				}
+				digest, digestErr := entry.document.Digest()
+				if digestErr != nil {
+					return nil, digestErr
+				}
+				delivery.Documents = append(delivery.Documents, InventoryDeliveredDocument{
+					Kind: deliveredAuthority, ID: authority, Generation: entry.document.Generation, Removed: entry.document.Removed, Digest: digest,
+				})
+				opts.Carriers[key] = entry.carrier
+				settled[authority] = entry
+				continue
+			}
+			entry.carrier = nil
 		}
 		bundle, signErr := signer.Sign(ctx, payload)
 		switch {
@@ -1058,6 +1130,7 @@ func signAuthoritySet(ctx context.Context, settled map[string]deliveredAuthority
 				return nil, fmt.Errorf("encode the signed carrier of authority %s: %w", authority, encodeErr)
 			}
 			entry.carrier = carrier
+			opts.Carriers[key] = carrier
 			if delivery.Identity == "" {
 				if identity, readErr := signing.ReadIdentity(bundle); readErr == nil {
 					delivery.Identity = identity.Subject + " (" + identity.Issuer + ")"

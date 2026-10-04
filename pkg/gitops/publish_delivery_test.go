@@ -20,11 +20,21 @@ import (
 
 // fakeSigner signs by wrapping the payload's length: enough to prove the
 // carrier holds the bytes it was handed and a bundle the signer produced.
-type fakeSigner struct{ signed int }
+// fakeSigner counts what it signs. With nonce set, every bundle differs — a
+// keyless signer's fresh key and log entry on each call — so a test can show
+// that nothing depends on signing being repeatable.
+type fakeSigner struct {
+	signed int
+	nonce  bool
+}
 
 func (signer *fakeSigner) Sign(_ context.Context, payload []byte) ([]byte, error) {
 	signer.signed++
-	return json.Marshal(map[string]any{"mediaType": signing.MediaTypeBundle, "signedBytes": len(payload)})
+	bundle := map[string]any{"mediaType": signing.MediaTypeBundle, "signedBytes": len(payload)}
+	if signer.nonce {
+		bundle["nonce"] = signer.signed
+	}
+	return json.Marshal(bundle)
 }
 
 // deliveryRepository is a clone-shaped repository whose base branch is reachable
@@ -719,12 +729,14 @@ func TestPublishRefusesAPairTheHostWouldNotActivate(t *testing.T) {
 
 	// The composition's host block was re-reviewed since the render: both
 	// halves name revision 1 and the environment declares 2 now. The halves
-	// agree with each other, which is not enough.
+	// agree with each other, which is not enough: the presence half is held
+	// to the revision declared now and refused first, before any activation.
 	reviewed := opts
 	reviewed.EnvelopeRevision = 2
-	err := settleAuthority(repository.stageAuthorityRender(t, bindings), &reviewed)
-	require.ErrorIs(t, err, solutionhost.ErrNotActivated)
-	require.Contains(t, err.Error(), "envelope revision 1 and this is revision 2")
+	_, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageAuthorityRender(t, bindings), &reviewed)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "envelope revision 1")
+	require.Contains(t, err.Error(), "revision 2 now")
 
 	// The host block is gone from the composition: the presence half is
 	// refused for it before the authority half is reached.
@@ -872,6 +884,12 @@ func TestPublishHoldsEveryDocumentToTheHostDeclaredNow(t *testing.T) {
 	err = settle(&deliveryPublishOptions{Signer: &fakeSigner{}, Domain: "example", Module: "crm"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "names no host now")
+	err = settle(&deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", Module: "crm", EnvelopeRevision: 9})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "envelope revision")
+	err = settle(&deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", Module: "crm", TrustDomain: "other.example"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "trust domain")
 }
 
 // TestPublishRefusesAReusedCarrierThatSignsOtherBytes: a carrier delivered
@@ -974,4 +992,33 @@ func TestCellMergeReconcilesEdgesAndRefusesAnotherHostsCell(t *testing.T) {
 	_, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, &moved, "crm", nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), `domain "example"`)
+}
+
+// TestPublishResignsAReusedCarrierTheReleasePolicyNoLongerAdmits: a carrier
+// delivered before that still signs its document but no longer passes the
+// release policy — the signing identity rotated, or the run that signed it
+// was never a release — is re-signed by this publish: neither reused nor
+// refused, and not a new generation.
+func TestPublishResignsAReusedCarrierTheReleasePolicyNoLongerAdmits(t *testing.T) {
+	ctx := context.Background()
+	repository := newDeliveryRepository(t)
+	signer := &fakeSigner{}
+	opts := deliveryPublishOptions{Signer: signer, Target: testDeliveryTarget(), Domain: "example", Module: "crm"}
+	_, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), &opts)
+	require.NoError(t, err)
+	require.Equal(t, 1, signer.signed)
+	repository.deliver(t)
+
+	opts.ReuseCheck = func(context.Context, []byte, []byte) error { return errors.New("the signing identity rotated") }
+	delivery, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), &opts)
+	require.NoError(t, err)
+	require.True(t, delivery.Signed)
+	require.Equal(t, 2, signer.signed, "the carrier was re-signed rather than reused or refused")
+	require.Equal(t, uint64(1), documentByID(delivery, "example.prod.crm").Generation, "re-signing is not a new generation")
+
+	// Admitted again, the delivered carrier is reused and nothing is signed.
+	opts.ReuseCheck = nil
+	_, err = settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", repository.stageRender(t, "crm"), &opts)
+	require.NoError(t, err)
+	require.Equal(t, 2, signer.signed)
 }

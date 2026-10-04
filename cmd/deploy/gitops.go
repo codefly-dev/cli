@@ -161,7 +161,7 @@ var gitOpsPublishCmd = &cobra.Command{
 		prepared, err := plane.PrepareMutation(ctx, control.Mutation{
 			Kind:    control.MutationGitOpsPublish,
 			Summary: "Publish reviewed GitOps promotion",
-			Payload: gitops.PublishMutation{Request: request, PlanID: plan.ID},
+			Payload: gitops.PublishMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers},
 		})
 		if err != nil {
 			return err
@@ -276,7 +276,7 @@ var gitOpsRollbackCmd = &cobra.Command{
 		prepared, err := plane.PrepareMutation(ctx, control.Mutation{
 			Kind:    control.MutationGitOpsRollback,
 			Summary: "Re-promote reviewed GitOps tree",
-			Payload: gitops.RollbackMutation{Request: request, PlanID: plan.ID},
+			Payload: gitops.RollbackMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers},
 		})
 		if err != nil {
 			return err

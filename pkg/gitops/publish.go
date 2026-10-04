@@ -73,6 +73,7 @@ func Publish(ctx context.Context, workspace *resources.Workspace, mutation *Publ
 	if mutation.PlanID == "" {
 		return PublishResult{}, fmt.Errorf("publish requires an inspected plan ID")
 	}
+	mutation.Request.Carriers = mutation.Carriers
 	inspected, err := preparePublish(ctx, workspace, &mutation.Request, "", false)
 	if err != nil {
 		return PublishResult{}, err
@@ -113,6 +114,7 @@ func Rollback(ctx context.Context, workspace *resources.Workspace, mutation *Rol
 	if mutation.PlanID == "" {
 		return PublishResult{}, fmt.Errorf("rollback requires an inspected plan ID")
 	}
+	mutation.Request.Carriers = mutation.Carriers
 	inspected, _, err := prepareRollback(ctx, workspace, &mutation.Request, false)
 	if err != nil {
 		return PublishResult{}, err
@@ -163,6 +165,9 @@ func preparePublish(
 	}
 	localFetchHost, err := localFetchRemoteHost(workspace, request, config)
 	if err != nil {
+		return nil, err
+	}
+	if err = refuseSharedDeliveryPath(workspace, request.Environment, request.Local); err != nil {
 		return nil, err
 	}
 	publication, err := newDeliveryPublication(request, baseBranch)
@@ -222,7 +227,7 @@ func preparePublish(
 	if restoreRevision == "" {
 		snapshotRevision, inventory, err = stageRenderedPublication(ctx, workspace, request, clone, rendered, &inventory)
 	} else {
-		snapshotRevision, inventory, err = stageRollbackPublication(ctx, workspace, request, clone, restoreRevision)
+		snapshotRevision, inventory, err = stageRollbackPublication(ctx, workspace, request, env, clone, restoreRevision)
 	}
 	if err != nil {
 		return fail(err)
@@ -266,6 +271,7 @@ func preparePublish(
 		Changed: changed, Diff: diff, ContractChecks: contractChecks,
 		Delivery:       inventory.Delivery,
 		StaleConsumers: staleConsumers,
+		Carriers:       publication.options.Carriers,
 	}
 	plan.ID, err = publishPlanID(&plan, restoreRevision)
 	if err != nil {
@@ -297,7 +303,16 @@ func newDeliveryPublication(request *PublishRequest, baseBranch string) (*delive
 			return nil, err
 		}
 		publication.options.SelfCheck = selfCheck
+		reuseCheck, err := signing.ReleaseCheckFromEnvironment(nil)
+		if err != nil {
+			return nil, err
+		}
+		publication.options.ReuseCheck = reuseCheck
 	}
+	// The carriers an inspected plan signed: the publish executing it
+	// delivers those exact bytes, so the plan it compares against is the one
+	// it was given — signing is once, in the plan, and reuse is verified.
+	publication.options.Reuse = request.Carriers
 	return publication, nil
 }
 
@@ -315,6 +330,7 @@ func (p *deliveryPublication) addressHost(ctx context.Context, workspace *resour
 		p.options.Domain = env.Host.Domain
 		p.options.Coordinate = env.Host.Coordinate
 		p.options.Component = env.Host.Component
+		p.options.TrustDomain = env.Host.TrustDomain
 	}
 	return nil
 }
@@ -335,31 +351,7 @@ func loadRenderedPublication(
 	if err != nil {
 		return Inventory{}, err
 	}
-	// The groups held against are the ones the composition's services and
-	// contract consume NOW, derived from the composition at publish — not
-	// re-read from the digests the render recorded, which could not say
-	// that a group consumed since the render exists at all.
-	var current map[string]string
-	module, loadErr := workspace.LoadModuleFromName(ctx, request.Module)
-	switch {
-	case loadErr == nil:
-		current, err = currentGroupDigests(ctx, workspace, env, module)
-	case isModuleNotFound(loadErr):
-		// No sources for this module in the workspace — a packaged solution
-		// — so the groups held against are the ones its render recorded,
-		// digested as the environment provides them now; a group consumed
-		// since that render is not findable here, and the doc says so.
-		current, err = digestRecordedGroups(ctx, workspace, env, inventory.WorkspaceConfigurationDigests)
-	default:
-		return Inventory{}, fmt.Errorf("the module %s this publish delivers cannot be loaded from the workspace, so the configuration groups its services consume now are unknown: %w", request.Module, loadErr)
-	}
-	if err != nil {
-		return Inventory{}, err
-	}
-	if err = refuseStaleRender(request.Module, request.Environment, inventory.WorkspaceConfigurationDigests, current); err != nil {
-		return Inventory{}, err
-	}
-	if err = refuseStaleGroupConsumers(workspace.Dir(), request.Module, request.Environment, inventory.WorkspaceConfigurationDigests); err != nil {
+	if err = holdRenderedGroups(ctx, workspace, request, env, &inventory); err != nil {
 		return Inventory{}, err
 	}
 	// The cell is the platform's inventory of what this publish delivers:
@@ -386,6 +378,76 @@ func loadRenderedPublication(
 // module that exists and cannot be loaded; core reports the first by message.
 func isModuleNotFound(err error) bool {
 	return strings.Contains(err.Error(), "cannot find module")
+}
+
+// holdRenderedGroups holds a tree about to be published — a render's or a
+// rollback's — to the workspace configuration groups as they are now. The
+// groups held against are the ones the composition's services and contract
+// consume NOW, derived from the composition at publish, not re-read from the
+// digests the render recorded, which could not say that a group consumed
+// since the render exists at all.
+func holdRenderedGroups(ctx context.Context, workspace *resources.Workspace, request *PublishRequest, env *environments.Environment, inventory *Inventory) error {
+	var current map[string]string
+	var err error
+	module, loadErr := workspace.LoadModuleFromName(ctx, request.Module)
+	switch {
+	case loadErr == nil:
+		current, err = currentGroupDigests(ctx, workspace, env, module)
+	case isModuleNotFound(loadErr):
+		// No sources for this module in the workspace — a packaged solution
+		// — so the groups held against are the ones its render recorded,
+		// digested as the environment provides them now; a group consumed
+		// since that render is not findable here, and the doc says so.
+		current, err = digestRecordedGroups(ctx, workspace, env, inventory.WorkspaceConfigurationDigests)
+	default:
+		return fmt.Errorf("the module %s this publish delivers cannot be loaded from the workspace, so the configuration groups its services consume now are unknown: %w", request.Module, loadErr)
+	}
+	if err != nil {
+		return err
+	}
+	if err = refuseStaleRender(request.Module, request.Environment, inventory.WorkspaceConfigurationDigests, current); err != nil {
+		return err
+	}
+	return refuseStaleGroupConsumers(workspace.Dir(), request.Module, request.Environment, inventory.WorkspaceConfigurationDigests)
+}
+
+// refuseSharedDeliveryPath refuses to publish an environment whose delivery
+// path — repository, branch and path — another environment of the workspace
+// delivers to as well, when either declares a host: a module tree there is
+// replaced whole by whichever environment publishes last, so the other's
+// delivered generations and tombstones would become absence, and a replay
+// would have no record of what was withdrawn. Each hosted environment needs a
+// path of its own.
+func refuseSharedDeliveryPath(workspace *resources.Workspace, environment string, local bool) error {
+	self, err := environments.Select(workspace, environment)
+	if err != nil {
+		return err
+	}
+	config, _, branch, root, err := resolveGitops(workspace, environment, local)
+	if err != nil {
+		return err
+	}
+	for _, resource := range workspace.Environments {
+		if resource == nil || resource.Name == environment {
+			continue
+		}
+		other, selectErr := environments.Select(workspace, resource.Name)
+		if selectErr != nil {
+			return selectErr
+		}
+		if self.Host == nil && other.Host == nil {
+			continue
+		}
+		otherConfig, _, otherBranch, otherRoot, resolveErr := resolveGitops(workspace, resource.Name, local)
+		if resolveErr != nil {
+			// An environment that delivers nowhere shares nothing.
+			continue
+		}
+		if otherConfig.RepoURL == config.RepoURL && otherBranch == branch && otherRoot == root {
+			return fmt.Errorf("environments %s and %s both deliver to %s on branch %s at %s; an environment that declares a host needs a delivery path of its own, or one publish would erase the other's delivered generations and tombstones", environment, resource.Name, config.RepoURL, branch, root)
+		}
+	}
+	return nil
 }
 
 // refuseUnrelatedPromotionChanges holds an existing promotion branch to the
@@ -451,6 +513,7 @@ func stageRollbackPublication(
 	ctx context.Context,
 	workspace *resources.Workspace,
 	request *PublishRequest,
+	env *environments.Environment,
 	clone *publicationClone,
 	restoreRevision string,
 ) (string, Inventory, error) {
@@ -470,6 +533,12 @@ func stageRollbackPublication(
 	}
 	inventory, err := LoadInventory(restored)
 	if err != nil {
+		return "", Inventory{}, err
+	}
+	// A restored tree is held to the groups as they are now exactly as a
+	// render is: a rollback that would resurrect configuration the
+	// composition no longer provides is refused, by name, until re-rendered.
+	if err = holdRenderedGroups(ctx, workspace, request, env, &inventory); err != nil {
 		return "", Inventory{}, err
 	}
 	generateBootstrap, err := publicationGeneratesBootstrap(ctx, workspace, request.Module, &inventory)
@@ -1808,11 +1877,18 @@ func resolveGitops(workspace *resources.Workspace, environment string, local boo
 		return nil, "", "", "", err
 	}
 	if config.RepoURL == "" && defaults != nil {
+		// An environment may override the path alone; the render lays its
+		// tree out under it (moduleOwnedPath), so the publish delivers there
+		// — in the workspace's repository, on its branch.
+		path := config.Path
 		config = repositoryConfig{
 			RepoURL:      defaults.RepoURL,
 			FetchRepoURL: defaults.FetchRepoURL,
 			Path:         defaults.Path,
 			Branch:       defaults.Branch,
+		}
+		if path != "" {
+			config.Path = path
 		}
 	}
 	if config.RepoURL == "" {
@@ -1948,6 +2024,9 @@ func publishPlanID(plan *PublishPlan, restoreRevision string) (string, error) {
 	planCopy := *plan
 	planCopy.ID = ""
 	planCopy.Diff = ""
+	// The carriers are the plan's output, carried to the publish that
+	// executes it; the plan is identified by what they sign, not by them.
+	planCopy.Carriers = nil
 	payload := struct {
 		Plan            PublishPlan `json:"plan"`
 		DiffSHA256      string      `json:"diffSha256"`

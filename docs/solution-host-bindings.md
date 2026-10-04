@@ -115,6 +115,13 @@ the one the service declares under `spec.deployment.endpoint-ports`).
 An environment that declares **no** `host` renders no document, and the render
 says which modules it could not declare.
 
+Two environments that deliver to one repository, branch and path replace each
+other's module trees whole, so a publish of one would turn the other's
+delivered generations and tombstones into absence — a replay would hold no
+record of what was withdrawn. An environment that declares a host is refused,
+at publish, while another environment of the workspace delivers to the same
+path; each hosted environment needs a path of its own.
+
 ## Presence
 
 One document per module instance, into
@@ -209,7 +216,9 @@ account. The ApplicationSet stamps the project and the destination per
 component, so the authority Application is the one Application of the module
 that reaches that namespace, and a Deployment, CronJob or Secret in the
 authority overlay is refused at apply. The overlay, the project and the
-namespace name each other in the ApplicationSet: a component stamped under
+namespace name each other in the ApplicationSet, read from the `overlay`,
+`project`, `namespace` and `component` fields the Application template
+consumes, each required: a component stamped under
 the authority project must point at the authority overlay and at that
 namespace, and a component pointing at the authority overlay must be stamped
 under that project — no unit overlay can borrow the project. What that
@@ -427,8 +436,10 @@ binding's revision in the contract.
 
 **Held to the host declared now.** Every document the render declares is
 held, at publish, to the environment's host block as it is then: the
-ownership domain, the host coordinate and the component it was stamped with
-must be the ones declared now, and a render that declares documents for an
+ownership domain, the host coordinate and component, the envelope revision
+and the trust domain its workload identities are issued under must be the
+ones declared now (the audience is the delivery Job's, re-rendered from the
+target declared now, so it cannot be stale), and a render that declares documents for an
 environment that names no host any more is refused outright — never signed
 and left for no Job to deliver. A render made before the host block changed
 is refused by name; the fix is to render again.
@@ -446,6 +457,17 @@ or that cannot be read, refuses the publish rather than being republished as
 signed. A local qualification publish never reuses a signed carrier: it
 delivers unsigned whatever the base branch holds, so `signed: false` holds
 for the whole set.
+
+**Signed once.** A keyless signature is fresh on every call — a new key, a
+new log entry — so a publish that signed in the plan and again in the publish
+could never match the plan it executes. The plan signs, hands its carriers to
+the publish that executes it (`carriers` in the plan, keyed by kind, ID and
+generation), and that publish delivers exactly those bytes after holding each
+to its document the way any carrier signed before is held. A carrier signed
+by an earlier release is reused under the **release policy** — the same
+repository and workflow, any release tag — and one the policy no longer
+admits (a rotated signing identity, a run that was never a release) is
+re-signed by this release: not reused, not refused, not a new generation.
 
 **Rollback re-settles.** A rollback restores the workloads an earlier revision
 delivered and settles their documents anew against the base branch — the old
@@ -684,9 +706,14 @@ carries a consumer of a value its provider no longer gives with nothing
 queued to replace it, and the way through is always the same one action:
 render the named module beside this one and publish both. A consumer current
 in this workspace but still stale on the base is named in the plan as the
-next publish to run. An unreadable sibling inventory is an error, never
-agreement, and the inventory schema a tree must carry is the current one — an
-older tree records no digests, and is refused by number.
+next publish to run. Absent history and unreadable history are told
+apart: no modules delivered yet on the base branch is a first publish, while
+a module directory — local or delivered — whose inventory is missing or
+cannot be read is an error, never agreement. A rollback is held to the same
+rules as a render: a restored tree that would resurrect configuration the
+composition no longer provides is refused until re-rendered. The inventory
+schema a tree must carry is the current one — an older tree records no
+digests, and is refused by number.
 
 ## CI wiring
 

@@ -274,7 +274,7 @@ func TestLocalGitopsPublishDeliversSignedCarriersAndTheJob(t *testing.T) {
 	}
 	configureSSHSigning(t)
 
-	signer := &fakeSigner{}
+	signer := &fakeSigner{nonce: true}
 	request := PublishRequest{
 		Module: "payments", Environment: "production", Local: true, Signer: signer,
 		PromotionBranch: "codefly/promote-payments-production",
@@ -295,9 +295,15 @@ func TestLocalGitopsPublishDeliversSignedCarriersAndTheJob(t *testing.T) {
 	if signer.signed != 1 {
 		t.Fatalf("the plan signed %d documents, want the one presence document", signer.signed)
 	}
-	result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID}, preparedPermit)
+	// The publish executes the inspected plan with the carriers it signed:
+	// every bundle this signer makes is different, so only reuse keeps the
+	// published tree the plan's.
+	result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers}, preparedPermit)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if signer.signed != 1 {
+		t.Fatalf("the publish signed again (%d signatures): the plan's carriers were not reused", signer.signed)
 	}
 	overlay := result.Path + "/" + solutionHostBindingDir + "/overlays/production/"
 	job := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+overlay+"deliver-presence.yaml")
@@ -1736,5 +1742,64 @@ func writeTestCell(t *testing.T, workspace *resources.Workspace, env *environmen
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestPublishRefusesEnvironmentsSharingADeliveryPath: two environments
+// delivering to one repository, branch and path replace each other's module
+// trees whole, so the one declaring a host is refused until it has a path of
+// its own; distinct paths share nothing.
+func TestPublishRefusesEnvironmentsSharingADeliveryPath(t *testing.T) {
+	root := t.TempDir()
+	write := func(stagingGitops string) *resources.Workspace {
+		t.Helper()
+		config := `name: payments
+layout: flat
+services:
+  - name: api
+environments:
+  - name: production
+    namespace: payments
+    cluster:
+      kind: k3d
+    host:
+      coordinate: example/prod/region-a
+      component: platform-host
+      domain: example
+      audience: https://host.example
+      trust_domain: cluster.example
+      envelope_revision: 1
+      delivery: payments/api/rest
+  - name: staging
+    cluster:
+      kind: k3d
+` + stagingGitops + `gitops:
+  repo-url: file://` + root + `/remote.git
+  fetch-repo-url: https://host.k3d.internal/manifests.git
+  path: environments
+  branch: main
+`
+		if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(config), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		manifest := filepath.Join(root, "services", "api", resources.ServiceConfigurationName)
+		if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(manifest, []byte(devServiceYAML("api")), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return workspace
+	}
+	err := refuseSharedDeliveryPath(write(""), "production", true)
+	if err == nil || !strings.Contains(err.Error(), "both deliver to") {
+		t.Fatalf("a shared delivery path was not refused: %v", err)
+	}
+	if err := refuseSharedDeliveryPath(write("    gitops:\n      path: environments/staging\n"), "production", true); err != nil {
+		t.Fatalf("distinct paths were refused: %v", err)
 	}
 }

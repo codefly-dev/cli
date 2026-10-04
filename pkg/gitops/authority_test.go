@@ -303,6 +303,12 @@ func TestAuthorityReachesArgoUnderItsOwnProject(t *testing.T) {
 
 	set, err := os.ReadFile(filepath.Join(root, "bootstrap", "applicationset.yaml"))
 	require.NoError(t, err)
+	// The generated set passes the validation publication runs over it: the
+	// validator reads the fields the Application template consumes.
+	var generated map[string]any
+	require.NoError(t, yaml.Unmarshal(set, &generated))
+	spec, _ := generated["spec"].(map[string]any)
+	require.NoError(t, validateComponentProjects(spec, "acme-staging"))
 	var applicationSet struct {
 		Spec struct {
 			Generators []struct {
@@ -370,7 +376,7 @@ func TestAuthorityReachesArgoUnderItsOwnProject(t *testing.T) {
 func TestComponentProjectsBindPathProjectAndNamespace(t *testing.T) {
 	spec := func(path, project, namespace string) map[string]any {
 		return map[string]any{"generators": []any{map[string]any{"list": map[string]any{"elements": []any{
-			map[string]any{"component": "c", "path": path, "project": project, "namespace": namespace},
+			map[string]any{"component": "c", "overlay": path, "project": project, "namespace": namespace},
 		}}}}}
 	}
 	authority := argoAuthorityProjectName("shop")
