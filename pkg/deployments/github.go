@@ -7,27 +7,27 @@ import (
 type Github struct {
 }
 
-func (github *Github) CreateRepository(ctx context.Context, name string) error {
+func (github *Github) CreateRepository(_ context.Context, _ string) error {
 	//
-	//ts := oauth2.StaticTokenSource(
+	// ts := oauth2.StaticTokenSource(
 	//	&oauth2.Token{AccessToken: "<YOUR_GITHUB_TOKEN>"},
-	//)
-	//tc := oauth2.NewClient(ctx, ts)
+	// )
+	// tc := oauth2.NewClient(ctx, ts)
 	//
-	//client := github.NewClient(tc)
+	// client := github.NewClient(tc)
 	//
 	//// create a new private repository
-	//repo := &github.Repository{
+	// repo := &github.Repository{
 	//	Name:    github.String("my-new-repository"),
 	//	Private: github.Bool(true),
-	//}
+	// }
 	//
-	//repository, _, err := client.Repositories.Create(ctx, "", repo)
-	//if err != nil {
+	// repository, _, err := client.Repositories.Create(ctx, "", repo)
+	// if err != nil {
 	//	fmt.Println(err)
 	//	return
-	//}
+	// }
 	//
-	//fmt.Println(*repository.CloneURL)
+	// fmt.Println(*repository.CloneURL)
 	return nil
 }

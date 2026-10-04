@@ -16,12 +16,12 @@ func InitRepository(ctx context.Context, workspace *resources.Workspace) error {
 		return w.Wrapf(err, "cannot initialize git repository")
 	}
 
-	//Use os/exec to add the submodule
-	//cmd := exec.Command("git", "-C", workspace.KustomizeDir(), "submodule", "add", "./_deployments", "_deployments")
-	//err = cmd.Run()
-	//if err != nil {
+	// Use os/exec to add the submodule
+	// cmd := exec.Command("git", "-C", workspace.KustomizeDir(), "submodule", "add", "./_deployments", "_deployments")
+	// err = cmd.Run()
+	// if err != nil {
 	//	return w.Wrapf(err, "cannot add _deployments as a submodule")
-	//}
+	// }
 	return nil
 }
 

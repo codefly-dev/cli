@@ -200,7 +200,7 @@ func verifiedKubeconfigSnapshot(ctx context.Context, env *environments.Environme
 	}
 	if current != *planned {
 		return nil, fmt.Errorf(
-			"Kubernetes target changed after validation (planned context %q, cluster %q, server %q; current context %q, cluster %q, server %q); refusing direct apply",
+			"the Kubernetes target changed after validation (planned context %q, cluster %q, server %q; current context %q, cluster %q, server %q); refusing direct apply",
 			planned.Context,
 			planned.Cluster,
 			planned.APIServer,
