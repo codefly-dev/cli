@@ -220,7 +220,14 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	defer func() {
 		cleanupCtx := context.WithoutCancel(ctx)
 		if err := runner.Shutdown(cleanupCtx); err != nil {
-			result = errors.Join(result, protoTeardownOutcome(err, name, recoverable))
+			// The runner resolves its name and owns an immutable container ID.
+			// Report that acquired ID, never the unresolved name supplied above.
+			containerID, idErr := runner.ContainerID()
+			if idErr != nil || containerID == "" {
+				result = errors.Join(result, fmt.Errorf("cannot shut down generation container (identity unavailable): %w", err), idErr)
+				return
+			}
+			result = errors.Join(result, protoTeardownOutcome(err, containerID, recoverable))
 		}
 	}()
 
@@ -304,9 +311,9 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 // passes down shortens them: `context.WithoutCancel` carries no deadline.
 // Measured idle on the companion image with both of this command's mounts,
 // stop takes ~3.2s — the full SIGTERM grace, because the paused container's
-// PID 1 does not handle it — and force-remove ~0.1s, so the ten seconds are
-// breached only under daemon load, which is why the failure is intermittent.
-// Raising them is core's call, not this command's.
+// PID 1 does not handle it — and force-remove ~0.1s. Those idle measurements do
+// not establish why removal sometimes exceeds its deadline. Raising the
+// deadline is core's call, not this command's.
 //
 // One residual, stated rather than papered over: the cross-scope sweep that
 // makes a leftover collectible whatever naming scope a later run picks needs a
@@ -318,7 +325,7 @@ func protoTeardownOutcome(err error, container string, recoverable bool) error {
 	if !recoverable {
 		return fmt.Errorf("cannot shut down the generation container %s, and this run projected no container recovery ownership, so nothing will collect it: %w", container, err)
 	}
-	cli.Warning("could not remove the generation container %s (%v); it is marked ephemeral and owned by this workspace's recovery scope, so a later run collects it — `docker rm -f %s` removes it now", container, err, container)
+	cli.Warning("could not remove the generation container %s (%v); it is marked ephemeral and eligible for scoped recovery — `docker rm -f %s` removes it now; recovery across naming scopes requires a durable host identity", container, err, container)
 	return nil
 }
 

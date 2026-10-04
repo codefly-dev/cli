@@ -2396,12 +2396,13 @@ that churn no longer decides anything.
 builds is created, driven once and thrown away: it is marked ephemeral and the
 command projects the container-recovery ownership a later run's sweep matches,
 so a container it cannot remove is left in exactly the state an interrupted
-`generate` leaves — one a later run collects. A removal that fails is therefore
-a **warning naming the container**, not a failed command: folding it in would
+`generate` leaves, eligible for scoped recovery. A removal that fails is therefore
+a **warning naming the container's immutable ID**, not a failed command: folding it in would
 report a correct generation as a failed one, and a drift gate
 (`codefly generate proto && git diff --exit-code`) cannot tell those apart. The
-warning names the container so it can be removed now rather than at the next
-run. If the command could *not* project ownership — outside a workspace, an
+warning supplies a removal command using that ID. Recovery across naming scopes
+requires a durable host identity; without one, only a matching scope can collect
+the leftover. If the command could *not* project ownership — outside a workspace, an
 unwritable home, which it already warns about — nothing will collect the
 leftover, and the failure is then reported as the command's. A generation that
 actually failed still fails, either way.
@@ -2410,10 +2411,9 @@ The removal deadlines themselves are Core's, fixed per Docker call in its own
 fresh contexts, so nothing the CLI passes down shortens them. Measured idle on
 the companion image with both of this command's mounts, stopping one of these
 containers takes about the full SIGTERM grace — its paused PID 1 does not
-handle the signal — and force-removing it is near-instant, so those deadlines
-are breached only under daemon load. That is why the failure is intermittent
-rather than systematic, and why raising them is Core's call rather than this
-command's.
+handle the signal — and force-removing it is near-instant. Removal timeouts were
+intermittent in local qualification; those idle timings do not establish why the
+daemon sometimes exceeds its deadline. Raising that deadline is Core's call.
 
 #### generate client
 
