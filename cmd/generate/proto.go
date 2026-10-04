@@ -192,10 +192,11 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	recoverable := projectContainerRecovery(ctx)
 
 	// Create Docker runner
-	runner, err := newProtoRunner(ctx, image, protoDir, name)
+	runner, err := runners.NewDockerEnvironment(ctx, image, protoDir, name)
 	if err != nil {
 		return w.Wrapf(err, "cannot create docker runner")
 	}
+	configureProtoRunnerUser(runner)
 
 	// A proto-gen container holds no state worth preserving: it is created,
 	// driven once and shut down in the defer below. Marking it ephemeral is what
@@ -287,17 +288,13 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	return nil
 }
 
-// newProtoRunner keeps generated directories and private files owned by the
-// invoking user. Buf creates output directories with mode 0700, so root-owned
-// emissions cannot be published or cleaned up by a non-root Linux caller.
-// The proto companion sets HOME=/tmp to support arbitrary host UIDs.
-func newProtoRunner(ctx context.Context, image *resources.DockerImage, dir, name string) (*runners.DockerEnvironment, error) {
-	runner, err := runners.NewDockerEnvironment(ctx, image, dir, name)
-	if err != nil {
-		return nil, err
-	}
+// configureProtoRunnerUser keeps private generated files owned by the invoking
+// user. Linux preserves the creating UID on bind mounts, so root-owned 0700
+// output directories cannot be published or cleaned up by a non-root caller.
+// The companion sets HOME=/tmp to support arbitrary UIDs, as contract generation
+// already requires. The mount qualification uses this same configuration.
+func configureProtoRunnerUser(runner *runners.DockerEnvironment) {
 	runner.WithUser(fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()))
-	return runner, nil
 }
 
 // protoTeardownOutcome decides what a failed teardown means for the command.

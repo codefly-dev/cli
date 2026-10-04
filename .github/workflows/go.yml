@@ -209,8 +209,12 @@ jobs:
       # `generate proto` stages generation and publishes from the staged tree,
       # so what a run emitted is known independently of what its outputs
       # already held (#885). That rests on the companion and the host sharing
-      # one staging directory, which only a real daemon can prove. Shares the
-      # alpine image pulled above.
+      # one staging directory, and on what it emits there being the invoking
+      # user's to publish and remove — buf's output directories are 0700, and
+      # only a real Linux bind mount preserves the creator's identity, which
+      # desktop Docker's ownership mapping hides (#895). Neither is provable
+      # against a fake runner. Shares the alpine image pulled above, so the
+      # host boundary is proven without pulling a provider toolchain.
       - name: Qualify the generate-proto staging mount against a real bind mount
         if: matrix.gate == 'control-integration'
         run: go test -tags=integration -run '^TestProtoStagingMountIsQualifiedAgainstARealBindMount$' ./cmd/generate -v

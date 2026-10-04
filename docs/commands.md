@@ -2341,9 +2341,18 @@ block and version — and buf's own `--output` cannot be used for this: it is
 prepended to each `out`, so `out: ../code/pkg/gen` under `-o /stage` resolves
 straight back out of the staging directory.
 
-The companion runs as the invoking host UID/GID, matching contract generation.
-Private output directories and files remain readable and removable by the host
-on Linux; publication does not require root or a permission-repair step.
+**The companion runs as the invoking host UID/GID**, the way contract
+generation already does, so everything it writes under a bind mount — the
+staging tree it generates into, and the formatted Go it hands back — belongs to
+the caller. This is load-bearing rather than cosmetic: buf creates its output
+directories `0700`, and on Linux a bind mount preserves the identity that
+created a file, so a companion running as root emits a tree the invoking user
+can neither inspect nor remove. Publication then fails on the generator's own
+output (`cannot inspect what was generated ... permission denied`), and the
+staging cleanup fails after it. Desktop Docker maps container ownership onto
+the host user, which is why this surfaces only on Linux, typically in CI.
+Consumers need no `sudo`, `chmod` or other permission-repair step; the proto
+companion sets `HOME=/tmp` precisely so it runs as an arbitrary UID.
 
 The staging tree is created fresh for each run under the codefly home
 (`~/.codefly/generate-proto/`, or `$CODEFLY_HOME`) and bind-mounted separately
