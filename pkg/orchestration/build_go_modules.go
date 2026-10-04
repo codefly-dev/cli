@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -176,22 +177,103 @@ func (p *goModulePrefetch) Close() error {
 
 // goPrefetchEnv is the host environment with the module cache redirected to the
 // prefetch's own. Everything that decides how a module is reached — GOPRIVATE,
-// GOPROXY, GONOSUMDB, GOSUMDB, NETRC, git's configuration — is the host's, so
-// the prefetch reaches a private module exactly when the host's `go` does.
-// GOWORK is off because a build resolves its module alone, as the recipe does;
-// -modcacherw keeps the cache removable; -mod=readonly makes an incomplete
-// go.sum fail here, as it would in the build, instead of being repaired.
+// GOPROXY, GONOSUMDB, GOSUMDB, NETRC, git's credentials and insteadOf rewrites —
+// is the host's, so the prefetch reaches a private module exactly when the
+// host's `go` does. GOWORK is off because a build resolves its module alone, as
+// the recipe does; -modcacherw keeps the cache removable; -mod=readonly makes an
+// incomplete go.sum fail here, as it would in the build, instead of being
+// repaired. The one thing it does impose on git is gitPrefetchConfig.
 func goPrefetchEnv(base []string, modCache string) []string {
-	env := make([]string, 0, len(base)+3)
+	configured := hostGitConfigCount(base)
+	env := make([]string, 0, len(base)+4+2*len(gitPrefetchConfig))
 	for _, entry := range base {
 		key, _, _ := strings.Cut(entry, "=")
-		switch key {
-		case "GOMODCACHE", "GOFLAGS", "GOWORK":
+		switch {
+		case key == "GOMODCACHE", key == "GOFLAGS", key == "GOWORK":
+			continue
+		case key == "GIT_CONFIG_COUNT":
+			// Re-emitted below with the prefetch's own entries counted in.
+			continue
+		case gitConfigIndex(key) >= configured:
+			// An entry at or past the host's own count is one git never reads,
+			// so dropping it loses no host configuration — and it keeps the
+			// indices the prefetch appends from colliding with a stale one.
 			continue
 		}
 		env = append(env, entry)
 	}
-	return append(env, "GOMODCACHE="+modCache, "GOFLAGS=-mod=readonly -modcacherw", "GOWORK=off")
+	env = append(env, "GOMODCACHE="+modCache, "GOFLAGS=-mod=readonly -modcacherw", "GOWORK=off")
+	for _, setting := range gitPrefetchConfig {
+		env = append(env,
+			fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", configured, setting[0]),
+			fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", configured, setting[1]),
+		)
+		configured++
+	}
+	return append(env, "GIT_CONFIG_COUNT="+strconv.Itoa(configured))
+}
+
+// gitPrefetchConfig is what the prefetch imposes on every git the go tool runs
+// in its module cache: no automatic repository maintenance.
+//
+// A `git fetch` ends by launching `git maintenance run --auto --detach`, which
+// repacks the repository it just fetched into — in a process that outlives the
+// fetch. The go tool reaches a pseudo-version's commit with `git fetch --depth=1
+// <hash>`, and when it then needs that commit's ancestry (a pseudo-version names
+// a base tag, so validating it reads tags the shallow clone does not have) it
+// deepens the clone: `git fetch` of every ref, then `git fetch --unshallow`. The
+// maintenance the first of those launched rewrites .git/shallow while the
+// unshallow is working from it, and git refuses the fetch:
+//
+//	fatal: shallow file has changed since we read it
+//
+// which the go tool reports as `invalid pseudo-version`, failing the render that
+// was only fetching modules (codefly-dev/cli#886). Both settings are named
+// because the task that rewrites the clone is reached two ways: git ≥ 2.30 runs
+// it as the `maintenance` command, older gits as `gc --auto`.
+//
+// Nothing is given up by refusing it. This cache exists for the length of one
+// flow and is deleted with it, every clone in it is pruned as soon as its
+// modules are in the proxy tree (pruneToProxy), and no later command reads the
+// repository being maintained.
+var gitPrefetchConfig = [][2]string{
+	{"maintenance.auto", "false"},
+	{"gc.auto", "0"},
+}
+
+// hostGitConfigCount is how many configuration entries the host already passes
+// to git in the environment: GIT_CONFIG_COUNT, with a GIT_CONFIG_KEY_<n> and
+// GIT_CONFIG_VALUE_<n> for each index below it. A value git itself would reject
+// counts as none, so the prefetch's entries start at 0 and the unusable ones are
+// left behind instead of being carried into every git the go tool runs.
+func hostGitConfigCount(base []string) int {
+	for _, entry := range base {
+		if value, ok := strings.CutPrefix(entry, "GIT_CONFIG_COUNT="); ok {
+			count, err := strconv.Atoi(strings.TrimSpace(value))
+			if err != nil || count < 0 {
+				return 0
+			}
+			return count
+		}
+	}
+	return 0
+}
+
+// gitConfigIndex is the index of a GIT_CONFIG_KEY_<n> or GIT_CONFIG_VALUE_<n>
+// variable, and -1 for every other name.
+func gitConfigIndex(key string) int {
+	for _, prefix := range []string{"GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"} {
+		suffix, ok := strings.CutPrefix(key, prefix)
+		if !ok {
+			continue
+		}
+		index, err := strconv.Atoi(suffix)
+		if err != nil || index < 0 {
+			return -1
+		}
+		return index
+	}
+	return -1
 }
 
 var errGoToolchainMissing = errors.New("a recipe declares Go module downloads, which the CLI fetches with the host's go toolchain, and `go` is not on PATH")

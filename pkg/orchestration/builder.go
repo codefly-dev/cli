@@ -362,6 +362,14 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 			w.Info("fetching Go modules before any image build", wool.Field("recipe", recipe.GetName()))
 			proxies, err := b.world.goModules().proxiesFor(ctx, contextDir, recipe)
 			if err != nil {
+				// What names the cause of a failed fetch is the go tool's own
+				// output — a git error, a missing credential, an incomplete
+				// go.sum — and the plain log renders an error chain collapsed to
+				// its outermost messages, so that output only reached a --debug
+				// re-run (codefly-dev/cli#886). Log it where it happened, so the
+				// operator reads why the render stopped from the run that stopped.
+				w.Warn("cannot fetch the Go modules this recipe declares",
+					wool.Field("recipe", recipe.GetName()), wool.ErrField(err))
 				return nil, w.Wrapf(err, "cannot fetch the Go modules of %s", b.instance.Unique())
 			}
 			if planned.proxies == nil {
