@@ -185,7 +185,9 @@ func staleGroupConsumers(workspaceDir, module, environment string, digests map[s
 	}
 	stale := map[string][]string{}
 	for _, entry := range entries {
-		if !entry.IsDir() || entry.Name() == module {
+		// The render stages its own tree beside the module trees, under a
+		// dot-prefixed temporary name; that is not a sibling's render.
+		if !entry.IsDir() || entry.Name() == module || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
 		inventory, err := LoadInventory(filepath.Join(modulesDir, entry.Name()))
