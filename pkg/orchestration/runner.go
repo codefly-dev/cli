@@ -1811,3 +1811,115 @@ func appendEnvironmentVariablesToFile(
 	}
 	return nil
 }
+
+// withExactNamePrecedence removes the mappings that exist only as the wrong
+// answer to a reference that already names its endpoint exactly.
+//
+// Core's matcher is `Name == token || API == token`, so a reference naming
+// `grpc` also matches a sibling whose api is `grpc`. The check permits that —
+// the reference says which endpoint it means, and refusing it would make clear
+// compositions unresolvable — but permitting it is only half the rule. Core's
+// resolution takes the FIRST bound mapping that matches and has an instance for
+// the consumer's access, so with both bound the sibling can win: by order, or
+// because the named endpoint has no instance for this access and the
+// interpolation falls through to it. Either way the value addresses an endpoint
+// the reference did not name, with no error. That is exact-name EXEMPTION
+// without exact-name PRECEDENCE, and it is a silent mis-resolution rather than a
+// loud one. (Layer-4 round-seven.)
+//
+// Ordering the mappings is not enough and is not what this does. One list has to
+// serve every reference at once, and two references can want opposite orders —
+// endpoints (name `a`, api `b`) and (name `b`, api `a`) make `${…/a}` want the
+// first and `${…/b}` want the second. So the wrong answers are REMOVED instead:
+// a mapping is dropped when no reference names it exactly AND every reference it
+// matches has an exact-name match elsewhere. What remains for such a reference is
+// the endpoint it named, so core resolves to that or fails saying it could not —
+// which also closes the access fall-through, because there is nothing left to
+// fall through to.
+//
+// A mapping no reference matches is kept: this narrows the answer to a
+// reference, never the set a consumer holds for anything else.
+//
+// The durable fix is core's, with the other half of the identity rule: prefer an
+// exact name match, and resolve only to the endpoint that was judged.
+func (world *World) withExactNamePrecedence(
+	ctx context.Context, consumer *resources.Service, effective []string,
+	withheld withheldCredentials, mappings []*basev0.NetworkMapping,
+) ([]*basev0.NetworkMapping, error) {
+	if world == nil || world.ConfigurationManager == nil || len(mappings) == 0 || len(effective) == 0 {
+		return mappings, nil
+	}
+	producers, err := world.workspaceProducers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if producers == nil {
+		return mappings, nil
+	}
+	consumerModule := ""
+	if identity, idErr := consumer.Identity(); idErr == nil {
+		consumerModule = identity.Module
+	}
+	skip := withheld.skips(world.referencingWorkspaceConfigurationValues(effective))
+
+	// Every reference this consumer receives, parsed once, with whether it has
+	// an exact-name answer among the endpoints it may reach.
+	type reference struct {
+		info      *resources.EndpointInformation
+		exactName bool
+	}
+	var references []reference
+	for _, raw := range world.ConfigurationManager.WorkspaceEndpointReferences(effective...) {
+		if skip[raw] {
+			continue
+		}
+		info, parseErr := resources.ParseEndpoint(raw)
+		if parseErr != nil {
+			continue
+		}
+		_, exact, matchErr := permittedReferenceMatches(raw, consumerModule, producers)
+		if matchErr != nil {
+			return nil, matchErr
+		}
+		references = append(references, reference{info: info, exactName: exact})
+	}
+	if len(references) == 0 {
+		return mappings, nil
+	}
+
+	out := make([]*basev0.NetworkMapping, 0, len(mappings))
+	for _, mapping := range mappings {
+		endpoint := mapping.GetEndpoint()
+		if endpoint == nil {
+			continue
+		}
+		declared, ok := manifestEndpoint(producers, endpoint.GetModule()+"/"+endpoint.GetService(), endpoint)
+		if !ok {
+			// Already filtered by exportableTo; keep rather than re-judge.
+			out = append(out, mapping)
+			continue
+		}
+		matched, onlyWrongAnswer := false, true
+		for _, ref := range references {
+			if !resources.EndpointMatchesReferenceInfo(declared, ref.info) {
+				continue
+			}
+			matched = true
+			if declared.Name == ref.info.Name || !ref.exactName {
+				// This reference names it, or has no exact-name answer of its
+				// own, so the mapping is a legitimate candidate for it.
+				onlyWrongAnswer = false
+				break
+			}
+		}
+		if matched && onlyWrongAnswer {
+			wool.Get(ctx).In("World.withExactNamePrecedence").Debug(
+				"not binding an endpoint that only matches a reference by API, where that reference names another endpoint exactly",
+				wool.Field("consumer", consumerLabel(consumer)),
+				wool.Field("endpoint", resources.EndpointDestination(endpoint)))
+			continue
+		}
+		out = append(out, mapping)
+	}
+	return out, nil
+}

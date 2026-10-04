@@ -114,6 +114,15 @@ func (world *World) workspaceConfigurationsFor(
 		return nil, err
 	}
 	mappings := append(slices.Clone(visible), referenced...)
+	// Exact-name PRECEDENCE, not merely exemption. The check lets a reference
+	// through when it names an endpoint exactly even though a sibling shares its
+	// API; without this the resolution could still bind the sibling, so the
+	// value would silently address the wrong endpoint — the exemption would have
+	// traded a refusal of clear compositions for a quiet mis-resolution.
+	mappings, err = world.withExactNamePrecedence(ctx, service, effective, withheld, mappings)
+	if err != nil {
+		return nil, err
+	}
 	manager := world.ConfigurationManager.ForConsumer(mappings, access).WithRunProducers(world.producerInRun())
 	resolved, err := manager.GetWorkspaceDependenciesConfigurations(ctx, declared...)
 	if err != nil {
@@ -573,6 +582,12 @@ func refuseAmbiguousReferences(
 	for _, group := range effective {
 		received[group] = true
 	}
+	// Every ambiguous reference, in ONE error, and as core's own structured
+	// finding rather than a bare string: the plan gate merges these with the
+	// faults core reports, and `codefly doctor` collapses them per fault and
+	// writes a remediation line for each. A plain error reaches both as a single
+	// opaque failure.
+	var ambiguous []configurations.UnresolvedReference
 	for _, info := range infos {
 		if !received[info.GetName()] {
 			continue
@@ -586,11 +601,17 @@ func refuseAmbiguousReferences(
 				if named || len(permitted) < 2 {
 					continue
 				}
-				return fmt.Errorf("the workspace configuration value %s/%s references ${endpoint:%s}, which %s's endpoints %s all satisfy for %s: a reference whose address could be any of several endpoints is refused rather than resolved to whichever one is bound first. Name the endpoint it means",
-					info.GetName(), value.GetKey(), reference,
-					referenceProducer(reference), strings.Join(permitted, ", "), identity.Unique())
+				ambiguous = append(ambiguous, configurations.UnresolvedReference{
+					Consumer: identity.Unique(), Group: info.GetName(), Key: value.GetKey(),
+					Reference: reference, Producer: referenceProducer(reference),
+					Reason: fmt.Sprintf("the producer's endpoints %s all satisfy it for this consumer and none is named by it, so its address could be any of several endpoints: it is refused rather than resolved to whichever one is bound first. Name the endpoint it means",
+						strings.Join(permitted, ", ")),
+				})
 			}
 		}
+	}
+	if len(ambiguous) > 0 {
+		return &configurations.UnresolvedReferencesError{References: ambiguous}
 	}
 	wool.Get(ctx).In("World.checkEffectiveWorkspaceConfigurationReferences").Debug("every reference names one endpoint")
 	return nil

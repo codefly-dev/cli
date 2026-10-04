@@ -511,6 +511,40 @@ func TestAnExactEndpointNameWinsOverAnAPISibling(t *testing.T) {
 	require.True(t, delivered)
 	require.Equal(t, "http://localhost:1111", address, "and it resolves to the endpoint it names")
 
+	// PRECEDENCE, not merely exemption: with the sibling published FIRST, and
+	// again with the named endpoint carrying no instance for this consumer's
+	// access, the reference must still never resolve to the sibling. Permitting
+	// the reference without this would have traded a refusal of clear
+	// compositions for a value silently addressing the wrong endpoint.
+	for _, shape := range []struct {
+		name     string
+		mappings []*basev0.NetworkMapping
+	}{
+		{"the sibling is published first", []*basev0.NetworkMapping{
+			endpointMapping("platform", "authority", "grpc-admin", "grpc", "public", nativeInstance("http://localhost:2222")),
+			endpointMapping("platform", "authority", "grpc", "grpc", "public", nativeInstance("http://localhost:1111")),
+		}},
+		{"the named endpoint has no instance for this access", []*basev0.NetworkMapping{
+			endpointMapping("platform", "authority", "grpc", "grpc", "public", containerInstance("http://grpc:9090")),
+			endpointMapping("platform", "authority", "grpc-admin", "grpc", "public", nativeInstance("http://localhost:2222")),
+		}},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			ordered, service := referenceValidityWorld(t, workspace, func(world *World) {
+				world.Mode = RunMode
+				recordMappings(t, world, "platform", "authority", shape.mappings...)
+			})
+			confs, err := ordered.workspaceConfigurationsFor(ctx, service, nil, resources.NewNativeNetworkAccess())
+			require.NoError(t, err)
+			address, delivered := groupValue(confs, "work-context", "authority-endpoint")
+			require.NotEqual(t, "http://localhost:2222", address,
+				"the value must never address the sibling the reference did not name")
+			if delivered {
+				require.Equal(t, "http://localhost:1111", address)
+			}
+		})
+	}
+
 	// The same holds at the plan gate, which runs the same rule.
 	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
 	require.NoError(t, err)

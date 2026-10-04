@@ -380,9 +380,17 @@ producer's declared visibility, whichever way they were bound.
 **A reference must name one endpoint.** Core's trailing token matches an
 endpoint's name *or* its API, so `${endpoint:platform/authority/rest}` matches an
 endpoint named `rest` and every endpoint whose api is `rest`. If more than one of
-them is visible to your module, the reference is refused and names the
-candidates: write the endpoint you mean. If exactly one is visible, it resolves
-as before.
+them is visible to your module **and none is named exactly as you wrote it**, the
+reference is refused and names the candidates: write the endpoint you mean. If
+exactly one is visible it resolves as before, and if you named an endpoint
+exactly it resolves to that one — a sibling sharing its API cannot take its
+place, including when the named endpoint has no address for your runtime
+context (you get an error naming the value, not the sibling's address).
+
+So a producer declaring both `grpc` (api `grpc`) and `grpc-admin` (api `grpc`) is
+fine: `${endpoint:…/grpc}` means `grpc`. What is refused is a token that names no
+endpoint and matches two, such as `${endpoint:…/rest}` against endpoints `api`
+and `admin` that both expose `rest`.
 
 **This can refuse less than it delivered before, in one case:** a cross-module
 bare dependency (`service-dependencies` naming the service and no endpoints) used

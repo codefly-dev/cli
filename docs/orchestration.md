@@ -386,7 +386,18 @@ Two further rules make the choice disappear rather than constrain it:
   works — with a public `api` and a private `admin` both on api `rest`, a
   cross-module consumer has exactly one legal endpoint and the reference is
   unambiguous for it, while a consumer in the producer's own module is told to
-  name the one it means.
+  name the one it means. **An endpoint named exactly as the reference wins**, so
+  a producer declaring `grpc` (api grpc) and `grpc-admin` (api grpc) does not
+  make `${endpoint:…/grpc}` unresolvable — core's matcher is
+  `Name == token || API == token`, and naming the api explicitly does not narrow
+  the name branch. That exemption comes with **precedence**, not only tolerance:
+  the mappings bound for a reference that names its endpoint exactly exclude the
+  siblings that merely share its API, so the value cannot silently address one of
+  them — by ordering, or because the named endpoint has no instance for this
+  consumer's access and core's interpolation would otherwise fall through.
+  Refused references arrive as core's own structured findings, so the plan gate
+  merges them with its other faults and `codefly doctor` writes a line per
+  fault.
 - **A mapping that does not say which endpoint it is does not get bound.** The
   filter identifies a mapping by its endpoint's name, with the mapping's API
   checked for consistency against the manifest. Matching a nameless mapping by
