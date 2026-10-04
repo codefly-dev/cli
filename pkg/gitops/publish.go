@@ -1,7 +1,6 @@
 package gitops
 
 import (
-	"io/fs"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -9,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"os/exec"
