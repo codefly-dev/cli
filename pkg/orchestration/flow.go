@@ -828,10 +828,141 @@ func (flow *Flow) Load(ctx context.Context) error {
 	w.Debug("got resources",
 		wool.Field("dns", flow.ConfigurationManager.DNS()))
 
-	// The policy and the playbook this operation runs under, by mode.
-	playbook, err := flow.playbookForMode(ctx)
-	if err != nil {
-		return w.Wrap(err)
+	var playbook *Playbook
+
+	switch flow.world.Mode {
+	case RunMode:
+		policy, err := NewRuntimeStartPolicy(ctx, flow.world.Dependencies, flow)
+		if err != nil {
+			return w.Wrapf(err, "cannot create policy")
+		}
+		flow.WithPolicy(policy)
+		playbook, err = NewPlaybook(ctx, flow.world)
+		if err != nil {
+			return w.Wrapf(err, "cannot create playbook")
+		}
+		playbook.WithPolicy(policy)
+		if flow.loadOnly {
+			w.Debug("load only")
+			playbook.WithStoppingAfter(stopAfterRoots(flow.rootUniques(), RuntimeLoad))
+		}
+		if flow.initOnly {
+			w.Debug("init only")
+			playbook.WithStoppingAfter(stopAfterRoots(flow.rootUniques(), RuntimeInit))
+		}
+	case TestMode:
+		policy, err := NewRuntimeTestPolicy(
+			ctx,
+			flow.world.Dependencies,
+			flow,
+			resources.WithUnique(flow.originService).Unique(),
+			flow.testDependencyMode,
+		)
+		if err != nil {
+			return w.Wrapf(err, "cannot create policy")
+		}
+		flow.WithPolicy(policy)
+		playbook, err = NewPlaybook(ctx, flow.world)
+		if err != nil {
+			return w.Wrapf(err, "cannot create playbook")
+		}
+		playbook.WithPolicy(policy)
+		if flow.loadOnly {
+			w.Debug("load only")
+			playbook.WithStoppingAfter(stopAfterRoots(flow.rootUniques(), RuntimeLoad))
+		}
+		if flow.initOnly {
+			w.Debug("init only")
+			playbook.WithStoppingAfter(stopAfterRoots(flow.rootUniques(), RuntimeInit))
+		}
+		playbook.WithStoppingAfter(func(_ context.Context, action Action) bool {
+			return action.Service == resources.WithUnique(flow.originService).Unique() && action.Type == RuntimeTest
+		})
+	case LintMode, CompileMode:
+		terminal := RuntimeLint
+		if flow.world.Mode == CompileMode {
+			terminal = RuntimeBuild
+		}
+		origin := resources.WithUnique(flow.originService).Unique()
+		policy, err := NewRuntimeValidationPolicy(ctx, flow.world.Dependencies, flow, origin, terminal)
+		if err != nil {
+			return w.Wrapf(err, "cannot create validation policy")
+		}
+		flow.WithPolicy(policy)
+		playbook, err = NewPlaybook(ctx, flow.world)
+		if err != nil {
+			return w.Wrapf(err, "cannot create playbook")
+		}
+		playbook.WithPolicy(policy)
+		playbook.WithStoppingAfter(func(_ context.Context, action Action) bool {
+			return action.Service == origin && action.Type == terminal
+		})
+
+	case BuildMode:
+		policy, err := NewBuildPolicy(ctx, flow.hub, flow.world)
+		if err != nil {
+			return w.Wrapf(err, "cannot create policy")
+		}
+		flow.WithPolicy(policy)
+		playbook, err = NewPlaybook(ctx, flow.world)
+		if err != nil {
+			return w.Wrapf(err, "cannot create playbook")
+		}
+		playbook.WithPolicy(policy)
+		playbook.WithStoppingAfter(func(_ context.Context, action Action) bool {
+			return action.Service == resources.WithUnique(flow.originService).Unique() && action.Type == BuilderBuild
+		})
+	case SyncMode:
+		var policy PlaybookPolicy
+		var err error
+		origin := resources.WithUnique(flow.originService).Unique()
+		if flow.syncRequest.GetDryRun() {
+			policy, err = NewSyncDriftPolicy(ctx, flow.world.Dependencies, flow, origin)
+		} else {
+			policy, err = NewSyncPolicy(ctx, flow.world.Dependencies, flow)
+		}
+		if err != nil {
+			return w.Wrapf(err, "cannot create policy")
+		}
+		flow.WithPolicy(policy)
+		playbook, err = NewPlaybook(ctx, flow.world)
+		if err != nil {
+			return w.Wrapf(err, "cannot create playbook")
+		}
+		playbook.WithPolicy(policy)
+		playbook.WithStoppingAfter(func(_ context.Context, action Action) bool {
+			return action.Service == origin && action.Type == BuilderSync
+		})
+	case DeployMode:
+		policy, err := NewDeployPolicy(ctx, flow.world.Dependencies, flow)
+		if err != nil {
+			return w.Wrapf(err, "cannot create policy")
+		}
+		flow.WithPolicy(policy)
+		playbook, err = NewPlaybook(ctx, flow.world)
+		if err != nil {
+			return w.Wrapf(err, "cannot create playbook")
+		}
+		playbook.WithPolicy(policy)
+		playbook.WithStoppingAfter(func(_ context.Context, action Action) bool {
+			return action.Service == resources.WithUnique(flow.originService).Unique() && action.Type == BuilderDeploy
+		})
+	case SnapshotMode:
+		policy, err := NewSnapshotPolicy(ctx, flow.world.Dependencies, flow)
+		if err != nil {
+			return w.Wrapf(err, "cannot create policy")
+		}
+		policy.standAlone = flow.standAlone
+		flow.WithPolicy(policy)
+		playbook, err = NewPlaybook(ctx, flow.world)
+		if err != nil {
+			return w.Wrapf(err, "cannot create playbook")
+		}
+		playbook.WithPolicy(policy)
+		playbook.WithStoppingAfter(func(_ context.Context, action Action) bool {
+			return policy.completed(action)
+		})
+
 	}
 	flow.playbook = playbook
 
@@ -1795,6 +1926,28 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	if err := flow.rebuildDependencyGraph(ctx, dependencyOptions); err != nil {
 		return w.Wrap(err)
 	}
+	if len(flow.remoteServices) > 0 {
+		cutoffs := make([]string, 0, len(flow.remoteServices))
+		for _, remote := range flow.remoteServices {
+			remotes[remote.Unique()] = remote
+			cutoffs = append(cutoffs, remote.Unique())
+		}
+		dependencyOptions = append(dependencyOptions, architecture.SkipDependencyFor(cutoffs...))
+	}
+	if len(flow.excludedDependencyServices) > 0 {
+		dependencyOptions = append(dependencyOptions, architecture.ExcludeServices(flow.excludedDependencyServices...))
+	}
+	if len(dependencyOptions) > 0 {
+		dep, err := architecture.NewServiceDependencies(ctx, flow.dependencyWorkspace(), dependencyOptions...)
+		if err != nil {
+			return w.Wrap(err)
+		}
+		flow.world.Dependencies = dep
+		if flow.SharedState != nil {
+			flow.SharedState.SetDependencies(dep)
+		}
+	}
+
 	if err := flow.selectDependencyStage(); err != nil {
 		return w.Wrap(err)
 	}

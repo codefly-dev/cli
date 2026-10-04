@@ -252,9 +252,15 @@ func (b *Builder) buildRecipe(
 	// the digest is the only identity a later run can verify the pushed image
 	// against, so a build that does not resolve one cannot be reused.
 	recordable := identity.Key != "" && imageCache.enabled()
-	metadataFile, removeMetadata, err := b.stageBuildMetadata(captureDigest || (shouldPush && (resolveEvidence || recordable)))
-	if err != nil {
-		return w.Wrapf(err, "cannot stage build metadata for %s", b.instance.Unique())
+	var metadataFile string
+	if captureDigest || (shouldPush && (resolveEvidence || recordable)) {
+		file, createErr := os.CreateTemp("", "codefly-build-metadata-*.json")
+		if createErr != nil {
+			return w.Wrapf(createErr, "cannot stage build metadata for %s", b.instance.Unique())
+		}
+		metadataFile = file.Name()
+		_ = file.Close()
+		defer os.Remove(metadataFile)
 	}
 	defer removeMetadata()
 

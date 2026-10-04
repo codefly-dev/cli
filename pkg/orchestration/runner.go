@@ -1343,8 +1343,13 @@ func (runner *Runner) Test(ctx context.Context) (*OutputProperty, error) {
 	// cases and exit with an accurate code, regardless of pass/fail.
 	runner.testResponse = resp
 
-	if verdict := refuseUnlessTestRunPassed(resp, runner.Unique()); verdict != nil {
-		return nil, verdict
+	//nolint:staticcheck // SA1019 deliberately: the deprecated field is what
+	// released runtime agents still populate, so reading the replacement would
+	// silently see a zero value from every agent in the field — a test run that
+	// reports success whatever happened. A migration needs the agent owners, and
+	// nothing in CI would catch it. Tracked as a follow-up.
+	if resp.GetStatus() != nil && resp.GetStatus().GetState() != runtimev0.TestStatus_SUCCESS {
+		return nil, w.NewError("tests failed for %s: %s", runner.Unique(), summarizeTestResponse(resp))
 	}
 
 	err = runner.outputPropertyForTest.Set(ctx, &RunnerTestOutput{})
