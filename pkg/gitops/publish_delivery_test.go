@@ -1185,7 +1185,9 @@ func TestPublishRefusesACellRenderedForAnotherHost(t *testing.T) {
 	require.NoError(t, os.WriteFile(source, data, 0o600))
 	publication := &deliveryPublication{baseBranch: "main", cellSource: source, cellPath: "deployments/cells/prod/cell.yaml",
 		options: deliveryPublishOptions{Module: "crm", Coordinate: "elsewhere/prod/x", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example"}}
-	err = stageCellFile(context.Background(), repository.repo, publication, &Inventory{Module: "crm"})
+	var contribution CellFile
+	require.NoError(t, yaml.Unmarshal(data, &contribution))
+	err = stageCellContribution(context.Background(), repository.repo, publication, &contribution, &Inventory{Module: "crm"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "the cell file describes host example/prod/region-a")
 }
@@ -1226,4 +1228,46 @@ func TestOnlyHostedDeliveryNeedsTheWorkflowIdentity(t *testing.T) {
 	}})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "run it from the release workflow")
+}
+
+// TestPublishHoldsABindingToItsRevisionAcrossRemovalAndReintroduction: the
+// guard against a binding's revision moving backwards used to read only the
+// document delivered just before, so a binding removed from one generation
+// and reintroduced in a later one was new to it. The ledger beside the
+// delivered authority documents keeps every binding ID's highest revision and
+// the meaning it carried, across its whole history under the environment.
+func TestPublishHoldsABindingToItsRevisionAcrossRemovalAndReintroduction(t *testing.T) {
+	repository := newDeliveryRepository(t)
+	opts := deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", EnvelopeRevision: 1, Module: "crm"}
+	settleBoth(t, repository, repository.stageAuthorityRender(t, []modulecontract.ResolvedBinding{modelBinding(5, "modelservice.profiles:invoke")}), &opts)
+	ledger := filepath.Join(repository.target, filepath.FromSlash(solutionAuthorityOverlay("prod")), bindingLedgerFile)
+	require.FileExists(t, ledger, "the ledger travels with the overlay")
+	repository.deliver(t)
+
+	// The binding is removed: another binding stands in its place, and the
+	// authority document is a new generation that grants "model" nothing.
+	other := modulecontract.ResolvedBinding{ID: "other", Revision: 1, Operations: []string{"invoke"}, Audience: "model-gateway", Scopes: map[string][]string{"invoke": {"modelservice.other:invoke"}}}
+	settleBoth(t, repository, repository.stageAuthorityRender(t, []modulecontract.ResolvedBinding{other}), &opts)
+	repository.deliver(t)
+
+	settle := func(bindings ...modulecontract.ResolvedBinding) error {
+		ctx := context.Background()
+		inventory := repository.stageAuthorityRender(t, bindings)
+		presence, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, &opts)
+		require.NoError(t, err)
+		_, err = settleAuthorityDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, presence, &opts)
+		return err
+	}
+	// Reintroduced below the revision it was delivered at: refused, though the
+	// document delivered just before never held it.
+	err := settle(other, modelBinding(1, "modelservice.profiles:invoke"))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "reintroduces the bindings example.prod.crm:model:invoke")
+	require.Contains(t, err.Error(), "delivered at 5")
+	// At the revision it was delivered at, with another meaning: refused.
+	err = settle(other, modelBinding(5, "modelservice.profiles:read"))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "another meaning")
+	// Above it: a new generation.
+	require.NoError(t, settle(other, modelBinding(6, "modelservice.profiles:read")))
 }

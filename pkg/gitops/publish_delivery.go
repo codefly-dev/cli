@@ -3,6 +3,7 @@ package gitops
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -819,6 +820,10 @@ func settleAuthorityDelivery(
 	if err != nil {
 		return nil, err
 	}
+	ledger, err := priorBindingLedger(ctx, repo, baseBranch, filepath.ToSlash(filepath.Join(targetPath, overlay)))
+	if err != nil {
+		return nil, err
+	}
 	rendered := map[string]deliveredAuthorityDocument{}
 	if inventory.SolutionAuthorityPath != "" {
 		if rendered, err = renderedAuthorities(filepath.Join(target, filepath.FromSlash(overlay))); err != nil {
@@ -889,11 +894,28 @@ func settleAuthorityDelivery(
 	if err != nil {
 		return nil, err
 	}
+	for _, authority := range names {
+		if entry := settled[authority]; !entry.document.Removed {
+			if err := ledger.refuseRewinds(entry.document); err != nil {
+				return nil, err
+			}
+		}
+	}
 	files, err := writeAuthoritySet(target, overlay, inventory, settled, names, opts)
 	if err != nil {
 		return nil, err
 	}
 	if err := writeAuthorityKustomization(target, environment, files); err != nil {
+		return nil, err
+	}
+	// The ledger travels with the overlay: every live document raises its
+	// marks, a withdrawn one leaves them standing.
+	for _, authority := range names {
+		if entry := settled[authority]; !entry.document.Removed {
+			ledger.record(entry.document)
+		}
+	}
+	if err := writeBindingLedger(filepath.Join(target, filepath.FromSlash(overlay)), ledger); err != nil {
 		return nil, err
 	}
 	inventory.SolutionAuthorityPath = solutionAuthorityDir
@@ -1332,6 +1354,101 @@ func authorityCarrierOf(data []byte) []byte {
 
 // priorDeliveredAuthorities reads the authority documents the base branch
 // delivers under the overlay path, keyed by authority ID.
+// bindingLedgerFile keeps, beside the delivered authority documents, the
+// highest revision every operation binding ID was ever delivered at under
+// this environment, with the meaning it carried then. The documents hold only
+// what is granted NOW, and a withdrawal is terminal for an authority, not for
+// a binding ID: a binding removed from one generation and reintroduced later
+// would otherwise be new to the guard and free to come back at a lower
+// revision — or at the same revision with another meaning — which is the
+// rewind a credential sealed to a revision must never meet. The ledger is the
+// publisher's own record under the repository's trust, like the cell; nothing
+// signs it, no Job reads it, and no reader of the overlay's YAML sees it.
+const bindingLedgerFile = "bindings.ledger"
+
+type ledgerEntry struct {
+	Authority string `json:"authority"`
+	Revision  uint64 `json:"revision"`
+	Audience  string `json:"audience"`
+	Scope     string `json:"scope"`
+	Queue     string `json:"queue"`
+	Namespace string `json:"namespace"`
+}
+
+type bindingLedger map[string]ledgerEntry
+
+// priorBindingLedger reads the ledger the base branch delivered; a base with
+// none is an empty ledger, a base whose ledger cannot be read is an error.
+func priorBindingLedger(ctx context.Context, repo, baseBranch, overlayPath string) (bindingLedger, error) {
+	data, err := gitCommandBytes(ctx, repo, "show", "refs/remotes/origin/"+baseBranch+":"+overlayPath+"/"+bindingLedgerFile)
+	if err != nil {
+		if gitSaysAbsent(err) {
+			return bindingLedger{}, nil
+		}
+		return nil, fmt.Errorf("read the delivered binding ledger from %s: %w", baseBranch, err)
+	}
+	ledger := bindingLedger{}
+	if err := json.Unmarshal(data, &ledger); err != nil {
+		return nil, fmt.Errorf("the delivered binding ledger on %s cannot be read, so no binding revision can be held against it: %w", baseBranch, err)
+	}
+	return ledger, nil
+}
+
+// refuseRewinds holds every binding a document grants to the ledger: a
+// revision below the mark, or at the mark with another meaning, is refused
+// whether or not the binding is in the document delivered just before.
+func (ledger bindingLedger) refuseRewinds(document *solutionhost.AuthorityDocument) error {
+	var rewound, remeant []string
+	for _, principal := range document.Principals {
+		for _, binding := range principal.Bindings {
+			mark, known := ledger[binding.ID]
+			if !known {
+				continue
+			}
+			switch {
+			case binding.Revision < mark.Revision:
+				rewound = append(rewound, fmt.Sprintf("%s (%d, delivered at %d under %s)", binding.ID, binding.Revision, mark.Revision, mark.Authority))
+			case binding.Revision == mark.Revision && (binding.Audience != mark.Audience || binding.Scope != mark.Scope || binding.Queue != mark.Queue || binding.Namespace != mark.Namespace):
+				remeant = append(remeant, fmt.Sprintf("%s (revision %d under %s)", binding.ID, binding.Revision, mark.Authority))
+			}
+		}
+	}
+	sort.Strings(rewound)
+	sort.Strings(remeant)
+	switch {
+	case len(rewound) > 0:
+		return fmt.Errorf("authority %s reintroduces the bindings %s below the revision they were delivered at; a binding's revision only increases across its whole history under this environment, removal and reintroduction included, since a credential sealed to a revision holds it against the live one",
+			document.Authority, strings.Join(rewound, ", "))
+	case len(remeant) > 0:
+		return fmt.Errorf("authority %s gives the bindings %s another meaning at the revision they were delivered with; a change of audience, scope, queue or namespace is a new revision",
+			document.Authority, strings.Join(remeant, ", "))
+	}
+	return nil
+}
+
+// record raises the ledger's mark for every binding a live document grants.
+func (ledger bindingLedger) record(document *solutionhost.AuthorityDocument) {
+	for _, principal := range document.Principals {
+		for _, binding := range principal.Bindings {
+			if mark, known := ledger[binding.ID]; known && mark.Revision > binding.Revision {
+				continue
+			}
+			ledger[binding.ID] = ledgerEntry{Authority: document.Authority, Revision: binding.Revision, Audience: binding.Audience, Scope: binding.Scope, Queue: binding.Queue, Namespace: binding.Namespace}
+		}
+	}
+}
+
+func writeBindingLedger(directory string, ledger bindingLedger) error {
+	data, err := json.MarshalIndent(ledger, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode the binding ledger: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, bindingLedgerFile), append(data, '\n'), 0o600); err != nil {
+		return fmt.Errorf("write the binding ledger: %w", err)
+	}
+	return nil
+}
+
 func priorDeliveredAuthorities(ctx context.Context, repo, baseBranch, overlayPath string) (map[string]deliveredAuthorityDocument, error) {
 	ref := "refs/remotes/origin/" + baseBranch
 	files, err := deliveredOverlayFiles(ctx, repo, baseBranch, overlayPath)

@@ -182,6 +182,7 @@ func preparePublish(
 	if err != nil {
 		return nil, err
 	}
+	publication.workspace, publication.env = workspace, env
 	if err = publication.addressHost(ctx, workspace, env); err != nil {
 		return nil, err
 	}
@@ -526,7 +527,7 @@ func stageRenderedPublication(
 	if err != nil {
 		return "", Inventory{}, err
 	}
-	if err = stageCellFile(ctx, clone.repo, clone.publication, &published); err != nil {
+	if err = stageCellFile(ctx, clone.repo, clone.publication, rendered, &published, true); err != nil {
 		return "", Inventory{}, err
 	}
 	return snapshotRevision, published, nil
@@ -582,10 +583,20 @@ func stageRollbackPublication(
 	if err != nil {
 		return "", Inventory{}, err
 	}
-	return prepareServicePublication(
+	snapshotRevision, published, err := prepareServicePublication(
 		ctx, clone.repo, clone.target, clone.targetPath, restored, &inventory, generateBootstrap,
 		request.Environment, clone.config, clone.publishSnapshot, clone.localFetchHost, clone.publication,
 	)
+	if err != nil {
+		return "", Inventory{}, err
+	}
+	// The cell describes what is published: a rollback contributes the cell
+	// of the tree it restores, derived from that tree, so the platform's
+	// inventory follows the workloads back.
+	if err = stageCellFile(ctx, clone.repo, clone.publication, restored, &published, false); err != nil {
+		return "", Inventory{}, err
+	}
+	return snapshotRevision, published, nil
 }
 
 // resolveGitopsModuleInventory resolves a consumed contract's exposing module
@@ -2264,6 +2275,10 @@ func commandWithEnvironment(
 type deliveryPublication struct {
 	baseBranch string
 	options    deliveryPublishOptions
+	// workspace and env are what deriving the cell contribution from a staged
+	// tree needs: the services the tree's units render, and the host block.
+	workspace *resources.Workspace
+	env       *environments.Environment
 	// cellSource is the environment's cell file under the workspace, and
 	// cellPath where it lands in the repository, outside every module path.
 	// Both empty when the workspace has rendered no cell for this environment.
@@ -2345,15 +2360,52 @@ func mergeDeliveries(parts ...*InventoryDelivery) *InventoryDelivery {
 // cell — a CI job rendering one module erased the others from policy input
 // while their workloads stayed deployed. A module is removed from the cell by
 // withdrawing it, never by another module's publish.
-func stageCellFile(ctx context.Context, repo string, publication *deliveryPublication, inventory *Inventory) error {
-	if publication == nil || publication.cellSource == "" {
+// stageCellFile stages the publishing module's cell contribution, DERIVED from
+// the exact tree being published — its workloads, images, selectors, endpoints
+// and release as the staged manifests and inventory carry them — never read
+// from a file that could describe another tree. A forward publish also holds
+// the workspace's cell file (the render's output) to that derivation and
+// refuses a contribution that does not describe the rendered tree; a rollback
+// has no render to hold, and contributes the restored tree's cell.
+func stageCellFile(ctx context.Context, repo string, publication *deliveryPublication, tree string, inventory *Inventory, rendered bool) error {
+	if publication == nil || publication.cellPath == "" || publication.env == nil || publication.env.Host == nil {
 		return nil
 	}
-	destination, err := confinedJoin(repo, publication.cellPath)
+	contribution, err := deriveCellContribution(ctx, publication.workspace, publication.env, tree, inventory)
 	if err != nil {
 		return err
 	}
-	data, err := os.ReadFile(publication.cellSource)
+	if rendered && publication.cellSource != "" {
+		if err := refuseStaleCellFile(publication.cellSource, contribution, publication.options.Module); err != nil {
+			return err
+		}
+	}
+	return stageCellContribution(ctx, repo, publication, contribution, inventory)
+}
+
+// deriveCellContribution is the render's own cell derivation applied to one
+// tree: the module's namespace entry, under the host the environment declares.
+func deriveCellContribution(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, tree string, inventory *Inventory) (*CellFile, error) {
+	consumers, err := endpointConsumers(ctx, workspace)
+	if err != nil {
+		return nil, err
+	}
+	namespace, err := cellNamespace(ctx, workspace, env, tree, inventory, consumers)
+	if err != nil {
+		return nil, fmt.Errorf("derive the cell contribution of module %s from the tree it publishes: %w", inventory.Module, err)
+	}
+	cell := &CellFile{Schema: CellSchemaV1, Environment: env.Name, Namespaces: []CellNamespace{namespace}}
+	if env.Host != nil {
+		cell.Coordinate, cell.Component, cell.Domain, cell.TrustDomain = env.Host.Coordinate, env.Host.Component, env.Host.Domain, env.Host.TrustDomain
+	}
+	return cell, nil
+}
+
+// refuseStaleCellFile holds the workspace's cell file — the render's output,
+// which a later render, an edit or a failed cell generation can leave behind
+// — to the contribution derived from the tree being published.
+func refuseStaleCellFile(source string, derived *CellFile, module string) error {
+	data, err := os.ReadFile(source)
 	if err != nil {
 		return fmt.Errorf("read the cell file: %w", err)
 	}
@@ -2361,13 +2413,44 @@ func stageCellFile(ctx context.Context, repo string, publication *deliveryPublic
 	if err = yaml.Unmarshal(data, &local); err != nil {
 		return fmt.Errorf("decode the cell file: %w", err)
 	}
-	if err = refuseCellForAnotherHost(&local, &publication.options); err != nil {
-		return err
+	var recorded *CellNamespace
+	for index := range local.Namespaces {
+		if local.Namespaces[index].Module == module {
+			recorded = &local.Namespaces[index]
+		}
 	}
-	merged, err := mergeCellContribution(ctx, repo, publication.baseBranch, publication.cellPath, &local, publication.options.Module, consumedEndpoints(inventory))
+	if recorded == nil {
+		return fmt.Errorf("the cell file %s carries no entry for module %s; render again before publishing", source, module)
+	}
+	have, err := yaml.Marshal(recorded)
 	if err != nil {
 		return err
 	}
+	want, err := yaml.Marshal(&derived.Namespaces[0])
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(have, want) {
+		return fmt.Errorf("the cell file %s does not describe the rendered tree of module %s (its workloads, images, selectors, endpoints or release differ from what the tree publishes); render again before publishing", source, module)
+	}
+	return nil
+}
+
+// stageCellContribution holds a contribution to the host declared now and
+// merges it into the delivered cell.
+func stageCellContribution(ctx context.Context, repo string, publication *deliveryPublication, contribution *CellFile, inventory *Inventory) error {
+	destination, err := confinedJoin(repo, publication.cellPath)
+	if err != nil {
+		return err
+	}
+	if err = refuseCellForAnotherHost(contribution, &publication.options); err != nil {
+		return err
+	}
+	merged, err := mergeCellContribution(ctx, repo, publication.baseBranch, publication.cellPath, contribution, publication.options.Module, consumedEndpoints(inventory))
+	if err != nil {
+		return err
+	}
+	var data []byte
 	if data, err = yaml.Marshal(merged); err != nil {
 		return fmt.Errorf("encode the cell file: %w", err)
 	}

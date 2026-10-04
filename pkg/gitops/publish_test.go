@@ -1781,22 +1781,12 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 // entry alone. These tests exercise delivery, not the cell's derivation: that
 // is RenderCell's, from module trees on disk, and the flat fixture here is
 // not laid out as a module tree.
-func writeTestCell(t *testing.T, workspace *resources.Workspace, env *environments.Environment, environment, module string) {
+// writeTestCell renders the environment's cell file the way a render does —
+// the publish holds the file to the tree it publishes, so a hand-written one
+// would be refused as describing another tree.
+func writeTestCell(t *testing.T, workspace *resources.Workspace, env *environments.Environment, _, _ string) {
 	t.Helper()
-	cell := CellFile{
-		Schema: CellSchemaV1, Coordinate: env.Host.Coordinate, Component: env.Host.Component,
-		Domain: env.Host.Domain, TrustDomain: env.Host.TrustDomain,
-		Namespaces: []CellNamespace{{Name: module, Module: module}},
-	}
-	data, err := yaml.Marshal(cell)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := cellPath(workspace.Dir(), environment)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if _, err := RenderCell(context.Background(), workspace, env); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1857,5 +1847,38 @@ environments:
 	}
 	if err := refuseSharedDeliveryPath(write("    gitops:\n      path: environments/staging\n"), "production", true); err != nil {
 		t.Fatalf("distinct paths were refused: %v", err)
+	}
+}
+
+// TestPublishRefusesACellFileThatDoesNotDescribeTheRenderedTree: the
+// contribution a publish merges is derived from the tree it publishes; the
+// workspace's cell file is the render's output and is held to that
+// derivation, so a stale or edited file with the right header is refused.
+func TestPublishRefusesACellFileThatDoesNotDescribeTheRenderedTree(t *testing.T) {
+	ctx, workspace, env, _ := hostedPublishWorkspace(t)
+	writeTestCell(t, workspace, env, "production", "payments")
+	path := cellPath(workspace.Dir(), "production")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cell CellFile
+	if err := yaml.Unmarshal(data, &cell); err != nil {
+		t.Fatal(err)
+	}
+	if len(cell.Namespaces) != 1 || len(cell.Namespaces[0].Workloads) == 0 {
+		t.Fatalf("the rendered cell carries no workload to edit: %+v", cell)
+	}
+	cell.Namespaces[0].Workloads[0].ServiceAccount = "someone-else"
+	if data, err = yaml.Marshal(&cell); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request := PublishRequest{Module: "payments", Environment: "production", Local: true, Signer: &fakeSigner{}, PromotionBranch: "codefly/promote-payments-production"}
+	_, err = PlanPublish(ctx, workspace, &request)
+	if err == nil || !strings.Contains(err.Error(), "does not describe the rendered tree") {
+		t.Fatalf("a cell file describing another tree was not refused: %v", err)
 	}
 }
