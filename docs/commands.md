@@ -2341,6 +2341,10 @@ block and version — and buf's own `--output` cannot be used for this: it is
 prepended to each `out`, so `out: ../code/pkg/gen` under `-o /stage` resolves
 straight back out of the staging directory.
 
+The companion runs as the invoking host UID/GID, matching contract generation.
+Private output directories and files remain readable and removable by the host
+on Linux; publication does not require root or a permission-repair step.
+
 The staging tree is created fresh for each run under the codefly home
 (`~/.codefly/generate-proto/`, or `$CODEFLY_HOME`) and bind-mounted separately
 from the generation mount, for two reasons. It must be **empty**, or a leftover

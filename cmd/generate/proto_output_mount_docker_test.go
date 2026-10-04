@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/codefly-dev/core/resources"
-	runners "github.com/codefly-dev/core/runners/dockerrun"
 )
 
 // Generation is staged: buf writes a tree under the mount and the CLI
@@ -44,6 +43,30 @@ func TestProtoStagingMountIsQualifiedAgainstARealBindMount(t *testing.T) {
 		}
 	})
 
+	// The mount probe alone cannot establish that newly emitted private trees
+	// are host-readable. Linux preserves the creator UID on bind mounts, unlike
+	// desktop Docker's ownership mapping, and Buf uses private output directories.
+	t.Run("private emissions can be published and removed by the host", func(t *testing.T) {
+		staging := t.TempDir()
+		companion := mountedCompanion(t, staging, protoStagingRoot)
+		script := `test "$(id -u):$(id -g)" = "$1" && umask 077 && mkdir -p /staging/0/nested && printf emitted > /staging/0/nested/value.txt`
+		if err := companion(t.Context(), "sh", "-c", script, "emit", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())); err != nil {
+			t.Fatalf("emit as the invoking host user: %v", err)
+		}
+		root := t.TempDir()
+		out := filepath.Join(root, "gen")
+		if err := publishProtoOutputs(staging, root, []string{out}, false, "buf.gen.yaml"); err != nil {
+			t.Fatalf("publish private container emission: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(out, "nested", "value.txt"))
+		if err != nil || string(got) != "emitted" {
+			t.Fatalf("published content = %q, %v", got, err)
+		}
+		if err := os.RemoveAll(filepath.Join(staging, "0")); err != nil {
+			t.Fatalf("host cannot remove private emission: %v", err)
+		}
+	})
+
 	// What #836 was about, in the shape it now takes: the companion resolves
 	// its staging path inside its own filesystem, writes a complete tree
 	// there, exits 0, and the host sees nothing. Mounting a different
@@ -71,7 +94,7 @@ func TestProtoStagingMountIsQualifiedAgainstARealBindMount(t *testing.T) {
 func mountedCompanion(t *testing.T, hostRoot, containerRoot string) protoCommand {
 	t.Helper()
 	ctx := context.Background()
-	runner, err := runners.NewDockerEnvironment(ctx, resources.NewDockerImage(mountQualificationImage), hostRoot, fmt.Sprintf("proto-mount-%d", time.Now().UnixNano()))
+	runner, err := newProtoRunner(ctx, resources.NewDockerImage(mountQualificationImage), hostRoot, fmt.Sprintf("proto-mount-%d", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("create docker environment: %v", err)
 	}
