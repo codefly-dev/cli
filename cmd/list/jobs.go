@@ -40,14 +40,14 @@ func listJobs() error {
 
 	if listJobsModule != "" {
 		// List jobs in specific module
-		mod, err := workspace.LoadModuleFromName(ctx, listJobsModule)
-		if err != nil {
-			return fmt.Errorf("module not found: %w", err)
+		mod, modErr := workspace.LoadModuleFromName(ctx, listJobsModule)
+		if modErr != nil {
+			return fmt.Errorf("module not found: %w", modErr)
 		}
 
-		jobs, err := mod.LoadJobs(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to load jobs: %w", err)
+		jobs, jobsErr := mod.LoadJobs(ctx)
+		if jobsErr != nil {
+			return fmt.Errorf("failed to load jobs: %w", jobsErr)
 		}
 
 		if len(jobs) == 0 {

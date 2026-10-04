@@ -105,9 +105,9 @@ Examples:
 		}
 
 		if dir == "" {
-			cwd, err := os.Getwd()
-			if err != nil {
-				return fmt.Errorf("cannot get working directory: %w", err)
+			cwd, cwdErr := os.Getwd()
+			if cwdErr != nil {
+				return fmt.Errorf("cannot get working directory: %w", cwdErr)
 			}
 			dir = cwd
 		}
@@ -212,7 +212,7 @@ func linkLocal(ctx context.Context, dir string) (returnErr error) {
 				seed = append(seed, "./"+m)
 			}
 		}
-		if err := runGo(ctx, root, seed...); err != nil {
+		if err = runGo(ctx, root, seed...); err != nil {
 			return fmt.Errorf("go work init: %w", err)
 		}
 	}

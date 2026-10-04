@@ -107,7 +107,7 @@ func runProvider(ctx context.Context, input io.Reader, output io.Writer, ex expl
 		return fmt.Errorf("request exceeds 2 MiB")
 	}
 	var request helpprovider.Request
-	if err := json.Unmarshal(payload, &request); err != nil {
+	if err = json.Unmarshal(payload, &request); err != nil {
 		return fmt.Errorf("decode request: %w", err)
 	}
 	if request.ProtocolVersion != helpprovider.ProtocolVersion {

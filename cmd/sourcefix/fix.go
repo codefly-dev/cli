@@ -61,7 +61,7 @@ func Run(ctx context.Context, workspace *resources.Workspace, module *resources.
 	if err != nil {
 		return nil, fmt.Errorf("load service plugin: %w", err)
 	}
-	if err := instance.LoadRuntime(ctx, true); err != nil {
+	if err = instance.LoadRuntime(ctx, true); err != nil {
 		return nil, fmt.Errorf("load runtime contract: %w", err)
 	}
 	env, err := orchestration.SelectEnvironment(workspace, orchestration.LocalEnvironmentName)
@@ -73,7 +73,7 @@ func Run(ctx context.Context, workspace *resources.Workspace, module *resources.
 		return nil, fmt.Errorf("encode local environment: %w", err)
 	}
 	instance.Runtime.Workspace = workspace
-	if _, err := instance.Runtime.Load(ctx, environment); err != nil {
+	if _, err = instance.Runtime.Load(ctx, environment); err != nil {
 		return nil, fmt.Errorf("initialize source root: %w", err)
 	}
 	client, err := services.LoadCode(ctx, service)

@@ -269,7 +269,7 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) ([]pu
 	// platform-specific stages.
 	if needsLinuxCLI(specs, targets) {
 		for _, platform := range platforms {
-			if err := buildLinuxCLI(coreDir, platform.Arch); err != nil {
+			if err = buildLinuxCLI(coreDir, platform.Arch); err != nil {
 				return nil, fmt.Errorf("cross-compile codefly CLI for %s: %w", platform.Value, err)
 			}
 		}
@@ -342,7 +342,7 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) ([]pu
 
 		// A multi-platform build is pushed atomically by buildx; there is no
 		// single local image for `docker push` to publish afterward.
-		if opts.Push && !(method == "docker" && multiPlatform) {
+		if opts.Push && (method != "docker" || !multiPlatform) {
 			pushDigest, pushErr := pushImage(c.Tag())
 			// A digest means the upload landed, which pushImage reports even
 			// when it goes on to fail the visibility check. Dependents are owed

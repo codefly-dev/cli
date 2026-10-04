@@ -83,13 +83,13 @@ func buildReplayPlan(ctx context.Context, workspace *resources.Workspace, plan *
 		return nil, err
 	}
 	for _, selected := range plan.Services {
-		closure, err := architecture.SelectClosure(ctx, workspace, selected.Service)
-		if err != nil {
-			return nil, err
+		closure, closureErr := architecture.SelectClosure(ctx, workspace, selected.Service)
+		if closureErr != nil {
+			return nil, closureErr
 		}
-		draft, err := closure.Draft(ctx, architecture.PlanOptions{Phase: executionplan.PhaseBuild, StatePolicy: executionplan.StatePolicy{Lifecycle: executionplan.LifecycleStop}})
-		if err != nil {
-			return nil, err
+		draft, draftErr := closure.Draft(ctx, architecture.PlanOptions{Phase: executionplan.PhaseBuild, StatePolicy: executionplan.StatePolicy{Lifecycle: executionplan.LifecycleStop}})
+		if draftErr != nil {
+			return nil, draftErr
 		}
 		if len(draft.SchemaSteps) > 0 {
 			return nil, fmt.Errorf("CI replay has no executor for schema job %s", draft.SchemaSteps[0].ID)

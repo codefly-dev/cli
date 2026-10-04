@@ -141,7 +141,7 @@ func readVersion(path string) (*semver.Version, error) {
 	var probe struct {
 		Version string `yaml:"version"`
 	}
-	if err := yaml.Unmarshal(raw, &probe); err != nil {
+	if err = yaml.Unmarshal(raw, &probe); err != nil {
 		return nil, fmt.Errorf("parse YAML: %w", err)
 	}
 	if probe.Version == "" {

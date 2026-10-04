@@ -43,7 +43,7 @@ If the provider is unavailable or not configured, the static help still succeeds
 		if err != nil {
 			return fmt.Errorf("render help for %s: %w", target.CommandPath(), err)
 		}
-		if _, err := fmt.Fprint(command.OutOrStdout(), staticHelp); err != nil {
+		if _, err = fmt.Fprint(command.OutOrStdout(), staticHelp); err != nil {
 			return fmt.Errorf("print static help: %w", err)
 		}
 

@@ -71,20 +71,20 @@ func addServiceDependency(ctx context.Context, args []string) error {
 		entries = append(entries, &models.Entry{
 			Identifier: otherModule,
 		})
-		selected, err := models.Select("Select the dependency or >> In another module", entries)
-		if err != nil {
-			return fmt.Errorf("cannot select service dependency: %w", err)
+		selected, selectedErr := models.Select("Select the dependency or >> In another module", entries)
+		if selectedErr != nil {
+			return fmt.Errorf("cannot select service dependency: %w", selectedErr)
 		}
 
 		if selected.Identifier != otherModule {
-			action, err := actionsservice.NewActionAddServiceDependency(ctx, &actionsservice.AddServiceDependency{
+			action, actionErr := actionsservice.NewActionAddServiceDependency(ctx, &actionsservice.AddServiceDependency{
 				Name:             service.Name,
 				Module:           module.Name,
 				DependencyModule: module.Name,
 				DependencyName:   selected.Identifier,
 			})
-			if err != nil {
-				return fmt.Errorf("cannot create dependency action: %w", err)
+			if actionErr != nil {
+				return fmt.Errorf("cannot create dependency action: %w", actionErr)
 			}
 			_, err = actions.Run(ctx, action, &actions.Space{Module: module, Workspace: workspace})
 			if err != nil {

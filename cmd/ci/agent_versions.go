@@ -161,8 +161,7 @@ func warnStaleAgentPins(ctx context.Context, plan []*resources.Agent) {
 // OCI manifest and Nix flake output for the agent.
 func probeAgentArtifact(ctx context.Context, agent *resources.Agent) agentArtifactStatus {
 	status := agentArtifactStatus{agent: agent}
-	status.sources = append(status.sources, probeGitHubAsset(ctx, agent))
-	status.sources = append(status.sources, probeOCIManifest(ctx, agent))
+	status.sources = append(status.sources, probeGitHubAsset(ctx, agent), probeOCIManifest(ctx, agent))
 	if source, ok := probeNixFlake(ctx, agent); ok {
 		status.sources = append(status.sources, source)
 	}

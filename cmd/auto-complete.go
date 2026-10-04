@@ -52,7 +52,7 @@ write it to that shell's conventional location with --install.
 		}
 
 		if !completionInstall {
-			if _, err := os.Stdout.Write(buf.Bytes()); err != nil {
+			if _, err = os.Stdout.Write(buf.Bytes()); err != nil {
 				return fmt.Errorf("cannot write completion script: %w", err)
 			}
 			return nil

@@ -52,7 +52,7 @@ var RunCmd = &cobra.Command{
 		if err = refuseServiceOverrides(ctx, workspace, runAllowServiceOverrides, "codefly ci run"); err != nil {
 			return err
 		}
-		if err := common.WithSilenceE(ctx, workspace, silent); err != nil {
+		if err = common.WithSilenceE(ctx, workspace, silent); err != nil {
 			return fmt.Errorf("cannot configure silent services: %w", err)
 		}
 		plan, err := runSelection.BuildPlan(ctx, workspace, ReplayInvocation{Phases: runPhases, Suites: testSuites, RuntimeContext: runtimeContext})

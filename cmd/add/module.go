@@ -250,7 +250,6 @@ func addModule(name string) (result error) {
 	// Resolve module agent if specified
 	var agent *resources.Agent
 	if moduleAgentInput != "" {
-		var err error
 		agent, err = common.GetModuleAgent(ctx, moduleAgentInput)
 		if err != nil {
 			return fmt.Errorf("cannot resolve module agent: %w", err)

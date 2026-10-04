@@ -38,16 +38,16 @@ var ServiceCmd = &cobra.Command{
 			return err
 		}
 		if renderOnly {
-			env, err := orchestration.SelectEnvironment(workspace, envInput)
-			if err != nil {
-				return err
+			env, envErr := orchestration.SelectEnvironment(workspace, envInput)
+			if envErr != nil {
+				return envErr
 			}
-			result, err := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
+			result, resultErr := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
 				Workspace: workspace, Module: module, Service: service, Environment: env,
 				AppProject: appProject, StandAlone: standAlone, Sink: cli.NewOutputSink(),
 			})
-			if err != nil {
-				return fmt.Errorf("cannot render service: %w", err)
+			if resultErr != nil {
+				return fmt.Errorf("cannot render service: %w", resultErr)
 			}
 			cli.Info("Rendered %s", result.Path)
 			cli.Info("Digest %s", result.Inventory.Digest)

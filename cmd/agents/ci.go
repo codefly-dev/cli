@@ -116,7 +116,7 @@ var AgentCICmd = &cobra.Command{
 		if !filepath.IsAbs(output) {
 			output = filepath.Join(dir, output)
 		}
-		if err := os.MkdirAll(output, 0o755); err != nil {
+		if err = os.MkdirAll(output, 0o755); err != nil {
 			return fmt.Errorf("create agent CI output directory: %w", err)
 		}
 		nativeOnly, err := cmd.Flags().GetBool("native-only")
@@ -253,10 +253,10 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 		return state.runStage(name, action)
 	}
 
-	if err := runStage("manifest", func() error {
-		manifest, err := loadAgentCIManifest(options.dir, options.skipConformance)
-		if err != nil {
-			return err
+	if err = runStage("manifest", func() error {
+		manifest, manifestErr := loadAgentCIManifest(options.dir, options.skipConformance)
+		if manifestErr != nil {
+			return manifestErr
 		}
 		state.manifest = manifest
 		state.report.Agent = &civ0.AgentCIIdentity{Publisher: manifest.Publisher, Kind: manifest.Kind, Name: manifest.Name, Version: manifest.Version}
@@ -271,14 +271,14 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 			_ = source.prepared.Close()
 		}
 	}()
-	if err := runStage("source", func() error {
+	if err = runStage("source", func() error {
 		// Resolve against the original home once, before isolating CI. Both
 		// validation and packaging use this same private executable selection.
 		source, err = prepareAgentCISource(ctx, options.dir, &state.manifest, state.temporary)
 		if err != nil {
 			return err
 		}
-		if err := os.Setenv(resources.CodeflyHomeEnv, state.agentHome); err != nil {
+		if err = os.Setenv(resources.CodeflyHomeEnv, state.agentHome); err != nil {
 			return err
 		}
 		return validateAgentSource(ctx, source)

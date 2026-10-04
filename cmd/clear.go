@@ -312,7 +312,7 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 		return errors.Join(failures...)
 	}
 	defer func() {
-		if err := dockerCLI.Close(); err != nil {
+		if err = dockerCLI.Close(); err != nil {
 			returnErr = errors.Join(returnErr, fmt.Errorf("close docker client: %w", err))
 		}
 	}()

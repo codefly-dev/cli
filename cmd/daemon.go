@@ -279,8 +279,13 @@ var daemonGatewayCmd = &cobra.Command{
 			return fmt.Errorf("cannot create gateway server: %w", err)
 		}
 
-		// Clean up port file on exit.
-		defer gateway.RemovePortFile()
+		// Clean up port file on exit; a port file that cannot be removed is
+		// said, since the next daemon reads it.
+		defer func() {
+			if err := gateway.RemovePortFile(); err != nil {
+				cli.Warning("cannot remove the daemon port file: %v", err)
+			}
+		}()
 
 		if err := srv.Serve(ctx); err != nil {
 			return fmt.Errorf("gateway server error: %w", err)
@@ -302,7 +307,7 @@ var daemonRestartCmd = &cobra.Command{
 		}
 		if status.Running {
 			fmt.Printf("Stopping daemon (PID %d)...\n", status.PID)
-			if err := daemon.Stop(); err != nil {
+			if err = daemon.Stop(); err != nil {
 				return fmt.Errorf("cannot stop daemon: %w", err)
 			}
 			fmt.Println("Daemon stopped.")

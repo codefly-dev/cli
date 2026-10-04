@@ -498,8 +498,8 @@ func fetchReleasesFromGitHub(ctx context.Context, agent *resources.Agent) ([]rel
 				if !ok {
 					continue
 				}
-				if platform, ok := strings.CutSuffix(platform, ".tar.gz"); ok {
-					platforms = append(platforms, platform)
+				if trimmed, ok := strings.CutSuffix(platform, ".tar.gz"); ok {
+					platforms = append(platforms, trimmed)
 				}
 			}
 			out = append(out, releaseInfo{version: version, platforms: platforms})

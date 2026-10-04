@@ -61,9 +61,9 @@ func addApplicationDependency(ctx context.Context) error {
 	if len(appEntries) == 1 {
 		application = apps[0]
 	} else {
-		selected, err := models.Select("Select the application to add the dependency to", appEntries)
-		if err != nil {
-			return fmt.Errorf("cannot select application: %w", err)
+		selected, selectedErr := models.Select("Select the application to add the dependency to", appEntries)
+		if selectedErr != nil {
+			return fmt.Errorf("cannot select application: %w", selectedErr)
 		}
 		application, err = mod.LoadApplicationFromName(ctx, selected.Identifier)
 		if err != nil {

@@ -128,11 +128,11 @@ Examples:
 					return fmt.Errorf("cannot get working directory: %w", err)
 				}
 			}
-			absDir, err := filepath.Abs(dir)
-			if err != nil {
-				return fmt.Errorf("cannot resolve directory: %w", err)
+			absDir, absDirErr := filepath.Abs(dir)
+			if absDirErr != nil {
+				return fmt.Errorf("cannot resolve directory: %w", absDirErr)
 			}
-			if err := buildAllAgents(ctx, absDir, opts); err != nil {
+			if err = buildAllAgents(ctx, absDir, opts); err != nil {
 				return fmt.Errorf("build --all failed: %w", err)
 			}
 			return nil
@@ -489,7 +489,7 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 	}
 
 	var ag agentYAML
-	if err := yaml.Unmarshal(data, &ag); err != nil {
+	if err = yaml.Unmarshal(data, &ag); err != nil {
 		res.err = fmt.Errorf("parse agent.codefly.yaml: %w", err)
 		return res
 	}
@@ -725,7 +725,7 @@ func buildSourcePackager(ctx context.Context, sourceDir, destination string, boo
 		return fmt.Errorf("create temporary executable: %w", err)
 	}
 	temporaryPath := temporary.Name()
-	if err := temporary.Close(); err != nil {
+	if err = temporary.Close(); err != nil {
 		_ = os.Remove(temporaryPath)
 		return fmt.Errorf("close temporary executable: %w", err)
 	}
@@ -748,7 +748,7 @@ func buildSourcePackager(ctx context.Context, sourceDir, destination string, boo
 	if !info.Mode().IsRegular() || info.Size() == 0 {
 		return fmt.Errorf("source bootstrap must emit a nonempty regular executable at CODEFLY_AGENT_OUTPUT")
 	}
-	if err := os.Chmod(temporaryPath, 0o755); err != nil {
+	if err = os.Chmod(temporaryPath, 0o755); err != nil {
 		return fmt.Errorf("mark bootstrap executable: %w", err)
 	}
 	file, err := os.Open(temporaryPath)

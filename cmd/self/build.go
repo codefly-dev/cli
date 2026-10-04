@@ -124,7 +124,7 @@ Examples:
 				output = defaultCrossOutput(srcDir, goos)
 			}
 			cli.Info("Cross-compiling codefly from %s for %s/%s", srcDir, goos, goarch)
-			if err := buildCLICross(ctx, srcDir, output, goos, goarch); err != nil {
+			if err = buildCLICross(ctx, srcDir, output, goos, goarch); err != nil {
 				return fmt.Errorf("build failed: %w", err)
 			}
 			cli.Info("Built %s/%s codefly at %s", goos, goarch, output)

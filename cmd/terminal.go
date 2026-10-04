@@ -79,7 +79,7 @@ func terminalCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		return fmt.Errorf("cannot connect to codefly server at %s: %w", serverAddress, err)
 	}
 	defer func() {
-		if err := conn.Close(); err != nil {
+		if err = conn.Close(); err != nil {
 			returnErr = errors.Join(returnErr, fmt.Errorf("close terminal connection: %w", err))
 		}
 	}()
@@ -109,7 +109,7 @@ func terminalCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cleanupCancel()
-		if _, err := client.Close(cleanupCtx, &cliv0.CloseTerminalRequest{SessionId: sessionID}); err != nil {
+		if _, err = client.Close(cleanupCtx, &cliv0.CloseTerminalRequest{SessionId: sessionID}); err != nil {
 			returnErr = errors.Join(returnErr, fmt.Errorf("close incomplete terminal session: %w", err))
 		}
 	}()
@@ -131,7 +131,7 @@ func terminalCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		return fmt.Errorf("cannot set raw mode: %w", err)
 	}
 	defer func() {
-		if err := term.Restore(int(os.Stdin.Fd()), oldState); err != nil {
+		if err = term.Restore(int(os.Stdin.Fd()), oldState); err != nil {
 			returnErr = errors.Join(returnErr, fmt.Errorf("restore terminal mode: %w", err))
 		}
 	}()

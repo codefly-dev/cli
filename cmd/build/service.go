@@ -111,7 +111,7 @@ func initBuildService(ctx context.Context, workspace *resources.Workspace, modul
 		// build), or when the env doesn't declare an Auth method
 		// (assume pre-existing docker creds in ~/.docker/config.json).
 		if registryURL != "" && env.Registry != nil && env.Registry.Auth != "" {
-			if err := builder.RegistryLogin(ctx, registryURL, env.Registry.Auth); err != nil {
+			if err = builder.RegistryLogin(ctx, registryURL, env.Registry.Auth); err != nil {
 				return nil, w.Wrapf(err, "registry login failed")
 			}
 		}

@@ -2,12 +2,9 @@ package cmd
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
-	"os"
 	"strings"
 
-	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/executionruntime"
 	"github.com/spf13/cobra"
 )
@@ -19,7 +16,7 @@ type gatewayExecutionOptions struct {
 	exporters       []string
 }
 
-func (options gatewayExecutionOptions) childArgs() ([]string, error) {
+func (options *gatewayExecutionOptions) childArgs() ([]string, error) {
 	if !options.enabled {
 		if options.hasConfiguration() {
 			return nil, fmt.Errorf("execution authority, state, and exporter flags require --governed-execution")
@@ -29,22 +26,16 @@ func (options gatewayExecutionOptions) childArgs() ([]string, error) {
 	if err := options.validate(); err != nil {
 		return nil, err
 	}
-	args := []string{
-		"--governed-execution",
-		"--execution-authority-issuer", options.authorityIssuer,
-	}
-	if strings.TrimSpace(options.stateDir) != "" {
-		args = append(args, "--execution-state-dir", options.stateDir)
-	}
-	for _, exporter := range options.exporters {
-		args = append(args, "--execution-exporter", exporter)
-	}
-	return args, nil
+	// The child's flags (--governed-execution, the authority JWKS and issuer,
+	// the state directory, the exporters) are built here once governed
+	// execution can be configured; until then the refusal is the answer, and
+	// nothing after it pretends otherwise.
+	return nil, governedExecutionUnavailable()
 }
 
-func (options gatewayExecutionOptions) open(
-	ctx context.Context,
-	workDir string,
+func (options *gatewayExecutionOptions) open(
+	_ context.Context,
+	_ string,
 ) (*executionruntime.Runtime, error) {
 	if !options.enabled {
 		if options.hasConfiguration() {
@@ -55,35 +46,17 @@ func (options gatewayExecutionOptions) open(
 	if err := options.validate(); err != nil {
 		return nil, err
 	}
-	release, err := cli.GetCurrentVersion()
-	if err != nil {
-		return nil, fmt.Errorf("resolve Codefly CLI release for execution receipts: %w", err)
-	}
-	runtime, err := executionruntime.Open(ctx, &executionruntime.Config{
-		WorkDir:         workDir,
-		StateDir:        options.stateDir,
-		AuthorityIssuer: options.authorityIssuer,
-		Release:         release,
-		ExporterSpecs:   append([]string(nil), options.exporters...),
-		OnDispatchError: func(dispatchErr error) {
-			fmt.Fprintf(os.Stderr, "[gateway] execution export pending: %v\n", dispatchErr)
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	identity := runtime.Identity
-	fmt.Printf(
-		"[gateway] governed execution signer=%s key=%s algorithm=%s public_key=%s\n",
-		identity.SignerID,
-		identity.KeyID,
-		identity.Algorithm,
-		base64.RawURLEncoding.EncodeToString(identity.PublicKey),
-	)
-	return runtime, nil
+	// The runtime is opened here (executionruntime.Open with the work
+	// directory, the state directory, the authority JWKS and issuer, this
+	// release and the exporter specs) once the issuer's live sources have a
+	// client; until then the refusal is the answer.
+	return nil, governedExecutionUnavailable()
 }
 
-func (options gatewayExecutionOptions) validate() error {
+func (options *gatewayExecutionOptions) validate() error {
+	if strings.TrimSpace(options.authorityJWKS) == "" {
+		return fmt.Errorf("--execution-authority-jwks is required with --governed-execution")
+	}
 	if strings.TrimSpace(options.authorityIssuer) == "" {
 		return fmt.Errorf("--execution-authority-issuer is required with --governed-execution")
 	}
@@ -92,18 +65,24 @@ func (options gatewayExecutionOptions) validate() error {
 			return fmt.Errorf("--execution-exporter cannot be empty")
 		}
 	}
-	// Core's Work Context authenticator verifies every capability against
-	// the issuer's LIVE state — its authorization revision and its seals
-	// (installation, principal epoch, approved build, operation binding) —
-	// and has no mode without those sources. This release carries no client
-	// for them, so governed execution cannot be configured from the command
-	// line until one exists: it refuses here, by name, rather than start a
-	// gateway that would verify nothing.
+	return nil
+}
+
+// governedExecutionUnavailable is why --governed-execution is refused by
+// name in this release. Core's Work Context authenticator verifies every
+// capability against the issuer's LIVE state — its authorization revision
+// and its seals (installation, principal epoch, approved build, operation
+// binding) — and has no mode without those sources. This release carries no
+// client for them, so governed execution cannot be configured from the
+// command line until one exists: it refuses rather than start a gateway
+// that would verify nothing.
+func governedExecutionUnavailable() error {
 	return fmt.Errorf("--governed-execution needs the Work Context issuer's live authorization-revision and seal sources, and this release has no client for them; governed execution is unavailable until one exists")
 }
 
-func (options gatewayExecutionOptions) hasConfiguration() bool {
-	return strings.TrimSpace(options.authorityIssuer) != "" ||
+func (options *gatewayExecutionOptions) hasConfiguration() bool {
+	return strings.TrimSpace(options.authorityJWKS) != "" ||
+		strings.TrimSpace(options.authorityIssuer) != "" ||
 		strings.TrimSpace(options.stateDir) != "" ||
 		len(options.exporters) != 0
 }

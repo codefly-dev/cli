@@ -155,7 +155,7 @@ var gitOpsPublishCmd = &cobra.Command{
 		if !gitOpsYes && !models.Confirm(ctx, "Publish this signed promotion and open or update its pull request?", false) {
 			return fmt.Errorf("publication not confirmed")
 		}
-		if err := plane.ConfigureMutationAuthority(ctx, control.AuthorityConfig{Mode: control.AuthorityPrepared}); err != nil {
+		if err = plane.ConfigureMutationAuthority(ctx, control.AuthorityConfig{Mode: control.AuthorityPrepared}); err != nil {
 			return err
 		}
 		prepared, err := plane.PrepareMutation(ctx, control.Mutation{
@@ -270,7 +270,7 @@ var gitOpsRollbackCmd = &cobra.Command{
 		if !gitOpsYes && !models.Confirm(ctx, "Publish this reviewed GitOps re-promotion?", false) {
 			return fmt.Errorf("rollback publication not confirmed")
 		}
-		if err := plane.ConfigureMutationAuthority(ctx, control.AuthorityConfig{Mode: control.AuthorityPrepared}); err != nil {
+		if err = plane.ConfigureMutationAuthority(ctx, control.AuthorityConfig{Mode: control.AuthorityPrepared}); err != nil {
 			return err
 		}
 		prepared, err := plane.PrepareMutation(ctx, control.Mutation{

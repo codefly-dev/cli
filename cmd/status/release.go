@@ -227,7 +227,9 @@ func extractVersionNumber(v string) int {
 	parts := strings.Split(strings.TrimPrefix(v, "v"), ".")
 	if len(parts) >= 3 {
 		var num int
-		fmt.Sscanf(parts[2], "%d", &num)
+		if _, err := fmt.Sscanf(parts[2], "%d", &num); err != nil {
+			return 0
+		}
 		return num
 	}
 	return 0

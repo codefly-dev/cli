@@ -133,10 +133,10 @@ func runUpdate(
 		if !term.IsTerminal(int(os.Stdin.Fd())) {
 			return errors.New("interactive confirmation requires a terminal; pass --yes to install")
 		}
-		confirmed, err := models.ConfirmE(ctx,
+		confirmed, confirmedErr := models.ConfirmE(ctx,
 			fmt.Sprintf("Install Codefly v%s over %s?", result.Latest, installation.ResolvedPath), false)
-		if err != nil {
-			return err
+		if confirmedErr != nil {
+			return confirmedErr
 		}
 		if !confirmed {
 			fmt.Fprintln(output, "Update cancelled.")

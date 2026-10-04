@@ -892,23 +892,6 @@ func (world *World) deploys() bool {
 	}
 }
 
-func setConfigurationValues(info *basev0.ConfigurationInformation, values map[string]string) {
-	for _, key := range slices.Sorted(maps.Keys(values)) {
-		replaced := false
-		for _, existing := range info.ConfigurationValues {
-			if existing.Key == key {
-				existing.Value = values[key]
-				replaced = true
-				break
-			}
-		}
-		if !replaced {
-			info.ConfigurationValues = append(info.ConfigurationValues,
-				&basev0.ConfigurationValue{Key: key, Value: values[key]})
-		}
-	}
-}
-
 // workspaceConfigurationSeen reports whether every Info name in a resolved
 // workspace configuration is already present in seen (all Infos of a workspace
 // configuration share one name), i.e. the configuration was already emitted via

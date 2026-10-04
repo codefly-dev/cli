@@ -166,7 +166,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		return fmt.Errorf("cannot load required service: %w", err)
 	}
 
-	if err := common.WithSilenceE(ctx, workspace, silent); err != nil {
+	if err = common.WithSilenceE(ctx, workspace, silent); err != nil {
 		return err
 	}
 
@@ -876,7 +876,7 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 		if outputEnv == "" {
 			return nil, w.NewError("--output-env-service requires --output-env")
 		}
-		if _, err := flow.ServiceFromUnique(outputEnvService); err != nil {
+		if _, err = flow.ServiceFromUnique(outputEnvService); err != nil {
 			return nil, w.Wrapf(err, "cannot select output environment service %q", outputEnvService)
 		}
 		flow.WithOutputEnvService(outputEnvService)

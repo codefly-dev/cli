@@ -221,8 +221,8 @@ func recordCIReportAudit(ctx context.Context, audit CIReportAudit) {
 	task.reporter.mu.Lock()
 	defer task.reporter.mu.Unlock()
 	if reportTask, found := task.reporter.task(task.id); found {
-		copy := audit
-		reportTask.Audit = &copy
+		audited := audit
+		reportTask.Audit = &audited
 	}
 }
 

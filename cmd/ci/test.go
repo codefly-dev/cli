@@ -70,7 +70,7 @@ var TestCmd = &cobra.Command{
 			return err
 		}
 
-		if err := common.WithSilenceE(ctx, workspace, silent); err != nil {
+		if err = common.WithSilenceE(ctx, workspace, silent); err != nil {
 			return fmt.Errorf("cannot configure silent services: %w", err)
 		}
 

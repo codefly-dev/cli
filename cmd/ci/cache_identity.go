@@ -336,14 +336,14 @@ func (builder *ciCacheIdentityBuilder) inputs(ctx context.Context, inputs CICach
 	}
 	servicesForLibraries := []*resources.Service{service}
 	for _, dependency := range order {
-		dependencyModule, dependencyService, err := loadCacheService(ctx, builder.workspace, dependency.Unique)
-		if err != nil {
-			return inputs, limitations, err
+		dependencyModule, dependencyService, dependencyModuleErr := loadCacheService(ctx, builder.workspace, dependency.Unique)
+		if dependencyModuleErr != nil {
+			return inputs, limitations, dependencyModuleErr
 		}
 		servicesForLibraries = append(servicesForLibraries, dependencyService)
-		serviceDigest, err := builder.digestPath(dependencyService.Dir())
-		if err != nil {
-			return inputs, limitations, fmt.Errorf("hash dependency %s: %w", dependency.Unique, err)
+		serviceDigest, serviceDigestErr := builder.digestPath(dependencyService.Dir())
+		if serviceDigestErr != nil {
+			return inputs, limitations, fmt.Errorf("hash dependency %s: %w", dependency.Unique, serviceDigestErr)
 		}
 		moduleDigest, err := builder.moduleDigest(dependencyModule)
 		if err != nil {
@@ -554,7 +554,7 @@ func (builder *ciCacheIdentityBuilder) libraryDigests(ctx context.Context, servi
 	}
 	loaded := map[string]*resources.Library{}
 	for len(pending) > 0 {
-		var names []string
+		names := make([]string, 0, len(pending))
 		for name := range pending {
 			names = append(names, name)
 		}
@@ -712,9 +712,9 @@ func hashCacheEntry(hasher hash.Hash, root, path string) error {
 	}
 	relative = filepath.ToSlash(relative)
 	if info.Mode()&os.ModeSymlink != 0 {
-		target, err := os.Readlink(path)
-		if err != nil {
-			return err
+		target, targetErr := os.Readlink(path)
+		if targetErr != nil {
+			return targetErr
 		}
 		writeCacheRecord(hasher, "symlink", relative, filepath.ToSlash(target))
 		return nil
