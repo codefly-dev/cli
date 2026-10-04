@@ -129,7 +129,7 @@ func TestVerifiedReuseRestoresAndVerifiesRequiredArtifacts(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		recordCIReportArtifact(ctx, CIReportArtifact{Kind: "cyclonedx-sbom", Subject: artifactSubjectSource, Path: relative, MediaType: "application/vnd.cyclonedx+json", SHA256: artifactDigest(payload)})
+		recordCIReportArtifact(ctx, &CIReportArtifact{Kind: "cyclonedx-sbom", Subject: artifactSubjectSource, Path: relative, MediaType: "application/vnd.cyclonedx+json", SHA256: artifactDigest(payload)})
 		return nil
 	}
 	cold := runReuseGate(t, workspace, plan, newReuseTestEngine(t, workspace, store, "runner@sha256:aaa", reuseTestReference), withReuseAction(produce), withReusePhase("sbom"))
@@ -251,7 +251,7 @@ func TestVerifiedReuseFallsBackToExecutionWhenEvidenceIsUnusable(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				recordCIReportArtifact(ctx, CIReportArtifact{Kind: "cyclonedx-sbom", Path: relative, SHA256: artifactDigest(payload)})
+				recordCIReportArtifact(ctx, &CIReportArtifact{Kind: "cyclonedx-sbom", Path: relative, SHA256: artifactDigest(payload)})
 				return nil
 			}
 			cold := runReuseGate(t, workspace, plan, newReuseTestEngine(t, workspace, store, "runner@sha256:aaa", reuseTestReference), withReuseAction(produce))

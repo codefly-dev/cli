@@ -186,11 +186,11 @@ func TestCIReportJSONIsStableAndWrittenRelativeToWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	report := reporter.Finalize(nil)
-	first, err := marshalCIReport(report)
+	first, err := marshalCIReport(&report)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := marshalCIReport(report)
+	second, err := marshalCIReport(&report)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestCIReportJSONIsStableAndWrittenRelativeToWorkspace(t *testing.T) {
 		t.Fatalf("default suite identity missing:\n%s", first)
 	}
 
-	destination, written, err := writeCIReport(workspace, ".codefly/test-report", report)
+	destination, written, err := writeCIReport(workspace, ".codefly/test-report", &report)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,13 +239,13 @@ func TestCIReportRecordsWorkspaceTaskAndTypedEvidence(t *testing.T) {
 	id := reportTaskID("audit", "", "management/worker")
 	reporter.startTask(id)
 	ctx := withCIReportTask(context.Background(), reporter, id)
-	recordCIReportAudit(ctx, CIReportAudit{State: "FINDINGS", Tool: "scanner", Findings: 2, High: 1})
+	recordCIReportAudit(ctx, &CIReportAudit{State: "FINDINGS", Tool: "scanner", Findings: 2, High: 1})
 	recordCIReportDrift(ctx, []string{"b.ts", "a.ts"})
-	recordCIReportArtifact(ctx, CIReportArtifact{Kind: "cyclonedx-sbom", Subject: artifactSubjectSource, Path: "sbom/worker.cdx.json", SHA256: "sha256:abc"})
+	recordCIReportArtifact(ctx, &CIReportArtifact{Kind: "cyclonedx-sbom", Subject: artifactSubjectSource, Path: "sbom/worker.cdx.json", SHA256: "sha256:abc"})
 	// A producer that names no subject must still yield a report that states one:
 	// the "absent means unknown" rule belongs in the data, not in a convention a
 	// report.json consumer cannot see.
-	recordCIReportArtifact(ctx, CIReportArtifact{Kind: "cyclonedx-sbom", Path: "sbom/unnamed.cdx.json", SHA256: "sha256:def"})
+	recordCIReportArtifact(ctx, &CIReportArtifact{Kind: "cyclonedx-sbom", Path: "sbom/unnamed.cdx.json", SHA256: "sha256:def"})
 	reporter.finishTask(id, nil)
 
 	report := reporter.Finalize(nil)
@@ -269,7 +269,7 @@ func TestCIReportRecordsWorkspaceTaskAndTypedEvidence(t *testing.T) {
 	if serviceTask.Artifacts[1].Subject != artifactSubjectUnknown {
 		t.Fatalf("unnamed artifact subject = %q, want %q", serviceTask.Artifacts[1].Subject, artifactSubjectUnknown)
 	}
-	encoded, err := marshalCIReport(report)
+	encoded, err := marshalCIReport(&report)
 	if err != nil {
 		t.Fatal(err)
 	}

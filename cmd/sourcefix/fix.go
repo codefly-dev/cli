@@ -182,7 +182,8 @@ func FixFiles(ctx context.Context, client Executor, service string, files []stri
 
 	// Optimistic concurrency gate: no file may change between preview and the
 	// start of the commit phase.
-	for _, file := range staged {
+	for index := range staged {
+		file := &staged[index]
 		current, err := readFile(ctx, client, file.result.File)
 		if err != nil {
 			return nil, err
@@ -211,12 +212,12 @@ func FixFiles(ctx context.Context, client Executor, service string, files []stri
 			// A transport failure can be reported after the remote write was
 			// applied. Restore only known staged states; never overwrite an
 			// intervening user edit with the preview's original content.
-			if restoreErr := restoreStagedFile(ctx, client, staged[index]); restoreErr != nil {
+			if restoreErr := restoreStagedFile(ctx, client, &staged[index]); restoreErr != nil {
 				rollbackErrs = append(rollbackErrs, restoreErr.Error())
 			}
 			for i := len(written) - 1; i >= 0; i-- {
 				prior := written[i]
-				if restoreErr := restoreStagedFile(ctx, client, staged[prior]); restoreErr != nil {
+				if restoreErr := restoreStagedFile(ctx, client, &staged[prior]); restoreErr != nil {
 					rollbackErrs = append(rollbackErrs, restoreErr.Error())
 				}
 			}
@@ -237,7 +238,7 @@ func rollbackError(ctx context.Context, client Executor, staged []stagedFile, wr
 	rollbackErrs := make([]string, 0, len(written))
 	for i := len(written) - 1; i >= 0; i-- {
 		prior := written[i]
-		if err := restoreStagedFile(ctx, client, staged[prior]); err != nil {
+		if err := restoreStagedFile(ctx, client, &staged[prior]); err != nil {
 			rollbackErrs = append(rollbackErrs, err.Error())
 		}
 	}
@@ -250,7 +251,7 @@ func rollbackError(ctx context.Context, client Executor, staged []stagedFile, wr
 	return cause
 }
 
-func restoreStagedFile(ctx context.Context, client Executor, staged stagedFile) error {
+func restoreStagedFile(ctx context.Context, client Executor, staged *stagedFile) error {
 	current, err := readFile(ctx, client, staged.result.File)
 	if err != nil {
 		return fmt.Errorf("inspect %s for rollback: %w", staged.result.File, err)

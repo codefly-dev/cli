@@ -63,7 +63,7 @@ func TestCreateAgentIssueCreatesIssueThroughAPI(t *testing.T) {
 	t.Setenv("GITHUB_API_URL", server.URL)
 
 	status := AgentStatus{Name: "service-redis", CoreVer: "0.3.0", LatestCore: "0.3.5", Delta: 5}
-	if err := createAgentIssue(baseDir, status); err != nil {
+	if err := createAgentIssue(baseDir, &status); err != nil {
 		t.Fatalf("createAgentIssue: %v", err)
 	}
 	if gotPath != "/api/v3/repos/codefly-dev/service-redis/issues" {

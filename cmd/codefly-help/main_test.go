@@ -21,8 +21,8 @@ type fakeExplainer struct {
 	err    error
 }
 
-func (f *fakeExplainer) explain(_ context.Context, req helpprovider.Request) (string, error) {
-	f.got = req
+func (f *fakeExplainer) explain(_ context.Context, req *helpprovider.Request) (string, error) {
+	f.got = *req
 	return f.result, f.err
 }
 
@@ -102,7 +102,7 @@ func TestLLMExplainerReplaysCassette(t *testing.T) {
 		t.Fatal(err)
 	}
 	ex := &llmExplainer{client: client}
-	got, err := ex.explain(t.Context(), helpprovider.Request{
+	got, err := ex.explain(t.Context(), &helpprovider.Request{
 		ProtocolVersion: helpprovider.ProtocolVersion,
 		Application:     "codefly",
 		Command:         "codefly build service",

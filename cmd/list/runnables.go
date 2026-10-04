@@ -89,7 +89,8 @@ func listRunnables(cmd *cobra.Command) error {
 
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "MODULE\tNAME\tVERSION\tAGENT\tFACILITIES\tTIMEOUT\tSOURCE")
-	for _, e := range entries {
+	for index := range entries {
+		e := &entries[index]
 		source := e.Source
 		if source == "" {
 			source = "declared"

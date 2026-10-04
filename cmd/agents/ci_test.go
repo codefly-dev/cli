@@ -284,7 +284,7 @@ func TestLoadAgentCIManifestConformanceModes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("loadAgentCIManifest: %v", err)
 			}
-			if got := conformanceMode(manifest); got != test.wantMode {
+			if got := conformanceMode(&manifest); got != test.wantMode {
 				t.Fatalf("conformanceMode = %q, want %q", got, test.wantMode)
 			}
 		})
@@ -366,7 +366,7 @@ func TestLoadAgentCIManifestRequiresKindOwnedConformance(t *testing.T) {
 			if err != nil {
 				t.Fatalf("declared %s manifest: %v", kind, err)
 			}
-			if conformanceMode(manifest) != mode || manifest.Conformance.Fixture != "conformance/operations.yaml" {
+			if conformanceMode(&manifest) != mode || manifest.Conformance.Fixture != "conformance/operations.yaml" {
 				t.Fatalf("unexpected %s manifest: %+v", kind, manifest.Conformance)
 			}
 		})
@@ -380,7 +380,7 @@ func TestRunAttachSourceConformanceFailsClosedWithoutFixtureWorkspace(t *testing
 		t.Fatalf("create fixture dir: %v", err)
 	}
 	manifest := agentYAML{Conformance: &agentConformance{Mode: conformanceModeAttachSource, Fixture: fixture}}
-	_, _, err := runAttachSourceConformance(context.Background(), t.TempDir(), t.TempDir(), agentDir, manifest)
+	_, _, err := runAttachSourceConformance(context.Background(), t.TempDir(), t.TempDir(), agentDir, &manifest)
 	if err == nil || !strings.Contains(err.Error(), "workspace.codefly.yaml") {
 		t.Fatalf("runAttachSourceConformance error = %v, want fixture missing workspace.codefly.yaml", err)
 	}
@@ -417,7 +417,7 @@ func TestAssertFixtureTargetsAgent(t *testing.T) {
 				t.Fatalf("create service dir: %v", err)
 			}
 			writeFile(t, filepath.Join(serviceDir, "service.codefly.yaml"), test.content)
-			err := assertFixtureTargetsAgent(fixtureDir, "conformance/fixture", manifest)
+			err := assertFixtureTargetsAgent(fixtureDir, "conformance/fixture", &manifest)
 			if test.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
 					t.Fatalf("assertFixtureTargetsAgent error = %v, want containing %q", err, test.wantErr)

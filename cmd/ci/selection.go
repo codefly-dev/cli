@@ -65,7 +65,7 @@ type mutablePlanService struct {
 	paths          []string
 }
 
-func BuildPlan(ctx context.Context, workspace *resources.Workspace, opts PlanOptions) (*Plan, error) {
+func BuildPlan(ctx context.Context, workspace *resources.Workspace, opts *PlanOptions) (*Plan, error) {
 	if workspace == nil {
 		return nil, fmt.Errorf("workspace is nil")
 	}

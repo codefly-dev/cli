@@ -88,7 +88,7 @@ func (s buildSpecs) cover(targets []*Companion) error {
 			undeclared = append(undeclared, c.Name)
 			continue
 		}
-		if err := checkBaseAgreesWithTree(c, spec); err != nil {
+		if err := checkBaseAgreesWithTree(c, &spec); err != nil {
 			return err
 		}
 	}
@@ -326,7 +326,7 @@ func buildTargets(coreDir string, targets []*Companion, opts BuildOptions) ([]pu
 			// cover guaranteed a spec for every target with a Dockerfile, and
 			// buildWithDocker rejects one without before reading the spec.
 			spec, _ := specs.of(c.Name)
-			buildDigest, buildErr = buildWithDocker(c, spec, coreDir, opts.Pull, platforms, opts.Push, companionBase)
+			buildDigest, buildErr = buildWithDocker(c, &spec, coreDir, opts.Pull, platforms, opts.Push, companionBase)
 		}
 		if buildErr != nil {
 			// The base is the one build whose failure invalidates what
@@ -472,7 +472,7 @@ func (r *baseResolver) referenceFor(c *Companion) (string, error) {
 // base is not what the image was built on. Neither shows up in the build, in
 // `companion verify`, or in the published manifest, whose base field is
 // omitted rather than contradicted.
-func checkBaseAgreesWithTree(c *Companion, spec companions.BuildSpec) error {
+func checkBaseAgreesWithTree(c *Companion, spec *companions.BuildSpec) error {
 	if !c.HasDockerfile {
 		return nil
 	}
@@ -724,7 +724,7 @@ func resolveDockerPlatforms(value string) ([]dockerPlatform, error) {
 // image, and the tag it was pushed under is mutable afterwards. Every other
 // build returns an empty digest — a single-platform image is published by
 // pushImage, which reports its own.
-func buildWithDocker(c *Companion, spec companions.BuildSpec, coreDir string, pull bool, platforms []dockerPlatform, push bool, baseImage string) (string, error) {
+func buildWithDocker(c *Companion, spec *companions.BuildSpec, coreDir string, pull bool, platforms []dockerPlatform, push bool, baseImage string) (string, error) {
 	if !c.HasDockerfile {
 		return "", fmt.Errorf("no Dockerfile in %s", c.Dir)
 	}

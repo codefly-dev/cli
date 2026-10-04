@@ -23,7 +23,7 @@ func TestReplayPreservesSelectionAndRejectsAlterations(t *testing.T) {
 			runCacheTestGit(t, root, "-c", "user.name=CI Test", "-c", "user.email=ci@example.com", "commit", "-m", "fixture")
 			options := PlanOptions{ChangedFiles: []string{"modules/management/services/organization/code/deleted.go"}}
 			ctx := context.Background()
-			plan, err := BuildPlan(ctx, workspace, options)
+			plan, err := BuildPlan(ctx, workspace, &options)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -166,7 +166,7 @@ func TestReplayRejectsChangedExternalModuleSource(t *testing.T) {
 	runCacheTestGit(t, root, "add", ".")
 	runCacheTestGit(t, root, "-c", "user.name=CI Test", "-c", "user.email=ci@example.com", "commit", "-m", "fixture")
 	options := PlanOptions{All: true, ChangedFiles: []string{"README.md"}}
-	plan, err := BuildPlan(context.Background(), workspace, options)
+	plan, err := BuildPlan(context.Background(), workspace, &options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestReplayRejectsEndpointVisibilityViolation(t *testing.T) {
 	runCacheTestGit(t, root, "init")
 	runCacheTestGit(t, root, "add", ".")
 	runCacheTestGit(t, root, "-c", "user.name=CI Test", "-c", "user.email=ci@example.com", "commit", "-m", "fixture")
-	plan, err := BuildPlan(context.Background(), workspace, PlanOptions{All: true, ChangedFiles: []string{"README.md"}})
+	plan, err := BuildPlan(context.Background(), workspace, &PlanOptions{All: true, ChangedFiles: []string{"README.md"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestReplayBindsTasksAndDispatchesBuildPrerequisites(t *testing.T) {
 	ctx := context.Background()
 	options := PlanOptions{ChangedFiles: []string{"modules/web/services/frontend/code/index.js"}}
 	invocation := ReplayInvocation{Phases: []string{"build"}, Suites: []string{"integration"}, RuntimeContext: "free"}
-	plan, err := BuildPlan(ctx, workspace, options)
+	plan, err := BuildPlan(ctx, workspace, &options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +348,7 @@ service-dependencies:
 	runCacheTestGit(t, root, "init")
 	runCacheTestGit(t, root, "add", ".")
 	runCacheTestGit(t, root, "-c", "user.name=CI Test", "-c", "user.email=ci@example.com", "commit", "-m", "fixture")
-	plan, err := BuildPlan(context.Background(), workspace, PlanOptions{All: true, ChangedFiles: []string{"README.md"}})
+	plan, err := BuildPlan(context.Background(), workspace, &PlanOptions{All: true, ChangedFiles: []string{"README.md"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +442,7 @@ func TestReplayVisibilityFollowsTheStagesItReplays(t *testing.T) {
 		t.Run(scenario.kind+"/"+scenario.phase, func(t *testing.T) {
 			workspace := visibilityFixture(t, scenario.kind)
 			ctx := context.Background()
-			plan, err := BuildPlan(ctx, workspace, PlanOptions{ChangedFiles: []string{"modules/documents/services/documents/code/main.go"}})
+			plan, err := BuildPlan(ctx, workspace, &PlanOptions{ChangedFiles: []string{"modules/documents/services/documents/code/main.go"}})
 			if err != nil {
 				t.Fatal(err)
 			}

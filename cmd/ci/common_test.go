@@ -355,7 +355,7 @@ func TestCIBuildPreservesPrerequisites(t *testing.T) {
 		for _, jobs := range []int{1, 2, 4} {
 			t.Run(fmt.Sprintf("selected=%t/jobs=%d", selected, jobs), func(t *testing.T) {
 				_, workspace := loadSchedulerFixture(t)
-				plan, err := BuildPlan(context.Background(), workspace, PlanOptions{All: true})
+				plan, err := BuildPlan(context.Background(), workspace, &PlanOptions{All: true})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -557,7 +557,7 @@ func TestCIMixedStageCycleCanPlanAndSchedule(t *testing.T) {
 	if err := os.WriteFile(path, payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := BuildPlan(context.Background(), workspace, PlanOptions{All: true, ChangedFiles: []string{"README.md"}})
+	plan, err := BuildPlan(context.Background(), workspace, &PlanOptions{All: true, ChangedFiles: []string{"README.md"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -618,7 +618,7 @@ func BenchmarkCIStageScheduling(b *testing.B) {
 		for _, selected := range []bool{false, true} {
 			b.Run(fmt.Sprintf("%s/selected=%t", phase, selected), func(b *testing.B) {
 				_, workspace := loadSchedulerFixture(b)
-				plan, err := BuildPlan(context.Background(), workspace, PlanOptions{All: true, ChangedFiles: []string{"README.md"}})
+				plan, err := BuildPlan(context.Background(), workspace, &PlanOptions{All: true, ChangedFiles: []string{"README.md"}})
 				if err != nil {
 					b.Fatal(err)
 				}

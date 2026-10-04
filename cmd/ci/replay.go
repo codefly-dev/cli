@@ -344,7 +344,7 @@ func readReplayPlan(ctx context.Context, workspace *resources.Workspace, path st
 	if options.Base == "" && len(options.ChangedFiles) == 0 && !options.All {
 		return nil, fmt.Errorf("--plan requires independent --base, --changed-file, or --all selection bounds")
 	}
-	expected, err := BuildPlan(ctx, workspace, *options)
+	expected, err := BuildPlan(ctx, workspace, options)
 	if err != nil {
 		return nil, err
 	}

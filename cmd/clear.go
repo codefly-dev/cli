@@ -327,7 +327,8 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 	}
 
 	removed := 0
-	for _, c := range cos {
+	for index := range cos {
+		c := &cos[index]
 		if len(c.Names) == 0 {
 			continue
 		}

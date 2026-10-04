@@ -58,13 +58,13 @@ func TestServiceInstallOptionsBuildTypedContract(t *testing.T) {
 }
 
 func TestServiceInstallOptionsRejectAmbiguousHealthAndEnvironment(t *testing.T) {
-	if _, err := (serviceInstallOptions{
+	if _, err := (&serviceInstallOptions{
 		healthHTTP: "http://127.0.0.1/healthz",
 		healthTCP:  "127.0.0.1:8080",
 	}).request("dev.codefly.test"); err == nil {
 		t.Fatal("two health probes were accepted")
 	}
-	if _, err := (serviceInstallOptions{
+	if _, err := (&serviceInstallOptions{
 		publicEnvironment: []string{"MISSING_VALUE"},
 	}).request("dev.codefly.test"); err == nil {
 		t.Fatal("malformed environment was accepted")
@@ -101,7 +101,7 @@ func TestServiceCommandExposesCompleteLifecycle(t *testing.T) {
 func TestWriteServiceStatusIncludesTypedDiagnostics(t *testing.T) {
 	exitCode := 78
 	var output bytes.Buffer
-	if err := writeServiceStatus(&output, control.InstalledServiceStatus{
+	if err := writeServiceStatus(&output, &control.InstalledServiceStatus{
 		Ref:             control.ServiceRef{Label: "dev.codefly.mind"},
 		Version:         "2",
 		State:           control.ServiceCrashLooping,

@@ -121,7 +121,7 @@ func runRelease(cmd *cobra.Command, _ []string) error {
 					fmt.Printf("⏭ Skipping archived repo %s\n", s.Name)
 					continue
 				}
-				if err := createAgentIssue(baseDir, s); err != nil {
+				if err := createAgentIssue(baseDir, &s); err != nil {
 					fmt.Printf("⚠ Failed to create issue for %s: %v\n", s.Name, err)
 				} else {
 					fmt.Printf("✓ Created issue for %s\n", s.Name)
@@ -278,7 +278,7 @@ func repoIsArchived(ctx context.Context, path string) bool {
 	return gh.Archived(ctx, owner, repo)
 }
 
-func createAgentIssue(baseDir string, status AgentStatus) error {
+func createAgentIssue(baseDir string, status *AgentStatus) error {
 	agentPath := filepath.Join(baseDir, status.Name)
 
 	title := fmt.Sprintf("chore: update core to %s (currently %s, %d versions behind)",

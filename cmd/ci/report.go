@@ -213,7 +213,7 @@ func withCIReportTask(ctx context.Context, reporter *CIReporter, id string) cont
 	return context.WithValue(ctx, ciReportTaskContextKey{}, ciReportTaskContext{reporter: reporter, id: id})
 }
 
-func recordCIReportAudit(ctx context.Context, audit CIReportAudit) {
+func recordCIReportAudit(ctx context.Context, audit *CIReportAudit) {
 	task, ok := ctx.Value(ciReportTaskContextKey{}).(ciReportTaskContext)
 	if !ok || task.reporter == nil {
 		return
@@ -222,7 +222,7 @@ func recordCIReportAudit(ctx context.Context, audit CIReportAudit) {
 	defer task.reporter.mu.Unlock()
 	if reportTask, found := task.reporter.task(task.id); found {
 		audited := audit
-		reportTask.Audit = &audited
+		reportTask.Audit = audited
 	}
 }
 
@@ -250,16 +250,16 @@ func recordCIReportSkip(ctx context.Context, reason string) {
 	task.reporter.markSkipped(task.id, reason)
 }
 
-func recordCIReportArtifact(ctx context.Context, artifact CIReportArtifact) {
+func recordCIReportArtifact(ctx context.Context, artifact *CIReportArtifact) {
 	task, ok := ctx.Value(ciReportTaskContextKey{}).(ciReportTaskContext)
 	if !ok || task.reporter == nil {
 		return
 	}
-	normalizeCIReportSubject(&artifact)
+	normalizeCIReportSubject(artifact)
 	task.reporter.mu.Lock()
 	defer task.reporter.mu.Unlock()
 	if reportTask, found := task.reporter.task(task.id); found {
-		reportTask.Artifacts = append(reportTask.Artifacts, artifact)
+		reportTask.Artifacts = append(reportTask.Artifacts, *artifact)
 	}
 }
 
@@ -366,7 +366,7 @@ func (reporter *CIReporter) registerTasks(ctx context.Context, workspace *resour
 		}
 		ids[index] = id
 		reporter.taskIndex[id] = len(reporter.report.Tasks)
-		cacheIdentity := reporter.cacheBuilder.identity(ctx, options, task.planned)
+		cacheIdentity := reporter.cacheBuilder.identity(ctx, options, &task.planned)
 		reporter.report.Tasks = append(reporter.report.Tasks, CIReportTask{
 			ID:               id,
 			Scope:            "service",
@@ -598,12 +598,13 @@ func (reporter *CIReporter) Finalize(runErr error) CIReport {
 	if runErr != nil {
 		reporter.report.Error = runErr.Error()
 	}
-	return cloneCIReport(reporter.report)
+	return cloneCIReport(&reporter.report)
 }
 
 func summarizeReportTasks(tasks []CIReportTask) CIReportSummary {
 	summary := CIReportSummary{Total: len(tasks)}
-	for _, task := range tasks {
+	for index := range tasks {
+		task := &tasks[index]
 		switch task.Status {
 		case reportStatusPassed:
 			summary.Passed++
@@ -620,8 +621,10 @@ func summarizeReportTasks(tasks []CIReportTask) CIReportSummary {
 	return summary
 }
 
-func cloneCIReport(report CIReport) CIReport {
-	cloned := report
+func cloneCIReport(report *CIReport) CIReport {
+	// A copy of the report, not a view of it: the reporter keeps writing the
+	// original, and the clone replaces every slice the original holds.
+	cloned := *report
 	cloned.Plan = clonePlan(&report.Plan)
 	cloned.Phases = append([]string(nil), report.Phases...)
 	cloned.Tasks = make([]CIReportTask, len(report.Tasks))
@@ -651,7 +654,7 @@ func cloneCIReport(report CIReport) CIReport {
 	return cloned
 }
 
-func marshalCIReport(report CIReport) ([]byte, error) {
+func marshalCIReport(report *CIReport) ([]byte, error) {
 	payload, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode CI report: %w", err)
@@ -659,7 +662,7 @@ func marshalCIReport(report CIReport) ([]byte, error) {
 	return append(payload, '\n'), nil
 }
 
-func writeCIReport(workspace *resources.Workspace, outputDirectory string, report CIReport) (string, []byte, error) {
+func writeCIReport(workspace *resources.Workspace, outputDirectory string, report *CIReport) (string, []byte, error) {
 	if workspace == nil {
 		return "", nil, fmt.Errorf("write CI report: workspace is nil")
 	}
@@ -761,7 +764,7 @@ func runWithCIReport(ctx context.Context, workspace *resources.Workspace, plan *
 		result = ctx.Err()
 	}
 	report := reporter.Finalize(result)
-	destination, payload, reportErr := writeCIReport(workspace, ciReportOutput, report)
+	destination, payload, reportErr := writeCIReport(workspace, ciReportOutput, &report)
 	result = errors.Join(result, reportErr)
 
 	if format == prereleaseFormatJSON {

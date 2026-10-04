@@ -46,7 +46,7 @@ func TestBuildWithDockerBuildsWhatTheSpecDeclares(t *testing.T) {
 	}
 	c, err := LoadCompanion(filepath.Join(root, "companions", "proto"))
 	require.NoError(t, err)
-	_, err = buildWithDocker(c, spec, root, false, []dockerPlatform{{Value: "linux/amd64", Arch: "amd64"}}, false, "")
+	_, err = buildWithDocker(c, &spec, root, false, []dockerPlatform{{Value: "linux/amd64", Arch: "amd64"}}, false, "")
 	require.NoError(t, err)
 
 	logged := strings.TrimSpace(string(readFile(t, dockerLog)))

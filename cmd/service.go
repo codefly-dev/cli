@@ -163,7 +163,7 @@ func newServiceStatusCommand(use, short string, jsonOutput *bool, operation serv
 					return err
 				}
 			} else {
-				if err := writeServiceStatus(command.OutOrStdout(), status); err != nil {
+				if err := writeServiceStatus(command.OutOrStdout(), &status); err != nil {
 					return err
 				}
 			}
@@ -181,7 +181,7 @@ func newServiceStatusCommand(use, short string, jsonOutput *bool, operation serv
 	}
 }
 
-func (options serviceInstallOptions) request(label string) (control.InstallServiceRequest, error) {
+func (options *serviceInstallOptions) request(label string) (control.InstallServiceRequest, error) {
 	if options.healthHTTP != "" && options.healthTCP != "" {
 		return control.InstallServiceRequest{}, fmt.Errorf("--health-http and --health-tcp are mutually exclusive")
 	}
@@ -250,7 +250,7 @@ func writeJSON(output io.Writer, value any) error {
 	return encoder.Encode(value)
 }
 
-func writeServiceStatus(output io.Writer, status control.InstalledServiceStatus) error {
+func writeServiceStatus(output io.Writer, status *control.InstalledServiceStatus) error {
 	if _, err := fmt.Fprintf(output, "%s: %s\n", status.Ref.Label, status.State); err != nil {
 		return err
 	}

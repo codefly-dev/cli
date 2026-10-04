@@ -303,7 +303,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 		if err != nil {
 			return err
 		}
-		if conformanceMode(state.manifest) == conformanceModeGeneratedService && !agentAdvertisesCapability(info, agentv0.Capability_BUILDER) {
+		if conformanceMode(&state.manifest) == conformanceModeGeneratedService && !agentAdvertisesCapability(info, agentv0.Capability_BUILDER) {
 			state.conformanceApplicable = false
 			state.report.Options.ConformanceEnabled = false
 		}
@@ -327,7 +327,7 @@ func runAgentCI(ctx context.Context, options agentCIOptions) (*civ0.AgentCIRepor
 	if options.skipConformance || !state.conformanceApplicable {
 		state.skipStage("conformance")
 	} else if err := runStage("conformance", func() error {
-		workspaceReport, conformanceDir, err := runAgentConformance(ctx, state.temporary, state.agentHome, options.dir, state.manifest)
+		workspaceReport, conformanceDir, err := runAgentConformance(ctx, state.temporary, state.agentHome, options.dir, &state.manifest)
 		state.workspaceRaw = workspaceReport
 		state.conformance = conformanceDir
 		return err
@@ -509,7 +509,7 @@ func loadAgentCIManifest(dir string, skipConformance bool) (agentYAML, error) {
 		return agentYAML{}, err
 	}
 	if manifest.Kind == string(resources.RunnableAgent) {
-		mode := conformanceMode(manifest)
+		mode := conformanceMode(&manifest)
 		if mode != conformanceModeRunnableCreate && mode != conformanceModeRunnablePackage {
 			return agentYAML{}, fmt.Errorf("runnable CI requires explicit conformance.mode: runnable-create or runnable-package")
 		}
@@ -524,7 +524,7 @@ func loadAgentCIManifest(dir string, skipConformance bool) (agentYAML, error) {
 			// The declaration is required whether or not this run waives
 			// conformance: a release that ships no fixture has nothing to
 			// qualify, and a waiver must stay a waiver of a real suite.
-			if conformanceMode(manifest) != required {
+			if conformanceMode(&manifest) != required {
 				return agentYAML{}, fmt.Errorf("%s CI requires conformance.mode: %s", manifest.Kind, required)
 			}
 			if strings.TrimSpace(manifest.Conformance.Fixture) == "" {
@@ -542,7 +542,7 @@ func loadAgentCIManifest(dir string, skipConformance bool) (agentYAML, error) {
 		}
 		return agentYAML{}, fmt.Errorf("agent CI supports codefly:service, codefly:module, codefly:toolbox, codefly:provider, codefly:runnable; got %s", manifest.Kind)
 	}
-	mode := conformanceMode(manifest)
+	mode := conformanceMode(&manifest)
 	switch mode {
 	case conformanceModeGeneratedService:
 	case conformanceModeAttachSource:
@@ -555,7 +555,7 @@ func loadAgentCIManifest(dir string, skipConformance bool) (agentYAML, error) {
 	return manifest, nil
 }
 
-func conformanceMode(manifest agentYAML) string {
+func conformanceMode(manifest *agentYAML) string {
 	if manifest.Conformance == nil || strings.TrimSpace(manifest.Conformance.Mode) == "" {
 		return conformanceModeGeneratedService
 	}
@@ -701,14 +701,14 @@ func snapshotAgentWorktree(ctx context.Context, dir string) (agentWorktreeSnapsh
 	return agentWorktreeSnapshot{root: root, entries: entries}, nil
 }
 
-func runAgentConformance(ctx context.Context, temporary, agentHome, agentDir string, manifest agentYAML) ([]byte, string, error) {
+func runAgentConformance(ctx context.Context, temporary, agentHome, agentDir string, manifest *agentYAML) ([]byte, string, error) {
 	switch manifest.Kind {
 	case string(resources.RunnableAgent):
-		return runRunnableConformance(ctx, temporary, agentHome, &manifest)
+		return runRunnableConformance(ctx, temporary, agentHome, manifest)
 	case string(resources.ToolboxAgent):
-		return runToolboxConformance(ctx, temporary, agentDir, &manifest)
+		return runToolboxConformance(ctx, temporary, agentDir, manifest)
 	case string(resources.ProviderAgent):
-		return runProviderConformance(ctx, temporary, agentDir, &manifest)
+		return runProviderConformance(ctx, temporary, agentDir, manifest)
 	}
 	if conformanceMode(manifest) == conformanceModeAttachSource {
 		return runAttachSourceConformance(ctx, temporary, agentHome, agentDir, manifest)
@@ -723,7 +723,7 @@ func runnableConformanceArguments(manifest *agentYAML, output string) [][]string
 		{"--timestamps=false", "add", "module", "app", "--yes"},
 		{"--timestamps=false", "--local-agents", "add", "runnable", "subject", "--module", "app", "--agent", manifest.Publisher + "/" + manifest.Name + ":" + manifest.Version, "--handler", manifest.Conformance.Handler},
 	}
-	if conformanceMode(*manifest) == conformanceModeRunnablePackage {
+	if conformanceMode(manifest) == conformanceModeRunnablePackage {
 		commands = append(commands, []string{"--timestamps=false", "--local-agents", "build", "runnable", "app/subject", "--output", output, "--json"})
 	}
 	return commands
@@ -761,7 +761,7 @@ func agentConformanceEnvironment(agentHome string) []string {
 	))
 }
 
-func runGeneratedServiceConformance(ctx context.Context, temporary, agentHome string, manifest agentYAML) ([]byte, string, error) {
+func runGeneratedServiceConformance(ctx context.Context, temporary, agentHome string, manifest *agentYAML) ([]byte, string, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, "", fmt.Errorf("resolve Codefly executable: %w", err)
@@ -793,7 +793,7 @@ func runGeneratedServiceConformance(ctx context.Context, temporary, agentHome st
 // ships, so attach-only agents whose Builder.Create declines to scaffold a
 // project template are still covered end to end. The fixture is copied out of
 // the agent repository so the gate never mutates the agent worktree.
-func runAttachSourceConformance(ctx context.Context, temporary, agentHome, agentDir string, manifest agentYAML) ([]byte, string, error) {
+func runAttachSourceConformance(ctx context.Context, temporary, agentHome, agentDir string, manifest *agentYAML) ([]byte, string, error) {
 	fixture := manifest.Conformance.Fixture
 	fixtureDir := fixture
 	if !filepath.IsAbs(fixtureDir) {
@@ -818,7 +818,7 @@ func runAttachSourceConformance(ctx context.Context, temporary, agentHome, agent
 	if err := os.RemoveAll(filepath.Join(workspaceDir, ".codefly")); err != nil {
 		return nil, "", fmt.Errorf("reset attach-existing-source fixture state: %w", err)
 	}
-	if err := installFixtureDependencies(ctx, executable, workspaceDir, agentHome, &manifest); err != nil {
+	if err := installFixtureDependencies(ctx, executable, workspaceDir, agentHome, manifest); err != nil {
 		return nil, "", err
 	}
 	return runWorkspaceGate(ctx, executable, workspaceDir, agentConformanceEnvironment(agentHome))
@@ -830,7 +830,7 @@ func runAttachSourceConformance(ctx context.Context, temporary, agentHome, agent
 // binary and a pin only resolves when it equals the version under test; any
 // other pin would silently exercise nothing, so we reject it up front with a
 // targeted message instead of a generic downstream "agent not found".
-func assertFixtureTargetsAgent(fixtureDir, fixture string, manifest agentYAML) error {
+func assertFixtureTargetsAgent(fixtureDir, fixture string, manifest *agentYAML) error {
 	referenced := false
 	err := filepath.WalkDir(fixtureDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {

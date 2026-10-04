@@ -192,7 +192,7 @@ func gitCacheFiles(ctx context.Context, repoRoot string) ([]string, error) {
 	return files, nil
 }
 
-func (builder *ciCacheIdentityBuilder) identity(ctx context.Context, options ScheduleOptions, planned PlannedService) CICacheIdentity {
+func (builder *ciCacheIdentityBuilder) identity(ctx context.Context, options ScheduleOptions, planned *PlannedService) CICacheIdentity {
 	identity := CICacheIdentity{
 		SchemaVersion: cacheIdentitySchemaVersion,
 		Algorithm:     cacheIdentityAlgorithm,
@@ -210,7 +210,7 @@ func (builder *ciCacheIdentityBuilder) identity(ctx context.Context, options Sch
 			Libraries:      []CICacheResourceDigest{},
 		},
 	}
-	inputs, limitations, err := builder.inputs(ctx, identity.Inputs, planned.Service)
+	inputs, limitations, err := builder.inputs(ctx, &identity.Inputs, planned.Service)
 	identity.Inputs = inputs
 	identity.Limitations = limitations
 	if err != nil {
@@ -292,62 +292,62 @@ func normalizedCacheSuite(phase, suite string) string {
 	return suite
 }
 
-func (builder *ciCacheIdentityBuilder) inputs(ctx context.Context, inputs CICacheIdentityInput, serviceUnique string) (CICacheIdentityInput, []string, error) {
+func (builder *ciCacheIdentityBuilder) inputs(ctx context.Context, inputs *CICacheIdentityInput, serviceUnique string) (CICacheIdentityInput, []string, error) {
 	if builder.workspace == nil {
-		return inputs, nil, fmt.Errorf("cache identity workspace is nil")
+		return *inputs, nil, fmt.Errorf("cache identity workspace is nil")
 	}
 	module, service, err := loadCacheService(ctx, builder.workspace, serviceUnique)
 	if err != nil {
-		return inputs, nil, err
+		return *inputs, nil, err
 	}
 	if service.Agent == nil {
-		return inputs, nil, fmt.Errorf("service %s has no agent", serviceUnique)
+		return *inputs, nil, fmt.Errorf("service %s has no agent", serviceUnique)
 	}
 	agentInput, agentLimitations := builder.agentInput(ctx, service.Agent)
 	inputs.Agent = agentInput
 	cliDigest, repositoryRest, limitations, err := builder.ambientInputs()
 	limitations = append(limitations, agentLimitations...)
 	if err != nil {
-		return inputs, limitations, err
+		return *inputs, limitations, err
 	}
 	inputs.CLIDigest = cliDigest
 	inputs.RepositoryRest = repositoryRest
 
 	inputs.WorkspaceDigest, err = builder.workspaceDigest()
 	if err != nil {
-		return inputs, limitations, fmt.Errorf("hash workspace inputs: %w", err)
+		return *inputs, limitations, fmt.Errorf("hash workspace inputs: %w", err)
 	}
 	inputs.ModuleDigest, err = builder.moduleDigest(module)
 	if err != nil {
-		return inputs, limitations, fmt.Errorf("hash module %s inputs: %w", module.Name, err)
+		return *inputs, limitations, fmt.Errorf("hash module %s inputs: %w", module.Name, err)
 	}
 	inputs.ServiceDigest, err = builder.digestPath(service.Dir())
 	if err != nil {
-		return inputs, limitations, fmt.Errorf("hash service %s inputs: %w", serviceUnique, err)
+		return *inputs, limitations, fmt.Errorf("hash service %s inputs: %w", serviceUnique, err)
 	}
 
 	dependencies, err := architecture.NewServiceDependencies(ctx, builder.workspace)
 	if err != nil {
-		return inputs, limitations, fmt.Errorf("load cache dependency graph: %w", err)
+		return *inputs, limitations, fmt.Errorf("load cache dependency graph: %w", err)
 	}
 	order, err := dependencies.OrderTo(ctx, serviceUnique)
 	if err != nil {
-		return inputs, limitations, fmt.Errorf("resolve cache dependencies for %s: %w", serviceUnique, err)
+		return *inputs, limitations, fmt.Errorf("resolve cache dependencies for %s: %w", serviceUnique, err)
 	}
 	servicesForLibraries := []*resources.Service{service}
 	for _, dependency := range order {
 		dependencyModule, dependencyService, dependencyModuleErr := loadCacheService(ctx, builder.workspace, dependency.Unique)
 		if dependencyModuleErr != nil {
-			return inputs, limitations, dependencyModuleErr
+			return *inputs, limitations, dependencyModuleErr
 		}
 		servicesForLibraries = append(servicesForLibraries, dependencyService)
 		serviceDigest, serviceDigestErr := builder.digestPath(dependencyService.Dir())
 		if serviceDigestErr != nil {
-			return inputs, limitations, fmt.Errorf("hash dependency %s: %w", dependency.Unique, serviceDigestErr)
+			return *inputs, limitations, fmt.Errorf("hash dependency %s: %w", dependency.Unique, serviceDigestErr)
 		}
 		moduleDigest, err := builder.moduleDigest(dependencyModule)
 		if err != nil {
-			return inputs, limitations, fmt.Errorf("hash dependency module %s: %w", dependencyModule.Name, err)
+			return *inputs, limitations, fmt.Errorf("hash dependency module %s: %w", dependencyModule.Name, err)
 		}
 		inputs.Dependencies = append(inputs.Dependencies, CICacheResourceDigest{
 			Resource: dependency.Unique,
@@ -358,9 +358,9 @@ func (builder *ciCacheIdentityBuilder) inputs(ctx context.Context, inputs CICach
 
 	inputs.Libraries, err = builder.libraryDigests(ctx, servicesForLibraries)
 	if err != nil {
-		return inputs, limitations, err
+		return *inputs, limitations, err
 	}
-	return inputs, limitations, nil
+	return *inputs, limitations, nil
 }
 
 // installCacheAgent installs the pinned agent from its GitHub release, and

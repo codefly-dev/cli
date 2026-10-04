@@ -29,7 +29,7 @@ func TestReferenceSelectionUsesCoreServicePaths(t *testing.T) {
 	runCacheTestGit(t, root, "init")
 	runCacheTestGit(t, root, "add", ".")
 	runCacheTestGit(t, root, "-c", "user.name=CI Test", "-c", "user.email=ci@example.com", "commit", "-m", "fixture")
-	plan, err := BuildPlan(ctx, workspace, PlanOptions{Base: "HEAD", ChangedFiles: []string{"modules/management/services/organization/service.codefly.yaml"}})
+	plan, err := BuildPlan(ctx, workspace, &PlanOptions{Base: "HEAD", ChangedFiles: []string{"modules/management/services/organization/service.codefly.yaml"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,14 +60,14 @@ func TestReferenceSelectionKeepsExternalInputsInTheirRepository(t *testing.T) {
 	runCacheTestGit(t, root, "init")
 	runCacheTestGit(t, root, "add", ".")
 	runCacheTestGit(t, root, "-c", "user.name=CI Test", "-c", "user.email=ci@example.com", "commit", "-m", "fixture")
-	plan, err := BuildPlan(ctx, workspace, PlanOptions{Base: "HEAD", ChangedFiles: []string{"modules/web/services/frontend/service.codefly.yaml"}})
+	plan, err := BuildPlan(ctx, workspace, &PlanOptions{Base: "HEAD", ChangedFiles: []string{"modules/web/services/frontend/service.codefly.yaml"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := servicePlanSummary(plan); !reflect.DeepEqual(got, []string{"web/frontend:direct"}) {
 		t.Fatalf("unrelated external agents selected: %v", got)
 	}
-	_, err = BuildPlan(ctx, workspace, PlanOptions{Base: "HEAD", ChangedFiles: []string{filepath.Join(external, "services/organization/service.codefly.yaml")}})
+	_, err = BuildPlan(ctx, workspace, &PlanOptions{Base: "HEAD", ChangedFiles: []string{filepath.Join(external, "services/organization/service.codefly.yaml")}})
 	if err == nil || !strings.Contains(err.Error(), "owning repository") {
 		t.Fatalf("external change used wrong revision: %v", err)
 	}
