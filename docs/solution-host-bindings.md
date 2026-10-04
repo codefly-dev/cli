@@ -412,7 +412,10 @@ yet, each set says so (`FirstRecord`), which is true of a render and said
 rather than implied.
 
 Verifying the carriers publish assembles — the host's own check, run early
-against the signing identity — is not built yet.
+against the signing identity — is the self-check publish runs before anything
+is staged, under the environment's reviewed `host.release` policy (the
+"Release identity" section above): the publisher's own check, which is not
+host admission.
 
 ## What publish settles
 
@@ -746,30 +749,38 @@ the cell grants a Job the service's reachability.
 It is regenerated whole on every render from the module trees on disk, and
 carries no generation and no tombstone — a workload absent from it is not
 delivered, which is the opposite of the presence document's rule. Publish
-stages **this module's contribution**: the namespace entry derived by the
-render's own derivation applied to the tree it publishes — for a forward
-publish and for a rollback alike, which contributes the restored tree's cell
-— never read from a file that could describe another tree. What the tree
-says is read off the tree: the workloads, their images, selectors, accounts,
-identities, artifacts and release. What the composition says is **the
-composition's declaration as it stands at publish**, not a record the tree
-carries: the endpoints and their ports, ingress, bindings, cloud identity,
-egress, and the consumer edges — so a rollback restores the workloads and
-re-reads those declarations, and a declaration changed since the render is
-what the cell carries. Persisting them in the render's inventory, so a publish
-derives from immutable inputs and refuses drift, is owed and named. The
-workspace's cell file, the render's output, is held on a forward publish to a
-derivation over the inventory **as rendered** (the render cannot know the
-tombstones a publish synthesizes) and refused when its entry does not match;
-the delivered cell is then derived from the **settled** inventory, delivery
-Job included, so a publish that withdraws the last declaration describes the
-Job that delivers its tombstones. The consumer edges a publish reconciles
-into other modules' entries come from the same dependency graph the cell
-render builds (every composed service's `service-dependencies`, a dependency
-naming no endpoint reaching every endpoint of its target), so the edges do
-not depend on which module publishes first. The contribution is held to the
-host declared now before it is merged into the cell the delivery repository
-already holds at
+stages **this module's contribution**: the namespace entry **its render
+recorded with the tree**. A hosted render derives the entry when it renders —
+the workloads, their images, selectors, accounts, identities, artifacts and
+release off the tree; the endpoints and their ports, ingress, bindings, cloud
+identity and egress as the composition declares them **then** — and writes it
+at the tree's root as `cell.yaml` (the one file beside `inventory.json`,
+hashed into the render digest and carried into the snapshot), with the
+module's outgoing consumer edges in the inventory (`consumedEndpoints`). A
+forward publish and a rollback alike read the staged snapshot's own record:
+never the composition as it stands at publish, never a file that could
+describe another tree — so a rollback restores the declarations the revision
+was rendered with, and a tree carrying no record (rendered before records
+existed, or not from its composition) is refused by name. The one thing the
+record cannot carry is the delivery Job, declared from the **settled**
+inventory — the render cannot know the tombstones a publish synthesizes — so
+a publish that withdraws the last declaration still describes the Job that
+delivers them. The workspace's cell file, the render's whole-workspace
+output, is assembled from the records of the trees on disk and held on a
+forward publish to this tree's record; one whose entry differs is refused.
+A packaged solution has no derivation (its executor renders no composition
+service), so its record is the entry the workspace's cell file carries for
+it, hand-written before the render — and a rollback restores that entry too.
+The **consumer edges** are the consumers' declarations: every module's
+publish records its outgoing edges in `cells/<environment>/consumers.ledger`
+beside the cell, and every entry's consumer lists in the delivered cell are
+derived from the ledger, so an edge reaches the provider's entry whether the
+consumer or the provider publishes first, leaves only when the consumer stops
+declaring it, and a provider's publish cannot drop a consumer that still
+declares it (a cell delivered before the ledger existed seeds it with the
+consumers its entries carry). The contribution is held to the host declared
+now before it is merged into the cell the delivery repository already holds
+at
 `<gitops path>/cells/<environment>/cell.yaml` (outside every module path and
 matched by no Argo overlay), every other module's entry kept as delivered.
 Three rules keep the merge honest. The cell is **one host's record**: the
@@ -788,7 +799,11 @@ cell by withdrawing it, never by another module's publish — copying the local
 file whole let the last module published decide the platform's inventory for
 the whole cell. A hosted environment publishes nothing
 without it: a render that has no cell file is refused by name, and a cell
-file that cannot be read is an error, never an absent one.
+file that cannot be read is an error, never an absent one. And the **merged cell is held to core's validator before a byte is
+staged**: two entries valid on their own can combine into a cell the
+reader refuses — one namespace name claimed by two modules — and a publish
+that staged it would leave every later publish unable to read the base
+cell it must merge into; such a publish stages nothing and says why.
 
 ## Workspace configuration groups a render bakes in
 

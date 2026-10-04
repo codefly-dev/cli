@@ -118,9 +118,14 @@ type Inventory struct {
 	// and recording another digest was rendered against another value, and the
 	// render refuses to deliver two values of one group.
 	WorkspaceConfigurationDigests map[string]string `json:"workspaceConfigurationDigests,omitempty"`
-	Units                         []InventoryUnit   `json:"units"`
-	Files                         []InventoryFile   `json:"files"`
-	Digest                        string            `json:"digest"`
+	// ConsumedEndpoints are the module's outgoing consumer edges — the
+	// endpoints of other services its services declared as dependencies when
+	// the tree was rendered — recorded with the render so a publish and a
+	// rollback reconcile the delivered cell from the snapshot alone.
+	ConsumedEndpoints []ConsumedEndpoint `json:"consumedEndpoints,omitempty"`
+	Units             []InventoryUnit    `json:"units"`
+	Files             []InventoryFile    `json:"files"`
+	Digest            string             `json:"digest"`
 	// Dev lists the dev deployments (`codefly deploy dev`) applied on top of
 	// this render: services whose image was re-pinned to code no release
 	// describes. A full render re-derives the tree and never carries it over.
@@ -194,6 +199,16 @@ type InventoryKubernetesValidation struct {
 type KubernetesOutputInventory = InventoryKubernetesOutput
 type KubernetesValidationInventory = InventoryKubernetesValidation
 
+// ConsumedEndpoint is one consumer edge: Consumer, a service of the publishing
+// module (module-qualified), depends on the endpoint Endpoint of the service
+// Provider (module-qualified), as its service-dependencies declared it at
+// render.
+type ConsumedEndpoint struct {
+	Provider string `json:"provider"`
+	Endpoint string `json:"endpoint"`
+	Consumer string `json:"consumer"`
+}
+
 type InventoryFile struct {
 	Path   string `json:"path"`
 	SHA256 string `json:"sha256"`
@@ -263,6 +278,18 @@ type RenderOptions struct {
 	// declares it. Absent, no solution host binding is rendered: a binding names
 	// a host, and a derived coordinate is a guess the host refuses later.
 	Host *environments.EnvironmentHost
+	// Composition and Target are the workspace and the environment a hosted
+	// render derives its cell record from: the module's namespace entry and
+	// its outgoing consumer edges, as the composition declares them when the
+	// tree is rendered, written into the tree (cell.yaml) and hashed into the
+	// render digest, so a publish and a rollback derive the cell from the
+	// staged snapshot alone. Absent, no record is written, and a hosted
+	// publish of the tree is refused.
+	Composition *resources.Workspace
+	Target      *environments.Environment
+	// ConsumedEndpoints is set by the render from the record it derived and
+	// carried into the inventory.
+	ConsumedEndpoints []ConsumedEndpoint
 	// DeliveryTarget is the host's delivery API as this render resolved it from
 	// the host block's delivery endpoint; the delivery Jobs POST to it.
 	DeliveryTarget *DeliveryTarget

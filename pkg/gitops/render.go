@@ -111,6 +111,14 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 		return RenderResult{}, err
 	}
 	opts.SolutionAuthorityPath = deliveredAuthorityPath(authorities)
+	// The cell record, before anything validates or measures the tree: this
+	// module's namespace entry and its outgoing consumer edges as the
+	// composition declares them now, written into the tree and hashed into the
+	// render digest, so a publish and a rollback derive the cell from the
+	// staged snapshot alone.
+	if err = renderCellRecord(ctx, owned, opts); err != nil {
+		return RenderResult{}, err
+	}
 	manifests, err := validateTree(owned, opts)
 	if err != nil {
 		return RenderResult{}, err
@@ -239,7 +247,9 @@ func ValidateServiceSnapshot(root string) error {
 	if err = validateInventoryUnits(&inventory); err != nil {
 		return err
 	}
-	allowed := map[string]struct{}{InventoryFilename: {}, moduleBundleDir: {}}
+	// The two render records at the root, the inventory and the cell record,
+	// are the snapshot's own.
+	allowed := map[string]struct{}{InventoryFilename: {}, cellRecordFile: {}, moduleBundleDir: {}}
 	// The delivery overlays the inventory records are part of the snapshot:
 	// the Applications that deliver them read the snapshot revision.
 	for _, path := range []string{inventory.SolutionHostBindingPath, inventory.SolutionAuthorityPath} {
@@ -323,6 +333,11 @@ func validateSnapshotCoverage(inventory *Inventory) error {
 		}
 	}
 	for _, file := range inventory.Files {
+		// The cell record is the snapshot's own, beside the inventory: the
+		// module's cell entry as rendered, owned by no unit.
+		if file.Path == cellRecordFile {
+			continue
+		}
 		owner := ""
 		for servicePath := range covered {
 			if file.Path == servicePath || strings.HasPrefix(file.Path, servicePath+"/") {
@@ -481,7 +496,8 @@ func validateTree(root string, opts *RenderOptions) ([]manifest, error) {
 	var manifests []manifest
 	var kustomizations []kustomization
 	err := walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
-		if relative == InventoryFilename {
+		// The two render records at the tree root are not manifests.
+		if relative == InventoryFilename || relative == cellRecordFile {
 			return nil
 		}
 		data, err := readWithin(root, relative)
@@ -1377,7 +1393,9 @@ func metadataString(value map[string]any, key string) string {
 	return result
 }
 
-func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
+// inventoryHead is the inventory as the render options declare it, before the
+// tree's files are measured: what the cell record is derived from.
+func inventoryHead(opts *RenderOptions) Inventory {
 	inventory := Inventory{
 		SchemaVersion: SchemaVersion,
 		Module:        opts.Module, Unit: opts.Unit, Environment: opts.Environment,
@@ -1387,6 +1405,7 @@ func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
 		HostsDelivery:           opts.HostsDelivery || hostsDeliveryAPI(opts),
 		SolutionAuthorityPath:   filepath.ToSlash(opts.SolutionAuthorityPath),
 		Units:                   append([]InventoryUnit(nil), opts.Units...),
+		ConsumedEndpoints:       append([]ConsumedEndpoint(nil), opts.ConsumedEndpoints...),
 	}
 	inventory.Delivery = opts.Delivered
 	if len(opts.WorkspaceConfigurationDigests) > 0 {
@@ -1408,6 +1427,11 @@ func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
 	sort.Slice(inventory.Units, func(i, j int) bool {
 		return inventory.Units[i].Name < inventory.Units[j].Name
 	})
+	return inventory
+}
+
+func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
+	inventory := inventoryHead(opts)
 	hash := sha256.New()
 	err := walkRegularFiles(root, func(_, relative string, info os.FileInfo) error {
 		if relative == InventoryFilename {

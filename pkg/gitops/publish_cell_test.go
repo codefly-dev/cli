@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
 	"github.com/codefly-dev/core/solutionhost/cell"
+	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 // hostedPaymentsInstances is the presence the hosted fixture declares.
@@ -36,7 +39,7 @@ func renderHostedPayments(t *testing.T, workspace *resources.Workspace, env *env
 		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "deployments", "modules", "payments")),
 		Units:       promotableServiceGraph("payments", []string{"api", "host"}),
 		Environment: "production", Namespace: "payments", AppProject: "payments", Promotable: true,
-		Workspace: "payments", Host: env.Host,
+		Workspace: "payments", Host: env.Host, Composition: workspace, Target: env,
 		SolutionInstances: instances,
 	}, func(_ context.Context, stage string) error {
 		for _, name := range []string{"api", "host"} {
@@ -174,4 +177,263 @@ func TestPublishWithdrawsTheLastPresenceAndStillPublishesItsCell(t *testing.T) {
 		}
 		mergePromotionToMain(t, remote, request.PromotionBranch)
 	}
+}
+
+// cellWorkload finds a workload by name in a delivered cell's one namespace.
+func cellWorkload(t *testing.T, file *cell.File, name string) *cell.Workload {
+	t.Helper()
+	for index := range file.Namespaces[0].Workloads {
+		if file.Namespaces[0].Workloads[index].Name == name {
+			return &file.Namespaces[0].Workloads[index]
+		}
+	}
+	t.Fatalf("the delivered cell carries no workload %s", name)
+	return nil
+}
+
+// TestRollbackRestoresTheDeclarationsTheRevisionWasRenderedWith: the cell's
+// declarations — endpoints and their visibility among them — are the
+// composition's as it was when the tree was RENDERED, recorded with the tree,
+// not as it stands at publish. Publish A (the host's endpoint internal),
+// change the declaration, render and publish B (public), roll back to A: the
+// delivered cell says internal again, which a derivation over the composition
+// as it stands now would not.
+func TestRollbackRestoresTheDeclarationsTheRevisionWasRenderedWith(t *testing.T) {
+	ctx, workspace, env, remote := hostedPublishWorkspace(t)
+	writeTestCell(t, workspace, env, "production", "payments")
+	request := hostedPublishRequest()
+	first := publishHosted(t, ctx, workspace, &request)
+	require.Equal(t, "internal", cellWorkload(t, deliveredCell(t, remote, request.PromotionBranch), "host").Endpoints[0].Visibility)
+	mergePromotionToMain(t, remote, request.PromotionBranch)
+
+	hostService := filepath.Join(workspace.Dir(), "services", "host", resources.ServiceConfigurationName)
+	require.NoError(t, os.WriteFile(hostService, []byte(devServiceYAML("host")+"endpoints:\n  - name: rest\n    api: rest\n    visibility: public\n"), 0o644))
+	changed, err := resources.LoadWorkspaceFromDir(ctx, workspace.Dir())
+	require.NoError(t, err)
+	changedEnv := selectedEnvironment(t, changed, "production")
+	renderHostedPayments(t, changed, changedEnv, pinnedDeployment, hostedPaymentsInstances())
+	writeTestCell(t, changed, changedEnv, "production", "payments")
+	publishHosted(t, ctx, changed, &request)
+	require.Equal(t, "public", cellWorkload(t, deliveredCell(t, remote, request.PromotionBranch), "host").Endpoints[0].Visibility)
+	mergePromotionToMain(t, remote, request.PromotionBranch)
+
+	require.NoError(t, writeReceipt(changed.Dir(), "evidence", "first.json", Evidence{
+		SchemaVersion: EvidenceSchemaVersion, Module: "payments", Environment: "production",
+		RenderDigest: first.RenderDigest, SignedCommit: first.Commit, Tree: first.Tree,
+		ArgoRevision: first.Commit, Cluster: "local-k3d", Health: "Healthy",
+		Review: ReviewEvidence{URL: first.PullRequest, State: "LOCAL_REVIEW_REF", ReviewDecision: "LOCAL_QUALIFIED", MergeCommit: first.Commit},
+	}))
+	rollbackRequest := RollbackRequest{PublishRequest: request, ToRevision: first.Commit}
+	rollbackPlan, err := PlanRollback(ctx, changed, &rollbackRequest)
+	require.NoError(t, err)
+	_, err = Rollback(ctx, changed, &RollbackMutation{Request: rollbackRequest, PlanID: rollbackPlan.ID, Carriers: rollbackPlan.Carriers}, preparedPermit)
+	require.NoError(t, err)
+	require.Equal(t, "internal", cellWorkload(t, deliveredCell(t, remote, request.PromotionBranch), "host").Endpoints[0].Visibility, "the rolled-back cell carries the declaration A was rendered with")
+}
+
+// TestPublishRefusesAMergedCellCoreRejects: a delivered cell and a
+// contribution each valid on their own can merge into a cell core refuses —
+// one namespace name claimed by two modules — and the publish refuses it
+// before a byte is staged, rather than delivering a file the next publisher
+// cannot read.
+func TestPublishRefusesAMergedCellCoreRejects(t *testing.T) {
+	repository := newDeliveryRepository(t)
+	cellPath := "deployments/cells/prod/cell.yaml"
+	entry := func(module string) cell.Namespace {
+		return cell.Namespace{Name: "payments", Module: module, Workloads: []cell.Workload{{
+			Name: module, Kind: "Deployment", Selector: map[string]string{"app": module}, Service: module + "/api", ServiceAccount: "api",
+			SPIFFEID: "spiffe://cluster.example/ns/payments/sa/api", Authenticating: "api",
+			Containers: []cell.Container{{Name: "api", Image: cell.Image{Repository: "registry.example.test/" + module, Digest: "sha256:" + strings.Repeat("a", 64)}}},
+			Artifact:   cell.Artifact{Name: "api", Digest: "sha256:" + strings.Repeat("a", 64)},
+		}}}
+	}
+	header := cell.File{Schema: cell.SchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example", Environment: "prod"}
+	delivered := header
+	delivered.Namespaces = []cell.Namespace{entry("crm")}
+	require.NoError(t, delivered.Validate(), "the delivered cell is valid on its own")
+	deliveredBytes := commitDeliveredCell(t, repository.repo, cellPath, &delivered, nil)
+	contribution := header
+	contribution.Namespaces = []cell.Namespace{entry("payments")}
+	require.NoError(t, contribution.Validate(), "the contribution is valid on its own")
+	publication := &deliveryPublication{baseBranch: "main", cellPath: cellPath,
+		options: deliveryPublishOptions{Module: "payments", Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example"}}
+	err := stageCellContribution(context.Background(), repository.repo, publication, &contribution, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "does not validate")
+	staged, err := os.ReadFile(filepath.Join(repository.repo, filepath.FromSlash(cellPath)))
+	require.NoError(t, err)
+	require.Equal(t, string(deliveredBytes), string(staged), "nothing was staged over the delivered cell")
+	_, err = os.Stat(filepath.Join(repository.repo, "deployments", "cells", "prod", consumersLedgerFile))
+	require.True(t, os.IsNotExist(err), "no ledger was staged either")
+}
+
+// commitDeliveredCell writes a cell (and a consumers ledger, when given) to
+// the delivery repository's base branch, as a publish before this one would
+// have, and returns the cell's bytes.
+func commitDeliveredCell(t *testing.T, repo, cellPath string, file *cell.File, ledger consumersLedger) []byte {
+	t.Helper()
+	data, err := yaml.Marshal(file)
+	require.NoError(t, err)
+	full := filepath.Join(repo, filepath.FromSlash(cellPath))
+	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+	require.NoError(t, os.WriteFile(full, data, 0o600))
+	if ledger != nil {
+		encoded, err := json.MarshalIndent(ledger, "", "  ")
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(full), consumersLedgerFile), append(encoded, '\n'), 0o600))
+	}
+	for _, args := range [][]string{{"add", "-A", "--", filepath.ToSlash(filepath.Dir(cellPath))}, {"commit", "-q", "--allow-empty", "-m", "cell"}, {"update-ref", "refs/remotes/origin/main", "HEAD"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.test", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.test")
+		out, runErr := cmd.CombinedOutput()
+		require.NoError(t, runErr, "git %v: %s", args, out)
+	}
+	return data
+}
+
+// TestCellMergeCarriesAnEdgeInEitherPublicationOrder: a consumer edge is the
+// consumer's declaration, recorded in the consumers ledger by the consumer's
+// publish; the delivered cell's consumer lists are derived from the ledger,
+// so the edge reaches the provider's entry whether the consumer or the
+// provider publishes first, and leaves when the consumer stops declaring it
+// — never when the provider publishes.
+func TestCellMergeCarriesAnEdgeInEitherPublicationOrder(t *testing.T) {
+	ctx := context.Background()
+	cellPath := "deployments/cells/prod/cell.yaml"
+	header := func(namespaces ...cell.Namespace) *cell.File {
+		return &cell.File{Schema: cell.SchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example", Environment: "prod", Namespaces: namespaces}
+	}
+	billing := func() cell.Namespace {
+		return cell.Namespace{Name: "ns-billing", Module: "billing", Workloads: []cell.Workload{{
+			Name: "billing", Kind: "Deployment", Selector: map[string]string{"app": "billing"}, Service: "billing/api", ServiceAccount: "api",
+			SPIFFEID: "spiffe://cluster.example/ns/ns-billing/sa/api", Authenticating: "api",
+			Containers: []cell.Container{{Name: "api", Image: cell.Image{Repository: "registry.example.test/billing", Digest: "sha256:" + strings.Repeat("d", 64)}}},
+			Artifact:   cell.Artifact{Name: "api", Digest: "sha256:" + strings.Repeat("d", 64)},
+			Endpoints:  []cell.Endpoint{{Name: "grpc"}},
+		}}}
+	}
+	crm := cell.Namespace{Name: "ns-crm", Module: "crm"}
+	edge := []ConsumedEndpoint{{Provider: "billing/api", Endpoint: "grpc", Consumer: "crm/api"}}
+	consumersOf := func(file *cell.File) []string {
+		for _, namespace := range file.Namespaces {
+			if namespace.Module == "billing" {
+				return namespace.Workloads[0].Endpoints[0].Consumers
+			}
+		}
+		return nil
+	}
+
+	// The consumer first: its edge waits in the ledger for the provider.
+	repository := newDeliveryRepository(t)
+	merged, ledger, err := mergeCellContribution(ctx, repository.repo, "main", cellPath, header(crm), "crm", edge)
+	require.NoError(t, err)
+	require.Equal(t, consumersLedger{"crm": edge}, ledger)
+	commitDeliveredCell(t, repository.repo, cellPath, merged, ledger)
+	merged, _, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, header(billing()), "billing", nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{"crm/api"}, consumersOf(merged), "the provider's first publish carries the edge the consumer recorded")
+
+	// The provider first: the consumer's publish writes the edge into the
+	// provider's delivered entry.
+	repository = newDeliveryRepository(t)
+	merged, ledger, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, header(billing()), "billing", nil)
+	require.NoError(t, err)
+	require.Empty(t, consumersOf(merged))
+	commitDeliveredCell(t, repository.repo, cellPath, merged, ledger)
+	merged, ledger, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, header(crm), "crm", edge)
+	require.NoError(t, err)
+	require.Equal(t, []string{"crm/api"}, consumersOf(merged))
+	commitDeliveredCell(t, repository.repo, cellPath, merged, ledger)
+
+	// The provider publishes again: the edge is the consumer's, so it stays.
+	merged, ledger, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, header(billing()), "billing", nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{"crm/api"}, consumersOf(merged))
+	commitDeliveredCell(t, repository.repo, cellPath, merged, ledger)
+
+	// The consumer stops declaring it: its publish removes it.
+	merged, ledger, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, header(crm), "crm", nil)
+	require.NoError(t, err)
+	require.Empty(t, consumersOf(merged))
+	require.NotContains(t, ledger, "crm")
+}
+
+// TestPackagedSolutionRollbackContributesTheRestoredRecordsCell: a packaged
+// solution's cell entry is hand-written and recorded with its render, so a
+// rollback restores the entry the revision was rendered with — publish A
+// (egress to a.example), publish B (b.example), roll back: a.example again —
+// instead of silently keeping B's cell under A's workloads.
+func TestPackagedSolutionRollbackContributesTheRestoredRecordsCell(t *testing.T) {
+	ctx := context.Background()
+	installFakeSolutionExecutor(t, &fakeSolutionExecutor{})
+	remote := createBareRepository(t)
+	workspace := loadSolutionWorkspace(t, remote)
+	env := selectedEnvironment(t, workspace, "local")
+	require.NotNil(t, env)
+	agent := &resources.Agent{Kind: resources.SolutionAgent, Publisher: "codefly.dev", Name: "hello-solution", Version: "0.0.1"}
+	render := func(egressHost string) {
+		t.Helper()
+		writeHandCellWithEgress(t, workspace, env, "local", "lastlogin-go", egressHost)
+		_, err := RenderSolution(ctx, &SolutionRenderRequest{
+			Workspace: workspace, Environment: env, Agent: agent, Name: "lastlogin-go",
+			Source:     filepath.Join(workspace.Dir(), "solution-src"),
+			Reference:  "ghcr.io/codefly-dev/hello-solution:0.0.1",
+			AppProject: "lastlogin-go",
+		})
+		require.NoError(t, err)
+	}
+	egressOf := func(file *cell.File) string {
+		require.Len(t, file.Namespaces[0].Egress, 1)
+		return file.Namespaces[0].Egress[0].Hosts[0].Name
+	}
+	configureSSHSigning(t)
+	request := PublishRequest{Module: "lastlogin-go", Environment: "local", Local: true, PromotionBranch: "codefly/promote-lastlogin-go-local"}
+	cellOnBranch := func() *cell.File {
+		out, err := exec.Command("git", "--git-dir", remote, "show", "refs/heads/"+request.PromotionBranch+":environments/cells/local/cell.yaml").Output()
+		require.NoError(t, err)
+		file, err := cell.Parse(out)
+		require.NoError(t, err)
+		return file
+	}
+
+	render("a.example")
+	first := publishHosted(t, ctx, workspace, &request)
+	require.Equal(t, "a.example", egressOf(cellOnBranch()))
+	mergePromotionToMain(t, remote, request.PromotionBranch)
+	render("b.example")
+	second := publishHosted(t, ctx, workspace, &request)
+	require.NotEqual(t, first.RenderDigest, second.RenderDigest)
+	require.Equal(t, "b.example", egressOf(cellOnBranch()))
+	mergePromotionToMain(t, remote, request.PromotionBranch)
+
+	require.NoError(t, writeReceipt(workspace.Dir(), "evidence", "first.json", Evidence{
+		SchemaVersion: EvidenceSchemaVersion, Module: "lastlogin-go", Environment: "local",
+		RenderDigest: first.RenderDigest, SignedCommit: first.Commit, Tree: first.Tree,
+		ArgoRevision: first.Commit, Cluster: "local-k3d", Health: "Healthy",
+		Review: ReviewEvidence{URL: first.PullRequest, State: "LOCAL_REVIEW_REF", ReviewDecision: "LOCAL_QUALIFIED", MergeCommit: first.Commit},
+	}))
+	rollbackRequest := RollbackRequest{PublishRequest: request, ToRevision: first.Commit}
+	rollbackPlan, err := PlanRollback(ctx, workspace, &rollbackRequest)
+	require.NoError(t, err)
+	_, err = Rollback(ctx, workspace, &RollbackMutation{Request: rollbackRequest, PlanID: rollbackPlan.ID, Carriers: rollbackPlan.Carriers}, preparedPermit)
+	require.NoError(t, err)
+	require.Equal(t, "a.example", egressOf(cellOnBranch()), "the rolled-back cell is the entry A was rendered with")
+}
+
+// writeHandCellWithEgress is writeHandCell with one egress host, so two
+// renders of a packaged solution record different entries.
+func writeHandCellWithEgress(t *testing.T, workspace *resources.Workspace, env *environments.Environment, environment, module, egressHost string) {
+	t.Helper()
+	cellFile := cell.File{
+		Schema: cell.SchemaV1, Coordinate: env.Host.Coordinate, Component: env.Host.Component,
+		Domain: env.Host.Domain, TrustDomain: env.Host.TrustDomain, Environment: environment,
+		Namespaces: []cell.Namespace{{Name: module, Module: module, Egress: []cell.Egress{{Service: module + "/app", Hosts: []cell.EgressHost{{Name: egressHost, Port: 443}}}}}},
+	}
+	require.NoError(t, cellFile.Validate())
+	data, err := yaml.Marshal(&cellFile)
+	require.NoError(t, err)
+	path := cellPath(workspace.Dir(), environment)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, data, 0o600))
 }

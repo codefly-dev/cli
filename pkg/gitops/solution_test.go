@@ -311,6 +311,11 @@ func TestLocalGitopsPublishSolutionGeneratesBootstrap(t *testing.T) {
 	agent := &resources.Agent{
 		Kind: resources.SolutionAgent, Publisher: "codefly.dev", Name: "hello-solution", Version: "0.0.1",
 	}
+	// A hosted environment publishes nothing without its cell. A packaged
+	// solution derives none (RenderSolution renders no composition service;
+	// see the doc's "What is not verified"), so this test writes the entry by
+	// hand, and the render records it with the tree.
+	writeHandCell(t, workspace, env, "local", "lastlogin-go")
 	if _, err := RenderSolution(ctx, &SolutionRenderRequest{
 		Workspace: workspace, Environment: env, Agent: agent, Name: "lastlogin-go",
 		Source:     filepath.Join(workspace.Dir(), "solution-src"),
@@ -320,10 +325,6 @@ func TestLocalGitopsPublishSolutionGeneratesBootstrap(t *testing.T) {
 		t.Fatal(err)
 	}
 	configureSSHSigning(t)
-	// A hosted environment publishes nothing without its cell. A packaged
-	// solution renders none yet (RenderSolution emits no cell; see the doc's
-	// "What is not verified"), so this test supplies the entry by hand.
-	writeHandCell(t, workspace, env, "local", "lastlogin-go")
 
 	request := PublishRequest{
 		Module: "lastlogin-go", Environment: "local", Local: true,

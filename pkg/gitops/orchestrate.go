@@ -75,6 +75,8 @@ func renderModuleTree(
 		OwnedPath:      ownedPath,
 		Workspace:      workspace.Name,
 		Host:           env.Host,
+		Composition:    workspace,
+		Target:         env,
 		DeliveryTarget: deliveryTarget,
 	}
 	render := &moduleRender{

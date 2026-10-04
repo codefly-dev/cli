@@ -549,7 +549,6 @@ func stageRenderedPublication(
 	// Settlement writes into the inventory it is given (the delivery paths it
 	// sets); the render's inventory, as the render left it, is what the
 	// workspace's cell file is held to.
-	asRendered := *inventory
 	snapshotRevision, published, err := prepareServicePublication(
 		ctx, clone.repo, clone.target, clone.targetPath, rendered, inventory, generateBootstrap,
 		request.Environment, clone.config, clone.publishSnapshot, clone.localFetchHost, clone.publication,
@@ -557,7 +556,7 @@ func stageRenderedPublication(
 	if err != nil {
 		return "", Inventory{}, err
 	}
-	if err = stageCellFile(ctx, clone.repo, clone.publication, rendered, &asRendered, &published); err != nil {
+	if err = stageCellFile(ctx, clone.repo, clone.publication, rendered, &published); err != nil {
 		return "", Inventory{}, err
 	}
 	return snapshotRevision, published, nil
@@ -623,7 +622,7 @@ func stageRollbackPublication(
 	// The cell describes what is published: a rollback contributes the cell
 	// of the tree it restores, derived from that tree, so the platform's
 	// inventory follows the workloads back.
-	if err = stageCellFile(ctx, clone.repo, clone.publication, restored, nil, &published); err != nil {
+	if err = stageCellFile(ctx, clone.repo, clone.publication, restored, &published); err != nil {
 		return "", Inventory{}, err
 	}
 	return snapshotRevision, published, nil
@@ -1046,6 +1045,7 @@ func prepareServicePublication(
 		SolutionHostBindingPath:       renderedInventory.SolutionHostBindingPath,
 		HostsDelivery:                 renderedInventory.HostsDelivery,
 		SolutionAuthorityPath:         renderedInventory.SolutionAuthorityPath,
+		ConsumedEndpoints:             renderedInventory.ConsumedEndpoints,
 		Delivered:                     delivery,
 		WorkspaceConfigurationDigests: renderedInventory.WorkspaceConfigurationDigests,
 	}
@@ -1121,6 +1121,13 @@ func prepareServiceSnapshot(
 	if err = removePublicationRemainder(target, unitDirs); err != nil {
 		return serviceSnapshotPreparation{}, err
 	}
+	// The cell record travels with the tree: staged after the remainder
+	// pruning and before the snapshot inventory measures the target, so the
+	// delivered inventory hashes it like any other delivered file and a
+	// rollback restores it with the revision.
+	if err = stageCellRecord(rendered, target); err != nil {
+		return serviceSnapshotPreparation{}, err
+	}
 	// The delivery documents are part of the snapshot: every Application the
 	// bootstrap stamps reads the ONE immutable snapshot revision, the delivery
 	// Applications included, so the overlays they read must be in it. They
@@ -1146,6 +1153,7 @@ func prepareServiceSnapshot(
 		SolutionHostBindingPath: renderedInventory.SolutionHostBindingPath,
 		HostsDelivery:           renderedInventory.HostsDelivery,
 		SolutionAuthorityPath:   renderedInventory.SolutionAuthorityPath,
+		ConsumedEndpoints:       renderedInventory.ConsumedEndpoints,
 		Delivered:               delivery,
 	}
 	snapshotInventory, err := buildInventory(target, snapshotOptions)
@@ -1376,6 +1384,23 @@ func publishServiceSnapshot(ctx context.Context, repo, module, environment, revi
 
 func serviceSnapshotBranch(module, environment string) string {
 	return "codefly/snapshot-" + sanitizeRef(module) + "-" + sanitizeRef(environment)
+}
+
+// stageCellRecord copies the render's cell record into the publication's
+// tree; a render carrying none stages none, and the publish refuses the tree
+// under a host by name.
+func stageCellRecord(rendered, target string) error {
+	data, err := readWithin(rendered, cellRecordFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the cell record: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(target, cellRecordFile), data, 0o600); err != nil {
+		return fmt.Errorf("stage the cell record: %w", err)
+	}
+	return nil
 }
 
 func removePublicationRemainder(target string, unitDirs []string) error {
@@ -2409,119 +2434,58 @@ func mergeDeliveries(parts ...*InventoryDelivery) *InventoryDelivery {
 	return merged
 }
 
-// stageCellFile stages this module's contribution to the environment's cell
-// file: the namespace entry its render produced, merged into the cell the base
-// branch already holds, every other module's entry kept as delivered. The local
-// cell is built from whatever module trees are on disk, so copying it whole
-// let the last module published decide the platform's inventory for the whole
-// cell — a CI job rendering one module erased the others from policy input
-// while their workloads stayed deployed. A module is removed from the cell by
-// withdrawing it, never by another module's publish.
-// stageCellFile stages the publishing module's cell contribution. What the
-// staged tree says — its workloads, their images, selectors, accounts,
-// identities, artifacts and release — is read off that tree, for a forward
-// publish and for a rollback alike. What the composition says — the
-// endpoints and their ports, ingress, bindings, cloud identity, egress and
-// the consumer edges — is the composition's declaration as it stands at
-// publish, not a record the tree carries; a rollback therefore restores the
-// workloads and re-reads those declarations. Persisting them in the render's
-// inventory, so a publish derives from immutable inputs, is owed and named.
-//
-// A forward publish holds the workspace's cell file (the render's output) to
-// a derivation over the RENDER inventory, before settlement — the render
-// cannot know the tombstones a publish synthesizes, so it is not held to
-// them — and refuses a file that does not describe the rendered tree. The
-// delivered cell is then derived from the SETTLED inventory, delivery Job
-// included, so a publish that withdraws the last declaration still describes
-// the Job that delivers its tombstones.
-func stageCellFile(ctx context.Context, repo string, publication *deliveryPublication, tree string, rendered, published *Inventory) error {
+// stageCellFile stages this module's cell contribution for a hosted
+// publication: the namespace entry its render recorded with the tree
+// (cell.yaml at the tree root, hashed into the render digest), so a forward
+// publish and a rollback alike read the staged snapshot's own record — never
+// the composition as it stands now, and never a file that could describe
+// another tree. The delivery Job is declared from the SETTLED inventory: the
+// render cannot know the tombstones a publish synthesizes, so a publish that
+// withdraws the last declaration still describes the Job that delivers them.
+// A forward publish first holds the workspace's cell file, the render's
+// whole-workspace output, to the record, and refuses one that does not carry
+// this module's entry as recorded. A tree with no record — rendered before
+// records existed, or not from its composition — is refused by name rather
+// than published with a cell describing another tree.
+func stageCellFile(ctx context.Context, repo string, publication *deliveryPublication, tree string, published *Inventory) error {
 	if publication == nil || publication.cellPath == "" || publication.env == nil || publication.env.Host == nil {
 		return nil
 	}
-	if packagedSolution(published) {
-		// A packaged solution has no derivation yet: RenderSolution emits
-		// no cell, and the module derivation loads every non-managed unit
-		// as a composition service, which a packaged unit is not. Its cell
-		// is the workspace's file, hand-written, held to the host declared
-		// now and merged as a contribution — the carried limitation the doc
-		// names, not a path this derivation covers.
-		return stageWorkspaceCellFile(ctx, repo, publication)
-	}
-	graph, err := endpointConsumers(ctx, publication.workspace)
+	record, err := readCellRecord(tree)
 	if err != nil {
-		return err
+		return fmt.Errorf("module %s: %w", published.Module, err)
 	}
-	if rendered != nil && publication.cellSource != "" {
-		if err = refuseStaleCellFile(ctx, publication, tree, rendered, graph); err != nil {
+	if record == nil {
+		if packagedUnits(published.Units) {
+			return fmt.Errorf("the tree of module %s carries no cell record: a packaged solution's cell entry is hand-written in %s, and a hosted render records it with the tree; write the entry and render %s for %s again before publishing or rolling back under a host", published.Module, cellPath(publication.workspace.Dir(), publication.env.Name), published.Module, publication.env.Name)
+		}
+		return fmt.Errorf("the tree of module %s carries no cell record, so its cell cannot be derived from the snapshot alone (the render predates cell records, or was not rendered from its composition); render %s for %s again before publishing or rolling back under a host", published.Module, published.Module, publication.env.Name)
+	}
+	entry := &record.Namespaces[0]
+	if entry.Module != published.Module {
+		return fmt.Errorf("the cell record of the tree of module %s describes module %s", published.Module, entry.Module)
+	}
+	if publication.cellSource != "" {
+		if err = refuseStaleCellFile(publication, entry); err != nil {
 			return err
 		}
 	}
-	contribution, err := deriveCellContribution(ctx, publication.workspace, publication.env, tree, published, graph)
-	if err != nil {
-		return err
+	entry.Delivery = nil
+	if published.SolutionHostBindingPath != "" {
+		entry.Delivery = deliveryDeclaration(publication.env, published.Namespace)
 	}
-	return stageCellContribution(ctx, repo, publication, contribution, moduleEdges(graph, publication.options.Module))
+	if err = record.Validate(); err != nil {
+		return fmt.Errorf("the cell contribution of module %s does not validate: %w", published.Module, err)
+	}
+	return stageCellContribution(ctx, repo, publication, record, published.ConsumedEndpoints)
 }
 
-// packagedSolution reports whether an inventory is a packaged solution's — a
-// unit of the solution kind, run by an executor rather than rendered from
-// composition services.
-func packagedSolution(inventory *Inventory) bool {
-	for _, unit := range inventory.Units {
-		if unit.Kind == UnitKindSolution {
-			return true
-		}
-	}
-	return false
-}
-
-// stageWorkspaceCellFile stages the workspace's cell file as the contribution,
-// for the one kind of publication that has no derivation to hold it to.
-func stageWorkspaceCellFile(ctx context.Context, repo string, publication *deliveryPublication) error {
-	if publication.cellSource == "" {
-		return nil
-	}
-	data, err := readWithin(filepath.Dir(publication.cellSource), filepath.Base(publication.cellSource))
-	if err != nil {
-		return fmt.Errorf("read the cell file: %w", err)
-	}
-	local, err := readCellFile(data)
-	if err != nil {
-		return err
-	}
-	graph, err := endpointConsumers(ctx, publication.workspace)
-	if err != nil {
-		return err
-	}
-	return stageCellContribution(ctx, repo, publication, local, moduleEdges(graph, publication.options.Module))
-}
-
-// deriveCellContribution is the render's own cell derivation applied to one
-// tree and one inventory, over the composition's dependency graph: the
-// module's namespace entry, under the host the environment declares.
-func deriveCellContribution(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, tree string, inventory *Inventory, graph map[string][]string) (*cell.File, error) {
-	namespace, err := cellNamespace(ctx, workspace, env, tree, inventory, graph)
-	if err != nil {
-		return nil, fmt.Errorf("derive the cell contribution of module %s from the tree it publishes: %w", inventory.Module, err)
-	}
-	contribution := &cell.File{Schema: cell.SchemaV1, Environment: env.Name, Namespaces: []cell.Namespace{namespace}}
-	if env.Host != nil {
-		contribution.Coordinate, contribution.Component, contribution.Domain, contribution.TrustDomain = env.Host.Coordinate, env.Host.Component, env.Host.Domain, env.Host.TrustDomain
-	}
-	// The writer is held to the model it writes before anything is merged.
-	if err := contribution.Validate(); err != nil {
-		return nil, fmt.Errorf("the cell contribution derived for module %s does not validate: %w", inventory.Module, err)
-	}
-	return contribution, nil
-}
-
-// moduleEdges reads the publishing module's outgoing consumer edges off the
-// SAME dependency graph the cell render builds (every composed service's
-// service-dependencies, a dependency naming no endpoint reaching every
-// endpoint of its target), so the edges a publish reconciles into other
-// modules' entries are the edges a render of those modules would write.
-func moduleEdges(graph map[string][]string, module string) []consumedEndpoint {
-	var edges []consumedEndpoint
+// moduleEdges reads a module's outgoing consumer edges off the dependency
+// graph the cell render builds (every composed service's service-dependencies,
+// a dependency naming no endpoint reaching every endpoint of its target): the
+// edges its render records, and a publish reconciles into the delivered cell.
+func moduleEdges(graph map[string][]string, module string) []ConsumedEndpoint {
+	var edges []ConsumedEndpoint
 	for key, consumers := range graph {
 		provider, endpoint, found := strings.Cut(key, "/")
 		if !found {
@@ -2533,10 +2497,15 @@ func moduleEdges(graph map[string][]string, module string) []consumedEndpoint {
 		}
 		for _, consumer := range consumers {
 			if strings.HasPrefix(consumer, module+"/") {
-				edges = append(edges, consumedEndpoint{Provider: provider + "/" + service, Endpoint: endpointName, Consumer: consumer})
+				edges = append(edges, ConsumedEndpoint{Provider: provider + "/" + service, Endpoint: endpointName, Consumer: consumer})
 			}
 		}
 	}
+	sortEdges(edges)
+	return edges
+}
+
+func sortEdges(edges []ConsumedEndpoint) {
 	sort.Slice(edges, func(i, j int) bool {
 		if edges[i].Provider != edges[j].Provider {
 			return edges[i].Provider < edges[j].Provider
@@ -2546,17 +2515,12 @@ func moduleEdges(graph map[string][]string, module string) []consumedEndpoint {
 		}
 		return edges[i].Consumer < edges[j].Consumer
 	})
-	return edges
 }
 
-// refuseStaleCellFile holds the workspace's cell file — the render's output,
-// which a later render, an edit or a failed cell generation can leave behind
-// — to the contribution derived from the tree being published.
-func refuseStaleCellFile(ctx context.Context, publication *deliveryPublication, tree string, rendered *Inventory, graph map[string][]string) error {
-	derived, err := deriveCellContribution(ctx, publication.workspace, publication.env, tree, rendered, graph)
-	if err != nil {
-		return err
-	}
+// refuseStaleCellFile holds the workspace's cell file — the render's
+// whole-workspace output, which a later render, an edit or a failed cell
+// generation can leave behind — to the entry this tree's render recorded.
+func refuseStaleCellFile(publication *deliveryPublication, recorded *cell.Namespace) error {
 	source, module := publication.cellSource, publication.options.Module
 	data, err := readWithin(filepath.Dir(source), filepath.Base(source))
 	if err != nil {
@@ -2566,64 +2530,80 @@ func refuseStaleCellFile(ctx context.Context, publication *deliveryPublication, 
 	if err != nil {
 		return err
 	}
-	var recorded *cell.Namespace
+	var carried *cell.Namespace
 	for index := range local.Namespaces {
 		if local.Namespaces[index].Module == module {
-			recorded = &local.Namespaces[index]
+			carried = &local.Namespaces[index]
 		}
 	}
-	if recorded == nil {
+	if carried == nil {
 		return fmt.Errorf("the cell file %s carries no entry for module %s; render again before publishing", source, module)
 	}
-	have, err := yaml.Marshal(recorded)
+	have, err := yaml.Marshal(carried)
 	if err != nil {
 		return err
 	}
-	want, err := yaml.Marshal(&derived.Namespaces[0])
+	want, err := yaml.Marshal(recorded)
 	if err != nil {
 		return err
 	}
 	if !bytes.Equal(have, want) {
-		return fmt.Errorf("the cell file %s does not describe the rendered tree of module %s (its workloads, images, selectors, endpoints or release differ from what the tree publishes); render again before publishing", source, module)
+		return fmt.Errorf("the cell file %s does not describe the rendered tree of module %s (its entry differs from the one the tree's render recorded: workloads, images, selectors, endpoints, ingress, egress, release or delivery); render again before publishing", source, module)
 	}
 	return nil
 }
 
-// stageCellContribution holds a contribution to the host declared now and
-// merges it into the delivered cell.
-func stageCellContribution(ctx context.Context, repo string, publication *deliveryPublication, contribution *cell.File, consumed []consumedEndpoint) error {
+// stageCellContribution holds a contribution to the host declared now, merges
+// it into the delivered cell, holds the MERGED cell to the model the reader
+// enforces, and stages it with the consumers ledger the merge updated.
+func stageCellContribution(ctx context.Context, repo string, publication *deliveryPublication, contribution *cell.File, consumed []ConsumedEndpoint) error {
 	destination, err := confinedFile(repo, publication.cellPath)
+	if err != nil {
+		return err
+	}
+	ledgerPath := path.Join(path.Dir(publication.cellPath), consumersLedgerFile)
+	ledgerDestination, err := confinedFile(repo, ledgerPath)
 	if err != nil {
 		return err
 	}
 	if err = refuseCellForAnotherHost(contribution, &publication.options); err != nil {
 		return err
 	}
-	merged, err := mergeCellContribution(ctx, repo, publication.baseBranch, publication.cellPath, contribution, publication.options.Module, consumed)
+	merged, ledger, err := mergeCellContribution(ctx, repo, publication.baseBranch, publication.cellPath, contribution, publication.options.Module, consumed)
 	if err != nil {
 		return err
+	}
+	// Two entries valid on their own can combine into a cell the reader
+	// refuses — one namespace name claimed by two modules — and a publish
+	// that staged it would leave every later publish unable to read the base
+	// cell it must merge into. The merge is held to core's validator before a
+	// byte is written.
+	if err = merged.Validate(); err != nil {
+		return fmt.Errorf("the cell merged for module %s does not validate, so this publish stages none of it: %w", publication.options.Module, err)
 	}
 	var data []byte
 	if data, err = yaml.Marshal(merged); err != nil {
 		return fmt.Errorf("encode the cell file: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+	if err = os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		return fmt.Errorf("create the cell directory: %w", err)
 	}
-	if err := os.WriteFile(destination, data, 0o600); err != nil {
+	if err = os.WriteFile(destination, data, 0o600); err != nil {
 		return fmt.Errorf("stage the cell file: %w", err)
 	}
-	return nil
+	return writeConsumersLedger(ledgerDestination, ledger)
 }
 
-// mergeCellContribution takes the publishing module's namespace entry from the
-// locally rendered cell and sets it into the cell the base branch delivers,
-// keeping every other module's entry. The cell's own fields — schema,
-// coordinate, component, domain, trust domain — are the composition's
-// declaration and come from the local render. With no cell on the base
+// mergeCellContribution takes the publishing module's namespace entry from
+// its contribution and sets it into the cell the base branch delivers,
+// keeping every other module's entry as delivered. The cell's own fields —
+// schema, coordinate, component, domain, trust domain — are the composition's
+// declaration and come from the contribution. With no cell on the base
 // branch, the result holds this module's entry alone: the others join on
-// their own publishes.
-func mergeCellContribution(ctx context.Context, repo, baseBranch, cellPath string, local *cell.File, module string, consumed []consumedEndpoint) (*cell.File, error) {
+// their own publishes. Every entry's consumer lists are then derived from
+// the consumers ledger, updated with this module's recorded edges, so a
+// publish changes the edges its own module declares and no other's.
+func mergeCellContribution(ctx context.Context, repo, baseBranch, cellPath string, local *cell.File, module string, consumed []ConsumedEndpoint) (*cell.File, consumersLedger, error) {
 	var contribution *cell.Namespace
 	for index := range local.Namespaces {
 		if local.Namespaces[index].Module == module {
@@ -2632,37 +2612,45 @@ func mergeCellContribution(ctx context.Context, repo, baseBranch, cellPath strin
 		}
 	}
 	if contribution == nil {
-		return nil, fmt.Errorf("the rendered cell file carries no entry for module %s; render %s for this environment before publishing it", module, module)
+		return nil, nil, fmt.Errorf("the rendered cell file carries no entry for module %s; render %s for this environment before publishing it", module, module)
 	}
 	merged := *local
 	merged.Namespaces = nil
+	var delivered *cell.File
 	data, showErr := gitCommandBytes(ctx, repo, "show", "refs/remotes/origin/"+baseBranch+":"+cellPath)
 	switch {
 	case showErr == nil:
-		delivered, decodeErr := readCellFile(data)
+		decoded, decodeErr := readCellFile(data)
 		if decodeErr != nil {
-			return nil, fmt.Errorf("the cell file delivered on %s cannot be read, so this module's contribution cannot be merged into it: %w", baseBranch, decodeErr)
+			return nil, nil, fmt.Errorf("the cell file delivered on %s cannot be read, so this module's contribution cannot be merged into it: %w", baseBranch, decodeErr)
 		}
-		if err := refuseCellHeaderChange(delivered, local, baseBranch); err != nil {
-			return nil, err
+		if err := refuseCellHeaderChange(decoded, local, baseBranch); err != nil {
+			return nil, nil, err
 		}
+		delivered = decoded
 		for index := range delivered.Namespaces {
-			if delivered.Namespaces[index].Module == module {
-				continue
+			if delivered.Namespaces[index].Module != module {
+				merged.Namespaces = append(merged.Namespaces, delivered.Namespaces[index])
 			}
-			namespace := delivered.Namespaces[index]
-			reconcileConsumers(&namespace, module, consumed)
-			merged.Namespaces = append(merged.Namespaces, namespace)
 		}
 	case gitSaysAbsent(showErr):
 		// No cell delivered for this environment yet: this contribution is
 		// the first, and the file is this module's entry alone.
 	default:
-		return nil, fmt.Errorf("the cell file delivered on %s cannot be read, so this module's contribution cannot be merged into it: %w", baseBranch, showErr)
+		return nil, nil, fmt.Errorf("the cell file delivered on %s cannot be read, so this module's contribution cannot be merged into it: %w", baseBranch, showErr)
 	}
 	merged.Namespaces = append(merged.Namespaces, *contribution)
 	sort.Slice(merged.Namespaces, func(i, j int) bool { return merged.Namespaces[i].Name < merged.Namespaces[j].Name })
-	return &merged, nil
+	ledger, found, err := priorConsumersLedger(ctx, repo, baseBranch, path.Join(path.Dir(cellPath), consumersLedgerFile))
+	if err != nil {
+		return nil, nil, err
+	}
+	if !found {
+		ledger = seedConsumersLedger(delivered)
+	}
+	ledger.record(module, consumed)
+	applyConsumersLedger(&merged, ledger)
+	return &merged, ledger, nil
 }
 
 // refuseCellForAnotherHost holds the rendered cell to the host the environment
@@ -2718,36 +2706,109 @@ func refuseCellHeaderChange(delivered, local *cell.File, baseBranch string) erro
 		local.Coordinate, local.Component, local.Domain, local.TrustDomain)
 }
 
-// consumedEndpoint is one edge a module's render declares: a unit of the
-// module consuming an endpoint of another module's service.
-type consumedEndpoint struct {
-	Provider, Endpoint, Consumer string
+// consumersLedgerFile keeps, beside the delivered cell, every module's
+// outgoing consumer edges as its last publish recorded them, keyed by module.
+// The delivered cell's consumer lists are derived from it, so a publish
+// changes the edges its own module declares and no other's: a consumer
+// published before its provider has its edge waiting here for the provider's
+// first publish, and a provider's publish cannot drop a consumer that still
+// declares it. A cell delivered before the ledger existed seeds it with the
+// consumers its entries carry.
+const consumersLedgerFile = "consumers.ledger"
+
+// consumersLedger is the ledger's content: a module's recorded edges by module.
+type consumersLedger map[string][]ConsumedEndpoint
+
+// priorConsumersLedger reads the ledger the base branch delivers; found is
+// false when it delivers none.
+func priorConsumersLedger(ctx context.Context, repo, baseBranch, ledgerPath string) (consumersLedger, bool, error) {
+	data, err := gitCommandBytes(ctx, repo, "show", "refs/remotes/origin/"+baseBranch+":"+ledgerPath)
+	if err != nil {
+		if gitSaysAbsent(err) {
+			return consumersLedger{}, false, nil
+		}
+		return nil, false, fmt.Errorf("read the delivered consumers ledger from %s: %w", baseBranch, err)
+	}
+	ledger := consumersLedger{}
+	if err := json.Unmarshal(data, &ledger); err != nil {
+		return nil, false, fmt.Errorf("the consumers ledger delivered on %s cannot be read, so no module's edges can be reconciled against it: %w", baseBranch, err)
+	}
+	return ledger, true, nil
 }
 
-// reconcileConsumers rewrites, in another module's delivered entry, the
-// consumer lists that belong to the publishing module: every consumer of that
-// module is dropped and the ones its render declares now are added, so an
-// edge the module grew or dropped reaches the provider's entry even when the
-// provider is not rendered in this workspace.
-func reconcileConsumers(namespace *cell.Namespace, module string, consumed []consumedEndpoint) {
-	prefix := module + "/"
-	for w := range namespace.Workloads {
-		workload := &namespace.Workloads[w]
-		for e := range workload.Endpoints {
-			endpoint := &workload.Endpoints[e]
-			var kept []string
-			for _, consumer := range endpoint.Consumers {
-				if !strings.HasPrefix(consumer, prefix) {
-					kept = append(kept, consumer)
+// seedConsumersLedger reads a cell delivered before the ledger existed: every
+// consumer its entries carry becomes that consumer module's recorded edge, so
+// a module's delivered relationships survive until its own publish restates
+// them. A nil cell seeds nothing.
+func seedConsumersLedger(delivered *cell.File) consumersLedger {
+	ledger := consumersLedger{}
+	if delivered == nil {
+		return ledger
+	}
+	for n := range delivered.Namespaces {
+		for w := range delivered.Namespaces[n].Workloads {
+			workload := &delivered.Namespaces[n].Workloads[w]
+			for _, endpoint := range workload.Endpoints {
+				for _, consumer := range endpoint.Consumers {
+					module, _, _ := strings.Cut(consumer, "/")
+					edge := ConsumedEndpoint{Provider: workload.Service, Endpoint: endpoint.Name, Consumer: consumer}
+					if !slices.Contains(ledger[module], edge) {
+						ledger[module] = append(ledger[module], edge)
+					}
 				}
 			}
-			for _, edge := range consumed {
-				if edge.Provider == workload.Service && edge.Endpoint == endpoint.Name && !slices.Contains(kept, edge.Consumer) {
-					kept = append(kept, edge.Consumer)
-				}
-			}
-			sort.Strings(kept)
-			endpoint.Consumers = kept
 		}
 	}
+	for module := range ledger {
+		sortEdges(ledger[module])
+	}
+	return ledger
+}
+
+// record replaces a module's row with the edges its publish carries; a module
+// declaring none has no row.
+func (ledger consumersLedger) record(module string, consumed []ConsumedEndpoint) {
+	if len(consumed) == 0 {
+		delete(ledger, module)
+		return
+	}
+	edges := append([]ConsumedEndpoint(nil), consumed...)
+	sortEdges(edges)
+	ledger[module] = edges
+}
+
+// applyConsumersLedger derives every endpoint's consumers, in every entry of
+// the cell, from the ledger: the consumers that declare the edge, sorted.
+func applyConsumersLedger(file *cell.File, ledger consumersLedger) {
+	for n := range file.Namespaces {
+		namespace := &file.Namespaces[n]
+		for w := range namespace.Workloads {
+			workload := &namespace.Workloads[w]
+			for e := range workload.Endpoints {
+				endpoint := &workload.Endpoints[e]
+				var consumers []string
+				for _, edges := range ledger {
+					for _, edge := range edges {
+						if edge.Provider == workload.Service && edge.Endpoint == endpoint.Name && !slices.Contains(consumers, edge.Consumer) {
+							consumers = append(consumers, edge.Consumer)
+						}
+					}
+				}
+				sort.Strings(consumers)
+				endpoint.Consumers = consumers
+			}
+		}
+	}
+}
+
+// writeConsumersLedger stages the ledger beside the cell.
+func writeConsumersLedger(destination string, ledger consumersLedger) error {
+	data, err := json.MarshalIndent(ledger, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode the consumers ledger: %w", err)
+	}
+	if err := os.WriteFile(destination, append(data, '\n'), 0o600); err != nil {
+		return fmt.Errorf("stage the consumers ledger: %w", err)
+	}
+	return nil
 }

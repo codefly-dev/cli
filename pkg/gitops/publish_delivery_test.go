@@ -437,7 +437,7 @@ func TestPublishMergesItsCellContributionIntoTheDeliveredCell(t *testing.T) {
 
 	// No cell delivered yet: the publish contributes crm alone. shop, rendered
 	// locally but not the module being published, is not added.
-	merged, err := mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "crm", nil)
+	merged, _, err := mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "crm", nil)
 	require.NoError(t, err)
 	require.Equal(t, []string{"crm"}, cellModules(merged))
 	require.Equal(t, "example", merged.Domain)
@@ -458,7 +458,7 @@ func TestPublishMergesItsCellContributionIntoTheDeliveredCell(t *testing.T) {
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, "git %v: %s", args, out)
 	}
-	merged, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "crm", nil)
+	merged, _, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "crm", nil)
 	require.NoError(t, err)
 	require.Equal(t, []string{"billing", "crm"}, cellModules(merged))
 	require.Equal(t, "sha256:"+strings.Repeat("b", 64), merged.Namespaces[1].Workloads[0].Artifact.Digest, "crm is this publish's render")
@@ -466,7 +466,7 @@ func TestPublishMergesItsCellContributionIntoTheDeliveredCell(t *testing.T) {
 
 	// A publish of a module the local cell has no entry for is refused: its
 	// tree was not rendered for this environment.
-	_, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "ledger", nil)
+	_, _, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "ledger", nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "carries no entry for module ledger")
 }
@@ -986,7 +986,7 @@ func TestCellMergeReconcilesEdgesAndRefusesAnotherHostsCell(t *testing.T) {
 	}
 	local := &cell.File{Schema: cell.SchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example", Environment: "prod",
 		Namespaces: []cell.Namespace{{Name: "ns-crm", Module: "crm"}}}
-	merged, err := mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "crm", []consumedEndpoint{{Provider: "billing/api", Endpoint: "grpc", Consumer: "crm/api"}})
+	merged, _, err := mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "crm", []ConsumedEndpoint{{Provider: "billing/api", Endpoint: "grpc", Consumer: "crm/api"}})
 	require.NoError(t, err)
 	var billing *cell.Namespace
 	for i := range merged.Namespaces {
@@ -999,7 +999,7 @@ func TestCellMergeReconcilesEdgesAndRefusesAnotherHostsCell(t *testing.T) {
 
 	moved := *local
 	moved.Domain = "other"
-	_, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, &moved, "crm", nil)
+	_, _, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, &moved, "crm", nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), `domain "example"`)
 }

@@ -46,6 +46,10 @@ const (
 	// shared by every such pod of the namespace, so never one presence names.
 	defaultServiceAccount = "default"
 	cellsDir              = "cells"
+	// cellRecordFile is the cell record a hosted render writes at its tree's
+	// root: the module's namespace entry as rendered, read by publish and by
+	// the whole-workspace cell render.
+	cellRecordFile = cell.FileName
 )
 
 // renderedWorkload is a cell workload as the render reads it off the rendered
@@ -132,9 +136,24 @@ func RenderCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 			result.Skipped = append(result.Skipped, inventory.Module)
 			continue
 		}
-		namespace, namespaceErr := cellNamespace(ctx, workspace, env, tree, &inventory, consumers)
-		if namespaceErr != nil {
-			return CellResult{}, namespaceErr
+		record, recordErr := readCellRecord(tree)
+		if recordErr != nil {
+			return CellResult{}, fmt.Errorf("module %s: %w", inventory.Module, recordErr)
+		}
+		var namespace cell.Namespace
+		if record != nil {
+			// A hosted render recorded its entry with the tree: the cell carries
+			// it as rendered, not a derivation over the composition as it stands
+			// now, which is what publish delivers.
+			if record.Namespaces[0].Module != inventory.Module {
+				return CellResult{}, fmt.Errorf("the cell record of the tree of module %s describes module %s", inventory.Module, record.Namespaces[0].Module)
+			}
+			namespace = record.Namespaces[0]
+		} else {
+			var namespaceErr error
+			if namespace, namespaceErr = cellNamespace(ctx, workspace, env, tree, &inventory, consumers); namespaceErr != nil {
+				return CellResult{}, namespaceErr
+			}
 		}
 		file.Namespaces = append(file.Namespaces, namespace)
 		result.Modules = append(result.Modules, inventory.Module)
@@ -257,15 +276,7 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 	}
 	sort.Slice(namespace.Workloads, func(i, j int) bool { return namespace.Workloads[i].Name < namespace.Workloads[j].Name })
 	if env.Host != nil && inventory.SolutionHostBindingPath != "" {
-		repository, digest, _ := strings.Cut(deliveryImage, "@")
-		namespace.Delivery = &cell.Delivery{
-			Kind:           kindJob,
-			Selector:       map[string]string{managedByLabel: managedByCodefly, deliveryLabel: deliveryPresence},
-			ServiceAccount: deliveryServiceAccount,
-			SPIFFEID:       env.Host.SPIFFEID(inventory.Namespace, deliveryServiceAccount),
-			Container:      deliveryContainerName,
-			Image:          cell.Image{Repository: repository, Digest: digest},
-		}
+		namespace.Delivery = deliveryDeclaration(env, inventory.Namespace)
 	}
 	for _, unit := range inventory.Units {
 		if unit.Kind != UnitKindService {
@@ -285,6 +296,138 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 	}
 	sort.Slice(namespace.Egress, func(i, j int) bool { return namespace.Egress[i].Service < namespace.Egress[j].Service })
 	return namespace, nil
+}
+
+// deliveryDeclaration is the delivery Job as the cell declares it for a
+// namespace: the one workload the closed admission set admits beyond what the
+// tree renders. Publish declares it from the settled inventory — a render
+// cannot know the tombstones a publish synthesizes and delivers.
+func deliveryDeclaration(env *environments.Environment, namespace string) *cell.Delivery {
+	repository, digest, _ := strings.Cut(deliveryImage, "@")
+	return &cell.Delivery{
+		Kind:           kindJob,
+		Selector:       map[string]string{managedByLabel: managedByCodefly, deliveryLabel: deliveryPresence},
+		ServiceAccount: deliveryServiceAccount,
+		SPIFFEID:       env.Host.SPIFFEID(namespace, deliveryServiceAccount),
+		Container:      deliveryContainerName,
+		Image:          cell.Image{Repository: repository, Digest: digest},
+	}
+}
+
+// renderCellRecord writes a hosted render's cell record into its tree: the
+// module's namespace entry — workloads, images, selectors, accounts,
+// identities, artifacts and release read off the tree; endpoints, ports,
+// ingress, bindings, cloud identity and egress as the composition declares
+// them NOW — and, on the options, the module's outgoing consumer edges, which
+// the inventory carries. Publish and rollback derive the delivered cell from
+// this record and the settled inventory, never from the composition as it
+// stands later. A packaged solution has no derivation (RenderSolution renders
+// no composition service this reader can hold a workload to), so its record
+// is the entry the workspace's cell file carries for it, hand-written before
+// the render — the carried limitation the doc names.
+func renderCellRecord(ctx context.Context, tree string, opts *RenderOptions) error {
+	if opts.Host == nil || opts.Composition == nil || opts.Target == nil {
+		return nil
+	}
+	head := inventoryHead(opts)
+	graph, err := endpointConsumers(ctx, opts.Composition)
+	if err != nil {
+		return err
+	}
+	var namespace cell.Namespace
+	if packagedUnits(head.Units) {
+		entry, found, readErr := workspaceCellEntry(opts.Composition, opts.Target, opts.Module)
+		if readErr != nil {
+			return readErr
+		}
+		if !found {
+			// Nothing to record: a hosted publish of this tree is refused by
+			// name until the entry is written and the solution rendered again.
+			return nil
+		}
+		namespace = entry
+	} else if namespace, err = cellNamespace(ctx, opts.Composition, opts.Target, tree, &head, graph); err != nil {
+		return fmt.Errorf("derive the cell record of module %s: %w", opts.Module, err)
+	}
+	record := cellFileFor(opts.Target, &namespace)
+	if err = record.Validate(); err != nil {
+		return fmt.Errorf("the cell record of module %s does not validate: %w", opts.Module, err)
+	}
+	body, err := yaml.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("encode the cell record: %w", err)
+	}
+	if err = os.WriteFile(filepath.Join(tree, cellRecordFile), body, 0o600); err != nil {
+		return fmt.Errorf("write the cell record: %w", err)
+	}
+	opts.ConsumedEndpoints = moduleEdges(graph, opts.Module)
+	return nil
+}
+
+// cellFileFor is a cell file carrying one module's entry under the host the
+// environment declares: the shape of a record and of a contribution alike.
+func cellFileFor(env *environments.Environment, namespace *cell.Namespace) *cell.File {
+	file := &cell.File{Schema: cell.SchemaV1, Environment: env.Name, Namespaces: []cell.Namespace{*namespace}}
+	if env.Host != nil {
+		file.Coordinate, file.Component, file.Domain, file.TrustDomain = env.Host.Coordinate, env.Host.Component, env.Host.Domain, env.Host.TrustDomain
+	}
+	return file
+}
+
+// packagedUnits reports whether an inventory's units are a packaged solution's
+// — a unit of the solution kind, run by an executor rather than rendered from
+// composition services.
+func packagedUnits(units []InventoryUnit) bool {
+	for _, unit := range units {
+		if unit.Kind == UnitKindSolution {
+			return true
+		}
+	}
+	return false
+}
+
+// workspaceCellEntry is the entry the workspace's cell file carries for a
+// module, read through core's reader; found is false when the file or the
+// entry is absent.
+func workspaceCellEntry(workspace *resources.Workspace, env *environments.Environment, module string) (cell.Namespace, bool, error) {
+	source := cellPath(workspace.Dir(), env.Name)
+	data, err := readWithin(filepath.Dir(source), filepath.Base(source))
+	if errors.Is(err, fs.ErrNotExist) {
+		return cell.Namespace{}, false, nil
+	}
+	if err != nil {
+		return cell.Namespace{}, false, fmt.Errorf("read the cell file %s: %w", source, err)
+	}
+	file, err := readCellFile(data)
+	if err != nil {
+		return cell.Namespace{}, false, err
+	}
+	for index := range file.Namespaces {
+		if file.Namespaces[index].Module == module {
+			return file.Namespaces[index], true, nil
+		}
+	}
+	return cell.Namespace{}, false, nil
+}
+
+// readCellRecord reads the cell record a hosted render wrote into its tree,
+// through core's reader; nil when the tree carries none.
+func readCellRecord(tree string) (*cell.File, error) {
+	data, err := readWithin(tree, cellRecordFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the cell record: %w", err)
+	}
+	record, err := readCellFile(data)
+	if err != nil {
+		return nil, fmt.Errorf("the cell record: %w", err)
+	}
+	if len(record.Namespaces) != 1 {
+		return nil, fmt.Errorf("the cell record carries %d namespace entries, not one module's", len(record.Namespaces))
+	}
+	return record, nil
 }
 
 // isDeliveryVerifier reports whether a workload is a serving workload of the
