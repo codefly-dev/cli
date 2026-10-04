@@ -17,7 +17,13 @@ kind: Deployment
 metadata:
   name: api
 spec:
+  selector:
+    matchLabels:
+      app: api
   template:
+    metadata:
+      labels:
+        app: api
     spec:
       serviceAccountName: api
       containers:

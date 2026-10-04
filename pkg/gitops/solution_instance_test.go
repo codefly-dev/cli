@@ -1,11 +1,12 @@
 package gitops
 
 import (
-	"github.com/codefly-dev/core/solutionhost"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/codefly-dev/core/solutionhost"
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"

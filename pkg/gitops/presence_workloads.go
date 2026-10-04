@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/core/solutionhost"
+	"github.com/codefly-dev/core/solutionhost/cell"
 )
 
 // --- What a presence document says the host runs ---
@@ -42,7 +43,7 @@ func presenceWorkloads(owned string, opts *RenderOptions, unit SolutionArtifactU
 	// never authenticates as the service, so it is declared to the cell for
 	// admission and not here as an approved build — listed here, its image
 	// would be one the host accepts a token from.
-	var rendered []CellWorkload
+	var rendered []renderedWorkload
 	for index := range all {
 		switch all[index].Kind {
 		case kindDeployment, kindStatefulSet, kindDaemonSet:
@@ -110,8 +111,8 @@ func presenceWorkloads(owned string, opts *RenderOptions, unit SolutionArtifactU
 // injects is projected too and mounted everywhere — and refusing it here first
 // puts the failure in front of whoever wrote the pod template, at publish,
 // rather than in front of an operator reading a denial at rollout.
-func authenticatingContainer(service string, workload *CellWorkload) (CellContainer, []string, error) {
-	var chosen *CellContainer
+func authenticatingContainer(service string, workload *renderedWorkload) (cell.Container, []string, error) {
+	var chosen *cell.Container
 	for index := range workload.Containers {
 		if workload.Containers[index].Name == service {
 			chosen = &workload.Containers[index]
@@ -126,7 +127,7 @@ func authenticatingContainer(service string, workload *CellWorkload) (CellContai
 		for _, container := range workload.Containers {
 			names = append(names, container.Name)
 		}
-		return CellContainer{}, nil, fmt.Errorf("none of its containers (%s) is named %q, so the one that authenticates cannot be told from a sidecar", strings.Join(names, ", "), service)
+		return cell.Container{}, nil, fmt.Errorf("none of its containers (%s) is named %q, so the one that authenticates cannot be told from a sidecar", strings.Join(names, ", "), service)
 	}
 	others := []string{}
 	for _, container := range workload.Containers {
@@ -139,7 +140,7 @@ func authenticatingContainer(service string, workload *CellWorkload) (CellContai
 	}
 	sort.Strings(others)
 	if err := refuseSharedTokens(chosen.Name, workload); err != nil {
-		return CellContainer{}, nil, err
+		return cell.Container{}, nil, err
 	}
 	return *chosen, others, nil
 }
@@ -148,13 +149,13 @@ func authenticatingContainer(service string, workload *CellWorkload) (CellContai
 // for an explicit audience is mounted by a container other than the one that
 // authenticates — a sidecar or an init container, which would present it as
 // the workload. It is the cell's admission rule, run at publish.
-func refuseSharedTokens(authenticating string, workload *CellWorkload) error {
+func refuseSharedTokens(authenticating string, workload *renderedWorkload) error {
 	var shared []string
-	for _, container := range append(append([]CellContainer(nil), workload.Containers...), workload.InitContainers...) {
+	for _, container := range append(append([]cell.Container(nil), workload.Containers...), workload.InitContainers...) {
 		if container.Name == authenticating {
 			continue
 		}
-		for _, mount := range container.tokenMounts {
+		for _, mount := range workload.tokenMounts[container.Name] {
 			shared = append(shared, fmt.Sprintf("%s mounts %s (audience %q)", container.Name, mount.volume, mount.audience))
 		}
 	}

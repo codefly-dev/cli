@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/core/solutionhost/cell"
+
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
@@ -176,16 +178,16 @@ func TestCellFileInventoriesEveryRenderedWorkload(t *testing.T) {
 
 	data, err := os.ReadFile(result.Path)
 	require.NoError(t, err)
-	var cell CellFile
-	require.NoError(t, yaml.Unmarshal(data, &cell))
-	require.Equal(t, CellSchemaV1, cell.Schema)
-	require.Equal(t, "example/staging/region-a", cell.Coordinate)
-	require.Equal(t, "platform-host", cell.Component)
-	require.Equal(t, "acme", cell.Domain, "the ownership domain the composition delivers under, for the platform to hold its signer policy against")
-	require.Equal(t, "cluster.example", cell.TrustDomain, "the trust domain is carried at the top level so a reader can re-derive every spiffe_id and refuse a mismatch")
-	require.Len(t, cell.Namespaces, 2)
-	require.Equal(t, "acme-billing", cell.Namespaces[0].Name)
-	shop := cell.Namespaces[1]
+	var cellFile cell.File
+	require.NoError(t, yaml.Unmarshal(data, &cellFile))
+	require.Equal(t, cell.SchemaV1, cellFile.Schema)
+	require.Equal(t, "example/staging/region-a", cellFile.Coordinate)
+	require.Equal(t, "platform-host", cellFile.Component)
+	require.Equal(t, "acme", cellFile.Domain, "the ownership domain the composition delivers under, for the platform to hold its signer policy against")
+	require.Equal(t, "cluster.example", cellFile.TrustDomain, "the trust domain is carried at the top level so a reader can re-derive every spiffe_id and refuse a mismatch")
+	require.Len(t, cellFile.Namespaces, 2)
+	require.Equal(t, "acme-billing", cellFile.Namespaces[0].Name)
+	shop := cellFile.Namespaces[1]
 	require.Equal(t, "acme-shop", shop.Name)
 	require.Len(t, shop.Workloads, 2, "the bootstrap Job is a declared workload with its own image")
 	api := shop.Workloads[0]
@@ -205,21 +207,21 @@ func TestCellFileInventoriesEveryRenderedWorkload(t *testing.T) {
 	require.Equal(t, "sha256:"+strings.Repeat("d", 64), migrate.Containers[0].Image.Digest)
 	require.Equal(t, "api", migrate.Authenticating, "a single container is the authenticating one")
 	require.Equal(t, "spiffe://cluster.example/ns/acme-shop/sa/api", api.SPIFFEID)
-	require.Equal(t, []CellContainer{
-		{Name: "api", Image: CellImage{Repository: "registry.example.test/acme/api", Digest: "sha256:" + strings.Repeat("a", 64)}},
-		{Name: "proxy", Image: CellImage{Repository: "registry.example.test/mesh/proxy", Digest: "sha256:" + strings.Repeat("b", 64)}},
+	require.Equal(t, []cell.Container{
+		{Name: "api", Image: cell.Image{Repository: "registry.example.test/acme/api", Digest: "sha256:" + strings.Repeat("a", 64)}},
+		{Name: "proxy", Image: cell.Image{Repository: "registry.example.test/mesh/proxy", Digest: "sha256:" + strings.Repeat("b", 64)}},
 	}, api.Containers)
 	require.Equal(t, "api", api.Artifact.Name)
 	require.True(t, strings.HasPrefix(api.Artifact.Digest, "sha256:"))
-	require.Equal(t, &CellRelease{Publisher: "acme", Name: "shop", Version: "1.2.0"}, api.Release)
-	require.Equal(t, []CellEndpoint{
+	require.Equal(t, &cell.Release{Publisher: "acme", Name: "shop", Version: "1.2.0"}, api.Release)
+	require.Equal(t, []cell.Endpoint{
 		{Name: "grpc", API: "grpc", Port: 9090, Visibility: "internal", AllowModules: []string{"billing"}, Consumers: []string{"billing/ledger"}},
 		{Name: "http", API: "http", Port: 8080, Visibility: "public"},
 	}, api.Endpoints, "the grpc endpoint has a declared consumer; the http endpoint has none, visibly")
-	require.Equal(t, []CellIngress{{Endpoint: "http", Hosts: []string{"shop.example.test"}}}, api.Ingress)
-	require.Equal(t, []CellEgress{{Service: "shop/api", Hosts: []CellEgressHost{{Name: "api.github.com", Port: 443}, {Name: "identity.example.test", Port: 443}}}}, shop.Egress,
+	require.Equal(t, []cell.Ingress{{Endpoint: "http", Hosts: []string{"shop.example.test"}}}, api.Ingress)
+	require.Equal(t, []cell.Egress{{Service: "shop/api", Hosts: []cell.EgressHost{{Name: "api.github.com", Port: 443}, {Name: "identity.example.test", Port: 443}}}}, shop.Egress,
 		"egress hosts are the environment's declaration, carried not derived, each with the port it is reached on made explicit")
-	require.Equal(t, []CellEgress{{Service: "billing/ledger", CIDRs: []string{"203.0.113.0/24"}}}, cell.Namespaces[0].Egress)
+	require.Equal(t, []cell.Egress{{Service: "billing/ledger", CIDRs: []string{"203.0.113.0/24"}}}, cellFile.Namespaces[0].Egress)
 
 	// The file carries no generation, no domain and no tombstone: it is an
 	// inventory regenerated whole.
@@ -259,24 +261,24 @@ func TestCellFileMarksTheVerifierAndCarriesTheGrants(t *testing.T) {
 	require.NoError(t, err)
 	data, err := os.ReadFile(result.Path)
 	require.NoError(t, err)
-	var cell CellFile
-	require.NoError(t, yaml.Unmarshal(data, &cell))
-	shop := cell.Namespaces[1]
+	var cellFile cell.File
+	require.NoError(t, yaml.Unmarshal(data, &cellFile))
+	shop := cellFile.Namespaces[1]
 	require.Equal(t, "acme-shop", shop.Name)
 	api, migrate := shop.Workloads[0], shop.Workloads[1]
 	require.Equal(t, "api", api.Name)
 	require.True(t, api.Verifier, "the serving workload of the delivery API's service verifies delivered documents")
 	require.Equal(t, "api-migrate", migrate.Name)
 	require.False(t, migrate.Verifier, "a bootstrap Job of that service runs its own image and verifies nothing")
-	for _, workload := range []CellWorkload{api, migrate} {
+	for _, workload := range []cell.Workload{api, migrate} {
 		require.Equal(t, []string{"audit", "vault"}, workload.Bindings, "the cell bindings the service declares ride on every workload of it, sorted")
 		require.True(t, workload.CloudIdentity)
 	}
-	ledger := cell.Namespaces[0].Workloads[0]
+	ledger := cellFile.Namespaces[0].Workloads[0]
 	require.False(t, ledger.Verifier)
 	require.Nil(t, ledger.Bindings)
 	require.False(t, ledger.CloudIdentity)
-	require.Equal(t, []CellEgressHost{{Name: "identity.example.test", Port: 443}, {Name: "smtp.example.test", Port: 587}}, shop.Egress[0].Hosts)
+	require.Equal(t, []cell.EgressHost{{Name: "identity.example.test", Port: 443}, {Name: "smtp.example.test", Port: 587}}, shop.Egress[0].Hosts)
 	// The YAML spells every one of them, so a reader never infers.
 	for _, want := range []string{"trust_domain: cluster.example", "verifier: true", "authenticating: api", "cloud_identity: true", "- vault", "port: 587"} {
 		require.Contains(t, string(data), want)
@@ -478,15 +480,15 @@ spec:
 	require.NoError(t, err)
 	require.Len(t, result.Inventory.Units, 2)
 
-	cell, err := RenderCell(ctx, workspace, env)
+	cellFile, err := RenderCell(ctx, workspace, env)
 	require.NoError(t, err)
-	data, err := os.ReadFile(cell.Path)
+	data, err := os.ReadFile(cellFile.Path)
 	require.NoError(t, err)
-	var file CellFile
+	var file cell.File
 	require.NoError(t, yaml.Unmarshal(data, &file))
 	billing := file.Namespaces[0]
 	require.Equal(t, "acme-billing", billing.Name)
-	names := map[string]CellWorkload{}
+	names := map[string]cell.Workload{}
 	for _, workload := range billing.Workloads {
 		names[workload.Name] = workload
 	}
@@ -535,22 +537,22 @@ func TestCellFileDeclaresThePresenceDeliveryJob(t *testing.T) {
 	require.NoError(t, err)
 	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", nil)
 
-	cell, err := RenderCell(ctx, workspace, env)
+	cellFile, err := RenderCell(ctx, workspace, env)
 	require.NoError(t, err)
-	data, err := os.ReadFile(cell.Path)
+	data, err := os.ReadFile(cellFile.Path)
 	require.NoError(t, err)
-	var file CellFile
+	var file cell.File
 	require.NoError(t, yaml.Unmarshal(data, &file))
 	billing, shop := file.Namespaces[0], file.Namespaces[1]
 	require.Nil(t, billing.Delivery, "a module delivering no presence runs no delivery Job")
 	require.NotNil(t, shop.Delivery)
-	require.Equal(t, &CellDelivery{
+	require.Equal(t, &cell.Delivery{
 		Kind:           "Job",
 		Selector:       map[string]string{"app.kubernetes.io/managed-by": "codefly", "codefly.dev/delivery": "presence"},
 		ServiceAccount: "delivery",
 		SPIFFEID:       "spiffe://cluster.example/ns/acme-shop/sa/delivery",
 		Container:      "deliver",
-		Image:          CellImage{Repository: "curlimages/curl:8.18.0", Digest: "sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17"},
+		Image:          cell.Image{Repository: "curlimages/curl:8.18.0", Digest: "sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17"},
 	}, shop.Delivery)
 	require.Contains(t, string(data), "delivery:\n", "the YAML spells it, so a loader never infers it")
 }

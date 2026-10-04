@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/codefly-dev/cli/pkg/modulecontract"
+	"github.com/codefly-dev/core/solutionhost/modulecontract"
 
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/environments"

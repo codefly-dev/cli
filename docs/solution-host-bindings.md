@@ -945,15 +945,16 @@ nothing attests that the pinned image was built from them. The **cell file is
 unsigned**: it is read by the platform's own build from the delivery
 repository, under the same repository trust as the manifests Argo applies,
 and whether that is enough is the owner's call. The **module contract**
-(`codefly/module-contract/v1`) and the **cell file** (`codefly/cell/v1`) are
-schemas this repository defines; their other implementers — the runtimes
-publishing contracts, the platform loading cells — hold the shape by
-agreement, not by a core model with fixtures, and moving both to core is a
-seam named for the owner.
-Until core owns them, both shapes are **pinned by digest** under
-`docs/wire/` — every field by wire name and type, read off the Go types, with
-the SHA-256 of each description in `docs/wire/README.md` — and
-`TestWireShapesArePinnedByDigest` refuses a change to either until the
-description is regenerated and the new digest is republished to the host and
-infra-base sessions, which pin the same digests against their readers. A
-stopgap, stated as one: the single implementation is still here.
+(`codefly/module-contract/v1`) and the **cell file** (`codefly/cell/v1`)
+have ONE implementation each, in core, beside the presence and authority
+documents: `solutionhost/modulecontract` (the model, strict decoding, every
+refusal, slot resolution) and `solutionhost/cell` (the model, strict decoding,
+every refusal). This repository holds no copy: the render derives authority
+through core's reader, the publish reads every cell — the workspace's file and
+the delivered one — through `cell.Parse` and holds the cell it writes to
+`Validate` before writing it, and the two kits core ships (`Fixtures()` and
+`Run(t, read)`, every accepted and refused document with its sentinel and
+message) run through this repository's own entrypoints
+(`TestTheModuleContractKitRunsThroughTheRender`,
+`TestTheCellKitRunsThroughThePublisher`). The runtimes publishing contracts and
+the platform loading cells run the same kits through theirs.

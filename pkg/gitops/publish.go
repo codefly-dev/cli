@@ -19,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/codefly-dev/core/solutionhost/cell"
+
 	"github.com/Masterminds/semver/v3"
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -404,18 +406,18 @@ func loadRenderedPublication(
 	// where the environment declares a host, a render without it is not
 	// publishable, and a cell that cannot be read is an error, never an
 	// absent one.
-	cell := cellPath(workspace.Dir(), request.Environment)
-	_, statErr := os.Stat(cell)
+	cellFile := cellPath(workspace.Dir(), request.Environment)
+	_, statErr := os.Stat(cellFile)
 	switch {
 	case statErr == nil:
-		publication.cellSource = cell
-		publication.cellPath = filepath.ToSlash(filepath.Join(pathRoot, cellsDir, request.Environment, CellFileName))
+		publication.cellSource = cellFile
+		publication.cellPath = filepath.ToSlash(filepath.Join(pathRoot, cellsDir, request.Environment, cell.FileName))
 	case errors.Is(statErr, fs.ErrNotExist):
 		if env.Host != nil {
-			return Inventory{}, fmt.Errorf("the environment %s declares a host but no cell file is rendered for it at %s; render %s for %s before publishing", request.Environment, cell, request.Module, request.Environment)
+			return Inventory{}, fmt.Errorf("the environment %s declares a host but no cell file is rendered for it at %s; render %s for %s before publishing", request.Environment, cellFile, request.Module, request.Environment)
 		}
 	default:
-		return Inventory{}, fmt.Errorf("read the cell file %s: %w", cell, statErr)
+		return Inventory{}, fmt.Errorf("read the cell file %s: %w", cellFile, statErr)
 	}
 	return inventory, nil
 }
@@ -2429,20 +2431,20 @@ func stageWorkspaceCellFile(ctx context.Context, repo string, publication *deliv
 	if publication.cellSource == "" {
 		return nil
 	}
-	data, err := os.ReadFile(publication.cellSource)
+	data, err := readWithin(filepath.Dir(publication.cellSource), filepath.Base(publication.cellSource))
 	if err != nil {
 		return fmt.Errorf("read the cell file: %w", err)
 	}
-	var local CellFile
-	if err = yaml.Unmarshal(data, &local); err != nil {
-		return fmt.Errorf("decode the cell file: %w", err)
+	local, err := readCellFile(data)
+	if err != nil {
+		return err
 	}
-	return stageCellContribution(ctx, repo, publication, &local, inventory)
+	return stageCellContribution(ctx, repo, publication, local, inventory)
 }
 
 // deriveCellContribution is the render's own cell derivation applied to one
 // tree: the module's namespace entry, under the host the environment declares.
-func deriveCellContribution(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, tree string, inventory *Inventory) (*CellFile, error) {
+func deriveCellContribution(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, tree string, inventory *Inventory) (*cell.File, error) {
 	consumers, err := endpointConsumers(ctx, workspace)
 	if err != nil {
 		return nil, err
@@ -2451,26 +2453,30 @@ func deriveCellContribution(ctx context.Context, workspace *resources.Workspace,
 	if err != nil {
 		return nil, fmt.Errorf("derive the cell contribution of module %s from the tree it publishes: %w", inventory.Module, err)
 	}
-	cell := &CellFile{Schema: CellSchemaV1, Environment: env.Name, Namespaces: []CellNamespace{namespace}}
+	contribution := &cell.File{Schema: cell.SchemaV1, Environment: env.Name, Namespaces: []cell.Namespace{namespace}}
 	if env.Host != nil {
-		cell.Coordinate, cell.Component, cell.Domain, cell.TrustDomain = env.Host.Coordinate, env.Host.Component, env.Host.Domain, env.Host.TrustDomain
+		contribution.Coordinate, contribution.Component, contribution.Domain, contribution.TrustDomain = env.Host.Coordinate, env.Host.Component, env.Host.Domain, env.Host.TrustDomain
 	}
-	return cell, nil
+	// The writer is held to the model it writes before anything is merged.
+	if err := contribution.Validate(); err != nil {
+		return nil, fmt.Errorf("the cell contribution derived for module %s does not validate: %w", inventory.Module, err)
+	}
+	return contribution, nil
 }
 
 // refuseStaleCellFile holds the workspace's cell file — the render's output,
 // which a later render, an edit or a failed cell generation can leave behind
 // — to the contribution derived from the tree being published.
-func refuseStaleCellFile(source string, derived *CellFile, module string) error {
-	data, err := os.ReadFile(source)
+func refuseStaleCellFile(source string, derived *cell.File, module string) error {
+	data, err := readWithin(filepath.Dir(source), filepath.Base(source))
 	if err != nil {
 		return fmt.Errorf("read the cell file: %w", err)
 	}
-	var local CellFile
-	if err = yaml.Unmarshal(data, &local); err != nil {
-		return fmt.Errorf("decode the cell file: %w", err)
+	local, err := readCellFile(data)
+	if err != nil {
+		return err
 	}
-	var recorded *CellNamespace
+	var recorded *cell.Namespace
 	for index := range local.Namespaces {
 		if local.Namespaces[index].Module == module {
 			recorded = &local.Namespaces[index]
@@ -2495,7 +2501,7 @@ func refuseStaleCellFile(source string, derived *CellFile, module string) error 
 
 // stageCellContribution holds a contribution to the host declared now and
 // merges it into the delivered cell.
-func stageCellContribution(ctx context.Context, repo string, publication *deliveryPublication, contribution *CellFile, inventory *Inventory) error {
+func stageCellContribution(ctx context.Context, repo string, publication *deliveryPublication, contribution *cell.File, inventory *Inventory) error {
 	destination, err := confinedJoin(repo, publication.cellPath)
 	if err != nil {
 		return err
@@ -2527,8 +2533,8 @@ func stageCellContribution(ctx context.Context, repo string, publication *delive
 // declaration and come from the local render. With no cell on the base
 // branch, the result holds this module's entry alone: the others join on
 // their own publishes.
-func mergeCellContribution(ctx context.Context, repo, baseBranch, cellPath string, local *CellFile, module string, consumed []consumedEndpoint) (*CellFile, error) {
-	var contribution *CellNamespace
+func mergeCellContribution(ctx context.Context, repo, baseBranch, cellPath string, local *cell.File, module string, consumed []consumedEndpoint) (*cell.File, error) {
+	var contribution *cell.Namespace
 	for index := range local.Namespaces {
 		if local.Namespaces[index].Module == module {
 			contribution = &local.Namespaces[index]
@@ -2543,11 +2549,11 @@ func mergeCellContribution(ctx context.Context, repo, baseBranch, cellPath strin
 	data, showErr := gitCommandBytes(ctx, repo, "show", "refs/remotes/origin/"+baseBranch+":"+cellPath)
 	switch {
 	case showErr == nil:
-		var delivered CellFile
-		if decodeErr := yaml.Unmarshal(data, &delivered); decodeErr != nil {
+		delivered, decodeErr := readCellFile(data)
+		if decodeErr != nil {
 			return nil, fmt.Errorf("the cell file delivered on %s cannot be read, so this module's contribution cannot be merged into it: %w", baseBranch, decodeErr)
 		}
-		if err := refuseCellHeaderChange(&delivered, local, baseBranch); err != nil {
+		if err := refuseCellHeaderChange(delivered, local, baseBranch); err != nil {
 			return nil, err
 		}
 		for index := range delivered.Namespaces {
@@ -2573,15 +2579,27 @@ func mergeCellContribution(ctx context.Context, repo, baseBranch, cellPath strin
 // declares at publish, as every delivered document is: a cell rendered before
 // the host block changed is refused by name, never merged under a declaration
 // it does not describe.
-func refuseCellForAnotherHost(cell *CellFile, opts *deliveryPublishOptions) error {
+func refuseCellForAnotherHost(file *cell.File, opts *deliveryPublishOptions) error {
 	if opts.Coordinate == "" {
 		return nil
 	}
-	if cell.Coordinate != opts.Coordinate || cell.Component != opts.Component || cell.Domain != opts.Domain || cell.TrustDomain != opts.TrustDomain {
+	if file.Coordinate != opts.Coordinate || file.Component != opts.Component || file.Domain != opts.Domain || file.TrustDomain != opts.TrustDomain {
 		return fmt.Errorf("the cell file describes host %s/%s under domain %q (trust domain %q) and the environment declares %s/%s under %q (%q) now; render again before publishing",
-			cell.Coordinate, cell.Component, cell.Domain, cell.TrustDomain, opts.Coordinate, opts.Component, opts.Domain, opts.TrustDomain)
+			file.Coordinate, file.Component, file.Domain, file.TrustDomain, opts.Coordinate, opts.Component, opts.Domain, opts.TrustDomain)
 	}
 	return nil
+}
+
+// readCellFile is the one way this publisher reads a cell — the workspace's
+// file and the delivered one alike — and it is core's reader: a cell that
+// does not parse and validate as codefly/cell/v1 is refused by name, never
+// read loosely and merged.
+func readCellFile(data []byte) (*cell.File, error) {
+	file, err := cell.Parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("decode the cell file: %w", err)
+	}
+	return file, nil
 }
 
 // gitSaysAbsent reports a git read that failed because the path or the ref
@@ -2600,7 +2618,7 @@ func gitSaysAbsent(err error) bool {
 // schema, coordinate, component, domain and trust domain are what every other
 // module's entry was written under, so a contribution made under another
 // declaration is refused rather than relabelling entries it does not own.
-func refuseCellHeaderChange(delivered, local *CellFile, baseBranch string) error {
+func refuseCellHeaderChange(delivered, local *cell.File, baseBranch string) error {
 	if delivered.Schema == local.Schema && delivered.Coordinate == local.Coordinate && delivered.Component == local.Component &&
 		delivered.Domain == local.Domain && delivered.TrustDomain == local.TrustDomain {
 		return nil
@@ -2641,7 +2659,7 @@ func consumedEndpoints(inventory *Inventory) []consumedEndpoint {
 // module is dropped and the ones its render declares now are added, so an
 // edge the module grew or dropped reaches the provider's entry even when the
 // provider is not rendered in this workspace.
-func reconcileConsumers(namespace *CellNamespace, module string, consumed []consumedEndpoint) {
+func reconcileConsumers(namespace *cell.Namespace, module string, consumed []consumedEndpoint) {
 	prefix := module + "/"
 	for w := range namespace.Workloads {
 		workload := &namespace.Workloads[w]

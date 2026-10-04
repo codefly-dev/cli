@@ -11,10 +11,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/core/solutionhost/cell"
+
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
-	"github.com/codefly-dev/cli/pkg/modulecontract"
 	"github.com/codefly-dev/core/solutionhost"
+	"github.com/codefly-dev/core/solutionhost/modulecontract"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
@@ -422,15 +424,16 @@ func TestPublishMergesItsCellContributionIntoTheDeliveredCell(t *testing.T) {
 	ctx := context.Background()
 	repository := newDeliveryRepository(t)
 	cellPath := "deployments/cells/prod/cell.yaml"
-	namespace := func(module, digest string) CellNamespace {
-		return CellNamespace{Name: "ns-" + module, Module: module, Workloads: []CellWorkload{{
-			Name: module, Kind: "Deployment", Service: module + "/api", ServiceAccount: "api",
-			Containers: []CellContainer{{Name: "api", Image: CellImage{Repository: "registry.example.test/" + module, Digest: "sha256:" + strings.Repeat(digest, 64)}}},
-			Artifact:   CellArtifact{Name: "api", Digest: "sha256:" + strings.Repeat(digest, 64)},
+	namespace := func(module, digest string) cell.Namespace {
+		return cell.Namespace{Name: "ns-" + module, Module: module, Workloads: []cell.Workload{{
+			Name: module, Kind: "Deployment", Selector: map[string]string{"app": "api"}, Service: module + "/api", ServiceAccount: "api",
+			SPIFFEID: "spiffe://cluster.example/ns/ns-" + module + "/sa/api", Authenticating: "api",
+			Containers: []cell.Container{{Name: "api", Image: cell.Image{Repository: "registry.example.test/" + module, Digest: "sha256:" + strings.Repeat(digest, 64)}}},
+			Artifact:   cell.Artifact{Name: "api", Digest: "sha256:" + strings.Repeat(digest, 64)},
 		}}}
 	}
-	local := &CellFile{Schema: CellSchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example", Environment: "prod",
-		Namespaces: []CellNamespace{namespace("crm", "b"), namespace("shop", "c")}}
+	local := &cell.File{Schema: cell.SchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example", Environment: "prod",
+		Namespaces: []cell.Namespace{namespace("crm", "b"), namespace("shop", "c")}}
 
 	// No cell delivered yet: the publish contributes crm alone. shop, rendered
 	// locally but not the module being published, is not added.
@@ -441,8 +444,8 @@ func TestPublishMergesItsCellContributionIntoTheDeliveredCell(t *testing.T) {
 
 	// billing and an older crm delivered: crm is replaced, billing kept, shop
 	// still not added.
-	delivered := &CellFile{Schema: CellSchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example", Environment: "prod",
-		Namespaces: []CellNamespace{namespace("billing", "d"), namespace("crm", "a")}}
+	delivered := &cell.File{Schema: cell.SchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example", Environment: "prod",
+		Namespaces: []cell.Namespace{namespace("billing", "d"), namespace("crm", "a")}}
 	data, err := yaml.Marshal(delivered)
 	require.NoError(t, err)
 	full := filepath.Join(repository.repo, filepath.FromSlash(cellPath))
@@ -468,9 +471,9 @@ func TestPublishMergesItsCellContributionIntoTheDeliveredCell(t *testing.T) {
 	require.Contains(t, err.Error(), "carries no entry for module ledger")
 }
 
-func cellModules(cell *CellFile) []string {
-	modules := make([]string, 0, len(cell.Namespaces))
-	for _, namespace := range cell.Namespaces {
+func cellModules(cellFile *cell.File) []string {
+	modules := make([]string, 0, len(cellFile.Namespaces))
+	for _, namespace := range cellFile.Namespaces {
 		modules = append(modules, namespace.Module)
 	}
 	return modules
@@ -960,12 +963,15 @@ func TestCellMergeReconcilesEdgesAndRefusesAnotherHostsCell(t *testing.T) {
 	ctx := context.Background()
 	repository := newDeliveryRepository(t)
 	cellPath := "deployments/cells/prod/cell.yaml"
-	provider := CellNamespace{Name: "ns-billing", Module: "billing", Workloads: []CellWorkload{{
-		Name: "billing", Kind: "Deployment", Service: "billing/api", ServiceAccount: "api",
-		Endpoints: []CellEndpoint{{Name: "grpc", Consumers: []string{"crm/api", "crm/worker", "shop/api"}}},
+	provider := cell.Namespace{Name: "ns-billing", Module: "billing", Workloads: []cell.Workload{{
+		Name: "billing", Kind: "Deployment", Selector: map[string]string{"app": "billing"}, Service: "billing/api", ServiceAccount: "api",
+		SPIFFEID: "spiffe://cluster.example/ns/ns-billing/sa/api", Authenticating: "api",
+		Containers: []cell.Container{{Name: "api", Image: cell.Image{Repository: "registry.example.test/billing", Digest: "sha256:" + strings.Repeat("d", 64)}}},
+		Artifact:   cell.Artifact{Name: "api", Digest: "sha256:" + strings.Repeat("d", 64)},
+		Endpoints:  []cell.Endpoint{{Name: "grpc", Consumers: []string{"crm/api", "crm/worker", "shop/api"}}},
 	}}}
-	delivered := &CellFile{Schema: CellSchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example",
-		Namespaces: []CellNamespace{provider, {Name: "ns-crm", Module: "crm"}}}
+	delivered := &cell.File{Schema: cell.SchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example", Environment: "prod",
+		Namespaces: []cell.Namespace{provider, {Name: "ns-crm", Module: "crm"}}}
 	data, err := yaml.Marshal(delivered)
 	require.NoError(t, err)
 	full := filepath.Join(repository.repo, filepath.FromSlash(cellPath))
@@ -978,11 +984,11 @@ func TestCellMergeReconcilesEdgesAndRefusesAnotherHostsCell(t *testing.T) {
 		out, runErr := cmd.CombinedOutput()
 		require.NoError(t, runErr, string(out))
 	}
-	local := &CellFile{Schema: CellSchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example",
-		Namespaces: []CellNamespace{{Name: "ns-crm", Module: "crm"}}}
+	local := &cell.File{Schema: cell.SchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example", Environment: "prod",
+		Namespaces: []cell.Namespace{{Name: "ns-crm", Module: "crm"}}}
 	merged, err := mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "crm", []consumedEndpoint{{Provider: "billing/api", Endpoint: "grpc", Consumer: "crm/api"}})
 	require.NoError(t, err)
-	var billing *CellNamespace
+	var billing *cell.Namespace
 	for i := range merged.Namespaces {
 		if merged.Namespaces[i].Module == "billing" {
 			billing = &merged.Namespaces[i]
@@ -1179,13 +1185,13 @@ func TestRollbackRestoresOtherEnvironmentsOverlaysAsDelivered(t *testing.T) {
 func TestPublishRefusesACellRenderedForAnotherHost(t *testing.T) {
 	repository := newDeliveryRepository(t)
 	source := filepath.Join(t.TempDir(), "cell.yaml")
-	data, err := yaml.Marshal(&CellFile{Schema: CellSchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example",
-		Namespaces: []CellNamespace{{Name: "crm", Module: "crm"}}})
+	data, err := yaml.Marshal(&cell.File{Schema: cell.SchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example",
+		Namespaces: []cell.Namespace{{Name: "crm", Module: "crm"}}})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(source, data, 0o600))
 	publication := &deliveryPublication{baseBranch: "main", cellSource: source, cellPath: "deployments/cells/prod/cell.yaml",
 		options: deliveryPublishOptions{Module: "crm", Coordinate: "elsewhere/prod/x", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example"}}
-	var contribution CellFile
+	var contribution cell.File
 	require.NoError(t, yaml.Unmarshal(data, &contribution))
 	err = stageCellContribution(context.Background(), repository.repo, publication, &contribution, &Inventory{Module: "crm"})
 	require.Error(t, err)

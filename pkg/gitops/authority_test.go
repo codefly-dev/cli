@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codefly-dev/cli/pkg/modulecontract"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
+	"github.com/codefly-dev/core/solutionhost/modulecontract"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )

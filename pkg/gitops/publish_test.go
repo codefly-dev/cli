@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/core/solutionhost/cell"
+
 	"gopkg.in/yaml.v3"
 
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -1815,12 +1817,12 @@ func writeTestCell(t *testing.T, workspace *resources.Workspace, env *environmen
 // emits no cell.
 func writeHandCell(t *testing.T, workspace *resources.Workspace, env *environments.Environment, environment, module string) {
 	t.Helper()
-	cell := CellFile{
-		Schema: CellSchemaV1, Coordinate: env.Host.Coordinate, Component: env.Host.Component,
-		Domain: env.Host.Domain, TrustDomain: env.Host.TrustDomain,
-		Namespaces: []CellNamespace{{Name: module, Module: module}},
+	cellFile := cell.File{
+		Schema: cell.SchemaV1, Coordinate: env.Host.Coordinate, Component: env.Host.Component,
+		Domain: env.Host.Domain, TrustDomain: env.Host.TrustDomain, Environment: environment,
+		Namespaces: []cell.Namespace{{Name: module, Module: module}},
 	}
-	data, err := yaml.Marshal(cell)
+	data, err := yaml.Marshal(cellFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1904,15 +1906,17 @@ func TestPublishRefusesACellFileThatDoesNotDescribeTheRenderedTree(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var cell CellFile
-	if err := yaml.Unmarshal(data, &cell); err != nil {
+	var cellFile cell.File
+	if err := yaml.Unmarshal(data, &cellFile); err != nil {
 		t.Fatal(err)
 	}
-	if len(cell.Namespaces) != 1 || len(cell.Namespaces[0].Workloads) == 0 {
-		t.Fatalf("the rendered cell carries no workload to edit: %+v", cell)
+	if len(cellFile.Namespaces) != 1 || len(cellFile.Namespaces[0].Workloads) == 0 {
+		t.Fatalf("the rendered cell carries no workload to edit: %+v", cellFile)
 	}
-	cell.Namespaces[0].Workloads[0].ServiceAccount = "someone-else"
-	if data, err = yaml.Marshal(&cell); err != nil {
+	// A valid cell (core's parser accepts it) that describes another tree:
+	// the artifact's digest is not the rendered unit's.
+	cellFile.Namespaces[0].Workloads[0].Artifact.Digest = "sha256:" + strings.Repeat("0", 64)
+	if data, err = yaml.Marshal(&cellFile); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
