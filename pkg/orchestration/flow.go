@@ -110,8 +110,6 @@ type Flow struct {
 	standAlone  bool
 	excludeRoot bool
 
-	scope string
-
 	// containerRecoveryScope is this flow's projected container ownership and
 	// containerRecoveryIdentity the acknowledgement its agents echo back, both
 	// resolved once by ContainerRecoveryScope().
@@ -204,7 +202,7 @@ type Flow struct {
 type StateListener func(service string, state tui.ServiceState, port int)
 
 func MapValues[K comparable, V any](m map[K]V) []V {
-	var values []V
+	values := make([]V, 0, len(m))
 	for _, v := range m {
 		values = append(values, v)
 	}
@@ -855,7 +853,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 			w.Debug("init only")
 			playbook.WithStoppingAfter(stopAfterRoots(flow.rootUniques(), RuntimeInit))
 		}
-		playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
+		playbook.WithStoppingAfter(func(_ context.Context, action Action) bool {
 			return action.Service == resources.WithUnique(flow.originService).Unique() && action.Type == RuntimeTest
 		})
 	case LintMode, CompileMode:
@@ -874,7 +872,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 			return w.Wrapf(err, "cannot create playbook")
 		}
 		playbook.WithPolicy(policy)
-		playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
+		playbook.WithStoppingAfter(func(_ context.Context, action Action) bool {
 			return action.Service == origin && action.Type == terminal
 		})
 
@@ -889,7 +887,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 			return w.Wrapf(err, "cannot create playbook")
 		}
 		playbook.WithPolicy(policy)
-		playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
+		playbook.WithStoppingAfter(func(_ context.Context, action Action) bool {
 			return action.Service == resources.WithUnique(flow.originService).Unique() && action.Type == BuilderBuild
 		})
 	case SyncMode:
@@ -910,7 +908,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 			return w.Wrapf(err, "cannot create playbook")
 		}
 		playbook.WithPolicy(policy)
-		playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
+		playbook.WithStoppingAfter(func(_ context.Context, action Action) bool {
 			return action.Service == origin && action.Type == BuilderSync
 		})
 	case DeployMode:
@@ -924,7 +922,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 			return w.Wrapf(err, "cannot create playbook")
 		}
 		playbook.WithPolicy(policy)
-		playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
+		playbook.WithStoppingAfter(func(_ context.Context, action Action) bool {
 			return action.Service == resources.WithUnique(flow.originService).Unique() && action.Type == BuilderDeploy
 		})
 	case SnapshotMode:
@@ -939,7 +937,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 			return w.Wrapf(err, "cannot create playbook")
 		}
 		playbook.WithPolicy(policy)
-		playbook.WithStoppingAfter(func(ctx context.Context, action Action) bool {
+		playbook.WithStoppingAfter(func(_ context.Context, action Action) bool {
 			return policy.completed(action)
 		})
 
@@ -968,7 +966,7 @@ func (flow *Flow) Start(ctx context.Context) error {
 	}
 	// In stand-alone Mode, we set an ignore policy
 	if flow.standAlone {
-		flow.playbook.WithIgnore(func(ctx context.Context, action Action) bool {
+		flow.playbook.WithIgnore(func(_ context.Context, action Action) bool {
 			return action.Service != resources.WithUnique(flow.originService).Unique()
 		})
 	}
@@ -1000,7 +998,7 @@ func (flow *Flow) Test(ctx context.Context) error {
 	}
 	// In stand-alone Mode, we set an ignore policy
 	if flow.standAlone {
-		flow.playbook.WithIgnore(func(ctx context.Context, action Action) bool {
+		flow.playbook.WithIgnore(func(_ context.Context, action Action) bool {
 			return action.Service != resources.WithUnique(flow.originService).Unique()
 		})
 	}
@@ -1253,7 +1251,7 @@ func (flow *Flow) Build(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.Build")
 	// In stand-alone Mode, we set an ignore policy
 	if flow.standAlone {
-		flow.playbook.WithIgnore(func(ctx context.Context, action Action) bool {
+		flow.playbook.WithIgnore(func(_ context.Context, action Action) bool {
 			return action.Service != resources.WithUnique(flow.originService).Unique()
 		})
 	}
@@ -1268,7 +1266,7 @@ func (flow *Flow) Sync(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.Sync")
 	// In stand-alone Mode, we set an ignore policy
 	if flow.standAlone {
-		flow.playbook.WithIgnore(func(ctx context.Context, action Action) bool {
+		flow.playbook.WithIgnore(func(_ context.Context, action Action) bool {
 			return action.Service != resources.WithUnique(flow.originService).Unique()
 		})
 	}
@@ -1286,7 +1284,7 @@ func (flow *Flow) Deploy(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.Deploy")
 	// In stand-alone Mode, we set an ignore policy
 	if flow.standAlone {
-		flow.playbook.WithIgnore(func(ctx context.Context, action Action) bool {
+		flow.playbook.WithIgnore(func(_ context.Context, action Action) bool {
 			return action.Service != resources.WithUnique(flow.originService).Unique()
 		})
 	}
@@ -1650,13 +1648,13 @@ func (flow *Flow) GetExecutor(ctx context.Context, action Action) (OutputProcess
 		return nil, w.Wrap(err)
 	}
 	if action.Failed {
-		return func(ctx context.Context) (*OutputProperty, error) {
+		return func(_ context.Context) (*OutputProperty, error) {
 			return Pause(), nil
 		}, nil
 	}
 	switch action.Type {
 	case RuntimeBegin:
-		return func(ctx context.Context) (*OutputProperty, error) {
+		return func(_ context.Context) (*OutputProperty, error) {
 			return OnInit(), nil
 		}, nil
 	case RuntimeLoad:
@@ -1672,7 +1670,7 @@ func (flow *Flow) GetExecutor(ctx context.Context, action Action) (OutputProcess
 	case RuntimeTest:
 		return manager.RunnerDoTest, nil
 	case BuilderBegin:
-		return func(ctx context.Context) (*OutputProperty, error) {
+		return func(_ context.Context) (*OutputProperty, error) {
 			return OnInit(), nil
 		}, nil
 	case BuilderLoad:
@@ -1703,7 +1701,7 @@ func (flow *Flow) GetDependenciesNetworkMappingsFor(ctx context.Context, service
 	return flow.SharedState.GetDependenciesNetworkMappings(ctx, service)
 }
 
-func (flow *Flow) GetAddressForEndpoint(ctx context.Context, module string, service string, endpoint string) (string, error) {
+func (flow *Flow) GetAddressForEndpoint(_ context.Context, module string, service string, endpoint string) (string, error) {
 	if flow == nil {
 		return "", fmt.Errorf("cannot get address from nil flow")
 	}
@@ -1749,8 +1747,7 @@ func (flow *Flow) selectDependencyStage() error {
 		return flow.world.Dependencies.VerifyAcyclic(context.Background())
 	}
 	stage := resources.StageRun
-	switch flow.world.Mode {
-	case BuildMode:
+	if flow.world.Mode == BuildMode {
 		stage = resources.StageBuild
 	}
 	dependencies, err := flow.world.Dependencies.ForStage(stage)
@@ -1900,7 +1897,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 		dependencyOptions = append(dependencyOptions, flow.configurationReferences)
 	}
 	if len(flow.remoteServices) > 0 {
-		var cutoffs []string
+		cutoffs := make([]string, 0, len(flow.remoteServices))
 		for _, remote := range flow.remoteServices {
 			remotes[remote.Unique()] = remote
 			cutoffs = append(cutoffs, remote.Unique())
@@ -2026,12 +2023,13 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	}
 
 	// Now add the current one
-	if preloadedOrigin != nil {
+	switch {
+	case preloadedOrigin != nil:
 		flow.services = append(flow.services, flow.originService)
 		// Dependency managers were appended after the preloaded origin. Rotate
 		// the origin to the end so Stop() tears down the target before its stack.
 		flow.hub.managers = append(flow.hub.managers[1:], preloadedOrigin)
-	} else if !flow.excludeRoot {
+	case !flow.excludeRoot:
 		w.Debug("creating run manager", wool.Field("for", resources.WithUnique(flow.originService).Unique()))
 		manager, err := New(ctx, flow.originModule, flow.originService, flow.world)
 		flow.output().RegisterLoggingResource(resources.WithUnique(flow.originService).Unique())
@@ -2047,7 +2045,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 			manager.Runner.WithRemote(remote.Environment)
 		}
 		flow.hub.managers = append(flow.hub.managers, manager)
-	} else {
+	default:
 		// Keep the origin in the playbook so dependency ordering remains exactly
 		// the same without loading its agent. If its SDK environment was requested,
 		// the environment-only manager publishes it after dependency startup.
@@ -2156,7 +2154,7 @@ func (flow *Flow) configureTestExecution(runner *Runner) error {
 	return nil
 }
 
-func (flow *Flow) logRunPlan(ctx context.Context, dependencyUniques []string, remotes map[string]*Remote) error {
+func (flow *Flow) logRunPlan(_ context.Context, dependencyUniques []string, remotes map[string]*Remote) error {
 	if flow == nil || flow.originService == nil {
 		return nil
 	}

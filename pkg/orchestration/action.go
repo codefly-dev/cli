@@ -55,7 +55,7 @@ type ActionGroup struct {
 }
 
 func (g *ActionGroup) String() string {
-	var actions []string
+	actions := make([]string, 0, len(g.actions))
 	for _, action := range g.actions {
 		actions = append(actions, action.String())
 	}
@@ -71,7 +71,7 @@ func (action *Action) Next(t ActionType) Action {
 }
 
 func (action *Action) NextFor(t ActionType, services ...architecture.Service) []Action {
-	var out []Action
+	out := make([]Action, 0, len(services))
 	for _, service := range services {
 		out = append(out, Action{Type: t, Service: service.Unique, Round: action.Round})
 	}
@@ -105,15 +105,15 @@ func NewActionManager() *ActionManager {
 }
 
 func (manager *ActionManager) Round() int {
-	manager.Mutex.Lock()
-	defer manager.Mutex.Unlock()
+	manager.Lock()
+	defer manager.Unlock()
 	return manager.round
 }
 
 func (manager *ActionManager) bumpRound() {
-	manager.Mutex.Lock()
+	manager.Lock()
 	manager.round++
-	manager.Mutex.Unlock()
+	manager.Unlock()
 }
 
 // Send actions as a group

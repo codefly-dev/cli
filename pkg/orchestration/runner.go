@@ -53,9 +53,6 @@ type Runner struct {
 	// of leaking the parent + sibling plugins indefinitely.
 	failureSink func(unique, msg string)
 
-	// Requires
-	requires []string
-
 	// outputProperty hub.
 	// isStarted is written by Stop/Start handlers and read by Follow.
 	isStarted atomic.Bool
@@ -995,7 +992,7 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot write dependency configurations to output environment")
 		}
-		if err := AppendRuntimeEnvironmentToFile(
+		if appendErr := AppendRuntimeEnvironmentToFile(
 			ctx,
 			runner.outputEnv,
 			identity,
@@ -1003,8 +1000,8 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 			runner.fixture,
 			runner.runtimeOverrides(),
 			endpointMappings,
-		); err != nil {
-			return nil, w.Wrapf(err, "cannot write runtime environment variables to file")
+		); appendErr != nil {
+			return nil, w.Wrapf(appendErr, "cannot write runtime environment variables to file")
 		}
 	}
 
@@ -1285,6 +1282,11 @@ func (runner *Runner) Test(ctx context.Context) (*OutputProperty, error) {
 	// cases and exit with an accurate code, regardless of pass/fail.
 	runner.testResponse = resp
 
+	//nolint:staticcheck // SA1019 deliberately: the deprecated field is what
+	// released runtime agents still populate, so reading the replacement would
+	// silently see a zero value from every agent in the field — a test run that
+	// reports success whatever happened. A migration needs the agent owners, and
+	// nothing in CI would catch it. Tracked as a follow-up.
 	if resp.GetStatus() != nil && resp.GetStatus().GetState() != runtimev0.TestStatus_SUCCESS {
 		return nil, w.NewError("tests failed for %s: %s", runner.Unique(), summarizeTestResponse(resp))
 	}
@@ -1841,7 +1843,7 @@ func appendEnvironmentVariablesToFile(
 
 	// Write each environment variable to the file
 	for _, env := range environments {
-		_, err := file.WriteString(fmt.Sprintf("%s=%v\n", env.Key, env.Value))
+		_, err := fmt.Fprintf(file, "%s=%v\n", env.Key, env.Value)
 		if err != nil {
 			return w.Wrapf(err, "cannot write to file")
 		}

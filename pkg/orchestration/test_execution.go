@@ -33,7 +33,7 @@ func resolveTestExecution(info *agentv0.AgentInformation, request *runtimev0.Tes
 	if request == nil {
 		request = &runtimev0.TestRequest{}
 	} else {
-		request = proto.Clone(request).(*runtimev0.TestRequest)
+		request = proto.CloneOf(request)
 	}
 	legacy := info == nil || info.GetValidation() == nil
 	if legacy {

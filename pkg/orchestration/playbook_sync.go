@@ -12,7 +12,7 @@ type SyncPolicy struct {
 	dependencies *architecture.ServiceDependencies
 }
 
-func NewSyncPolicy(ctx context.Context, dependencies *architecture.ServiceDependencies, changeManager ExecutorManager) (*SyncPolicy, error) {
+func NewSyncPolicy(_ context.Context, dependencies *architecture.ServiceDependencies, changeManager ExecutorManager) (*SyncPolicy, error) {
 	return &SyncPolicy{dependencies: dependencies, ExecutorManager: changeManager}, nil
 }
 

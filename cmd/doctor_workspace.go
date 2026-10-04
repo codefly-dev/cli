@@ -218,9 +218,9 @@ func checkWorkspace(ctx context.Context, opts workspaceReadinessOptions, report 
 	var probe struct {
 		Layout string `yaml:"layout"`
 	}
-	if err := yaml.Unmarshal(raw, &probe); err != nil {
+	if probeErr := yaml.Unmarshal(raw, &probe); probeErr != nil {
 		report.add(codeWorkspaceInvalid, "workspace", "fail",
-			fmt.Sprintf("%s is not valid YAML: %v", resources.WorkspaceConfigurationName, err),
+			fmt.Sprintf("%s is not valid YAML: %v", resources.WorkspaceConfigurationName, probeErr),
 			"fix the workspace manifest syntax")
 		return nil
 	}
@@ -653,7 +653,7 @@ func overlayDirective(overlay *resources.LocalOverlay, module string) *resources
 func checkEnvironment(ws *resources.Workspace, name string, report *workspaceReadinessReport) *environments.Environment {
 	env := ws.FindEnvironment(name)
 	if env == nil {
-		var declared []string
+		declared := make([]string, 0, len(ws.Environments))
 		for _, e := range ws.Environments {
 			declared = append(declared, e.Name)
 		}
@@ -1562,8 +1562,8 @@ bindings_schema_unknown, and the per-binding validation codes).`,
 		}
 
 		fmt.Println(tui.RenderHeader(1, "codefly doctor workspace"))
-		for _, diagnostic := range report.Checks {
-			printWorkspaceDiagnostic(diagnostic)
+		for i := range report.Checks {
+			printWorkspaceDiagnostic(&report.Checks[i])
 		}
 		fmt.Println()
 		if report.Status != readinessStatusReady {
@@ -1575,7 +1575,7 @@ bindings_schema_unknown, and the per-binding validation codes).`,
 	},
 }
 
-func printWorkspaceDiagnostic(diagnostic workspaceDiagnostic) {
+func printWorkspaceDiagnostic(diagnostic *workspaceDiagnostic) {
 	result := checkResult{name: diagnostic.Name, detail: diagnostic.Message, fix: diagnostic.Remediation}
 	switch diagnostic.Status {
 	case "warn":

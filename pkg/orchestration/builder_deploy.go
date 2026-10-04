@@ -59,6 +59,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	dependenciesConfigurations = append(workspaceConfigurations, dependenciesConfigurations...)
 	profile := kubernetesOutputProfile(b.world)
 	var secretReferences map[string]*builderv0.KubernetesSecretKeyReference
+	//nolint:staticcheck // SA1019 deliberately: this names a value on the wire to a released builder agent, and core's own proto says the deprecated form is retained so existing callers keep rendering the identical bundle during migration. Switching it is a plugin-contract change that needs the agent owners, and nothing in CI would catch a released agent rejecting the new value. Tracked as a follow-up.
 	if profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
 		secretName := "secret-" + b.instance.Service.Name
 		conf, dependenciesConfigurations, secretReferences, err = promotableDeploymentConfigurations(
@@ -148,16 +149,16 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if resp.State != nil && resp.State.State != builderv0.DeploymentStatus_SUCCESS {
 		return nil, w.NewError("cant deploy service instance")
 	}
-	if err := validateDeploymentOutput(
+	if validateErr := validateDeploymentOutput(
 		b.world.RemoteManager,
 		profile,
 		resp.Deployment,
 		validationContext,
-	); err != nil {
-		return nil, w.Wrapf(err, "cannot verify service deployment output")
+	); validateErr != nil {
+		return nil, w.Wrapf(validateErr, "cannot verify service deployment output")
 	}
 	if resp.Deployment != nil {
-		b.deploymentOutput = proto.Clone(resp.Deployment).(*builderv0.DeploymentOutput)
+		b.deploymentOutput = proto.CloneOf(resp.Deployment)
 	}
 
 	if resp.Configuration != nil {
@@ -518,17 +519,17 @@ func promotableConfiguration(
 	if configuration == nil {
 		return nil, nil
 	}
-	safe := proto.Clone(configuration).(*basev0.Configuration)
+	safe := proto.CloneOf(configuration)
 	safe.Infos = safe.Infos[:0]
 	for _, sourceInfo := range configuration.GetInfos() {
 		if sourceInfo.GetData().GetSecret() {
 			return nil, fmt.Errorf("structured secret configuration %q requires typed Kubernetes key references", sourceInfo.GetName())
 		}
-		info := proto.Clone(sourceInfo).(*basev0.ConfigurationInformation)
+		info := proto.CloneOf(sourceInfo)
 		info.ConfigurationValues = info.ConfigurationValues[:0]
 		for _, sourceValue := range sourceInfo.GetConfigurationValues() {
 			if !promotesToDeploymentSecret(sourceValue) {
-				info.ConfigurationValues = append(info.ConfigurationValues, proto.Clone(sourceValue).(*basev0.ConfigurationValue))
+				info.ConfigurationValues = append(info.ConfigurationValues, proto.CloneOf(sourceValue))
 				continue
 			}
 			secretConfiguration := &basev0.Configuration{
@@ -571,6 +572,7 @@ func validateKubernetesDeploymentOutput(
 	if kubernetes.GetProfile() != requested {
 		return fmt.Errorf("plugin returned Kubernetes output profile %s, requested %s", kubernetes.GetProfile(), requested)
 	}
+	//nolint:staticcheck // SA1019 deliberately: this names a value on the wire to a released builder agent, and core's own proto says the deprecated form is retained so existing callers keep rendering the identical bundle during migration. Switching it is a plugin-contract change that needs the agent owners, and nothing in CI would catch a released agent rejecting the new value. Tracked as a follow-up.
 	if requested != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
 		return nil
 	}
@@ -582,6 +584,7 @@ func validateKubernetesDeploymentOutput(
 		)
 	}
 	validation := kubernetes.GetValidation()
+	//nolint:staticcheck // SA1019 deliberately: this names a value on the wire to a released builder agent, and core's own proto says the deprecated form is retained so existing callers keep rendering the identical bundle during migration. Switching it is a plugin-contract change that needs the agent owners, and nothing in CI would catch a released agent rejecting the new value. Tracked as a follow-up.
 	if !validation.GetPromotable() ||
 		validation.GetStaticValidation() != builderv0.KubernetesManifestValidation_STATUS_PASSED {
 		return fmt.Errorf("plugin did not return a successfully validated promotable Kubernetes output")

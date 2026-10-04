@@ -25,7 +25,7 @@ func (b *BuildExecutor) GetExecutor(ctx context.Context, action Action) (OutputP
 
 	switch action.Type {
 	case BuilderBegin:
-		return func(ctx context.Context) (*OutputProperty, error) {
+		return func(_ context.Context) (*OutputProperty, error) {
 			return OnInit(), nil
 		}, nil
 	case BuilderLoad:

@@ -16,8 +16,8 @@ func init() {
 	environment.PostImportValidate = func(ctx context.Context, dir, env string) error {
 		report := workspaceReadiness(ctx, workspaceReadinessOptions{dir: dir, env: env})
 		fmt.Println(tui.RenderHeader(1, fmt.Sprintf("codefly doctor workspace --env %s", env)))
-		for _, diagnostic := range report.Checks {
-			printWorkspaceDiagnostic(diagnostic)
+		for i := range report.Checks {
+			printWorkspaceDiagnostic(&report.Checks[i])
 		}
 		if report.Status != readinessStatusReady {
 			fmt.Println(tui.RenderError(fmt.Sprintf("Workspace is NOT ready for environment %q — fix the items marked ✗ above.", env)))

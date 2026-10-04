@@ -150,7 +150,7 @@ func (b *RunnerStartManager) Process(ctx context.Context) (*OutputProperty, erro
 	return b.processed, nil
 }
 
-func (b *RunnerStartManager) Set(ctx context.Context, output *RunnerStartOutput) error {
+func (b *RunnerStartManager) Set(ctx context.Context, _ *RunnerStartOutput) error {
 	w := wool.Get(ctx).In("RunnerStartManager.Set", wool.NameField(b.unique))
 	if b.processed == nil {
 		w.Debug("first time")

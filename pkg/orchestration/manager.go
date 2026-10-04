@@ -74,14 +74,6 @@ type Manager struct {
 	Runner *Runner
 
 	Builder *Builder
-
-	initOnly bool
-
-	load *runtimev0.LoadResponse
-	init *runtimev0.InitResponse
-
-	dependencyEndpoints []*basev0.Endpoint
-	networkMappings     []*basev0.NetworkMapping
 }
 
 func (manager *Manager) BuilderDoInit(ctx context.Context) (*OutputProperty, error) {
@@ -230,7 +222,7 @@ func (manager *Manager) Load(ctx context.Context) error {
 		return w.Wrapf(err, "cannot load service instance")
 	}
 
-	w.Debug("load agent", wool.Field("agent-pid", instance.ProcessInfo.AgentPID))
+	w.Debug("load agent", wool.Field("agent-pid", instance.AgentPID))
 	if err = manager.validateContainerRecovery(instance); err != nil {
 		return w.Wrap(err)
 	}
@@ -335,23 +327,23 @@ func (manager environmentOnlyManager) RunnerDoStart(ctx context.Context) (*Outpu
 	return OnInit(), nil
 }
 
-func (n NoOpManager) RunnerDoTest(ctx context.Context) (*OutputProperty, error) {
+func (n NoOpManager) RunnerDoTest(_ context.Context) (*OutputProperty, error) {
 	return nil, nil
 }
 
-func (n NoOpManager) RunnerDoBuild(ctx context.Context) (*OutputProperty, error) {
+func (n NoOpManager) RunnerDoBuild(_ context.Context) (*OutputProperty, error) {
 	return OnInit(), nil
 }
 
-func (n NoOpManager) RunnerDoLint(ctx context.Context) (*OutputProperty, error) {
+func (n NoOpManager) RunnerDoLint(_ context.Context) (*OutputProperty, error) {
 	return OnInit(), nil
 }
 
-func (n NoOpManager) RunnerDoStop(ctx context.Context) (*OutputProperty, error) {
+func (n NoOpManager) RunnerDoStop(_ context.Context) (*OutputProperty, error) {
 	return nil, nil
 }
 
-func (n NoOpManager) RunnerDoDestroy(ctx context.Context) (*OutputProperty, error) {
+func (n NoOpManager) RunnerDoDestroy(_ context.Context) (*OutputProperty, error) {
 	return nil, nil
 }
 
@@ -363,11 +355,11 @@ func (n NoOpManager) Unique() string {
 	return resources.WithUnique(n.service).Unique()
 }
 
-func (n NoOpManager) BuilderDoInit(ctx context.Context) (*OutputProperty, error) {
+func (n NoOpManager) BuilderDoInit(_ context.Context) (*OutputProperty, error) {
 	return &OutputProperty{OnInit: true}, nil
 }
 
-func (n NoOpManager) BuilderDoLoad(ctx context.Context) (*OutputProperty, error) {
+func (n NoOpManager) BuilderDoLoad(_ context.Context) (*OutputProperty, error) {
 	return &OutputProperty{OnInit: true}, nil
 }
 
@@ -375,36 +367,36 @@ func (n NoOpManager) BuilderDoPlan(_ context.Context) (*OutputProperty, error) {
 	return &OutputProperty{OnInit: true}, nil
 }
 
-func (n NoOpManager) BuilderDoBuild(ctx context.Context) (*OutputProperty, error) {
+func (n NoOpManager) BuilderDoBuild(_ context.Context) (*OutputProperty, error) {
 	return &OutputProperty{OnInit: true}, nil
 }
 
-func (n NoOpManager) BuilderDoSync(ctx context.Context) (*OutputProperty, error) {
+func (n NoOpManager) BuilderDoSync(_ context.Context) (*OutputProperty, error) {
 	return &OutputProperty{OnInit: true}, nil
 }
 
-func (n NoOpManager) BuilderDoDeploy(ctx context.Context) (*OutputProperty, error) {
+func (n NoOpManager) BuilderDoDeploy(_ context.Context) (*OutputProperty, error) {
 	return &OutputProperty{OnInit: true}, nil
 }
 
-func (n NoOpManager) RunnerDoLoad(ctx context.Context) (*OutputProperty, error) {
+func (n NoOpManager) RunnerDoLoad(_ context.Context) (*OutputProperty, error) {
 	return &OutputProperty{OnInit: true}, nil
 }
 
-func (n NoOpManager) RunnerDoInit(ctx context.Context) (*OutputProperty, error) {
+func (n NoOpManager) RunnerDoInit(_ context.Context) (*OutputProperty, error) {
 	return &OutputProperty{OnInit: true}, nil
 }
 
-func (n NoOpManager) RunnerDoStart(ctx context.Context) (*OutputProperty, error) {
+func (n NoOpManager) RunnerDoStart(_ context.Context) (*OutputProperty, error) {
 	return &OutputProperty{OnInit: true}, nil
 }
 
-func (n NoOpManager) DoSetCallback(seed func(ctx context.Context, action Action) error) {
+func (n NoOpManager) DoSetCallback(_ func(ctx context.Context, action Action) error) {
 }
 
-func (n NoOpManager) DoSetFailureSink(sink func(unique, msg string)) {
+func (n NoOpManager) DoSetFailureSink(_ func(unique, msg string)) {
 }
 
-func (n NoOpManager) Stop(ctx context.Context) error {
+func (n NoOpManager) Stop(_ context.Context) error {
 	return nil
 }

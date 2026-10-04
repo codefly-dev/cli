@@ -12,7 +12,7 @@ type DeployPolicy struct {
 	dependencies *architecture.ServiceDependencies
 }
 
-func NewDeployPolicy(ctx context.Context, dependencies *architecture.ServiceDependencies, changeManager ExecutorManager) (*DeployPolicy, error) {
+func NewDeployPolicy(_ context.Context, dependencies *architecture.ServiceDependencies, changeManager ExecutorManager) (*DeployPolicy, error) {
 	return &DeployPolicy{dependencies: dependencies, ExecutorManager: changeManager}, nil
 }
 

@@ -238,8 +238,8 @@ func (b *Builder) buildRecipe(
 	// provisions nor selects the local emulating builder.
 	builderName := b.world.BuildxBuilder
 	if multiArch && b.world.BuildCache == nil && builderName == "" {
-		if err := ensureBuildxBuilder(ctx); err != nil {
-			return w.Wrapf(err, "cannot provision image builder for %s", b.instance.Unique())
+		if provisionErr := ensureBuildxBuilder(ctx); provisionErr != nil {
+			return w.Wrapf(provisionErr, "cannot provision image builder for %s", b.instance.Unique())
 		}
 		builderName = buildxBuilderName
 	}
@@ -254,9 +254,9 @@ func (b *Builder) buildRecipe(
 	recordable := identity.Key != "" && imageCache.enabled()
 	var metadataFile string
 	if captureDigest || (shouldPush && (resolveEvidence || recordable)) {
-		file, err := os.CreateTemp("", "codefly-build-metadata-*.json")
-		if err != nil {
-			return w.Wrapf(err, "cannot stage build metadata for %s", b.instance.Unique())
+		file, createErr := os.CreateTemp("", "codefly-build-metadata-*.json")
+		if createErr != nil {
+			return w.Wrapf(createErr, "cannot stage build metadata for %s", b.instance.Unique())
 		}
 		metadataFile = file.Name()
 		_ = file.Close()
