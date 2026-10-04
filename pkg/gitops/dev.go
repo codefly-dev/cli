@@ -25,6 +25,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/posture"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -110,6 +111,9 @@ type DevResult struct {
 	// including the render inventory.
 	Changed []string
 	Entry   InventoryDevDeployment
+	// PostureAllowances are the environment's declared exceptions to the
+	// deployed security posture, one line each, printed on every run.
+	PostureAllowances []string
 }
 
 // buildServiceImage is the build/push boundary of a dev deployment. It is a
@@ -143,8 +147,20 @@ func buildRenderedServiceImages(
 	}
 	defer os.RemoveAll(scratch)
 	destinations := serviceRenderDestinations(scratch)
-	if err := renderServiceFlow(ctx, workspace, module, service, env, renderBuild{standAlone: true, rebuild: rebuild}, sink, destinations, nil, nil, nil, nil, nil); err != nil {
+	// serviceFlow, not renderServiceFlow: the dev build drives a service's agents
+	// through the same seam the module and service renders do, so a test can stand
+	// in-process agents in for it here too.
+	if err := serviceFlow(ctx, workspace, module, service, env, renderBuild{standAlone: true, rebuild: rebuild}, sink, destinations, nil, nil, nil, nil, nil); err != nil {
 		return nil, fmt.Errorf("build service %s: %w", service.Name, err)
+	}
+	// A dev deployment ships this render's image into a cell, so this render is
+	// held to the environment's deployed security posture exactly as a full
+	// `deploy gitops render` is — the manifests it just wrote say what the code
+	// in that image expects of the platform. Only the image reaches the cell, but
+	// a service whose render mounts its configuration from a file is a service
+	// whose code reads a file the platform never delivers. See pkg/posture.
+	if err := posture.ValidateTree(scratch, posture.Subject{Module: module.Name, Service: service.Name}, env.Posture); err != nil {
+		return nil, err
 	}
 	return digestImages(destinations(module, service))
 }
@@ -221,7 +237,10 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 		relative = append(relative, filepath.ToSlash(rel))
 	}
 	entry = inventory.Dev[devEntryIndex(inventory.Dev, request.Service)]
-	return DevResult{Root: root, Changed: relative, Entry: entry}, nil
+	return DevResult{
+		Root: root, Changed: relative, Entry: entry,
+		PostureAllowances: request.Environment.Posture.Report(),
+	}, nil
 }
 
 // moduleRenderDestination is where a full module render writes its owned tree.

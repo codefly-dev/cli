@@ -79,6 +79,7 @@ the next full ` + "`codefly deploy gitops render <module> --env <env>`" + ` clea
 		if err != nil {
 			return err
 		}
+		printPostureAllowances(result.PostureAllowances)
 		cli.Info("Pinned %s", result.Entry.Image)
 		for _, path := range result.Changed {
 			cli.Info("  changed %s", path)
@@ -109,6 +110,15 @@ func init() {
 	DevCmd.Flags().BoolVar(&devPush, "push", false, "Push the commit (requires --commit)")
 	DevCmd.Flags().BoolVar(&devRebuild, "rebuild", false, "Build the image even when no input of it changed, instead of keeping the image already built from those inputs")
 	_ = DevCmd.MarkFlagRequired("env")
+}
+
+// printPostureAllowances says out loud, on every run, which services the
+// environment allows to break a deployed-render security rule. An allowance is
+// only ever an explicit, reviewed exception, so it is never silent.
+func printPostureAllowances(lines []string) {
+	for _, line := range lines {
+		cli.Warning("%s", line)
+	}
 }
 
 // printClearedDev says out loud that a full render ended dev deployments.

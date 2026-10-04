@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/posture"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
@@ -962,6 +963,14 @@ type Environment struct {
 	// manifests fail when their backend is absent. Legacy plaintext *.secret.*
 	// files remain local-only. CLI-side; not serialized to proto.
 	Secrets []*resources.EnvironmentSecretProvider `yaml:"secrets,omitempty"`
+
+	// Posture is the security posture a deployed (restricted) render of this
+	// environment is held to: the facts the environment asserts about the
+	// platform it deploys onto, and the reviewed allowances that make an
+	// exception of one service. Absent, the environment asserts nothing and
+	// allows nothing, which is where every environment starts. CLI-side; not
+	// serialized to proto. See pkg/posture.
+	Posture *posture.Declaration `yaml:"posture,omitempty"`
 }
 
 // EnvironmentDNS is the environment's DNS contract.

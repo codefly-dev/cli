@@ -72,6 +72,7 @@ func renderModuleTree(
 		AppProject:  project,
 		Promotable:  true,
 		OwnedPath:   ownedPath,
+		Posture:     env.Posture,
 	}
 	return RenderOwnedTree(ctx, options, func(ctx context.Context, stage string) error {
 		services := make([]*resources.Service, 0, len(module.ServiceReferences))
@@ -348,6 +349,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		AppProject:  project,
 		Promotable:  true,
 		Package:     pkg,
+		Posture:     env.Posture,
 	}, func(ctx context.Context, stage string) error {
 		// A configuration error refuses the render before any image is built or
 		// pushed.

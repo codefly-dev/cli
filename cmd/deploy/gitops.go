@@ -58,6 +58,7 @@ var gitOpsRenderCmd = &cobra.Command{
 		}
 		cli.Info("Rendered %s", result.Path)
 		cli.Info("Digest %s", result.Inventory.Digest)
+		printPostureAllowances(result.PostureAllowances)
 		printSizingReport(result.Sizing)
 		printElidedNamespaces(result.ElidedNamespaces)
 		printClearedDev(result.ClearedDev)
@@ -93,6 +94,7 @@ var gitOpsSnapshotCmd = &cobra.Command{
 		}
 		cli.Info("Rendered service snapshot %s", result.Path)
 		cli.Info("Digest %s", result.Inventory.Digest)
+		printPostureAllowances(result.PostureAllowances)
 		printSizingReport(result.Sizing)
 		printElidedNamespaces(result.ElidedNamespaces)
 		printClearedDev(result.ClearedDev)

@@ -67,6 +67,7 @@ var ModuleCmd = &cobra.Command{
 			}
 			cli.Info("Rendered %s", result.Path)
 			cli.Info("Digest %s", result.Inventory.Digest)
+			printPostureAllowances(result.PostureAllowances)
 			printSizingReport(result.Sizing)
 			printElidedNamespaces(result.ElidedNamespaces)
 			printClearedDev(result.ClearedDev)

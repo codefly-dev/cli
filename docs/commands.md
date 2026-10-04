@@ -659,6 +659,80 @@ Pass `--allow-unresolved-contracts` to downgrade a violation caused by the
 exposing module not being deployed yet to a skipped check, for bootstrap
 ordering — every other violation still blocks publication.
 
+**The deployed security posture.** A deployed render — any restricted profile:
+`deploy gitops render`, `deploy gitops snapshot`, `deploy module`/`deploy service
+--render-only`, `deploy solution`, and the service build behind [`deploy
+dev`](#codefly-deploy-devmoduleservice--the-dev-escape-hatch) — refuses a
+rendered workload that breaks one of three rules. Each refusal names the
+service, the rule and the field that triggered it. A local or ephemeral render
+is not a cell and is not held to them. The posture itself is the platform
+owner's decision, recorded in obin-ai/handbook `decisions/security-posture.md`;
+the render is where it cannot be forgotten, because it is the last door before a
+cell and the one every module, solution and agent passes through.
+
+| Rule | Refused when |
+| --- | --- |
+| `peer-transport-material` | A container is configured with certificate, key or CA material (`…TLS_CERT_FILE`, `--ca-cert=…`, a value naming `tls.crt`/`tls.key`/`ca.crt`), or a volume delivers that material as files, **while the environment asserts `internal-transport/mesh-protected`**. Transport between workloads is the mesh's; TLS at the edge is the ingress's. |
+| `non-scratch-mount` | A workload volume is anything but the standard scratch volume (`emptyDir`) or a durable data claim (`persistentVolumeClaim`; a StatefulSet's `volumeClaimTemplates` are not pod volumes and are never read). Configuration and credentials reach a service as values and secrets in the environment variables the render already projects, so a ConfigMap, Secret, projected or `hostPath` mount means something reads a file the platform never delivers. |
+| `in-memory-state-store` | A container is started in a development or in-memory mode: a `-dev`/`--dev…` switch on its command line, an environment variable whose name carries both a development and a credential word (`…_DEV_ROOT_TOKEN_ID`), one naming in-memory storage (`…_INMEM…`), or a storage/backend variable set to `memory`, `inmem`, `ephemeral`, `tmpfs` or `none`. A deployed product's keys and state live in a durable store; a development mode loses them on the next restart or node replacement. |
+
+The rules read the manifests the cell would apply — the Kustomize-built overlay
+output, so a volume an environment overlay patches into a conforming base is
+refused too — and they read structured fields only: a container's volumes, its
+`env` names and values, and its `command`/`args` tokens. A shell script an agent
+hands its container as a single argument is that agent's program, not a field the
+render holds to a rule.
+
+```
+Error: deployed render refuses service shop/frontend: non-scratch-mount — volume
+"settings" takes its contents from a configMap source, and a deployed workload
+mounts only the standard scratch volume (emptyDir) or a durable data claim
+(persistentVolumeClaim); configuration and credentials reach a service as values
+and secrets in the environment variables the render already projects, so a mount
+means something reads a file the platform never delivers
+(services/frontend/base/deployment.yaml: Deployment/frontend
+spec.template.spec.volumes[1].configMap). Declare a deliberate exception as an
+environment-level posture allowance (posture.allowances: rule non-scratch-mount,
+service shop/frontend, and the reason), which the render then prints on every
+run. The rule is obin-ai/handbook decisions/security-posture.md
+```
+
+**The environment declares the posture**, including the exceptions:
+
+```yaml
+environments:
+  - name: staging
+    posture:
+      # What the environment states about the platform it deploys onto. An
+      # assertion the render does not know is an error, never a no-op.
+      asserts:
+        internal-transport/mesh-protected: true
+      # The deliberate exceptions. Each names one rule and one service
+      # ("<module>/<service>", or a bare "<service>" for that service in
+      # whichever module renders it) and says why; the reason is required.
+      allowances:
+        - rule: non-scratch-mount
+          service: saas/frontend
+          reason: the theme files are a build artifact of the host, reviewed in handbook#215
+```
+
+An allowance is never a silent skip: **every declared allowance is printed on
+every deployed render**, whether or not that run needed it, and a render whose
+exception has become unnecessary says so until the declaration is removed.
+
+```
+Warning: security posture: service saas/frontend is allowed to break rule
+non-scratch-mount — the theme files are a build artifact of the host, reviewed in
+handbook#215
+```
+
+An environment with no `posture` block asserts nothing and allows nothing:
+`non-scratch-mount` and `in-memory-state-store` apply to every deployed render,
+and `peer-transport-material` applies only where the mesh is asserted — a
+service's own TLS may be the only transport protection an unmeshed environment
+has. A client that must pin an *external* peer's CA is exactly what an allowance
+is for.
+
 #### Service secrets
 
 When the environment declares `service-secrets`, render projects each service's
@@ -886,7 +960,11 @@ codefly deploy dev payments/api --env staging --commit --push
    `deploy gitops render` takes for it: the environment's `registry` (and its
    login), the snapshot flow driving the service agent's Build and Deploy with
    push, and the same `@sha256:` digest capture. `DOCKER_HOST` is honoured the
-   way every build honours it.
+   way every build honours it. That render is held to [the deployed security
+   posture](#codefly-deploy-service-name) exactly as a full one is: a service
+   whose current code renders a non-scratch mount, its own peer TLS on a
+   mesh-protected environment, or a development-mode store is refused before its
+   image reaches the cell, naming the service, the rule and the field.
 3. **Patch.** Only that service's digest pin changes, inside its own rendered
    unit (`deployments/modules/<module>/services/<service>/`); every other byte of
    the tree is left as the render wrote it, and the render inventory is

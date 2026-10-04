@@ -89,6 +89,7 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 		AppProject:  req.AppProject,
 		Promotable:  true,
 		OwnedPath:   ownedPath,
+		Posture:     env.Posture,
 	}
 	return RenderOwnedTree(ctx, options, func(ctx context.Context, stage string) error {
 		executor, release, err := connectSolutionExecutor(ctx, req.Workspace.Dir(), req.Agent)

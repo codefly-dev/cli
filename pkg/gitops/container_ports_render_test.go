@@ -140,6 +140,11 @@ func fakePromotableOutput() *builderv0.DeploymentOutput {
 	}}}
 }
 
+// fakeAgentWorkloadPatch, when set, rewrites the workload manifest a fake agent
+// renders. It is how a test renders a tree that breaks a deployed-render rule
+// through the real RenderModule path. See posture_render_test.go.
+var fakeAgentWorkloadPatch func(service, workload string) string
+
 // fakeAgentTree is the base and overlay one agent writes for a service.
 func fakeAgentTree(ctx context.Context, service *resources.Service, env *environments.Environment, mappings []*basev0.NetworkMapping) (map[string]string, error) {
 	image := fmt.Sprintf("registry.example.com/acme/%s@sha256:%s", service.Name, strings.Repeat("a", 64))
@@ -200,6 +205,9 @@ spec:
 `, service.Name, image)
 	default:
 		return nil, fmt.Errorf("no fake agent for %s", service.Agent.Name)
+	}
+	if fakeAgentWorkloadPatch != nil {
+		workload = fakeAgentWorkloadPatch(service.Name, workload)
 	}
 	return map[string]string{
 		filepath.Join("base", "kustomization.yaml"): "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - " +
