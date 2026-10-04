@@ -1858,6 +1858,11 @@ sync with `origin/main`, target tag free locally and remotely. Nothing is ever
 pushed with `--force`. A service-agent repository additionally runs release-grade
 agent CI against the bumped version, then creates the GitHub release, uploads the
 loader archives and SBOMs, and verifies each resolves through the install URL.
+That final read uses the publisher's authenticated GitHub client through Core's
+agent-download path, so private release archives are verified without requiring
+public access. Asset-CDN requests do not receive the GitHub API credential.
+Installing private agents requires `GITHUB_TOKEN` or `GH_TOKEN` in the install
+process; public agent downloads continue to work without either.
 A module-agent repository publishes only the immutable Git tag. If the release
 pull request merged but the tag push failed, re-run: the untagged release commit
 is recognised and finished rather than bumped again.

@@ -125,7 +125,7 @@ func (r *agentReleaser) waitForWorkflowRelease(ctx context.Context, client *gith
 	if err := verifyWorkflowRelease(ctx, client, owner, repo, tag, r.assets); err != nil {
 		return err
 	}
-	return verifyReleaseAssets(ctx, r.reg, r.publisher, r.name, strings.TrimPrefix(tag, "v"), r.assets)
+	return verifyReleaseAssets(ctx, client, r.reg, r.publisher, r.name, strings.TrimPrefix(tag, "v"), r.assets)
 }
 
 // releaseVerifyBudget sizes the work that follows a live tag: downloading every
