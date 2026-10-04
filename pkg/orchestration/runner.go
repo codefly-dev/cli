@@ -539,6 +539,14 @@ func (world *World) referencedProducerMappings(
 	// render of a service over a value it was deliberately not given.
 	// (Layer-4 round-five F4.)
 	skip := withheld.skips(world.referencingWorkspaceConfigurationValues(effective))
+	producers, err := world.workspaceProducers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	consumerModule := ""
+	if identity, idErr := service.Identity(); idErr == nil {
+		consumerModule = identity.Module
+	}
 	var out []*basev0.NetworkMapping
 	collected := make(map[string]bool)
 	for _, reference := range world.ConfigurationManager.WorkspaceEndpointReferences(effective...) {
@@ -550,7 +558,14 @@ func (world *World) referencedProducerMappings(
 			continue
 		}
 		producer := info.Module + "/" + info.Service
-		if collected[producer] || mappingsCarry(have, info) {
+		exactName := false
+		if producers != nil {
+			_, exactName, err = permittedReferenceMatches(reference, consumerModule, producers)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if collected[producer] || mappingsCarry(have, info, exactName) {
 			continue
 		}
 		collected[producer] = true
@@ -619,11 +634,18 @@ func (world *World) referencedProducerMappings(
 // legitimate `internal` reference. Core's check reads the manifest; so does this.
 // (Layer-5 round-five NEW-6.)
 //
-// It cannot cost a consumer a value it was entitled to. Every reference in the
-// effective set has already been validated against the same manifest by core's
-// own check (checkEffectiveWorkspaceConfigurationReferences), so a reference
-// naming an endpoint this filter removes has already been refused; the only
-// mappings it can remove are ones no reference the consumer receives may name.
+// It cannot cost a consumer a value it was entitled to, with one exception worth
+// stating rather than implying. Every reference in the effective set has already
+// been validated against the same manifest by core's own check
+// (checkEffectiveWorkspaceConfigurationReferences), so a reference naming an
+// endpoint this filter removes has already been refused — EXCEPT where the
+// reference's exact name is unreachable for this consumer and a sibling sharing
+// its API is not: core's check passes on the sibling, this filter removes only
+// the unreachable name, and the value then resolves to the sibling instead of
+// saying the endpoint asked for is private. That is a known gap, carried as a
+// follow-up; the right answer is to refuse with ValidateEndpointVisibility's own
+// reason. Otherwise the only mappings this can remove are ones no reference the
+// consumer receives may name.
 // What it does change, deliberately, is a cross-module BARE dependency: an
 // address of the producer's private endpoint used to be interpolatable into a
 // workspace configuration value, and is not any more. Disclosed in
@@ -739,8 +761,17 @@ func manifestEndpoint(
 }
 
 // mappingsCarry reports whether mappings already hold the endpoint a reference
-// names.
-func mappingsCarry(mappings []*basev0.NetworkMapping, info *resources.EndpointInformation) bool {
+// names, so discovery does not re-bind its producer.
+//
+// requireExactName says the reference has an endpoint named exactly as its
+// token, which the consumer may reach. Then only a mapping carrying THAT name
+// counts: an API-only match is not the endpoint the reference names, and
+// treating it as one made discovery skip the producer, so the named endpoint's
+// mapping was never bound — withExactNamePrecedence then stripped the API-only
+// sibling as the wrong answer and the value was dropped with a WARN blaming the
+// producer's address, or refused in a render. The same shape silently resolved
+// to the sibling before precedence existed. (Layer-5 round-seven N2.)
+func mappingsCarry(mappings []*basev0.NetworkMapping, info *resources.EndpointInformation, requireExactName bool) bool {
 	for _, mapping := range mappings {
 		endpoint := mapping.GetEndpoint()
 		if endpoint == nil || endpoint.GetModule() != info.Module || endpoint.GetService() != info.Service {
@@ -748,6 +779,12 @@ func mappingsCarry(mappings []*basev0.NetworkMapping, info *resources.EndpointIn
 		}
 		// The same match a reference resolves by (resources.InterpolateEndpoints).
 		if info.API != "" && endpoint.GetApi() != info.API {
+			continue
+		}
+		if requireExactName {
+			if endpoint.GetName() == info.Name {
+				return true
+			}
 			continue
 		}
 		if info.Name == "" || endpoint.GetName() == info.Name || endpoint.GetApi() == info.Name {
@@ -1901,6 +1938,17 @@ func (world *World) withExactNamePrecedence(
 		}
 		matched, onlyWrongAnswer := false, true
 		for _, ref := range references {
+			// resources.EndpointMatchesReferenceInfo compares the API and the
+			// name and NEVER the module or the service, so without this a
+			// reference to another producer that happens to share the token
+			// vouches for this mapping: `${endpoint:payments/ledger/grpc}` with
+			// no exact-name answer of its own would keep platform/authority's
+			// `admin` alive, and core's first match then writes admin's address
+			// into the value — err nil, plan gate green. (Layer-5 round-seven
+			// N1.)
+			if declared.Module != ref.info.Module || declared.Service != ref.info.Service {
+				continue
+			}
 			if !resources.EndpointMatchesReferenceInfo(declared, ref.info) {
 				continue
 			}

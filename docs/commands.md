@@ -382,15 +382,22 @@ endpoint's name *or* its API, so `${endpoint:platform/authority/rest}` matches a
 endpoint named `rest` and every endpoint whose api is `rest`. If more than one of
 them is visible to your module **and none is named exactly as you wrote it**, the
 reference is refused and names the candidates: write the endpoint you mean. If
-exactly one is visible it resolves as before, and if you named an endpoint
-exactly it resolves to that one — a sibling sharing its API cannot take its
-place, including when the named endpoint has no address for your runtime
+exactly one is visible it resolves as before, and if you named an endpoint your
+module may reach it resolves to that one — a sibling sharing its API cannot take
+its place, including when the named endpoint has no address for your runtime
 context (you get an error naming the value, not the sibling's address).
 
-So a producer declaring both `grpc` (api `grpc`) and `grpc-admin` (api `grpc`) is
+So a producer declaring both `grpc` (api `grpc`) and `admin` (api `grpc`) is
 fine: `${endpoint:…/grpc}` means `grpc`. What is refused is a token that names no
 endpoint and matches two, such as `${endpoint:…/rest}` against endpoints `api`
 and `admin` that both expose `rest`.
+
+**One case is not yet right, and it is worth knowing before you hit it:** if you
+name an endpoint your module may **not** reach while a sibling sharing its API is
+visible to you, the value resolves to the sibling instead of telling you the
+endpoint you asked for is private. Name a visible endpoint, or declare the
+visibility you need; the refusal this should give instead is a tracked
+follow-up.
 
 **This can refuse less than it delivered before, in one case:** a cross-module
 bare dependency (`service-dependencies` naming the service and no endpoints) used

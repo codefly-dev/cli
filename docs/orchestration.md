@@ -395,9 +395,13 @@ Two further rules make the choice disappear rather than constrain it:
   siblings that merely share its API, so the value cannot silently address one of
   them — by ordering, or because the named endpoint has no instance for this
   consumer's access and core's interpolation would otherwise fall through.
-  Refused references arrive as core's own structured findings, so the plan gate
-  merges them with its other faults and `codefly doctor` writes a line per
-  fault.
+  Refused references arrive as core's own structured findings, so they carry a
+  consumer, a group, a key and a reason rather than one opaque message. They are
+  reported **after** the other reference faults rather than merged with them:
+  `CheckConfigurationReferences` returns core's findings first and reaches the
+  ambiguity rule only when there are none, so a plan with both kinds is fixed in
+  two passes. The `codefly doctor` line for an ambiguous finding also falls
+  through to the generic remediation. Both are follow-ups, named in the PR.
 - **A mapping that does not say which endpoint it is does not get bound.** The
   filter identifies a mapping by its endpoint's name, with the mapping's API
   checked for consistency against the manifest. Matching a nameless mapping by
@@ -406,11 +410,15 @@ Two further rules make the choice disappear rather than constrain it:
   against the first API match, approved as public, and then returned by core's
   interpolator, which matches the retained mapping by API.
 
-Together they leave exactly one legal endpoint per reference and one identified
-endpoint per mapping, so the check and the resolution cannot land on different
-ones. The durable fix is still core's: judge visibility for **every** endpoint a
-reference can match, refuse an ambiguous one, and resolve only to the endpoint
-that was judged.
+Together they leave one identified endpoint per mapping, and — for a reference
+whose exact name the consumer may reach — one candidate for the resolution to
+pick. **What they do not cover:** an exact name the consumer may *not* reach
+loses to a permitted API sibling, and manifest order then decides which address
+the value gets, with no error. That case is a follow-up, named in the PR, and the
+honest form of it is to refuse with the visibility reason rather than resolve to
+something else. The durable fix is still core's: judge visibility for **every**
+endpoint a reference can match, prefer an exact name, refuse an ambiguous one,
+and resolve only to the endpoint that was judged.
 
 ##### A composition root's credentials are not run-wide
 

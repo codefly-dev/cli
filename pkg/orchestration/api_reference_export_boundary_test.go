@@ -467,7 +467,7 @@ func TestAnAmbiguousReferenceOnlyRefusesTheConsumersThatReceiveIt(t *testing.T) 
 //
 // This is the over-refusal the ambiguity rule shipped with, and it refused
 // ordinary compositions. A producer declaring `grpc` (api grpc) and
-// `grpc-admin` (api grpc) makes `${endpoint:platform/authority/grpc}` match
+// `admin` (api grpc) makes `${endpoint:platform/authority/grpc}` match
 // BOTH, because core's matcher is `Name == token || API == token` — and naming
 // the api explicitly does not narrow the name branch. The reference says which
 // endpoint it means, so refusing it makes a clear composition unresolvable.
@@ -485,11 +485,11 @@ func TestAnExactEndpointNameWinsOverAnAPISibling(t *testing.T) {
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
 		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
-		// `grpc` by name, `grpc-admin` by API: the reference matches both.
+		// `grpc` by name, `admin` by API: the reference matches both.
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n" +
-			"    - name: grpc-admin\n      api: grpc\n      visibility: public\n",
+			"    - name: admin\n      api: grpc\n      visibility: public\n",
 		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
@@ -500,7 +500,7 @@ func TestAnExactEndpointNameWinsOverAnAPISibling(t *testing.T) {
 		world.Mode = RunMode
 		recordMappings(t, world, "platform", "authority",
 			endpointMapping("platform", "authority", "grpc", "grpc", "public", nativeInstance("http://localhost:1111")),
-			endpointMapping("platform", "authority", "grpc-admin", "grpc", "public", nativeInstance("http://localhost:2222")),
+			endpointMapping("platform", "authority", "admin", "grpc", "public", nativeInstance("http://localhost:2222")),
 		)
 	})
 
@@ -521,12 +521,12 @@ func TestAnExactEndpointNameWinsOverAnAPISibling(t *testing.T) {
 		mappings []*basev0.NetworkMapping
 	}{
 		{"the sibling is published first", []*basev0.NetworkMapping{
-			endpointMapping("platform", "authority", "grpc-admin", "grpc", "public", nativeInstance("http://localhost:2222")),
+			endpointMapping("platform", "authority", "admin", "grpc", "public", nativeInstance("http://localhost:2222")),
 			endpointMapping("platform", "authority", "grpc", "grpc", "public", nativeInstance("http://localhost:1111")),
 		}},
 		{"the named endpoint has no instance for this access", []*basev0.NetworkMapping{
 			endpointMapping("platform", "authority", "grpc", "grpc", "public", containerInstance("http://grpc:9090")),
-			endpointMapping("platform", "authority", "grpc-admin", "grpc", "public", nativeInstance("http://localhost:2222")),
+			endpointMapping("platform", "authority", "admin", "grpc", "public", nativeInstance("http://localhost:2222")),
 		}},
 	} {
 		t.Run(shape.name, func(t *testing.T) {
@@ -550,4 +550,113 @@ func TestAnExactEndpointNameWinsOverAnAPISibling(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{worker}, true),
 		"the gate must not refuse what the resolution resolves")
+}
+
+// Another producer's reference does not vouch for this producer's endpoint.
+//
+// `resources.EndpointMatchesReferenceInfo` compares an endpoint's API and its
+// name and NEVER its module or service. So the precedence pass asked "does any
+// reference legitimately want this mapping?" with a matcher that cannot tell one
+// producer from another: a reference to `payments/ledger/grpc` — which has no
+// exact-name answer of its own, so every API match is a legitimate candidate for
+// it — vouched for `platform/authority/admin`, keeping it bound for the
+// authority reference that names `grpc` exactly. Core's first match then writes
+// admin's address into the value, with `err=nil` and a green plan gate: the exact
+// mis-resolution precedence exists to stop, reintroduced by the fix for it.
+// (Layer-5 round-seven N1.)
+func TestAnotherProducersReferenceDoesNotKeepThisProducersSibling(t *testing.T) {
+	ctx := context.Background()
+	workspace := writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
+			"endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n" +
+			"    - name: admin\n      api: grpc\n      visibility: public\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n    - name: ledger\n",
+		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
+		// A second producer whose only endpoint matches `grpc` by API, so a
+		// reference to it has no exact-name answer — the shape that vouched.
+		"modules/payments/services/ledger/service.codefly.yaml": "kind: service\nname: ledger\nversion: 0.0.0\nmodule: payments\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
+			"endpoints:\n    - name: books\n      api: grpc\n      visibility: public\n",
+		"configurations/local/work-context.env": "authority-endpoint=${endpoint:platform/authority/grpc}\n" +
+			"ledger-endpoint=${endpoint:payments/ledger/grpc}\n",
+	})
+	world, worker := referenceValidityWorld(t, workspace, func(world *World) {
+		world.Mode = RunMode
+		// authority's sibling first, so an unfiltered set resolves to it.
+		recordMappings(t, world, "platform", "authority",
+			endpointMapping("platform", "authority", "admin", "grpc", "public", nativeInstance("http://localhost:2222")),
+			endpointMapping("platform", "authority", "grpc", "grpc", "public", nativeInstance("http://localhost:1111")),
+		)
+		recordMappings(t, world, "payments", "ledger",
+			endpointMapping("payments", "ledger", "books", "grpc", "public", nativeInstance("http://localhost:3333")),
+		)
+	})
+
+	confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
+	require.NoError(t, err)
+	authority, delivered := groupValue(confs, "work-context", "authority-endpoint")
+	require.True(t, delivered)
+	require.Equal(t, "http://localhost:1111", authority,
+		"the exactly named endpoint wins, whatever another producer's reference matches")
+	require.NotEqual(t, "http://localhost:2222", authority)
+	// And the other producer's own reference still resolves, so the fix narrows
+	// the vouching and not the set.
+	ledger, delivered := groupValue(confs, "work-context", "ledger-endpoint")
+	require.True(t, delivered, "a reference with no exact-name answer still resolves by API")
+	require.Equal(t, "http://localhost:3333", ledger)
+}
+
+// Discovery binds the endpoint a reference NAMES even when the consumer's own
+// dependency mappings already carry an API-sibling of it.
+//
+// mappingsCarry answered "the producer's endpoint is already here" for a mapping
+// that merely shared the API, so discovery skipped the producer and the named
+// endpoint's mapping was never bound. Precedence then stripped the sibling as
+// the wrong answer, and the value was dropped — in a run with a WARN blaming the
+// producer's address, which is the wrong cause, and refused outright in a
+// render. Before precedence existed the same shape resolved silently to the
+// sibling. (Layer-5 round-seven N2.)
+func TestDiscoveryBindsTheNamedEndpointEvenWhenADependencyCarriesItsAPISibling(t *testing.T) {
+	ctx := context.Background()
+	workspace := writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
+			"endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n" +
+			"    - name: admin\n      api: grpc\n      visibility: public\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		// The consumer depends on `admin` specifically, so its dependency
+		// mappings carry admin and nothing else.
+		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
+			"service-dependencies:\n    - name: authority\n      module: platform\n      endpoints:\n          - name: admin\n",
+		"configurations/local/work-context.env": "authority-endpoint=${endpoint:platform/authority/grpc}\n",
+	})
+	world, worker := referenceValidityWorld(t, workspace, func(world *World) {
+		world.Mode = RunMode
+		recordMappings(t, world, "platform", "authority",
+			endpointMapping("platform", "authority", "grpc", "grpc", "public", nativeInstance("http://localhost:1111")),
+			endpointMapping("platform", "authority", "admin", "grpc", "public", nativeInstance("http://localhost:2222")),
+		)
+	})
+	dependencyMappings, err := world.SharedState.GetDependenciesNetworkMappings(ctx, worker)
+	require.NoError(t, err)
+	require.Len(t, dependencyMappings, 1, "the declared dependency grants admin alone")
+	require.Equal(t, "admin", dependencyMappings[0].GetEndpoint().GetName())
+
+	confs, err := world.workspaceConfigurationsFor(ctx, worker, dependencyMappings, resources.NewNativeNetworkAccess())
+	require.NoError(t, err)
+	address, delivered := groupValue(confs, "work-context", "authority-endpoint")
+	require.True(t, delivered,
+		"the reference names grpc, so discovery must bind grpc rather than count admin as carrying it")
+	require.Equal(t, "http://localhost:1111", address)
 }
