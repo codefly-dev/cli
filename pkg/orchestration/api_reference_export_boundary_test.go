@@ -660,3 +660,45 @@ func TestDiscoveryBindsTheNamedEndpointEvenWhenADependencyCarriesItsAPISibling(t
 		"the reference names grpc, so discovery must bind grpc rather than count admin as carrying it")
 	require.Equal(t, "http://localhost:1111", address)
 }
+
+// An endpoint name core's schema refuses is refused by the render, so a fixture
+// that uses one is not testing the render at all.
+//
+// `endpoint.proto` constrains an endpoint name to `^[a-z]+$`, 3 to 20
+// characters — tighter than a module or a service, which allow digits and
+// hyphens. An earlier revision of the precedence fixtures above used
+// `grpc-admin`, which is not a legal endpoint name: it loads from YAML, because
+// core's post-load check only looks for duplicates, and then fails the moment a
+// render asks the network manager to derive addresses for it. So those fixtures
+// exercised the run path and would have been silently useless in a render, and
+// renaming them to `admin` was a correctness fix rather than cosmetics.
+//
+// This pins the rule itself, so the next fixture that reaches for a hyphen gets
+// an answer here rather than a confusing failure three layers down. (Layer-5
+// round-seven N4.)
+func TestAnEndpointNameCoresSchemaRefusesFailsTheRender(t *testing.T) {
+	ctx := context.Background()
+	workspace := writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		// Hyphenated, so illegal — and accepted by the YAML load, which is what
+		// makes it a trap.
+		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
+			"endpoints:\n    - name: grpc-admin\n      api: grpc\n      visibility: public\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
+			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
+		"configurations/local/work-context.env": "authority-endpoint=${endpoint:platform/authority/grpc-admin}\n",
+	})
+	world, worker := referenceValidityWorld(t, workspace)
+	require.True(t, world.deploys())
+
+	_, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewContainerNetworkAccess())
+	require.Error(t, err, "a render cannot derive an address for an endpoint whose name core refuses")
+	require.Contains(t, err.Error(), "cannot derive the addresses of platform/authority",
+		"and it is the derivation that says so, with the producer named")
+	require.Contains(t, err.Error(), "^[a-z]+$", "carrying core's own reason")
+}
