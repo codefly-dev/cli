@@ -61,3 +61,58 @@ func TestSelfCheckPolicyIsTheWorkflowIdentity(t *testing.T) {
 		t.Fatalf("a bundle with no transparency evidence must be refused by name: %v", err)
 	}
 }
+
+// TestSelfCheckUnderHoldsThisWorkflowToTheReviewedPolicy: the fresh-signature
+// check is this workflow's exact identity, and it is built only when the
+// reviewed policy admits that identity — another repository, another
+// workflow, a branch or a tag outside the pattern never signs.
+func TestSelfCheckUnderHoldsThisWorkflowToTheReviewedPolicy(t *testing.T) {
+	policy := &ReleasePolicy{Repository: "codefly-dev/cli", Workflow: ".github/workflows/release.yaml", Refs: []string{`refs/tags/v[0-9]+\.[0-9]+\.[0-9]+`}}
+	check, err := SelfCheckUnder(lookupFrom(map[string]string{
+		envGitHubRepository: "codefly-dev/cli", envGitHubWorkflowRef: "codefly-dev/cli/.github/workflows/release.yaml@refs/tags/v1.2.3",
+	}), policy)
+	if err != nil || check == nil {
+		t.Fatalf("an admitted identity: check=%v err=%v", check != nil, err)
+	}
+	for name, identity := range map[string][2]string{
+		"another repository": {"codefly-dev/core", "codefly-dev/core/.github/workflows/release.yaml@refs/tags/v1.2.3"},
+		"another workflow":   {"codefly-dev/cli", "codefly-dev/cli/.github/workflows/ci.yaml@refs/tags/v1.2.3"},
+		"a branch":           {"codefly-dev/cli", "codefly-dev/cli/.github/workflows/release.yaml@refs/heads/main"},
+		"a tag outside":      {"codefly-dev/cli", "codefly-dev/cli/.github/workflows/release.yaml@refs/tags/nightly"},
+	} {
+		if _, err := SelfCheckUnder(lookupFrom(map[string]string{envGitHubRepository: identity[0], envGitHubWorkflowRef: identity[1]}), policy); err == nil || !strings.Contains(err.Error(), "release policy") {
+			t.Fatalf("%s: err = %v", name, err)
+		}
+	}
+	none, err := SelfCheckUnder(lookupFrom(map[string]string{}), policy)
+	if err != nil || none != nil {
+		t.Fatalf("no workflow metadata must build no check: check=%v err=%v", none != nil, err)
+	}
+	if _, err := ReleaseCheckUnder(nil); err == nil {
+		t.Fatal("a reuse check needs the policy")
+	}
+}
+
+// TestReleasePolicyAdmitsEveryReleaseRefAndNothingElse: a carrier delivered
+// earlier is reused under the policy's refs — any release tag of the same
+// workflow — and never under a branch of it.
+func TestReleasePolicyAdmitsEveryReleaseRefAndNothingElse(t *testing.T) {
+	pattern, err := (&ReleasePolicy{Repository: "codefly-dev/cli", Workflow: ".github/workflows/release.yaml", Refs: []string{`refs/tags/v[0-9]+\.[0-9]+\.[0-9]+`}}).refPattern()
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := GitHubActionsPolicy("codefly-dev/cli", ".github/workflows/release.yaml", pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []string{"v1.2.3", "v1.2.4"} {
+		release := signVirtually(t, strings.Replace(releaseSubject, "v1.2.3", version, 1), releaseIssuer, []byte("presence document"), false)
+		if _, err := Verify(release.bundle, release.payload, release.trusted, policy); err != nil {
+			t.Fatalf("the release at %s must verify under the policy: %v", version, err)
+		}
+	}
+	branch := signVirtually(t, strings.Replace(releaseSubject, "refs/tags/v1.2.3", "refs/heads/main", 1), releaseIssuer, []byte("presence document"), false)
+	if _, err := Verify(branch.bundle, branch.payload, branch.trusted, policy); !errors.Is(err, ErrSignature) {
+		t.Fatalf("a branch of the same workflow must be refused: %v", err)
+	}
+}

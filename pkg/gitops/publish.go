@@ -298,18 +298,6 @@ func newDeliveryPublication(request *PublishRequest, baseBranch string) (*delive
 	if request.Local && request.Signer == nil {
 		publication.options.Signer = &signing.Unavailable{Reason: "a local qualification publish delivers its documents unsigned"}
 	}
-	if !request.Local && request.Signer == nil {
-		selfCheck, err := signing.SelfCheckFromEnvironment(nil)
-		if err != nil {
-			return nil, err
-		}
-		publication.options.SelfCheck = selfCheck
-		reuseCheck, err := signing.ReleaseCheckFromEnvironment(nil)
-		if err != nil {
-			return nil, err
-		}
-		publication.options.ReuseCheck = reuseCheck
-	}
 	// The carriers an inspected plan signed: the publish executing it
 	// delivers those exact bytes, so the plan it compares against is the one
 	// it was given — signing is once, in the plan, and reuse is verified.
@@ -335,6 +323,32 @@ func (p *deliveryPublication) requireReleaseIdentity() error {
 	return errors.New("the environment declares a host, so this publish delivers signed carriers; a release publish signs and checks them under the workflow identity it runs with, and this process has none (GITHUB_REPOSITORY and GITHUB_WORKFLOW_REF are not both set): run it from the release workflow, or publish --local to a qualification cluster")
 }
 
+// holdToReleasePolicy builds, for a release publish, the two checks its
+// carriers are held to from the policy the composition states beside the
+// host block: the fresh-signature check is this workflow's exact identity,
+// admitted by the policy first, and the reuse check is the policy itself. A
+// hosted environment that states no policy cannot be released to, since
+// nothing reviewed would say which identity the host accepts.
+func (p *deliveryPublication) holdToReleasePolicy(env *environments.Environment) error {
+	if p.options.AllowUnsigned || p.options.Signer != nil {
+		return nil
+	}
+	if env.Host.Release == nil {
+		return fmt.Errorf("environment %s declares a host but no release policy; a release publish signs under the identity the host accepts, which the composition states as host.release (repository, workflow, refs)", env.Name)
+	}
+	policy := &signing.ReleasePolicy{Repository: env.Host.Release.Repository, Workflow: env.Host.Release.Workflow, Refs: env.Host.Release.Refs}
+	selfCheck, err := signing.SelfCheckUnder(nil, policy)
+	if err != nil {
+		return err
+	}
+	reuseCheck, err := signing.ReleaseCheckUnder(policy)
+	if err != nil {
+		return err
+	}
+	p.options.SelfCheck, p.options.ReuseCheck = selfCheck, reuseCheck
+	return nil
+}
+
 // addressHost points the publication at the environment's host: the delivery
 // API its Jobs post to, and the envelope revision and the domain its
 // documents must declare.
@@ -344,6 +358,9 @@ func (p *deliveryPublication) addressHost(ctx context.Context, workspace *resour
 	// dropped its host while documents are rendered for it is refused later,
 	// by refuseUnaddressedDocuments, not admitted here.)
 	if env.Host != nil {
+		if err := p.holdToReleasePolicy(env); err != nil {
+			return err
+		}
 		if err := p.requireReleaseIdentity(); err != nil {
 			return err
 		}
@@ -1014,6 +1031,7 @@ func prepareServicePublication(
 		Promotable:                    true,
 		CheckUnitDirectories:          true,
 		SolutionHostBindingPath:       renderedInventory.SolutionHostBindingPath,
+		HostsDelivery:                 renderedInventory.HostsDelivery,
 		SolutionAuthorityPath:         renderedInventory.SolutionAuthorityPath,
 		Delivered:                     delivery,
 		WorkspaceConfigurationDigests: renderedInventory.WorkspaceConfigurationDigests,
@@ -1113,6 +1131,7 @@ func prepareServiceSnapshot(
 		AppProject:              renderedInventory.AppProject,
 		Promotable:              true,
 		SolutionHostBindingPath: renderedInventory.SolutionHostBindingPath,
+		HostsDelivery:           renderedInventory.HostsDelivery,
 		SolutionAuthorityPath:   renderedInventory.SolutionAuthorityPath,
 		Delivered:               delivery,
 	}

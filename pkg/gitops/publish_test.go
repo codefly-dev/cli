@@ -227,7 +227,7 @@ func hostedPublishWorkspace(t *testing.T) (ctx context.Context, workspace *resou
 		t.Fatal(err)
 	}
 	hosted := strings.Replace(string(config), "  - name: production\n    cluster:\n      kind: k3d\n",
-		"  - name: production\n    namespace: payments\n    cluster:\n      kind: k3d\n    host:\n      coordinate: example/prod/region-a\n      component: platform-host\n      domain: example\n      audience: accounts\n      trust_domain: cluster.example\n      envelope_revision: 1\n      delivery: payments/host/rest\n", 1)
+		"  - name: production\n    namespace: payments\n    cluster:\n      kind: k3d\n    host:\n      coordinate: example/prod/region-a\n      component: platform-host\n      domain: example\n      audience: accounts\n      trust_domain: cluster.example\n      envelope_revision: 1\n      delivery: payments/host/rest\n      release:\n        repository: codefly-test/payments\n        workflow: .github/workflows/release.yml\n        refs:\n          - refs/tags/v[0-9]+[.][0-9]+[.][0-9]+\n", 1)
 	if hosted == string(config) {
 		t.Fatal("the fixture's environment was not found")
 	}
@@ -320,11 +320,30 @@ func TestReleasePublishRefusesToDeliverWithoutItsWorkflowIdentity(t *testing.T) 
 	if err == nil || !strings.Contains(err.Error(), "run it from the release workflow") {
 		t.Fatalf("a hosted release publish with no workflow identity was not refused: %v", err)
 	}
-	t.Setenv("GITHUB_REPOSITORY", "codefly-test/manifests")
-	t.Setenv("GITHUB_WORKFLOW_REF", "codefly-test/manifests/.github/workflows/release.yml@refs/tags/v1.0.0")
+	// An identity the reviewed policy does not admit — another repository,
+	// another workflow, a branch, a tag outside the pattern — is refused
+	// before anything is signed.
+	for name, identity := range map[string][2]string{
+		"another repository": {"codefly-test/manifests", "codefly-test/manifests/.github/workflows/release.yml@refs/tags/v1.0.0"},
+		"another workflow":   {"codefly-test/payments", "codefly-test/payments/.github/workflows/ci.yml@refs/tags/v1.0.0"},
+		"a branch":           {"codefly-test/payments", "codefly-test/payments/.github/workflows/release.yml@refs/heads/main"},
+		"a tag outside":      {"codefly-test/payments", "codefly-test/payments/.github/workflows/release.yml@refs/tags/nightly"},
+	} {
+		t.Setenv("GITHUB_REPOSITORY", identity[0])
+		t.Setenv("GITHUB_WORKFLOW_REF", identity[1])
+		_, err = PlanPublish(ctx, workspace, &request)
+		if err == nil || !strings.Contains(err.Error(), "release policy") {
+			t.Fatalf("%s: not refused by the release policy: %v", name, err)
+		}
+	}
+	t.Setenv("GITHUB_REPOSITORY", "codefly-test/payments")
+	t.Setenv("GITHUB_WORKFLOW_REF", "codefly-test/payments/.github/workflows/release.yml@refs/tags/v1.0.0")
 	_, err = PlanPublish(ctx, workspace, &request)
-	if err == nil || strings.Contains(err.Error(), "run it from the release workflow") {
-		t.Fatalf("with the workflow identity the publish must reach its signer, which this process does not hold: %v", err)
+	if err == nil || strings.Contains(err.Error(), "run it from the release workflow") || strings.Contains(err.Error(), "release policy") {
+		t.Fatalf("with the admitted identity the publish must reach its signer, which this process does not hold: %v", err)
+	}
+	if !strings.Contains(err.Error(), "sign") {
+		t.Fatalf("the error past the policy is not the signer's: %v", err)
 	}
 }
 

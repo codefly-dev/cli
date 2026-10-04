@@ -428,10 +428,67 @@ type EnvironmentHost struct {
 	// composition names which endpoint is the delivery API and never where it
 	// lives.
 	Delivery string `yaml:"delivery"`
+	// Release is the identity the host accepts delivered carriers from — the
+	// release workflow, reviewed with this composition: the repository, the
+	// workflow path, and the refs it may run at, each an anchored regular
+	// expression. A hosted release publish holds its own workflow identity to
+	// this policy before it signs anything, and reuses a carrier delivered
+	// earlier only when the identity that signed it is within it. The host
+	// publishes the same literal and enforces it independently.
+	Release *HostReleasePolicy `yaml:"release,omitempty"`
+}
+
+// HostReleasePolicy is one repository, one workflow path, and the refs that
+// workflow may run at.
+type HostReleasePolicy struct {
+	Repository string   `yaml:"repository"`
+	Workflow   string   `yaml:"workflow"`
+	Refs       []string `yaml:"refs"`
+}
+
+var releasePolicyFields = []string{"repository", "workflow", "refs"}
+
+// UnmarshalYAML refuses a key the policy does not have: a misspelled `refs`
+// would otherwise read as a policy admitting no ref.
+func (policy *HostReleasePolicy) UnmarshalYAML(node *yaml.Node) error {
+	if err := rejectUnknownKeys(node, "host.release", releasePolicyFields...); err != nil {
+		return err
+	}
+	type plain HostReleasePolicy
+	return node.Decode((*plain)(policy))
+}
+
+var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?/[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$`)
+
+// Validate holds the policy to its shape: an owner/repository, a workflow
+// path inside it, and at least one ref pattern that compiles and names a ref
+// (it starts with `refs/`).
+func (policy *HostReleasePolicy) Validate() error {
+	if policy == nil {
+		return nil
+	}
+	if !repositoryPattern.MatchString(policy.Repository) {
+		return fmt.Errorf("host release repository %q is not <owner>/<repository>", policy.Repository)
+	}
+	if policy.Workflow == "" || strings.HasPrefix(policy.Workflow, "/") || strings.ContainsAny(policy.Workflow, " \t\n@") {
+		return fmt.Errorf("host release workflow %q is not a workflow path inside the repository (such as .github/workflows/release.yml)", policy.Workflow)
+	}
+	if len(policy.Refs) == 0 {
+		return fmt.Errorf("host release refs must name at least one ref the release workflow may run at (an anchored regular expression such as refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+)")
+	}
+	for _, ref := range policy.Refs {
+		if !strings.HasPrefix(ref, "refs/") {
+			return fmt.Errorf("host release ref %q does not name a ref (it starts with refs/)", ref)
+		}
+		if _, err := regexp.Compile("^(?:" + ref + ")$"); err != nil {
+			return fmt.Errorf("host release ref %q is not a regular expression: %v", ref, err)
+		}
+	}
+	return nil
 }
 
 // hostFields are the keys a host block may carry, in declaration order.
-var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "envelope_revision", "delivery"}
+var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "envelope_revision", "delivery", "release"}
 
 // deliveryPattern is a composition identity: <module>/<service>/<endpoint>,
 // each a lowercase name.
@@ -489,7 +546,7 @@ func (host *EnvironmentHost) Validate() error {
 	if !deliveryPattern.MatchString(host.Delivery) {
 		return fmt.Errorf("host delivery %q is not the composition identity <module>/<service>/<endpoint> of the host's delivery API", host.Delivery)
 	}
-	return nil
+	return host.Release.Validate()
 }
 
 // DeliveryEndpoint splits the delivery API's composition identity into the

@@ -1221,11 +1221,23 @@ func TestOnlyHostedDeliveryNeedsTheWorkflowIdentity(t *testing.T) {
 	require.NoError(t, hostless.addressHost(ctx, nil, &environments.Environment{Name: "production"}))
 	require.Nil(t, hostless.options.Target)
 
-	hosted := &deliveryPublication{baseBranch: "main"}
-	err := hosted.addressHost(ctx, nil, &environments.Environment{Name: "production", Host: &environments.EnvironmentHost{
+	host := &environments.EnvironmentHost{
 		Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", Audience: "accounts",
 		TrustDomain: "cluster.example", EnvelopeRevision: 1, Delivery: "payments/host/rest",
-	}})
+	}
+	// A hosted environment stating no release policy cannot be released to.
+	hosted := &deliveryPublication{baseBranch: "main"}
+	err := hosted.addressHost(ctx, nil, &environments.Environment{Name: "production", Host: host})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "host.release")
+	// With the policy, the workflow identity is required.
+	host.Release = &environments.HostReleasePolicy{Repository: "codefly-test/payments", Workflow: ".github/workflows/release.yml", Refs: []string{`refs/tags/v[0-9]+\.[0-9]+\.[0-9]+`}}
+	for _, name := range []string{"GITHUB_REPOSITORY", "GITHUB_WORKFLOW_REF"} {
+		t.Setenv(name, "")
+		require.NoError(t, os.Unsetenv(name))
+	}
+	hosted = &deliveryPublication{baseBranch: "main"}
+	err = hosted.addressHost(ctx, nil, &environments.Environment{Name: "production", Host: host})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "run it from the release workflow")
 }
