@@ -2718,11 +2718,12 @@ The companion mounts the nearest directory holding --proto, --output, the
 template and every `out` the template declares, so outputs beside the proto
 directory (out: ../code/pkg/gen) are written on the host. An `out` that
 escapes the owning workspace (or, outside a workspace, the directory the named
-paths share) is refused. buf generates into a staging tree under that mount and
-the CLI publishes to each `out` itself, so what a run emitted is known
-independently of what the outputs already held: a generation that produced no
-file fails and leaves them untouched, and an unchanged regeneration publishes
-byte-identical content and succeeds.
+paths share) is refused, resolving symlinks so a symlinked component cannot
+smuggle an output past it. buf generates into a staging tree of its own, mounted
+separately, and the CLI publishes to each `out` itself — so what a run
+emitted is known independently of what the outputs already held: a generation
+that produced no file fails and leaves them untouched, and an unchanged
+regeneration publishes byte-identical content and succeeds.
 --local selects --output/buf.gen.local.yaml, not execution on the host.
 Go, gRPC, Connect, gateway, OpenAPI and TypeScript
 outputs, then goimports over every Go output the template declares. Nothing

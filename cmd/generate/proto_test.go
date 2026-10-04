@@ -67,10 +67,10 @@ func TestResolveProtoTemplate(t *testing.T) {
 }
 
 func TestProtoMountRootNeverExposesFilesystemRoot(t *testing.T) {
-	if _, err := protoMountRoot("/repo/proto", "/repo/output", "/elsewhere/templates", nil, ""); err == nil {
+	if _, _, err := protoMountRoot("/repo/proto", "/repo/output", "/elsewhere/templates", nil, ""); err == nil {
 		t.Fatal("accepted writable mount of the filesystem root")
 	}
-	root, err := protoMountRoot("/repo/proto", "/repo/service/output", "/repo/templates", nil, "")
+	root, _, err := protoMountRoot("/repo/proto", "/repo/service/output", "/repo/templates", nil, "")
 	if err != nil || root != "/repo" {
 		t.Fatalf("mount root = %q, %v", root, err)
 	}
@@ -101,7 +101,7 @@ plugins:
 	if want := []string{filepath.Join(service, "code", "pkg", "gen"), filepath.Join(service, "openapi")}; !reflect.DeepEqual(outs, want) {
 		t.Fatalf("outputs = %v, want %v", outs, want)
 	}
-	root, err := protoMountRoot(input, input, input, outs, workspace)
+	root, _, err := protoMountRoot(input, input, input, outs, workspace)
 	if err != nil {
 		t.Fatalf("mount root: %v", err)
 	}
@@ -124,11 +124,11 @@ func TestProtoMountRootRefusesOutputEscapingBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("template outputs: %v", err)
 	}
-	if _, err := protoMountRoot(input, input, input, outs, workspace); err == nil {
+	if _, _, err := protoMountRoot(input, input, input, outs, workspace); err == nil {
 		t.Fatal("accepted an output outside the workspace")
 	}
 	// Outside a workspace the boundary is the directories the caller named.
-	if _, err := protoMountRoot(input, input, input, outs, ""); err == nil {
+	if _, _, err := protoMountRoot(input, input, input, outs, ""); err == nil {
 		t.Fatal("accepted an output outside the named directories")
 	}
 	writeTestFile(t, template, "version: v2\nplugins:\n  - local: protoc-gen-go\n    out: /abs/gen\n")
@@ -275,7 +275,7 @@ func TestPublishProtoOutputsRefusesAGenerationThatEmittedNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = publishProtoOutputs(context.Background(), staging, outs, false, filepath.Join(root, "buf.gen.yaml"))
+	err = publishProtoOutputs(staging, root, outs, false, filepath.Join(root, "buf.gen.yaml"))
 	if err == nil {
 		t.Fatal("a pre-existing file was accepted as proof of generation")
 	}
@@ -297,7 +297,7 @@ func TestPublishProtoOutputsRefusesAGenerationThatEmittedNothing(t *testing.T) {
 func TestPublishProtoOutputsKeepsTheOutputWhenNothingWasEmittedUnderClean(t *testing.T) {
 	root, outs := protoOutputFixture(t)
 	writeTestFile(t, filepath.Join(outs[0], "api_pb.ts"), "export {};\n")
-	if err := publishProtoOutputs(context.Background(), t.TempDir(), outs, true, filepath.Join(root, "buf.gen.yaml")); err == nil {
+	if err := publishProtoOutputs(t.TempDir(), root, outs, true, filepath.Join(root, "buf.gen.yaml")); err == nil {
 		t.Fatal("accepted a generation that emitted nothing")
 	}
 	if _, err := os.Stat(filepath.Join(outs[0], "api_pb.ts")); err != nil {
@@ -311,7 +311,7 @@ func TestPublishProtoOutputsPublishesWhatWasEmitted(t *testing.T) {
 	stageFile(t, staging, 0, "documents/v1/api_pb.ts", "export const api = 1;\n")
 	stageFile(t, staging, 1, "api.swagger.json", "{}\n")
 
-	if err := publishProtoOutputs(context.Background(), staging, outs, false, filepath.Join(root, "buf.gen.yaml")); err != nil {
+	if err := publishProtoOutputs(staging, root, outs, false, filepath.Join(root, "buf.gen.yaml")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	for path, want := range map[string]string{
@@ -339,7 +339,7 @@ func TestPublishProtoOutputsLeavesAnUnchangedReplayUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := publishProtoOutputs(context.Background(), staging, outs, false, filepath.Join(root, "buf.gen.yaml")); err != nil {
+	if err := publishProtoOutputs(staging, root, outs, false, filepath.Join(root, "buf.gen.yaml")); err != nil {
 		t.Fatalf("refused an unchanged replay: %v", err)
 	}
 	info, err := os.Stat(published)
@@ -362,7 +362,7 @@ func TestPublishProtoOutputsOverwritesGeneratedAndKeepsHandwritten(t *testing.T)
 	writeTestFile(t, filepath.Join(outs[0], "api_pb.ts"), "export const api = 1;\n")
 	writeTestFile(t, filepath.Join(outs[0], "handwritten.ts"), "export const mine = true;\n")
 
-	if err := publishProtoOutputs(context.Background(), staging, outs, false, filepath.Join(root, "buf.gen.yaml")); err != nil {
+	if err := publishProtoOutputs(staging, root, outs, false, filepath.Join(root, "buf.gen.yaml")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(outs[0], "api_pb.ts"))
@@ -382,7 +382,7 @@ func TestPublishProtoOutputsCleanReplacesTheOutput(t *testing.T) {
 	stageFile(t, staging, 0, "api_pb.ts", "export const api = 1;\n")
 	writeTestFile(t, filepath.Join(outs[0], "gone_pb.ts"), "export {};\n")
 
-	if err := publishProtoOutputs(context.Background(), staging, outs, true, filepath.Join(root, "buf.gen.yaml")); err != nil {
+	if err := publishProtoOutputs(staging, root, outs, true, filepath.Join(root, "buf.gen.yaml")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(outs[0], "gone_pb.ts")); !os.IsNotExist(err) {
@@ -402,7 +402,7 @@ func TestPublishProtoOutputsToleratesOneOutputWithNothingToEmit(t *testing.T) {
 	stageFile(t, staging, 0, "api_pb.ts", "export {};\n")
 	writeTestFile(t, filepath.Join(outs[1], "api.swagger.json"), "{}\n")
 
-	if err := publishProtoOutputs(context.Background(), staging, outs, false, filepath.Join(root, "buf.gen.yaml")); err != nil {
+	if err := publishProtoOutputs(staging, root, outs, false, filepath.Join(root, "buf.gen.yaml")); err != nil {
 		t.Fatalf("refused a template whose second plugin had nothing to emit: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(outs[1], "api.swagger.json")); err != nil {
@@ -433,7 +433,7 @@ func TestPublishProtoOutputsSurvivesACleanOfTheTreeThatWouldHaveHeldStaging(t *t
 	stageFile(t, staging, 0, "api_pb.ts", "export const api = 1;\n")
 	writeTestFile(t, filepath.Join(out, "gone_pb.ts"), "export {};\n")
 
-	if err := publishProtoOutputs(context.Background(), staging, []string{out}, true, "buf.gen.yaml"); err != nil {
+	if err := publishProtoOutputs(staging, out, []string{out}, true, "buf.gen.yaml"); err != nil {
 		t.Fatalf("clean of the output holding the mount root broke publication: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(out, "api_pb.ts")); err != nil {
@@ -458,7 +458,7 @@ func TestPublishProtoOutputsCleansEveryNestedOutputBeforePublishingAny(t *testin
 	writeTestFile(t, filepath.Join(parent, "gone_pb.ts"), "export {};\n")
 	writeTestFile(t, filepath.Join(nested, "gone_too_pb.ts"), "export {};\n")
 
-	if err := publishProtoOutputs(context.Background(), staging, []string{parent, nested}, true, "buf.gen.yaml"); err != nil {
+	if err := publishProtoOutputs(staging, filepath.Dir(parent), []string{parent, nested}, true, "buf.gen.yaml"); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	// Both outputs' files must be present: the nested clean must not have
@@ -525,7 +525,7 @@ func TestPublishProtoOutputsCannotFollowASymlinkOutOfTheOutput(t *testing.T) {
 	}
 	stageFile(t, staging, 0, "nested/value.ts", "overwritten")
 
-	err := publishProtoOutputs(context.Background(), staging, []string{out}, false, "buf.gen.yaml")
+	err := publishProtoOutputs(staging, out, []string{out}, false, "buf.gen.yaml")
 	if err == nil {
 		t.Fatal("published through a symlink leaving the declared output")
 	}
@@ -550,7 +550,7 @@ func TestPublishProtoOutputsFollowsASymlinkThatStaysInsideTheOutput(t *testing.T
 	}
 	stageFile(t, staging, 0, "nested/value.ts", "published")
 
-	if err := publishProtoOutputs(context.Background(), staging, []string{out}, false, "buf.gen.yaml"); err != nil {
+	if err := publishProtoOutputs(staging, out, []string{out}, false, "buf.gen.yaml"); err != nil {
 		t.Fatalf("refused a symlink that stays inside the output: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(out, "real", "value.ts"))
@@ -570,7 +570,7 @@ func TestPublishProtoOutputsCleanKeepsAStagingTreeInsideTheOutput(t *testing.T) 
 	stageFile(t, staging, 0, "api_pb.ts", "export const api = 1;\n")
 	writeTestFile(t, filepath.Join(out, "gone_pb.ts"), "export {};\n")
 
-	if err := publishProtoOutputs(context.Background(), staging, []string{out}, true, "buf.gen.yaml"); err != nil {
+	if err := publishProtoOutputs(staging, filepath.Dir(out), []string{out}, true, "buf.gen.yaml"); err != nil {
 		t.Fatalf("clean deleted the staged source it was about to publish: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(out, "api_pb.ts"))
@@ -587,11 +587,70 @@ func TestPublishProtoOutputsCleanKeepsAStagingTreeInsideTheOutput(t *testing.T) 
 func TestPublishProtoOutputsRefusesAnOutputThatIsTheStagingTree(t *testing.T) {
 	staging := t.TempDir()
 	stageFile(t, staging, 0, "api_pb.ts", "export {};\n")
-	if err := publishProtoOutputs(context.Background(), staging, []string{staging}, true, "buf.gen.yaml"); err == nil {
+	if err := publishProtoOutputs(staging, staging, []string{staging}, true, "buf.gen.yaml"); err == nil {
 		t.Fatal("accepted an output that is the staging tree itself")
 	}
 	if _, err := os.Stat(filepath.Join(protoStagingSlot(staging, 0), "api_pb.ts")); err != nil {
 		t.Fatalf("the refusal still destroyed the staged generation: %v", err)
+	}
+}
+
+// A lexical boundary check is bypassed by a symlinked component in the output's
+// own path: `out: <workspace>/link/gen` with `link` pointing outside reads as
+// inside the workspace, and then `clean: true` deletes the resolved target
+// before publication ever runs. The escape test therefore resolves both sides.
+func TestProtoMountRootRefusesAnOutputReachedThroughAnEscapingSymlink(t *testing.T) {
+	workspace, outside := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "gen"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspace, "link")); err != nil {
+		t.Fatal(err)
+	}
+	input := filepath.Join(workspace, "svc", "proto")
+	escaping := filepath.Join(workspace, "link", "gen")
+
+	_, _, err := protoMountRoot(input, input, input, []string{escaping}, workspace)
+	if err == nil {
+		t.Fatal("accepted an output that leaves the workspace through a symlink")
+	}
+	if !strings.Contains(err.Error(), "through a symlink") || !strings.Contains(err.Error(), outside) {
+		t.Fatalf("error does not explain the escape: %v", err)
+	}
+
+	// The same shape staying inside the workspace is fine, and an output buf
+	// has yet to create still resolves as far as it exists.
+	inside := filepath.Join(workspace, "real")
+	if err := os.MkdirAll(inside, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(inside, filepath.Join(workspace, "ok")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := protoMountRoot(input, input, input, []string{filepath.Join(workspace, "ok", "gen")}, workspace); err != nil {
+		t.Fatalf("refused an output reached through a symlink that stays inside: %v", err)
+	}
+}
+
+// Even handed an escaping output directly, publication must not act outside
+// the boundary: `clean: true` deletes before it writes, and a check alone
+// cannot survive a symlink swapped in after it.
+func TestPublishProtoOutputsCleanCannotDeleteThroughAnEscapingSymlink(t *testing.T) {
+	workspace, outside, staging := t.TempDir(), t.TempDir(), t.TempDir()
+	guarded := filepath.Join(outside, "gen", "value.ts")
+	writeTestFile(t, guarded, "preserve")
+	if err := os.Symlink(outside, filepath.Join(workspace, "link")); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(workspace, "link", "gen")
+	stageFile(t, staging, 0, "api_pb.ts", "export {};\n")
+
+	if err := publishProtoOutputs(staging, workspace, []string{out}, true, "buf.gen.yaml"); err == nil {
+		t.Fatal("cleaned an output that resolves outside the boundary")
+	}
+	got, err := os.ReadFile(guarded)
+	if err != nil || string(got) != "preserve" {
+		t.Fatalf("clean deleted a tree outside the boundary: %q, %v", got, err)
 	}
 }
 

@@ -2312,6 +2312,12 @@ declares, so a template whose outputs sit beside the proto directory
 regenerates on the host. An `out` that escapes the workspace owning `--proto`
 (outside a workspace: the directory `--proto`, `--output` and the template share)
 is refused, as is an absolute `out`, which names a path the companion cannot see.
+That escape test resolves symlinks on both sides: a lexical one is bypassed by a
+symlinked component in the output's own path — `out: ../link/gen` where `link`
+points outside the workspace reads as inside it — and everything anchored on
+that conclusion, publication and `clean: true` included, would then act outside
+the boundary the caller was promised. Only existing components can be symlinks,
+so an output buf has yet to create is resolved as far as it exists.
 
 **The output validation contract: generation is staged.** buf *syncs* an output
 tree rather than rewriting it — it compares the bytes it generated against what
@@ -2370,13 +2376,16 @@ answerable:
   `out: gen` publishes it to the path `out: gen/nested` owns, so cleaning each
   output just before copying it would delete what a sibling had already
   published.
-- **Publication cannot be redirected out of the declared output.** It writes
-  through an `os.Root` rooted at each `out`, so a directory in the published
-  tree that is a symlink leaving the output — `gen/nested` pointing somewhere
-  else entirely — is an error rather than a write to a path no `out` names. A
-  relative symlink that stays inside the output is still followed, and a
-  symlinked `out` itself is still honoured: that is the caller's own
-  declaration.
+- **Publication cannot be redirected out of the boundary.** Every host
+  mutation — the clean, the output directories, the files — goes through one
+  `os.Root` anchored at the boundary above, so a directory in the published
+  tree that is a symlink leaving it, or a symlinked component in an output's
+  own path, is an error rather than a write to a path no `out` names.
+  Resolving the outputs up front establishes that they are inside the
+  boundary; anchoring the writes there keeps it true, which a check alone
+  cannot — a symlink swapped in between the check and the write would escape
+  it, and `clean: true` deletes before it writes. A symlink that stays inside
+  the boundary is still followed: that is the tree's own business.
 
 The Go lane was never an exception to buf's sync; it only looked like one
 because `goimports` runs after generation and leaves a shape buf never emits,

@@ -61,11 +61,12 @@ The companion mounts the nearest directory holding --proto, --output, the
 template and every ` + "`out`" + ` the template declares, so outputs beside the proto
 directory (out: ../code/pkg/gen) are written on the host. An ` + "`out`" + ` that
 escapes the owning workspace (or, outside a workspace, the directory the named
-paths share) is refused. buf generates into a staging tree under that mount and
-the CLI publishes to each ` + "`out`" + ` itself, so what a run emitted is known
-independently of what the outputs already held: a generation that produced no
-file fails and leaves them untouched, and an unchanged regeneration publishes
-byte-identical content and succeeds.
+paths share) is refused, resolving symlinks so a symlinked component cannot
+smuggle an output past it. buf generates into a staging tree of its own, mounted
+separately, and the CLI publishes to each ` + "`out`" + ` itself — so what a run
+emitted is known independently of what the outputs already held: a generation
+that produced no file fails and leaves them untouched, and an unchanged
+regeneration publishes byte-identical content and succeeds.
 --local selects --output/buf.gen.local.yaml, not execution on the host.
 Go, gRPC, Connect, gateway, OpenAPI and TypeScript
 outputs, then goimports over every Go output the template declares. Nothing
@@ -147,7 +148,7 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	if err != nil {
 		return err
 	}
-	commonRoot, err := protoMountRoot(protoDir, outputDir, templateDir, outs, boundary)
+	commonRoot, boundary, err := protoMountRoot(protoDir, outputDir, templateDir, outs, boundary)
 	if err != nil {
 		return err
 	}
@@ -261,7 +262,7 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	if err != nil {
 		return w.Wrapf(err, "cannot generate proto code")
 	}
-	if err = publishProtoOutputs(ctx, staging, outs, clean, templatePath); err != nil {
+	if err = publishProtoOutputs(staging, boundary, outs, clean, templatePath); err != nil {
 		return err
 	}
 
@@ -277,27 +278,72 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	return nil
 }
 
-// protoMountRoot is the host directory mounted into the companion: the nearest
+// protoMountRoot is the host directory mounted into the companion — the nearest
 // common ancestor of the proto input, the --output directory, the template's
-// directory and every `out` the template declares. An `out` that resolves
-// outside boundary is refused rather than widening the mount past it.
-func protoMountRoot(protoDir, outputDir, templateDir string, outs []string, boundary string) (string, error) {
-	root := commonAncestor(commonAncestor(protoDir, outputDir), templateDir)
+// directory and every `out` the template declares — along with the effective
+// boundary no output may escape.
+//
+// The escape test is made on resolved paths. A lexical one is bypassed by a
+// symlinked component: `out: ../link/gen` where `link` points outside the
+// workspace reads as inside it, and then everything anchored on that
+// conclusion — publication, and `clean: true` deleting the output first — acts
+// outside the boundary the caller was promised. Only the components that exist
+// can be symlinks, so an output buf has yet to create is resolved as far as it
+// exists.
+func protoMountRoot(protoDir, outputDir, templateDir string, outs []string, boundary string) (root string, effective string, err error) {
+	root = commonAncestor(commonAncestor(protoDir, outputDir), templateDir)
 	scope := "the workspace " + boundary
 	if boundary == "" {
 		boundary = root
 		scope = boundary + ", the directory shared by --proto, --output and the template (no workspace owns " + protoDir + ")"
 	}
+	resolvedBoundary, err := resolveExistingPath(boundary)
+	if err != nil {
+		return "", "", fmt.Errorf("cannot resolve %s: %w", boundary, err)
+	}
 	for _, out := range outs {
-		if !pathWithin(boundary, out) {
-			return "", fmt.Errorf("generation output %s lies outside %s; every `out` in the template must stay under it", out, scope)
+		resolvedOut, err := resolveExistingPath(out)
+		if err != nil {
+			return "", "", fmt.Errorf("cannot resolve generation output %s: %w", out, err)
+		}
+		if !pathWithin(resolvedBoundary, resolvedOut) {
+			detail := ""
+			if resolvedOut != filepath.Clean(out) {
+				detail = fmt.Sprintf(" (it resolves to %s, through a symlink)", resolvedOut)
+			}
+			return "", "", fmt.Errorf("generation output %s lies outside %s%s; every `out` in the template must stay under it", out, scope, detail)
 		}
 		root = commonAncestor(root, out)
 	}
 	if root == "" || filepath.Dir(root) == root {
-		return "", fmt.Errorf("proto input, output and template must share a directory below the filesystem root")
+		return "", "", fmt.Errorf("proto input, output and template must share a directory below the filesystem root")
 	}
-	return root, nil
+	return root, boundary, nil
+}
+
+// resolveExistingPath returns p with every symlink along it resolved, keeping
+// the part that does not exist yet. buf creates output directories, so a
+// declared `out` need not exist — but only an existing component can be a
+// symlink, so resolving the longest existing ancestor is what decides whether
+// the path can leave a boundary.
+func resolveExistingPath(p string) (string, error) {
+	p = filepath.Clean(p)
+	remainder := ""
+	for {
+		resolved, err := filepath.EvalSymlinks(p)
+		if err == nil {
+			return filepath.Join(resolved, remainder), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return "", fmt.Errorf("no part of %s exists", p)
+		}
+		remainder = filepath.Join(filepath.Base(p), remainder)
+		p = parent
+	}
 }
 
 // protoMountBoundary is the directory no template output may escape: the
@@ -597,7 +643,7 @@ func protoStagedFiles(slot string) ([]string, error) {
 // A file whose bytes are already on disk is left untouched, mirroring buf's
 // own sync: an unchanged replay then changes no content and no modification
 // time, which is what a drift gate over a generated tree reads.
-func publishProtoOutputs(ctx context.Context, staging string, outs []string, clean bool, templatePath string) error {
+func publishProtoOutputs(staging, boundary string, outs []string, clean bool, templatePath string) error {
 	emitted := make([][]string, len(outs))
 	total := 0
 	for i, out := range outs {
@@ -617,9 +663,30 @@ func publishProtoOutputs(ctx context.Context, staging string, outs []string, cle
 	// cleaning one output after publishing another would delete files this run
 	// had already published. With no copy yet made, the order of the cleans
 	// cannot matter.
+	// Everything from here mutates the host, and all of it goes through one
+	// os.Root anchored at the boundary no output may escape. Resolving the
+	// outputs against that boundary up front (protoMountRoot) establishes that
+	// they are inside it; anchoring the writes there keeps it true, which a
+	// check alone cannot — a symlink swapped in between the check and the
+	// write would otherwise escape it, and `clean: true` deletes before it
+	// writes.
+	root, err := os.OpenRoot(boundary)
+	if err != nil {
+		return fmt.Errorf("cannot open the generation boundary %s: %w", boundary, err)
+	}
+	defer func() { _ = root.Close() }()
+	rels := make([]string, len(outs))
+	for i, out := range outs {
+		rel, err := filepath.Rel(boundary, out)
+		if err != nil || !pathWithin(boundary, out) {
+			return fmt.Errorf("generation output %s is not under the boundary %s", out, boundary)
+		}
+		rels[i] = rel
+	}
+
 	if clean {
-		for _, out := range outs {
-			if err := cleanProtoOutput(out, staging); err != nil {
+		for i, out := range outs {
+			if err := cleanProtoOutput(root, rels[i], out, staging); err != nil {
 				return err
 			}
 		}
@@ -628,11 +695,16 @@ func publishProtoOutputs(ctx context.Context, staging string, outs []string, cle
 		if len(emitted[i]) == 0 && !clean {
 			continue
 		}
-		if _, err := shared.CheckDirectoryOrCreate(ctx, out); err != nil {
-			return fmt.Errorf("cannot create generation output %s: %w", out, err)
+		// A generated source tree is read by the tooling of whoever owns it,
+		// so it keeps the usual directory mode rather than being narrowed.
+		if err := root.MkdirAll(rels[i], 0o755); err != nil { //nolint:gosec // G301: a generated source tree its own tooling must read
+			return fmt.Errorf("cannot create generation output %s (a path that leaves %s is refused): %w", out, boundary, err)
 		}
-		if err := publishProtoSlot(protoStagingSlot(staging, i), out, emitted[i]); err != nil {
-			return err
+		slot := protoStagingSlot(staging, i)
+		for _, rel := range emitted[i] {
+			if err := publishProtoFile(root, slot, out, rels[i], rel); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -646,75 +718,70 @@ func publishProtoOutputs(ctx context.Context, staging string, outs []string, cle
 // generation mount, and every `out` is under it — but publication deleting its
 // own evidence and then failing to read it is a trap worth closing in the
 // function rather than only in its caller.
-func cleanProtoOutput(out, staging string) error {
+func cleanProtoOutput(root *os.Root, rel, out, staging string) error {
 	if filepath.Clean(out) == filepath.Clean(staging) {
 		return fmt.Errorf("generation output %s is the staging tree itself; cleaning it would delete what was generated", out)
 	}
-	if !pathWithin(out, staging) {
-		if err := os.RemoveAll(out); err != nil {
-			return fmt.Errorf("cannot clean generation output %s: %w", out, err)
+	keep := ""
+	if pathWithin(out, staging) {
+		inside, err := filepath.Rel(out, staging)
+		if err != nil {
+			return fmt.Errorf("cannot locate the staging tree under generation output %s: %w", out, err)
+		}
+		keep = strings.Split(inside, string(filepath.Separator))[0]
+	}
+	// An output that is the boundary itself has no name to remove within the
+	// root, so it — like an output holding the staging tree — is emptied entry
+	// by entry instead. Either way what buf's clean leaves behind is an output
+	// holding only what this run emitted.
+	if keep == "" && rel != "." {
+		if err := root.RemoveAll(rel); err != nil {
+			return fmt.Errorf("cannot clean generation output %s (a path that leaves the boundary is refused): %w", out, err)
 		}
 		return nil
 	}
-	rel, err := filepath.Rel(out, staging)
+	dir, err := root.Open(rel)
 	if err != nil {
-		return fmt.Errorf("cannot locate the staging tree under generation output %s: %w", out, err)
-	}
-	keep := strings.Split(rel, string(filepath.Separator))[0]
-	entries, err := os.ReadDir(out)
-	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
+		return fmt.Errorf("cannot clean generation output %s: %w", out, err)
+	}
+	entries, err := dir.ReadDir(-1)
+	_ = dir.Close()
+	if err != nil {
 		return fmt.Errorf("cannot clean generation output %s: %w", out, err)
 	}
 	for _, entry := range entries {
 		if entry.Name() == keep {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(out, entry.Name())); err != nil {
+		if err := root.RemoveAll(path.Join(rel, entry.Name())); err != nil {
 			return fmt.Errorf("cannot clean generation output %s: %w", out, err)
 		}
 	}
 	return nil
 }
 
-// publishProtoSlot writes one output's generated files into it, through an
-// os.Root rooted at the output.
+// publishProtoFile writes one generated file — named by its path relative to
+// the staging slot — into the declared output, through the boundary root. A
+// destination that already holds those bytes is left alone, so an unchanged
+// replay changes neither content nor modification time.
 //
-// The root is what stops the output's own contents redirecting the write. A
-// directory in the published tree that is a symlink out of the output —
-// `gen/nested` pointing at somewhere else entirely — would otherwise have
-// publication overwrite a file the template never declared, on a host path
-// outside every `out`. os.Root resolves every name beneath the output and
-// refuses one that leaves it, absolute symlinks included, so the escape is an
-// error instead of a write. (A symlinked `out` itself is still honoured: that
-// is the caller's own declaration, and buf followed it too.)
-func publishProtoSlot(slot, out string, emitted []string) error {
-	output, err := os.OpenRoot(out)
-	if err != nil {
-		return fmt.Errorf("cannot open generation output %s: %w", out, err)
-	}
-	defer func() { _ = output.Close() }()
-	for _, rel := range emitted {
-		if err := publishProtoFile(output, slot, out, rel); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// publishProtoFile writes one generated file, named by its path relative to
-// the staging slot, into the declared output. A destination that already holds
-// those bytes is left alone, so an unchanged replay changes neither content
-// nor modification time.
+// The root is what stops anything on disk redirecting the write. A directory
+// in the published tree that is a symlink out of the boundary, or a symlinked
+// component in the output's own path, would otherwise have publication
+// overwrite a file no `out` names. os.Root resolves every name beneath the
+// boundary and refuses one that leaves it, absolute symlinks included, so an
+// escape is an error instead of a write. A symlink that stays inside the
+// boundary is still followed: that is the tree's own business.
 //
 // The staging side is re-checked too: rel comes from a walk of the slot, which
-// cannot ascend and skips everything that is not a regular file — filepath
-// .WalkDir does not descend into symlinked directories — but the whole point
-// of publishing from the host is that nothing the companion produced decides
-// where the host writes.
-func publishProtoFile(output *os.Root, slot, out, rel string) error {
+// cannot ascend and skips everything that is not a regular file — WalkDir does
+// not descend into symlinked directories — but the whole point of publishing
+// from the host is that nothing the companion produced decides where the host
+// writes.
+func publishProtoFile(root *os.Root, slot, out, outRel, rel string) error {
 	from := filepath.Join(slot, rel)
 	if !pathWithin(slot, from) {
 		return fmt.Errorf("generated file %q does not stay under the staging tree it was generated into", rel)
@@ -723,27 +790,25 @@ func publishProtoFile(output *os.Root, slot, out, rel string) error {
 	if err != nil {
 		return fmt.Errorf("cannot read generated file %s: %w", from, err)
 	}
-	published, readErr := output.ReadFile(rel)
+	to := path.Join(outRel, filepath.ToSlash(rel))
+	published, readErr := root.ReadFile(to)
 	if readErr == nil && bytes.Equal(published, generated) {
 		return nil
 	}
 	if readErr != nil && !errors.Is(readErr, fs.ErrNotExist) {
-		return fmt.Errorf("cannot publish %s into %s (a path in the output that leaves it, such as a symlink pointing elsewhere, is refused rather than followed): %w", rel, out, readErr)
+		return fmt.Errorf("cannot publish %s into %s (a path that leaves the boundary, such as a symlink pointing outside it, is refused rather than followed): %w", rel, out, readErr)
 	}
 	info, err := os.Stat(from)
 	if err != nil {
 		return fmt.Errorf("cannot inspect generated file %s: %w", from, err)
 	}
-	if dir := filepath.Dir(rel); dir != "." {
-		// A generated source tree is read by the tooling of whoever owns it,
-		// so it keeps the mode the generator gave it rather than being
-		// narrowed here.
-		if err := output.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: a generated source tree its own tooling must read
-			return fmt.Errorf("cannot create %s inside %s (a path that leaves the output is refused): %w", dir, out, err)
+	if dir := path.Dir(to); dir != "." {
+		if err := root.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: a generated source tree its own tooling must read
+			return fmt.Errorf("cannot create %s inside %s (a path that leaves the boundary is refused): %w", dir, out, err)
 		}
 	}
-	if err := output.WriteFile(rel, generated, info.Mode().Perm()); err != nil {
-		return fmt.Errorf("cannot publish %s into %s (a path that leaves the output is refused): %w", rel, out, err)
+	if err := root.WriteFile(to, generated, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("cannot publish %s into %s (a path that leaves the boundary is refused): %w", rel, out, err)
 	}
 	return nil
 }
