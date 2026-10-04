@@ -30,7 +30,8 @@ func CheckDockerCompose(ctx context.Context, dir string) (*Recommendation, error
 	}
 
 	// Print parsed services
-	for _, service := range config.Services {
+	for index := range config.Services {
+		service := &config.Services[index]
 		fmt.Println("Name Name:", service.Name)
 		fmt.Println("Image:", service.Image)
 		// ... and so on for other service properties

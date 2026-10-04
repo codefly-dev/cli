@@ -1,8 +1,8 @@
 package imports
 
-func Clone(repo string, destination string) error {
+func Clone(_ string, _ string) error {
 	// Clone the repository
-	//_, err := git.PlainClone(destination, false, &git.CloneOptions{
+	// _, err := git.PlainClone(destination, false, &git.CloneOptions{
 	//	URL:      repo,
 	//	Progress: os.Stdout,
 	//	// If the repo is private, you can set authentication like this:
@@ -10,9 +10,9 @@ func Clone(repo string, destination string) error {
 	//	// 	Username: "your-username", // this can be anything except an empty string
 	//	// 	Password: "your-personal-access-token",
 	//	// },
-	//})
-	//if err != nil {
+	// })
+	// if err != nil {
 	//	return err
-	//}
+	// }
 	return nil
 }
