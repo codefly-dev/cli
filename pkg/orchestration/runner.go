@@ -1881,7 +1881,7 @@ func appendEnvironmentVariablesToFile(
 // exact name match, and resolve only to the endpoint that was judged.
 func (world *World) withExactNamePrecedence(
 	ctx context.Context, consumer *resources.Service, effective []string,
-	withheld withheldCredentials, mappings []*basev0.NetworkMapping,
+	withheld withheldCredentials, access *basev0.NetworkAccess, mappings []*basev0.NetworkMapping,
 ) ([]*basev0.NetworkMapping, error) {
 	if world == nil || world.ConfigurationManager == nil || len(mappings) == 0 || len(effective) == 0 {
 		return mappings, nil
@@ -1901,11 +1901,7 @@ func (world *World) withExactNamePrecedence(
 
 	// Every reference this consumer receives, parsed once, with whether it has
 	// an exact-name answer among the endpoints it may reach.
-	type reference struct {
-		info      *resources.EndpointInformation
-		exactName bool
-	}
-	var references []reference
+	var references []referenceIntent
 	for _, raw := range world.ConfigurationManager.WorkspaceEndpointReferences(effective...) {
 		if skip[raw] {
 			continue
@@ -1918,7 +1914,7 @@ func (world *World) withExactNamePrecedence(
 		if matchErr != nil {
 			return nil, matchErr
 		}
-		references = append(references, reference{info: info, exactName: exact})
+		references = append(references, referenceIntent{info: info, exactName: exact})
 	}
 	if len(references) == 0 {
 		return mappings, nil
@@ -1969,5 +1965,214 @@ func (world *World) withExactNamePrecedence(
 		}
 		out = append(out, mapping)
 	}
+	// Removal is per MAPPING; core's selection is per REFERENCE against the
+	// whole retained list. Two references into one producer therefore defeat
+	// removal on its own: with `admin` (api grpc) and `grpc` (api grpc), a
+	// reference naming `grpc` and another naming `admin` each keep their own
+	// endpoint, and core then resolves the first reference against both — first
+	// match wins, so `admin` can answer it. (Layer-4 round-eight R8-1.)
+	return orderedForEachReference(ctx, consumer, references, producers, access, out)
+}
+
+// referenceIntent is one ${endpoint:…} this consumer receives, parsed, with
+// whether the endpoint it names exactly is one this consumer may reach.
+type referenceIntent struct {
+	info      *resources.EndpointInformation
+	exactName bool
+}
+
+// retained is a mapping that survived filtering, beside the manifest endpoint it
+// stands for — the identity every selection question is asked about.
+type retained struct {
+	mapping  *basev0.NetworkMapping
+	endpoint *resources.Endpoint
+}
+
+// orderedForEachReference makes the one shared mapping list answer every
+// reference with the endpoint that reference names, or refuses because no list
+// can.
+//
+// Core reads one mapping list per configuration and scans it per reference,
+// taking the first endpoint that matches and has an instance for the consumer's
+// access. So the list has to satisfy every reference at once, and two things can
+// stop it:
+//
+//   - ORDER. A reference naming `grpc` also matches `admin` by API, so `grpc`
+//     must come first; the reference naming `admin` matches only `admin`, so one
+//     order serves both. Where the constraints form a cycle — endpoints
+//     (name `grpc`, api `rest`) and (name `rest`, api `grpc`), referenced by
+//     both names — no order serves both, and that is refused.
+//   - ACCESS. Core does not stop at a match without an instance for the
+//     consumer's access: it falls through to the next match. So if a reference's
+//     exactly named endpoint has no instance for this access while another
+//     endpoint it matches does, ordering cannot save it either, and that is
+//     refused too.
+//
+// Refusing is the honest end of both: the alternative is a value addressing an
+// endpoint its reference did not name, with no error anywhere. A second
+// interpolator in the CLI — resolving each reference against its own list — is
+// the thing not to build; selection and interpolation are core's, and the
+// durable fix is core preferring the exact name per reference. Named in the PR
+// body.
+func orderedForEachReference(
+	ctx context.Context, consumer *resources.Service, references []referenceIntent,
+	producers configurations.ProducerLookup, access *basev0.NetworkAccess, mappings []*basev0.NetworkMapping,
+) ([]*basev0.NetworkMapping, error) {
+	byProducer := map[string][]retained{}
+	var order []string
+	for _, mapping := range mappings {
+		endpoint := mapping.GetEndpoint()
+		if endpoint == nil {
+			continue
+		}
+		unique := endpoint.GetModule() + "/" + endpoint.GetService()
+		declared, ok := manifestEndpoint(producers, unique, endpoint)
+		if !ok {
+			declared = &resources.Endpoint{Name: endpoint.GetName(), API: endpoint.GetApi()}
+		}
+		if _, seen := byProducer[unique]; !seen {
+			order = append(order, unique)
+		}
+		byProducer[unique] = append(byProducer[unique], retained{mapping: mapping, endpoint: declared})
+	}
+
+	out := make([]*basev0.NetworkMapping, 0, len(mappings))
+	for _, unique := range order {
+		group := byProducer[unique]
+		// The ordering constraints this producer's references impose, and the
+		// access fall-through each of them would suffer.
+		before := make(map[string]map[string]bool, len(group))
+		for _, ref := range references {
+			if !ref.exactName || ref.info.Module+"/"+ref.info.Service != unique {
+				continue
+			}
+			var named *retained
+			var others []string
+			for i := range group {
+				if !resources.EndpointMatchesReferenceInfo(group[i].endpoint, ref.info) {
+					continue
+				}
+				if group[i].endpoint.Name == ref.info.Name {
+					named = &group[i]
+					continue
+				}
+				others = append(others, group[i].endpoint.Name)
+			}
+			if named == nil || len(others) == 0 {
+				continue
+			}
+			if !mappingServesAccess(named.mapping, access) {
+				return nil, fmt.Errorf("the workspace configuration reference ${endpoint:%s} names %s's endpoint %q, which has no address for %s's network access, while %s also satisfies that reference: resolving it would hand over an endpoint the reference did not name, so it is refused. Give %q an address for this access, or reference the endpoint you mean",
+					referenceText(ref.info), unique, ref.info.Name, consumerLabel(consumer),
+					strings.Join(others, ", "), ref.info.Name)
+			}
+			if before[named.endpoint.Name] == nil {
+				before[named.endpoint.Name] = map[string]bool{}
+			}
+			for _, other := range others {
+				before[named.endpoint.Name][other] = true
+			}
+		}
+		names := make([]string, 0, len(group))
+		for _, item := range group {
+			names = append(names, item.endpoint.Name)
+		}
+		sorted, err := endpointsInConstraintOrder(names, before)
+		if err != nil {
+			return nil, fmt.Errorf("the workspace configuration references into %s cannot all be answered from one set of network mappings for %s: %w. Reference the endpoints you mean by name, so no reference depends on the order another one needs",
+				unique, consumerLabel(consumer), err)
+		}
+		at := make(map[string]int, len(sorted))
+		for i, name := range sorted {
+			at[name] = i
+		}
+		ordered := slices.Clone(group)
+		slices.SortStableFunc(ordered, func(a, b retained) int {
+			return at[a.endpoint.Name] - at[b.endpoint.Name]
+		})
+		for _, item := range ordered {
+			out = append(out, item.mapping)
+		}
+	}
+	wool.Get(ctx).In("World.orderedForEachReference").Debug("every reference can be answered by the endpoint it names")
 	return out, nil
+}
+
+// mappingServesAccess reports whether a mapping has an address for one network
+// access — the question core asks before it accepts a match.
+func mappingServesAccess(mapping *basev0.NetworkMapping, access *basev0.NetworkAccess) bool {
+	for _, instance := range mapping.GetInstances() {
+		if instance.GetAccess().GetKind() == access.GetKind() && instance.GetAddress() != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// endpointsInConstraintOrder returns names in an order satisfying every
+// "before" constraint, or says which pair makes that impossible.
+func endpointsInConstraintOrder(names []string, before map[string]map[string]bool) ([]string, error) {
+	indegree := make(map[string]int, len(names))
+	for _, name := range names {
+		indegree[name] += 0
+	}
+	for from, tos := range before {
+		for to := range tos {
+			if _, known := indegree[to]; !known {
+				continue
+			}
+			if _, known := indegree[from]; !known {
+				continue
+			}
+			indegree[to]++
+		}
+	}
+	queue := make([]string, 0, len(names))
+	for _, name := range names {
+		if indegree[name] == 0 {
+			queue = append(queue, name)
+		}
+	}
+	slices.Sort(queue)
+	out := make([]string, 0, len(names))
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+		out = append(out, name)
+		next := make([]string, 0, len(before[name]))
+		for to := range before[name] {
+			if _, known := indegree[to]; !known {
+				continue
+			}
+			indegree[to]--
+			if indegree[to] == 0 {
+				next = append(next, to)
+			}
+		}
+		slices.Sort(next)
+		queue = append(queue, next...)
+	}
+	if len(out) != len(names) {
+		var stuck []string
+		for _, name := range names {
+			if !slices.Contains(out, name) {
+				stuck = append(stuck, name)
+			}
+		}
+		slices.Sort(stuck)
+		return nil, fmt.Errorf("%s each have to be found before the other", strings.Join(stuck, " and "))
+	}
+	return out, nil
+}
+
+// referenceText renders a parsed reference the way it was written.
+func referenceText(info *resources.EndpointInformation) string {
+	out := info.Module + "/" + info.Service
+	if info.Name != "" {
+		out += "/" + info.Name
+	}
+	if info.API != "" {
+		out += "::" + info.API
+	}
+	return out
 }

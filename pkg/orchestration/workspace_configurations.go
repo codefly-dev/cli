@@ -119,7 +119,7 @@ func (world *World) workspaceConfigurationsFor(
 	// API; without this the resolution could still bind the sibling, so the
 	// value would silently address the wrong endpoint — the exemption would have
 	// traded a refusal of clear compositions for a quiet mis-resolution.
-	mappings, err = world.withExactNamePrecedence(ctx, service, effective, withheld, mappings)
+	mappings, err = world.withExactNamePrecedence(ctx, service, effective, withheld, access, mappings)
 	if err != nil {
 		return nil, err
 	}
@@ -547,18 +547,22 @@ func (world *World) checkEffectiveWorkspaceConfigurationReferences(
 //
 // An EXACT NAME match wins, and that exemption is not a softening — without it
 // the rule refuses ordinary compositions. A producer with `grpc` (api grpc) and
-// `grpc-admin` (api grpc) makes `${endpoint:…/grpc}` match both, because core's
+// `admin` (api grpc) makes `${endpoint:…/grpc}` match both, because core's
 // matcher is `Name == token || API == token` and naming the api explicitly does
 // not narrow the name branch. The reference says exactly which endpoint it
 // means, so refusing it would make a perfectly clear composition unresolvable.
 // What stays refused is ambiguity among API-token matches, where nothing in the
 // reference picks one.
 //
-// The residual, stated because it is not closed here: core's resolution does not
-// prefer the exact name either — it takes the first bound mapping that matches —
-// so in the `grpc`/`grpc-admin` shape the address can still come from the
-// sibling. That is core's endpoint-identity gap, drafted as a follow-up, and it
-// is the reason this exemption is the owner's call rather than mine.
+// Core's resolution does not prefer the exact name either — it takes the first
+// bound mapping that matches and has an instance for the consumer's access — so
+// the exemption is only safe because the CLI makes the bound list answer each
+// reference with the endpoint it names: wrong answers removed where a reference
+// is alone (World.exportableTo's caller), ordered where two references into one
+// producer each need their own, and REFUSED where no single list can serve both
+// (orderedForEachReference). That is core's endpoint-identity gap, drafted as a
+// follow-up; until it is closed the CLI carries the selection, which is why the
+// exemption was the owner's call rather than mine.
 //
 // It judges the consumer's EFFECTIVE groups and nothing else. The information
 // blocks handed in are everything the loader loaded, which includes groups this

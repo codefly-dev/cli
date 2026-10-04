@@ -392,6 +392,13 @@ fine: `${endpoint:…/grpc}` means `grpc`. What is refused is a token that names
 endpoint and matches two, such as `${endpoint:…/rest}` against endpoints `api`
 and `admin` that both expose `rest`.
 
+Two references into the same producer each resolve to the endpoint they name.
+Where that is impossible you get an error rather than the wrong address: if the
+endpoint you named has no address for your runtime context while a sibling
+sharing its API does, or if two references would need the producer's endpoints
+found in opposite orders (each endpoint's name being the other's API), the
+reference is refused and the message names what to change.
+
 **One case is not yet right, and it is worth knowing before you hit it:** if you
 name an endpoint your module may **not** reach while a sibling sharing its API is
 visible to you, the value resolves to the sibling instead of telling you the

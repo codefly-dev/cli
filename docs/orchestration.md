@@ -387,7 +387,7 @@ Two further rules make the choice disappear rather than constrain it:
   cross-module consumer has exactly one legal endpoint and the reference is
   unambiguous for it, while a consumer in the producer's own module is told to
   name the one it means. **An endpoint named exactly as the reference wins**, so
-  a producer declaring `grpc` (api grpc) and `grpc-admin` (api grpc) does not
+  a producer declaring `grpc` (api grpc) and `admin` (api grpc) does not
   make `${endpoint:…/grpc}` unresolvable — core's matcher is
   `Name == token || API == token`, and naming the api explicitly does not narrow
   the name branch. That exemption comes with **precedence**, not only tolerance:
@@ -395,6 +395,15 @@ Two further rules make the choice disappear rather than constrain it:
   siblings that merely share its API, so the value cannot silently address one of
   them — by ordering, or because the named endpoint has no instance for this
   consumer's access and core's interpolation would otherwise fall through.
+  **Two references into one producer** are handled by ORDER rather than removal,
+  because each one's exact answer is the other's wrong answer and neither can be
+  dropped: the list is arranged so every reference meets the endpoint it names
+  first. Two cases no list can serve are **refused** instead of guessed — a
+  reference whose named endpoint has no address for this consumer's access while
+  a sibling it also matches does (core falls through rather than stopping), and
+  references whose orders contradict each other, which endpoints
+  (name `grpc`, api `rest`) and (name `rest`, api `grpc`) produce when both are
+  referenced by name.
   Refused references arrive as core's own structured findings, so they carry a
   consumer, a group, a key and a reason rather than one opaque message. They are
   reported **after** the other reference faults rather than merged with them:
