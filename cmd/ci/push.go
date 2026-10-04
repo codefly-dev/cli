@@ -18,7 +18,7 @@ var PushCmd = &cobra.Command{
 	Use:   "push",
 	Short: "Publish workspace state to the Codefly platform in CI",
 	Args:  cobra.NoArgs,
-	RunE: func(_ *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 

@@ -11,7 +11,7 @@ var WorkspaceCmd = &cobra.Command{
 	Use:    "workspaces",
 	Short:  "List Codefly workspaces available from the current context",
 	Hidden: true, // not implemented yet
-	RunE: func(_ *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		// Previously a no-op that exited 0, pretending to succeed.
 		return errors.New("`codefly list workspaces` is not implemented yet")
 	},
