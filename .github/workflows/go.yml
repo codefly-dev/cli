@@ -198,15 +198,14 @@ jobs:
         if: matrix.gate == 'control-integration'
         run: go test -tags=integration -run '^TestAnInterruptedGenerateLeavesARecoverableContainer$' ./cmd/generate -v
 
-      # `generate proto` accepts an unchanged replay because the companion's
-      # `out` is provably the host's directory, not because a file was
-      # rewritten — buf syncs an output tree rather than rewriting it (#885).
-      # That the deletion the check relies on really crosses the bind mount is
-      # only true of a real daemon, so the mount contract is qualified here.
-      # Shares the alpine image pulled above.
-      - name: Qualify the generate-proto output mounts against a real bind mount
+      # `generate proto` stages generation and publishes from the staged tree,
+      # so what a run emitted is known independently of what its outputs
+      # already held (#885). That rests on the companion and the host sharing
+      # one staging directory, which only a real daemon can prove. Shares the
+      # alpine image pulled above.
+      - name: Qualify the generate-proto staging mount against a real bind mount
         if: matrix.gate == 'control-integration'
-        run: go test -tags=integration -run '^TestProtoOutputMountsAreQualifiedAgainstARealBindMount$' ./cmd/generate -v
+        run: go test -tags=integration -run '^TestProtoStagingMountIsQualifiedAgainstARealBindMount$' ./cmd/generate -v
 
       - name: Verify source attachment across the generic protocol
         if: matrix.gate == 'control-integration'

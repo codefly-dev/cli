@@ -1,6 +1,7 @@
 package generate
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +27,10 @@ import (
 
 // protoContainerRoot is where the companion sees the mounted host tree.
 const protoContainerRoot = "/workspace"
+
+// protoStagedTemplateName is the derived template the companion generates
+// through; see protoStagingTemplate.
+const protoStagedTemplateName = "buf.gen.staged.yaml"
 
 var protoDir string
 var outputDir string
@@ -44,10 +50,11 @@ The companion mounts the nearest directory holding --proto, --output, the
 template and every ` + "`out`" + ` the template declares, so outputs beside the proto
 directory (out: ../code/pkg/gen) are written on the host. An ` + "`out`" + ` that
 escapes the owning workspace (or, outside a workspace, the directory the named
-paths share) is refused. Before generating, each declared ` + "`out`" + ` is proved to
-be the host directory it names, writable from inside the companion; afterwards,
-the declared outputs must hold generated files. An unchanged regeneration
-writes nothing and succeeds — buf syncs an output tree rather than rewriting it.
+paths share) is refused. buf generates into a staging tree under that mount and
+the CLI publishes to each ` + "`out`" + ` itself, so what a run emitted is known
+independently of what the outputs already held: a generation that produced no
+file fails and leaves them untouched, and an unchanged regeneration publishes
+byte-identical content and succeeds.
 --local selects --output/buf.gen.local.yaml, not execution on the host.
 Go, gRPC, Connect, gateway, OpenAPI and TypeScript
 outputs, then goimports over every Go output the template declares. Nothing
@@ -143,6 +150,32 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	// Create a unique container name
 	name := fmt.Sprintf("proto-gen-%d", time.Now().UnixMilli())
 
+	// buf generates into a staging tree and the CLI publishes from it, so what
+	// this run emitted is knowable independently of what the outputs already
+	// held. Staging lives under the mount — that is the only way both sides
+	// see it — and is this run's alone.
+	clean, err := protoTemplateClean(templatePath)
+	if err != nil {
+		return err
+	}
+	staging := filepath.Join(commonRoot, protoStagingDir(name))
+	containerStaging := path.Join(protoContainerRoot, protoStagingDir(name))
+	if err = os.MkdirAll(staging, 0o750); err != nil {
+		return w.Wrapf(err, "cannot create the generation staging directory %s", staging)
+	}
+	defer func() {
+		if removeErr := os.RemoveAll(staging); removeErr != nil {
+			result = errors.Join(result, w.Wrapf(removeErr, "cannot remove the generation staging directory %s", staging))
+		}
+	}()
+	stagedTemplate, err := protoStagingTemplate(templatePath, outs, containerStaging)
+	if err != nil {
+		return err
+	}
+	if err = os.WriteFile(filepath.Join(staging, protoStagedTemplateName), stagedTemplate, 0o600); err != nil {
+		return w.Wrapf(err, "cannot write the staged generation template")
+	}
+
 	projectContainerRecovery(ctx)
 
 	// Create Docker runner
@@ -179,11 +212,10 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 		return w.Wrapf(err, "cannot init runner")
 	}
 
-	// Prove the companion writes the host's output tree before anything runs
-	// in it. buf's output sync makes a generation that landed inside the
-	// container indistinguishable, afterwards, from one that had nothing to
-	// rewrite — so the mount is checked directly, and up front.
-	if err = verifyProtoOutputMounts(ctx, protoRunnerCommand(runner), outs, commonRoot, protoContainerRoot, protoOutputProbe(name)); err != nil {
+	// Prove the companion's staging directory is the host's before anything
+	// runs in it, so a mount that never reaches the host is reported as that
+	// rather than as a generator that produced nothing.
+	if err = verifyProtoStagingMount(ctx, protoRunnerCommand(runner), staging, containerStaging, "."+name+"-probe"); err != nil {
 		return err
 	}
 
@@ -201,11 +233,11 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 
 	w.Info("Generating proto code...")
 
-	// The input and path filters are absolute because a custom template may
-	// live outside the proto directory.
+	// The input, template and path filters are absolute: a custom template may
+	// live outside the proto directory, and the staged template always does.
 	pathArgs := protoGenerationPathArgs(containerProto, true)
 	args := make([]string, 0, 4+len(pathArgs))
-	args = append(args, "generate", containerProto, "--template", filepath.Base(templatePath))
+	args = append(args, "generate", containerProto, "--template", path.Join(containerStaging, protoStagedTemplateName))
 	args = append(args, pathArgs...)
 	proc, err = runner.NewProcess("buf", args...)
 	if err != nil {
@@ -215,7 +247,7 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	if err != nil {
 		return w.Wrapf(err, "cannot generate proto code")
 	}
-	if err = requireProtoOutputsPopulated(outs, templatePath); err != nil {
+	if err = publishProtoOutputs(ctx, staging, outs, clean, templatePath); err != nil {
 		return err
 	}
 
@@ -311,15 +343,15 @@ func pathWithin(root, p string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// protoProcessRunner is what output validation needs from the companion: the
-// ability to start a process in it. The Docker environment the command drives
-// satisfies it.
+// protoProcessRunner is what staging needs from the companion: the ability to
+// start a process in it. The Docker environment the command drives satisfies
+// it.
 type protoProcessRunner interface {
 	NewProcess(bin string, args ...string) (base.Proc, error)
 }
 
 // protoCommand runs one command inside the companion and reports whether it
-// exited clean. Validation needs nothing else from the companion, so it takes
+// exited clean. Staging needs nothing else from the companion, so it takes
 // this rather than a runner: the mount contract is then exercised by a
 // closure, and only the one adapter below depends on base.Proc.
 type protoCommand func(ctx context.Context, bin string, args ...string) error
@@ -334,128 +366,275 @@ func protoRunnerCommand(runner protoProcessRunner) protoCommand {
 	}
 }
 
-// protoOutputProbe names the file a run uses to prove its output mounts. The
-// container name makes it unique to the run, so a probe some killed run left
-// behind can never stand in for this one's.
-func protoOutputProbe(run string) string {
-	return ".codefly-mount-probe-" + run
+// Generation is staged, and the CLI — not buf — writes the declared outputs.
+//
+// buf syncs an output tree rather than rewriting it: it compares the bytes it
+// generated against what is already under each `out` and writes only the files
+// that are new or different. With `clean: true` it additionally prunes what it
+// no longer generates, and still leaves byte-identical files untouched. So
+// nothing observable about the output tree after a run distinguishes "the
+// generator emitted exactly what was already there" from "the generator
+// emitted nothing" or "the generation never reached the host" — and a file
+// that was already on disk cannot be evidence that this run produced it.
+//
+// So buf generates into a staging tree instead, through a derived template
+// that redirects every `out` into it, and the CLI publishes from there. The
+// staged tree is what this run actually emitted, which makes the two questions
+// the command has to answer separately answerable: an empty staging tree is a
+// generation that produced nothing, and a tree that matches the declared
+// output is an unchanged replay, which publishes byte-identically and
+// succeeds (#885). Writing the consumer's tree from the host also removes the
+// failure #836 was about — buf can no longer write an output the host cannot
+// see, because buf no longer writes the output at all.
+//
+// buf's own `--output` cannot do this: it is prepended to each `out`, so an
+// `out` reaching out of the template's directory (`../code/pkg/gen`, the
+// go-grpc layout) resolves straight back out of the staging directory.
+// Measured against companion 0.0.16: `-o /stage` with `out: ../sibling/gen`
+// writes `/sibling/gen`, exactly where it writes without the flag. An
+// absolute `out` lands where it says, and that is what the derived template
+// carries.
+func protoStagingDir(run string) string {
+	return "." + run + "-staging"
 }
 
-// verifyProtoOutputMounts proves that every output the template declares is
-// the host directory the CLI resolved, and that what the companion writes
-// there reaches the host.
+func protoStagingSlot(staging string, out int) string {
+	return filepath.Join(staging, strconv.Itoa(out))
+}
+
+// protoStagingTemplate is the caller's template with every `out` redirected
+// into the companion's view of the staging tree, and nothing else changed: the
+// plugins, their options, the managed-mode block and the version are the
+// caller's, so what runs is the generation they declared.
 //
-// This, and not an observed write, is what the command can actually check.
-// buf syncs an output tree rather than rewriting it: it compares the bytes it
-// generated against what is already under each `out` and writes only the
-// files that are new or different — with `clean: true` it additionally deletes
-// the files it no longer generates, and still leaves identical ones untouched.
-// So an unchanged regeneration legitimately touches nothing (#885), and "did
-// any file get written?" cannot separate that from a generation the host never
-// received. Whether the companion's `out` is the host's directory *can* be
-// answered directly, and it is the question #836 was really about: the host
-// drops a uniquely named probe in each declared output, the companion deletes
-// it, and the host checks every one is gone. An `out` the companion resolves
-// inside its own filesystem, one outside the mount, and a mount the companion
-// cannot write through all fail here — before any generation runs, so a
-// template that cannot deliver its outputs never half-writes a tree.
-//
-// hostRoot is the host directory the companion mounts at containerRoot.
-func verifyProtoOutputMounts(ctx context.Context, companion protoCommand, outs []string, hostRoot, containerRoot, probe string) (result error) {
-	if len(outs) == 0 {
+// The slot an `out` is redirected to is its index in outs, so plugins sharing
+// an output (protoc-gen-go, -go-grpc, -grpc-gateway and -connect-go all write
+// the go-grpc layout's `../code/pkg/gen`) still generate into one directory,
+// and one output's files are published to one place.
+func protoStagingTemplate(templatePath string, outs []string, containerStaging string) ([]byte, error) {
+	contents, err := os.ReadFile(templatePath)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read generation template %s: %w", templatePath, err)
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(contents, &document); err != nil {
+		return nil, fmt.Errorf("cannot parse generation template %s: %w", templatePath, err)
+	}
+	slots := make(map[string]string, len(outs))
+	for i, out := range outs {
+		slots[out] = path.Join(containerStaging, strconv.Itoa(i))
+	}
+	root := &document
+	if root.Kind == yaml.DocumentNode && len(root.Content) == 1 {
+		root = root.Content[0]
+	}
+	plugins := protoYAMLField(root, "plugins")
+	if plugins == nil || plugins.Kind != yaml.SequenceNode {
+		return nil, fmt.Errorf("generation template %s declares no plugins", templatePath)
+	}
+	templateDir := filepath.Dir(templatePath)
+	staged := 0
+	for _, plugin := range plugins.Content {
+		out := protoYAMLField(plugin, "out")
+		if out == nil || strings.TrimSpace(out.Value) == "" {
+			continue
+		}
+		slot, ok := slots[filepath.Join(templateDir, strings.TrimSpace(out.Value))]
+		if !ok {
+			return nil, fmt.Errorf("generation output %q in %s is not one of the outputs the template declares", out.Value, templatePath)
+		}
+		out.Kind, out.Tag, out.Style, out.Value = yaml.ScalarNode, "!!str", 0, slot
+		staged++
+	}
+	if staged == 0 {
+		return nil, fmt.Errorf("no plugin in %s declares an `out` to generate into", templatePath)
+	}
+	return yaml.Marshal(&document)
+}
+
+// protoYAMLField returns the value node of key in a mapping, whose Content
+// alternates key and value.
+func protoYAMLField(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
 		return nil
 	}
-	// Installed before the first probe is written: a failure partway through
-	// the loop below must not leave one behind either. A probe must not
-	// outlive the check — a stray file under a generated output is exactly
-	// what a consumer's drift gate reports.
-	defer func() { result = errors.Join(result, removeProtoOutputProbes(outs, probe)) }()
-
-	containerProbes := make([]string, 0, len(outs))
-	for _, out := range outs {
-		if !pathWithin(hostRoot, out) {
-			return fmt.Errorf("generation output %s lies outside the companion mount %s; every `out` in the template must stay under it", out, hostRoot)
-		}
-		rel, err := filepath.Rel(hostRoot, out)
-		if err != nil {
-			return fmt.Errorf("cannot locate generation output %s under the companion mount %s: %w", out, hostRoot, err)
-		}
-		// The host owns the probe, so clearing it never depends on the user
-		// the companion runs as, and the output directory a first generation
-		// needs is created here — host-owned, and with the same mode the
-		// command already gives --output — rather than by the container.
-		if _, err := shared.CheckDirectoryOrCreate(ctx, out); err != nil {
-			return fmt.Errorf("cannot create generation output %s: %w", out, err)
-		}
-		if err := os.WriteFile(filepath.Join(out, probe), nil, 0o600); err != nil {
-			return fmt.Errorf("cannot write the mount probe in generation output %s: %w", out, err)
-		}
-		containerProbes = append(containerProbes, path.Join(containerRoot, filepath.ToSlash(rel), probe))
-	}
-	if err := companion(ctx, "rm", append([]string{"--"}, containerProbes...)...); err != nil {
-		return fmt.Errorf("the companion cannot reach every output the template declares (%s) through the mount of %s, so buf would write them inside the container and the host would keep whatever tree it already has: %w", strings.Join(outs, ", "), hostRoot, err)
-	}
-	for i, out := range outs {
-		_, err := os.Lstat(filepath.Join(out, probe))
-		if err == nil {
-			return fmt.Errorf("the companion's %s is not the host's %s: what it writes there never reaches the host, so generation would be discarded", containerProbes[i], out)
-		}
-		if !os.IsNotExist(err) {
-			return fmt.Errorf("cannot check the generation output mount for %s: %w", out, err)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
 		}
 	}
 	return nil
 }
 
-// removeProtoOutputProbes clears this run's probe from every declared output,
-// whatever the check did. A probe the companion already deleted is gone.
-func removeProtoOutputProbes(outs []string, probe string) error {
-	var errs []error
-	for _, out := range outs {
-		if err := os.Remove(filepath.Join(out, probe)); err != nil && !os.IsNotExist(err) {
-			errs = append(errs, fmt.Errorf("cannot remove the mount probe from %s: %w", out, err))
-		}
+// protoTemplateClean reports the template's document-level `clean`, which asks
+// buf to delete each `out` before generating. Staging moves that decision to
+// publication: buf would only ever clean the staging tree, so the CLI applies
+// it to the declared output instead.
+func protoTemplateClean(templatePath string) (bool, error) {
+	contents, err := os.ReadFile(templatePath)
+	if err != nil {
+		return false, fmt.Errorf("cannot read generation template %s: %w", templatePath, err)
 	}
-	return errors.Join(errs...)
+	var document struct {
+		Clean bool `yaml:"clean"`
+	}
+	if err := yaml.Unmarshal(contents, &document); err != nil {
+		return false, fmt.Errorf("cannot parse generation template %s: %w", templatePath, err)
+	}
+	return document.Clean, nil
 }
 
-// requireProtoOutputsPopulated fails a generation that left every declared
-// output empty. With the mounts proven by verifyProtoOutputMounts and buf
-// exiting clean, an output tree holding files *is* the generated tree —
-// written by this run, or already byte-identical to what this run generated.
-// One holding nothing means no plugin produced anything, which is a failure,
-// not a success with an empty result.
+// verifyProtoStagingMount proves the companion's staging directory is the
+// host's, and writable through the mount, before any generation runs. A
+// generation into a staging tree the host cannot read would otherwise surface
+// as "the generator produced nothing", which names the wrong cause.
 //
-// Any output, not every output: a template may pair a plugin that generates
-// for this input with one that legitimately has nothing to emit, the way
-// openapiv2 emits nothing for a contract carrying no REST annotations.
-func requireProtoOutputsPopulated(outs []string, templatePath string) error {
-	if len(outs) == 0 {
-		return nil
+// The probe lives in the staging tree, which belongs to this run — never in a
+// declared output, where a probe left behind by a killed run is exactly what a
+// consumer's drift gate reports.
+func verifyProtoStagingMount(ctx context.Context, companion protoCommand, hostStaging, containerStaging, probe string) (result error) {
+	host := filepath.Join(hostStaging, probe)
+	// Registered before the probe exists, so no path out of this function can
+	// leave one behind.
+	defer func() {
+		if err := os.Remove(host); err != nil && !os.IsNotExist(err) {
+			result = errors.Join(result, fmt.Errorf("cannot remove the mount probe %s: %w", host, err))
+		}
+	}()
+	if err := os.WriteFile(host, nil, 0o600); err != nil {
+		return fmt.Errorf("cannot write the mount probe in %s: %w", hostStaging, err)
 	}
-	for _, out := range outs {
-		populated := false
-		err := filepath.WalkDir(out, func(file string, entry os.DirEntry, err error) error {
-			if err != nil {
-				if os.IsNotExist(err) && file == out {
-					return filepath.SkipDir
-				}
+	if err := companion(ctx, "rm", "--", path.Join(containerStaging, probe)); err != nil {
+		return fmt.Errorf("the companion cannot reach its staging directory %s (the host's %s) through the mount, so nothing it generates would reach the host: %w", containerStaging, hostStaging, err)
+	}
+	if _, err := os.Lstat(host); err == nil {
+		return fmt.Errorf("the companion's %s is not the host's %s: what it writes there never reaches the host, so nothing generated would be published", containerStaging, hostStaging)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("cannot check the staging mount for %s: %w", hostStaging, err)
+	}
+	return nil
+}
+
+// protoStagedFiles returns what the companion generated into one staging slot,
+// as paths relative to it. A slot buf never created is an empty result: the
+// plugin writing there produced nothing.
+func protoStagedFiles(slot string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(slot, func(file string, entry os.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) && file == slot {
+				return filepath.SkipDir
+			}
+			return err
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(slot, file)
+		if err != nil {
+			return err
+		}
+		files = append(files, rel)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+// publishProtoOutputs copies what this generation emitted into the outputs the
+// template declares, and refuses a generation that emitted nothing.
+//
+// The refusal is decided from the staging tree alone, before anything is
+// published, so a generation that produced no file leaves every declared
+// output exactly as it found it — a file already on disk is never mistaken for
+// one this run produced.
+//
+// Publication adds and overwrites; it does not prune. An `out` may be a broad
+// source root holding handwritten files beside the generated ones (which is
+// why core's FormatGoOutputs formats only files carrying the generated-code
+// notice), and a generator that stops emitting a file leaves the old one in
+// place exactly as buf does. `clean: true` is the caller asking for the
+// opposite, and replaces the declared output with what this run emitted.
+//
+// A file whose bytes are already on disk is left untouched, mirroring buf's
+// own sync: an unchanged replay then changes no content and no modification
+// time, which is what a drift gate over a generated tree reads.
+func publishProtoOutputs(ctx context.Context, staging string, outs []string, clean bool, templatePath string) error {
+	emitted := make([][]string, len(outs))
+	total := 0
+	for i, out := range outs {
+		files, err := protoStagedFiles(protoStagingSlot(staging, i))
+		if err != nil {
+			return fmt.Errorf("cannot inspect what was generated for %s: %w", out, err)
+		}
+		emitted[i] = files
+		total += len(files)
+	}
+	if total == 0 {
+		return fmt.Errorf("generation produced no file for any output declared by %s (%s); nothing was generated", templatePath, strings.Join(outs, ", "))
+	}
+	for i, out := range outs {
+		if len(emitted[i]) == 0 && !clean {
+			continue
+		}
+		if clean {
+			if err := os.RemoveAll(out); err != nil {
+				return fmt.Errorf("cannot clean generation output %s: %w", out, err)
+			}
+		}
+		if _, err := shared.CheckDirectoryOrCreate(ctx, out); err != nil {
+			return fmt.Errorf("cannot create generation output %s: %w", out, err)
+		}
+		slot := protoStagingSlot(staging, i)
+		for _, rel := range emitted[i] {
+			if err := publishProtoFile(slot, out, rel); err != nil {
 				return err
 			}
-			if entry.Type().IsRegular() {
-				populated = true
-				return filepath.SkipAll
-			}
-			return nil
-		})
-		if err != nil {
-			return fmt.Errorf("cannot inspect generation output %s: %w", out, err)
-		}
-		if populated {
-			return nil
 		}
 	}
-	return fmt.Errorf("generation left every output declared by %s (%s) empty; nothing was generated", templatePath, strings.Join(outs, ", "))
+	return nil
+}
+
+// publishProtoFile writes one generated file, named by its path relative to
+// the staging slot, into the declared output. A destination that already holds
+// those bytes is left alone.
+//
+// Both ends are re-checked against their roots rather than trusted: rel comes
+// from a walk of the staging slot, which cannot ascend and skips anything that
+// is not a regular file, but the whole point of publishing from the host is
+// that nothing the companion produced decides where the host writes.
+func publishProtoFile(slot, out, rel string) error {
+	from, to := filepath.Join(slot, rel), filepath.Join(out, rel)
+	if !pathWithin(slot, from) || !pathWithin(out, to) {
+		return fmt.Errorf("generated file %q does not stay under the output %s it was generated for", rel, out)
+	}
+	generated, err := os.ReadFile(from)
+	if err != nil {
+		return fmt.Errorf("cannot read generated file %s: %w", from, err)
+	}
+	published, readErr := os.ReadFile(to)
+	if readErr == nil && bytes.Equal(published, generated) {
+		return nil
+	}
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return fmt.Errorf("cannot read %s: %w", to, readErr)
+	}
+	info, err := os.Stat(from)
+	if err != nil {
+		return fmt.Errorf("cannot inspect generated file %s: %w", from, err)
+	}
+	// A generated source tree is read by the tooling of whoever owns it, so it
+	// keeps the mode the generator gave it rather than being narrowed here.
+	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil { //nolint:gosec // G301: a generated source tree its own tooling must read
+		return fmt.Errorf("cannot create %s: %w", filepath.Dir(to), err)
+	}
+	if err := os.WriteFile(to, generated, info.Mode().Perm()); err != nil { //nolint:gosec // G703: rel is walked from slot and both ends are checked against their roots above
+		return fmt.Errorf("cannot write %s: %w", to, err)
+	}
+	return nil
 }
 
 func resolveProtoTemplate(protoDir, outputDir, template string, local bool) (string, error) {

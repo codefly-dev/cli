@@ -2313,30 +2313,51 @@ regenerates on the host. An `out` that escapes the workspace owning `--proto`
 (outside a workspace: the directory `--proto`, `--output` and the template share)
 is refused, as is an absolute `out`, which names a path the companion cannot see.
 
-**The output validation contract.** buf *syncs* each output tree rather than
-rewriting it: it compares the bytes it generated against what is already under
-each `out` and writes only the files that are new or different. With
-`clean: true` it additionally deletes the files it no longer generates — and
-still leaves byte-identical ones untouched. So an unchanged regeneration
-legitimately writes nothing, and whether a file was written says nothing about
-whether generation reached the host. Two checks bracket the run instead:
+**The output validation contract: generation is staged.** buf *syncs* an output
+tree rather than rewriting it — it compares the bytes it generated against what
+is already under each `out` and writes only the files that are new or
+different, and with `clean: true` it additionally prunes what it no longer
+generates while still leaving byte-identical files untouched. So nothing
+observable about the output tree after a run separates "the generator emitted
+exactly what was already there" from "the generator emitted nothing" or "the
+generation never reached the host", and a file that was already on disk is not
+evidence that the run produced it.
 
-- **Before generating,** every declared `out` is proved to be the host
-  directory the CLI resolved and writable from inside the companion: the host
-  drops a uniquely named probe in each one, the companion deletes it, and the
-  host checks every probe is gone. An `out` the companion resolves inside its
-  own filesystem, one outside the mount, and a mount that discards what the
-  companion writes all fail here, before any plugin runs.
-- **After generating,** at least one declared `out` must hold a regular file.
-  A template whose plugins produced nothing fails. Any output rather than every
-  output: a plugin with nothing to emit for the given input — openapiv2 over a
-  contract carrying no REST annotations — is not a failed generation.
+So buf generates into a staging tree under the mount, through a derived
+template that redirects every `out` into it, and **the CLI publishes to the
+declared outputs**. The caller's template is otherwise unchanged — same
+plugins, options, managed-mode block and version — and buf's own `--output`
+cannot be used for this: it is prepended to each `out`, so `out: ../code/pkg/gen`
+under `-o /stage` resolves straight back out of the staging directory.
 
-An unchanged replay therefore succeeds and leaves the tree byte-identical,
-which is what a CI drift gate (`git diff --exit-code` over the generated tree)
-needs. The Go lane is no exception: it only appeared to need a write because
-`goimports` runs after generation and leaves a shape buf never emits, so the
-next run rewrites every Go file.
+The staged tree is what the run emitted, which makes each question separately
+answerable:
+
+- **A generation that emitted no file fails**, and the refusal is decided from
+  staging before anything is published, so the declared outputs are left
+  exactly as they were found — including under `clean: true`, which never gets
+  to empty a tree on behalf of a generator that produced nothing.
+- **An unchanged replay publishes byte-identical content** and succeeds. A file
+  whose bytes are already on disk is left untouched, so content *and*
+  modification times are unchanged, which is what a CI drift gate
+  (`git diff --exit-code` over the generated tree) reads.
+- **Generation into a tree the host cannot see is no longer possible**, because
+  buf no longer writes the output. A staging directory the companion does not
+  share with the host is caught before generation by a probe the host writes
+  and the companion deletes — which also catches a mount that reads but
+  discards writes, where the command exits 0 and the probe survives.
+- **Publication adds and overwrites; it does not prune.** An `out` may be a
+  broad source root holding handwritten files beside generated ones, and a
+  generator that stops emitting a file leaves the old one in place, exactly as
+  buf does. `clean: true` is the caller asking for the opposite and replaces
+  the output with what the run emitted. One plugin with nothing to emit for a
+  given input — openapiv2 over a contract carrying no REST annotations — is not
+  a failed generation and does not disturb that output.
+
+The Go lane was never an exception to buf's sync; it only looked like one
+because `goimports` runs after generation and leaves a shape buf never emits,
+so the next run finds every Go file different. Publication is content-based, so
+that churn no longer decides anything.
 
 #### generate client
 

@@ -15,75 +15,61 @@ import (
 	runners "github.com/codefly-dev/core/runners/dockerrun"
 )
 
-// The output-mount check is a statement about a real bind mount: that the
-// directory the companion resolves an `out` to is the host directory the CLI
-// resolved, and that what the companion writes there reaches the host. Neither
-// half exists without a daemon — a fake runner can only assert the shape of
-// the check, not that Docker propagates a deletion — so the contract that
-// replaced the mtime guard (#885) is qualified here against a real container.
+// Generation is staged: buf writes a tree under the mount and the CLI
+// publishes from it, so what a run emitted is knowable independently of what
+// its outputs already held (#885, and the stale-file hole after it). That
+// rests on the companion and the host seeing one directory, which no fake
+// runner can prove — a fake can only assert the shape of the check, not that
+// Docker propagates a deletion. So the staging mount is qualified here against
+// a real container.
 //
 // The image is alpine rather than the proto companion: all the probe needs is
 // `rm`, and pulling the companion would make a mount proof fail on a buf or
 // registry problem. Keep the tag in step with the image the workflow pulls.
 const mountQualificationImage = "alpine:3.22"
 
-func TestProtoOutputMountsAreQualifiedAgainstARealBindMount(t *testing.T) {
+func TestProtoStagingMountIsQualifiedAgainstARealBindMount(t *testing.T) {
 	requireDockerDaemon(t)
-	root := t.TempDir()
-	outs := []string{filepath.Join(root, "sdk", "src", "gen"), filepath.Join(root, "svc", "openapi")}
 
-	// An unchanged replay: the output tree is already the generated one, and
-	// buf would touch none of it.
-	committed := filepath.Join(outs[0], "api_pb.ts")
-	if err := os.MkdirAll(filepath.Dir(committed), 0o750); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(committed, []byte("export {};\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	before, err := os.Stat(committed)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Run("the host's own outputs are accepted", func(t *testing.T) {
-		companion := mountedCompanion(t, root, protoContainerRoot)
-		probe := protoOutputProbe(fmt.Sprintf("mount-live-%d", time.Now().UnixMilli()))
-		if err := verifyProtoOutputMounts(context.Background(), companion, outs, root, protoContainerRoot, probe); err != nil {
-			t.Fatalf("refused a live mount of the host's outputs: %v", err)
-		}
-		for _, out := range outs {
-			if _, err := os.Lstat(filepath.Join(out, probe)); !os.IsNotExist(err) {
-				t.Fatalf("probe left behind in %s: %v", out, err)
-			}
-		}
-		after, err := os.Stat(committed)
-		if err != nil {
+	t.Run("a staging directory the host shares is accepted", func(t *testing.T) {
+		root := t.TempDir()
+		staging := filepath.Join(root, ".proto-gen-live-staging")
+		if err := os.MkdirAll(staging, 0o750); err != nil {
 			t.Fatal(err)
 		}
-		if !after.ModTime().Equal(before.ModTime()) || after.Size() != before.Size() {
-			t.Fatal("the mount check rewrote a file an unchanged replay must leave alone")
+		containerStaging := protoContainerRoot + "/.proto-gen-live-staging"
+		companion := mountedCompanion(t, root, protoContainerRoot)
+		probe := fmt.Sprintf(".probe-%d", time.Now().UnixMilli())
+		if err := verifyProtoStagingMount(context.Background(), companion, staging, containerStaging, probe); err != nil {
+			t.Fatalf("refused a live staging mount: %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(staging, probe)); !os.IsNotExist(err) {
+			t.Fatalf("probe left behind in %s: %v", staging, err)
 		}
 	})
 
-	// The failure #836 was about: the companion resolves the declared `out`
-	// inside its own filesystem, writes a complete tree there, exits 0, and
-	// the host keeps whatever it already had. Mounting a different directory
-	// at /workspace reproduces exactly that view.
-	t.Run("an output the companion cannot reach is refused", func(t *testing.T) {
+	// What #836 was about, in the shape it now takes: the companion resolves
+	// its staging path inside its own filesystem, writes a complete tree
+	// there, exits 0, and the host sees nothing. Mounting a different
+	// directory at the container root reproduces exactly that view.
+	t.Run("a staging directory the host cannot see is refused", func(t *testing.T) {
+		root := t.TempDir()
+		staging := filepath.Join(root, ".proto-gen-blind-staging")
+		if err := os.MkdirAll(staging, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		containerStaging := protoContainerRoot + "/.proto-gen-blind-staging"
 		companion := mountedCompanion(t, t.TempDir(), protoContainerRoot)
-		probe := protoOutputProbe(fmt.Sprintf("mount-blind-%d", time.Now().UnixMilli()))
-		err := verifyProtoOutputMounts(context.Background(), companion, outs, root, protoContainerRoot, probe)
+		probe := fmt.Sprintf(".probe-%d", time.Now().UnixMilli())
+		err := verifyProtoStagingMount(context.Background(), companion, staging, containerStaging, probe)
 		if err == nil {
-			t.Fatal("accepted outputs the companion writes inside the container")
+			t.Fatal("accepted a staging directory the companion writes inside the container")
 		}
-		if !strings.Contains(err.Error(), outs[0]) {
-			t.Fatalf("error does not name the unreachable output: %v", err)
+		if !strings.Contains(err.Error(), staging) {
+			t.Fatalf("error does not name the staging directory: %v", err)
 		}
-		for _, out := range outs {
-			if _, err := os.Lstat(filepath.Join(out, probe)); !os.IsNotExist(err) {
-				t.Fatalf("probe left behind in %s after a failed check: %v", out, err)
-			}
+		if _, err := os.Lstat(filepath.Join(staging, probe)); !os.IsNotExist(err) {
+			t.Fatalf("probe left behind in %s after a failed check: %v", staging, err)
 		}
 	})
 }
@@ -93,9 +79,7 @@ func TestProtoOutputMountsAreQualifiedAgainstARealBindMount(t *testing.T) {
 func mountedCompanion(t *testing.T, hostRoot, containerRoot string) protoCommand {
 	t.Helper()
 	ctx := context.Background()
-	name := fmt.Sprintf("proto-mount-%d-%s", time.Now().UnixNano(), strings.ToLower(t.Name()[strings.LastIndex(t.Name(), "/")+1:]))
-	name = strings.NewReplacer(" ", "-", "'", "", "/", "-").Replace(name)
-	runner, err := runners.NewDockerEnvironment(ctx, resources.NewDockerImage(mountQualificationImage), hostRoot, name)
+	runner, err := runners.NewDockerEnvironment(ctx, resources.NewDockerImage(mountQualificationImage), hostRoot, fmt.Sprintf("proto-mount-%d", time.Now().UnixNano()))
 	if err != nil {
 		t.Fatalf("create docker environment: %v", err)
 	}

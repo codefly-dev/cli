@@ -8,6 +8,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestProtoGenerationPathArgs(t *testing.T) {
@@ -146,31 +149,263 @@ func TestProtoMountBoundaryIsTheOwningWorkspace(t *testing.T) {
 	}
 }
 
-// The contract the output validation rests on: buf syncs an output tree
-// rather than rewriting it, so a correct unchanged replay touches nothing
-// (#885). The gate is therefore the mount, checked before generation — the
-// companion must be looking at the host's own output directory.
-//
-// faithfulMount stands in for a companion whose `out` really is the host
-// directory, by translating the container path back and removing the probe.
-func faithfulMount(hostRoot, containerRoot string) protoCommand {
-	return func(_ context.Context, bin string, args ...string) error {
-		if bin != "rm" {
-			return fmt.Errorf("unexpected command %q", bin)
+// What the staged design has to get right, and what the mtime guard got
+// wrong: buf syncs an output tree rather than rewriting it, so neither a
+// write nor a file already on disk is evidence that *this* generation
+// produced anything (#885, and the stale-file hole that followed it). The
+// evidence is the staging tree, and these pin that.
+
+// stageFile writes one file the companion is pretending to have generated.
+func stageFile(t *testing.T, staging string, out int, rel, contents string) {
+	t.Helper()
+	writeTestFile(t, filepath.Join(protoStagingSlot(staging, out), filepath.FromSlash(rel)), contents)
+}
+
+func TestProtoStagingTemplateRedirectsEveryOutputAndChangesNothingElse(t *testing.T) {
+	service := t.TempDir()
+	template := filepath.Join(service, "proto", "buf.gen.yaml")
+	writeTestFile(t, template, `version: v1
+managed:
+  enabled: false
+plugins:
+  - name: go
+    path: protoc-gen-go
+    out: ../code/pkg/gen
+    opt:
+      - paths=source_relative
+  - name: go-grpc
+    path: protoc-gen-go-grpc
+    out: ../code/pkg/gen
+  - name: openapiv2
+    path: protoc-gen-openapiv2
+    out: ../openapi
+`)
+	outs, err := protoTemplateOutputs(template)
+	if err != nil {
+		t.Fatalf("template outputs: %v", err)
+	}
+	staged, err := protoStagingTemplate(template, outs, "/workspace/.proto-gen-1-staging")
+	if err != nil {
+		t.Fatalf("staged template: %v", err)
+	}
+
+	var document struct {
+		Version string `yaml:"version"`
+		Managed struct {
+			Enabled bool `yaml:"enabled"`
+		} `yaml:"managed"`
+		Plugins []struct {
+			Name string   `yaml:"name"`
+			Path string   `yaml:"path"`
+			Out  string   `yaml:"out"`
+			Opt  []string `yaml:"opt"`
+		} `yaml:"plugins"`
+	}
+	if err := yaml.Unmarshal(staged, &document); err != nil {
+		t.Fatalf("parse staged template: %v\n%s", err, staged)
+	}
+	if document.Version != "v1" || document.Managed.Enabled {
+		t.Fatalf("staging rewrote more than the outputs: %s", staged)
+	}
+	if len(document.Plugins) != 3 {
+		t.Fatalf("staged plugins = %d, want 3: %s", len(document.Plugins), staged)
+	}
+	// The go-grpc layout's four Go plugins share one `out`; sharing must
+	// survive, or one output's files land in two places.
+	gen, openapi := document.Plugins[0].Out, document.Plugins[2].Out
+	if gen != document.Plugins[1].Out {
+		t.Fatalf("plugins sharing an output were split: %q vs %q", gen, document.Plugins[1].Out)
+	}
+	if gen == openapi {
+		t.Fatalf("distinct outputs were merged into %q", gen)
+	}
+	for _, slot := range []string{gen, openapi} {
+		if !strings.HasPrefix(slot, "/workspace/.proto-gen-1-staging/") {
+			t.Fatalf("output %q was not redirected into staging", slot)
 		}
-		for _, arg := range args {
-			if arg == "--" {
-				continue
+	}
+	// Everything else the caller declared is the caller's.
+	if document.Plugins[0].Path != "protoc-gen-go" || len(document.Plugins[0].Opt) != 1 || document.Plugins[0].Opt[0] != "paths=source_relative" {
+		t.Fatalf("staging changed a plugin's own declaration: %s", staged)
+	}
+}
+
+func TestProtoStagingTemplateRefusesATemplateWithNothingToGenerate(t *testing.T) {
+	root := t.TempDir()
+	template := filepath.Join(root, "buf.gen.yaml")
+	writeTestFile(t, template, "version: v2\nplugins: []\n")
+	if _, err := protoStagingTemplate(template, nil, "/workspace/.staging"); err == nil {
+		t.Fatal("staged a template declaring no plugins")
+	}
+}
+
+func TestProtoTemplateClean(t *testing.T) {
+	root := t.TempDir()
+	for _, tc := range []struct {
+		name, contents string
+		want           bool
+	}{
+		{"absent", "version: v2\nplugins: []\n", false},
+		{"false", "version: v2\nclean: false\nplugins: []\n", false},
+		{"true", "version: v2\nclean: true\nplugins: []\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			template := filepath.Join(root, tc.name+".yaml")
+			writeTestFile(t, template, tc.contents)
+			got, err := protoTemplateClean(template)
+			if err != nil || got != tc.want {
+				t.Fatalf("clean = %v, %v; want %v", got, err, tc.want)
 			}
-			rel, err := filepath.Rel(containerRoot, arg)
-			if err != nil {
-				return err
-			}
-			if err := os.Remove(filepath.Join(hostRoot, rel)); err != nil {
-				return err
-			}
+		})
+	}
+}
+
+// The hole the stale-file review found: a plugin that emits nothing leaves the
+// output holding whatever was already there, and that file is not evidence of
+// generation. Decided from staging alone, and before anything is published, so
+// the refused run leaves the output exactly as it found it.
+func TestPublishProtoOutputsRefusesAGenerationThatEmittedNothing(t *testing.T) {
+	root, outs := protoOutputFixture(t)
+	staging := t.TempDir()
+	stale := filepath.Join(outs[0], "stale.txt")
+	writeTestFile(t, stale, "left over from some earlier run\n")
+	before, err := os.Stat(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = publishProtoOutputs(context.Background(), staging, outs, false, filepath.Join(root, "buf.gen.yaml"))
+	if err == nil {
+		t.Fatal("a pre-existing file was accepted as proof of generation")
+	}
+	if !strings.Contains(err.Error(), "produced no file") {
+		t.Fatalf("error does not name the cause: %v", err)
+	}
+	after, err := os.Stat(stale)
+	if err != nil {
+		t.Fatalf("the refused generation disturbed the output: %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) || after.Size() != before.Size() {
+		t.Fatal("the refused generation rewrote the output")
+	}
+}
+
+// Even with `clean: true`, which would otherwise replace the output: a
+// generation that emitted nothing must not be allowed to empty a consumer's
+// tree.
+func TestPublishProtoOutputsKeepsTheOutputWhenNothingWasEmittedUnderClean(t *testing.T) {
+	root, outs := protoOutputFixture(t)
+	writeTestFile(t, filepath.Join(outs[0], "api_pb.ts"), "export {};\n")
+	if err := publishProtoOutputs(context.Background(), t.TempDir(), outs, true, filepath.Join(root, "buf.gen.yaml")); err == nil {
+		t.Fatal("accepted a generation that emitted nothing")
+	}
+	if _, err := os.Stat(filepath.Join(outs[0], "api_pb.ts")); err != nil {
+		t.Fatalf("clean emptied the output for a generation that produced nothing: %v", err)
+	}
+}
+
+func TestPublishProtoOutputsPublishesWhatWasEmitted(t *testing.T) {
+	root, outs := protoOutputFixture(t)
+	staging := t.TempDir()
+	stageFile(t, staging, 0, "documents/v1/api_pb.ts", "export const api = 1;\n")
+	stageFile(t, staging, 1, "api.swagger.json", "{}\n")
+
+	if err := publishProtoOutputs(context.Background(), staging, outs, false, filepath.Join(root, "buf.gen.yaml")); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	for path, want := range map[string]string{
+		filepath.Join(outs[0], "documents", "v1", "api_pb.ts"): "export const api = 1;\n",
+		filepath.Join(outs[1], "api.swagger.json"):             "{}\n",
+	} {
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != want {
+			t.Fatalf("%s = %q, %v; want %q", path, got, err, want)
 		}
-		return nil
+	}
+}
+
+// The #885 case, end to end through publication: the output already holds
+// exactly what this run emitted. It must succeed and leave the tree alone,
+// content and modification time, because that is what a drift gate reads.
+func TestPublishProtoOutputsLeavesAnUnchangedReplayUntouched(t *testing.T) {
+	root, outs := protoOutputFixture(t)
+	staging := t.TempDir()
+	published := filepath.Join(outs[0], "documents", "v1", "api_pb.ts")
+	stageFile(t, staging, 0, "documents/v1/api_pb.ts", "export const api = 1;\n")
+	writeTestFile(t, published, "export const api = 1;\n")
+	stale := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(published, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := publishProtoOutputs(context.Background(), staging, outs, false, filepath.Join(root, "buf.gen.yaml")); err != nil {
+		t.Fatalf("refused an unchanged replay: %v", err)
+	}
+	info, err := os.Stat(published)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ModTime().After(stale.Add(time.Second)) {
+		t.Fatalf("an unchanged replay rewrote %s (mtime moved from %s to %s)", published, stale, info.ModTime())
+	}
+}
+
+// A changed input has to reach the output, and an output that is a shared
+// source root must keep its handwritten neighbours — core's FormatGoOutputs
+// only formats files carrying the generated-code notice precisely because
+// `out` may hold both.
+func TestPublishProtoOutputsOverwritesGeneratedAndKeepsHandwritten(t *testing.T) {
+	root, outs := protoOutputFixture(t)
+	staging := t.TempDir()
+	stageFile(t, staging, 0, "api_pb.ts", "export const api = 2;\n")
+	writeTestFile(t, filepath.Join(outs[0], "api_pb.ts"), "export const api = 1;\n")
+	writeTestFile(t, filepath.Join(outs[0], "handwritten.ts"), "export const mine = true;\n")
+
+	if err := publishProtoOutputs(context.Background(), staging, outs, false, filepath.Join(root, "buf.gen.yaml")); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(outs[0], "api_pb.ts"))
+	if err != nil || string(got) != "export const api = 2;\n" {
+		t.Fatalf("changed generation did not reach the output: %q, %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(outs[0], "handwritten.ts")); err != nil {
+		t.Fatalf("publication removed a handwritten neighbour: %v", err)
+	}
+}
+
+// `clean: true` is the caller asking for the output to be what this run
+// emitted, which is the pruning buf would have done itself.
+func TestPublishProtoOutputsCleanReplacesTheOutput(t *testing.T) {
+	root, outs := protoOutputFixture(t)
+	staging := t.TempDir()
+	stageFile(t, staging, 0, "api_pb.ts", "export const api = 1;\n")
+	writeTestFile(t, filepath.Join(outs[0], "gone_pb.ts"), "export {};\n")
+
+	if err := publishProtoOutputs(context.Background(), staging, outs, true, filepath.Join(root, "buf.gen.yaml")); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outs[0], "gone_pb.ts")); !os.IsNotExist(err) {
+		t.Fatalf("clean kept a file this run did not generate: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outs[0], "api_pb.ts")); err != nil {
+		t.Fatalf("clean did not publish what was emitted: %v", err)
+	}
+}
+
+// One plugin emitting nothing is not a failed generation — openapiv2 emits
+// nothing for a contract carrying no REST annotations — and must not empty
+// that output either.
+func TestPublishProtoOutputsToleratesOneOutputWithNothingToEmit(t *testing.T) {
+	root, outs := protoOutputFixture(t)
+	staging := t.TempDir()
+	stageFile(t, staging, 0, "api_pb.ts", "export {};\n")
+	writeTestFile(t, filepath.Join(outs[1], "api.swagger.json"), "{}\n")
+
+	if err := publishProtoOutputs(context.Background(), staging, outs, false, filepath.Join(root, "buf.gen.yaml")); err != nil {
+		t.Fatalf("refused a template whose second plugin had nothing to emit: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outs[1], "api.swagger.json")); err != nil {
+		t.Fatalf("an output with nothing emitted was disturbed: %v", err)
 	}
 }
 
@@ -181,167 +416,68 @@ func protoOutputFixture(t *testing.T) (root string, outs []string) {
 	return root, outs
 }
 
-func TestVerifyProtoOutputMountsAcceptsTheHostsOwnOutputs(t *testing.T) {
-	root, outs := protoOutputFixture(t)
-	// An unchanged replay: the tree is already the generated one.
-	committed := filepath.Join(outs[0], "api_pb.ts")
-	writeTestFile(t, committed, "export {};\n")
-	before, err := os.Stat(committed)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	probe := protoOutputProbe("proto-gen-1")
-	if err := verifyProtoOutputMounts(context.Background(), faithfulMount(root, "/workspace"), outs, root, "/workspace", probe); err != nil {
-		t.Fatalf("refused a live mount: %v", err)
-	}
-
-	// The check leaves the tree exactly as it found it, probe included: a
-	// stray file under a generated output is what a consumer's drift gate
-	// reports, and an unchanged replay must stay unchanged.
-	for _, out := range outs {
-		if _, err := os.Lstat(filepath.Join(out, probe)); !os.IsNotExist(err) {
-			t.Fatalf("probe left behind in %s: %v", out, err)
+// faithfulStagingMount stands in for a companion whose staging directory
+// really is the host's, by translating the container path back and removing
+// the probe.
+func faithfulStagingMount(hostStaging, containerStaging string) protoCommand {
+	return func(_ context.Context, bin string, args ...string) error {
+		if bin != "rm" {
+			return fmt.Errorf("unexpected command %q", bin)
 		}
-	}
-	after, err := os.Stat(committed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !after.ModTime().Equal(before.ModTime()) || after.Size() != before.Size() {
-		t.Fatal("the mount check rewrote a generated file")
+		for _, arg := range args {
+			if arg == "--" {
+				continue
+			}
+			rel, err := filepath.Rel(containerStaging, arg)
+			if err != nil {
+				return err
+			}
+			if err := os.Remove(filepath.Join(hostStaging, rel)); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 }
 
-// A first generation has no output directory yet. The host creates it, so the
-// tree a consumer commits is host-owned rather than owned by whatever user the
-// companion runs as.
-func TestVerifyProtoOutputMountsCreatesAMissingOutput(t *testing.T) {
-	root, outs := protoOutputFixture(t)
-	if err := verifyProtoOutputMounts(context.Background(), faithfulMount(root, "/workspace"), outs, root, "/workspace", protoOutputProbe("proto-gen-2")); err != nil {
-		t.Fatalf("refused a first generation: %v", err)
+func TestVerifyProtoStagingMountAcceptsAMountTheHostCanRead(t *testing.T) {
+	staging := t.TempDir()
+	if err := verifyProtoStagingMount(context.Background(), faithfulStagingMount(staging, "/workspace/.staging"), staging, "/workspace/.staging", ".probe"); err != nil {
+		t.Fatalf("refused a live staging mount: %v", err)
 	}
-	for _, out := range outs {
-		info, err := os.Stat(out)
-		if err != nil || !info.IsDir() {
-			t.Fatalf("output %s was not created: %v", out, err)
-		}
+	if _, err := os.Lstat(filepath.Join(staging, ".probe")); !os.IsNotExist(err) {
+		t.Fatalf("probe left behind: %v", err)
 	}
 }
 
-// The failure the old mtime guard was a proxy for (#836): buf resolves `out`
-// inside the container, writes there, and the host keeps the tree it already
-// had. The companion cannot delete a probe it cannot see.
-func TestVerifyProtoOutputMountsRefusesAContainerLocalOutput(t *testing.T) {
-	root, outs := protoOutputFixture(t)
-	writeTestFile(t, filepath.Join(outs[0], "api_pb.ts"), "export {};\n")
-	probe := protoOutputProbe("proto-gen-3")
-
+func TestVerifyProtoStagingMountRefusesAStagingTreeTheHostCannotSee(t *testing.T) {
+	staging := t.TempDir()
 	blind := func(_ context.Context, _ string, _ ...string) error {
-		return fmt.Errorf("rm: can't remove '/workspace/sdk/src/gen/%s': No such file or directory", probe)
+		return fmt.Errorf("rm: can't remove '/workspace/.staging/.probe': No such file or directory")
 	}
-	err := verifyProtoOutputMounts(context.Background(), blind, outs, root, "/workspace", probe)
+	err := verifyProtoStagingMount(context.Background(), blind, staging, "/workspace/.staging", ".probe")
 	if err == nil {
-		t.Fatal("accepted an output the companion cannot reach")
+		t.Fatal("accepted a staging directory the companion cannot reach")
 	}
-	if !strings.Contains(err.Error(), outs[0]) {
-		t.Fatalf("error does not name the unreachable output: %v", err)
+	if !strings.Contains(err.Error(), staging) {
+		t.Fatalf("error does not name the staging directory: %v", err)
 	}
-	for _, out := range outs {
-		if _, err := os.Lstat(filepath.Join(out, probe)); !os.IsNotExist(err) {
-			t.Fatalf("probe left behind in %s after a failed check: %v", out, err)
-		}
+	if _, err := os.Lstat(filepath.Join(staging, ".probe")); !os.IsNotExist(err) {
+		t.Fatalf("probe left behind after a failed check: %v", err)
 	}
 }
 
-// A mount the companion can read but whose writes never reach the host: the
+// A mount the companion reads but whose writes never reach the host: the
 // command exits clean and the probe survives. Exit status alone would pass
 // this, which is why the host checks the probe is gone.
-func TestVerifyProtoOutputMountsRefusesAMountThatDiscardsWrites(t *testing.T) {
-	root, outs := protoOutputFixture(t)
-	probe := protoOutputProbe("proto-gen-4")
+func TestVerifyProtoStagingMountRefusesAMountThatDiscardsWrites(t *testing.T) {
+	staging := t.TempDir()
 	discarding := func(_ context.Context, _ string, _ ...string) error { return nil }
-
-	err := verifyProtoOutputMounts(context.Background(), discarding, outs, root, "/workspace", probe)
-	if err == nil {
+	if err := verifyProtoStagingMount(context.Background(), discarding, staging, "/workspace/.staging", ".probe"); err == nil {
 		t.Fatal("accepted a mount that discards what the companion writes")
 	}
-	if !strings.Contains(err.Error(), outs[0]) {
-		t.Fatalf("error does not name the output: %v", err)
-	}
-	for _, out := range outs {
-		if _, err := os.Lstat(filepath.Join(out, probe)); !os.IsNotExist(err) {
-			t.Fatalf("probe left behind in %s: %v", out, err)
-		}
-	}
-}
-
-func TestVerifyProtoOutputMountsRefusesAnOutputOutsideTheMount(t *testing.T) {
-	root := t.TempDir()
-	outside := filepath.Join(t.TempDir(), "gen")
-	called := false
-	companion := func(_ context.Context, _ string, _ ...string) error {
-		called = true
-		return nil
-	}
-	err := verifyProtoOutputMounts(context.Background(), companion, []string{outside}, root, "/workspace", protoOutputProbe("proto-gen-5"))
-	if err == nil {
-		t.Fatal("accepted an output outside the companion mount")
-	}
-	if called {
-		t.Fatal("ran the companion for an output it could never reach")
-	}
-	if _, err := os.Stat(outside); !os.IsNotExist(err) {
-		t.Fatal("probed an output outside the mount")
-	}
-}
-
-// A template declaring no output cannot be judged either way.
-func TestVerifyProtoOutputMountsSkipsATemplateWithoutOutputs(t *testing.T) {
-	called := false
-	companion := func(_ context.Context, _ string, _ ...string) error {
-		called = true
-		return nil
-	}
-	if err := verifyProtoOutputMounts(context.Background(), companion, nil, t.TempDir(), "/workspace", "probe"); err != nil {
-		t.Fatalf("refused a template without outputs: %v", err)
-	}
-	if called {
-		t.Fatal("ran the companion with nothing to check")
-	}
-}
-
-func TestRequireProtoOutputsPopulated(t *testing.T) {
-	_, outs := protoOutputFixture(t)
-
-	// No generation at all: every declared output is absent or empty.
-	if err := requireProtoOutputsPopulated(outs, "buf.gen.yaml"); err == nil {
-		t.Fatal("reported success for a generation that produced nothing")
-	}
-	for _, out := range outs {
-		if err := os.MkdirAll(filepath.Join(out, "documents", "v1"), 0o750); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := requireProtoOutputsPopulated(outs, "buf.gen.yaml"); err == nil {
-		t.Fatal("a tree of empty directories is not generated output")
-	}
-
-	// The #885 regression: an unchanged replay writes nothing, and the tree it
-	// left alone is the generated tree.
-	writeTestFile(t, filepath.Join(outs[0], "documents", "v1", "api_pb.ts"), "export {};\n")
-	if err := requireProtoOutputsPopulated(outs, "buf.gen.yaml"); err != nil {
-		t.Fatalf("refused an unchanged replay: %v", err)
-	}
-
-	// Any output, not every output: a plugin with nothing to emit for this
-	// input (openapiv2 over a contract with no REST annotations) is not a
-	// failed generation.
-	if err := requireProtoOutputsPopulated(outs[1:], "buf.gen.yaml"); err == nil {
-		t.Fatal("reported success with every declared output empty")
-	}
-	if err := requireProtoOutputsPopulated(nil, "buf.gen.yaml"); err != nil {
-		t.Fatalf("a template without outputs cannot be judged: %v", err)
+	if _, err := os.Lstat(filepath.Join(staging, ".probe")); !os.IsNotExist(err) {
+		t.Fatalf("probe left behind: %v", err)
 	}
 }
 
