@@ -28,10 +28,15 @@ authorization; they are not permission to merge or publish automatically.
 2. **CLI, only if its implementation or required tooling changes** — adopt the reviewed Core API and qualify it:
    ```bash
    GOWORK=off go get github.com/codefly-dev/core@vX.Y.Z && go mod tidy
+   # Update pkg/conformance/matrix.json's core field to the same release line.
+   go test ./pkg/conformance/...
    # commit, merge the CLI PR, then:
    codefly publish patch        # in pkg/cli mode
    codefly self build           # install the qualified CLI when needed
    ```
+   Follow [Updating the core pin](../supported-matrix.md#updating-the-core-pin)
+   for the matrix declaration; do not change row statuses or required receipts
+   merely because the dependency version changed.
    Agent publication runs `codefly ci run`. Verify that the selected CLI has the
    required tooling, including [port isolation](../agent-ci-port-isolation.md).
    Do not rebuild it merely to match an agent's linked Core version.
