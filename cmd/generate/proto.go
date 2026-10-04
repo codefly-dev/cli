@@ -78,7 +78,7 @@ Examples:
   codefly generate proto --proto ../proto --output ../code --path saas/v1/service.proto
 `,
 	Args: cobra.NoArgs,
-	RunE: func(_ *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		ctx, stop := common.SignalContext(ctx)

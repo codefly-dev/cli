@@ -43,7 +43,7 @@ var MCPServeCmd = &cobra.Command{
 The server communicates via JSON-RPC 2.0 over stdin/stdout, following the
 Model Context Protocol specification.`,
 	Args: cobra.NoArgs,
-	RunE: func(_ *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		// First statement in the command: from the moment this process is
 		// `mcp serve`, stdout carries JSON-RPC and nothing else. Everything
 		// below this line logs — common.NewContext installs pkg/cli's stdout
@@ -87,7 +87,7 @@ var MCPToolsCmd = &cobra.Command{
 	Use:   "tools",
 	Short: "List the tools exposed by the Codefly MCP server",
 	Args:  cobra.NoArgs,
-	RunE: func(_ *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		defer services.ClearAgents()

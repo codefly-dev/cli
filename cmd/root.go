@@ -39,10 +39,10 @@ container images, and deploy services to configured environments.`,
   codefly add service api --agent=go-grpc
   codefly run service api
   codefly deploy service api --env=staging`,
-	PersistentPreRunE: func(_ *cobra.Command, args []string) error {
+	PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
 		return applyRootOptions()
 	},
-	Run: func(_ *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		common.Logo()
 	},
 }

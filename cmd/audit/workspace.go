@@ -21,7 +21,7 @@ var WorkspaceCmd = &cobra.Command{
 	Use:   "workspace",
 	Short: "Scan every workspace service for vulnerable and outdated dependencies",
 	Args:  cobra.NoArgs,
-	RunE: func(_ *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		defer services.ClearAgents()
