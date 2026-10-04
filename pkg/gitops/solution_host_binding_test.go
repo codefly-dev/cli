@@ -607,14 +607,29 @@ func TestDeclaredBindingsReachArgo(t *testing.T) {
 	if !strings.Contains(set, "overlay: "+overlay) {
 		t.Fatalf("no Argo Application delivers the declared bindings:\n%s", set)
 	}
-	// After every unit of the module: the host is a module of the composition
-	// too, and under a parent that syncs by wave its own delivery must not
-	// wait on a service ordered after it.
-	if !strings.Contains(set, "wave: \""+deliveryWave+"\"") {
+	// Beside the module's consumers, after its bootstrap units: a consumer
+	// whose readiness waits on activation is activated while it comes up,
+	// never after it is healthy.
+	if !strings.Contains(set, "overlay: "+overlay+"\n") || !strings.Contains(set, "wave: \""+deliveryWave+"\"") {
 		t.Fatalf("the bindings do not land in the delivery wave:\n%s", set)
 	}
-	if deliveryWave <= consumerUnitWave {
-		t.Fatalf("delivery is ordered before the units it may depend on (wave %q)", deliveryWave)
+	if deliveryWave != consumerUnitWave || deliveryWave <= bootstrapUnitWave {
+		t.Fatalf("delivery is wave %q; it belongs beside the consumers (%q), after the bootstrap units (%q)", deliveryWave, consumerUnitWave, bootstrapUnitWave)
+	}
+	// The host's own module posts to the API its units serve, so its delivery
+	// follows them.
+	hostRoot := t.TempDir()
+	hostInventory := *inventory
+	hostInventory.HostsDelivery = true
+	if err := generateArgoBootstrap(context.Background(), config, hostRoot, targetPath, &hostInventory, "prod", strings.Repeat("c", 40), ""); err != nil {
+		t.Fatal(err)
+	}
+	hostSet, err := os.ReadFile(filepath.Join(hostRoot, "bootstrap", "applicationset.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(hostSet), "wave: \""+hostDeliveryWave+"\"") || hostDeliveryWave <= consumerUnitWave {
+		t.Fatalf("the host module's delivery is not ordered after its units (wave %q):\n%s", hostDeliveryWave, hostSet)
 	}
 	cluster, namespaced, err := snapshotAuthority(root, inventory, "prod")
 	if err != nil {

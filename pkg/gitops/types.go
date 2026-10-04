@@ -95,6 +95,11 @@ type Inventory struct {
 	// points an Argo Application at its environment overlay and derives the
 	// promotion's authority from it, exactly as it does for a unit.
 	SolutionHostBindingPath string `json:"solutionHostBindingPath,omitempty"`
+	// HostsDelivery is true for the module that serves the environment's
+	// delivery API: its own delivery cannot precede the API it posts to, so
+	// it is ordered after the module's units where every other module's
+	// delivery goes beside them.
+	HostsDelivery bool `json:"hostsDelivery,omitempty"`
 	// SolutionAuthorityPath is the render subdirectory holding the declared
 	// authority documents, when this render declared any. Delivered into the
 	// platform's authority namespace, through its own Argo component.
@@ -270,6 +275,9 @@ type RenderOptions struct {
 	// documents, so the inventory records the delivered path rather than the
 	// intent to write one.
 	SolutionHostBindingPath string
+	// HostsDelivery carries Inventory.HostsDelivery across a publish's
+	// re-render of the inventory.
+	HostsDelivery bool
 	// SolutionInstances are the solution instances of the resolved composition
 	// whose workloads this render delivers, resolved by the caller from the same
 	// resolution the workloads came from. One SolutionHostBinding is rendered

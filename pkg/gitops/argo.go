@@ -102,20 +102,33 @@ const (
 	moduleResourcesWave = "-1"
 	bootstrapUnitWave   = "0"
 	consumerUnitWave    = "1"
-	// Delivery lands after every unit of the module. A delivery Application
-	// carries a Sync hook that POSTs to the host's delivery API, and the host
-	// is itself a module of the composition: on a cold bootstrap its own
-	// delivery would wait on a service that, ordered after it, never starts.
+	// Delivery goes BESIDE a module's consumers, in their wave, not after
+	// them: the delivery Application carries a Sync hook that POSTs the
+	// module's declarations to the host's delivery API, and a consumer whose
+	// readiness waits on its activation would, with delivery ordered after
+	// the consumers, wait on a declaration that waits on it. In the same wave
+	// neither waits for the other — a parent that syncs by wave starts both
+	// once the bootstrap units are healthy, the Job retries within its budget
+	// until the host answers, and the consumer becomes ready once activated.
 	// The Applications an ApplicationSet stamps sync independently of each
-	// other, so the wave orders them only where a parent application syncs
-	// them by wave; there, delivery must be the last thing a module does.
-	//
-	// The cost is real and accepted: under such ordering, a module whose
-	// rollout is unhealthy has its new declaration withheld until the rollout
-	// is, and the host keeps the previous generation applied meanwhile. The
-	// alternative was a bootstrap that could not complete.
-	deliveryWave = "2"
+	// other, so the wave orders them only where a parent syncs them by wave.
+	deliveryWave = consumerUnitWave
+	// The host's own module is the exception: its delivery posts to the API
+	// its units serve, so it follows them, or on a cold bootstrap it would
+	// wait on a service ordered after it. What that costs is the host's own
+	// declaration waiting on its rollout being healthy — the host's, nobody
+	// else's.
+	hostDeliveryWave = "2"
 )
+
+// deliveryWaveFor orders a module's delivery: beside its consumers, unless the
+// module serves the delivery API itself.
+func deliveryWaveFor(inventory *Inventory) string {
+	if inventory.HostsDelivery {
+		return hostDeliveryWave
+	}
+	return deliveryWave
+}
 
 func unitWave(unit *InventoryUnit) string {
 	if unit.Bootstrap {
@@ -312,14 +325,14 @@ func generateArgoBootstrap(
 		components = append(components, argoBootstrapComponent{
 			Component: argoBoundedName(componentNameBudget, inventory.Module, "solution-host-bindings"),
 			Overlay:   filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionHostBindingPath, "overlays", environment)),
-			Wave:      deliveryWave,
+			Wave:      deliveryWaveFor(inventory),
 		})
 	}
 	if inventory.SolutionAuthorityPath != "" {
 		components = append(components, argoBootstrapComponent{
 			Component: argoBoundedName(componentNameBudget, inventory.Module, "solution-authority"),
 			Overlay:   filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionAuthorityPath, "overlays", environment)),
-			Wave:      deliveryWave,
+			Wave:      deliveryWaveFor(inventory),
 			Project:   authorityProject,
 			Namespace: authorityNamespace,
 		})

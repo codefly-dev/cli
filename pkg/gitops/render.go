@@ -1384,6 +1384,7 @@ func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
 		Namespace: opts.Namespace, AppProject: opts.AppProject, OwnedPath: filepath.ToSlash(opts.OwnedPath),
 		ModulePath: filepath.ToSlash(opts.ModulePath), Package: opts.Package,
 		SolutionHostBindingPath: filepath.ToSlash(opts.SolutionHostBindingPath),
+		HostsDelivery:           opts.HostsDelivery || hostsDeliveryAPI(opts),
 		SolutionAuthorityPath:   filepath.ToSlash(opts.SolutionAuthorityPath),
 		Units:                   append([]InventoryUnit(nil), opts.Units...),
 	}
@@ -1539,4 +1540,15 @@ func copyTreeEntry(destination, path, relative string, info os.FileInfo) error {
 		return flushErr
 	}
 	return closeErr
+}
+
+// hostsDeliveryAPI reports whether the module being rendered serves the
+// environment's delivery API — the host's own module, whose delivery must
+// follow its units rather than go beside them.
+func hostsDeliveryAPI(opts *RenderOptions) bool {
+	if opts.Host == nil {
+		return false
+	}
+	module, _, _ := opts.Host.DeliveryEndpoint()
+	return module != "" && module == opts.Module
 }
