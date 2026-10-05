@@ -137,12 +137,13 @@ implemented. Don't rely on a list kept here — it drifts the moment a command l
   ↔ the kind core registers (`codefly:runnable`). Used by `codefly agent install --kind`
   and the MCP `list_agents`/`agent_info` schemas so the convention has a single copy.
 - **pkg/posture/** — the deployed security posture: the one guard every restricted
-  render of a cell's manifests passes through. It owns the effective-manifest
-  pipeline (the environment's overlay built with Kustomize, wrapper lists expanded,
-  references resolved), the rules themselves, the facts an environment asserts about
-  its platform, and the reviewed allowances that except one service. Written against
-  the shape of a rendered workload, never against a product's names. See
-  [docs/commands.md](docs/commands.md#the-deployed-security-posture).
+  render of a cell's manifests passes through. It owns the manifest selector every
+  path shares (`SelectManifests`), the service contract reader
+  (`ContractFromService`: `spec.deployment.storage` and the service's declared
+  endpoints), the three rules, the facts an environment asserts about its platform,
+  and the reviewed allowances that except one service. Written against declarations
+  and manifest shape, never against a product's names or a container's command line.
+  See [docs/commands.md](docs/commands.md#the-deployed-security-posture).
 - **pkg/runnables/** — the one projection of a `resources.Runnable` that every listing
   surface emits (`list runnables --json`, `show runnable --json`, MCP `list_runnables`).
 - **pkg/cli/**, **pkg/builder/**, **pkg/deployments/**, **pkg/generators/**, **pkg/imports/**,
@@ -190,14 +191,19 @@ relative paths.
   `codefly run`. Test thoroughly.
 - **Configs flow as environment variables, not files.** Connection strings derived from network
   mappings are injected as `CODEFLY__SERVICE_...` env vars. A render of restricted
-  manifests for an environment that deploys to a cell enforces this: it refuses a
-  workload that mounts configuration or credentials, carries its own TLS for in-cell
-  peers on a mesh-protected environment, or keeps credential state in memory —
-  naming the service, the rule and the field, with an environment-level allowance as
-  the only, always-printed exception (`pkg/posture`). It reads the manifests the cell
-  would apply (the environment's Kustomize-built overlay) and refuses what it cannot
-  read rather than assuming it conforms. See
-  [docs/commands.md](docs/commands.md#the-deployed-security-posture) for the limits
+  manifests for an environment that deploys to a cell enforces this: a deployed
+  workload carries the standard scratch volume and nothing else, the render delivers
+  no certificate material on a mesh-protected environment, and a workload that keeps
+  its own state must have declared `spec.deployment.storage: durable`. Each refusal
+  names the service, the rule and the field; an environment-level allowance is the
+  only exception, printed on every deployed run including `--dry-run`.
+- **The posture guard reads declarations and manifest shape, never a container's env
+  or command line.** A render cannot prove from those what a process does, and the
+  attempt both missed ordinary spellings and refused correct configurations. What only
+  the service can know, the service declares; the render makes the declaration
+  mandatory and the exception visible. The runtime half — a store refusing to start
+  ephemeral in a deployed context — belongs to the store and the cell's preflight. See
+  [docs/commands.md](docs/commands.md#the-deployed-security-posture) for exactly what
   each rule does and does not establish.
 - **Daemon state lives in `~/.codefly/`** (override with `CODEFLY_HOME`). PID file, logs, agent
   binaries all live there.

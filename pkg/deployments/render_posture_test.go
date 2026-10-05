@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -15,8 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// violatingWorkload starts a development server for a workload holding credential
-// material, and mounts a Secret: two refusals of the deployed posture.
+// violatingWorkload mounts a Secret, which is not the standard scratch volume.
 const violatingWorkload = `apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -34,23 +32,27 @@ spec:
       containers:
         - name: store
           image: registry.example.com/acme/store@sha256:aaaa
-          args: ["server", "-dev"]
-          env:
-            - name: STORE_ROOT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: secret-store
-                  key: STORE_ROOT_TOKEN
       volumes:
         - name: credentials
           secret:
             secretName: store-credentials
 `
 
+// certificateMaterial is a ConfigMap the render would deliver, carrying material
+// under Kubernetes' own conventional key.
+const certificateMaterial = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: store-trust
+  namespace: acme
+data:
+  ca.crt: material
+`
+
 func cellEnvironment() *environments.Environment {
 	return &environments.Environment{
 		Name:    "staging",
-		Cluster: &environments.EnvironmentCluster{Kind: "gke", Context: "cell"},
+		Cluster: &environments.EnvironmentCluster{Kind: "managed", Context: "cell"},
 	}
 }
 
@@ -64,12 +66,16 @@ func TestRenderManagerHoldsItsOutputToTheDeployedPosture(t *testing.T) {
 	require.ErrorContains(t, err, "deployed render refuses service shop/store")
 	require.ErrorContains(t, err, posture.RuleNonScratchMount)
 
-	// The same path reaches the other rules: without the mount, the development
-	// server of a workload holding credential material is what is refused.
-	withoutMount := violatingWorkload[:strings.Index(violatingWorkload, "      volumes:")]
+	// The same path reaches the other rules: certificate material the render
+	// delivers is refused on a mesh-protected environment.
+	meshed := cellEnvironment()
+	meshed.Posture = &posture.Declaration{
+		Asserts: map[string]bool{posture.AssertMeshProtectedTransport: true},
+	}
+	meshedManager := NewRenderManager(&resources.Workspace{Name: "acme"}, meshed)
 	require.ErrorContains(t,
-		manager.checkPosture(context.Background(), module, service, withoutMount),
-		posture.RuleInMemoryStateStore)
+		meshedManager.checkPosture(context.Background(), module, service, certificateMaterial),
+		posture.RulePeerTransportMaterial)
 
 	local := &environments.Environment{
 		Name:    "local",
@@ -78,6 +84,26 @@ func TestRenderManagerHoldsItsOutputToTheDeployedPosture(t *testing.T) {
 	localManager := NewRenderManager(&resources.Workspace{Name: "acme"}, local)
 	require.NoError(t, localManager.checkPosture(context.Background(), module, service, violatingWorkload),
 		"a render for a local cluster is not a cell")
+}
+
+// A dry run prints the exceptions it relies on, like every other deployed render.
+func TestRenderManagerReportsTheEnvironmentsAllowances(t *testing.T) {
+	env := cellEnvironment()
+	env.Posture = &posture.Declaration{Allowances: []posture.Allowance{{
+		Rule: posture.RuleNonScratchMount, Service: "shop/store", Reason: "a durable data claim, reviewed",
+	}}}
+	manager := NewRenderManager(&resources.Workspace{Name: "acme"}, env)
+	require.Equal(t, []string{
+		"security posture: service shop/store is allowed to break rule non-scratch-mount — a durable data claim, reviewed",
+	}, manager.PostureAllowances())
+
+	local := &environments.Environment{
+		Name:    "local",
+		Cluster: &environments.EnvironmentCluster{Kind: environments.ClusterKindK3d},
+		Posture: env.Posture,
+	}
+	require.Nil(t, NewRenderManager(&resources.Workspace{Name: "acme"}, local).PostureAllowances(),
+		"a render that is not for a cell is not held to the posture and reports no exception to it")
 }
 
 // The dry-run path end to end: the manager builds the tree with Kustomize and

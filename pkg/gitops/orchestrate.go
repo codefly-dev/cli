@@ -12,6 +12,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/posture"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -97,6 +98,11 @@ func renderModuleTree(
 		if err != nil {
 			return err
 		}
+		contracts, err := serviceContracts(module.Name, services)
+		if err != nil {
+			return err
+		}
+		options.Contracts = contracts
 		// A configuration error refuses the render before any image is built or
 		// pushed, listing every unresolved reference of every root's graph.
 		if err = orchestration.PlanConfigurationReferences(ctx, workspace, env, roots, false); err != nil {
@@ -300,6 +306,21 @@ func copySelectedEnvironmentBootstrap(moduleDir, environment, destination string
 	return true, nil
 }
 
+// serviceContracts reads what each service of a render declares about itself. One
+// reader, one shape: the posture is decided by these declarations, so a path that
+// collected them differently would be a path that enforced something different.
+func serviceContracts(module string, services []*resources.Service) (posture.Contracts, error) {
+	contracts := posture.Contracts{}
+	for _, service := range services {
+		contract, err := posture.ContractFromService(module, service)
+		if err != nil {
+			return nil, err
+		}
+		contracts.Add(contract)
+	}
+	return contracts, nil
+}
+
 func copyEnvironmentBootstrap(source, environment, destination string) error {
 	selected := filepath.Join(source, "overlays", environment)
 	info, err := os.Stat(selected)
@@ -341,7 +362,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 	if err != nil {
 		return RenderResult{}, err
 	}
-	return RenderOwnedTree(ctx, &RenderOptions{
+	options := &RenderOptions{
 		Destination:   destination,
 		Module:        module.Name,
 		Unit:          service.Name,
@@ -352,7 +373,8 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		Package:       pkg,
 		Posture:       env.Posture,
 		DeploysToCell: env.DeploysToCell(),
-	}, func(ctx context.Context, stage string) error {
+	}
+	return RenderOwnedTree(ctx, options, func(ctx context.Context, stage string) error {
 		// A configuration error refuses the render before any image is built or
 		// pushed.
 		if err := orchestration.PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{service}, build.standAlone); err != nil {
@@ -361,6 +383,13 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		if err := prepareSnapshotRegistry(ctx, env); err != nil {
 			return err
 		}
+		contract, contractErr := posture.ContractFromService(module.Name, service)
+		if contractErr != nil {
+			return contractErr
+		}
+		contracts := posture.Contracts{}
+		contracts.Add(contract)
+		options.Contracts = contracts
 		var graph map[string]*resources.Service
 		var selfEndpoints map[string]map[string]string
 		var deployed map[string]*basev0.Configuration
@@ -376,7 +405,14 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 			sink,
 			serviceRenderDestinations(stage),
 			nil,
-			func(services map[string]*resources.Service) { graph = services },
+			func(services map[string]*resources.Service) {
+				graph = services
+				for _, rendered := range services {
+					if staged, stagedErr := posture.ContractFromService(module.Name, rendered); stagedErr == nil {
+						contracts.Add(staged)
+					}
+				}
+			},
 			func(rendered map[string]map[string]string) { selfEndpoints = rendered },
 			func(rendered map[string]*basev0.Configuration, keys map[string][]string) {
 				deployed, secretKeys = rendered, keys

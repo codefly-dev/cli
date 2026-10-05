@@ -93,6 +93,10 @@ var ModuleCmd = &cobra.Command{
 			manager := deployments.NewRenderManager(workspace, env)
 			deploymentManager = manager
 			evidenceProvider = manager
+			// A dry run is a deployed render: the exceptions it relies on are
+			// printed on it too, or an allowance nobody sees becomes the silent
+			// skip the mechanism exists to prevent.
+			printPostureAllowances(manager.PostureAllowances())
 		}
 
 		cli.Header(1, "Deploying module %s to env %s", module.Name, env.Name)

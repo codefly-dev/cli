@@ -219,6 +219,10 @@ type RenderOptions struct {
 	// re-validation reconstructed from an inventory leaves it nil, and the
 	// posture pass it gates does not run (see enforceDeployedPosture).
 	Posture *posture.Declaration
+	// Contracts are what the services of this render declared about themselves —
+	// their storage mode and their endpoints — which is what the deployed posture
+	// is decided by (pkg/posture). A unit with no contract has declared nothing.
+	Contracts posture.Contracts
 	// DeploysToCell is the environment's own classification: whether this render
 	// targets a cell rather than the machine running the command
 	// (environments.Environment.DeploysToCell). It is what subjects a render to

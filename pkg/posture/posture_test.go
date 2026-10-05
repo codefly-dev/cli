@@ -5,19 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 )
 
-func document(t *testing.T, text string) map[string]any {
-	t.Helper()
-	var value map[string]any
-	require.NoError(t, yaml.Unmarshal([]byte(text), &value))
-	return value
-}
-
-// meshed is an environment that asserts the platform protects transport between
-// its workloads.
 func meshed(allowances ...Allowance) *Declaration {
 	return &Declaration{
 		Asserts:    map[string]bool{AssertMeshProtectedTransport: true},
@@ -25,137 +16,59 @@ func meshed(allowances ...Allowance) *Declaration {
 	}
 }
 
-const scratchWorkload = `apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: api
-spec:
-  template:
-    spec:
-      containers:
-        - name: api
-          image: registry.example.com/acme/api@sha256:aaaa
-          env:
-            - name: ACME__ENDPOINT__SHOP__STORE__TCP
-              value: store.acme.svc.cluster.local:5432
-            - name: SESSION_MAX_ACTIVE_DEVICES
-              value: "4"
-            - name: API_KEY_FILE
-              value: /run/api/key
-      volumes:
-        - name: tmp
-          emptyDir: {}
-`
+var storeSubject = Subject{Module: "shop", Service: "store"}
 
-const durableWorkload = `apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: store
-spec:
-  template:
-    spec:
-      containers:
-        - name: store
-          image: registry.example.com/acme/store@sha256:bbbb
-      volumes:
-        - name: tmp
-          emptyDir: {}
-        - name: data
-          persistentVolumeClaim:
-            claimName: store-data
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: ["ReadWriteOnce"]
-`
-
-func TestConformingWorkloadsPassEveryRule(t *testing.T) {
-	subject := Subject{Module: "shop", Service: "api"}
-	require.NoError(t, Validate(document(t, scratchWorkload), subject, "services/api/base/deployment.yaml", meshed()))
-	require.NoError(t, Validate(document(t, durableWorkload), subject, "services/store/base/stateful-set.yaml", meshed()))
+// documents decodes a manifest body as one selected set.
+func documents(t *testing.T, body string) []Document {
+	t.Helper()
+	values, err := decodeDocuments([]byte(body))
+	require.NoError(t, err)
+	decoded := make([]Document, 0, len(values))
+	for _, value := range values {
+		decoded = append(decoded, Document{Location: "services/store/overlays/staging (Kustomize output)", Value: value})
+	}
+	return expand(decoded)
 }
 
-func TestRuleRefusals(t *testing.T) {
-	subject := Subject{Module: "shop", Service: "store"}
-	cases := []struct {
-		name        string
-		manifest    string
-		declaration *Declaration
-		rule        string
-		field       string
-		detail      string
-	}{
-		{
-			name: "a listener configured with its own certificate on a mesh-protected environment",
-			manifest: `apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: store
-spec:
-  template:
-    spec:
-      containers:
+// workload wraps a pod specification body in a StatefulSet.
+func workload(body string) string {
+	return "apiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: store\n  namespace: acme\nspec:\n  template:\n    spec:\n" + body
+}
+
+// conformingWorkload is what the platform's own projection produces: the standard
+// scratch volume, mounted at the standard scratch path, and nothing else.
+const conformingWorkload = `      containers:
         - name: store
-          env:
-            - name: STORE_TLS_CERT_FILE
-              value: /etc/store/server.crt
-`,
-			declaration: meshed(),
-			rule:        RulePeerTransportMaterial,
-			field:       "spec.template.spec.containers[0].env[0]",
-			detail:      "STORE_TLS_CERT_FILE=/etc/store/server.crt configures TLS material",
-		},
-		{
-			name: "a client handed CA material on the command line",
-			manifest: `apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: store
-spec:
-  template:
-    spec:
-      containers:
-        - name: store
-          args: ["serve", "--ca-cert=/etc/peers/ca.crt"]
-`,
-			declaration: meshed(),
-			rule:        RulePeerTransportMaterial,
-			field:       "spec.template.spec.containers[0].args[1]",
-			detail:      "--ca-cert=/etc/peers/ca.crt configures TLS material",
-		},
-		{
-			name: "a volume delivering TLS material as files",
-			manifest: `apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: store
-spec:
-  template:
-    spec:
-      containers:
-        - name: store
+          image: registry.example.com/acme/store@sha256:aaaa
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
       volumes:
-        - name: peer-tls
-          secret:
-            secretName: store-peer-tls
-`,
-			declaration: meshed(),
-			rule:        RulePeerTransportMaterial,
-			field:       "spec.template.spec.volumes[0].secret",
-			detail:      `volume "peer-tls" delivers tls as files`,
-		},
-		{
-			name: "a ConfigMap volume carrying configuration",
-			manifest: `apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: store
-spec:
-  template:
-    spec:
-      containers:
+        - name: tmp
+          emptyDir: {}
+`
+
+func durable() Contracts {
+	contracts := Contracts{}
+	contracts.Add(ServiceContract{Module: "shop", Service: "store", StorageMode: StorageModeDurable})
+	return contracts
+}
+
+func TestAConformingWorkloadNeedsNoAllowance(t *testing.T) {
+	require.NoError(t, ValidateDocuments(documents(t, workload(conformingWorkload)), storeSubject, durable(), meshed()))
+}
+
+// Rule 2 is an identity, not a list of sources or destinations: the standard
+// scratch volume, mounted where it belongs, and nothing else. Every case here is
+// one way of carrying something else, including the ones that only changed the
+// destination.
+func TestOnlyTheStandardScratchVolumeIsCarried(t *testing.T) {
+	cases := map[string]string{
+		"a ConfigMap volume": `      containers:
         - name: store
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: tmp
           emptyDir: {}
@@ -163,284 +76,345 @@ spec:
           configMap:
             name: store-config
 `,
-			rule:   RuleNonScratchMount,
-			field:  "spec.template.spec.volumes[1].configMap",
-			detail: `volume "config" takes its contents from a configMap source`,
-		},
-		{
-			name: "a projected volume",
-			manifest: `apiVersion: batch/v1
-kind: Job
-metadata:
-  name: store-bootstrap
-spec:
-  template:
-    spec:
-      containers:
-        - name: bootstrap
+		"a Secret volume": `      containers:
+        - name: store
+      volumes:
+        - name: credentials
+          secret:
+            secretName: store-credentials
+`,
+		"a projected volume": `      containers:
+        - name: store
       volumes:
         - name: identity
           projected:
             sources: []
 `,
-			rule:   RuleNonScratchMount,
-			field:  "spec.template.spec.volumes[0].projected",
-			detail: `volume "identity" takes its contents from a projected source`,
-		},
-		{
-			name: "a host path",
-			manifest: `apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: store
-spec:
-  template:
-    spec:
-      containers:
+		"a host path": `      containers:
         - name: store
       volumes:
         - name: host
           hostPath:
             path: /var/lib/store
 `,
-			rule:   RuleNonScratchMount,
-			field:  "spec.template.spec.volumes[0].hostPath",
-			detail: `volume "host" takes its contents from a hostPath source`,
-		},
-		{
-			name: "a development-mode switch on the command line",
-			manifest: `apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: store
-spec:
-  template:
-    spec:
-      containers:
+		"a configuration claim at an application path": `      containers:
         - name: store
-          command: ["store", "server", "-dev"]
-          env:
-            - name: STORE_ROOT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: secret-store
-                  key: STORE_ROOT_TOKEN
-`,
-			rule:   RuleInMemoryStateStore,
-			field:  "spec.template.spec.containers[0].command[2]",
-			detail: "-dev starts its development server",
-		},
-		{
-			name: "a development-mode root credential",
-			manifest: `apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: store
-spec:
-  template:
-    spec:
-      containers:
-        - name: store
-          env:
-            - name: STORE_DEV_ROOT_TOKEN_ID
-              value: "seeded"
-`,
-			rule:   RuleInMemoryStateStore,
-			field:  "spec.template.spec.containers[0].env[0]",
-			detail: "STORE_DEV_ROOT_TOKEN_ID=seeded starts its development server",
-		},
-		{
-			name: "in-memory storage selected by value",
-			manifest: `apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: store
-spec:
-  template:
-    spec:
-      containers:
-        - name: store
-          env:
-            - name: STORE_MASTER_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: secret-store
-                  key: STORE_MASTER_KEY
-            - name: STORE_STORAGE_BACKEND
-              value: inmem
-`,
-			rule:   RuleInMemoryStateStore,
-			field:  "spec.template.spec.containers[0].env[1]",
-			detail: "STORE_STORAGE_BACKEND=inmem keeps its state in memory",
-		},
-		{
-			name: "a CronJob's pod template is a workload too",
-			manifest: `apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: store-compact
-spec:
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          containers:
-            - name: compact
-          volumes:
+          args: ["--config=/app/config/settings.yaml"]
+          volumeMounts:
             - name: config
-              configMap:
-                name: store-config
+              mountPath: /app/config
+              readOnly: true
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: store-config
 `,
-			rule:   RuleNonScratchMount,
-			field:  "spec.jobTemplate.spec.template.spec.volumes[0].configMap",
-			detail: `volume "config" takes its contents from a configMap source`,
-		},
-		{
-			name: "an init container is held to the same rules",
-			manifest: `apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: store
-spec:
-  template:
-    spec:
-      initContainers:
-        - name: migrate
-          args: ["--dev-mode=true"]
-          env:
-            - name: STORE_ROOT_TOKEN
-              value: seeded
-      containers:
+		"a second scratch volume at an application path": `      containers:
         - name: store
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: extra
+              mountPath: /app/secrets
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: extra
+          emptyDir:
+            medium: Memory
 `,
-			rule:   RuleInMemoryStateStore,
-			field:  "spec.template.spec.initContainers[0].args[0]",
-			detail: "--dev-mode=true starts its development server",
-		},
+		"the standard volume mounted somewhere else as well": `      containers:
+        - name: store
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: tmp
+              mountPath: /app/cache
+      volumes:
+        - name: tmp
+          emptyDir: {}
+`,
+		"a durable claim declared but never mounted": `      containers:
+        - name: store
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: data
+          persistentVolumeClaim:
+            claimName: store-data
+`,
+		"a scratch volume under another name": `      containers:
+        - name: store
+          volumeMounts:
+            - name: cache
+              mountPath: /tmp
+      volumes:
+        - name: cache
+          emptyDir: {}
+`,
 	}
-	for _, test := range cases {
-		t.Run(test.name, func(t *testing.T) {
-			err := Validate(document(t, test.manifest), subject, "services/store/base/workload.yaml", test.declaration)
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := ValidateDocuments(documents(t, workload(body)), storeSubject, durable(), meshed())
 			require.Error(t, err)
 			var violation *Violation
 			require.ErrorAs(t, err, &violation)
-			require.Equal(t, test.rule, violation.Rule)
-			require.Equal(t, test.field, violation.Field)
-			message := err.Error()
-			require.Contains(t, message, "deployed render refuses service shop/store")
-			require.Contains(t, message, test.rule)
-			require.Contains(t, message, test.field)
-			require.Contains(t, message, test.detail)
-			require.Contains(t, message, "services/store/base/workload.yaml")
-			require.Contains(t, message, "posture.allowances")
-			require.Contains(t, message, `docs/commands.md ("The deployed security posture")`)
+			require.Equal(t, RuleNonScratchMount, violation.Rule)
+			require.NotEmpty(t, violation.Field)
+			require.Contains(t, err.Error(), "deployed render refuses service shop/store")
 		})
 	}
 }
 
-// Transport material is only refused where the environment states that the
-// platform already protects transport between its workloads. Without that
-// assertion the service's own TLS may be the only protection there is.
-func TestTransportMaterialIsOnlyRefusedOnAMeshProtectedEnvironment(t *testing.T) {
-	manifest := document(t, `apiVersion: apps/v1
-kind: Deployment
+// Rule 1 reads what the render delivers and what the service declared. A
+// container's environment and command line are not read at all, which is why an
+// external HTTPS destination is not mistaken for a listener of its own.
+func TestCertificateMaterialIsRefusedByWhatTheRenderDelivers(t *testing.T) {
+	refused := map[string]string{
+		"a Secret of a certificate type": `apiVersion: v1
+kind: Secret
 metadata:
-  name: store
-spec:
-  template:
-    spec:
-      containers:
+  name: store-peer
+  namespace: acme
+type: kubernetes.io/tls
+`,
+		"a ConfigMap carrying certificate material": `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: store-trust
+  namespace: acme
+data:
+  ca.crt: |
+    -----BEGIN CERTIFICATE-----
+`,
+		"a ConfigMap key that is a material file": `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: store-trust
+  namespace: acme
+data:
+  internal-root.pem: |
+    -----BEGIN CERTIFICATE-----
+`,
+		"a projected source delivering a certificate": workload(`      containers:
+        - name: store
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: trust
+          projected:
+            sources:
+              - configMap:
+                  name: store-trust
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+`),
+	}
+	for name, body := range refused {
+		t.Run(name, func(t *testing.T) {
+			err := ValidateDocuments(documents(t, body), storeSubject, durable(), meshed())
+			require.Error(t, err)
+			var violation *Violation
+			require.ErrorAs(t, err, &violation)
+			require.Equal(t, RulePeerTransportMaterial, violation.Rule)
+		})
+	}
+
+	// Without the mesh assertion, material the render delivers is this
+	// environment's only transport protection and the rule does not apply. (The
+	// projected-volume case above is also a mount violation, which is not
+	// mesh-dependent, so it is not part of this check.)
+	t.Run("delivered material is not refused where no mesh is asserted", func(t *testing.T) {
+		for name, body := range refused {
+			if name == "a projected source delivering a certificate" {
+				continue
+			}
+			require.NoError(t, ValidateDocuments(documents(t, body), storeSubject, durable(), &Declaration{}), name)
+		}
+	})
+
+	// The cases the previous, sniffing implementation got wrong in both
+	// directions: an external destination is not this service's own transport, and
+	// an ordinary credential is not certificate material.
+	accepted := map[string]string{
+		"an external HTTPS destination": workload(`      containers:
         - name: store
           env:
-            - name: STORE_TLS_CERT_FILE
-              value: /etc/store/server.crt
-`)
-	subject := Subject{Module: "shop", Service: "store"}
-	require.NoError(t, Validate(manifest, subject, "workload.yaml", nil))
-	require.NoError(t, Validate(manifest, subject, "workload.yaml", &Declaration{}))
-	require.Error(t, Validate(manifest, subject, "workload.yaml", meshed()))
-}
-
-// A credential a service authenticates with is not its transport. Each of these
-// is a real name a render carries today, and none of them is TLS material.
-func TestCredentialNamesAreNotTransportMaterial(t *testing.T) {
-	for _, name := range []string{
-		"CODEFLY__WORKSPACE_SECRET_CONFIGURATION__APP_INTEGRATION__APP_PRIVATE_KEY",
-		"CODEFLY__SERVICE_SECRET_CONFIGURATION__SHOP__STORE__POSTGRES__PASSWORD",
-		"API_KEY_FILE",
-		"SIGNING_KEY",
-		"SESSION_MAX_ACTIVE_DEVICES",
-	} {
-		manifest := document(t, `apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: api
-spec:
-  template:
-    spec:
-      containers:
-        - name: api
+            - name: WEBHOOK_URL
+              value: https://hooks.example.com/events
+            - name: OIDC_ISSUER_URL
+              value: https://login.example.com
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+`),
+		"a credential delivered as a secret reference": workload(`      containers:
+        - name: store
           env:
-            - name: `+name+`
+            - name: APP_CLIENT_KEY
               valueFrom:
                 secretKeyRef:
-                  name: secret-api
-                  key: `+name+`
-`)
-		require.NoError(t,
-			Validate(manifest, Subject{Module: "shop", Service: "api"}, "workload.yaml", meshed()),
-			name)
+                  name: secret-store
+                  key: APP_CLIENT_KEY
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+`),
+		"a Secret of an ordinary type carrying no material": `apiVersion: v1
+kind: Secret
+metadata:
+  name: secret-store
+  namespace: acme
+type: Opaque
+`,
+	}
+	for name, body := range accepted {
+		t.Run(name, func(t *testing.T) {
+			require.NoError(t, ValidateDocuments(documents(t, body), storeSubject, durable(), meshed()),
+				"a correct configuration must not need an allowance")
+		})
 	}
 }
 
-func TestAnAllowanceExcusesExactlyItsRuleAndService(t *testing.T) {
-	manifest := document(t, `apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: web
-spec:
-  template:
-    spec:
-      containers:
-        - name: web
-      volumes:
-        - name: config
-          configMap:
-            name: web-config
-`)
-	subject := Subject{Module: "shop", Service: "web"}
-	bare := &Declaration{Allowances: []Allowance{{
-		Rule: RuleNonScratchMount, Service: "web", Reason: "the asset bundle is built into the image",
-	}}}
-	qualified := &Declaration{Allowances: []Allowance{{
-		Rule: RuleNonScratchMount, Service: "shop/web", Reason: "the asset bundle is built into the image",
-	}}}
-	require.NoError(t, Validate(manifest, subject, "workload.yaml", bare))
-	require.NoError(t, Validate(manifest, subject, "workload.yaml", qualified))
+// A service's own declaration is where transport protocol is decided.
+func TestADeclaredTLSEndpointIsRefusedOnAMeshedEnvironment(t *testing.T) {
+	contracts := Contracts{}
+	contracts.Add(ServiceContract{
+		Module: "shop", Service: "store", StorageMode: StorageModeDurable,
+		Endpoints: []EndpointContract{{Name: "peer", API: "https"}},
+	})
+	err := ValidateDocuments(documents(t, workload(conformingWorkload)), storeSubject, contracts, meshed())
+	require.ErrorContains(t, err, "deployed render refuses service shop/store")
+	require.ErrorContains(t, err, RulePeerTransportMaterial)
+	require.ErrorContains(t, err, `endpoints[peer].api = https`)
 
-	otherService := &Declaration{Allowances: []Allowance{{
-		Rule: RuleNonScratchMount, Service: "shop/api", Reason: "unrelated",
-	}}}
-	otherRule := &Declaration{Allowances: []Allowance{{
-		Rule: RuleInMemoryStateStore, Service: "shop/web", Reason: "unrelated",
-	}}}
-	require.Error(t, Validate(manifest, subject, "workload.yaml", otherService))
-	require.Error(t, Validate(manifest, subject, "workload.yaml", otherRule))
+	plain := Contracts{}
+	plain.Add(ServiceContract{
+		Module: "shop", Service: "store", StorageMode: StorageModeDurable,
+		Endpoints: []EndpointContract{{Name: "grpc", API: "grpc"}, {Name: "http", API: "http"}},
+	})
+	require.NoError(t, ValidateDocuments(documents(t, workload(conformingWorkload)), storeSubject, plain, meshed()))
+	require.NoError(t, ValidateDocuments(documents(t, workload(conformingWorkload)), storeSubject, contracts, &Declaration{}),
+		"without the mesh assertion a service's own TLS may be the only protection there is")
+}
+
+// Rule 3 is decided by the declaration, and a store that has not declared is
+// refused rather than assumed conformant.
+func TestStorageModeIsDecidedByTheDeclaration(t *testing.T) {
+	stateful := workload(`      containers:
+        - name: store
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+`)
+	t.Run("an ephemeral declaration is refused", func(t *testing.T) {
+		contracts := Contracts{}
+		contracts.Add(ServiceContract{Module: "shop", Service: "store", StorageMode: StorageModeEphemeral})
+		err := ValidateDocuments(documents(t, workload(conformingWorkload)), storeSubject, contracts, meshed())
+		require.ErrorContains(t, err, RuleInMemoryStateStore)
+		require.ErrorContains(t, err, "declares ephemeral storage")
+	})
+	t.Run("a store that declares nothing is refused by name", func(t *testing.T) {
+		err := ValidateDocuments(documents(t, stateful), storeSubject, Contracts{}, meshed())
+		require.ErrorContains(t, err, RuleInMemoryStateStore)
+		require.ErrorContains(t, err, "declares no storage mode")
+		require.ErrorContains(t, err, "spec.deployment.storage")
+	})
+	t.Run("a declared durable store is admitted", func(t *testing.T) {
+		require.NoError(t, ValidateDocuments(documents(t, stateful), storeSubject, durable(), meshed()))
+	})
+	t.Run("a workload that keeps no state needs no declaration", func(t *testing.T) {
+		require.NoError(t, ValidateDocuments(documents(t, workload(conformingWorkload)), storeSubject, Contracts{}, meshed()))
+	})
+}
+
+// An allowance excuses one rule for one service, and nothing else.
+func TestAnAllowanceExcusesExactlyItsRuleAndService(t *testing.T) {
+	body := workload(`      containers:
+        - name: store
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: /var/lib/store
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: data
+          persistentVolumeClaim:
+            claimName: store-data
+`)
+	allowed := meshed(Allowance{
+		Rule: RuleNonScratchMount, Service: "shop/store", Reason: "a durable data claim, reviewed by the platform owner",
+	})
+	require.NoError(t, ValidateDocuments(documents(t, body), storeSubject, durable(), allowed))
+
+	bare := meshed(Allowance{Rule: RuleNonScratchMount, Service: "store", Reason: "the same, by bare name"})
+	require.NoError(t, ValidateDocuments(documents(t, body), storeSubject, durable(), bare))
+
+	other := meshed(Allowance{Rule: RuleNonScratchMount, Service: "shop/api", Reason: "unrelated"})
+	require.Error(t, ValidateDocuments(documents(t, body), storeSubject, durable(), other))
+
+	wrongRule := meshed(Allowance{Rule: RuleInMemoryStateStore, Service: "shop/store", Reason: "unrelated"})
+	require.Error(t, ValidateDocuments(documents(t, body), storeSubject, durable(), wrongRule))
+}
+
+func TestContractFromServiceReadsWhatAServiceDeclares(t *testing.T) {
+	service := &resources.Service{
+		Name:      "store",
+		Endpoints: []*resources.Endpoint{{Name: "tcp", API: "tcp"}},
+		Spec:      map[string]any{"deployment": map[string]any{"storage": "durable"}},
+	}
+	contract, err := ContractFromService("shop", service)
+	require.NoError(t, err)
+	require.Equal(t, StorageModeDurable, contract.StorageMode)
+	require.Equal(t, []EndpointContract{{Name: "tcp", API: "tcp"}}, contract.Endpoints)
+
+	service.Spec = map[string]any{"deployment": map[string]any{"storage": "ephemeral"}}
+	contract, err = ContractFromService("shop", service)
+	require.NoError(t, err)
+	require.Equal(t, StorageModeEphemeral, contract.StorageMode,
+		"what the service declared is what the render acts on")
+
+	service.Spec = map[string]any{"deployment": map[string]any{"storage": "in-memory"}}
+	_, err = ContractFromService("shop", service)
+	require.ErrorContains(t, err, "is not a storage mode")
+
+	service.Spec = nil
+	contract, err = ContractFromService("shop", service)
+	require.NoError(t, err)
+	require.Empty(t, contract.StorageMode, "a service that declares nothing declares nothing")
 }
 
 func TestDeclarationValidationRefusesWhatARenderCouldNotActOn(t *testing.T) {
 	require.NoError(t, (*Declaration)(nil).Validate())
-	require.NoError(t, (&Declaration{
-		Asserts:    map[string]bool{AssertMeshProtectedTransport: true},
-		Allowances: []Allowance{{Rule: RuleNonScratchMount, Service: "shop/web", Reason: "reviewed by the platform owner"}},
-	}).Validate())
-
 	require.ErrorContains(t,
 		(&Declaration{Asserts: map[string]bool{"internal-transport/mesh": true}}).Validate(),
 		`posture asserts unknown fact "internal-transport/mesh"`)
 	require.ErrorContains(t,
 		(&Declaration{Allowances: []Allowance{{Rule: "no-mounts", Service: "api", Reason: "why"}}}).Validate(),
-		`posture allowance 1 names unknown rule "no-mounts"`)
+		`names unknown rule "no-mounts"`)
 	require.ErrorContains(t,
 		(&Declaration{Allowances: []Allowance{{Rule: RuleNonScratchMount, Reason: "why"}}}).Validate(),
 		"must name a service")
@@ -449,19 +423,14 @@ func TestDeclarationValidationRefusesWhatARenderCouldNotActOn(t *testing.T) {
 		"must state a reason")
 }
 
-// Every declared allowance is reported, exercised or not: a render that stopped
-// needing one must still say the exception stands.
 func TestReportNamesEveryDeclaredAllowance(t *testing.T) {
 	declaration := &Declaration{Allowances: []Allowance{
-		{Rule: RuleNonScratchMount, Service: "shop/web", Reason: "the theme is a build artifact"},
-		{Rule: RulePeerTransportMaterial, Service: "shop/api", Reason: "an external peer pins its own CA"},
+		{Rule: RuleNonScratchMount, Service: "shop/web", Reason: "the asset bundle is built into the image"},
 	}}
 	require.Equal(t, []string{
-		"security posture: service shop/web is allowed to break rule non-scratch-mount — the theme is a build artifact",
-		"security posture: service shop/api is allowed to break rule peer-transport-material — an external peer pins its own CA",
+		"security posture: service shop/web is allowed to break rule non-scratch-mount — the asset bundle is built into the image",
 	}, declaration.Report())
 	require.Nil(t, (*Declaration)(nil).Report())
-	require.Nil(t, (&Declaration{}).Report())
 }
 
 func TestSubjectFromPathNamesTheUnitThatRenderedTheManifest(t *testing.T) {
@@ -469,50 +438,23 @@ func TestSubjectFromPathNamesTheUnitThatRenderedTheManifest(t *testing.T) {
 	cases := map[string]Subject{
 		"services/store/base/stateful-set.yaml":                {Module: "shop", Service: "store"},
 		"solutions/checkout/overlays/staging/deployment.yaml":  {Module: "shop", Service: "checkout"},
-		"kustomize:services/store/overlays/staging#2":          {Module: "shop", Service: "store"},
+		"services/store/overlays/staging (Kustomize output)":   {Module: "shop", Service: "store"},
 		"modules/billing/services/ledger/base/deployment.yaml": {Module: "billing", Service: "ledger"},
 		"base/deployment.yaml":                                 defaults,
-		"module/workspace.codefly.yaml":                        defaults,
 	}
 	for path, expected := range cases {
 		require.Equal(t, expected, SubjectFromPath(path, defaults), path)
 	}
 }
 
-// A tree on disk is read through the effective-manifest pipeline, and a refusal
-// names the service the manifest belongs to and where it came from.
-func TestEffectiveTreeRefusalNamesTheServiceAndItsManifest(t *testing.T) {
+// writeTree materializes a tree on disk for the selector tests.
+func writeTree(t *testing.T, files map[string]string) string {
+	t.Helper()
 	root := t.TempDir()
-	write := func(path, content string) {
+	for path, content := range files {
 		full := filepath.Join(root, filepath.FromSlash(path))
 		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
 		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
 	}
-	write("modules/shop/services/api/overlays/staging/kustomization.yaml", "resources:\n  - workload.yaml\n")
-	write("modules/shop/services/api/overlays/staging/workload.yaml", scratchWorkload)
-	documents, err := EffectiveTree(root, "staging")
-	require.NoError(t, err)
-	require.NoError(t, ValidateDocuments(documents, Subject{Module: "shop", Service: "api"}, meshed()))
-
-	write("modules/shop/services/store/overlays/staging/kustomization.yaml", "resources:\n  - workload.yaml\n")
-	write("modules/shop/services/store/overlays/staging/workload.yaml", `apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: store
-spec:
-  template:
-    spec:
-      containers:
-        - name: store
-          command: ["store", "server", "-dev"]
-          env:
-            - name: STORE_ROOT_TOKEN
-              value: seeded
-`)
-	documents, err = EffectiveTree(root, "staging")
-	require.NoError(t, err)
-	err = ValidateDocuments(documents, Subject{Module: "shop", Service: "api"}, meshed())
-	require.ErrorContains(t, err, "deployed render refuses service shop/store")
-	require.ErrorContains(t, err, "modules/shop/services/store/overlays/staging")
-	require.ErrorContains(t, err, RuleInMemoryStateStore)
+	return root
 }

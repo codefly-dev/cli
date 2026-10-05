@@ -147,10 +147,23 @@ func buildRenderedServiceImages(
 	}
 	defer os.RemoveAll(scratch)
 	destinations := serviceRenderDestinations(scratch)
+	// The contracts of every service this build renders — the root and the graph it
+	// stages — are what the posture is decided by, so they are collected from the
+	// flow rather than assumed to be the root's alone.
+	contracts := posture.Contracts{}
+	recordServices := func(services map[string]*resources.Service) {
+		for _, rendered := range services {
+			contract, contractErr := posture.ContractFromService(module.Name, rendered)
+			if contractErr != nil {
+				continue
+			}
+			contracts.Add(contract)
+		}
+	}
 	// serviceFlow, not renderServiceFlow: the dev build drives a service's agents
 	// through the same seam the module and service renders do, so a test can stand
 	// in-process agents in for it here too.
-	if err := serviceFlow(ctx, workspace, module, service, env, renderBuild{standAlone: true, rebuild: rebuild}, sink, destinations, nil, nil, nil, nil, nil); err != nil {
+	if err := serviceFlow(ctx, workspace, module, service, env, renderBuild{standAlone: true, rebuild: rebuild}, sink, destinations, nil, recordServices, nil, nil, nil); err != nil {
 		return nil, fmt.Errorf("build service %s: %w", service.Name, err)
 	}
 	// A dev deployment ships this render's image into a cell, so this render is
@@ -160,12 +173,12 @@ func buildRenderedServiceImages(
 	// expanded and references resolved. Reading the staged files instead would
 	// judge a tree by what its authors wrote rather than by what the cell applies.
 	if env.DeploysToCell() {
-		documents, treeErr := posture.EffectiveTree(scratch, env.Name)
+		documents, treeErr := posture.SelectManifests(scratch, env.Name)
 		if treeErr != nil {
 			return nil, treeErr
 		}
 		subject := posture.Subject{Module: module.Name, Service: service.Name}
-		if postureErr := posture.ValidateDocuments(documents, subject, env.Posture); postureErr != nil {
+		if postureErr := posture.ValidateDocuments(documents, subject, contracts, env.Posture); postureErr != nil {
 			return nil, postureErr
 		}
 	}

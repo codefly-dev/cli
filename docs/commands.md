@@ -690,48 +690,46 @@ are the ones codefly ships, and an environment says in its own declaration
 
 | Rule | What it checks |
 | --- | --- |
-| `peer-transport-material` | The workload configures TLS of its own, **while the environment asserts `internal-transport/mesh-protected`**: a setting that names certificate, key or CA material *and* carries material as its value (a path or inline PEM — `--cert=/keys/listener.crt`, `TLS_CERT_FILE`, `CERTIFICATE_PATH`); a listener serving `https://`; a TLS switch that is on; or a volume delivering that material as files. Transport between workloads is the mesh's; TLS at the edge is the ingress's. |
-| `non-scratch-mount` | What reaches the workload as files. A volume is admitted only as scratch (`emptyDir`) or as a durable data claim (`persistentVolumeClaim`; a StatefulSet's `volumeClaimTemplates` are not pod volumes and are never read) — and neither is admitted **at a configuration or credential destination** (`/etc`, `/config`, `/secrets`, `/run/secrets`, `/keys`, `/certs`, …), because a scratch volume mounted over `/secrets` delivers what a Secret volume would. Configuration and credentials reach a service as values and secrets in the environment variables the render already projects. |
-| `in-memory-state-store` | A workload that holds credential material as its own state — a root, master or signing credential, not the password an ordinary service uses to reach something else — *and* keeps that state only for the life of the process: a development switch that is on, a storage mode set to `memory`/`inmem`/`ephemeral`/`tmpfs`/`none`, an in-memory switch under any spelling, or a startup program this render cannot read (see below). Both halves are the rule: an in-memory cache loses nothing it cannot recompute, while a store whose keys live in memory loses, on one node replacement, everything encrypted under them. |
+| `non-scratch-mount` | The workload carries **exactly one volume — the standard scratch volume (`tmp`, an `emptyDir`) — mounted at exactly one place (`/tmp`)**. Any other volume, any other mount, the same volume mounted twice, or a scratch volume under another name is refused by name. Configuration and credentials reach a service as values and secrets in the environment variables the render already projects. A durable data claim is not a default either: whether a store may carry one is an allowance, per service, printed on every run. |
+| `peer-transport-material` | **While the environment asserts `internal-transport/mesh-protected`:** the render delivers no certificate material — no Secret of a certificate type, no Secret or ConfigMap key that is material (`tls.crt`, `ca.crt`, or any `.crt`/`.key`/`.pem`/`.p12`/`.jks` file), no projected source carrying one — and the service's **own declared endpoints** name no TLS protocol (`https`, `grpcs`, `tls`, `mtls`, …). Transport between workloads is the mesh's; TLS at the edge is the ingress's. |
+| `in-memory-state-store` | A workload that keeps its own state — it declares `volumeClaimTemplates`, or a claim-backed volume — is held to what its service **declared**: `spec.deployment.storage` must be `durable`. Declaring `ephemeral` is refused, and so is **declaring nothing**: a store that has not said its state is durable is not deployed on the strength of the render's guess. |
 
-**What the rules read.** The manifests the cell would apply, not the files an
-author wrote: the requested environment's overlay built with Kustomize, so a patch
-in any form — strategic merge, JSON 6902, inline or file — decides the outcome,
-*including a patch that removes something the base declared*. Another
-environment's overlay is not part of this environment's manifests and is not read.
-A workload shipped inside a `List` is expanded and held to the same rules.
+**What the rules read.** Two things, and nothing else: **what a service declared
+about itself**, and **the structure of the manifests the cell would apply**.
 
-Within a workload, a rule reads its effective configuration rather than one
-spelling of it: command-line options in both `--name=value` and `--name value`
-forms, `env` names and values, values arriving through `envFrom` or a
-`configMapKeyRef` **resolved from the same manifest set**, and the options inside a
-shell program (`sh -c "…"`), whose comments are stripped first so a retired option
-named in a comment is not read as configuration. Values are read for truth, so
-`MUTUAL_TLS=false` and `--dev=false` configure nothing.
+A container's environment variables and command line are *not* read. A render
+cannot prove from them what a process does — the attempt both missed ordinary
+spellings of the same thing (`--storage=memory` beside `STORAGE_BACKEND=memory`, a
+`-dev` inside `sh -c`) and refused correct configurations (an external `https://`
+destination is not a listener of one's own; `MUTUAL_TLS=false` configures
+nothing). A rule that can be satisfied by rewording is not a rule, so the
+declaration carries what only the service can know and the render checks the
+declaration and the manifest shape.
 
-**What it cannot read, it does not call conformant.** A value that lives outside
-the manifest set — a Secret key, a field reference — is unresolved, and for a
-setting that decides a posture-relevant question (a storage mode, a certificate
-path) the render refuses and names the reference rather than reading absence as
-compliance. The same applies to a startup program: a workload that holds
-credential material and is started by a shell program the render cannot read as
-configuration is refused, because it cannot show which storage mode that program
-selects. Start such a workload with an explicit command and options, or declare
-the exception.
+The manifests are selected once, by one selector every render path shares:
+
+- every kustomization no other kustomization references is built, so a base is
+  built once — through the overlay that includes it — and a patch that *removes*
+  something is honoured rather than judged against the unpatched base;
+- a directory under another environment's `overlays/<name>` is neither built nor
+  read;
+- a manifest file no built kustomization consumes is still decoded, so a unit
+  shipping plain manifests is covered rather than skipped;
+- every list wrapper is unwrapped recursively — a plain `List`, a typed
+  `DeploymentList`, a list of lists — before any workload is read.
 
 ```
 Error: deployed render refuses service shop/web: non-scratch-mount — volume
-"config" takes its contents from a configMap source, and a deployed workload
-mounts only the standard scratch volume (emptyDir) or a durable data claim
-(persistentVolumeClaim); configuration and credentials reach a service as values
-and secrets in the environment variables the render already projects, so a mount
-means something reads a file the platform never delivers
-(services/web/overlays/staging (Kustomize output): Deployment/web
-spec.template.spec.volumes[1].configMap). Declare a deliberate exception as an
-environment-level posture allowance (posture.allowances: rule non-scratch-mount,
-service shop/web, and the reason), which the render then prints on every
-run. The rule and the allowance mechanism are in docs/commands.md ("The deployed
-security posture")
+"config" (configMap) is not the standard scratch volume, and a deployed workload
+carries that volume and nothing else ("tmp", emptyDir, mounted at /tmp);
+configuration and credentials reach a service as values and secrets in the
+environment variables the render already projects, and whether a store may carry
+a durable claim is an allowance, not a default (services/web/overlays/staging
+(Kustomize output): Deployment/web spec.template.spec.volumes[1].configMap).
+Declare a deliberate exception as an environment-level posture allowance
+(posture.allowances: rule non-scratch-mount, service shop/web, and the reason),
+which the render then prints on every run. The rule and the allowance mechanism
+are in docs/commands.md ("The deployed security posture")
 ```
 
 **The environment declares the posture**, including the exceptions:
@@ -750,7 +748,7 @@ environments:
       allowances:
         - rule: non-scratch-mount
           service: shop/web
-          reason: the asset bundle is built into the image, reviewed by the platform owner
+          reason: the asset bundle is delivered as a ConfigMap, reviewed by the platform owner
 ```
 
 An allowance covers **one rule for one service**, so a workload allowed to carry
@@ -758,8 +756,9 @@ peer TLS material in a mounted Secret is still held to `non-scratch-mount` and
 needs an allowance there too — two decisions, stated separately.
 
 An allowance is never a silent skip: **every declared allowance is printed on
-every deployed render**, whether or not that run needed it, and a render whose
-exception has become unnecessary says so until the declaration is removed.
+every deployed render — including `--dry-run`**, whether or not that run needed it,
+and a render whose exception has become unnecessary says so until the declaration
+is removed.
 
 ```
 Warning: security posture: service shop/web is allowed to break rule
@@ -774,13 +773,14 @@ service's own TLS may be the only transport protection an unmeshed environment
 has. A client that must pin an *external* peer's CA is exactly what an allowance
 is for.
 
-**What these rules do not establish.** `in-memory-state-store` recognises a
-workload that keeps credential material as its own state from the names its
-configuration uses; a store whose configuration says so in none of those terms,
-and whose startup program the render can read, is not recognised as one. Making
-that fact explicit rather than inferred needs a declaration a service carries
-about itself, which is a contract change across every module and agent, not a
-render-side heuristic. Until then this rule is a floor, not a proof.
+**What the render guard does not claim.** It checks declarations and manifest
+structure, so it establishes that a store *declared* durable storage, and that the
+tree delivers no certificate material and no mount beyond scratch. It does **not**
+establish what a process does at runtime: a service that declares `durable` and
+then starts an in-memory store is not caught here. That half belongs to the store
+itself — refusing to start in an ephemeral mode in a deployed context — and to the
+cell's own preflight rows. The render is the door that makes the declaration
+mandatory and the exception visible; it is not a proof about a running process.
 
 #### Service secrets
 
@@ -1010,13 +1010,12 @@ codefly deploy dev payments/api --env staging --commit --push
    login), the snapshot flow driving the service agent's Build and Deploy with
    push, and the same `@sha256:` digest capture. `DOCKER_HOST` is honoured the
    way every build honours it. That render is held to [the deployed security
-   posture](#the-deployed-security-posture) through the same effective-manifest
-   pipeline a full render uses — the requested environment's overlay, built with
-   Kustomize — so a service whose current code renders a non-scratch mount, its own
-   peer TLS on a mesh-protected environment, or a development-mode store is refused
-   before its image reaches the cell, naming the service, the rule and the field.
-   It checks the service and the graph it stages, where a full render checks every
-   unit of the module.
+   posture](#the-deployed-security-posture) through the same selector a full render
+   uses, for the same environment, so a service whose current render carries a volume
+   beyond scratch, delivers certificate material on a mesh-protected environment, or
+   keeps state without declaring it durable is refused before its image reaches the
+   cell. It checks the service and the graph it stages, where a full render checks
+   every unit of the module.
 3. **Patch.** Only that service's digest pin changes, inside its own rendered
    unit (`deployments/modules/<module>/services/<service>/`); every other byte of
    the tree is left as the render wrote it, and the render inventory is

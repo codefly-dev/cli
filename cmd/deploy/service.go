@@ -158,6 +158,8 @@ func initDeployService(ctx context.Context, workspace *resources.Workspace, modu
 		manager := deployments.NewRenderManager(workspace, env)
 		deploymentManager = manager
 		evidenceProvider = manager
+		// A dry run is a deployed render, so its allowances are printed too.
+		printPostureAllowances(manager.PostureAllowances())
 	}
 
 	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.DeployMode)

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"unicode"
 )
 
 // The manifest fields a pod specification is reached through.
@@ -14,26 +13,16 @@ const (
 	jobTemplateField = "jobTemplate"
 )
 
-// configMapKind names a ConfigMap reference, the one reference kind an effective
-// manifest set can resolve for itself.
-const configMapKind = "configMap"
-
-// wordBackend and wordStorage are the name words that select where state lives.
+// The standard scratch volume: the one volume a deployed workload may carry, and
+// the one place it may mount it. It is an identity, not a shape to match
+// approximately — a second scratch volume, or the same volume somewhere else, is
+// another way to put files in front of a process, and the point of this rule is
+// that there is only one.
 const (
-	wordBackend = "BACKEND"
-	wordStorage = "STORAGE"
+	scratchVolumeName   = "tmp"
+	scratchVolumeSource = "emptyDir"
+	scratchMountPath    = "/tmp"
 )
-
-// scratchVolumeSource is the standard scratch volume: writable space for a
-// read-only root filesystem, carrying nothing the platform did not put there at
-// start.
-const scratchVolumeSource = "emptyDir"
-
-// durableVolumeSource is a durable data claim: the storage a stateful workload
-// keeps its own data in, which RuleInMemoryStateStore exists to require. It is
-// admitted as data storage only, never as a way to deliver configuration or
-// credentials — see configurationMountPaths.
-const durableVolumeSource = "persistentVolumeClaim"
 
 // podSpecPaths maps a workload kind to the field path of its pod specification.
 // A kind absent here is still inspected when it carries a pod template at one of
@@ -60,178 +49,78 @@ var genericPodSpecPaths = [][]string{templatePath, jobTemplatePath}
 // All three run in the cell, so all three are held to the same rules.
 var containerFields = []string{"containers", "initContainers", "ephemeralContainers"}
 
-// transportMaterialOptions name a setting that configures certificate, key or CA
-// material, matched against the separator-free lowercase spelling so that
-// --tls-cert-file, TLS_CERT_FILE and tlsCertFile are one name.
+// persistentStateSources are the volume sources that keep a workload's own state
+// across restarts. A workload that carries one is a store, whatever it is called:
+// this is the one thing about storage a manifest really does say, and it is what
+// makes a missing storage declaration a refusal rather than a guess.
+var persistentStateSources = map[string]bool{
+	"persistentVolumeClaim": true, "ephemeral": true,
+}
+
+// certificateSecretTypes are the Secret types whose content IS certificate
+// material, by Kubernetes' own definition.
+var certificateSecretTypes = map[string]bool{
+	"kubernetes.io/tls": true, "kubernetes.io/ssh-auth": false,
+}
+
+// certificateKeys are the data keys certificate material is delivered under. They
+// are Kubernetes' own conventional names plus the file types material is encoded
+// in, so this reads the SHAPE of what the render delivers rather than guessing
+// from a name someone chose.
+var certificateKeys = map[string]bool{
+	"tls.crt": true, "tls.key": true, "ca.crt": true, "ca.key": true,
+	"client.crt": true, "client.key": true, "server.crt": true, "server.key": true,
+}
+
+// certificateExtensions are the file types certificate and key material is
+// delivered as; a data key or projected path ending in one of them is material.
+var certificateExtensions = []string{".crt", ".cer", ".pem", ".key", ".p12", ".pfx", ".jks", ".der"}
+
+// ValidateDocuments holds a selected manifest set to the deployed posture, with
+// the contracts the services of that render declared about themselves.
 //
-// Every entry either is transport vocabulary itself or carries the transport word
-// that makes it so. A bare key name is deliberately absent — an application's own
-// signing key or an API key read from a file is a credential, not its transport —
-// and a name alone never decides: RuleTransportMaterial also requires the value to
-// BE material (transportMaterialValue), so a credential named through a reference,
-// with no value in the manifest, is not mistaken for a certificate.
-var transportMaterialOptions = []string{
-	"cabundle", "cacert", "cachain", "cafile", "cert", "certchain", "certfile",
-	"certificate", "certificatechain", "certificatefile", "certificatepath", "certs",
-	"clientca", "clientcert", "keystore", "mtlscert", "mtlskey", "peercert", "peerkey",
-	"servercert", "serverkey", "sslca", "sslcert", "sslkey", "tlsca", "tlscert",
-	"tlskey", "trustedca", "truststore",
-}
-
-// transportEnableOptions name a setting that turns a workload's own TLS on. The
-// value decides: MUTUAL_TLS=false configures no transport at all.
-var transportEnableOptions = []string{
-	"enabletls", "enablessl", "mtls", "mutualtls", "requiretls", "ssl", "tls",
-	"tlsenabled", "usetls", "usessl",
-}
-
-// listenerOptions name the setting that says what a workload serves on, by word,
-// so that a value carrying an https scheme is read as that workload terminating
-// TLS itself.
-var listenerWords = map[string]bool{
-	"LISTEN": true, "LISTENER": true, "BIND": true, "ADDR": true, "ADDRESS": true,
-	"SERVE": true, "SERVER": true, "ENDPOINT": true, "URL": true, "ADVERTISE": true,
-}
-
-// materialExtensions are the file types certificate, key and CA material is
-// delivered as.
-var materialExtensions = []string{".crt", ".cer", ".pem", ".key", ".p12", ".pfx", ".jks", ".der"}
-
-// transportMaterialFiles are the conventional names TLS material is mounted
-// under, matched inside a volume source or a value.
-var transportMaterialFiles = []string{"tls.crt", "tls.key", "ca.crt", "ca.pem", "cert.pem", "key.pem"}
-
-// transportMaterialNameWords are the words that name TLS material in a volume,
-// a Secret or a ConfigMap. They are matched per word and only inside a volume
-// source: a word this short would read as material in too many other names.
-var transportMaterialNameWords = map[string]bool{
-	"TLS": true, "MTLS": true, "SSL": true, "CA": true, "PKI": true,
-	"CERT": true, "CERTS": true, "CERTIFICATE": true, "CERTIFICATES": true,
-}
-
-// developmentWords mark a development mode, matched per word so that a name
-// merely containing the letters (SESSION_MAX_ACTIVE_DEVICES) is not one.
-var developmentWords = map[string]bool{"DEV": true, "DEVELOPMENT": true}
-
-// developmentCompanionWords are the words that make a development marker in an
-// ENVIRONMENT name a statement about how the workload runs, rather than part of
-// some other name (a development portal's URL). A command-line option named dev
-// needs no companion: that is what the option is.
-var developmentCompanionWords = map[string]bool{
-	"MODE": true, "SERVER": true, "ROOT": true, "TOKEN": true, "KEY": true,
-	"KEYS": true, "SECRET": true, "PASSWORD": true, wordStorage: true, wordBackend: true,
-	"STORE": true, "ENABLED": true, "ENABLE": true,
-}
-
-// stateWords name what a setting is about: where a workload keeps its own state.
-var stateWords = map[string]bool{
-	wordStorage: true, wordBackend: true, "STORE": true, "PERSISTENCE": true,
-	"STATE": true, "DATABASE": true, "DB": true, "DATA": true,
-}
-
-// stateSelectorWords name a setting that SELECTS a mode rather than merely
-// mentioning storage. Both halves are required, so STORAGE_BACKEND and --storage
-// are read as the storage mode while STORE_ROOT_TOKEN and DATABASE_URL — which
-// name no mode — are not, including when their values cannot be read.
-var stateSelectorWords = map[string]bool{
-	"MODE": true, wordBackend: true, "ENGINE": true, "TYPE": true, "DRIVER": true,
-	"PROVIDER": true, "KIND": true, wordStorage: true, "PERSISTENCE": true,
-}
-
-// ephemeralStateValues are the values of a state setting that keep state only for
-// the life of the process.
-var ephemeralStateValues = map[string]bool{
-	"memory": true, "inmem": true, "in-memory": true, "in_memory": true,
-	"inmemory": true, "ram": true, "ephemeral": true, "tmpfs": true, "none": true,
-}
-
-// inMemoryOptions name a setting that selects in-memory storage outright.
-var inMemoryOptions = []string{"inmem", "inmemory"}
-
-// credentialWords and custodyWords together identify a workload that keeps
-// credential material as its own state, rather than one merely handed a password
-// of its own: a store's root or master credential mints or protects others, while
-// an ordinary service's database password does neither. This is what keeps
-// RuleInMemoryStateStore off an in-memory cache, which loses nothing that matters
-// when it restarts.
-var credentialWords = map[string]bool{
-	"TOKEN": true, "TOKENS": true, "KEY": true, "KEYS": true, "SECRET": true,
-	"SECRETS": true, "PASSWORD": true, "CREDENTIAL": true, "CREDENTIALS": true,
-}
-
-var custodyWords = map[string]bool{
-	"ROOT": true, "MASTER": true, "ADMIN": true, "SIGNING": true, "ISSUER": true,
-	"KEYRING": true, "CUSTODY": true, "UNLOCK": true, "RECOVERY": true,
-}
-
-// configurationMountPaths are the destinations a file-delivered configuration or
-// credential lands at. A mount there is refused whatever its source, because the
-// rule is about what reaches a workload as files, not about which Kubernetes
-// volume type carried it: a scratch volume mounted over /secrets delivers the
-// same thing a Secret volume would.
-var configurationMountPaths = []string{
-	"/etc", "/config", "/configs", "/conf", "/secrets", "/secret", "/credentials",
-	"/keys", "/certs", "/cert", "/tls", "/pki", "/run/secrets", "/var/run/secrets",
-}
-
-// ValidateDocuments holds a whole effective manifest set to the deployed posture.
-// It is the entry point every restricted render path uses, and the only one that
-// can resolve a value a workload reads from elsewhere in the same set, so a rule
-// is never satisfied merely by moving a value into a ConfigMap.
-//
-// Wrapper lists are expanded first: a workload shipped inside a List is applied
-// exactly as a top-level workload is.
-func ValidateDocuments(documents []Document, defaults Subject, declaration *Declaration) error {
-	expanded := expand(documents)
-	index := newReferenceIndex(expanded)
-	for _, document := range expanded {
+// Every rule here is decided by one of two things only: what a service declared,
+// or the structure of the manifests the cell would apply. Nothing is inferred
+// from a container's command line or its environment variables — a render cannot
+// prove from those what a process does, and the attempt both missed ordinary
+// spellings and refused correct configurations.
+func ValidateDocuments(documents []Document, defaults Subject, contracts Contracts, declaration *Declaration) error {
+	for _, document := range documents {
 		subject := SubjectFromPath(document.Location, defaults)
-		if err := validateDocument(document, subject, index, declaration); err != nil {
+		if err := validateDocument(document, subject, contracts, declaration); err != nil {
 			return err
 		}
 	}
-	return nil
+	return declaration.validateContracts(contracts, documents)
 }
 
-// Validate holds one decoded manifest to the posture, with no manifest set around
-// it to resolve references against. Prefer ValidateDocuments.
-func Validate(document map[string]any, subject Subject, location string, declaration *Declaration) error {
-	return ValidateDocuments([]Document{{Location: location, Value: document}}, subject, declaration)
-}
-
-// validateDocument applies every rule to one workload, most specific first, so a
-// TLS Secret mounted on a mesh-protected environment is reported as the
-// transport-material rule it really breaks rather than as a generic mount.
-func validateDocument(document Document, subject Subject, index *referenceIndex, declaration *Declaration) error {
+// validateDocument applies the structural rules to one document.
+func validateDocument(document Document, subject Subject, contracts Contracts, declaration *Declaration) error {
 	kind := stringAt(document.Value, "kind")
 	name := metadataName(document.Value)
 	workload := kind
 	if name != "" {
 		workload = kind + "/" + name
 	}
-	for _, spec := range podSpecifications(document.Value, kind) {
-		report := func(rule, field, detail string) error {
-			if _, allowed := declaration.Allows(rule, subject); allowed {
-				return nil
-			}
-			return &Violation{
-				Rule: rule, Subject: subject, Location: document.Location,
-				Workload: workload, Field: field, Detail: detail,
-			}
+	report := func(rule, field, detail string) error {
+		if _, allowed := declaration.Allows(rule, subject); allowed {
+			return nil
 		}
-		configurations := make([]containerSettings, 0, 4)
-		for _, container := range containers(spec) {
-			configurations = append(configurations, containerConfiguration(container, index))
+		return &Violation{
+			Rule: rule, Subject: subject, Location: document.Location,
+			Workload: workload, Field: field, Detail: detail,
 		}
-		if declaration.Asserted(AssertMeshProtectedTransport) {
-			if err := checkTransportMaterial(spec, configurations, report); err != nil {
-				return err
-			}
-		}
-		if err := checkMounts(spec, report); err != nil {
+	}
+	if declaration.Asserted(AssertMeshProtectedTransport) {
+		if err := checkDeliveredCertificates(document, report); err != nil {
 			return err
 		}
-		if err := checkEphemeralCredentialState(configurations, report); err != nil {
+	}
+	for _, spec := range podSpecifications(document.Value, kind) {
+		if err := checkStandardScratchOnly(spec, report); err != nil {
+			return err
+		}
+		if err := checkStorageDeclaration(document.Value, spec, subject, contracts, report); err != nil {
 			return err
 		}
 	}
@@ -240,280 +129,204 @@ func validateDocument(document Document, subject Subject, index *referenceIndex,
 
 // reporter turns a rule, a field path and a detail into a violation, or into nil
 // when the environment allows that rule for this subject. A caller keeps looking
-// after a nil: an allowance covers one rule for one service, so a workload allowed
-// to mount a TLS Secret is still held to the mount rule.
+// after a nil: an allowance covers one rule for one service.
 type reporter func(rule, field, detail string) error
 
-// checkTransportMaterial refuses a workload that terminates or initiates TLS
-// itself — configured with certificate, key or CA material, serving an https
-// listener, or mounting that material as files — on an environment that has
-// already said transport between its workloads is protected.
-func checkTransportMaterial(spec pathedSpec, configurations []containerSettings, report reporter) error {
-	detail := "the workload configures its own TLS for its in-cell peers, but the environment asserts " +
-		AssertMeshProtectedTransport +
-		": transport between workloads belongs to the mesh and TLS at the edge belongs to the ingress"
-	for index := range configurations {
-		configuration := &configurations[index]
-		for entryIndex := range configuration.settings {
-			entry := &configuration.settings[entryIndex]
-			switch {
-			case transportMaterialSetting(entry):
-				if err := report(RulePeerTransportMaterial, entry.field, fmt.Sprintf(
-					"%s configures TLS material (%s)", entry.describe(), detail)); err != nil {
-					return err
-				}
-			case httpsListener(entry):
-				if err := report(RulePeerTransportMaterial, entry.field, fmt.Sprintf(
-					"%s serves TLS itself (%s)", entry.describe(), detail)); err != nil {
-					return err
-				}
-			case transportEnabled(entry):
-				if err := report(RulePeerTransportMaterial, entry.field, fmt.Sprintf(
-					"%s turns on the workload's own TLS (%s)", entry.describe(), detail)); err != nil {
-					return err
-				}
-			}
-		}
-	}
+// checkStandardScratchOnly admits exactly one volume and one mount: the standard
+// scratch volume, at the standard scratch path. Everything else is refused by
+// name — not because its source or its destination is on a list, but because it
+// is not the one thing a deployed workload is allowed to carry.
+//
+// Configuration and credentials reach a service as values and secrets in the
+// environment variables the render projects. A durable data claim is not
+// admitted here either: whether a store may carry one is the platform owner's
+// decision, and until it is written into the rule it is an environment-level
+// allowance, printed on every run, per service.
+func checkStandardScratchOnly(spec pathedSpec, report reporter) error {
 	for _, volume := range volumes(spec) {
-		if volume.source == "" {
+		if volume.name == scratchVolumeName && volume.source == scratchVolumeSource {
 			continue
 		}
-		if marker, found := volumeTransportMaterial(volume.name, volume.value[volume.source]); found {
-			if err := report(RulePeerTransportMaterial, volume.sourcePath, fmt.Sprintf(
-				"volume %q delivers %s as files (%s)", volume.name, marker, detail)); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// transportMaterialSetting reports a setting that names TLS material AND carries
-// material as its value. Both halves are required: the name alone would read an
-// application's own signing key as a certificate, and the value alone would read
-// every file path as one.
-func transportMaterialSetting(entry *setting) bool {
-	if !matchesAny(entry.canonical(), transportMaterialOptions) {
-		return false
-	}
-	return transportMaterialValue(entry)
-}
-
-// transportMaterialValue reports whether a value is certificate, key or CA
-// material: inline PEM, or a path to a file. An unresolved value under a material
-// name is treated as material — the render cannot see it, and reading absence as
-// conformance would make the rule optional.
-func transportMaterialValue(entry *setting) bool {
-	if !entry.resolved {
-		return true
-	}
-	value := strings.TrimSpace(entry.value)
-	if value == "" {
-		return false
-	}
-	if strings.Contains(value, "-----BEGIN") {
-		return true
-	}
-	lowered := strings.ToLower(value)
-	for _, extension := range materialExtensions {
-		if strings.HasSuffix(lowered, extension) {
-			return true
-		}
-	}
-	for _, file := range transportMaterialFiles {
-		if strings.Contains(lowered, file) {
-			return true
-		}
-	}
-	// A material option pointed at a file is material whatever the file is called.
-	return strings.Contains(value, "/") && !strings.Contains(value, "://")
-}
-
-// httpsListener reports a setting that says this workload serves, or dials a
-// peer over, TLS it terminates itself.
-func httpsListener(entry *setting) bool {
-	if !anyWord(entry.words(), listenerWords) {
-		return false
-	}
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(entry.value)), "https://")
-}
-
-// transportEnabled reports a setting that turns the workload's own TLS on, read
-// for truth so that a disabled one is not a violation.
-func transportEnabled(entry *setting) bool {
-	return exactlyAny(entry.canonical(), transportEnableOptions) && entry.enabled()
-}
-
-// checkMounts refuses what reaches a workload as files. A volume is admitted only
-// as scratch space or as a durable data claim, and neither may be mounted where a
-// configuration or a credential would be read from.
-func checkMounts(spec pathedSpec, report reporter) error {
-	byName := map[string]pathedVolume{}
-	for _, volume := range volumes(spec) {
-		byName[volume.name] = volume
-		switch volume.source {
-		case scratchVolumeSource, durableVolumeSource, "":
-			continue
+		source := volume.source
+		if source == "" {
+			source = "no source"
 		}
 		if err := report(RuleNonScratchMount, volume.sourcePath, fmt.Sprintf(
-			"volume %q takes its contents from a %s source, and a deployed workload mounts only the standard scratch volume (%s) or a durable data claim (%s); "+
-				"configuration and credentials reach a service as values and secrets in the environment variables the render already projects, so a mount means something reads a file the platform never delivers",
-			volume.name, volume.source, scratchVolumeSource, durableVolumeSource)); err != nil {
+			"volume %q (%s) is not the standard scratch volume, and a deployed workload carries that volume and nothing else "+
+				"(%q, %s, mounted at %s); configuration and credentials reach a service as values and secrets in the environment "+
+				"variables the render already projects, and whether a store may carry a durable claim is an allowance, not a default",
+			volume.name, source, scratchVolumeName, scratchVolumeSource, scratchMountPath)); err != nil {
 			return err
 		}
 	}
 	for _, mount := range mounts(spec) {
-		if !configurationMountPath(mount.path) {
+		if mount.volume == scratchVolumeName && mount.path == scratchMountPath {
 			continue
 		}
-		volume := byName[mount.volume]
-		source := volume.source
-		if source == "" {
-			source = "unknown"
-		}
 		if err := report(RuleNonScratchMount, mount.field, fmt.Sprintf(
-			"volume %q (a %s source) is mounted at %s, where a service reads its configuration or its credentials from files; "+
-				"those reach a service as values and secrets in the environment variables the render already projects, whatever volume type carries them",
-			mount.volume, source, mount.path)); err != nil {
+			"volume %q is mounted at %s, and the only mount a deployed workload carries is %q at %s; "+
+				"anything else puts files in front of a process that the platform did not deliver",
+			mount.volume, mount.path, scratchVolumeName, scratchMountPath)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// checkEphemeralCredentialState refuses a workload that keeps credential material
-// as its own state while keeping that state only for the life of the process.
-//
-// Both halves are required, and that is the rule rather than a softening of it: an
-// in-memory cache loses nothing that cannot be recomputed, while a store whose
-// keys live in memory loses, on one node replacement, everything encrypted under
-// them. The custody half is what tells the two apart (see custodyWords).
-//
-// Where the workload keeps credential material and its startup program is a shell
-// body the render cannot read as configuration, the render refuses rather than
-// assume the program is conformant: the evidence has to be explicit.
-func checkEphemeralCredentialState(configurations []containerSettings, report reporter) error {
-	detail := "a deployed runtime keeps its keys and state in a durable store, and a development or in-memory mode keeps them only " +
-		"for the life of the process: the next restart or node replacement loses them"
-	for index := range configurations {
-		configuration := &configurations[index]
-		custody, _ := configuration.custodyOfCredentials()
-		if custody == "" {
-			continue
+// checkStorageDeclaration holds a workload that keeps its own state to what its
+// service declared about that state. A workload carrying persistent storage is a
+// store — that is what the volume means — so its service must declare the storage
+// durable; declaring it ephemeral, or declaring nothing at all, is refused by
+// name. The render does not try to decide from a command line which mode a
+// process will choose: it refuses to deploy a store that has not said.
+func checkStorageDeclaration(document map[string]any, spec pathedSpec, subject Subject, contracts Contracts, report reporter) error {
+	state := persistentState(document, spec)
+	contract, declared := contracts.Of(subject)
+	if declared && contract.StorageMode == StorageModeEphemeral {
+		return report(RuleInMemoryStateStore, "spec.deployment."+storageKey, fmt.Sprintf(
+			"service %s declares %s storage, and a deployed runtime keeps its state in a durable store: "+
+				"an ephemeral one loses, on the next restart or node replacement, everything it held",
+			subject, StorageModeEphemeral))
+	}
+	if state == "" {
+		return nil
+	}
+	if !declared || contract.StorageMode == "" {
+		return report(RuleInMemoryStateStore, state, fmt.Sprintf(
+			"the workload keeps its own state (%s) but service %s declares no storage mode, so this render cannot show the state is durable; "+
+				"declare spec.deployment.%s: %s (or %s)",
+			state, subject, storageKey, StorageModeDurable, StorageModeEphemeral))
+	}
+	return nil
+}
+
+// persistentState reports the field by which a workload keeps state across
+// restarts, or "" when it keeps none. A StatefulSet declares its claims beside
+// its pod template rather than inside it, so both places are read.
+func persistentState(document map[string]any, spec pathedSpec) string {
+	if workloadSpec, ok := document[specField].(map[string]any); ok {
+		if claims, present := workloadSpec["volumeClaimTemplates"].([]any); present && len(claims) > 0 {
+			return specField + ".volumeClaimTemplates"
 		}
-		for entryIndex := range configuration.settings {
-			entry := &configuration.settings[entryIndex]
-			var reason string
-			switch {
-			case developmentMode(entry):
-				reason = fmt.Sprintf("%s starts its development server", entry.describe())
-			case ephemeralState(entry):
-				reason = fmt.Sprintf("%s keeps its state in memory", entry.describe())
-			case inMemorySelected(entry):
-				reason = fmt.Sprintf("%s selects in-memory storage", entry.describe())
-			default:
-				continue
-			}
-			if err := report(RuleInMemoryStateStore, entry.field, fmt.Sprintf(
-				"the workload holds credential material (%s) and %s; %s", custody, reason, detail)); err != nil {
-				return err
+	}
+	for _, volume := range volumes(spec) {
+		if persistentStateSources[volume.source] {
+			return volume.sourcePath
+		}
+	}
+	return ""
+}
+
+// checkDeliveredCertificates refuses certificate material the render itself
+// delivers, on an environment that has already said transport between its
+// workloads is protected. It reads what the manifests ARE — a Secret of a
+// certificate type, a data key that is certificate material, a projected source
+// carrying one — never what a container might do with them.
+func checkDeliveredCertificates(document Document, report reporter) error {
+	detail := "the environment asserts " + AssertMeshProtectedTransport +
+		": transport between workloads belongs to the mesh and TLS at the edge belongs to the ingress, " +
+		"so a deployed render delivers no certificate material of its own"
+	kind := stringAt(document.Value, "kind")
+	if kind == "Secret" && certificateSecretTypes[stringAt(document.Value, "type")] {
+		if err := report(RulePeerTransportMaterial, "type", fmt.Sprintf(
+			"the render delivers a %s Secret (%s)", stringAt(document.Value, "type"), detail)); err != nil {
+			return err
+		}
+	}
+	if kind == "Secret" || kind == "ConfigMap" {
+		for _, field := range []string{"data", "stringData", "binaryData"} {
+			values, _ := document.Value[field].(map[string]any)
+			for _, key := range sortedKeysOf(values) {
+				if !certificateMaterialKey(key) {
+					continue
+				}
+				if err := report(RulePeerTransportMaterial, field+"."+key, fmt.Sprintf(
+					"the render delivers certificate material under %s.%s (%s)", field, key, detail)); err != nil {
+					return err
+				}
 			}
 		}
-		if configuration.opaqueProgram != "" {
-			if err := report(RuleInMemoryStateStore, configuration.opaqueProgramField, fmt.Sprintf(
-				"the workload holds credential material (%s) and is started by a shell program this render cannot read as configuration, "+
-					"so it cannot show which storage mode that program selects; %s. "+
-					"Start it with an explicit command and options, or declare the exception",
-				custody, detail)); err != nil {
-				return err
+	}
+	for _, spec := range podSpecifications(document.Value, kind) {
+		for _, volume := range volumes(spec) {
+			if key, found := certificateVolumeKey(volume.value[volume.source]); found {
+				if err := report(RulePeerTransportMaterial, volume.sourcePath, fmt.Sprintf(
+					"volume %q delivers certificate material (%s) as files (%s)", volume.name, key, detail)); err != nil {
+					return err
+				}
 			}
 		}
 	}
 	return nil
 }
 
-// custodyOfCredentials reports the setting by which a workload holds credential
-// material as its own state — a root, master or signing credential, rather than
-// the password an ordinary service uses to reach something else.
-func (configuration *containerSettings) custodyOfCredentials() (string, string) {
-	for index := range configuration.settings {
-		entry := &configuration.settings[index]
-		words := entry.words()
-		if anyWord(words, credentialWords) && anyWord(words, custodyWords) {
-			return entry.name, entry.field
-		}
-	}
-	return "", ""
-}
-
-// developmentMode reports a setting that starts a development server. A
-// command-line option named dev says so by itself; an environment name needs a
-// companion word, so that a development portal's URL is not read as one.
-func developmentMode(entry *setting) bool {
-	words := entry.words()
-	if !anyWord(words, developmentWords) {
-		return false
-	}
-	if !entry.flag && !entry.resolved {
+// certificateMaterialKey reports whether a data key names certificate or key
+// material: one of Kubernetes' conventional names, or a file of a material type.
+func certificateMaterialKey(key string) bool {
+	lowered := strings.ToLower(key)
+	if certificateKeys[lowered] {
 		return true
 	}
-	if !entry.flag && !anyWord(words, developmentCompanionWords) {
-		return false
-	}
-	return entry.enabled()
-}
-
-// ephemeralState reports a setting that selects where state lives and chooses
-// somewhere it does not survive the process.
-func ephemeralState(entry *setting) bool {
-	words := entry.words()
-	if !anyWord(words, stateWords) || !anyWord(words, stateSelectorWords) {
-		return false
-	}
-	if !entry.resolved {
-		return true
-	}
-	return ephemeralStateValues[strings.ToLower(strings.TrimSpace(entry.value))]
-}
-
-// inMemorySelected reports a setting that names in-memory storage outright, read
-// for truth so that one switched off is not a violation.
-func inMemorySelected(entry *setting) bool {
-	return matchesAny(entry.canonical(), inMemoryOptions) && entry.enabled()
-}
-
-// describe names a setting the way a refusal should: the name, and the value when
-// the render could read one.
-func (s *setting) describe() string {
-	switch {
-	case s.display != "":
-		return s.display
-	case !s.resolved:
-		return fmt.Sprintf("%s (from %s, a value this render cannot read)", s.name, s.reference)
-	case s.value == "":
-		return s.name
-	default:
-		return fmt.Sprintf("%s=%s", s.name, s.value)
-	}
-}
-
-func matchesAny(canonical string, markers []string) bool {
-	for _, marker := range markers {
-		if strings.Contains(canonical, marker) {
+	for _, extension := range certificateExtensions {
+		if strings.HasSuffix(lowered, extension) {
 			return true
 		}
 	}
 	return false
 }
 
-func exactlyAny(canonical string, markers []string) bool {
-	for _, marker := range markers {
-		if canonical == marker {
-			return true
+// certificateVolumeKey reports the material a volume source delivers: an item
+// key or path that is certificate material. A volume naming a Secret this render
+// does not carry says nothing about its content, so only material the manifests
+// themselves name is read here.
+func certificateVolumeKey(source any) (string, bool) {
+	switch typed := source.(type) {
+	case map[string]any:
+		for _, field := range []string{"key", "path"} {
+			if text, ok := typed[field].(string); ok && certificateMaterialKey(text) {
+				return text, true
+			}
+		}
+		for _, key := range sortedMapKeys(typed) {
+			if material, found := certificateVolumeKey(typed[key]); found {
+				return material, true
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if material, found := certificateVolumeKey(item); found {
+				return material, true
+			}
 		}
 	}
-	return false
+	return "", false
+}
+
+// validateContracts holds the service contracts themselves to the posture: an
+// endpoint a service declares as its own TLS is refused on a mesh-protected
+// environment, from the declaration rather than from anything a container does.
+func (declaration *Declaration) validateContracts(contracts Contracts, documents []Document) error {
+	if !declaration.Asserted(AssertMeshProtectedTransport) || len(documents) == 0 {
+		return nil
+	}
+	for _, key := range contracts.sortedSubjects() {
+		contract := contracts[key]
+		subject := Subject{Module: contract.Module, Service: contract.Service}
+		if _, allowed := declaration.Allows(RulePeerTransportMaterial, subject); allowed {
+			continue
+		}
+		for _, endpoint := range contract.declaredTLSEndpoints() {
+			return &Violation{
+				Rule: RulePeerTransportMaterial, Subject: subject,
+				Field: fmt.Sprintf("endpoints[%s].api = %s", endpoint.Name, endpoint.API),
+				Detail: fmt.Sprintf(
+					"service %s declares endpoint %q with the %s protocol, which is transport it terminates itself, "+
+						"but the environment asserts %s: transport between workloads belongs to the mesh and TLS at the edge to the ingress",
+					subject, endpoint.Name, endpoint.API, AssertMeshProtectedTransport),
+			}
+		}
+	}
+	return nil
 }
 
 // pathedSpec is a pod specification and the field path it was found at.
@@ -600,23 +413,11 @@ func mounts(spec pathedSpec) []pathedMount {
 			decoded = append(decoded, pathedMount{
 				volume: stringAt(value, "name"),
 				path:   stringAt(value, "mountPath"),
-				field:  fmt.Sprintf("%s.volumeMounts[%d].mountPath", container.path, index),
+				field:  fmt.Sprintf("%s.volumeMounts[%d]", container.path, index),
 			})
 		}
 	}
 	return decoded
-}
-
-// configurationMountPath reports whether a mount destination is where a service
-// reads configuration or credentials from files.
-func configurationMountPath(mountPath string) bool {
-	clean := "/" + strings.Trim(strings.TrimSpace(mountPath), "/")
-	for _, candidate := range configurationMountPaths {
-		if clean == candidate || strings.HasPrefix(clean, candidate+"/") {
-			return true
-		}
-	}
-	return false
 }
 
 // pathedContainer is one container of a pod specification.
@@ -645,176 +446,6 @@ func containers(spec pathedSpec) []pathedContainer {
 		}
 	}
 	return decoded
-}
-
-// environmentEntry is one env entry of a container.
-type environmentEntry struct {
-	name       string
-	value      string
-	hasLiteral bool
-	reference  *valueReference
-}
-
-func (container pathedContainer) environment() []environmentEntry {
-	list, ok := container.value["env"].([]any)
-	if !ok {
-		return nil
-	}
-	entries := make([]environmentEntry, 0, len(list))
-	for _, entry := range list {
-		value, ok := entry.(map[string]any)
-		if !ok {
-			continue
-		}
-		decoded := environmentEntry{name: stringAt(value, "name")}
-		if literal, exists := value["value"]; exists {
-			decoded.value, decoded.hasLiteral = fmt.Sprintf("%v", literal), true
-		}
-		if from, exists := value["valueFrom"].(map[string]any); exists {
-			decoded.reference = decodeValueReference(from)
-		}
-		entries = append(entries, decoded)
-	}
-	return entries
-}
-
-// decodeValueReference names where a non-literal env value comes from.
-func decodeValueReference(from map[string]any) *valueReference {
-	for field, kind := range map[string]string{
-		"configMapKeyRef": configMapKind, "secretKeyRef": "secret",
-		"fieldRef": "field", "resourceFieldRef": "resource",
-	} {
-		reference, ok := from[field].(map[string]any)
-		if !ok {
-			continue
-		}
-		name := stringAt(reference, "name")
-		if kind == "field" {
-			name = stringAt(reference, "fieldPath")
-		}
-		if kind == "resource" {
-			name = stringAt(reference, "resource")
-		}
-		return &valueReference{kind: kind, name: name, key: stringAt(reference, "key")}
-	}
-	return nil
-}
-
-// argumentToken is one token of a container's command or args.
-type argumentToken struct {
-	value string
-	path  string
-}
-
-// arguments decodes a container's command and args as individual tokens.
-func (container pathedContainer) arguments() []argumentToken {
-	var tokens []argumentToken
-	for _, field := range []string{"command", "args"} {
-		list, ok := container.value[field].([]any)
-		if !ok {
-			continue
-		}
-		for index, entry := range list {
-			text, ok := entry.(string)
-			if !ok {
-				continue
-			}
-			tokens = append(tokens, argumentToken{
-				value: text,
-				path:  fmt.Sprintf("%s.%s[%d]", container.path, field, index),
-			})
-		}
-	}
-	return tokens
-}
-
-// volumeTransportMaterial reports the TLS material a volume delivers as files.
-func volumeTransportMaterial(name string, source any) (string, bool) {
-	for _, text := range nestedStrings(source) {
-		lowered := strings.ToLower(text)
-		for _, file := range transportMaterialFiles {
-			if strings.Contains(lowered, file) {
-				return file, true
-			}
-		}
-	}
-	for _, candidate := range append([]string{name}, nestedStrings(source)...) {
-		for word := range nameWords(candidate) {
-			if transportMaterialNameWords[word] {
-				return strings.ToLower(word), true
-			}
-		}
-	}
-	return "", false
-}
-
-// nestedStrings flattens every string a value holds, in a deterministic order.
-func nestedStrings(value any) []string {
-	switch typed := value.(type) {
-	case string:
-		return []string{typed}
-	case map[string]any:
-		var texts []string
-		for _, key := range sortedMapKeys(typed) {
-			texts = append(texts, nestedStrings(typed[key])...)
-		}
-		return texts
-	case []any:
-		var texts []string
-		for _, child := range typed {
-			texts = append(texts, nestedStrings(child)...)
-		}
-		return texts
-	}
-	return nil
-}
-
-// canonical is the separator-free lowercase spelling a marker is matched against.
-func canonical(value string) string {
-	var builder strings.Builder
-	for _, symbol := range strings.ToLower(value) {
-		if unicode.IsLetter(symbol) || unicode.IsDigit(symbol) {
-			builder.WriteRune(symbol)
-		}
-	}
-	return builder.String()
-}
-
-// nameWords splits a configuration name into upper-case words, on separators and
-// on camelCase boundaries. Matching per word is what keeps DEVICES from reading
-// as a development marker.
-func nameWords(value string) map[string]bool {
-	words := map[string]bool{}
-	var current strings.Builder
-	flush := func() {
-		if current.Len() > 0 {
-			words[strings.ToUpper(current.String())] = true
-			current.Reset()
-		}
-	}
-	runes := []rune(value)
-	for index, symbol := range runes {
-		switch {
-		case unicode.IsLetter(symbol) || unicode.IsDigit(symbol):
-			if unicode.IsUpper(symbol) && index > 0 && unicode.IsLower(runes[index-1]) {
-				flush()
-			}
-			current.WriteRune(symbol)
-		default:
-			flush()
-		}
-	}
-	flush()
-	return words
-}
-
-func anyWord(words map[string]bool, markers map[string]bool) bool {
-	for word := range words {
-		if markers[word] {
-			return true
-		}
-	}
-	return false
 }
 
 func stringAt(value map[string]any, key string) string {
@@ -850,3 +481,5 @@ func sortedMapKeys(value map[string]any) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+func sortedKeysOf(value map[string]any) []string { return sortedMapKeys(value) }

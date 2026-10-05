@@ -443,13 +443,31 @@ func (r *RenderManager) Handle(ctx context.Context, service *resources.Service, 
 // still not be how a workload that breaks the posture reaches a tree someone then
 // applies.
 func (r *RenderManager) checkPosture(ctx context.Context, module *resources.Module, service *resources.Service, manifests string) error {
+	contract, err := posture.ContractFromService(module.Name, service)
+	if err != nil {
+		return err
+	}
+	contracts := posture.Contracts{}
+	contracts.Add(contract)
 	return posture.ValidateRenderedManifests(
 		manifests,
 		KustomizeDirForEnv(ctx, r.Workspace, module, service, r.Env),
 		posture.Subject{Module: module.Name, Service: service.Name},
+		contracts,
 		r.Env.Posture,
 		r.Env.DeploysToCell(),
 	)
+}
+
+// PostureAllowances are the environment's declared exceptions to the deployed
+// posture, one line each. A dry run is a deployed render, so the exceptions it
+// relies on are printed on it too — an allowance nobody sees is the silent skip
+// the mechanism exists to prevent.
+func (r *RenderManager) PostureAllowances() []string {
+	if r.Env == nil || !r.Env.DeploysToCell() {
+		return nil
+	}
+	return r.Env.Posture.Report()
 }
 
 func (r *RenderManager) Evidence() DeploymentEvidence {
