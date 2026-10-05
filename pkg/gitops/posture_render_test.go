@@ -75,6 +75,7 @@ func renderWorkloads(t *testing.T, declaration *posture.Declaration, promotable 
 	options := RenderOptions{
 		Destination: destination, Module: "shop", UnitNames: names,
 		Environment: "staging", Promotable: promotable, Posture: declaration,
+		DeploysToCell: true,
 	}
 	result, err := RenderOwnedTree(context.Background(), &options, func(_ context.Context, root string) error {
 		for name, manifest := range workloads {
@@ -89,6 +90,18 @@ func renderWorkloads(t *testing.T, declaration *posture.Declaration, promotable 
 		return nil
 	})
 	return result, destination, err
+}
+
+// withCustody adds, to a workload's environment, the credential a store holds as
+// its own state: what tells a store of credentials apart from a cache, which
+// loses nothing it cannot recompute when it restarts.
+func withCustody(manifest string) string {
+	// A credential never carries a value in a restricted render — it arrives as a
+	// reference, which the render's own credential rule already requires.
+	const entry = "          env:\n            - name: STORE_ROOT_TOKEN\n" +
+		"              valueFrom:\n                secretKeyRef:\n" +
+		"                  name: secret-store\n                  key: STORE_ROOT_TOKEN\n"
+	return strings.Replace(manifest, "          env:\n", entry, 1)
 }
 
 // conformingWorkload is what the platform's own projection produces: scratch
@@ -143,7 +156,7 @@ func TestDeployedRenderRefusesAServicesOwnTLSForItsInCellPeers(t *testing.T) {
 	require.ErrorContains(t, err, "deployed render refuses service shop/api")
 	require.ErrorContains(t, err, posture.RulePeerTransportMaterial)
 	require.ErrorContains(t, err, "API_TLS_CERT_FILE")
-	require.ErrorContains(t, err, "spec.template.spec.containers[0].env[0].name")
+	require.ErrorContains(t, err, "spec.template.spec.containers[0].env[0]")
 	require.ErrorContains(t, err, posture.AssertMeshProtectedTransport)
 }
 
@@ -169,10 +182,13 @@ func TestDeployedRenderRefusesADevelopmentModeStore(t *testing.T) {
 		`        - name: store
           command: ["store", "server", "-dev"]
           image:`)
+	// A store holds credential material as its own state — that is what makes an
+	// in-memory mode a loss rather than a cold cache.
+	workload = withCustody(workload)
 	_, _, err := renderWorkloads(t, meshedStaging(), true, map[string]string{"store": workload})
 	require.ErrorContains(t, err, "deployed render refuses service shop/store")
 	require.ErrorContains(t, err, posture.RuleInMemoryStateStore)
-	require.ErrorContains(t, err, `the command line passes "-dev", a development-mode switch`)
+	require.ErrorContains(t, err, "-dev starts its development server")
 	require.ErrorContains(t, err, "spec.template.spec.containers[0].command[2]")
 }
 
@@ -199,6 +215,7 @@ func TestLocalRenderIsNotHeldToTheDeployedPosture(t *testing.T) {
 		`        - name: store
           command: ["store", "server", "-dev"]
           image:`)
+	development = withCustody(development)
 	_, _, err := renderWorkloads(t, meshedStaging(), false, map[string]string{"api": mounted, "store": development})
 	require.NoError(t, err)
 }
@@ -242,6 +259,7 @@ func TestDeployedRenderSeesAVolumeAnOverlayPatchesIn(t *testing.T) {
 	options := RenderOptions{
 		Destination: destination, Module: "shop", UnitNames: []string{"api"},
 		Environment: "staging", Promotable: true, Posture: meshedStaging(),
+		DeploysToCell: true,
 	}
 	_, err := RenderOwnedTree(context.Background(), &options, func(_ context.Context, root string) error {
 		base := filepath.Join(root, "services", "api", "base")
@@ -296,10 +314,7 @@ func TestRenderModuleIsHeldToTheEnvironmentsDeclaredPosture(t *testing.T) {
             name: store-config
 `
 	}
-	workspace, module, env := posturedFixture(t, `    posture:
-      asserts:
-        internal-transport/mesh-protected: true
-`)
+	workspace, module, env := posturedFixture(t, meshBlock)
 	_, err := RenderModule(context.Background(), workspace, module, env, "acme-staging", nil)
 	require.ErrorContains(t, err, "deployed render refuses service shop/store")
 	require.ErrorContains(t, err, posture.RuleNonScratchMount)
@@ -337,10 +352,7 @@ func TestAnUnknownPostureRuleIsRefusedWhenTheEnvironmentIsRead(t *testing.T) {
 func TestDevServiceBuildIsHeldToTheDeployedPosture(t *testing.T) {
 	installFakeAgents(t)
 	t.Cleanup(func() { fakeAgentWorkloadPatch = nil })
-	workspace, module, env := posturedFixture(t, `    posture:
-      asserts:
-        internal-transport/mesh-protected: true
-`)
+	workspace, module, env := posturedFixture(t, meshBlock)
 	store, err := module.LoadServiceFromName(context.Background(), "store")
 	require.NoError(t, err)
 
@@ -362,4 +374,101 @@ func TestDevServiceBuildIsHeldToTheDeployedPosture(t *testing.T) {
 	require.ErrorContains(t, err, "deployed render refuses service shop/store")
 	require.ErrorContains(t, err, posture.RuleNonScratchMount)
 	require.ErrorContains(t, err, "spec.template.spec.volumes[0].secret")
+}
+
+// Each entry point must carry the environment's posture into its render. These
+// are per-entry-point regression tests: deleting the declaration at any one of
+// them fails here, which is what keeps a path from silently losing the guard.
+func TestEveryRenderEntryPointCarriesTheEnvironmentPosture(t *testing.T) {
+	mounted := func(service, workload string) string {
+		if service != "store" {
+			return workload
+		}
+		return workload + `      volumes:
+        - name: credentials
+          secret:
+            secretName: store-credentials
+`
+	}
+	t.Run("a module render", func(t *testing.T) {
+		installFakeAgents(t)
+		t.Cleanup(func() { fakeAgentWorkloadPatch = nil })
+		fakeAgentWorkloadPatch = mounted
+		workspace, module, env := posturedFixture(t, meshBlock)
+		_, err := RenderModule(context.Background(), workspace, module, env, "acme-staging", nil)
+		require.ErrorContains(t, err, "deployed render refuses service shop/store")
+		require.ErrorContains(t, err, posture.RuleNonScratchMount)
+	})
+	t.Run("a single-service render", func(t *testing.T) {
+		installFakeAgents(t)
+		t.Cleanup(func() { fakeAgentWorkloadPatch = nil })
+		fakeAgentWorkloadPatch = mounted
+		workspace, module, env := posturedFixture(t, meshBlock)
+		api, err := module.LoadServiceFromName(context.Background(), "api")
+		require.NoError(t, err)
+		_, err = RenderService(context.Background(), workspace, module, api, env, "acme-staging", false, nil)
+		require.ErrorContains(t, err, "deployed render refuses service shop/store",
+			"a service render drives its dependency graph, and every unit it stages is held to the posture")
+		require.ErrorContains(t, err, posture.RuleNonScratchMount)
+	})
+	// A solution renders through its own entry point, with its own options, and
+	// drives an executor an in-repo test cannot stand in for. Its options are
+	// assembled by one function, so the declaration it must carry is covered here.
+	t.Run("a solution render", func(t *testing.T) {
+		_, _, env := posturedFixture(t, meshBlock)
+		options := solutionRenderOptions(
+			&SolutionRenderRequest{Name: "checkout", Environment: env, AppProject: "acme-staging"},
+			env, "/tmp/destination", "deployments/modules/checkout", "acme-checkout")
+		require.True(t, options.deployedRender(),
+			"a solution rendered for a cell is held to the posture")
+		require.Same(t, env.Posture, options.Posture,
+			"the environment's declaration, including its allowances, reaches the render")
+		require.True(t, options.Posture.Asserted(posture.AssertMeshProtectedTransport))
+	})
+}
+
+// meshBlock is the posture declaration the fixture environment carries.
+const meshBlock = `    posture:
+      asserts:
+        internal-transport/mesh-protected: true
+`
+
+// A dev build is held to the posture of the environment it is building for, and
+// to that environment's manifests only: another environment's overlay in the same
+// scratch tree is not what this deployment ships.
+func TestDevServiceBuildReadsOnlyTheRequestedEnvironment(t *testing.T) {
+	installFakeAgents(t)
+	t.Cleanup(func() { fakeAgentExtraFiles = nil })
+	fakeAgentExtraFiles = func(service string) map[string]string {
+		if service != "store" {
+			return nil
+		}
+		return map[string]string{
+			filepath.Join("overlays", "local", "kustomization.yaml"): "resources:\n  - ../../base\n  - development.yaml\n",
+			filepath.Join("overlays", "local", "development.yaml"): `apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: store-development
+spec:
+  template:
+    spec:
+      containers:
+        - name: store
+          args: ["server", "-dev"]
+          env:
+            - name: STORE_ROOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: secret-store
+                  key: STORE_ROOT_TOKEN
+`,
+		}
+	}
+	workspace, module, env := posturedFixture(t, meshBlock)
+	store, err := module.LoadServiceFromName(context.Background(), "store")
+	require.NoError(t, err)
+	images, err := buildRenderedServiceImages(context.Background(), workspace, module, store, env, false, nil)
+	require.NoError(t, err,
+		"a development overlay the requested environment never applies is not this build's manifests")
+	require.NotEmpty(t, images)
 }

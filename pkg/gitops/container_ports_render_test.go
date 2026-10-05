@@ -145,6 +145,11 @@ func fakePromotableOutput() *builderv0.DeploymentOutput {
 // through the real RenderModule path. See posture_render_test.go.
 var fakeAgentWorkloadPatch func(service, workload string) string
 
+// fakeAgentExtraFiles, when set, adds files to the tree a fake agent writes, keyed
+// by unit-relative path. It is how a test puts another environment's overlay into a
+// rendered tree, to show which overlay a check reads.
+var fakeAgentExtraFiles func(service string) map[string]string
+
 // fakeAgentTree is the base and overlay one agent writes for a service.
 func fakeAgentTree(ctx context.Context, service *resources.Service, env *environments.Environment, mappings []*basev0.NetworkMapping) (map[string]string, error) {
 	image := fmt.Sprintf("registry.example.com/acme/%s@sha256:%s", service.Name, strings.Repeat("a", 64))
@@ -209,14 +214,20 @@ spec:
 	if fakeAgentWorkloadPatch != nil {
 		workload = fakeAgentWorkloadPatch(service.Name, workload)
 	}
-	return map[string]string{
+	tree := map[string]string{
 		filepath.Join("base", "kustomization.yaml"): "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - " +
 			workloadFile + "\n  - service.yaml\n",
 		filepath.Join("base", workloadFile): workload,
 		filepath.Join("base", "service.yaml"): fmt.Sprintf("apiVersion: v1\nkind: Service\nmetadata:\n  name: %[1]s\n  namespace: acme\n"+
 			"spec:\n  selector:\n    app: %[1]s\n  ports:\n%[2]s", service.Name, servicePorts),
 		filepath.Join("overlays", env.Name, "kustomization.yaml"): "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - ../../base\n",
-	}, nil
+	}
+	if fakeAgentExtraFiles != nil {
+		for path, content := range fakeAgentExtraFiles(service.Name) {
+			tree[path] = content
+		}
+	}
+	return tree, nil
 }
 
 // fakeGoGrpcPorts mirrors service-go-grpc's templates: grpc on 9090 always,

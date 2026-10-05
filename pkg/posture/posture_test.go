@@ -103,8 +103,8 @@ spec:
 `,
 			declaration: meshed(),
 			rule:        RulePeerTransportMaterial,
-			field:       "spec.template.spec.containers[0].env[0].name",
-			detail:      "STORE_TLS_CERT_FILE declares certfile",
+			field:       "spec.template.spec.containers[0].env[0]",
+			detail:      "STORE_TLS_CERT_FILE=/etc/store/server.crt configures TLS material",
 		},
 		{
 			name: "a client handed CA material on the command line",
@@ -122,7 +122,7 @@ spec:
 			declaration: meshed(),
 			rule:        RulePeerTransportMaterial,
 			field:       "spec.template.spec.containers[0].args[1]",
-			detail:      "the command line declares ca.crt",
+			detail:      "--ca-cert=/etc/peers/ca.crt configures TLS material",
 		},
 		{
 			name: "a volume delivering TLS material as files",
@@ -219,10 +219,16 @@ spec:
       containers:
         - name: store
           command: ["store", "server", "-dev"]
+          env:
+            - name: STORE_ROOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: secret-store
+                  key: STORE_ROOT_TOKEN
 `,
 			rule:   RuleInMemoryStateStore,
 			field:  "spec.template.spec.containers[0].command[2]",
-			detail: `the command line passes "-dev", a development-mode switch`,
+			detail: "-dev starts its development server",
 		},
 		{
 			name: "a development-mode root credential",
@@ -240,8 +246,8 @@ spec:
               value: "seeded"
 `,
 			rule:   RuleInMemoryStateStore,
-			field:  "spec.template.spec.containers[0].env[0].name",
-			detail: "STORE_DEV_ROOT_TOKEN_ID is a development-mode credential",
+			field:  "spec.template.spec.containers[0].env[0]",
+			detail: "STORE_DEV_ROOT_TOKEN_ID=seeded starts its development server",
 		},
 		{
 			name: "in-memory storage selected by value",
@@ -255,12 +261,17 @@ spec:
       containers:
         - name: store
           env:
+            - name: STORE_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: secret-store
+                  key: STORE_MASTER_KEY
             - name: STORE_STORAGE_BACKEND
               value: inmem
 `,
 			rule:   RuleInMemoryStateStore,
-			field:  "spec.template.spec.containers[0].env[0].value",
-			detail: `STORE_STORAGE_BACKEND selects "inmem" storage`,
+			field:  "spec.template.spec.containers[0].env[1]",
+			detail: "STORE_STORAGE_BACKEND=inmem keeps its state in memory",
 		},
 		{
 			name: "a CronJob's pod template is a workload too",
@@ -296,12 +307,15 @@ spec:
       initContainers:
         - name: migrate
           args: ["--dev-mode=true"]
+          env:
+            - name: STORE_ROOT_TOKEN
+              value: seeded
       containers:
         - name: store
 `,
 			rule:   RuleInMemoryStateStore,
 			field:  "spec.template.spec.initContainers[0].args[0]",
-			detail: `the command line passes "--dev-mode=true", a development-mode switch`,
+			detail: "--dev-mode=true starts its development server",
 		},
 	}
 	for _, test := range cases {
@@ -465,18 +479,23 @@ func TestSubjectFromPathNamesTheUnitThatRenderedTheManifest(t *testing.T) {
 	}
 }
 
-func TestValidateTreeNamesTheServiceAndFileOfTheWorkloadItRefuses(t *testing.T) {
+// A tree on disk is read through the effective-manifest pipeline, and a refusal
+// names the service the manifest belongs to and where it came from.
+func TestEffectiveTreeRefusalNamesTheServiceAndItsManifest(t *testing.T) {
 	root := t.TempDir()
 	write := func(path, content string) {
 		full := filepath.Join(root, filepath.FromSlash(path))
 		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
 		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
 	}
-	write("modules/shop/services/api/base/deployment.yaml", scratchWorkload)
-	write("modules/shop/services/api/base/kustomization.yaml", "resources:\n  - deployment.yaml\n")
-	require.NoError(t, ValidateTree(root, Subject{Module: "shop", Service: "api"}, meshed()))
+	write("modules/shop/services/api/overlays/staging/kustomization.yaml", "resources:\n  - workload.yaml\n")
+	write("modules/shop/services/api/overlays/staging/workload.yaml", scratchWorkload)
+	documents, err := EffectiveTree(root, "staging")
+	require.NoError(t, err)
+	require.NoError(t, ValidateDocuments(documents, Subject{Module: "shop", Service: "api"}, meshed()))
 
-	write("modules/shop/services/store/base/stateful-set.yaml", `apiVersion: apps/v1
+	write("modules/shop/services/store/overlays/staging/kustomization.yaml", "resources:\n  - workload.yaml\n")
+	write("modules/shop/services/store/overlays/staging/workload.yaml", `apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: store
@@ -486,9 +505,14 @@ spec:
       containers:
         - name: store
           command: ["store", "server", "-dev"]
+          env:
+            - name: STORE_ROOT_TOKEN
+              value: seeded
 `)
-	err := ValidateTree(root, Subject{Module: "shop", Service: "api"}, meshed())
+	documents, err = EffectiveTree(root, "staging")
+	require.NoError(t, err)
+	err = ValidateDocuments(documents, Subject{Module: "shop", Service: "api"}, meshed())
 	require.ErrorContains(t, err, "deployed render refuses service shop/store")
-	require.ErrorContains(t, err, "modules/shop/services/store/base/stateful-set.yaml")
+	require.ErrorContains(t, err, "modules/shop/services/store/overlays/staging")
 	require.ErrorContains(t, err, RuleInMemoryStateStore)
 }

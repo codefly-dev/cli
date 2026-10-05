@@ -12,6 +12,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
+	"github.com/codefly-dev/cli/pkg/posture"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
@@ -419,6 +420,9 @@ func (r *RenderManager) Handle(ctx context.Context, service *resources.Service, 
 		if err != nil {
 			return w.Wrapf(err, "cannot render kustomize")
 		}
+		if err = r.checkPosture(ctx, module, service, manifests); err != nil {
+			return w.Wrap(err)
+		}
 		r.evidence.record(&RenderedTreeEvidence{
 			Module:     module.Name,
 			Service:    service.Name,
@@ -431,6 +435,21 @@ func (r *RenderManager) Handle(ctx context.Context, service *resources.Service, 
 		return w.NewError("unsupported deployment kind %T", deploy.Kind)
 	}
 	return nil
+}
+
+// checkPosture holds this render's built manifests to the deployed security
+// posture, like every other restricted render: one guard, reached from the one
+// place this path has the built output. A render that is only ever inspected must
+// still not be how a workload that breaks the posture reaches a tree someone then
+// applies.
+func (r *RenderManager) checkPosture(ctx context.Context, module *resources.Module, service *resources.Service, manifests string) error {
+	return posture.ValidateRenderedManifests(
+		manifests,
+		KustomizeDirForEnv(ctx, r.Workspace, module, service, r.Env),
+		posture.Subject{Module: module.Name, Service: service.Name},
+		r.Env.Posture,
+		r.Env.DeploysToCell(),
+	)
 }
 
 func (r *RenderManager) Evidence() DeploymentEvidence {

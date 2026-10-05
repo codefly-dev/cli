@@ -155,12 +155,19 @@ func buildRenderedServiceImages(
 	}
 	// A dev deployment ships this render's image into a cell, so this render is
 	// held to the environment's deployed security posture exactly as a full
-	// `deploy gitops render` is — the manifests it just wrote say what the code
-	// in that image expects of the platform. Only the image reaches the cell, but
-	// a service whose render mounts its configuration from a file is a service
-	// whose code reads a file the platform never delivers. See pkg/posture.
-	if postureErr := posture.ValidateTree(scratch, posture.Subject{Module: module.Name, Service: service.Name}, env.Posture); postureErr != nil {
-		return nil, postureErr
+	// `deploy gitops render` is, through the same effective-manifest pipeline: the
+	// requested environment's overlay, built with Kustomize, with wrapper lists
+	// expanded and references resolved. Reading the staged files instead would
+	// judge a tree by what its authors wrote rather than by what the cell applies.
+	if env.DeploysToCell() {
+		documents, treeErr := posture.EffectiveTree(scratch, env.Name)
+		if treeErr != nil {
+			return nil, treeErr
+		}
+		subject := posture.Subject{Module: module.Name, Service: service.Name}
+		if postureErr := posture.ValidateDocuments(documents, subject, env.Posture); postureErr != nil {
+			return nil, postureErr
+		}
 	}
 	return digestImages(destinations(module, service))
 }

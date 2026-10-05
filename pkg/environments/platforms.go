@@ -10,6 +10,25 @@ import (
 // k3d, kind or minikube cluster is containers in the local container engine.
 var localClusterKinds = map[string]bool{ClusterKindK3d: true, "kind": true, "minikube": true}
 
+// DeploysToCell reports whether this environment deploys to a cell — somewhere
+// other than the machine running the command — which is what makes a restricted
+// render subject to the deployed security posture (see pkg/posture).
+//
+// It is decided by what the environment DECLARES, never by its name: a k3d, kind
+// or minikube cluster runs its nodes in the local container engine, and anything
+// else is a cell. An environment that declares no cluster kind counts as a cell:
+// the posture is the last door before one, and a classification that defaulted
+// the other way would make an undeclared environment the way around it.
+func (env *Environment) DeploysToCell() bool {
+	if env == nil {
+		return false
+	}
+	if env.Cluster == nil || env.Cluster.Kind == "" {
+		return true
+	}
+	return !localClusterKinds[env.Cluster.Kind]
+}
+
 // imageArchitectures are the node architectures an environment may declare,
 // named as Go and OCI name them.
 var imageArchitectures = map[string]bool{

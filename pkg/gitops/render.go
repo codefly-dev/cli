@@ -142,31 +142,38 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 //
 // It runs over the effective manifest set validateTree returns — Kustomize-built
 // output for anything a kustomization covers — so a volume an environment overlay
-// patches in is seen exactly as the cell would see it. Only a restricted
-// (promotable) render is held to it: a local or ephemeral render is not a cell.
+// patches in is seen exactly as the cell would see it, and it hands the whole set
+// to one call so that a value a workload reads from a ConfigMap of the same set is
+// part of its configuration. Only a render whose manifests are restricted AND
+// whose environment deploys to a cell is held to it.
 //
 // This is the render's own pass, not the tree re-validation publish and observe
 // perform: those reconstruct their options from a render inventory, which carries
 // the environment's name but not its posture, and the tree they check is already
 // pinned byte-for-byte to the one validated here by its inventory digest.
 func enforceDeployedPosture(manifests []manifest, opts *RenderOptions) error {
-	if !opts.Promotable {
+	if !opts.deployedRender() {
 		return nil
 	}
-	defaults := posture.Subject{Module: opts.Module, Service: opts.Unit}
+	documents := make([]posture.Document, 0, len(manifests))
 	for _, item := range manifests {
-		subject := posture.SubjectFromPath(item.path, defaults)
-		if err := posture.Validate(item.value, subject, item.path, opts.Posture); err != nil {
-			return err
-		}
+		documents = append(documents, posture.Document{Location: item.path, Value: item.value})
 	}
-	return nil
+	return posture.ValidateDocuments(documents, posture.Subject{Module: opts.Module, Service: opts.Unit}, opts.Posture)
+}
+
+// deployedRender reports whether this render must satisfy the deployed posture:
+// its manifests are restricted AND the environment they are rendered for deploys
+// to a cell. Both halves are the point — a restricted profile is also what a
+// local apply of a promotable tree requests, and the posture is about cells.
+func (opts *RenderOptions) deployedRender() bool {
+	return opts.Promotable && opts.DeploysToCell
 }
 
 // postureAllowances is the report a deployed render prints on every run: one line
 // per declared exception, whether or not this render needed it.
 func postureAllowances(opts *RenderOptions) []string {
-	if !opts.Promotable {
+	if !opts.deployedRender() {
 		return nil
 	}
 	return opts.Posture.Report()

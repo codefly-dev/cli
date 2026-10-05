@@ -4,10 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"io/fs"
-	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -19,55 +16,6 @@ var manifestExtensions = map[string]bool{".yaml": true, ".yml": true, ".json": t
 // unitDirectories are the render subdirectories whose next path segment names
 // the unit a manifest belongs to.
 var unitDirectories = map[string]bool{"services": true, "solutions": true}
-
-// ValidateTree holds every workload manifest under root to the deployed posture.
-// It is the entry point for a caller that has a rendered tree on disk rather than
-// decoded documents — the dev deployment's scratch render — and it reads the tree
-// exactly as it was written, with no Kustomize build: a render's own tree
-// validation covers the built overlay output.
-//
-// defaults names the subject of a manifest whose path does not identify a unit,
-// which is the case for a single-unit render whose tree root *is* that unit.
-func ValidateTree(root string, defaults Subject, declaration *Declaration) error {
-	var paths []string
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() || !manifestExtensions[strings.ToLower(filepath.Ext(path))] {
-			return nil
-		}
-		paths = append(paths, path)
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	// Sorted, so a tree with more than one violation always reports the same one.
-	sort.Strings(paths)
-	for _, path := range paths {
-		relative, relErr := filepath.Rel(root, path)
-		if relErr != nil {
-			relative = path
-		}
-		relative = filepath.ToSlash(relative)
-		data, readErr := os.ReadFile(path) //nolint:gosec // a path from walking the tree under validation
-		if readErr != nil {
-			return fmt.Errorf("read %s: %w", relative, readErr)
-		}
-		documents, decodeErr := decodeDocuments(data)
-		if decodeErr != nil {
-			return fmt.Errorf("%s: %w", relative, decodeErr)
-		}
-		subject := SubjectFromPath(relative, defaults)
-		for _, document := range documents {
-			if err := Validate(document, subject, relative, declaration); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
 
 // decodeDocuments decodes every YAML document of one file, skipping anything
 // that is not a mapping (a Kustomize patch list, an empty document).

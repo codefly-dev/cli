@@ -65,14 +65,15 @@ func renderModuleTree(
 	// take it from here.
 	scope := moduleScope(env, workspace, module.Name)
 	options := &RenderOptions{
-		Destination: destination,
-		Module:      module.Name,
-		Environment: env.Name,
-		Namespace:   scope.Namespace,
-		AppProject:  project,
-		Promotable:  true,
-		OwnedPath:   ownedPath,
-		Posture:     env.Posture,
+		Destination:   destination,
+		Module:        module.Name,
+		Environment:   env.Name,
+		Namespace:     scope.Namespace,
+		AppProject:    project,
+		Promotable:    true,
+		OwnedPath:     ownedPath,
+		Posture:       env.Posture,
+		DeploysToCell: env.DeploysToCell(),
 	}
 	return RenderOwnedTree(ctx, options, func(ctx context.Context, stage string) error {
 		services := make([]*resources.Service, 0, len(module.ServiceReferences))
@@ -341,15 +342,16 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		return RenderResult{}, err
 	}
 	return RenderOwnedTree(ctx, &RenderOptions{
-		Destination: destination,
-		Module:      module.Name,
-		Unit:        service.Name,
-		Environment: env.Name,
-		Namespace:   env.ModuleNamespace(workspace, module.Name),
-		AppProject:  project,
-		Promotable:  true,
-		Package:     pkg,
-		Posture:     env.Posture,
+		Destination:   destination,
+		Module:        module.Name,
+		Unit:          service.Name,
+		Environment:   env.Name,
+		Namespace:     env.ModuleNamespace(workspace, module.Name),
+		AppProject:    project,
+		Promotable:    true,
+		Package:       pkg,
+		Posture:       env.Posture,
+		DeploysToCell: env.DeploysToCell(),
 	}, func(ctx context.Context, stage string) error {
 		// A configuration error refuses the render before any image is built or
 		// pushed.

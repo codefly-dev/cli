@@ -219,6 +219,12 @@ type RenderOptions struct {
 	// re-validation reconstructed from an inventory leaves it nil, and the
 	// posture pass it gates does not run (see enforceDeployedPosture).
 	Posture *posture.Declaration
+	// DeploysToCell is the environment's own classification: whether this render
+	// targets a cell rather than the machine running the command
+	// (environments.Environment.DeploysToCell). It is what subjects a render to
+	// the deployed posture — not the output profile, which a delivery path may
+	// request for its own reasons.
+	DeploysToCell bool
 }
 
 func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKubernetesOutput {
