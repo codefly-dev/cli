@@ -327,6 +327,7 @@ type World struct {
 	// sync.Once rather than a plain nil check so a World handed to concurrent
 	// readers answers once, whatever the playbook's scheduling.
 	workspaceProducerLookup     func(unique string) (*resources.Service, bool)
+	workspaceDeclaredEndpoints  resources.DeclaredEndpoints
 	workspaceProducerLookupErr  error
 	workspaceProducerLookupOnce sync.Once
 

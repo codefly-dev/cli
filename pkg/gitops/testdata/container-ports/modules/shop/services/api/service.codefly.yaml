@@ -13,7 +13,9 @@ service-dependencies:
 endpoints:
   - name: authority
     api: grpc
-    visibility: module
+    visibility: internal
+    allow-modules:
+      - "*"
   - name: grpc
     api: grpc
   - name: rest

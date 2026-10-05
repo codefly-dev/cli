@@ -94,11 +94,16 @@ func TestARenderRefusesARootValueThatDidNotSurviveResolution(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			confs, err := droppedValueWorld(t, SnapshotMode, test.reference, test.mappings)
-			_, delivered := groupValue(confs, "work-context", "authority-endpoint")
-			require.False(t, delivered, "the premise of the case is that the value does not survive")
 			require.Error(t, err, "a render must not emit a manifest with a root value silently absent")
+			// Refused by CORE now, at the interpolation, rather than by this
+			// package's outcome check afterwards: since core v0.11.0 an
+			// endpoint with no instance for this access, and an instance whose
+			// address is empty, are faults of the composition and not
+			// omissions this consumer is entitled to. The value never reaches
+			// the outcome check, so there is nothing to ask `confs` about.
+			require.Nil(t, confs)
 			require.Contains(t, err.Error(), "work-context/authority-endpoint")
-			require.Contains(t, err.Error(), "platform/authority")
+			require.NotContains(t, err.Error(), "${endpoint:", "a diagnostic must not echo the value")
 		})
 	}
 }
@@ -117,23 +122,20 @@ func TestARootReferenceMissingItsEndpointComponentIsRefusedAsMalformed(t *testin
 //
 // This tolerance also held before the PR, by accident rather than by rule — the
 // old code dropped the value silently — so the test survives a wholesale
-// rollback and is not differential evidence. What it guards is an intermediate
-// revision of this PR that made the refusal unconditional and broke working
-// local runs: making judgeDroppedValue refuse in every mode fails it.
-// The run may legitimately be early or smaller than the
-// composition, and failing it would break working local runs — the asymmetry
-// `docs/orchestration.md` states, in the direction that cannot produce "works
-// locally, unconfigured once deployed".
-func TestARunDoesNotRefuseARootValueThatDidNotSurviveResolution(t *testing.T) {
-	confs, err := droppedValueWorld(t, RunMode, "${endpoint:platform/authority/rest}",
+// The render/run asymmetry this used to assert is GONE, by core's decision
+// (core#703, recorded there and in its release notes): a faulty reference in a
+// composition-root group fails every receiver, in a run as in a render. The
+// case this package once had to tolerate — a run legitimately smaller or
+// earlier than the composition — is now a fault core refuses, and an endpoint
+// with no instance for this consumer's access is one of them. This test is kept,
+// flipped, so the change is recorded rather than deleted.
+func TestARunRefusesARootValueWhoseEndpointHasNoInstanceForItsAccess(t *testing.T) {
+	_, err := droppedValueWorld(t, RunMode, "${endpoint:platform/authority/rest}",
 		[]*basev0.NetworkMapping{{Endpoint: &basev0.Endpoint{Module: "platform", Service: "authority", Name: "rest", Api: "rest"}}})
-	require.NoError(t, err, "a run must not fail over a value it cannot place")
-	_, delivered := groupValue(confs, "work-context", "authority-endpoint")
-	require.False(t, delivered)
-	// The rest of the group still arrives: only the unresolvable value is lost.
-	literal, delivered := groupValue(confs, "work-context", "literal")
-	require.True(t, delivered, "a literal in the same group is unaffected")
-	require.Equal(t, "present", literal)
+	require.Error(t, err,
+		"a composition fault in a root group fails every receiver, in a run as in a render")
+	require.Contains(t, err.Error(), "work-context/authority-endpoint")
+	require.Contains(t, err.Error(), "no instance for access")
 }
 
 // A World that resolves groups carrying references but cannot say what they

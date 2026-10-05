@@ -3,6 +3,7 @@ package gitops
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -50,7 +51,9 @@ func requireUnresolvedShopReferences(t *testing.T, err error, consumers ...strin
 	require.True(t, errors.As(err, &unresolved), "want the plan-time refusal, got %v", err)
 	faults := make([]string, 0, len(unresolved.References))
 	for _, reference := range unresolved.References {
-		faults = append(faults, reference.Consumer+" "+reference.Key+" "+reference.Producer)
+		// Located by consumer, key and POSITION: core v0.11.0 carries no text
+		// from the value in a diagnostic.
+		faults = append(faults, fmt.Sprintf("%s %s #%d", reference.Consumer, reference.Key, reference.Position))
 	}
 	slices.Sort(faults)
 	// `shop` is a composition-root group, so every consumer the plan covers
@@ -60,7 +63,9 @@ func requireUnresolvedShopReferences(t *testing.T, err error, consumers ...strin
 	// unresolved reference arrives in one error either way.
 	want := make([]string, 0, len(consumers)*2)
 	for _, consumer := range consumers {
-		want = append(want, consumer+" store-endpoint store/db", consumer+" worker-endpoint shop/worker")
+		// Both values carry one reference each, so each is reference #1 of its
+		// own value: core v0.11.0 names a reference by position, never by text.
+		want = append(want, consumer+" store-endpoint #1", consumer+" worker-endpoint #1")
 	}
 	slices.Sort(want)
 	require.Equal(t, want, faults, "every unresolved reference every consumer in the plan receives, in one error")

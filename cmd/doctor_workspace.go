@@ -906,7 +906,7 @@ func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, 
 		for _, reference := range collapseReferencesByFault(unresolved.References) {
 			report.add(codeConfigurationReference, "workspace configuration "+reference.Group, "fail",
 				reference.message,
-				referenceRemediation(&reference.UnresolvedReference, dependencies))
+				referenceRemediation(&reference.UnresolvedReference, dependencies, provided.Infos))
 		}
 	default:
 		report.add(codeConfigurationInvalid, "configuration references", "fail", err.Error(), "")
@@ -942,7 +942,10 @@ func collapseReferencesByFault(references []configurations.UnresolvedReference) 
 	var out []collapsedReference
 	at := map[string]int{}
 	for _, reference := range references {
-		fault := reference.Group + "\x00" + reference.Key + "\x00" + reference.Reference + "\x00" + reference.Reason
+		// Keyed on the reference's POSITION rather than its text: core v0.11.0
+		// carries no text from the value. Position is as discriminating here —
+		// two faults of one key differ by which reference they are.
+		fault := fmt.Sprintf("%s\x00%s\x00%d\x00%s", reference.Group, reference.Key, reference.Position, reference.Reason)
 		if index, seen := at[fault]; seen {
 			out[index].consumers++
 			out[index].message = out[index].describe()
@@ -971,14 +974,23 @@ func (c *collapsedReference) describe() string {
 // all, a producer absent from the graph is not in the workspace, and a producer
 // that is there is missing the endpoint. One shared line telling every reader to
 // "compose the producer into the workspace" is wrong advice for two of the three.
-func referenceRemediation(reference *configurations.UnresolvedReference, dependencies *architecture.ServiceDependencies) string {
+//
+// The producer is derived from the configurations this command already holds,
+// by the position core reported: core v0.11.0 carries no text from a value in a
+// diagnostic, because a reference is text from a value and a value may be a
+// secret. Reading it here keeps the three answers apart without core echoing
+// anything, and without this command parsing core's prose — which would turn a
+// reworded reason into silently wrong advice.
+func referenceRemediation(reference *configurations.UnresolvedReference, dependencies *architecture.ServiceDependencies,
+	infos []*basev0.ConfigurationInformation) string {
+	producer := orchestration.ReferenceProducerAt(infos, reference.Group, reference.Key, reference.Position)
 	switch {
-	case reference.Producer == "":
+	case producer == "":
 		return fmt.Sprintf("write %s as ${endpoint:<module>/<service>/<endpoint>} in the %q workspace configuration", reference.Key, reference.Group)
-	case !inWorkspace(dependencies, reference.Producer):
-		return fmt.Sprintf("compose the module providing %s into this workspace, or point %s at a service this workspace declares", reference.Producer, reference.Key)
+	case !inWorkspace(dependencies, producer):
+		return fmt.Sprintf("compose the module providing %s into this workspace, or point %s at a service this workspace declares", producer, reference.Key)
 	default:
-		return fmt.Sprintf("declare the endpoint on %s, or point %s at an endpoint %s already declares", reference.Producer, reference.Key, reference.Producer)
+		return fmt.Sprintf("declare the endpoint on %s, or point %s at an endpoint %s already declares", producer, reference.Key, producer)
 	}
 }
 

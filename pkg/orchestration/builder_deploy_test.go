@@ -332,7 +332,11 @@ func TestWithContainerReachableAsPublicMirrorsContainerOnlyEndpoint(t *testing.T
 	container := resources.NewHTTPNetworkInstance("saas-vault.saas.svc.cluster.local", 8080, false)
 	container.Access = resources.NewContainerNetworkAccess()
 	mappings := []*basev0.NetworkMapping{{
-		Endpoint:  &basev0.Endpoint{Module: "saas", Service: "vault", Name: "http", Api: "http", Visibility: resources.VisibilityModule},
+		// `module` visibility is gone from core's model: it was a permission
+		// granted to every module, which is `internal` with an allow-list of
+		// everything. (core v0.11.0.)
+		Endpoint: &basev0.Endpoint{Module: "saas", Service: "vault", Name: "http", Api: "http",
+			Visibility: resources.VisibilityInternal, AllowModules: []string{"*"}},
 		Instances: []*basev0.NetworkInstance{container},
 	}}
 

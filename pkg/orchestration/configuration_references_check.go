@@ -69,7 +69,7 @@ func CheckConfigurationReferences(
 			service, err := dependencies.ServiceFromUnique(unique)
 			return service, err == nil
 		})
-	err := withExcludedProducerReasons(declaredProblems, excludedProducers)
+	err := withExcludedProducerReasons(declaredProblems, excludedProducers, provided.Infos)
 	lookup, lookupErr := workspaceProducerLookup(ctx, workspace)
 	if lookupErr != nil {
 		return errors.Join(err, lookupErr)
@@ -215,25 +215,40 @@ func consumersWithRootGroupsOnly(consumers []*resources.Service, rootGroups []st
 // endpoint may cross a module boundary (World.exportableTo), so a disagreement
 // is a security one.
 func workspaceProducerLookup(ctx context.Context, workspace *resources.Workspace) (configurations.ProducerLookup, error) {
+	lookup, _, err := workspaceProducers(ctx, workspace)
+	return lookup, err
+}
+
+// workspaceProducers reads the workspace's services ONCE and answers both
+// questions that depend on them: "is this <module>/<service> a service of this
+// workspace", which the plan gate asks, and "what does it declare", which
+// core's endpoint selection asks of every resolution.
+//
+// One read, because they are the same fact. A gate judging a reference against
+// one manifest while the resolution selects against another is how the two come
+// to disagree about an endpoint, and that disagreement is what this whole area
+// has been about.
+func workspaceProducers(ctx context.Context, workspace *resources.Workspace) (configurations.ProducerLookup, resources.DeclaredEndpoints, error) {
 	if workspace == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	services, err := workspace.LoadServices(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("cannot read this workspace's services, so the ${endpoint:…} references a service receives cannot be checked against the producers they name: %w", err)
+		return nil, nil, fmt.Errorf("cannot read this workspace's services, so the ${endpoint:…} references a service receives cannot be checked against the producers they name: %w", err)
 	}
 	byUnique := make(map[string]*resources.Service, len(services))
 	for _, service := range services {
-		identity, err := service.Identity()
-		if err != nil {
+		identity, idErr := service.Identity()
+		if idErr != nil {
 			continue
 		}
 		byUnique[identity.Unique()] = service
 	}
-	return func(unique string) (*resources.Service, bool) {
+	lookup := func(unique string) (*resources.Service, bool) {
 		service, ok := byUnique[unique]
 		return service, ok
-	}, nil
+	}
+	return lookup, resources.DeclaredEndpointsOf(services), nil
 }
 
 // WorkspaceConfigurationsForChecking reads the workspace configurations the way
@@ -302,7 +317,16 @@ func WorkspaceConfigurationsForChecking(
 // service of this plan") sends the reader looking for a missing composition. The
 // real cause is the exclusion, and the fix is to exclude the group that
 // references it as well, or to stop excluding the producer.
-func withExcludedProducerReasons(err error, excludedProducers map[string]bool) error {
+//
+// The producer is derived HERE, from the value, rather than read off core's
+// finding. Core stopped carrying it deliberately: a reference is text from a
+// value, a value may be a secret, and a producer taken from a reference's
+// tokens is value-derived even when every token is well formed. That rule is
+// right and this honours it — the correlation happens in the one place that
+// already holds the value, and nothing of it is printed. What reaches the
+// reader is the group name and the producer this caller itself named on the
+// command line.
+func withExcludedProducerReasons(err error, excludedProducers map[string]bool, infos []*basev0.ConfigurationInformation) error {
 	if err == nil || len(excludedProducers) == 0 {
 		return err
 	}
@@ -312,14 +336,48 @@ func withExcludedProducerReasons(err error, excludedProducers map[string]bool) e
 	}
 	for i := range unresolved.References {
 		reference := &unresolved.References[i]
-		if !excludedProducers[reference.Producer] {
+		producer := ReferenceProducerAt(infos, reference.Group, reference.Key, reference.Position)
+		if producer == "" || !excludedProducers[producer] {
 			continue
 		}
 		reference.Reason = fmt.Sprintf(
 			"the producer is excluded from this run (--exclude-dependency or a run profile); exclude the %q workspace configuration too, or stop excluding %s",
-			reference.Group, reference.Producer)
+			reference.Group, producer)
 	}
 	return err
+}
+
+// ReferenceProducerAt is the <module>/<service> named by one value's Nth
+// endpoint reference, 1-based, in the order core counts them.
+//
+// It reads the references the way core does — resources.ConfigurationValueEndpointReferences,
+// which covers a templated value's literals and not only its Value — so the
+// position core reported indexes the same list. An unparseable or out-of-range
+// position yields nothing rather than a guess.
+func ReferenceProducerAt(infos []*basev0.ConfigurationInformation, group, key string, position int) string {
+	if position < 1 {
+		return ""
+	}
+	for _, info := range infos {
+		if info.GetName() != group {
+			continue
+		}
+		for _, value := range info.GetConfigurationValues() {
+			if value.GetKey() != key {
+				continue
+			}
+			references := resources.ConfigurationValueEndpointReferences(value)
+			if position > len(references) {
+				return ""
+			}
+			parsed, parseErr := resources.ParseEndpoint(references[position-1])
+			if parseErr != nil || parsed.Module == "" || parsed.Service == "" {
+				return ""
+			}
+			return parsed.Module + "/" + parsed.Service
+		}
+	}
+	return ""
 }
 
 // PlanConfigurationReferences is CheckConfigurationReferences for a plan that

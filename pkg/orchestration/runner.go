@@ -655,8 +655,12 @@ func (world *World) exportableTo(
 				wool.Field("endpoint", resources.EndpointDestination(endpoint)))
 			continue
 		}
+		// The declared Location travels with the rest of the declaration: core
+		// judges the whole declaration before it judges the consumer, so a
+		// location the model does not define is ErrInvalidEndpointDeclaration
+		// rather than something this filter silently treats as reachable.
 		if err := resources.ValidateEndpointVisibility(consumerModule, endpoint.GetModule(), endpoint.GetService(),
-			declared.Name, declared.Visibility, declared.AllowModules); err != nil {
+			declared.Name, resources.Visibility(declared.Visibility), declared.Location, declared.AllowModules); err != nil {
 			wool.Get(ctx).In("World.exportableTo").Debug(
 				"not binding a producer endpoint this consumer's module may not reach",
 				wool.Field("consumer", consumerLabel(consumer)),

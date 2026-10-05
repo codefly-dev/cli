@@ -170,7 +170,7 @@ func TestARootGroupReferenceToAPublicEndpointResolves(t *testing.T) {
 // that is only correct while a second guard is also correct is not a guard. An
 // earlier revision had the read drop the value with a warning and left the
 // refusal to this gate alone, which a dynamic review showed to be a fail-open.
-func TestATypoedProducerInARootGroupIsRefusedByNameAtThePlanGate(t *testing.T) {
+func TestATypoedProducerInARootGroupIsRefusedAtThePlanGate(t *testing.T) {
 	ctx := context.Background()
 	workspace := referenceValidityWorkspace(t, "platfrom/authority/admin", "public")
 	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
@@ -183,7 +183,13 @@ func TestATypoedProducerInARootGroupIsRefusedByNameAtThePlanGate(t *testing.T) {
 
 	err = PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{consumer}, true)
 	require.Error(t, err, "a reference naming a producer the workspace does not have must not reach a run")
-	require.Contains(t, err.Error(), "platfrom/authority")
+	// The typo is NOT echoed. Core v0.11.0 carries no text from a value into a
+	// diagnostic, because a reference is text from a value and a value may be a
+	// secret — a mistyped producer is value text like any other. What locates it
+	// is the group, the key and which reference of that value it was.
+	require.NotContains(t, err.Error(), "platfrom", "a diagnostic must not echo the value")
+	require.Contains(t, err.Error(), "work-context/authority-endpoint")
+	require.Contains(t, err.Error(), "reference 1")
 	require.Contains(t, err.Error(), "not a service of this workspace")
 
 	// And the same plan passes once the producer name is right, so the refusal is
@@ -212,7 +218,7 @@ func TestATypoedProducerInARootGroupIsRefusedByTheResolutionToo(t *testing.T) {
 
 	_, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewContainerNetworkAccess())
 	require.Error(t, err, "a producer that is not a service of the workspace must be refused wherever the value resolves")
-	require.Contains(t, err.Error(), "platfrom/authority")
+	require.NotContains(t, err.Error(), "platfrom", "a diagnostic must not echo the value")
 	require.Contains(t, err.Error(), "not a service of this workspace")
 }
 
@@ -368,8 +374,10 @@ func TestAMixedRootGroupReportsBothTheVisibilityViolationAndTheTypo(t *testing.T
 	require.Error(t, err, "a group with two faults must report both, not stop at one")
 	require.Contains(t, err.Error(), "is private to module",
 		"the visibility violation must be named")
-	require.Contains(t, err.Error(), "platfrom/authority",
-		"and so must the typo: core's verdict on each reference is propagated whole")
+	require.Contains(t, err.Error(), "not a service of this workspace",
+		"and so must the typo's verdict: core's verdict on each reference is propagated whole")
+	require.NotContains(t, err.Error(), "platfrom",
+		"reported by position and reason, never by echoing the value")
 }
 
 // An unreadable workspace fails the reference check CLOSED.
@@ -440,7 +448,8 @@ func TestAnInvocationOverrideIsCheckedLikeAnyOtherReference(t *testing.T) {
 	require.NoError(t, err)
 	err = PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{consumer}, true)
 	require.Error(t, err, "a typo supplied by an invocation override must not pass the plan")
-	require.Contains(t, err.Error(), "platfrom/authority")
+	require.Contains(t, err.Error(), "not a service of this workspace")
+	require.NotContains(t, err.Error(), "platfrom", "a diagnostic must not echo the value")
 
 	// And the resolution refuses it too, so the gate is not the only guard.
 	world, service := referenceValidityWorld(t, workspace)

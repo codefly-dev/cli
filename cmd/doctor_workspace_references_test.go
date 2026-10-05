@@ -38,7 +38,11 @@ func TestDoctorWorkspaceChecksEndpointReferences(t *testing.T) {
 		if len(diagnostics) != 2 {
 			t.Fatalf("want one failure per unresolved reference, got %d: %s", len(diagnostics), reportJSON(t, report))
 		}
-		for i, want := range []string{"backend/api: platform/store-endpoint = ${endpoint:store/db/tcp} (producer store/db)", "backend/api: platform/worker-admin = ${endpoint:backend/worker/admin} (producer backend/worker)"} {
+		// core v0.11.0 locates a reference by position and echoes no text from
+		// the value; the producer still reaches the operator through the
+		// REMEDIATION, which this command derives from the configurations it
+		// already holds.
+		for i, want := range []string{"backend/api: platform/store-endpoint, reference 1:", "backend/api: platform/worker-admin, reference 1:"} {
 			if diagnostics[i].Status != "fail" || !strings.Contains(diagnostics[i].Message, want) {
 				t.Fatalf("diagnostic %d = %+v, want a failure containing %q", i, diagnostics[i], want)
 			}
@@ -85,7 +89,7 @@ func TestDoctorWorkspaceChecksCompositionRootGroupReferences(t *testing.T) {
 	if len(diagnostics) != 1 {
 		t.Fatalf("want the root group's typo reported once, got %d: %s", len(diagnostics), reportJSON(t, report))
 	}
-	for _, want := range []string{"work-context/worker-endpoint", "bakcend/worker"} {
+	for _, want := range []string{"work-context/worker-endpoint", "reference 1", "not a service of this workspace"} {
 		if !strings.Contains(diagnostics[0].Message, want) {
 			t.Fatalf("diagnostic = %q, want it to contain %q", diagnostics[0].Message, want)
 		}

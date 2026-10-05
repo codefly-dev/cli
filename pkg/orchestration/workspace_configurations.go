@@ -126,6 +126,16 @@ func (world *World) workspaceConfigurationsFor(
 	// between two individually-correct rules. core#702 moved the answer to
 	// where the scan lives, and this hands it the two inputs it cannot read off
 	// the mappings: who the consumer is, and what each producer declares.
+	// The consumer's module when it is readable, and empty when it is not.
+	//
+	// Core requires it to SELECT an endpoint and refuses with
+	// ErrConsumerNotIdentified when a reference needs selecting without it — so
+	// the fail-closed behaviour is core's and does not need repeating here.
+	// Refusing at this point instead failed every resolution of a service whose
+	// identity carries no module, including the ones whose configurations hold
+	// no reference at all and for which the module is never consulted: runtime
+	// init and accepted-port publication both resolve configurations that
+	// select nothing.
 	consumerModule := ""
 	if identity, idErr := service.Identity(); idErr == nil {
 		consumerModule = identity.Module
@@ -568,26 +578,19 @@ func (world *World) checkEffectiveWorkspaceConfigurationReferences(
 // declaredEndpointsLookup is what each producer of the workspace DECLARES, for
 // core's per-reference endpoint selection.
 //
-// It reads the same producer lookup the plan gate reads, so the manifest the
-// resolution selects against and the manifest the check judges against are one
-// source. Nil only when there is no workspace to read; a workspace that cannot
-// be read is an error, because a reference selected against no manifest is a
-// reference whose visibility nothing judged.
-func (world *World) declaredEndpointsLookup(ctx context.Context) (func(unique string) []*resources.Endpoint, error) {
-	producers, err := world.workspaceProducers(ctx)
-	if err != nil {
+// It comes from the same single read of the workspace's services as the plan
+// gate's producer lookup, through core's own resources.DeclaredEndpointsOf, so
+// the manifest the resolution selects against and the manifest the check judges
+// against are one source rather than two that have to be kept in step.
+//
+// Core refuses a resolution whose selection context is incomplete, so a nil
+// answer here is a refusal and not a lenient fallback: a reference resolved
+// against no manifest is a reference whose visibility nothing judged.
+func (world *World) declaredEndpointsLookup(ctx context.Context) (resources.DeclaredEndpoints, error) {
+	if _, err := world.workspaceProducers(ctx); err != nil {
 		return nil, err
 	}
-	if producers == nil {
-		return nil, nil
-	}
-	return func(unique string) []*resources.Endpoint {
-		service, ok := producers(unique)
-		if !ok || service == nil {
-			return nil
-		}
-		return service.Endpoints
-	}, nil
+	return world.workspaceDeclaredEndpoints, nil
 }
 
 func (world *World) workspaceProducers(ctx context.Context) (configurations.ProducerLookup, error) {
@@ -599,7 +602,8 @@ func (world *World) workspaceProducers(ctx context.Context) (configurations.Prod
 	// workspace" is how the gate and the resolution come to disagree about a
 	// producer.
 	world.workspaceProducerLookupOnce.Do(func() {
-		world.workspaceProducerLookup, world.workspaceProducerLookupErr = workspaceProducerLookup(ctx, world.Workspace)
+		world.workspaceProducerLookup, world.workspaceDeclaredEndpoints, world.workspaceProducerLookupErr =
+			workspaceProducers(ctx, world.Workspace)
 	})
 	if world.workspaceProducerLookupErr != nil {
 		// Fail closed, and keep failing: the failure is memoized for the whole

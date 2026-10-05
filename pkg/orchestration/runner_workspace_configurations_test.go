@@ -3,6 +3,7 @@ package orchestration
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -233,7 +234,12 @@ func TestWorkspaceConfigurationsForResolvesEndpointsFromConsumerMappings(t *test
 	_, err = world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewNativeNetworkAccess())
 	require.Error(t, err, "a reference to a producer of the run with no address fails, never an omitted key")
 	require.Contains(t, err.Error(), "platform/gateway-endpoint")
-	require.Contains(t, err.Error(), "producer saas/auth-gateway")
+	// Core v0.11.0 names what the manifest says — the endpoint — and locates the
+	// reference by position. The producer came from the value's tokens, so it is
+	// no longer echoed.
+	require.Contains(t, err.Error(), `names endpoint "rest"`)
+	require.Contains(t, err.Error(), "reference 1 of 1")
+	require.Contains(t, err.Error(), "platform/gateway-endpoint")
 
 	// A producer the run does not contain is not for this run: the consumer
 	// does not receive the key. Whether the workspace can resolve it at all is
@@ -491,7 +497,8 @@ func TestConfigurationReferencesToAProducerDeclaredExternal(t *testing.T) {
 	_, err = world.workspaceConfigurationsFor(ctx, relay, dependencyMappings, resources.NewNativeNetworkAccess())
 	require.Error(t, err, "a producer that never loaded has no address, so the read fails")
 	require.Contains(t, err.Error(), "platform/accounts-endpoint")
-	require.Contains(t, err.Error(), "producer saas/accounts")
+	require.Contains(t, err.Error(), `names endpoint "connect"`)
+	require.Contains(t, err.Error(), "platform/accounts-endpoint")
 
 	// The run orders the producer first, so it has loaded and recorded its
 	// endpoints by the time the consumer reads the group. Its address is then
@@ -576,16 +583,19 @@ func TestRunRefusesUnresolvedConfigurationReferencesBeforeStartingAnything(t *te
 	err = flow.InitManagers(ctx)
 	var unresolved *configurations.UnresolvedReferencesError
 	require.True(t, errors.As(err, &unresolved), "want the plan-time refusal, got %v", err)
+	// A finding is located by consumer, key and POSITION: core v0.11.0 stopped
+	// carrying the reference's text, because a reference is text from a value
+	// and a value may be a secret. Position plus the key is enough to find it.
 	var got []string
 	for _, reference := range unresolved.References {
-		got = append(got, reference.Consumer+" "+reference.Key+" "+reference.Producer)
+		got = append(got, fmt.Sprintf("%s %s #%d", reference.Consumer, reference.Key, reference.Position))
 	}
 	slices.Sort(got)
 	require.Equal(t, []string{
-		"platform/relay accounts-admin saas/accounts",
-		"platform/relay documents-endpoint documents/store",
-		"saas/accounts accounts-admin saas/accounts",
-		"saas/accounts documents-endpoint documents/store",
+		"platform/relay accounts-admin #1",
+		"platform/relay documents-endpoint #1",
+		"saas/accounts accounts-admin #1",
+		"saas/accounts documents-endpoint #1",
 	}, got, "a root group's faults are reported for every service that receives it")
 	require.Empty(t, flow.hub.managers, "no service of the run set was created")
 }
@@ -602,7 +612,9 @@ func TestPlanConfigurationReferences(t *testing.T) {
 	root, err := warden.LoadServiceFromName(ctx, "warden")
 	require.NoError(t, err)
 	err = PlanConfigurationReferences(ctx, broken, env, []*resources.Service{root}, false)
-	require.ErrorContains(t, err, "platform/warden: platform/documents-endpoint = ${endpoint:documents/store/grpc} (producer documents/store)")
+	// The finding's shape in core v0.11.0: consumer, group/key, position and
+	// reason — no reference text, no producer taken from it.
+	require.ErrorContains(t, err, "platform/warden: platform/documents-endpoint, reference 1: the producer is not a service of this workspace")
 
 	workspace, err := resources.LoadWorkspaceFromDir(ctx, "testdata/configuration-references")
 	require.NoError(t, err)
@@ -643,7 +655,10 @@ func TestRunNamesTheExclusionThatLeftAReferenceWithNoProducer(t *testing.T) {
 	var unresolved *configurations.UnresolvedReferencesError
 	require.True(t, errors.As(err, &unresolved), "want the plan-time refusal, got %v", err)
 	require.Len(t, unresolved.References, 1)
-	require.Equal(t, "saas/accounts", unresolved.References[0].Producer)
+	// The producer is named in the reason this package writes — derived from the
+	// value it already holds, by the position core reported — so the operator
+	// still learns which excluded service caused it.
+	require.Contains(t, unresolved.References[0].Reason, "saas/accounts")
 	require.Contains(t, unresolved.References[0].Reason, "excluded from this run")
 	require.Contains(t, unresolved.References[0].Reason, `exclude the "platform" workspace configuration too`)
 	require.NotContains(t, unresolved.References[0].Reason, "not a service of this plan")
@@ -743,7 +758,9 @@ func TestTheFlowPlanGateRefusesARootGroupsVisibilityViolation(t *testing.T) {
 			var unresolved *configurations.UnresolvedReferencesError
 			require.True(t, errors.As(err, &unresolved), "want the plan-time refusal, got %v", err)
 			require.NotEmpty(t, unresolved.References)
-			require.Equal(t, "platform/authority", unresolved.References[0].Producer)
+			// Core's reason names what the MANIFEST says — the producing
+			// service and endpoint — rather than the reference's text.
+			require.Contains(t, unresolved.References[0].Reason, "authority")
 			require.Contains(t, unresolved.References[0].Reason, "payments",
 				"the refusal must name the module that may not see the endpoint")
 			// The reason is core's own visibility verdict, asserted so the test
@@ -848,8 +865,14 @@ func TestTheFlowPlanGateChecksAnInvocationOverride(t *testing.T) {
 	var unresolved *configurations.UnresolvedReferencesError
 	require.True(t, errors.As(err, &unresolved),
 		"a typo supplied through the override carrier must not pass the flow's plan gate, got %v", err)
-	require.Equal(t, "platfrom/authority", unresolved.References[0].Producer)
+	// The typo itself is NOT echoed: core v0.11.0 carries no text from the
+	// value, and a mistyped producer is value text like any other. What the
+	// operator gets is the group, the key and which reference of that value it
+	// was — enough to find it in their own file — plus the reason.
+	require.Equal(t, "work-context", unresolved.References[0].Group)
+	require.Equal(t, 1, unresolved.References[0].Position)
 	require.Contains(t, unresolved.References[0].Reason, "not a service of this workspace")
+	require.NotContains(t, unresolved.References[0].Reason, "platfrom")
 	require.Empty(t, flow.hub.managers, "no service of the run set was created")
 }
 

@@ -11,7 +11,7 @@ require (
 	github.com/asottile/dockerfile v3.1.0+incompatible
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/briandowns/spinner v1.23.2
-	github.com/codefly-dev/core v0.10.0
+	github.com/codefly-dev/core v0.11.0
 	github.com/codefly-dev/golor v0.1.3
 	github.com/codefly-dev/llm v0.1.7
 	github.com/codefly-dev/sdk-go/workcontext v0.0.0-20260919105812-8b263f353cdc
@@ -198,7 +198,7 @@ require (
 	github.com/tree-sitter/tree-sitter-python v0.25.0 // indirect
 	github.com/tree-sitter/tree-sitter-rust v0.24.2 // indirect
 	github.com/tree-sitter/tree-sitter-typescript v0.23.2 // indirect
-	github.com/ulikunitz/xz v0.5.16 // indirect
+	github.com/ulikunitz/xz v0.5.17 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
 	github.com/xeipuuv/gojsonpointer v0.0.0-20190905194746-02993c407bfb // indirect
 	github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 // indirect
@@ -235,3 +235,5 @@ require (
 	k8s.io/kube-openapi v0.0.0-20260721132016-d427ff9ee9ad // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+replace github.com/codefly-dev/core => /private/tmp/claude-501/-Users-antoine--lazybox-v2-github-codefly-dev-cli-issue-882-fix-render-a-deployed-service-never-receives-the/8c6f8932-1e9a-4c88-bce0-f227097c80da/scratchpad/core

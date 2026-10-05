@@ -118,7 +118,7 @@ func writeNetworkJSON(ctx context.Context, out io.Writer, workspace *resources.W
 			if entry.Visibility == "" {
 				entry.Visibility = "private"
 			}
-			if ep.Visibility != resources.VisibilityExternal {
+			if !resources.IsExternalEndpoint(ep) {
 				if inst := network.NativeFor(ctx, workspace.Name, id.Module, id.Name, namingScope, ep); inst != nil {
 					entry.Native = inst.Address
 				}

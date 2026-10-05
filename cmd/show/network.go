@@ -92,7 +92,7 @@ carries none; a render for another environment is an error.`,
 			}
 			for _, ep := range endpoints {
 				addr := "(external — DNS/public-resolved at runtime)"
-				if ep.Visibility != resources.VisibilityExternal {
+				if !resources.IsExternalEndpoint(ep) {
 					if inst := network.NativeFor(ctx, workspace.Name, id.Module, id.Name, namingScope, ep); inst != nil {
 						addr = inst.Address
 					}

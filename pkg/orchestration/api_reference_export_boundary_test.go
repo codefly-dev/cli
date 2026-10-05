@@ -128,7 +128,8 @@ func TestAnAPINameReferenceCannotResolveToAnEndpointTheConsumerMayNotReach(t *te
 		})
 
 		confs, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewNativeNetworkAccess())
-		require.NoError(t, err, "a root group's unresolvable value is dropped in a run, not fatal")
+		require.Error(t, err, "an endpoint with no instance for this access is a composition fault (core v0.11.0)")
+		require.Contains(t, err.Error(), "no instance for access")
 		address, delivered := groupValue(confs, "work-context", "authority-endpoint")
 		require.False(t, delivered,
 			"with no reachable endpoint to resolve to, the value is dropped and warned about — never filled from a private sibling")
@@ -431,19 +432,25 @@ func TestAReferenceSeveralPermittedEndpointsSatisfyIsRefused(t *testing.T) {
 	require.ErrorContains(t, err, "satisfied by more than one endpoint the consumer may reach")
 }
 
-// The ambiguity refusal judges the consumer's own groups and nothing else.
+// A faulty reference in a composition-root group fails EVERY receiver, not only
+// the services that declared the group.
 //
-// This is the regression the first revision of it shipped, and it broke the rule
-// this package states everywhere else: a value a service does not receive
-// imposes no obligation on it. The check was handed every information block the
-// loader loaded — which includes groups a service never declared and the
-// composition root does not provide run-wide — so one ambiguous reference
-// anywhere in the workspace refused every consumer in it. (Layer-4 round-seven
-// B1.)
+// This test asserted the opposite, and the opposite was this package's own rule:
+// a root group's value that a service did not declare imposed no obligation on
+// it, so an ambiguous reference refused only the declaring consumer. core#703
+// decided otherwise and recorded it — a root group reaches every service of the
+// composition, so a fault in it is a fault for every service of the composition,
+// and a render or run that would ship one service unconfigured is refused
+// wholesale rather than per receiver.
 //
-// The pair is the test: the same ambiguous reference must not refuse a consumer
-// that does not receive its group, and must refuse the one that does.
-func TestAnAmbiguousReferenceOnlyRefusesTheConsumersThatReceiveIt(t *testing.T) {
+// It is kept, flipped, because the change is worth a test rather than a
+// deletion: `payments/worker` below declares only a reference-free group and
+// never reads the ambiguous value, and it is refused all the same.
+//
+// The ambiguity itself is core's verdict, per consumer-reachable candidates:
+// `platform/authority` declares `api` and `admin`, both public on api `rest`, so
+// `${endpoint:platform/authority/rest}` names neither of them.
+func TestAnAmbiguousReferenceInARootGroupRefusesEveryReceiver(t *testing.T) {
 	ctx := context.Background()
 	workspace := writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
@@ -480,12 +487,13 @@ func TestAnAmbiguousReferenceOnlyRefusesTheConsumersThatReceiveIt(t *testing.T) 
 		world.compositionRootGroups = func() []string { return nil }
 	})
 
-	confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewContainerNetworkAccess())
-	require.NoError(t, err,
-		"an ambiguous reference in a group this service does not receive must not refuse it")
-	require.Equal(t, []string{"work-context"}, groupSet(confs),
-		"the check must have run over a non-empty effective set, or this proves nothing")
+	_, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewContainerNetworkAccess())
+	require.Error(t, err,
+		"a fault in a composition-root group refuses every receiver, declarer or not")
+	require.ErrorContains(t, err, "satisfied by more than one endpoint the consumer may reach")
+	require.Contains(t, err.Error(), "authority-pool/authority-endpoint")
 
+	// And the service that declares the group, for which it was always a fault.
 	reader, err := loadService(ctx, t, workspace, "payments", "reader")
 	require.NoError(t, err)
 	_, err = world.workspaceConfigurationsFor(ctx, reader, nil, resources.NewContainerNetworkAccess())
@@ -566,8 +574,16 @@ func TestAnExactEndpointNameWinsOverAnAPISibling(t *testing.T) {
 				world.Mode = RunMode
 				recordMappings(t, world, "platform", "authority", shape.mappings...)
 			})
+			// Either the named endpoint answers with its own address, or the
+			// composition is refused — never the sibling, in any shape or
+			// order. Since core v0.11.0 an endpoint with no instance for this
+			// access is a fault rather than a drop, so some shapes refuse.
 			confs, err := ordered.workspaceConfigurationsFor(ctx, service, nil, resources.NewNativeNetworkAccess())
-			require.NoError(t, err)
+			if err != nil {
+				require.NotContains(t, err.Error(), "http://localhost:2222",
+					"a refusal must not carry the sibling's address either")
+				return
+			}
 			address, delivered := groupValue(confs, "work-context", "authority-endpoint")
 			require.NotEqual(t, "http://localhost:2222", address,
 				"the value must never address the sibling the reference did not name")
@@ -851,14 +867,15 @@ func TestTwoReferencesIntoOneProducerEachResolveToTheEndpointTheyName(t *testing
 		// over; core#702 removed the fall-through, and the drop is the better
 		// outcome — the composition is told what is missing rather than
 		// refused for what might have happened.
-		confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
-		require.NoError(t, err)
-		primary, delivered := groupValue(confs, "work-context", "primary-address")
-		require.False(t, delivered, "the named endpoint has no address for this access, so the value drops")
-		require.Empty(t, primary)
-		secondary, delivered := groupValue(confs, "work-context", "secondary-address")
-		require.True(t, delivered, "and the reference that names admin still gets admin")
-		require.Equal(t, "http://localhost:2222", secondary)
+		// core v0.11.0: an endpoint with no instance for this consumer's access is
+		// a fault of the composition, not an omission this consumer is entitled
+		// to, so it is refused in every mode. What matters here is unchanged and
+		// is what the refusal proves — the sibling never answers.
+		_, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "no instance for access")
+		require.NotContains(t, err.Error(), "localhost:2222",
+			"the sibling's address must appear nowhere, refusal included")
 	})
 
 	for _, order := range []struct {
@@ -1130,11 +1147,14 @@ func TestTwoReferencesOverDistinctAPIsResolve(t *testing.T) {
 				)
 			})
 
-		confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
-		require.NoError(t, err,
-			"neither the named endpoint nor the sibling serves this access, so there is nothing to refuse")
-		_, delivered := groupValue(confs, "work-context", "primary-address")
-		require.False(t, delivered, "the value drops instead")
+		// core v0.11.0 refuses this: the endpoint the reference selected has no
+		// instance for the access, which is a composition fault whether or not
+		// a sibling could have answered. The property under test is unchanged —
+		// no sibling's address is produced.
+		_, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "no instance for access")
+		require.NotContains(t, err.Error(), "admin:9090")
 	})
 }
 
@@ -1206,18 +1226,14 @@ func TestAnEmptyAddressOnTheNamedEndpointIsNotAbsence(t *testing.T) {
 	// group delivered, and this one value dropped. (Layer-4 round-eleven N2
 	// — the first version of this assertion accepted an error too, so it
 	// would have passed on a refusal it was written to forbid.)
-	confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
-	require.NoError(t, err, "nothing can be handed over wrongly here, so there is nothing to refuse")
-	require.Contains(t, groupNames(confs), "work-context",
-		"the group is still delivered: it is the one value that drops")
-	primary, delivered := groupValue(confs, "work-context", "primary-address")
-	require.False(t, delivered,
-		"the named endpoint answered with nothing, so the value drops")
-	require.Empty(t, primary)
-	// And the sibling's address reached nothing at all, under any key.
-	secondary, delivered := groupValue(confs, "work-context", "secondary-address")
-	require.True(t, delivered, "the reference that does name admin still gets it")
-	require.Equal(t, "http://localhost:2222", secondary)
+	// core v0.11.0: an empty address is a fault, not an omission — the endpoint
+	// answered, with nothing. What this test exists for is unchanged: the
+	// sibling never stands in for it.
+	_, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "empty address")
+	require.NotContains(t, err.Error(), "localhost:2222",
+		"the sibling must never answer a reference that named the other endpoint")
 }
 
 // A sibling whose address for this access is EMPTY is not a competing answer.
@@ -1246,11 +1262,9 @@ func TestASiblingWithNoAddressIsNotACompetingAnswer(t *testing.T) {
 			)
 		})
 
-		confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
-		require.NoError(t, err,
-			"a sibling with no address for this access cannot hand one over, so there is nothing to refuse")
-		_, delivered := groupValue(confs, "work-context", "primary-address")
-		require.False(t, delivered, "the reference drops instead")
+		_, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
+		require.Error(t, err, "no instance for this access is a fault, whatever the siblings hold")
+		require.Contains(t, err.Error(), "no instance for access")
 	})
 
 	// The control the review asked for, which does not reach the sibling
@@ -1266,11 +1280,14 @@ func TestASiblingWithNoAddressIsNotACompetingAnswer(t *testing.T) {
 			)
 		})
 
-		confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
-		require.NoError(t, err)
-		primary, delivered := groupValue(confs, "work-context", "primary-address")
-		require.True(t, delivered)
-		require.Equal(t, "http://localhost:1111", primary)
+		// The named endpoint answers; the sibling's EMPTY address is still a
+		// fault for the reference that names IT, which is the second value of
+		// this group — so the resolution refuses, and the refusal is about
+		// admin, never about grpc being answered by a sibling.
+		_, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "empty address")
+		require.Contains(t, err.Error(), "secondary-address")
 	})
 
 	// And where a sibling COULD have answered, it still does not: core resolves
@@ -1285,11 +1302,10 @@ func TestASiblingWithNoAddressIsNotACompetingAnswer(t *testing.T) {
 			)
 		})
 
-		confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
-		require.NoError(t, err)
-		primary, delivered := groupValue(confs, "work-context", "primary-address")
-		require.False(t, delivered)
-		require.NotEqual(t, "http://localhost:2222", primary,
+		_, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewNativeNetworkAccess())
+		require.Error(t, err, "the named endpoint has no instance for this access: a fault")
+		require.Contains(t, err.Error(), "no instance for access")
+		require.NotContains(t, err.Error(), "localhost:2222",
 			"the sibling must never answer a reference that named the other endpoint")
 	})
 }
@@ -1386,10 +1402,14 @@ func TestNoOrderingLetsASiblingAnswerAReferenceThatNamedAnother(t *testing.T) {
 				require.NotEqual(t, "http://localhost:3333", primary)
 				return
 			}
-			require.Contains(t, err.Error(), "${endpoint:platform/authority/grpc}",
-				"the refusal names the reference that cannot be answered correctly")
-			require.Contains(t, err.Error(), "metrics",
-				"and the sibling that would otherwise have answered it")
+			// Core names the ENDPOINT the reference selected and locates the
+			// reference by position; it echoes no text from the value. What
+			// this test is for survives: the value is never answered by a
+			// sibling, in either recorded order.
+			require.Contains(t, err.Error(), `names endpoint "grpc"`)
+			require.Contains(t, err.Error(), "work-context/primary-address")
+			require.NotContains(t, err.Error(), "localhost:3333",
+				"the sibling that could have answered must not have")
 		})
 	}
 }

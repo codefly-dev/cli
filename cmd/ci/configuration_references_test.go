@@ -41,7 +41,9 @@ func TestCIGateRefusesUnresolvedConfigurationReferencesBeforeAnyPhase(t *testing
 	require.Len(t, unresolved.References, 1)
 	require.Equal(t, "backend/api", unresolved.References[0].Consumer)
 	require.Equal(t, "store-endpoint", unresolved.References[0].Key)
-	require.Equal(t, "store/db", unresolved.References[0].Producer)
+	// Located by position: core v0.11.0 carries no text from a value into a
+	// diagnostic, so the producer it named is no longer echoed.
+	require.Equal(t, 1, unresolved.References[0].Position)
 
 	// Lint and compile drive a runtime flow that reaches RuntimeInit, so both
 	// resolve the workspace configurations and are refused by the same error —
