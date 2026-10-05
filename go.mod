@@ -235,5 +235,3 @@ require (
 	k8s.io/kube-openapi v0.0.0-20260721132016-d427ff9ee9ad // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
-
-replace github.com/codefly-dev/core => /private/tmp/claude-501/-Users-antoine--lazybox-v2-github-codefly-dev-cli-issue-882-fix-render-a-deployed-service-never-receives-the/8c6f8932-1e9a-4c88-bce0-f227097c80da/scratchpad/core
