@@ -279,7 +279,16 @@ its scopes name — is never spelled in the module's repository: it is a **slot*
 configuration for the environment. A slot resolves public configuration only; a
 slot pointing at a secret-classified value fails the render rather than inlining
 it into a delivered document, and a bare string where a slot belongs is a schema
-error.
+error. The render decides nothing about which record answers a slot: it hands
+core every record of the group as the composition supplies it — both spellings
+of a key, a key supplied twice, a key public in one place and secret in another
+— and core's resolution rules, the same for every consumer, match the key in
+either spelling, require the records of one key to agree on its value, read a
+key any occurrence of which is secret as the secret, and hold a resolved value
+to one non-empty line and a resolved resource kind to the grammar a literal
+kind is held to. Core's resolution kit drives this provider
+(`TestTheResolutionKitRunsThroughTheRendersProvider`), so a provider that
+selected among the records would fail it.
 
 A slot's **key name carries its meaning**, because no reader can check what the
 value it resolves to means: a declared, supplied key holding a model profile

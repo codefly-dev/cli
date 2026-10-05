@@ -310,7 +310,7 @@ func TestCellMergeCarriesAnEdgeInEitherPublicationOrder(t *testing.T) {
 			SPIFFEID: "spiffe://cluster.example/ns/ns-billing/sa/api", Authenticating: "api",
 			Containers: []cell.Container{{Name: "api", Image: cell.Image{Repository: "registry.example.test/billing", Digest: "sha256:" + strings.Repeat("d", 64)}}},
 			Artifact:   cell.Artifact{Name: "api", Digest: "sha256:" + strings.Repeat("d", 64)},
-			Endpoints:  []cell.Endpoint{{Name: "grpc"}},
+			Endpoints:  []cell.Endpoint{{Name: "grpc", Visibility: "public"}},
 		}}}
 	}
 	crm := cell.Namespace{Name: "ns-crm", Module: "crm"}

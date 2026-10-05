@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 
@@ -84,44 +83,35 @@ type DeclaredAuthority struct {
 	Build     string `json:"build"`
 }
 
-// workspaceValues resolves contract slots from the workspace configurations
-// the environment provides, matching keys in either spelling core accepts.
+// workspaceValues is the provider the render resolves contract slots from:
+// the workspace configurations the environment provides, enumerated per group
+// exactly as supplied — every record, in both spellings of a key, a key
+// supplied twice, a key classified public here and secret there — and nothing
+// decided. Normalisation, ambiguity and secret precedence are core's resolution
+// rules, once (modulecontract.Values), so two renderers cannot read one
+// composition into two authority documents; core's resolution kit fails a
+// provider that selects.
 type workspaceValues struct {
 	provided *configurations.WorkspaceConfigurations
 }
 
-// Value implements modulecontract.Values over the configurations the
-// composition provides: the key is matched in either spelling core accepts,
-// and a group supplying it in two spellings is an error, never a choice —
-// the same contract would otherwise resolve to whichever a reader met first.
-func (values workspaceValues) Value(group, key string) (string, bool, bool, error) {
+// Records implements modulecontract.Values: a group's records as the
+// composition supplies them, across every information that contributes to
+// the group.
+func (values workspaceValues) Records(group string) ([]modulecontract.Record, error) {
 	if values.provided == nil {
-		return "", false, false, nil
+		return nil, nil
 	}
-	normalized := strings.ToUpper(strings.ReplaceAll(key, "-", "_"))
-	var spellings []string
-	var foundValue string
-	var foundSecret, found bool
+	var records []modulecontract.Record
 	for _, info := range values.provided.Infos {
-		if info.Name != group {
+		if info.GetName() != group {
 			continue
 		}
-		for _, value := range info.ConfigurationValues {
-			if value.Key == key || strings.ToUpper(strings.ReplaceAll(value.Key, "-", "_")) == normalized {
-				if !slices.Contains(spellings, value.Key) {
-					spellings = append(spellings, value.Key)
-				}
-				if !found {
-					foundValue, foundSecret, found = value.Value, value.Secret, true
-				}
-			}
+		for _, value := range info.GetConfigurationValues() {
+			records = append(records, modulecontract.Record{Key: value.GetKey(), Value: value.GetValue(), Secret: value.GetSecret()})
 		}
 	}
-	if len(spellings) > 1 {
-		sort.Strings(spellings)
-		return "", false, false, fmt.Errorf("group %q supplies it as %s", group, strings.Join(spellings, " and "))
-	}
-	return foundValue, foundSecret, found, nil
+	return records, nil
 }
 
 // authorityInstancesOf resolves the authority document a module render

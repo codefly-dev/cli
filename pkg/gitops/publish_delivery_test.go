@@ -968,7 +968,7 @@ func TestCellMergeReconcilesEdgesAndRefusesAnotherHostsCell(t *testing.T) {
 		SPIFFEID: "spiffe://cluster.example/ns/ns-billing/sa/api", Authenticating: "api",
 		Containers: []cell.Container{{Name: "api", Image: cell.Image{Repository: "registry.example.test/billing", Digest: "sha256:" + strings.Repeat("d", 64)}}},
 		Artifact:   cell.Artifact{Name: "api", Digest: "sha256:" + strings.Repeat("d", 64)},
-		Endpoints:  []cell.Endpoint{{Name: "grpc", Consumers: []string{"crm/api", "crm/worker", "shop/api"}}},
+		Endpoints:  []cell.Endpoint{{Name: "grpc", Visibility: "public", Consumers: []string{"crm/api", "crm/worker", "shop/api"}}},
 	}}}
 	delivered := &cell.File{Schema: cell.SchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example", Environment: "prod",
 		Namespaces: []cell.Namespace{provider, {Name: "ns-crm", Module: "crm"}}}
