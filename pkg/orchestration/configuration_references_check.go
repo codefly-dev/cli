@@ -56,6 +56,39 @@ func CheckConfigurationReferences(
 	return configurations.CheckEndpointReferences(provided.Infos, consumers, profile, lookup)
 }
 
+// ReferenceProducerAt is the <module>/<service> named by one value's Nth
+// endpoint reference, 1-based, in the order core counts them.
+//
+// It reads the references the way core does — resources.ConfigurationValueEndpointReferences,
+// which covers a templated value's literals and not only its Value — so the
+// position core reported indexes the same list. An unparseable or out-of-range
+// position yields nothing rather than a guess.
+func ReferenceProducerAt(infos []*basev0.ConfigurationInformation, group, key string, position int) string {
+	if position < 1 {
+		return ""
+	}
+	for _, info := range infos {
+		if info.GetName() != group {
+			continue
+		}
+		for _, value := range info.GetConfigurationValues() {
+			if value.GetKey() != key {
+				continue
+			}
+			references := resources.ConfigurationValueEndpointReferences(value)
+			if position > len(references) {
+				return ""
+			}
+			parsed, parseErr := resources.ParseEndpoint(references[position-1])
+			if parseErr != nil || parsed.Module == "" || parsed.Service == "" {
+				return ""
+			}
+			return parsed.Module + "/" + parsed.Service
+		}
+	}
+	return ""
+}
+
 // workspaceProducerLookup resolves <module>/<service> over the whole workspace.
 // It fails closed: an unreadable workspace means no reference can be checked,
 // and a reference delivered unchecked is how a private endpoint's address

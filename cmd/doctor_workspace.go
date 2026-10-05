@@ -889,7 +889,10 @@ func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, 
 // the reason it states; the producer's name is read back from the doctor's own
 // workspace value, which the doctor already holds.
 func referenceRemediation(reference *configurations.UnresolvedReference, provided *configurations.WorkspaceConfigurations) string {
-	producer := referencedProducer(reference, provided)
+	producer := ""
+	if provided != nil {
+		producer = orchestration.ReferenceProducerAt(provided.Infos, reference.Group, reference.Key, reference.Position)
+	}
 	switch {
 	case reference.Position == 0 || producer == "":
 		return fmt.Sprintf("write %s as ${endpoint:<module>/<service>/<endpoint>} in the %q workspace configuration", reference.Key, reference.Group)
@@ -903,35 +906,6 @@ func referenceRemediation(reference *configurations.UnresolvedReference, provide
 // producerNotInWorkspace is the reason core states for a reference naming a
 // producer the workspace does not declare (configurations.checkEndpointReference).
 const producerNotInWorkspace = "the producer is not a service of this workspace"
-
-// referencedProducer is the <module>/<service> the reference names, read from
-// the value the doctor's own workspace configurations carry at the reference's
-// position; empty when the value or the marker cannot be read.
-func referencedProducer(reference *configurations.UnresolvedReference, provided *configurations.WorkspaceConfigurations) string {
-	if provided == nil || reference.Position < 1 {
-		return ""
-	}
-	for _, info := range provided.Infos {
-		if info.GetName() != reference.Group {
-			continue
-		}
-		for _, value := range info.GetConfigurationValues() {
-			if value.GetKey() != reference.Key {
-				continue
-			}
-			markers := resources.EndpointReferences(value.GetValue())
-			if reference.Position > len(markers) {
-				return ""
-			}
-			parsed, err := resources.ParseEndpointReference(markers[reference.Position-1])
-			if err != nil {
-				return ""
-			}
-			return parsed.Module + "/" + parsed.Service
-		}
-	}
-	return ""
-}
 
 // checkDevAgents warns about every service in scope running an agent dev build
 // (`codefly publish dev`): an unreleased agent, fine for iteration and never

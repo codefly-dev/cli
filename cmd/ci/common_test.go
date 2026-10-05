@@ -293,9 +293,6 @@ func loadSchedulerFixture(t testing.TB) (string, *resources.Workspace) {
 		if readErr != nil {
 			return readErr
 		}
-		// The `visibility: application` compensation is gone: core v0.11.0
-		// refuses that spelling at load and the fixture now declares `public`
-		// outright, which is what this rewrite produced anyway.
 		return os.WriteFile(path, []byte(strings.ReplaceAll(string(payload), "name: grpc\n      api:", "name: grpc\n      visibility: public\n      api:")), 0o600)
 	}); err != nil {
 		t.Fatal(err)

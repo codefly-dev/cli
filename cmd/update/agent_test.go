@@ -24,7 +24,7 @@ secret-service-configurations:
         - key: vault_token
 endpoints:
     - name: http
-      visibility: module
+      visibility: internal
 spec:
     transit-key: api-keys
 `
@@ -66,8 +66,8 @@ func TestRewriteAgentVersionPreservesUnmodeledKeysAndComments(t *testing.T) {
 func TestRewriteAgentVersionPreservesNonCanonicalFormatting(t *testing.T) {
 	// A hand-authored, 2-space-indented file must survive with only the version
 	// token changed — no reflow to yaml.v3's canonical 4-space style.
-	in := "name: vault\nagent:\n  name: vault\n  version: 0.0.22\nendpoints:\n  - name: http\n    visibility: module\n"
-	want := "name: vault\nagent:\n  name: vault\n  version: 0.0.24\nendpoints:\n  - name: http\n    visibility: module\n"
+	in := "name: vault\nagent:\n  name: vault\n  version: 0.0.22\nendpoints:\n  - name: http\n    visibility: internal\n"
+	want := "name: vault\nagent:\n  name: vault\n  version: 0.0.24\nendpoints:\n  - name: http\n    visibility: internal\n"
 	out, err := rewriteAgentVersion([]byte(in), "0.0.24")
 	if err != nil {
 		t.Fatalf("rewriteAgentVersion: %v", err)
