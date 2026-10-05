@@ -14,10 +14,7 @@ import (
 // the external endpoint that resolves to a public host is absent.
 func TestInClusterPortsReadsContainerAccessInstances(t *testing.T) {
 	internal := &basev0.Endpoint{Name: "grpc", Api: "grpc", Module: "shop", Service: "api"}
-	// External is a LOCATION now, beside whatever visibility applies: it says
-	// where the endpoint lives, not who may reach it. (core v0.11.0.)
-	external := &basev0.Endpoint{Name: "http", Api: "http", Module: "shop", Service: "api",
-		Visibility: resources.VisibilityPublic, Location: resources.LocationExternal}
+	external := &basev0.Endpoint{Name: "http", Api: "http", Module: "shop", Service: "api", Location: resources.LocationExternal}
 	public := resources.NewNetworkInstance("api.shop.svc.cluster.local", 19043)
 	container := resources.NewNetworkInstance("api.shop.svc.cluster.local", 19043)
 	mappings := []*basev0.NetworkMapping{

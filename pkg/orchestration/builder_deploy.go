@@ -38,16 +38,25 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	// The groups the deployed service receives: the one resolution every
-	// delivery path shares (pkg/orchestration/workspace_configurations.go), so
-	// the set is the set `codefly run` resolves for the same service. A deployed
-	// service reaches its dependencies inside the cluster, so its ${endpoint:…}
-	// references resolve to their in-cluster addresses — its dependencies' and
-	// those of every producer its effective groups reference, the composition
-	// root's as well as its declared ones, derived from each producer's identity
-	// and namespace. That address family is the only thing the render resolves
-	// differently.
-	workspaceConfigurations, err := b.workspaceConfigurations(ctx, dependenciesNetworkMappings)
+	// A deployed service reaches its dependencies inside the cluster, so its
+	// ${endpoint:…} references resolve to their in-cluster addresses: its
+	// dependencies' and those of every producer its declared groups reference
+	// (referencedProducerMappings), derived as their own deploy records them.
+	referenced, err := b.world.referencedProducerMappings(ctx, b.instance.Service,
+		b.instance.Service.WorkspaceConfigurationDependencies, dependenciesNetworkMappings)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	consumerMappings := append(slices.Clone(dependenciesNetworkMappings), referenced...)
+	consumerModule, declaredEndpoints, err := b.world.consumerContext(ctx, b.instance.Service)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	workspaceConfigurations, err := b.world.ConfigurationManager.
+		ForConsumer(consumerMappings, resources.NewContainerNetworkAccess()).
+		ForConsumerModule(consumerModule, declaredEndpoints).
+		WithRunProducers(b.world.producerInRun()).
+		GetWorkspaceDependenciesConfigurations(ctx, b.instance.Service.WorkspaceConfigurationDependencies...)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get workspace configurations")
 	}

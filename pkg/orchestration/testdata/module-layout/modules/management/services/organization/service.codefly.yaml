@@ -11,5 +11,5 @@ endpoints:
     - name: grpc
       api: grpc
     - name: rest
-      visibility: public
+      visibility: internal
       api: rest

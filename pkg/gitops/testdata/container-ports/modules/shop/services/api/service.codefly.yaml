@@ -13,15 +13,7 @@ service-dependencies:
 endpoints:
   - name: authority
     api: grpc
-    # Nothing outside module `shop` consumes this, and `store` — the only other
-    # service here — is inside it, where visibility never gates. `private` is
-    # therefore what this endpoint is, and it authors no allow-list: core#711
-    # DERIVES allow_modules from consumers' service-dependencies and refuses an
-    # authored one, and the derivation over this fixture would produce an empty
-    # list, which is private. The earlier `internal` + ["*"] was a faithful
-    # translation of the deleted `visibility: module` spelling but wider than
-    # anything here needs, and it named a field that is about to be refused.
-    visibility: private
+    visibility: internal
   - name: grpc
     api: grpc
   - name: rest

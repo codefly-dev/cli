@@ -216,6 +216,11 @@ type World struct {
 	Env  *environments.Environment
 	Mode Mode
 
+	// declaredEndpoints answers which endpoints each service of the workspace
+	// declares, read once for every resolution of this world (consumerContext).
+	declaredEndpoints   resources.DeclaredEndpoints
+	declaredEndpointsMu sync.Mutex
+
 	// containerRecoveryIdentity is the ownership acknowledgement every agent
 	// spawned for this flow must return before it can create Docker resources.
 	containerRecoveryIdentity string

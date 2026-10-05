@@ -3017,16 +3017,19 @@ What it checks, in order:
 6. Per-service `configurations/<env>` files parse; duplicates are flagged.
 7. Every `${endpoint:<module>/<service>/<endpoint>}` reference in a workspace
    configuration a service in scope declares names a service of the workspace
-   and an endpoint that service declares (`configuration_reference_unresolved`,
-   one per reference, naming the consumer, the key and the producer). This is
-   the same check, over the same service graph, that `codefly run`, `codefly ci
-   run` (for its test, lint and compile phases), `codefly deploy gitops render`
-   and `codefly deploy dev` run before they build or start anything; an
-   unresolved reference is never silently omitted. A run that excludes the
-   producer — `--exclude-dependency`, or a run profile's
-   `exclude-dependencies` — must exclude the group that references it as well
-   (`exclude-workspace-configurations`), or the reference has no producer left
-   to resolve against and the run is refused naming both.
+   and an endpoint that service declares and the consumer's module may receive
+   (`configuration_reference_unresolved`, one per reference, naming the
+   consumer, the group, the key, the reference's position in the value and
+   core's reason — never the reference's text, since the value may be a secret;
+   the remediation names the producer, read back from the value the doctor
+   holds). This is the same check, over the whole workspace's services, that
+   `codefly run`, `codefly ci run` (for its test, lint and compile phases),
+   `codefly deploy gitops render` and `codefly deploy dev` run before they
+   build or start anything; an unresolved reference is never silently omitted.
+   A run that excludes the producer — `--exclude-dependency`, or a run
+   profile's `exclude-dependencies` — is not refused here: the producer is
+   still a service of the workspace, and core's resolution drops that value
+   for the consumer, saying so, when the producer is not part of the run.
 8. Secret provider references (`op://…`) resolve in memory through the
    configured backend; resolved values are discarded immediately. Plaintext
    values shaped like unsupported reference schemes are flagged.

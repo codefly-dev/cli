@@ -458,6 +458,46 @@ func (world *World) setRunProducers(required []string, origin *resources.Service
 
 // producerInRun is the run set as core asks for it: nil before the flow has
 // decided one, so no reference is provably to a producer of the run.
+// consumerContext is what a resolution for service must know about its
+// consumer: the module receiving the addresses and the endpoints every service
+// of the workspace declares, read once per world from the manifests the
+// plan-time check reads.
+//
+// Neither half is invented here: a service without a module identity names no
+// consumer, and a world without a workspace declares nothing, and core refuses
+// the resolution of a reference on either — a value carrying no reference needs
+// neither. Only a workspace that cannot be read is an error of this read.
+func (world *World) consumerContext(ctx context.Context, service *resources.Service) (string, resources.DeclaredEndpoints, error) {
+	consumerModule := ""
+	if identity, err := service.Identity(); err == nil && identity != nil {
+		consumerModule = identity.Module
+	}
+	declared, err := world.declaredEndpointsLookup(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	return consumerModule, declared, nil
+}
+
+// declaredEndpointsLookup answers resources.DeclaredEndpoints from the
+// workspace's services, memoized for the world.
+func (world *World) declaredEndpointsLookup(ctx context.Context) (resources.DeclaredEndpoints, error) {
+	world.declaredEndpointsMu.Lock()
+	defer world.declaredEndpointsMu.Unlock()
+	if world.declaredEndpoints != nil {
+		return world.declaredEndpoints, nil
+	}
+	if world.Workspace == nil {
+		return nil, nil
+	}
+	services, err := world.Workspace.LoadServices(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read this workspace's services, so no ${endpoint:…} reference can be resolved against what its producer declares: %w", err)
+	}
+	world.declaredEndpoints = resources.DeclaredEndpointsOf(services)
+	return world.declaredEndpoints, nil
+}
+
 func (world *World) producerInRun() func(unique string) bool {
 	if world.runProducers == nil {
 		return nil
@@ -485,7 +525,17 @@ func (world *World) workspaceConfigurationsFor(
 		return nil, err
 	}
 	mappings := append(slices.Clone(dependencyMappings), referenced...)
-	manager := world.ConfigurationManager.ForConsumer(mappings, access).WithRunProducers(world.producerInRun())
+	// Which endpoint a reference names is core's answer (core v0.11, the cold
+	// cutover of endpoint selection): a resolution must say who the consumer
+	// is — the module, the export boundary — and what each producer declares,
+	// or it is refused. The mappings alone decide neither.
+	consumerModule, declaredEndpoints, err := world.consumerContext(ctx, service)
+	if err != nil {
+		return nil, err
+	}
+	manager := world.ConfigurationManager.ForConsumer(mappings, access).
+		ForConsumerModule(consumerModule, declaredEndpoints).
+		WithRunProducers(world.producerInRun())
 	declared, err := manager.GetWorkspaceDependenciesConfigurations(ctx, dependencies...)
 	if err != nil {
 		return nil, err

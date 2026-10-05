@@ -149,10 +149,8 @@ func TestResolveNative(t *testing.T) {
 		t.Errorf("non-standard endpoint should be Unsupported with no address, got %+v", r)
 	}
 
-	// External endpoints are DNS-resolved at runtime, not port-hashed — and
-	// `external` is a LOCATION, not a visibility, since core v0.11.0.
-	r, err = ResolveNative(ctx, "ws", "mod", "svc", "",
-		&resources.Endpoint{Name: "grpc", API: "grpc", Visibility: resources.VisibilityPublic, Location: resources.LocationExternal})
+	// External endpoints are DNS-resolved at runtime, not port-hashed.
+	r, err = ResolveNative(ctx, "ws", "mod", "svc", "", &resources.Endpoint{Name: "grpc", API: "grpc", Location: resources.LocationExternal})
 	if err != nil {
 		t.Fatalf("external: unexpected err %v", err)
 	}
