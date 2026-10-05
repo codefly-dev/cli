@@ -259,7 +259,8 @@ func TestPublishRefusesAMergedCellCoreRejects(t *testing.T) {
 		options: deliveryPublishOptions{Module: "payments", Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example"}}
 	err := stageCellContribution(context.Background(), repository.repo, publication, &contribution, nil)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "does not validate")
+	require.Contains(t, err.Error(), "cannot be written, so this publish stages none of it")
+	require.ErrorIs(t, err, cell.ErrInvalid, "core's refusal is the reason, by its sentinel")
 	staged, err := os.ReadFile(filepath.Join(repository.repo, filepath.FromSlash(cellPath)))
 	require.NoError(t, err)
 	require.Equal(t, string(deliveredBytes), string(staged), "nothing was staged over the delivered cell")

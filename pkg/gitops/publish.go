@@ -2577,13 +2577,11 @@ func stageCellContribution(ctx context.Context, repo string, publication *delive
 	// refuses — one namespace name claimed by two modules — and a publish
 	// that staged it would leave every later publish unable to read the base
 	// cell it must merge into. The merge is held to core's validator before a
-	// byte is written.
-	if err = merged.Validate(); err != nil {
-		return fmt.Errorf("the cell merged for module %s does not validate, so this publish stages none of it: %w", publication.options.Module, err)
-	}
+	// byte is written: core's Encode validates it, writes it and reads the
+	// bytes back through its own reader.
 	var data []byte
-	if data, err = yaml.Marshal(merged); err != nil {
-		return fmt.Errorf("encode the cell file: %w", err)
+	if data, err = merged.Encode(); err != nil {
+		return fmt.Errorf("the cell merged for module %s cannot be written, so this publish stages none of it: %w", publication.options.Module, err)
 	}
 	if err = os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		return fmt.Errorf("create the cell directory: %w", err)

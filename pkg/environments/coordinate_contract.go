@@ -109,8 +109,8 @@ func validateManagedContractServices(services map[string]EnvironmentManagedServi
 			return fmt.Errorf("managed service %q requires an endpoint and port in 1..65535", name)
 		}
 		for _, cidr := range service.EgressCIDRs {
-			if _, _, err := net.ParseCIDR(cidr); err != nil {
-				return fmt.Errorf("managed service %q has invalid egress CIDR %q: %w", name, cidr, err)
+			if err := validateEgressCIDR(name, cidr); err != nil {
+				return err
 			}
 		}
 		if err := service.Identity.validate(fmt.Sprintf("managed service %q", name)); err != nil {
@@ -152,4 +152,24 @@ func (c *CoordinateContract) ToEnvironment(envName, namespace string) (*Environm
 		return nil, err
 	}
 	return &env, nil
+}
+
+// validateEgressCIDR holds a managed service's egress range to the one
+// spelling the cell carries it in: a range is written as its network address
+// (10.20.0.0/16, never 10.20.1.7/16 — a host address with a prefix length says
+// two things), and the range naming every address is no declared reach at
+// all. The cell reader refuses the same, so an author hears it here, at the
+// environment, with the name of the service.
+func validateEgressCIDR(service, cidr string) error {
+	ip, network, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return fmt.Errorf("managed service %q has invalid egress CIDR %q: %w", service, cidr, err)
+	}
+	if !ip.Equal(network.IP) {
+		return fmt.Errorf("managed service %q egress CIDR %q is not written as its network address; write %s", service, cidr, network.String())
+	}
+	if ones, _ := network.Mask.Size(); ones == 0 {
+		return fmt.Errorf("managed service %q egress CIDR %q names every address; a declared reach names a range", service, cidr)
+	}
+	return nil
 }

@@ -744,7 +744,15 @@ service is not marked), and the `bindings` and `cloud_identity` the
 environment's `cell` declaration states for the service. Per namespace, the
 egress each service is declared to need: the hosts from the environment's
 `egress` declaration, each as `{name, port}` with the port always explicit,
-and the CIDRs of a managed service.
+and the CIDRs of a managed service — written as the range's network address
+(`10.20.0.0/16`, never a host address with a prefix length), one range one
+spelling, no range inside another, and never the range naming every address,
+which is the absence of a declared reach; the environment refuses the same
+at load, naming the service. The cell is written through core's `Encode`
+only: validated, marshaled and read back through core's own reader before a
+byte is staged, so a cell a render produced that core would refuse — or that
+would read back as another cell — is a render or publish refusal with the
+reason, never a document the platform's loader meets first.
 
 A managed service's bootstrap bundle is inventoried too — its Job is a pod
 the closed admission set would refuse unless the cell names it — with no
@@ -753,7 +761,8 @@ endpoints of its own, and so is the module's **presence delivery Job**, under
 settled set's digest and is decided at publish), the `delivery` account, the
 one container and its pinned image. An ingress route reaches the
 module-qualified service it names and no other module's service of that bare
-name. A service's own bootstrap Job or
+name; an endpoint routed through several declarations is one ingress entry
+carrying every host once. A service's own bootstrap Job or
 CronJob is inventoried the same way, with no endpoints, consumers or ingress:
 a workload that serves nothing declares nothing, so no policy derived from
 the cell grants a Job the service's reachability.

@@ -162,15 +162,13 @@ func RenderCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 	sort.Slice(file.Namespaces, func(i, j int) bool { return file.Namespaces[i].Name < file.Namespaces[j].Name })
 	sort.Strings(result.Modules)
 	sort.Strings(result.Skipped)
-	// The writer is held to the model it writes: a cell this render produced
-	// that core would refuse is a render bug, caught here rather than at the
-	// loader.
-	if err = file.Validate(); err != nil {
-		return CellResult{}, fmt.Errorf("the rendered cell does not validate: %w", err)
-	}
-	body, err := yaml.Marshal(file)
+	// The writer is held to the model it writes: core's Encode validates the
+	// cell, writes it and reads the bytes back through its own reader, so a
+	// cell this render produced that core would refuse — or that would read
+	// back as another cell — is a render bug caught here, not at the loader.
+	body, err := file.Encode()
 	if err != nil {
-		return CellResult{}, fmt.Errorf("encode cell file: %w", err)
+		return CellResult{}, fmt.Errorf("the rendered cell cannot be written: %w", err)
 	}
 	result.Path = cellPath(workspace.Dir(), env.Name)
 	if err := os.MkdirAll(filepath.Dir(result.Path), 0o755); err != nil {
@@ -266,10 +264,19 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 			// An ingress route names its service module-qualified. Matched on
 			// the bare name too, every module's "api" would inherit another
 			// module's public hosts.
+			// One entry per endpoint: the environment may route one endpoint
+			// through several declarations, and a host may be named more than
+			// once; the cell carries each endpoint once with every host once,
+			// since a count in a cell is a count a reader trusts.
+			routes := map[string][]string{}
 			for _, route := range env.Ingress {
 				if route.Service == workload.Service {
-					workload.Ingress = append(workload.Ingress, cell.Ingress{Endpoint: route.Endpoint, Hosts: append([]string(nil), route.Hosts...)})
+					routes[route.Endpoint] = append(routes[route.Endpoint], route.Hosts...)
 				}
+			}
+			for endpoint, hosts := range routes {
+				sort.Strings(hosts)
+				workload.Ingress = append(workload.Ingress, cell.Ingress{Endpoint: endpoint, Hosts: slices.Compact(hosts)})
 			}
 			sort.Slice(workload.Ingress, func(i, j int) bool { return workload.Ingress[i].Endpoint < workload.Ingress[j].Endpoint })
 			namespace.Workloads = append(namespace.Workloads, workload.Workload)
@@ -351,12 +358,9 @@ func renderCellRecord(ctx context.Context, tree string, opts *RenderOptions) err
 		return fmt.Errorf("derive the cell record of module %s: %w", opts.Module, err)
 	}
 	record := cellFileFor(opts.Target, &namespace)
-	if err = record.Validate(); err != nil {
-		return fmt.Errorf("the cell record of module %s does not validate: %w", opts.Module, err)
-	}
-	body, err := yaml.Marshal(record)
+	body, err := record.Encode()
 	if err != nil {
-		return fmt.Errorf("encode the cell record: %w", err)
+		return fmt.Errorf("the cell record of module %s cannot be written: %w", opts.Module, err)
 	}
 	if err = os.WriteFile(filepath.Join(tree, cellRecordFile), body, 0o600); err != nil {
 		return fmt.Errorf("write the cell record: %w", err)
