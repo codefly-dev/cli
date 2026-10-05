@@ -157,7 +157,7 @@ func buildRenderedServiceImages(
 			if contractErr != nil {
 				continue
 			}
-			contracts.Add(contract)
+			contracts.Add(&contract)
 		}
 	}
 	// serviceFlow, not renderServiceFlow: the dev build drives a service's agents

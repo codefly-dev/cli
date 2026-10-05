@@ -316,7 +316,7 @@ func serviceContracts(module string, services []*resources.Service) (posture.Con
 		if err != nil {
 			return nil, err
 		}
-		contracts.Add(contract)
+		contracts.Add(&contract)
 	}
 	return contracts, nil
 }
@@ -388,7 +388,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 			return contractErr
 		}
 		contracts := posture.Contracts{}
-		contracts.Add(contract)
+		contracts.Add(&contract)
 		options.Contracts = contracts
 		var graph map[string]*resources.Service
 		var selfEndpoints map[string]map[string]string
@@ -409,7 +409,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 				graph = services
 				for _, rendered := range services {
 					if staged, stagedErr := posture.ContractFromService(module.Name, rendered); stagedErr == nil {
-						contracts.Add(staged)
+						contracts.Add(&staged)
 					}
 				}
 			},

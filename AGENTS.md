@@ -192,17 +192,20 @@ relative paths.
 - **Configs flow as environment variables, not files.** Connection strings derived from network
   mappings are injected as `CODEFLY__SERVICE_...` env vars. A render of restricted
   manifests for an environment that deploys to a cell enforces this: a deployed
-  workload carries the standard scratch volume and nothing else, the render delivers
-  no certificate material on a mesh-protected environment, and a workload that keeps
-  its own state must have declared `spec.deployment.storage: durable`. Each refusal
+  workload carries exactly the volumes its service declared in
+  `spec.deployment.scratch-volumes` (plus its own durable state when it declared
+  `spec.deployment.storage: durable`), and the render delivers no certificate
+  material on a mesh-protected environment. Each refusal
   names the service, the rule and the field; an environment-level allowance is the
   only exception, printed on every deployed run including `--dry-run`.
 - **The posture guard reads declarations and manifest shape, never a container's env
   or command line.** A render cannot prove from those what a process does, and the
   attempt both missed ordinary spellings and refused correct configurations. What only
   the service can know, the service declares; the render makes the declaration
-  mandatory and the exception visible. The runtime half — a store refusing to start
-  ephemeral in a deployed context — belongs to the store and the cell's preflight. See
+  mandatory and the exception visible. Those declarations are not in the fleet yet,
+  so the guard is not mergeable until they land. The runtime half — a store refusing
+  to start ephemeral in a deployed context — belongs to the store and the cell's
+  preflight. See
   [docs/commands.md](docs/commands.md#the-deployed-security-posture) for exactly what
   each rule does and does not establish.
 - **Daemon state lives in `~/.codefly/`** (override with `CODEFLY_HOME`). PID file, logs, agent

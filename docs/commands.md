@@ -690,9 +690,30 @@ are the ones codefly ships, and an environment says in its own declaration
 
 | Rule | What it checks |
 | --- | --- |
-| `non-scratch-mount` | The workload carries **exactly one volume — the standard scratch volume (`tmp`, an `emptyDir`) — mounted at exactly one place (`/tmp`)**. Any other volume, any other mount, the same volume mounted twice, or a scratch volume under another name is refused by name. Configuration and credentials reach a service as values and secrets in the environment variables the render already projects. A durable data claim is not a default either: whether a store may carry one is an allowance, per service, printed on every run. |
+| `non-scratch-mount` | The workload carries **exactly the volumes its service declared** in `spec.deployment.scratch-volumes`, each an `emptyDir`, each mounted at the one path declared for it — plus its own durable state when it declared `storage: durable`. Any other volume, any other mount, a declared volume at a second path, and a volume declared as scratch but rendered from a ConfigMap or Secret are refused by name. Configuration and credentials reach a service as values and secrets in the environment variables the render already projects. |
 | `peer-transport-material` | **While the environment asserts `internal-transport/mesh-protected`:** the render delivers no certificate material — no Secret of a certificate type, no Secret or ConfigMap key that is material (`tls.crt`, `ca.crt`, or any `.crt`/`.key`/`.pem`/`.p12`/`.jks` file), no projected source carrying one — and the service's **own declared endpoints** name no TLS protocol (`https`, `grpcs`, `tls`, `mtls`, …). Transport between workloads is the mesh's; TLS at the edge is the ingress's. |
 | `in-memory-state-store` | A workload that keeps its own state — it declares `volumeClaimTemplates`, or a claim-backed volume — is held to what its service **declared**: `spec.deployment.storage` must be `durable`. Declaring `ephemeral` is refused, and so is **declaring nothing**: a store that has not said its state is durable is not deployed on the strength of the render's guess. |
+
+**Why the volumes are declared rather than recognised.** No property of a volume
+separates the platform's scratch directory from a second `emptyDir` mounted over
+`/secrets` to deliver credentials — both are an `emptyDir` — and a rule keyed on
+the destination is defeated by moving the mount. So what the platform renders, the
+platform declares: each service's agent declares the scratch volumes it renders,
+and the render admits exactly those. A volume nobody declared does not reach a
+cell, and the exception is an allowance, printed on every run, rather than a
+property an author can arrange for.
+
+```yaml
+# a service's own service.codefly.yaml, written by the agent that renders it
+spec:
+  deployment:
+    storage: durable          # or ephemeral, which a deployed render refuses
+    scratch-volumes:
+      - name: tmp
+        mount: /tmp
+      - name: postgres-run
+        mount: /var/run/postgresql
+```
 
 **What the rules read.** Two things, and nothing else: **what a service declared
 about itself**, and **the structure of the manifests the cell would apply**.
@@ -718,18 +739,23 @@ The manifests are selected once, by one selector every render path shares:
 - every list wrapper is unwrapped recursively — a plain `List`, a typed
   `DeploymentList`, a list of lists — before any workload is read.
 
+> **Not yet enforceable.** `spec.deployment.scratch-volumes` and
+> `spec.deployment.storage` are read by the render but are not yet declared by the
+> agents and stores that need them. Until they are, a deployed render of a workload
+> that carries any volume is refused by name. The declarations land first; see the
+> PR that introduced this section.
+
 ```
 Error: deployed render refuses service shop/web: non-scratch-mount — volume
-"config" (configMap) is not the standard scratch volume, and a deployed workload
-carries that volume and nothing else ("tmp", emptyDir, mounted at /tmp);
-configuration and credentials reach a service as values and secrets in the
-environment variables the render already projects, and whether a store may carry
-a durable claim is an allowance, not a default (services/web/overlays/staging
-(Kustomize output): Deployment/web spec.template.spec.volumes[1].configMap).
-Declare a deliberate exception as an environment-level posture allowance
-(posture.allowances: rule non-scratch-mount, service shop/web, and the reason),
-which the render then prints on every run. The rule and the allowance mechanism
-are in docs/commands.md ("The deployed security posture")
+"config" (configMap) is not declared by service shop/web, and a deployed workload
+carries only what its service declares: scratch space in
+spec.deployment.scratch-volumes (declared: tmp at /tmp)
+(services/web/overlays/staging (Kustomize output): Deployment/web
+spec.template.spec.volumes[1].configMap). Declare a deliberate exception as an
+environment-level posture allowance (posture.allowances: rule non-scratch-mount,
+service shop/web, and the reason), which the render then prints on every run. The
+rule and the allowance mechanism are in docs/commands.md ("The deployed security
+posture")
 ```
 
 **The environment declares the posture**, including the exceptions:

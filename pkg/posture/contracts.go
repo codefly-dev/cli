@@ -21,6 +21,7 @@ const (
 const (
 	deploymentSpecKey = "deployment"
 	storageKey        = "storage"
+	scratchVolumesKey = "scratch-volumes"
 )
 
 // ServiceContract is what a service declares about itself that the deployed
@@ -37,6 +38,22 @@ type ServiceContract struct {
 	// Endpoints are the service's own declared endpoints, which is where a
 	// transport protocol is declared if there is one.
 	Endpoints []EndpointContract
+	// ScratchVolumes are the scratch volumes this service's agent renders and
+	// mounts: writable space for a read-only root filesystem, which the platform
+	// owns. A deployed workload may carry exactly these and nothing else.
+	//
+	// They are declared rather than recognised because there is no property of a
+	// volume that distinguishes the platform's scratch directory from a second
+	// emptyDir mounted over /secrets to deliver credentials: both are an emptyDir.
+	// What the platform renders, the platform declares.
+	ScratchVolumes []ScratchVolume
+}
+
+// ScratchVolume is one declared scratch volume: the name the agent renders it
+// under and the single path it mounts it at.
+type ScratchVolume struct {
+	Name  string `yaml:"name"`
+	Mount string `yaml:"mount"`
 }
 
 // EndpointContract is one declared endpoint of a service.
@@ -57,8 +74,8 @@ func (contracts Contracts) Of(subject Subject) (ServiceContract, bool) {
 }
 
 // Add records one service's contract.
-func (contracts Contracts) Add(contract ServiceContract) {
-	contracts[Subject{Module: contract.Module, Service: contract.Service}.String()] = contract
+func (contracts Contracts) Add(contract *ServiceContract) {
+	contracts[Subject{Module: contract.Module, Service: contract.Service}.String()] = *contract
 }
 
 // ContractFromService reads what a service declares about itself. It is the one
@@ -80,12 +97,21 @@ func ContractFromService(module string, service *resources.Service) (ServiceCont
 		return ServiceContract{}, fmt.Errorf("service %s: encode spec.%s: %w", service.Name, deploymentSpecKey, err)
 	}
 	var spec struct {
-		Storage string `yaml:"storage"`
+		Storage        string          `yaml:"storage"`
+		ScratchVolumes []ScratchVolume `yaml:"scratch-volumes"`
 	}
 	if err := yaml.Unmarshal(encoded, &spec); err != nil {
-		return ServiceContract{}, fmt.Errorf("service %s: spec.%s.%s must be a string: %w",
-			service.Name, deploymentSpecKey, storageKey, err)
+		return ServiceContract{}, fmt.Errorf("service %s: spec.%s must declare %s as a string and %s as a list of {name, mount}: %w",
+			service.Name, deploymentSpecKey, storageKey, scratchVolumesKey, err)
 	}
+	for index, volume := range spec.ScratchVolumes {
+		if strings.TrimSpace(volume.Name) == "" || strings.TrimSpace(volume.Mount) == "" {
+			return ServiceContract{}, fmt.Errorf(
+				"service %s: spec.%s.%s[%d] must declare both name and mount: a scratch volume is a name AND the one path it is mounted at",
+				service.Name, deploymentSpecKey, scratchVolumesKey, index)
+		}
+	}
+	contract.ScratchVolumes = spec.ScratchVolumes
 	mode := strings.ToLower(strings.TrimSpace(spec.Storage))
 	switch mode {
 	case "", StorageModeDurable, StorageModeEphemeral:
@@ -108,7 +134,7 @@ var tlsProtocols = map[string]bool{
 
 // declaredTLSEndpoints lists the endpoints whose declared protocol is TLS the
 // service terminates itself, in declaration order.
-func (contract ServiceContract) declaredTLSEndpoints() []EndpointContract {
+func (contract *ServiceContract) declaredTLSEndpoints() []EndpointContract {
 	var declared []EndpointContract
 	for _, endpoint := range contract.Endpoints {
 		if tlsProtocols[strings.ToLower(endpoint.API)] || tlsProtocols[strings.ToLower(endpoint.Name)] {
@@ -116,6 +142,30 @@ func (contract ServiceContract) declaredTLSEndpoints() []EndpointContract {
 		}
 	}
 	return declared
+}
+
+// scratchVolume reports the declaration for a volume name, if the service
+// declared one.
+func (contract *ServiceContract) scratchVolume(name string) (ScratchVolume, bool) {
+	for _, volume := range contract.ScratchVolumes {
+		if volume.Name == name {
+			return volume, true
+		}
+	}
+	return ScratchVolume{}, false
+}
+
+// declaredScratch is how a refusal names what the service did declare, so the
+// reader can see what was expected rather than only what was refused.
+func (contract *ServiceContract) declaredScratch() string {
+	if len(contract.ScratchVolumes) == 0 {
+		return "none"
+	}
+	declared := make([]string, 0, len(contract.ScratchVolumes))
+	for _, volume := range contract.ScratchVolumes {
+		declared = append(declared, fmt.Sprintf("%s at %s", volume.Name, volume.Mount))
+	}
+	return strings.Join(declared, ", ")
 }
 
 // sortedSubjects lists the subjects of a contract set, for deterministic output.

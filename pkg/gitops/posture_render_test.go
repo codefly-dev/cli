@@ -91,13 +91,15 @@ func meshedStaging(allowances ...posture.Allowance) *posture.Declaration {
 	}
 }
 
-// durableContracts declares every unit of these tests a durable store, so a case
+// durableContracts declares, for every unit of these tests, what the platform
+// renders for it — one scratch volume at one path — and durable storage, so a case
 // is about the thing it is testing rather than about a missing declaration.
 func durableContracts(services ...string) posture.Contracts {
 	contracts := posture.Contracts{}
 	for _, service := range services {
-		contracts.Add(posture.ServiceContract{
+		contracts.Add(&posture.ServiceContract{
 			Module: "shop", Service: service, StorageMode: posture.StorageModeDurable,
+			ScratchVolumes: []posture.ScratchVolume{{Name: "tmp", Mount: "/tmp"}},
 		})
 	}
 	return contracts
@@ -222,7 +224,7 @@ func TestDeployedRenderRefusesAnythingButTheStandardScratchVolume(t *testing.T) 
 		map[string]string{"api": unit})
 	require.ErrorContains(t, err, "deployed render refuses service shop/api")
 	require.ErrorContains(t, err, posture.RuleNonScratchMount)
-	require.ErrorContains(t, err, `volume "config" (configMap) is not the standard scratch volume`)
+	require.ErrorContains(t, err, `volume "config" (configMap) is not declared by service shop/api`)
 	_, statErr := os.Stat(destination)
 	require.True(t, os.IsNotExist(statErr), "a refused render installs nothing")
 }

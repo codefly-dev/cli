@@ -13,16 +13,14 @@ const (
 	jobTemplateField = "jobTemplate"
 )
 
-// The standard scratch volume: the one volume a deployed workload may carry, and
-// the one place it may mount it. It is an identity, not a shape to match
-// approximately — a second scratch volume, or the same volume somewhere else, is
-// another way to put files in front of a process, and the point of this rule is
-// that there is only one.
-const (
-	scratchVolumeName   = "tmp"
-	scratchVolumeSource = "emptyDir"
-	scratchMountPath    = "/tmp"
-)
+// scratchVolumeSource is the Kubernetes source a scratch volume must be: writable
+// space the platform put there at start, carrying nothing. A declaration cannot
+// turn a ConfigMap into scratch.
+const scratchVolumeSource = "emptyDir"
+
+// durableVolumeSource is a claim-backed volume: the workload's own state, which
+// the storage declaration governs (checkStorageDeclaration), not this rule.
+const durableVolumeSource = "persistentVolumeClaim"
 
 // podSpecPaths maps a workload kind to the field path of its pod specification.
 // A kind absent here is still inspected when it carries a pod template at one of
@@ -116,8 +114,10 @@ func validateDocument(document Document, subject Subject, contracts Contracts, d
 			return err
 		}
 	}
+	declaredContract, _ := contracts.Of(subject)
+	contract := &declaredContract
 	for _, spec := range podSpecifications(document.Value, kind) {
-		if err := checkStandardScratchOnly(spec, report); err != nil {
+		if err := checkDeclaredVolumesOnly(document.Value, spec, subject, contract, report); err != nil {
 			return err
 		}
 		if err := checkStorageDeclaration(document.Value, spec, subject, contracts, report); err != nil {
@@ -132,45 +132,105 @@ func validateDocument(document Document, subject Subject, contracts Contracts, d
 // after a nil: an allowance covers one rule for one service.
 type reporter func(rule, field, detail string) error
 
-// checkStandardScratchOnly admits exactly one volume and one mount: the standard
-// scratch volume, at the standard scratch path. Everything else is refused by
-// name — not because its source or its destination is on a list, but because it
-// is not the one thing a deployed workload is allowed to carry.
+// checkDeclaredVolumesOnly admits exactly what the service declared and nothing
+// else: a scratch volume it declared (spec.deployment.scratch-volumes), mounted at
+// the one path it declared for it, or the workload's own durable state when it
+// declared durable storage. Every other volume and every other mount is refused by
+// name.
 //
-// Configuration and credentials reach a service as values and secrets in the
-// environment variables the render projects. A durable data claim is not
-// admitted here either: whether a store may carry one is the platform owner's
-// decision, and until it is written into the rule it is an environment-level
-// allowance, printed on every run, per service.
-func checkStandardScratchOnly(spec pathedSpec, report reporter) error {
+// The admitted set is a declaration rather than a list of sources, names or
+// destinations, because no property of a volume separates the platform's scratch
+// directory from a second emptyDir mounted over /secrets to deliver credentials —
+// both are an emptyDir — and a rule keyed on the destination is defeated by moving
+// the mount. What the platform renders, the platform declares; what nobody
+// declared does not reach a cell.
+func checkDeclaredVolumesOnly(
+	document map[string]any,
+	spec pathedSpec,
+	subject Subject,
+	contract *ServiceContract,
+	report reporter,
+) error {
+	durable := contract.StorageMode == StorageModeDurable
+	state := claimNames(document, spec)
 	for _, volume := range volumes(spec) {
-		if volume.name == scratchVolumeName && volume.source == scratchVolumeSource {
+		_, isScratch := contract.scratchVolume(volume.name)
+		switch {
+		case isScratch && volume.source == scratchVolumeSource:
+			continue
+		case isScratch:
+			if err := report(RuleNonScratchMount, volume.sourcePath, fmt.Sprintf(
+				"volume %q is declared as scratch by service %s but is rendered from a %s source; scratch space is an %s and carries nothing the platform did not put there at start",
+				volume.name, subject, volume.source, scratchVolumeSource)); err != nil {
+				return err
+			}
+			continue
+		case volume.source == durableVolumeSource && durable:
 			continue
 		}
-		source := volume.source
-		if source == "" {
-			source = "no source"
+		detail := fmt.Sprintf(
+			"volume %q (%s) is not declared by service %s, and a deployed workload carries only what its service declares: "+
+				"scratch space in spec.deployment.%s (declared: %s)",
+			volume.name, volume.source, subject, scratchVolumesKey, contract.declaredScratch())
+		if volume.source == durableVolumeSource {
+			detail = fmt.Sprintf(
+				"volume %q is the workload's own durable state, and service %s has not declared spec.deployment.%s: %s",
+				volume.name, subject, storageKey, StorageModeDurable)
 		}
-		if err := report(RuleNonScratchMount, volume.sourcePath, fmt.Sprintf(
-			"volume %q (%s) is not the standard scratch volume, and a deployed workload carries that volume and nothing else "+
-				"(%q, %s, mounted at %s); configuration and credentials reach a service as values and secrets in the environment "+
-				"variables the render already projects, and whether a store may carry a durable claim is an allowance, not a default",
-			volume.name, source, scratchVolumeName, scratchVolumeSource, scratchMountPath)); err != nil {
+		if err := report(RuleNonScratchMount, volume.sourcePath, detail); err != nil {
 			return err
 		}
 	}
 	for _, mount := range mounts(spec) {
-		if mount.volume == scratchVolumeName && mount.path == scratchMountPath {
+		if declared, isScratch := contract.scratchVolume(mount.volume); isScratch {
+			if declared.Mount == mount.path {
+				continue
+			}
+			if err := report(RuleNonScratchMount, mount.field, fmt.Sprintf(
+				"volume %q is mounted at %s, but service %s declares it at %s: a scratch volume is a name AND the one path it is mounted at, "+
+					"or the same volume mounted twice is another way to put files in front of a process",
+				mount.volume, mount.path, subject, declared.Mount)); err != nil {
+				return err
+			}
+			continue
+		}
+		if state[mount.volume] && durable {
 			continue
 		}
 		if err := report(RuleNonScratchMount, mount.field, fmt.Sprintf(
-			"volume %q is mounted at %s, and the only mount a deployed workload carries is %q at %s; "+
-				"anything else puts files in front of a process that the platform did not deliver",
-			mount.volume, mount.path, scratchVolumeName, scratchMountPath)); err != nil {
+			"volume %q is mounted at %s and service %s declares no such volume; a deployed workload mounts only the scratch volumes it declares "+
+				"(declared: %s) and its own durable state",
+			mount.volume, mount.path, subject, contract.declaredScratch())); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// claimNames are the volume names that carry the workload's own durable state: a
+// StatefulSet's claim templates, and any claim-backed volume.
+func claimNames(document map[string]any, spec pathedSpec) map[string]bool {
+	names := map[string]bool{}
+	if workloadSpec, ok := document[specField].(map[string]any); ok {
+		claims, _ := workloadSpec["volumeClaimTemplates"].([]any)
+		for _, entry := range claims {
+			claim, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			if metadata, present := claim["metadata"].(map[string]any); present {
+				if name := stringAt(metadata, "name"); name != "" {
+					names[name] = true
+				}
+			}
+		}
+	}
+	for _, volume := range volumes(spec) {
+		if volume.source == durableVolumeSource {
+			names[volume.name] = true
+		}
+	}
+	return names
 }
 
 // checkStorageDeclaration holds a workload that keeps its own state to what its
@@ -310,7 +370,8 @@ func (declaration *Declaration) validateContracts(contracts Contracts, documents
 		return nil
 	}
 	for _, key := range contracts.sortedSubjects() {
-		contract := contracts[key]
+		declared := contracts[key]
+		contract := &declared
 		subject := Subject{Module: contract.Module, Service: contract.Service}
 		if _, allowed := declaration.Allows(RulePeerTransportMaterial, subject); allowed {
 			continue

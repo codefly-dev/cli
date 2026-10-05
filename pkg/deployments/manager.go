@@ -448,7 +448,7 @@ func (r *RenderManager) checkPosture(ctx context.Context, module *resources.Modu
 		return err
 	}
 	contracts := posture.Contracts{}
-	contracts.Add(contract)
+	contracts.Add(&contract)
 	return posture.ValidateRenderedManifests(
 		manifests,
 		KustomizeDirForEnv(ctx, r.Workspace, module, service, r.Env),
