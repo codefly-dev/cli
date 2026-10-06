@@ -8,9 +8,9 @@ import (
 )
 
 func TestGatewayExecutionOptionsRequireExplicitEnablement(t *testing.T) {
-	options := gatewayExecutionOptions{
-		authorityJWKS: "https://accounts.example.test/keys",
-	}
+	// Authority configured, governed execution not enabled. The ISSUER carries
+	// that now: the JWKS URL this used to set is gone with the verifier.
+	options := gatewayExecutionOptions{authorityIssuer: "https://accounts.example.test"}
 	if _, err := options.childArgs(); err == nil {
 		t.Fatal("authority configuration without governed execution was accepted")
 	}
@@ -22,7 +22,6 @@ func TestGatewayExecutionOptionsRequireExplicitEnablement(t *testing.T) {
 func TestGatewayExecutionChildArgsPreserveEveryExporter(t *testing.T) {
 	options := gatewayExecutionOptions{
 		enabled:         true,
-		authorityJWKS:   "https://accounts.example.test/keys",
 		authorityIssuer: "https://accounts.example.test",
 		stateDir:        filepath.Join(t.TempDir(), "state"),
 		exporters:       []string{"example/a:1.0.0", "example/b:2.0.0"},
@@ -33,7 +32,6 @@ func TestGatewayExecutionChildArgsPreserveEveryExporter(t *testing.T) {
 	}
 	want := []string{
 		"--governed-execution",
-		"--execution-authority-jwks", options.authorityJWKS,
 		"--execution-authority-issuer", options.authorityIssuer,
 		"--execution-state-dir", options.stateDir,
 		"--execution-exporter", options.exporters[0],
@@ -45,13 +43,14 @@ func TestGatewayExecutionChildArgsPreserveEveryExporter(t *testing.T) {
 }
 
 func TestGatewayExecutionOptionsRequireCompleteAuthority(t *testing.T) {
-	for _, options := range []gatewayExecutionOptions{
-		{enabled: true},
-		{enabled: true, authorityJWKS: "https://accounts.example.test/keys"},
-		{enabled: true, authorityIssuer: "https://accounts.example.test"},
-	} {
-		if _, err := options.childArgs(); err == nil {
-			t.Fatalf("incomplete options accepted: %#v", options)
-		}
+	// A key source is no longer part of a complete authority: this process
+	// verifies nothing. The issuer still is — it is what the recorder compares
+	// a verified capability's own issuer against.
+	if _, err := (gatewayExecutionOptions{enabled: true}).childArgs(); err == nil {
+		t.Fatal("options with no issuer were accepted")
+	}
+	complete := gatewayExecutionOptions{enabled: true, authorityIssuer: "https://accounts.example.test"}
+	if _, err := complete.childArgs(); err != nil {
+		t.Fatalf("complete options rejected: %v", err)
 	}
 }

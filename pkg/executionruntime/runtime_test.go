@@ -39,7 +39,6 @@ func TestOpenWithoutExportersCreatesPrivateProductNeutralRuntime(t *testing.T) {
 	runtime, err := Open(context.Background(), Config{
 		WorkDir:         t.TempDir(),
 		StateDir:        stateDir,
-		AuthorityJWKS:   "https://accounts.example.test/.well-known/work-context-jwks.json",
 		AuthorityIssuer: "https://accounts.example.test",
 		Release:         "test",
 	})

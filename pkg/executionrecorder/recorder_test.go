@@ -29,7 +29,7 @@ func TestRecorderBracketsEffectAndPreventsOperationReplay(t *testing.T) {
 	fixture := newRecorderFixture(t)
 	input := fixture.beginInput()
 
-	first, err := fixture.recorder.Begin(t.Context(), fixture.execution, input)
+	first, err := fixture.recorder.Begin(t.Context(), fixture.execution, fixture.verified, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestRecorderBracketsEffectAndPreventsOperationReplay(t *testing.T) {
 		t.Fatalf("incomplete after begin = %+v err=%v", incomplete, err)
 	}
 
-	retry, err := fixture.recorder.Begin(t.Context(), fixture.execution, input)
+	retry, err := fixture.recorder.Begin(t.Context(), fixture.execution, fixture.verified, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestRecorderBracketsEffectAndPreventsOperationReplay(t *testing.T) {
 		t.Fatalf("second finish error = %v", err)
 	}
 
-	completedRetry, err := fixture.recorder.Begin(t.Context(), fixture.execution, input)
+	completedRetry, err := fixture.recorder.Begin(t.Context(), fixture.execution, fixture.verified, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,13 +84,13 @@ func TestRecorderBracketsEffectAndPreventsOperationReplay(t *testing.T) {
 	substituted := input
 	substituted.Target = proto.Clone(input.Target).(*executionv1.ExecutionTargetV1)
 	substituted.Target.Service = "another-service"
-	if _, err := fixture.recorder.Begin(t.Context(), fixture.execution, substituted); !errors.Is(err, ErrConflict) {
+	if _, err := fixture.recorder.Begin(t.Context(), fixture.execution, fixture.verified, substituted); !errors.Is(err, ErrConflict) {
 		t.Fatalf("target substitution error = %v", err)
 	}
 
 	substituted = input
 	substituted.OperationInputSHA256 = hexDigest(sha256.Sum256([]byte("different input")))
-	if _, err := fixture.recorder.Begin(t.Context(), fixture.execution, substituted); !errors.Is(err, ErrConflict) {
+	if _, err := fixture.recorder.Begin(t.Context(), fixture.execution, fixture.verified, substituted); !errors.Is(err, ErrConflict) {
 		t.Fatalf("operation input substitution error = %v", err)
 	}
 
@@ -99,7 +99,7 @@ func TestRecorderBracketsEffectAndPreventsOperationReplay(t *testing.T) {
 	changedObservation := input
 	changedObservation.Resources = cloneResources(input.Resources)
 	changedObservation.Resources[0].BeforeSha256 = stringPointer(hexDigest(sha256.Sum256([]byte("after"))))
-	replayed, err := fixture.recorder.Begin(t.Context(), fixture.execution, changedObservation)
+	replayed, err := fixture.recorder.Begin(t.Context(), fixture.execution, fixture.verified, changedObservation)
 	if err != nil || replayed.Existing == nil {
 		t.Fatalf("replay after workspace mutation = %+v err=%v", replayed, err)
 	}
@@ -108,7 +108,7 @@ func TestRecorderBracketsEffectAndPreventsOperationReplay(t *testing.T) {
 func TestRecorderRecoversIncompleteStartAsUncertain(t *testing.T) {
 	fixture := newRecorderFixture(t)
 	input := fixture.beginInput()
-	if result, err := fixture.recorder.Begin(t.Context(), fixture.execution, input); err != nil || result.Attempt == nil {
+	if result, err := fixture.recorder.Begin(t.Context(), fixture.execution, fixture.verified, input); err != nil || result.Attempt == nil {
 		t.Fatalf("begin = %+v err=%v", result, err)
 	}
 	if err := fixture.journal.Close(); err != nil {
@@ -136,7 +136,7 @@ func TestRecorderRecoversIncompleteStartAsUncertain(t *testing.T) {
 	if err != nil || len(incomplete) != 0 {
 		t.Fatalf("incomplete after recovery = %+v err=%v", incomplete, err)
 	}
-	retry, err := recorder.Begin(t.Context(), fixture.execution, input)
+	retry, err := recorder.Begin(t.Context(), fixture.execution, fixture.verified, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestRecorderProcessLossRecoversAndExportsStartedThenUncertain(t *testing.T)
 		Attestor: attestor,
 		Authority: AuthorityFunc(func(
 			context.Context,
-			workcontext.WorkContextToken,
+			*workcontext.Verified,
 			Admission,
 		) (*basev0.WorkContextV1, error) {
 			return nil, errors.New("recovery must not re-authorize an already admitted start")
@@ -282,12 +282,8 @@ func appendStartedBeforeProcessLoss(stateDir string) error {
 		return err
 	}
 	signature := make([]byte, 64)
-	token, err := workcontext.ParseWorkContextToken(
-		"e30." + base64.RawURLEncoding.EncodeToString(signature),
-	)
-	if err != nil {
-		return err
-	}
+	// An opaque carrier, not a parsed token: nothing on this side decodes it.
+	token := "e30." + base64.RawURLEncoding.EncodeToString(signature)
 	execution, err := workcontextgrpc.NewExecutionContext(token, "operation-process-loss")
 	if err != nil {
 		return err
@@ -297,7 +293,7 @@ func appendStartedBeforeProcessLoss(stateDir string) error {
 		Attestor: attestor,
 		Authority: AuthorityFunc(func(
 			context.Context,
-			workcontext.WorkContextToken,
+			*workcontext.Verified,
 			Admission,
 		) (*basev0.WorkContextV1, error) {
 			return testClaims(), nil
@@ -309,7 +305,11 @@ func appendStartedBeforeProcessLoss(stateDir string) error {
 	if err != nil {
 		return err
 	}
-	result, err := recorder.Begin(ctx, execution, testBeginInput())
+	verified, err := conformanceVerified(ctx)
+	if err != nil {
+		return err
+	}
+	result, err := recorder.Begin(ctx, execution, verified, testBeginInput())
 	if err != nil {
 		return err
 	}
@@ -326,7 +326,7 @@ func TestRecorderRejectsAuthorityFailureBeforeJournal(t *testing.T) {
 		Attestor: fixture.attestor,
 		Authority: AuthorityFunc(func(
 			context.Context,
-			workcontext.WorkContextToken,
+			*workcontext.Verified,
 			Admission,
 		) (*basev0.WorkContextV1, error) {
 			return nil, errors.New("forged")
@@ -337,7 +337,7 @@ func TestRecorderRejectsAuthorityFailureBeforeJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := recorder.Begin(t.Context(), fixture.execution, fixture.beginInput()); !errors.Is(err, ErrInvalid) {
+	if _, err := recorder.Begin(t.Context(), fixture.execution, fixture.verified, fixture.beginInput()); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("authority error = %v", err)
 	}
 	pending, err := fixture.journal.Pending(t.Context(), 0, 10)
@@ -357,7 +357,7 @@ func TestRecorderRejectsTargetOutsideWorkContextBeforeJournal(t *testing.T) {
 	} {
 		input := fixture.beginInput()
 		mutate(&input)
-		if _, err := fixture.recorder.Begin(t.Context(), fixture.execution, input); !errors.Is(err, ErrInvalid) {
+		if _, err := fixture.recorder.Begin(t.Context(), fixture.execution, fixture.verified, input); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("target mismatch error = %v", err)
 		}
 	}
@@ -375,6 +375,7 @@ type recorderFixture struct {
 	authority   Authority
 	producer    *executionv1.ExecutionProducerV1
 	execution   workcontextgrpc.ExecutionContext
+	verified    *workcontext.Verified
 	clock       *testClock
 }
 
@@ -393,10 +394,7 @@ func newRecorderFixture(t *testing.T) *recorderFixture {
 	t.Cleanup(func() { _ = journal.Close() })
 
 	signature := make([]byte, 64)
-	token, err := workcontext.ParseWorkContextToken("e30." + base64.RawURLEncoding.EncodeToString(signature))
-	if err != nil {
-		t.Fatal(err)
-	}
+	token := "e30." + base64.RawURLEncoding.EncodeToString(signature)
 	execution, err := workcontextgrpc.NewExecutionContext(token, "operation-1")
 	if err != nil {
 		t.Fatal(err)
@@ -404,7 +402,7 @@ func newRecorderFixture(t *testing.T) *recorderFixture {
 	claims := testClaims()
 	authority := AuthorityFunc(func(
 		_ context.Context,
-		_ workcontext.WorkContextToken,
+		_ *workcontext.Verified,
 		admission Admission,
 	) (*basev0.WorkContextV1, error) {
 		if admission.OperationID != "operation-1" || admission.ProducerID != "codefly.execution" {
@@ -425,7 +423,7 @@ func newRecorderFixture(t *testing.T) *recorderFixture {
 	return &recorderFixture{
 		recorder: recorder, journal: journal, journalPath: journalPath,
 		attestor: attestor, authority: authority, producer: producer,
-		execution: execution, clock: clock,
+		execution: execution, verified: verifiedFixture(t), clock: clock,
 	}
 }
 

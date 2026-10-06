@@ -44,21 +44,27 @@ type Admission struct {
 	Target        *executionv1.ExecutionTargetV1
 }
 
-// Authority verifies the opaque SDK token and returns trusted claims.
+// Authority authorizes an ALREADY-VERIFIED capability and returns its claims.
+//
+// The parameter is a *workcontext.Verified, which only core's Verifier
+// constructs, so an unverified capability cannot reach this interface: there is
+// no token parameter to pass one through. That is structural rather than
+// documentary — see WorkContextAuthority for why this component does not
+// verify.
 type Authority interface {
-	Verify(context.Context, workcontext.WorkContextToken, Admission) (*basev0.WorkContextV1, error)
+	Authorize(context.Context, *workcontext.Verified, Admission) (*basev0.WorkContextV1, error)
 }
 
 // AuthorityFunc adapts a function into Authority.
-type AuthorityFunc func(context.Context, workcontext.WorkContextToken, Admission) (*basev0.WorkContextV1, error)
+type AuthorityFunc func(context.Context, *workcontext.Verified, Admission) (*basev0.WorkContextV1, error)
 
-// Verify implements Authority.
-func (fn AuthorityFunc) Verify(
+// Authorize implements Authority.
+func (fn AuthorityFunc) Authorize(
 	ctx context.Context,
-	token workcontext.WorkContextToken,
+	verified *workcontext.Verified,
 	admission Admission,
 ) (*basev0.WorkContextV1, error) {
-	return fn(ctx, token, admission)
+	return fn(ctx, verified, admission)
 }
 
 // Journal is the minimal durable outbox contract used by the recorder.
@@ -150,6 +156,7 @@ func New(config Config) (*Recorder, error) {
 func (r *Recorder) Begin(
 	ctx context.Context,
 	execution workcontextgrpc.ExecutionContext,
+	verified *workcontext.Verified,
 	input BeginInput,
 ) (BeginResult, error) {
 	if r == nil {
@@ -182,9 +189,17 @@ func (r *Recorder) Begin(
 		Assurance:     input.Assurance,
 		Target:        target,
 	}
-	claims, err := r.authority.Verify(ctx, execution.WorkContext(), admission)
+	// Refused here, before the authority, because the receipt this call writes
+	// carries the capability's digest: without a verified capability there is
+	// nothing to digest, and a receipt attesting to an unverified execution is
+	// worse than no receipt. An Authority implementation could also refuse, but
+	// the recorder must not depend on every implementation remembering to.
+	if verified == nil {
+		return BeginResult{}, fmt.Errorf("%w: a governed execution requires a verified Work Context; this recorder does not verify capabilities and will not attest to an unverified one", ErrInvalid)
+	}
+	claims, err := r.authority.Authorize(ctx, verified, admission)
 	if err != nil {
-		return BeginResult{}, fmt.Errorf("%w: verify Work Context: %v", ErrInvalid, err)
+		return BeginResult{}, fmt.Errorf("%w: authorize Work Context: %v", ErrInvalid, err)
 	}
 	if claims == nil {
 		return BeginResult{}, fmt.Errorf("%w: authority returned no Work Context claims", ErrInvalid)
@@ -211,7 +226,9 @@ func (r *Recorder) Begin(
 	}
 	admission.Target = target
 	attemptID := stableAttemptID(claims.GetTenantId(), r.producer.GetId(), execution.OperationID())
-	tokenDigest := sha256.Sum256([]byte(execution.WorkContext().Encoded()))
+	// core computed this over the capability it verified, so the receipt's
+	// digest and the verification cannot describe different bytes.
+	tokenDigest := verified.SHA256()
 
 	if existing, startedReceipt, found, err := r.findExisting(ctx, claims.GetTenantId(), execution.OperationID(), attemptID); err != nil {
 		return BeginResult{}, err
@@ -240,7 +257,7 @@ func (r *Recorder) Begin(
 		Producer:          proto.Clone(r.producer).(*executionv1.ExecutionProducerV1),
 		Assurance:         input.Assurance,
 		WorkContext:       claims,
-		WorkContextSha256: hex.EncodeToString(tokenDigest[:]),
+		WorkContextSha256: tokenDigest,
 		Target:            proto.Clone(target).(*executionv1.ExecutionTargetV1),
 		StartedAt:         timestamppb.New(r.now().UTC()),
 		Resources:         resources,
@@ -426,7 +443,7 @@ func (r *Recorder) findExisting(
 func sameAdmission(
 	receipt *executionv1.ExecutionReceiptV1,
 	claims *basev0.WorkContextV1,
-	tokenDigest [sha256.Size]byte,
+	tokenDigest string,
 	admission Admission,
 	attemptID string,
 	producer *executionv1.ExecutionProducerV1,
@@ -442,7 +459,7 @@ func sameAdmission(
 		receipt.GetAttemptId() == attemptID &&
 		receipt.GetOperationKind() == admission.OperationKind &&
 		receipt.GetAssurance() == admission.Assurance &&
-		receipt.GetWorkContextSha256() == hex.EncodeToString(tokenDigest[:]) &&
+		receipt.GetWorkContextSha256() == tokenDigest &&
 		proto.Equal(receipt.GetWorkContext(), claims) &&
 		proto.Equal(receipt.GetProducer(), producer) &&
 		proto.Equal(receipt.GetTarget(), admission.Target)

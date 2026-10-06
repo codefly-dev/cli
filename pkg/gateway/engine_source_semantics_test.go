@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,7 +17,6 @@ import (
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/internal/protocoltest"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
 	codev0 "github.com/codefly-dev/core/generated/go/codefly/services/code/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 	"github.com/google/uuid"
@@ -275,10 +276,13 @@ func TestPreparedMutationWritesToTheVerifiedTreeNotTheAgent(t *testing.T) {
 	}
 }
 
-// The engine resolves and writes a typed symbol patch, so its receipt must not
-// claim a plugin returned the effect. GATEWAY_EXECUTED and PLUGIN_EXECUTED are
-// distinct provenance claims and the receipt is persisted and signed.
-func TestSymbolPatchReceiptRecordsGatewayExecution(t *testing.T) {
+// Governed execution is refused at the symbol-patch entry point too.
+//
+// It asserted a recorded receipt; this gateway cannot verify a capability and
+// so refuses rather than admitting one unverified. The same reasoning as the
+// apply-edit and run entry points in server_test.go, asserted here because an
+// entry point that forgot to refuse is exactly what this pins.
+func TestSymbolPatchRefusesGovernedExecutionItCannotVerify(t *testing.T) {
 	server, _, root := newPreparedMutationGateway(t)
 	path := filepath.Join(root, "pkg", "service.go")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -289,28 +293,20 @@ func TestSymbolPatchReceiptRecordsGatewayExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixture := enableGovernedGateway(t, server, "operation-symbol-patch-1")
-
-	response, err := server.ApplySymbolPatch(fixture.ctx, &gatewayv1.ApplySymbolPatchRequest{
+	_, err := server.ApplySymbolPatch(fixture.ctx, &gatewayv1.ApplySymbolPatchRequest{
 		Service: "app", File: "pkg/service.go", QualifiedName: "service.Value",
 		ExpectedDeclarationSha256: contentSHA256([]byte(declaration)),
 		NewSource:                 "func Value() int { return 2 }",
 	})
-	if err != nil || !response.GetSuccess() {
-		t.Fatalf("apply symbol patch: response=%+v err=%v", response, err)
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("governed execution must be refused Unimplemented, got %v", err)
 	}
-	pending, err := fixture.journal.Pending(t.Context(), 0, 10)
-	if err != nil {
-		t.Fatal(err)
+	pending, pendingErr := fixture.journal.Pending(t.Context(), 0, 10)
+	if pendingErr != nil {
+		t.Fatal(pendingErr)
 	}
-	if len(pending) == 0 {
-		t.Fatal("symbol patch recorded no execution receipt")
-	}
-	started := pending[0].Attestation.GetReceipt()
-	if started.GetOperationKind() != "code.apply-symbol-patch" {
-		t.Fatalf("receipt operation kind = %q", started.GetOperationKind())
-	}
-	if started.GetAssurance() != executionv1.ExecutionAssurance_EXECUTION_ASSURANCE_GATEWAY_EXECUTED {
-		t.Fatalf("receipt assurance = %s, want GATEWAY_EXECUTED for an engine-performed effect", started.GetAssurance())
+	if len(pending) != 0 {
+		t.Fatalf("a refused execution must write no receipt, got %d", len(pending))
 	}
 }
 

@@ -53,6 +53,7 @@ import (
 	githubtoolbox "github.com/codefly-dev/core/toolbox/github"
 	"github.com/codefly-dev/core/wool"
 	wotel "github.com/codefly-dev/core/wool/otel"
+	workcontext "github.com/codefly-dev/sdk-go/workcontext"
 	workcontextgrpc "github.com/codefly-dev/sdk-go/workcontext/grpctransport"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
@@ -109,7 +110,7 @@ type Config struct {
 // ExecutionRecorder is the narrow neutral lifecycle capability used by the
 // Gateway. Warden and every other exporter stay behind Codefly's plugin API.
 type ExecutionRecorder interface {
-	Begin(context.Context, workcontextgrpc.ExecutionContext, executionrecorder.BeginInput) (executionrecorder.BeginResult, error)
+	Begin(context.Context, workcontextgrpc.ExecutionContext, *workcontext.Verified, executionrecorder.BeginInput) (executionrecorder.BeginResult, error)
 	RecoverIncomplete(context.Context, int) (int, error)
 }
 
@@ -2058,24 +2059,44 @@ func (s *Server) headRevision(ctx context.Context) string {
 	return commits[0].SHA
 }
 
+// validateOptionalExecutionContext rejects a malformed execution context while
+// leaving a request that carries none alone.
+//
+// Presence is no longer a library question: sdk-go's grpctransport dropped the
+// three-value form, so absence is simply its error path. The two cases are told
+// apart HERE, by looking for the carrier in the metadata, and that has to be
+// this package's business — a gateway serving ungoverned callers cannot treat
+// "no capability" as a fault, and must not treat "a capability that does not
+// parse" as absence either.
 func validateOptionalExecutionContext(ctx context.Context) error {
-	_, _, err := workcontextgrpc.GRPCExecutionContextFromIncomingIfPresent(ctx)
-	if err != nil {
+	if !carriesExecutionContext(ctx) {
+		return nil
+	}
+	if _, err := workcontextgrpc.GRPCExecutionContextFromIncoming(ctx); err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid Codefly execution context: %v", err)
 	}
 	return nil
+}
+
+// carriesExecutionContext reports whether the request presents a Work Context
+// carrier at all, read from the one metadata key sdk-go reads it from.
+func carriesExecutionContext(ctx context.Context) bool {
+	values, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return false
+	}
+	return len(values.Get(workcontext.HeaderName)) > 0
 }
 
 func (s *Server) beginGovernedExecution(
 	ctx context.Context,
 	input executionrecorder.BeginInput,
 ) (*executionrecorder.Attempt, bool, error) {
-	execution, present, err := workcontextgrpc.GRPCExecutionContextFromIncomingIfPresent(ctx)
-	if err != nil {
-		return nil, false, status.Errorf(codes.InvalidArgument, "invalid Codefly execution context: %v", err)
-	}
-	if !present {
+	if !carriesExecutionContext(ctx) {
 		return nil, false, nil
+	}
+	if _, err := workcontextgrpc.GRPCExecutionContextFromIncoming(ctx); err != nil {
+		return nil, false, status.Errorf(codes.InvalidArgument, "invalid Codefly execution context: %v", err)
 	}
 	if s.executionRecorder == nil {
 		return nil, true, status.Error(
@@ -2083,30 +2104,23 @@ func (s *Server) beginGovernedExecution(
 			"Codefly execution authority was supplied but governed execution is not configured",
 		)
 	}
-	result, err := s.executionRecorder.Begin(ctx, execution, input)
-	if err != nil {
-		if errors.Is(err, executionrecorder.ErrConflict) {
-			return nil, true, status.Errorf(
-				codes.AlreadyExists,
-				"governed operation identity conflict: %v",
-				err,
-			)
-		}
-		return nil, true, status.Errorf(codes.PermissionDenied, "governed execution admission failed: %v", err)
-	}
-	if result.Existing != nil {
-		receipt := result.Existing.Attestation.GetReceipt()
-		return nil, true, status.Errorf(
-			codes.AlreadyExists,
-			"operation %q already has durable stage %s; effect was not re-executed",
-			receipt.GetOperationId(),
-			receipt.GetStage(),
-		)
-	}
-	if result.Attempt == nil {
-		return nil, true, status.Error(codes.Internal, "governed execution admission returned no attempt")
-	}
-	return result.Attempt, true, nil
+	// REFUSED, not admitted. This server holds none of the four live sources
+	// core's Verifier requires — the authorization revision, the replay store,
+	// the grant source, the seal source — so it cannot turn the presented
+	// capability into a *workcontext.Verified, and it will not pretend to. A
+	// verifier fed invented state does not fail, it PASSES, which is precisely
+	// what the seal check exists to prevent.
+	//
+	// The admission path that used to follow is deleted rather than left
+	// unreachable behind this: a compatibility path nobody takes is still a
+	// path somebody can re-enable. Governed execution becomes servable when the
+	// component holding those sources verifies the capability and hands the
+	// recorder a *Verified — which its Authority already takes, and refuses
+	// when nil.
+	return nil, true, status.Error(
+		codes.Unimplemented,
+		"governed execution requires a verified Work Context: this gateway does not hold the authorization-revision, replay, grant and seal sources needed to verify one, and will not admit an unverified capability",
+	)
 }
 
 func finishGovernedExecution(

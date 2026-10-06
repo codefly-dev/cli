@@ -8,11 +8,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	coreworkcontext "github.com/codefly-dev/core/workcontext"
 	"math"
 	"math/big"
 	"net"
@@ -44,7 +44,6 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
-	"google.golang.org/protobuf/proto"
 )
 
 // mockCodeClient implements codev0.CodeClient via the unified Execute RPC.
@@ -318,7 +317,7 @@ func enableGovernedGateway(
 		Attestor: attestor,
 		Authority: executionrecorder.AuthorityFunc(func(
 			_ context.Context,
-			_ workcontext.WorkContextToken,
+			_ *workcontext.Verified,
 			admission executionrecorder.Admission,
 		) (*basev0.WorkContextV1, error) {
 			if admission.OperationID != operationID {
@@ -342,13 +341,12 @@ func enableGovernedGateway(
 
 func incomingExecutionContext(t *testing.T, operationID string) context.Context {
 	t.Helper()
-	signature := make([]byte, 64)
-	token, err := workcontext.ParseWorkContextToken(
-		"e30." + base64.RawURLEncoding.EncodeToString(signature),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// A real capability from core's conformance kit. The hand-made `e30.` JSON
+	// carrier this used to build is refused outright now ("not a core token:
+	// the payload is a JSON object"), which is the cutover: the carrier is a
+	// deterministic protobuf encoding. This side still neither parses nor
+	// verifies it — it only has to be well formed enough to travel.
+	token := conformanceCarrier(t)
 	execution, err := workcontextgrpc.NewExecutionContext(token, operationID)
 	if err != nil {
 		t.Fatal(err)
@@ -502,12 +500,8 @@ func TestWriteFileAcceptsSDKExecutionContextOverRealGRPC(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = connection.Close() })
 
-	workContext, err := workcontext.ParseWorkContextToken(
-		"e30.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// A real capability from core's conformance kit, for the same reason.
+	workContext := conformanceCarrier(t)
 	execution, err := workcontextgrpc.NewExecutionContext(workContext, "operation-write-1")
 	if err != nil {
 		t.Fatal(err)
@@ -838,6 +832,22 @@ func TestApplyEdit(t *testing.T) {
 	}
 }
 
+// Governed execution is REFUSED at every effect entry point, because this
+// gateway cannot verify a capability.
+//
+// These three tests asserted the opposite: that an effect was bracketed by a
+// started and a terminal receipt, and that a replay was suppressed. That
+// behaviour is gone from THIS component by design — core's Verifier requires
+// the authorization revision, the replay store, the grant source and the seal
+// source, this server holds none of them, and a verifier fed invented state
+// PASSES rather than fails. So the capability is refused rather than admitted
+// on a weaker check, and the admission path that produced those receipts is
+// deleted rather than left unreachable.
+//
+// What the receipts themselves do is still covered, with a real verified
+// capability, by pkg/executionrecorder's own tests. What is covered HERE is the
+// property that matters for this server: every entry point refuses, and none
+// of them quietly proceeds.
 func TestApplyEditGovernedReceiptBracketsEffectAndSuppressesReplay(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "main.go")
@@ -860,64 +870,19 @@ func TestApplyEditGovernedReceiptBracketsEffectAndSuppressesReplay(t *testing.T)
 		Service: "test-svc", File: "main.go", Find: "old code", Replace: "new code",
 		FixMode: basev0.FixMode_FIX_MODE_SAFE,
 	}
-
-	response, err := server.ApplyEdit(fixture.ctx, request)
-	if err != nil {
-		t.Fatal(err)
+	_, err := server.ApplyEdit(fixture.ctx, request)
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("governed execution must be refused Unimplemented, got %v", err)
 	}
-	if !response.GetSuccess() || calls != 1 {
-		t.Fatalf("first apply-edit response=%+v calls=%d", response, calls)
+	if !strings.Contains(status.Convert(err).Message(), "requires a verified Work Context") {
+		t.Fatalf("the refusal must say what is missing: %v", err)
 	}
-	pending, err := fixture.journal.Pending(t.Context(), 0, 10)
-	if err != nil {
-		t.Fatal(err)
+	pending, pendingErr := fixture.journal.Pending(t.Context(), 0, 10)
+	if pendingErr != nil {
+		t.Fatal(pendingErr)
 	}
-	if len(pending) != 2 {
-		t.Fatalf("pending receipt count=%d, want 2", len(pending))
-	}
-	started := pending[0].Attestation.GetReceipt()
-	terminal := pending[1].Attestation.GetReceipt()
-	if started.GetStage() != executionv1.ExecutionStage_EXECUTION_STAGE_STARTED ||
-		terminal.GetStage() != executionv1.ExecutionStage_EXECUTION_STAGE_SUCCEEDED {
-		t.Fatalf("receipt stages=%s,%s", started.GetStage(), terminal.GetStage())
-	}
-	if started.GetOperationKind() != "code.apply-edit" ||
-		started.GetAssurance() != executionv1.ExecutionAssurance_EXECUTION_ASSURANCE_PLUGIN_EXECUTED ||
-		started.GetTarget().GetWorkspaceId() != "workspace-codefly" ||
-		started.GetTarget().GetService() != "test-svc" {
-		t.Fatalf("started receipt identity=%+v", started)
-	}
-	if len(started.GetResources()) != 2 ||
-		started.GetResources()[0].GetKind() != "operation.input" ||
-		started.GetResources()[1].GetBeforeSha256() == "" {
-		t.Fatalf("started resources=%+v", started.GetResources())
-	}
-	if len(terminal.GetResources()) != 2 ||
-		terminal.GetResources()[1].GetAfterSha256() == "" ||
-		!terminal.GetResources()[1].GetChanged() {
-		t.Fatalf("terminal resources=%+v", terminal.GetResources())
-	}
-
-	// The file hash has changed, but an exact transport retry is still the
-	// same immutable input and must never execute the edit twice.
-	if _, err := server.ApplyEdit(fixture.ctx, request); status.Code(err) != codes.AlreadyExists {
-		t.Fatalf("exact retry error=%v, want AlreadyExists", err)
-	}
-	if calls != 1 {
-		t.Fatalf("exact retry executed effect; calls=%d", calls)
-	}
-	pending, err = fixture.journal.Pending(t.Context(), 0, 10)
-	if err != nil || len(pending) != 2 {
-		t.Fatalf("pending after retry=%d err=%v", len(pending), err)
-	}
-
-	substituted := proto.Clone(request).(*gatewayv1.ApplyEditRequest)
-	substituted.Replace = "different code"
-	if _, err := server.ApplyEdit(fixture.ctx, substituted); status.Code(err) != codes.AlreadyExists {
-		t.Fatalf("input substitution error=%v, want AlreadyExists", err)
-	}
-	if calls != 1 {
-		t.Fatalf("input substitution executed effect; calls=%d", calls)
+	if len(pending) != 0 {
+		t.Fatalf("a refused execution must write no receipt, got %d", len(pending))
 	}
 }
 
@@ -953,6 +918,22 @@ func TestApplyEditExecutionCarrierFailsClosedWithoutRecorder(t *testing.T) {
 	}
 }
 
+// Governed execution is REFUSED at every effect entry point, because this
+// gateway cannot verify a capability.
+//
+// These three tests asserted the opposite: that an effect was bracketed by a
+// started and a terminal receipt, and that a replay was suppressed. That
+// behaviour is gone from THIS component by design — core's Verifier requires
+// the authorization revision, the replay store, the grant source and the seal
+// source, this server holds none of them, and a verifier fed invented state
+// PASSES rather than fails. So the capability is refused rather than admitted
+// on a weaker check, and the admission path that produced those receipts is
+// deleted rather than left unreachable.
+//
+// What the receipts themselves do is still covered, with a real verified
+// capability, by pkg/executionrecorder's own tests. What is covered HERE is the
+// property that matters for this server: every entry point refuses, and none
+// of them quietly proceeds.
 func TestRunGovernedReceiptRecordsCountsAndSuppressesReplay(t *testing.T) {
 	var calls int
 	runtime := &mockRuntimeClient{testFn: func(
@@ -974,44 +955,19 @@ func TestRunGovernedReceiptRecordsCountsAndSuppressesReplay(t *testing.T) {
 			Target: "./pkg/...", Race: true, Filters: []string{"TestReceipt"},
 		},
 	}
-
-	response, err := server.Test(fixture.ctx, request)
-	if err != nil {
-		t.Fatal(err)
+	_, err := server.Test(fixture.ctx, request)
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("governed execution must be refused Unimplemented, got %v", err)
 	}
-	if !response.GetSuccess() || calls != 1 {
-		t.Fatalf("first test response=%+v calls=%d", response, calls)
+	if !strings.Contains(status.Convert(err).Message(), "requires a verified Work Context") {
+		t.Fatalf("the refusal must say what is missing: %v", err)
 	}
-	pending, err := fixture.journal.Pending(t.Context(), 0, 10)
-	if err != nil || len(pending) != 2 {
-		t.Fatalf("pending=%d err=%v", len(pending), err)
+	pending, pendingErr := fixture.journal.Pending(t.Context(), 0, 10)
+	if pendingErr != nil {
+		t.Fatal(pendingErr)
 	}
-	terminal := pending[1].Attestation.GetReceipt()
-	if terminal.GetStage() != executionv1.ExecutionStage_EXECUTION_STAGE_SUCCEEDED ||
-		terminal.GetResult().GetPassedCount() != 3 ||
-		terminal.GetResult().GetSkippedCount() != 1 {
-		t.Fatalf("terminal test receipt=%+v", terminal)
-	}
-	if len(terminal.GetResources()) != 2 ||
-		terminal.GetResources()[0].GetKind() != "operation.input" ||
-		terminal.GetResources()[1].GetKind() != "test.selection" {
-		t.Fatalf("test resources=%+v", terminal.GetResources())
-	}
-
-	if _, err := server.Test(fixture.ctx, request); status.Code(err) != codes.AlreadyExists {
-		t.Fatalf("exact retry error=%v, want AlreadyExists", err)
-	}
-	if calls != 1 {
-		t.Fatalf("exact retry executed tests; calls=%d", calls)
-	}
-
-	substituted := proto.Clone(request).(*gatewayv1.TestRequest)
-	substituted.RuntimeRequest = &runtimev0.TestRequest{Target: "./other"}
-	if _, err := server.Test(fixture.ctx, substituted); status.Code(err) != codes.AlreadyExists {
-		t.Fatalf("selection substitution error=%v, want AlreadyExists", err)
-	}
-	if calls != 1 {
-		t.Fatalf("selection substitution executed tests; calls=%d", calls)
+	if len(pending) != 0 {
+		t.Fatalf("a refused execution must write no receipt, got %d", len(pending))
 	}
 }
 
@@ -1872,3 +1828,28 @@ func TestFormattableChangedPaths(t *testing.T) {
 func uint64Pointer(value uint64) *uint64 { return &value }
 
 func stringPointer(value string) *string { return &value }
+
+// conformanceCarrier is a well-formed Work Context carrier, as a caller would
+// present it on the wire.
+//
+// It comes from core's conformance fixtures because the carrier is a
+// deterministic protobuf encoding now: a hand-built JSON token is refused
+// before it reaches anything this package does. Nothing here verifies it —
+// this gateway cannot — so any valid fixture serves.
+func conformanceCarrier(t *testing.T) string {
+	t.Helper()
+	fixtures, err := coreworkcontext.Fixtures(time.Date(2026, time.July, 23, 19, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("core's conformance fixtures: %v", err)
+	}
+	// Only an ACCEPTED fixture: the kit deliberately includes rejected ones to
+	// exercise refusals, and one of those is not a carrier a caller would
+	// present.
+	for _, fixture := range fixtures {
+		if fixture.Outcome == coreworkcontext.OutcomeAccepted && fixture.Token != "" {
+			return fixture.Token
+		}
+	}
+	t.Fatal("core's conformance kit produced no accepted capability carrier")
+	return ""
+}

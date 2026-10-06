@@ -1827,7 +1827,6 @@ Flags:
 ```
       --dir string                          Working directory containing mind.yaml (default ".")
       --execution-authority-issuer string   Exact Work Context issuer
-      --execution-authority-jwks string     HTTPS JWKS URL for Work Context verification
       --execution-exporter stringArray      Installed execution-exporter agent specification (repeatable)
       --execution-state-dir string          Owner-only execution key and receipt state directory (defaults per workspace)
       --governed-execution                  Enable signed Work Context admission and durable receipts for supported ApplyEdit/Test effects
@@ -1906,7 +1905,6 @@ Flags:
 ```
       --dir string                          Working directory for gateway (requires --gateway) (default ".")
       --execution-authority-issuer string   Exact Work Context issuer
-      --execution-authority-jwks string     HTTPS JWKS URL for Work Context verification
       --execution-exporter stringArray      Installed execution-exporter agent specification (repeatable)
       --execution-state-dir string          Owner-only execution key and receipt state directory (defaults per workspace)
       --gateway                             Start the Mind Gateway gRPC server instead of running services
