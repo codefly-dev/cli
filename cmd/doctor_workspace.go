@@ -906,7 +906,7 @@ func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, 
 		for _, reference := range collapseReferencesByFault(unresolved.References) {
 			report.add(codeConfigurationReference, "workspace configuration "+reference.Group, "fail",
 				reference.message,
-				referenceRemediation(&reference.UnresolvedReference, dependencies, provided.Infos))
+				referenceRemediation(&reference.UnresolvedReference))
 		}
 	default:
 		report.add(codeConfigurationInvalid, "configuration references", "fail", err.Error(), "")
@@ -968,38 +968,24 @@ func (c *collapsedReference) describe() string {
 	return fmt.Sprintf("%s (and %d other service(s) receiving this group)", c.String(), c.consumers-1)
 }
 
-// referenceRemediation says what to do about one unresolved reference. The three
-// ways a reference fails need three different answers, and the facts tell them
-// apart without reading core's prose: a malformed reference names no producer at
-// all, a producer absent from the graph is not in the workspace, and a producer
-// that is there is missing the endpoint. One shared line telling every reader to
-// "compose the producer into the workspace" is wrong advice for two of the three.
+// referenceRemediation says what to do about one unresolved reference.
 //
-// The producer is derived from the configurations this command already holds,
-// by the position core reported: core v0.11.0 carries no text from a value in a
-// diagnostic, because a reference is text from a value and a value may be a
-// secret. Reading it here keeps the three answers apart without core echoing
-// anything, and without this command parsing core's prose — which would turn a
-// reworded reason into silently wrong advice.
-func referenceRemediation(reference *configurations.UnresolvedReference, dependencies *architecture.ServiceDependencies,
-	infos []*basev0.ConfigurationInformation) string {
-	producer := orchestration.ReferenceProducerAt(infos, reference.Group, reference.Key, reference.Position)
-	switch {
-	case producer == "":
-		return fmt.Sprintf("write %s as ${endpoint:<module>/<service>/<endpoint>} in the %q workspace configuration", reference.Key, reference.Group)
-	case !inWorkspace(dependencies, producer):
-		return fmt.Sprintf("compose the module providing %s into this workspace, or point %s at a service this workspace declares", producer, reference.Key)
-	default:
-		return fmt.Sprintf("declare the endpoint on %s, or point %s at an endpoint %s already declares", producer, reference.Key, producer)
-	}
-}
-
-func inWorkspace(dependencies *architecture.ServiceDependencies, unique string) bool {
-	if dependencies == nil {
-		return false
-	}
-	_, err := dependencies.ServiceFromUnique(unique)
-	return err == nil
+// It does NOT name the producer, and that is a deliberate loss. The producer in
+// a reference comes from the reference's tokens, which are text from the value,
+// and a value may be a secret — so deriving it to print it publishes part of
+// what the diagnostic is reporting on. An earlier version of this did exactly
+// that, correlating a locally-derived producer by core's reported position, and
+// the derivation was sound while the printing was not.
+//
+// What an operator gets instead is the group, the key and which reference of
+// that value failed, plus core's reason — enough to find the line in their own
+// file, where the producer is written in front of them. The three ways a
+// reference fails are told apart by core's typed reason rather than by
+// re-reading the value.
+func referenceRemediation(reference *configurations.UnresolvedReference) string {
+	return fmt.Sprintf(
+		"fix reference %d of %s in the %q workspace configuration: %s",
+		reference.Position, reference.Key, reference.Group, reference.Reason)
 }
 
 // checkDevAgents warns about every service in scope running an agent dev build

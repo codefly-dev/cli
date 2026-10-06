@@ -64,12 +64,20 @@ func CheckConfigurationReferences(
 	// as "not a service of this workspace". Whether a producer is in THIS run is
 	// not a plan-time question; this gate answers only whether the reference is
 	// legal at all.
-	declaredProblems := configurations.CheckEndpointReferences(provided.Infos, consumers, profile,
+	// checkedInfos is the set core counts reference POSITIONS over, and the
+	// only set a position may be indexed back into. The two uses below take
+	// this one local rather than reaching for provided.Infos separately: a
+	// position is an index into one value's reference list, so correlating it
+	// against a DIFFERENT set — a credential-narrowed one, say — indexes a
+	// different list and names the wrong producer. Binding them to one name is
+	// what stops that being reintroduced by an edit.
+	checkedInfos := provided.Infos
+	declaredProblems := configurations.CheckEndpointReferences(checkedInfos, consumers, profile,
 		func(unique string) (*resources.Service, bool) {
 			service, err := dependencies.ServiceFromUnique(unique)
 			return service, err == nil
 		})
-	err := withExcludedProducerReasons(declaredProblems, excludedProducers, provided.Infos)
+	err := withExcludedProducerReasons(declaredProblems, excludedProducers, checkedInfos)
 	lookup, lookupErr := workspaceProducerLookup(ctx, workspace)
 	if lookupErr != nil {
 		return errors.Join(err, lookupErr)
@@ -349,6 +357,20 @@ func withExcludedProducerReasons(err error, excludedProducers map[string]bool, i
 
 // ReferenceProducerAt is the <module>/<service> named by one value's Nth
 // endpoint reference, 1-based, in the order core counts them.
+//
+// infos MUST be the set the check that produced the position ran over. A
+// position is an index into one value's reference list, so a different set —
+// one whose value for the same group and key differs because a credential was
+// withheld — indexes a different list. A position past the end yields nothing
+// rather than a guess, which makes the mismatched-length case safe; the
+// same-length case is prevented by the caller binding both to one slice.
+//
+// It is used in exactly ONE place: naming the producer the OPERATOR excluded on
+// their own command line. That is the single permitted echo, and it is permitted
+// because what reaches the reader is the operator's own input, matched against
+// the derived value rather than printed from it. Nothing else derives a
+// producer to display — see cmd/doctor_workspace.go's referenceRemediation for
+// the reasoning.
 //
 // It reads the references the way core does — resources.ConfigurationValueEndpointReferences,
 // which covers a templated value's literals and not only its Value — so the

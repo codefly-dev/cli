@@ -834,7 +834,15 @@ func (world *World) refuseDroppedWorkspaceConfigurationValues(
 // be written off as a legitimate drop and hide the real fault.
 func (world *World) judgeDroppedValue(ctx context.Context, consumer, qualified string, references []string) error {
 	inRun := world.producerInRun()
-	for _, reference := range references {
+	total := len(references)
+	for index, reference := range references {
+		// A reference is named by its POSITION in the value, never by its text.
+		// A reference is text FROM a value and a value may be a secret, so a
+		// diagnostic that reconstructs one — even one whose every token
+		// validated — publishes part of the value it is reporting on. The
+		// group, the key and which reference of that value it is locate it in
+		// the operator's own file, which is where the text already is.
+		position := fmt.Sprintf("reference %d of %d", index+1, total)
 		info, err := resources.ParseEndpoint(reference)
 		if err != nil {
 			// Unreachable, and an error rather than a skip for that reason.
@@ -843,8 +851,8 @@ func (world *World) judgeDroppedValue(ctx context.Context, consumer, qualified s
 			// set, and core calls a reference it cannot parse malformed. If
 			// that ever stops being true, a reference nothing could read must
 			// not become a value nothing delivers in silence.
-			return fmt.Errorf("the workspace configuration value %s carries the reference ${endpoint:%s}, which cannot be read, and the value is missing for %s: %w",
-				qualified, reference, consumer, err)
+			return fmt.Errorf("the workspace configuration value %s carries a reference that cannot be read (%s), and the value is missing for %s: %w",
+				qualified, position, consumer, err)
 		}
 		producer := info.Module + "/" + info.Service
 		if world.deploys() {
@@ -857,11 +865,11 @@ func (world *World) judgeDroppedValue(ctx context.Context, consumer, qualified s
 				// excusing it is only correct while another guard refuses it,
 				// and the reason it is unreachable is precisely that that guard
 				// is here rather than only at the plan gate.
-				return fmt.Errorf("the workspace configuration value %s is missing for %s: it references %s, which is not a service of this workspace, and the reference check did not refuse it — a render must not emit a manifest whose value is silently absent. References: %s",
-					qualified, consumer, producer, endpointReferenceList(references))
+				return fmt.Errorf("the workspace configuration value %s is missing for %s: its %s names a producer that is not a service of this workspace, and the reference check did not refuse it — a render must not emit a manifest whose value is silently absent",
+					qualified, consumer, position)
 			}
-			return fmt.Errorf("the workspace configuration value %s was dropped for %s: it references %s, a service of this workspace whose deployed address is a function of its identity and namespace, so the value did not survive resolution for a reason the render cannot excuse — the manifest would simply lack it, which stays invisible until a client dials it. References: %s",
-				qualified, consumer, producer, endpointReferenceList(references))
+			return fmt.Errorf("the workspace configuration value %s was dropped for %s: its %s names a service of this workspace whose deployed address is a function of its identity and namespace, so the value did not survive resolution for a reason the render cannot excuse — the manifest would simply lack it, which stays invisible until a client dials it",
+				qualified, consumer, position)
 		}
 		if inRun == nil {
 			// Nothing is provably in the run, so no missing value is provably a
@@ -869,11 +877,11 @@ func (world *World) judgeDroppedValue(ctx context.Context, consumer, qualified s
 			continue
 		}
 		if !inRun(producer) {
-			warnDroppedWorkspaceConfigurationReference(ctx, consumer, producer, qualified, []string{reference},
+			warnDroppedWorkspaceConfigurationReference(ctx, consumer, qualified, position,
 				"its producer is not part of this run (excluded, or a run of fewer services than the workspace), so no local address exists for it")
 			continue
 		}
-		warnDroppedWorkspaceConfigurationReference(ctx, consumer, producer, qualified, []string{reference},
+		warnDroppedWorkspaceConfigurationReference(ctx, consumer, qualified, position,
 			"its producer is part of this run and no address could be derived for it yet (it recorded no endpoint, or --temporary-ports allocates its address at initialization)")
 	}
 	return nil
@@ -895,23 +903,17 @@ func (world *World) workspaceHasProducer(ctx context.Context, producer string) b
 // warnDroppedWorkspaceConfigurationReference says, at WARN, that a value is
 // about to be missing from what a service receives. The level is the point: core
 // drops the same value at DEBUG, and a configuration value absent without a word
-// is the fault cli#882 exists to remove. The consumer, the producer and the
-// reference are all named, so the line is actionable on its own.
-func warnDroppedWorkspaceConfigurationReference(ctx context.Context, consumer, producer, qualified string, references []string, because string) {
+// is the fault cli#882 exists to remove.
+//
+// It names the consumer, the value and WHICH reference of it — never the
+// reference's text. A log line is the easiest place for a value to leak: it is
+// written whether or not anyone is watching, kept, and shipped. The group, the
+// key and the position locate the reference in the operator's own file.
+func warnDroppedWorkspaceConfigurationReference(ctx context.Context, consumer, qualified, position, because string) {
 	wool.Get(ctx).In("World.refuseDroppedWorkspaceConfigurationValues").Warn(
 		"a workspace configuration value is missing for this service: "+because,
-		wool.Field("consumer", consumer), wool.Field("producer", producer),
-		wool.Field("value", qualified), wool.Field("references", endpointReferenceList(references)))
-}
-
-// endpointReferenceList writes references the way they appear in a
-// configuration file, so a diagnostic can be grepped for in the source.
-func endpointReferenceList(references []string) string {
-	out := make([]string, 0, len(references))
-	for _, reference := range references {
-		out = append(out, "${endpoint:"+reference+"}")
-	}
-	return strings.Join(out, ", ")
+		wool.Field("consumer", consumer),
+		wool.Field("value", qualified), wool.Field("reference", position))
 }
 
 // consumerLabel names the service a diagnostic is about. resources.WithUnique

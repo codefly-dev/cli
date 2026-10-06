@@ -526,14 +526,20 @@ func (world *World) referencedProducerMappings(
 		mappings, err := world.producerNetworkMappings(ctx, producer)
 		if err != nil {
 			if !world.deploys() && !fatal[reference] {
+				// The producer is named, the REFERENCE is not. A producer here
+				// is a <module>/<service> this package resolved against the
+				// workspace's own manifest, so naming it publishes nothing
+				// from the value; the reference's text is the value, and a log
+				// line is the easiest place for a value to leak — written
+				// whether or not anyone is watching, kept, and shipped.
 				wool.Get(ctx).In("World.referencedProducerMappings").Warn(
 					"a workspace configuration value will be missing for this service: the composition root's group references a producer whose address cannot be derived yet, and a root group's reference orders nothing",
 					wool.Field("consumer", consumerLabel(service)), wool.Field("producer", producer),
-					wool.Field("reference", "${endpoint:"+reference+"}"), wool.Field("reason", err.Error()))
+					wool.Field("reason", err.Error()))
 				continue
 			}
-			return nil, fmt.Errorf("cannot derive the addresses of %s, named by the workspace configuration reference ${endpoint:%s} that %s declares: %w",
-				producer, reference, consumerLabel(service), err)
+			return nil, fmt.Errorf("cannot derive the addresses of %s, which a workspace configuration reference that %s declares names: %w",
+				producer, consumerLabel(service), err)
 		}
 		visible, err := world.exportableTo(ctx, service, mappings)
 		if err != nil {

@@ -206,8 +206,11 @@ func TestARenderRefusesALostRootValueWhoseProducerIsOutsideItsRunSet(t *testing.
 	_, err := builder.workspaceConfigurations(ctx, nil)
 	require.Error(t, err, "a render must refuse a lost root value, run-set membership notwithstanding")
 	require.Contains(t, err.Error(), "work-context/authority-endpoint")
-	require.Contains(t, err.Error(), "platform/authority")
+	require.Contains(t, err.Error(), "reference 1 of 1", "located by position")
 	require.Contains(t, err.Error(), "a service of this workspace")
+	// The canary: a reference is text from a value and a value may be a
+	// secret, so no diagnostic reconstructs one.
+	require.NotContains(t, err.Error(), "${endpoint:")
 }
 
 // A producer the workspace does not have is refused outright, before the

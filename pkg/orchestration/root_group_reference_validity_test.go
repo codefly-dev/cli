@@ -260,9 +260,10 @@ func TestARenderRefusesARootReferenceNoAddressCanBeDerivedFor(t *testing.T) {
 
 	_, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewContainerNetworkAccess())
 	require.Error(t, err, "a render must not emit a manifest with a root group's value silently missing")
-	require.Contains(t, err.Error(), "${endpoint:platform/authority/admin}")
 	require.Contains(t, err.Error(), "work-context/authority-endpoint", "the refusal must name the value that went missing")
+	require.Contains(t, err.Error(), "reference 1 of 1", "and which reference of it")
 	require.Contains(t, err.Error(), "a service of this workspace")
+	require.NotContains(t, err.Error(), "${endpoint:", "a diagnostic must not reconstruct the reference")
 }
 
 // The same unresolved reference under `codefly run` is not refused — it is
