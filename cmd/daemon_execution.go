@@ -106,7 +106,7 @@ func addGatewayExecutionFlags(command *cobra.Command) {
 		&gatewayExecution.enabled,
 		"governed-execution",
 		false,
-		"Enable signed Work Context admission and durable receipts for supported ApplyEdit/Test effects",
+		"Arm durable execution receipt state and its recovery. A governed request is still REFUSED: this process holds none of the sources needed to verify a Work Context",
 	)
 	command.Flags().StringVar(
 		&gatewayExecution.authorityIssuer,

@@ -40,6 +40,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/control"
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/executionrecorder"
+	"github.com/codefly-dev/cli/pkg/gateway/effect"
 	codecore "github.com/codefly-dev/core/code"
 	"github.com/codefly-dev/core/failures"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -347,6 +348,36 @@ func (s *Server) requireConfig() error {
 }
 
 // Serve starts the gRPC server and blocks until stopped.
+// serverOptions is the served gRPC configuration, in one place.
+//
+// It is a method rather than a literal inside Serve because the effect
+// boundary is only worth anything if it is in the chain a real client goes
+// through: a test that assembles its own chain proves its own chain. See
+// TestTheServedChainRefusesAGovernedEffect.
+func (s *Server) serverOptions() []grpc.ServerOption {
+	options := grpcconfig.TypedMessageServerOptions()
+	options = append(options,
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+		// Authenticate, then admit. The effect boundary runs for EVERY method,
+		// unary and streaming, which is the whole point: a governed effect is
+		// refused before its handler, rather than at the three call sites that
+		// remembered to ask.
+		grpc.ChainUnaryInterceptor(
+			gatewayAuthUnaryInterceptor(s.cfg.Token),
+			effect.UnaryInterceptor(),
+			rpcLogInterceptor(),
+		),
+		grpc.ChainStreamInterceptor(
+			gatewayAuthStreamInterceptor(s.cfg.Token),
+			effect.StreamInterceptor(),
+		),
+	)
+	if s.tlsConfig != nil {
+		options = append(options, grpc.Creds(credentials.NewTLS(s.tlsConfig.Clone())))
+	}
+	return options
+}
+
 func (s *Server) Serve(ctx context.Context) error {
 	w := wool.Get(ctx).In("gateway.Serve")
 	lifecycleContext, cancelLifecycle := context.WithCancel(ctx)
@@ -384,16 +415,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
 
-	serverOptions := grpcconfig.TypedMessageServerOptions()
-	serverOptions = append(serverOptions,
-		grpc.StatsHandler(otelgrpc.NewServerHandler()),
-		grpc.ChainUnaryInterceptor(gatewayAuthUnaryInterceptor(s.cfg.Token), rpcLogInterceptor()),
-		grpc.StreamInterceptor(gatewayAuthStreamInterceptor(s.cfg.Token)),
-	)
-	if s.tlsConfig != nil {
-		serverOptions = append(serverOptions, grpc.Creds(credentials.NewTLS(s.tlsConfig.Clone())))
-	}
-	s.grpcSrv = grpc.NewServer(serverOptions...)
+	s.grpcSrv = grpc.NewServer(s.serverOptions()...)
 	gatewayv1.RegisterGatewayServer(s.grpcSrv, s)
 
 	if err := writePortFile(s.cfg.Port); err != nil {
@@ -2069,7 +2091,7 @@ func (s *Server) headRevision(ctx context.Context) string {
 // "no capability" as a fault, and must not treat "a capability that does not
 // parse" as absence either.
 func validateOptionalExecutionContext(ctx context.Context) error {
-	if !carriesExecutionContext(ctx) {
+	if !effect.Carried(ctx) {
 		return nil
 	}
 	if _, err := workcontextgrpc.GRPCExecutionContextFromIncoming(ctx); err != nil {
@@ -2078,21 +2100,19 @@ func validateOptionalExecutionContext(ctx context.Context) error {
 	return nil
 }
 
-// carriesExecutionContext reports whether the request presents a Work Context
-// carrier at all, read from the one metadata key sdk-go reads it from.
-func carriesExecutionContext(ctx context.Context) bool {
-	values, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return false
-	}
-	return len(values.Get(workcontext.HeaderName)) > 0
-}
-
+// beginGovernedExecution brackets an effect with a receipt when the request is
+// governed, and reports whether it was.
+//
+// The transport boundary (pkg/gateway/effect) refuses a governed effect before
+// any handler runs, so in a served gateway this function sees only ungoverned
+// requests. It stays, and keeps refusing through the SAME function, because an
+// in-process caller reaches a method without passing an interceptor: the rule
+// must not be reachable in one path and absent in another.
 func (s *Server) beginGovernedExecution(
 	ctx context.Context,
 	input executionrecorder.BeginInput,
 ) (*executionrecorder.Attempt, bool, error) {
-	if !carriesExecutionContext(ctx) {
+	if !effect.Carried(ctx) {
 		return nil, false, nil
 	}
 	if _, err := workcontextgrpc.GRPCExecutionContextFromIncoming(ctx); err != nil {
@@ -2104,23 +2124,11 @@ func (s *Server) beginGovernedExecution(
 			"Codefly execution authority was supplied but governed execution is not configured",
 		)
 	}
-	// REFUSED, not admitted. This server holds none of the four live sources
-	// core's Verifier requires — the authorization revision, the replay store,
-	// the grant source, the seal source — so it cannot turn the presented
-	// capability into a *workcontext.Verified, and it will not pretend to. A
-	// verifier fed invented state does not fail, it PASSES, which is precisely
-	// what the seal check exists to prevent.
-	//
-	// The admission path that used to follow is deleted rather than left
-	// unreachable behind this: a compatibility path nobody takes is still a
-	// path somebody can re-enable. Governed execution becomes servable when the
-	// component holding those sources verifies the capability and hands the
-	// recorder a *Verified — which its Authority already takes, and refuses
-	// when nil.
-	return nil, true, status.Error(
-		codes.Unimplemented,
-		"governed execution requires a verified Work Context: this gateway does not hold the authorization-revision, replay, grant and seal sources needed to verify one, and will not admit an unverified capability",
-	)
+	// REFUSED, not admitted — through effect.RefuseGoverned, which is the one
+	// refusal and carries the reasoning. The admission path that used to
+	// follow is deleted rather than left unreachable behind it: a
+	// compatibility path nobody takes is still a path somebody can re-enable.
+	return nil, true, effect.RefuseGoverned()
 }
 
 func finishGovernedExecution(

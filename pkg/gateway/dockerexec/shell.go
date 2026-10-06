@@ -6,12 +6,18 @@ import (
 	"strings"
 
 	codeflygateway "github.com/codefly-dev/cli/pkg/gateway"
+	"github.com/codefly-dev/cli/pkg/gateway/effect"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 func (g *Gateway) RunCommand(ctx context.Context, req *gatewayv1.RunCommandRequest) (*gatewayv1.RunCommandResponse, error) {
+	// Arbitrary execution inside the container: the one method here where a
+	// missing boundary is worth most to an attacker.
+	if err := effect.Admit(ctx, "RunCommand"); err != nil {
+		return nil, err
+	}
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "run command request is required")
 	}
