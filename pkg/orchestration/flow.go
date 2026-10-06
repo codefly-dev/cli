@@ -415,11 +415,6 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	if err := environments.ValidateManagedServices(ctx, workspace); err != nil {
 		return nil, w.Wrap(err)
 	}
-	graphWorkspace, err := runModuleClosure(ctx, workspace, options.moduleClosureSeeds)
-	if err != nil {
-		return nil, w.Wrap(err)
-	}
-
 	// Get dependency graph. A service reaching a producer only through a
 	// workspace configuration group the composition root writes is ordered
 	// after it, as for a declared dependency.
@@ -448,6 +443,18 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 			wool.ErrField(providedErr))
 	}
 	configurationReferences := configurationReferenceOptionFrom(providedWorkspaceConfigurations)
+	var closureOptions []resources.ModuleClosureOption
+	if providedWorkspaceConfigurations != nil {
+		closureOptions = append(closureOptions, resources.WithModuleConfigurationReferences(
+			configurations.EndpointProducers(providedWorkspaceConfigurations.Infos)))
+	}
+	// Narrow only after selecting this invocation's references. A declared
+	// configuration group can be the only route to a producer's module; once
+	// discarded, the later service-graph pass cannot recover that producer.
+	graphWorkspace, err := runModuleClosure(ctx, workspace, options.moduleClosureSeeds, closureOptions...)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
 	var graphOptions []architecture.DependencyOption
 	if configurationReferences != nil {
 		graphOptions = append(graphOptions, configurationReferences)

@@ -111,6 +111,14 @@ absent from the graph, and a declaration reaching a module the workspace does no
 pin is refused up front, naming the service that asked, instead of coming up with
 no endpoints.
 
+The same invocation-selected configuration snapshot feeds Core's module closure
+and service graph. A declared configuration group can be the only dependency on
+a producer; its pinned module is retained before narrowing, and its own declared
+groups and service dependencies are followed transitively. No additional run
+roots are needed. Root-only groups still do not expand the run. Service exclusions
+and configuration preflight remain authoritative: retaining a module neither
+starts an excluded service nor grants access to a private endpoint.
+
 The closure is also where a run's endpoint visibility is judged, through the same
 core implementation `Workspace.ValidateServiceDependencies` uses, so a graph that
 runs is a graph that validates. The verdict is scoped to the closure: a violation

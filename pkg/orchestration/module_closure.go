@@ -50,12 +50,12 @@ func WithRunModuleClosure(seeds ...string) FlowOption {
 // The narrowed workspace serves the dependency graph alone. Workspace
 // configurations and run profiles are declared by the composition and stay
 // resolved against all of it.
-func runModuleClosure(ctx context.Context, workspace *resources.Workspace, seeds []string) (*resources.Workspace, error) {
+func runModuleClosure(ctx context.Context, workspace *resources.Workspace, seeds []string, opts ...resources.ModuleClosureOption) (*resources.Workspace, error) {
 	w := wool.Get(ctx).In("orchestration.runModuleClosure", wool.NameField(workspace.Name))
 	if len(seeds) == 0 {
 		return workspace, nil
 	}
-	closure, err := workspace.ResolveModuleClosure(ctx, resources.StageRun, seeds)
+	closure, err := workspace.ResolveModuleClosure(ctx, resources.StageRun, seeds, opts...)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
