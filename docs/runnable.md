@@ -206,3 +206,17 @@ CLI starts it.
 
 MCP create/build tools are deferred until the installation and execution surface
 is qualified. The CLI commands are available for unattended authoring now.
+
+### Tool exposure survives preparation
+
+An explicitly marked Core operation may also declare `tool` metadata: a name,
+description and `EFFECT_READ_ONLY` or `EFFECT_MUTATION`. `generate runnables`
+preserves it in `operation.json`; `generate runnable-bindings` carries it into
+`policy.tool`, using Core's validator. An omitted exposure stays omitted. An
+empty, unspecified or unknown effect is refused, never inferred from a method
+name or HTTP verb. Input and output schemas remain the existing derived contract.
+
+This is declaration delivery, not viewer discovery or an authorization grant.
+The host must authenticate the publisher and apply installation/exposure and
+current caller permissions. Existing operations become tools only when their
+owners explicitly expose them and the full derived tree is regenerated.

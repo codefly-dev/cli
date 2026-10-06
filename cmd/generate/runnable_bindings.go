@@ -269,6 +269,17 @@ func preparedPolicy(declared *runnablespkg.Operation) (*runnablev0.Operation, er
 		return nil, fmt.Errorf("completion %q is not a completion mode; %s and %s are the two",
 			declared.Completion, basev0.RunnableExecution_COMPLETION_CALL, basev0.RunnableExecution_COMPLETION_SUBMIT)
 	}
+	var tool *runnablev0.ToolExposure
+	if declared.Tool != nil {
+		effect, ok := runnablev0.ToolExposure_Effect_value[declared.Tool.Effect]
+		if !ok {
+			return nil, fmt.Errorf("unknown tool effect %q", declared.Tool.Effect)
+		}
+		tool = &runnablev0.ToolExposure{Name: declared.Tool.Name, Description: declared.Tool.Description, Effect: runnablev0.ToolExposure_Effect(effect)}
+		if err := corerunnable.ValidateToolExposure(tool); err != nil {
+			return nil, err
+		}
+	}
 	return &runnablev0.Operation{
 		AttemptTimeout: durationpb.New(durations["attempt_timeout"]),
 		TotalTimeout:   durationpb.New(durations["total_timeout"]),
@@ -282,6 +293,7 @@ func preparedPolicy(declared *runnablespkg.Operation) (*runnablev0.Operation, er
 		MaxInputBytes:  declared.MaxInputBytes,
 		MaxOutputBytes: declared.MaxOutputBytes,
 		Completion:     basev0.RunnableExecution_Completion(completion),
+		Tool:           tool,
 	}, nil
 }
 

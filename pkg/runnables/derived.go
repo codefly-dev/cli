@@ -158,6 +158,16 @@ type Operation struct {
 	// derived before this field existed therefore fails to prepare, by name,
 	// instead of being prepared as something the owner never declared.
 	Completion string `json:"completion"`
+	// Tool is explicit owner exposure. Nil never enables discovery.
+	Tool *ToolExposure `json:"tool,omitempty"`
+}
+
+// ToolExposure preserves Core's tool metadata in the derived policy document.
+// Input and output remain the derived package's contract, never repeated here.
+type ToolExposure struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Effect      string `json:"effect"`
 }
 
 // Scope is one authority a binding is minted for.
