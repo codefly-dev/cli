@@ -144,7 +144,7 @@ environments:
 name: infra
 `,
 		filepath.Join("modules", "infra", "deployment", "kustomize", "base", "kustomization.yaml"):             "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.yaml\n",
-		filepath.Join("modules", "infra", "deployment", "kustomize", "base", "deployment.yaml"):                pinnedDeployment,
+		filepath.Join("modules", "infra", "deployment", "kustomize", "base", "deployment.yaml"):                pinnedConfigMap,
 		filepath.Join("modules", "infra", "deployment", "kustomize", "overlays", "prod", "kustomization.yaml"): "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - ../../base\n",
 	}
 	for rel, content := range files {

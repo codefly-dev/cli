@@ -81,15 +81,7 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 	if gitopsPath != "" {
 		ownedPath = filepath.ToSlash(filepath.Join(gitopsPath, ownedPath))
 	}
-	options := &RenderOptions{
-		Destination: destination,
-		Module:      req.Name,
-		Environment: env.Name,
-		Namespace:   namespace,
-		AppProject:  req.AppProject,
-		Promotable:  true,
-		OwnedPath:   ownedPath,
-	}
+	options := solutionRenderOptions(req, env, destination, ownedPath, namespace)
 	return RenderOwnedTree(ctx, options, func(ctx context.Context, stage string) error {
 		executor, release, err := connectSolutionExecutor(ctx, req.Workspace.Dir(), req.Agent)
 		if err != nil {
@@ -272,6 +264,28 @@ func solutionDiagnostics(phase, name string, diagnostics []*basev0.FailureDiagno
 // rather than the builder's Kubernetes deployment evidence, so the attestation is
 // the CLI's own render-time validateTree(Promotable) pass — server-side
 // validation stays NOT_RUN because the CLI runs only the static ruleset.
+// solutionRenderOptions assembles the options a solution renders under. It is its
+// own function so that the posture a solution render is held to is covered by a
+// test of this entry point, rather than only by whichever end-to-end test happens
+// to drive a solution executor.
+func solutionRenderOptions(
+	req *SolutionRenderRequest,
+	env *environments.Environment,
+	destination, ownedPath, namespace string,
+) *RenderOptions {
+	return &RenderOptions{
+		Destination:   destination,
+		Module:        req.Name,
+		Environment:   env.Name,
+		Namespace:     namespace,
+		AppProject:    req.AppProject,
+		Promotable:    true,
+		OwnedPath:     ownedPath,
+		Posture:       env.Posture,
+		DeploysToCell: env.DeploysToCell(),
+	}
+}
+
 func solutionRenderAttestation() *InventoryKubernetesOutput {
 	return &InventoryKubernetesOutput{
 		Kind: builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String(),

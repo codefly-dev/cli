@@ -25,6 +25,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/posture"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -110,6 +111,20 @@ type DevResult struct {
 	// including the render inventory.
 	Changed []string
 	Entry   InventoryDevDeployment
+	// PostureAllowances are the environment's declared exceptions to the
+	// deployed security posture, one line each, printed on every run.
+	PostureAllowances []string
+}
+
+// sortedServiceUniques orders a service map, so a refusal names the same service
+// every run.
+func sortedServiceUniques(services map[string]*resources.Service) []string {
+	names := make([]string, 0, len(services))
+	for name := range services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // buildServiceImage is the build/push boundary of a dev deployment. It is a
@@ -143,8 +158,50 @@ func buildRenderedServiceImages(
 	}
 	defer os.RemoveAll(scratch)
 	destinations := serviceRenderDestinations(scratch)
-	if err := renderServiceFlow(ctx, workspace, module, service, env, renderBuild{standAlone: true, rebuild: rebuild}, sink, destinations, nil, nil, nil, nil, nil); err != nil {
+	// The contracts of every service this build renders — the root and the graph it
+	// stages — are what the posture is decided by, so they are collected from the
+	// flow rather than assumed to be the root's alone.
+	contracts := posture.Contracts{}
+	// A declaration that does not parse is a refusal, not an absent declaration:
+	// swallowing the error here removed the contract, and the absent-declaration path
+	// then admitted the workload. The error is kept and returned below.
+	var contractErr error
+	recordServices := func(services map[string]*resources.Service) {
+		for _, name := range sortedServiceUniques(services) {
+			contract, err := posture.ContractFromService(module.Name, services[name])
+			if err != nil {
+				if contractErr == nil {
+					contractErr = err
+				}
+				continue
+			}
+			contracts.Add(&contract)
+		}
+	}
+	// serviceFlow, not renderServiceFlow: the dev build drives a service's agents
+	// through the same seam the module and service renders do, so a test can stand
+	// in-process agents in for it here too.
+	if err := serviceFlow(ctx, workspace, module, service, env, renderBuild{standAlone: true, rebuild: rebuild}, sink, destinations, nil, recordServices, nil, nil, nil); err != nil {
 		return nil, fmt.Errorf("build service %s: %w", service.Name, err)
+	}
+	if contractErr != nil {
+		return nil, contractErr
+	}
+	// A dev deployment ships this render's image into a cell, so this render is
+	// held to the environment's deployed security posture exactly as a full
+	// `deploy gitops render` is, through the same effective-manifest pipeline: the
+	// requested environment's overlay, built with Kustomize, with wrapper lists
+	// expanded and references resolved. Reading the staged files instead would
+	// judge a tree by what its authors wrote rather than by what the cell applies.
+	if env.DeploysToCell() {
+		documents, treeErr := posture.SelectManifests(scratch, env.Name)
+		if treeErr != nil {
+			return nil, treeErr
+		}
+		subject := posture.Subject{Module: module.Name, Service: service.Name}
+		if postureErr := posture.ValidateDocuments(documents, subject, contracts, env.Posture); postureErr != nil {
+			return nil, postureErr
+		}
 	}
 	return digestImages(destinations(module, service))
 }
@@ -221,7 +278,10 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 		relative = append(relative, filepath.ToSlash(rel))
 	}
 	entry = inventory.Dev[devEntryIndex(inventory.Dev, request.Service)]
-	return DevResult{Root: root, Changed: relative, Entry: entry}, nil
+	return DevResult{
+		Root: root, Changed: relative, Entry: entry,
+		PostureAllowances: request.Environment.Posture.Report(),
+	}, nil
 }
 
 // moduleRenderDestination is where a full module render writes its owned tree.

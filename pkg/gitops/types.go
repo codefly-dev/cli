@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/posture"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 )
@@ -213,6 +214,21 @@ type RenderOptions struct {
 	ModulePath           string
 	Units                []InventoryUnit
 	Package              *InventoryPackage
+	// Posture is the security posture the environment declares. A render that
+	// produces manifests sets it from the environment it renders for; a tree
+	// re-validation reconstructed from an inventory leaves it nil, and the
+	// posture pass it gates does not run (see enforceDeployedPosture).
+	Posture *posture.Declaration
+	// Contracts are what the services of this render declared about themselves —
+	// their storage mode and their endpoints — which is what the deployed posture
+	// is decided by (pkg/posture). A unit with no contract has declared nothing.
+	Contracts posture.Contracts
+	// DeploysToCell is the environment's own classification: whether this render
+	// targets a cell rather than the machine running the command
+	// (environments.Environment.DeploysToCell). It is what subjects a render to
+	// the deployed posture — not the output profile, which a delivery path may
+	// request for its own reasons.
+	DeploysToCell bool
 }
 
 func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKubernetesOutput {
@@ -251,6 +267,10 @@ type RenderResult struct {
 	// ClearedDev are the dev deployments the tree this render replaced carried.
 	// A full render re-derives every image, so they no longer run.
 	ClearedDev []InventoryDevDeployment `json:"clearedDev,omitempty"`
+	// PostureAllowances are the environment's declared exceptions to the
+	// deployed security posture, one line each. A deployed render prints them on
+	// every run, so an exception can never become a silent skip.
+	PostureAllowances []string `json:"postureAllowances,omitempty"`
 }
 
 type PublishRequest struct {

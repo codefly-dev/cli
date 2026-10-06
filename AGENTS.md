@@ -136,6 +136,14 @@ implemented. Don't rely on a list kept here — it drifts the moment a command l
 - **pkg/agentkinds/** — the one owner of the short agent kind a user types (`runnable`)
   ↔ the kind core registers (`codefly:runnable`). Used by `codefly agent install --kind`
   and the MCP `list_agents`/`agent_info` schemas so the convention has a single copy.
+- **pkg/posture/** — the deployed security posture: the one guard every restricted
+  render of a cell's manifests passes through. It owns the manifest selector every
+  path shares (`SelectManifests`), the service contract reader
+  (`ContractFromService`: `spec.deployment.storage` and the service's declared
+  endpoints), the three rules, the facts an environment asserts about its platform,
+  and the reviewed allowances that except one service. Written against declarations
+  and manifest shape, never against a product's names or a container's command line.
+  See [docs/commands.md](docs/commands.md#the-deployed-security-posture).
 - **pkg/runnables/** — the one projection of a `resources.Runnable` that every listing
   surface emits (`list runnables --json`, `show runnable --json`, MCP `list_runnables`).
 - **pkg/cli/**, **pkg/builder/**, **pkg/deployments/**, **pkg/generators/**, **pkg/imports/**,
@@ -182,7 +190,25 @@ relative paths.
 - **The orchestration package is the most critical code.** Changes there affect every
   `codefly run`. Test thoroughly.
 - **Configs flow as environment variables, not files.** Connection strings derived from network
-  mappings are injected as `CODEFLY__SERVICE_...` env vars.
+  mappings are injected as `CODEFLY__SERVICE_...` env vars. A render of restricted
+  manifests for an environment that deploys to a cell enforces this through three
+  invariants: every workload's service DECLARES its storage mode, its transport and the
+  scratch volumes it renders (absence is refused by name); the rendered configuration
+  must AGREE with those declarations (a contradiction refuses, naming both sides); and
+  anything the guard cannot read — a malformed manifest, an unresolved reference, a
+  Kustomization cycle — is refused rather than read as conforming. Each refusal
+  names the service, the rule and the field; an environment-level allowance is the
+  only exception, printed on every deployed run including `--dry-run`.
+- **The posture guard reads declarations and manifest shape, never a container's env
+  or command line.** A render cannot prove from those what a process does, and the
+  attempt both missed ordinary spellings and refused correct configurations. What only
+  the service can know, the service declares; the render makes the declaration
+  mandatory and the exception visible. Those declarations are not in the fleet yet,
+  so the guard is not mergeable until they land. The runtime half — a store refusing
+  to start ephemeral in a deployed context — belongs to the store and the cell's
+  preflight. See
+  [docs/commands.md](docs/commands.md#the-deployed-security-posture) for exactly what
+  each rule does and does not establish.
 - **Daemon state lives in `~/.codefly/`** (override with `CODEFLY_HOME`). PID file, logs, agent
   binaries all live there.
 - **MCP exposes codefly capabilities to AI agents.** When adding a CLI feature, consider whether

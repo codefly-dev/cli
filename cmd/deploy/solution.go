@@ -69,6 +69,7 @@ var SolutionCmd = &cobra.Command{
 		}
 		cli.Info("Rendered %s", result.Path)
 		cli.Info("Digest %s", result.Inventory.Digest)
+		printPostureAllowances(result.PostureAllowances)
 		printSizingReport(result.Sizing)
 		printElidedNamespaces(result.ElidedNamespaces)
 		cli.Header(1, "Solution render done!")

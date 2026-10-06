@@ -17,6 +17,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/codefly-dev/cli/pkg/posture"
 	coreservices "github.com/codefly-dev/core/agents/services"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -98,6 +99,11 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err != nil {
 		return RenderResult{}, err
 	}
+	// postureErr, not err: the lint gate's shadow check refuses a nested err here
+	// while the outer one is still read below.
+	if postureErr := enforceDeployedPosture(owned, opts); postureErr != nil {
+		return RenderResult{}, postureErr
+	}
 	sizing := computeSizing(manifests)
 	inventory, err := buildInventory(owned, opts)
 	if err != nil {
@@ -122,7 +128,60 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err := replaceOwnedTree(owned, destination); err != nil {
 		return RenderResult{}, err
 	}
-	return RenderResult{Path: destination, Inventory: inventory, Sizing: sizing, ElidedNamespaces: elided, ClearedDev: cleared}, nil
+	return RenderResult{
+		Path: destination, Inventory: inventory, Sizing: sizing,
+		ElidedNamespaces: elided, ClearedDev: cleared,
+		PostureAllowances: postureAllowances(opts),
+	}, nil
+}
+
+// enforceDeployedPosture holds a deployed render to the security posture of the
+// environment it renders for: a service that carries its own TLS material for
+// in-cell peers on a mesh-protected environment, mounts anything beyond the
+// standard scratch volume, or runs a development/in-memory store (pkg/posture).
+//
+// It reads the staged tree through posture.SelectManifests — the one selector
+// every render path uses, so no two paths can disagree about what they check —
+// and holds it to what the services of this render declared about themselves.
+// Only a render whose manifests are restricted AND whose environment deploys to a
+// cell is held to it.
+//
+// This is the render's own pass, not the tree re-validation publish and observe
+// perform: those reconstruct their options from a render inventory, which carries
+// the environment's name but neither its posture nor the service declarations, and
+// the tree they check is already pinned byte-for-byte to the one validated here by
+// its inventory digest.
+func enforceDeployedPosture(root string, opts *RenderOptions) error {
+	if !opts.deployedRender() {
+		return nil
+	}
+	documents, err := posture.SelectManifests(root, opts.Environment)
+	if err != nil {
+		return err
+	}
+	return posture.ValidateDocuments(
+		documents,
+		posture.Subject{Module: opts.Module, Service: opts.Unit},
+		opts.Contracts,
+		opts.Posture,
+	)
+}
+
+// deployedRender reports whether this render must satisfy the deployed posture:
+// its manifests are restricted AND the environment they are rendered for deploys
+// to a cell. Both halves are the point — a restricted profile is also what a
+// local apply of a promotable tree requests, and the posture is about cells.
+func (opts *RenderOptions) deployedRender() bool {
+	return opts.Promotable && opts.DeploysToCell
+}
+
+// postureAllowances is the report a deployed render prints on every run: one line
+// per declared exception, whether or not this render needed it.
+func postureAllowances(opts *RenderOptions) []string {
+	if !opts.deployedRender() {
+		return nil
+	}
+	return opts.Posture.Report()
 }
 
 func LoadInventory(root string) (Inventory, error) {

@@ -659,6 +659,146 @@ Pass `--allow-unresolved-contracts` to downgrade a violation caused by the
 exposing module not being deployed yet to a skipped check, for bootstrap
 ordering — every other violation still blocks publication.
 
+#### The deployed security posture
+
+A render refuses a rendered workload that breaks one of three rules, naming the
+service, the rule and the field that triggered it, and pointing back at this
+section.
+
+**When it applies** — two conditions, both required:
+
+1. the manifests are **restricted** (the secret-free, digest-pinned profile), and
+2. the **environment deploys to a cell**, which the environment itself decides by
+   the cluster kind it declares: `k3d`, `kind` and `minikube` run their nodes in
+   the local container engine and are not cells, anything else is, and an
+   environment that declares no cluster kind counts as one — the posture is the
+   last door before a cell, so an undeclared environment must not be the way
+   around it. It is never decided by an environment's *name*.
+
+Every path that renders restricted manifests for a cell reaches the same guard:
+`deploy gitops render`, `deploy gitops snapshot`, `deploy module` and `deploy
+service` (both `--render-only` and `--dry-run`), `deploy solution`, and the
+service build behind [`deploy
+dev`](#codefly-deploy-devmoduleservice--the-dev-escape-hatch).
+
+**Why the render.** It is the last door before a cell and the one every module,
+solution and agent passes through, so it is the only place a rule of this kind
+cannot be forgotten by one service template, one agent or one environment. Which
+rules a platform holds its cells to is the platform owner's decision; these three
+are the ones codefly ships, and an environment says in its own declaration
+(below) which of them apply to it and who is excepted from them.
+
+Three invariants, in this order, because each needs the one before it.
+
+**1. Mandatory — absence is never conformance.** A deployed workload whose service
+declares no storage mode, or no transport, is **refused by name**, whatever shape it
+has. A contract that admits what declared nothing enforces nothing: the in-memory
+store this posture exists for carries no volume to notice, so a rule that asked for a
+declaration only when it already saw persistent storage never asked the service that
+needed asking.
+
+```yaml
+# a service's own service.codefly.yaml, written by the agent that renders it
+spec:
+  deployment:
+    storage: durable            # or ephemeral, which a deployed render refuses
+    transport: mesh             # or own-tls, refused where the mesh is asserted
+    scratch-volumes:            # exactly the volumes this agent renders
+      - name: tmp
+        mount: /tmp
+```
+
+A declaration that does not parse is a refusal, not an absent declaration — at every
+entry point: module, service, a service's dependency, dev and dry-run alike.
+
+**2. Consistent — the declaration is the intent, and the manifest must agree.** A
+service declaring that the platform carries its transport, beside rendered
+configuration that terminates TLS of its own, is a **contradiction**: the render
+refuses and names both sides. The same for a service declaring durable storage beside
+a development or in-memory setting. Configuration is read wherever it arrives — `env`,
+`envFrom` (in source order, with prefixes applied, resolved in the workload's **own
+namespace**), both `--name=value` and `--name value` forms, and the program inside a
+shell wrapper in any spelling of its flag (`-c`, `-ec`, `-euxc`) — across ordinary,
+init and ephemeral containers.
+
+An unrecognised spelling cannot defeat this, which is why the check is against the
+declaration rather than a decision made from the configuration: a setting this guard
+does not recognise leaves the declaration governing, and the runtime is still bound by
+what its service declared.
+
+**3. Fail closed — what cannot be read is refused.** A manifest whose shape this guard
+cannot read (a non-list where a list belongs, a non-object entry, a volume with several
+sources, a document with no kind), a reference whose value lives outside the manifest
+set, and a tree whose Kustomizations reference each other in a cycle are all refusals.
+An empty selection is indistinguishable from a conforming tree, so it is never read as
+one.
+
+| Rule | What it checks |
+| --- | --- |
+| `non-scratch-mount` | The workload carries exactly the volumes its service declared in `spec.deployment.scratch-volumes`, each an `emptyDir`, each mounted only at the path declared for it — plus its own durable state when it declared `storage: durable`. A volume's source is **resolved**, so a claim template borrowing the scratch volume's name is still a claim; raw block devices are attachments too; and a durable claim that **delivers the container's configuration** (a `--config` path inside its mount) contradicts the declaration that admitted it. |
+| `peer-transport-material` | The transport declaration must be present, must not be `own-tls` where the environment asserts `internal-transport/mesh-protected`, and must not be contradicted by rendered TLS configuration. The render also delivers no certificate material: a Secret of a certificate type, one of Kubernetes' conventional keys, or a value that **parses as PEM** — never a filename extension, which cannot tell an application's licence key from a private key. An endpoint's declared **protocol** decides, not its name, and an endpoint declared external is not in-cell transport. |
+| `in-memory-state-store` | The storage declaration must be present, must not be `ephemeral`, and must not be contradicted by rendered development or in-memory settings. |
+
+The manifests are selected once, by one selector every render path shares: only
+kustomizations nothing else references are built (so a base is built once, through the
+overlay that includes it, and a patch that *removes* something is honoured), another
+environment's overlay is neither built nor read, a manifest no kustomization consumes
+is still decoded, and every list wrapper — plain, typed, nested — is unwrapped before
+any workload is read.
+
+> **Not yet enforceable.** `spec.deployment.storage`, `spec.deployment.transport` and
+> `spec.deployment.scratch-volumes` are read by the render but are not yet declared by
+> the agents and services that owe them. Until they are, every deployed render is
+> refused by name. The declarations land first; the pull request that introduced this
+> section carries the list of what each agent and service owes.
+
+**The environment declares the posture**, including the exceptions:
+
+```yaml
+environments:
+  - name: staging
+    posture:
+      # What the environment states about the platform it deploys onto. An
+      # assertion the render does not know is an error, never a no-op.
+      asserts:
+        internal-transport/mesh-protected: true
+      # The deliberate exceptions. Each names one rule and one service
+      # ("<module>/<service>", or a bare "<service>" for that service in
+      # whichever module renders it) and says why; the reason is required.
+      allowances:
+        - rule: non-scratch-mount
+          service: shop/web
+          reason: the asset bundle is delivered as a ConfigMap, reviewed by the platform owner
+```
+
+An allowance covers **one rule for one service**, so a workload allowed to carry
+peer TLS material in a mounted Secret is still held to `non-scratch-mount` and
+needs an allowance there too — two decisions, stated separately.
+
+An allowance is never a silent skip: **every declared allowance is printed on
+every deployed render — including `--dry-run`**, whether or not that run needed it,
+and a render whose exception has become unnecessary says so until the declaration
+is removed.
+
+```
+Warning: security posture: service shop/web is allowed to break rule
+non-scratch-mount — the asset bundle is built into the image, reviewed by the
+platform owner
+```
+
+An environment with no `posture` block asserts nothing and allows nothing:
+`non-scratch-mount` and `in-memory-state-store` apply to every deployed render,
+and `peer-transport-material` applies only where the mesh is asserted — a
+service's own TLS may be the only transport protection an unmeshed environment
+has. A client that must pin an *external* peer's CA is exactly what an allowance
+is for.
+
+**What the render guard does not claim.** It checks declarations, the manifests the
+cell would apply, and whether the two agree. It does not prove what a process does at
+runtime: a service that declares `durable`, whose manifest contradicts it nowhere, can
+still start an in-memory store. That half belongs to the store — refusing to start in
+an ephemeral mode in a deployed context — and to the cell's own preflight rows.
+
 #### Service secrets
 
 When the environment declares `service-secrets`, render projects each service's
@@ -886,7 +1026,13 @@ codefly deploy dev payments/api --env staging --commit --push
    `deploy gitops render` takes for it: the environment's `registry` (and its
    login), the snapshot flow driving the service agent's Build and Deploy with
    push, and the same `@sha256:` digest capture. `DOCKER_HOST` is honoured the
-   way every build honours it.
+   way every build honours it. That render is held to [the deployed security
+   posture](#the-deployed-security-posture) through the same selector a full render
+   uses, for the same environment, so a service whose current render carries a volume
+   beyond scratch, delivers certificate material on a mesh-protected environment, or
+   keeps state without declaring it durable is refused before its image reaches the
+   cell. It checks the service and the graph it stages, where a full render checks
+   every unit of the module.
 3. **Patch.** Only that service's digest pin changes, inside its own rendered
    unit (`deployments/modules/<module>/services/<service>/`); every other byte of
    the tree is left as the render wrote it, and the render inventory is

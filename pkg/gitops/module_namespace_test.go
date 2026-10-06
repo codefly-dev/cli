@@ -38,7 +38,7 @@ environments:
 	for _, module := range []string{"saas", "documents"} {
 		files[filepath.Join("modules", module, resources.ModuleConfigurationName)] = "kind: module\nname: " + module + "\n"
 		files[filepath.Join("modules", module, "deployment", "kustomize", "base", "kustomization.yaml")] = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.yaml\n"
-		files[filepath.Join("modules", module, "deployment", "kustomize", "base", "deployment.yaml")] = pinnedDeployment
+		files[filepath.Join("modules", module, "deployment", "kustomize", "base", "deployment.yaml")] = pinnedConfigMap
 		files[filepath.Join("modules", module, "deployment", "kustomize", "overlays", "staging", "kustomization.yaml")] = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - ../../base\n"
 	}
 	for rel, content := range files {
