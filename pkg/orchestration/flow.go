@@ -2208,9 +2208,15 @@ func (flow *Flow) WithDeploymentDestination(destination func(*resources.Module, 
 	flow.world.DeploymentDestination = destination
 }
 
-func (flow *Flow) WithKubernetesOutputProfile(profile builderv0.KubernetesOutputProfile) {
-	flow.world.KubernetesOutputProfile = profile
-}
+// WithKubernetesOutputProfile is DELETED. It let a caller outside this package
+// choose the Kubernetes output profile, including the deprecated
+// PROMOTABLE_GITOPS_V1, which then flowed through selection into a render
+// whose validation gate would wave it through for not being the restricted
+// profile. The profile is not a caller's choice: pkg/deployments decides it
+// from the deployment manager — EPHEMERAL_LOCAL_APPLY_V1 for a direct local
+// apply, RESTRICTED_PORTABLE_V1 for everything else — and SnapshotMode pins
+// the restricted profile at the point it registers the placeholder resolver
+// that depends on it (see NewFlow).
 
 // WithClusterValidation opts a promotable render into a server-side dry-run
 // against the environment's declared cluster (`--validate-cluster`).

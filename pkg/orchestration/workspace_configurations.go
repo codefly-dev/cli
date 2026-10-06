@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
 
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -497,9 +496,15 @@ func (world *World) checkEffectiveWorkspaceConfigurationReferences(
 		// every dropped value went unnoticed — silently, which is the fault
 		// this file exists to remove. NewFlow binds it beside the loader;
 		// anything else that resolves groups must too.
-		if references := world.ConfigurationManager.WorkspaceEndpointReferences(effective...); len(references) > 0 {
-			return fmt.Errorf("cannot validate the workspace configuration references %s: this world resolves groups but was built without the configurations they were loaded from, so a reference naming a private endpoint or a producer that does not exist would be delivered unchecked and a dropped value would go unnoticed (bind World.providedWorkspaceConfigurationInfos as NewFlow does)",
-				strings.Join(references, ", "))
+		// The COUNT, never the references. A refusal is a diagnostic, and a
+		// diagnostic that quotes ${endpoint:…} republishes the very producer
+		// and endpoint the check was meant to adjudicate — to a reader who may
+		// be exactly the consumer that must not learn it. There is no position
+		// to report here: the capability that would resolve positions is the
+		// missing one.
+		if count := len(world.ConfigurationManager.WorkspaceEndpointReferences(effective...)); count > 0 {
+			return fmt.Errorf("cannot validate %d workspace configuration endpoint reference(s): this world resolves groups but was built without the configurations they were loaded from, so a reference naming a private endpoint or a producer that does not exist would be delivered unchecked and a dropped value would go unnoticed (bind World.providedWorkspaceConfigurationInfos as NewFlow does)",
+				count)
 		}
 		return nil
 	}
@@ -525,9 +530,10 @@ func (world *World) checkEffectiveWorkspaceConfigurationReferences(
 		// always binds a workspace, so this refuses a construction no production
 		// path takes rather than a real one — which is exactly why it should
 		// refuse instead of being trusted to stay unreachable.
-		if references := world.ConfigurationManager.WorkspaceEndpointReferences(effective...); len(references) > 0 {
-			return fmt.Errorf("cannot validate the workspace configuration references %s: this world resolves groups but has no workspace, so a reference naming a private endpoint or a producer that does not exist cannot be checked against anything (bind World.Workspace as NewFlow does)",
-				strings.Join(references, ", "))
+		// The count, for the reason given at the guard above.
+		if count := len(world.ConfigurationManager.WorkspaceEndpointReferences(effective...)); count > 0 {
+			return fmt.Errorf("cannot validate %d workspace configuration endpoint reference(s): this world resolves groups but has no workspace, so a reference naming a private endpoint or a producer that does not exist cannot be checked against anything (bind World.Workspace as NewFlow does)",
+				count)
 		}
 		return nil
 	}

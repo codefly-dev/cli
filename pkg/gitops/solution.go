@@ -280,7 +280,7 @@ func solutionRenderAttestation() *InventoryKubernetesOutput {
 		Validation: &InventoryKubernetesValidation{
 			StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED.String(),
 			ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_NOT_RUN.String(),
-			Promotable:           true,
+			Restricted:           true,
 			Violations:           []string{},
 		},
 	}

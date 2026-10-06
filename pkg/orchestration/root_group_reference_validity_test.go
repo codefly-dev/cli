@@ -535,8 +535,68 @@ func TestAWorldWithNoWorkspaceRefusesToResolveAReferenceBearingGroup(t *testing.
 	confs, err := world.workspaceConfigurationsFor(context.Background(), consumer, mappings, resources.NewNativeNetworkAccess())
 	require.Error(t, err, "a reference must not be resolved by a World that cannot check it")
 	require.Contains(t, err.Error(), "has no workspace")
-	require.Contains(t, err.Error(), "saas/auth-gateway/rest", "the refusal must name the reference it could not check")
+	require.NotContains(t, err.Error(), "saas/auth-gateway/rest",
+		"a refusal must not quote the reference: it republishes the producer and endpoint to a reader who may be the consumer that must not learn them")
+	require.NotContains(t, err.Error(), "${endpoint:", "nor the reference's syntax with its contents")
+	require.Contains(t, err.Error(), "1 workspace configuration endpoint reference",
+		"the refusal still has to say how much went unchecked")
 	value, delivered := groupValue(confs, "platform", "gateway-endpoint")
 	require.False(t, delivered, "nothing is delivered when nothing could be checked")
 	require.NotContains(t, value, "38342", "least of all the private endpoint's address")
+}
+
+// The canary, at the two guards that refuse for want of a checking capability.
+//
+// A reference is text taken from a configuration VALUE, and a value may be a
+// secret, so a refusal that quotes the reference publishes part of what it is
+// refusing to adjudicate — to a reader who may be exactly the consumer that
+// must not learn it. Core stopped carrying reference text for this reason.
+//
+// Both guards interpolated strings.Join(references, ", "). They are reached by
+// leaving out the capability that answers the question — the loaded
+// configurations, or the workspace — so the doctor's canary cannot reach them:
+// NewFlow always binds both. This is the same canary, where they live.
+func TestNeitherUncheckableGuardQuotesTheReference(t *testing.T) {
+	const canary = "sup3rs3cr3t-canary-producer"
+	reference := "${endpoint:" + canary + "/db/tcp}"
+	consumer := &resources.Service{WorkspaceConfigurationDependencies: []string{"platform"}}
+	loader := staticWorkspaceLoader{
+		confs: []*basev0.Configuration{
+			workspaceConfiguration("platform", "store-endpoint", "http://"+reference),
+		},
+	}
+
+	for _, guard := range []struct {
+		name  string
+		world func(*testing.T) *World
+		says  string
+	}{
+		{
+			name: "no loaded configurations to check against",
+			world: func(t *testing.T) *World {
+				world := loadedWorkspaceWorld(t, loader)
+				world.providedWorkspaceConfigurationInfos = nil
+				return world
+			},
+			says: "without the configurations they were loaded from",
+		},
+		{
+			name:  "no workspace to resolve producers in",
+			world: func(t *testing.T) *World { return loadedWorkspaceWorld(t, loader) },
+			says:  "has no workspace",
+		},
+	} {
+		t.Run(guard.name, func(t *testing.T) {
+			world := guard.world(t)
+			_, err := world.workspaceConfigurationsFor(
+				context.Background(), consumer, nil, resources.NewNativeNetworkAccess(),
+			)
+			require.Error(t, err, "a reference must not be resolved by a world that cannot check it")
+			require.Contains(t, err.Error(), guard.says, "the refusal must name the missing capability")
+			require.NotContains(t, err.Error(), canary, "the refusal published the value it was refusing to check")
+			require.NotContains(t, err.Error(), "${endpoint:", "nor the reference's syntax with its contents")
+			require.Contains(t, err.Error(), "1 workspace configuration endpoint reference",
+				"the refusal still has to say how much went unchecked")
+		})
+	}
 }

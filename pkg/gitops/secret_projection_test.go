@@ -760,7 +760,7 @@ func promotableManagedOutput() *InventoryKubernetesOutput {
 		ContractVersion: "codefly.dev/kubernetes-manifest/v1",
 		Validation: &InventoryKubernetesValidation{
 			StaticValidation: "STATUS_PASSED", ServerSideValidation: "STATUS_PASSED",
-			Promotable: true, Violations: []string{},
+			Restricted: true, Violations: []string{},
 		},
 	}
 }

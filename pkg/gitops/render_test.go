@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	coreservices "github.com/codefly-dev/core/agents/services"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 )
 
@@ -33,7 +34,7 @@ func promotableServiceGraph(module string, services []string) []InventoryUnit {
 				ContractVersion: "codefly.dev/kubernetes-manifest/v1",
 				Validation: &KubernetesValidationInventory{
 					StaticValidation: "STATUS_PASSED", ServerSideValidation: "STATUS_PASSED",
-					Promotable: true, Violations: []string{},
+					Restricted: true, Violations: []string{},
 				},
 			},
 		})
@@ -87,29 +88,62 @@ func TestRenderOwnedTreeIsDeterministicAndReplacesOnlyOwnedDestination(t *testin
 	}
 }
 
-func TestInventoryKubernetesOutputPreservesPromotableEvidence(t *testing.T) {
-	output := &builderv0.DeploymentOutput{
-		Kind: &builderv0.DeploymentOutput_Kubernetes{
-			Kubernetes: &builderv0.KubernetesDeploymentOutput{
-				Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE,
-				Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
-				ContractVersion: "codefly.dev/kubernetes-manifest/v1",
-				Validation: &builderv0.KubernetesManifestValidation{
-					StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED,
-					ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_PASSED,
-					Promotable:           true,
+// The inventory carries the SECURITY property, and admission requires it.
+//
+// It carried `promotable` — a delivery decision — and admission asserted that
+// instead, on output whose profile it had just required to be
+// RESTRICTED_PORTABLE_V1. So the two conflicting combinations both behaved
+// wrongly: an agent reporting restricted without promotable passed the builder
+// gate and then produced unacceptable persisted evidence, and an agent
+// reporting promotable without restricted was admitted on a property that says
+// nothing about restricted rendering.
+//
+// The old test copied the legacy boolean and asserted it survived, which would
+// pass without `restricted` being enforced anywhere.
+func TestInventoryKubernetesOutputRequiresTheRestrictedSecurityProperty(t *testing.T) {
+	evidenceFor := func(restricted, promotable bool) *KubernetesOutputInventory {
+		return inventoryKubernetesOutput(&builderv0.DeploymentOutput{
+			Kind: &builderv0.DeploymentOutput_Kubernetes{
+				Kubernetes: &builderv0.KubernetesDeploymentOutput{
+					Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE,
+					Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
+					ContractVersion: coreservices.KubernetesManifestContractVersion,
+					Validation: &builderv0.KubernetesManifestValidation{
+						StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED,
+						ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_PASSED,
+						Restricted:           restricted,
+						Promotable:           promotable,
+					},
 				},
 			},
-		},
+		})
 	}
 
-	evidence := inventoryKubernetesOutput(output)
-	if evidence == nil || evidence.Kind != "KUSTOMIZE" ||
-		evidence.Profile != "KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1" ||
-		evidence.ContractVersion != "codefly.dev/kubernetes-manifest/v1" ||
-		evidence.Validation == nil || !evidence.Validation.Promotable ||
-		evidence.Validation.Violations == nil {
-		t.Fatalf("evidence = %+v", evidence)
+	// Restricted and NOT promotable: the combination that passes the builder
+	// gate. It must be acceptable persisted evidence too, or the two gates
+	// disagree about the same output.
+	restrictedOnly := evidenceFor(true, false)
+	if restrictedOnly == nil || restrictedOnly.Validation == nil || !restrictedOnly.Validation.Restricted {
+		t.Fatalf("the security property was not carried into the inventory: %+v", restrictedOnly)
+	}
+	if restrictedOnly.Kind != "KUSTOMIZE" ||
+		restrictedOnly.Profile != "KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1" ||
+		restrictedOnly.ContractVersion != coreservices.KubernetesManifestContractVersion ||
+		restrictedOnly.Validation.Violations == nil {
+		t.Fatalf("evidence = %+v", restrictedOnly)
+	}
+	if err := validateInventoryKubernetesOutput("api", restrictedOnly); err != nil {
+		t.Fatalf("restricted evidence was refused by admission: %v", err)
+	}
+
+	// Promotable and NOT restricted: refused. The delivery decision says
+	// nothing about whether the manifests are restricted.
+	promotableOnly := evidenceFor(false, true)
+	if promotableOnly.Validation.Restricted {
+		t.Fatal("the delivery decision was copied into the security property")
+	}
+	if err := validateInventoryKubernetesOutput("api", promotableOnly); err == nil {
+		t.Fatal("output claiming only the delivery decision was admitted")
 	}
 }
 
@@ -121,7 +155,7 @@ func TestValidateInventoryKubernetesOutputAcceptsRenderOnlyValidation(t *testing
 		Validation: &KubernetesValidationInventory{
 			StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED.String(),
 			ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_NOT_RUN.String(),
-			Promotable:           true,
+			Restricted:           true,
 			Violations:           []string{},
 		},
 	}
@@ -139,7 +173,7 @@ func TestValidateInventoryKubernetesOutputRejectsFailedOrMissingValidation(t *te
 		Validation: &KubernetesValidationInventory{
 			StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED.String(),
 			ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_FAILED.String(),
-			Promotable:           true,
+			Restricted:           true,
 			Violations:           []string{},
 		},
 	}
@@ -162,7 +196,7 @@ func TestRenderInventoryRecordsOwnedUnitGraph(t *testing.T) {
 		Validation: &InventoryKubernetesValidation{
 			StaticValidation:     "STATUS_PASSED",
 			ServerSideValidation: "STATUS_PASSED",
-			Promotable:           true,
+			Restricted:           true,
 			Violations:           []string{},
 		},
 	}
@@ -286,6 +320,11 @@ func TestRenderRecordsExposedContractsAndPackageFromModuleCatalog(t *testing.T) 
 			{
 				Kind: UnitKindService, Module: "saas", Name: "accounts", Path: "services/accounts",
 				Contracts: catalog.exposedContracts("saas", "accounts"),
+				// A unit rendered into an owned path carries its agent's
+				// restricted output evidence. This fixture had none, and was
+				// only accepted because RenderOwnedTree installed an inventory
+				// it never validated.
+				Output: restrictedRenderEvidence(),
 			},
 		},
 	}, func(_ context.Context, root string) error {
@@ -361,7 +400,7 @@ func TestValidateInventoryUnitsAcceptsSolutionKind(t *testing.T) {
 		Validation: &InventoryKubernetesValidation{
 			StaticValidation:     "STATUS_PASSED",
 			ServerSideValidation: "STATUS_PASSED",
-			Promotable:           true,
+			Restricted:           true,
 			Violations:           []string{},
 		},
 	}
@@ -767,5 +806,60 @@ spec:
 	}
 	if err := ValidateRenderedTree(result.Path, "other", true); err == nil || !strings.Contains(err.Error(), "differs from selected") {
 		t.Fatalf("mismatched AppProject error = %v", err)
+	}
+}
+
+// restrictedRenderEvidence is the Kubernetes output evidence a real agent
+// produces for a restricted portable render, in the shape the inventory
+// persists it.
+func restrictedRenderEvidence() *InventoryKubernetesOutput {
+	return &InventoryKubernetesOutput{
+		Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String(),
+		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1.String(),
+		ContractVersion: coreservices.KubernetesManifestContractVersion,
+		Validation: &InventoryKubernetesValidation{
+			StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED.String(),
+			ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_NOT_RUN.String(),
+			Restricted:           true,
+			Violations:           []string{},
+		},
+	}
+}
+
+// A render refuses to install an inventory it would not accept on the way in.
+//
+// RenderOwnedTree wrote and installed its own inventory without calling
+// validateInventoryUnits, while every entry point that READS an inventory
+// validates it. So a render could install a unit graph no loader would accept
+// — here, a unit whose output evidence is not restricted — and the tree
+// shipped with it.
+func TestRenderOwnedTreeRefusesAnInventoryItsReadersWouldReject(t *testing.T) {
+	notRestricted := restrictedRenderEvidence()
+	notRestricted.Validation.Restricted = false
+
+	destination := filepath.Join(t.TempDir(), "deployments", "modules", "saas")
+	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
+		Destination: destination, Module: "saas", Environment: "production", Promotable: true,
+		OwnedPath: "deployments/modules/saas",
+		Units: []InventoryUnit{{
+			Kind: UnitKindService, Module: "saas", Name: "accounts", Path: "services/accounts",
+			Output: notRestricted,
+		}},
+	}, func(_ context.Context, root string) error {
+		service := filepath.Join(root, "services", "accounts")
+		if mkErr := os.MkdirAll(service, 0o750); mkErr != nil {
+			return mkErr
+		}
+		return os.WriteFile(filepath.Join(service, "deployment.yaml"), []byte(pinnedDeployment), 0o600)
+	})
+	if err == nil {
+		t.Fatal("a render installed output evidence that is not restricted")
+	}
+	if !strings.Contains(err.Error(), "validate rendered inventory") {
+		t.Fatalf("the refusal must name the stage: %v", err)
+	}
+	// And nothing is installed: a refused render leaves no tree behind.
+	if _, statErr := os.Stat(destination); !os.IsNotExist(statErr) {
+		t.Fatalf("a refused render installed a tree: %v", statErr)
 	}
 }

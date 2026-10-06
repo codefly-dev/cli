@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/testrun"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 )
 
@@ -166,15 +167,10 @@ func indent(s, pad string) string {
 // It is a function rather than a switch inside Runner.Test so the rule can be
 // tested without a live agent. It could not be, and a mutation that made
 // UNKNOWN pass broke no test.
+// refuseUnlessTestRunPassed is pkg/testrun's rule. It stays as a function here
+// so the call sites read the same, but the rule is shared with the gateway's
+// response builder and the code-unit aggregator: three copies of "did it
+// pass?" is how two of them came to disagree.
 func refuseUnlessTestRunPassed(resp *runtimev0.TestResponse, unique string) error {
-	switch state := resp.GetResult().GetState(); state {
-	case runtimev0.TestRunResult_PASSED:
-		return nil
-	case runtimev0.TestRunResult_UNKNOWN:
-		return fmt.Errorf(
-			"tests for %s returned no run-level outcome: the runtime agent reported %q, which is not a verdict this run may treat as success",
-			unique, state)
-	default:
-		return fmt.Errorf("tests failed for %s: %s", unique, summarizeTestResponse(resp))
-	}
+	return testrun.RefuseUnlessPassed(resp, unique, summarizeTestResponse)
 }

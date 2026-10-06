@@ -571,8 +571,25 @@ func validateKubernetesDeploymentOutput(
 	if kubernetes.GetProfile() != requested {
 		return fmt.Errorf("plugin returned Kubernetes output profile %s, requested %s", kubernetes.GetProfile(), requested)
 	}
-	if requested != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1 {
+	// Only the local-apply profile is exempt, and it is exempt BY NAME.
+	// This read "anything that is not the restricted profile needs no
+	// evidence", so the deprecated PROMOTABLE_GITOPS_V1 — and any profile
+	// added to the enum later — was accepted on the strength of the plugin
+	// echoing back the profile it was asked for.
+	switch requested {
+	case builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1:
+		// Checked below.
+	case builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1:
+		// A direct apply into a local cluster produces no promotable artifact
+		// and nothing persists it, so there is no restricted-rendering
+		// property to attest. The exemption follows the validated operation
+		// type rather than being the default for everything unrecognised.
 		return nil
+	default:
+		return fmt.Errorf(
+			"kubernetes output profile %s is not a profile this CLI requests: only the restricted portable profile and the ephemeral local-apply profile are",
+			requested,
+		)
 	}
 	if kubernetes.GetContractVersion() != coreservices.KubernetesManifestContractVersion {
 		return fmt.Errorf(

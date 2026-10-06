@@ -104,7 +104,7 @@ func installFakeAgents(t *testing.T) {
 			}
 			writeFiles(t, destination(module, service), files)
 			unique := resources.ServiceUnique(module.Name, service.Name)
-			outputs[unique] = fakePromotableOutput()
+			outputs[unique] = fakeRestrictedOutput()
 			services[unique] = service
 			ports[unique] = orchestration.InClusterPorts(ctx, mappings)
 		}
@@ -127,7 +127,12 @@ func installFakeAgents(t *testing.T) {
 	}
 }
 
-func fakePromotableOutput() *builderv0.DeploymentOutput {
+// fakeRestrictedOutput is what a real agent emits: the RESTRICTED security
+// property. It set only `promotable` — the delivery decision — which no real
+// agent could get past the builder gate, because that gate requires
+// restricted. This double replaces serviceFlow wholesale, so it never met the
+// gate and the inventory it produced was installed unvalidated.
+func fakeRestrictedOutput() *builderv0.DeploymentOutput {
 	return &builderv0.DeploymentOutput{Kind: &builderv0.DeploymentOutput_Kubernetes{Kubernetes: &builderv0.KubernetesDeploymentOutput{
 		Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE,
 		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
@@ -135,7 +140,7 @@ func fakePromotableOutput() *builderv0.DeploymentOutput {
 		Validation: &builderv0.KubernetesManifestValidation{
 			StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED,
 			ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_NOT_RUN,
-			Promotable:           true,
+			Restricted:           true,
 		},
 	}}}
 }
@@ -280,7 +285,15 @@ func treeDigest(t *testing.T, root string) string {
 //
 // Every committed .codefly-render.json in the fleet records the old string and
 // will show this one-line change on its next render.
-const undeclaredFixtureDigest = "040e750efc0e12db53eafbe4a33111281878a63d5459205096abd074e83cd608"
+//
+// It moved again when the inventory started persisting the RESTRICTED security
+// property instead of the `promotable` delivery decision: the rendered
+// manifests are byte-identical, and the one differing byte range is
+// render-inventory.json's validation object, now
+// {"staticValidation","serverSideValidation","restricted","violations"}. That
+// was verified by rendering the fixture and reading the installed inventory —
+// no "promotable" key remains anywhere in it.
+const undeclaredFixtureDigest = "ed0a83231a659a8c0c8e3a4d5245289fd3c1a0dbef09e508b201283a468e8347"
 
 func TestRenderModuleWithoutDeclarationsIsByteIdentical(t *testing.T) {
 	installFakeAgents(t)

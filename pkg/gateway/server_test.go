@@ -453,59 +453,17 @@ func TestSubscribeWorkspaceChangesStreamsExternalEditsAndReplaysReconnect(t *tes
 	}
 }
 
-func TestWriteFileAcceptsSDKExecutionContextOverRealGRPC(t *testing.T) {
-	root := t.TempDir()
-	srv, err := NewServer(Config{WorkDir: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	listener := bufconn.Listen(1 << 20)
-	grpcServer := grpc.NewServer()
-	gatewayv1.RegisterGatewayServer(grpcServer, srv)
-	go func() { _ = grpcServer.Serve(listener) }()
-	t.Cleanup(grpcServer.Stop)
-	connection, err := grpc.NewClient(
-		"passthrough:///execution-context",
-		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
-			return listener.DialContext(ctx)
-		}),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = connection.Close() })
-
-	// A real capability from core's conformance kit, for the same reason.
-	workContext := conformanceCarrier(t)
-	execution, err := workcontextgrpc.NewExecutionContext(workContext, "operation-write-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, err := workcontextgrpc.WithGRPCExecutionContext(t.Context(), execution)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	response, err := gatewayv1.NewGatewayClient(connection).WriteFile(
-		ctx,
-		&gatewayv1.WriteFileRequest{Path: "receipt.txt", Content: "executed\n"},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !response.GetSuccess() {
-		t.Fatalf("WriteFile failed: %s", response.GetError())
-	}
-	content, err := os.ReadFile(filepath.Join(root, "receipt.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(content) != "executed\n" {
-		t.Fatalf("unexpected written content %q", content)
-	}
-}
+// TestWriteFileAcceptsSDKExecutionContextOverRealGRPC stood here, and r15 was
+// right that it asserted the bypass: it registered a BARE grpc.NewServer with
+// no interceptors, presented a real capability to WriteFile, and required the
+// write to succeed. What it proved was that a chain without the effect
+// boundary has no effect boundary.
+//
+// Its replacement is TestTheServedChainRefusesAGovernedEffect in
+// effect_boundary_test.go, which serves through serverOptions() — the chain
+// Serve installs — and requires the refusal, the absent file, and the same
+// call succeeding when it is not governed. The SDK carrier still makes a real
+// gRPC hop there, so that coverage is kept rather than dropped.
 
 type gatewayWorkspaceReceiveResult struct {
 	event *gatewayv1.WorkspaceChangeEvent

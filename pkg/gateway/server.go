@@ -41,6 +41,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/executionrecorder"
 	"github.com/codefly-dev/cli/pkg/gateway/effect"
+	"github.com/codefly-dev/cli/pkg/testrun"
 	codecore "github.com/codefly-dev/core/code"
 	"github.com/codefly-dev/core/failures"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -2219,22 +2220,15 @@ func errorCode(value string) *string {
 	return &value
 }
 
+// runtimeTestSuccess is pkg/testrun's rule and nothing else.
+//
+// The two fallbacks that stood here are deleted. The deprecated status field
+// answered for an agent that set no run result, and below it "no failures were
+// counted" answered for an agent that set neither — which is also exactly what
+// a run that never executed looks like, so an empty TestResponse reported
+// SUCCESS.
 func runtimeTestSuccess(resp *runtimev0.TestResponse) bool {
-	if resp == nil {
-		return false
-	}
-	if result := resp.GetResult(); result != nil {
-		switch result.GetState() {
-		case runtimev0.TestRunResult_PASSED:
-			return true
-		case runtimev0.TestRunResult_FAILED, runtimev0.TestRunResult_ERRORED, runtimev0.TestRunResult_TIMED_OUT:
-			return false
-		}
-	}
-	if status := resp.GetStatus(); status != nil {
-		return status.GetState() == runtimev0.TestStatus_SUCCESS
-	}
-	return resp.GetTestsFailed() == 0 && len(resp.GetFailures()) == 0
+	return testrun.Passed(resp)
 }
 
 func runtimeTestOutput(resp *runtimev0.TestResponse, success bool) string {
@@ -2248,6 +2242,12 @@ func runtimeTestOutput(resp *runtimev0.TestResponse, success bool) string {
 	var msg string
 	if result := resp.GetResult(); result != nil {
 		msg = result.GetMessage()
+	}
+	if msg == "" && testrun.State(resp) == runtimev0.TestRunResult_UNKNOWN {
+		// Without this an agent reporting nothing produced Success:false with
+		// an empty output, which reads as "the tests failed and said nothing"
+		// rather than "no verdict was returned".
+		msg = testrun.NoVerdictMessage
 	}
 	if msg == "" {
 		if status := resp.GetStatus(); status != nil {

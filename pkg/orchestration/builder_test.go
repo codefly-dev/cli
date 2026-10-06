@@ -130,3 +130,37 @@ func TestValidateKubernetesDeploymentOutputRequiresRequestedProfile(t *testing.T
 		t.Fatalf("validation error = %v", err)
 	}
 }
+
+// A profile this CLI does not request is refused, with or without evidence.
+//
+// The gate read "anything that is not the restricted profile needs no
+// validation evidence", so the deprecated PROMOTABLE_GITOPS_V1 — and any
+// profile added to the enum later — was accepted on the strength of the plugin
+// echoing back the profile it was asked for.
+func TestValidateKubernetesDeploymentOutputRefusesAProfileTheCLIDoesNotRequest(t *testing.T) {
+	deprecated := builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1
+	output := &builderv0.DeploymentOutput{
+		Kind: &builderv0.DeploymentOutput_Kubernetes{
+			Kubernetes: &builderv0.KubernetesDeploymentOutput{Profile: deprecated},
+		},
+	}
+	err := validateKubernetesDeploymentOutput(deprecated, output, "")
+	if err == nil {
+		t.Fatal("the deprecated promotable-gitops profile was accepted with no validation evidence")
+	}
+	if !strings.Contains(err.Error(), "not a profile this CLI requests") {
+		t.Fatalf("error = %v", err)
+	}
+
+	// The local-apply exemption is BY NAME, and it stands: a direct apply
+	// produces no promotable artifact and nothing persists it.
+	local := builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1
+	localOutput := &builderv0.DeploymentOutput{
+		Kind: &builderv0.DeploymentOutput_Kubernetes{
+			Kubernetes: &builderv0.KubernetesDeploymentOutput{Profile: local},
+		},
+	}
+	if err := validateKubernetesDeploymentOutput(local, localOutput, ""); err != nil {
+		t.Fatalf("the local-apply profile was refused: %v", err)
+	}
+}
