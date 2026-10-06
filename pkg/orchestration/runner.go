@@ -1249,24 +1249,8 @@ func (runner *Runner) Test(ctx context.Context) (*OutputProperty, error) {
 	// cases and exit with an accurate code, regardless of pass/fail.
 	runner.testResponse = resp
 
-	// The run-level outcome is read from the STRUCTURED result, which core's
-	// proto names the single source of truth — the flat `status` field is
-	// computed from it and is deprecated.
-	//
-	// The old suppression here feared exactly one thing: that reading the
-	// replacement would see a zero value from an agent that only populates the
-	// flat field, and report success whatever happened. That fear is answered
-	// rather than inherited — TestRunResult_UNKNOWN is zero, and it REFUSES.
-	// An agent that tells this runner nothing about the outcome does not get
-	// treated as having passed; a missing verdict is a failed one.
-	switch state := resp.GetResult().GetState(); state {
-	case runtimev0.TestRunResult_PASSED:
-	case runtimev0.TestRunResult_UNKNOWN:
-		return nil, w.NewError(
-			"tests for %s returned no run-level outcome: the runtime agent reported %q, which is not a verdict this run may treat as success",
-			runner.Unique(), state)
-	default:
-		return nil, w.NewError("tests failed for %s: %s", runner.Unique(), summarizeTestResponse(resp))
+	if verdict := refuseUnlessTestRunPassed(resp, runner.Unique()); verdict != nil {
+		return nil, verdict
 	}
 
 	err = runner.outputPropertyForTest.Set(ctx, &RunnerTestOutput{})

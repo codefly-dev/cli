@@ -499,3 +499,32 @@ func hexDigest(sum [sha256.Size]byte) string {
 	}
 	return string(encoded)
 }
+
+// The recorder refuses a nil capability itself, before the authority.
+//
+// The authority refuses one too, but the recorder must not depend on every
+// Authority implementation remembering to: the receipt this call writes carries
+// the capability's digest, so without a verified capability there is nothing to
+// digest, and a receipt attesting to an unverified execution is worse than no
+// receipt at all.
+//
+// The stub authority here PERMITS everything, so the only thing that can refuse
+// is the recorder. Removing that guard makes this test fail — which it did not
+// before this test existed, because every other case passes a real capability.
+func TestBeginRefusesWithoutAVerifiedCapability(t *testing.T) {
+	fixture := newRecorderFixture(t)
+	_, err := fixture.recorder.Begin(t.Context(), fixture.execution, nil, fixture.beginInput())
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("want ErrInvalid, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "requires a verified Work Context") {
+		t.Fatalf("the refusal must say what is missing: %v", err)
+	}
+	pending, pendingErr := fixture.journal.Pending(t.Context(), 0, 10)
+	if pendingErr != nil {
+		t.Fatal(pendingErr)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("a refused execution must write no receipt, got %d", len(pending))
+	}
+}

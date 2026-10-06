@@ -151,3 +151,30 @@ func indent(s, pad string) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// refuseUnlessTestRunPassed is the run-level verdict: only PASSED is success.
+//
+// It reads the STRUCTURED result, which core's proto names the single source of
+// truth — the flat `status` field is computed from it and deprecated. The
+// suppression this replaced feared exactly one thing: that reading the
+// replacement would see a zero value from an agent populating only the flat
+// field, and report success whatever happened. That fear is answered rather
+// than inherited — TestRunResult_UNKNOWN IS zero, and it refuses. An agent that
+// tells the runner nothing about the outcome does not get treated as having
+// passed; a missing verdict is a failed one.
+//
+// It is a function rather than a switch inside Runner.Test so the rule can be
+// tested without a live agent. It could not be, and a mutation that made
+// UNKNOWN pass broke no test.
+func refuseUnlessTestRunPassed(resp *runtimev0.TestResponse, unique string) error {
+	switch state := resp.GetResult().GetState(); state {
+	case runtimev0.TestRunResult_PASSED:
+		return nil
+	case runtimev0.TestRunResult_UNKNOWN:
+		return fmt.Errorf(
+			"tests for %s returned no run-level outcome: the runtime agent reported %q, which is not a verdict this run may treat as success",
+			unique, state)
+	default:
+		return fmt.Errorf("tests failed for %s: %s", unique, summarizeTestResponse(resp))
+	}
+}
