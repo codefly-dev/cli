@@ -387,7 +387,7 @@ func validateInventoryKubernetesOutput(service string, output *KubernetesOutputI
 		return fmt.Errorf("service %s has no promotable Kubernetes output evidence", service)
 	}
 	if output.Kind != builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String() ||
-		output.Profile != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1.String() ||
+		output.Profile != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1.String() ||
 		output.ContractVersion != coreservices.KubernetesManifestContractVersion {
 		return fmt.Errorf("service %s has incompatible Kubernetes output evidence", service)
 	}

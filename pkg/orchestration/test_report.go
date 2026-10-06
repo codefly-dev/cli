@@ -17,8 +17,10 @@ func testCounts(resp *runtimev0.TestResponse) (total, passed, failed, skipped, e
 	if c := resp.GetCounts(); c != nil {
 		return c.GetTotal(), c.GetPassed(), c.GetFailed(), c.GetSkipped(), c.GetErrored()
 	}
-	//nolint:staticcheck // deprecated flat fields are the fallback for old agents.
-	return resp.GetTestsRun(), resp.GetTestsPassed(), resp.GetTestsFailed(), resp.GetTestsSkipped(), 0
+	// No counts means no counts. The deprecated flat fields are computed FROM
+	// this tree by core, so falling back to them reported a number the
+	// structured message had already declined to give.
+	return 0, 0, 0, 0, 0
 }
 
 // summarizeTestResponse renders a single-line summary suitable for an error
@@ -41,13 +43,11 @@ func summarizeTestResponse(resp *runtimev0.TestResponse) string {
 		summary += fmt.Sprintf(" (%d total)", total)
 	}
 	if resp != nil {
-		// The additive TestRunResult is preferred, but released agents may
-		// still carry their typed terminal cause only on the legacy status.
-		status := resp.GetStatus() //nolint:staticcheck // compatibility at the agent protocol boundary
+		// The structured result carries the typed terminal cause. The legacy
+		// status fallback is gone with the rest of the deprecated reads: core's
+		// proto computes the flat fields FROM this tree, so a cause that is
+		// absent here is absent, not hiding in the old field.
 		failure := resp.GetResult().GetFailure()
-		if failure == nil {
-			failure = status.GetFailure()
-		}
 		if failure != nil {
 			detail := failure.GetCode().String()
 			if message := strings.TrimSpace(failure.GetMessage()); message != "" {
@@ -56,8 +56,6 @@ func summarizeTestResponse(resp *runtimev0.TestResponse) string {
 			summary += ": " + detail
 		} else if r := resp.GetResult(); r != nil && r.GetMessage() != "" {
 			summary += ": " + r.GetMessage()
-		} else if message := strings.TrimSpace(status.GetMessage()); message != "" {
-			summary += ": " + message
 		}
 	}
 	return summary
@@ -71,17 +69,11 @@ func TestSucceeded(resp *runtimev0.TestResponse) bool {
 	if resp == nil {
 		return false
 	}
-	if r := resp.GetResult(); r != nil && r.GetState() != runtimev0.TestRunResult_UNKNOWN {
-		return r.GetState() == runtimev0.TestRunResult_PASSED
-	}
-	//nolint:staticcheck // deprecated status is the fallback for old agents.
-	if s := resp.GetStatus(); s != nil {
-		return s.GetState() == runtimev0.TestStatus_SUCCESS
-	}
-	// No structured result and no legacy status: only treat as success if a
-	// run clearly happened with zero failures/errors.
-	_, _, failed, _, errored := testCounts(resp)
-	return failed == 0 && errored == 0
+	// Only the structured result decides, and only PASSED is success. An
+	// UNKNOWN or absent outcome is NOT inferred from counts: "no failures
+	// recorded" is what a run that never started also looks like, and treating
+	// that as success is how a broken test run reports green.
+	return resp.GetResult().GetState() == runtimev0.TestRunResult_PASSED
 }
 
 // RenderTestReport produces a human-readable multi-line report from a

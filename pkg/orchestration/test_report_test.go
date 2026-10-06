@@ -9,8 +9,12 @@ import (
 )
 
 func TestSummarizeTestResponsePreservesTypedTerminalFailure(t *testing.T) {
-	response := &runtimev0.TestResponse{Status: &runtimev0.TestStatus{
-		State:   runtimev0.TestStatus_ERROR,
+	// The typed cause travels on the STRUCTURED result. core's proto computes
+	// the deprecated flat fields from this tree, so an agent that reports a
+	// terminal failure reports it here; the legacy fallback this test used to
+	// exercise is deleted rather than kept as a second place to look.
+	response := &runtimev0.TestResponse{Result: &runtimev0.TestRunResult{
+		State:   runtimev0.TestRunResult_ERRORED,
 		Message: "test not available: generic agent has no language knowledge",
 		Failure: &basev0.Failure{
 			Code:      basev0.FailureCode_FAILURE_CODE_UNSUPPORTED_OPERATION,

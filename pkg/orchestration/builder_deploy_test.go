@@ -230,7 +230,7 @@ func TestPromotableDeploymentInputsPreserveWorkspaceConfigurationAndExtractSecre
 
 func TestKubernetesOutputProfileReservesEphemeralForDirectLocalApply(t *testing.T) {
 	require.Equal(t,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		kubernetesOutputProfile(&World{Env: environments.LocalEnvironment()}),
 	)
 	require.Equal(t,
@@ -241,17 +241,17 @@ func TestKubernetesOutputProfileReservesEphemeralForDirectLocalApply(t *testing.
 		}),
 	)
 	require.Equal(t,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		kubernetesOutputProfile(&World{Env: &environments.Environment{
 			Name:    "aws",
 			Cluster: &environments.EnvironmentCluster{Kind: "eks"},
 		}}),
 	)
 	require.Equal(t,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		kubernetesOutputProfile(&World{
 			Env:                     environments.LocalEnvironment(),
-			KubernetesOutputProfile: builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+			KubernetesOutputProfile: builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		}),
 	)
 }
@@ -262,22 +262,22 @@ func TestValidateKubernetesDeploymentOutputRejectsProfileMismatch(t *testing.T) 
 	)
 
 	err := validateKubernetesDeploymentOutput(
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		output,
 		"k3d-codefly-local",
 	)
 	require.EqualError(t, err,
-		"plugin returned Kubernetes output profile KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1, requested KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1",
+		"plugin returned Kubernetes output profile KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1, requested KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1",
 	)
 }
 
 func TestValidateKubernetesDeploymentOutputAcceptsPromotableContract(t *testing.T) {
 	output := validKubernetesDeploymentOutput(
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 	)
 
 	require.NoError(t, validateKubernetesDeploymentOutput(
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		output,
 		"k3d-codefly-local",
 	))
@@ -285,11 +285,11 @@ func TestValidateKubernetesDeploymentOutputAcceptsPromotableContract(t *testing.
 
 func TestValidateKubernetesDeploymentOutputRejectsDifferentValidationContext(t *testing.T) {
 	output := validKubernetesDeploymentOutput(
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 	)
 
 	err := validateKubernetesDeploymentOutput(
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		output,
 		"mind-aws",
 	)
@@ -300,14 +300,14 @@ func TestValidateKubernetesDeploymentOutputRejectsDifferentValidationContext(t *
 
 func TestValidateKubernetesDeploymentOutputAcceptsOfflinePromotableContract(t *testing.T) {
 	output := validKubernetesDeploymentOutput(
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 	)
 	output.GetKubernetes().Validation.ServerSideValidation =
 		builderv0.KubernetesManifestValidation_STATUS_NOT_RUN
 	output.GetKubernetes().Validation.ValidatedContext = ""
 
 	require.NoError(t, validateKubernetesDeploymentOutput(
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		output,
 		"",
 	))
@@ -316,13 +316,13 @@ func TestValidateKubernetesDeploymentOutputAcceptsOfflinePromotableContract(t *t
 func TestValidateDeploymentOutputAllowsOptionalNoDeploymentResponse(t *testing.T) {
 	require.NoError(t, validateDeploymentOutput(
 		&deployments.RenderManager{},
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		nil,
 		"",
 	))
 	require.EqualError(t, validateDeploymentOutput(
 		requiredDeploymentOutputManager{},
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		nil,
 		"",
 	), "plugin returned no Kubernetes deployment output")
@@ -399,7 +399,7 @@ func validKubernetesDeploymentOutput(profile builderv0.KubernetesOutputProfile) 
 	}
 }
 
-const promotableProfile = builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1
+const promotableProfile = builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1
 
 // clusterValidationWorld is a promotable-render World whose environment is a
 // local k3d cluster with an explicit context and kubeconfig — the shape that

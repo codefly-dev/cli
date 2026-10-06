@@ -163,7 +163,7 @@ func TestNewFlowInSnapshotModeIsValueFreeAndPromotable(t *testing.T) {
 	flow := newSnapshotWorkspaceFlow(t, SnapshotMode)
 
 	require.Equal(t,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		flow.world.KubernetesOutputProfile)
 
 	flow.ConfigurationManager.WithLoader(staticConfigurationLoader{

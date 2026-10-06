@@ -503,11 +503,10 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	// secret values back into secretKeyRefs before a builder sees them; any other
 	// profile would ship the placeholder as a real value. Bind that profile here,
 	// at the same point the resolver is registered, so the two cannot drift: a
-	// snapshot is by definition the promotable GitOps snapshot.
+	// snapshot is by definition the restricted, portable snapshot.
 	if mode == SnapshotMode {
 		configurationManager.WithSecretResolver(snapshotSecretResolver{})
-		//nolint:staticcheck // SA1019: builder_deploy and the whole render path still gate on PROMOTABLE_GITOPS_V1; this must match them, migrate together.
-		world.KubernetesOutputProfile = builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1
+		world.KubernetesOutputProfile = builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1
 	}
 
 	stateManager, err := NewStateManager(ctx, configurationManager, world.Dependencies)

@@ -274,9 +274,8 @@ func solutionDiagnostics(phase, name string, diagnostics []*basev0.FailureDiagno
 // validation stays NOT_RUN because the CLI runs only the static ruleset.
 func solutionRenderAttestation() *InventoryKubernetesOutput {
 	return &InventoryKubernetesOutput{
-		Kind: builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String(),
-		//nolint:staticcheck // validateInventoryKubernetesOutput accepts exactly this profile; matching it is required, not optional.
-		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1.String(),
+		Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String(),
+		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1.String(),
 		ContractVersion: coreservices.KubernetesManifestContractVersion,
 		Validation: &InventoryKubernetesValidation{
 			StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED.String(),

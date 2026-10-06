@@ -125,7 +125,7 @@ func GetKubernetesDeployment(
 				Destination:        KustomizeDir(ctx, workspace, module, service),
 				Profile:            profile,
 				SecretReferences:   secretReferences,
-				ValidateServerSide: profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+				ValidateServerSide: profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 			},
 		},
 	}, nil
@@ -135,7 +135,7 @@ func KubernetesOutputProfile(manager Manager) builderv0.KubernetesOutputProfile 
 	if _, directLocalApply := manager.(*LocalApplyManager); directLocalApply {
 		return builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1
 	}
-	return builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1
+	return builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1
 }
 
 // NewLocalApplyManager binds a direct apply to an exact local k3d target and to

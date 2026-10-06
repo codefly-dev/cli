@@ -50,12 +50,12 @@ func TestVerifyLocalK3dTargetRejectsRemoteKindsBeforeInspectingKubeconfig(t *tes
 func TestKubernetesOutputProfileReservesEphemeralForVerifiedLocalApply(t *testing.T) {
 	require.Equal(
 		t,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		KubernetesOutputProfile(nil),
 	)
 	require.Equal(
 		t,
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		KubernetesOutputProfile(&RenderManager{}),
 	)
 	require.Equal(

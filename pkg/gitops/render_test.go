@@ -29,7 +29,7 @@ func promotableServiceGraph(module string, services []string) []InventoryUnit {
 		graph = append(graph, InventoryUnit{
 			Kind: UnitKindService, Module: module, Name: service, Path: filepath.ToSlash(filepath.Join("services", service)),
 			Output: &KubernetesOutputInventory{
-				Kind: "KUSTOMIZE", Profile: "KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1",
+				Kind: "KUSTOMIZE", Profile: "KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1",
 				ContractVersion: "codefly.dev/kubernetes-manifest/v1",
 				Validation: &KubernetesValidationInventory{
 					StaticValidation: "STATUS_PASSED", ServerSideValidation: "STATUS_PASSED",
@@ -92,7 +92,7 @@ func TestInventoryKubernetesOutputPreservesPromotableEvidence(t *testing.T) {
 		Kind: &builderv0.DeploymentOutput_Kubernetes{
 			Kubernetes: &builderv0.KubernetesDeploymentOutput{
 				Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE,
-				Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+				Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 				ContractVersion: "codefly.dev/kubernetes-manifest/v1",
 				Validation: &builderv0.KubernetesManifestValidation{
 					StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED,
@@ -105,7 +105,7 @@ func TestInventoryKubernetesOutputPreservesPromotableEvidence(t *testing.T) {
 
 	evidence := inventoryKubernetesOutput(output)
 	if evidence == nil || evidence.Kind != "KUSTOMIZE" ||
-		evidence.Profile != "KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1" ||
+		evidence.Profile != "KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1" ||
 		evidence.ContractVersion != "codefly.dev/kubernetes-manifest/v1" ||
 		evidence.Validation == nil || !evidence.Validation.Promotable ||
 		evidence.Validation.Violations == nil {
@@ -116,7 +116,7 @@ func TestInventoryKubernetesOutputPreservesPromotableEvidence(t *testing.T) {
 func TestValidateInventoryKubernetesOutputAcceptsRenderOnlyValidation(t *testing.T) {
 	output := &KubernetesOutputInventory{
 		Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String(),
-		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1.String(),
+		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1.String(),
 		ContractVersion: "codefly.dev/kubernetes-manifest/v1",
 		Validation: &KubernetesValidationInventory{
 			StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED.String(),
@@ -134,7 +134,7 @@ func TestValidateInventoryKubernetesOutputAcceptsRenderOnlyValidation(t *testing
 func TestValidateInventoryKubernetesOutputRejectsFailedOrMissingValidation(t *testing.T) {
 	output := &KubernetesOutputInventory{
 		Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String(),
-		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1.String(),
+		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1.String(),
 		ContractVersion: "codefly.dev/kubernetes-manifest/v1",
 		Validation: &KubernetesValidationInventory{
 			StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED.String(),
@@ -157,7 +157,7 @@ func TestRenderInventoryRecordsOwnedUnitGraph(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "deployments", "modules", "users")
 	output := &InventoryKubernetesOutput{
 		Kind:            "KUSTOMIZE",
-		Profile:         "KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1",
+		Profile:         "KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1",
 		ContractVersion: "codefly.dev/kubernetes-manifest/v1",
 		Validation: &InventoryKubernetesValidation{
 			StaticValidation:     "STATUS_PASSED",
@@ -356,7 +356,7 @@ func TestValidateInventoryUnitsRejectsUnknownKind(t *testing.T) {
 func TestValidateInventoryUnitsAcceptsSolutionKind(t *testing.T) {
 	output := &InventoryKubernetesOutput{
 		Kind:            "KUSTOMIZE",
-		Profile:         "KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1",
+		Profile:         "KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1",
 		ContractVersion: "codefly.dev/kubernetes-manifest/v1",
 		Validation: &InventoryKubernetesValidation{
 			StaticValidation:     "STATUS_PASSED",

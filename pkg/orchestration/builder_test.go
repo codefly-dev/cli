@@ -101,7 +101,7 @@ func TestPromotableDeploymentConfigurationsRejectStructuredSecretBytes(t *testin
 }
 
 func TestValidateKubernetesDeploymentOutputRequiresRequestedProfile(t *testing.T) {
-	requested := builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1
+	requested := builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1
 	output := &builderv0.DeploymentOutput{
 		Kind: &builderv0.DeploymentOutput_Kubernetes{
 			Kubernetes: &builderv0.KubernetesDeploymentOutput{

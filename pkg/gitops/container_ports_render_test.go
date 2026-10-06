@@ -130,7 +130,7 @@ func installFakeAgents(t *testing.T) {
 func fakePromotableOutput() *builderv0.DeploymentOutput {
 	return &builderv0.DeploymentOutput{Kind: &builderv0.DeploymentOutput_Kubernetes{Kubernetes: &builderv0.KubernetesDeploymentOutput{
 		Kind:            builderv0.KubernetesDeploymentOutput_KUSTOMIZE,
-		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
+		Profile:         builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,
 		ContractVersion: coreservices.KubernetesManifestContractVersion,
 		Validation: &builderv0.KubernetesManifestValidation{
 			StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED,
@@ -270,7 +270,17 @@ func treeDigest(t *testing.T, root string) string {
 // no declaration, captured on main before the container-port check existed
 // (b990c162, with only the serviceFlow seam added). A render that declares
 // nothing must stay byte-identical.
-const undeclaredFixtureDigest = "aaca0799de4ebe4f9afa38c7cb84594a63b7b2dfd984251de5d90c4fd03cee0d"
+// The digest moved with the output profile: the render records the profile it
+// requested in its own evidence file (.codefly-render.json), so switching from
+// PROMOTABLE_GITOPS_V1 to RESTRICTED_PORTABLE_V1 changes that one string and
+// therefore the tree digest. The MANIFESTS are unchanged — the two profiles
+// render the identical restricted bundle, which core's proto states and
+// service-vault's own deployment test proves byte-for-byte — and the two cases
+// below still agree with each other, which is the property this digest pins.
+//
+// Every committed .codefly-render.json in the fleet records the old string and
+// will show this one-line change on its next render.
+const undeclaredFixtureDigest = "040e750efc0e12db53eafbe4a33111281878a63d5459205096abd074e83cd608"
 
 func TestRenderModuleWithoutDeclarationsIsByteIdentical(t *testing.T) {
 	installFakeAgents(t)

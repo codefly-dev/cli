@@ -59,8 +59,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	dependenciesConfigurations = append(workspaceConfigurations, dependenciesConfigurations...)
 	profile := kubernetesOutputProfile(b.world)
 	var secretReferences map[string]*builderv0.KubernetesSecretKeyReference
-	//nolint:staticcheck // SA1019 deliberately: this names a value on the wire to a released builder agent, and core's own proto says the deprecated form is retained so existing callers keep rendering the identical bundle during migration. Switching it is a plugin-contract change that needs the agent owners, and nothing in CI would catch a released agent rejecting the new value. Tracked as a follow-up.
-	if profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
+	if profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1 {
 		secretName := "secret-" + b.instance.Service.Name
 		conf, dependenciesConfigurations, secretReferences, err = promotableDeploymentConfigurations(
 			conf,
@@ -572,8 +571,7 @@ func validateKubernetesDeploymentOutput(
 	if kubernetes.GetProfile() != requested {
 		return fmt.Errorf("plugin returned Kubernetes output profile %s, requested %s", kubernetes.GetProfile(), requested)
 	}
-	//nolint:staticcheck // SA1019 deliberately: this names a value on the wire to a released builder agent, and core's own proto says the deprecated form is retained so existing callers keep rendering the identical bundle during migration. Switching it is a plugin-contract change that needs the agent owners, and nothing in CI would catch a released agent rejecting the new value. Tracked as a follow-up.
-	if requested != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
+	if requested != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1 {
 		return nil
 	}
 	if kubernetes.GetContractVersion() != coreservices.KubernetesManifestContractVersion {
@@ -584,7 +582,6 @@ func validateKubernetesDeploymentOutput(
 		)
 	}
 	validation := kubernetes.GetValidation()
-	//nolint:staticcheck // SA1019 deliberately: this names a value on the wire to a released builder agent, and core's own proto says the deprecated form is retained so existing callers keep rendering the identical bundle during migration. Switching it is a plugin-contract change that needs the agent owners, and nothing in CI would catch a released agent rejecting the new value. Tracked as a follow-up.
 	if !validation.GetPromotable() ||
 		validation.GetStaticValidation() != builderv0.KubernetesManifestValidation_STATUS_PASSED {
 		return fmt.Errorf("plugin did not return a successfully validated promotable Kubernetes output")
