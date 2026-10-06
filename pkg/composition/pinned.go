@@ -588,6 +588,10 @@ type rawWorkspaceModuleTrustProbe struct {
 	Workspaces []struct {
 		Name string `yaml:"name"`
 		Path string `yaml:"path"`
+		// A released import carries no path: these are what it is resolved from.
+		Source    string `yaml:"source"`
+		Version   string `yaml:"version"`
+		Workspace string `yaml:"workspace"`
 	} `yaml:"workspaces"`
 }
 
@@ -653,13 +657,20 @@ const ModuleResolutionKey = "module-resolution"
 // `resolution:` spelling, which core silently drops on its next write to the
 // file and which therefore must never appear to work.
 func LoadModuleResolutions(workspaceDir string) (map[string]WorkspaceResolution, error) {
-	return loadModuleResolutions(workspaceDir, map[string]bool{})
+	return LoadModuleResolutionsContext(context.Background(), workspaceDir)
+}
+
+// LoadModuleResolutionsContext is LoadModuleResolutions with a context, which a
+// released import needs: resolving one pulls an artifact, and a caller that can
+// be cancelled should be.
+func LoadModuleResolutionsContext(ctx context.Context, workspaceDir string) (map[string]WorkspaceResolution, error) {
+	return loadModuleResolutions(ctx, workspaceDir, map[string]bool{})
 }
 
 // loadModuleResolutions is LoadModuleResolutions plus the set of workspace
 // directories already visited, so a cycle of imports terminates instead of
 // recursing until the stack goes.
-func loadModuleResolutions(workspaceDir string, seen map[string]bool) (map[string]WorkspaceResolution, error) {
+func loadModuleResolutions(ctx context.Context, workspaceDir string, seen map[string]bool) (map[string]WorkspaceResolution, error) {
 	key, err := filepath.Abs(workspaceDir)
 	if err != nil {
 		key = workspaceDir
@@ -691,12 +702,25 @@ func loadModuleResolutions(workspaceDir string, seen map[string]bool) (map[strin
 	for _, imported := range probe.Workspaces {
 		path := strings.TrimSpace(imported.Path)
 		if path == "" {
-			continue // imported by release, not by path: nothing on disk to read
-		}
-		if !filepath.IsAbs(path) {
+			// Imported by release. It still has a module-resolution block; it
+			// just is not on disk until the artifact is pulled. Resolving it
+			// here is what lets a consumer drop the `path:` stopgap -- without
+			// it, a released import inherits nothing and lands back on the
+			// error this inheritance exists to remove.
+			resolved, err := ResolveWorkspaceReference(ctx, &resources.WorkspaceReference{
+				Name:      imported.Name,
+				Source:    imported.Source,
+				Version:   imported.Version,
+				Workspace: imported.Workspace,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("imported workspace %q: %w", imported.Name, err)
+			}
+			path = resolved
+		} else if !filepath.IsAbs(path) {
 			path = filepath.Join(workspaceDir, path)
 		}
-		inherited, err := loadModuleResolutions(path, seen)
+		inherited, err := loadModuleResolutions(ctx, path, seen)
 		if err != nil {
 			return nil, fmt.Errorf("imported workspace %q: %w", imported.Name, err)
 		}
