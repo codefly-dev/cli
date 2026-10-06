@@ -65,27 +65,27 @@ func (a *WorkContextAuthority) Authorize(
 	_ context.Context,
 	verified *workcontext.Verified,
 	admission Admission,
-) (*basev0.WorkContextV1, error) {
+) error {
 	if a == nil {
-		return nil, fmt.Errorf("%w: Work Context authority is not initialized", ErrInvalid)
+		return fmt.Errorf("%w: Work Context authority is not initialized", ErrInvalid)
 	}
 	if verified == nil {
-		return nil, fmt.Errorf("%w: no verified Work Context was supplied; this component does not verify capabilities and will not accept an unverified one", ErrInvalid)
+		return fmt.Errorf("%w: no verified Work Context was supplied; this component does not verify capabilities and will not accept an unverified one", ErrInvalid)
 	}
 	if strings.TrimSpace(admission.ProducerID) == "" {
-		return nil, fmt.Errorf("%w: execution producer ID is required", ErrInvalid)
+		return fmt.Errorf("%w: execution producer ID is required", ErrInvalid)
 	}
 	claims := verified.Context()
 	if claims.GetIssuer() != a.issuer {
-		return nil, fmt.Errorf("%w: capability was minted by issuer %q, not %q", ErrInvalid, claims.GetIssuer(), a.issuer)
+		return fmt.Errorf("%w: capability was minted by issuer %q, not %q", ErrInvalid, claims.GetIssuer(), a.issuer)
 	}
 	if claims.GetAudience() != a.audience {
-		return nil, fmt.Errorf("%w: capability was minted for audience %q, not %q", ErrInvalid, claims.GetAudience(), a.audience)
+		return fmt.Errorf("%w: capability was minted for audience %q, not %q", ErrInvalid, claims.GetAudience(), a.audience)
 	}
 	if err := requireExplicitEvidenceScope(verified.EffectiveScopes(), admission.ProducerID); err != nil {
-		return nil, fmt.Errorf("authorize execution evidence producer: %w", err)
+		return fmt.Errorf("authorize execution evidence producer: %w", err)
 	}
-	return claims, nil
+	return nil
 }
 
 // requireExplicitEvidenceScope demands that the final actor's effective

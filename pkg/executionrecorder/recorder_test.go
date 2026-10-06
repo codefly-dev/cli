@@ -17,7 +17,6 @@ import (
 	"github.com/codefly-dev/cli/pkg/executionattestor"
 	"github.com/codefly-dev/cli/pkg/executiondispatcher"
 	"github.com/codefly-dev/cli/pkg/executionjournal"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
 	workcontext "github.com/codefly-dev/sdk-go/workcontext"
 	workcontextgrpc "github.com/codefly-dev/sdk-go/workcontext/grpctransport"
@@ -190,8 +189,8 @@ func TestRecorderProcessLossRecoversAndExportsStartedThenUncertain(t *testing.T)
 			context.Context,
 			*workcontext.Verified,
 			Admission,
-		) (*basev0.WorkContextV1, error) {
-			return nil, errors.New("recovery must not re-authorize an already admitted start")
+		) error {
+			return errors.New("recovery must not re-authorize an already admitted start")
 		}),
 		Producer: &executionv1.ExecutionProducerV1{
 			Id: "codefly.execution", Component: "gateway", Release: "v0.1.27",
@@ -295,8 +294,8 @@ func appendStartedBeforeProcessLoss(stateDir string) error {
 			context.Context,
 			*workcontext.Verified,
 			Admission,
-		) (*basev0.WorkContextV1, error) {
-			return testClaims(), nil
+		) error {
+			return nil
 		}),
 		Producer: &executionv1.ExecutionProducerV1{
 			Id: "codefly.execution", Component: "gateway", Release: "v0.1.27",
@@ -305,7 +304,7 @@ func appendStartedBeforeProcessLoss(stateDir string) error {
 	if err != nil {
 		return err
 	}
-	verified, err := conformanceVerified(ctx)
+	verified, err := mintedCapability(ctx, evidenceScope(fixtureProducerID))
 	if err != nil {
 		return err
 	}
@@ -328,8 +327,8 @@ func TestRecorderRejectsAuthorityFailureBeforeJournal(t *testing.T) {
 			context.Context,
 			*workcontext.Verified,
 			Admission,
-		) (*basev0.WorkContextV1, error) {
-			return nil, errors.New("forged")
+		) error {
+			return errors.New("forged")
 		}),
 		Producer: fixture.producer,
 		Now:      fixture.clock.Now,
@@ -399,17 +398,10 @@ func newRecorderFixture(t *testing.T) *recorderFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claims := testClaims()
-	authority := AuthorityFunc(func(
-		_ context.Context,
-		_ *workcontext.Verified,
-		admission Admission,
-	) (*basev0.WorkContextV1, error) {
-		if admission.OperationID != "operation-1" || admission.ProducerID != "codefly.execution" {
-			return nil, errors.New("unexpected admission")
-		}
-		return proto.Clone(claims).(*basev0.WorkContextV1), nil
-	})
+	// The REAL authority, over the capability's own scopes. A stub permitting
+	// everything would have left the whole authorization path untested here
+	// and, worse, been the second source of claims round 15 found.
+	authority := fixtureAuthority(t)
 	producer := &executionv1.ExecutionProducerV1{
 		Id: "codefly.execution", Component: "gateway", Release: "v0.1.25",
 	}
@@ -433,13 +425,16 @@ func (f *recorderFixture) beginInput() BeginInput {
 
 func testBeginInput() BeginInput {
 	before := sha256.Sum256([]byte("before"))
-	projectID := "project-warden"
+	// The capability's workspace and project. The recorder refuses a target
+	// naming any other, which is the point: see
+	// TestRecorderRejectsTargetOutsideWorkContextBeforeJournal.
+	projectID := fixtureProjectID
 	return BeginInput{
 		OperationKind:        "code.apply-edit",
 		OperationInputSHA256: hexDigest(sha256.Sum256([]byte("apply-edit request"))),
 		Assurance:            executionv1.ExecutionAssurance_EXECUTION_ASSURANCE_PLUGIN_EXECUTED,
 		Target: &executionv1.ExecutionTargetV1{
-			WorkspaceId: "workspace-codefly", Service: "warden", ProjectId: &projectID,
+			WorkspaceId: fixtureWorkspaceID, Service: "warden", ProjectId: &projectID,
 		},
 		Resources: []*executionv1.ExecutionResourceV1{{
 			Kind: "workspace.path", Reference: "modules/warden/main.go",
@@ -447,35 +442,6 @@ func testBeginInput() BeginInput {
 		}},
 	}
 }
-
-func testClaims() *basev0.WorkContextV1 {
-	started := time.Date(2026, time.July, 23, 19, 0, 0, 0, time.UTC)
-	workspaceID := "workspace-codefly"
-	projectID := "project-warden"
-	return &basev0.WorkContextV1{
-		Typ: "codefly.work-context/v1", Algorithm: "Ed25519",
-		KeyId: "accounts-key-1", Issuer: "accounts", Audience: "codefly.execution",
-		NotBeforeUnix: started.Add(-time.Minute).Unix(), IssuedAtUnix: started.Add(-time.Minute).Unix(),
-		ExpiresAtUnix: started.Add(4 * time.Minute).Unix(), Nonce: "nonce-1",
-		AuthorizationRevision: 4, ReplayPolicy: "idempotent",
-		TenantId: "tenant-codefly", OwnerPrincipalId: "principal-antoine",
-		TaskId: "task-1", SessionId: "session-1",
-		WorkspaceId: &workspaceID, ProjectId: &projectID,
-		// The seal binds the capability to one installation and one execution.
-		// Core requires it as of v0.9.1; the execution pair below is optional
-		// but must be whole, and this fixture sets it because the receipts it
-		// signs describe a plugin that actually ran.
-		Seal: &basev0.WorkSealV1{
-			PrincipalEpoch:       1,
-			InstallationId:       "installation-warden",
-			InstallationRevision: 3,
-			BuildIncarnation:     uint64Pointer(7),
-			ImageDigest:          stringPointer("sha256:" + strings.Repeat("a", 64)),
-		},
-	}
-}
-
-func uint64Pointer(value uint64) *uint64 { return &value }
 
 type testClock struct {
 	mu   sync.Mutex

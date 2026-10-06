@@ -289,29 +289,6 @@ func enableGovernedGateway(
 	}
 	t.Cleanup(func() { _ = journal.Close() })
 
-	now := time.Now().UTC()
-	workspaceID := "workspace-codefly"
-	projectID := "project-warden"
-	claims := &basev0.WorkContextV1{
-		Typ: "codefly.work-context/v1", Algorithm: "Ed25519",
-		KeyId: "accounts-key-1", Issuer: "accounts", Audience: "codefly.execution",
-		NotBeforeUnix: now.Add(-time.Minute).Unix(), IssuedAtUnix: now.Add(-time.Minute).Unix(),
-		ExpiresAtUnix: now.Add(4 * time.Minute).Unix(), Nonce: "gateway-test-nonce",
-		AuthorizationRevision: 7, ReplayPolicy: "idempotent",
-		TenantId: "tenant-codefly", OwnerPrincipalId: "principal-antoine",
-		TaskId: "task-1", SessionId: "session-1",
-		WorkspaceId: &workspaceID, ProjectId: &projectID,
-		// Core v0.9.1 requires the seal: a capability names the installation it
-		// is held through and the execution it was minted for. The execution
-		// pair is optional but must be whole.
-		Seal: &basev0.WorkSealV1{
-			PrincipalEpoch:       1,
-			InstallationId:       "installation-gateway",
-			InstallationRevision: 2,
-			BuildIncarnation:     uint64Pointer(5),
-			ImageDigest:          stringPointer("sha256:" + strings.Repeat("b", 64)),
-		},
-	}
 	recorder, err := executionrecorder.New(executionrecorder.Config{
 		Journal:  journal,
 		Attestor: attestor,
@@ -319,11 +296,11 @@ func enableGovernedGateway(
 			_ context.Context,
 			_ *workcontext.Verified,
 			admission executionrecorder.Admission,
-		) (*basev0.WorkContextV1, error) {
+		) error {
 			if admission.OperationID != operationID {
-				return nil, fmt.Errorf("unexpected operation %q", admission.OperationID)
+				return fmt.Errorf("unexpected operation %q", admission.OperationID)
 			}
-			return claims, nil
+			return nil
 		}),
 		Producer: &executionv1.ExecutionProducerV1{
 			Id: "codefly.execution", Component: "gateway", Release: "test",

@@ -44,26 +44,34 @@ type Admission struct {
 	Target        *executionv1.ExecutionTargetV1
 }
 
-// Authority authorizes an ALREADY-VERIFIED capability and returns its claims.
+// Authority decides whether an ALREADY-VERIFIED capability may do this, and
+// returns nothing but that decision.
+//
+// It deliberately does NOT return claims. It used to, and the claims it
+// returned were then signed into the receipt beside verified.SHA256() — two
+// sources for one fact, so a receipt could attest to a tenant, workspace or
+// actor the capability never named, while its digest pointed at a capability
+// that said something else. Comparing the two before signing would have caught
+// that; not having a second source cannot be forgotten. The recorder reads the
+// claims from the capability itself.
 //
 // The parameter is a *workcontext.Verified, which only core's Verifier
 // constructs, so an unverified capability cannot reach this interface: there is
-// no token parameter to pass one through. That is structural rather than
-// documentary — see WorkContextAuthority for why this component does not
-// verify.
+// no token parameter to pass one through. See WorkContextAuthority for why this
+// component does not verify.
 type Authority interface {
-	Authorize(context.Context, *workcontext.Verified, Admission) (*basev0.WorkContextV1, error)
+	Authorize(context.Context, *workcontext.Verified, Admission) error
 }
 
 // AuthorityFunc adapts a function into Authority.
-type AuthorityFunc func(context.Context, *workcontext.Verified, Admission) (*basev0.WorkContextV1, error)
+type AuthorityFunc func(context.Context, *workcontext.Verified, Admission) error
 
 // Authorize implements Authority.
 func (fn AuthorityFunc) Authorize(
 	ctx context.Context,
 	verified *workcontext.Verified,
 	admission Admission,
-) (*basev0.WorkContextV1, error) {
+) error {
 	return fn(ctx, verified, admission)
 }
 
@@ -197,12 +205,16 @@ func (r *Recorder) Begin(
 	if verified == nil {
 		return BeginResult{}, fmt.Errorf("%w: a governed execution requires a verified Work Context; this recorder does not verify capabilities and will not attest to an unverified one", ErrInvalid)
 	}
-	claims, err := r.authority.Authorize(ctx, verified, admission)
-	if err != nil {
-		return BeginResult{}, fmt.Errorf("%w: authorize Work Context: %v", ErrInvalid, err)
+	if authorizeErr := r.authority.Authorize(ctx, verified, admission); authorizeErr != nil {
+		return BeginResult{}, fmt.Errorf("%w: authorize Work Context: %v", ErrInvalid, authorizeErr)
 	}
+	// The claims come from the CAPABILITY, never from the authority. The
+	// receipt carries both these claims and verified.SHA256(), so taking them
+	// from two sources let a receipt attest to a tenant the digest's capability
+	// never named.
+	claims := verified.Context()
 	if claims == nil {
-		return BeginResult{}, fmt.Errorf("%w: authority returned no Work Context claims", ErrInvalid)
+		return BeginResult{}, fmt.Errorf("%w: the verified Work Context carries no claims", ErrInvalid)
 	}
 	claims = proto.Clone(claims).(*basev0.WorkContextV1)
 	claimsWorkspace := claims.GetWorkspaceId()

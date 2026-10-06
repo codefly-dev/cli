@@ -21,7 +21,7 @@ func TestAuthorizeRefusesWithoutAVerifiedCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = authority.Authorize(t.Context(), nil, Admission{ProducerID: "codefly.execution"})
+	err = authority.Authorize(t.Context(), nil, Admission{ProducerID: "codefly.execution"})
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("want ErrInvalid, got %v", err)
 	}
@@ -51,7 +51,7 @@ func TestAuthorizeRefusesAnotherIssuerOrAudience(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = authority.Authorize(t.Context(), verified, Admission{ProducerID: "codefly.execution"})
+			err = authority.Authorize(t.Context(), verified, Admission{ProducerID: "codefly.execution"})
 			if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), blocked.want) {
 				t.Fatalf("want a %q refusal, got %v", blocked.want, err)
 			}
@@ -63,7 +63,18 @@ func TestAuthorizeRefusesAnotherIssuerOrAudience(t *testing.T) {
 // its effective authority does not name this producer's evidence — so the two
 // checks are independent and neither stands in for the other.
 func TestAuthorizeRefusesAVerifiedCapabilityWithoutEvidenceAuthority(t *testing.T) {
-	verified := verifiedFixture(t)
+	// Minted with authority over a RECORD, not over this producer's evidence.
+	// Explicit, because the previous version of this test relied on the shared
+	// fixture happening to carry no evidence scope: granting the fixture one
+	// turned this test green while asserting nothing.
+	verified, err := mintedCapability(t.Context(), []*basev0.WorkScopeV1{{
+		ResourceKind: "record",
+		Actions:      []string{"read"},
+		ResourceIds:  []string{"record-conformance"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	claims := verified.Context()
 	authority, err := NewWorkContextAuthority(WorkContextAuthorityConfig{
 		Issuer: claims.GetIssuer(), Audience: claims.GetAudience(),
@@ -71,7 +82,16 @@ func TestAuthorizeRefusesAVerifiedCapabilityWithoutEvidenceAuthority(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = authority.Authorize(t.Context(), verified, Admission{ProducerID: "codefly.execution"})
+	// And the SAME capability, once it names this producer's evidence, is
+	// authorized — so the refusal above is the scope and nothing else.
+	granted, err := mintedCapability(t.Context(), evidenceScope(fixtureProducerID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := authority.Authorize(t.Context(), granted, Admission{ProducerID: fixtureProducerID}); err != nil {
+		t.Fatalf("a capability naming this producer's evidence was refused: %v", err)
+	}
+	err = authority.Authorize(t.Context(), verified, Admission{ProducerID: "codefly.execution"})
 	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "appends") {
 		t.Fatalf("want an evidence-authority refusal, got %v", err)
 	}
