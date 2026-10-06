@@ -130,7 +130,7 @@ func materializePinnedModulesLocked(ctx context.Context, workspace *resources.Wo
 	// than per module: it is one side-parse of workspace.codefly.yaml, and a
 	// malformed declaration must fail the whole materialization rather than
 	// resolve some modules and not others.
-	declared, err := LoadModuleResolutions(workspace.Dir())
+	declared, err := LoadModuleResolutionsContext(ctx, workspace.Dir())
 	if err != nil {
 		return err
 	}
@@ -362,7 +362,7 @@ func loadMaterializationState(ctx context.Context, workspace *resources.Workspac
 	if err != nil {
 		return nil, err
 	}
-	declared, err := LoadModuleResolutions(workspace.Dir())
+	declared, err := LoadModuleResolutionsContext(ctx, workspace.Dir())
 	if err != nil {
 		return nil, err
 	}

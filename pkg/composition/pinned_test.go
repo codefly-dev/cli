@@ -783,3 +783,55 @@ modules:
 		"b-module": WorkspaceResolutionGit,
 	}, declared)
 }
+
+// A released import is resolved, not skipped.
+//
+// The first version of this inheritance (#907) handled `path:` imports only and
+// skipped a reference carrying source + version, on the grounds that there was
+// "nothing on disk to read". That left a consumer unable to drop the `path:`
+// stopgap: the moment the import named a release, its module-resolution stopped
+// being inherited and the render landed back on "module <x> is pinned but
+// workspace declares no module-trust".
+func TestLoadModuleResolutionsResolvesAReleasedImport(t *testing.T) {
+	root := t.TempDir()
+	product := filepath.Join(root, "product")
+	require.NoError(t, os.MkdirAll(product, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(product, resources.WorkspaceConfigurationName), []byte(`name: product
+workspaces:
+    - name: platform-core
+      source: owner/platform-core
+      version: "0.0.1"
+module-resolution:
+    wiki: git
+modules:
+    - name: wiki
+      source: owner/solutions
+      version: "0.0.16"
+`), 0o600))
+
+	// No resolver can reach a registry here, so the released import must FAIL
+	// loudly naming the workspace -- not be silently skipped, which is what
+	// produced the bug this test exists for.
+	_, err := LoadModuleResolutions(product)
+	require.Error(t, err, "a released import that cannot be resolved must say so, not read as nothing declared")
+	require.Contains(t, err.Error(), "platform-core")
+}
+
+// The probe carries what a released import declares, so the resolver has
+// something to resolve from.
+func TestWorkspaceProbeCarriesAReleasedImportsCoordinates(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, resources.WorkspaceConfigurationName), []byte(`name: product
+workspaces:
+    - name: platform-core
+      source: owner/platform-core
+      version: "0.0.1"
+      workspace: sub
+`), 0o600))
+	probe, err := loadWorkspaceProbe(dir)
+	require.NoError(t, err)
+	require.Len(t, probe.Workspaces, 1)
+	require.Equal(t, "owner/platform-core", probe.Workspaces[0].Source)
+	require.Equal(t, "0.0.1", probe.Workspaces[0].Version)
+	require.Equal(t, "sub", probe.Workspaces[0].Workspace)
+}

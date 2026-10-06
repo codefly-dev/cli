@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/codefly-dev/cli/pkg/composition"
 	"os"
 	"sort"
 	"strings"
@@ -39,6 +40,12 @@ container images, and deploy services to configured environments.`,
   codefly run service api
   codefly deploy service api --env=staging`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// A `workspaces:` entry naming a release has no directory until a host
+		// produces one; core refuses with "requires host resolution" when no
+		// resolver is registered. Registering here rather than at each of the
+		// six LoadWorkspaceFromDir call sites means a versioned import resolves
+		// wherever a workspace is loaded, not only where someone remembered.
+		cmd.SetContext(composition.WithWorkspaceResolver(cmd.Context()))
 		return applyRootOptions()
 	},
 	Run: func(cmd *cobra.Command, args []string) {
