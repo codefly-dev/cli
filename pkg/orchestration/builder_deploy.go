@@ -582,9 +582,14 @@ func validateKubernetesDeploymentOutput(
 		)
 	}
 	validation := kubernetes.GetValidation()
-	if !validation.GetPromotable() ||
+	// `restricted`, not `promotable`: core's proto says promotable "names a
+	// delivery decision in a plugin-facing contract" and is retained only for
+	// migration, always carrying the same value, while restricted "reports a
+	// security property, never a delivery decision". The security property is
+	// what this gate is actually asserting.
+	if !validation.GetRestricted() ||
 		validation.GetStaticValidation() != builderv0.KubernetesManifestValidation_STATUS_PASSED {
-		return fmt.Errorf("plugin did not return a successfully validated promotable Kubernetes output")
+		return fmt.Errorf("plugin did not return a successfully validated restricted Kubernetes output")
 	}
 	if validationContext != "" {
 		if validation.GetServerSideValidation() != builderv0.KubernetesManifestValidation_STATUS_PASSED {

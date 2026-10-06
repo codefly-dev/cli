@@ -118,12 +118,14 @@ func TestValidateKubernetesDeploymentOutputRequiresRequestedProfile(t *testing.T
 	output.GetKubernetes().Validation = &builderv0.KubernetesManifestValidation{
 		StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED,
 		ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_PASSED,
-		Promotable:           true,
+		Restricted:           true,
 	}
 	if err := validateKubernetesDeploymentOutput(requested, output, ""); err != nil {
 		t.Fatal(err)
 	}
-	output.GetKubernetes().Validation.Promotable = false
+	// The security property, not the delivery decision: clearing restricted is
+	// what must refuse.
+	output.GetKubernetes().Validation.Restricted = false
 	if err := validateKubernetesDeploymentOutput(requested, output, ""); err == nil || !strings.Contains(err.Error(), "successfully validated") {
 		t.Fatalf("validation error = %v", err)
 	}

@@ -391,7 +391,7 @@ func validKubernetesDeploymentOutput(profile builderv0.KubernetesOutputProfile) 
 				Validation: &builderv0.KubernetesManifestValidation{
 					StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED,
 					ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_PASSED,
-					Promotable:           true,
+					Restricted:           true,
 					ValidatedContext:     "k3d-codefly-local",
 				},
 			},
