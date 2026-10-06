@@ -692,7 +692,7 @@ func TestRenderedTreeDeliversItsBindings(t *testing.T) {
 // for admission, so the two files describe the same pods for different ends.
 func TestPresenceNamesOnlyTheWorkloadsThatMint(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "modules", "crm")
-	_, err := RenderOwnedTree(context.Background(), solutionRenderOptions(destination), renderWorkload(cellDeployment))
+	_, err := RenderOwnedTree(context.Background(), solutionRenderOptions(destination), renderWorkload(hostedDeployment))
 	if err != nil {
 		t.Fatal(err)
 	}

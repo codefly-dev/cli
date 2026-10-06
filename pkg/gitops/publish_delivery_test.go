@@ -11,12 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codefly-dev/core/solutionhost/cell"
-
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
+	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/solutionhost"
-	"github.com/codefly-dev/core/solutionhost/modulecontract"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
@@ -412,71 +410,6 @@ func TestRollbackResettlesWhatItRestores(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, documentByID(withdrawn, "example.prod.crm").Removed, "restoring a tree from before the declaration withdraws it")
 
-}
-
-// TestPublishMergesItsCellContributionIntoTheDeliveredCell: the local cell is
-// built from whatever module trees are on disk, so a publish takes only its
-// own module's entry from it and sets that into the cell the base branch
-// delivers, every other module's entry kept. One module's publish never
-// erases another from the platform's inventory, and a module rendered
-// locally but not published is not added on another's account.
-func TestPublishMergesItsCellContributionIntoTheDeliveredCell(t *testing.T) {
-	ctx := context.Background()
-	repository := newDeliveryRepository(t)
-	cellPath := "deployments/cells/prod/cell.yaml"
-	namespace := func(module, digest string) cell.Namespace {
-		return cell.Namespace{Name: "ns-" + module, Module: module, Workloads: []cell.Workload{{
-			Name: module, Kind: "Deployment", Selector: map[string]string{"app": "api"}, Service: module + "/api", ServiceAccount: "api",
-			SPIFFEID: "spiffe://cluster.example/ns/ns-" + module + "/sa/api", Authenticating: "api",
-			Containers: []cell.Container{{Name: "api", Image: cell.Image{Repository: "registry.example.test/" + module, Digest: "sha256:" + strings.Repeat(digest, 64)}}},
-			Artifact:   cell.Artifact{Name: "api", Digest: "sha256:" + strings.Repeat(digest, 64)},
-		}}}
-	}
-	local := &cell.File{Schema: cell.SchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example", Environment: "prod",
-		Namespaces: []cell.Namespace{namespace("crm", "b"), namespace("shop", "c")}}
-
-	// No cell delivered yet: the publish contributes crm alone. shop, rendered
-	// locally but not the module being published, is not added.
-	merged, _, err := mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "crm", nil)
-	require.NoError(t, err)
-	require.Equal(t, []string{"crm"}, cellModules(merged))
-	require.Equal(t, "example", merged.Domain)
-
-	// billing and an older crm delivered: crm is replaced, billing kept, shop
-	// still not added.
-	delivered := &cell.File{Schema: cell.SchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example", Environment: "prod",
-		Namespaces: []cell.Namespace{namespace("billing", "d"), namespace("crm", "a")}}
-	data, err := yaml.Marshal(delivered)
-	require.NoError(t, err)
-	full := filepath.Join(repository.repo, filepath.FromSlash(cellPath))
-	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
-	require.NoError(t, os.WriteFile(full, data, 0o644))
-	for _, args := range [][]string{{"add", "-A", "--", cellPath}, {"commit", "-q", "-m", "cell"}, {"update-ref", "refs/remotes/origin/main", "HEAD"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repository.repo
-		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.test", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.test")
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "git %v: %s", args, out)
-	}
-	merged, _, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "crm", nil)
-	require.NoError(t, err)
-	require.Equal(t, []string{"billing", "crm"}, cellModules(merged))
-	require.Equal(t, "sha256:"+strings.Repeat("b", 64), merged.Namespaces[1].Workloads[0].Artifact.Digest, "crm is this publish's render")
-	require.Equal(t, "sha256:"+strings.Repeat("d", 64), merged.Namespaces[0].Workloads[0].Artifact.Digest, "billing is as delivered")
-
-	// A publish of a module the local cell has no entry for is refused: its
-	// tree was not rendered for this environment.
-	_, _, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "ledger", nil)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "carries no entry for module ledger")
-}
-
-func cellModules(cellFile *cell.File) []string {
-	modules := make([]string, 0, len(cellFile.Namespaces))
-	for _, namespace := range cellFile.Namespaces {
-		modules = append(modules, namespace.Module)
-	}
-	return modules
 }
 
 func TestPublishRefusesToWithdrawEverythingWhenTheHostDeclarationIsGone(t *testing.T) {
@@ -954,56 +887,6 @@ func TestPublishRefusesAReusedCarrierThatSignsOtherBytes(t *testing.T) {
 	require.Contains(t, err.Error(), "signs other bytes")
 }
 
-// TestCellMergeReconcilesEdgesAndRefusesAnotherHostsCell: the publishing
-// module's consumer edges in other modules' delivered entries follow its
-// render — dropped where it no longer consumes, added where it does now —
-// and a contribution made under another host declaration is refused rather
-// than relabelling entries it does not own.
-func TestCellMergeReconcilesEdgesAndRefusesAnotherHostsCell(t *testing.T) {
-	ctx := context.Background()
-	repository := newDeliveryRepository(t)
-	cellPath := "deployments/cells/prod/cell.yaml"
-	provider := cell.Namespace{Name: "ns-billing", Module: "billing", Workloads: []cell.Workload{{
-		Name: "billing", Kind: "Deployment", Selector: map[string]string{"app": "billing"}, Service: "billing/api", ServiceAccount: "api",
-		SPIFFEID: "spiffe://cluster.example/ns/ns-billing/sa/api", Authenticating: "api",
-		Containers: []cell.Container{{Name: "api", Image: cell.Image{Repository: "registry.example.test/billing", Digest: "sha256:" + strings.Repeat("d", 64)}}},
-		Artifact:   cell.Artifact{Name: "api", Digest: "sha256:" + strings.Repeat("d", 64)},
-		Endpoints:  []cell.Endpoint{{Name: "grpc", Visibility: "public", Consumers: []string{"crm/api", "crm/worker", "shop/api"}}},
-	}}}
-	delivered := &cell.File{Schema: cell.SchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example", Environment: "prod",
-		Namespaces: []cell.Namespace{provider, {Name: "ns-crm", Module: "crm"}}}
-	data, err := yaml.Marshal(delivered)
-	require.NoError(t, err)
-	full := filepath.Join(repository.repo, filepath.FromSlash(cellPath))
-	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
-	require.NoError(t, os.WriteFile(full, data, 0o600))
-	for _, args := range [][]string{{"add", "-A", "--", cellPath}, {"commit", "-q", "-m", "cell"}, {"update-ref", "refs/remotes/origin/main", "HEAD"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repository.repo
-		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.test", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.test")
-		out, runErr := cmd.CombinedOutput()
-		require.NoError(t, runErr, string(out))
-	}
-	local := &cell.File{Schema: cell.SchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example", Environment: "prod",
-		Namespaces: []cell.Namespace{{Name: "ns-crm", Module: "crm"}}}
-	merged, _, err := mergeCellContribution(ctx, repository.repo, "main", cellPath, local, "crm", []ConsumedEndpoint{{Provider: "billing/api", Endpoint: "grpc", Consumer: "crm/api"}})
-	require.NoError(t, err)
-	var billing *cell.Namespace
-	for i := range merged.Namespaces {
-		if merged.Namespaces[i].Module == "billing" {
-			billing = &merged.Namespaces[i]
-		}
-	}
-	require.NotNil(t, billing)
-	require.Equal(t, []string{"crm/api", "shop/api"}, billing.Workloads[0].Endpoints[0].Consumers)
-
-	moved := *local
-	moved.Domain = "other"
-	_, _, err = mergeCellContribution(ctx, repository.repo, "main", cellPath, &moved, "crm", nil)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), `domain "example"`)
-}
-
 // TestPublishResignsAReusedCarrierTheReleasePolicyNoLongerAdmits: a carrier
 // delivered before that still signs its document but no longer passes the
 // release policy — the signing identity rotated, or the run that signed it
@@ -1194,24 +1077,6 @@ func TestRollbackRestoresOtherEnvironmentsOverlaysAsDelivered(t *testing.T) {
 	require.False(t, deliveredBinding(t, repository.target, "example.prod.crm").Removed, "the historical revision holds the live document")
 	require.NoError(t, restoreDeliveredOverlays(ctx, repository.repo, "main", repository.targetPath))
 	require.True(t, deliveredBinding(t, repository.target, "example.prod.crm").Removed, "the tombstone the base branch delivered survives the restore")
-}
-
-// TestPublishRefusesACellRenderedForAnotherHost: the rendered cell is held to
-// the host the environment declares at publish, as every document is.
-func TestPublishRefusesACellRenderedForAnotherHost(t *testing.T) {
-	repository := newDeliveryRepository(t)
-	source := filepath.Join(t.TempDir(), "cell.yaml")
-	data, err := yaml.Marshal(&cell.File{Schema: cell.SchemaV1, Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example",
-		Namespaces: []cell.Namespace{{Name: "crm", Module: "crm"}}})
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(source, data, 0o600))
-	publication := &deliveryPublication{baseBranch: "main", cellSource: source, cellPath: "deployments/cells/prod/cell.yaml",
-		options: deliveryPublishOptions{Module: "crm", Coordinate: "elsewhere/prod/x", Component: "platform-host", Domain: "example", TrustDomain: "cluster.example"}}
-	var contribution cell.File
-	require.NoError(t, yaml.Unmarshal(data, &contribution))
-	err = stageCellContribution(context.Background(), repository.repo, publication, &contribution, nil)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "the cell file describes host example/prod/region-a")
 }
 
 func TestReleasePublishRequiresTheWorkflowIdentityToDeliver(t *testing.T) {

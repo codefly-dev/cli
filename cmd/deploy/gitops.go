@@ -473,12 +473,6 @@ func printSolutionHostBindings(result *gitops.RenderResult) {
 	for _, declared := range result.SolutionHostBindings {
 		cli.Info("Declared solution host binding %s at provisional generation %d (%s); publish settles the generation against the delivery repository and signs the document", declared.Binding, declared.Generation, declared.Path)
 	}
-	if result.Cell != nil {
-		cli.Info("Cell file %s covers modules %s", result.Cell.Path, strings.Join(result.Cell.Modules, ", "))
-		if len(result.Cell.Skipped) > 0 {
-			cli.Info("Cell file leaves out %s: rendered for another environment", strings.Join(result.Cell.Skipped, ", "))
-		}
-	}
 	groups := make([]string, 0, len(result.StaleGroupConsumers))
 	for group := range result.StaleGroupConsumers {
 		groups = append(groups, group)

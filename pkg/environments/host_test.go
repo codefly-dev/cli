@@ -1,12 +1,10 @@
 package environments
 
 import (
-	"slices"
 	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
-	"gopkg.in/yaml.v3"
 )
 
 // hostBlock is a complete host declaration, every field present. The tests
@@ -104,113 +102,6 @@ func TestHostDeclarationRefusesAPartialOrMalformedIdentity(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			workspace, err := resources.LoadFromBytes[resources.Workspace]([]byte(
 				"name: example\nenvironments:\n  - name: prod\n    namespace: example\n    host:\n" + table.yaml))
-			if err == nil {
-				_, err = Select(workspace, "prod")
-			}
-			if err == nil || !strings.Contains(err.Error(), table.want) {
-				t.Fatalf("declaration was accepted or refused wrongly: %v (want %q)", err, table.want)
-			}
-		})
-	}
-}
-
-// TestEgressIsADeclarationCarriedNotDerived pins the per-service egress
-// declaration: module-qualified keys, bare host names meaning port 443 or
-// {name, port} for another port, read back sorted with the port explicit.
-func TestEgressIsADeclarationCarriedNotDerived(t *testing.T) {
-	workspace, err := resources.LoadFromBytes[resources.Workspace]([]byte(`name: example
-environments:
-  - name: prod
-    namespace: example
-    egress:
-      platform/accounts: {hosts: [identity.example.test, api.github.com, {name: smtp.example.test, port: 587}]}
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	env, err := Select(workspace, "prod")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []EnvironmentEgressHost{{Name: "api.github.com", Port: 443}, {Name: "identity.example.test", Port: 443}, {Name: "smtp.example.test", Port: 587}}
-	if got := env.EgressHosts("platform", "accounts"); !slices.Equal(got, want) {
-		t.Fatalf("egress hosts %+v, want %+v", got, want)
-	}
-	if env.EgressHosts("platform", "frontend") != nil {
-		t.Fatal("a service declaring no egress reaches nothing")
-	}
-	// A bare name round-trips as a bare name, so a re-serialized workspace keeps
-	// the terse declaration; a declared port keeps its mapping.
-	encoded, err := yaml.Marshal(env.Egress["platform/accounts"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := string(encoded); !strings.Contains(got, "- identity.example.test\n") || !strings.Contains(got, "port: 587") {
-		t.Fatalf("egress re-serialized as:\n%s", got)
-	}
-	for name, table := range map[string]struct{ yaml, want string }{
-		"bare key":              {yaml: "      accounts: {hosts: [api.github.com]}\n", want: "module-qualified"},
-		"a URL":                 {yaml: "      platform/accounts: {hosts: [https://api.github.com/v3]}\n", want: "bare DNS host name"},
-		"a port in the name":    {yaml: "      platform/accounts: {hosts: [api.github.com:443]}\n", want: "bare DNS host name"},
-		"no host":               {yaml: "      platform/accounts: {hosts: []}\n", want: "declares no host"},
-		"an uppercase":          {yaml: "      platform/accounts: {hosts: [API.github.com]}\n", want: "bare DNS host name"},
-		"a port out of range":   {yaml: "      platform/accounts: {hosts: [{name: smtp.example.test, port: 70000}]}\n", want: "is not a port"},
-		"a host twice":          {yaml: "      platform/accounts: {hosts: [api.github.com, {name: api.github.com, port: 443}]}\n", want: "declares api.github.com:443 twice"},
-		"an unknown host field": {yaml: "      platform/accounts: {hosts: [{name: api.github.com, protocol: tls}]}\n", want: "unknown egress host field"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			workspace, err := resources.LoadFromBytes[resources.Workspace]([]byte(
-				"name: example\nenvironments:\n  - name: prod\n    namespace: example\n    egress:\n" + table.yaml))
-			if err == nil {
-				_, err = Select(workspace, "prod")
-			}
-			if err == nil || !strings.Contains(err.Error(), table.want) {
-				t.Fatalf("declaration was accepted or refused wrongly: %v (want %q)", err, table.want)
-			}
-		})
-	}
-}
-
-// TestCellGrantsAreADeclaration pins the per-service cell declaration: which
-// cell-provided resources a service binds and whether it mints a cloud
-// credential, module-qualified, read back sorted, and an entry that declares
-// nothing refused.
-func TestCellGrantsAreADeclaration(t *testing.T) {
-	workspace, err := resources.LoadFromBytes[resources.Workspace]([]byte(`name: example
-environments:
-  - name: prod
-    namespace: example
-    cell:
-      platform/accounts: {bindings: [vault, audit]}
-      platform/model: {bindings: [model_gateway], cloud-identity: true}
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	env, err := Select(workspace, "prod")
-	if err != nil {
-		t.Fatal(err)
-	}
-	accounts, declared := env.CellWorkload("platform", "accounts")
-	if !declared || !slices.Equal(accounts.Bindings, []string{"audit", "vault"}) || accounts.CloudIdentity {
-		t.Fatalf("accounts %+v (declared %v)", accounts, declared)
-	}
-	model, declared := env.CellWorkload("platform", "model")
-	if !declared || !slices.Equal(model.Bindings, []string{"model_gateway"}) || !model.CloudIdentity {
-		t.Fatalf("model %+v (declared %v)", model, declared)
-	}
-	if _, declared := env.CellWorkload("platform", "frontend"); declared {
-		t.Fatal("a service with no entry has no grant")
-	}
-	for name, table := range map[string]struct{ yaml, want string }{
-		"bare key":         {yaml: "      accounts: {bindings: [vault]}\n", want: "module-qualified"},
-		"nothing declared": {yaml: "      platform/accounts: {}\n", want: "declares nothing"},
-		"a binding twice":  {yaml: "      platform/accounts: {bindings: [vault, vault]}\n", want: "declared twice"},
-		"an uppercase":     {yaml: "      platform/accounts: {bindings: [Vault]}\n", want: "lowercase resource name"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			workspace, err := resources.LoadFromBytes[resources.Workspace]([]byte(
-				"name: example\nenvironments:\n  - name: prod\n    namespace: example\n    cell:\n" + table.yaml))
 			if err == nil {
 				_, err = Select(workspace, "prod")
 			}

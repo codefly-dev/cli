@@ -11,10 +11,9 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/core/configurations"
+	modulecontract "github.com/codefly-dev/core/contracts/module"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost/cell"
-	"github.com/codefly-dev/core/solutionhost/modulecontract"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,7 +42,7 @@ func TestTheModuleContractKitRunsThroughTheRender(t *testing.T) {
 	require.NoError(t, os.WriteFile(configuration, []byte(strings.Replace(string(config), "modules:\n  - name: shop\n", "modules:\n  - name: shop\n  - name: assistant\n", 1)), 0o644))
 	for rel, content := range map[string]string{
 		filepath.Join("modules", "assistant", resources.ModuleConfigurationName):                     "kind: module\nname: assistant\nservices:\n  - name: api\n",
-		filepath.Join("modules", "assistant", "services", "api", resources.ServiceConfigurationName): cellServiceYAML("api", "assistant") + "module-identity: true\n",
+		filepath.Join("modules", "assistant", "services", "api", resources.ServiceConfigurationName): hostedServiceYAML("api", "assistant") + "module-identity: true\n",
 		filepath.Join("modules", "assistant", "module.package.codefly.yaml"):                         "schema: codefly/module-package/v1\nid: acme/assistant\nversion: 1.0.0\n",
 		filepath.Join("configurations", "staging", "assistant.env"):                                  "MODEL_AUDIENCE=model-gateway\nMODEL_RESOURCE_KIND=modelservice.profiles\nMODEL_BINDING=model\nEVIDENCE_AUDIENCE=documents\nEVIDENCE_RESOURCE_KIND=documents.passages\nANNOTATIONS_PREFIX=annotations\n",
 	} {
@@ -143,15 +142,4 @@ func TestTheModuleContractKitAdapterFailsOnUnrelatedErrors(t *testing.T) {
 	verdict, past = kitVerdict([]AuthorityInstance{{}}, nil)
 	require.NoError(t, verdict)
 	require.False(t, past)
-}
-
-// TestTheCellKitRunsThroughThePublisher drives core's cell kit through the one
-// way this publisher reads a cell — the workspace's file, the record a render
-// writes with its tree and the delivered cell alike — so a cell core refuses
-// is refused here by the same name.
-func TestTheCellKitRunsThroughThePublisher(t *testing.T) {
-	cell.Run(t, func(document []byte) error {
-		_, err := readCellFile(document)
-		return err
-	})
 }

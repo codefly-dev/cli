@@ -15,7 +15,7 @@ import (
 // "accounts" whose "rest" endpoint is the delivery API.
 func writeHostWorkspace(t *testing.T, secured bool, withPort bool) *resources.Workspace {
 	t.Helper()
-	workspace := writeCellWorkspace(t)
+	workspace := writeHostedWorkspace(t)
 	service := devServiceYAML("accounts") + "endpoints:\n  - name: rest\n    api: rest\n    visibility: public\n"
 	if secured {
 		service += "    secured: true\n"
@@ -68,7 +68,7 @@ func TestDeliveryTargetIsResolvedFromTheCompositionNeverDeclared(t *testing.T) {
 
 func TestDeliveryTargetRefusesAnEndpointNobodyDeclared(t *testing.T) {
 	// The composition has no such module at all.
-	workspace := writeCellWorkspace(t)
+	workspace := writeHostedWorkspace(t)
 	_, err := resolveDeliveryTarget(context.Background(), workspace, selectedEnvironment(t, workspace, "staging"))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "the composition does not have")

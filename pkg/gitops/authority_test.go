@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
-	"github.com/codefly-dev/core/solutionhost/modulecontract"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
@@ -77,10 +77,10 @@ destinations:
 // configuration the contract's slots resolve from.
 func writeAuthorityWorkspace(t *testing.T) (*resources.Workspace, *resources.Module) {
 	t.Helper()
-	workspace := writeCellWorkspace(t)
+	workspace := writeHostedWorkspace(t)
 	files := map[string]string{
 		filepath.Join("modules", "shop", resources.ModuleConfigurationName):                     "kind: module\nname: shop\nservices:\n  - name: api\n",
-		filepath.Join("modules", "shop", "services", "api", resources.ServiceConfigurationName): cellServiceYAML("api", "shop") + "module-identity: true\n",
+		filepath.Join("modules", "shop", "services", "api", resources.ServiceConfigurationName): hostedServiceYAML("api", "shop") + "module-identity: true\n",
 		filepath.Join("modules", "shop", modulecontract.FileName):                               authorityContract,
 		filepath.Join("modules", "shop", "module.package.codefly.yaml"):                         "schema: codefly/module-package/v1\nid: acme/shop\nversion: 1.2.0\n",
 		filepath.Join("configurations", "staging", "assistant.env"):                             "MODEL_AUDIENCE=model-gateway\nMODEL_RESOURCE_KIND=modelservice.profiles\nANNOTATIONS_PREFIX=annotations\n",
@@ -143,7 +143,7 @@ func TestRenderDerivesAuthorityFromTheModuleContract(t *testing.T) {
 		if err := os.MkdirAll(overlay, 0o755); err != nil {
 			return err
 		}
-		return os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(cellDeployment), 0o644)
+		return os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(hostedDeployment), 0o644)
 	})
 	require.NoError(t, err)
 	require.Equal(t, solutionAuthorityDir, result.Inventory.SolutionAuthorityPath)
@@ -185,7 +185,7 @@ func TestRenderDerivesAuthorityFromTheModuleContract(t *testing.T) {
 
 func TestAuthorityIsNotDerivedWithoutAContractOrAnIdentity(t *testing.T) {
 	ctx := context.Background()
-	workspace := writeCellWorkspace(t)
+	workspace := writeHostedWorkspace(t)
 	env := selectedEnvironment(t, workspace, "staging")
 	module, err := workspace.LoadModuleFromName(ctx, "shop")
 	require.NoError(t, err)
@@ -213,7 +213,7 @@ func TestAuthorityIsNotDerivedWithoutAContractOrAnIdentity(t *testing.T) {
 // goes on.
 func TestAModuleWithAContractMustDeclarePresence(t *testing.T) {
 	ctx := context.Background()
-	workspace := writeCellWorkspace(t)
+	workspace := writeHostedWorkspace(t)
 	env := selectedEnvironment(t, workspace, "staging")
 	module, err := workspace.LoadModuleFromName(ctx, "shop")
 	require.NoError(t, err)
@@ -243,7 +243,7 @@ func TestAuthorityIsPresentedByOneService(t *testing.T) {
 	env := selectedEnvironment(t, workspace, "staging")
 	worker := filepath.Join(module.Dir(), "services", "worker", resources.ServiceConfigurationName)
 	require.NoError(t, os.MkdirAll(filepath.Dir(worker), 0o755))
-	require.NoError(t, os.WriteFile(worker, []byte(cellServiceYAML("worker", "shop")+"module-identity: true\n"), 0o644))
+	require.NoError(t, os.WriteFile(worker, []byte(hostedServiceYAML("worker", "shop")+"module-identity: true\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), resources.ModuleConfigurationName), []byte("kind: module\nname: shop\nservices:\n  - name: api\n  - name: worker\n"), 0o644))
 	workspace, err := resources.LoadWorkspaceFromDir(ctx, workspace.Dir())
 	require.NoError(t, err)

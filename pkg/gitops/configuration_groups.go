@@ -14,8 +14,8 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/configurations"
+	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost/modulecontract"
 )
 
 // --- Workspace configuration groups a render consumes ---

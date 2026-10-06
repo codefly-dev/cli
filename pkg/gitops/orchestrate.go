@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/codefly-dev/core/solutionhost/modulecontract"
+	modulecontract "github.com/codefly-dev/core/contracts/module"
 
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -75,7 +75,6 @@ func renderModuleTree(
 		OwnedPath:      ownedPath,
 		Workspace:      workspace.Name,
 		Host:           env.Host,
-		Composition:    workspace,
 		Target:         env,
 		DeliveryTarget: deliveryTarget,
 	}
@@ -88,15 +87,6 @@ func renderModuleTree(
 		return RenderResult{}, err
 	}
 	result.StaleGroupConsumers = render.staleConsumers
-	// The cell file describes every module tree rendered for this environment,
-	// this one included, so it is regenerated whole after the tree is in place.
-	if env.Host != nil {
-		cell, cellErr := RenderCell(ctx, workspace, env)
-		if cellErr != nil {
-			return RenderResult{}, cellErr
-		}
-		result.Cell = &cell
-	}
 	return result, nil
 }
 

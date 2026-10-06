@@ -24,7 +24,6 @@ nothing straddles them. The render produces the static half:
 |---|---|---|
 | presence document | the render; settled and signed at publish | kind, binding ID, generation, ownership domain, envelope revision, host, release digest, rendered artifacts and their digests, the workloads with the build each runs and the identity each presents |
 | authority document | derived from the module's published contract; signed at publish | the principal and the units of authority it holds, approved for one build, effective from one presence generation |
-| cell file | the render, regenerated whole | the inventory of a cell: every namespace, workload, account, SPIFFE ID, image, endpoint, ingress and egress |
 
 The dynamic half is the host's: the **envelope** (the ceiling a platform
 administrator writes), an organisation's installation, team exposure. The
@@ -81,13 +80,12 @@ verification names — for a release workflow,
 `https://github.com/<owner>/<repo>/.github/workflows/<file>@refs/tags/<tag>`).
 That policy is the platform's, provisioned beside the identity allowlist and
 never by a delivered document; the composition carries its domain (here, in
-every document it renders, and in the cell file) and nothing about who may
+every document it renders) and nothing about who may
 sign for it. A document signed by an identity the host does not let speak for
 its domain is refused with the signer and the domain named. `trust_domain` is the mesh's — `cluster.local` for a mesh
 that derives a workload's identity from (trust domain, namespace,
-ServiceAccount) — and the platform's loader refuses a SPIFFE ID it does not
-derive the same way, so a document naming any other value gets an identity the
-mesh never presents.
+ServiceAccount) — so a document naming any other value names an identity the
+mesh never presents, and the host refuses the connection.
 
 An environment that composes a module **declares the host it runs on**, or
 the render is refused with the instances and the block's fields named.
@@ -95,32 +93,6 @@ Rendering the instances' workloads with no declaration delivered them present
 on no host, with a warning the operator could miss; a composition with nothing
 to declare is one with no solution instance, not one that forgot its host.
 
-The environment also declares the external reach of each service, keyed by
-module-qualified identity like `managed-services`, and what the cell must
-grant it beyond the mesh edges the render derives:
-
-```yaml
-    egress:
-      platform/accounts: {hosts: [identity.example.test, api.github.com, {name: smtp.example.test, port: 587}]}
-    cell:
-      platform/accounts: {bindings: [vault, audit]}
-      platform/model: {bindings: [model_gateway], cloud-identity: true}
-```
-
-Both are declarations the composition states and the render carries into the
-cell file, never derived. Egress: the module author knows a service reaches an
-identity provider or a code host, only the composition knows which, and a host
-left out here is a workload that cannot reach it. A bare host name means port
-443; a host reached on another port says so, because the platform allows a
-(host, port) and a port it cannot see is a denial that looks like an
-application timeout. The render validates a bare host name and never parses
-one out of configuration. `cell`: the cell-provided resources a service binds —
-a vault, an object store, an audit sink; the vocabulary is the cell's and its
-loader refuses a name it does not provide — and whether the workload mints a
-cloud credential from the node's metadata server, a path no egress waypoint
-carries. Only the composition knows which of its workloads holds a binding;
-the cell provisions the resource and derives the grant, so a binding missing
-here is a workload refused at the resource rather than one granted by guess.
 `delivery` names the host's delivery API the way
 `api.consumes` names a producing endpoint — by module, service and endpoint —
 and the render resolves it to the in-cluster address the delivery Jobs POST to
@@ -179,10 +151,9 @@ service is refused: "whichever one presented the token" is how a sidecar ends
 up holding a workload's authority. Presence names what **mints** under the
 service's principal — its serving workloads — and not a unit's bootstrap Job
 or CronJob: those run their own images and never authenticate as the service,
-so they are declared to the cell for admission, where the closed approved set
-covers every pod the platform will see, and not here, where their image would
-be a build the host accepts a token for. A managed service's bootstrap bundle
-is the cell's for the same reason and is never a presence artifact.
+so they are not here, where their image would be a build the host accepts a
+token for; a managed service's bootstrap bundle is never a presence artifact
+for the same reason.
 
 A serving workload names its own ServiceAccount: one running as the
 namespace's `default` account — every pod's that names none — is refused,
@@ -191,8 +162,8 @@ of the namespace can present.
 
 The document cannot close the sidecar gap on its own: a projected
 ServiceAccount token is the pod's, so a sidecar that mounts it presents it as
-the workload and the host cannot tell which container asked. The cell's
-admission policy closes it — a projected token minted for an explicit
+the workload and the host cannot tell which container asked. The platform's
+admission policy is where it closes — a projected token minted for an explicit
 `audience` must be mounted by the authenticating container and no other; a
 declared volume nobody mounts is inert and admitted, on both sides — and
 the render refuses the same pod template first, at publish, so the failure
@@ -212,8 +183,8 @@ image is not approved at admission. The identity a document names is the
 account's.
 
 The `delivery` ServiceAccount is the delivery Job's and nothing else's: a
-serving workload naming it is refused at render, in the presence document and
-in the cell alike, since a deployment caller and a runtime caller under one
+serving workload naming it is refused at render, since a deployment caller
+and a runtime caller under one
 account is the collision the host's distinction between the two assumes
 absent.
 
@@ -355,7 +326,7 @@ The derivation:
   binding ID's highest revision and the meaning it carried, so a binding
   removed from one generation and reintroduced later cannot come back below
   that revision, or at it with another meaning. The ledger is the
-  publisher's own record under the repository's trust, like the cell;
+  publisher's own record under the repository's trust;
   nothing signs it and no Job reads it; the module's queue and namespace
   when it declares one of each — absence grants no queue- or namespace-scoped
   authority, never every queue, and several are refused rather than granted
@@ -488,8 +459,7 @@ held, at publish, to the environment's host block as it is then: the
 ownership domain, the host coordinate and component, the envelope revision,
 and the trust domain and audience every one of its workload identities is
 issued under must be the ones declared now (the delivery Job's own token
-audience is re-rendered from the target declared now), and the rendered
-cell is held to the same host before it is merged, and a render that declares documents for an
+audience is re-rendered from the target declared now), and a render that declares documents for an
 environment that names no host any more is refused outright — never signed
 and left for no Job to deliver. A render made before the host block changed
 is refused by name; the fix is to render again.
@@ -706,126 +676,6 @@ API does not offer yet. A document the host keeps failing never keeps a later
 one — a tombstone among them — from its first attempt, and the Job fails at
 the end for whatever never landed.
 
-## The cell file
-
-`deployments/cells/<environment>/cell.yaml` (schema `codefly/cell/v1`) is the
-inventory of the cell, from which the platform derives its mesh policy rather
-than from a hand-written set. At the top, the host's coordinate, component,
-the ownership `domain` the composition delivers under (so the platform can
-hold its signer policy against what the composition declares at build time,
-rather than have the host refuse the first delivery) and `trust_domain` —
-carried as its own field as well as inside every SPIFFE ID,
-so the platform re-derives each identity and refuses a mismatch instead of
-parsing the domain out of the string it is checking. One namespace per module
-rendered for the environment; under it every pod-producing workload of every
-unit — Deployment, StatefulSet, DaemonSet, Job, CronJob — with its kind, the
-exact label set that **selects its pods** (the selector of a Deployment, the
-template labels of a Job: a bootstrap Job carries no `app` label, and a policy
-assuming one selects its pods with nothing; a Job or CronJob whose template
-carries no labels at all is given `codefly.dev/workload: <name>` and
-`codefly.dev/workload-kind: <job|cronjob>` by the render, so the set is never
-empty — an empty selector would select every pod or none), the account it runs as and its
-SPIFFE ID, the **authenticating** container (the one named after the service,
-or the only one; several with none so named is refused, naming them — the
-same designation the presence document carries, so an admission policy
-compares that container's image to the approved build and treats every other
-container as a closed set that never authenticates), its pinned containers
-and init containers, the artifact and release it comes from, the endpoints it
-serves with their **container** ports (the port a connection lands on after
-Service resolution, as the service declares and the render verifies), their
-visibility and `allow_modules`, and their **consumers** — every composed
-service whose `service-dependencies` reaches the endpoint, so a port no
-declared edge reaches is visible in the file rather than found by an audit.
-Three more fields the platform derives grants from: `verifier: true` on the
-serving workloads of the service `host.delivery` names (the one that verifies
-delivered documents, from which the platform derives its token-review and
-pod-read RBAC and the carrier's allow into it — a bootstrap Job of that
-service is not marked), and the `bindings` and `cloud_identity` the
-environment's `cell` declaration states for the service. Per namespace, the
-egress each service is declared to need: the hosts from the environment's
-`egress` declaration, each as `{name, port}` with the port always explicit,
-and the CIDRs of a managed service — written as the range's network address
-(`10.20.0.0/16`, never a host address with a prefix length), one range one
-spelling, no range inside another, and never the range naming every address,
-which is the absence of a declared reach; the environment refuses the same
-at load, naming the service. The cell is written through core's `Encode`
-only: validated, marshaled and read back through core's own reader before a
-byte is staged, so a cell a render produced that core would refuse — or that
-would read back as another cell — is a render or publish refusal with the
-reason, never a document the platform's loader meets first.
-
-A managed service's bootstrap bundle is inventoried too — its Job is a pod
-the closed admission set would refuse unless the cell names it — with no
-endpoints of its own, and so is the module's **presence delivery Job**, under
-`delivery` on the namespace: the labels its pods carry (its name holds the
-settled set's digest and is decided at publish), the `delivery` account, the
-one container and its pinned image. An ingress route reaches the
-module-qualified service it names and no other module's service of that bare
-name; an endpoint routed through several declarations is one ingress entry
-carrying every host once. A service's own bootstrap Job or
-CronJob is inventoried the same way, with no endpoints, consumers or ingress:
-a workload that serves nothing declares nothing, so no policy derived from
-the cell grants a Job the service's reachability.
-
-It is regenerated whole on every render from the module trees on disk, and
-carries no generation and no tombstone — a workload absent from it is not
-delivered, which is the opposite of the presence document's rule. Publish
-stages **this module's contribution**: the namespace entry **its render
-recorded with the tree**. A hosted render derives the entry when it renders —
-the workloads, their images, selectors, accounts, identities, artifacts and
-release off the tree; the endpoints and their ports, ingress, bindings, cloud
-identity and egress as the composition declares them **then** — and writes it
-at the tree's root as `cell.yaml` (the one file beside `inventory.json`,
-hashed into the render digest and carried into the snapshot), with the
-module's outgoing consumer edges in the inventory (`consumedEndpoints`). A
-forward publish and a rollback alike read the staged snapshot's own record:
-never the composition as it stands at publish, never a file that could
-describe another tree — so a rollback restores the declarations the revision
-was rendered with, and a tree carrying no record (rendered before records
-existed, or not from its composition) is refused by name. The one thing the
-record cannot carry is the delivery Job, declared from the **settled**
-inventory — the render cannot know the tombstones a publish synthesizes — so
-a publish that withdraws the last declaration still describes the Job that
-delivers them. The workspace's cell file, the render's whole-workspace
-output, is assembled from the records of the trees on disk and held on a
-forward publish to this tree's record; one whose entry differs is refused.
-A packaged solution has no derivation (its executor renders no composition
-service), so its record is the entry the workspace's cell file carries for
-it, hand-written before the render — and a rollback restores that entry too.
-The **consumer edges** are the consumers' declarations: every module's
-publish records its outgoing edges in `cells/<environment>/consumers.ledger`
-beside the cell, and every entry's consumer lists in the delivered cell are
-derived from the ledger, so an edge reaches the provider's entry whether the
-consumer or the provider publishes first, leaves only when the consumer stops
-declaring it, and a provider's publish cannot drop a consumer that still
-declares it (a cell delivered before the ledger existed seeds it with the
-consumers its entries carry). The contribution is held to the host declared
-now before it is merged into the cell the delivery repository already holds
-at
-`<gitops path>/cells/<environment>/cell.yaml` (outside every module path and
-matched by no Argo overlay), every other module's entry kept as delivered.
-Three rules keep the merge honest. The cell is **one host's record**: the
-delivered cell's schema, coordinate, component, domain and trust domain are
-what every other module's entry was written under, so a contribution made
-under another declaration is refused rather than relabelling entries it does
-not own. The publishing module's **edges follow its render**: in every other
-module's delivered entry, the consumers that belong to this module are
-dropped and the ones its inventory declares now (the contracts its units
-consume) are added, so an edge the module grew or dropped reaches the
-provider's entry even when the provider is not rendered in this workspace. And
-a base branch with **no cell** for the environment is a first contribution,
-while a cell that cannot be read is an error — the two are told apart by what
-git says, never conflated into an empty baseline. A module is removed from the
-cell by withdrawing it, never by another module's publish — copying the local
-file whole let the last module published decide the platform's inventory for
-the whole cell. A hosted environment publishes nothing
-without it: a render that has no cell file is refused by name, and a cell
-file that cannot be read is an error, never an absent one. And the **merged cell is held to core's validator before a byte is
-staged**: two entries valid on their own can combine into a cell the
-reader refuses — one namespace name claimed by two modules — and a publish
-that staged it would leave every later publish unable to read the base
-cell it must merge into; such a publish stages nothing and says why.
-
 ## Workspace configuration groups a render bakes in
 
 A render records, per workspace configuration group its services and its
@@ -996,20 +846,19 @@ host acknowledging them needs the host's acknowledgement, which the delivery
 API does not yet answer. The **release digest** is the content digest of the
 module package as the composition materialized it, computed over its files;
 it ties the declaration to those bytes and to nothing a registry attested, and
-nothing attests that the pinned image was built from them. The **cell file is
-unsigned**: it is read by the platform's own build from the delivery
-repository, under the same repository trust as the manifests Argo applies,
-and whether that is enough is the owner's call. The **module contract**
-(`codefly/module-contract/v1`) and the **cell file** (`codefly/cell/v1`)
-have ONE implementation each, in core, beside the presence and authority
-documents: `solutionhost/modulecontract` (the model, strict decoding, every
-refusal, slot resolution) and `solutionhost/cell` (the model, strict decoding,
-every refusal). This repository holds no copy: the render derives authority
-through core's reader, the publish reads every cell — the workspace's file and
-the delivered one — through `cell.Parse` and holds the cell it writes to
-`Validate` before writing it, and the two kits core ships (`Fixtures()` and
-`Run(t, read)`, every accepted and refused document with its sentinel and
-message) run through this repository's own entrypoints
+nothing attests that the pinned image was built from them. The **module
+contract** (`codefly/module-contract/v1`) has ONE implementation, in core,
+beside the presence and authority documents: `contracts/module` (the model,
+strict decoding, every refusal, slot resolution). This repository holds no
+copy: the render derives authority through core's reader, and the kits core
+ships — the document kit (`Fixtures()` and `Run(t, read)`, every accepted and
+refused document with its sentinel and message) and the resolution kit
+(`RunResolution`, driving the provider the render resolves slots from) — run
+through this repository's own entrypoints
 (`TestTheModuleContractKitRunsThroughTheRender`,
-`TestTheCellKitRunsThroughThePublisher`). The runtimes publishing contracts and
-the platform loading cells run the same kits through theirs.
+`TestTheResolutionKitRunsThroughTheRendersProvider`). The runtimes publishing
+contracts run the same kits through theirs. **No cell inventory is written
+here**: core's owner ruled an environment-wide Kubernetes model out of core,
+and the Lane 3 registry specification replaces it with an inventory of the
+keys the cluster's admission policy compares, written by the CLI once that
+specification is an implementation contract — a PR of its own.
