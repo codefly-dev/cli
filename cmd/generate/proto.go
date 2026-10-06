@@ -196,6 +196,7 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	if err != nil {
 		return w.Wrapf(err, "cannot create docker runner")
 	}
+	configureProtoRunnerUser(runner)
 
 	// A proto-gen container holds no state worth preserving: it is created,
 	// driven once and shut down in the defer below. Marking it ephemeral is what
@@ -285,6 +286,15 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 	}
 
 	return nil
+}
+
+// configureProtoRunnerUser keeps private generated files owned by the invoking
+// user. Linux preserves the creating UID on bind mounts, so root-owned 0700
+// output directories cannot be published or cleaned up by a non-root caller.
+// The companion sets HOME=/tmp to support arbitrary UIDs, as contract generation
+// already requires. The mount qualification uses this same configuration.
+func configureProtoRunnerUser(runner *runners.DockerEnvironment) {
+	runner.WithUser(fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()))
 }
 
 // protoTeardownOutcome decides what a failed teardown means for the command.

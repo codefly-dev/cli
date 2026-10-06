@@ -2509,6 +2509,19 @@ block and version — and buf's own `--output` cannot be used for this: it is
 prepended to each `out`, so `out: ../code/pkg/gen` under `-o /stage` resolves
 straight back out of the staging directory.
 
+**The companion runs as the invoking host UID/GID**, the way contract
+generation already does, so everything it writes under a bind mount — the
+staging tree it generates into, and the formatted Go it hands back — belongs to
+the caller. This is load-bearing rather than cosmetic: buf creates its output
+directories `0700`, and on Linux a bind mount preserves the identity that
+created a file, so a companion running as root emits a tree the invoking user
+can neither inspect nor remove. Publication then fails on the generator's own
+output (`cannot inspect what was generated ... permission denied`), and the
+staging cleanup fails after it. Desktop Docker maps container ownership onto
+the host user, which is why this surfaces only on Linux, typically in CI.
+Consumers need no `sudo`, `chmod` or other permission-repair step; the proto
+companion sets `HOME=/tmp` precisely so it runs as an arbitrary UID.
+
 The staging tree is created fresh for each run under the codefly home
 (`~/.codefly/generate-proto/`, or `$CODEFLY_HOME`) and bind-mounted separately
 from the generation mount, for two reasons. It must be **empty**, or a leftover
@@ -3353,6 +3366,21 @@ fetched at its start.
   `GOPROXY`, `GONOSUMDB`, `NETRC` and git's configuration (credential helpers,
   `insteadOf` rewrites) are the host's. `go` must be on `PATH` when a recipe
   declares downloads.
+- One git setting is the CLI's, not the host's: automatic repository maintenance
+  is off in that cache (`maintenance.auto=false`, `gc.auto=0`, passed to git in
+  the environment after whatever the host already configures there). A `git
+  fetch` otherwise detaches `git maintenance run --auto`, which repacks the
+  clone it just fetched into — and the go tool deepens that clone in the next
+  fetch when it validates a pseudo-version (`--depth=1`, then every ref, then
+  `--unshallow`). The maintenance rewrites `.git/shallow` while the unshallow is
+  working from it, git refuses with `fatal: shallow file has changed since we
+  read it`, and the go tool reports `invalid pseudo-version` — failing a render
+  that was only downloading modules. The cache is deleted with the flow and each
+  clone is pruned as soon as its modules are in the proxy tree, so maintaining
+  it buys nothing and costs the fetch.
+- A failed fetch is logged where it happens, with the go tool's own output (the
+  git error, the missing credential, the incomplete `go.sum`), so the plain log
+  names the cause without a `--debug` re-run.
 - The build receives each fetched graph as the named build context the recipe
   declares (`--build-context gomodproxy=<cache>/cache/download`), which its
   Dockerfile reads as `GOPROXY=file://`. `GOPRIVATE`, which names module paths

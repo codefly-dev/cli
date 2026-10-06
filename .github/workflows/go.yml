@@ -182,6 +182,14 @@ jobs:
         if: matrix.gate == 'control-integration'
         run: go test -tags=integration -run '^TestAGoModuleBuildNeedsNoCredentialWithThePrefetchedProxy$' ./pkg/orchestration -v
 
+      # Two services of one flow pinning one private repository at two
+      # pseudo-versions: the prefetch deepens a shallow clone, and git's own
+      # detached auto-maintenance must not repack it under that fetch (cli#886).
+      # Needs git and the host go toolchain; the repository is local, no network.
+      - name: Prove one repository at two pseudo-versions fetches
+        if: matrix.gate == 'control-integration'
+        run: go test -tags=integration -run '^TestTwoServicesPinningOneRepositoryFetchWithoutGitMaintainingTheCache$' ./pkg/orchestration -v
+
       # Keep the tag in step with qualificationImage in
       # cmd/generate/container_recovery_docker_test.go.
       - name: Pull the interrupted-generate proof's image
@@ -201,8 +209,12 @@ jobs:
       # `generate proto` stages generation and publishes from the staged tree,
       # so what a run emitted is known independently of what its outputs
       # already held (#885). That rests on the companion and the host sharing
-      # one staging directory, which only a real daemon can prove. Shares the
-      # alpine image pulled above.
+      # one staging directory, and on what it emits there being the invoking
+      # user's to publish and remove — buf's output directories are 0700, and
+      # only a real Linux bind mount preserves the creator's identity, which
+      # desktop Docker's ownership mapping hides (#895). Neither is provable
+      # against a fake runner. Shares the alpine image pulled above, so the
+      # host boundary is proven without pulling a provider toolchain.
       - name: Qualify the generate-proto staging mount against a real bind mount
         if: matrix.gate == 'control-integration'
         run: go test -tags=integration -run '^TestProtoStagingMountIsQualifiedAgainstARealBindMount$' ./cmd/generate -v
@@ -240,6 +252,18 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The whole history, so the linter can compute the merge-base
+          # itself. The action's own only-new-issues mode asks GitHub for the
+          # pull request's patch, and GitHub refuses one over 20,000 lines
+          # ("Sorry, the diff exceeded the maximum number of lines") -- at
+          # which point the action has no baseline and FALLS BACK TO REPORTING
+          # THE ENTIRE BACKLOG, 753 findings on a branch that introduced none.
+          # A gate that answers about the backlog on a large PR and about the
+          # diff on a small one is not a gate. --new-from-merge-base below
+          # needs the base commit present locally, which fetch-depth: 1 does
+          # not provide.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -261,7 +285,12 @@ jobs:
           # one ("the Go language version used to build golangci-lint is lower
           # than the targeted Go version"). Matches `make lint`.
           install-mode: goinstall
-          only-new-issues: true
+          # Not only-new-issues: that mode fetches the PR patch from GitHub
+          # and silently reports everything when the patch is too large to
+          # serve (see the checkout step). The linter computes the merge-base
+          # against the PR's base branch itself, from the full history, which
+          # works for any diff size and is what `make lint` can reproduce.
+          args: --new-from-merge-base=origin/${{ github.base_ref }}
 
   # pkg/web/go-grpc/out is a committed, generated artifact: web/dashboard builds
   # into it and go:embed ships it inside the CLI binary (see the Makefile's

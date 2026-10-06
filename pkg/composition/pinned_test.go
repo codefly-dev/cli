@@ -682,3 +682,156 @@ func TestResolutionReceiptAnswers(t *testing.T) {
 	}
 	require.True(t, latestReceipt.Answers(latest, ResolutionModeGit))
 }
+
+// An importing workspace inherits the imported workspace's declaration for the
+// modules that workspace composes.
+//
+// Before this, a composition that imported another could neither inherit the
+// policy nor restate it: restating is refused because those modules are not
+// composed in the importer, so there was no legal way to say how an imported
+// module resolves. The only mechanism left was a machine-local
+// codefly.local.yaml, which a composition that renders a committed, deployed
+// artifact cannot use (obin-ai/platform-obin#104, codefly-dev/cli#906).
+func TestLoadModuleResolutionsInheritsFromImportedWorkspace(t *testing.T) {
+	root := t.TempDir()
+
+	platform := filepath.Join(root, "platform-core")
+	require.NoError(t, os.MkdirAll(platform, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(platform, resources.WorkspaceConfigurationName), []byte(`name: platform-core
+module-resolution:
+    saas: git
+    documents: git
+modules:
+    - name: saas
+      source: owner/saas
+      version: "0.0.90"
+    - name: documents
+      source: owner/documents
+      version: "0.0.28"
+`), 0o600))
+
+	product := filepath.Join(root, "product")
+	require.NoError(t, os.MkdirAll(product, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(product, resources.WorkspaceConfigurationName), []byte(`name: product
+workspaces:
+    - name: platform-core
+      path: ../platform-core
+module-resolution:
+    wiki: git
+modules:
+    - name: wiki
+      source: owner/solutions
+      version: "0.0.16"
+`), 0o600))
+
+	declared, err := LoadModuleResolutions(product)
+	require.NoError(t, err)
+	require.Equal(t, map[string]WorkspaceResolution{
+		"wiki":      WorkspaceResolutionGit,
+		"saas":      WorkspaceResolutionGit,
+		"documents": WorkspaceResolutionGit,
+	}, declared, "the importer's own declaration plus the imported workspace's, for the modules each composes")
+
+	// An import whose own workspace declares nothing adds nothing, and is not an
+	// error: the importer's own declaration still stands.
+	quiet := filepath.Join(root, "quiet")
+	require.NoError(t, os.MkdirAll(quiet, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(quiet, resources.WorkspaceConfigurationName), []byte(`name: quiet
+modules:
+    - name: other
+      source: owner/other
+      version: "1.0.0"
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(product, resources.WorkspaceConfigurationName), []byte(`name: product
+workspaces:
+    - name: quiet
+      path: ../quiet
+module-resolution:
+    wiki: git
+modules:
+    - name: wiki
+      source: owner/solutions
+      version: "0.0.16"
+`), 0o600))
+	only, err := LoadModuleResolutions(product)
+	require.NoError(t, err)
+	require.Equal(t, map[string]WorkspaceResolution{"wiki": WorkspaceResolutionGit}, only)
+}
+
+// A cycle of imports terminates instead of recursing until the stack goes.
+func TestLoadModuleResolutionsStopsOnAnImportCycle(t *testing.T) {
+	root := t.TempDir()
+	for _, pair := range [][2]string{{"a", "b"}, {"b", "a"}} {
+		dir := filepath.Join(root, pair[0])
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, resources.WorkspaceConfigurationName), []byte(`name: `+pair[0]+`
+workspaces:
+    - name: `+pair[1]+`
+      path: ../`+pair[1]+`
+module-resolution:
+    `+pair[0]+`-module: git
+modules:
+    - name: `+pair[0]+`-module
+      source: owner/`+pair[0]+`
+      version: "1.0.0"
+`), 0o600))
+	}
+	declared, err := LoadModuleResolutions(filepath.Join(root, "a"))
+	require.NoError(t, err)
+	require.Equal(t, map[string]WorkspaceResolution{
+		"a-module": WorkspaceResolutionGit,
+		"b-module": WorkspaceResolutionGit,
+	}, declared)
+}
+
+// A released import is resolved, not skipped.
+//
+// The first version of this inheritance (#907) handled `path:` imports only and
+// skipped a reference carrying source + version, on the grounds that there was
+// "nothing on disk to read". That left a consumer unable to drop the `path:`
+// stopgap: the moment the import named a release, its module-resolution stopped
+// being inherited and the render landed back on "module <x> is pinned but
+// workspace declares no module-trust".
+func TestLoadModuleResolutionsResolvesAReleasedImport(t *testing.T) {
+	root := t.TempDir()
+	product := filepath.Join(root, "product")
+	require.NoError(t, os.MkdirAll(product, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(product, resources.WorkspaceConfigurationName), []byte(`name: product
+workspaces:
+    - name: platform-core
+      source: owner/platform-core
+      version: "0.0.1"
+module-resolution:
+    wiki: git
+modules:
+    - name: wiki
+      source: owner/solutions
+      version: "0.0.16"
+`), 0o600))
+
+	// No resolver can reach a registry here, so the released import must FAIL
+	// loudly naming the workspace -- not be silently skipped, which is what
+	// produced the bug this test exists for.
+	_, err := LoadModuleResolutions(product)
+	require.Error(t, err, "a released import that cannot be resolved must say so, not read as nothing declared")
+	require.Contains(t, err.Error(), "platform-core")
+}
+
+// The probe carries what a released import declares, so the resolver has
+// something to resolve from.
+func TestWorkspaceProbeCarriesAReleasedImportsCoordinates(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, resources.WorkspaceConfigurationName), []byte(`name: product
+workspaces:
+    - name: platform-core
+      source: owner/platform-core
+      version: "0.0.1"
+      workspace: sub
+`), 0o600))
+	probe, err := loadWorkspaceProbe(dir)
+	require.NoError(t, err)
+	require.Len(t, probe.Workspaces, 1)
+	require.Equal(t, "owner/platform-core", probe.Workspaces[0].Source)
+	require.Equal(t, "0.0.1", probe.Workspaces[0].Version)
+	require.Equal(t, "sub", probe.Workspaces[0].Workspace)
+}

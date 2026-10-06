@@ -1,0 +1,55 @@
+{
+  "artifacts": [],
+  "complete": true,
+  "delivery": "delivery",
+  "dependencies": [],
+  "egress": [],
+  "envelope_revision": "1",
+  "generation": 1,
+  "ingress": [],
+  "members": [
+    {
+      "artifacts": [],
+      "binding": "member",
+      "declaration_kind": "module",
+      "digest": "sha256:112747ee2d71526450b6d522353b55cb3d245e890ae69270ddf100647a0e1e88",
+      "presence_generation": 1,
+      "removed": true,
+      "workloads": []
+    }
+  ],
+  "namespaces": [],
+  "ownership_domain": "team",
+  "platform_refs": {
+    "compiler": {
+      "digest": "sha256:5f348f0829d9bf970a068ce6b8f6c68b5f675d729a5e1a92826c58a79ba52f7c",
+      "id": "compiler",
+      "revision": "1"
+    },
+    "execution": {
+      "digest": "sha256:20ad183d2e0d34a2dbf65c4a284845d0aa9d1f76c38425ce9208e6438d16fa68",
+      "id": "execution",
+      "revision": "1"
+    },
+    "identity": {
+      "digest": "sha256:919917359a0566095385e8772667ffa849afecda0a1ed41632222f30e6a1048a",
+      "id": "identity",
+      "revision": "1"
+    },
+    "trust": {
+      "digest": "sha256:e7712c94496595e654a83c5163e76ff14c907410c37cb823674a0512afe9d800",
+      "id": "trust",
+      "revision": "1"
+    }
+  },
+  "previous": null,
+  "removed": true,
+  "resource_bindings": [],
+  "schema": "codefly/execution-inventory/v1",
+  "target": {
+    "cluster_instance": "cluster-instance-1",
+    "coordinate": "local",
+    "host_component": "host"
+  },
+  "workloads": []
+}

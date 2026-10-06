@@ -582,6 +582,17 @@ type rawWorkspaceModuleTrustProbe struct {
 		// see LoadModuleResolutions.
 		Resolution string `yaml:"resolution"`
 	} `yaml:"modules"`
+	// Workspaces are the workspaces this one imports. Their modules are composed
+	// here, so their module-resolution declarations apply here too: see
+	// LoadModuleResolutions.
+	Workspaces []struct {
+		Name string `yaml:"name"`
+		Path string `yaml:"path"`
+		// A released import carries no path: these are what it is resolved from.
+		Source    string `yaml:"source"`
+		Version   string `yaml:"version"`
+		Workspace string `yaml:"workspace"`
+	} `yaml:"workspaces"`
 }
 
 // loadWorkspaceProbe reads workspace.codefly.yaml and side-parses the keys core
@@ -646,6 +657,29 @@ const ModuleResolutionKey = "module-resolution"
 // `resolution:` spelling, which core silently drops on its next write to the
 // file and which therefore must never appear to work.
 func LoadModuleResolutions(workspaceDir string) (map[string]WorkspaceResolution, error) {
+	return LoadModuleResolutionsContext(context.Background(), workspaceDir)
+}
+
+// LoadModuleResolutionsContext is LoadModuleResolutions with a context, which a
+// released import needs: resolving one pulls an artifact, and a caller that can
+// be cancelled should be.
+func LoadModuleResolutionsContext(ctx context.Context, workspaceDir string) (map[string]WorkspaceResolution, error) {
+	return loadModuleResolutions(ctx, workspaceDir, map[string]bool{})
+}
+
+// loadModuleResolutions is LoadModuleResolutions plus the set of workspace
+// directories already visited, so a cycle of imports terminates instead of
+// recursing until the stack goes.
+func loadModuleResolutions(ctx context.Context, workspaceDir string, seen map[string]bool) (map[string]WorkspaceResolution, error) {
+	key, err := filepath.Abs(workspaceDir)
+	if err != nil {
+		key = workspaceDir
+	}
+	if seen[key] {
+		return nil, nil
+	}
+	seen[key] = true
+
 	probe, err := loadWorkspaceProbe(workspaceDir)
 	if err != nil || probe == nil {
 		return nil, err
@@ -657,14 +691,54 @@ func LoadModuleResolutions(workspaceDir string) (map[string]WorkspaceResolution,
 		return nil, fmt.Errorf("module %q declares resolution: %q on its entry in %s; declare it as %s.%s instead — core does not preserve a per-module key and would drop it on the next write to this file",
 			module.Name, module.Resolution, resources.WorkspaceConfigurationName, ModuleResolutionKey, module.Name)
 	}
+	// An imported workspace's declaration applies to the modules IT composes.
+	// Without this a workspace that imports another can neither inherit the
+	// policy nor restate it -- restating is refused below, because those modules
+	// are not composed here -- so there is no legal way to say how an imported
+	// module resolves, and the only mechanism left is a machine-local
+	// codefly.local.yaml, which cannot be committed by a composition that
+	// renders a deployed artifact (obin-ai/platform-obin#104).
+	resolutions := map[string]WorkspaceResolution{}
+	for _, imported := range probe.Workspaces {
+		path := strings.TrimSpace(imported.Path)
+		if path == "" {
+			// Imported by release. It still has a module-resolution block; it
+			// just is not on disk until the artifact is pulled. Resolving it
+			// here is what lets a consumer drop the `path:` stopgap -- without
+			// it, a released import inherits nothing and lands back on the
+			// error this inheritance exists to remove.
+			resolved, err := ResolveWorkspaceReference(ctx, &resources.WorkspaceReference{
+				Name:      imported.Name,
+				Source:    imported.Source,
+				Version:   imported.Version,
+				Workspace: imported.Workspace,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("imported workspace %q: %w", imported.Name, err)
+			}
+			path = resolved
+		} else if !filepath.IsAbs(path) {
+			path = filepath.Join(workspaceDir, path)
+		}
+		inherited, err := loadModuleResolutions(ctx, path, seen)
+		if err != nil {
+			return nil, fmt.Errorf("imported workspace %q: %w", imported.Name, err)
+		}
+		for name, value := range inherited {
+			resolutions[name] = value
+		}
+	}
+
 	if len(probe.ModuleResolution) == 0 {
-		return nil, nil
+		if len(resolutions) == 0 {
+			return nil, nil
+		}
+		return resolutions, nil
 	}
 	composed := make(map[string]bool, len(probe.Modules))
 	for _, module := range probe.Modules {
 		composed[module.Name] = true
 	}
-	resolutions := map[string]WorkspaceResolution{}
 	for name, value := range probe.ModuleResolution {
 		declared := strings.TrimSpace(value)
 		if declared == "" {

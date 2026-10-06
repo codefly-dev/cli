@@ -4,6 +4,8 @@ package orchestration
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -151,4 +153,220 @@ func goArch(t *testing.T) string {
 	default:
 		return "amd64"
 	}
+}
+
+// privateVCSModulePath is a module the prefetch can only reach through git, the
+// way a private repository is reached. The `.git` suffix is what lets the go
+// tool resolve the path to a repository URL with no meta-tag lookup, and the
+// test's own git configuration rewrites that URL to a repository on disk.
+const privateVCSModulePath = "example.com/private/lib.git"
+
+// privateVCSRepository writes a bare git repository standing in for the private
+// repository two services pin, and returns it with the commit at the tip of each
+// of two branches.
+//
+// Its shape is what the fetch under test needs. Each pinned commit is a ref tip,
+// because the go tool fetches a commit it can name a ref for — and only that
+// fetch is shallow (`--depth=1`). The repository carries a tag that both commits
+// descend from, because that is what makes their pseudo-versions name a base
+// version, and validating that base is what makes the go tool deepen the shallow
+// clone it just made: every ref, then `--unshallow`. That is the fetch
+// codefly-dev/cli#886 fails in.
+func privateVCSRepository(t *testing.T) (string, [2]string) {
+	t.Helper()
+	source := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		command := exec.Command("git", args...)
+		command.Dir = source
+		command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
+			"GIT_AUTHOR_NAME=codefly", "GIT_AUTHOR_EMAIL=codefly@example.com",
+			"GIT_COMMITTER_NAME=codefly", "GIT_COMMITTER_EMAIL=codefly@example.com")
+		out, err := command.CombinedOutput()
+		require.NoError(t, err, "git %s: %s", strings.Join(args, " "), out)
+		return strings.TrimSpace(string(out))
+	}
+	commit := func(constant int, message string) string {
+		t.Helper()
+		require.NoError(t, os.WriteFile(filepath.Join(source, "lib.go"),
+			[]byte(fmt.Sprintf("package lib\n\nconst Version = %d\n", constant)), 0o644))
+		git("add", "-A")
+		git("commit", "-m", message)
+		return git("rev-parse", "HEAD")
+	}
+
+	git("init", "-q", "-b", "main", ".")
+	require.NoError(t, os.WriteFile(filepath.Join(source, "go.mod"),
+		[]byte("module "+privateVCSModulePath+"\n\ngo 1.22\n"), 0o644))
+	base := commit(1, "the released version")
+	git("tag", "v0.0.1")
+	// Two commits a pseudo-version can name, each at the tip of its own branch
+	// and each descended from the tag.
+	first := commit(2, "what one service pins")
+	git("checkout", "-q", "-b", "other", base)
+	second := commit(3, "what the other service pins")
+	git("checkout", "-q", "main")
+
+	repository := filepath.Join(t.TempDir(), "lib.git")
+	clone := exec.Command("git", "clone", "-q", "--bare", source, repository)
+	out, err := clone.CombinedOutput()
+	require.NoError(t, err, string(out))
+	// A commit named by hash is fetched only from a server that allows it.
+	// GitHub does; this repository has to say so, or the prefetch's clone is
+	// never shallow and the fetch under test is never the one that fails.
+	config := exec.Command("git", "-C", repository, "config", "uploadpack.allowAnySHA1InWant", "true")
+	out, err = config.CombinedOutput()
+	require.NoError(t, err, string(out))
+	return repository, [2]string{first, second}
+}
+
+// reachPrivateVCSThroughGit points the host's git at the repository on disk for
+// the rest of the test, as a developer's or a CI job's `insteadOf` points it at
+// a private repository it holds a credential for.
+func reachPrivateVCSThroughGit(t *testing.T, repository string) {
+	t.Helper()
+	configuration := filepath.Join(t.TempDir(), "gitconfig")
+	// Both spellings: the go tool drops the `.git` suffix for some of the URLs
+	// it tries, and git rewrites the longest match.
+	require.NoError(t, os.WriteFile(configuration, []byte(fmt.Sprintf(
+		"[url \"file://%s\"]\n\tinsteadOf = https://%s\n\tinsteadOf = https://%s\n",
+		repository, privateVCSModulePath, strings.TrimSuffix(privateVCSModulePath, ".git"))), 0o644))
+	t.Setenv("GIT_CONFIG_GLOBAL", configuration)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_TERMINAL_PROMPT", "0")
+	t.Setenv("GOPRIVATE", "example.com/*")
+	t.Setenv("GONOSUMDB", "example.com/*")
+	t.Setenv("GOPROXY", "direct")
+	t.Setenv("GOSUMDB", "off")
+}
+
+// servicePinning writes a service's module root requiring the private module at
+// one commit, resolved to the pseudo-version the go tool computes, and returns
+// that version.
+func servicePinning(t *testing.T, root, commit string) string {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(root, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "go.mod"),
+		[]byte("module example.com/"+filepath.Base(root)+"\n\ngo 1.22\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.go"), []byte(
+		"package main\n\nimport (\n\t\"fmt\"\n\n\tlib \""+privateVCSModulePath+"\"\n)\n\nfunc main() { fmt.Println(lib.Version) }\n"), 0o644))
+
+	cache := t.TempDir()
+	env := append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off", "GOMODCACHE="+cache)
+	get := exec.Command("go", "get", privateVCSModulePath+"@"+commit)
+	get.Dir, get.Env = root, env
+	out, err := get.CombinedOutput()
+	require.NoError(t, err, string(out))
+	t.Cleanup(func() { cleanModCache(t, env) })
+
+	list := exec.Command("go", "list", "-m", "-f", "{{.Version}}", privateVCSModulePath)
+	list.Dir, list.Env = root, env
+	version, err := list.Output()
+	require.NoError(t, err)
+	return strings.TrimSpace(string(version))
+}
+
+// gitChildren is every command the gits in a GIT_TRACE2_EVENT log launched.
+func gitChildren(t *testing.T, trace string) [][]string {
+	t.Helper()
+	content, err := os.ReadFile(trace)
+	require.NoError(t, err, "git wrote no trace: the fetch under test was not observed")
+	var children [][]string
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var event struct {
+			Argv []string `json:"argv"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil || len(event.Argv) == 0 {
+			continue
+		}
+		children = append(children, event.Argv)
+	}
+	return children
+}
+
+// childRuns reports whether any of those commands carries every one of words as
+// an argument — the command name itself matching whether git invoked it by name
+// or by its path in git-core.
+func childRuns(children [][]string, words ...string) bool {
+	for _, argv := range children {
+		found := 0
+		for _, word := range words {
+			for _, argument := range argv {
+				if argument == word || strings.HasSuffix(argument, "/"+word) {
+					found++
+					break
+				}
+			}
+		}
+		if found == len(words) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestTwoServicesPinningOneRepositoryFetchWithoutGitMaintainingTheCache is
+// codefly-dev/cli#886: two services of one flow pin one private repository at
+// two pseudo-versions, and the prefetch has to fetch both.
+//
+// Fetching a pseudo-version makes the go tool deepen the shallow clone it made:
+// every ref, then `git fetch --unshallow`. The first of those fetches ends by
+// detaching `git maintenance run --auto`, which repacks the clone — and rewrites
+// .git/shallow while the unshallow is working from it, so git refuses the fetch
+// ("shallow file has changed since we read it") and the go tool reports an
+// invalid pseudo-version, failing a render that was only downloading modules.
+//
+// So this asserts both: that the fetch the bug lives in is the fetch this test
+// performs (the clone was shallow and was deepened), and that no automatic
+// maintenance ran in the prefetch's cache to race it.
+func TestTwoServicesPinningOneRepositoryFetchWithoutGitMaintainingTheCache(t *testing.T) {
+	for _, tool := range []string{"go", "git"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("the prefetch runs the host %s", tool)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	repository, commits := privateVCSRepository(t)
+	reachPrivateVCSThroughGit(t, repository)
+
+	contextDir := t.TempDir()
+	versions := [2]string{
+		servicePinning(t, filepath.Join(contextDir, "one"), commits[0]),
+		servicePinning(t, filepath.Join(contextDir, "other"), commits[1]),
+	}
+	require.NotEqual(t, versions[0], versions[1], "the two services must pin the one repository at two versions")
+
+	trace := filepath.Join(t.TempDir(), "git-trace.json")
+	t.Setenv("GIT_TRACE2_EVENT", trace)
+
+	prefetch := newGoModulePrefetch()
+	t.Cleanup(func() { require.NoError(t, prefetch.Close()) })
+	proxies, err := prefetch.proxiesFor(ctx, contextDir, &builderv0.DockerBuildRecipe{
+		Name: "app", GoModuleDownloads: []*builderv0.GoModuleDownload{
+			{ModuleRoot: "one", ProxyContext: "oneproxy"},
+			{ModuleRoot: "other", ProxyContext: "otherproxy"},
+		},
+	})
+	require.NoError(t, err, "both versions of the one repository must fetch")
+
+	for _, version := range versions {
+		require.FileExists(t, filepath.Join(proxies["oneproxy"],
+			filepath.FromSlash(privateVCSModulePath), "@v", version+".info"),
+			"the proxy handed to the build carries the version this service pins")
+	}
+
+	children := gitChildren(t, trace)
+	require.True(t, childRuns(children, "fetch", "--depth=1"),
+		"the clone must be shallow, or this test is not the fetch that fails")
+	require.True(t, childRuns(children, "fetch", "--unshallow"),
+		"the shallow clone must be deepened, or this test is not the fetch that fails")
+	require.False(t, childRuns(children, "maintenance", "--auto"),
+		"a `git fetch` in the prefetch's cache must detach no maintenance to rewrite the clone under the next fetch")
+	require.False(t, childRuns(children, "gc", "--auto"),
+		"nor reach the same repacking as the gc an older git runs")
 }

@@ -1,0 +1,33 @@
+name: Deployment contract
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: contracts/deployment
+    env:
+      GOWORK: 'off'
+      GOPROXY: 'off'
+      GOSUMDB: 'off'
+      CGO_ENABLED: '0'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: contracts/deployment/go.mod
+          cache: false
+      - run: go build ./...
+      - run: go vet ./...
+      - run: test -z "$(gofmt -l .)"
+      # Includes the data corpus through the Python executable adapter, schema
+      # drift, deterministic generation, and the network/import boundary gate.
+      - run: go test ./...

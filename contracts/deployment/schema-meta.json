@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codefly.dev/schemas/deployment/v1",
+  "$vocabulary": {
+    "https://json-schema.org/draft/2020-12/vocab/core": true,
+    "https://json-schema.org/draft/2020-12/vocab/applicator": true,
+    "https://json-schema.org/draft/2020-12/vocab/validation": true,
+    "https://codefly.dev/schemas/deployment/v1/rules": true
+  },
+  "type": ["object", "boolean"],
+  "properties": {"codeflyRules": {"const": true}}
+}
