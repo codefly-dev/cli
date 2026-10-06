@@ -59,7 +59,12 @@ must not discard an authority requirement it does not understand and then
 deliver the remaining policy as a complete binding. This check is separate
 from the index schema version: a new required policy feature must also use a
 catalog version older readers refuse, because those readers cannot acquire a
-new decoder's checks retroactively.
+new decoder's checks retroactively. Writers now emit
+`codefly/runnable-operations/v2`; a v1 reader rejects that version before reading
+any operation policy. The new reader refuses v1 catalogs too: regenerate owner
+catalogs with the matching generator rather than editing the schema string.
+This catalog gate does not change the input/output contract digest or claim
+that an unresolved scope selection is executable.
 
 An `index.json` is data on disk, and in a composed workspace it arrives inside
 a third-party module package, so every path read out of one is resolved inside

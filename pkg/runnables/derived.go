@@ -17,8 +17,10 @@ import (
 )
 
 const (
-	// IndexSchema versions the derived-operation index.
-	IndexSchema = "codefly/runnable-operations/v1"
+	// IndexSchema versions the complete derived catalog, including operation
+	// authority. V2 excludes lenient v1 readers that could discard a required
+	// scope slot before preparing a binding. Writers always emit this version.
+	IndexSchema = "codefly/runnable-operations/v2"
 	// IndexFileName is the index a composition reads to prepare bindings.
 	IndexFileName = "index.json"
 	// PackageFileName is the canonical package one derived operation carries.

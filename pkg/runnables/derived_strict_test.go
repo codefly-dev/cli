@@ -1,6 +1,7 @@
 package runnables_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,21 @@ import (
 	"github.com/codefly-dev/cli/pkg/runnables/runnablestest"
 	"github.com/stretchr/testify/require"
 )
+
+func TestDerivedCatalogRequiresTheStrictReaderVersion(t *testing.T) {
+	require.Equal(t, "codefly/runnable-operations/v2", runnables.IndexSchema)
+	dir := t.TempDir()
+	runnablestest.Write(t, dir, "test-workspace", "documents", "runtime-worker-grpc-apply-text")
+	index, err := runnables.LoadIndex(dir)
+	require.NoError(t, err)
+	require.Equal(t, "codefly/runnable-operations/v2", index.Schema)
+	index.Schema = "codefly/runnable-operations/v1"
+	data, err := json.Marshal(index)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, runnables.DerivedDir, runnables.IndexFileName), data, 0o600))
+	_, err = runnables.LoadDerivedOperations(dir)
+	require.ErrorContains(t, err, "codefly/runnable-operations/v1")
+}
 
 func TestDerivedReadersRefuseUnrecognizedAuthority(t *testing.T) {
 	for _, scenario := range []struct {
