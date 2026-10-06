@@ -1,6 +1,7 @@
 package runnables
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -115,7 +116,7 @@ func LoadIndex(moduleDir string) (*Index, error) {
 			derivedDir, len(entries), IndexFileName)
 	}
 	var index Index
-	if err = json.Unmarshal(data, &index); err != nil {
+	if err = decodeDerivedJSON(data, &index); err != nil {
 		return nil, fmt.Errorf("cannot read derived runnable index: %w", err)
 	}
 	if index.Schema != IndexSchema {
@@ -218,7 +219,7 @@ func LoadDerived(moduleDir string, entry *IndexEntry) (Derived, error) {
 	}
 	operation := &Operation{}
 	if err = readDerivedFile(root, entry, OperationFileName, func(data []byte) error {
-		return json.Unmarshal(data, operation)
+		return decodeDerivedJSON(data, operation)
 	}); err != nil {
 		return Derived{}, err
 	}
@@ -227,6 +228,25 @@ func LoadDerived(moduleDir string, entry *IndexEntry) (Derived, error) {
 		return Derived{}, fmt.Errorf("derived runnable %s records an agent that cannot be read: %w", entry.Name, err)
 	}
 	return Derived{Entry: *entry, Package: pkg, Operation: operation, Agent: agent.Identifier()}, nil
+}
+
+// decodeDerivedJSON refuses authority or installation metadata this reader
+// cannot act on. Ignoring a new required field could turn an incomplete policy
+// into a concrete binding before Core ever sees what was omitted.
+func decodeDerivedJSON(data []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("derived document must contain exactly one JSON value")
+	}
+	return nil
 }
 
 // readDerivedFile reads one of a row's files THROUGH an os.Root anchored at

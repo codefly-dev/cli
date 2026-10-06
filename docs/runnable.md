@@ -53,6 +53,14 @@ is minted for sit **beside** it in `operation.json`, because they are installed
 with the binding — two installations of one contract may run under different
 ones, and digesting them in would make those two installations two releases.
 
+Both the index and `operation.json` are decoded strictly, including nested
+authority scopes: unknown fields and trailing JSON values are refused. A reader
+must not discard an authority requirement it does not understand and then
+deliver the remaining policy as a complete binding. This check is separate
+from the index schema version: a new required policy feature must also use a
+catalog version older readers refuse, because those readers cannot acquire a
+new decoder's checks retroactively.
+
 An `index.json` is data on disk, and in a composed workspace it arrives inside
 a third-party module package, so every path read out of one is resolved inside
 the module directory through `os.Root` — a row naming `../../../.ssh/id_rsa`,
