@@ -10,7 +10,7 @@ import (
 
 // Real manifests and root configuration files reproduce a single-root run.
 // Neither configuration producer is reachable through a service dependency.
-func configurationClosureFlow(t *testing.T, visibility string) *Flow {
+func configurationClosureFlow(t *testing.T, visibility string, reciprocal ...bool) *Flow {
 	t.Helper()
 	files := map[string]string{
 		"workspace.codefly.yaml":             "name: example\nlayout: modules\nmodules:\n  - name: app\n  - name: provider\n  - name: catalog\n  - name: storage\n  - name: unused\n",
@@ -31,6 +31,9 @@ func configurationClosureFlow(t *testing.T, visibility string) *Flow {
 		case "provider":
 			service += "workspace-configuration-dependencies:\n  - catalog\n"
 		case "catalog":
+			if len(reciprocal) > 0 && reciprocal[0] {
+				service += "workspace-configuration-dependencies:\n  - provider\n"
+			}
 			service += "service-dependencies:\n  - module: storage\n    name: api\n"
 		}
 		files[fmt.Sprintf("modules/%s/services/api/service.codefly.yaml", module)] = service
@@ -99,4 +102,27 @@ func TestSingleRootConfigurationClosureUsesInvocationSelection(t *testing.T) {
 	require.Equal(t, "unused/api", order[0].Unique)
 	require.ElementsMatch(t, []string{"app", "unused"}, moduleNames(flow.graphWorkspace))
 	require.NoError(t, flow.checkConfigurationReferences(t.Context(), []string{"unused/api"}))
+}
+
+func TestSingleRootReciprocalConfigurationRetainsBothOwners(t *testing.T) {
+	flow := configurationClosureFlow(t, "public", true)
+	order, err := flow.runClosure(t.Context())
+	require.NoError(t, err)
+	var required []string
+	for _, service := range order {
+		required = append(required, service.Unique)
+	}
+	require.ElementsMatch(t, []string{"storage/api", "catalog/api", "provider/api"}, required)
+	require.Equal(t, []string{"app/api"}, flow.rootUniques(), "no extra root repairs participation")
+	require.NoError(t, flow.checkConfigurationReferences(t.Context(), required))
+	_, options := flow.dependencyGraphOptions()
+	require.NoError(t, flow.scopeDependenciesToRun(t.Context(), required, options))
+	require.NoError(t, flow.checkConfigurationReferences(t.Context(), required))
+	restricted, err := flow.world.Dependencies.Restrict(t.Context(), "app/api")
+	require.NoError(t, err)
+	for _, unique := range required {
+		_, err = restricted.ServiceFromUnique(unique)
+		require.NoError(t, err)
+	}
+	require.NoError(t, restricted.VerifyAcyclic(t.Context()))
 }

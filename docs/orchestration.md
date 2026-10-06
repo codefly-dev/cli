@@ -1081,3 +1081,13 @@ advertisement never grants a skip. A supported operation that returns Unimplemen
 remains a contract failure. CI records unsupported operations as skipped with
 `agent_no_lint_capability`, `agent_no_compile_capability`, or
 `agent_no_test_capability`, rather than reporting a successful check.
+
+
+### Reciprocal configured producers
+
+The selected Core graph retains both owners of reciprocal endpoint references
+in a single-root run, including their transitive dependencies. A callback does
+not disappear during module selection, run restriction or preflight just because
+adding another startup-order edge would create a cycle. Endpoint access checks
+and exclusions are unchanged. Callback participation is separate from startup
+ordering; the ordinary service health checks still apply to each running owner.
