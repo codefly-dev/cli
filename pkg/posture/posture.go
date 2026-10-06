@@ -113,7 +113,7 @@ func (declaration *Declaration) Validate() error {
 	if declaration == nil {
 		return nil
 	}
-	for _, name := range sortedKeys(declaration.Asserts) {
+	for _, name := range sortedAssertNames(declaration.Asserts) {
 		if !known(Asserts, name) {
 			return fmt.Errorf("posture asserts unknown fact %q (known: %s)", name, strings.Join(Asserts, ", "))
 		}
@@ -224,7 +224,7 @@ func known(names []string, name string) bool {
 	return false
 }
 
-func sortedKeys(values map[string]bool) []string {
+func sortedAssertNames(values map[string]bool) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)

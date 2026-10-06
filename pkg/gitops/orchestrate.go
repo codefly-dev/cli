@@ -390,6 +390,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		contracts := posture.Contracts{}
 		contracts.Add(&contract)
 		options.Contracts = contracts
+		var dependencyContractErr error
 		var graph map[string]*resources.Service
 		var selfEndpoints map[string]map[string]string
 		var deployed map[string]*basev0.Configuration
@@ -407,10 +408,17 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 			nil,
 			func(services map[string]*resources.Service) {
 				graph = services
-				for _, rendered := range services {
-					if staged, stagedErr := posture.ContractFromService(module.Name, rendered); stagedErr == nil {
-						contracts.Add(&staged)
+				// A dependency's declaration is read on the same terms as the root's:
+				// a parse error is a refusal, so it is kept rather than skipped.
+				for _, name := range sortedServiceUniques(services) {
+					staged, stagedErr := posture.ContractFromService(module.Name, services[name])
+					if stagedErr != nil {
+						if dependencyContractErr == nil {
+							dependencyContractErr = stagedErr
+						}
+						continue
 					}
+					contracts.Add(&staged)
 				}
 			},
 			func(rendered map[string]map[string]string) { selfEndpoints = rendered },
@@ -420,6 +428,9 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 			func(rendered map[string]map[string]uint32) { inClusterPorts = rendered },
 		); err != nil {
 			return err
+		}
+		if dependencyContractErr != nil {
+			return dependencyContractErr
 		}
 		injections, err := deriveRenderInjections(ctx, workspace, selfEndpoints, sink)
 		if err != nil {

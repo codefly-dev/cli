@@ -54,17 +54,18 @@ const conformingWorkload = `      containers:
 func durable() Contracts {
 	contracts := Contracts{}
 	contracts.Add(&ServiceContract{
-		Module: "shop", Service: "store", StorageMode: StorageModeDurable,
+		Module: "shop", Service: "store", StorageMode: StorageModeDurable, Transport: TransportMesh,
 		ScratchVolumes: []ScratchVolume{{Name: "tmp", Mount: "/tmp"}},
 	})
 	return contracts
 }
 
-// scratchOnly declared its scratch volume but no storage mode.
+// scratchOnly declared its scratch volume and its transport but NO storage mode,
+// which a deployed render refuses on its own.
 func scratchOnly() Contracts {
 	contracts := Contracts{}
 	contracts.Add(&ServiceContract{
-		Module: "shop", Service: "store",
+		Module: "shop", Service: "store", Transport: TransportMesh,
 		ScratchVolumes: []ScratchVolume{{Name: "tmp", Mount: "/tmp"}},
 	})
 	return contracts
@@ -73,7 +74,7 @@ func scratchOnly() Contracts {
 // declaresNothing is the contract of a service that has declared nothing at all.
 func declaresNothing() Contracts {
 	contracts := Contracts{}
-	contracts.Add(&ServiceContract{Module: "shop", Service: "store"})
+	contracts.Add(&ServiceContract{Module: "shop", Service: "store", Transport: TransportMesh})
 	return contracts
 }
 
@@ -84,7 +85,12 @@ func TestAWorkloadThatCarriesWhatItDeclaredNeedsNoAllowance(t *testing.T) {
 // The same workload, from a service that declared nothing, is refused: a deployed
 // workload carries only what its service declares.
 func TestAVolumeNobodyDeclaredIsRefused(t *testing.T) {
-	err := ValidateDocuments(documents(t, workload(conformingWorkload)), storeSubject, declaresNothing(), meshed())
+	// Declares its storage and its transport, but no scratch volume.
+	noScratch := Contracts{}
+	noScratch.Add(&ServiceContract{
+		Module: "shop", Service: "store", StorageMode: StorageModeDurable, Transport: TransportMesh,
+	})
+	err := ValidateDocuments(documents(t, workload(conformingWorkload)), storeSubject, noScratch, meshed())
 	require.ErrorContains(t, err, RuleNonScratchMount)
 	require.ErrorContains(t, err, `volume "tmp" (emptyDir) is not declared by service shop/store`)
 	require.ErrorContains(t, err, "spec.deployment.scratch-volumes (declared: none)")
@@ -206,16 +212,19 @@ func TestOnlyTheStandardScratchVolumeIsCarried(t *testing.T) {
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
 			contracts := durable()
+			expected := RuleNonScratchMount
 			if strings.Contains(name, "claim") {
-				// A claim is the workload's own state: without a durable
-				// declaration it is not admitted, which is what these cases show.
+				// A claim is the workload's own state, admitted only for a service
+				// that declared durable storage — and a service that declared no
+				// storage mode is refused for that before anything else.
 				contracts = scratchOnly()
+				expected = RuleInMemoryStateStore
 			}
 			err := ValidateDocuments(documents(t, workload(body)), storeSubject, contracts, meshed())
 			require.Error(t, err)
 			var violation *Violation
 			require.ErrorAs(t, err, &violation)
-			require.Equal(t, RuleNonScratchMount, violation.Rule)
+			require.Equal(t, expected, violation.Rule)
 			require.NotEmpty(t, violation.Field)
 			require.Contains(t, err.Error(), "deployed render refuses service shop/store")
 		})
@@ -346,9 +355,9 @@ type: Opaque
 func TestADeclaredTLSEndpointIsRefusedOnAMeshedEnvironment(t *testing.T) {
 	contracts := Contracts{}
 	contracts.Add(&ServiceContract{
-		Module: "shop", Service: "store", StorageMode: StorageModeDurable,
+		Module: "shop", Service: "store", StorageMode: StorageModeDurable, Transport: TransportMesh,
 		ScratchVolumes: []ScratchVolume{{Name: "tmp", Mount: "/tmp"}},
-		Endpoints:      []EndpointContract{{Name: "peer", API: "https"}},
+		Endpoints:      []EndpointContract{{Name: "peer", Protocol: "https"}},
 	})
 	err := ValidateDocuments(documents(t, workload(conformingWorkload)), storeSubject, contracts, meshed())
 	require.ErrorContains(t, err, "deployed render refuses service shop/store")
@@ -357,9 +366,9 @@ func TestADeclaredTLSEndpointIsRefusedOnAMeshedEnvironment(t *testing.T) {
 
 	plain := Contracts{}
 	plain.Add(&ServiceContract{
-		Module: "shop", Service: "store", StorageMode: StorageModeDurable,
+		Module: "shop", Service: "store", StorageMode: StorageModeDurable, Transport: TransportMesh,
 		ScratchVolumes: []ScratchVolume{{Name: "tmp", Mount: "/tmp"}},
-		Endpoints:      []EndpointContract{{Name: "grpc", API: "grpc"}, {Name: "http", API: "http"}},
+		Endpoints:      []EndpointContract{{Name: "grpc", Protocol: "grpc"}, {Name: "http", Protocol: "http"}},
 	})
 	require.NoError(t, ValidateDocuments(documents(t, workload(conformingWorkload)), storeSubject, plain, meshed()))
 	require.NoError(t, ValidateDocuments(documents(t, workload(conformingWorkload)), storeSubject, contracts, &Declaration{}),
@@ -386,7 +395,7 @@ func TestStorageModeIsDecidedByTheDeclaration(t *testing.T) {
 	t.Run("an ephemeral declaration is refused", func(t *testing.T) {
 		contracts := Contracts{}
 		contracts.Add(&ServiceContract{
-			Module: "shop", Service: "store", StorageMode: StorageModeEphemeral,
+			Module: "shop", Service: "store", StorageMode: StorageModeEphemeral, Transport: TransportMesh,
 			ScratchVolumes: []ScratchVolume{{Name: "tmp", Mount: "/tmp"}},
 		})
 		err := ValidateDocuments(documents(t, workload(conformingWorkload)), storeSubject, contracts, meshed())
@@ -395,6 +404,7 @@ func TestStorageModeIsDecidedByTheDeclaration(t *testing.T) {
 	})
 	t.Run("a store that declares no storage mode is refused by name", func(t *testing.T) {
 		err := ValidateDocuments(documents(t, stateful), storeSubject, scratchOnly(), meshed())
+		_ = err
 		require.ErrorContains(t, err, RuleInMemoryStateStore)
 		require.ErrorContains(t, err, "declares no storage mode")
 		require.ErrorContains(t, err, "spec.deployment.storage")
@@ -422,10 +432,12 @@ func TestStorageModeIsDecidedByTheDeclaration(t *testing.T) {
 		// either, and it is the mount that is named — the volume list is conforming.
 		require.ErrorContains(t,
 			ValidateDocuments(documents(t, mounted), storeSubject, scratchOnly(), meshed()),
-			`volume "data" is mounted at /var/lib/store and service shop/store declares no such volume`)
+			"declares no storage mode", "without the declaration nothing about its state is admitted")
 	})
-	t.Run("a workload that keeps no state needs no storage declaration", func(t *testing.T) {
-		require.NoError(t, ValidateDocuments(documents(t, workload(conformingWorkload)), storeSubject, scratchOnly(), meshed()))
+	t.Run("even a workload that keeps no state declares a storage mode", func(t *testing.T) {
+		err := ValidateDocuments(documents(t, workload(conformingWorkload)), storeSubject, scratchOnly(), meshed())
+		require.ErrorContains(t, err, RuleInMemoryStateStore)
+		require.ErrorContains(t, err, "declares no storage mode")
 	})
 }
 
@@ -475,7 +487,7 @@ func TestContractFromServiceReadsWhatAServiceDeclares(t *testing.T) {
 	contract, err := ContractFromService("shop", service)
 	require.NoError(t, err)
 	require.Equal(t, StorageModeDurable, contract.StorageMode)
-	require.Equal(t, []EndpointContract{{Name: "tcp", API: "tcp"}}, contract.Endpoints)
+	require.Equal(t, []EndpointContract{{Name: "tcp", Protocol: "tcp"}}, contract.Endpoints)
 	require.Equal(t, []ScratchVolume{{Name: "tmp", Mount: "/tmp"}, {Name: "run", Mount: "/var/run/store"}},
 		contract.ScratchVolumes, "the volumes the agent declares are what the render admits")
 

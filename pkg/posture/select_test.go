@@ -49,9 +49,25 @@ func selected(t *testing.T, root string) []Document {
 	return documents
 }
 
+// declaredUnits is the contract of every unit these trees carry: each declares its
+// storage, its transport and the scratch volume the platform renders for it, so a
+// case is about selection rather than about a missing declaration.
+func declaredUnits(services ...string) Contracts {
+	contracts := Contracts{}
+	for _, service := range services {
+		contracts.Add(&ServiceContract{
+			Module: "shop", Service: service,
+			StorageMode: StorageModeDurable, Transport: TransportMesh,
+			ScratchVolumes: []ScratchVolume{{Name: "tmp", Mount: "/tmp"}},
+		})
+	}
+	return contracts
+}
+
 func refuses(t *testing.T, root string) error {
 	t.Helper()
-	return ValidateDocuments(selected(t, root), Subject{Module: "shop", Service: "store"}, durable(), meshed())
+	return ValidateDocuments(selected(t, root),
+		Subject{Module: "shop", Service: "store"}, declaredUnits("store", "api"), meshed())
 }
 
 // The selected set is what the cell would apply: patches decide, in whatever form

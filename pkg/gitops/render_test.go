@@ -23,6 +23,17 @@ spec:
           image: ghcr.io/codefly-dev/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 `
 
+// pinnedConfigMap is a module-level manifest that carries no workload: a module's
+// own static tree has no service to declare storage or transport for it, so a test
+// about module scoping uses a manifest the posture has nothing to ask about.
+const pinnedConfigMap = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: module-settings
+data:
+  region: eastus2
+`
+
 func promotableServiceGraph(module string, services []string) []InventoryUnit {
 	graph := make([]InventoryUnit, 0, len(services))
 	for _, service := range services {

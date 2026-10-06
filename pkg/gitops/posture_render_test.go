@@ -40,6 +40,7 @@ func posturedFixtureE(t *testing.T, block string) (*resources.Workspace, *resour
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, append(data, []byte(block)...), 0o644))
+	declareFixtureServices(t, root, nil)
 	ctx := context.Background()
 	workspace, err := resources.LoadWorkspaceFromDir(ctx, root)
 	if err != nil {
@@ -66,10 +67,7 @@ func declaringFixture(t *testing.T, service, specBlock string) (*resources.Works
 	data, err := os.ReadFile(workspacePath)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(workspacePath, append(data, []byte(meshBlock)...), 0o644))
-	servicePath := filepath.Join(root, "modules", "shop", "services", service, resources.ServiceConfigurationName)
-	declaration, err := os.ReadFile(servicePath)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(servicePath, append(declaration, []byte(specBlock)...), 0o644))
+	declareFixtureServices(t, root, map[string]string{service: specBlock})
 	ctx := context.Background()
 	workspace, err := resources.LoadWorkspaceFromDir(ctx, root)
 	require.NoError(t, err)
@@ -82,7 +80,26 @@ func declaringFixture(t *testing.T, service, specBlock string) (*resources.Works
 
 // ephemeralStorageBlock is what a service declares when its state does not survive
 // its process — which a deployed render refuses.
-const ephemeralStorageBlock = "  deployment:\n    storage: ephemeral\n"
+const ephemeralStorageBlock = "  deployment:\n    storage: ephemeral\n    transport: mesh\n"
+
+// declareFixtureServices gives both fixture services the declarations every deployed
+// workload owes — storage and transport — merging a case's own block into the same
+// deployment mapping rather than opening a second one.
+func declareFixtureServices(t *testing.T, root string, extra map[string]string) {
+	t.Helper()
+	for _, service := range []string{"api", "store"} {
+		path := filepath.Join(root, "modules", "shop", "services", service, resources.ServiceConfigurationName)
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		block := "  deployment:\n    storage: durable\n    transport: mesh\n"
+		if declared, present := extra[service]; present {
+			// The case's own block replaces the default: one deployment mapping, and
+			// the case says what that service declares.
+			block = declared
+		}
+		require.NoError(t, os.WriteFile(path, append(data, []byte(block)...), 0o644))
+	}
+}
 
 func meshedStaging(allowances ...posture.Allowance) *posture.Declaration {
 	return &posture.Declaration{
@@ -98,7 +115,8 @@ func durableContracts(services ...string) posture.Contracts {
 	contracts := posture.Contracts{}
 	for _, service := range services {
 		contracts.Add(&posture.ServiceContract{
-			Module: "shop", Service: service, StorageMode: posture.StorageModeDurable,
+			Module: "shop", Service: service,
+			StorageMode: posture.StorageModeDurable, Transport: posture.TransportMesh,
 			ScratchVolumes: []posture.ScratchVolume{{Name: "tmp", Mount: "/tmp"}},
 		})
 	}
@@ -549,4 +567,34 @@ func TestDevServiceBuildCarriesTheServiceDeclarations(t *testing.T) {
 	require.ErrorContains(t, err, "deployed render refuses service shop/store")
 	require.ErrorContains(t, err, posture.RuleInMemoryStateStore)
 	require.ErrorContains(t, err, "declares ephemeral storage")
+}
+
+// INVARIANT: a declaration that does not parse is a refusal, at every entry point.
+// Swallowing the error removed the contract, and the absent-declaration path then
+// admitted the workload — the same defect twice over.
+func TestAMalformedDeclarationRefusesAtEveryEntryPoint(t *testing.T) {
+	const malformed = "  deployment:\n    storage: durabl\n    transport: mesh\n"
+	t.Run("a module render", func(t *testing.T) {
+		installFakeAgents(t)
+		workspace, module, env := declaringFixture(t, "store", malformed)
+		_, err := RenderModule(context.Background(), workspace, module, env, "acme-staging", nil)
+		require.ErrorContains(t, err, "is not a storage mode")
+	})
+	t.Run("a single-service render, through a dependency", func(t *testing.T) {
+		installFakeAgents(t)
+		workspace, module, env := declaringFixture(t, "store", malformed)
+		api, err := module.LoadServiceFromName(context.Background(), "api")
+		require.NoError(t, err)
+		_, err = RenderService(context.Background(), workspace, module, api, env, "acme-staging", false, nil)
+		require.ErrorContains(t, err, "is not a storage mode",
+			"a dependency's declaration is read on the same terms as the root's")
+	})
+	t.Run("a dev build", func(t *testing.T) {
+		installFakeAgents(t)
+		workspace, module, env := declaringFixture(t, "store", malformed)
+		store, err := module.LoadServiceFromName(context.Background(), "store")
+		require.NoError(t, err)
+		_, err = buildRenderedServiceImages(context.Background(), workspace, module, store, env, false, nil)
+		require.ErrorContains(t, err, "is not a storage mode")
+	})
 }

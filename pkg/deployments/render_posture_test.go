@@ -61,7 +61,9 @@ func cellEnvironment() *environments.Environment {
 func TestRenderManagerHoldsItsOutputToTheDeployedPosture(t *testing.T) {
 	manager := NewRenderManager(&resources.Workspace{Name: "acme"}, cellEnvironment())
 	module := &resources.Module{Name: "shop"}
-	service := &resources.Service{Name: "store"}
+	service := &resources.Service{Name: "store", Spec: map[string]any{
+		"deployment": map[string]any{"storage": "durable", "transport": "mesh"},
+	}}
 	err := manager.checkPosture(context.Background(), module, service, violatingWorkload)
 	require.ErrorContains(t, err, "deployed render refuses service shop/store")
 	require.ErrorContains(t, err, posture.RuleNonScratchMount)
@@ -119,7 +121,9 @@ func TestRenderManagerHandleRefusesAViolatingDryRun(t *testing.T) {
 	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)
 	require.NoError(t, err)
 	module := &resources.Module{Name: "shop"}
-	service := &resources.Service{Name: "store"}
+	service := &resources.Service{Name: "store", Spec: map[string]any{
+		"deployment": map[string]any{"storage": "durable", "transport": "mesh"},
+	}}
 	env := cellEnvironment()
 	base := filepath.Join(root, "deployments", "modules", "shop", "services", "store", "base")
 	overlay := filepath.Join(root, "deployments", "modules", "shop", "services", "store", "overlays", "staging")

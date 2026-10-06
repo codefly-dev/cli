@@ -29,10 +29,17 @@ func containerPortsFixture(t *testing.T, declarations map[string]string) (*resou
 	t.Helper()
 	root := t.TempDir()
 	require.NoError(t, copyTree(filepath.Join("testdata", "container-ports"), root))
-	for service, block := range declarations {
+	// Every service of a deployed render declares its storage and its transport, so
+	// the fixture declares them for both; a case's own block is merged into the same
+	// deployment mapping rather than opening a second one.
+	for _, service := range []string{"api", "store"} {
 		path := filepath.Join(root, "modules", "shop", "services", service, resources.ServiceConfigurationName)
 		data, err := os.ReadFile(path)
 		require.NoError(t, err)
+		block := "  deployment:\n    storage: durable\n    transport: mesh\n"
+		if declared, present := declarations[service]; present {
+			block += strings.TrimPrefix(declared, "  deployment:\n")
+		}
 		require.NoError(t, os.WriteFile(path, append(data, []byte(block)...), 0o644))
 	}
 	ctx := context.Background()

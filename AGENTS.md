@@ -191,11 +191,12 @@ relative paths.
   `codefly run`. Test thoroughly.
 - **Configs flow as environment variables, not files.** Connection strings derived from network
   mappings are injected as `CODEFLY__SERVICE_...` env vars. A render of restricted
-  manifests for an environment that deploys to a cell enforces this: a deployed
-  workload carries exactly the volumes its service declared in
-  `spec.deployment.scratch-volumes` (plus its own durable state when it declared
-  `spec.deployment.storage: durable`), and the render delivers no certificate
-  material on a mesh-protected environment. Each refusal
+  manifests for an environment that deploys to a cell enforces this through three
+  invariants: every workload's service DECLARES its storage mode, its transport and the
+  scratch volumes it renders (absence is refused by name); the rendered configuration
+  must AGREE with those declarations (a contradiction refuses, naming both sides); and
+  anything the guard cannot read — a malformed manifest, an unresolved reference, a
+  Kustomization cycle — is refused rather than read as conforming. Each refusal
   names the service, the rule and the field; an environment-level allowance is the
   only exception, printed on every deployed run including `--dry-run`.
 - **The posture guard reads declarations and manifest shape, never a container's env

@@ -9,44 +9,52 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// StorageModeDurable and StorageModeEphemeral are the storage modes a service may
-// declare for itself. A deployed render admits only the durable one.
+// The storage modes a service may declare for itself. A deployed render admits
+// only the durable one, and admits NEITHER by default: a workload that declares
+// nothing is refused by name (see checkDeclarationsArePresent). Absence is not
+// conformance — that is the invariant this file exists to hold.
 const (
 	StorageModeDurable   = "durable"
 	StorageModeEphemeral = "ephemeral"
 )
 
-// deploymentSpecKey and storageKey locate the declaration in a service's own
-// spec: spec.deployment.storage.
+// The transports a service may declare for itself: the platform's, or its own TLS.
+const (
+	TransportMesh   = "mesh"
+	TransportOwnTLS = "own-tls"
+)
+
+// deploymentSpecKey and the keys under it locate a service's declarations:
+// spec.deployment.{storage,transport,scratch-volumes}.
 const (
 	deploymentSpecKey = "deployment"
 	storageKey        = "storage"
+	transportKey      = "transport"
 	scratchVolumesKey = "scratch-volumes"
 )
 
-// ServiceContract is what a service declares about itself that the deployed
-// posture is decided by. It is the whole reason this guard is not a reader of
-// container command lines: what a process does with its state or its transport
-// cannot be proven from a manifest, so the service says it, and the render holds
-// the manifests to what was said.
+// ServiceContract is what a service declares about itself. It is the authority
+// for the two questions a render cannot answer from manifests — what a process
+// does with its state, and whether it terminates its own transport — and the
+// rendered configuration is then checked AGAINST it (see configuration.go). A
+// declaration with no agreement check authorizes whatever contradicts it; an
+// inspection with no declaration can be defeated by a spelling. Both halves, or
+// neither works.
 type ServiceContract struct {
 	Module  string
 	Service string
-	// StorageMode is spec.deployment.storage: "durable" or "ephemeral", empty when
-	// the service declares nothing.
+	// StorageMode is spec.deployment.storage. Empty means the service declared
+	// nothing, which a deployed render refuses by name.
 	StorageMode string
-	// Endpoints are the service's own declared endpoints, which is where a
-	// transport protocol is declared if there is one.
-	Endpoints []EndpointContract
+	// Transport is spec.deployment.transport. Empty means the service declared
+	// nothing, which a deployed render refuses by name.
+	Transport string
 	// ScratchVolumes are the scratch volumes this service's agent renders and
-	// mounts: writable space for a read-only root filesystem, which the platform
-	// owns. A deployed workload may carry exactly these and nothing else.
-	//
-	// They are declared rather than recognised because there is no property of a
-	// volume that distinguishes the platform's scratch directory from a second
-	// emptyDir mounted over /secrets to deliver credentials: both are an emptyDir.
-	// What the platform renders, the platform declares.
+	// mounts. A deployed workload carries exactly these.
 	ScratchVolumes []ScratchVolume
+	// Endpoints are the service's own declared endpoints, carrying the protocol
+	// and whether the endpoint lives outside the cell.
+	Endpoints []EndpointContract
 }
 
 // ScratchVolume is one declared scratch volume: the name the agent renders it
@@ -56,18 +64,21 @@ type ScratchVolume struct {
 	Mount string `yaml:"mount"`
 }
 
-// EndpointContract is one declared endpoint of a service.
+// EndpointContract is one declared endpoint. Protocol is the endpoint's declared
+// API and nothing else: an endpoint may be NAMED "https" while declaring the
+// `http` protocol, and the declaration is what the service serves.
 type EndpointContract struct {
-	Name string
-	API  string
+	Name     string
+	Protocol string
+	// External marks an endpoint that lives outside the cell, so it is not
+	// transport between in-cell peers at all.
+	External bool
 }
 
 // Contracts are the service contracts of one render, keyed as a Subject prints.
 type Contracts map[string]ServiceContract
 
-// Of returns the contract declared for a subject, and whether there is one. A
-// unit with no contract has declared nothing, which is not the same as having
-// declared conformance — see checkStorageDeclaration.
+// Of returns the contract declared for a subject, and whether there is one.
 func (contracts Contracts) Of(subject Subject) (ServiceContract, bool) {
 	contract, declared := contracts[subject.String()]
 	return contract, declared
@@ -78,15 +89,22 @@ func (contracts Contracts) Add(contract *ServiceContract) {
 	contracts[Subject{Module: contract.Module, Service: contract.Service}.String()] = *contract
 }
 
-// ContractFromService reads what a service declares about itself. It is the one
-// reader of that declaration, so every render path sees the same contract.
+// ContractFromService reads what a service declares about itself. Every render
+// path reads declarations through this one function, and every path must
+// propagate its error: a contract that failed to parse is not an absent contract,
+// it is a refusal (pattern 3 of the audit's lessons — one authority, every
+// caller).
 func ContractFromService(module string, service *resources.Service) (ServiceContract, error) {
 	contract := ServiceContract{Module: module, Service: service.Name}
 	for _, endpoint := range service.Endpoints {
 		if endpoint == nil {
 			continue
 		}
-		contract.Endpoints = append(contract.Endpoints, EndpointContract{Name: endpoint.Name, API: endpoint.API})
+		contract.Endpoints = append(contract.Endpoints, EndpointContract{
+			Name:     endpoint.Name,
+			Protocol: endpoint.API,
+			External: endpoint.Location == resources.LocationExternal,
+		})
 	}
 	declared, present := service.Spec[deploymentSpecKey]
 	if !present || declared == nil {
@@ -98,20 +116,15 @@ func ContractFromService(module string, service *resources.Service) (ServiceCont
 	}
 	var spec struct {
 		Storage        string          `yaml:"storage"`
+		Transport      string          `yaml:"transport"`
 		ScratchVolumes []ScratchVolume `yaml:"scratch-volumes"`
 	}
-	if err := yaml.Unmarshal(encoded, &spec); err != nil {
-		return ServiceContract{}, fmt.Errorf("service %s: spec.%s must declare %s as a string and %s as a list of {name, mount}: %w",
-			service.Name, deploymentSpecKey, storageKey, scratchVolumesKey, err)
+	decoder := yaml.NewDecoder(strings.NewReader(string(encoded)))
+	if err := decoder.Decode(&spec); err != nil {
+		return ServiceContract{}, fmt.Errorf(
+			"service %s: spec.%s must declare %s and %s as strings and %s as a list of {name, mount}: %w",
+			service.Name, deploymentSpecKey, storageKey, transportKey, scratchVolumesKey, err)
 	}
-	for index, volume := range spec.ScratchVolumes {
-		if strings.TrimSpace(volume.Name) == "" || strings.TrimSpace(volume.Mount) == "" {
-			return ServiceContract{}, fmt.Errorf(
-				"service %s: spec.%s.%s[%d] must declare both name and mount: a scratch volume is a name AND the one path it is mounted at",
-				service.Name, deploymentSpecKey, scratchVolumesKey, index)
-		}
-	}
-	contract.ScratchVolumes = spec.ScratchVolumes
 	mode := strings.ToLower(strings.TrimSpace(spec.Storage))
 	switch mode {
 	case "", StorageModeDurable, StorageModeEphemeral:
@@ -121,31 +134,48 @@ func ContractFromService(module string, service *resources.Service) (ServiceCont
 			"service %s: spec.%s.%s = %q is not a storage mode (%s or %s)",
 			service.Name, deploymentSpecKey, storageKey, spec.Storage, StorageModeDurable, StorageModeEphemeral)
 	}
+	transport := strings.ToLower(strings.TrimSpace(spec.Transport))
+	switch transport {
+	case "", TransportMesh, TransportOwnTLS:
+		contract.Transport = transport
+	default:
+		return ServiceContract{}, fmt.Errorf(
+			"service %s: spec.%s.%s = %q is not a transport (%s or %s)",
+			service.Name, deploymentSpecKey, transportKey, spec.Transport, TransportMesh, TransportOwnTLS)
+	}
+	for index, volume := range spec.ScratchVolumes {
+		if strings.TrimSpace(volume.Name) == "" || strings.TrimSpace(volume.Mount) == "" {
+			return ServiceContract{}, fmt.Errorf(
+				"service %s: spec.%s.%s[%d] must declare both name and mount: a scratch volume is a name AND the one path it is mounted at",
+				service.Name, deploymentSpecKey, scratchVolumesKey, index)
+		}
+	}
+	contract.ScratchVolumes = spec.ScratchVolumes
 	return contract, nil
 }
 
-// tlsProtocols are the endpoint protocols that put transport in the service's
-// own hands. An endpoint declared as one of these on a mesh-protected
-// environment is the declaration the posture refuses; it is read from what the
-// service declares, never guessed from how its container is started.
+// tlsProtocols are the endpoint protocols a service terminates itself.
 var tlsProtocols = map[string]bool{
 	"https": true, "grpcs": true, "tls": true, "mtls": true, "ssl": true, "wss": true,
 }
 
-// declaredTLSEndpoints lists the endpoints whose declared protocol is TLS the
-// service terminates itself, in declaration order.
+// declaredTLSEndpoints lists the IN-CELL endpoints whose declared protocol is TLS
+// the service terminates itself. An endpoint declared external is somewhere else's
+// transport and is not one; the endpoint's NAME is never read as a protocol.
 func (contract *ServiceContract) declaredTLSEndpoints() []EndpointContract {
 	var declared []EndpointContract
 	for _, endpoint := range contract.Endpoints {
-		if tlsProtocols[strings.ToLower(endpoint.API)] || tlsProtocols[strings.ToLower(endpoint.Name)] {
+		if endpoint.External {
+			continue
+		}
+		if tlsProtocols[strings.ToLower(strings.TrimSpace(endpoint.Protocol))] {
 			declared = append(declared, endpoint)
 		}
 	}
 	return declared
 }
 
-// scratchVolume reports the declaration for a volume name, if the service
-// declared one.
+// scratchVolume reports the declaration for a volume name, if there is one.
 func (contract *ServiceContract) scratchVolume(name string) (ScratchVolume, bool) {
 	for _, volume := range contract.ScratchVolumes {
 		if volume.Name == name {
@@ -155,11 +185,10 @@ func (contract *ServiceContract) scratchVolume(name string) (ScratchVolume, bool
 	return ScratchVolume{}, false
 }
 
-// declaredScratch is how a refusal names what the service did declare, so the
-// reader can see what was expected rather than only what was refused.
+// declaredScratch is how a refusal names what the service did declare.
 func (contract *ServiceContract) declaredScratch() string {
 	if len(contract.ScratchVolumes) == 0 {
-		return "none"
+		return valueNone
 	}
 	declared := make([]string, 0, len(contract.ScratchVolumes))
 	for _, volume := range contract.ScratchVolumes {

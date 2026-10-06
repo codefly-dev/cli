@@ -116,6 +116,17 @@ type DevResult struct {
 	PostureAllowances []string
 }
 
+// sortedServiceUniques orders a service map, so a refusal names the same service
+// every run.
+func sortedServiceUniques(services map[string]*resources.Service) []string {
+	names := make([]string, 0, len(services))
+	for name := range services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // buildServiceImage is the build/push boundary of a dev deployment. It is a
 // variable so tests can stand in for the agent and the registry.
 var buildServiceImage = buildRenderedServiceImages
@@ -151,10 +162,17 @@ func buildRenderedServiceImages(
 	// stages — are what the posture is decided by, so they are collected from the
 	// flow rather than assumed to be the root's alone.
 	contracts := posture.Contracts{}
+	// A declaration that does not parse is a refusal, not an absent declaration:
+	// swallowing the error here removed the contract, and the absent-declaration path
+	// then admitted the workload. The error is kept and returned below.
+	var contractErr error
 	recordServices := func(services map[string]*resources.Service) {
-		for _, rendered := range services {
-			contract, contractErr := posture.ContractFromService(module.Name, rendered)
-			if contractErr != nil {
+		for _, name := range sortedServiceUniques(services) {
+			contract, err := posture.ContractFromService(module.Name, services[name])
+			if err != nil {
+				if contractErr == nil {
+					contractErr = err
+				}
 				continue
 			}
 			contracts.Add(&contract)
@@ -165,6 +183,9 @@ func buildRenderedServiceImages(
 	// in-process agents in for it here too.
 	if err := serviceFlow(ctx, workspace, module, service, env, renderBuild{standAlone: true, rebuild: rebuild}, sink, destinations, nil, recordServices, nil, nil, nil); err != nil {
 		return nil, fmt.Errorf("build service %s: %w", service.Name, err)
+	}
+	if contractErr != nil {
+		return nil, contractErr
 	}
 	// A dev deployment ships this render's image into a cell, so this render is
 	// held to the environment's deployed security posture exactly as a full

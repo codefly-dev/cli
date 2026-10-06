@@ -16,9 +16,15 @@ import (
 // Document is one manifest of a selected manifest set: an object a cell would
 // apply, after Kustomize has built it and after any list wrapper is unwrapped.
 type Document struct {
-	// Location is where the document came from, for a refusal to name.
+	// Location is where the document came from, for a refusal to name. It may carry
+	// a diagnostic annotation, so it is never parsed for identity.
 	Location string
-	Value    map[string]any
+	// Subject is the unit this document belongs to, carried explicitly. Deriving it
+	// from Location made a service called "store" become "store (Kustomize output)",
+	// and a declaration and an allowance for the real service were then both missed:
+	// identity and diagnostics are different things and are kept apart.
+	Subject Subject
+	Value   map[string]any
 }
 
 // kustomizationNames are the file names Kustomize accepts for a kustomization.
@@ -56,8 +62,19 @@ func SelectManifests(root, environment string) ([]Document, error) {
 	if err != nil {
 		return nil, err
 	}
+	roots := tree.roots()
+	if len(roots) == 0 && len(tree.kustomizations) > 0 {
+		// Every kustomization is referenced by another: the references form a cycle,
+		// so there is no root to build and the selection would be empty. An empty
+		// selection is indistinguishable from a conforming tree, which is how a
+		// forbidden volume reached a cell behind a cycle. Refuse instead.
+		return nil, fmt.Errorf(
+			"the rendered tree's Kustomizations reference each other in a cycle (%s), so there is no root to build: "+
+				"this render cannot be checked and is refused rather than read as empty",
+			strings.Join(tree.directories(), ", "))
+	}
 	var documents []Document
-	for _, directory := range tree.roots() {
+	for _, directory := range roots {
 		built, buildErr := buildKustomization(root, directory)
 		if buildErr != nil {
 			return nil, buildErr
@@ -172,11 +189,22 @@ func (found *tree) uncoveredDocuments(root string) ([]Document, error) {
 		if decodeErr != nil {
 			return nil, fmt.Errorf("%s: %w", relative, decodeErr)
 		}
+		subject := SubjectFromPath(relative, Subject{})
 		for _, value := range values {
-			documents = append(documents, Document{Location: relative, Value: value})
+			documents = append(documents, Document{Location: relative, Subject: subject, Value: value})
 		}
 	}
 	return documents, nil
+}
+
+// directories lists the kustomization directories of a tree, for a refusal to name.
+func (found *tree) directories() []string {
+	names := make([]string, 0, len(found.kustomizations))
+	for directory := range found.kustomizations {
+		names = append(names, directory)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // inventoryFilename is the render record a rendered tree carries beside its
@@ -248,9 +276,10 @@ func buildKustomization(root, directory string) ([]Document, error) {
 		return nil, fmt.Errorf("%s: %w", directory, err)
 	}
 	location := directory + " (Kustomize output)"
+	subject := SubjectFromPath(directory, Subject{})
 	documents := make([]Document, 0, len(values))
 	for _, value := range values {
-		documents = append(documents, Document{Location: location, Value: value})
+		documents = append(documents, Document{Location: location, Subject: subject, Value: value})
 	}
 	return documents, nil
 }
@@ -274,6 +303,7 @@ func expand(documents []Document) []Document {
 			}
 			nested = append(nested, Document{
 				Location: fmt.Sprintf("%s (items[%d])", document.Location, index),
+				Subject:  document.Subject,
 				Value:    value,
 			})
 		}
