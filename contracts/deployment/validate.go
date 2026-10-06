@@ -40,8 +40,9 @@ var labelPart = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?$`)
 // The type is the gate: Rows is a method, so there is no way to obtain a
 // projection without having passed the schema check that produces the value.
 type Checked struct {
-	canonical []byte
-	rows      []byte
+	canonical   []byte
+	rows        []byte
+	projections []byte
 }
 
 func (c *Checked) Canonical() []byte { return bytes.Clone(c.canonical) }
@@ -55,6 +56,14 @@ func (c *Checked) Inventory() Inventory {
 // Rows is the seven-key projection the cluster's admission policy compares:
 // one row per workload with ns, labels, sa, container, images, app and init.
 func (c *Checked) Rows() []Row { var r []Row; _ = json.Unmarshal(c.rows, &r); return r }
+
+// Projections is Rows with each row's workload id and delivery member, so a
+// consumer selects by name instead of by position.
+func (c *Checked) Projections() []Projection {
+	var p []Projection
+	_ = json.Unmarshal(c.projections, &p)
+	return p
+}
 
 // Validated is a Checked inventory whose EXTERNAL references and image
 // evidence have also been accepted against an independently authenticated
@@ -85,6 +94,7 @@ func checked(inv Inventory, input []byte) (*Checked, error) {
 	if err != nil {
 		return nil, err
 	}
+	projections := make([]Projection, 0, len(inv.Workloads))
 	rows := make([]Row, 0, len(inv.Workloads))
 	for _, w := range inv.Workloads {
 		r := Row{w.Controller.Namespace, w.Selector, w.Template.Spec.ServiceAccountName, w.AuthenticatingContainer, map[string]string{}, nil, nil}
@@ -97,12 +107,17 @@ func checked(inv Inventory, input []byte) (*Checked, error) {
 			r.Images[c.Name] = c.Image
 		}
 		rows = append(rows, r)
+		projections = append(projections, Projection{w.ID, w.MemberBinding, r})
 	}
 	encoded, err := json.Marshal(rows)
 	if err != nil {
 		return nil, err
 	}
-	return &Checked{canonical, encoded}, nil
+	identified, err := json.Marshal(projections)
+	if err != nil {
+		return nil, err
+	}
+	return &Checked{canonical, encoded, identified}, nil
 }
 
 // Validate is an offline consistency check, not an authorization decision. The

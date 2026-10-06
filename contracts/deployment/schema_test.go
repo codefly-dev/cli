@@ -184,3 +184,57 @@ func mustJSON(t *testing.T, v any) []byte {
 	}
 	return out
 }
+
+// Selecting one member's rows must not depend on position.
+//
+// The first consumer paired Rows()[i] with Inventory().Workloads[i], which is
+// correct while the projection is one row per workload in workload order, and
+// silently wrong the first time a row is filtered, reordered or synthesised.
+// Mispairing a row means comparing one workload's observation against another
+// workload's approved images — a wrong answer that looks like a right one.
+//
+// So Projections carries the workload id and the delivery member beside each
+// row, and Row stays exactly the seven keys admission compares.
+func TestARowCanBeSelectedByNameNotPosition(t *testing.T) {
+	checked, err := Check(read(t, "testdata/base.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	projections := checked.Projections()
+	rows := checked.Rows()
+	if len(projections) != len(rows) {
+		t.Fatalf("Projections and Rows disagree in length: %d vs %d", len(projections), len(rows))
+	}
+	if len(projections) == 0 {
+		t.Fatal("no projections, so a consumer cannot select by name")
+	}
+
+	inventory := checked.Inventory()
+	byWorkload := map[string]Projection{}
+	for _, p := range projections {
+		if p.Workload == "" {
+			t.Errorf("projection names no workload, so it cannot be selected by name: %+v", p)
+		}
+		if _, duplicate := byWorkload[p.Workload]; duplicate {
+			t.Errorf("two projections claim workload %q, so selection by name is ambiguous", p.Workload)
+		}
+		byWorkload[p.Workload] = p
+	}
+
+	// Every workload is projected, and each projection's row is the row at the
+	// same index — so a consumer that already paired by position is not broken
+	// by this, and one that pairs by name gets the same answer.
+	for i, w := range inventory.Workloads {
+		p, ok := byWorkload[w.ID]
+		if !ok {
+			t.Errorf("workload %q has no projection", w.ID)
+			continue
+		}
+		if p.MemberBinding != w.MemberBinding {
+			t.Errorf("workload %q projected member %q, want %q", w.ID, p.MemberBinding, w.MemberBinding)
+		}
+		if p.Row.Namespace != rows[i].Namespace || p.Row.ServiceAccount != rows[i].ServiceAccount {
+			t.Errorf("workload %q: projection row and positional row disagree", w.ID)
+		}
+	}
+}

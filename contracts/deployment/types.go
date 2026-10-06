@@ -259,6 +259,10 @@ type PlatformRefs struct {
 }
 
 // Row is a projection, not an alternative editable source of execution facts.
+// Row is EXACTLY the seven keys the cluster's admission policy compares, and
+// nothing else. A test asserts the field count, deliberately: the row is the
+// comparison, so a field that admission does not compare does not belong in
+// it. To identify a row, see Projection.
 type Row struct {
 	Namespace      string            `json:"ns"`
 	Labels         map[string]string `json:"labels"`
@@ -333,4 +337,24 @@ type CompilerProfile struct {
 	Normalization     string   `json:"normalization"`
 	SupportedKinds    []string `json:"supported_kinds"`
 	ExcludedFields    []string `json:"excluded_fields"`
+}
+
+// Projection pairs a Row with the identity of what it projects. It exists so a
+// consumer can select one delivery member's rows BY NAME rather than by
+// position.
+//
+// The first consumer paired Rows()[i] with Inventory().Workloads[i] and said
+// so before this module merged. That pairing is correct today and fragile
+// forever: it holds only while the projection is one row per workload in
+// workload order, so the first time a row is filtered, reordered or
+// synthesised, every consumer silently mispairs — and mispairing a row means
+// comparing one workload's observation against another workload's approved
+// images, which is a wrong answer that looks like a right one.
+//
+// Identity lives here rather than in Row because Row is the admission
+// comparison and must stay exactly those seven keys.
+type Projection struct {
+	Workload      string `json:"workload"`
+	MemberBinding string `json:"member_binding"`
+	Row           Row    `json:"row"`
 }
