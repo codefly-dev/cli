@@ -104,3 +104,83 @@ func TestCorpusRegeneratesExactly(t *testing.T) {
 		}
 	}
 }
+
+// The projection must be reachable from a schema-checked inventory ALONE,
+// without a validation context.
+//
+// Why this is a test and not a convenience: the row projection is a pure
+// function of Workloads — namespace, selector, service account, authenticating
+// container, the container-name-to-image map, and application/init membership.
+// A consumer holding an inventory that was already approved, but no longer
+// holding the context that approval was checked against, must be able to ask
+// the contract for its rows. If it cannot, it writes its own traversal of
+// Workloads[].Template.Spec, which is a second implementation of the
+// projection — the duplication this module exists to prevent. The first
+// consumer (the platform Catalogue) hit exactly that and said so.
+//
+// It also pins the two forms to AGREE: Check and Validate must produce
+// identical canonical bytes, identical digests and identical rows, or an
+// approval signed over one and compared against the other would disagree for
+// no visible reason.
+func TestTheProjectionIsReachableWithoutAContext(t *testing.T) {
+	inventory := read(t, "testdata/base.json")
+
+	checked, err := Check(inventory)
+	if err != nil {
+		t.Fatalf("Check on the base inventory: %v", err)
+	}
+	rows := checked.Rows()
+	if len(rows) == 0 {
+		t.Fatal("a schema-checked inventory projected no rows, so a consumer cannot use the contract's own projection")
+	}
+	for _, r := range rows {
+		if r.Namespace == "" || r.ServiceAccount == "" {
+			t.Errorf("row is missing an authoritative field: %+v", r)
+		}
+		// The authenticating container is the designation that CANNOT be
+		// inferred from the image map, so a row that has lost it has lost the
+		// thing admission needs most.
+		if r.Container != nil {
+			if _, ok := r.Images[*r.Container]; !ok {
+				t.Errorf("authenticating container %q is absent from the image map: %+v", *r.Container, r)
+			}
+		}
+		if len(r.Images) == 0 || len(r.App) == 0 {
+			t.Errorf("row carries no container membership: %+v", r)
+		}
+		for _, name := range append(append([]string{}, r.App...), r.Init...) {
+			if _, ok := r.Images[name]; !ok {
+				t.Errorf("container %q is in membership but absent from the image map: %+v", name, r)
+			}
+		}
+	}
+
+	// And the two forms agree, so a digest signed over one matches the other.
+	validated, err := Validate(inventory, read(t, "testdata/base-context.json"))
+	if err != nil {
+		t.Fatalf("Validate on the base inventory and context: %v", err)
+	}
+	if checked.Digest() != validated.Digest() {
+		t.Errorf("Check and Validate disagree on the digest: %s vs %s", checked.Digest(), validated.Digest())
+	}
+	if !bytes.Equal(checked.Canonical(), validated.Canonical()) {
+		t.Error("Check and Validate disagree on the canonical bytes")
+	}
+	if a, b := mustJSON(t, checked.Rows()), mustJSON(t, validated.Rows()); !bytes.Equal(a, b) {
+		t.Errorf("Check and Validate disagree on the projection:\n  check:    %s\n  validate: %s", a, b)
+	}
+
+	// A refused inventory yields no projection at all: the type is the gate.
+	if _, err := Check([]byte(`{"schema":"wrong"}`)); err == nil {
+		t.Error("an inventory with an unsupported schema was accepted by Check")
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	out, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}

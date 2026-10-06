@@ -22,19 +22,88 @@ var labelPart = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?$`)
 
 // Validated retains private canonical bytes. Accessors return fresh copies, so
 // mutation of caller buffers or decoded objects cannot change a compiled result.
-type Validated struct {
+// Checked is an inventory whose INTRINSIC form has been accepted: its schema
+// version, its required vocabulary and its structural rules. It carries the
+// canonical bytes, their digest, and the seven-key projection.
+//
+// It exists as its own type so that the projection is reachable WITHOUT a
+// validation context. The projection is a pure function of a schema-valid
+// inventory — namespace, selector, service account, authenticating container,
+// the container-name-to-image map and the application/init membership all come
+// from Workloads alone. A consumer holding an inventory that was already
+// approved, but no longer holding the retained context that approval was
+// checked against, must still be able to ask the contract for its rows; if it
+// cannot, it writes its own traversal of Workloads[].Template.Spec, which is a
+// second implementation of the projection and the exact duplication this
+// module exists to prevent.
+//
+// The type is the gate: Rows is a method, so there is no way to obtain a
+// projection without having passed the schema check that produces the value.
+type Checked struct {
 	canonical []byte
 	rows      []byte
 }
 
-func (v *Validated) Canonical() []byte { return bytes.Clone(v.canonical) }
-func (v *Validated) Digest() string    { return Digest(v.canonical) }
-func (v *Validated) Inventory() Inventory {
+func (c *Checked) Canonical() []byte { return bytes.Clone(c.canonical) }
+func (c *Checked) Digest() string    { return Digest(c.canonical) }
+func (c *Checked) Inventory() Inventory {
 	var i Inventory
-	_ = json.Unmarshal(v.canonical, &i)
+	_ = json.Unmarshal(c.canonical, &i)
 	return i
 }
-func (v *Validated) Rows() []Row { var r []Row; _ = json.Unmarshal(v.rows, &r); return r }
+
+// Rows is the seven-key projection the cluster's admission policy compares:
+// one row per workload with ns, labels, sa, container, images, app and init.
+func (c *Checked) Rows() []Row { var r []Row; _ = json.Unmarshal(c.rows, &r); return r }
+
+// Validated is a Checked inventory whose EXTERNAL references and image
+// evidence have also been accepted against an independently authenticated
+// context. Validation is an offline consistency check and is NEVER an
+// authorization decision.
+type Validated struct {
+	*Checked
+}
+
+// Check accepts an inventory's intrinsic form and returns its canonical bytes,
+// digest and projection. It consults no context, fetches nothing, and
+// authorizes nothing.
+func Check(input []byte) (*Checked, error) {
+	inv, err := decode[Inventory](input)
+	if err != nil {
+		return nil, err
+	}
+	if err = intrinsic(inv); err != nil {
+		return nil, err
+	}
+	return checked(inv, input)
+}
+
+// checked builds the value once, so Check and Validate cannot disagree about
+// canonical bytes or the projection.
+func checked(inv Inventory, input []byte) (*Checked, error) {
+	canonical, err := CanonicalJSON(input)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]Row, 0, len(inv.Workloads))
+	for _, w := range inv.Workloads {
+		r := Row{w.Controller.Namespace, w.Selector, w.Template.Spec.ServiceAccountName, w.AuthenticatingContainer, map[string]string{}, nil, nil}
+		for _, c := range w.Template.Spec.Containers {
+			r.App = append(r.App, c.Name)
+			r.Images[c.Name] = c.Image
+		}
+		for _, c := range w.Template.Spec.InitContainers {
+			r.Init = append(r.Init, c.Name)
+			r.Images[c.Name] = c.Image
+		}
+		rows = append(rows, r)
+	}
+	encoded, err := json.Marshal(rows)
+	if err != nil {
+		return nil, err
+	}
+	return &Checked{canonical, encoded}, nil
+}
 
 // Validate is an offline consistency check, not an authorization decision. The
 // caller must independently authenticate contextBytes and fetch retained blobs.
@@ -60,35 +129,18 @@ func Validate(inventoryBytes, contextBytes []byte) (*Validated, error) {
 	if err = validateImages(inv, profiles.execution, ctx.Blobs); err != nil {
 		return nil, err
 	}
-	canonical, err := CanonicalJSON(inventoryBytes)
+	base, err := checked(inv, inventoryBytes)
 	if err != nil {
 		return nil, err
 	}
-	rows := make([]Row, 0, len(inv.Workloads))
-	for _, w := range inv.Workloads {
-		r := Row{w.Controller.Namespace, w.Selector, w.Template.Spec.ServiceAccountName, w.AuthenticatingContainer, map[string]string{}, []string{}, []string{}}
-		for _, c := range w.Template.Spec.Containers {
-			r.App = append(r.App, c.Name)
-			r.Images[c.Name] = c.Image
-		}
-		for _, c := range w.Template.Spec.InitContainers {
-			r.Init = append(r.Init, c.Name)
-			r.Images[c.Name] = c.Image
-		}
-		rows = append(rows, r)
-	}
-	encoded, _ := json.Marshal(rows)
-	return &Validated{canonical, encoded}, nil
+	return &Validated{base}, nil
 }
 
 // CheckSchema evaluates the structural AND required codeflyRules vocabulary.
 // External reference/evidence checks require Validate with its separate context.
 func CheckSchema(input []byte) error {
-	inv, err := decode[Inventory](input)
-	if err != nil {
-		return err
-	}
-	return intrinsic(inv)
+	_, err := Check(input)
+	return err
 }
 func intrinsic(inv Inventory) error {
 	if inv.Schema != Schema {

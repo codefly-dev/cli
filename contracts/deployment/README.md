@@ -253,3 +253,27 @@ The independent CI workflow runs with workspace/module-network resolution off.
 H1 does not qualify later acceptance-test paths: live CEL/admission, signatures,
 current authorization transactions, Kubernetes observation, withdrawal, retirement,
 credential revocation, fleet integration and timing remain unverified here.
+
+## Reading the projection
+
+`Check(inventory)` accepts an inventory's intrinsic form — schema version,
+required vocabulary, structural rules — and returns a `*Checked` carrying the
+canonical bytes, their digest, and `Rows()`: the seven-key projection
+(`ns`, `labels`, `sa`, `container`, `images`, `app`, `init`) that the cluster's
+admission policy compares.
+
+`Rows()` needs **no validation context**, deliberately. The projection is a
+pure function of `Workloads`, and a consumer holding an inventory that was
+already approved — but no longer holding the context that approval was checked
+against — must still be able to ask for its rows. If it cannot, it writes its
+own traversal of `Workloads[].Template.Spec`, which is a second implementation
+of the projection. The first consumer of this module hit exactly that.
+
+`Validate(inventory, context)` is `Check` plus the external reference and image
+evidence checks, and returns a `*Validated` that embeds the same `*Checked`, so
+the two forms cannot disagree about canonical bytes, digest or rows. A test
+pins that agreement.
+
+Neither is an authorization decision. `Validate` is an offline consistency
+check; what may execute is approved elsewhere, by an authority that is not this
+module and not its caller's inventory.
