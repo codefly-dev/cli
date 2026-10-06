@@ -20,7 +20,7 @@ import (
 )
 
 func newOperationDocument(spec *corerunnable.OperationSpec) *runnablespkg.Operation {
-	return &runnablespkg.Operation{
+	document := &runnablespkg.Operation{
 		Method:         spec.Method,
 		AttemptTimeout: spec.AttemptTimeout.String(),
 		TotalTimeout:   spec.TotalTimeout.String(),
@@ -35,6 +35,10 @@ func newOperationDocument(spec *corerunnable.OperationSpec) *runnablespkg.Operat
 		MaxOutputBytes: spec.MaxOutputBytes,
 		Completion:     spec.Completion.String(),
 	}
+	if tool := spec.Tool; tool != nil {
+		document.Tool = &runnablespkg.ToolExposure{Name: tool.GetName(), Description: tool.GetDescription(), Effect: tool.GetEffect().String()}
+	}
+	return document
 }
 
 func scopeDocuments(scopes []*basev0.WorkScopeV1) []runnablespkg.Scope {
