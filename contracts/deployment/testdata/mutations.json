@@ -1,0 +1,2787 @@
+[
+  {
+    "name": "digest-only",
+    "outcome": "valid",
+    "rule_id": null,
+    "mutation": {}
+  },
+  {
+    "name": "release-metadata",
+    "outcome": "valid",
+    "rule_id": null,
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/members/0/release",
+          "value": {
+            "publisher": "publisher",
+            "name": "package",
+            "version": "1.2.3"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "release-malformed",
+    "outcome": "invalid",
+    "rule_id": "RELEASE_METADATA",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/members/0/release",
+          "value": {
+            "publisher": "publisher",
+            "name": "package",
+            "version": "latest"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "release-null",
+    "outcome": "invalid",
+    "rule_id": "RELEASE_METADATA",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/members/0/release",
+          "value": null
+        }
+      ]
+    }
+  },
+  {
+    "name": "release-incomplete",
+    "outcome": "invalid",
+    "rule_id": "SCHEMA_REQUIRED",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/members/0/release",
+          "value": {
+            "publisher": "publisher",
+            "name": "package"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "mutable-tag",
+    "outcome": "invalid",
+    "rule_id": "IMAGE_REFERENCE",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/containers/0/image",
+          "value": "registry.example/team/worker:latest"
+        }
+      ]
+    }
+  },
+  {
+    "name": "missing-digest",
+    "outcome": "invalid",
+    "rule_id": "IMAGE_REFERENCE",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/containers/0/image",
+          "value": "registry.example/team/worker"
+        }
+      ]
+    }
+  },
+  {
+    "name": "tag-and-digest",
+    "outcome": "invalid",
+    "rule_id": "IMAGE_REFERENCE",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/containers/0/image",
+          "value": "registry.example/team/worker:latest@sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+        }
+      ]
+    }
+  },
+  {
+    "name": "bare-digest",
+    "outcome": "invalid",
+    "rule_id": "IMAGE_REFERENCE",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/containers/0/image",
+          "value": "sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+        }
+      ]
+    }
+  },
+  {
+    "name": "unknown-field",
+    "outcome": "invalid",
+    "rule_id": "SCHEMA_UNKNOWN",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/dev",
+          "value": true
+        }
+      ]
+    }
+  },
+  {
+    "name": "unknown-pod-field",
+    "outcome": "invalid",
+    "rule_id": "SCHEMA_UNKNOWN",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/hostNetwork",
+          "value": true
+        }
+      ]
+    }
+  },
+  {
+    "name": "ephemeral-container",
+    "outcome": "invalid",
+    "rule_id": "SCHEMA_UNKNOWN",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/ephemeralContainers",
+          "value": []
+        }
+      ]
+    }
+  },
+  {
+    "name": "runtime-field",
+    "outcome": "invalid",
+    "rule_id": "SCHEMA_UNKNOWN",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/nodeName",
+          "value": "node-1"
+        }
+      ]
+    }
+  },
+  {
+    "name": "controller-generated-field",
+    "outcome": "invalid",
+    "rule_id": "SCHEMA_UNKNOWN",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/metadata/uid",
+          "value": "uid"
+        }
+      ]
+    }
+  },
+  {
+    "name": "missing-collection",
+    "outcome": "invalid",
+    "rule_id": "SCHEMA_REQUIRED",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "remove",
+          "path": "/egress"
+        }
+      ]
+    }
+  },
+  {
+    "name": "null-collection",
+    "outcome": "invalid",
+    "rule_id": "SCHEMA_REQUIRED",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/egress",
+          "value": null
+        }
+      ]
+    }
+  },
+  {
+    "name": "schema-version",
+    "outcome": "invalid",
+    "rule_id": "SCHEMA_VERSION",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/schema",
+          "value": "codefly/execution-inventory/v2"
+        }
+      ]
+    }
+  },
+  {
+    "name": "partial",
+    "outcome": "invalid",
+    "rule_id": "AGGREGATE_COMPLETE",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/complete",
+          "value": false
+        }
+      ]
+    }
+  },
+  {
+    "name": "first-predecessor",
+    "outcome": "invalid",
+    "rule_id": "AGGREGATE_PREVIOUS",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/previous",
+          "value": {
+            "generation": 1,
+            "digest": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "next-generation",
+    "outcome": "valid",
+    "rule_id": null,
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/generation",
+          "value": 2
+        },
+        {
+          "op": "replace",
+          "path": "/previous",
+          "value": {
+            "generation": 1,
+            "digest": "sha256:cba06b5736faf67e54b07b561eae94395e774c517a7d910a54369e1263ccfbd4"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "missing-predecessor",
+    "outcome": "invalid",
+    "rule_id": "AGGREGATE_PREVIOUS",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/generation",
+          "value": 2
+        }
+      ]
+    }
+  },
+  {
+    "name": "empty-target",
+    "outcome": "invalid",
+    "rule_id": "IDENTIFIER",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/target/cluster_instance",
+          "value": ""
+        }
+      ]
+    }
+  },
+  {
+    "name": "duplicate-workload",
+    "outcome": "invalid",
+    "rule_id": "WORKLOAD_ID",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "copy",
+          "from": "/workloads/0",
+          "path": "/workloads/-"
+        }
+      ]
+    }
+  },
+  {
+    "name": "overlap-different-keys",
+    "outcome": "invalid",
+    "rule_id": "SELECTOR_OVERLAP",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "copy",
+          "from": "/workloads/0",
+          "path": "/workloads/-"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/controller/name",
+          "value": "other"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/id",
+          "value": "other"
+        },
+        {
+          "op": "remove",
+          "path": "/workloads/1/selector/app"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/selector/role",
+          "value": "backend"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/template/metadata/labels/role",
+          "value": "backend"
+        }
+      ]
+    }
+  },
+  {
+    "name": "overlap-subset",
+    "outcome": "invalid",
+    "rule_id": "SELECTOR_OVERLAP",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "copy",
+          "from": "/workloads/0",
+          "path": "/workloads/-"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/controller/name",
+          "value": "other"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/id",
+          "value": "other"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/selector/role",
+          "value": "backend"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/template/metadata/labels/role",
+          "value": "backend"
+        }
+      ]
+    }
+  },
+  {
+    "name": "duplicate-object",
+    "outcome": "invalid",
+    "rule_id": "OBJECT_UNIQUE",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "copy",
+          "from": "/workloads/0",
+          "path": "/workloads/-"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/id",
+          "value": "other"
+        },
+        {
+          "op": "remove",
+          "path": "/workloads/1/selector/app"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/selector/role",
+          "value": "backend"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/template/metadata/labels/role",
+          "value": "backend"
+        }
+      ]
+    }
+  },
+  {
+    "name": "empty-selector",
+    "outcome": "invalid",
+    "rule_id": "SELECTOR_EMPTY",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/selector",
+          "value": {}
+        }
+      ]
+    }
+  },
+  {
+    "name": "selector-mismatch",
+    "outcome": "invalid",
+    "rule_id": "SELECTOR_TEMPLATE",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/selector",
+          "value": {
+            "app": "other"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "unknown-credential",
+    "outcome": "invalid",
+    "rule_id": "CREDENTIAL_KIND",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/credential_kind",
+          "value": "admin"
+        }
+      ]
+    }
+  },
+  {
+    "name": "ineligible-authenticator",
+    "outcome": "invalid",
+    "rule_id": "AUTHENTICATING_CONTAINER",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/authenticating_container",
+          "value": "worker"
+        }
+      ]
+    }
+  },
+  {
+    "name": "authenticator-is-second",
+    "outcome": "valid",
+    "rule_id": null,
+    "mutation": {
+      "profiles": {
+        "identity": [
+          {
+            "op": "replace",
+            "path": "/grants/-",
+            "value": {
+              "workload": "worker",
+              "namespace": "workloads",
+              "service_account": "worker",
+              "credential_kind": "application",
+              "container": "worker",
+              "identity": {
+                "issuer": "https://issuer.example",
+                "audience": "work-context",
+                "subject": "system:serviceaccount:workloads:worker",
+                "spiffe_id": "spiffe://trust.example/workloads/worker",
+                "attachments": []
+              }
+            }
+          }
+        ]
+      },
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/credential_kind",
+          "value": "application"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/authenticating_container",
+          "value": "worker"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/identity",
+          "value": {
+            "issuer": "https://issuer.example",
+            "audience": "work-context",
+            "subject": "system:serviceaccount:workloads:worker",
+            "spiffe_id": "spiffe://trust.example/workloads/worker",
+            "attachments": []
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "identity-self-grant",
+    "outcome": "invalid",
+    "rule_id": "IDENTITY_GRANT",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/credential_kind",
+          "value": "application"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/authenticating_container",
+          "value": "worker"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/identity",
+          "value": {
+            "issuer": "https://issuer.example",
+            "audience": "work-context",
+            "subject": "system:serviceaccount:workloads:worker",
+            "spiffe_id": "spiffe://trust.example/workloads/worker",
+            "attachments": []
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "authenticator-in-init",
+    "outcome": "invalid",
+    "rule_id": "AUTHENTICATING_CONTAINER",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/credential_kind",
+          "value": "application"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/authenticating_container",
+          "value": "worker"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/identity",
+          "value": {
+            "issuer": "https://issuer.example",
+            "audience": "work-context",
+            "subject": "system:serviceaccount:workloads:worker",
+            "spiffe_id": "spiffe://trust.example/workloads/worker",
+            "attachments": []
+          }
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/authenticating_container",
+          "value": "seed"
+        }
+      ]
+    }
+  },
+  {
+    "name": "authenticator-missing",
+    "outcome": "invalid",
+    "rule_id": "AUTHENTICATING_CONTAINER",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/credential_kind",
+          "value": "application"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/authenticating_container",
+          "value": "worker"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/identity",
+          "value": {
+            "issuer": "https://issuer.example",
+            "audience": "work-context",
+            "subject": "system:serviceaccount:workloads:worker",
+            "spiffe_id": "spiffe://trust.example/workloads/worker",
+            "attachments": []
+          }
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/authenticating_container",
+          "value": "absent"
+        }
+      ]
+    }
+  },
+  {
+    "name": "duplicate-container",
+    "outcome": "invalid",
+    "rule_id": "CONTAINER_UNIQUE",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/initContainers/0/name",
+          "value": "worker"
+        }
+      ]
+    }
+  },
+  {
+    "name": "app-restart-policy",
+    "outcome": "invalid",
+    "rule_id": "RESTART_POLICY",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/containers/0/restartPolicy",
+          "value": "Always"
+        }
+      ]
+    }
+  },
+  {
+    "name": "init-restart-policy",
+    "outcome": "invalid",
+    "rule_id": "RESTART_POLICY",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/initContainers/0/restartPolicy",
+          "value": "OnFailure"
+        }
+      ]
+    }
+  },
+  {
+    "name": "init-order",
+    "outcome": "valid",
+    "rule_id": null,
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/initContainers",
+          "value": [
+            {
+              "args": [],
+              "command": [
+                "/seed"
+              ],
+              "env": [],
+              "image": "registry.example/team/worker@sha256:227abccb20fc21ca22053afa8770ffeaeee9f48848f5dd55fdd8cd3d185e8e77",
+              "imagePullPolicy": "IfNotPresent",
+              "name": "seed",
+              "ports": [],
+              "restartPolicy": null,
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "add": [],
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "privileged": false,
+                "readOnlyRootFilesystem": true,
+                "runAsGroup": 1000,
+                "runAsNonRoot": true,
+                "runAsUser": 1000,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              },
+              "terminationMessagePath": "/dev/termination-log",
+              "terminationMessagePolicy": "File",
+              "volumeMounts": [],
+              "workingDir": "/"
+            },
+            {
+              "args": [],
+              "command": [
+                "/prepare"
+              ],
+              "env": [],
+              "image": "registry.example/team/worker@sha256:227abccb20fc21ca22053afa8770ffeaeee9f48848f5dd55fdd8cd3d185e8e77",
+              "imagePullPolicy": "IfNotPresent",
+              "name": "prepare",
+              "ports": [],
+              "restartPolicy": "Always",
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "add": [],
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "privileged": false,
+                "readOnlyRootFilesystem": true,
+                "runAsGroup": 1000,
+                "runAsNonRoot": true,
+                "runAsUser": 1000,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              },
+              "terminationMessagePath": "/dev/termination-log",
+              "terminationMessagePolicy": "File",
+              "volumeMounts": [],
+              "workingDir": "/"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "init-restart-change",
+    "outcome": "valid",
+    "rule_id": null,
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/initContainers/0/restartPolicy",
+          "value": null
+        }
+      ]
+    }
+  },
+  {
+    "name": "bare-pod",
+    "outcome": "invalid",
+    "rule_id": "CONTROLLER_KIND",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/controller/kind",
+          "value": "Pod"
+        }
+      ]
+    }
+  },
+  {
+    "name": "unknown-kind",
+    "outcome": "invalid",
+    "rule_id": "CONTROLLER_KIND",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/controller/kind",
+          "value": "ReplicaSet"
+        }
+      ]
+    }
+  },
+  {
+    "name": "kind-statefulset",
+    "outcome": "valid",
+    "rule_id": null,
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/controller",
+          "value": {
+            "apiVersion": "apps/v1",
+            "kind": "StatefulSet",
+            "name": "worker",
+            "namespace": "workloads"
+          }
+        },
+        {
+          "op": "replace",
+          "path": "/artifacts/0/objects/0",
+          "value": {
+            "apiVersion": "apps/v1",
+            "kind": "StatefulSet",
+            "name": "worker",
+            "namespace": "workloads"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "kind-daemonset",
+    "outcome": "valid",
+    "rule_id": null,
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/controller",
+          "value": {
+            "apiVersion": "apps/v1",
+            "kind": "DaemonSet",
+            "name": "worker",
+            "namespace": "workloads"
+          }
+        },
+        {
+          "op": "replace",
+          "path": "/artifacts/0/objects/0",
+          "value": {
+            "apiVersion": "apps/v1",
+            "kind": "DaemonSet",
+            "name": "worker",
+            "namespace": "workloads"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "kind-job",
+    "outcome": "valid",
+    "rule_id": null,
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/controller",
+          "value": {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "name": "worker",
+            "namespace": "workloads"
+          }
+        },
+        {
+          "op": "replace",
+          "path": "/artifacts/0/objects/0",
+          "value": {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "name": "worker",
+            "namespace": "workloads"
+          }
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/restartPolicy",
+          "value": "Never"
+        }
+      ]
+    }
+  },
+  {
+    "name": "kind-cronjob",
+    "outcome": "valid",
+    "rule_id": null,
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/controller",
+          "value": {
+            "apiVersion": "batch/v1",
+            "kind": "CronJob",
+            "name": "worker",
+            "namespace": "workloads"
+          }
+        },
+        {
+          "op": "replace",
+          "path": "/artifacts/0/objects/0",
+          "value": {
+            "apiVersion": "batch/v1",
+            "kind": "CronJob",
+            "name": "worker",
+            "namespace": "workloads"
+          }
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/restartPolicy",
+          "value": "Never"
+        }
+      ]
+    }
+  },
+  {
+    "name": "bad-controller-api",
+    "outcome": "invalid",
+    "rule_id": "CONTROLLER_KIND",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/controller/apiVersion",
+          "value": "apps/v2"
+        }
+      ]
+    }
+  },
+  {
+    "name": "unknown-artifact-object",
+    "outcome": "invalid",
+    "rule_id": "ARTIFACT_OBJECT_KIND",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/artifacts/0/objects/-",
+          "value": {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "namespace": "workloads",
+            "name": "unlisted"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "artifact-traversal",
+    "outcome": "invalid",
+    "rule_id": "ARTIFACT_SOURCE",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/artifacts/0/path",
+          "value": "../outside.json"
+        }
+      ]
+    }
+  },
+  {
+    "name": "artifact-source",
+    "outcome": "invalid",
+    "rule_id": "ARTIFACT_SOURCE",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/artifacts/0/source",
+          "value": "untrusted"
+        }
+      ]
+    }
+  },
+  {
+    "name": "unresolved-member",
+    "outcome": "invalid",
+    "rule_id": "REFERENCE_RESOLUTION",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/member_binding",
+          "value": "absent"
+        }
+      ]
+    }
+  },
+  {
+    "name": "cross-binding",
+    "outcome": "invalid",
+    "rule_id": "REFERENCE_RESOLUTION",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/members/0/workloads",
+          "value": []
+        }
+      ]
+    }
+  },
+  {
+    "name": "unresolved-artifact",
+    "outcome": "invalid",
+    "rule_id": "REFERENCE_RESOLUTION",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/artifact/artifact",
+          "value": "absent"
+        }
+      ]
+    }
+  },
+  {
+    "name": "origin-ambiguous",
+    "outcome": "invalid",
+    "rule_id": "WORKLOAD_ORIGIN",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/artifact/carrier_profile",
+          "value": "carrier"
+        }
+      ]
+    }
+  },
+  {
+    "name": "unresolved-platform-role",
+    "outcome": "invalid",
+    "rule_id": "REFERENCE_RESOLUTION",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/platform_role_ref",
+          "value": "self-granted"
+        }
+      ]
+    }
+  },
+  {
+    "name": "namespace-owner",
+    "outcome": "invalid",
+    "rule_id": "NAMESPACE",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/namespaces/0/member_binding",
+          "value": "missing"
+        }
+      ]
+    }
+  },
+  {
+    "name": "withdrawal-active",
+    "outcome": "invalid",
+    "rule_id": "REMOVAL",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/removed",
+          "value": true
+        }
+      ]
+    }
+  },
+  {
+    "name": "withdrawal",
+    "outcome": "valid",
+    "rule_id": null,
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/removed",
+          "value": true
+        },
+        {
+          "op": "replace",
+          "path": "/members/0/removed",
+          "value": true
+        },
+        {
+          "op": "replace",
+          "path": "/members/0/workloads",
+          "value": []
+        },
+        {
+          "op": "replace",
+          "path": "/members/0/artifacts",
+          "value": []
+        },
+        {
+          "op": "replace",
+          "path": "/workloads",
+          "value": []
+        },
+        {
+          "op": "replace",
+          "path": "/artifacts",
+          "value": []
+        },
+        {
+          "op": "replace",
+          "path": "/namespaces",
+          "value": []
+        }
+      ]
+    }
+  },
+  {
+    "name": "automatic-token",
+    "outcome": "invalid",
+    "rule_id": "SERVICE_ACCOUNT",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/automountServiceAccountToken",
+          "value": true
+        }
+      ]
+    }
+  },
+  {
+    "name": "privileged",
+    "outcome": "invalid",
+    "rule_id": "CONTAINER_SECURITY",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/containers/0/securityContext/privileged",
+          "value": true
+        }
+      ]
+    }
+  },
+  {
+    "name": "long-grace",
+    "outcome": "invalid",
+    "rule_id": "POD_UNSUPPORTED",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/terminationGracePeriodSeconds",
+          "value": 31
+        }
+      ]
+    }
+  },
+  {
+    "name": "no-containers",
+    "outcome": "invalid",
+    "rule_id": "CONTAINER_REQUIRED",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/containers",
+          "value": []
+        }
+      ]
+    }
+  },
+  {
+    "name": "platform-not-pinned",
+    "outcome": "invalid",
+    "rule_id": "POD_PLATFORM",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/nodeSelector",
+          "value": {}
+        }
+      ]
+    }
+  },
+  {
+    "name": "profile-content-digest",
+    "outcome": "invalid",
+    "rule_id": "PROFILE_DIGEST",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/platform_refs/compiler/digest",
+          "value": "sha256:8810ad581e59f2bc3928b261707a71308f7e139eb04820366dc4d5c18d980225"
+        }
+      ]
+    }
+  },
+  {
+    "name": "profile-missing",
+    "outcome": "invalid",
+    "rule_id": "PROFILE_MISSING",
+    "mutation": {
+      "context": [
+        {
+          "op": "remove",
+          "path": "/documents/0"
+        }
+      ]
+    }
+  },
+  {
+    "name": "profile-version",
+    "outcome": "invalid",
+    "rule_id": "PROFILE_VERSION",
+    "mutation": {
+      "profiles": {
+        "compiler": [
+          {
+            "op": "replace",
+            "path": "/schema",
+            "value": "codefly/compiler-profile/v2"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "kubernetes-version",
+    "outcome": "invalid",
+    "rule_id": "COMPILER_PROFILE",
+    "mutation": {
+      "profiles": {
+        "compiler": [
+          {
+            "op": "replace",
+            "path": "/kubernetes_version",
+            "value": "1.35"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "excluded-field",
+    "outcome": "invalid",
+    "rule_id": "COMPILER_PROFILE",
+    "mutation": {
+      "profiles": {
+        "compiler": [
+          {
+            "op": "replace",
+            "path": "/excluded_fields/-",
+            "value": "spec.nodeName"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "unsupported-profile-kind",
+    "outcome": "invalid",
+    "rule_id": "COMPILER_PROFILE",
+    "mutation": {
+      "profiles": {
+        "compiler": [
+          {
+            "op": "replace",
+            "path": "/supported_kinds/-",
+            "value": "Pod"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "profile-disabled-kind",
+    "outcome": "invalid",
+    "rule_id": "CONTROLLER_PROFILE",
+    "mutation": {
+      "profiles": {
+        "compiler": [
+          {
+            "op": "replace",
+            "path": "/supported_kinds",
+            "value": [
+              "Job"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "unsupported-profile-field",
+    "outcome": "invalid",
+    "rule_id": "SCHEMA_UNKNOWN",
+    "mutation": {
+      "profiles": {
+        "compiler": [
+          {
+            "op": "replace",
+            "path": "/allow_unknown",
+            "value": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "image-bytes-missing",
+    "outcome": "invalid",
+    "rule_id": "IMAGE_EVIDENCE",
+    "mutation": {
+      "context": [
+        {
+          "op": "remove",
+          "path": "/blobs/sha256:227abccb20fc21ca22053afa8770ffeaeee9f48848f5dd55fdd8cd3d185e8e77"
+        }
+      ]
+    }
+  },
+  {
+    "name": "blob-corrupt",
+    "outcome": "invalid",
+    "rule_id": "BLOB_DIGEST",
+    "mutation": {
+      "context": [
+        {
+          "op": "replace",
+          "path": "/blobs/sha256:227abccb20fc21ca22053afa8770ffeaeee9f48848f5dd55fdd8cd3d185e8e77",
+          "value": "e30="
+        }
+      ]
+    }
+  },
+  {
+    "name": "config-bytes-missing",
+    "outcome": "invalid",
+    "rule_id": "IMAGE_CONFIG_LINK",
+    "mutation": {
+      "context": [
+        {
+          "op": "remove",
+          "path": "/blobs/sha256:f008010116aa695498def709db00dcb2f47f7789fa9f7acf9282d78181649ef7"
+        }
+      ]
+    }
+  },
+  {
+    "name": "image-index",
+    "outcome": "invalid",
+    "rule_id": "IMAGE_INDEX",
+    "mutation": {
+      "image": {
+        "manifest": [
+          {
+            "op": "replace",
+            "path": "/mediaType",
+            "value": "application/vnd.oci.image.index.v1+json"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "docker-index",
+    "outcome": "invalid",
+    "rule_id": "IMAGE_INDEX",
+    "mutation": {
+      "image": {
+        "manifest": [
+          {
+            "op": "replace",
+            "path": "/mediaType",
+            "value": "application/vnd.docker.distribution.manifest.list.v2+json"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "image-platform",
+    "outcome": "invalid",
+    "rule_id": "IMAGE_PLATFORM",
+    "mutation": {
+      "image": {
+        "config": [
+          {
+            "op": "replace",
+            "path": "/architecture",
+            "value": "arm64"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "config-size",
+    "outcome": "invalid",
+    "rule_id": "IMAGE_CONFIG_LINK",
+    "mutation": {
+      "image": {
+        "manifest": [
+          {
+            "op": "replace",
+            "path": "/config/size",
+            "value": 1
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "config-link",
+    "outcome": "invalid",
+    "rule_id": "IMAGE_CONFIG_LINK",
+    "mutation": {
+      "image": {
+        "manifest": [
+          {
+            "op": "replace",
+            "path": "/config/digest",
+            "value": "sha256:5ad38304b535c2987dbd24657c1a11b884984ff600d9f389deb0d4e634fee792"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "manifest-media",
+    "outcome": "invalid",
+    "rule_id": "IMAGE_MANIFEST",
+    "mutation": {
+      "image": {
+        "manifest": [
+          {
+            "op": "replace",
+            "path": "/mediaType",
+            "value": "application/octet-stream"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "config-rootfs",
+    "outcome": "invalid",
+    "rule_id": "IMAGE_CONFIGURATION",
+    "mutation": {
+      "image": {
+        "config": [
+          {
+            "op": "replace",
+            "path": "/rootfs/type",
+            "value": "unknown"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "unresolved-dependency",
+    "outcome": "invalid",
+    "rule_id": "REFERENCE_RESOLUTION",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/dependencies/-",
+          "value": {
+            "consumer": "absent",
+            "provider": {
+              "workload": "worker",
+              "endpoint": "http"
+            },
+            "protocol": "TCP",
+            "port": 8080
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "dependency",
+    "outcome": "valid",
+    "rule_id": null,
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/dependencies/-",
+          "value": {
+            "consumer": "worker",
+            "provider": {
+              "workload": "worker",
+              "endpoint": "http"
+            },
+            "protocol": "TCP",
+            "port": 8080
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "unresolved-egress",
+    "outcome": "invalid",
+    "rule_id": "REFERENCE_RESOLUTION",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/egress/-",
+          "value": {
+            "host": "destination.example",
+            "protocol": "TCP",
+            "port": 443,
+            "cidrs": [],
+            "consumers": [
+              "absent"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "egress",
+    "outcome": "valid",
+    "rule_id": null,
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/egress/-",
+          "value": {
+            "host": "destination.example",
+            "protocol": "TCP",
+            "port": 443,
+            "cidrs": [],
+            "consumers": [
+              "worker"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "cidr-unsupported",
+    "outcome": "invalid",
+    "rule_id": "CIDR_UNSUPPORTED",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/egress/-",
+          "value": {
+            "host": "destination.example",
+            "protocol": "TCP",
+            "port": 443,
+            "cidrs": [
+              "192.0.2.0/24"
+            ],
+            "consumers": [
+              "worker"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "ingress-unsupported",
+    "outcome": "invalid",
+    "rule_id": "INGRESS_UNSUPPORTED",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/ingress/-",
+          "value": {
+            "workload": "worker",
+            "endpoint": "http",
+            "host": "route.example",
+            "path": "/",
+            "exposure": "public"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "resource-unsupported",
+    "outcome": "invalid",
+    "rule_id": "RESOURCE_UNSUPPORTED",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/resource_bindings/-",
+          "value": {
+            "workload": "worker",
+            "resource": "resource",
+            "fact_ref": "fact",
+            "grant_ref": "grant"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "configuration-env",
+    "outcome": "valid",
+    "rule_id": null,
+    "mutation": {
+      "profiles": {
+        "execution": [
+          {
+            "op": "replace",
+            "path": "/catalog/-",
+            "value": {
+              "id": "settings",
+              "kind": "configmap",
+              "namespace": "workloads",
+              "name": "settings",
+              "version": "1",
+              "digest": "sha256:cde0fb0dec1400c54a0f7e7eafa73624c53e4da258bbd34b3380a0defeba95c1",
+              "workloads": [
+                "worker"
+              ],
+              "credential_kinds": [
+                "none"
+              ],
+              "protocol": "",
+              "port": 0
+            }
+          }
+        ]
+      },
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/containers/0/env/-",
+          "value": {
+            "name": "SETTING",
+            "value": null,
+            "valueFrom": {
+              "configMapKeyRef": {
+                "name": "settings",
+                "key": "setting",
+                "optional": false
+              },
+              "secretKeyRef": null
+            }
+          }
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/configuration_refs/-",
+          "value": {
+            "id": "settings",
+            "kind": "configmap",
+            "name": "settings",
+            "catalog_ref": "settings",
+            "version": "1",
+            "consumers": [
+              {
+                "container": "helper",
+                "use": "env",
+                "name": "SETTING",
+                "key": "setting"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "configuration-undeclared",
+    "outcome": "invalid",
+    "rule_id": "CONFIGURATION_CLOSURE",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/containers/0/env/-",
+          "value": {
+            "name": "SETTING",
+            "value": null,
+            "valueFrom": {
+              "configMapKeyRef": {
+                "name": "settings",
+                "key": "setting",
+                "optional": false
+              },
+              "secretKeyRef": null
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "configuration-unresolved",
+    "outcome": "invalid",
+    "rule_id": "REFERENCE_RESOLUTION",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/containers/0/env/-",
+          "value": {
+            "name": "SETTING",
+            "value": null,
+            "valueFrom": {
+              "configMapKeyRef": {
+                "name": "settings",
+                "key": "setting",
+                "optional": false
+              },
+              "secretKeyRef": null
+            }
+          }
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/configuration_refs/-",
+          "value": {
+            "id": "settings",
+            "kind": "configmap",
+            "name": "settings",
+            "catalog_ref": "settings",
+            "version": "1",
+            "consumers": [
+              {
+                "container": "helper",
+                "use": "env",
+                "name": "SETTING",
+                "key": "setting"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "configuration-optional",
+    "outcome": "invalid",
+    "rule_id": "CONFIGURATION_USE",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/containers/0/env/-",
+          "value": {
+            "name": "SETTING",
+            "value": null,
+            "valueFrom": {
+              "configMapKeyRef": {
+                "name": "settings",
+                "key": "setting",
+                "optional": true
+              },
+              "secretKeyRef": null
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "carrier",
+    "outcome": "valid",
+    "rule_id": null,
+    "mutation": {
+      "profiles": {
+        "execution": [
+          {
+            "op": "replace",
+            "path": "/catalog/-",
+            "value": {
+              "id": "carrier",
+              "kind": "carrier",
+              "namespace": "workloads",
+              "name": "carrier",
+              "version": "1",
+              "digest": "sha256:01602aed7de1a580205dc3617e385b199cee07b1ac3f7054276212b78d8d36ba",
+              "workloads": [
+                "carrier"
+              ],
+              "credential_kinds": [
+                "none"
+              ],
+              "protocol": "",
+              "port": 0
+            }
+          },
+          {
+            "op": "replace",
+            "path": "/catalog/-",
+            "value": {
+              "id": "carrier-role",
+              "kind": "role",
+              "namespace": "workloads",
+              "name": "carrier-role",
+              "version": "1",
+              "digest": "sha256:cde0fb0dec1400c54a0f7e7eafa73624c53e4da258bbd34b3380a0defeba95c1",
+              "workloads": [
+                "carrier"
+              ],
+              "credential_kinds": [
+                "none"
+              ],
+              "protocol": "",
+              "port": 0
+            }
+          }
+        ]
+      },
+      "inventory": [
+        {
+          "op": "copy",
+          "from": "/workloads/0",
+          "path": "/workloads/-"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/artifact/artifact",
+          "value": null
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/artifact/carrier_profile",
+          "value": "carrier"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/controller/name",
+          "value": "carrier"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/id",
+          "value": "carrier"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/platform_role_ref",
+          "value": "carrier-role"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/selector/app",
+          "value": "carrier"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/template/metadata/labels/app",
+          "value": "carrier"
+        },
+        {
+          "op": "replace",
+          "path": "/members/0/workloads/-",
+          "value": "carrier"
+        }
+      ]
+    }
+  },
+  {
+    "name": "carrier-overlap",
+    "outcome": "invalid",
+    "rule_id": "SELECTOR_OVERLAP",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "copy",
+          "from": "/workloads/0",
+          "path": "/workloads/-"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/artifact/artifact",
+          "value": null
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/artifact/carrier_profile",
+          "value": "carrier"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/controller/name",
+          "value": "carrier"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/id",
+          "value": "carrier"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/platform_role_ref",
+          "value": "carrier-role"
+        },
+        {
+          "op": "remove",
+          "path": "/workloads/1/selector/app"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/selector/role",
+          "value": "carrier"
+        },
+        {
+          "op": "remove",
+          "path": "/workloads/1/template/metadata/labels/app"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/template/metadata/labels/role",
+          "value": "carrier"
+        }
+      ]
+    }
+  },
+  {
+    "name": "unicode",
+    "outcome": "valid",
+    "rule_id": null,
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/metadata/annotations",
+          "value": {
+            "example.test/text": "<>&  😀é\n"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "duplicate-json-key",
+    "outcome": "invalid",
+    "rule_id": "JSON_DUPLICATE",
+    "mutation": {
+      "raw_replace": [
+        "\"complete\": true",
+        "\"complete\": true, \"complete\": true"
+      ]
+    }
+  },
+  {
+    "name": "duplicate-escaped-key",
+    "outcome": "invalid",
+    "rule_id": "JSON_DUPLICATE",
+    "mutation": {
+      "raw_replace": [
+        "\"complete\": true",
+        "\"complete\": true, \"\\u0063omplete\": true"
+      ]
+    }
+  },
+  {
+    "name": "fractional-number",
+    "outcome": "invalid",
+    "rule_id": "JSON_NUMBER",
+    "mutation": {
+      "raw_replace": [
+        "\"generation\": 1",
+        "\"generation\": 1.0"
+      ]
+    }
+  },
+  {
+    "name": "surrogate",
+    "outcome": "invalid",
+    "rule_id": "JSON_UNICODE",
+    "mutation": {
+      "raw_replace": [
+        "\"delivery\": \"delivery\"",
+        "\"delivery\": \"\\ud800\""
+      ]
+    }
+  },
+  {
+    "name": "registry-ambiguous",
+    "outcome": "invalid",
+    "rule_id": "IMAGE_REFERENCE",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/containers/0/image",
+          "value": "registry/team/image@sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+        }
+      ]
+    }
+  },
+  {
+    "name": "registry-port-invalid",
+    "outcome": "invalid",
+    "rule_id": "IMAGE_REFERENCE",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/containers/0/image",
+          "value": "registry.example:99999/team/image@sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid-label",
+    "outcome": "invalid",
+    "rule_id": "LABEL",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/selector",
+          "value": {
+            "app/invalid/key": "worker"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid-annotation",
+    "outcome": "invalid",
+    "rule_id": "ANNOTATION",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/metadata/annotations",
+          "value": {
+            "invalid/key/more": "value"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "artifact-digest",
+    "outcome": "invalid",
+    "rule_id": "ARTIFACT",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/artifacts/0/digest",
+          "value": "not-a-digest"
+        }
+      ]
+    }
+  },
+  {
+    "name": "bad-member",
+    "outcome": "invalid",
+    "rule_id": "MEMBER",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/members/0/presence_generation",
+          "value": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid-object-name",
+    "outcome": "invalid",
+    "rule_id": "OBJECT_IDENTITY",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/controller/name",
+          "value": "UPPER"
+        }
+      ]
+    }
+  },
+  {
+    "name": "unsupported-pull",
+    "outcome": "invalid",
+    "rule_id": "CONTAINER_UNSUPPORTED",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/containers/0/imagePullPolicy",
+          "value": "Never"
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid-endpoint",
+    "outcome": "invalid",
+    "rule_id": "ENDPOINT",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/containers/0/ports/-",
+          "value": {
+            "name": "http",
+            "containerPort": 8080,
+            "protocol": "TCP"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "context-version",
+    "outcome": "invalid",
+    "rule_id": "CONTEXT_VERSION",
+    "mutation": {
+      "context": [
+        {
+          "op": "replace",
+          "path": "/schema",
+          "value": "codefly/validation-context/v2"
+        }
+      ]
+    }
+  },
+  {
+    "name": "duplicate-document",
+    "outcome": "invalid",
+    "rule_id": "CONTEXT_DOCUMENT",
+    "mutation": {
+      "context": [
+        {
+          "op": "replace",
+          "path": "/documents/-",
+          "value": {
+            "content": "eyJjYXRhbG9nIjpbXSwiY3JlZGVudGlhbF9raW5kcyI6WyJub25lIiwiYXBwbGljYXRpb24iLCJkZWxpdmVyeSIsInBsYXRmb3JtIl0sInBsYXRmb3JtcyI6W3siYXJjaGl0ZWN0dXJlIjoiYW1kNjQiLCJvcyI6ImxpbnV4IiwidmFyaWFudCI6IiJ9XSwic2NoZW1hIjoiY29kZWZseS9leGVjdXRpb24tcHJvZmlsZS92MSIsInNvdXJjZXMiOlt7ImlkIjoicmVuZGVyZWQiLCJsb2NhdGlvbiI6Imh0dHBzOi8vc291cmNlLmV4YW1wbGUvcmVuZGVyZWQifV19",
+            "id": "execution",
+            "revision": "1"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "duplicate-profile-reference",
+    "outcome": "invalid",
+    "rule_id": "PROFILE_REFERENCE",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/platform_refs/identity",
+          "value": {
+            "digest": "sha256:20ad183d2e0d34a2dbf65c4a284845d0aa9d1f76c38425ce9208e6438d16fa68",
+            "id": "execution",
+            "revision": "1"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "execution-platform-unsupported",
+    "outcome": "invalid",
+    "rule_id": "EXECUTION_PROFILE",
+    "mutation": {
+      "profiles": {
+        "execution": [
+          {
+            "op": "replace",
+            "path": "/platforms/0/os",
+            "value": "windows"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "credential-kind-disabled",
+    "outcome": "invalid",
+    "rule_id": "CREDENTIAL_PROFILE",
+    "mutation": {
+      "profiles": {
+        "execution": [
+          {
+            "op": "replace",
+            "path": "/credential_kinds",
+            "value": [
+              "application"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "empty-trust-profile",
+    "outcome": "invalid",
+    "rule_id": "TRUST_PROFILE",
+    "mutation": {
+      "profiles": {
+        "trust": [
+          {
+            "op": "replace",
+            "path": "/verifiers",
+            "value": []
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "invalid-egress",
+    "outcome": "invalid",
+    "rule_id": "EGRESS",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/egress/-",
+          "value": {
+            "host": "destination.example",
+            "protocol": "TCP",
+            "port": 0,
+            "cidrs": [],
+            "consumers": [
+              "worker"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "wrong-json-type",
+    "outcome": "invalid",
+    "rule_id": "SCHEMA_TYPE",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/generation",
+          "value": "1"
+        }
+      ]
+    }
+  },
+  {
+    "name": "json-trailing-comma",
+    "outcome": "invalid",
+    "rule_id": "JSON_SYNTAX",
+    "mutation": {
+      "raw_replace": [
+        "\"complete\": true,",
+        "\"complete\": true,,"
+      ]
+    }
+  },
+  {
+    "name": "json-depth-limit",
+    "outcome": "invalid",
+    "rule_id": "JSON_LIMIT",
+    "mutation": {
+      "raw_replace": [
+        "\"delivery\": \"delivery\"",
+        "\"delivery\": [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[0]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]"
+      ]
+    }
+  },
+  {
+    "name": "unsupported-catalogue-kind",
+    "outcome": "invalid",
+    "rule_id": "CATALOG_ENTRY",
+    "mutation": {
+      "profiles": {
+        "execution": [
+          {
+            "op": "replace",
+            "path": "/catalog/-",
+            "value": {
+              "id": "settings",
+              "kind": "unknown",
+              "namespace": "workloads",
+              "name": "settings",
+              "version": "1",
+              "digest": "sha256:cde0fb0dec1400c54a0f7e7eafa73624c53e4da258bbd34b3380a0defeba95c1",
+              "workloads": [
+                "worker"
+              ],
+              "credential_kinds": [
+                "none"
+              ],
+              "protocol": "",
+              "port": 0
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "configuration-empty-consumers",
+    "outcome": "invalid",
+    "rule_id": "CONFIGURATION_REF",
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/configuration_refs/-",
+          "value": {
+            "id": "settings",
+            "kind": "configmap",
+            "name": "settings",
+            "catalog_ref": "settings",
+            "version": "1",
+            "consumers": []
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "carrier-template-mismatch",
+    "outcome": "invalid",
+    "rule_id": "CARRIER_TEMPLATE",
+    "mutation": {
+      "profiles": {
+        "execution": [
+          {
+            "op": "replace",
+            "path": "/catalog/-",
+            "value": {
+              "id": "carrier",
+              "kind": "carrier",
+              "namespace": "workloads",
+              "name": "carrier",
+              "version": "1",
+              "digest": "sha256:64cf74bc2684907fc1e6bd8d28a3cc7fe0eda0b6c48870a72233cbe7e9def0a0",
+              "workloads": [
+                "carrier"
+              ],
+              "credential_kinds": [
+                "none"
+              ],
+              "protocol": "",
+              "port": 0
+            }
+          },
+          {
+            "op": "replace",
+            "path": "/catalog/-",
+            "value": {
+              "id": "carrier-role",
+              "kind": "role",
+              "namespace": "workloads",
+              "name": "carrier-role",
+              "version": "1",
+              "digest": "sha256:cde0fb0dec1400c54a0f7e7eafa73624c53e4da258bbd34b3380a0defeba95c1",
+              "workloads": [
+                "carrier"
+              ],
+              "credential_kinds": [
+                "none"
+              ],
+              "protocol": "",
+              "port": 0
+            }
+          }
+        ]
+      },
+      "inventory": [
+        {
+          "op": "copy",
+          "from": "/workloads/0",
+          "path": "/workloads/-"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/artifact/artifact",
+          "value": null
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/artifact/carrier_profile",
+          "value": "carrier"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/controller/name",
+          "value": "carrier"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/id",
+          "value": "carrier"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/platform_role_ref",
+          "value": "carrier-role"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/selector/app",
+          "value": "carrier"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/template/metadata/labels/app",
+          "value": "carrier"
+        },
+        {
+          "op": "replace",
+          "path": "/members/0/workloads/-",
+          "value": "carrier"
+        }
+      ]
+    }
+  },
+  {
+    "name": "token-subject-is-not-cloud-principal",
+    "outcome": "invalid",
+    "rule_id": "IDENTITY_VALUE",
+    "mutation": {
+      "profiles": {
+        "identity": [
+          {
+            "op": "replace",
+            "path": "/grants/-",
+            "value": {
+              "workload": "worker",
+              "namespace": "workloads",
+              "service_account": "worker",
+              "credential_kind": "application",
+              "container": "worker",
+              "identity": {
+                "issuer": "https://issuer.example",
+                "audience": "work-context",
+                "subject": "cloud-principal",
+                "spiffe_id": "spiffe://trust.example/workloads/worker",
+                "attachments": []
+              }
+            }
+          }
+        ]
+      },
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/credential_kind",
+          "value": "application"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/authenticating_container",
+          "value": "worker"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/identity",
+          "value": {
+            "issuer": "https://issuer.example",
+            "audience": "work-context",
+            "subject": "cloud-principal",
+            "spiffe_id": "spiffe://trust.example/workloads/worker",
+            "attachments": []
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "shared-credential-principal",
+    "outcome": "invalid",
+    "rule_id": "PRINCIPAL_UNIQUE",
+    "mutation": {
+      "profiles": {
+        "identity": [
+          {
+            "op": "replace",
+            "path": "/grants/-",
+            "value": {
+              "workload": "worker",
+              "namespace": "workloads",
+              "service_account": "worker",
+              "credential_kind": "application",
+              "container": "worker",
+              "identity": {
+                "issuer": "https://issuer.example",
+                "audience": "work-context",
+                "subject": "system:serviceaccount:workloads:worker",
+                "spiffe_id": "spiffe://trust.example/workloads/worker",
+                "attachments": []
+              }
+            }
+          }
+        ]
+      },
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/credential_kind",
+          "value": "application"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/authenticating_container",
+          "value": "worker"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/identity",
+          "value": {
+            "issuer": "https://issuer.example",
+            "audience": "work-context",
+            "subject": "system:serviceaccount:workloads:worker",
+            "spiffe_id": "spiffe://trust.example/workloads/worker",
+            "attachments": []
+          }
+        },
+        {
+          "op": "copy",
+          "from": "/workloads/0",
+          "path": "/workloads/-"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/controller/name",
+          "value": "other"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/id",
+          "value": "other"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/selector/app",
+          "value": "other"
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/1/template/metadata/labels/app",
+          "value": "other"
+        },
+        {
+          "op": "replace",
+          "path": "/members/0/workloads/-",
+          "value": "other"
+        },
+        {
+          "op": "replace",
+          "path": "/artifacts/0/objects/-",
+          "value": {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "name": "other",
+            "namespace": "workloads"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "configuration-volume",
+    "outcome": "valid",
+    "rule_id": null,
+    "mutation": {
+      "profiles": {
+        "execution": [
+          {
+            "op": "replace",
+            "path": "/catalog/-",
+            "value": {
+              "id": "settings",
+              "kind": "configmap",
+              "namespace": "workloads",
+              "name": "settings",
+              "version": "1",
+              "digest": "sha256:cde0fb0dec1400c54a0f7e7eafa73624c53e4da258bbd34b3380a0defeba95c1",
+              "workloads": [
+                "worker"
+              ],
+              "credential_kinds": [
+                "none"
+              ],
+              "protocol": "",
+              "port": 0
+            }
+          }
+        ]
+      },
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/volumes/-",
+          "value": {
+            "name": "settings",
+            "configMap": {
+              "name": "settings",
+              "defaultMode": 292,
+              "optional": false,
+              "items": [
+                {
+                  "key": "setting",
+                  "path": "setting",
+                  "mode": 292
+                }
+              ]
+            },
+            "secret": null
+          }
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/containers/0/volumeMounts/-",
+          "value": {
+            "name": "settings",
+            "mountPath": "/settings",
+            "readOnly": true
+          }
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/configuration_refs/-",
+          "value": {
+            "id": "settings",
+            "kind": "configmap",
+            "name": "settings",
+            "catalog_ref": "settings",
+            "version": "1",
+            "consumers": [
+              {
+                "container": "helper",
+                "use": "mount",
+                "name": "/settings",
+                "key": "setting"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "configuration-writable-mount",
+    "outcome": "invalid",
+    "rule_id": "CONFIGURATION_USE",
+    "mutation": {
+      "profiles": {
+        "execution": [
+          {
+            "op": "replace",
+            "path": "/catalog/-",
+            "value": {
+              "id": "settings",
+              "kind": "configmap",
+              "namespace": "workloads",
+              "name": "settings",
+              "version": "1",
+              "digest": "sha256:cde0fb0dec1400c54a0f7e7eafa73624c53e4da258bbd34b3380a0defeba95c1",
+              "workloads": [
+                "worker"
+              ],
+              "credential_kinds": [
+                "none"
+              ],
+              "protocol": "",
+              "port": 0
+            }
+          }
+        ]
+      },
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/volumes/-",
+          "value": {
+            "name": "settings",
+            "configMap": {
+              "name": "settings",
+              "defaultMode": 292,
+              "optional": false,
+              "items": [
+                {
+                  "key": "setting",
+                  "path": "setting",
+                  "mode": 292
+                }
+              ]
+            },
+            "secret": null
+          }
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/containers/0/volumeMounts/-",
+          "value": {
+            "name": "settings",
+            "mountPath": "/settings",
+            "readOnly": false
+          }
+        },
+        {
+          "op": "replace",
+          "path": "/workloads/0/configuration_refs/-",
+          "value": {
+            "id": "settings",
+            "kind": "configmap",
+            "name": "settings",
+            "catalog_ref": "settings",
+            "version": "1",
+            "consumers": [
+              {
+                "container": "helper",
+                "use": "mount",
+                "name": "/settings",
+                "key": "setting"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "literal-env",
+    "outcome": "valid",
+    "rule_id": null,
+    "mutation": {
+      "inventory": [
+        {
+          "op": "replace",
+          "path": "/workloads/0/template/spec/containers/0/env/-",
+          "value": {
+            "name": "SETTING",
+            "value": "literal",
+            "valueFrom": null
+          }
+        }
+      ]
+    }
+  }
+]

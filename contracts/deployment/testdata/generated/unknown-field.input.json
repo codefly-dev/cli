@@ -1,0 +1,270 @@
+{
+  "artifacts": [
+    {
+      "digest": "sha256:8b87e12b2e81f186e2d2e38d5b0eca16e19dabad14ecd8b9d325c607184ca9f0",
+      "id": "rendered",
+      "objects": [
+        {
+          "apiVersion": "apps/v1",
+          "kind": "Deployment",
+          "name": "worker",
+          "namespace": "workloads"
+        }
+      ],
+      "path": "worker.json",
+      "source": "rendered"
+    }
+  ],
+  "complete": true,
+  "delivery": "delivery",
+  "dependencies": [],
+  "egress": [],
+  "envelope_revision": "1",
+  "generation": 1,
+  "ingress": [],
+  "members": [
+    {
+      "artifacts": [
+        "rendered"
+      ],
+      "binding": "member",
+      "declaration_kind": "module",
+      "digest": "sha256:112747ee2d71526450b6d522353b55cb3d245e890ae69270ddf100647a0e1e88",
+      "presence_generation": 1,
+      "removed": false,
+      "workloads": [
+        "worker"
+      ]
+    }
+  ],
+  "namespaces": [
+    {
+      "member_binding": "member",
+      "name": "workloads"
+    }
+  ],
+  "ownership_domain": "team",
+  "platform_refs": {
+    "compiler": {
+      "digest": "sha256:5f348f0829d9bf970a068ce6b8f6c68b5f675d729a5e1a92826c58a79ba52f7c",
+      "id": "compiler",
+      "revision": "1"
+    },
+    "execution": {
+      "digest": "sha256:20ad183d2e0d34a2dbf65c4a284845d0aa9d1f76c38425ce9208e6438d16fa68",
+      "id": "execution",
+      "revision": "1"
+    },
+    "identity": {
+      "digest": "sha256:919917359a0566095385e8772667ffa849afecda0a1ed41632222f30e6a1048a",
+      "id": "identity",
+      "revision": "1"
+    },
+    "trust": {
+      "digest": "sha256:e7712c94496595e654a83c5163e76ff14c907410c37cb823674a0512afe9d800",
+      "id": "trust",
+      "revision": "1"
+    }
+  },
+  "previous": null,
+  "removed": false,
+  "resource_bindings": [],
+  "schema": "codefly/execution-inventory/v1",
+  "target": {
+    "cluster_instance": "cluster-instance-1",
+    "coordinate": "local",
+    "host_component": "host"
+  },
+  "workloads": [
+    {
+      "artifact": {
+        "artifact": "rendered",
+        "carrier_profile": null
+      },
+      "authenticating_container": null,
+      "configuration_refs": [],
+      "controller": {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "name": "worker",
+        "namespace": "workloads"
+      },
+      "credential_kind": "none",
+      "id": "worker",
+      "identity": null,
+      "member_binding": "member",
+      "platform_role_ref": null,
+      "selector": {
+        "app": "worker"
+      },
+      "template": {
+        "metadata": {
+          "annotations": {},
+          "labels": {
+            "app": "worker"
+          }
+        },
+        "spec": {
+          "automountServiceAccountToken": false,
+          "containers": [
+            {
+              "args": [],
+              "command": [
+                "/helper"
+              ],
+              "env": [],
+              "image": "registry.example/team/worker@sha256:227abccb20fc21ca22053afa8770ffeaeee9f48848f5dd55fdd8cd3d185e8e77",
+              "imagePullPolicy": "IfNotPresent",
+              "name": "helper",
+              "ports": [],
+              "restartPolicy": null,
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "add": [],
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "privileged": false,
+                "readOnlyRootFilesystem": true,
+                "runAsGroup": 1000,
+                "runAsNonRoot": true,
+                "runAsUser": 1000,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              },
+              "terminationMessagePath": "/dev/termination-log",
+              "terminationMessagePolicy": "File",
+              "volumeMounts": [],
+              "workingDir": "/"
+            },
+            {
+              "args": [],
+              "command": [
+                "/app"
+              ],
+              "env": [],
+              "image": "registry.example/team/worker@sha256:227abccb20fc21ca22053afa8770ffeaeee9f48848f5dd55fdd8cd3d185e8e77",
+              "imagePullPolicy": "IfNotPresent",
+              "name": "worker",
+              "ports": [
+                {
+                  "containerPort": 8080,
+                  "name": "http",
+                  "protocol": "TCP"
+                }
+              ],
+              "restartPolicy": null,
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "add": [],
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "privileged": false,
+                "readOnlyRootFilesystem": true,
+                "runAsGroup": 1000,
+                "runAsNonRoot": true,
+                "runAsUser": 1000,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              },
+              "terminationMessagePath": "/dev/termination-log",
+              "terminationMessagePolicy": "File",
+              "volumeMounts": [],
+              "workingDir": "/"
+            }
+          ],
+          "dnsPolicy": "ClusterFirst",
+          "enableServiceLinks": false,
+          "initContainers": [
+            {
+              "args": [],
+              "command": [
+                "/prepare"
+              ],
+              "env": [],
+              "image": "registry.example/team/worker@sha256:227abccb20fc21ca22053afa8770ffeaeee9f48848f5dd55fdd8cd3d185e8e77",
+              "imagePullPolicy": "IfNotPresent",
+              "name": "prepare",
+              "ports": [],
+              "restartPolicy": "Always",
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "add": [],
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "privileged": false,
+                "readOnlyRootFilesystem": true,
+                "runAsGroup": 1000,
+                "runAsNonRoot": true,
+                "runAsUser": 1000,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              },
+              "terminationMessagePath": "/dev/termination-log",
+              "terminationMessagePolicy": "File",
+              "volumeMounts": [],
+              "workingDir": "/"
+            },
+            {
+              "args": [],
+              "command": [
+                "/seed"
+              ],
+              "env": [],
+              "image": "registry.example/team/worker@sha256:227abccb20fc21ca22053afa8770ffeaeee9f48848f5dd55fdd8cd3d185e8e77",
+              "imagePullPolicy": "IfNotPresent",
+              "name": "seed",
+              "ports": [],
+              "restartPolicy": null,
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": {
+                  "add": [],
+                  "drop": [
+                    "ALL"
+                  ]
+                },
+                "privileged": false,
+                "readOnlyRootFilesystem": true,
+                "runAsGroup": 1000,
+                "runAsNonRoot": true,
+                "runAsUser": 1000,
+                "seccompProfile": {
+                  "type": "RuntimeDefault"
+                }
+              },
+              "terminationMessagePath": "/dev/termination-log",
+              "terminationMessagePolicy": "File",
+              "volumeMounts": [],
+              "workingDir": "/"
+            }
+          ],
+          "nodeSelector": {
+            "kubernetes.io/arch": "amd64",
+            "kubernetes.io/os": "linux"
+          },
+          "os": {
+            "name": "linux"
+          },
+          "restartPolicy": "Always",
+          "schedulerName": "default-scheduler",
+          "serviceAccountName": "worker",
+          "terminationGracePeriodSeconds": 30,
+          "volumes": []
+        }
+      }
+    }
+  ],
+  "dev": true
+}

@@ -1,0 +1,1489 @@
+{
+  "$schema": "https://codefly.dev/schemas/deployment/v1",
+  "additionalProperties": false,
+  "codeflyRules": true,
+  "properties": {
+    "artifacts": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "digest": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "objects": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "apiVersion": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "namespace": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "apiVersion",
+                "kind",
+                "namespace",
+                "name"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "path": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "path",
+          "digest",
+          "objects"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "complete": {
+      "const": true,
+      "type": "boolean"
+    },
+    "delivery": {
+      "type": "string"
+    },
+    "dependencies": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "consumer": {
+            "type": "string"
+          },
+          "port": {
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
+            "type": "integer"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "provider": {
+            "additionalProperties": false,
+            "properties": {
+              "endpoint": {
+                "type": "string"
+              },
+              "workload": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "workload",
+              "endpoint"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "consumer",
+          "provider",
+          "protocol",
+          "port"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "egress": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "cidrs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "consumers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "host": {
+            "type": "string"
+          },
+          "port": {
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
+            "type": "integer"
+          },
+          "protocol": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "host",
+          "protocol",
+          "port",
+          "cidrs",
+          "consumers"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "envelope_revision": {
+      "type": "string"
+    },
+    "generation": {
+      "maximum": 9007199254740991,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "ingress": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          },
+          "exposure": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "workload": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workload",
+          "endpoint",
+          "host",
+          "path",
+          "exposure"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "members": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "artifacts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "binding": {
+            "type": "string"
+          },
+          "declaration_kind": {
+            "type": "string"
+          },
+          "digest": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "presence_generation": {
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
+            "type": "integer"
+          },
+          "release": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,252}$",
+                "type": "string"
+              },
+              "publisher": {
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,252}$",
+                "type": "string"
+              },
+              "version": {
+                "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "publisher",
+              "name",
+              "version"
+            ],
+            "type": "object"
+          },
+          "removed": {
+            "type": "boolean"
+          },
+          "workloads": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "binding",
+          "presence_generation",
+          "declaration_kind",
+          "digest",
+          "artifacts",
+          "workloads",
+          "removed"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "namespaces": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "member_binding": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "member_binding"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "ownership_domain": {
+      "type": "string"
+    },
+    "platform_refs": {
+      "additionalProperties": false,
+      "properties": {
+        "compiler": {
+          "additionalProperties": false,
+          "properties": {
+            "digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "revision",
+            "digest"
+          ],
+          "type": "object"
+        },
+        "execution": {
+          "additionalProperties": false,
+          "properties": {
+            "digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "revision",
+            "digest"
+          ],
+          "type": "object"
+        },
+        "identity": {
+          "additionalProperties": false,
+          "properties": {
+            "digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "revision",
+            "digest"
+          ],
+          "type": "object"
+        },
+        "trust": {
+          "additionalProperties": false,
+          "properties": {
+            "digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "revision",
+            "digest"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "execution",
+        "identity",
+        "trust",
+        "compiler"
+      ],
+      "type": "object"
+    },
+    "previous": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "digest": {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "generation": {
+              "maximum": 9007199254740991,
+              "minimum": -9007199254740991,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "generation",
+            "digest"
+          ],
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "removed": {
+      "type": "boolean"
+    },
+    "resource_bindings": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "fact_ref": {
+            "type": "string"
+          },
+          "grant_ref": {
+            "type": "string"
+          },
+          "resource": {
+            "type": "string"
+          },
+          "workload": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workload",
+          "resource",
+          "fact_ref",
+          "grant_ref"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema": {
+      "const": "codefly/execution-inventory/v1",
+      "type": "string"
+    },
+    "target": {
+      "additionalProperties": false,
+      "properties": {
+        "cluster_instance": {
+          "type": "string"
+        },
+        "coordinate": {
+          "type": "string"
+        },
+        "host_component": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "coordinate",
+        "host_component",
+        "cluster_instance"
+      ],
+      "type": "object"
+    },
+    "workloads": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "carrier_profile": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "artifact",
+              "carrier_profile"
+            ],
+            "type": "object"
+          },
+          "authenticating_container": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "configuration_refs": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "catalog_ref": {
+                  "type": "string"
+                },
+                "consumers": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "container": {
+                        "type": "string"
+                      },
+                      "key": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "use": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "container",
+                      "use",
+                      "name",
+                      "key"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "name",
+                "catalog_ref",
+                "version",
+                "consumers"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "controller": {
+            "additionalProperties": false,
+            "properties": {
+              "apiVersion": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "namespace": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "apiVersion",
+              "kind",
+              "namespace",
+              "name"
+            ],
+            "type": "object"
+          },
+          "credential_kind": {
+            "enum": [
+              "none",
+              "application",
+              "delivery",
+              "platform"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "identity": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "attachments": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "audience": {
+                    "type": "string"
+                  },
+                  "issuer": {
+                    "type": "string"
+                  },
+                  "spiffe_id": {
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "issuer",
+                  "audience",
+                  "subject",
+                  "spiffe_id",
+                  "attachments"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "member_binding": {
+            "type": "string"
+          },
+          "platform_role_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selector": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "minProperties": 1,
+            "type": "object"
+          },
+          "template": {
+            "additionalProperties": false,
+            "properties": {
+              "metadata": {
+                "additionalProperties": false,
+                "properties": {
+                  "annotations": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "type": "object"
+                  },
+                  "labels": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "labels",
+                  "annotations"
+                ],
+                "type": "object"
+              },
+              "spec": {
+                "additionalProperties": false,
+                "properties": {
+                  "automountServiceAccountToken": {
+                    "type": "boolean"
+                  },
+                  "containers": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "args": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "command": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "env": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "name": {
+                                "type": "string"
+                              },
+                              "value": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "valueFrom": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "configMapKeyRef": {
+                                        "anyOf": [
+                                          {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "key": {
+                                                "type": "string"
+                                              },
+                                              "name": {
+                                                "type": "string"
+                                              },
+                                              "optional": {
+                                                "type": "boolean"
+                                              }
+                                            },
+                                            "required": [
+                                              "name",
+                                              "key",
+                                              "optional"
+                                            ],
+                                            "type": "object"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "secretKeyRef": {
+                                        "anyOf": [
+                                          {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "key": {
+                                                "type": "string"
+                                              },
+                                              "name": {
+                                                "type": "string"
+                                              },
+                                              "optional": {
+                                                "type": "boolean"
+                                              }
+                                            },
+                                            "required": [
+                                              "name",
+                                              "key",
+                                              "optional"
+                                            ],
+                                            "type": "object"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "configMapKeyRef",
+                                      "secretKeyRef"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "value",
+                              "valueFrom"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "image": {
+                          "pattern": "^([a-z0-9]([a-z0-9.-]*[a-z0-9])?)(:[1-9][0-9]{0,4})?/[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*@sha256:[0-9a-f]{64}$",
+                          "type": "string"
+                        },
+                        "imagePullPolicy": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "ports": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "containerPort": {
+                                "maximum": 9007199254740991,
+                                "minimum": -9007199254740991,
+                                "type": "integer"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "protocol": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "containerPort",
+                              "protocol"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "restartPolicy": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "securityContext": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "allowPrivilegeEscalation": {
+                              "type": "boolean"
+                            },
+                            "capabilities": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "add": {
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "type": "array"
+                                },
+                                "drop": {
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "type": "array"
+                                }
+                              },
+                              "required": [
+                                "drop",
+                                "add"
+                              ],
+                              "type": "object"
+                            },
+                            "privileged": {
+                              "type": "boolean"
+                            },
+                            "readOnlyRootFilesystem": {
+                              "type": "boolean"
+                            },
+                            "runAsGroup": {
+                              "maximum": 9007199254740991,
+                              "minimum": -9007199254740991,
+                              "type": "integer"
+                            },
+                            "runAsNonRoot": {
+                              "type": "boolean"
+                            },
+                            "runAsUser": {
+                              "maximum": 9007199254740991,
+                              "minimum": -9007199254740991,
+                              "type": "integer"
+                            },
+                            "seccompProfile": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "type": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "type"
+                              ],
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "runAsNonRoot",
+                            "runAsUser",
+                            "runAsGroup",
+                            "readOnlyRootFilesystem",
+                            "allowPrivilegeEscalation",
+                            "privileged",
+                            "capabilities",
+                            "seccompProfile"
+                          ],
+                          "type": "object"
+                        },
+                        "terminationMessagePath": {
+                          "type": "string"
+                        },
+                        "terminationMessagePolicy": {
+                          "type": "string"
+                        },
+                        "volumeMounts": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "mountPath": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "readOnly": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "mountPath",
+                              "readOnly"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "workingDir": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "image",
+                        "command",
+                        "args",
+                        "workingDir",
+                        "env",
+                        "ports",
+                        "volumeMounts",
+                        "imagePullPolicy",
+                        "restartPolicy",
+                        "terminationMessagePath",
+                        "terminationMessagePolicy",
+                        "securityContext"
+                      ],
+                      "type": "object"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "dnsPolicy": {
+                    "type": "string"
+                  },
+                  "enableServiceLinks": {
+                    "type": "boolean"
+                  },
+                  "initContainers": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "args": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "command": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "env": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "name": {
+                                "type": "string"
+                              },
+                              "value": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "valueFrom": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "configMapKeyRef": {
+                                        "anyOf": [
+                                          {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "key": {
+                                                "type": "string"
+                                              },
+                                              "name": {
+                                                "type": "string"
+                                              },
+                                              "optional": {
+                                                "type": "boolean"
+                                              }
+                                            },
+                                            "required": [
+                                              "name",
+                                              "key",
+                                              "optional"
+                                            ],
+                                            "type": "object"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "secretKeyRef": {
+                                        "anyOf": [
+                                          {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "key": {
+                                                "type": "string"
+                                              },
+                                              "name": {
+                                                "type": "string"
+                                              },
+                                              "optional": {
+                                                "type": "boolean"
+                                              }
+                                            },
+                                            "required": [
+                                              "name",
+                                              "key",
+                                              "optional"
+                                            ],
+                                            "type": "object"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "configMapKeyRef",
+                                      "secretKeyRef"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "value",
+                              "valueFrom"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "image": {
+                          "pattern": "^([a-z0-9]([a-z0-9.-]*[a-z0-9])?)(:[1-9][0-9]{0,4})?/[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*@sha256:[0-9a-f]{64}$",
+                          "type": "string"
+                        },
+                        "imagePullPolicy": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "ports": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "containerPort": {
+                                "maximum": 9007199254740991,
+                                "minimum": -9007199254740991,
+                                "type": "integer"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "protocol": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "containerPort",
+                              "protocol"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "restartPolicy": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "securityContext": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "allowPrivilegeEscalation": {
+                              "type": "boolean"
+                            },
+                            "capabilities": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "add": {
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "type": "array"
+                                },
+                                "drop": {
+                                  "items": {
+                                    "type": "string"
+                                  },
+                                  "type": "array"
+                                }
+                              },
+                              "required": [
+                                "drop",
+                                "add"
+                              ],
+                              "type": "object"
+                            },
+                            "privileged": {
+                              "type": "boolean"
+                            },
+                            "readOnlyRootFilesystem": {
+                              "type": "boolean"
+                            },
+                            "runAsGroup": {
+                              "maximum": 9007199254740991,
+                              "minimum": -9007199254740991,
+                              "type": "integer"
+                            },
+                            "runAsNonRoot": {
+                              "type": "boolean"
+                            },
+                            "runAsUser": {
+                              "maximum": 9007199254740991,
+                              "minimum": -9007199254740991,
+                              "type": "integer"
+                            },
+                            "seccompProfile": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "type": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "type"
+                              ],
+                              "type": "object"
+                            }
+                          },
+                          "required": [
+                            "runAsNonRoot",
+                            "runAsUser",
+                            "runAsGroup",
+                            "readOnlyRootFilesystem",
+                            "allowPrivilegeEscalation",
+                            "privileged",
+                            "capabilities",
+                            "seccompProfile"
+                          ],
+                          "type": "object"
+                        },
+                        "terminationMessagePath": {
+                          "type": "string"
+                        },
+                        "terminationMessagePolicy": {
+                          "type": "string"
+                        },
+                        "volumeMounts": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "mountPath": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "readOnly": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "mountPath",
+                              "readOnly"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "workingDir": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "image",
+                        "command",
+                        "args",
+                        "workingDir",
+                        "env",
+                        "ports",
+                        "volumeMounts",
+                        "imagePullPolicy",
+                        "restartPolicy",
+                        "terminationMessagePath",
+                        "terminationMessagePolicy",
+                        "securityContext"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "nodeSelector": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "type": "object"
+                  },
+                  "os": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "restartPolicy": {
+                    "type": "string"
+                  },
+                  "schedulerName": {
+                    "type": "string"
+                  },
+                  "serviceAccountName": {
+                    "type": "string"
+                  },
+                  "terminationGracePeriodSeconds": {
+                    "maximum": 9007199254740991,
+                    "minimum": -9007199254740991,
+                    "type": "integer"
+                  },
+                  "volumes": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "configMap": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "defaultMode": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": -9007199254740991,
+                                  "type": "integer"
+                                },
+                                "items": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "key": {
+                                        "type": "string"
+                                      },
+                                      "mode": {
+                                        "maximum": 9007199254740991,
+                                        "minimum": -9007199254740991,
+                                        "type": "integer"
+                                      },
+                                      "path": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "key",
+                                      "path",
+                                      "mode"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "name": {
+                                  "type": "string"
+                                },
+                                "optional": {
+                                  "type": "boolean"
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "defaultMode",
+                                "optional",
+                                "items"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "secret": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "defaultMode": {
+                                  "maximum": 9007199254740991,
+                                  "minimum": -9007199254740991,
+                                  "type": "integer"
+                                },
+                                "items": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "key": {
+                                        "type": "string"
+                                      },
+                                      "mode": {
+                                        "maximum": 9007199254740991,
+                                        "minimum": -9007199254740991,
+                                        "type": "integer"
+                                      },
+                                      "path": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "key",
+                                      "path",
+                                      "mode"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                },
+                                "optional": {
+                                  "type": "boolean"
+                                },
+                                "secretName": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "secretName",
+                                "defaultMode",
+                                "optional",
+                                "items"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "configMap",
+                        "secret"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "serviceAccountName",
+                  "automountServiceAccountToken",
+                  "restartPolicy",
+                  "dnsPolicy",
+                  "schedulerName",
+                  "terminationGracePeriodSeconds",
+                  "enableServiceLinks",
+                  "os",
+                  "nodeSelector",
+                  "containers",
+                  "initContainers",
+                  "volumes"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "metadata",
+              "spec"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "member_binding",
+          "artifact",
+          "controller",
+          "selector",
+          "credential_kind",
+          "authenticating_container",
+          "identity",
+          "template",
+          "configuration_refs",
+          "platform_role_ref"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema",
+    "target",
+    "delivery",
+    "ownership_domain",
+    "generation",
+    "previous",
+    "envelope_revision",
+    "complete",
+    "members",
+    "artifacts",
+    "namespaces",
+    "workloads",
+    "dependencies",
+    "ingress",
+    "egress",
+    "resource_bindings",
+    "platform_refs",
+    "removed"
+  ],
+  "type": "object"
+}

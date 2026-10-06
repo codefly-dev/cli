@@ -1,7 +1,9 @@
 # H1 security decisions required before implementation
 
-Status: blocked; no deployment-contract implementation or executable has been
-introduced. These questions follow the H1 brief's instruction to stop on
+Status: resolved by the owner in `H1-RESOLUTIONS.md` (task input outside this
+repository); both proposed resolutions below are accepted. The implementation
+is now in this module. These original questions followed the H1 brief's
+instruction to stop on
 security-relevant ambiguity rather than guess. The module location is settled:
 `github.com/codefly-dev/cli/contracts/deployment`, with its own `go.mod` and no
 dependency on the parent CLI module or Core.
@@ -32,14 +34,13 @@ the signed digest. A profile submitted by the delivery cannot authorize itself.
 An arbitrary built-in allowlist would also choose execution policy that the
 spec assigns to the platform.
 
-**Proposed resolution, not implemented:** H1 defines a separate explicit
+**Accepted resolution:** H1 defines a separate explicit
 validation-context input carrying exact referenced profile/catalog content.
 The trusted caller authenticates that context independently of the inventory;
 H1 checks reference digests and refuses unsupported profile versions or missing
 entries. The executable is an offline validator, with successful validation
-explicitly distinct from platform authorization. Please establish this boundary
-and the initial profile's API version, supported fields/kinds and normalization
-rules before the accepted wire contract and positive fixtures are frozen.
+explicitly distinct from platform authorization. The owner established this boundary and pinned Kubernetes 1.34 and the five
+supported controller kinds before the wire contract and fixtures were frozen.
 
 ## Q2 — evidence for image-manifest kind and platform
 
@@ -60,17 +61,29 @@ required refusal. Fetching registry content instead introduces a resolver,
 credentials and an execution environment that the H1 executable interface does
 not yet specify.
 
-**Proposed resolution, not implemented:** Require retained image-manifest and
+**Accepted resolution:** Require retained image-manifest and
 image-configuration bytes as content-addressed validation inputs; recompute their
 digests, refuse index media types, validate manifest-to-configuration links and
 check the image platform against the independently authorized execution profile.
-The trusted caller owns fetching; the shared executable remains offline. Please
-confirm that evidence contract and whether its definition belongs in H1.
+The trusted caller owns fetching; the shared executable remains offline. The
+owner confirmed that this evidence contract belongs in H1.
 
-## Work remaining after these decisions
+## Resolution recorded for implementation
 
-All five H1 implementation deliverables remain: inventory types/schema, exact
-canonicalization/digest, semantic validator with stable rule IDs, generated
-data-based conformance corpus, and the executable Python calls. The module
-README, import-boundary check and required Go build/vet/format/test checks also
-remain. No build or conformance result is claimed by this document.
+Q1 uses a distinct caller-authenticated validation-context input. Profiles and
+catalogue content never come from inventory fields. Offline validation is
+explicitly not platform authorization.
+
+Q2 uses retained content-addressed manifest and configuration bytes, recomputed
+digests, manifest-to-configuration linkage, index refusal and platform checking.
+The caller owns fetching. Production imports and their closure are checked to
+keep the module offline.
+
+The owner pinned Kubernetes 1.34 and the five supported controller kinds. The
+initial closed `explicit-v1` profile requires all supported defaultable values,
+performs identity normalization and excludes no fields. Unsupported fields and
+restrictions refuse. See README.md for its exact scope and verification limits.
+
+The digest-only-image addendum is implemented as primary image identity with
+optional, validated member release metadata. No bypass or development switch is
+part of the schema or executable. No unresolved security question is recorded.
