@@ -66,6 +66,14 @@ catalogs with the matching generator rather than editing the schema string.
 This catalog gate does not change the input/output contract digest or claim
 that an unresolved scope selection is executable.
 
+This is a breaking delivery change: every owner of a generated
+`contracts/runnables` catalog must regenerate it with `codefly generate runnables`
+using the matching CLI, including generated test fixtures. An unregenerated v1
+catalog is refused as an unsupported index version; an unknown field in a v2
+catalog is separately refused as an unknown field. Neither refusal returns a
+partial policy. Coordinate the migration with affected owners before landing
+the version change; do not replace the schema string by hand.
+
 An `index.json` is data on disk, and in a composed workspace it arrives inside
 a third-party module package, so every path read out of one is resolved inside
 the module directory through `os.Root` — a row naming `../../../.ssh/id_rsa`,

@@ -113,6 +113,13 @@ func TestGenerateRunnablesDerivesMarkedMethodsAndRefusesTheRest(t *testing.T) {
 	}
 
 	index := readIndex(t, moduleDir)
+	if index.Schema != "codefly/runnable-operations/v2" {
+		t.Fatalf("generator emitted catalog schema %q, want v2", index.Schema)
+	}
+	derived, loadErr := runnablespkg.LoadDerivedOperations(moduleDir)
+	if loadErr != nil || len(derived) != 1 {
+		t.Fatalf("strict reader refused the real generator's fixture: %v (%d operations)", loadErr, len(derived))
+	}
 	if len(index.Operations) != 1 {
 		t.Fatalf("index has %d operations, want 1", len(index.Operations))
 	}

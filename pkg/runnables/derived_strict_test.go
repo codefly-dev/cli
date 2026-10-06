@@ -25,6 +25,8 @@ func TestDerivedCatalogRequiresTheStrictReaderVersion(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, runnables.DerivedDir, runnables.IndexFileName), data, 0o600))
 	_, err = runnables.LoadDerivedOperations(dir)
 	require.ErrorContains(t, err, "codefly/runnable-operations/v1")
+	require.ErrorContains(t, err, "index schema")
+	require.NotContains(t, err.Error(), "unknown field")
 }
 
 func TestDerivedReadersRefuseUnrecognizedAuthority(t *testing.T) {
@@ -63,6 +65,8 @@ func TestDerivedReadersRefuseUnrecognizedAuthority(t *testing.T) {
 			require.Error(t, err)
 			if scenario.want != "" {
 				require.ErrorContains(t, err, scenario.want)
+				require.ErrorContains(t, err, "unknown field")
+				require.NotContains(t, err.Error(), "index schema")
 			}
 		})
 	}
