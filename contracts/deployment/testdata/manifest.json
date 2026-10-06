@@ -1,0 +1,1130 @@
+{
+  "schema": "codefly/conformance-corpus/v1",
+  "cases": [
+    {
+      "name": "digest-only",
+      "input": "generated/digest-only.input.json",
+      "context": "base-context.json",
+      "outcome": "valid",
+      "rule_id": null,
+      "canonical": "generated/digest-only.canonical.json",
+      "digest": "sha256:f2a1722bb24a12be7d12747308cefec6876dbccf2eed41ed964d861cab7aae47"
+    },
+    {
+      "name": "release-metadata",
+      "input": "generated/release-metadata.input.json",
+      "context": "base-context.json",
+      "outcome": "valid",
+      "rule_id": null,
+      "canonical": "generated/release-metadata.canonical.json",
+      "digest": "sha256:4e0d01c32d99b7ef6f7fd3f63c349821d4e80bbffb9d4c8e74c2dc9426b3a1d5"
+    },
+    {
+      "name": "release-malformed",
+      "input": "generated/release-malformed.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "RELEASE_METADATA",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "release-null",
+      "input": "generated/release-null.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "RELEASE_METADATA",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "release-incomplete",
+      "input": "generated/release-incomplete.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "SCHEMA_REQUIRED",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "mutable-tag",
+      "input": "generated/mutable-tag.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "IMAGE_REFERENCE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "missing-digest",
+      "input": "generated/missing-digest.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "IMAGE_REFERENCE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "tag-and-digest",
+      "input": "generated/tag-and-digest.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "IMAGE_REFERENCE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "bare-digest",
+      "input": "generated/bare-digest.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "IMAGE_REFERENCE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "unknown-field",
+      "input": "generated/unknown-field.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "SCHEMA_UNKNOWN",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "unknown-pod-field",
+      "input": "generated/unknown-pod-field.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "SCHEMA_UNKNOWN",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "ephemeral-container",
+      "input": "generated/ephemeral-container.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "SCHEMA_UNKNOWN",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "runtime-field",
+      "input": "generated/runtime-field.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "SCHEMA_UNKNOWN",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "controller-generated-field",
+      "input": "generated/controller-generated-field.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "SCHEMA_UNKNOWN",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "missing-collection",
+      "input": "generated/missing-collection.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "SCHEMA_REQUIRED",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "null-collection",
+      "input": "generated/null-collection.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "SCHEMA_REQUIRED",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "schema-version",
+      "input": "generated/schema-version.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "SCHEMA_VERSION",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "partial",
+      "input": "generated/partial.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "AGGREGATE_COMPLETE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "first-predecessor",
+      "input": "generated/first-predecessor.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "AGGREGATE_PREVIOUS",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "next-generation",
+      "input": "generated/next-generation.input.json",
+      "context": "base-context.json",
+      "outcome": "valid",
+      "rule_id": null,
+      "canonical": "generated/next-generation.canonical.json",
+      "digest": "sha256:25d35eeb9853447a8cfdf37064c35af42d6e9ba48c7c752170310c743f772d61"
+    },
+    {
+      "name": "missing-predecessor",
+      "input": "generated/missing-predecessor.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "AGGREGATE_PREVIOUS",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "empty-target",
+      "input": "generated/empty-target.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "IDENTIFIER",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "duplicate-workload",
+      "input": "generated/duplicate-workload.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "WORKLOAD_ID",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "overlap-different-keys",
+      "input": "generated/overlap-different-keys.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "SELECTOR_OVERLAP",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "overlap-subset",
+      "input": "generated/overlap-subset.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "SELECTOR_OVERLAP",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "duplicate-object",
+      "input": "generated/duplicate-object.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "OBJECT_UNIQUE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "empty-selector",
+      "input": "generated/empty-selector.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "SELECTOR_EMPTY",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "selector-mismatch",
+      "input": "generated/selector-mismatch.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "SELECTOR_TEMPLATE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "unknown-credential",
+      "input": "generated/unknown-credential.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "CREDENTIAL_KIND",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "ineligible-authenticator",
+      "input": "generated/ineligible-authenticator.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "AUTHENTICATING_CONTAINER",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "authenticator-is-second",
+      "input": "generated/authenticator-is-second.input.json",
+      "context": "generated/authenticator-is-second.context.json",
+      "outcome": "valid",
+      "rule_id": null,
+      "canonical": "generated/authenticator-is-second.canonical.json",
+      "digest": "sha256:16c787911055c68ba1634f7f68bde4976209ac68a3d1e4f5fcaf0b7c368e1abe"
+    },
+    {
+      "name": "identity-self-grant",
+      "input": "generated/identity-self-grant.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "IDENTITY_GRANT",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "authenticator-in-init",
+      "input": "generated/authenticator-in-init.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "AUTHENTICATING_CONTAINER",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "authenticator-missing",
+      "input": "generated/authenticator-missing.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "AUTHENTICATING_CONTAINER",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "duplicate-container",
+      "input": "generated/duplicate-container.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "CONTAINER_UNIQUE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "app-restart-policy",
+      "input": "generated/app-restart-policy.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "RESTART_POLICY",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "init-restart-policy",
+      "input": "generated/init-restart-policy.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "RESTART_POLICY",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "init-order",
+      "input": "generated/init-order.input.json",
+      "context": "base-context.json",
+      "outcome": "valid",
+      "rule_id": null,
+      "canonical": "generated/init-order.canonical.json",
+      "digest": "sha256:f99260c3e4b29146824d951913486f677feb7698ff68382d55a495428a372b6b"
+    },
+    {
+      "name": "init-restart-change",
+      "input": "generated/init-restart-change.input.json",
+      "context": "base-context.json",
+      "outcome": "valid",
+      "rule_id": null,
+      "canonical": "generated/init-restart-change.canonical.json",
+      "digest": "sha256:ca356c52069b0f268216687adcf6f50e8c7b9d7cb56f726a4f8db75a358c2709"
+    },
+    {
+      "name": "bare-pod",
+      "input": "generated/bare-pod.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "CONTROLLER_KIND",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "unknown-kind",
+      "input": "generated/unknown-kind.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "CONTROLLER_KIND",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "kind-statefulset",
+      "input": "generated/kind-statefulset.input.json",
+      "context": "base-context.json",
+      "outcome": "valid",
+      "rule_id": null,
+      "canonical": "generated/kind-statefulset.canonical.json",
+      "digest": "sha256:a3efdbd183353dd4a815b6a683570ac4755830cd3105a12897f17bfe34fc100b"
+    },
+    {
+      "name": "kind-daemonset",
+      "input": "generated/kind-daemonset.input.json",
+      "context": "base-context.json",
+      "outcome": "valid",
+      "rule_id": null,
+      "canonical": "generated/kind-daemonset.canonical.json",
+      "digest": "sha256:4960322d5709587cde438acff9f609b6caa73d75defb6fb6219da750e6b898b1"
+    },
+    {
+      "name": "kind-job",
+      "input": "generated/kind-job.input.json",
+      "context": "base-context.json",
+      "outcome": "valid",
+      "rule_id": null,
+      "canonical": "generated/kind-job.canonical.json",
+      "digest": "sha256:e226bcb8a4caf8d8205c3615da019d237924bddda622441b5d9e70555010ab90"
+    },
+    {
+      "name": "kind-cronjob",
+      "input": "generated/kind-cronjob.input.json",
+      "context": "base-context.json",
+      "outcome": "valid",
+      "rule_id": null,
+      "canonical": "generated/kind-cronjob.canonical.json",
+      "digest": "sha256:241bf20af57f846fe63c272e10723671ee204f32184a674d629ef91dc7a30c52"
+    },
+    {
+      "name": "bad-controller-api",
+      "input": "generated/bad-controller-api.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "CONTROLLER_KIND",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "unknown-artifact-object",
+      "input": "generated/unknown-artifact-object.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "ARTIFACT_OBJECT_KIND",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "artifact-traversal",
+      "input": "generated/artifact-traversal.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "ARTIFACT_SOURCE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "artifact-source",
+      "input": "generated/artifact-source.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "ARTIFACT_SOURCE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "unresolved-member",
+      "input": "generated/unresolved-member.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "REFERENCE_RESOLUTION",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "cross-binding",
+      "input": "generated/cross-binding.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "REFERENCE_RESOLUTION",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "unresolved-artifact",
+      "input": "generated/unresolved-artifact.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "REFERENCE_RESOLUTION",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "origin-ambiguous",
+      "input": "generated/origin-ambiguous.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "WORKLOAD_ORIGIN",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "unresolved-platform-role",
+      "input": "generated/unresolved-platform-role.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "REFERENCE_RESOLUTION",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "namespace-owner",
+      "input": "generated/namespace-owner.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "NAMESPACE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "withdrawal-active",
+      "input": "generated/withdrawal-active.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "REMOVAL",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "withdrawal",
+      "input": "generated/withdrawal.input.json",
+      "context": "base-context.json",
+      "outcome": "valid",
+      "rule_id": null,
+      "canonical": "generated/withdrawal.canonical.json",
+      "digest": "sha256:902cfd2079b5cf33ffbf32739b0ba67e6c42abbd607c3f9b48e5419104d9c708"
+    },
+    {
+      "name": "automatic-token",
+      "input": "generated/automatic-token.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "SERVICE_ACCOUNT",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "privileged",
+      "input": "generated/privileged.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "CONTAINER_SECURITY",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "long-grace",
+      "input": "generated/long-grace.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "POD_UNSUPPORTED",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "no-containers",
+      "input": "generated/no-containers.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "CONTAINER_REQUIRED",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "platform-not-pinned",
+      "input": "generated/platform-not-pinned.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "POD_PLATFORM",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "profile-content-digest",
+      "input": "generated/profile-content-digest.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "PROFILE_DIGEST",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "profile-missing",
+      "input": "generated/profile-missing.input.json",
+      "context": "generated/profile-missing.context.json",
+      "outcome": "invalid",
+      "rule_id": "PROFILE_MISSING",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "profile-version",
+      "input": "generated/profile-version.input.json",
+      "context": "generated/profile-version.context.json",
+      "outcome": "invalid",
+      "rule_id": "PROFILE_VERSION",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "kubernetes-version",
+      "input": "generated/kubernetes-version.input.json",
+      "context": "generated/kubernetes-version.context.json",
+      "outcome": "invalid",
+      "rule_id": "COMPILER_PROFILE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "excluded-field",
+      "input": "generated/excluded-field.input.json",
+      "context": "generated/excluded-field.context.json",
+      "outcome": "invalid",
+      "rule_id": "COMPILER_PROFILE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "unsupported-profile-kind",
+      "input": "generated/unsupported-profile-kind.input.json",
+      "context": "generated/unsupported-profile-kind.context.json",
+      "outcome": "invalid",
+      "rule_id": "COMPILER_PROFILE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "profile-disabled-kind",
+      "input": "generated/profile-disabled-kind.input.json",
+      "context": "generated/profile-disabled-kind.context.json",
+      "outcome": "invalid",
+      "rule_id": "CONTROLLER_PROFILE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "unsupported-profile-field",
+      "input": "generated/unsupported-profile-field.input.json",
+      "context": "generated/unsupported-profile-field.context.json",
+      "outcome": "invalid",
+      "rule_id": "SCHEMA_UNKNOWN",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "image-bytes-missing",
+      "input": "generated/image-bytes-missing.input.json",
+      "context": "generated/image-bytes-missing.context.json",
+      "outcome": "invalid",
+      "rule_id": "IMAGE_EVIDENCE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "blob-corrupt",
+      "input": "generated/blob-corrupt.input.json",
+      "context": "generated/blob-corrupt.context.json",
+      "outcome": "invalid",
+      "rule_id": "BLOB_DIGEST",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "config-bytes-missing",
+      "input": "generated/config-bytes-missing.input.json",
+      "context": "generated/config-bytes-missing.context.json",
+      "outcome": "invalid",
+      "rule_id": "IMAGE_CONFIG_LINK",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "image-index",
+      "input": "generated/image-index.input.json",
+      "context": "generated/image-index.context.json",
+      "outcome": "invalid",
+      "rule_id": "IMAGE_INDEX",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "docker-index",
+      "input": "generated/docker-index.input.json",
+      "context": "generated/docker-index.context.json",
+      "outcome": "invalid",
+      "rule_id": "IMAGE_INDEX",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "image-platform",
+      "input": "generated/image-platform.input.json",
+      "context": "generated/image-platform.context.json",
+      "outcome": "invalid",
+      "rule_id": "IMAGE_PLATFORM",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "config-size",
+      "input": "generated/config-size.input.json",
+      "context": "generated/config-size.context.json",
+      "outcome": "invalid",
+      "rule_id": "IMAGE_CONFIG_LINK",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "config-link",
+      "input": "generated/config-link.input.json",
+      "context": "generated/config-link.context.json",
+      "outcome": "invalid",
+      "rule_id": "IMAGE_CONFIG_LINK",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "manifest-media",
+      "input": "generated/manifest-media.input.json",
+      "context": "generated/manifest-media.context.json",
+      "outcome": "invalid",
+      "rule_id": "IMAGE_MANIFEST",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "config-rootfs",
+      "input": "generated/config-rootfs.input.json",
+      "context": "generated/config-rootfs.context.json",
+      "outcome": "invalid",
+      "rule_id": "IMAGE_CONFIGURATION",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "unresolved-dependency",
+      "input": "generated/unresolved-dependency.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "REFERENCE_RESOLUTION",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "dependency",
+      "input": "generated/dependency.input.json",
+      "context": "base-context.json",
+      "outcome": "valid",
+      "rule_id": null,
+      "canonical": "generated/dependency.canonical.json",
+      "digest": "sha256:bdc287452b280f5d74335b63c861c09ad5635c5f0c450ef570ca0342dcaeb9af"
+    },
+    {
+      "name": "unresolved-egress",
+      "input": "generated/unresolved-egress.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "REFERENCE_RESOLUTION",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "egress",
+      "input": "generated/egress.input.json",
+      "context": "base-context.json",
+      "outcome": "valid",
+      "rule_id": null,
+      "canonical": "generated/egress.canonical.json",
+      "digest": "sha256:51e5e94d6ad101f52cbf7168fccf5e86893de06442630758eea1fa98daaab832"
+    },
+    {
+      "name": "cidr-unsupported",
+      "input": "generated/cidr-unsupported.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "CIDR_UNSUPPORTED",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "ingress-unsupported",
+      "input": "generated/ingress-unsupported.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "INGRESS_UNSUPPORTED",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "resource-unsupported",
+      "input": "generated/resource-unsupported.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "RESOURCE_UNSUPPORTED",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "configuration-env",
+      "input": "generated/configuration-env.input.json",
+      "context": "generated/configuration-env.context.json",
+      "outcome": "valid",
+      "rule_id": null,
+      "canonical": "generated/configuration-env.canonical.json",
+      "digest": "sha256:1c31b2043c5989119238ae7788d685668db7c3ff741fd71f829bcfcce039df4a"
+    },
+    {
+      "name": "configuration-undeclared",
+      "input": "generated/configuration-undeclared.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "CONFIGURATION_CLOSURE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "configuration-unresolved",
+      "input": "generated/configuration-unresolved.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "REFERENCE_RESOLUTION",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "configuration-optional",
+      "input": "generated/configuration-optional.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "CONFIGURATION_USE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "carrier",
+      "input": "generated/carrier.input.json",
+      "context": "generated/carrier.context.json",
+      "outcome": "valid",
+      "rule_id": null,
+      "canonical": "generated/carrier.canonical.json",
+      "digest": "sha256:961770a8e24624d5680f0110df3e456d262f453ff20f2dec04aea8e2fdd0984c"
+    },
+    {
+      "name": "carrier-overlap",
+      "input": "generated/carrier-overlap.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "SELECTOR_OVERLAP",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "unicode",
+      "input": "generated/unicode.input.json",
+      "context": "base-context.json",
+      "outcome": "valid",
+      "rule_id": null,
+      "canonical": "generated/unicode.canonical.json",
+      "digest": "sha256:1395b39468f43f9284cf6e28812e2daf3ed47e7772d131879fe2650046532dd4"
+    },
+    {
+      "name": "duplicate-json-key",
+      "input": "generated/duplicate-json-key.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "JSON_DUPLICATE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "duplicate-escaped-key",
+      "input": "generated/duplicate-escaped-key.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "JSON_DUPLICATE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "fractional-number",
+      "input": "generated/fractional-number.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "JSON_NUMBER",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "surrogate",
+      "input": "generated/surrogate.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "JSON_UNICODE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "registry-ambiguous",
+      "input": "generated/registry-ambiguous.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "IMAGE_REFERENCE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "registry-port-invalid",
+      "input": "generated/registry-port-invalid.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "IMAGE_REFERENCE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "invalid-label",
+      "input": "generated/invalid-label.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "LABEL",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "invalid-annotation",
+      "input": "generated/invalid-annotation.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "ANNOTATION",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "artifact-digest",
+      "input": "generated/artifact-digest.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "ARTIFACT",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "bad-member",
+      "input": "generated/bad-member.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "MEMBER",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "invalid-object-name",
+      "input": "generated/invalid-object-name.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "OBJECT_IDENTITY",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "unsupported-pull",
+      "input": "generated/unsupported-pull.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "CONTAINER_UNSUPPORTED",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "invalid-endpoint",
+      "input": "generated/invalid-endpoint.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "ENDPOINT",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "context-version",
+      "input": "generated/context-version.input.json",
+      "context": "generated/context-version.context.json",
+      "outcome": "invalid",
+      "rule_id": "CONTEXT_VERSION",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "duplicate-document",
+      "input": "generated/duplicate-document.input.json",
+      "context": "generated/duplicate-document.context.json",
+      "outcome": "invalid",
+      "rule_id": "CONTEXT_DOCUMENT",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "duplicate-profile-reference",
+      "input": "generated/duplicate-profile-reference.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "PROFILE_REFERENCE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "execution-platform-unsupported",
+      "input": "generated/execution-platform-unsupported.input.json",
+      "context": "generated/execution-platform-unsupported.context.json",
+      "outcome": "invalid",
+      "rule_id": "EXECUTION_PROFILE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "credential-kind-disabled",
+      "input": "generated/credential-kind-disabled.input.json",
+      "context": "generated/credential-kind-disabled.context.json",
+      "outcome": "invalid",
+      "rule_id": "CREDENTIAL_PROFILE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "empty-trust-profile",
+      "input": "generated/empty-trust-profile.input.json",
+      "context": "generated/empty-trust-profile.context.json",
+      "outcome": "invalid",
+      "rule_id": "TRUST_PROFILE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "invalid-egress",
+      "input": "generated/invalid-egress.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "EGRESS",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "wrong-json-type",
+      "input": "generated/wrong-json-type.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "SCHEMA_TYPE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "json-trailing-comma",
+      "input": "generated/json-trailing-comma.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "JSON_SYNTAX",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "json-depth-limit",
+      "input": "generated/json-depth-limit.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "JSON_LIMIT",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "unsupported-catalogue-kind",
+      "input": "generated/unsupported-catalogue-kind.input.json",
+      "context": "generated/unsupported-catalogue-kind.context.json",
+      "outcome": "invalid",
+      "rule_id": "CATALOG_ENTRY",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "configuration-empty-consumers",
+      "input": "generated/configuration-empty-consumers.input.json",
+      "context": "base-context.json",
+      "outcome": "invalid",
+      "rule_id": "CONFIGURATION_REF",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "carrier-template-mismatch",
+      "input": "generated/carrier-template-mismatch.input.json",
+      "context": "generated/carrier-template-mismatch.context.json",
+      "outcome": "invalid",
+      "rule_id": "CARRIER_TEMPLATE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "token-subject-is-not-cloud-principal",
+      "input": "generated/token-subject-is-not-cloud-principal.input.json",
+      "context": "generated/token-subject-is-not-cloud-principal.context.json",
+      "outcome": "invalid",
+      "rule_id": "IDENTITY_VALUE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "shared-credential-principal",
+      "input": "generated/shared-credential-principal.input.json",
+      "context": "generated/shared-credential-principal.context.json",
+      "outcome": "invalid",
+      "rule_id": "PRINCIPAL_UNIQUE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "configuration-volume",
+      "input": "generated/configuration-volume.input.json",
+      "context": "generated/configuration-volume.context.json",
+      "outcome": "valid",
+      "rule_id": null,
+      "canonical": "generated/configuration-volume.canonical.json",
+      "digest": "sha256:e423e70ee994efa9d3b029a1713299bb9308c93ba6fafaf692042896442f9f67"
+    },
+    {
+      "name": "configuration-writable-mount",
+      "input": "generated/configuration-writable-mount.input.json",
+      "context": "generated/configuration-writable-mount.context.json",
+      "outcome": "invalid",
+      "rule_id": "CONFIGURATION_USE",
+      "canonical": null,
+      "digest": null
+    },
+    {
+      "name": "literal-env",
+      "input": "generated/literal-env.input.json",
+      "context": "base-context.json",
+      "outcome": "valid",
+      "rule_id": null,
+      "canonical": "generated/literal-env.canonical.json",
+      "digest": "sha256:dcdf4b09ab0efa449ac0f713016d832beab197a61508cc0710bcab4f0a8e9d6e"
+    }
+  ]
+}

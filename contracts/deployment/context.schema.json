@@ -1,0 +1,47 @@
+{
+  "$schema": "https://codefly.dev/schemas/deployment/v1",
+  "additionalProperties": false,
+  "codeflyRules": true,
+  "properties": {
+    "blobs": {
+      "additionalProperties": {
+        "contentEncoding": "base64",
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "documents": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "contentEncoding": "base64",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "content"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "schema": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "documents",
+    "blobs"
+  ],
+  "type": "object"
+}

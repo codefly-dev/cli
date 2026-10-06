@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -31,6 +32,8 @@ type goWorkflowStep struct {
 	With struct {
 		Version       string `yaml:"version"`
 		OnlyNewIssues bool   `yaml:"only-new-issues"`
+		Args          string `yaml:"args"`
+		FetchDepth    int    `yaml:"fetch-depth"`
 	} `yaml:"with"`
 }
 
@@ -49,6 +52,15 @@ type golangciConfig struct {
 
 type golangciExclusions struct {
 	Paths []string `yaml:"paths"`
+}
+
+func checkoutStep(job goWorkflowJob) (goWorkflowStep, bool) {
+	for _, step := range job.Steps {
+		if regexp.MustCompile(`^actions/checkout`).MatchString(step.Uses) {
+			return step, true
+		}
+	}
+	return goWorkflowStep{}, false
 }
 
 func lintStep(job goWorkflowJob) (goWorkflowStep, bool) {
@@ -140,8 +152,25 @@ func TestLintVersionPinnedConsistently(t *testing.T) {
 	if !found {
 		t.Fatal("lint job has no golangci-lint-action step")
 	}
-	if !step.With.OnlyNewIssues {
-		t.Fatal("golangci-lint step must set only-new-issues to gate on new findings only")
+
+	// The gate must judge NEW findings only, and it must do so by a method
+	// that works for any diff size. only-new-issues asks GitHub for the pull
+	// request's patch and GitHub refuses one over 20,000 lines -- at which
+	// point the action has no baseline and reports the whole backlog (753
+	// findings on a branch that introduced none). So the baseline is the
+	// merge-base, computed by the linter itself from the full history.
+	if step.With.OnlyNewIssues {
+		t.Fatal("golangci-lint step must not use only-new-issues: it falls back to the full backlog when GitHub refuses a large patch")
+	}
+	if !strings.Contains(step.With.Args, "--new-from-merge-base=origin/${{ github.base_ref }}") {
+		t.Fatalf("golangci-lint step must gate on --new-from-merge-base against the PR base, got args %q", step.With.Args)
+	}
+	checkout, found := checkoutStep(workflow.Jobs["lint"])
+	if !found {
+		t.Fatal("lint job has no actions/checkout step")
+	}
+	if checkout.With.FetchDepth != 0 {
+		t.Fatalf("lint job's checkout must fetch the full history (fetch-depth: 0) so the merge-base is present, got %d", checkout.With.FetchDepth)
 	}
 
 	makefile, err := os.ReadFile(repositoryPath("Makefile"))
