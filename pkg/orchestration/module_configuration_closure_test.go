@@ -88,9 +88,9 @@ func TestSingleRootConfigurationClosurePreservesExclusionRefusal(t *testing.T) {
 }
 
 func TestSingleRootConfigurationClosurePreservesVisibilityRefusal(t *testing.T) {
-	flow := configurationClosureFlow(t, "internal")
+	flow := configurationClosureFlow(t, "private")
 	err := flow.checkConfigurationReferences(t.Context(), nil)
-	require.ErrorContains(t, err, "does not permit module", "loading a producer does not export its endpoint")
+	require.ErrorContains(t, err, "private to module", "loading a producer does not export its endpoint")
 	require.NotContains(t, err.Error(), "not a service of this workspace")
 }
 
