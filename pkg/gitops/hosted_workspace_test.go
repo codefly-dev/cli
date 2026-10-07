@@ -13,16 +13,20 @@ import (
 
 // hostedServiceYAML is a service declaring endpoints with their ports and a
 // workspace configuration group, the two things the presence document and the group
-// digest read off a service.
+// digest read off a service. `grpc` is internal and names nobody: since core
+// v0.14.0 the allow-list is derived from the consumers' declared dependencies
+// (billing/ledger declares one below) and an authored one is refused by key.
+// `http` is public and states its exposure, as every public endpoint must;
+// none, unless an ingress routes to it (exposedHostedServiceYAML).
 func hostedServiceYAML(name string, groups ...string) string {
 	service := devServiceYAML(name) + `endpoints:
   - name: grpc
     api: grpc
     visibility: internal
-    allow-modules: [billing]
   - name: http
     api: http
     visibility: public
+    exposure: none
 spec:
   deployment:
     endpoint-ports:
@@ -36,6 +40,13 @@ spec:
 		}
 	}
 	return service
+}
+
+// exposedHostedServiceYAML is hostedServiceYAML for the service whose `http`
+// endpoint the staging environment routes an ingress to: an address reachable
+// from outside the workspace is the endpoint's exposure, so it states `public`.
+func exposedHostedServiceYAML(name string, groups ...string) string {
+	return strings.Replace(hostedServiceYAML(name, groups...), "exposure: none", "exposure: public", 1)
 }
 
 // writeHostedWorkspace lays down a workspace composing module "shop" with a
@@ -74,7 +85,7 @@ environments:
       delivery: platform/accounts/rest
 `,
 		filepath.Join("modules", "shop", resources.ModuleConfigurationName):                           "kind: module\nname: shop\nservices:\n  - name: api\n",
-		filepath.Join("modules", "shop", "services", "api", resources.ServiceConfigurationName):       hostedServiceYAML("api", "shop"),
+		filepath.Join("modules", "shop", "services", "api", resources.ServiceConfigurationName):       exposedHostedServiceYAML("api", "shop"),
 		filepath.Join("modules", "billing", resources.ModuleConfigurationName):                        "kind: module\nname: billing\nservices:\n  - name: ledger\n",
 		filepath.Join("modules", "billing", "services", "ledger", resources.ServiceConfigurationName): hostedServiceYAML("ledger", "shop") + "service-dependencies:\n  - name: api\n    module: shop\n    endpoints:\n      - name: grpc\n        api: grpc\n",
 		filepath.Join("configurations", "staging", "shop.env"):                                        "MODE=prod\nTOKEN_LIMIT=4\n",

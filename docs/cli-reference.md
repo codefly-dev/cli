@@ -2529,13 +2529,13 @@ Subcommands:
 
 ## `codefly expose service`
 
-Render edge routing manifests for a service's public endpoints
+Render edge routing manifests for a service's exposed endpoints
 
 ```
 Service renders the Kubernetes routing manifests that publish a service's
-public endpoints at the shared gateway. Hostnames come from the environment's
-ingress intent (or --host); the in-cluster backend and port are resolved
-deterministically, so nothing is guessed.
+exposed endpoints — the ones declaring exposure: public — at the shared gateway.
+Hostnames come from the environment's ingress intent (or --host); the in-cluster
+backend and port are resolved deterministically, so nothing is guessed.
 
 The default backend emits Gateway API GRPCRoute/HTTPRoute (implemented by Istio
 when the gateway's class is istio); --routing istio emits the legacy

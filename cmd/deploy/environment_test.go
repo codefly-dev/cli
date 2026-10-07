@@ -38,6 +38,7 @@ agent:
 endpoints:
     - name: rest
       visibility: public
+      exposure: none
       api: rest
 `,
 	}

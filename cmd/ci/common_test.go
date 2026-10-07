@@ -293,7 +293,7 @@ func loadSchedulerFixture(t testing.TB) (string, *resources.Workspace) {
 		if readErr != nil {
 			return readErr
 		}
-		return os.WriteFile(path, []byte(strings.ReplaceAll(string(payload), "name: grpc\n      api:", "name: grpc\n      visibility: public\n      api:")), 0o600)
+		return os.WriteFile(path, []byte(strings.ReplaceAll(string(payload), "name: grpc\n      api:", "name: grpc\n      visibility: public\n      exposure: none\n      api:")), 0o600)
 	}); err != nil {
 		t.Fatal(err)
 	}

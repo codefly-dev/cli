@@ -58,7 +58,7 @@ func parityWorld(t *testing.T, mode Mode, origins ...string) (*World, *resources
 
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
 	require.NoError(t, err)
-	sharedState, err := NewStateManager(ctx, manager, dependencies)
+	sharedState, err := NewStateManager(ctx, manager, dependencies, workspace)
 	require.NoError(t, err)
 	localNetwork, err := network.NewRuntimeManager(ctx, manager)
 	require.NoError(t, err)

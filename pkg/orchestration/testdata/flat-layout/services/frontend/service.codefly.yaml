@@ -12,4 +12,5 @@ service-dependencies:
 endpoints:
     - name: http
       visibility: public
+      exposure: none
       api: http

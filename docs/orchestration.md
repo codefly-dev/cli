@@ -245,9 +245,8 @@ accident. Once every root-referenced producer is bound for every service, two
 things would otherwise follow:
 
 - a root group carrying `${endpoint:platform/authority/admin}` where that
-  endpoint's visibility is `private` (or `internal` without the consumer's module
-  in `allow-modules`) would hand its address to **every** service of the
-  composition, with nothing refusing it;
+  endpoint's visibility is `private` would hand its address to **every** service
+  of the composition, with nothing refusing it;
 - a typo'd producer in a root group — the one kind of group no service declares,
   so the plan check never saw it — would be dropped from **every** service in
   silence, which is the cli#882 fault itself.
@@ -336,13 +335,22 @@ render or a run that worked before. Two shapes:
   render, in `codefly doctor` and in CI. The value was never reaching those
   services; what changes is that they say so instead of starting without it,
   which is the whole point of #882. The fix in the composition is to declare the
-  visibility the reference needs (`public`, or `internal` with the consuming
-  module in `allow-modules`), or to stop referencing a private endpoint from a
+  visibility the reference needs (`internal`, which permits every module of the
+  composition, or `public`), or to stop referencing a private endpoint from a
   group every service receives.
-- Core's deprecated `visibility: module` **permits** rather than refuses — it is
-  an alias for `internal` with every module allowed
-  (`resources.Endpoint.AllowsModule`) — so a reference to one of those is
-  unaffected.
+- Since core v0.14.0 a visibility is **reach only** — `private`, `internal` or
+  `public` — and nothing else loads: the former `visibility: module` is refused
+  at load, and an authored `allow-modules` is refused by the key's presence
+  before it is decoded, in any spelling and with any value. Which modules *do*
+  reach an internal endpoint is the **derived** allow-list
+  (`Workspace.DeriveAllowModules`, joined from the consumers' declared service
+  dependencies) — a deployment-time record for mesh policy, and never an input
+  to whether a consumer may reach it (`resources.Endpoint.AllowsModule`). This
+  package never consults it to decide a hand-out, because core's plan-time
+  check judges by reach alone and the two would otherwise disagree. Whether an
+  endpoint has an address reachable from outside the workspace is its
+  **`exposure`** (`public` or `none`), which every public endpoint must state;
+  a visibility never says whether an address exists.
 
 A root group's reference to a producer the workspace does not have is also
 refused at the plan gate now, where before it was dropped for every service in
@@ -374,8 +382,11 @@ it, with no error anywhere.
 So the bound set is filtered as well: `World.exportableTo` keeps only the
 mappings whose endpoint passes `resources.ValidateEndpointVisibility` for the
 consumer's module — core's rule again, applied to what the resolution walks
-rather than to what the check reads. A private sibling is then not in the set to
-fall through to. It narrows only, and never within a module:
+rather than to what the check reads, and judged on the producer's **whole
+declaration** (`resources.Endpoint.Declaration()`: reach, location and
+exposure), so a declaration the model cannot judge is refused as invalid rather
+than treated as reachable. A private sibling is then not in the set to fall
+through to. It narrows only, and never within a module:
 `ValidateEndpointVisibility` returns nil when the consumer and the producer share
 one, so a service reading its own module's endpoints is untouched.
 
@@ -521,13 +532,19 @@ a store entry for.
   `resources.ResolveRunProfile` builds its inventory of known group names from
   service declarations, so such a name is rejected as unknown and the group
   cannot be excluded at all;
-- let the dependency mappings a consumer is handed be what
-  `PermittedDependencyEndpoints` grants. A **bare** service dependency — one
-  naming no endpoints — is handed every mapping its producer published
-  (`StateManager.GetDependenciesNetworkMappings` narrows by the dependency's
-  endpoint list, never by visibility), so a cross-module private endpoint's
-  address was in the set a `${endpoint:…}` resolves against. The CLI filters that
-  set now (`World.exportableTo`), which is the consumer-side half;
+- ~~let the dependency mappings a consumer is handed be what
+  `PermittedDependencyEndpoints` grants~~ — closed by core v0.14.0 (core#717):
+  every verdict on an edge takes the composition's provenance (the
+  `*resources.Workspace`) first, and `StateManager.GetDependenciesNetworkMappings`
+  now resolves what it hands out through
+  `resources.ResolveDependencyNetworkMappings(workspace, …)` — the edge by the
+  provenance of its two ends (a solution reaches modules only through the host),
+  then each endpoint by the producer's export, run-stage dependencies only —
+  before anything reaches an agent request, the output environment file or the
+  SDK's `GetDependenciesNetworkMappings`. A hand-out with no composition is
+  refused (`resources.ErrUnjudgedProvenance`) rather than assumed to be a
+  module's. `World.exportableTo` stays as the filter over what a resolution
+  walks, which also covers producer discovery;
 - refuse `CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES` outside a local
   environment in the loader itself, so the guard does not depend on every caller
   having one;

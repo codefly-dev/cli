@@ -509,7 +509,7 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 		world.KubernetesOutputProfile = builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1
 	}
 
-	stateManager, err := NewStateManager(ctx, configurationManager, world.Dependencies)
+	stateManager, err := NewStateManager(ctx, configurationManager, world.Dependencies, workspace)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}

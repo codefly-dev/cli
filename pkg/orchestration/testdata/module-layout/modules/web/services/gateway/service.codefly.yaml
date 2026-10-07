@@ -13,9 +13,14 @@ service-dependencies:
     - name: accounts
       module: billing
 endpoints:
+    # Exposed: the runner tests drive a real agent that answers with a Public
+    # instance for each, which the CLI accepts only where it would itself have
+    # proposed one, and since core v0.14.0 that is the endpoint's exposure.
     - name: rest
       visibility: public
+      exposure: public
       api: rest
     - name: grpc
       visibility: public
+      exposure: public
       api: grpc

@@ -197,7 +197,7 @@ func TestWorkspaceConfigurationsForResolvesEndpointsFromConsumerMappings(t *test
 			"domain: github.com/codefly-ai/acme/saas\nservices:\n    - name: auth-gateway\n",
 		"modules/saas/services/auth-gateway/service.codefly.yaml": "kind: service\nname: auth-gateway\nversion: 0.0.0\nmodule: saas\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
-			"endpoints:\n    - name: rest\n      api: rest\n      visibility: public\n",
+			"endpoints:\n    - name: rest\n      api: rest\n      visibility: public\n      exposure: none\n",
 		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: acme\n" +
 			"domain: github.com/codefly-ai/acme/platform\nservices:\n    - name: relay\n",
 		"modules/platform/services/relay/service.codefly.yaml": "kind: service\nname: relay\nversion: 0.0.0\nmodule: platform\n" +
@@ -293,7 +293,7 @@ func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testin
 	require.NoError(t, err)
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
 	require.NoError(t, err)
-	sharedState, err := NewStateManager(ctx, nil, dependencies)
+	sharedState, err := NewStateManager(ctx, nil, dependencies, workspace)
 	require.NoError(t, err)
 	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
 	require.NoError(t, err)
@@ -463,7 +463,7 @@ func TestConfigurationReferencesToAProducerDeclaredExternal(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []architecture.Service{{Unique: "saas/accounts"}}, order)
 
-	sharedState, err := NewStateManager(ctx, nil, dependencies)
+	sharedState, err := NewStateManager(ctx, nil, dependencies, workspace)
 	require.NoError(t, err)
 	loader := staticWorkspaceLoader{
 		confs: []*basev0.Configuration{workspaceConfiguration("platform", "accounts-endpoint", "${endpoint:saas/accounts/connect}")},
@@ -746,10 +746,12 @@ func referenceValidityFlow(t *testing.T, workspace *resources.Workspace, options
 // in the producer's own module — so it was a missing-endpoint test wearing a
 // visibility name, and it would have passed with the visibility rule removed
 // altogether. resources.ValidateEndpointVisibility returns nil within one
-// module, which is exactly why the consumer here is in the other one.
+// module, which is exactly why the consumer here is in the other one. Private
+// is the one reach that refuses since core v0.14.0: internal permits every
+// module of the composition and names nobody.
 func TestTheFlowPlanGateRefusesARootGroupsVisibilityViolation(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
-	for _, visibility := range []string{"private", "internal"} {
+	for _, visibility := range []string{"private"} {
 		t.Run(visibility, func(t *testing.T) {
 			flow := referenceValidityFlow(t,
 				referenceValidityWorkspace(t, "platform/authority/admin", visibility))

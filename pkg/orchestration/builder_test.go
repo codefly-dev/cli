@@ -7,6 +7,7 @@ import (
 	coreservices "github.com/codefly-dev/core/agents/services"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 func TestBuildResultKindAssertionIsSafeForNonDockerResults(t *testing.T) {
@@ -136,9 +137,16 @@ func TestValidateKubernetesDeploymentOutputRequiresRequestedProfile(t *testing.T
 // The gate read "anything that is not the restricted profile needs no
 // validation evidence", so the deprecated PROMOTABLE_GITOPS_V1 — and any
 // profile added to the enum later — was accepted on the strength of the plugin
-// echoing back the profile it was asked for.
+// echoing back the profile it was asked for. core v0.14.0 deleted that value
+// and reserved its number, so the case is stated as the number: a request
+// decoded from an older schema still carries it, and the gate refuses it for
+// not being one of the two profiles this CLI requests.
 func TestValidateKubernetesDeploymentOutputRefusesAProfileTheCLIDoesNotRequest(t *testing.T) {
-	deprecated := builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1
+	// PROMOTABLE_GITOPS_V1's number, which the schema reserves now.
+	deprecated := builderv0.KubernetesOutputProfile(2)
+	if !builderv0.KubernetesOutputProfile(0).Descriptor().ReservedRanges().Has(protoreflect.EnumNumber(deprecated)) {
+		t.Fatalf("profile number %d is not reserved by the schema; the case must name a deleted value", deprecated)
+	}
 	output := &builderv0.DeploymentOutput{
 		Kind: &builderv0.DeploymentOutput_Kubernetes{
 			Kubernetes: &builderv0.KubernetesDeploymentOutput{Profile: deprecated},

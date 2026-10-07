@@ -218,6 +218,7 @@ endpoints:
     - name: http
       api: http
       visibility: public
+      exposure: none
 `,
 		"vendor/lodestar/saas/module.codefly.yaml": `kind: module
 name: saas
@@ -238,6 +239,7 @@ endpoints:
     - name: rest
       api: rest
       visibility: public
+      exposure: none
 `,
 		"vendor/lodestar/documents/module.codefly.yaml": `kind: module
 name: documents
@@ -258,6 +260,7 @@ endpoints:
     - name: grpc
       api: grpc
       visibility: public
+      exposure: none
 `,
 	})
 

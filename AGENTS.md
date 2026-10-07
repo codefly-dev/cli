@@ -183,6 +183,23 @@ relative paths.
   fleet pins or provider toolchains in CLI gates. Agent behavior is tested by its owner.
 - **The orchestration package is the most critical code.** Changes there affect every
   `codefly run`. Test thoroughly.
+- **An endpoint declaration is core v0.14.0's three axes, and every hand-out is judged
+  with the composition.** `visibility` is reach only (`private` / `internal` / `public`;
+  `internal` permits every module of the composition and names nobody), `exposure` is
+  addressing (`public` or `none`, required on every public endpoint, and the ONE
+  condition a Public network instance exists on — mirror it with
+  `resources.IsExposedEndpoint`, never a visibility), `location` is where it lives. An
+  authored `allow-modules` is refused by key before decoding: the allow-list is DERIVED
+  from consumers' declared dependencies (`Workspace.DeriveAllowModules`) for mesh
+  policy and is never an input to reach, so never consult it to decide whether a
+  consumer may be handed an address. Every `ResolveDependencyNetworkMappings` /
+  `ConsumedDependencyEndpoints` / `PermittedDependencyEndpoints` call takes the
+  `*resources.Workspace` first; the CLI is the provider, so
+  `StateManager.GetDependenciesNetworkMappings` judges with `World.Workspace` before
+  anything reaches an agent request, the output env file or the SDK, and a hand-out
+  with no composition is refused (`resources.ErrUnjudgedProvenance`), never assumed.
+  Judge a producer's manifest endpoint whole (`Endpoint.Declaration()`), never the
+  mapping an agent reported. See [docs/orchestration.md](docs/orchestration.md).
 - **A deployed service receives the same workspace configuration groups it receives
   under `run`.** The set is declared ∪ the composition root's, resolved once in
   `pkg/orchestration/workspace_configurations.go`; the render is the source of truth and

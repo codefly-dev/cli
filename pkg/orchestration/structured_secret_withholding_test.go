@@ -136,7 +136,7 @@ func TestAWithheldRootCredentialIsNotJudgedAsALostValue(t *testing.T) {
 			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
-			"endpoints:\n    - name: admin\n      api: rest\n      visibility: public\n",
+			"endpoints:\n    - name: admin\n      api: rest\n      visibility: public\n      exposure: none\n",
 		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
@@ -217,7 +217,7 @@ func withheldCredentialWorkspace(t *testing.T, visibility string) *resources.Wor
 			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
-			"endpoints:\n    - name: admin\n      api: rest\n      visibility: " + visibility + "\n",
+			"endpoints:\n    - name: admin\n      api: rest\n      visibility: " + visibility + "\n" + statedExposure(visibility),
 		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n    - name: api\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +

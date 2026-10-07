@@ -274,7 +274,7 @@ func gatewayRunner(t *testing.T, runtime *agentservices.RuntimeAgent) (*Runner, 
 	require.NoError(t, configurationManager.Load(ctx, env.Runtime()))
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
 	require.NoError(t, err)
-	sharedState, err := NewStateManager(ctx, configurationManager, dependencies)
+	sharedState, err := NewStateManager(ctx, configurationManager, dependencies, workspace)
 	require.NoError(t, err)
 	networkManager, err := network.NewRuntimeManager(ctx, configurationManager)
 	require.NoError(t, err)
