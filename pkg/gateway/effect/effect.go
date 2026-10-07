@@ -86,14 +86,28 @@ func (c Class) String() string {
 // classes is the whole inventory of the Gateway contract.
 //
 // Keyed by the method's own name, not its full path, because both
-// implementations of the contract serve the same names. Everything that runs a
-// tool is an Effect even when it looks like a query: Build, Lint, Test,
-// RunCommand, RunChecks and Format execute code in the workspace, and a plugin
-// that runs is an effect whether or not it writes a file. ResizeTerminal and
-// CloseTerminal act on a live process. PrepareMutation and
+// implementations of the contract serve the same names.
+//
+// The line is drawn at what a method is ENTITLED to do, not at where the work
+// happens. Build, Lint, Test, Format, RunCommand and RunChecks run the
+// toolchain or an arbitrary command, whose side effects are unbounded, so they
+// are effects even when a particular run happens to write nothing.
+// ResizeTerminal and CloseTerminal act on a live process. PrepareMutation and
 // MaterializeRepositorySnapshot leave durable state on disk even though
 // neither is the final write. ForgeMergePullRequest and ForgeRequestReview
 // reach outside the machine entirely.
+//
+// Dispatching to the service agent is NOT by itself what makes an effect, and
+// an earlier draft of this comment said it was. GitDiff's unstaged path,
+// GetSourceManifest and DiscoverCodeUnits go through the same agent transport
+// as Lint, and they are observations: the contract asks each of them for a
+// reading and for nothing else. That makes them reads on the agent's word —
+// the CLI cannot verify what a third-party agent does inside either kind of
+// call, so the honest distinction is what the contract asks for, not where it
+// is executed. GitStatus is a read in the same spirit: `git status` may
+// refresh the index stat cache while answering, which changes no tracked
+// content, no history and no ref, and leaves nothing a receipt could attest
+// to.
 var classes = map[string]Class{
 	// Reads.
 	"ListServices":              Observation,
