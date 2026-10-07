@@ -142,10 +142,24 @@ type InventoryKubernetesOutput struct {
 	Validation      *InventoryKubernetesValidation `json:"validation"`
 }
 
+// InventoryKubernetesValidation is the agent's validation evidence as the
+// inventory persists it.
+//
+// Restricted, not promotable. Core's proto says promotable "names a delivery
+// decision in a plugin-facing contract", retained only for migration, while
+// restricted "reports a security property, never a delivery decision". This
+// type carried only the delivery decision, so the inventory could not
+// represent the security property at all: admission asserted `promotable` on
+// output whose profile it had just required to be RESTRICTED_PORTABLE_V1, and
+// an agent reporting restricted without promotable passed the builder gate and
+// then became unacceptable persisted evidence.
+//
+// The legacy field is deleted rather than kept beside the new one. Two
+// booleans for one property is how they came to disagree.
 type InventoryKubernetesValidation struct {
 	StaticValidation     string   `json:"staticValidation"`
 	ServerSideValidation string   `json:"serverSideValidation"`
-	Promotable           bool     `json:"promotable"`
+	Restricted           bool     `json:"restricted"`
 	Violations           []string `json:"violations"`
 }
 
@@ -232,7 +246,7 @@ func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKub
 		Validation: &InventoryKubernetesValidation{
 			StaticValidation:     validation.GetStaticValidation().String(),
 			ServerSideValidation: validation.GetServerSideValidation().String(),
-			Promotable:           validation.GetPromotable(),
+			Restricted:           validation.GetRestricted(),
 			Violations:           violations,
 		},
 	}

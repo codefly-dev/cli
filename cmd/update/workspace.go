@@ -33,7 +33,7 @@ start with a compatible protocol; any failure leaves the file untouched.`,
 	Example: `  codefly update workspace                                                         # latest releases
   codefly update workspace --agent-override codefly.dev/go-grpc=0.1.47-dev.abc123def456 # pin a dev build`,
 	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		if len(agentOverrideFlags) > 0 {
 			return overrideWorkspaceAgents(agentOverrideFlags)
 		}

@@ -286,7 +286,7 @@ func normalizedCacheRuntimeContext(value string) string {
 
 func normalizedCacheSuite(phase, suite string) string {
 	suite = strings.TrimSpace(suite)
-	if strings.TrimSpace(phase) == "test" && suite == "" {
+	if strings.TrimSpace(phase) == ciPhaseTest && suite == "" {
 		return "default"
 	}
 	return suite
@@ -625,15 +625,16 @@ func (builder *ciCacheIdentityBuilder) digestPath(path string) (string, error) {
 		return "", err
 	}
 	var paths []string
-	if !info.IsDir() {
+	switch {
+	case !info.IsDir():
 		paths = []string{path}
-	} else if builder.useGitFiles && pathWithin(path, builder.repoRoot) {
+	case builder.useGitFiles && pathWithin(path, builder.repoRoot):
 		for _, candidate := range builder.gitFiles {
 			if pathWithin(candidate, path) && !cachePathPruned(path, candidate) {
 				paths = append(paths, candidate)
 			}
 		}
-	} else {
+	default:
 		err = filepath.WalkDir(path, func(candidate string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr

@@ -45,7 +45,7 @@ log the failure hint points at, so the usual flow after a command fails is:
   codefly logs -n 500     # more history
   codefly logs --raw      # raw JSON lines (for jq / grep)
   codefly logs --path     # just print the file path (for scripts)`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		path := logsFile
 		if path == "" {
 			var err error

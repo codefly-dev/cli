@@ -55,7 +55,7 @@ var TestCmd = &cobra.Command{
 	Use:   "test",
 	Short: "Test affected services and emit CI reports",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 
@@ -79,7 +79,7 @@ var TestCmd = &cobra.Command{
 			return fmt.Errorf("cannot build affected-service plan: %w", err)
 		}
 		return runWithCIReport(ctx, workspace, plan, "codefly ci test", func(reporter *CIReporter) error {
-			return executeCIPhase(ctx, reporter, workspace, plan, "test", normalizeTestSuites(testSuites), ciFailFast)
+			return executeCIPhase(ctx, reporter, workspace, plan, ciPhaseTest, normalizeTestSuites(testSuites), ciFailFast)
 		})
 	},
 }

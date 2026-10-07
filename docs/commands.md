@@ -340,6 +340,174 @@ and its digest (the registrar's `federation` group, already delivered by
 reference) into the store, deriving both from one credential. A render that needs a secret but whose environment declares no
 secret store fails instead of rendering a dangling reference or a value.
 
+A render delivers a service the **same workspace configuration groups** `codefly
+run` delivers it: the groups it declares under
+`workspace-configuration-dependencies` unioned with the ones the composition root
+provides run-wide. For a run of the whole composition only the addresses inside
+those groups differ — in-cluster here, loopback or the runtime context's family
+under `run`.
+
+**A composition root's credentials go only to the services that declare its
+group.** A root group's ordinary values reach every service; a value of it that
+carries `secret:` or whose key is credential-named — and a whole
+`<name>.secret.yaml` group, which is a credential document rather than a key —
+reaches the services that list the group in
+`workspace-configuration-dependencies`, and nothing else, under `run` and in a
+render alike. This is a **change in both paths**, and the reason
+is least privilege: a render now resolves root groups, so without this every
+workload of the composition would receive every root credential as a mandatory
+`secretKeyRef`, one compromised service would yield all of them, and the store
+would hold a copy of each credential per service. If a service needs a root
+credential, declare the group:
+
+```yaml
+workspace-configuration-dependencies:
+    - work-context
+```
+
+Nothing else changes for it — a declared group has always delivered its
+credentials by reference — and `codefly deploy secrets` plans a store entry only
+for the services that receive one.
+
+A root group's `${endpoint:…}` is held to the producer's export boundary exactly
+as a declared group's is: a reference to an endpoint whose visibility is
+`private`, or `internal` without your module in `allow-modules`, is refused
+rather than delivered. Neither a root group nor a **bare** service dependency is
+a way to reach an endpoint a declared dependency on that endpoint would be
+refused — the addresses a `${endpoint:…}` can resolve to are filtered by the
+producer's declared visibility, whichever way they were bound.
+
+**A reference must name one endpoint.** Core's trailing token matches an
+endpoint's name *or* its API, so `${endpoint:platform/authority/rest}` matches an
+endpoint named `rest` and every endpoint whose api is `rest`. If more than one of
+them is visible to your module **and none is named exactly as you wrote it**, the
+reference is refused and names the candidates: write the endpoint you mean. If
+exactly one is visible it resolves as before, and if you named an endpoint your
+module may reach it resolves to that one — a sibling sharing its API cannot take
+its place, including when the named endpoint has no address for your runtime
+context (you get an error naming the value, not the sibling's address).
+
+So a producer declaring both `grpc` (api `grpc`) and `admin` (api `grpc`) is
+fine: `${endpoint:…/grpc}` means `grpc`. What is refused is a token that names no
+endpoint and matches two, such as `${endpoint:…/rest}` against endpoints `api`
+and `admin` that both expose `rest`.
+
+Two references into the same producer each resolve to the endpoint they name.
+Where that is impossible you get an error rather than the wrong address: if the
+endpoint you named has no address for your runtime context while a sibling
+sharing its API does, or if two references would need the producer's endpoints
+found in opposite orders (each endpoint's name being the other's API), the
+reference is refused and the message names what to change.
+
+**One case is not yet right, and it is worth knowing before you hit it:** if you
+name an endpoint your module may **not** reach while a sibling sharing its API is
+visible to you, the value resolves to the sibling instead of telling you the
+endpoint you asked for is private. Name a visible endpoint, or declare the
+visibility you need; the refusal this should give instead is a tracked
+follow-up.
+
+**This can refuse less than it delivered before, in one case:** a cross-module
+bare dependency (`service-dependencies` naming the service and no endpoints) used
+to put *every* endpoint its producer published into the set a workspace
+configuration value could interpolate, including ones private to the producer's
+module. Those are no longer interpolatable. Name the endpoint you consume in the
+dependency and declare its visibility to permit your module. A reference naming a producer the workspace
+does not have is refused both when the plan is checked and when the value
+resolves — including one supplied by an invocation-scoped override
+(`CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES`, which an integration harness
+sets; this is not `--set`, which is a per-service runtime environment override),
+because the plan check reads a loaded configuration rather than the directory.
+
+**This can refuse a composition that rendered before.** An endpoint with no
+`visibility:` declared defaults to `private`, so a composition-root group
+referencing one used to have that value silently dropped for every service
+outside the producer's module and now fails them by name. Declare the visibility
+the reference needs, or stop referencing a private endpoint from a group every
+service receives. Core's deprecated `visibility: module` permits every module,
+so references to those are unaffected.
+
+Three asymmetries remain, and **all three leave the run with fewer values than
+the render, never the reverse**, so a deployed workload never loses a value
+because of how you ran things locally: a run profile trims the run only; a root
+group's reference does not order the run, so under `--temporary-ports` its
+producer may have no address yet; and a run of fewer services than the
+composition does not contain the producer at all, so `codefly run
+payments/worker` drops a value the render of that same service resolves. Each
+drop is logged at WARN naming the consumer, the producer and the reference. The
+rule, the mechanisms and the tests that pin them are in [the orchestration
+engine's workspace configuration
+groups](orchestration.md#workspace-configuration-groups).
+
+<a id="codefly-deploy-gitops-render-secret-consequence"></a>
+
+#### A root group's credential, and what `deploy secrets` can and cannot seed
+
+A credential-named value in a composition-root group renders the way a declared
+group's always has — as a `secretKeyRef` on `secret-<service>`, never inline in a
+committed manifest — so the environment's `service-secrets` store must hold that
+key for the projected ExternalSecret to materialize it. The key is core's
+encoding of the group and the value, e.g.
+`CODEFLY__WORKSPACE_SECRET_CONFIGURATION__WORK_CONTEXT__AUTHORITY_TOKEN`.
+
+`codefly deploy secrets` **discovers** that key from the render. It supplies the
+value only from a source its planner can reach:
+
+- the store already holds the property (`keep`);
+- a federation derivation covers it (`derive`, `update`);
+- another remote key in the environment holds the same configuration value
+  (`propagate`);
+- the environment declares a generator for the key under
+  `service-secrets.generate` (`generate`).
+
+An arbitrary root-group credential is none of those. The render discarded its
+plaintext — that is what keeps it out of the committed manifest — so the planner
+never sees the configuration value, and the plan reports the property as
+`require`: a value **the operator must supply**. `codefly deploy secrets
+--dry-run` lists every such property as `remote-key#property (key)`.
+
+So re-running `deploy secrets` after a root group's credential first reaches the
+render does not by itself make the workload startable.
+
+**First, a prerequisite the generator depends on: the key must be read as a
+property of a JSON document.** With no `service-secrets.defaults` and no
+per-service `remote-keys` entry, a key falls back to the remote key
+`<service>/<key>` read as a **bare value**, and the planner refuses that shape
+before it chooses any source at all — *"remote key … is read as a bare value;
+only a JSON document read by property can be planned"*. Declaring the generator
+without this gets you that refusal, not the value and not even the `require`
+line. One environment-wide declaration covers every service:
+
+```yaml
+service-secrets:
+  secret-store:
+    name: cell-secrets
+    kind: ClusterSecretStore
+  defaults:
+    key: "{module}-{service}"
+    property: "{key}"
+```
+
+With the key plannable, either write the value into the store, or declare a
+generator for it so the verb can mint it:
+
+```yaml
+service-secrets:
+  generate:
+    - scope: workspace
+      configuration: work-context
+      keys: [AUTHORITY_TOKEN]
+```
+
+The full source table, and why each property is resolved by its secret key
+rather than by the store property it is filed under, are under [`codefly deploy
+secrets`](#codefly-deploy-secrets--seed-the-store-from-the-render).
+`TestARootGroupCredentialWithNoSourceIsRequiredNotSeeded` and
+`TestARootGroupCredentialTheEnvironmentDeclaresIsGenerated`
+(`pkg/deploysecrets`) pin both outcomes against an empty store, and
+`TestARootGroupCredentialCannotBePlannedAsABareValue` pins the prerequisite —
+each deriving the remote reference from the environment's own declarations
+rather than assuming a shape.
+
 Every run and render also carries a service's **self endpoint** —
 `CODEFLY__SELF_ENDPOINT__<MODULE>__<SERVICE>__<ENDPOINT>__<API>`, core's carrier
 — beside its listen address `CODEFLY__ENDPOINT__…`: the in-cluster address in a
@@ -1025,6 +1193,16 @@ Composition splits **identity** (what to compose, portable) from **location**
   overlay — a `resolve:` directive per module (`path:` for `--source`,
   `worktree: <owner/repo>@<ref>` for `--worktree`). It never lands in committed
   config, so a local source choice keeps `git status` clean.
+- **`path:` and `worktree:` point at different things.** `path:` resolves to
+  the module directory itself and does **not** join the composition's
+  `module:` subpath, while `worktree:` resolves to the checkout and then joins
+  it. So a module composed as `module: modules/host` takes
+  `path: ../saas-host/modules/host` but
+  `worktree: codefly-dev/saas-host@main`. Pointing `path:` at the repository
+  root resolves to a directory with no module manifest, and the failure reads
+  as an unresolved reference rather than a wrong path. (Core's
+  `module_resolver.go`: the `path` case returns `overlayDir(directive.Path)`
+  with no join; the `worktree` case joins `ref.Module` when it is set.)
 - When the module is not yet composed, a portable identity (`source` +
   `version`, never a path) is added to `workspace.codefly.yaml`. `--source`
   derives the identity from the directory's `origin` remote when it is a git

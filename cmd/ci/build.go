@@ -21,7 +21,7 @@ var BuildCmd = &cobra.Command{
 	Use:   "build",
 	Short: "Build affected services as a CI stage",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 

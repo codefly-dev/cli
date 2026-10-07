@@ -1025,7 +1025,7 @@ func mergeOverrides(layers ...map[string]map[string]string) map[string]map[strin
 	return merged
 }
 
-func parseRemote(workspace *resources.Workspace, remotes []string) ([]*orchestration.Remote, error) {
+func parseRemote(_ *resources.Workspace, remotes []string) ([]*orchestration.Remote, error) {
 	var out []*orchestration.Remote
 	// Remote should be unique-ish:env
 	for _, remote := range remotes {

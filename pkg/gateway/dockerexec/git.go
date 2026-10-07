@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/gateway/effect"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -57,6 +58,19 @@ func parseGitStatusLine(line string) (fileStatus, filePath string, staged, ok bo
 }
 
 func (g *Gateway) GitDiff(ctx context.Context, req *gatewayv1.GitDiffRequest) (*gatewayv1.GitDiffResponse, error) {
+	// GitDiff is an EFFECT in the contract's inventory, because the served
+	// gateway's unstaged path reaches the language agent and starting one is an
+	// effect. The class belongs to the contract, not to an implementation, and
+	// it is the conservative union of what the name can do: this container
+	// implementation only runs `git diff` inside the container, but it serves
+	// the same method name to the same callers, and a governed caller must not
+	// get two different answers depending on which implementation is wired up.
+	//
+	// GitStatus and GitLog below stay observations: neither reaches an agent in
+	// either implementation.
+	if err := effect.Admit(ctx, "GitDiff"); err != nil {
+		return nil, err
+	}
 	if req == nil {
 		req = &gatewayv1.GitDiffRequest{}
 	}

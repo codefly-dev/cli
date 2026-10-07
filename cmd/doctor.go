@@ -33,7 +33,7 @@ var DoctorCmd = &cobra.Command{
 Verifies the things that quietly break a run — Docker reachability, the codefly
 home + installed agents, free disk, process limits (macOS), and stray agent
 processes — and tells you how to fix each one.`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
 		defer cancel()
 
@@ -131,7 +131,7 @@ func checkAgentsInstalled(_ context.Context) checkResult {
 	agentsDir := filepath.Join(home, "agents")
 	r := checkResult{name: "agents installed"}
 	count := 0
-	_ = filepath.WalkDir(agentsDir, func(path string, d os.DirEntry, err error) error {
+	_ = filepath.WalkDir(agentsDir, func(_ string, d os.DirEntry, err error) error {
 		if err == nil && !d.IsDir() && strings.HasPrefix(d.Name(), "agent.codefly.yaml") {
 			count++
 		}

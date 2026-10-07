@@ -15,7 +15,7 @@ var GenerateCmd = &cobra.Command{
 	Use:   "generate",
 	Short: "Generate a Codefly service template from an existing source directory",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		ctx, stop := common.SignalContext(ctx)

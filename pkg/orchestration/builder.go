@@ -31,23 +31,15 @@ type Builder struct {
 	instance *services.Instance
 
 	// API
-	endpoints       []*basev0.Endpoint
-	networkMappings []*basev0.NetworkMapping
+	endpoints []*basev0.Endpoint
 
 	world *World
-
-	// Requires
-	requires []string
-
-	// outputProperty hub
-	isStarted bool
 
 	outputPropertyForLoad  *BuilderLoadManager
 	outputPropertyForInit  *BuilderInitManager
 	outputPropertyForBuild *BuilderBuildManager
 	outputPropertyForSync  *BuilderSyncManager
 
-	push        bool
 	imageDigest string
 
 	imageEvidence  []*builderv0.ImageSBOM
@@ -124,8 +116,7 @@ func (b *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 
 	var options []services.BuilderLoadOption
 
-	switch b.world.Mode {
-	case SyncMode:
+	if b.world.Mode == SyncMode {
 		options = []services.BuilderLoadOption{services.ForSync}
 	}
 	resp, err := b.instance.Builder.Load(ctx, options...)
@@ -423,9 +414,8 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 					return nil, w.Wrapf(err, "refusing to push %s", im)
 				}
 				cmd := exec.CommandContext(ctx, "docker", "push", im)
-				err := cmd.Run()
-				if err != nil {
-					return nil, w.Wrapf(err, "cannot push docker image")
+				if pushErr := cmd.Run(); pushErr != nil {
+					return nil, w.Wrapf(pushErr, "cannot push docker image")
 				}
 			}
 		}

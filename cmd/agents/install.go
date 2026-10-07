@@ -34,7 +34,7 @@ Examples:
   codefly agent install go-grpc:0.1.4
   codefly agent install python:0.0.1 --kind=runnable`,
 	Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 
@@ -42,7 +42,7 @@ Examples:
 		if err != nil {
 			return fmt.Errorf("invalid agent: %w", err)
 		}
-		if agent.Version == "latest" {
+		if agent.Version == latestAgentVersion {
 			_, err = manager.PinToLatestRelease(ctx, agent)
 			if err != nil {
 				return fmt.Errorf("cannot resolve latest agent release: %w", err)
@@ -76,7 +76,7 @@ func parseInstallAgent(ctx context.Context, specification, overrideVersion, kind
 	if !safeAgentComponent(agent.Publisher) || !safeAgentComponent(agent.Name) {
 		return nil, fmt.Errorf("publisher and name may contain only letters, digits, '.', '-', and '_'")
 	}
-	if agent.Version != "latest" {
+	if agent.Version != latestAgentVersion {
 		version := strings.TrimPrefix(agent.Version, "v")
 		parsed, err := semver.Parse(version)
 		if err != nil {

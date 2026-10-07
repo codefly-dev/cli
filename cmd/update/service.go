@@ -35,7 +35,7 @@ service.codefly.yaml is that module's content. Move its agent with
 	Example: `  codefly update service api                                         # latest compatible release
   codefly update service api --agent-version 0.1.47-dev.abc123def456 # pin a dev build`,
 	Args: cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		workspace, mod, service, err := common.LoadRequiredE(ctx, args)

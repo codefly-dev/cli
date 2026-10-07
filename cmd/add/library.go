@@ -36,7 +36,7 @@ Examples:
   codefly add library shared-models --git=git@github.com:myorg/shared-models.git
 `,
 	Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		return addLibrary(args[0])
 	},
 }

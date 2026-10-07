@@ -135,7 +135,7 @@ func (b *BuilderBuildManager) Process(ctx context.Context) (*OutputProperty, err
 	return b.processed, nil
 }
 
-func (b *BuilderBuildManager) Set(ctx context.Context, output *BuilderBuildOutput) error {
+func (b *BuilderBuildManager) Set(_ context.Context, _ *BuilderBuildOutput) error {
 	if b.processed == nil {
 		b.processed = OnInit()
 		return nil
@@ -170,7 +170,7 @@ func (b *BuilderSyncManager) Process(ctx context.Context) (*OutputProperty, erro
 	return b.processed, nil
 }
 
-func (b *BuilderSyncManager) Set(ctx context.Context, output *BuilderSyncOutput) error {
+func (b *BuilderSyncManager) Set(_ context.Context, _ *BuilderSyncOutput) error {
 	//		w := wool.Get(ctx).In("BuilderSyncManager.Set")
 	if b.processed == nil {
 		b.processed = OnInit()

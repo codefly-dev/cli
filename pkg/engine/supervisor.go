@@ -6,8 +6,11 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/codefly-dev/cli/pkg/gateway/effect"
 
 	"github.com/codefly-dev/core/agents/contract"
 	"github.com/codefly-dev/core/agents/manager"
@@ -86,6 +89,29 @@ func NewAgentSupervisor(cfg AgentSupervisorConfig) *AgentSupervisor {
 }
 
 func (s *AgentSupervisor) acquire(ctx context.Context, target ServiceTarget) (*AgentSession, error) {
+	// STARTING A PROCESS IS AN EFFECT, and this is the one place the Gateway
+	// starts one.
+	//
+	// r16 found governed Build refused at the transport boundary while governed
+	// ListAllCommands spawned a language agent, because the three RPCs that
+	// read a service's command and dependency metadata were classed as
+	// observations and reach this funnel. Classification alone could not fix
+	// that: the next RPC to need an agent starts ungated again, exactly as the
+	// per-call-site gate did before pkg/gateway/effect.
+	//
+	// So the refusal is here, where the process is started, and it does not
+	// depend on whether a session happens to be warm — the early returns above
+	// this would otherwise make the same request succeed or refuse according to
+	// cache state. A governed caller gets one answer.
+	//
+	// Every RPC that can reach this point is classed Effect in
+	// pkg/gateway/effect, and TestNoObservationStartsAnAgent walks the
+	// observations to keep that true: an observation that reaches here surfaces
+	// this refusal, which fails that test by name.
+	agentStartAttempts.Add(1)
+	if effect.Carried(ctx) {
+		return nil, effect.RefuseGoverned()
+	}
 	descriptor, err := resolveServiceDescriptor(ctx, target)
 	if err != nil {
 		return nil, err
@@ -444,3 +470,25 @@ func (w *prefixWriter) Write(data []byte) (int, error) {
 	}
 	return written, nil
 }
+
+// agentStartAttempts counts entries into acquire, incremented before anything
+// else it does.
+//
+// It exists because the refusal above cannot be observed from outside: callers
+// swallow it. ListAllCommands asks executionServiceBehavior and proceeds `if
+// err == nil`, so a governed refusal there becomes a response quietly missing
+// its agent commands rather than an error anything can assert on. A test that
+// looked for the refusal in a result would report no offender while an agent
+// was starting — which is exactly what the first version of
+// TestNoObservationStartsAnAgent did.
+//
+// Counting the ENTRY rather than the start also means the assertion holds when
+// an agent could not have started anyway: a test environment with nothing
+// installed still records the attempt, so the test does not quietly pass for
+// the wrong reason.
+var agentStartAttempts atomic.Int64
+
+// AgentStartAttempts is the number of times anything has tried to acquire a
+// service agent in this process. For tests that assert a request started no
+// process; nothing in production reads it.
+func AgentStartAttempts() int64 { return agentStartAttempts.Load() }

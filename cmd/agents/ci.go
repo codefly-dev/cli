@@ -858,7 +858,7 @@ func assertFixtureTargetsAgent(fixtureDir, fixture string, manifest agentYAML) e
 			return nil
 		}
 		referenced = true
-		if agent.Version != "latest" && agent.Version != manifest.Version {
+		if agent.Version != latestAgentVersion && agent.Version != manifest.Version {
 			return fmt.Errorf("attach-existing-source fixture %q pins agent %s/%s at version %q; use \"latest\" or %q so the locally built agent under test is exercised", fixture, manifest.Publisher, manifest.Name, agent.Version, manifest.Version)
 		}
 		return nil

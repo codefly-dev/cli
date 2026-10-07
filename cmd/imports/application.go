@@ -11,7 +11,7 @@ var ModuleCmd = &cobra.Command{
 	Use:    "module",
 	Short:  "Import an existing project as a Codefly module",
 	Hidden: true, // not implemented yet
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		return errors.New("`codefly import module` is not implemented yet")
 	},
 }

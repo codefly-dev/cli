@@ -183,7 +183,7 @@ func TestRenderSolutionDrivesExecutorToPromotableOwnedTree(t *testing.T) {
 	if unit.Kind != UnitKindSolution || unit.Name != "lastlogin-go" || unit.Path != "solutions/lastlogin-go" {
 		t.Fatalf("solution unit = %+v", unit)
 	}
-	if unit.Output == nil || unit.Output.Validation == nil || !unit.Output.Validation.Promotable {
+	if unit.Output == nil || unit.Output.Validation == nil || !unit.Output.Validation.Restricted {
 		t.Fatalf("solution unit output = %+v", unit.Output)
 	}
 

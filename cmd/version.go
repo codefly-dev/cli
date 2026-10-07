@@ -13,7 +13,7 @@ var VersionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print the installed Codefly CLI version",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		version, err := cli.GetCurrentVersion()
 		if err != nil {
 			return fmt.Errorf("cannot get current version: %w", err)

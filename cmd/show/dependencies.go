@@ -17,7 +17,7 @@ var DependenciesCmd = &cobra.Command{
 	Use:   "dependencies [service]",
 	Short: "Show a service's dependency graph and startup order",
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 

@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/codefly-dev/cli/pkg/engine"
+	"github.com/codefly-dev/cli/pkg/testrun"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
@@ -576,24 +577,17 @@ func dominantTestState(current, candidate runtimev0.TestRunResult_State) runtime
 	return current
 }
 
+// effectiveRuntimeTestState is pkg/testrun's State: the agent's own outcome,
+// with no response at all counted as ERRORED.
+//
+// It used to rewrite UNKNOWN. An agent that left the run result unset was run
+// through the gateway's old success interpretation — the deprecated status
+// field, then "no failures were counted" — and a positive answer was recorded
+// as an explicit PASSED. So a unit that reported no outcome entered the
+// aggregate as a passing one, and dominantTestState's ranking of UNKNOWN above
+// FAILED never saw the case it exists for.
 func effectiveRuntimeTestState(response *runtimev0.TestResponse) runtimev0.TestRunResult_State {
-	if response == nil {
-		return runtimev0.TestRunResult_ERRORED
-	}
-	if state := response.GetResult().GetState(); state != runtimev0.TestRunResult_UNKNOWN {
-		return state
-	}
-	// Some production agents still expose a successful composite invocation
-	// through typed status/counts while leaving the additive run-result enum at
-	// UNKNOWN. Match the gateway's established success interpretation so an
-	// aggregate does not turn real passing evidence into a false error.
-	if runtimeTestSuccess(response) {
-		return runtimev0.TestRunResult_PASSED
-	}
-	if response.GetStatus().GetState() == runtimev0.TestStatus_ERROR {
-		return runtimev0.TestRunResult_ERRORED
-	}
-	return runtimev0.TestRunResult_FAILED
+	return testrun.State(response)
 }
 
 func smallestPositive(current, candidate int32) int32 {

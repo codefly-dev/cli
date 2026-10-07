@@ -23,7 +23,7 @@ var ModuleCmd = &cobra.Command{
 	Use:   "module [name]",
 	Short: "Build container images for every service in a module",
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 

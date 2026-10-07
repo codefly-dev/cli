@@ -14,7 +14,6 @@ import (
 
 type gatewayExecutionOptions struct {
 	enabled         bool
-	authorityJWKS   string
 	authorityIssuer string
 	stateDir        string
 	exporters       []string
@@ -32,7 +31,6 @@ func (options gatewayExecutionOptions) childArgs() ([]string, error) {
 	}
 	args := []string{
 		"--governed-execution",
-		"--execution-authority-jwks", options.authorityJWKS,
 		"--execution-authority-issuer", options.authorityIssuer,
 	}
 	if strings.TrimSpace(options.stateDir) != "" {
@@ -64,7 +62,6 @@ func (options gatewayExecutionOptions) open(
 	runtime, err := executionruntime.Open(ctx, executionruntime.Config{
 		WorkDir:         workDir,
 		StateDir:        options.stateDir,
-		AuthorityJWKS:   options.authorityJWKS,
 		AuthorityIssuer: options.authorityIssuer,
 		Release:         release,
 		ExporterSpecs:   append([]string(nil), options.exporters...),
@@ -87,9 +84,6 @@ func (options gatewayExecutionOptions) open(
 }
 
 func (options gatewayExecutionOptions) validate() error {
-	if strings.TrimSpace(options.authorityJWKS) == "" {
-		return fmt.Errorf("--execution-authority-jwks is required with --governed-execution")
-	}
 	if strings.TrimSpace(options.authorityIssuer) == "" {
 		return fmt.Errorf("--execution-authority-issuer is required with --governed-execution")
 	}
@@ -102,8 +96,7 @@ func (options gatewayExecutionOptions) validate() error {
 }
 
 func (options gatewayExecutionOptions) hasConfiguration() bool {
-	return strings.TrimSpace(options.authorityJWKS) != "" ||
-		strings.TrimSpace(options.authorityIssuer) != "" ||
+	return strings.TrimSpace(options.authorityIssuer) != "" ||
 		strings.TrimSpace(options.stateDir) != "" ||
 		len(options.exporters) != 0
 }
@@ -113,13 +106,7 @@ func addGatewayExecutionFlags(command *cobra.Command) {
 		&gatewayExecution.enabled,
 		"governed-execution",
 		false,
-		"Enable signed Work Context admission and durable receipts for supported ApplyEdit/Test effects",
-	)
-	command.Flags().StringVar(
-		&gatewayExecution.authorityJWKS,
-		"execution-authority-jwks",
-		"",
-		"HTTPS JWKS URL for Work Context verification",
+		"Arm durable execution receipt state and its recovery. A governed request is still REFUSED: this process holds none of the sources needed to verify a Work Context",
 	)
 	command.Flags().StringVar(
 		&gatewayExecution.authorityIssuer,

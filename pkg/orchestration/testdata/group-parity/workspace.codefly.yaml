@@ -1,0 +1,5 @@
+name: group-parity
+layout: modules
+modules:
+    - name: platform
+    - name: payments

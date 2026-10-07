@@ -756,11 +756,11 @@ func TestProjectRenderedServiceSecretsNoOpWithoutDeclaration(t *testing.T) {
 func promotableManagedOutput() *InventoryKubernetesOutput {
 	return &InventoryKubernetesOutput{
 		Kind:            "KUSTOMIZE",
-		Profile:         "KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1",
+		Profile:         "KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1",
 		ContractVersion: "codefly.dev/kubernetes-manifest/v1",
 		Validation: &InventoryKubernetesValidation{
 			StaticValidation: "STATUS_PASSED", ServerSideValidation: "STATUS_PASSED",
-			Promotable: true, Violations: []string{},
+			Restricted: true, Violations: []string{},
 		},
 	}
 }

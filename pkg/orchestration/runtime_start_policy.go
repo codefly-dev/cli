@@ -36,7 +36,7 @@ func runtimePhase(t ActionType) (tui.ServiceState, bool) {
 	}
 }
 
-func NewRuntimeStartPolicy(ctx context.Context, dependencies *architecture.ServiceDependencies, changeManager ExecutorManager) (*RuntimeStartPolicy, error) {
+func NewRuntimeStartPolicy(_ context.Context, dependencies *architecture.ServiceDependencies, changeManager ExecutorManager) (*RuntimeStartPolicy, error) {
 	return &RuntimeStartPolicy{dependencies: dependencies, ExecutorManager: changeManager}, nil
 }
 

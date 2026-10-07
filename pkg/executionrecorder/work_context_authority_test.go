@@ -1,109 +1,133 @@
 package executionrecorder
 
 import (
-	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	workcontext "github.com/codefly-dev/sdk-go/workcontext"
-	"google.golang.org/protobuf/proto"
 )
 
-type workContextVerifierFunc func(
-	context.Context,
-	workcontext.WorkContextToken,
-	workcontext.WorkContextExpectations,
-) (*basev0.WorkContextV1, error)
-
-func (fn workContextVerifierFunc) Verify(
-	ctx context.Context,
-	token workcontext.WorkContextToken,
-	expected workcontext.WorkContextExpectations,
-) (*basev0.WorkContextV1, error) {
-	return fn(ctx, token, expected)
-}
-
-func TestWorkContextAuthorityUsesSDKVerificationAndExactProducerScope(t *testing.T) {
-	claims := testClaims()
-	claims.AuthorityScopes = []*basev0.WorkScopeV1{{
-		ResourceKind: "evidence",
-		Actions:      []string{"append"},
-		ResourceIds:  []string{"codefly.execution"},
-	}}
-	var verified bool
+// A nil verified capability is refused by name.
+//
+// This is the whole shape of the cutover: the authority has no verifier and no
+// token parameter, so the only thing that can reach it is something core's
+// Verifier produced. A caller that cannot produce one is refused rather than
+// served by a weaker check.
+func TestAuthorizeRefusesWithoutAVerifiedCapability(t *testing.T) {
 	authority, err := NewWorkContextAuthority(WorkContextAuthorityConfig{
-		Issuer:   "accounts",
-		Audience: ExecutionWorkContextAudience,
-		Verifier: workContextVerifierFunc(func(
-			_ context.Context,
-			_ workcontext.WorkContextToken,
-			expected workcontext.WorkContextExpectations,
-		) (*basev0.WorkContextV1, error) {
-			verified = true
-			if expected.Issuer != "accounts" ||
-				expected.Audience != ExecutionWorkContextAudience {
-				t.Fatalf("expectations = %+v", expected)
-			}
-			return proto.Clone(claims).(*basev0.WorkContextV1), nil
-		}),
+		Issuer: "accounts", Audience: ExecutionWorkContextAudience,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := authority.Verify(t.Context(), workcontext.WorkContextToken{}, Admission{
-		ProducerID: "codefly.execution",
-	})
-	if err != nil {
-		t.Fatal(err)
+	err = authority.Authorize(t.Context(), nil, Admission{ProducerID: "codefly.execution"})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("want ErrInvalid, got %v", err)
 	}
-	if !verified || !proto.Equal(got, claims) {
-		t.Fatalf("verified=%v claims=%+v", verified, got)
+	if !strings.Contains(err.Error(), "does not verify capabilities") {
+		t.Fatalf("the refusal must say why it cannot accept one: %q", err)
 	}
 }
 
-func TestWorkContextAuthorityRejectsWildcardOtherProducerAndVerifierFailure(t *testing.T) {
-	cases := []struct {
-		name        string
-		resourceIDs []string
-		verifyErr   error
+// A capability that really was verified, but minted for another issuer or
+// audience, is refused — with a *Verified only core can construct.
+func TestAuthorizeRefusesAnotherIssuerOrAudience(t *testing.T) {
+	verified := verifiedFixture(t)
+	claims := verified.Context()
+
+	for _, blocked := range []struct {
+		name             string
+		issuer, audience string
+		want             string
 	}{
-		{name: "wildcard"},
-		{name: "other producer", resourceIDs: []string{"other.execution"}},
-		{name: "invalid token", verifyErr: workcontext.ErrWorkContextInvalid},
-	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			claims := testClaims()
-			claims.AuthorityScopes = []*basev0.WorkScopeV1{{
-				ResourceKind: "evidence",
-				Actions:      []string{"append"},
-				ResourceIds:  testCase.resourceIDs,
-			}}
+		{"another issuer", "someone-else", claims.GetAudience(), "minted by issuer"},
+		{"another audience", claims.GetIssuer(), "codefly.elsewhere", "minted for audience"},
+	} {
+		t.Run(blocked.name, func(t *testing.T) {
 			authority, err := NewWorkContextAuthority(WorkContextAuthorityConfig{
-				Issuer: "accounts", Audience: ExecutionWorkContextAudience,
-				Verifier: workContextVerifierFunc(func(
-					context.Context,
-					workcontext.WorkContextToken,
-					workcontext.WorkContextExpectations,
-				) (*basev0.WorkContextV1, error) {
-					if testCase.verifyErr != nil {
-						return nil, testCase.verifyErr
-					}
-					return claims, nil
-				}),
+				Issuer: blocked.issuer, Audience: blocked.audience,
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = authority.Verify(t.Context(), workcontext.WorkContextToken{}, Admission{
-				ProducerID: "codefly.execution",
-			})
-			if err == nil {
-				t.Fatal("expected authority rejection")
+			err = authority.Authorize(t.Context(), verified, Admission{ProducerID: "codefly.execution"})
+			if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), blocked.want) {
+				t.Fatalf("want a %q refusal, got %v", blocked.want, err)
 			}
-			if testCase.verifyErr != nil && !errors.Is(err, testCase.verifyErr) {
-				t.Fatalf("error = %v", err)
+		})
+	}
+}
+
+// A verified capability for the right issuer and audience is still refused when
+// its effective authority does not name this producer's evidence — so the two
+// checks are independent and neither stands in for the other.
+func TestAuthorizeRefusesAVerifiedCapabilityWithoutEvidenceAuthority(t *testing.T) {
+	// Minted with authority over a RECORD, not over this producer's evidence.
+	// Explicit, because the previous version of this test relied on the shared
+	// fixture happening to carry no evidence scope: granting the fixture one
+	// turned this test green while asserting nothing.
+	verified, err := mintedCapability(t.Context(), []*basev0.WorkScopeV1{{
+		ResourceKind: "record",
+		Actions:      []string{"read"},
+		ResourceIds:  []string{"record-conformance"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := verified.Context()
+	authority, err := NewWorkContextAuthority(WorkContextAuthorityConfig{
+		Issuer: claims.GetIssuer(), Audience: claims.GetAudience(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// And the SAME capability, once it names this producer's evidence, is
+	// authorized — so the refusal above is the scope and nothing else.
+	granted, err := mintedCapability(t.Context(), evidenceScope(fixtureProducerID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := authority.Authorize(t.Context(), granted, Admission{ProducerID: fixtureProducerID}); err != nil {
+		t.Fatalf("a capability naming this producer's evidence was refused: %v", err)
+	}
+	err = authority.Authorize(t.Context(), verified, Admission{ProducerID: "codefly.execution"})
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "appends") {
+		t.Fatalf("want an evidence-authority refusal, got %v", err)
+	}
+}
+
+// Evidence authority is granted per producer BY NAME. A wildcard, an empty
+// resource list, or another producer's id does not append this producer's
+// evidence — evidence is the record of what ran, so a capability that may
+// append it anywhere is how one producer's receipts get written under
+// another's name.
+func TestExplicitEvidenceScopeIsRequiredByName(t *testing.T) {
+	const producer = "codefly.execution"
+	scope := func(kind string, actions, ids []string) *basev0.WorkScopeV1 {
+		return &basev0.WorkScopeV1{ResourceKind: kind, Actions: actions, ResourceIds: ids}
+	}
+	for _, test := range []struct {
+		name   string
+		scopes []*basev0.WorkScopeV1
+		allow  bool
+	}{
+		{"named explicitly", []*basev0.WorkScopeV1{scope("evidence", []string{"append"}, []string{producer})}, true},
+		{"named beside others", []*basev0.WorkScopeV1{scope("evidence", []string{"append"}, []string{"other", producer})}, true},
+		{"wildcard", []*basev0.WorkScopeV1{scope("evidence", []string{"append"}, []string{"*"})}, false},
+		{"no resource ids", []*basev0.WorkScopeV1{scope("evidence", []string{"append"}, nil)}, false},
+		{"another producer", []*basev0.WorkScopeV1{scope("evidence", []string{"append"}, []string{"other"})}, false},
+		{"another action", []*basev0.WorkScopeV1{scope("evidence", []string{"read"}, []string{producer})}, false},
+		{"another kind", []*basev0.WorkScopeV1{scope("artifact", []string{"append"}, []string{producer})}, false},
+		{"nothing at all", nil, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := requireExplicitEvidenceScope(test.scopes, producer)
+			if test.allow && err != nil {
+				t.Fatalf("want permitted, got %v", err)
+			}
+			if !test.allow && err == nil {
+				t.Fatal("want refused, got permitted")
 			}
 		})
 	}

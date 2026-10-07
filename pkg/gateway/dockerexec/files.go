@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/gateway/effect"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -37,6 +38,12 @@ func (g *Gateway) ReadFile(ctx context.Context, req *gatewayv1.ReadFileRequest) 
 }
 
 func (g *Gateway) WriteFile(ctx context.Context, req *gatewayv1.WriteFileRequest) (*gatewayv1.WriteFileResponse, error) {
+	// The SAME boundary the served gateway puts in front of this method. This
+	// implementation of the contract is reached without an interceptor, so the
+	// rule is called here rather than assumed.
+	if err := effect.Admit(ctx, "WriteFile"); err != nil {
+		return nil, err
+	}
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "write file request is required")
 	}
@@ -53,6 +60,12 @@ func (g *Gateway) WriteFile(ctx context.Context, req *gatewayv1.WriteFileRequest
 }
 
 func (g *Gateway) CreateFile(ctx context.Context, req *gatewayv1.CreateFileRequest) (*gatewayv1.CreateFileResponse, error) {
+	// The SAME boundary the served gateway puts in front of this method. This
+	// implementation of the contract is reached without an interceptor, so the
+	// rule is called here rather than assumed.
+	if err := effect.Admit(ctx, "CreateFile"); err != nil {
+		return nil, err
+	}
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "create file request is required")
 	}
@@ -80,6 +93,12 @@ func (g *Gateway) CreateFile(ctx context.Context, req *gatewayv1.CreateFileReque
 }
 
 func (g *Gateway) DeleteFile(ctx context.Context, req *gatewayv1.DeleteFileRequest) (*gatewayv1.DeleteFileResponse, error) {
+	// The SAME boundary the served gateway puts in front of this method. This
+	// implementation of the contract is reached without an interceptor, so the
+	// rule is called here rather than assumed.
+	if err := effect.Admit(ctx, "DeleteFile"); err != nil {
+		return nil, err
+	}
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "delete file request is required")
 	}
@@ -104,6 +123,12 @@ func (g *Gateway) DeleteFile(ctx context.Context, req *gatewayv1.DeleteFileReque
 }
 
 func (g *Gateway) ApplyEdit(ctx context.Context, req *gatewayv1.ApplyEditRequest) (*gatewayv1.ApplyEditResponse, error) {
+	// The SAME boundary the served gateway puts in front of this method. This
+	// implementation of the contract is reached without an interceptor, so the
+	// rule is called here rather than assumed.
+	if err := effect.Admit(ctx, "ApplyEdit"); err != nil {
+		return nil, err
+	}
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "apply edit request is required")
 	}

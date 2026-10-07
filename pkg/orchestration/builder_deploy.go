@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 
@@ -39,20 +38,16 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	// A deployed service reaches its dependencies inside the cluster, so its
-	// ${endpoint:…} references resolve to their in-cluster addresses: its
-	// dependencies' and those of every producer its declared groups reference
-	// (referencedProducerMappings), derived as their own deploy records them.
-	referenced, err := b.world.referencedProducerMappings(ctx, b.instance.Service,
-		b.instance.Service.WorkspaceConfigurationDependencies, dependenciesNetworkMappings)
-	if err != nil {
-		return nil, w.Wrap(err)
-	}
-	consumerMappings := append(slices.Clone(dependenciesNetworkMappings), referenced...)
-	workspaceConfigurations, err := b.world.ConfigurationManager.
-		ForConsumer(consumerMappings, resources.NewContainerNetworkAccess()).
-		WithRunProducers(b.world.producerInRun()).
-		GetWorkspaceDependenciesConfigurations(ctx, b.instance.Service.WorkspaceConfigurationDependencies...)
+	// The groups the deployed service receives: the one resolution every
+	// delivery path shares (pkg/orchestration/workspace_configurations.go), so
+	// the set is the set `codefly run` resolves for the same service. A deployed
+	// service reaches its dependencies inside the cluster, so its ${endpoint:…}
+	// references resolve to their in-cluster addresses — its dependencies' and
+	// those of every producer its effective groups reference, the composition
+	// root's as well as its declared ones, derived from each producer's identity
+	// and namespace. That address family is the only thing the render resolves
+	// differently.
+	workspaceConfigurations, err := b.workspaceConfigurations(ctx, dependenciesNetworkMappings)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get workspace configurations")
 	}
@@ -64,7 +59,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	dependenciesConfigurations = append(workspaceConfigurations, dependenciesConfigurations...)
 	profile := kubernetesOutputProfile(b.world)
 	var secretReferences map[string]*builderv0.KubernetesSecretKeyReference
-	if profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
+	if profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1 {
 		secretName := "secret-" + b.instance.Service.Name
 		conf, dependenciesConfigurations, secretReferences, err = promotableDeploymentConfigurations(
 			conf,
@@ -153,16 +148,16 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if resp.State != nil && resp.State.State != builderv0.DeploymentStatus_SUCCESS {
 		return nil, w.NewError("cant deploy service instance")
 	}
-	if err := validateDeploymentOutput(
+	if validateErr := validateDeploymentOutput(
 		b.world.RemoteManager,
 		profile,
 		resp.Deployment,
 		validationContext,
-	); err != nil {
-		return nil, w.Wrapf(err, "cannot verify service deployment output")
+	); validateErr != nil {
+		return nil, w.Wrapf(validateErr, "cannot verify service deployment output")
 	}
 	if resp.Deployment != nil {
-		b.deploymentOutput = proto.Clone(resp.Deployment).(*builderv0.DeploymentOutput)
+		b.deploymentOutput = proto.CloneOf(resp.Deployment)
 	}
 
 	if resp.Configuration != nil {
@@ -523,17 +518,17 @@ func promotableConfiguration(
 	if configuration == nil {
 		return nil, nil
 	}
-	safe := proto.Clone(configuration).(*basev0.Configuration)
+	safe := proto.CloneOf(configuration)
 	safe.Infos = safe.Infos[:0]
 	for _, sourceInfo := range configuration.GetInfos() {
 		if sourceInfo.GetData().GetSecret() {
 			return nil, fmt.Errorf("structured secret configuration %q requires typed Kubernetes key references", sourceInfo.GetName())
 		}
-		info := proto.Clone(sourceInfo).(*basev0.ConfigurationInformation)
+		info := proto.CloneOf(sourceInfo)
 		info.ConfigurationValues = info.ConfigurationValues[:0]
 		for _, sourceValue := range sourceInfo.GetConfigurationValues() {
 			if !promotesToDeploymentSecret(sourceValue) {
-				info.ConfigurationValues = append(info.ConfigurationValues, proto.Clone(sourceValue).(*basev0.ConfigurationValue))
+				info.ConfigurationValues = append(info.ConfigurationValues, proto.CloneOf(sourceValue))
 				continue
 			}
 			secretConfiguration := &basev0.Configuration{
@@ -576,8 +571,25 @@ func validateKubernetesDeploymentOutput(
 	if kubernetes.GetProfile() != requested {
 		return fmt.Errorf("plugin returned Kubernetes output profile %s, requested %s", kubernetes.GetProfile(), requested)
 	}
-	if requested != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
+	// Only the local-apply profile is exempt, and it is exempt BY NAME.
+	// This read "anything that is not the restricted profile needs no
+	// evidence", so the deprecated PROMOTABLE_GITOPS_V1 — and any profile
+	// added to the enum later — was accepted on the strength of the plugin
+	// echoing back the profile it was asked for.
+	switch requested {
+	case builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1:
+		// Checked below.
+	case builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1:
+		// A direct apply into a local cluster produces no promotable artifact
+		// and nothing persists it, so there is no restricted-rendering
+		// property to attest. The exemption follows the validated operation
+		// type rather than being the default for everything unrecognised.
 		return nil
+	default:
+		return fmt.Errorf(
+			"kubernetes output profile %s is not a profile this CLI requests: only the restricted portable profile and the ephemeral local-apply profile are",
+			requested,
+		)
 	}
 	if kubernetes.GetContractVersion() != coreservices.KubernetesManifestContractVersion {
 		return fmt.Errorf(
@@ -587,9 +599,14 @@ func validateKubernetesDeploymentOutput(
 		)
 	}
 	validation := kubernetes.GetValidation()
-	if !validation.GetPromotable() ||
+	// `restricted`, not `promotable`: core's proto says promotable "names a
+	// delivery decision in a plugin-facing contract" and is retained only for
+	// migration, always carrying the same value, while restricted "reports a
+	// security property, never a delivery decision". The security property is
+	// what this gate is actually asserting.
+	if !validation.GetRestricted() ||
 		validation.GetStaticValidation() != builderv0.KubernetesManifestValidation_STATUS_PASSED {
-		return fmt.Errorf("plugin did not return a successfully validated promotable Kubernetes output")
+		return fmt.Errorf("plugin did not return a successfully validated restricted Kubernetes output")
 	}
 	if validationContext != "" {
 		if validation.GetServerSideValidation() != builderv0.KubernetesManifestValidation_STATUS_PASSED {

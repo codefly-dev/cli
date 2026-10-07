@@ -51,7 +51,7 @@ carries none; a render for another environment is an error.`,
   codefly show network --json --env staging
   codefly show network --json --env staging --rendered`,
 	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 
@@ -92,7 +92,7 @@ carries none; a render for another environment is an error.`,
 			}
 			for _, ep := range endpoints {
 				addr := "(external — DNS/public-resolved at runtime)"
-				if ep.Visibility != resources.VisibilityExternal {
+				if !resources.IsExternalEndpoint(ep) {
 					if inst := network.NativeFor(ctx, workspace.Name, id.Module, id.Name, namingScope, ep); inst != nil {
 						addr = inst.Address
 					}

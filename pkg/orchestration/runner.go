@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"net"
 	"os"
 	"slices"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/agents/contract"
+	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
@@ -52,9 +52,6 @@ type Runner struct {
 	// when a child process dies (mind os.Exit(1), agent crash, etc.) instead
 	// of leaking the parent + sibling plugins indefinitely.
 	failureSink func(unique, msg string)
-
-	// Requires
-	requires []string
 
 	// outputProperty hub.
 	// isStarted is written by Stop/Start handlers and read by Follow.
@@ -281,67 +278,17 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	cfgCtx, cfgCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cfgCancel()
 
-	dependenciesEndpoints, err := runner.world.SharedState.GetDependenciesEndpoints(cfgCtx, runner.instance.Service)
+	inputs, err := runner.gatherInitInputs(ctx, cfgCtx, w)
 	if err != nil {
-		if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
-			w.Warn("timeout waiting for dependency endpoints after 30s; check that dependency services are reachable")
-			return nil, w.Wrapf(err, "init timeout: dependencies endpoints not available within 30s")
-		}
-		return nil, w.Wrapf(err, "cannot get dependencies endpoints")
+		return nil, err
 	}
-	dependenciesNetworkMappings, err := runner.world.SharedState.GetDependenciesNetworkMappings(cfgCtx, runner.instance.Service)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot get initialized dependency network mappings")
-	}
-	if runner.testRequest != nil && !runner.serviceRunningForTest && len(dependenciesNetworkMappings) > 0 &&
-		!slices.Contains(runner.instance.Info.GetContract().GetCapabilities(), contract.RuntimeInitDependencyMappings) {
-		return nil, w.NewError("dependency-only tests require agent capability %s to consume accepted addresses at Init", contract.RuntimeInitDependencyMappings)
-	}
-
-	conf, err := runner.world.ConfigurationManager.GetServiceConfiguration(cfgCtx, runner.instance.Identity)
-	if err != nil {
-		if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
-			w.Warn("timeout waiting for service configuration after 30s; check that dependency services are reachable")
-			return nil, w.Wrapf(err, "init timeout: service configuration not available within 30s")
-		}
-		return nil, w.Wrapf(err, "cannot get service configuration")
-	}
-
-	runtimeContext, err := resources.NewRuntimeContext(runner.runtimeContext)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
-	}
-
-	workspaceConfigurations, err := runner.world.workspaceConfigurationsFor(cfgCtx, runner.instance.Service,
-		dependenciesNetworkMappings, resources.NetworkAccessFromRuntimeContext(runtimeContext))
-	if err != nil {
-		if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
-			w.Warn("timeout waiting for workspace dependencies configurations after 30s; check that dependency services are reachable")
-			return nil, w.Wrapf(err, "init timeout: workspace dependencies configurations not available within 30s")
-		}
-		return nil, w.Wrapf(err, "cannot get project configurations")
-	}
-
-	dependenciesConfigurations, err := runner.world.SharedState.GetDependentConfigurationsFor(cfgCtx, runner.instance.Identity)
-	if err != nil {
-		if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
-			w.Warn("timeout waiting for dependencies configurations after 30s; check that dependency services are reachable")
-			return nil, w.Wrapf(err, "init timeout: dependencies configurations not available within 30s")
-		}
-		return nil, w.Wrapf(err, "cannot get configuration for dependencies")
-	}
-
-	networkMappings, err := runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env.Runtime(), runner.world.Workspace, runner.instance.Identity, runner.endpoints, runtimeContext)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
-	}
-
-	w.Debug("configuration",
-		wool.Field("network mappings", resources.MakeManyNetworkMappingSummary(networkMappings)),
-		wool.Field("service configuration", resources.MakeConfigurationSummary(conf)),
-		wool.Field("dependencies endpoints", resources.MakeManyEndpointSummary(dependenciesEndpoints)),
-		wool.Field("project configurations", resources.MakeManyConfigurationSummary(workspaceConfigurations)),
-		wool.Field("dependencies configurations", resources.MakeManyConfigurationSummary(dependenciesConfigurations)))
+	dependenciesEndpoints := inputs.dependenciesEndpoints
+	dependenciesNetworkMappings := inputs.dependenciesNetworkMappings
+	conf := inputs.conf
+	runtimeContext := inputs.runtimeContext
+	workspaceConfigurations := inputs.workspaceConfigurations
+	dependenciesConfigurations := inputs.dependenciesConfigurations
+	networkMappings := inputs.networkMappings
 
 	// Init is the only lifecycle call guaranteed to reach a service under test:
 	// a test policy replaces the origin's Start with a barrier or skips it
@@ -462,57 +409,6 @@ func (world *World) producerInRun() func(unique string) bool {
 	return func(unique string) bool { return world.runProducers[unique] }
 }
 
-// workspaceConfigurationsFor resolves the workspace configurations one service
-// receives. ${endpoint:…} references resolve against that service's dependency
-// mappings, in the address family of its access, plus the mappings of every
-// producer in the run that a configuration the service declares names (see
-// referencedProducerMappings).
-func (world *World) workspaceConfigurationsFor(
-	ctx context.Context, service *resources.Service,
-	dependencyMappings []*basev0.NetworkMapping, access *basev0.NetworkAccess,
-) ([]*basev0.Configuration, error) {
-	dependencies := make([]string, 0, len(service.WorkspaceConfigurationDependencies))
-	for _, dependency := range service.WorkspaceConfigurationDependencies {
-		if !world.excludedWorkspaceConfigurations[dependency] {
-			dependencies = append(dependencies, dependency)
-		}
-	}
-	referenced, err := world.referencedProducerMappings(ctx, service, dependencies, dependencyMappings)
-	if err != nil {
-		return nil, err
-	}
-	mappings := append(slices.Clone(dependencyMappings), referenced...)
-	manager := world.ConfigurationManager.ForConsumer(mappings, access).WithRunProducers(world.producerInRun())
-	declared, err := manager.GetWorkspaceDependenciesConfigurations(ctx, dependencies...)
-	if err != nil {
-		return nil, err
-	}
-	// The composition root injects its own workspace configurations into every
-	// service, so a composed-module service resolves root-provided values
-	// without redeclaring them as dependencies. A service that declares a
-	// dependency on one of the root's own configurations (e.g. the root service
-	// itself) yields that name in both sets, so union by name to avoid emitting
-	// it twice.
-	root, err := manager.GetCompositionRootWorkspaceConfigurations(ctx)
-	if err != nil {
-		return nil, err
-	}
-	seen := make(map[string]bool, len(declared))
-	for _, conf := range declared {
-		for _, info := range conf.Infos {
-			seen[info.Name] = true
-		}
-	}
-	out := declared
-	for _, conf := range root {
-		if world.workspaceConfigurationExcluded(conf) || world.workspaceConfigurationSeen(conf, seen) {
-			continue
-		}
-		out = append(out, conf)
-	}
-	return world.applyWorkspaceConfigurationValues(out, dependencies), nil
-}
-
 // referencedProducerMappings returns the network mappings of the producers the
 // workspace configurations a service declares reference by ${endpoint:…}, for
 // every referenced endpoint the service's own dependency mappings (have) do not
@@ -529,47 +425,317 @@ func (world *World) workspaceConfigurationsFor(
 // recorded nothing when the consumer reads the group, and a declaration may
 // name other endpoints of the producer than the one referenced. Only an
 // endpoint already in have is skipped. The service's own endpoints resolve the
-// same way. A reference whose producer is not a service of the workspace
-// contributes nothing, and core fails the read naming the key and the producer:
-// nothing is omitted silently. Only groups the service declares are considered:
-// the root's groups injected into every service never bind one service to
-// another.
+// same way. A reference whose producer is not a service of the workspace never
+// reaches here: core's check over the effective set
+// (checkEffectiveWorkspaceConfigurationReferences) has already refused it by
+// name.
 //
-// Failing to derive a producer's addresses is an error, not a warning: swallowing
-// it leaves the consumer's read to fail with core's "producer is not part of the
-// run", which names the wrong cause and buries the real one in a log line nobody
-// correlates.
+// The groups considered are the EFFECTIVE set — the declared ones and the
+// composition root's alike — because a root group's reference is exactly what
+// #882 was about: the root supplies a value every service can read, and binding
+// only the declared groups' producers deletes it from every service that did not
+// declare the group. `declared` is still passed, and is not a second selection:
+// it is what separates a reference the dependency graph ORDERS from one it does
+// not, which is what decides whether a failure to derive is fatal.
+//
+// Failing to derive a producer's addresses is an error wherever an address must
+// already exist — every reference in a render, and a declared group's reference
+// in a run — because swallowing it leaves the consumer's read to fail with core's
+// "producer is not part of the run", which names the wrong cause and buries the
+// real one in a log line nobody correlates. A root group's reference in a RUN is
+// the one exception, and it is a drop rather than a swallow: nothing ordered the
+// producer, so there is nothing to blame, and
+// refuseDroppedWorkspaceConfigurationValues warns by name.
 func (world *World) referencedProducerMappings(
-	ctx context.Context, service *resources.Service, groups []string, have []*basev0.NetworkMapping,
+	ctx context.Context, service *resources.Service, declared, effective []string, have []*basev0.NetworkMapping,
+	withheld withheldCredentials,
 ) ([]*basev0.NetworkMapping, error) {
-	if world == nil || world.ConfigurationManager == nil || world.SharedState == nil || world.Dependencies == nil || len(groups) == 0 {
+	if world == nil || world.ConfigurationManager == nil || world.SharedState == nil || world.Dependencies == nil || len(effective) == 0 {
 		return nil, nil
+	}
+	// Whether failing to derive a producer's addresses is fatal depends on
+	// whether anything guarantees the address exists yet, and that is a question
+	// about the MODE first and the group second.
+	//
+	// In a render, nothing is early: a deployed address is a pure function of the
+	// producer's identity and namespace, so a failure to derive one is a fault
+	// whatever group named it. Every reference is fatal there. (An earlier
+	// revision of this made root-only references non-fatal in every mode while
+	// fixing the run, which left a render swallowing the same failure it had
+	// refused the commit before — the regression this comment exists to stop
+	// coming back.)
+	//
+	// In a run, only a reference in a group the service DECLARES is ordered:
+	// core's graph puts that producer before the consumer
+	// (ServiceDependencies.addConfigurationReferenceEdges), so a failure there is
+	// a real fault. A root group's reference is ordered by nothing, so the same
+	// failure is the run simply being early — fatal would break every run of a
+	// composition whose root group holds a reference, which is what
+	// --temporary-ports guarantees (localProducerMappings cannot know an address
+	// allocated at initialization). Those are dropped, and
+	// refuseDroppedWorkspaceConfigurationValues is where the drop is warned
+	// about.
+	fatal := make(map[string]bool)
+	if !world.deploys() {
+		for _, reference := range world.ConfigurationManager.WorkspaceEndpointReferences(declared...) {
+			fatal[reference] = true
+		}
+	}
+	// A reference carried ONLY by values this service does not receive is not
+	// discovered for it: a withheld credential's producer does not have to have
+	// a derivable address, and treating it as fatal in a render refused the
+	// render of a service over a value it was deliberately not given.
+	// (Layer-4 round-five F4.)
+	skip := withheld.skips(world.referencingWorkspaceConfigurationValues(effective))
+	producers, err := world.workspaceProducers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	consumerModule := ""
+	if identity, idErr := service.Identity(); idErr == nil {
+		consumerModule = identity.Module
 	}
 	var out []*basev0.NetworkMapping
 	collected := make(map[string]bool)
-	for _, reference := range world.ConfigurationManager.WorkspaceEndpointReferences(groups...) {
+	for _, reference := range world.ConfigurationManager.WorkspaceEndpointReferences(effective...) {
+		if skip[reference] {
+			continue
+		}
 		info, err := resources.ParseEndpoint(reference)
 		if err != nil {
 			continue
 		}
 		producer := info.Module + "/" + info.Service
-		if collected[producer] || mappingsCarry(have, info) {
+		// Whether the bound set already carries this reference's own endpoint
+		// is asked of core's selection, over the producer's manifest. Asking it
+		// here, with a second implementation of the same rule, is what let an
+		// API sibling count as the named endpoint and leave discovery skipping
+		// a producer whose endpoint was never bound.
+		exactName := false
+		if producers != nil {
+			if declaring, ok := producers(producer); ok && declaring != nil {
+				if selected, selErr := resources.SelectEndpointForReference(consumerModule, info, declaring.Endpoints); selErr == nil {
+					exactName = selected.ExactName
+				}
+			}
+		}
+		if collected[producer] || mappingsCarry(have, info, exactName) {
 			continue
 		}
 		collected[producer] = true
 		mappings, err := world.producerNetworkMappings(ctx, producer)
 		if err != nil {
-			return nil, fmt.Errorf("cannot derive the addresses of %s, named by the workspace configuration reference ${endpoint:%s} that %s declares: %w",
-				producer, reference, resources.WithUnique(service).Unique(), err)
+			if !world.deploys() && !fatal[reference] {
+				// The producer is named, the REFERENCE is not. A producer here
+				// is a <module>/<service> this package resolved against the
+				// workspace's own manifest, so naming it publishes nothing
+				// from the value; the reference's text is the value, and a log
+				// line is the easiest place for a value to leak — written
+				// whether or not anyone is watching, kept, and shipped.
+				wool.Get(ctx).In("World.referencedProducerMappings").Warn(
+					"a workspace configuration value will be missing for this service: the composition root's group references a producer whose address cannot be derived yet, and a root group's reference orders nothing",
+					wool.Field("consumer", consumerLabel(service)), wool.Field("producer", producer),
+					wool.Field("reason", err.Error()))
+				continue
+			}
+			return nil, fmt.Errorf("cannot derive the addresses of %s, which a workspace configuration reference that %s declares names: %w",
+				producer, consumerLabel(service), err)
 		}
-		out = append(out, mappings...)
+		visible, err := world.exportableTo(ctx, service, mappings)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, visible...)
 	}
 	return out, nil
 }
 
+// exportableTo keeps the mappings whose endpoint the consumer's module may
+// reach, by core's own export rule (resources.ValidateEndpointVisibility — the
+// one body behind every "may this consumer depend on this endpoint" answer),
+// judged against the producer's MANIFEST.
+//
+// Binding a producer's mappings is not the same act as checking a reference, and
+// that is the whole reason this exists. The check
+// (configurations.checkEndpointReference) returns on the FIRST manifest endpoint
+// a reference matches; the resolution (resources.resolveEndpointReference)
+// returns the first BOUND mapping that matches AND has an instance for the
+// consumer's network access, falling through to the next match otherwise. A
+// reference naming an API rather than an endpoint name — or a name that is
+// another endpoint's API — matches several of a producer's endpoints, so the two
+// can land on different endpoints: the check passes on the public one, and the
+// resolution hands over the private one's address, either because it is bound
+// first or because the public one has no instance for this consumer's access. An
+// earlier revision of this file claimed the opposite ("the same function
+// reaching the same verdict… the two cannot disagree"); it was false, and the
+// layer-5 review reproduced it.
+//
+// Filtering what is bound closes it from the consumer's side: an endpoint this
+// module may not reach is not in the set, so there is nothing to fall through
+// to. It is core's rule, not a second one, and it narrows only: within one
+// module ValidateEndpointVisibility returns nil, so a service reading its own
+// module's endpoints is untouched.
+//
+// It is applied to the WHOLE set a resolution walks — the consumer's own
+// dependency mappings as well as the ones producer discovery binds. Filtering
+// only the second was a bypass, not a fix: a bare service dependency (one naming
+// no endpoints) is handed every mapping its producer published
+// (StateManager.GetDependenciesNetworkMappings, which narrows by the dependency's
+// endpoint list and not by visibility), and when those already carry a match
+// discovery never re-binds the producer at all — so the filter never ran and the
+// interpolation walked the unfiltered set. Reported and reproduced as layer-5
+// round-five NEW-1.
+//
+// Visibility is read from the producer's manifest through the memoized
+// workspaceProducers lookup, NOT from the mapping. In a run the mapping's
+// endpoint is the agent's Load answer, recorded without being checked against
+// the manifest, so judging from it would let a runtime agent reporting a private
+// endpoint as public reopen the hole, and one that drops `allow-modules` refuse a
+// legitimate `internal` reference. Core's check reads the manifest; so does this.
+// (Layer-5 round-five NEW-6.)
+//
+// It cannot cost a consumer a value it was entitled to, with one exception worth
+// stating rather than implying. Every reference in the effective set has already
+// been validated against the same manifest by core's own check
+// (checkEffectiveWorkspaceConfigurationReferences), so a reference naming an
+// endpoint this filter removes has already been refused — EXCEPT where the
+// reference's exact name is unreachable for this consumer and a sibling sharing
+// its API is not: core's check passes on the sibling, this filter removes only
+// the unreachable name, and the value then resolves to the sibling instead of
+// saying the endpoint asked for is private. That is a known gap, carried as a
+// follow-up; the right answer is to refuse with ValidateEndpointVisibility's own
+// reason. Otherwise the only mappings this can remove are ones no reference the
+// consumer receives may name.
+// What it does change, deliberately, is a cross-module BARE dependency: an
+// address of the producer's private endpoint used to be interpolatable into a
+// workspace configuration value, and is not any more. Disclosed in
+// `docs/commands.md`.
+//
+// The durable fix belongs in core, in the two functions above: judge visibility
+// for EVERY endpoint a reference can match (or refuse a reference that matches
+// more than one as ambiguous), and resolve only to the endpoint that was judged;
+// and let the dependency mappings a consumer is handed be what
+// PermittedDependencyEndpoints grants. Named in docs/orchestration.md and in the
+// PR body.
+//
+// A visibility this core does not know is treated as refusing, because
+// ValidateEndpointVisibility refuses it — `module` is not that case (it is a
+// deprecated alias for internal with every module allowed, so it permits).
+func (world *World) exportableTo(
+	ctx context.Context, consumer *resources.Service, mappings []*basev0.NetworkMapping,
+) ([]*basev0.NetworkMapping, error) {
+	if len(mappings) == 0 {
+		return mappings, nil
+	}
+	producers, err := world.workspaceProducers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if producers == nil {
+		// No workspace, so no manifest to judge against. A resolution carrying a
+		// reference is already refused for that reason
+		// (checkEffectiveWorkspaceConfigurationReferences), so what reaches here
+		// resolves no reference and has nothing to filter.
+		return mappings, nil
+	}
+	// An unidentifiable consumer gets the strict answer rather than a lenient
+	// one: "" matches no producer module, so only endpoints visible to every
+	// module survive. NewFlow resolves nothing without an identity, so this is a
+	// floor, not a path.
+	consumerModule := ""
+	if identity, err := consumer.Identity(); err == nil {
+		consumerModule = identity.Module
+	}
+	out := make([]*basev0.NetworkMapping, 0, len(mappings))
+	for _, mapping := range mappings {
+		endpoint := mapping.GetEndpoint()
+		if endpoint == nil {
+			continue
+		}
+		unique := endpoint.GetModule() + "/" + endpoint.GetService()
+		declared, ok := manifestEndpoint(producers, unique, endpoint)
+		if !ok {
+			wool.Get(ctx).In("World.exportableTo").Debug(
+				"not binding a mapping for an endpoint the producer's manifest does not declare",
+				wool.Field("consumer", consumerLabel(consumer)),
+				wool.Field("endpoint", resources.EndpointDestination(endpoint)))
+			continue
+		}
+		// The declared Location travels with the rest of the declaration: core
+		// judges the whole declaration before it judges the consumer, so a
+		// location the model does not define is ErrInvalidEndpointDeclaration
+		// rather than something this filter silently treats as reachable.
+		if err := resources.ValidateEndpointVisibility(consumerModule, endpoint.GetModule(), endpoint.GetService(),
+			declared.Name, resources.Visibility(declared.Visibility), declared.Location, declared.AllowModules); err != nil {
+			wool.Get(ctx).In("World.exportableTo").Debug(
+				"not binding a producer endpoint this consumer's module may not reach",
+				wool.Field("consumer", consumerLabel(consumer)),
+				wool.Field("endpoint", resources.EndpointDestination(endpoint)),
+				wool.Field("reason", err.Error()))
+			continue
+		}
+		out = append(out, mapping)
+	}
+	return out, nil
+}
+
+// manifestEndpoint finds the endpoint a mapping stands for in its producer's
+// manifest, by CANONICAL IDENTITY: its name, which core refuses to let a service
+// declare twice, with the mapping's API checked for consistency against it.
+//
+// A mapping that carries no name is not identified and not bound, and that is
+// the point rather than a conservatism. An earlier revision fell back to
+// matching by API, which does not establish which endpoint a mapping
+// represents: with a public `api` and a private `admin` both on api `rest`, a
+// mapping of `{Name: "", Api: "rest"}` whose instance addresses `admin` was
+// judged against `api` — the first API match — approved as public, and then
+// returned admin's address by core's interpolator, which matches the retained
+// mapping by API. The visibility verdict has to be about the endpoint whose
+// address is in the mapping, so the mapping has to say which endpoint that is.
+// (Layer-2 round-six finding 2.)
+//
+// A mapping whose API disagrees with the manifest endpoint of that name is not
+// bound either: the two fields would then describe different endpoints, and
+// nothing here can say which one the address belongs to.
+func manifestEndpoint(
+	producers configurations.ProducerLookup, unique string, endpoint *basev0.Endpoint,
+) (*resources.Endpoint, bool) {
+	if endpoint.GetName() == "" {
+		return nil, false
+	}
+	producer, ok := producers(unique)
+	if !ok || producer == nil {
+		return nil, false
+	}
+	for _, declared := range producer.Endpoints {
+		if declared == nil || declared.Name != endpoint.GetName() {
+			continue
+		}
+		// The API has to agree too, in both directions: a mapping that omits it
+		// for an endpoint the manifest gives one is as unidentified as one that
+		// contradicts it. A real mapping carries the manifest's own endpoint
+		// proto (acceptNetworkInstances keeps the proposal's), so this only ever
+		// rejects a mapping nothing in the composition published.
+		if declared.API != endpoint.GetApi() {
+			return nil, false
+		}
+		return declared, true
+	}
+	return nil, false
+}
+
 // mappingsCarry reports whether mappings already hold the endpoint a reference
-// names.
-func mappingsCarry(mappings []*basev0.NetworkMapping, info *resources.EndpointInformation) bool {
+// names, so discovery does not re-bind its producer.
+//
+// requireExactName says the reference has an endpoint named exactly as its
+// token, which the consumer may reach. Then only a mapping carrying THAT name
+// counts: an API-only match is not the endpoint the reference names, and
+// treating it as one made discovery skip the producer, so the named endpoint's
+// mapping was never bound — withExactNamePrecedence then stripped the API-only
+// sibling as the wrong answer and the value was dropped with a WARN blaming the
+// producer's address, or refused in a render. The same shape silently resolved
+// to the sibling before precedence existed. (Layer-5 round-seven N2.)
+func mappingsCarry(mappings []*basev0.NetworkMapping, info *resources.EndpointInformation, requireExactName bool) bool {
 	for _, mapping := range mappings {
 		endpoint := mapping.GetEndpoint()
 		if endpoint == nil || endpoint.GetModule() != info.Module || endpoint.GetService() != info.Service {
@@ -577,6 +743,12 @@ func mappingsCarry(mappings []*basev0.NetworkMapping, info *resources.EndpointIn
 		}
 		// The same match a reference resolves by (resources.InterpolateEndpoints).
 		if info.API != "" && endpoint.GetApi() != info.API {
+			continue
+		}
+		if requireExactName {
+			if endpoint.GetName() == info.Name {
+				return true
+			}
 			continue
 		}
 		if info.Name == "" || endpoint.GetName() == info.Name || endpoint.GetApi() == info.Name {
@@ -596,9 +768,12 @@ func mappingsCarry(mappings []*basev0.NetworkMapping, info *resources.EndpointIn
 // two consumers of one group would each get a different one. Deriving there
 // would hand out a plausible address for a service that is not behind it, which
 // fails at connect time far from its cause — so say so instead. The producer
-// initializing first (which its reference orders, core's
-// architecture.WithConfigurationReferences) makes its recorded mappings
-// authoritative and never reaches this.
+// initializing first makes its recorded mappings authoritative and never reaches
+// this — but only a reference in a group the consumer DECLARES is ordered that
+// way (core's ServiceDependencies.addConfigurationReferenceEdges reads a
+// consumer's declared groups and no more), so a root group's reference can reach
+// here legitimately. referencedProducerMappings drops that case rather than
+// failing the run.
 func (world *World) localProducerMappings(ctx context.Context, service *resources.Service, identity *resources.ServiceIdentity, endpoints []*basev0.Endpoint) ([]*basev0.NetworkMapping, error) {
 	if world.LocalNetworkManager == nil || world.runtimeContextFor == nil {
 		return nil, nil
@@ -664,101 +839,6 @@ func (world *World) deploys() bool {
 	default:
 		return false
 	}
-}
-
-// applyWorkspaceConfigurationValues layers the run's derived values onto the
-// resolved configurations, for the groups this service actually declares. A
-// derived value therefore arrives on the same CODEFLY__WORKSPACE_CONFIGURATION
-// carrier a declared one does, which is the contract a service reads — not a
-// raw process variable it would only see through an incidental os.Getenv
-// fallback.
-//
-// A derived value replaces a declared one for the same key: these are values
-// the run mints for this run (a per-run credential digest), so a stale
-// declaration must not win and leave the run's two halves unable to match.
-func (world *World) applyWorkspaceConfigurationValues(
-	resolved []*basev0.Configuration, dependencies []string,
-) []*basev0.Configuration {
-	if len(world.workspaceConfigurationValues) == 0 {
-		return resolved
-	}
-	for _, group := range dependencies {
-		values := world.workspaceConfigurationValues[group]
-		if len(values) == 0 {
-			continue
-		}
-		resolved = upsertWorkspaceConfigurationValues(resolved, group, values)
-	}
-	return resolved
-}
-
-// upsertWorkspaceConfigurationValues sets values on the named group, adding the
-// group (and the workspace-origin configuration carrying it) when the
-// composition declared none.
-func upsertWorkspaceConfigurationValues(
-	resolved []*basev0.Configuration, group string, values map[string]string,
-) []*basev0.Configuration {
-	for _, conf := range resolved {
-		if conf.Origin != resources.ConfigurationWorkspace {
-			continue
-		}
-		for _, info := range conf.Infos {
-			if info.Name != group {
-				continue
-			}
-			setConfigurationValues(info, values)
-			return resolved
-		}
-	}
-	info := &basev0.ConfigurationInformation{Name: group}
-	setConfigurationValues(info, values)
-	return append(resolved, &basev0.Configuration{
-		Origin: resources.ConfigurationWorkspace,
-		Infos:  []*basev0.ConfigurationInformation{info},
-	})
-}
-
-func setConfigurationValues(info *basev0.ConfigurationInformation, values map[string]string) {
-	for _, key := range slices.Sorted(maps.Keys(values)) {
-		replaced := false
-		for _, existing := range info.ConfigurationValues {
-			if existing.Key == key {
-				existing.Value = values[key]
-				replaced = true
-				break
-			}
-		}
-		if !replaced {
-			info.ConfigurationValues = append(info.ConfigurationValues,
-				&basev0.ConfigurationValue{Key: key, Value: values[key]})
-		}
-	}
-}
-
-// workspaceConfigurationSeen reports whether every Info name in a resolved
-// workspace configuration is already present in seen (all Infos of a workspace
-// configuration share one name), i.e. the configuration was already emitted via
-// the declared-dependency set.
-func (world *World) workspaceConfigurationSeen(conf *basev0.Configuration, seen map[string]bool) bool {
-	for _, info := range conf.Infos {
-		if seen[info.Name] {
-			return true
-		}
-	}
-	return false
-}
-
-// workspaceConfigurationExcluded reports whether a resolved workspace
-// configuration is profile-excluded. Workspace configurations carry their name
-// on each Info (the Configuration.Origin is always "workspace"), and every Info
-// in a given configuration shares that name.
-func (world *World) workspaceConfigurationExcluded(conf *basev0.Configuration) bool {
-	for _, info := range conf.Infos {
-		if world.excludedWorkspaceConfigurations[info.Name] {
-			return true
-		}
-	}
-	return false
 }
 
 func (flow *Flow) WorkspaceConfigurationsFor(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error) {
@@ -879,7 +959,7 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		if err != nil {
 			return nil, w.Wrapf(err, "cannot write dependency configurations to output environment")
 		}
-		if err := AppendRuntimeEnvironmentToFile(
+		if appendErr := AppendRuntimeEnvironmentToFile(
 			ctx,
 			runner.outputEnv,
 			identity,
@@ -887,8 +967,8 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 			runner.fixture,
 			runner.runtimeOverrides(),
 			endpointMappings,
-		); err != nil {
-			return nil, w.Wrapf(err, "cannot write runtime environment variables to file")
+		); appendErr != nil {
+			return nil, w.Wrapf(appendErr, "cannot write runtime environment variables to file")
 		}
 	}
 
@@ -1169,8 +1249,8 @@ func (runner *Runner) Test(ctx context.Context) (*OutputProperty, error) {
 	// cases and exit with an accurate code, regardless of pass/fail.
 	runner.testResponse = resp
 
-	if resp.GetStatus() != nil && resp.GetStatus().GetState() != runtimev0.TestStatus_SUCCESS {
-		return nil, w.NewError("tests failed for %s: %s", runner.Unique(), summarizeTestResponse(resp))
+	if verdict := refuseUnlessTestRunPassed(resp, runner.Unique()); verdict != nil {
+		return nil, verdict
 	}
 
 	err = runner.outputPropertyForTest.Set(ctx, &RunnerTestOutput{})
@@ -1725,10 +1805,77 @@ func appendEnvironmentVariablesToFile(
 
 	// Write each environment variable to the file
 	for _, env := range environments {
-		_, err := file.WriteString(fmt.Sprintf("%s=%v\n", env.Key, env.Value))
+		_, err := fmt.Fprintf(file, "%s=%v\n", env.Key, env.Value)
 		if err != nil {
 			return w.Wrapf(err, "cannot write to file")
 		}
 	}
 	return nil
+}
+
+// runnerInitInputs is everything Runner.Init reads before it calls the agent:
+// the dependency views, this service's own configuration, and the addresses it
+// proposes to serve.
+type runnerInitInputs struct {
+	dependenciesEndpoints       []*basev0.Endpoint
+	dependenciesNetworkMappings []*basev0.NetworkMapping
+	conf                        *basev0.Configuration
+	runtimeContext              *basev0.RuntimeContext
+	workspaceConfigurations     []*basev0.Configuration
+	dependenciesConfigurations  []*basev0.Configuration
+	networkMappings             []*basev0.NetworkMapping
+}
+
+// gatherInitInputs performs the reads Init needs, each bounded by cfgCtx.
+//
+// They are gathered in one place because they share one failure mode: a
+// configuration read can block on a stalled provider — a dependency that failed
+// to export its configuration — and a timeout there is a different diagnosis
+// from a real fault, which initReadFailure is what says so.
+func (runner *Runner) gatherInitInputs(ctx, cfgCtx context.Context, w *wool.Wool) (*runnerInitInputs, error) {
+	out := &runnerInitInputs{}
+	var err error
+	out.dependenciesEndpoints, err = runner.world.SharedState.GetDependenciesEndpoints(cfgCtx, runner.instance.Service)
+	if err != nil {
+		return nil, runner.initReadFailure(cfgCtx, w, err, "dependencies endpoints")
+	}
+	out.dependenciesNetworkMappings, err = runner.world.SharedState.GetDependenciesNetworkMappings(cfgCtx, runner.instance.Service)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot get initialized dependency network mappings")
+	}
+	if runner.testRequest != nil && !runner.serviceRunningForTest && len(out.dependenciesNetworkMappings) > 0 &&
+		!slices.Contains(runner.instance.Info.GetContract().GetCapabilities(), contract.RuntimeInitDependencyMappings) {
+		return nil, w.NewError("dependency-only tests require agent capability %s to consume accepted addresses at Init", contract.RuntimeInitDependencyMappings)
+	}
+	out.conf, err = runner.world.ConfigurationManager.GetServiceConfiguration(cfgCtx, runner.instance.Identity)
+	if err != nil {
+		return nil, runner.initReadFailure(cfgCtx, w, err, "service configuration")
+	}
+	out.runtimeContext, err = resources.NewRuntimeContext(runner.runtimeContext)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
+	}
+	out.workspaceConfigurations, err = runner.workspaceConfigurations(cfgCtx, out.dependenciesNetworkMappings, out.runtimeContext)
+	if err != nil {
+		return nil, runner.initReadFailure(cfgCtx, w, err, "workspace dependencies configurations")
+	}
+	out.dependenciesConfigurations, err = runner.world.SharedState.GetDependentConfigurationsFor(cfgCtx, runner.instance.Identity)
+	if err != nil {
+		return nil, runner.initReadFailure(cfgCtx, w, err, "dependencies configurations")
+	}
+	out.networkMappings, err = runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env.Runtime(), runner.world.Workspace, runner.instance.Identity, runner.endpoints, out.runtimeContext)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
+	}
+	return out, nil
+}
+
+// initReadFailure tells a stalled provider apart from a real fault, in the one
+// wording every bounded Init read used to repeat.
+func (runner *Runner) initReadFailure(cfgCtx context.Context, w *wool.Wool, err error, what string) error {
+	if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
+		w.Warn(fmt.Sprintf("timeout waiting for %s after 30s; check that dependency services are reachable", what))
+		return w.Wrapf(err, "init timeout: %s not available within 30s", what)
+	}
+	return w.Wrapf(err, "cannot get %s", what)
 }

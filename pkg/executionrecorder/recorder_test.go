@@ -3,12 +3,12 @@ package executionrecorder
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,7 +16,6 @@ import (
 	"github.com/codefly-dev/cli/pkg/executionattestor"
 	"github.com/codefly-dev/cli/pkg/executiondispatcher"
 	"github.com/codefly-dev/cli/pkg/executionjournal"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
 	workcontext "github.com/codefly-dev/sdk-go/workcontext"
 	workcontextgrpc "github.com/codefly-dev/sdk-go/workcontext/grpctransport"
@@ -28,7 +27,7 @@ func TestRecorderBracketsEffectAndPreventsOperationReplay(t *testing.T) {
 	fixture := newRecorderFixture(t)
 	input := fixture.beginInput()
 
-	first, err := fixture.recorder.Begin(t.Context(), fixture.execution, input)
+	first, err := fixture.recorder.Begin(t.Context(), fixture.execution, fixture.verified, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +39,7 @@ func TestRecorderBracketsEffectAndPreventsOperationReplay(t *testing.T) {
 		t.Fatalf("incomplete after begin = %+v err=%v", incomplete, err)
 	}
 
-	retry, err := fixture.recorder.Begin(t.Context(), fixture.execution, input)
+	retry, err := fixture.recorder.Begin(t.Context(), fixture.execution, fixture.verified, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +70,7 @@ func TestRecorderBracketsEffectAndPreventsOperationReplay(t *testing.T) {
 		t.Fatalf("second finish error = %v", err)
 	}
 
-	completedRetry, err := fixture.recorder.Begin(t.Context(), fixture.execution, input)
+	completedRetry, err := fixture.recorder.Begin(t.Context(), fixture.execution, fixture.verified, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,13 +82,13 @@ func TestRecorderBracketsEffectAndPreventsOperationReplay(t *testing.T) {
 	substituted := input
 	substituted.Target = proto.Clone(input.Target).(*executionv1.ExecutionTargetV1)
 	substituted.Target.Service = "another-service"
-	if _, err := fixture.recorder.Begin(t.Context(), fixture.execution, substituted); !errors.Is(err, ErrConflict) {
+	if _, err := fixture.recorder.Begin(t.Context(), fixture.execution, fixture.verified, substituted); !errors.Is(err, ErrConflict) {
 		t.Fatalf("target substitution error = %v", err)
 	}
 
 	substituted = input
 	substituted.OperationInputSHA256 = hexDigest(sha256.Sum256([]byte("different input")))
-	if _, err := fixture.recorder.Begin(t.Context(), fixture.execution, substituted); !errors.Is(err, ErrConflict) {
+	if _, err := fixture.recorder.Begin(t.Context(), fixture.execution, fixture.verified, substituted); !errors.Is(err, ErrConflict) {
 		t.Fatalf("operation input substitution error = %v", err)
 	}
 
@@ -98,7 +97,7 @@ func TestRecorderBracketsEffectAndPreventsOperationReplay(t *testing.T) {
 	changedObservation := input
 	changedObservation.Resources = cloneResources(input.Resources)
 	changedObservation.Resources[0].BeforeSha256 = stringPointer(hexDigest(sha256.Sum256([]byte("after"))))
-	replayed, err := fixture.recorder.Begin(t.Context(), fixture.execution, changedObservation)
+	replayed, err := fixture.recorder.Begin(t.Context(), fixture.execution, fixture.verified, changedObservation)
 	if err != nil || replayed.Existing == nil {
 		t.Fatalf("replay after workspace mutation = %+v err=%v", replayed, err)
 	}
@@ -107,7 +106,7 @@ func TestRecorderBracketsEffectAndPreventsOperationReplay(t *testing.T) {
 func TestRecorderRecoversIncompleteStartAsUncertain(t *testing.T) {
 	fixture := newRecorderFixture(t)
 	input := fixture.beginInput()
-	if result, err := fixture.recorder.Begin(t.Context(), fixture.execution, input); err != nil || result.Attempt == nil {
+	if result, err := fixture.recorder.Begin(t.Context(), fixture.execution, fixture.verified, input); err != nil || result.Attempt == nil {
 		t.Fatalf("begin = %+v err=%v", result, err)
 	}
 	if err := fixture.journal.Close(); err != nil {
@@ -135,7 +134,7 @@ func TestRecorderRecoversIncompleteStartAsUncertain(t *testing.T) {
 	if err != nil || len(incomplete) != 0 {
 		t.Fatalf("incomplete after recovery = %+v err=%v", incomplete, err)
 	}
-	retry, err := recorder.Begin(t.Context(), fixture.execution, input)
+	retry, err := recorder.Begin(t.Context(), fixture.execution, fixture.verified, input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,10 +186,10 @@ func TestRecorderProcessLossRecoversAndExportsStartedThenUncertain(t *testing.T)
 		Attestor: attestor,
 		Authority: AuthorityFunc(func(
 			context.Context,
-			workcontext.WorkContextToken,
+			*workcontext.Verified,
 			Admission,
-		) (*basev0.WorkContextV1, error) {
-			return nil, errors.New("recovery must not re-authorize an already admitted start")
+		) error {
+			return errors.New("recovery must not re-authorize an already admitted start")
 		}),
 		Producer: &executionv1.ExecutionProducerV1{
 			Id: "codefly.execution", Component: "gateway", Release: "v0.1.27",
@@ -280,14 +279,14 @@ func appendStartedBeforeProcessLoss(stateDir string) error {
 	if err != nil {
 		return err
 	}
-	signature := make([]byte, 64)
-	token, err := workcontext.ParseWorkContextToken(
-		"e30." + base64.RawURLEncoding.EncodeToString(signature),
-	)
+	verified, err := mintedCapability(ctx, evidenceScope(fixtureProducerID))
 	if err != nil {
 		return err
 	}
-	execution, err := workcontextgrpc.NewExecutionContext(token, "operation-process-loss")
+	// The carrier is the capability's OWN encoded form. A dummy token stood
+	// here, paired with an unrelated capability, until the recorder started
+	// binding the two — see TestBeginRefusesACarrierThatIsNotTheVerifiedCapability.
+	execution, err := workcontextgrpc.NewExecutionContext(verified.Encoded(), "operation-process-loss")
 	if err != nil {
 		return err
 	}
@@ -296,10 +295,10 @@ func appendStartedBeforeProcessLoss(stateDir string) error {
 		Attestor: attestor,
 		Authority: AuthorityFunc(func(
 			context.Context,
-			workcontext.WorkContextToken,
+			*workcontext.Verified,
 			Admission,
-		) (*basev0.WorkContextV1, error) {
-			return testClaims(), nil
+		) error {
+			return nil
 		}),
 		Producer: &executionv1.ExecutionProducerV1{
 			Id: "codefly.execution", Component: "gateway", Release: "v0.1.27",
@@ -308,7 +307,7 @@ func appendStartedBeforeProcessLoss(stateDir string) error {
 	if err != nil {
 		return err
 	}
-	result, err := recorder.Begin(ctx, execution, testBeginInput())
+	result, err := recorder.Begin(ctx, execution, verified, testBeginInput())
 	if err != nil {
 		return err
 	}
@@ -325,10 +324,10 @@ func TestRecorderRejectsAuthorityFailureBeforeJournal(t *testing.T) {
 		Attestor: fixture.attestor,
 		Authority: AuthorityFunc(func(
 			context.Context,
-			workcontext.WorkContextToken,
+			*workcontext.Verified,
 			Admission,
-		) (*basev0.WorkContextV1, error) {
-			return nil, errors.New("forged")
+		) error {
+			return errors.New("forged")
 		}),
 		Producer: fixture.producer,
 		Now:      fixture.clock.Now,
@@ -336,7 +335,7 @@ func TestRecorderRejectsAuthorityFailureBeforeJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := recorder.Begin(t.Context(), fixture.execution, fixture.beginInput()); !errors.Is(err, ErrInvalid) {
+	if _, err := recorder.Begin(t.Context(), fixture.execution, fixture.verified, fixture.beginInput()); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("authority error = %v", err)
 	}
 	pending, err := fixture.journal.Pending(t.Context(), 0, 10)
@@ -356,7 +355,7 @@ func TestRecorderRejectsTargetOutsideWorkContextBeforeJournal(t *testing.T) {
 	} {
 		input := fixture.beginInput()
 		mutate(&input)
-		if _, err := fixture.recorder.Begin(t.Context(), fixture.execution, input); !errors.Is(err, ErrInvalid) {
+		if _, err := fixture.recorder.Begin(t.Context(), fixture.execution, fixture.verified, input); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("target mismatch error = %v", err)
 		}
 	}
@@ -374,6 +373,7 @@ type recorderFixture struct {
 	authority   Authority
 	producer    *executionv1.ExecutionProducerV1
 	execution   workcontextgrpc.ExecutionContext
+	verified    *workcontext.Verified
 	clock       *testClock
 }
 
@@ -391,26 +391,19 @@ func newRecorderFixture(t *testing.T) *recorderFixture {
 	}
 	t.Cleanup(func() { _ = journal.Close() })
 
-	signature := make([]byte, 64)
-	token, err := workcontext.ParseWorkContextToken("e30." + base64.RawURLEncoding.EncodeToString(signature))
+	verified := verifiedFixture(t)
+	// The carrier is the capability's own encoded form: the recorder refuses a
+	// carrier that is not the capability that was verified, and a fixture
+	// pairing a dummy token with an unrelated capability is exactly what hid
+	// that hole.
+	execution, err := workcontextgrpc.NewExecutionContext(verified.Encoded(), "operation-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	execution, err := workcontextgrpc.NewExecutionContext(token, "operation-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	claims := testClaims()
-	authority := AuthorityFunc(func(
-		_ context.Context,
-		_ workcontext.WorkContextToken,
-		admission Admission,
-	) (*basev0.WorkContextV1, error) {
-		if admission.OperationID != "operation-1" || admission.ProducerID != "codefly.execution" {
-			return nil, errors.New("unexpected admission")
-		}
-		return proto.Clone(claims).(*basev0.WorkContextV1), nil
-	})
+	// The REAL authority, over the capability's own scopes. A stub permitting
+	// everything would have left the whole authorization path untested here
+	// and, worse, been the second source of claims round 15 found.
+	authority := fixtureAuthority(t)
 	producer := &executionv1.ExecutionProducerV1{
 		Id: "codefly.execution", Component: "gateway", Release: "v0.1.25",
 	}
@@ -424,7 +417,7 @@ func newRecorderFixture(t *testing.T) *recorderFixture {
 	return &recorderFixture{
 		recorder: recorder, journal: journal, journalPath: journalPath,
 		attestor: attestor, authority: authority, producer: producer,
-		execution: execution, clock: clock,
+		execution: execution, verified: verified, clock: clock,
 	}
 }
 
@@ -434,34 +427,21 @@ func (f *recorderFixture) beginInput() BeginInput {
 
 func testBeginInput() BeginInput {
 	before := sha256.Sum256([]byte("before"))
-	projectID := "project-warden"
+	// The capability's workspace and project. The recorder refuses a target
+	// naming any other, which is the point: see
+	// TestRecorderRejectsTargetOutsideWorkContextBeforeJournal.
+	projectID := fixtureProjectID
 	return BeginInput{
 		OperationKind:        "code.apply-edit",
 		OperationInputSHA256: hexDigest(sha256.Sum256([]byte("apply-edit request"))),
 		Assurance:            executionv1.ExecutionAssurance_EXECUTION_ASSURANCE_PLUGIN_EXECUTED,
 		Target: &executionv1.ExecutionTargetV1{
-			WorkspaceId: "workspace-codefly", Service: "warden", ProjectId: &projectID,
+			WorkspaceId: fixtureWorkspaceID, Service: "warden", ProjectId: &projectID,
 		},
 		Resources: []*executionv1.ExecutionResourceV1{{
 			Kind: "workspace.path", Reference: "modules/warden/main.go",
 			BeforeSha256: stringPointer(hexDigest(before)),
 		}},
-	}
-}
-
-func testClaims() *basev0.WorkContextV1 {
-	started := time.Date(2026, time.July, 23, 19, 0, 0, 0, time.UTC)
-	workspaceID := "workspace-codefly"
-	projectID := "project-warden"
-	return &basev0.WorkContextV1{
-		Typ: "codefly.work-context/v1", Algorithm: "Ed25519",
-		KeyId: "accounts-key-1", Issuer: "accounts", Audience: "codefly.execution",
-		NotBeforeUnix: started.Add(-time.Minute).Unix(), IssuedAtUnix: started.Add(-time.Minute).Unix(),
-		ExpiresAtUnix: started.Add(4 * time.Minute).Unix(), Nonce: "nonce-1",
-		AuthorizationRevision: 4, ReplayPolicy: "idempotent",
-		TenantId: "tenant-codefly", OwnerPrincipalId: "principal-antoine",
-		TaskId: "task-1", SessionId: "session-1",
-		WorkspaceId: &workspaceID, ProjectId: &projectID,
 	}
 }
 
@@ -486,4 +466,79 @@ func hexDigest(sum [sha256.Size]byte) string {
 		encoded[index*2+1] = digits[value&0x0f]
 	}
 	return string(encoded)
+}
+
+// The recorder refuses a nil capability itself, before the authority.
+//
+// The authority refuses one too, but the recorder must not depend on every
+// Authority implementation remembering to: the receipt this call writes carries
+// the capability's digest, so without a verified capability there is nothing to
+// digest, and a receipt attesting to an unverified execution is worse than no
+// receipt at all.
+//
+// The stub authority here PERMITS everything, so the only thing that can refuse
+// is the recorder. Removing that guard makes this test fail — which it did not
+// before this test existed, because every other case passes a real capability.
+func TestBeginRefusesWithoutAVerifiedCapability(t *testing.T) {
+	fixture := newRecorderFixture(t)
+	_, err := fixture.recorder.Begin(t.Context(), fixture.execution, nil, fixture.beginInput())
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("want ErrInvalid, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "requires a verified Work Context") {
+		t.Fatalf("the refusal must say what is missing: %v", err)
+	}
+	pending, pendingErr := fixture.journal.Pending(t.Context(), 0, 10)
+	if pendingErr != nil {
+		t.Fatal(pendingErr)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("a refused execution must write no receipt, got %d", len(pending))
+	}
+}
+
+// A carrier that is not the capability that was verified is refused.
+//
+// The recorder takes both an ExecutionContext, which carries the token the
+// caller presented, and a *Verified produced by whoever could verify one.
+// Nothing tied them together: a caller could present one capability and hand
+// over another's verification, and the receipt would carry the verified
+// capability's digest and claims beside an operation admitted under a token
+// nobody checked.
+//
+// r16 executed that against this package's own fixture, which paired a dummy
+// `e30.` carrier with an unrelated conformance capability and succeeded. The
+// fixture now carries verified.Encoded(), and this test is the negative case:
+// two REAL capabilities, each verified, crossed over.
+func TestBeginRefusesACarrierThatIsNotTheVerifiedCapability(t *testing.T) {
+	fixture := newRecorderFixture(t)
+
+	// A second, genuine capability — minted and verified exactly like the
+	// first, differing only in being a different capability.
+	other, err := mintedCapability(t.Context(), evidenceScope(fixtureProducerID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.SHA256() == fixture.verified.SHA256() {
+		t.Fatal("the two capabilities are the same, so this test proves nothing")
+	}
+
+	crossed, err := workcontextgrpc.NewExecutionContext(other.Encoded(), "operation-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = fixture.recorder.Begin(t.Context(), crossed, fixture.verified, fixture.beginInput())
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("want ErrInvalid, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "not the capability that was verified") {
+		t.Fatalf("the refusal must name what is wrong: %v", err)
+	}
+	pending, pendingErr := fixture.journal.Pending(t.Context(), 0, 10)
+	if pendingErr != nil {
+		t.Fatal(pendingErr)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("a refused execution must write no receipt, got %d", len(pending))
+	}
 }

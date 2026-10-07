@@ -19,7 +19,7 @@ var WorkspaceCmd = &cobra.Command{
 	Short: "Create a Codefly workspace in a new directory",
 	Args:  cobra.ExactArgs(1),
 
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		if interactive {
 			return fmt.Errorf("interactive mode not implemented yet")
 		}

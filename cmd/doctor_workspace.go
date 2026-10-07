@@ -218,9 +218,9 @@ func checkWorkspace(ctx context.Context, opts workspaceReadinessOptions, report 
 	var probe struct {
 		Layout string `yaml:"layout"`
 	}
-	if err := yaml.Unmarshal(raw, &probe); err != nil {
+	if probeErr := yaml.Unmarshal(raw, &probe); probeErr != nil {
 		report.add(codeWorkspaceInvalid, "workspace", "fail",
-			fmt.Sprintf("%s is not valid YAML: %v", resources.WorkspaceConfigurationName, err),
+			fmt.Sprintf("%s is not valid YAML: %v", resources.WorkspaceConfigurationName, probeErr),
 			"fix the workspace manifest syntax")
 		return nil
 	}
@@ -653,7 +653,7 @@ func overlayDirective(overlay *resources.LocalOverlay, module string) *resources
 func checkEnvironment(ws *resources.Workspace, name string, report *workspaceReadinessReport) *environments.Environment {
 	env := ws.FindEnvironment(name)
 	if env == nil {
-		var declared []string
+		declared := make([]string, 0, len(ws.Environments))
 		for _, e := range ws.Environments {
 			declared = append(declared, e.Name)
 		}
@@ -870,45 +870,122 @@ func checkConfigurationReferences(ctx context.Context, ws *resources.Workspace, 
 			fmt.Sprintf("cannot build the service graph to check endpoint references: %v", err), "")
 		return
 	}
-	err = orchestration.CheckConfigurationReferences(ctx, ws, env, provided, dependencies, scope, resources.RunProfile{}, nil)
+	// The composition root's groups are part of what every service receives, so
+	// the doctor checks their references too — not only the declared ones — and
+	// it checks the configurations as an invocation supplies them, so an
+	// override carried in CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES is
+	// diagnosed rather than skipped.
+	//
+	// A read that fails says so and stops. It used to fall back to the plain
+	// disk read, which carries no composition-root names — so the check ran over
+	// declared groups only and then reported "every endpoint reference
+	// resolves… and in the composition root's own", which was a statement about
+	// a check that had not happened. One unsupplied ${profile} value in an
+	// unrelated group was enough to reach it, and the workspace was reported
+	// ready with a typo'd producer in a root group.
+	checked, rootGroups, err := orchestration.WorkspaceConfigurationsForChecking(ctx, ws, env)
+	if err != nil {
+		// A failure here is not only "the doctor could not look": the run
+		// resolves these configurations through the same loader, so a workspace
+		// whose configurations do not load has no working run either. It is a
+		// fault of the workspace, reported as one — unlike the branch above,
+		// where checkConfigurationSources has already reported the read failure
+		// and this is a note beside it.
+		report.add(codeConfigurationInvalid, "configuration references", "fail",
+			fmt.Sprintf("not checked: %v", err),
+			"fix the workspace configurations named above, then run the doctor again")
+		return
+	}
+	err = orchestration.CheckConfigurationReferences(ctx, ws, env, checked, dependencies, scope,
+		resources.RunProfile{}, nil, rootGroups)
 	var unresolved *configurations.UnresolvedReferencesError
 	switch {
 	case err == nil:
-		report.add("", "configuration references", "ok", "every endpoint reference in the declared workspace configurations resolves", "")
+		report.add("", "configuration references", "ok", "every endpoint reference resolves, in the groups each service declares and in the composition root's own", "")
 	case errors.As(err, &unresolved):
-		for _, reference := range unresolved.References {
+		for _, reference := range collapseReferencesByFault(unresolved.References) {
 			report.add(codeConfigurationReference, "workspace configuration "+reference.Group, "fail",
-				reference.String(),
-				referenceRemediation(&reference, dependencies))
+				reference.message,
+				referenceRemediation(&reference.UnresolvedReference))
 		}
 	default:
 		report.add(codeConfigurationInvalid, "configuration references", "fail", err.Error(), "")
 	}
 }
 
-// referenceRemediation says what to do about one unresolved reference. The three
-// ways a reference fails need three different answers, and the facts tell them
-// apart without reading core's prose: a malformed reference names no producer at
-// all, a producer absent from the graph is not in the workspace, and a producer
-// that is there is missing the endpoint. One shared line telling every reader to
-// "compose the producer into the workspace" is wrong advice for two of the three.
-func referenceRemediation(reference *configurations.UnresolvedReference, dependencies *architecture.ServiceDependencies) string {
-	switch {
-	case reference.Producer == "":
-		return fmt.Sprintf("write %s as ${endpoint:<module>/<service>/<endpoint>} in the %q workspace configuration", reference.Key, reference.Group)
-	case !inWorkspace(dependencies, reference.Producer):
-		return fmt.Sprintf("compose the module providing %s into this workspace, or point %s at a service this workspace declares", reference.Producer, reference.Key)
-	default:
-		return fmt.Sprintf("declare the endpoint on %s, or point %s at an endpoint %s already declares", reference.Producer, reference.Key, reference.Producer)
-	}
+// collapsedReference is one fault, with the consumers that meet it.
+type collapsedReference struct {
+	configurations.UnresolvedReference
+	message   string
+	consumers int
 }
 
-func inWorkspace(dependencies *architecture.ServiceDependencies, unique string) bool {
-	if dependencies == nil {
-		return false
+// collapseReferencesByFault reports one line per distinct fault rather than one
+// per consumer that meets it.
+//
+// The check is per consumer because visibility is per consumer: the same
+// reference can be legal for a service in the producer's own module and refused
+// for one outside it. But a composition-root group reaches EVERY service, so a
+// single typo in it produces one identical entry per service in the
+// composition — noise that grows with the workspace and buries the other
+// faults. Faults identical apart from the consumer collapse into one, which
+// names how many services are affected; a fault that genuinely differs by
+// consumer still gets its own line.
+//
+// The fault key includes core's reason text, so the grouping depends on core's
+// wording. That dependence is deliberate and safe in one direction only: if
+// core rewords a reason, previously merged entries stop merging and the report
+// grows a line per service — more noise, never fewer facts, and never two
+// different faults merged into one. Keying on anything coarser would risk the
+// opposite, hiding one consumer's visibility verdict behind another's.
+func collapseReferencesByFault(references []configurations.UnresolvedReference) []collapsedReference {
+	var out []collapsedReference
+	at := map[string]int{}
+	for _, reference := range references {
+		// Keyed on the reference's POSITION rather than its text: core v0.11.0
+		// carries no text from the value. Position is as discriminating here —
+		// two faults of one key differ by which reference they are.
+		fault := fmt.Sprintf("%s\x00%s\x00%d\x00%s", reference.Group, reference.Key, reference.Position, reference.Reason)
+		if index, seen := at[fault]; seen {
+			out[index].consumers++
+			out[index].message = out[index].describe()
+			continue
+		}
+		at[fault] = len(out)
+		collapsed := collapsedReference{UnresolvedReference: reference, consumers: 1}
+		collapsed.message = collapsed.describe()
+		out = append(out, collapsed)
 	}
-	_, err := dependencies.ServiceFromUnique(unique)
-	return err == nil
+	return out
+}
+
+// describe is the fault's line: core's own rendering, plus how many other
+// services receive the same group and meet the same fault.
+func (c *collapsedReference) describe() string {
+	if c.consumers <= 1 {
+		return c.String()
+	}
+	return fmt.Sprintf("%s (and %d other service(s) receiving this group)", c.String(), c.consumers-1)
+}
+
+// referenceRemediation says what to do about one unresolved reference.
+//
+// It does NOT name the producer, and that is a deliberate loss. The producer in
+// a reference comes from the reference's tokens, which are text from the value,
+// and a value may be a secret — so deriving it to print it publishes part of
+// what the diagnostic is reporting on. An earlier version of this did exactly
+// that, correlating a locally-derived producer by core's reported position, and
+// the derivation was sound while the printing was not.
+//
+// What an operator gets instead is the group, the key and which reference of
+// that value failed, plus core's reason — enough to find the line in their own
+// file, where the producer is written in front of them. The three ways a
+// reference fails are told apart by core's typed reason rather than by
+// re-reading the value.
+func referenceRemediation(reference *configurations.UnresolvedReference) string {
+	return fmt.Sprintf(
+		"fix reference %d of %s in the %q workspace configuration: %s",
+		reference.Position, reference.Key, reference.Group, reference.Reason)
 }
 
 // checkDevAgents warns about every service in scope running an agent dev build
@@ -1483,8 +1560,8 @@ bindings_schema_unknown, and the per-binding validation codes).`,
 		}
 
 		fmt.Println(tui.RenderHeader(1, "codefly doctor workspace"))
-		for _, diagnostic := range report.Checks {
-			printWorkspaceDiagnostic(diagnostic)
+		for i := range report.Checks {
+			printWorkspaceDiagnostic(&report.Checks[i])
 		}
 		fmt.Println()
 		if report.Status != readinessStatusReady {
@@ -1496,7 +1573,7 @@ bindings_schema_unknown, and the per-binding validation codes).`,
 	},
 }
 
-func printWorkspaceDiagnostic(diagnostic workspaceDiagnostic) {
+func printWorkspaceDiagnostic(diagnostic *workspaceDiagnostic) {
 	result := checkResult{name: diagnostic.Name, detail: diagnostic.Message, fix: diagnostic.Remediation}
 	switch diagnostic.Status {
 	case "warn":

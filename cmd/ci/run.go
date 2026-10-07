@@ -90,7 +90,7 @@ var RunCmd = &cobra.Command{
 					}
 					continue
 				}
-				if phase == "test" {
+				if phase == ciPhaseTest {
 					for _, suite := range suites {
 						options := commandScheduleOptions(true, phase, suite, reporter)
 						if err := prepareCIReportTasks(ctx, workspace, plan, options); err != nil {
@@ -145,7 +145,7 @@ func runCIPhases(ctx context.Context, phases []string, failFast bool, execute fu
 // runCIPhases applies across phases.
 func executeCIPhase(ctx context.Context, reporter *CIReporter, workspace *resources.Workspace, plan *Plan, phase string, suites []string, failFast bool) error {
 	switch phase {
-	case "test":
+	case ciPhaseTest:
 		var errs error
 		for _, suite := range suites {
 			if suite != "" {

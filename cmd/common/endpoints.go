@@ -69,7 +69,11 @@ type ResolvedEndpoint struct {
 // runtime uses (network.NativeFor). namingScope must match the scope the
 // service was/will be run with (empty for the normal interactive case).
 func ResolveNative(ctx context.Context, workspace, module, service, namingScope string, ep *resources.Endpoint) (ResolvedEndpoint, error) {
-	if ep.Visibility == resources.VisibilityExternal {
+	// External is a LOCATION, not a visibility: core v0.11.0 deleted
+	// `external` from the visibility model (a visibility says who may reach an
+	// endpoint, which is a different question from where it lives) and
+	// Endpoint.External() is the reader. cmd/expose already used it.
+	if ep.External() {
 		return ResolvedEndpoint{External: true}, nil
 	}
 	// Mirror Proto()'s api inference EXACTLY: fold Name→api only when Name is

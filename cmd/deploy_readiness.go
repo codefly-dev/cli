@@ -31,8 +31,8 @@ func init() {
 			return nil
 		}
 		fmt.Println(tui.RenderHeader(1, fmt.Sprintf("codefly doctor workspace --env %s --module %s", env, module)))
-		for _, diagnostic := range report.Checks {
-			printWorkspaceDiagnostic(diagnostic)
+		for i := range report.Checks {
+			printWorkspaceDiagnostic(&report.Checks[i])
 		}
 		fmt.Println(tui.RenderError(fmt.Sprintf("Workspace is NOT ready for environment %q — fix the items marked ✗ above.", env)))
 		return fmt.Errorf("workspace is not ready for environment %q: %s", env, firstReadinessFailure(report))

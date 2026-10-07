@@ -65,7 +65,6 @@ func (s *StateManager) GetDependentConfigurationsFor(ctx context.Context, servic
 		return nil, nil
 	}
 	w := wool.Get(ctx).In("StateManager.GetConfigurations", wool.ThisField(service))
-	var confs []*basev0.Configuration
 	// We get the shared information from the direct requirements
 	requires, err := s.deps().DirectRequires(ctx, service.Unique())
 	if err != nil {
@@ -101,6 +100,7 @@ func (s *StateManager) GetDependentConfigurationsFor(ctx context.Context, servic
 		serviceConfigurations = append(serviceConfigurations, shared...)
 
 	}
+	confs := make([]*basev0.Configuration, 0, len(serviceConfigurations))
 	confs = append(confs, serviceConfigurations...)
 	w.Debug("configurations",
 		wool.Field("uniqueToService", resources.MakeManyConfigurationSummary(serviceConfigurations)))

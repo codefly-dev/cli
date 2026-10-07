@@ -84,3 +84,42 @@ home before isolation and retains the exact selected version in a private home
 for both source validation and packaging, including older installed versions.
 A self-hosted candidate is bootstrapped once, before source validation; it does
 not need an intermediate release. Neither path replaces installed agent files.
+
+## What an agent must report
+
+The CLI does not infer an outcome an agent did not state. Two reports are
+required rather than reconstructed, and a missing one is refused rather than
+read favourably.
+
+**A test run states its own verdict.** `TestResponse.result.state` must be set
+to an explicit outcome — `PASSED`, `FAILED`, `ERRORED` or `TIMED_OUT`. Only
+`PASSED` is success. `UNKNOWN`, or no `result` at all, is refused by the
+orchestrator, reported as a failure by the gateway, and kept as `UNKNOWN`
+through code-unit aggregation, where it outranks `FAILED` so one unit without
+a verdict decides the run.
+
+The CLI used to fall back to the deprecated `status` field and then to "no
+failures were counted". Both are gone: zero counted failures is also what a
+run that never executed reports, so an agent that crashed before reporting, or
+whose harness output it could not parse, was deploying. An agent that sets only
+the deprecated fields now reads as having reported nothing.
+
+**A Kubernetes deployment output states the security property.** For the
+restricted portable profile, `KubernetesManifestValidation.restricted` must be
+true, static validation must have passed, server-side validation must have
+passed or not run, and the violation list must be present and empty. The
+contract version must match the one this CLI pins.
+
+`restricted` is the security property; `promotable` names a delivery decision
+and the CLI no longer reads it anywhere, including in the render inventory it
+persists — that record carries `restricted`, so a render produced by an older
+CLI shows a one-line change in `render-inventory.json` on its next render. An
+agent emitting only `promotable` is refused at the builder gate and, if it
+reached one, as persisted evidence.
+
+The CLI requests only two profiles: the restricted portable profile, and the
+ephemeral local-apply profile for a direct apply into a local cluster. A
+response naming any other profile is refused, and the local-apply profile is
+the one documented exemption from restricted-rendering evidence, because it
+produces no promotable artifact and nothing persists it.
+

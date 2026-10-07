@@ -85,7 +85,7 @@ func preserveReferenceDependents(ctx context.Context, workspace *resources.Works
 				visited[current] = true
 				queue = append(queue, dependents[current]...)
 				if live[current] {
-					addPlanSelection(selected, current, "dependent", "affected by reference declaration "+previous.unique, path)
+					addPlanSelection(selected, current, classificationDependent, "affected by reference declaration "+previous.unique, path)
 				}
 			}
 		}

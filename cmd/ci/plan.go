@@ -33,8 +33,8 @@ var PlanCmd = &cobra.Command{
 	Use:   "plan",
 	Short: "List directly changed services and their transitive dependents",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, _ []string) error {
-		if planReplay && !strings.EqualFold(strings.TrimSpace(planFormat), "json") {
+	RunE: func(_ *cobra.Command, _ []string) error {
+		if planReplay && !strings.EqualFold(strings.TrimSpace(planFormat), prereleaseFormatJSON) {
 			return fmt.Errorf("--replay requires --format json")
 		}
 		ctx, done := common.NewContext()
@@ -73,9 +73,9 @@ var PlanCmd = &cobra.Command{
 			}
 		}
 		switch strings.ToLower(strings.TrimSpace(planFormat)) {
-		case "", "text":
+		case "", prereleaseFormatText:
 			printPlan(plan)
-		case "json":
+		case prereleaseFormatJSON:
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			if err := enc.Encode(output); err != nil {
@@ -97,7 +97,7 @@ func init() {
 	PlanCmd.Flags().StringVar(&planHead, "head", "", "Head Git revision (defaults to HEAD when --base is set)")
 	PlanCmd.Flags().StringSliceVar(&planChangedFiles, "changed-file", nil, "Changed path supplied by the CI provider (repeatable; bypasses Git discovery)")
 	PlanCmd.Flags().BoolVar(&planAll, "all", false, "Select every service explicitly")
-	PlanCmd.Flags().StringVar(&planFormat, "format", "text", "Output format: text or json")
+	PlanCmd.Flags().StringVar(&planFormat, "format", prereleaseFormatText, "Output format: text or json")
 	PlanCmd.Flags().BoolVar(&planAllowServiceOverrides, "allow-service-overrides", false, "Plan against the machine-local per-service overrides in "+resources.LocalOverlayConfigurationName+" instead of refusing")
 }
 

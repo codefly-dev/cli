@@ -1,0 +1,17 @@
+kind: service
+name: gateway
+version: 0.0.0
+module: platform
+agent:
+    kind: runtime::service
+    name: go-grpc
+    version: 0.0.16
+    publisher: codefly.ai
+# A group that is also the composition root's own: it must be delivered once,
+# not twice, and identically by both paths.
+workspace-configuration-dependencies:
+    - work-context
+endpoints:
+    - name: rest
+      api: rest
+      visibility: public

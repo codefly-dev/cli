@@ -135,6 +135,539 @@ The `World` holds shared state that all managers can access:
 - `RemoteNetworkManager` -- manages port-forwarding for remote services
 - `ConfigurationManager` -- loads and distributes service configurations
 
+### Workspace configuration groups
+
+Every path that delivers workspace configuration groups to a service resolves
+them in one place, `pkg/orchestration/workspace_configurations.go`, by one rule:
+
+    the groups a service receives = the groups it declares
+        (`workspace-configuration-dependencies`)
+      ∪ the groups the composition root provides run-wide
+      − the groups the selected run profile excludes
+
+The composition root's own `configurations/<profile>/*` (and any
+invocation-scoped override) reach **every** service of the composition, so a
+composed module's service reads a root-provided value without redeclaring it. A
+group a composed module ships reaches only the services that declare it.
+
+**The rendered deployment is the source of truth for that set, and the local run
+resolves the identical one.** For a run of the whole composition, `codefly run`
+and `codefly deploy gitops render` hand a given service the same group names, and
+the same keys inside them *except where a rule below removes a key from both* —
+a credential the service does not declare is withheld in each path, not in one.
+Where a key reaches both, only the address family differs: a value naming
+`${endpoint:<module>/<service>/<endpoint>}` resolves to the producer's loopback
+address for a local run and to its in-cluster address in a render.
+
+The claim is about the two paths agreeing, not about every key arriving. An
+earlier wording said "the same keys inside them" without that qualification,
+which the credential rule and the three asymmetries both contradict.
+
+Three named asymmetries remain, below, and they are the reason that sentence says
+*a run of the whole composition*. **Every one of them leaves the run with fewer
+values than the render, never the reverse** — the direction that cannot produce
+"works locally, dials something unconfigured once deployed". A deployed workload
+never loses a value because of how someone ran things locally.
+
+A render that resolved fewer groups than a run would make "works locally, dials
+something unconfigured once deployed" a property of the pipeline rather than a
+mistake anyone made — the root supplies a value every service can read, the run
+delivers it, and the deployed service starts without it, naming a key it never
+saw or, worse, not noticing. A run resolving fewer would hide the mirror-image
+fault equally well. `TestRenderAndRunDeliverTheSameWorkspaceConfigurationGroups`
+renders a fixture composition both ways and diffs the per-service group set *and
+the keys of each group*; both diffs must be empty.
+
+#### The set is selected before anything is resolved
+
+The whole effective set drives producer discovery, and that ordering is the
+correctness condition rather than a tidiness one.
+
+Core resolves the root's run-wide groups **leniently**: a value whose
+`${endpoint:…}` a given consumer cannot resolve is dropped for that consumer
+rather than failing it, and an information block whose every value was dropped
+goes with them (core #393 — the leniency exists because a run-wide group reaches
+leaf services that never declared the producer). So a resolution that discovered
+producers from the declared groups alone deleted a root group's endpoint values
+from every service that did not declare the group, and a root group holding
+nothing but references disappeared whole, with no error anywhere. A group holding
+one literal beside its references keeps its *name*, which is why a parity
+assertion over group names cannot see the loss.
+
+Two things prevent it, and both are needed:
+
+- `effectiveWorkspaceConfigurationGroups` selects declared ∪ root − excluded
+  **before** `referencedProducerMappings` runs, so a reference carried by a group
+  the service never declared still gets its producer's addresses bound.
+- `refuseDroppedWorkspaceConfigurationValues` runs **after** resolution and
+  compares what was asked for with what arrived: every value whose loaded form
+  carried a reference must still be there. It reads the outcome rather than
+  predicting it, and that distinction is load-bearing — an earlier revision
+  predicted, asking whether the bound mappings held an endpoint of that identity
+  and treating yes as resolution, so a mapping with no instance for the
+  consumer's network access, an instance with an empty address, and a reference
+  missing its endpoint component all read as resolved while core dropped the
+  value and returned no error. Core's interpolation is the only thing that knows
+  whether it succeeded.
+
+  What a missing value means depends on the path, and in a render it does **not**
+  depend on run membership:
+
+  - A **render** refuses whenever the producer is a service of the workspace. A
+    deployed address is a pure function of identity and namespace, so it exists
+    for any service the workspace has — including one this render's flow does not
+    cover, which is the normal case: a render flow covers one root service's
+    build closure (`Flow.managerDependencies` → `Dependencies.Restrict`), and a
+    root group's reference adds no edge to it. Judging a render by run membership
+    exempted exactly the #882 case. There is no excused drop left here: a
+    producer the workspace does not have was the last one, and it is refused
+    before the outcome is examined at all.
+  - A **run** drops, with a WARN. A local address exists only for a service of
+    this run, so a producer outside it could never resolve here, and one inside
+    it may simply have no address yet.
+
+#### A composition-root group is not a way around an export boundary
+
+Widening the set that resolves widens what must be *checked*, and the check did
+not follow at first. Core's plan-time check
+(`configurations.CheckEndpointReferences`) validates every reference a consumer
+receives — it is well formed, the producer is a service of the workspace, that
+producer declares the endpoint named, and the endpoint is visible to the
+consumer's module — but it iterates the consumer's
+`workspace-configuration-dependencies`, **the declared groups only**. Its own
+comment gives the reason the visibility rule is there at all: without it,
+*declaring the group instead of the dependency would be the way around
+visibility*.
+
+While the render resolved declared groups only, a service that did not declare a
+root group never had the producer's mappings bound, so the boundary held by
+accident. Once every root-referenced producer is bound for every service, two
+things would otherwise follow:
+
+- a root group carrying `${endpoint:platform/authority/admin}` where that
+  endpoint's visibility is `private` (or `internal` without the consumer's module
+  in `allow-modules`) would hand its address to **every** service of the
+  composition, with nothing refusing it;
+- a typo'd producer in a root group — the one kind of group no service declares,
+  so the plan check never saw it — would be dropped from **every** service in
+  silence, which is the cli#882 fault itself.
+
+Both are checked now by handing core's own check the **effective** set in place
+of the consumer's declared one — core's rule reaching core's verdict over the
+wider set. Where each is *refused* differs, deliberately:
+
+- **A visibility violation is refused everywhere**: at the plan gate
+  (`CheckConfigurationReferences`, before anything is built or started) and
+  again when the value resolves
+  (`checkEffectiveWorkspaceConfigurationReferences`).
+- **A producer the workspace does not have is refused in both places**, by
+  core's own verdict. It used to be refused at the gate and merely dropped by
+  the resolution — the division this package has for declared groups — until a
+  dynamic review showed that to be a fail-open rather than a division: a typo
+  supplied through an invocation-scoped override reached the resolution while the
+  gate was still reading the configurations off disk, so nothing refused it
+  anywhere and the value was quietly absent. A guard that is only correct while a second guard is
+  also correct is not a guard.
+
+The gate reads the configurations **the run will actually resolve**, through
+`WorkspaceConfigurationsForChecking`, which loads a configuration reader rather
+than reading the directory. That is the only way to see an invocation-scoped
+override from outside core, because core applies them inside the loader
+(`applyWorkspaceConfigurationOverrides`), and it matters twice over: a
+`${endpoint:…}` an override supplies is checked like any other, and a group an
+override makes composition-root — the run itself is supplying the value, so it
+reaches every service — is recognised as one.
+
+**A render or a deploy refuses to start while an invocation-scoped override is
+set.** The loader applies it before anything resolves, so its values would be
+baked into the committed manifests, and an override makes its group
+composition-root even on a name a composed module provides — so it reaches every
+rendered service, not only the ones that declared the module's group. The carrier
+belongs to integration harnesses running against a throwaway workspace, so
+`NewFlow` refuses it in snapshot and deploy modes and a local run is untouched
+(`refuseInvocationOverridesInARender`). Asking an operator not to set it was
+advice, not a guard.
+
+**An invocation-scoped workspace configuration override is not `--set`.** It is
+carried in `CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES`, core's private
+SDK-to-CLI carrier, which an integration harness sets; the CLI itself sets it
+nowhere and has no flag for it. `codefly run --set <service>:KEY=VAL` is a
+different mechanism — a per-service runtime environment override, documented in
+`docs/commands.md` — and a `${endpoint:…}` written in one of those is neither
+checked nor interpolated. An earlier revision of these docs named `--set` here;
+that was wrong, and an operator reading it would have believed a reference they
+typed on the command line was being checked.
+
+**One snapshot orders the run, checks it, and resolves it.** `NewFlow` takes that
+same invocation-aware read once and uses it for the dependency graph's ordering
+edges as well, because two reads were a fault: the graph used to be ordered from
+the directory while the gate validated the overridden values, so an override
+that redirects a reference to a *different* producer left the run's closure
+holding the producer named on disk. The gate then accepted the new reference —
+nothing is wrong with it — and the resolution dropped the value, because core
+drops a reference to a producer the run does not contain rather than failing the
+consumer. Delivered false, error nil: cli#882's own shape, reached through the
+mechanism added to check for it. A snapshot that cannot be taken is not fatal in
+`NewFlow` itself — every mode that resolves a configuration passes the gate,
+which fails closed, and the modes that skip the gate (build, sync) resolve none.
+
+Loading a reader is also what fixes the lifecycle: this gate runs inside
+`InitManagers`, and the loader the flow registers only populates its
+composition-root names in `Load`, which runs afterwards. Reading that loader
+here returned nothing, so the gate quietly checked declared groups only. The
+same call is the single place the composition-root names are derived, so there
+is no CLI-side "not `ComposedBy` ⇒ root" rule any more: it asks core's loader.
+
+Root groups are judged against the **whole workspace**, not the plan's graph. A
+root group reaches every service of every run, including a module-closure run
+whose graph is a slice of the workspace, and judging it against that slice would
+report a real producer as "not a service of this workspace" and refuse the run.
+Whether a producer is in *this* run is not a plan-time question.
+
+##### What this refuses that used to be tolerated
+
+This is a **behaviour change for existing compositions**, and it can refuse a
+render or a run that worked before. Two shapes:
+
+- An endpoint with **no `visibility:` at all defaults to `private`** (core's
+  `Endpoint` post-load). So a composition-root group referencing such an
+  endpoint used to have that one value quietly dropped for every service outside
+  the producer's module, and now fails them by name — in `codefly run`, in a
+  render, in `codefly doctor` and in CI. The value was never reaching those
+  services; what changes is that they say so instead of starting without it,
+  which is the whole point of #882. The fix in the composition is to declare the
+  visibility the reference needs (`public`, or `internal` with the consuming
+  module in `allow-modules`), or to stop referencing a private endpoint from a
+  group every service receives.
+- Core's deprecated `visibility: module` **permits** rather than refuses — it is
+  an alias for `internal` with every module allowed
+  (`resources.Endpoint.AllowsModule`) — so a reference to one of those is
+  unaffected.
+
+A root group's reference to a producer the workspace does not have is also
+refused at the plan gate now, where before it was dropped for every service in
+silence.
+
+##### Checking a reference and resolving it are two different selections
+
+Handing core's check the effective set closes the group-as-a-way-around-visibility
+hole. It does **not** make the check and the resolution agree about *which*
+endpoint a reference names, and an earlier revision of this document claimed it
+did:
+
+- `configurations.checkEndpointReference` walks the producer's **manifest
+  endpoints** and returns on the first one the reference matches.
+- `resources.resolveEndpointReference` walks the **bound mappings** and returns
+  the first one that matches *and* has an instance for the consumer's network
+  access, falling through to the next match otherwise.
+
+A reference may name an API rather than an endpoint
+(`${endpoint:platform/authority/rest}` where the producer declares two `rest`
+endpoints), in which case it matches both. The check then passes on whichever
+comes first in the manifest, and the resolution can pick the other one — because
+the agent published the mappings in a different order, or because the endpoint
+the check approved has no instance for this consumer's access (an agent may drop
+a view it cannot serve). With a public and a private endpoint sharing an API,
+that hands a private endpoint's address to a consumer whose module may not reach
+it, with no error anywhere.
+
+So the bound set is filtered as well: `World.exportableTo` keeps only the
+mappings whose endpoint passes `resources.ValidateEndpointVisibility` for the
+consumer's module — core's rule again, applied to what the resolution walks
+rather than to what the check reads. A private sibling is then not in the set to
+fall through to. It narrows only, and never within a module:
+`ValidateEndpointVisibility` returns nil when the consumer and the producer share
+one, so a service reading its own module's endpoints is untouched.
+
+**Which endpoint a reference names is core's answer, not this package's.**
+
+`resources.SelectEndpointForReference` (core#702) answers it once, and both
+core's plan-time check and core's resolution ask it:
+
+- an endpoint whose **name** is the reference's token wins, and nothing else may
+  answer — not a sibling bound earlier, and not a sibling that has an address for
+  this consumer's access when the named endpoint does not;
+- an exact name the consumer may **not** reach is **refused** with the
+  visibility reason, never replaced by a permitted sibling sharing its API;
+- with no exact name, the candidates are the API matches the consumer may reach,
+  and the reference must come to exactly **one** — several are **ambiguous and
+  refused** rather than settled by declaration order;
+- candidates are scoped to the producer the reference names, so another
+  service's endpoint sharing the token is not a candidate.
+
+The resolution then binds **only the selected endpoint**, by name. So order is
+not part of the answer, a sibling can never answer, a producer publishing several
+mappings for one endpoint is simply several places to look, and an endpoint with
+no address for this access is reported as that rather than substituted.
+
+This package passes core the two inputs it cannot read off the mappings —
+`ForConsumerModule(consumerModule, declaredEndpoints)`: who the consumer is,
+which is the export boundary, and what each producer declares, which is the only
+input distinguishing *the endpoint you named is not running* from *you named an
+API*. The manifest comes from the same producer lookup the plan gate reads, so
+the manifest the resolution selects against and the one the check judges against
+are one source.
+
+It used to model this here instead, because core matched by API and took the
+first match: a removal pass that unbound a producer's endpoints that were only
+ever the wrong answer, an ordering pass that arranged one mapping list so every
+reference met its own endpoint first, refusals for the pairs no order could
+serve, and finally a verification pass that replayed core's scan over the list it
+was about to hand over. That is 615 lines, and it is gone. Four review rounds
+each found the model diverging from core somewhere new — the last in an
+interaction between two individually-correct rules, found by a random search
+rather than by reading. A caller can order and prune the mappings it hands over,
+but it cannot stop core matching by API, so every rule it writes to compensate is
+a second model of a scan it does not own.
+
+Two compositions changed outcome with the move, and both are improvements:
+
+- a reference naming an endpoint **private** to the producer's module is now
+  refused with the visibility reason, where it used to be answered quietly by the
+  public endpoint sharing its API. That case was named here as an open gap;
+- endpoints named after each other's APIs — (name `grpc`, api `rest`) and
+  (name `rest`, api `grpc`), both referenced by name — now both resolve. They
+  needed contradictory orders and so were refused; nothing was ever wrong with
+  that composition.
+
+Refused references arrive as core's own structured findings, so they carry a
+consumer, a group, a key and a reason rather than one opaque message. The
+`codefly doctor` line for an ambiguous finding still falls through to the generic
+remediation, which is a follow-up named in the PR.
+
+- **A mapping that does not say which endpoint it is does not get bound.** The
+  filter identifies a mapping by its endpoint's name, with the mapping's API
+  checked for consistency against the manifest. Matching a nameless mapping by
+  API cannot establish which endpoint carries the address: a mapping of
+  `{Name: "", Api: "rest"}` holding the private endpoint's address was judged
+  against the first API match, approved as public, and then returned by core's
+  interpolator, which matches the retained mapping by API.
+
+Together they leave one identified endpoint per mapping, and — for a reference
+whose exact name the consumer may reach — one candidate for the resolution to
+pick. **What they do not cover:** an exact name the consumer may *not* reach
+loses to a permitted API sibling, and manifest order then decides which address
+the value gets, with no error. That case is a follow-up, named in the PR, and the
+honest form of it is to refuse with the visibility reason rather than resolve to
+something else. The durable fix is still core's: judge visibility for **every**
+endpoint a reference can match, prefer an exact name, refuse an ambiguous one,
+and resolve only to the endpoint that was judged.
+
+##### A composition root's credentials are not run-wide
+
+A root group's non-secret values reach every service. **Its credentials reach
+only the services that declare the group** (`workspace-configuration-dependencies`),
+in a run and in a render alike — `withheldCredentials`, decided once per service
+and used by the reference check, producer discovery, the plan gate and delivery.
+
+The reason is that making the render resolve root groups, which is the #882 fix,
+would otherwise have widened least privilege as a side effect. Before it, a
+render delivered declared groups only, so a root group's credential reached the
+services that declared it. Afterwards every workload of the composition would
+receive every root credential as a mandatory `secretKeyRef`: compromising any one
+service would yield all of them, and the environment's store would hold a copy of
+each credential per service. Nothing about #882 asks for that.
+
+Both delivery paths withhold, so the parity this section is about is intact — the
+run does not give a service a credential its deployment lacks, and the render
+does not give it one the run lacked.
+
+A **structured** secret — `configurations/<profile>/<name>.secret.yaml`, which
+core loads as an information block with no key/value entries — is withheld whole,
+by group. It also has to be: a promotable render refuses a structured secret
+outright ("requires typed Kubernetes key references"), so while the root's
+`.secret.yaml` reached every service, no service of the composition could be
+rendered at all.
+
+And the decision is made **before** anything is checked or resolved, in the
+resolution **and at the plan gate**. A value a service does not receive imposes no
+obligation on it: a withheld credential whose `${endpoint:…}` names an endpoint
+private to the producer's module, or a producer whose address nothing can derive,
+used to refuse the render of every service that would never read it — and, while
+only the resolver was fixed, still refused their *plan*, which stops `codefly
+run`, a render, a dev deploy and `codefly doctor` alike. A guard that refuses
+what the thing it guards would have allowed is a contradiction, not a division of
+labour. The same reference still refuses the service that *declares* the group,
+which is where the obligation belongs.
+
+One step is **not** fixed here: core resolves every root group's secrets inside
+`GetCompositionRootWorkspaceConfigurations`, before the CLI can remove what this
+service does not receive. So a withheld credential is still read from the secret
+backend for a consumer that will never get it, and a missing backend or a failed
+authentication fails that consumer's resolution. The value is discarded before
+delivery — it reaches no workload, no manifest and no store plan — but the read
+happens. Fixing it needs a core API that resolves a named subset; it is listed
+with the other core changes below. What an operator meets is that a service
+needing a root credential must say so, which is the same thing a declared group
+has always required. "Credential" is the render's own classifier: an explicit
+`secret:` flag, or a credential-named key (`resources.IsSensitiveKey`) — exactly
+what promotes a value to a `secretKeyRef` and what `codefly deploy secrets` plans
+a store entry for.
+
+**The durable fixes are in core,** and the above are shims until they land:
+
+- let `configurations.CheckEndpointReferences` take the effective group set, so
+  the plan-time check and this resolution stop being two selections of the same
+  thing;
+- make `configurations.checkEndpointReference` and
+  `resources.resolveEndpointReference` agree on which endpoint a reference names
+  — judge every endpoint a reference can match, or refuse an ambiguous reference,
+  and resolve only to the endpoint that was judged;
+- give `configurations.Manager` an accessor for the composition-root group names
+  it accumulates across **all** its loaders (in `LoadConfigurations`), so the CLI
+  can read the manager's union instead of binding the capability on the one
+  loader it registers;
+- let a run profile exclude a composition-root group that no service declares:
+  `resources.ResolveRunProfile` builds its inventory of known group names from
+  service declarations, so such a name is rejected as unknown and the group
+  cannot be excluded at all;
+- let the dependency mappings a consumer is handed be what
+  `PermittedDependencyEndpoints` grants. A **bare** service dependency — one
+  naming no endpoints — is handed every mapping its producer published
+  (`StateManager.GetDependenciesNetworkMappings` narrows by the dependency's
+  endpoint list, never by visibility), so a cross-module private endpoint's
+  address was in the set a `${endpoint:…}` resolves against. The CLI filters that
+  set now (`World.exportableTo`), which is the consumer-side half;
+- refuse `CODEFLY__WORKSPACE_CONFIGURATION_OVERRIDES` outside a local
+  environment in the loader itself, so the guard does not depend on every caller
+  having one;
+- let a caller resolve a NAMED SUBSET of the composition root's groups, or
+  filter before secret resolution:
+  `Manager.GetCompositionRootWorkspaceConfigurations` resolves every root group's
+  secrets before interpolation (`configurations/manager.go`,
+  `configurations/secrets.go`), so a credential the CLI is about to withhold is
+  read from the backend anyway and a backend failure fails a consumer that does
+  not receive it;
+- expose the manager's authoritative inventory of composition-root group names
+  (the same gap as the accessor above), so a World cannot resolve groups it
+  cannot classify — the CLI refuses that construction now, which is a guard on
+  the binding rather than on the inventory;
+- make the shared configuration resolution safe for simultaneous readers.
+  `Manager.resolveWorkspaceConfiguration` mutates the loader's `Info` protos in
+  place and publishes into `resolvedWorkspace` without a lock
+  (`configurations/manager.go`), and the secret cache and value publication in
+  `configurations/secrets.go` do the same, so two concurrent cold reads of one
+  manager race. The CLI reaches it through this resolution and through
+  `pkg/control/checks.go`'s `Configurations()`; the normal playbook executes
+  serially, so no CLI path is known to trigger it today.
+
+The root's group names come from the manager's own loaders (core's
+`configurations.Loader.CompositionRootWorkspaceConfigurationNames`) and are bound
+on the `World` at the one place a loader is registered. A `World` that cannot
+name a root group would plan producer discovery without it, so
+`requireKnownRootGroup` refuses such a group rather than delivering it with its
+references resolved against nothing.
+
+#### The three asymmetries that remain, and why none is the fault above
+
+- A [run profile](commands.md#codefly-run-service)'s
+  `exclude-workspace-configurations` trims the **run** only — build and
+  deployment operations ignore profiles.
+
+- **A root group's `${endpoint:…}` does not order the run**, so under
+  `--temporary-ports` its producer may have no address yet. Core's dependency
+  graph orders a consumer after the producers of the groups it *declares*
+  (`ServiceDependencies.addConfigurationReferenceEdges`, core
+  `architecture/service_dependencies.go`, reads a consumer's
+  `workspace-configuration-dependencies` and no more), so nothing puts the
+  producer of a root group's reference first.
+
+  Note what this does **not** mean, because the earlier wording here had the
+  mechanism wrong: with deterministic ports a consumer that merely starts early
+  still resolves, because a producer's address is derived from the endpoints it
+  recorded at **Load**, and every service of a run loads before any initializes.
+  The value is lost only where no address can exist yet — under
+  `--temporary-ports`, where each address is allocated at initialization
+  (`codefly ci`, `test --temporary-ports`), or where the producer recorded no
+  endpoint at all. There it is dropped; a *declared* group's reference is
+  ordered, so the same failure there stays a hard error.
+  `TestARunWithTemporaryPortsDropsARootReferenceItCannotPlaceYet` pins the drop,
+  and `TestARenderRefusesARootReferenceNoAddressCanBeDerivedFor` pins that the
+  render refuses rather than emitting a manifest with the value missing.
+
+- **A run of fewer services than the composition does not contain the producer**
+  a root group references. `codefly run payments/worker` runs the worker and its
+  dependency closure, and a root group's reference adds no edge to that closure,
+  so the producer is not in the run and has no local address: the value is
+  dropped. The render of that same one service derives the producer's address
+  anyway — a deployed address is a function of identity and namespace rather than
+  of run membership — so it delivers the value.
+  `TestASingleServiceRunDropsARootReferenceTheRenderResolves` pins both halves.
+
+All three leave the **run** with less than the render, never the reverse, which
+is the direction that cannot produce "works locally, unconfigured once
+deployed". None of them is a reason the **render** may lose a value: a render
+refuses a lost value whenever the workspace has the producer, whatever this
+render's flow happens to cover.
+
+A value dropped for any of these reasons is logged at **WARN**, naming the
+consumer, the producer and the reference. Core's own drop is a DEBUG line, and a
+configuration value going missing without a word is the fault this section exists
+to remove.
+
+#### A root override of a composed group: per key for a module, wholesale for a workspace
+
+This is **core's** behaviour, not this package's, and the two halves differ in a
+way worth knowing because it interacts with the rule above.
+
+A consuming workspace that declares a group a composed module also provides wins
+the name — that is the intended rule, so a solution can override a composed
+configuration without redeclaring everything the host brings. For a composed
+**module's** group it wins **per key**
+(`configurations.composeModuleWorkspaceConfigurations`, core
+`configurations/local_reader.go`):
+
+- a key the root does not supply keeps the module's value;
+- a `${profile}` requirement the root does not discharge survives the override
+  and is reported, so `Load` fails naming it;
+- a root value that **empties** a `${profile}` key is refused by name
+  (`configurations.ErrEmptyProfileValue`), and a key the module's group does not
+  declare is refused by name (`configurations.ErrUndeclaredProfileKey`) — the
+  root is overriding nothing, which is a typo rather than a declaration;
+- the group **stays composed**, so this package delivers it to the services that
+  declared it and not to every service of the composition.
+
+That is a change: until `core v0.9.1` the override was wholesale, which lost the
+module's defaults for every key the root did not mention, discarded the
+`${profile}` markers among them (so an empty override discharged a value that
+must differ per environment — exactly what the marker exists to refuse) and
+reclassified the group as the composition root's own, widening its delivery to
+every service. It was filed as
+[codefly-dev/core#693](https://github.com/codefly-dev/core/issues/693) and fixed
+in [core#694](https://github.com/codefly-dev/core/pull/694), released as
+`v0.9.1` and pinned here. The interim operator rule that stood in this section —
+declare every key of the group or none — is gone with it.
+
+One case still replaces whole: a group inherited from a composed **workspace**
+(the product model), because the precedence there has to be decided per key for
+the product model first. So when a *workspace* is the thing you compose, declare
+**every** key of the group you override, or override none of them. An
+invocation-scoped override is unchanged either way — still attributed to the run,
+still composition-root even on a composed name.
+
+`TestAPartialRootOverrideOverlaysAComposedModuleGroupPerKey`
+(`pkg/orchestration`) pins all of this against core directly and names the core
+function, so the CLI's expectations move when core's do.
+
+One reporting gap follows from the provenance rule and is not yet addressed: an
+overridden group stays attributed to its module, so `codefly doctor workspace`
+credits the module and lists nothing under the workspace's own configurations,
+even though the operator's file is sitting in `configurations/<env>`. The
+override is applied; only the report is quiet about where it came from.
+
+#### The consequence an operator meets
+
+A root group's values are subject to the render's own rules, which is the point
+of there being one resolved set: a credential-named value (or one declared
+`Secret`) is promoted to a `secretKeyRef` on the service's own Secret rather than
+rendered inline, so the environment's `service-secrets` store must hold that key
+for the projected ExternalSecret to materialize it.
+
+`codefly deploy secrets` discovers that key from the render. It does **not**
+necessarily supply the value: see [the render's secret
+consequence](commands.md#codefly-deploy-gitops-render-secret-consequence) for the sources its
+planner can reach and the refusal it reports when none of them covers the key.
+
 ## Playbook
 
 The `Playbook` is the execution engine. It receives actions, executes them through a policy, and produces follow-up actions.

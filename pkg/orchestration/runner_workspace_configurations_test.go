@@ -3,8 +3,10 @@ package orchestration
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/codefly-dev/core/architecture"
@@ -71,18 +73,49 @@ func loadedWorkspaceManager(t *testing.T, loader staticWorkspaceLoader) *configu
 	return manager
 }
 
+// loadedWorkspaceWorld is a World over one static loader, bound the way NewFlow
+// binds one: the manager and the composition-root group source come from the
+// same loader. Binding only the manager is not a lighter version of this — the
+// resolution plans producer discovery against the root's group names, so a World
+// that cannot name a root group refuses it (requireKnownRootGroup) rather than
+// resolve its references against nothing.
+// The tests built on this helper are the RUN path's pre-existing contract,
+// carried forward onto the shared resolution unchanged: the union, the
+// deduplication, the profile exclusions, the address family a consumer's
+// mappings give a reference. They are expected to pass against the behaviour
+// before this PR as well — that is what "carried forward unchanged" means — so
+// they are regression guards, not evidence that this PR changes anything. The
+// differential evidence is the root-only fixture
+// (workspace_configurations_parity_test.go) and the refusal tests. Each of
+// these is still killed by the targeted mutation of the behaviour it names:
+// removing the union deduplication fails TestWorkspaceConfigurationsForDeduplicatesOverlap,
+// and so on.
+func loadedWorkspaceWorld(t *testing.T, loader staticWorkspaceLoader) *World {
+	t.Helper()
+	return &World{
+		ConfigurationManager:  loadedWorkspaceManager(t, loader),
+		compositionRootGroups: loader.CompositionRootWorkspaceConfigurationNames,
+		// Also from the same loader: the configurations as loaded, pre
+		// interpolation. Without them the resolution can neither validate a
+		// reference nor notice a dropped value, so it refuses to resolve a
+		// group carrying one at all rather than do either silently.
+		providedWorkspaceConfigurationInfos: func() []*basev0.ConfigurationInformation {
+			return workspaceConfigurationInfos(loader.Configurations())
+		},
+	}
+}
+
 // A composed service reads the composition root's workspace configurations even
 // when it declares none of them as dependencies: the root set is unioned into
 // every service.
 func TestWorkspaceConfigurationsForInjectsCompositionRootSet(t *testing.T) {
-	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
+	world := loadedWorkspaceWorld(t, staticWorkspaceLoader{
 		confs: []*basev0.Configuration{
 			workspaceConfiguration("db", "url", "postgres://db"),
 			workspaceConfiguration("work-context", "authority-jwks-url", "https://jwks"),
 		},
 		rootConfigs: []string{"work-context"},
 	})
-	world := &World{ConfigurationManager: manager}
 
 	confs, err := world.workspaceConfigurationsFor(context.Background(), &resources.Service{}, nil, resources.NewNativeNetworkAccess())
 	require.NoError(t, err)
@@ -91,14 +124,13 @@ func TestWorkspaceConfigurationsForInjectsCompositionRootSet(t *testing.T) {
 
 // The union of declared dependencies and the composition-root set is returned.
 func TestWorkspaceConfigurationsForUnionsDeclaredAndRoot(t *testing.T) {
-	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
+	world := loadedWorkspaceWorld(t, staticWorkspaceLoader{
 		confs: []*basev0.Configuration{
 			workspaceConfiguration("db", "url", "postgres://db"),
 			workspaceConfiguration("work-context", "authority-jwks-url", "https://jwks"),
 		},
 		rootConfigs: []string{"work-context"},
 	})
-	world := &World{ConfigurationManager: manager}
 
 	confs, err := world.workspaceConfigurationsFor(context.Background(),
 		&resources.Service{WorkspaceConfigurationDependencies: []string{"db"}}, nil, resources.NewNativeNetworkAccess())
@@ -110,14 +142,13 @@ func TestWorkspaceConfigurationsForUnionsDeclaredAndRoot(t *testing.T) {
 // configuration (e.g. the root service declaring its own workspace config) is
 // emitted once, not duplicated.
 func TestWorkspaceConfigurationsForDeduplicatesOverlap(t *testing.T) {
-	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
+	world := loadedWorkspaceWorld(t, staticWorkspaceLoader{
 		confs: []*basev0.Configuration{
 			workspaceConfiguration("db", "url", "postgres://db"),
 			workspaceConfiguration("work-context", "authority-jwks-url", "https://jwks"),
 		},
 		rootConfigs: []string{"work-context"},
 	})
-	world := &World{ConfigurationManager: manager}
 
 	confs, err := world.workspaceConfigurationsFor(context.Background(),
 		&resources.Service{WorkspaceConfigurationDependencies: []string{"db", "work-context"}}, nil, resources.NewNativeNetworkAccess())
@@ -128,7 +159,7 @@ func TestWorkspaceConfigurationsForDeduplicatesOverlap(t *testing.T) {
 // Profile-excluded workspace configurations are dropped from both the declared
 // and the composition-root sets.
 func TestWorkspaceConfigurationsForExcludesProfiledConfigurations(t *testing.T) {
-	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
+	world := loadedWorkspaceWorld(t, staticWorkspaceLoader{
 		confs: []*basev0.Configuration{
 			workspaceConfiguration("db", "url", "postgres://db"),
 			workspaceConfiguration("work-context", "authority-jwks-url", "https://jwks"),
@@ -136,10 +167,7 @@ func TestWorkspaceConfigurationsForExcludesProfiledConfigurations(t *testing.T) 
 		},
 		rootConfigs: []string{"work-context", "managed-auth"},
 	})
-	world := &World{
-		ConfigurationManager:            manager,
-		excludedWorkspaceConfigurations: map[string]bool{"managed-auth": true},
-	}
+	world.excludedWorkspaceConfigurations = map[string]bool{"managed-auth": true}
 
 	confs, err := world.workspaceConfigurationsFor(context.Background(),
 		&resources.Service{WorkspaceConfigurationDependencies: []string{"db"}}, nil, resources.NewNativeNetworkAccess())
@@ -152,13 +180,34 @@ func TestWorkspaceConfigurationsForExcludesProfiledConfigurations(t *testing.T) 
 // same group gives a native consumer its loopback address and a deployed one its
 // in-cluster address.
 func TestWorkspaceConfigurationsForResolvesEndpointsFromConsumerMappings(t *testing.T) {
-	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
+	world := loadedWorkspaceWorld(t, staticWorkspaceLoader{
 		confs: []*basev0.Configuration{
 			workspaceConfiguration("platform", "gateway-endpoint", "http://${endpoint:saas/auth-gateway/rest}"),
 		},
 	})
-	world := &World{ConfigurationManager: manager}
-	service := &resources.Service{WorkspaceConfigurationDependencies: []string{"platform"}}
+	// A real workspace holding the producer, because a resolution that carries a
+	// reference and has no workspace to check it against is refused now: the
+	// lookup is what answers "does this producer exist and may this consumer see
+	// that endpoint", and a World without one used to resolve the reference
+	// unchecked. Binding it also means this test exercises the lookup rather
+	// than skipping it.
+	world.Workspace = writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: acme\nlayout: modules\nmodules:\n    - name: saas\n    - name: platform\n",
+		"modules/saas/module.codefly.yaml": "kind: module\nname: saas\nproject: acme\n" +
+			"domain: github.com/codefly-ai/acme/saas\nservices:\n    - name: auth-gateway\n",
+		"modules/saas/services/auth-gateway/service.codefly.yaml": "kind: service\nname: auth-gateway\nversion: 0.0.0\nmodule: saas\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
+			"endpoints:\n    - name: rest\n      api: rest\n      visibility: public\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: acme\n" +
+			"domain: github.com/codefly-ai/acme/platform\nservices:\n    - name: relay\n",
+		"modules/platform/services/relay/service.codefly.yaml": "kind: service\nname: relay\nversion: 0.0.0\nmodule: platform\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
+	})
+	// The consumer is loaded from that workspace rather than hand-built: core's
+	// reference check reads its identity, and a service with no module has none.
+	service, err := loadService(context.Background(), t, world.Workspace, "platform", "relay")
+	require.NoError(t, err)
+	service.WorkspaceConfigurationDependencies = []string{"platform"}
 	mappings := []*basev0.NetworkMapping{{
 		Endpoint: &basev0.Endpoint{Module: "saas", Service: "auth-gateway", Name: "rest", Api: "rest"},
 		Instances: []*basev0.NetworkInstance{
@@ -185,7 +234,12 @@ func TestWorkspaceConfigurationsForResolvesEndpointsFromConsumerMappings(t *test
 	_, err = world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewNativeNetworkAccess())
 	require.Error(t, err, "a reference to a producer of the run with no address fails, never an omitted key")
 	require.Contains(t, err.Error(), "platform/gateway-endpoint")
-	require.Contains(t, err.Error(), "producer saas/auth-gateway")
+	// Core v0.11.0 names what the manifest says — the endpoint — and locates the
+	// reference by position. The producer came from the value's tokens, so it is
+	// no longer echoed.
+	require.Contains(t, err.Error(), `names endpoint "rest"`)
+	require.Contains(t, err.Error(), "reference 1 of 1")
+	require.Contains(t, err.Error(), "platform/gateway-endpoint")
 
 	// A producer the run does not contain is not for this run: the consumer
 	// does not receive the key. Whether the workspace can resolve it at all is
@@ -220,10 +274,19 @@ func configurationsCarryKey(confs []*basev0.Configuration, name, key string) boo
 // consumer does not depend on — the composition root binding the host by its
 // own name for it. Before the producer initializes, the reference resolves to
 // the mappings its Init proposes, derived from the endpoints it recorded at
-// Load. A producer that is not in the run, such as one that is not a service of
-// the workspace, is not for this run: the read drops it for the consumer, and
-// the plan-time check refuses it before anything starts
-// (TestPlanConfigurationReferences).
+// Load.
+//
+// A producer that EXISTS but is outside this run is not for this run: the read
+// drops it for the consumer, because no local address exists for a service the
+// run does not contain. That is `platform/warden` below — a real service, real
+// endpoint, simply not in this run set.
+//
+// A producer that is not a service of the workspace at all is a different thing
+// and is REFUSED, by core's verdict, wherever the value resolves. It used to be
+// dropped here and refused only at the plan gate, which a dynamic review showed
+// to be a fail-open: a typo supplied through an override reached the resolution
+// while the gate was still reading the pre-override configurations, so nothing
+// refused it anywhere. The two cases are asserted separately below.
 func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testing.T) {
 	ctx := context.Background()
 	workspace, err := resources.LoadWorkspaceFromDir(ctx, "testdata/excluded-root-visibility")
@@ -235,18 +298,19 @@ func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testin
 	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
 	require.NoError(t, err)
 
-	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
+	loader := staticWorkspaceLoader{
 		confs: []*basev0.Configuration{{
 			Origin: resources.ConfigurationWorkspace,
 			Infos: []*basev0.ConfigurationInformation{{
 				Name: "platform",
 				ConfigurationValues: []*basev0.ConfigurationValue{
 					{Key: "accounts-endpoint", Value: "${endpoint:saas/accounts/connect}"},
-					{Key: "elsewhere", Value: "${endpoint:absent/service/http}"},
+					{Key: "elsewhere", Value: "${endpoint:platform/warden/rest}"},
 				},
 			}},
 		}},
-	})
+	}
+	manager := loadedWorkspaceManager(t, loader)
 	localNetwork, err := network.NewRuntimeManager(ctx, manager)
 	require.NoError(t, err)
 	world := &World{
@@ -254,6 +318,9 @@ func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testin
 		ConfigurationManager: manager, SharedState: sharedState, Dependencies: dependencies,
 		LocalNetworkManager: localNetwork,
 		runtimeContextFor:   func(*resources.Service) string { return resources.RuntimeContextNative },
+		providedWorkspaceConfigurationInfos: func() []*basev0.ConfigurationInformation {
+			return workspaceConfigurationInfos(loader.Configurations())
+		},
 	}
 
 	saas, err := workspace.LoadModuleFromName(ctx, "saas")
@@ -277,7 +344,33 @@ func TestWorkspaceConfigurationsForResolvesReferencedProducersOfTheRun(t *testin
 	resolved, err := resources.GetConfigurationValue(ctx, mixed[0], "platform", "accounts-endpoint")
 	require.NoError(t, err)
 	require.Regexp(t, `^http://localhost:\d+$`, resolved)
-	require.False(t, configurationsCarryKey(mixed, "platform", "elsewhere"), "a producer outside the run is dropped for the consumer")
+	require.False(t, configurationsCarryKey(mixed, "platform", "elsewhere"),
+		"a producer that exists but is outside the run is dropped for the consumer")
+
+	// And the other case, which is not a drop: a producer the workspace does not
+	// have is refused by core's own verdict rather than left to another gate.
+	absentLoader := staticWorkspaceLoader{
+		confs: []*basev0.Configuration{workspaceConfiguration("platform", "nowhere", "${endpoint:absent/service/http}")},
+	}
+	// Built fresh rather than copied from `world`: a World carries a sync.Once
+	// for its memoized producer lookup, and copying one is a `go vet` copylocks
+	// diagnostic — and would share the memoized verdict of a different
+	// workspace.
+	refusing := &World{
+		Env: env, Workspace: workspace,
+		ConfigurationManager: loadedWorkspaceManager(t, absentLoader),
+		SharedState:          sharedState,
+		Dependencies:         dependencies,
+		LocalNetworkManager:  localNetwork,
+		runtimeContextFor:    func(*resources.Service) string { return resources.RuntimeContextNative },
+		providedWorkspaceConfigurationInfos: func() []*basev0.ConfigurationInformation {
+			return workspaceConfigurationInfos(absentLoader.Configurations())
+		},
+	}
+	refusing.setRunProducers([]string{"saas/accounts"}, consumer)
+	_, err = refusing.workspaceConfigurationsFor(ctx, consumer, nil, resources.NewNativeNetworkAccess())
+	require.Error(t, err, "a producer that is not a service of the workspace must be refused, not dropped")
+	require.Contains(t, err.Error(), "not a service of this workspace")
 
 	manager = loadedWorkspaceManager(t, staticWorkspaceLoader{
 		confs: []*basev0.Configuration{workspaceConfiguration("platform", "accounts-endpoint", "${endpoint:saas/accounts/connect}")},
@@ -314,7 +407,9 @@ func TestConfigurationReferencesOrderTheRun(t *testing.T) {
 	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
 	require.NoError(t, err)
 
-	option := configurationReferenceOption(ctx, workspace, env)
+	provided, _, err := WorkspaceConfigurationsForChecking(ctx, workspace, env)
+	require.NoError(t, err)
+	option := configurationReferenceOptionFrom(provided)
 	require.NotNil(t, option)
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace, option)
 	require.NoError(t, err)
@@ -356,7 +451,9 @@ func TestConfigurationReferencesToAProducerDeclaredExternal(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, order, "the external declaration alone orders nothing")
 
-	option := configurationReferenceOption(ctx, workspace, env)
+	provided, _, err := WorkspaceConfigurationsForChecking(ctx, workspace, env)
+	require.NoError(t, err)
+	option := configurationReferenceOptionFrom(provided)
 	require.NotNil(t, option)
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace, option)
 	require.NoError(t, err)
@@ -368,9 +465,10 @@ func TestConfigurationReferencesToAProducerDeclaredExternal(t *testing.T) {
 
 	sharedState, err := NewStateManager(ctx, nil, dependencies)
 	require.NoError(t, err)
-	manager := loadedWorkspaceManager(t, staticWorkspaceLoader{
+	loader := staticWorkspaceLoader{
 		confs: []*basev0.Configuration{workspaceConfiguration("platform", "accounts-endpoint", "${endpoint:saas/accounts/connect}")},
-	})
+	}
+	manager := loadedWorkspaceManager(t, loader)
 	localNetwork, err := network.NewRuntimeManager(ctx, manager)
 	require.NoError(t, err)
 	world := &World{
@@ -378,6 +476,9 @@ func TestConfigurationReferencesToAProducerDeclaredExternal(t *testing.T) {
 		ConfigurationManager: manager, SharedState: sharedState, Dependencies: dependencies,
 		LocalNetworkManager: localNetwork,
 		runtimeContextFor:   func(*resources.Service) string { return resources.RuntimeContextNative },
+		providedWorkspaceConfigurationInfos: func() []*basev0.ConfigurationInformation {
+			return workspaceConfigurationInfos(loader.Configurations())
+		},
 	}
 	platform, err := workspace.LoadModuleFromName(ctx, "platform")
 	require.NoError(t, err)
@@ -396,7 +497,8 @@ func TestConfigurationReferencesToAProducerDeclaredExternal(t *testing.T) {
 	_, err = world.workspaceConfigurationsFor(ctx, relay, dependencyMappings, resources.NewNativeNetworkAccess())
 	require.Error(t, err, "a producer that never loaded has no address, so the read fails")
 	require.Contains(t, err.Error(), "platform/accounts-endpoint")
-	require.Contains(t, err.Error(), "producer saas/accounts")
+	require.Contains(t, err.Error(), `names endpoint "connect"`)
+	require.Contains(t, err.Error(), "platform/accounts-endpoint")
 
 	// The run orders the producer first, so it has loaded and recorded its
 	// endpoints by the time the consumer reads the group. Its address is then
@@ -452,6 +554,15 @@ func copyConfigurationReferencesWorkspace(t *testing.T, platformEnv string) *res
 // A run refuses a configuration error when its flow is planned, before any
 // service of the run set is created or started, and lists every unresolved
 // reference of every service in the run at once.
+//
+// `platform` is the composition root's own group, so EVERY service of the run
+// receives it — the consumer that declares it and the producer that does not.
+// Both are listed below for that reason, and that is the behaviour under test as
+// much as the refusal is: this gate runs inside InitManagers, and until the
+// group names were sourced from a read rather than from the loader (which Load
+// populates afterwards) it saw no root group at all and checked declared groups
+// only. If this test ever reports one consumer again, the gate has gone back to
+// doing nothing for root groups.
 func TestRunRefusesUnresolvedConfigurationReferencesBeforeStartingAnything(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
@@ -472,14 +583,20 @@ func TestRunRefusesUnresolvedConfigurationReferencesBeforeStartingAnything(t *te
 	err = flow.InitManagers(ctx)
 	var unresolved *configurations.UnresolvedReferencesError
 	require.True(t, errors.As(err, &unresolved), "want the plan-time refusal, got %v", err)
+	// A finding is located by consumer, key and POSITION: core v0.11.0 stopped
+	// carrying the reference's text, because a reference is text from a value
+	// and a value may be a secret. Position plus the key is enough to find it.
 	var got []string
 	for _, reference := range unresolved.References {
-		got = append(got, reference.Consumer+" "+reference.Key+" "+reference.Producer)
+		got = append(got, fmt.Sprintf("%s %s #%d", reference.Consumer, reference.Key, reference.Position))
 	}
+	slices.Sort(got)
 	require.Equal(t, []string{
-		"platform/relay accounts-admin saas/accounts",
-		"platform/relay documents-endpoint documents/store",
-	}, got)
+		"platform/relay accounts-admin #1",
+		"platform/relay documents-endpoint #1",
+		"saas/accounts accounts-admin #1",
+		"saas/accounts documents-endpoint #1",
+	}, got, "a root group's faults are reported for every service that receives it")
 	require.Empty(t, flow.hub.managers, "no service of the run set was created")
 }
 
@@ -495,7 +612,9 @@ func TestPlanConfigurationReferences(t *testing.T) {
 	root, err := warden.LoadServiceFromName(ctx, "warden")
 	require.NoError(t, err)
 	err = PlanConfigurationReferences(ctx, broken, env, []*resources.Service{root}, false)
-	require.ErrorContains(t, err, "platform/warden: platform/documents-endpoint = ${endpoint:documents/store/grpc} (producer documents/store)")
+	// The finding's shape in core v0.11.0: consumer, group/key, position and
+	// reason — no reference text, no producer taken from it.
+	require.ErrorContains(t, err, "platform/warden: platform/documents-endpoint, reference 1: the producer is not a service of this workspace")
 
 	workspace, err := resources.LoadWorkspaceFromDir(ctx, "testdata/configuration-references")
 	require.NoError(t, err)
@@ -536,7 +655,10 @@ func TestRunNamesTheExclusionThatLeftAReferenceWithNoProducer(t *testing.T) {
 	var unresolved *configurations.UnresolvedReferencesError
 	require.True(t, errors.As(err, &unresolved), "want the plan-time refusal, got %v", err)
 	require.Len(t, unresolved.References, 1)
-	require.Equal(t, "saas/accounts", unresolved.References[0].Producer)
+	// The producer is named in the reason this package writes — derived from the
+	// value it already holds, by the position core reported — so the operator
+	// still learns which excluded service caused it.
+	require.Contains(t, unresolved.References[0].Reason, "saas/accounts")
 	require.Contains(t, unresolved.References[0].Reason, "excluded from this run")
 	require.Contains(t, unresolved.References[0].Reason, `exclude the "platform" workspace configuration too`)
 	require.NotContains(t, unresolved.References[0].Reason, "not a service of this plan")
@@ -585,4 +707,241 @@ func TestRemoteBoundServiceIsNotCheckedForConfigurationReferences(t *testing.T) 
 	}})
 	err = remote.InitManagers(ctx)
 	require.False(t, errors.As(err, &unresolved), "a remote-bound service resolves no group, got %v", err)
+}
+
+// referenceValidityFlow builds the real Flow for the two-module composition
+// referenceValidityWorkspace describes: the origin is payments/worker, which
+// declares no workspace configuration group at all, so everything it receives is
+// the composition root's. That is what makes these tests about the gate's
+// extension rather than about its declared-group half.
+func referenceValidityFlow(t *testing.T, workspace *resources.Workspace, options ...FlowOption) *Flow {
+	t.Helper()
+	ctx := context.Background()
+	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+	payments, err := workspace.LoadModuleFromName(ctx, "payments")
+	require.NoError(t, err)
+	worker, err := payments.LoadServiceFromName(ctx, "worker")
+	require.NoError(t, err)
+	require.Empty(t, worker.WorkspaceConfigurationDependencies,
+		"the consumer must declare nothing for this to be about the effective set")
+
+	flow, err := NewFlow(ctx, workspace, payments, worker, env, RunMode, options...)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = flow.Stop() })
+	return flow
+}
+
+// The flow's plan gate sees a composition-root group's VISIBILITY violation,
+// and sees it at plan time rather than mid-run.
+//
+// It is the half of the gate extension nothing covered: the gate runs inside
+// InitManagers, and sourcing its group names from the loader returned nothing
+// there, because Load populates them afterwards. So a root group's reference
+// was checked for nobody until each service reached its own Init. This drives
+// the real Flow.
+//
+// It is a cross-module case on an endpoint that EXISTS. An earlier revision of
+// this test referenced an endpoint the producer did not declare, from a consumer
+// in the producer's own module — so it was a missing-endpoint test wearing a
+// visibility name, and it would have passed with the visibility rule removed
+// altogether. resources.ValidateEndpointVisibility returns nil within one
+// module, which is exactly why the consumer here is in the other one.
+func TestTheFlowPlanGateRefusesARootGroupsVisibilityViolation(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	for _, visibility := range []string{"private", "internal"} {
+		t.Run(visibility, func(t *testing.T) {
+			flow := referenceValidityFlow(t,
+				referenceValidityWorkspace(t, "platform/authority/admin", visibility))
+
+			err := flow.InitManagers(context.Background())
+			var unresolved *configurations.UnresolvedReferencesError
+			require.True(t, errors.As(err, &unresolved), "want the plan-time refusal, got %v", err)
+			require.NotEmpty(t, unresolved.References)
+			// Core's reason names what the MANIFEST says — the producing
+			// service and endpoint — rather than the reference's text.
+			require.Contains(t, unresolved.References[0].Reason, "authority")
+			require.Contains(t, unresolved.References[0].Reason, "payments",
+				"the refusal must name the module that may not see the endpoint")
+			// The reason is core's own visibility verdict, asserted so the test
+			// cannot pass on a different fault wearing the same name.
+			switch visibility {
+			case "private":
+				require.Contains(t, unresolved.References[0].Reason, "is private to module")
+			case "internal":
+				require.Contains(t, unresolved.References[0].Reason, "does not permit module")
+			}
+			require.Empty(t, flow.hub.managers, "no service of the run set was created")
+		})
+	}
+}
+
+// The same group with a visible endpoint passes the gate, so the test above is
+// about the boundary and not about root references refusing runs in general.
+//
+// It is a negative control, and that is a structural limit on what it can
+// prove: its assertion is the ABSENCE of a refusal, and the behaviour before
+// this PR refused nothing here either, so no rollback of this PR can make it
+// fail. The same is true of every "must not refuse" test in this package
+// (TestTheFlowPlanGateDoesNotRefuseARootProducerOutsideTheRunClosure,
+// TestARunDoesNotRefuseARootValueThatDidNotSurviveResolution,
+// TestARunWithTemporaryPortsDropsARootReferenceItCannotPlaceYet). What they
+// constrain is the refusal mechanism going too far, so they are killed by the
+// targeted mutation that widens it — not by removing it.
+func TestTheFlowPlanGateAcceptsAVisibleRootGroupReference(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	flow := referenceValidityFlow(t,
+		referenceValidityWorkspace(t, "platform/authority/admin", "public"))
+
+	err := flow.InitManagers(context.Background())
+	var unresolved *configurations.UnresolvedReferencesError
+	require.False(t, errors.As(err, &unresolved), "a visible root reference must pass the plan gate: %v", err)
+}
+
+// A module-closure run whose root group names a producer outside the closure is
+// NOT refused — the trap the gate had to avoid while being extended.
+//
+// The gate's lookup for a declared group is the plan's graph, where an excluded
+// producer is absent by design. A root group reaches every service of every run,
+// including a closure run (`--module`) whose graph is a slice of the workspace,
+// so judging a root group against that slice would report a perfectly real
+// producer as "not a service of this workspace" and refuse the run. Root groups
+// are therefore judged against the whole workspace: whether a producer is in
+// THIS run is not a plan-time question.
+//
+// The closure is REAL here, and that is the correction this test needed. Its
+// earlier shape built none — the flow's graph was the whole workspace, so the
+// producer was in it and the trap was never set; the test passed with root
+// groups judged against the plan graph, which is the mutation it exists to
+// catch. WithRunModuleClosure("payments") gives the flow a graph of the payments
+// module alone, and platform/authority is genuinely not in it.
+func TestTheFlowPlanGateDoesNotRefuseARootProducerOutsideTheRunClosure(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	workspace := referenceValidityWorkspace(t, "platform/authority/admin", "public")
+	flow := referenceValidityFlow(t, workspace, WithRunModuleClosure("payments"))
+
+	// The graph this run was given really does lack the producer: without this
+	// the test would be asserting the absence of a refusal that nothing could
+	// have produced.
+	_, err := flow.world.Dependencies.ServiceFromUnique("platform/authority")
+	require.Error(t, err, "the closure must not contain the producer, or the trap is not set")
+
+	err = flow.InitManagers(ctx)
+	var unresolved *configurations.UnresolvedReferencesError
+	require.False(t, errors.As(err, &unresolved),
+		"a legal root reference must not refuse a run just because this run is smaller than the workspace: %v", err)
+}
+
+// The flow's plan gate reads the configurations this invocation will RESOLVE,
+// overrides included — not the ones on disk.
+//
+// The two halves of this were separately correct and jointly silent. The gate
+// read the workspace configurations with a plain disk read, which cannot see an
+// invocation-scoped override, and the resolution tolerated a nonexistent
+// producer because "the gate refuses that". So a typo an operator supplied on
+// their own command line passed the gate reading a value it did not have, and
+// was then dropped by the resolution deferring to that gate — the value simply
+// absent, no error anywhere.
+//
+// PlanConfigurationReferences is pinned for this by
+// TestAnInvocationOverrideIsCheckedLikeAnyOtherReference; this pins the FLOW's
+// gate, which is the path `codefly run` takes and a different call site. Both
+// are needed: restoring the pre-override read in one of them leaves the other
+// green.
+func TestTheFlowPlanGateChecksAnInvocationOverride(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	// Correct on disk. The override is what breaks it.
+	workspace := referenceValidityWorkspace(t, "platform/authority/admin", "public")
+	encoded, err := resources.EncodeWorkspaceConfigurationOverrides([]resources.WorkspaceConfigurationOverride{
+		{Name: "work-context", Key: "authority-endpoint", Value: "${endpoint:platfrom/authority/admin}"},
+	})
+	require.NoError(t, err)
+	t.Setenv(resources.WorkspaceConfigurationOverridesEnvironment, encoded)
+
+	flow := referenceValidityFlow(t, workspace)
+	err = flow.InitManagers(ctx)
+	var unresolved *configurations.UnresolvedReferencesError
+	require.True(t, errors.As(err, &unresolved),
+		"a typo supplied through the override carrier must not pass the flow's plan gate, got %v", err)
+	// The typo itself is NOT echoed: core v0.11.0 carries no text from the
+	// value, and a mistyped producer is value text like any other. What the
+	// operator gets is the group, the key and which reference of that value it
+	// was — enough to find it in their own file — plus the reason.
+	require.Equal(t, "work-context", unresolved.References[0].Group)
+	require.Equal(t, 1, unresolved.References[0].Position)
+	require.Contains(t, unresolved.References[0].Reason, "not a service of this workspace")
+	require.NotContains(t, unresolved.References[0].Reason, "platfrom")
+	require.Empty(t, flow.hub.managers, "no service of the run set was created")
+}
+
+// A run profile that excludes a composition-root group excludes it from the
+// plan gate's ROOT half too.
+//
+// The exclusion is the one asymmetry this package allows: a profile's
+// `exclude-workspace-configurations` trims the run and never a render, so a
+// profile can leave the run with fewer groups than the render. A group no
+// service of the run receives must not refuse that run.
+//
+// Core's check reads the exclusions off the profile, and the gate's root half is
+// a restatement of each consumer carrying the groups it did not declare — handed
+// to that same check, with that same profile. So the exclusion holds for the
+// root half too, and `consumersWithRootGroupsOnly`'s own exclusion filter only
+// decides whether the second check is run at all. That is why removing it
+// changes no verdict: the layer-5 review reported that mutation as surviving,
+// and it survives because it is observationally equivalent, not because the
+// behaviour is unpinned. This test pins the behaviour, end to end, through the
+// real flow.
+//
+// (A composition-root group that NO service of the workspace declares cannot be
+// excluded by a profile at all: core builds its inventory of known group names
+// from service declarations, so `ResolveRunProfile` calls such a name unknown.
+// That is a core-side gap, named in the PR body, and the reason this test uses a
+// group one service declares and another receives run-wide.)
+func TestARunProfileExclusionAlsoExcludesARootGroupFromThePlanGate(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
+	// A producer no module of this workspace has, in the `platform` group:
+	// platform/relay declares that group, saas/accounts does not and receives it
+	// from the composition root.
+	//
+	// The resolvable reference beside it is what puts saas/accounts in the run
+	// set: a configuration reference is an ordering edge
+	// (WithConfigurationReferences), and relay's own dependency on accounts is
+	// `external`, which codefly never starts.
+	workspace := copyConfigurationReferencesWorkspace(t,
+		"accounts-endpoint=${endpoint:saas/accounts/connect}\n"+
+			"documents-endpoint=${endpoint:documents/store/grpc}\n")
+	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+	platform, err := workspace.LoadModuleFromName(ctx, "platform")
+	require.NoError(t, err)
+	relay, err := platform.LoadServiceFromName(ctx, "relay")
+	require.NoError(t, err)
+
+	refusing, err := NewFlow(ctx, workspace, platform, relay, env, RunMode)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = refusing.Stop() })
+	var unresolved *configurations.UnresolvedReferencesError
+	require.True(t, errors.As(refusing.InitManagers(ctx), &unresolved),
+		"the group's unresolvable reference must refuse the run while the run receives the group")
+	var consumers []string
+	for _, reference := range unresolved.References {
+		consumers = append(consumers, reference.Consumer)
+	}
+	require.Contains(t, consumers, "saas/accounts",
+		"the root half must be what covers a consumer that declares nothing, or this test excludes nothing")
+
+	excluded, err := workspace.ResolveRunProfile(ctx, "", resources.RunProfile{
+		ExcludeWorkspaceConfigurations: []string{"platform"},
+	})
+	require.NoError(t, err)
+	passing, err := NewFlow(ctx, workspace, platform, relay, env, RunMode)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = passing.Stop() })
+	require.NoError(t, passing.WithRunProfile(excluded))
+	err = passing.InitManagers(ctx)
+	require.False(t, errors.As(err, &unresolved),
+		"a group this run does not receive must not refuse it: %v", err)
 }

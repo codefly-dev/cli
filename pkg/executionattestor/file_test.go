@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -145,9 +146,23 @@ func testReceipt() *executionv1.ExecutionReceiptV1 {
 			AuthorizationRevision: 4, ReplayPolicy: "idempotent",
 			TenantId: "tenant-codefly", OwnerPrincipalId: "principal-antoine",
 			TaskId: "task-1", SessionId: "session-1",
+			// Core v0.9.1 requires the seal: a capability names the
+			// installation it is held through and the execution it was minted
+			// for. The execution pair is optional but must be whole.
+			Seal: &basev0.WorkSealV1{
+				PrincipalEpoch:       1,
+				InstallationId:       "installation-warden",
+				InstallationRevision: 3,
+				BuildIncarnation:     uint64Pointer(7),
+				ImageDigest:          stringPointer("sha256:" + strings.Repeat("a", 64)),
+			},
 		},
 		WorkContextSha256: hex.EncodeToString(contextDigest[:]),
 		Target:            &executionv1.ExecutionTargetV1{WorkspaceId: "workspace-codefly", Service: "warden"},
 		StartedAt:         timestamppb.New(started),
 	}
 }
+
+func uint64Pointer(value uint64) *uint64 { return &value }
+
+func stringPointer(value string) *string { return &value }

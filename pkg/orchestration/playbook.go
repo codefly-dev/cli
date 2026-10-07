@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -20,8 +19,7 @@ type PlaybookPolicy interface {
 }
 
 type Playbook struct {
-	dependencies *architecture.ServiceDependencies
-	policy       PlaybookPolicy
+	policy PlaybookPolicy
 
 	world *World
 
@@ -106,7 +104,7 @@ func (playbook *Playbook) WithSignallerFunc(signaller CreateSignalFunc) *Playboo
 	return playbook
 }
 
-func NewPlaybook(ctx context.Context, world *World) (*Playbook, error) {
+func NewPlaybook(_ context.Context, world *World) (*Playbook, error) {
 	return &Playbook{
 		world:     world,
 		pause:     NewPauseManager(world),
@@ -175,10 +173,8 @@ func (playbook *Playbook) Executed() []Action {
 		return nil
 	}
 	playbook.lock.RLock()
-	var out []Action
-	for _, action := range playbook.executed {
-		out = append(out, action)
-	}
+	out := make([]Action, 0, len(playbook.executed))
+	out = append(out, playbook.executed...)
 	playbook.lock.RUnlock()
 	return out
 }
@@ -198,7 +194,7 @@ func (playbook *Playbook) ignore(ctx context.Context, action Action) bool {
 	return playbook.ignorer != nil && playbook.ignorer(ctx, action)
 }
 
-func (playbook *Playbook) previouslyExecuted(ctx context.Context, action Action) bool {
+func (playbook *Playbook) previouslyExecuted(_ context.Context, action Action) bool {
 	executed := playbook.Executed()
 	for _, a := range executed {
 		if a == action {
@@ -296,7 +292,7 @@ func (playbook *Playbook) WithIgnore(ignore IgnoreFunc) {
 	playbook.ignorer = ignore
 }
 
-func (playbook *Playbook) signal(ctx context.Context, action Action) {
+func (playbook *Playbook) signal(_ context.Context, action Action) {
 	if playbook.signaller != nil {
 		playbook.signaller.signal(playbook, action)
 	}

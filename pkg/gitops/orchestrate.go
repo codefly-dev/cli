@@ -500,9 +500,6 @@ func renderServiceFlow(
 	}
 	flow.WithDeploymentManager(gitOpsDeploymentOutputManager{})
 	flow.WithDeploymentDestination(destination)
-	flow.WithKubernetesOutputProfile(
-		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1,
-	)
 	if err := flow.Deploy(ctx); err != nil {
 		return err
 	}

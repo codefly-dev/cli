@@ -39,7 +39,7 @@ type AgentStatus struct {
 	Issues     []string
 }
 
-func runRelease(cmd *cobra.Command, args []string) error {
+func runRelease(cmd *cobra.Command, _ []string) error {
 	baseDir := os.Getenv("CODEFLY_DEV_DIR")
 	if baseDir == "" {
 		baseDir = filepath.Join(os.Getenv("HOME"), "development/deus")
@@ -69,11 +69,12 @@ func runRelease(cmd *cobra.Command, args []string) error {
 
 	for _, status := range statuses {
 		deltaStr := fmt.Sprintf("%+d", status.Delta)
-		if status.Delta > 50 {
+		switch {
+		case status.Delta > 50:
 			deltaStr = color.RedString(deltaStr)
-		} else if status.Delta > 20 {
+		case status.Delta > 20:
 			deltaStr = color.YellowString(deltaStr)
-		} else {
+		default:
 			deltaStr = color.GreenString(deltaStr)
 		}
 

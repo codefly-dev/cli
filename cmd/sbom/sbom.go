@@ -28,7 +28,7 @@ var ServiceCmd = &cobra.Command{
 	Use:   "service [name]",
 	Short: "Generate a CycloneDX SBOM for one service through its agent",
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		defer services.ClearAgents()
@@ -63,7 +63,7 @@ var WorkspaceCmd = &cobra.Command{
 	Use:   "workspace",
 	Short: "Generate CycloneDX SBOMs for every service in the workspace",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, _ []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		defer services.ClearAgents()

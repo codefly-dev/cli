@@ -1827,10 +1827,9 @@ Flags:
 ```
       --dir string                          Working directory containing mind.yaml (default ".")
       --execution-authority-issuer string   Exact Work Context issuer
-      --execution-authority-jwks string     HTTPS JWKS URL for Work Context verification
       --execution-exporter stringArray      Installed execution-exporter agent specification (repeatable)
       --execution-state-dir string          Owner-only execution key and receipt state directory (defaults per workspace)
-      --governed-execution                  Enable signed Work Context admission and durable receipts for supported ApplyEdit/Test effects
+      --governed-execution                  Arm durable execution receipt state and its recovery. A governed request is still REFUSED: this process holds none of the sources needed to verify a Work Context
       --port int                            gRPC listen port (default 50051)
 ```
 
@@ -1906,11 +1905,10 @@ Flags:
 ```
       --dir string                          Working directory for gateway (requires --gateway) (default ".")
       --execution-authority-issuer string   Exact Work Context issuer
-      --execution-authority-jwks string     HTTPS JWKS URL for Work Context verification
       --execution-exporter stringArray      Installed execution-exporter agent specification (repeatable)
       --execution-state-dir string          Owner-only execution key and receipt state directory (defaults per workspace)
       --gateway                             Start the Mind Gateway gRPC server instead of running services
-      --governed-execution                  Enable signed Work Context admission and durable receipts for supported ApplyEdit/Test effects
+      --governed-execution                  Arm durable execution receipt state and its recovery. A governed request is still REFUSED: this process holds none of the sources needed to verify a Work Context
       --port int                            gRPC port for gateway (requires --gateway) (default 50051)
 ```
 

@@ -103,6 +103,16 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err != nil {
 		return RenderResult{}, err
 	}
+	// The unit graph and its Kubernetes output evidence are checked HERE, where
+	// the inventory is produced and installed. Every other entry point that
+	// reads an inventory validates it; this one wrote and installed its own
+	// without doing so, so a unit graph that no loader would accept — including
+	// output evidence that is not restricted — was still what the tree shipped
+	// with. A producer that validates less than its readers is the fault, not
+	// the readers.
+	if err = validateInventoryUnits(&inventory); err != nil {
+		return RenderResult{}, fmt.Errorf("validate rendered inventory: %w", err)
+	}
 	canonical, err := json.MarshalIndent(inventory, "", "  ")
 	if err != nil {
 		return RenderResult{}, fmt.Errorf("encode render inventory: %w", err)
@@ -384,25 +394,25 @@ func validateInventoryContracts(unit *InventoryUnit) error {
 
 func validateInventoryKubernetesOutput(service string, output *KubernetesOutputInventory) error {
 	if output == nil {
-		return fmt.Errorf("service %s has no promotable Kubernetes output evidence", service)
+		return fmt.Errorf("service %s has no restricted Kubernetes output evidence", service)
 	}
 	if output.Kind != builderv0.KubernetesDeploymentOutput_KUSTOMIZE.String() ||
-		output.Profile != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1.String() ||
+		output.Profile != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1.String() ||
 		output.ContractVersion != coreservices.KubernetesManifestContractVersion {
 		return fmt.Errorf("service %s has incompatible Kubernetes output evidence", service)
 	}
 	if output.Validation == nil {
-		return fmt.Errorf("service %s has no promotable Kubernetes validation evidence", service)
+		return fmt.Errorf("service %s has no restricted Kubernetes validation evidence", service)
 	}
 	passed := builderv0.KubernetesManifestValidation_STATUS_PASSED.String()
 	notRun := builderv0.KubernetesManifestValidation_STATUS_NOT_RUN.String()
 	serverSideValidation := output.Validation.ServerSideValidation
 	if output.Validation.StaticValidation != passed ||
 		(serverSideValidation != passed && serverSideValidation != notRun) ||
-		!output.Validation.Promotable ||
+		!output.Validation.Restricted ||
 		output.Validation.Violations == nil ||
 		len(output.Validation.Violations) != 0 {
-		return fmt.Errorf("service %s has failed promotable Kubernetes validation evidence", service)
+		return fmt.Errorf("service %s has failed restricted Kubernetes validation evidence", service)
 	}
 	return nil
 }

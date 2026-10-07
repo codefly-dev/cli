@@ -40,6 +40,8 @@ import (
 	"github.com/codefly-dev/cli/pkg/control"
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/executionrecorder"
+	"github.com/codefly-dev/cli/pkg/gateway/effect"
+	"github.com/codefly-dev/cli/pkg/testrun"
 	codecore "github.com/codefly-dev/core/code"
 	"github.com/codefly-dev/core/failures"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -53,6 +55,7 @@ import (
 	githubtoolbox "github.com/codefly-dev/core/toolbox/github"
 	"github.com/codefly-dev/core/wool"
 	wotel "github.com/codefly-dev/core/wool/otel"
+	workcontext "github.com/codefly-dev/sdk-go/workcontext"
 	workcontextgrpc "github.com/codefly-dev/sdk-go/workcontext/grpctransport"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
@@ -109,7 +112,7 @@ type Config struct {
 // ExecutionRecorder is the narrow neutral lifecycle capability used by the
 // Gateway. Warden and every other exporter stay behind Codefly's plugin API.
 type ExecutionRecorder interface {
-	Begin(context.Context, workcontextgrpc.ExecutionContext, executionrecorder.BeginInput) (executionrecorder.BeginResult, error)
+	Begin(context.Context, workcontextgrpc.ExecutionContext, *workcontext.Verified, executionrecorder.BeginInput) (executionrecorder.BeginResult, error)
 	RecoverIncomplete(context.Context, int) (int, error)
 }
 
@@ -346,6 +349,36 @@ func (s *Server) requireConfig() error {
 }
 
 // Serve starts the gRPC server and blocks until stopped.
+// serverOptions is the served gRPC configuration, in one place.
+//
+// It is a method rather than a literal inside Serve because the effect
+// boundary is only worth anything if it is in the chain a real client goes
+// through: a test that assembles its own chain proves its own chain. See
+// TestTheServedChainRefusesAGovernedEffect.
+func (s *Server) serverOptions() []grpc.ServerOption {
+	options := grpcconfig.TypedMessageServerOptions()
+	options = append(options,
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+		// Authenticate, then admit. The effect boundary runs for EVERY method,
+		// unary and streaming, which is the whole point: a governed effect is
+		// refused before its handler, rather than at the three call sites that
+		// remembered to ask.
+		grpc.ChainUnaryInterceptor(
+			gatewayAuthUnaryInterceptor(s.cfg.Token),
+			effect.UnaryInterceptor(),
+			rpcLogInterceptor(),
+		),
+		grpc.ChainStreamInterceptor(
+			gatewayAuthStreamInterceptor(s.cfg.Token),
+			effect.StreamInterceptor(),
+		),
+	)
+	if s.tlsConfig != nil {
+		options = append(options, grpc.Creds(credentials.NewTLS(s.tlsConfig.Clone())))
+	}
+	return options
+}
+
 func (s *Server) Serve(ctx context.Context) error {
 	w := wool.Get(ctx).In("gateway.Serve")
 	lifecycleContext, cancelLifecycle := context.WithCancel(ctx)
@@ -383,16 +416,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
 
-	serverOptions := grpcconfig.TypedMessageServerOptions()
-	serverOptions = append(serverOptions,
-		grpc.StatsHandler(otelgrpc.NewServerHandler()),
-		grpc.ChainUnaryInterceptor(gatewayAuthUnaryInterceptor(s.cfg.Token), rpcLogInterceptor()),
-		grpc.StreamInterceptor(gatewayAuthStreamInterceptor(s.cfg.Token)),
-	)
-	if s.tlsConfig != nil {
-		serverOptions = append(serverOptions, grpc.Creds(credentials.NewTLS(s.tlsConfig.Clone())))
-	}
-	s.grpcSrv = grpc.NewServer(serverOptions...)
+	s.grpcSrv = grpc.NewServer(s.serverOptions()...)
 	gatewayv1.RegisterGatewayServer(s.grpcSrv, s)
 
 	if err := writePortFile(s.cfg.Port); err != nil {
@@ -2058,24 +2082,42 @@ func (s *Server) headRevision(ctx context.Context) string {
 	return commits[0].SHA
 }
 
+// validateOptionalExecutionContext rejects a malformed execution context while
+// leaving a request that carries none alone.
+//
+// Presence is no longer a library question: sdk-go's grpctransport dropped the
+// three-value form, so absence is simply its error path. The two cases are told
+// apart HERE, by looking for the carrier in the metadata, and that has to be
+// this package's business — a gateway serving ungoverned callers cannot treat
+// "no capability" as a fault, and must not treat "a capability that does not
+// parse" as absence either.
 func validateOptionalExecutionContext(ctx context.Context) error {
-	_, _, err := workcontextgrpc.GRPCExecutionContextFromIncomingIfPresent(ctx)
-	if err != nil {
+	if !effect.Carried(ctx) {
+		return nil
+	}
+	if _, err := workcontextgrpc.GRPCExecutionContextFromIncoming(ctx); err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid Codefly execution context: %v", err)
 	}
 	return nil
 }
 
+// beginGovernedExecution brackets an effect with a receipt when the request is
+// governed, and reports whether it was.
+//
+// The transport boundary (pkg/gateway/effect) refuses a governed effect before
+// any handler runs, so in a served gateway this function sees only ungoverned
+// requests. It stays, and keeps refusing through the SAME function, because an
+// in-process caller reaches a method without passing an interceptor: the rule
+// must not be reachable in one path and absent in another.
 func (s *Server) beginGovernedExecution(
 	ctx context.Context,
 	input executionrecorder.BeginInput,
 ) (*executionrecorder.Attempt, bool, error) {
-	execution, present, err := workcontextgrpc.GRPCExecutionContextFromIncomingIfPresent(ctx)
-	if err != nil {
-		return nil, false, status.Errorf(codes.InvalidArgument, "invalid Codefly execution context: %v", err)
-	}
-	if !present {
+	if !effect.Carried(ctx) {
 		return nil, false, nil
+	}
+	if _, err := workcontextgrpc.GRPCExecutionContextFromIncoming(ctx); err != nil {
+		return nil, false, status.Errorf(codes.InvalidArgument, "invalid Codefly execution context: %v", err)
 	}
 	if s.executionRecorder == nil {
 		return nil, true, status.Error(
@@ -2083,30 +2125,11 @@ func (s *Server) beginGovernedExecution(
 			"Codefly execution authority was supplied but governed execution is not configured",
 		)
 	}
-	result, err := s.executionRecorder.Begin(ctx, execution, input)
-	if err != nil {
-		if errors.Is(err, executionrecorder.ErrConflict) {
-			return nil, true, status.Errorf(
-				codes.AlreadyExists,
-				"governed operation identity conflict: %v",
-				err,
-			)
-		}
-		return nil, true, status.Errorf(codes.PermissionDenied, "governed execution admission failed: %v", err)
-	}
-	if result.Existing != nil {
-		receipt := result.Existing.Attestation.GetReceipt()
-		return nil, true, status.Errorf(
-			codes.AlreadyExists,
-			"operation %q already has durable stage %s; effect was not re-executed",
-			receipt.GetOperationId(),
-			receipt.GetStage(),
-		)
-	}
-	if result.Attempt == nil {
-		return nil, true, status.Error(codes.Internal, "governed execution admission returned no attempt")
-	}
-	return result.Attempt, true, nil
+	// REFUSED, not admitted — through effect.RefuseGoverned, which is the one
+	// refusal and carries the reasoning. The admission path that used to
+	// follow is deleted rather than left unreachable behind it: a
+	// compatibility path nobody takes is still a path somebody can re-enable.
+	return nil, true, effect.RefuseGoverned()
 }
 
 func finishGovernedExecution(
@@ -2197,22 +2220,15 @@ func errorCode(value string) *string {
 	return &value
 }
 
+// runtimeTestSuccess is pkg/testrun's rule and nothing else.
+//
+// The two fallbacks that stood here are deleted. The deprecated status field
+// answered for an agent that set no run result, and below it "no failures were
+// counted" answered for an agent that set neither — which is also exactly what
+// a run that never executed looks like, so an empty TestResponse reported
+// SUCCESS.
 func runtimeTestSuccess(resp *runtimev0.TestResponse) bool {
-	if resp == nil {
-		return false
-	}
-	if result := resp.GetResult(); result != nil {
-		switch result.GetState() {
-		case runtimev0.TestRunResult_PASSED:
-			return true
-		case runtimev0.TestRunResult_FAILED, runtimev0.TestRunResult_ERRORED, runtimev0.TestRunResult_TIMED_OUT:
-			return false
-		}
-	}
-	if status := resp.GetStatus(); status != nil {
-		return status.GetState() == runtimev0.TestStatus_SUCCESS
-	}
-	return resp.GetTestsFailed() == 0 && len(resp.GetFailures()) == 0
+	return testrun.Passed(resp)
 }
 
 func runtimeTestOutput(resp *runtimev0.TestResponse, success bool) string {
@@ -2226,6 +2242,12 @@ func runtimeTestOutput(resp *runtimev0.TestResponse, success bool) string {
 	var msg string
 	if result := resp.GetResult(); result != nil {
 		msg = result.GetMessage()
+	}
+	if msg == "" && testrun.State(resp) == runtimev0.TestRunResult_UNKNOWN {
+		// Without this an agent reporting nothing produced Success:false with
+		// an empty output, which reads as "the tests failed and said nothing"
+		// rather than "no verdict was returned".
+		msg = testrun.NoVerdictMessage
 	}
 	if msg == "" {
 		if status := resp.GetStatus(); status != nil {

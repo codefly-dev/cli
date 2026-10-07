@@ -176,7 +176,7 @@ Examples:
   codefly clear neo4j postgres      # both
   codefly clear --keep-processes neo4j  # only the container, leave running codefly alone
   codefly clear --dry-run           # list what would be removed without doing it`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
 		ctx, stop := common.SignalContext(ctx)
@@ -226,11 +226,12 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 			w.Warn("cannot enumerate codefly processes", wool.ErrField(err))
 			failures = append(failures, err)
 		}
-		if options.dryRun {
+		switch {
+		case options.dryRun:
 			w.Info("would kill codefly processes", wool.Field("count", len(pids)), wool.Field("pids", pids))
-		} else if len(pids) == 0 {
+		case len(pids) == 0:
 			w.Info("no codefly processes running")
-		} else {
+		default:
 			killed := 0
 			for _, pid := range pids {
 				p, err := os.FindProcess(pid)
@@ -368,15 +369,14 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 		}
 		removed++
 	}
-	if removed == 0 {
-		if len(args) > 0 {
-			w.Info("no containers matched filter", wool.Field("filter", args))
-		} else {
-			w.Info("no codefly containers found")
-		}
-	} else if options.dryRun {
+	switch {
+	case removed == 0 && len(args) > 0:
+		w.Info("no containers matched filter", wool.Field("filter", args))
+	case removed == 0:
+		w.Info("no codefly containers found")
+	case options.dryRun:
 		w.Info("containers would be removed", wool.Field("count", removed))
-	} else {
+	default:
 		w.Info("removed containers", wool.Field("count", removed))
 	}
 	clearNixDataNote(w)

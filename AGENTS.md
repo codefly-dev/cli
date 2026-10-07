@@ -181,6 +181,38 @@ relative paths.
   fleet pins or provider toolchains in CLI gates. Agent behavior is tested by its owner.
 - **The orchestration package is the most critical code.** Changes there affect every
   `codefly run`. Test thoroughly.
+- **A deployed service receives the same workspace configuration groups it receives
+  under `run`.** The set is declared ∪ the composition root's, resolved once in
+  `pkg/orchestration/workspace_configurations.go`; the render is the source of truth and
+  `run` matches it. Never resolve groups in a delivery path of your own, and **select
+  the whole set before resolving anything**: core drops a root group's unresolvable
+  `${endpoint:…}` silently, so discovering producers from the declared groups alone
+  deletes values from every service that did not declare the group. Widening what
+  resolves widens what must be **checked**: core's plan-time
+  `CheckEndpointReferences` validates visibility and producer existence over the
+  *declared* groups only, so the effective set is handed to that same check, or a
+  root group becomes the way around a producer's export boundary. Checking a
+  reference and resolving it are **one** selection, in core
+  (`resources.SelectEndpointForReference`, core#702): the exact name wins, an
+  exact name the consumer may not reach is refused rather than replaced by a
+  permitted API sibling, an ambiguous reference is refused, and only the selected
+  endpoint is bound. They used to be two — the check stopping at the first
+  manifest endpoint a reference matched, the resolution taking the first bound
+  mapping with an instance for the consumer's access — and this package spent
+  615 lines ordering, pruning and finally replaying core's scan to keep them in
+  step. Pass core the consumer and the producer's manifest
+  (`Manager.ForConsumerModule`) instead of modelling its scan beside it. The
+  mappings bound for a consumer are still filtered by visibility
+  (`World.exportableTo`), which is assembly rather than selection: a private
+  address never enters the resolution at all. The filter covers the consumer's
+  own dependency mappings as well — a **bare** dependency is handed every
+  endpoint its producer published — and judges from the producer's manifest,
+  never from the mapping an agent reported. And a root group's **credentials** are not
+  run-wide: they reach the services that declare the group, in run and in render,
+  so making the render resolve root groups does not hand every workload every
+  credential; a value a service does not receive is decided **before** anything
+  is checked or resolved, so it imposes no obligation on that service. See
+  [docs/orchestration.md](docs/orchestration.md#workspace-configuration-groups).
 - **Configs flow as environment variables, not files.** Connection strings derived from network
   mappings are injected as `CODEFLY__SERVICE_...` env vars.
 - **Daemon state lives in `~/.codefly/`** (override with `CODEFLY_HOME`). PID file, logs, agent

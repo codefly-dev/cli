@@ -20,7 +20,6 @@ import (
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"github.com/codefly-dev/core/resources"
 	coreservices "github.com/codefly-dev/core/services"
-	workcontext "github.com/codefly-dev/sdk-go/workcontext"
 )
 
 const (
@@ -39,7 +38,6 @@ var ErrInvalid = errors.New("invalid Codefly execution runtime configuration")
 type Config struct {
 	WorkDir         string
 	StateDir        string
-	AuthorityJWKS   string
 	AuthorityIssuer string
 	Release         string
 	ExporterSpecs   []string
@@ -88,9 +86,6 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(config.AuthorityJWKS) == "" {
-		return nil, fmt.Errorf("%w: authority JWKS URL is required", ErrInvalid)
-	}
 	if strings.TrimSpace(config.AuthorityIssuer) == "" {
 		return nil, fmt.Errorf("%w: authority issuer is required", ErrInvalid)
 	}
@@ -132,15 +127,18 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 		}
 	}()
 
-	verifier, err := workcontext.NewWorkContextJWKSVerifier(workcontext.WorkContextJWKSVerifierOptions{
-		URL: config.AuthorityJWKS,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("configure Work Context JWKS verifier: %w", err)
-	}
+	// No verifier is constructed, and that is the design rather than a gap.
+	// Core's Verifier requires the authorization revision, the replay store,
+	// the grant source and the SEAL source; this process holds none of them,
+	// and one fed invented state would PASS rather than fail. The JWKS
+	// verifier that stood here was from the JSON era and is deleted with its
+	// flag and its config field: a flag that exists only to refuse is a
+	// compatibility shim.
+	//
+	// The recorder therefore authorizes a capability its caller has already
+	// verified, and refuses when there is none.
 	authority, err := executionrecorder.NewWorkContextAuthority(
 		executionrecorder.WorkContextAuthorityConfig{
-			Verifier: verifier,
 			Issuer:   config.AuthorityIssuer,
 			Audience: executionrecorder.ExecutionWorkContextAudience,
 		},

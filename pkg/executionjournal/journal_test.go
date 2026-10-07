@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -406,11 +407,24 @@ func receiptForStage(stage executionv1.ExecutionStage) *executionv1.ExecutionRec
 			}},
 			ActorChain: []*basev0.WorkActorV1{{
 				PrincipalId: "principal-claude", PrincipalKind: "agent", DelegationId: "delegation-1",
+				// Each hop of the chain carries its own epoch, so advancing one
+				// principal's epoch cuts off only that hop's capabilities.
+				PrincipalEpoch: 1,
 				GrantedScopes: []*basev0.WorkScopeV1{{
 					ResourceKind: "evidence", Actions: []string{"append"}, ResourceIds: []string{"codefly.execution"},
 				}},
 			}},
 			WorkspaceId: &workspaceID, ProjectId: &projectID,
+			// Core v0.9.1 requires the seal: a capability names the
+			// installation it is held through and the execution it was minted
+			// for. The execution pair is optional but must be whole.
+			Seal: &basev0.WorkSealV1{
+				PrincipalEpoch:       1,
+				InstallationId:       "installation-warden",
+				InstallationRevision: 3,
+				BuildIncarnation:     uint64Pointer(7),
+				ImageDigest:          stringPointer("sha256:" + strings.Repeat("a", 64)),
+			},
 		},
 		WorkContextSha256: hex.EncodeToString(contextDigest[:]),
 		Target:            &executionv1.ExecutionTargetV1{WorkspaceId: workspaceID, Service: "warden", ProjectId: &projectID},
@@ -448,3 +462,5 @@ func stageName(stage executionv1.ExecutionStage) string {
 func stringPointer(value string) *string {
 	return &value
 }
+
+func uint64Pointer(value uint64) *uint64 { return &value }
