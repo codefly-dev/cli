@@ -14,12 +14,16 @@ import (
 // service's own declaration — in both directions.
 //
 // core#711 made the export boundary derived: Module.applyInterface stamps each
-// endpoint with the visibility and allow-list the module's interface exports it
-// at, keeping the service's authored values aside, and core calls that "the
-// single place the boundary is applied". The CLI reaches it by loading
-// producers through the workspace — Workspace.LoadServices → LoadService →
+// endpoint with the visibility the module's interface exports it at, keeping
+// the service's authored values aside, and core calls that "the single place
+// the boundary is applied". Since core v0.14.0 (core#717) an interface entry
+// states reach only — `internal` (any module of the composition) or `public`
+// — and names nobody: narrowing is omitting the endpoint from the interface,
+// which keeps it private, and an authored allow-list is refused by key. The
+// CLI reaches the derived declaration by loading producers through the
+// workspace — Workspace.LoadServices → LoadService →
 // Module.LoadServiceFromName → loadServiceFromReference → applyInterface — so
-// what World.exportableTo judges is already the derived declaration.
+// what World.exportableTo judges is already the module's export.
 //
 // Nothing asserted that. The CLI's export-boundary tests build producer
 // declarations by hand, so every one of them would pass against a producer
@@ -29,9 +33,10 @@ import (
 // what core#711 says must not decide a consumer's reach.
 //
 // The fixture makes the two disagree on purpose, so neither case can pass by
-// coincidence: the service authors PUBLIC while the module exports internally
-// to a third module, and the service authors PRIVATE while the module exports
-// it publicly.
+// coincidence: the service authors PUBLIC while the module's interface omits
+// the endpoint (exporting only a sibling), and the service authors PRIVATE
+// while the module exports it publicly, or internally to every module of the
+// composition.
 func TestTheModuleInterfaceDecidesReachAndNotTheService(t *testing.T) {
 	for _, test := range []struct {
 		name              string
@@ -41,25 +46,28 @@ func TestTheModuleInterfaceDecidesReachAndNotTheService(t *testing.T) {
 		becauseTheService string
 	}{
 		{
-			name:              "the module narrows what the service published",
-			authored:          "public",
-			interfaceEntry:    "visibility: internal\n      allow-modules:\n        - billing\n",
+			name:     "the module narrows what the service published",
+			authored: "public",
+			// The interface exports `admin` and omits `api`, which keeps `api`
+			// private: omission is how a module narrows, since an entry can
+			// only say internal or public and never name who.
+			interfaceEntry:    "endpoint: admin\n      visibility: internal\n",
 			expectReachable:   false,
 			becauseTheService: "authored public, which must not win",
 		},
 		{
 			name:              "the module widens what the service kept private",
 			authored:          "private",
-			interfaceEntry:    "visibility: public\n",
+			interfaceEntry:    "endpoint: api\n      visibility: public\n",
 			expectReachable:   true,
 			becauseTheService: "authored private, which must not win either",
 		},
 		{
-			name:              "the module names the consumer explicitly",
+			name:              "the module exports it internal, naming nobody",
 			authored:          "private",
-			interfaceEntry:    "visibility: internal\n      allow-modules:\n        - payments\n",
+			interfaceEntry:    "endpoint: api\n      visibility: internal\n",
 			expectReachable:   true,
-			becauseTheService: "authored private",
+			becauseTheService: "authored private; internal permits every module of the composition",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -68,11 +76,14 @@ func TestTheModuleInterfaceDecidesReachAndNotTheService(t *testing.T) {
 				// The module's interface IS the export declaration.
 				"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: derivation\n" +
 					"domain: github.com/codefly-ai/derivation/platform\n" +
-					"interface:\n  endpoints:\n    - service: authority\n      endpoint: api\n      " + test.interfaceEntry +
+					"interface:\n  endpoints:\n    - service: authority\n      " + test.interfaceEntry +
 					"services:\n    - name: authority\n",
+				// `admin` is a sibling the interface can export instead of `api`;
+				// no mapping below carries it.
 				"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 					"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
-					"endpoints:\n    - name: api\n      api: rest\n      visibility: " + test.authored + "\n",
+					"endpoints:\n    - name: api\n      api: rest\n      visibility: " + test.authored + "\n" + statedExposure(test.authored) +
+					"    - name: admin\n      api: rest\n",
 				"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: derivation\n" +
 					"domain: github.com/codefly-ai/derivation/payments\nservices:\n    - name: worker\n",
 				"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +

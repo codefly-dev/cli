@@ -22,10 +22,10 @@ func overrideOrderingWorkspace(t *testing.T) *resources.Workspace {
 			"domain: github.com/codefly-ai/ordering/platform\nservices:\n    - name: authority\n    - name: gateway\n",
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
-			"endpoints:\n    - name: rest\n      api: rest\n      visibility: public\n",
+			"endpoints:\n    - name: rest\n      api: rest\n      visibility: public\n      exposure: none\n",
 		"modules/platform/services/gateway/service.codefly.yaml": "kind: service\nname: gateway\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
-			"endpoints:\n    - name: rest\n      api: rest\n      visibility: public\n",
+			"endpoints:\n    - name: rest\n      api: rest\n      visibility: public\n      exposure: none\n",
 		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: ordering\n" +
 			"domain: github.com/codefly-ai/ordering/payments\nservices:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +

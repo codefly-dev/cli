@@ -80,7 +80,7 @@ func writeAuthorityWorkspace(t *testing.T) (*resources.Workspace, *resources.Mod
 	workspace := writeHostedWorkspace(t)
 	files := map[string]string{
 		filepath.Join("modules", "shop", resources.ModuleConfigurationName):                     "kind: module\nname: shop\nservices:\n  - name: api\n",
-		filepath.Join("modules", "shop", "services", "api", resources.ServiceConfigurationName): hostedServiceYAML("api", "shop") + "module-identity: true\n",
+		filepath.Join("modules", "shop", "services", "api", resources.ServiceConfigurationName): exposedHostedServiceYAML("api", "shop") + "module-identity: true\n",
 		filepath.Join("modules", "shop", modulecontract.FileName):                               authorityContract,
 		filepath.Join("modules", "shop", "module.package.codefly.yaml"):                         "schema: codefly/module-package/v1\nid: acme/shop\nversion: 1.2.0\n",
 		filepath.Join("configurations", "staging", "assistant.env"):                             "MODEL_AUDIENCE=model-gateway\nMODEL_RESOURCE_KIND=modelservice.profiles\nANNOTATIONS_PREFIX=annotations\n",

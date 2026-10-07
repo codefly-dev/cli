@@ -106,9 +106,12 @@ func TestRenderOwnedTreeIsDeterministicAndReplacesOnlyOwnedDestination(t *testin
 // nothing about restricted rendering.
 //
 // The old test copied the legacy boolean and asserted it survived, which would
-// pass without `restricted` being enforced anywhere.
+// pass without `restricted` being enforced anywhere. core v0.14.0 then deleted
+// `promotable` from the wire and reserved its number, so there is no delivery
+// decision left for an agent to report in its place: the property's presence
+// admits, and its absence is what admission refuses.
 func TestInventoryKubernetesOutputRequiresTheRestrictedSecurityProperty(t *testing.T) {
-	evidenceFor := func(restricted, promotable bool) *KubernetesOutputInventory {
+	evidenceFor := func(restricted bool) *KubernetesOutputInventory {
 		return inventoryKubernetesOutput(&builderv0.DeploymentOutput{
 			Kind: &builderv0.DeploymentOutput_Kubernetes{
 				Kubernetes: &builderv0.KubernetesDeploymentOutput{
@@ -119,38 +122,37 @@ func TestInventoryKubernetesOutputRequiresTheRestrictedSecurityProperty(t *testi
 						StaticValidation:     builderv0.KubernetesManifestValidation_STATUS_PASSED,
 						ServerSideValidation: builderv0.KubernetesManifestValidation_STATUS_PASSED,
 						Restricted:           restricted,
-						Promotable:           promotable,
 					},
 				},
 			},
 		})
 	}
 
-	// Restricted and NOT promotable: the combination that passes the builder
-	// gate. It must be acceptable persisted evidence too, or the two gates
-	// disagree about the same output.
-	restrictedOnly := evidenceFor(true, false)
-	if restrictedOnly == nil || restrictedOnly.Validation == nil || !restrictedOnly.Validation.Restricted {
-		t.Fatalf("the security property was not carried into the inventory: %+v", restrictedOnly)
+	// Restricted: the combination that passes the builder gate. It must be
+	// acceptable persisted evidence too, or the two gates disagree about the
+	// same output.
+	restricted := evidenceFor(true)
+	if restricted == nil || restricted.Validation == nil || !restricted.Validation.Restricted {
+		t.Fatalf("the security property was not carried into the inventory: %+v", restricted)
 	}
-	if restrictedOnly.Kind != "KUSTOMIZE" ||
-		restrictedOnly.Profile != "KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1" ||
-		restrictedOnly.ContractVersion != coreservices.KubernetesManifestContractVersion ||
-		restrictedOnly.Validation.Violations == nil {
-		t.Fatalf("evidence = %+v", restrictedOnly)
+	if restricted.Kind != "KUSTOMIZE" ||
+		restricted.Profile != "KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1" ||
+		restricted.ContractVersion != coreservices.KubernetesManifestContractVersion ||
+		restricted.Validation.Violations == nil {
+		t.Fatalf("evidence = %+v", restricted)
 	}
-	if err := validateInventoryKubernetesOutput("api", restrictedOnly); err != nil {
+	if err := validateInventoryKubernetesOutput("api", restricted); err != nil {
 		t.Fatalf("restricted evidence was refused by admission: %v", err)
 	}
 
-	// Promotable and NOT restricted: refused. The delivery decision says
-	// nothing about whether the manifests are restricted.
-	promotableOnly := evidenceFor(false, true)
-	if promotableOnly.Validation.Restricted {
-		t.Fatal("the delivery decision was copied into the security property")
+	// Not restricted: refused. Nothing else an agent reports stands in for the
+	// security property.
+	unrestricted := evidenceFor(false)
+	if unrestricted.Validation.Restricted {
+		t.Fatal("the security property was invented by the inventory")
 	}
-	if err := validateInventoryKubernetesOutput("api", promotableOnly); err == nil {
-		t.Fatal("output claiming only the delivery decision was admitted")
+	if err := validateInventoryKubernetesOutput("api", unrestricted); err == nil {
+		t.Fatal("output without the security property was admitted")
 	}
 }
 

@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -224,21 +225,42 @@ func environmentKeys(body string) []string {
 
 // dependencyMappingOf is a producer endpoint as the dependency graph surfaces
 // it to the runner: the "saas/accounts" module publishing one named endpoint.
-func dependencyMappingOf(name, visibility string, allow ...string) *basev0.NetworkMapping {
+// A public endpoint states its exposure — none here: nothing in these tests
+// has an address reachable from outside the workspace — because the verdict
+// judges the declaration whole before it judges the consumer.
+func dependencyMappingOf(name, visibility string) *basev0.NetworkMapping {
+	exposure := ""
+	if visibility == string(resources.VisibilityPublic) {
+		exposure = resources.ExposureNone
+	}
 	return &basev0.NetworkMapping{
 		Endpoint: &basev0.Endpoint{
-			Module:       "saas",
-			Service:      "accounts",
-			Name:         name,
-			Api:          "connect",
-			Visibility:   visibility,
-			AllowModules: allow,
+			Module:     "saas",
+			Service:    "accounts",
+			Name:       name,
+			Api:        "connect",
+			Visibility: visibility,
+			Exposure:   exposure,
 		},
 		Instances: []*basev0.NetworkInstance{{
 			Address: "http://localhost:10650",
 			Access:  resources.NewNativeNetworkAccess(),
 		}},
 	}
+}
+
+// outputEnvProvenance is the composition the hand-out is judged with: the
+// consumer's module "platform" and the producer's "saas", both carried as
+// modules, so the verdict is about each endpoint's reach and nothing else.
+func outputEnvProvenance(t *testing.T) resources.Provenance {
+	t.Helper()
+	return writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: output-env\nlayout: modules\nmodules:\n    - name: platform\n    - name: saas\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: output-env\n" +
+			"domain: github.com/codefly-ai/output-env/platform\n",
+		"modules/saas/module.codefly.yaml": "kind: module\nname: saas\nproject: output-env\n" +
+			"domain: github.com/codefly-ai/output-env/saas\n",
+	})
 }
 
 func accountsDependency(endpoints ...string) []*resources.ServiceDependency {
@@ -265,6 +287,7 @@ func TestOutputEnvNetworkMappingsDropsUndeclaredDependencyEndpoint(t *testing.T)
 		Endpoint: &basev0.Endpoint{Module: "platform", Service: "warden", Name: "rest", Api: "rest"},
 	}}
 	mappings, err := outputEnvNetworkMappings(
+		outputEnvProvenance(t),
 		"platform",
 		accountsDependency("connect"),
 		own,
@@ -286,6 +309,7 @@ func TestOutputEnvNetworkMappingsDropsUndeclaredDependencyEndpoint(t *testing.T)
 // endpoint private to the producer's module is filtered out rather than written.
 func TestOutputEnvNetworkMappingsFiltersForbiddenEndpointWhenConsumingAll(t *testing.T) {
 	mappings, err := outputEnvNetworkMappings(
+		outputEnvProvenance(t),
 		"platform",
 		accountsDependency(),
 		nil,
@@ -303,16 +327,36 @@ func TestOutputEnvNetworkMappingsFiltersForbiddenEndpointWhenConsumingAll(t *tes
 }
 
 // Naming an endpoint the producer keeps private fails the write, so the file is
-// never created with an address the service may not reach.
+// never created with an address the service may not reach. Private is the one
+// reach that denies another module since core v0.14.0: internal permits every
+// module of the composition and names nobody, and an authored allow-list is
+// refused before it is decoded.
 func TestOutputEnvNetworkMappingsRejectsDeclaredForbiddenEndpoint(t *testing.T) {
 	_, err := outputEnvNetworkMappings(
+		outputEnvProvenance(t),
 		"platform",
 		accountsDependency("internal"),
 		nil,
-		[]*basev0.NetworkMapping{dependencyMappingOf("internal", string(resources.VisibilityInternal), "billing")},
+		[]*basev0.NetworkMapping{dependencyMappingOf("internal", string(resources.VisibilityPrivate))},
 	)
 	if err == nil {
 		t.Fatal("declaring an endpoint that does not permit the module must fail")
+	}
+}
+
+// The hand-out is judged with the composition, or not at all: with no
+// provenance core refuses to answer (resources.ErrUnjudgedProvenance) rather
+// than assume whoever asked is a module, and the file is not written.
+func TestOutputEnvNetworkMappingsRefusesToJudgeWithoutAComposition(t *testing.T) {
+	_, err := outputEnvNetworkMappings(
+		nil,
+		"platform",
+		accountsDependency("connect"),
+		nil,
+		[]*basev0.NetworkMapping{dependencyMappingOf("connect", string(resources.VisibilityPublic))},
+	)
+	if !errors.Is(err, resources.ErrUnjudgedProvenance) {
+		t.Fatalf("a hand-out with no composition must be refused as unjudged, got %v", err)
 	}
 }
 
@@ -320,6 +364,7 @@ func TestOutputEnvNetworkMappingsRejectsDeclaredForbiddenEndpoint(t *testing.T) 
 // appear as a CODEFLY__ENDPOINT__ variable any tooling would then read.
 func TestAppendRuntimeEnvironmentToFileOmitsForbiddenDependencyEndpoint(t *testing.T) {
 	mappings, err := outputEnvNetworkMappings(
+		outputEnvProvenance(t),
 		"platform",
 		accountsDependency(),
 		nil,

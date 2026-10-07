@@ -16,3 +16,4 @@ endpoints:
     - name: rest
       api: rest
       visibility: public
+      exposure: none

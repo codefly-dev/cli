@@ -18,9 +18,13 @@ func gatewayEndpoint(name string) *basev0.Endpoint {
 	return &basev0.Endpoint{Module: "web", Service: "gateway", Name: name, Api: name}
 }
 
+// publicGatewayEndpoint is an endpoint the CLI itself proposes a Public
+// instance for: exposed, which since core v0.14.0 is the endpoint's exposure
+// and never its visibility (a public endpoint states one or the other).
 func publicGatewayEndpoint(name string) *basev0.Endpoint {
 	endpoint := gatewayEndpoint(name)
 	endpoint.Visibility = resources.VisibilityPublic
+	endpoint.Exposure = resources.ExposurePublic
 	return endpoint
 }
 
@@ -190,7 +194,7 @@ func TestAcceptNetworkMappingsRejectsInvalidResponses(t *testing.T) {
 			name:     "public address on a private endpoint",
 			proposed: []*basev0.NetworkMapping{proposedMapping("grpc", 9000)},
 			returned: []*basev0.NetworkMapping{publicOnPrivate},
-			message:  "adds a public address to an endpoint whose visibility is",
+			message:  "adds a public address to an endpoint whose exposure is",
 		},
 		{
 			name:     "container view rewritten onto loopback",
@@ -271,7 +275,7 @@ func TestAcceptNetworkMappingsIsOrderInsensitive(t *testing.T) {
 }
 
 // An agent may serve fewer views than proposed, and may add one the CLI would
-// itself have proposed for a public endpoint.
+// itself have proposed for an exposed endpoint.
 func TestAcceptNetworkMappingsAllowsAgentChosenAccessViews(t *testing.T) {
 	dropped := proposedMapping("grpc", 41337)
 	dropped.Instances = dropped.Instances[1:]

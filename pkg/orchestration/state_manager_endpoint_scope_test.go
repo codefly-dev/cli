@@ -12,19 +12,31 @@ import (
 
 func TestDependencyRuntimeCapabilitiesHonorEndpointScope(t *testing.T) {
 	const dependencyUnique = "users/accounts"
+	// The hand-out is judged with the composition since core v0.14.0, so the
+	// state holds the workspace carrying both modules and the published
+	// endpoints carry their declaration: internal, which permits "mind".
+	workspace := writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml":            "name: scope\nlayout: modules\nmodules:\n    - name: mind\n    - name: users\n",
+		"modules/mind/module.codefly.yaml":  "kind: module\nname: mind\nproject: scope\ndomain: github.com/codefly-ai/scope/mind\n",
+		"modules/users/module.codefly.yaml": "kind: module\nname: users\nproject: scope\ndomain: github.com/codefly-ai/scope/users\n",
+	})
+	published := func(name, api string) *basev0.Endpoint {
+		return &basev0.Endpoint{Module: "users", Service: "accounts", Name: name, Api: api, Visibility: resources.VisibilityInternal}
+	}
 	state := &StateManager{
+		workspace: workspace,
 		endpoints: map[string][]*basev0.Endpoint{
 			dependencyUnique: {
-				{Name: "connect", Api: standards.CONNECT},
-				{Name: "grpc", Api: standards.GRPC},
-				{Name: "rest", Api: standards.REST},
+				published("connect", standards.CONNECT),
+				published("grpc", standards.GRPC),
+				published("rest", standards.REST),
 			},
 		},
 		networkMappings: map[string][]*basev0.NetworkMapping{
 			dependencyUnique: {
-				{Endpoint: &basev0.Endpoint{Name: "connect", Api: standards.CONNECT}},
-				{Endpoint: &basev0.Endpoint{Name: "grpc", Api: standards.GRPC}},
-				{Endpoint: &basev0.Endpoint{Name: "rest", Api: standards.REST}},
+				{Endpoint: published("connect", standards.CONNECT)},
+				{Endpoint: published("grpc", standards.GRPC)},
+				{Endpoint: published("rest", standards.REST)},
 			},
 		},
 	}

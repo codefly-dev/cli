@@ -11,6 +11,7 @@ endpoints:
     - name: connect
       api: rest
       visibility: public
+      exposure: none
     - name: internal
       api: rest
       visibility: private

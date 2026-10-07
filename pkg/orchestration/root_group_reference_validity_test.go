@@ -28,7 +28,7 @@ func referenceValidityWorkspace(t *testing.T, reference string, producerVisibili
 			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
-			"endpoints:\n    - name: admin\n      api: rest\n      visibility: " + producerVisibility + "\n",
+			"endpoints:\n    - name: admin\n      api: rest\n      visibility: " + producerVisibility + "\n" + statedExposure(producerVisibility),
 		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
 		// Declares nothing: whatever it receives is the composition root's, which
@@ -56,7 +56,7 @@ func referenceValidityWorld(t *testing.T, workspace *resources.Workspace, option
 
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
 	require.NoError(t, err)
-	sharedState, err := NewStateManager(ctx, manager, dependencies)
+	sharedState, err := NewStateManager(ctx, manager, dependencies, workspace)
 	require.NoError(t, err)
 	remoteNetwork, err := remotenetwork.NewRemoteManager(ctx, manager)
 	require.NoError(t, err)
@@ -122,12 +122,13 @@ func recordParityEndpoints(t *testing.T, world *World, module, name string) {
 // root group carrying a reference to a private endpoint would reach every
 // service of the composition with nothing refusing it.
 //
-// `private` and `internal`-without-allow-modules are the two refused forms.
-// `visibility: module`, which the first review named, is a core value — a
-// deprecated alias for internal with every module allow-listed (resources
-// endpoint.go) — so it permits rather than refuses and is not a case here.
+// `private` is the refused form. Since core v0.14.0 `internal` names nobody
+// and permits every module of the composition — the allow-list is derived from
+// the consumers' declared dependencies, and an authored one is refused by key
+// before it is decoded — so it resolves like `public` below and is not a case
+// here; `visibility: module`, which the first review named, is refused at load.
 func TestARootGroupReferenceIsHeldToTheProducersExportBoundary(t *testing.T) {
-	for _, visibility := range []string{"private", "internal"} {
+	for _, visibility := range []string{"private"} {
 		t.Run(visibility, func(t *testing.T) {
 			world, service := referenceValidityWorld(t,
 				referenceValidityWorkspace(t, "platform/authority/admin", visibility))
@@ -141,16 +142,22 @@ func TestARootGroupReferenceIsHeldToTheProducersExportBoundary(t *testing.T) {
 }
 
 // The same group with a public endpoint resolves, so the test above is about the
-// boundary and not about root references failing in general.
+// boundary and not about root references failing in general — and with an
+// internal one, which since core v0.14.0 permits every module of the
+// composition without naming any.
 func TestARootGroupReferenceToAPublicEndpointResolves(t *testing.T) {
-	world, service := referenceValidityWorld(t,
-		referenceValidityWorkspace(t, "platform/authority/admin", "public"))
+	for _, visibility := range []string{"public", "internal"} {
+		t.Run(visibility, func(t *testing.T) {
+			world, service := referenceValidityWorld(t,
+				referenceValidityWorkspace(t, "platform/authority/admin", visibility))
 
-	confs, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewContainerNetworkAccess())
-	require.NoError(t, err)
-	address, delivered := groupValue(confs, "work-context", "authority-endpoint")
-	require.True(t, delivered, "a visible root reference must still reach a service that declares no group")
-	requireInClusterAddressIn(t, address, "boundary", "platform", "authority", LocalEnvironmentName)
+			confs, err := world.workspaceConfigurationsFor(context.Background(), service, nil, resources.NewContainerNetworkAccess())
+			require.NoError(t, err)
+			address, delivered := groupValue(confs, "work-context", "authority-endpoint")
+			require.True(t, delivered, "a visible root reference must still reach a service that declares no group")
+			requireInClusterAddressIn(t, address, "boundary", "platform", "authority", LocalEnvironmentName)
+		})
+	}
 }
 
 // A typo'd producer in a composition-root group is refused by name, at the plan

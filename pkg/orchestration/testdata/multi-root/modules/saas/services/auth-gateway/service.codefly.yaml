@@ -11,6 +11,7 @@ endpoints:
     - name: http
       api: http
       visibility: public
+      exposure: none
     - name: admin
       api: http
       visibility: private

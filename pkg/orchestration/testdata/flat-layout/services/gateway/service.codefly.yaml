@@ -13,7 +13,9 @@ service-dependencies:
 endpoints:
     - name: rest
       visibility: public
+      exposure: none
       api: rest
     - name: grpc
       visibility: public
+      exposure: none
       api: grpc

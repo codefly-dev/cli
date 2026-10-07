@@ -178,7 +178,7 @@ func TestGenerateRunnableBindingsRefusesAStaleContractCatalog(t *testing.T) {
 }
 
 func connectEndpoint() *resources.Endpoint {
-	return &resources.Endpoint{Name: "connect", API: standards.CONNECT, Visibility: resources.VisibilityPublic}
+	return &resources.Endpoint{Name: "connect", API: standards.CONNECT, Visibility: resources.VisibilityPublic, Exposure: resources.ExposureNone}
 }
 
 func TestRunnableBindingKeyIsAnEnvironmentKey(t *testing.T) {

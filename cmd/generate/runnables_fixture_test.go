@@ -206,7 +206,7 @@ func saveRunnableFixture(t *testing.T, ctx context.Context, contract []byte, man
 			Version: "0.0.1",
 			Agent:   &resources.Agent{Kind: resources.ServiceAgent, Name: "go", Version: "0.0.48", Publisher: "codefly.dev"},
 			Endpoints: append([]*resources.Endpoint{
-				{Name: "grpc", API: "grpc", Visibility: resources.VisibilityPublic},
+				{Name: "grpc", API: "grpc", Visibility: resources.VisibilityPublic, Exposure: resources.ExposureNone},
 			}, beside...),
 		},
 	)

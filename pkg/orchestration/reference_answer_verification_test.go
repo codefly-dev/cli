@@ -19,7 +19,7 @@ func answerWorkspace(t *testing.T, endpoints [][2]string, references []string) *
 	t.Helper()
 	declared := "endpoints:\n"
 	for _, endpoint := range endpoints {
-		declared += "    - name: " + endpoint[0] + "\n      api: " + endpoint[1] + "\n      visibility: public\n"
+		declared += "    - name: " + endpoint[0] + "\n      api: " + endpoint[1] + "\n      visibility: public\n      exposure: none\n"
 	}
 	values := ""
 	for index, reference := range references {

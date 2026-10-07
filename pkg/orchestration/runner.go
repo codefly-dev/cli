@@ -586,13 +586,14 @@ func (world *World) referencedProducerMappings(
 // interpolation walked the unfiltered set. Reported and reproduced as layer-5
 // round-five NEW-1.
 //
-// Visibility is read from the producer's manifest through the memoized
+// The declaration is read from the producer's manifest through the memoized
 // workspaceProducers lookup, NOT from the mapping. In a run the mapping's
 // endpoint is the agent's Load answer, recorded without being checked against
 // the manifest, so judging from it would let a runtime agent reporting a private
-// endpoint as public reopen the hole, and one that drops `allow-modules` refuse a
-// legitimate `internal` reference. Core's check reads the manifest; so does this.
-// (Layer-5 round-five NEW-6.)
+// endpoint as public reopen the hole. Core's check reads the manifest; so does
+// this. (Layer-5 round-five NEW-6.) Loaded through the workspace, the manifest
+// endpoint carries the MODULE's export (Module.applyInterface), so the verdict
+// is the composition's and not the service's authored value.
 //
 // It cannot cost a consumer a value it was entitled to, with one exception worth
 // stating rather than implying. Every reference in the effective set has already
@@ -619,8 +620,15 @@ func (world *World) referencedProducerMappings(
 // PR body.
 //
 // A visibility this core does not know is treated as refusing, because
-// ValidateEndpointVisibility refuses it — `module` is not that case (it is a
-// deprecated alias for internal with every module allowed, so it permits).
+// ValidateEndpointVisibility refuses the whole declaration as invalid
+// (ErrInvalidEndpointDeclaration): since core v0.14.0 reach is `private`,
+// `internal` (any module of the composition) or `public`, and nothing else —
+// the former `module` is refused at load, and an authored `allow-modules` is
+// refused by key before it is decoded. Which modules DO reach an internal
+// endpoint is the derived allow-list (Workspace.DeriveAllowModules), a record
+// of declared asks for mesh policy, and never an input to this answer
+// (resources.Endpoint.AllowsModule): consulting it here would make this
+// filter disagree with core's plan-time check, which judges by reach alone.
 func (world *World) exportableTo(
 	ctx context.Context, consumer *resources.Service, mappings []*basev0.NetworkMapping,
 ) ([]*basev0.NetworkMapping, error) {
@@ -661,12 +669,12 @@ func (world *World) exportableTo(
 				wool.Field("endpoint", resources.EndpointDestination(endpoint)))
 			continue
 		}
-		// The declared Location travels with the rest of the declaration: core
-		// judges the whole declaration before it judges the consumer, so a
-		// location the model does not define is ErrInvalidEndpointDeclaration
-		// rather than something this filter silently treats as reachable.
-		if err := resources.ValidateEndpointVisibility(consumerModule, endpoint.GetModule(), endpoint.GetService(),
-			declared.Name, resources.Visibility(declared.Visibility), declared.Location, declared.AllowModules); err != nil {
+		// The whole declaration travels — reach, location and exposure: core
+		// judges it before it judges the consumer, so a value the model does
+		// not define, or a contradiction between the axes, is
+		// ErrInvalidEndpointDeclaration rather than something this filter
+		// silently treats as reachable.
+		if err := resources.ValidateEndpointVisibility(consumerModule, endpoint.GetModule(), declared.Declaration()); err != nil {
 			wool.Get(ctx).In("World.exportableTo").Debug(
 				"not binding a producer endpoint this consumer's module may not reach",
 				wool.Field("consumer", consumerLabel(consumer)),
@@ -930,6 +938,7 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 			return nil, w.NewError("cannot resolve dependency network mappings for output environment: %s has no module", runner.instance.Unique())
 		}
 		endpointMappings, mappingErr := outputEnvNetworkMappings(
+			runner.world.Workspace,
 			runner.instance.Module.Name,
 			runner.instance.Service.ServiceDependencies,
 			runner.networkMappings,
@@ -1719,17 +1728,22 @@ func AppendServiceProcessConfigurationsToFile(
 // outputEnvNetworkMappings is the endpoint set the output environment carries:
 // the service's own mappings, plus its dependencies' narrowed by
 // resources.ResolveDependencyNetworkMappings to what the service declared and
-// its producers permit. The file is a second carrier of the addresses the agent
-// itself receives, so it resolves through the same call that
-// services.RuntimeInstance.Start makes on the request — otherwise the narrower
-// of the two carriers decides what enforcement is worth.
+// its producers permit — judged with the composition's provenance, the
+// workspace, as every verdict on an edge is since core v0.14.0: a solution's
+// route to a module's endpoint, or an end the composition does not carry, is
+// refused rather than written. The file is a second carrier of the addresses
+// the agent itself receives, so it resolves through the same call that
+// services.RuntimeInstance.Start makes on the request (with Instance.Workspace
+// as its provenance) — otherwise the narrower of the two carriers decides what
+// enforcement is worth.
 func outputEnvNetworkMappings(
+	provenance resources.Provenance,
 	consumerModule string,
 	dependencies []*resources.ServiceDependency,
 	own []*basev0.NetworkMapping,
 	dependencyMappings []*basev0.NetworkMapping,
 ) ([]*basev0.NetworkMapping, error) {
-	resolved, err := resources.ResolveDependencyNetworkMappings(consumerModule, dependencies, dependencyMappings)
+	resolved, err := resources.ResolveDependencyNetworkMappings(provenance, consumerModule, dependencies, dependencyMappings)
 	if err != nil {
 		return nil, err
 	}

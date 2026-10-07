@@ -70,6 +70,18 @@ func writeTempWorkspace(t *testing.T, files map[string]string) *resources.Worksp
 	return workspace
 }
 
+// statedExposure is the exposure line a test-authored endpoint of the given
+// visibility must carry at core v0.14.0: a public endpoint states its exposure
+// — none, as nothing in these fixtures has an address reachable from outside
+// the workspace — and any other reach states nothing. Indented for the
+// four-space service manifests the tests in this package write.
+func statedExposure(visibility string) string {
+	if visibility == string(resources.VisibilityPublic) {
+		return "      exposure: none\n"
+	}
+	return ""
+}
+
 func declaredWorkspace(t *testing.T) *resources.Workspace {
 	t.Helper()
 	return writeTempWorkspace(t, map[string]string{"workspace.codefly.yaml": declaredEnvironmentsWorkspace})
@@ -237,6 +249,7 @@ agent:
 endpoints:
     - name: rest
       visibility: public
+      exposure: none
       api: rest
 `,
 	})

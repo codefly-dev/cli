@@ -191,7 +191,7 @@ func TestGenerateContractsSkipsNonContractEndpoints(t *testing.T) {
 			Name:    "api",
 			Version: "0.0.1",
 			Endpoints: []*resources.Endpoint{
-				{Name: "web", API: "http", Visibility: resources.VisibilityPublic},
+				{Name: "web", API: "http", Visibility: resources.VisibilityPublic, Exposure: resources.ExposureNone},
 			},
 		},
 	)
@@ -236,7 +236,7 @@ func TestGenerateContractsSkipsConnectWithoutProto(t *testing.T) {
 			Name:    "api",
 			Version: "0.0.1",
 			Endpoints: []*resources.Endpoint{
-				{Name: "connect", API: "connect", Visibility: resources.VisibilityPublic},
+				{Name: "connect", API: "connect", Visibility: resources.VisibilityPublic, Exposure: resources.ExposureNone},
 			},
 		},
 	)
@@ -282,7 +282,7 @@ func TestGenerateContractsSkipsRestWithoutOpenAPI(t *testing.T) {
 			Name:    "api",
 			Version: "0.0.1",
 			Endpoints: []*resources.Endpoint{
-				{Name: "rest", API: "rest", Visibility: resources.VisibilityPublic},
+				{Name: "rest", API: "rest", Visibility: resources.VisibilityPublic, Exposure: resources.ExposureNone},
 			},
 		},
 	)
@@ -366,6 +366,8 @@ func scaffoldGoGRPCFixture(t *testing.T) string {
 	for _, endpoint := range service.Endpoints {
 		if endpoint.Name == "grpc" {
 			endpoint.Visibility = resources.VisibilityPublic
+			// A public endpoint states its exposure (core v0.14.0).
+			endpoint.Exposure = resources.ExposureNone
 			found = true
 		}
 	}

@@ -24,11 +24,11 @@ import (
 // routes, so a solution's rendered output carries its own routing.
 var ServiceCmd = &cobra.Command{
 	Use:   "service [service]",
-	Short: "Render edge routing manifests for a service's public endpoints",
+	Short: "Render edge routing manifests for a service's exposed endpoints",
 	Long: `Service renders the Kubernetes routing manifests that publish a service's
-public endpoints at the shared gateway. Hostnames come from the environment's
-ingress intent (or --host); the in-cluster backend and port are resolved
-deterministically, so nothing is guessed.
+exposed endpoints — the ones declaring exposure: public — at the shared gateway.
+Hostnames come from the environment's ingress intent (or --host); the in-cluster
+backend and port are resolved deterministically, so nothing is guessed.
 
 The default backend emits Gateway API GRPCRoute/HTTPRoute (implemented by Istio
 when the gateway's class is istio); --routing istio emits the legacy
@@ -98,15 +98,18 @@ Examples:
 	},
 }
 
-// exposedEndpoints builds the routable public endpoints of a service: their
-// in-cluster ports, the ingress hosts bound to each endpoint, and (for gRPC)
-// the proto-package prefix. TCP and unsupported endpoints are skipped — the
-// edge cannot HTTP/gRPC-route them.
+// exposedEndpoints builds the routable endpoints of a service — the ones
+// declaring `exposure: public`, an address reachable from outside the
+// workspace, which is what an edge route publishes; a visibility says who may
+// call and never whether such an address exists — with their in-cluster
+// ports, the ingress hosts bound to each endpoint, and (for gRPC) the
+// proto-package prefix. TCP and unsupported endpoints are skipped — the edge
+// cannot HTTP/gRPC-route them.
 func exposedEndpoints(ctx context.Context, module string, service *resources.Service, env *environments.Environment, hostOverride []string, prefix string) []routing.ExposedEndpoint {
 	ports := inClusterPorts(ctx, module, service.Name, service.Endpoints)
 	var endpoints []routing.ExposedEndpoint
 	for _, ep := range service.Endpoints {
-		if ep.Visibility != resources.VisibilityPublic {
+		if !ep.Exposed() {
 			continue
 		}
 		api := resolveAPI(ep)

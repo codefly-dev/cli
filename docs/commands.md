@@ -316,11 +316,23 @@ for the services that receive one.
 
 A root group's `${endpoint:…}` is held to the producer's export boundary exactly
 as a declared group's is: a reference to an endpoint whose visibility is
-`private`, or `internal` without your module in `allow-modules`, is refused
-rather than delivered. Neither a root group nor a **bare** service dependency is
-a way to reach an endpoint a declared dependency on that endpoint would be
-refused — the addresses a `${endpoint:…}` can resolve to are filtered by the
-producer's declared visibility, whichever way they were bound.
+`private` is refused rather than delivered, while `internal` and `public` permit
+every module of the composition. Neither a root group nor a **bare** service
+dependency is a way to reach an endpoint a declared dependency on that endpoint
+would be refused — the addresses a `${endpoint:…}` can resolve to are filtered by
+the producer's declared visibility, whichever way they were bound.
+
+Since core v0.14.0 an endpoint declaration has three axes, and the CLI reads
+them as core defines them: `visibility` is **reach** (`private`, `internal`,
+`public`); `exposure` is **addressing** (`public` for an address reachable from
+outside the workspace, `none` otherwise — required on every `visibility: public`
+endpoint, and the one condition a Public network instance exists on; a
+visibility never means an address); `location: external` is where an endpoint
+lives. `allow-modules` is never written: the allow-list of an internal endpoint
+is derived from its consumers' declared `service-dependencies`, and a manifest
+authoring one, in any spelling, fails to load, as does the former
+`visibility: module`. A module's interface entry says `internal` or `public`
+and names nobody; omitting an endpoint from the interface keeps it private.
 
 **A reference must name one endpoint.** Core's trailing token matches an
 endpoint's name *or* its API, so `${endpoint:platform/authority/rest}` matches an
@@ -351,6 +363,15 @@ endpoint you asked for is private. Name a visible endpoint, or declare the
 visibility you need; the refusal this should give instead is a tracked
 follow-up.
 
+**What a service is handed is judged with the composition.** The dependency
+addresses a service, a job or an SDK process receives — on the agent's request,
+in the output environment file and through the CLI server's
+`GetDependenciesNetworkMappings` — are resolved with the workspace as the
+provenance of every edge: a dependency onto an endpoint private to another
+module is refused, a solution's run-stage dependency onto a module's endpoint
+is refused (a solution reaches modules only through the host), and only a
+run-stage dependency has an address to consume at all.
+
 **This can refuse less than it delivered before, in one case:** a cross-module
 bare dependency (`service-dependencies` naming the service and no endpoints) used
 to put *every* endpoint its producer published into the set a workspace
@@ -368,8 +389,8 @@ because the plan check reads a loaded configuration rather than the directory.
 referencing one used to have that value silently dropped for every service
 outside the producer's module and now fails them by name. Declare the visibility
 the reference needs, or stop referencing a private endpoint from a group every
-service receives. Core's deprecated `visibility: module` permits every module,
-so references to those are unaffected.
+service receives. The former `visibility: module` is refused at load; write
+`internal`, which permits every module of the composition.
 
 Three asymmetries remain, and **all three leave the run with fewer values than
 the render, never the reverse**, so a deployed workload never loses a value

@@ -127,8 +127,8 @@ func acceptNetworkInstances(destination string, endpoint *basev0.Endpoint, propo
 			return nil, fmt.Errorf("accepted network mapping for %s has two %s instances", destination, access)
 		}
 		if access == resources.NetworkAccessPublic && !publiclyReachable(endpoint) {
-			return nil, fmt.Errorf("accepted network mapping for %s adds a public address to an endpoint whose visibility is %q",
-				destination, endpoint.GetVisibility())
+			return nil, fmt.Errorf("accepted network mapping for %s adds a public address to an endpoint whose exposure is %q (visibility %q): an address reachable from outside the workspace is the endpoint's exposure, never its visibility",
+				destination, endpoint.GetExposure(), endpoint.GetVisibility())
 		}
 		if err := acceptNetworkInstance(destination, access, proposedViews[access], instance); err != nil {
 			return nil, err
@@ -186,11 +186,15 @@ func acceptNetworkInstance(destination, access string, proposed, accepted *basev
 	return nil
 }
 
-// publiclyReachable mirrors the condition network.RuntimeManager uses to emit a
-// public instance, so an agent may answer with one exactly where the CLI would
-// have proposed one.
+// publiclyReachable mirrors the condition under which the CLI proposes a Public
+// instance, so an agent may answer with one exactly where the CLI would have
+// proposed one: the endpoint's EXPOSURE — resources.IsExposedEndpoint, the one
+// condition network.RuntimeManager emits the Public instance on since core
+// v0.14.0 — or an external endpoint, which is addressed where it lives (the
+// remote manager publishes its DNS-backed address as Public). A visibility says
+// who may call and nothing about addresses, so it is not part of this.
 func publiclyReachable(endpoint *basev0.Endpoint) bool {
-	return endpoint.GetVisibility() == resources.VisibilityPublic || resources.IsExternalEndpoint(endpoint)
+	return resources.IsExposedEndpoint(endpoint) || resources.IsExternalEndpoint(endpoint)
 }
 
 func isLoopbackHostname(hostname string) bool {

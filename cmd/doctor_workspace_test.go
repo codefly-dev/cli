@@ -1489,7 +1489,7 @@ func serviceOverrideWorkspace(t *testing.T, overrideDir string) string {
 	dir := writeTestWorkspace(t, map[string]string{
 		"workspace.codefly.yaml":                             "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      path: modules/saas\n",
 		"modules/saas/module.codefly.yaml":                   "kind: module\nname: saas\nservices:\n  - name: gateway\n",
-		"modules/saas/services/gateway/service.codefly.yaml": "kind: service\nname: gateway\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.0.1\n  publisher: codefly.ai\nendpoints:\n  - name: public-api\n    visibility: public\n",
+		"modules/saas/services/gateway/service.codefly.yaml": "kind: service\nname: gateway\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.0.1\n  publisher: codefly.ai\nendpoints:\n  - name: public-api\n    visibility: public\n    exposure: none\n",
 		resources.LocalOverlayConfigurationName:              "resolve:\n  saas:\n    services:\n      gateway:\n        path: " + overrideDir + "\n",
 	})
 	return dir
@@ -1508,7 +1508,7 @@ func writeOverrideService(t *testing.T, manifest string) string {
 // listing it is the only way anyone sees that a service is not running from the
 // module that composed it.
 func TestDoctorWorkspaceReportsAnActiveServiceOverride(t *testing.T) {
-	override := writeOverrideService(t, "kind: service\nname: gateway\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 9.9.9\n  publisher: codefly.ai\nendpoints:\n  - name: public-api\n    visibility: public\n")
+	override := writeOverrideService(t, "kind: service\nname: gateway\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 9.9.9\n  publisher: codefly.ai\nendpoints:\n  - name: public-api\n    visibility: public\n    exposure: none\n")
 	report := runReadiness(t, workspaceReadinessOptions{dir: serviceOverrideWorkspace(t, override)})
 
 	diag := requireCode(t, report, codeServiceOverrideActive, "ok")
@@ -1535,7 +1535,7 @@ func TestDoctorWorkspaceFlagsAMissingServiceOverrideDirectory(t *testing.T) {
 // The same check the load performs, so doctor cannot pass an override the next
 // run refuses.
 func TestDoctorWorkspaceFlagsServiceOverrideContractDrift(t *testing.T) {
-	override := writeOverrideService(t, "kind: service\nname: gateway\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: python-grpc\n  version: 0.0.1\n  publisher: codefly.ai\nendpoints:\n  - name: public-api\n    visibility: public\n")
+	override := writeOverrideService(t, "kind: service\nname: gateway\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: python-grpc\n  version: 0.0.1\n  publisher: codefly.ai\nendpoints:\n  - name: public-api\n    visibility: public\n    exposure: none\n")
 	report := runReadiness(t, workspaceReadinessOptions{dir: serviceOverrideWorkspace(t, override)})
 
 	diag := requireCode(t, report, codeServiceOverrideDrift, "fail")
@@ -1585,7 +1585,7 @@ func TestDoctorWorkspaceReportsNoServiceOverridesWhenThereAreNone(t *testing.T) 
 func TestDoctorWorkspaceFlagsServiceOverrideWorktreeAheadOfThePinnedVersion(t *testing.T) {
 	container := t.TempDir()
 	solution := filepath.Join(container, "github-acme-solution", "main")
-	gatewayManifest := "kind: service\nname: gateway\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.0.1\n  publisher: codefly.ai\nendpoints:\n  - name: public-api\n    visibility: public\n"
+	gatewayManifest := "kind: service\nname: gateway\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.0.1\n  publisher: codefly.ai\nendpoints:\n  - name: public-api\n    visibility: public\n    exposure: none\n"
 	for path, content := range map[string]string{
 		"workspace.codefly.yaml":                             "name: solution\nlayout: modules\nmodules:\n    - name: saas\n      source: acme/host\n      version: \"0.0.62\"\n      path: modules/saas\n",
 		"modules/saas/module.codefly.yaml":                   "kind: module\nname: saas\nservices:\n  - name: gateway\n",

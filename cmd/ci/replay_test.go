@@ -195,7 +195,10 @@ func TestReplayRejectsEndpointVisibilityViolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload = []byte(strings.ReplaceAll(string(payload), "visibility: public", "visibility: internal\n      allow-modules: [management]"))
+	// Private is the one reach a consumer in another module is refused since
+	// core v0.14.0: internal permits every module of the composition, and an
+	// authored allow-list is refused by key before it is decoded.
+	payload = []byte(strings.ReplaceAll(string(payload), "visibility: public", "visibility: private"))
 	if err := os.WriteFile(path, payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -388,6 +391,7 @@ endpoints:
     - name: grpc
       api: grpc
       visibility: public
+      exposure: none
 `)
 	writeCacheTestFile(t, filepath.Join(root, "modules", "documents", "services", "documents", "code", "main.go"), "package main\n")
 	writeCacheTestFile(t, filepath.Join(root, "modules", "saas", "module.codefly.yaml"),
@@ -406,6 +410,7 @@ endpoints:
     - name: http
       api: http
       visibility: public
+      exposure: none
     - name: admin
       api: grpc
       visibility: private

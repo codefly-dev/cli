@@ -97,13 +97,16 @@ func (world *World) workspaceConfigurationsFor(
 	}
 	// The consumer's OWN dependency mappings are filtered too, and before
 	// discovery runs against them. A bare service dependency — one naming no
-	// endpoints — is handed every mapping its producer published, narrowed by
-	// the dependency's endpoint list and not by visibility
+	// endpoints — used to be handed every mapping its producer published,
+	// narrowed by the dependency's endpoint list and not by visibility
 	// (StateManager.GetDependenciesNetworkMappings), so a cross-module private
 	// endpoint's address was in the set a ${endpoint:…} resolves against. And
 	// because discovery skips a producer whose endpoint the dependency mappings
 	// already carry, filtering only what discovery binds meant the filter never
-	// ran at all for exactly that consumer. (Layer-5 round-five NEW-1.)
+	// ran at all for exactly that consumer. (Layer-5 round-five NEW-1.) The
+	// hand-out is judged with the composition's provenance since core v0.14.0,
+	// so this filter is a second pass over it; it stays because it is the one
+	// that also covers what discovery binds.
 	visible, err := world.exportableTo(ctx, service, dependencyMappings)
 	if err != nil {
 		return nil, err
@@ -450,12 +453,13 @@ func workspaceConfigurationInfos(confs []*basev0.Configuration) []*basev0.Config
 // value was dropped and the boundary held by accident. Now every root-referenced
 // producer is bound for every service, so a root group carrying
 // ${endpoint:platform/authority/admin} on an endpoint whose visibility is
-// `private`, or `internal` without the consumer's module in `allow-modules`,
-// would reach every service of the composition with nothing refusing it, and a
-// typo'd producer in a root group would be dropped from every service in
-// silence — the #882 fault itself, in a new place. (Not `module`: core's
-// `module` is a deprecated alias for internal with every module allowed, so it
-// permits rather than refuses — resources.Endpoint.AllowsModule.)
+// `private` would reach every service of the composition with nothing refusing
+// it, and a typo'd producer in a root group would be dropped from every service
+// in silence — the #882 fault itself, in a new place. (Since core v0.14.0
+// `internal` names nobody and permits every module of the composition — the
+// allow-list is derived from declared dependencies and an authored one is
+// refused at load — so `private` is the one reach that refuses; the former
+// `module` is refused at load too.)
 //
 // It is core's rule, not a second one: core's exported check is called, with the
 // consumer's declared set replaced by the effective set. That replacement is the

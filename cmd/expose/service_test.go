@@ -95,15 +95,20 @@ func TestInClusterPortsAccountsForPrivateOwner(t *testing.T) {
 	}
 }
 
+// The routable set is the EXPOSED endpoints: since core v0.14.0 an address
+// reachable from outside the workspace is the endpoint's exposure, and a
+// visibility says who may call and nothing about addresses — so a public
+// endpoint with `exposure: none` is not routed, and neither is a private one.
 func TestExposedEndpointsSelectsRoutablePublicEndpointsWithHostsAndPrefix(t *testing.T) {
 	ctx := context.Background()
 	service := &resources.Service{
 		Name: "accounts",
 		Endpoints: []*resources.Endpoint{
-			{Name: "grpc", API: standards.GRPC, Visibility: resources.VisibilityPublic},
-			{Name: "rest", API: standards.REST, Visibility: resources.VisibilityPublic},
+			{Name: "grpc", API: standards.GRPC, Visibility: resources.VisibilityPublic, Exposure: resources.ExposurePublic},
+			{Name: "rest", API: standards.REST, Visibility: resources.VisibilityPublic, Exposure: resources.ExposurePublic},
 			{Name: "internal", API: standards.GRPC, Visibility: resources.VisibilityPrivate},
-			{Name: "raw", API: standards.TCP, Visibility: resources.VisibilityPublic},
+			{Name: "unaddressed", API: standards.REST, Visibility: resources.VisibilityPublic, Exposure: resources.ExposureNone},
+			{Name: "raw", API: standards.TCP, Visibility: resources.VisibilityPublic, Exposure: resources.ExposurePublic},
 		},
 	}
 	env := &environments.Environment{

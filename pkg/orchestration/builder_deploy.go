@@ -291,9 +291,12 @@ func resolveClusterValidation(
 	profile builderv0.KubernetesOutputProfile,
 	namespace string,
 ) (clusterValidation, error) {
-	// Only a restricted (promotable) profile is ever validated against a
-	// cluster: an ephemeral local apply is about to be applied for real.
-	if world == nil || !world.ValidateCluster || !coreservices.IsRestrictedOutputProfile(profile) {
+	// Only the restricted portable profile is ever validated against a
+	// cluster: an ephemeral local apply is about to be applied for real. By
+	// name, as core's OutputProfile.Restricted reads it: the deleted
+	// PROMOTABLE_GITOPS_V1 the old helper also accepted is a reserved number
+	// now, refused by core's decoder before any render.
+	if world == nil || !world.ValidateCluster || profile != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1 {
 		return clusterValidation{}, nil
 	}
 	kubeconfig, contextName, err := kubernetesValidationTarget(ctx, world.Env)

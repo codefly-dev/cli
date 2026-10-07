@@ -16,7 +16,9 @@ import (
 func writeHostWorkspace(t *testing.T, secured bool, withPort bool) *resources.Workspace {
 	t.Helper()
 	workspace := writeHostedWorkspace(t)
-	service := devServiceYAML("accounts") + "endpoints:\n  - name: rest\n    api: rest\n    visibility: public\n"
+	// The delivery Job dials the Service in-cluster and no ingress routes to
+	// the endpoint, so its exposure is none; a public endpoint states it.
+	service := devServiceYAML("accounts") + "endpoints:\n  - name: rest\n    api: rest\n    visibility: public\n    exposure: none\n"
 	if secured {
 		service += "    secured: true\n"
 	}

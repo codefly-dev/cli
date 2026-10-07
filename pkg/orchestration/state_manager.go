@@ -25,6 +25,12 @@ type StateManager struct {
 	// lock before calling methods on the snapshot.
 	dependencies *architecture.ServiceDependencies
 
+	// workspace is the composition every hand-out of dependency addresses is
+	// judged with (resources.Provenance): the CLI is the provider of every
+	// address a service, a job or an SDK process receives, and it holds the
+	// composition, so the verdict runs here with it.
+	workspace *resources.Workspace
+
 	endpoints       map[string][]*basev0.Endpoint
 	networkMappings map[string][]*basev0.NetworkMapping
 }
@@ -49,10 +55,13 @@ func (s *StateManager) deps() *architecture.ServiceDependencies {
 	return d
 }
 
-func NewStateManager(_ context.Context, configurationManager *providers.Manager, dependencies *architecture.ServiceDependencies) (*StateManager, error) {
+// NewStateManager builds the shared state of a flow over the workspace that
+// composes it: the provenance every dependency hand-out is judged with.
+func NewStateManager(_ context.Context, configurationManager *providers.Manager, dependencies *architecture.ServiceDependencies, workspace *resources.Workspace) (*StateManager, error) {
 	return &StateManager{
 		dependencies:         dependencies,
 		configurationManager: configurationManager,
+		workspace:            workspace,
 		endpoints:            make(map[string][]*basev0.Endpoint),
 		networkMappings:      make(map[string][]*basev0.NetworkMapping),
 	}, nil
@@ -204,22 +213,51 @@ func (s *StateManager) GetNetworkMappingsFromUnique(unique string) ([]*basev0.Ne
 	return mappings, ok
 }
 
-// GetDependenciesNetworkMappings returns the network mappings for the given service
+// GetDependenciesNetworkMappings hands a consumer the addresses of what its
+// dependencies consume, JUDGED. The CLI is the provider of every address a
+// service, a job or an SDK process receives, and it holds the composition, so
+// the one verdict runs here with the composition's provenance
+// (resources.ResolveDependencyNetworkMappings): the edge by the provenance of
+// its two ends — a solution reaches modules only through the host — then each
+// endpoint by the producer's export, and only a run-stage dependency has an
+// address to consume at all. Core's own wrappers judge the agent requests
+// again with Instance.Workspace (services.RuntimeInstance.Init/Start,
+// services.BuilderInstance.Deploy); what the SDK reads back through
+// GetDependenciesNetworkMappings (pkg/web/go-grpc) has no second verdict, so
+// this one is the one that holds for it. It used to narrow by the dependency's
+// endpoint list alone, never by visibility, which core#717 named as the CLI's
+// unjudged provider.
 func (s *StateManager) GetDependenciesNetworkMappings(ctx context.Context, service *resources.Service) ([]*basev0.NetworkMapping, error) {
 	if s == nil {
 		return nil, nil
 	}
 	w := wool.Get(ctx).In("StateManager.GetDependenciesNetworkMappings", wool.ThisField(resources.WithUnique(service)))
+	identity, err := service.Identity()
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot judge dependency network mappings for a consumer with no identity")
+	}
 	s.mu.RLock()
-	var mappings []*basev0.NetworkMapping
+	var candidates []*basev0.NetworkMapping
 	for _, req := range service.ServiceDependencies {
 		for _, mapping := range s.networkMappings[req.Unique()] {
-			if mapping == nil || mapping.GetEndpoint() == nil || dependencyConsumesEndpoint(req, mapping.GetEndpoint()) {
-				mappings = append(mappings, mapping)
+			if mapping == nil {
+				continue
 			}
+			candidates = append(candidates, mapping)
 		}
 	}
+	// A nil *Workspace must reach core as a nil Provenance, so the refusal
+	// says "judged with no composition" rather than naming a member it never
+	// had.
+	var provenance resources.Provenance
+	if s.workspace != nil {
+		provenance = s.workspace
+	}
 	s.mu.RUnlock()
+	mappings, err := resources.ResolveDependencyNetworkMappings(provenance, identity.Module, service.ServiceDependencies, candidates)
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
 	w.Debug("got network mappings", wool.Field("mappings", resources.MakeManyNetworkMappingSummary(mappings)))
 	return mappings, nil
 }

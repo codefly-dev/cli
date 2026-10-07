@@ -59,6 +59,7 @@ func (flow *Flow) exportExcludedOriginEnvironment(ctx context.Context) error {
 	// consumer module the runner passes as instance.Module.Name: core builds the
 	// identity from that same field, so the two carriers agree by construction.
 	endpointMappings, err := outputEnvNetworkMappings(
+		flow.world.Workspace,
 		identity.Module,
 		flow.originService.ServiceDependencies,
 		nil,

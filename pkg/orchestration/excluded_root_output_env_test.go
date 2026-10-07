@@ -56,7 +56,7 @@ func excludedRootVisibilityFlow(t *testing.T, ctx context.Context) (*Flow, strin
 	require.NoError(t, configurationManager.Load(ctx, env.Runtime()))
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
 	require.NoError(t, err)
-	sharedState, err := NewStateManager(ctx, configurationManager, dependencies)
+	sharedState, err := NewStateManager(ctx, configurationManager, dependencies, workspace)
 	require.NoError(t, err)
 
 	// The producer's endpoints as the dependency graph surfaces them, carrying
@@ -162,7 +162,7 @@ func TestOutputEnvRefusesToWriteWithoutAConsumerModule(t *testing.T) {
 	require.NoError(t, configurationManager.Load(ctx, env.Runtime()))
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
 	require.NoError(t, err)
-	sharedState, err := NewStateManager(ctx, configurationManager, dependencies)
+	sharedState, err := NewStateManager(ctx, configurationManager, dependencies, workspace)
 	require.NoError(t, err)
 
 	// Module deliberately absent: the field core guards before the identical call.

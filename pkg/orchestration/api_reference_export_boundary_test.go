@@ -31,7 +31,7 @@ func apiReferenceWorkspace(t *testing.T) *resources.Workspace {
 			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
-			"endpoints:\n    - name: api\n      api: rest\n      visibility: public\n" +
+			"endpoints:\n    - name: api\n      api: rest\n      visibility: public\n      exposure: none\n" +
 			"    - name: admin\n      api: rest\n      visibility: private\n",
 		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
@@ -54,10 +54,18 @@ func recordMappings(t *testing.T, world *World, module, name string, mappings ..
 	require.NoError(t, world.SharedState.RecordNetworkMappings(ctx, service, mappings))
 }
 
+// endpointMapping is a mapping as the shared state records it: its endpoint
+// is the producer's declaration (the CLI's proposal keeps the manifest's
+// endpoint), so a public one states its exposure — none, as nothing here has
+// an address reachable from outside the workspace.
 func endpointMapping(module, service, name, api, visibility string, instances ...*basev0.NetworkInstance) *basev0.NetworkMapping {
+	exposure := ""
+	if visibility == string(resources.VisibilityPublic) {
+		exposure = resources.ExposureNone
+	}
 	return &basev0.NetworkMapping{
 		Endpoint: &basev0.Endpoint{
-			Module: module, Service: service, Name: name, Api: api, Visibility: visibility,
+			Module: module, Service: service, Name: name, Api: api, Visibility: visibility, Exposure: exposure,
 		},
 		Instances: instances,
 	}
@@ -181,13 +189,16 @@ func TestAPrivateEndpointStillResolvesForAConsumerInItsOwnModule(t *testing.T) {
 // A BARE service dependency is not a way around the export boundary either.
 //
 // This is the bypass the first revision of the filter left open, and it was the
-// more reachable of the two: a dependency naming no endpoints is handed every
-// mapping its producer published — StateManager.GetDependenciesNetworkMappings
-// narrows by the dependency's endpoint list, never by visibility — and those
-// mappings go straight into the set a ${endpoint:…} resolves against. Worse,
+// more reachable of the two: a dependency naming no endpoints used to be handed
+// every mapping its producer published — StateManager.GetDependenciesNetworkMappings
+// narrowed by the dependency's endpoint list, never by visibility — and those
+// mappings went straight into the set a ${endpoint:…} resolves against. Worse,
 // producer discovery SKIPS a producer whose endpoint the dependency mappings
 // already carry, so filtering only what discovery binds meant the filter never
-// ran for exactly this consumer.
+// ran for exactly this consumer. Since core v0.14.0 the shared state judges the
+// hand-out with the composition (resources.ResolveDependencyNetworkMappings),
+// so the private mapping never reaches this set at all; the filter stays as the
+// pass over what discovery binds, and this test holds both halves.
 //
 // The reference below names `rest`, which is `api`'s API and `rest`'s name, so
 // it matches both of the producer's endpoints. Core's check passes on `api`
@@ -205,7 +216,7 @@ func TestABareServiceDependencyIsNotAWayAroundTheExportBoundary(t *testing.T) {
 		// `api` first, which used to be what made core's check pass on it.
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
-			"endpoints:\n    - name: api\n      api: rest\n      visibility: public\n" +
+			"endpoints:\n    - name: api\n      api: rest\n      visibility: public\n      exposure: none\n" +
 			"    - name: rest\n      api: grpc\n      visibility: private\n",
 		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
@@ -227,10 +238,15 @@ func TestABareServiceDependencyIsNotAWayAroundTheExportBoundary(t *testing.T) {
 	require.NotEmpty(t, service.ServiceDependencies, "the case is a declared dependency, not a discovered producer")
 
 	// The mappings a real resolution is handed: the consumer's own dependency
-	// mappings, as the shared state gives them.
+	// mappings, as the shared state gives them — JUDGED with the composition
+	// since core v0.14.0, so a bare dependency is handed what its module is
+	// permitted and the private endpoint never leaves the shared state. The
+	// filter below (exportableTo) is then a second pass over this set; it
+	// stays because it also covers what producer discovery binds.
 	dependencyMappings, err := world.SharedState.GetDependenciesNetworkMappings(ctx, service)
 	require.NoError(t, err)
-	require.Len(t, dependencyMappings, 2, "a bare dependency is handed every endpoint its producer published")
+	require.Len(t, dependencyMappings, 1, "a bare dependency is handed what its module is permitted, never every endpoint its producer published")
+	require.Equal(t, "api", dependencyMappings[0].GetEndpoint().GetName())
 
 	// Since core#702 this composition is REFUSED rather than answered. The
 	// reference names `rest` exactly, `rest` is private to the producer's
@@ -278,9 +294,8 @@ func TestABareServiceDependencyIsNotAWayAroundTheExportBoundary(t *testing.T) {
 // In a run the mapping's endpoint is the agent's Load answer, recorded without
 // being checked against the manifest. Judging visibility from it would make the
 // export boundary a property of what a runtime agent says: an agent reporting a
-// private endpoint as `public` would reopen the hole above, and one that dropped
-// `allow-modules` would refuse a legitimate `internal` reference. Core's
-// reference check reads the manifest; so does the filter.
+// private endpoint as `public` would reopen the hole above. Core's reference
+// check reads the manifest; so does the filter.
 //
 // Below, the manifest says `admin` is private and the published mapping claims
 // `public`. (Layer-5 round-five NEW-6.)
@@ -386,7 +401,7 @@ func TestAReferenceSeveralPermittedEndpointsSatisfyIsRefused(t *testing.T) {
 		// TestAnExactEndpointNameWinsOverAnAPISibling.)
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
-			"endpoints:\n    - name: api\n      api: rest\n      visibility: public\n" +
+			"endpoints:\n    - name: api\n      api: rest\n      visibility: public\n      exposure: none\n" +
 			"    - name: admin\n      api: rest\n      visibility: private\n",
 		// In the producer's module, so both endpoints are reachable for it.
 		"modules/platform/services/sidecar/service.codefly.yaml": "kind: service\nname: sidecar\nversion: 0.0.0\nmodule: platform\n" +
@@ -460,8 +475,8 @@ func TestAnAmbiguousReferenceInARootGroupRefusesEveryReceiver(t *testing.T) {
 		// visible to every module: ambiguous for whoever receives the group.
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
-			"endpoints:\n    - name: api\n      api: rest\n      visibility: public\n" +
-			"    - name: admin\n      api: rest\n      visibility: public\n",
+			"endpoints:\n    - name: api\n      api: rest\n      visibility: public\n      exposure: none\n" +
+			"    - name: admin\n      api: rest\n      visibility: public\n      exposure: none\n",
 		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n    - name: reader\n",
 		// Declares a DIFFERENT group, so its effective set is non-empty and the
@@ -528,8 +543,8 @@ func TestAnExactEndpointNameWinsOverAnAPISibling(t *testing.T) {
 		// `grpc` by name, `admin` by API: the reference matches both.
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
-			"endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n" +
-			"    - name: admin\n      api: grpc\n      visibility: public\n",
+			"endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n      exposure: none\n" +
+			"    - name: admin\n      api: grpc\n      visibility: public\n      exposure: none\n",
 		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
@@ -620,8 +635,8 @@ func TestAnotherProducersReferenceDoesNotKeepThisProducersSibling(t *testing.T) 
 			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
-			"endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n" +
-			"    - name: admin\n      api: grpc\n      visibility: public\n",
+			"endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n      exposure: none\n" +
+			"    - name: admin\n      api: grpc\n      visibility: public\n      exposure: none\n",
 		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n    - name: ledger\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
@@ -630,7 +645,7 @@ func TestAnotherProducersReferenceDoesNotKeepThisProducersSibling(t *testing.T) 
 		// reference to it has no exact-name answer — the shape that vouched.
 		"modules/payments/services/ledger/service.codefly.yaml": "kind: service\nname: ledger\nversion: 0.0.0\nmodule: payments\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
-			"endpoints:\n    - name: books\n      api: grpc\n      visibility: public\n",
+			"endpoints:\n    - name: books\n      api: grpc\n      visibility: public\n      exposure: none\n",
 		"configurations/local/work-context.env": "authority-endpoint=${endpoint:platform/authority/grpc}\n" +
 			"ledger-endpoint=${endpoint:payments/ledger/grpc}\n",
 	})
@@ -678,8 +693,8 @@ func TestDiscoveryBindsTheNamedEndpointEvenWhenADependencyCarriesItsAPISibling(t
 			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
-			"endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n" +
-			"    - name: admin\n      api: grpc\n      visibility: public\n",
+			"endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n      exposure: none\n" +
+			"    - name: admin\n      api: grpc\n      visibility: public\n      exposure: none\n",
 		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
 		// The consumer depends on `admin` specifically, so its dependency
@@ -734,7 +749,7 @@ func TestAnEndpointNameCoresSchemaRefusesFailsTheRender(t *testing.T) {
 		// makes it a trap.
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
-			"endpoints:\n    - name: grpc-admin\n      api: grpc\n      visibility: public\n",
+			"endpoints:\n    - name: grpc-admin\n      api: grpc\n      visibility: public\n      exposure: none\n",
 		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
@@ -769,11 +784,11 @@ func twoReferenceWorkspace(t *testing.T, values string) *resources.Workspace {
 // regression test non-discriminating. (Layer-4 round-ten B3.)
 func twoReferenceWorkspaceOrdered(t *testing.T, values string, siblingFirst bool) *resources.Workspace {
 	t.Helper()
-	endpoints := "endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n" +
-		"    - name: admin\n      api: grpc\n      visibility: public\n"
+	endpoints := "endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n      exposure: none\n" +
+		"    - name: admin\n      api: grpc\n      visibility: public\n      exposure: none\n"
 	if siblingFirst {
-		endpoints = "endpoints:\n    - name: admin\n      api: grpc\n      visibility: public\n" +
-			"    - name: grpc\n      api: grpc\n      visibility: public\n"
+		endpoints = "endpoints:\n    - name: admin\n      api: grpc\n      visibility: public\n      exposure: none\n" +
+			"    - name: grpc\n      api: grpc\n      visibility: public\n      exposure: none\n"
 	}
 	return writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
@@ -956,8 +971,8 @@ func TestReferencesNamingEachOthersAPIsEachResolve(t *testing.T) {
 		// Each endpoint's name is the other's API.
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
-			"endpoints:\n    - name: grpc\n      api: rest\n      visibility: public\n" +
-			"    - name: rest\n      api: grpc\n      visibility: public\n",
+			"endpoints:\n    - name: grpc\n      api: rest\n      visibility: public\n      exposure: none\n" +
+			"    - name: rest\n      api: grpc\n      visibility: public\n      exposure: none\n",
 		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
@@ -1104,8 +1119,8 @@ func TestTwoReferencesOverDistinctAPIsResolve(t *testing.T) {
 		// Distinct APIs: neither reference matches the other's endpoint.
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
-			"endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n" +
-			"    - name: rest\n      api: rest\n      visibility: public\n",
+			"endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n      exposure: none\n" +
+			"    - name: rest\n      api: rest\n      visibility: public\n      exposure: none\n",
 		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
 			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
@@ -1321,7 +1336,7 @@ func twoSiblingWorkspace(t *testing.T, values string, siblings []string) *resour
 	t.Helper()
 	endpoints := "endpoints:\n"
 	for _, name := range append([]string{"grpc"}, siblings...) {
-		endpoints += "    - name: " + name + "\n      api: grpc\n      visibility: public\n"
+		endpoints += "    - name: " + name + "\n      api: grpc\n      visibility: public\n      exposure: none\n"
 	}
 	return writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
