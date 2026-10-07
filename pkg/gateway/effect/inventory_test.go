@@ -1,7 +1,15 @@
 package effect
 
 import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
@@ -115,5 +123,100 @@ func TestAMalformedCapabilityIsRefusedRatherThanReadAsAbsent(t *testing.T) {
 		if err := Admit(ctx, method); err == nil {
 			t.Errorf("%s: a malformed capability was read as absent", method)
 		}
+	}
+}
+
+// Nothing outside pkg/gateway reaches an effect by calling it.
+//
+// The boundary is a transport interceptor, so it covers every gRPC request,
+// unary and streaming. It does NOT cover a caller that holds a *gateway.Server
+// and invokes a method on it in process — and the fix for B1 was asked for
+// across "every transport, including direct calls", so that gap deserves an
+// assertion rather than a paragraph of reasoning.
+//
+// Today the gap has no caller. Exactly two non-test files outside pkg/gateway
+// import the package: cmd/daemon.go, which calls Serve and nothing else, and
+// pkg/gateway/dockerexec/shell.go, which uses one free function and never holds
+// a Server. This test fails the moment that changes, so whoever adds the first
+// in-process caller has to decide what admits it instead of inheriting a
+// boundary that does not reach them.
+//
+// What it proves: no file outside pkg/gateway that imports pkg/gateway names an
+// effect method in a call. What it does not prove: anything about reflection,
+// or about a caller that reaches the server through an interface it was handed
+// — neither of which exists here, and both of which would also defeat an
+// in-body check.
+func TestNoPackageOutsideTheGatewayCallsAnEffectDirectly(t *testing.T) {
+	const gatewayImport = `"github.com/codefly-dev/cli/pkg/gateway"`
+	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	effects := map[string]bool{}
+	for _, method := range Methods() {
+		if class, _ := ClassOf(method); class == Effect {
+			effects[method] = true
+		}
+	}
+	if len(effects) == 0 {
+		t.Fatal("no effect methods in the inventory, so this test proves nothing")
+	}
+
+	var offenders []string
+	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			switch entry.Name() {
+			case ".git", "vendor", "testdata", "node_modules":
+				return filepath.SkipDir
+			}
+			// pkg/gateway owns this boundary and calls Admit inside itself;
+			// its own internal calls are what the interceptor and dockerexec's
+			// in-body admits already cover.
+			if path == filepath.Join(root, "pkg", "gateway") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		source, readErr := os.ReadFile(path) // #nosec G304 -- a .go file inside this module
+		if readErr != nil {
+			return readErr
+		}
+		if !strings.Contains(string(source), gatewayImport) {
+			return nil
+		}
+		file, parseErr := parser.ParseFile(token.NewFileSet(), path, source, 0)
+		if parseErr != nil {
+			return parseErr
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			if effects[selector.Sel.Name] {
+				relative, _ := filepath.Rel(root, path)
+				offenders = append(offenders, fmt.Sprintf("%s calls %s", relative, selector.Sel.Name))
+			}
+			return true
+		})
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatal(walkErr)
+	}
+	if len(offenders) > 0 {
+		t.Fatalf("an effect is reached in process, where the transport boundary does not apply:\n  %s\n"+
+			"route it through effect.Admit, or give the caller its own admitted path",
+			strings.Join(offenders, "\n  "))
 	}
 }
