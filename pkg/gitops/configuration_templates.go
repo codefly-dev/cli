@@ -158,9 +158,8 @@ func externalSecretTemplateExpression(delivered deliveredTemplate) (string, []st
 // wrote. A regular service's keys resolve through EnvironmentServiceSecrets
 // under the producer's own scope, the same call its own projection makes.
 //
-// The store is returned beside the reference because an ExternalSecret owns a
-// single store: a producer whose keys live in another one cannot be read from
-// the consumer's ExternalSecret at all, and the caller refuses rather than
+// The store is returned beside the reference so the consumer can select the
+// producer's backend with data[].sourceRef.storeRef rather than
 // reading the consumer's store and finding nothing.
 func producerPrimitiveRemote(
 	scope unitScope,
@@ -190,18 +189,9 @@ func producerPrimitiveRemote(
 			"producer %s assembles from %s, which its own deployment does not read as a secret",
 			delivered.producer, primitive)
 	}
-	var store environments.EnvironmentSecretStoreReference
-	if secrets != nil {
-		store = secrets.SecretStore
-		// The producer's own projection takes its per-service override the same
-		// way (serviceSecretProjection), so this is the store its ExternalSecret
-		// actually reads from.
-		if override := secrets.Services[service].SecretStore; override != nil {
-			store = *override
-		}
-	}
 	producerScope := environments.SecretScope{Workspace: scope.Workspace, Module: module, Service: service}
-	return secrets.RemoteRef(producerScope, primitive), store, nil
+	remote := secrets.RemoteRef(producerScope, primitive)
+	return remote, secrets.RemoteStore(service, remote), nil
 }
 
 // refusesNestedAssembly rejects a template that references another value the

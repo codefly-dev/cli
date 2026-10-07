@@ -91,6 +91,7 @@ func TestConfigurationProjectionRejectsRedirectedSecretDelivery(t *testing.T) {
 		"remote key":        "- op: replace\n  path: /spec/data/0/remoteRef/key\n  value: other-tenant/api",
 		"property":          "- op: replace\n  path: /spec/data/0/remoteRef/property\n  value: other",
 		"store":             "- op: replace\n  path: /spec/secretStoreRef/name\n  value: other-store",
+		"per-key store":     "- op: add\n  path: /spec/data/0/sourceRef\n  value:\n    storeRef:\n      name: other-store\n      kind: ClusterSecretStore",
 		"target":            "- op: replace\n  path: /spec/target/name\n  value: other-secret",
 		"namespace":         "- op: replace\n  path: /metadata/namespace\n  value: other-namespace",
 		"missing key":       "- op: remove\n  path: /spec/data/0",
@@ -397,4 +398,24 @@ func TestRejectedConfigurationCannotReplacePublishedTree(t *testing.T) {
 	entries, err := os.ReadDir(destination)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
+}
+
+func TestConfigurationProjectionPerKeyStoreSurvivesOverlay(t *testing.T) {
+	env := injectionContract(t)
+	mapping := env.ServiceSecrets.Services["api"]
+	remote := mapping.RemoteKeys["DATABASE_PASSWORD"]
+	remote.SecretStore = &environments.EnvironmentSecretStoreReference{Name: "database-store", Kind: "ClusterSecretStore"}
+	mapping.RemoteKeys["DATABASE_PASSWORD"] = remote
+	env.ServiceSecrets.Services["api"] = mapping
+	root := t.TempDir()
+	writeConsumerTree(t, root, env.Name, env.Namespace, "api", "declared.example")
+	err := projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "api"}, env, scopeOf(env), serviceInjection{})
+	require.NoError(t, err)
+	data, err := os.ReadFile(filepath.Join(root, "overlays", env.Name, "external-secret.yaml"))
+	require.NoError(t, err)
+	var projection externalSecret
+	require.NoError(t, yaml.Unmarshal(data, &projection))
+	require.Equal(t, "secret-api", projection.Spec.Target.Name)
+	require.Len(t, projection.Spec.Data, 1)
+	require.Equal(t, "database-store", projection.Spec.Data[0].SourceRef.StoreRef.Name)
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -84,27 +85,114 @@ the store already holds, but nothing outside the scope is planned or written.`,
 				return fmt.Errorf("--module %s: not a module rendered for %s (rendered: %s)", module, env.Name, strings.Join(rendered.Modules, ", "))
 			}
 		}
-		store, err := resolveSecretStore(ctx, env, rendered)
-		if err != nil {
-			return err
-		}
-		plan, err := deploysecrets.Build(ctx, &deploysecrets.Inputs{
+		plans, err := planSecretStores(ctx, &deploysecrets.Inputs{
 			Rendered:     rendered,
 			Generators:   env.ServiceSecrets.Generate,
 			Services:     workspaceServiceUniques(ctx, workspace),
-			Store:        store,
 			ReadPayloads: !secretsMetadataOnly,
 			Modules:      secretsModules,
 			MayBeEmpty:   env.ServiceSecrets.MayBeEmpty,
+		}, func(group gitops.RenderedEnvironment) (deploysecrets.Store, error) {
+			return resolveSecretStore(ctx, env, group)
 		})
 		if err != nil {
 			return err
 		}
-		printSecretsPlan(cmd.OutOrStdout(), env.Name, rendered, plan)
-		return finishSecretsPlan(ctx, plan, store, secretsDryRun, secretsAllowMissing, func() bool {
-			return secretsYes || models.Confirm(ctx, fmt.Sprintf("Write %d remote keys to %s?", len(plan.Changes()), plan.Store), false)
+		for _, planned := range plans {
+			printSecretsPlan(cmd.OutOrStdout(), env.Name, planned.rendered, planned.plan)
+		}
+		return finishSecretPlans(ctx, plans, secretsDryRun, secretsAllowMissing, func(planned plannedSecretStore) bool {
+			return secretsYes || models.Confirm(ctx, fmt.Sprintf("Write %d remote keys to %s?", len(planned.plan.Changes()), planned.plan.Store), false)
 		})
 	},
+}
+
+// Each backend has its own plan and writes. Namespace is part of a SecretStore's
+// identity, whereas a ClusterSecretStore is shared across namespaces.
+func groupSecretStores(rendered gitops.RenderedEnvironment) []gitops.RenderedEnvironment {
+	type address struct {
+		store     environments.EnvironmentSecretStoreReference
+		namespace string
+	}
+	groups := map[address]gitops.RenderedEnvironment{}
+	for _, secret := range rendered.Secrets {
+		key := address{store: secret.Store}
+		if secret.Store.Kind == "SecretStore" {
+			key.namespace = secret.Namespace
+		}
+		group, found := groups[key]
+		if !found {
+			group = gitops.RenderedEnvironment{Modules: rendered.Modules, Skipped: rendered.Skipped}
+		}
+		group.Secrets = append(group.Secrets, secret)
+		groups[key] = group
+	}
+	keys := make([]address, 0, len(groups))
+	for key := range groups {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, b := keys[i], keys[j]
+		if a.store.Kind != b.store.Kind {
+			return a.store.Kind < b.store.Kind
+		}
+		if a.store.Name != b.store.Name {
+			return a.store.Name < b.store.Name
+		}
+		return a.namespace < b.namespace
+	})
+	result := make([]gitops.RenderedEnvironment, 0, len(groups))
+	for _, key := range keys {
+		result = append(result, groups[key])
+	}
+	return result
+}
+
+type plannedSecretStore struct {
+	rendered gitops.RenderedEnvironment
+	store    deploysecrets.Store
+	plan     *deploysecrets.Plan
+}
+
+func planSecretStores(ctx context.Context, inputs *deploysecrets.Inputs, resolve func(gitops.RenderedEnvironment) (deploysecrets.Store, error)) ([]plannedSecretStore, error) {
+	var result []plannedSecretStore
+	for _, group := range groupSecretStores(inputs.Rendered) {
+		store, err := resolve(group)
+		if err != nil {
+			return nil, err
+		}
+		groupInputs := *inputs
+		groupInputs.Rendered, groupInputs.Store = group, store
+		plan, err := deploysecrets.Build(ctx, &groupInputs)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, plannedSecretStore{rendered: group, store: store, plan: plan})
+	}
+	return result, nil
+}
+
+// Validate and confirm every backend before writing to any of them.
+func finishSecretPlans(ctx context.Context, plans []plannedSecretStore, dryRun, allowMissing bool, confirm func(plannedSecretStore) bool) error {
+	if dryRun {
+		return nil
+	}
+	for _, planned := range plans {
+		if err := planned.plan.ValidateApply(allowMissing); err != nil {
+			return err
+		}
+	}
+	for _, planned := range plans {
+		if len(planned.plan.Changes()) > 0 && !confirm(planned) {
+			return fmt.Errorf("write not confirmed")
+		}
+	}
+	for _, planned := range plans {
+		if err := finishSecretsPlan(ctx, planned.plan, planned.store, false, allowMissing, func() bool { return true }); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // finishSecretsPlan validates completeness before even a no-op apply succeeds.
@@ -135,7 +223,7 @@ func resolveSecretStore(ctx context.Context, env *environments.Environment, rend
 	first := rendered.Secrets[0]
 	for _, secret := range rendered.Secrets[1:] {
 		if secret.Store != first.Store || (first.Store.Kind == "SecretStore" && secret.Namespace != first.Namespace) {
-			return nil, fmt.Errorf("the render reads through more than one secret store (%s and %s); planning several stores at once is not supported yet", first.Store.Name, secret.Store.Name)
+			return nil, fmt.Errorf("the render reads through more than one secret store (%s and %s); a backend plan must contain exactly one store", first.Store.Name, secret.Store.Name)
 		}
 	}
 	if env.Cluster == nil || env.Cluster.Context == "" {

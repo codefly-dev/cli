@@ -104,14 +104,17 @@ type EnvironmentManagedSecretReference struct {
 
 // EnvironmentSecretRemoteRef names where one secret key lives in the external
 // store: the remote key (an Azure Key Vault secret name, a Vault path, …) and,
-// for stores that hold structured documents, the property inside it.
+// for stores that hold structured documents, the property inside it. SecretStore
+// optionally selects a backend for this key instead of the service default.
 type EnvironmentSecretRemoteRef struct {
-	Key      string `yaml:"key"`
-	Property string `yaml:"property,omitempty"`
+	Key         string                           `yaml:"key"`
+	Property    string                           `yaml:"property,omitempty"`
+	SecretStore *EnvironmentSecretStoreReference `yaml:"secret-store,omitempty"`
 }
 
 // UnmarshalYAML accepts either a scalar remote key ("lodestar-accounts", which
-// means {key: "lodestar-accounts"}) or an explicit {key, property} mapping, so a
+// means {key: "lodestar-accounts"}) or an explicit mapping with key, property
+// and optional secret-store, so a
 // store that holds bare scalars stays terse while a store of JSON documents can
 // name the property.
 func (ref *EnvironmentSecretRemoteRef) UnmarshalYAML(node *yaml.Node) error {
@@ -120,7 +123,7 @@ func (ref *EnvironmentSecretRemoteRef) UnmarshalYAML(node *yaml.Node) error {
 	}
 	if node.Kind == yaml.MappingNode {
 		for i := 0; i < len(node.Content); i += 2 {
-			if key := node.Content[i].Value; key != "key" && key != "property" {
+			if key := node.Content[i].Value; key != "key" && key != "property" && key != "secret-store" {
 				return fmt.Errorf("unknown secret reference field %q", key)
 			}
 		}
@@ -130,11 +133,11 @@ func (ref *EnvironmentSecretRemoteRef) UnmarshalYAML(node *yaml.Node) error {
 }
 
 // MarshalYAML emits the terse scalar form (the remote key alone) when no property
-// is set, so a round-trip that re-serializes the workspace — `environment import`
+// or store override is set, so a round-trip that re-serializes the workspace — `environment import`
 // rewrites it in place — preserves a scalar remote-key declaration instead of
-// expanding it to a {key: …} mapping. With a property it emits the full mapping.
+// expanding it to a {key: …} mapping. A property or store override emits the full mapping.
 func (ref EnvironmentSecretRemoteRef) MarshalYAML() (any, error) {
-	if ref.Property == "" {
+	if ref.Property == "" && ref.SecretStore == nil {
 		return ref.Key, nil
 	}
 	type plain EnvironmentSecretRemoteRef
@@ -845,6 +848,11 @@ func (s *EnvironmentServiceSecrets) Validate() error {
 			if strings.TrimSpace(key) == "" {
 				return fmt.Errorf("service-secrets service %q: remote-key name cannot be empty", name)
 			}
+			if remote.SecretStore != nil {
+				if err := remote.SecretStore.validate(fmt.Sprintf("service-secrets service %q remote-key %q secret-store", name, key)); err != nil {
+					return err
+				}
+			}
 			if strings.TrimSpace(remote.Key) == "" {
 				return fmt.Errorf("service-secrets service %q: remote-key %q resolves to an empty path", name, key)
 			}
@@ -861,6 +869,11 @@ func (s *EnvironmentServiceSecrets) Validate() error {
 func (ref *EnvironmentSecretRemoteRef) validate(label string) error {
 	if ref == nil {
 		return nil
+	}
+	if ref.SecretStore != nil {
+		if err := ref.SecretStore.validate(label + " defaults secret-store"); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(ref.Key) == "" {
 		return fmt.Errorf("%s: defaults key cannot be empty", label)
@@ -907,12 +920,28 @@ func (s *EnvironmentServiceSecrets) RemoteRef(scope SecretScope, key string) Env
 				"{key}", key,
 			)
 			return EnvironmentSecretRemoteRef{
-				Key:      substitute.Replace(defaults.Key),
-				Property: substitute.Replace(defaults.Property),
+				Key:         substitute.Replace(defaults.Key),
+				Property:    substitute.Replace(defaults.Property),
+				SecretStore: defaults.SecretStore,
 			}
 		}
 	}
 	return EnvironmentSecretRemoteRef{Key: scope.Service + "/" + key}
+}
+
+// RemoteStore resolves the store for a key: its own override wins over the
+// service override, which wins over the environment default.
+func (s *EnvironmentServiceSecrets) RemoteStore(service string, remote EnvironmentSecretRemoteRef) EnvironmentSecretStoreReference {
+	if remote.SecretStore != nil {
+		return *remote.SecretStore
+	}
+	if s == nil {
+		return EnvironmentSecretStoreReference{}
+	}
+	if override := s.Services[service].SecretStore; override != nil {
+		return *override
+	}
+	return s.SecretStore
 }
 
 // Validate checks the structural invariants of a declared service-config block.

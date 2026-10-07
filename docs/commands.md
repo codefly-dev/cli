@@ -815,6 +815,10 @@ service-secrets:
         CODEFLY__…__IDENTITY_CLIENT_SECRET:
           key: lodestar-identity
           property: client_secret
+          # optional: this key comes from another store
+          secret-store:
+            name: identity-secrets
+            kind: ClusterSecretStore
       # defaults template: applies to every key not listed above; "{service}"
       # and "{key}" are substituted
       defaults:
@@ -825,9 +829,19 @@ service-secrets:
 A key with no matching `remote-keys` entry and no `defaults` falls back to the
 `<service>/<key>` store path. The rendered `ExternalSecret` is the single
 source; the store is seeded from it with `codefly deploy secrets`, never by hand,
-and nobody hand-authors ExternalSecrets.
+and nobody hand-authors ExternalSecrets. An optional `secret-store` on a remote
+key or defaults template overrides the per-service store and then the environment
+store. ESO v1 `data[].sourceRef.storeRef` selects that backend within the same
+ExternalSecret, keeping one owner for `secret-<service>`. The installed ESO must
+support this field.
 
 #### `codefly deploy secrets` — seed the store from the render
+
+The command plans each effective store separately and prints its backend before
+its keys. A namespaced SecretStore is distinct in each namespace. Reads,
+propagation and writes stay within that backend; values are never printed. All
+backend plans must be complete and confirmed before the first write. A backend
+failure during apply can still leave earlier backend writes complete.
 
 ```bash
 codefly deploy secrets --env staging --dry-run --metadata-only  # which keys exist; reads no value
@@ -927,7 +941,7 @@ The producer's location is whichever surface the producer itself resolves
 through: a managed service's keys come from its `secret-references`
 (`remote-key`/`property`), a regular service's from `service-secrets` under the
 producer's own scope. A producer resolving through a different `secret-store`
-than the consumer is refused — one ExternalSecret reads through one store. A
+uses a per-key `sourceRef.storeRef`, preserving that producer's backend. A
 template may only reference keys the producer's own deployment reads as
 secrets; a reference to one of its plain values is refused at render.
 

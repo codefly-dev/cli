@@ -806,3 +806,13 @@ func TestImportDryRunSkipsPostValidation(t *testing.T) {
 		t.Fatalf("dry-run ran post-import validation %d time(s)", *calls)
 	}
 }
+
+func TestImportCarriesPerKeySecretStore(t *testing.T) {
+	contract := strings.Replace(fixtureContract, `"service-secrets": {"secret-store": {"name": "cell-secrets", "kind": "ClusterSecretStore"}}`, `"service-secrets": {"secret-store": {"name": "cell-secrets", "kind": "ClusterSecretStore"}, "services": {"accounts": {"remote-keys": {"TOKEN": {"key": "identity", "property": "token", "secret-store": {"name": "identity-store", "kind": "SecretStore"}}}}}}`, 1)
+	dir := writeWorkspace(t, "name: acme\nlayout: modules\nmodules: []\n")
+	doImport(t, dir, importOptions{contractData: []byte(contract)})
+	remote := loadWorkspace(t, dir).FindEnvironment("azure").ServiceSecrets.Services["accounts"].RemoteKeys["TOKEN"]
+	if remote.SecretStore == nil || remote.SecretStore.Name != "identity-store" || remote.Property != "token" {
+		t.Fatalf("import lost store: %+v", remote)
+	}
+}

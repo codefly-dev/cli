@@ -496,3 +496,60 @@ func TestCoordinateContractRefusesUnsupportedSchemas(t *testing.T) {
 		})
 	}
 }
+
+func TestCoordinateContractPerKeySecretStoresRoundTrip(t *testing.T) {
+	var document map[string]any
+	if err := json.Unmarshal(loadCoordinateFixture(t, "config-injection.json"), &document); err != nil {
+		t.Fatal(err)
+	}
+	decl := document["environment"].(map[string]any)["service-secrets"].(map[string]any)
+	mapping := decl["services"].(map[string]any)["api"].(map[string]any)
+	remote := mapping["remote-keys"].(map[string]any)["DATABASE_PASSWORD"].(map[string]any)
+	remote["secret-store"] = map[string]any{"name": "database", "kind": "ClusterSecretStore"}
+	data, _ := json.Marshal(document)
+	contract, err := ParseCoordinateContract(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := contract.ToEnvironment(contract.Environment.Name, contract.Environment.Namespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := env.Resource()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := FromRuntime(runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reloaded.ServiceSecrets.Services["api"].RemoteKeys["DATABASE_PASSWORD"]
+	if got.SecretStore == nil || got.SecretStore.Name != "database" || got.Property != "password" {
+		t.Fatalf("lost override: %+v", got)
+	}
+	remote["secret-store"] = map[string]any{"name": "", "kind": "ClusterSecretStore"}
+	data, _ = json.Marshal(document)
+	if _, err := ParseCoordinateContract(data); err == nil {
+		t.Fatal("empty store admitted")
+	}
+}
+
+func TestSecretDefaultsPreserveStoreOverride(t *testing.T) {
+	store := EnvironmentSecretStoreReference{Name: "other", Kind: "SecretStore"}
+	secrets := &EnvironmentServiceSecrets{Defaults: &EnvironmentSecretRemoteRef{Key: "{module}/{service}", Property: "{key}", SecretStore: &store}}
+	remote := secrets.RemoteRef(SecretScope{Module: "app", Service: "api"}, "TOKEN")
+	if remote.Key != "app/api" || remote.Property != "TOKEN" || secrets.RemoteStore("api", remote) != store {
+		t.Fatalf("defaults = %+v", remote)
+	}
+	bare, err := yaml.Marshal(EnvironmentSecretRemoteRef{Key: "bare", SecretStore: &store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundtrip EnvironmentSecretRemoteRef
+	if err := yaml.Unmarshal(bare, &roundtrip); err != nil {
+		t.Fatal(err)
+	}
+	if roundtrip.SecretStore == nil || *roundtrip.SecretStore != store {
+		t.Fatalf("bare key lost store: %s", bare)
+	}
+}
