@@ -205,14 +205,18 @@ func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 	w.Debug("loaded",
 		wool.Field("endpoints", resources.MakeManyEndpointSummary(resp.Endpoints)))
 
-	runner.endpoints = resp.Endpoints
+	endpoints, err := reconcileLoadedEndpoints(runner.instance.Service, resp.Endpoints)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot accept runtime endpoints")
+	}
+	runner.endpoints = endpoints
 
-	err = runner.world.SharedState.RecordEndpoints(ctx, runner.instance.Identity, resp.Endpoints)
+	err = runner.world.SharedState.RecordEndpoints(ctx, runner.instance.Identity, endpoints)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record endpoints")
 	}
 
-	err = runner.outputPropertyForLoad.Set(ctx, &RunnerLoadOutput{Endpoints: resp.Endpoints})
+	err = runner.outputPropertyForLoad.Set(ctx, &RunnerLoadOutput{Endpoints: endpoints})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for load")
 	}

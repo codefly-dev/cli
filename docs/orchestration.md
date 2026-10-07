@@ -735,6 +735,15 @@ Actions are the atomic units of work. Each has a `Type` and targets a specific `
 RuntimeBegin → RuntimeLoad → RuntimeInit → RuntimeStart → [RuntimeTest]
 ```
 
+At `RuntimeLoad`, the CLI matches each reported endpoint to its producer's
+manifest by module, service, name and API. The manifest supplies `visibility`,
+`exposure` and `location`, including an explicit `exposure: none`; the agent's
+discovered API details remain intact. An older agent that cannot report
+`exposure` therefore does not erase it. Undeclared, duplicate or foreign
+endpoints and unknown wire declarations are refused before shared state is
+updated. A missing exposure in the manifest is still invalid and is never
+filled from the agent's response.
+
 **Builder actions (for `build`, `sync`, `deploy`):**
 
 ```
