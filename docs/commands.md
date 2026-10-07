@@ -1193,6 +1193,16 @@ Composition splits **identity** (what to compose, portable) from **location**
   overlay — a `resolve:` directive per module (`path:` for `--source`,
   `worktree: <owner/repo>@<ref>` for `--worktree`). It never lands in committed
   config, so a local source choice keeps `git status` clean.
+- **`path:` and `worktree:` point at different things.** `path:` resolves to
+  the module directory itself and does **not** join the composition's
+  `module:` subpath, while `worktree:` resolves to the checkout and then joins
+  it. So a module composed as `module: modules/host` takes
+  `path: ../saas-host/modules/host` but
+  `worktree: codefly-dev/saas-host@main`. Pointing `path:` at the repository
+  root resolves to a directory with no module manifest, and the failure reads
+  as an unresolved reference rather than a wrong path. (Core's
+  `module_resolver.go`: the `path` case returns `overlayDir(directive.Path)`
+  with no join; the `worktree` case joins `ref.Module` when it is set.)
 - When the module is not yet composed, a portable identity (`source` +
   `version`, never a path) is added to `workspace.codefly.yaml`. `--source`
   derives the identity from the directory's `origin` remote when it is a git
