@@ -15,6 +15,11 @@ import (
 )
 
 func projectServiceConfiguration(ctx context.Context, root string, service *resources.Service, env *environments.Environment, scope unitScope, injection serviceInjection) error {
+	resolved, err := withServiceEnvironmentDefaults(service, env)
+	if err != nil {
+		return err
+	}
+	env = resolved
 	if err := projectConfigurationValues(ctx, root, service.Name, env); err != nil {
 		return fmt.Errorf("project service %s configuration: %w", service.Name, err)
 	}

@@ -83,6 +83,24 @@ Proxy containers, image choices and loopback routing are not part of this contra
 
 ## Configuration and secret injection
 
+A service may declare non-secret raw environment defaults under
+`spec.environment-defaults` in its `service.codefly.yaml`, for example
+`AUDIT_SINK: postgres`. GitOps rendering projects these into the service's
+identified container. Explicit `service-config` values or `service-secrets`
+remote keys take precedence. Defaults are nonempty strings with environment
+variable names; the `CODEFLY__` namespace is reserved for resolved runtime
+configuration. Defaults do not change the imported coordinate or supply secret
+credentials. A job-capable promotion driver must inherit the resulting service
+configuration, including these defaults, instead of choosing a separate job
+default.
+
+Module bundle `deployJobs` entries currently require unsupported driver work:
+catalog mounts, the running service's immutable image and identity, resolved
+connection authority, inherited environment, and a barrier after dependency
+migrations that fails the promotion on a failed job. This CLI rejects a selected
+bundle containing those entries. ApplicationSet sync-wave annotations alone
+cannot provide that barrier across independently reconciling Applications.
+
 Injecting a workload's configuration and secrets needs four declarations and no
 others: the target (`name`, `namespace`, `cluster.context`), resolved values
 under `service-config`, secret references under `service-secrets`, and a workload
