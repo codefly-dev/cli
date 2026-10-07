@@ -1,6 +1,4 @@
 kind: module
 name: app
-project: readiness
-domain: github.com/codefly-dev/readiness/app
 services:
     - name: api

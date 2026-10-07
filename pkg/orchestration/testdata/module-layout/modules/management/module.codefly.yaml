@@ -1,6 +1,4 @@
 kind: module
 name: management
-project: codefly-platform
-domain: github.com/codefly-ai/codefly-platform/management
 services:
     - name: organization

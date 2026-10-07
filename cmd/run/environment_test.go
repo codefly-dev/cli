@@ -99,7 +99,6 @@ environments:
 `,
 		"modules/web/module.codefly.yaml": `kind: module
 name: web
-project: run-env
 services:
     - name: gateway
 `,

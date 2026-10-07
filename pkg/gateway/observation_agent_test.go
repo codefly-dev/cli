@@ -87,8 +87,8 @@ func writeAgentRequiringWorkspace(t *testing.T, root string) {
 	t.Helper()
 	for name, content := range map[string]string{
 		"workspace.codefly.yaml": "name: observation\nlayout: modules\nmodules:\n    - name: backend\n",
-		"modules/backend/module.codefly.yaml": "kind: module\nname: backend\nproject: observation\n" +
-			"domain: github.com/codefly-ai/observation/backend\nservices:\n    - name: api\n",
+		"modules/backend/module.codefly.yaml": "kind: module\nname: backend\n" +
+			"services:\n    - name: api\n",
 		"modules/backend/services/api/service.codefly.yaml": "kind: service\nname: api\nversion: 0.0.0\nmodule: backend\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
 		"main.go": "package main\n\nfunc main() {}\n",

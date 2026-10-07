@@ -24,13 +24,13 @@ func referenceValidityWorkspace(t *testing.T, reference string, producerVisibili
 	t.Helper()
 	return writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
-		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
+			"services:\n    - name: authority\n",
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"endpoints:\n    - name: admin\n      api: rest\n      visibility: " + producerVisibility + "\n" + statedExposure(producerVisibility),
-		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\n" +
+			"services:\n    - name: worker\n",
 		// Declares nothing: whatever it receives is the composition root's, which
 		// is exactly the path that used to have no check on it.
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
@@ -364,13 +364,13 @@ func TestRequireKnownRootGroupRefusesAGroupTheResolutionDidNotPlanFor(t *testing
 func TestAMixedRootGroupReportsBothTheVisibilityViolationAndTheTypo(t *testing.T) {
 	workspace := writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
-		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
+			"services:\n    - name: authority\n",
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"endpoints:\n    - name: admin\n      api: rest\n      visibility: private\n",
-		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\n" +
+			"services:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
 		"configurations/local/work-context.env": "typo=${endpoint:platfrom/authority/admin}\n" +

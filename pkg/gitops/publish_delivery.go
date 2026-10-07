@@ -739,6 +739,22 @@ func priorDeliveredBindings(ctx context.Context, repo, baseBranch, overlayPath s
 			return nil, fmt.Errorf("read the delivered %s from %s: %w", name, baseBranch, err)
 		}
 		document, alias, carrier, ok, err := bindingFromConfigMap(data)
+		if errors.Is(err, solutionhost.ErrSchema) {
+			// Delivered against a schema this Core no longer reads. Settling a
+			// generation against it is impossible for the same reason the render
+			// cannot compare it (see nextGeneration): a document this Core cannot
+			// read is a document it cannot digest. Refusing here would make the
+			// FIRST delivery after a schema step impossible — every prior document
+			// in the tree is superseded at once — which is the opposite of what a
+			// distinct ErrSchema sentinel exists for.
+			//
+			// So it is not a comparable prior and the history restarts. What makes
+			// that safe rather than merely quiet is that a schema step also makes
+			// every host discard its applied records, so no host is holding a
+			// higher generation to refuse the new one as stale; the restart is
+			// visible in the delivered document rather than inferred.
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("the delivered %s on %s cannot be read, so no generation can be settled against it: %w", name, baseBranch, err)
 		}
@@ -1096,7 +1112,20 @@ func settledAuthoritySet(
 		} else {
 			tombstone.Generation = previous.document.Generation + 1
 			tombstone.Removed = true
+			// A withdrawal clears everything that DESCRIBES the module, the
+			// subject declarations included: core requires queues, namespaces
+			// and scope_ceilings on a live generation and forbids them on a
+			// removed one, because a withdrawal that still describes what it
+			// withdraws leaves a host deciding which half meant it. So a
+			// tombstone is not the live document with a flag set.
 			tombstone.ApprovedBuild, tombstone.EffectiveFrom, tombstone.Principals = "", 0, nil
+			// EMPTY, not absent. The two rules only look contradictory: core
+			// requires the three keys on every generation, so nil is "the
+			// renderer dropped the field", and forbids them NON-EMPTY on a
+			// removed one, so a value is "the withdrawal still describes what
+			// it withdraws". Only an empty, present list satisfies both.
+			tombstone.Queues, tombstone.Namespaces = []string{}, []string{}
+			tombstone.ScopeCeilings = []solutionhost.ScopeCeiling{}
 			if err := tombstone.Validate(); err != nil {
 				return nil, fmt.Errorf("withdraw authority %s: %w", authority, err)
 			}

@@ -3,6 +3,7 @@ package gitops
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -152,6 +153,7 @@ type SolutionEndpoint struct {
 	Module     string
 	API        string
 	Visibility string
+	Exposure   string
 }
 
 // SolutionModulePin is one effective module pin.
@@ -278,7 +280,7 @@ func solutionHostBinding(owned string, opts *RenderOptions, instance *SolutionIn
 	}
 	release := solutionhost.Release{Publisher: publisher, Name: name, Version: instance.Version, Digest: instance.ReleaseDigest}
 	document := &solutionhost.SolutionHostBinding{
-		Schema:     solutionhost.SchemaPresenceV2,
+		Schema:     solutionhost.SchemaPresenceV1,
 		Kind:       instance.Kind,
 		Binding:    id,
 		Generation: 1,
@@ -324,7 +326,7 @@ func solutionHostBinding(owned string, opts *RenderOptions, instance *SolutionIn
 	for _, endpoint := range instance.Endpoints {
 		document.Endpoints = append(document.Endpoints, solutionhost.Endpoint{
 			Name: endpoint.Name, Service: endpoint.Service, Module: endpoint.Module,
-			API: endpoint.API, Visibility: endpoint.Visibility,
+			API: endpoint.API, Visibility: endpoint.Visibility, Exposure: endpoint.Exposure,
 		})
 	}
 	for _, pin := range instance.Modules {
@@ -477,6 +479,24 @@ func unitDigest(root, relative string) (string, error) {
 // number to avoid it would be a renderer asserting a history it does not have.
 func nextGeneration(destination, environment string, candidate *solutionhost.SolutionHostBinding) (uint64, error) {
 	prior, err := priorSolutionHostBinding(destination, environment, candidate.Binding)
+	if errors.Is(err, solutionhost.ErrSchema) {
+		// The delivered tree holds a document this Core does not read: it was
+		// written by an older renderer, against a schema that has since been
+		// superseded. That is version SKEW, not a malformed delivery, and
+		// ErrSchema is a distinct sentinel so this caller can tell the two
+		// apart. Returning it would accuse delivery of writing a bad document
+		// when it only wrote an older one.
+		//
+		// A document it cannot read is a document it cannot compare, so there is
+		// no comparable prior and the history starts again. That is the same
+		// accepted failure this function already documents for a tree it cannot
+		// see at all, and it is loud in the same place: a host holding a higher
+		// generation refuses generation 1 as stale. What makes it safe rather
+		// than merely loud is that a schema step also makes every host discard
+		// its applied records, so after the cutover no higher generation is left
+		// to conflict with.
+		return 1, nil
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -694,7 +714,7 @@ func presenceInstanceOf(
 			}
 			instance.Endpoints = append(instance.Endpoints, SolutionEndpoint{
 				Name: endpoint.Name, Service: service.Name, Module: module.Name,
-				API: endpoint.API, Visibility: endpoint.Visibility,
+				API: endpoint.API, Visibility: endpoint.Visibility, Exposure: endpoint.Exposure,
 			})
 		}
 	}

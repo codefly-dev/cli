@@ -18,16 +18,16 @@ func overrideOrderingWorkspace(t *testing.T) *resources.Workspace {
 	t.Helper()
 	return writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: ordering\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
-		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: ordering\n" +
-			"domain: github.com/codefly-ai/ordering/platform\nservices:\n    - name: authority\n    - name: gateway\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
+			"services:\n    - name: authority\n    - name: gateway\n",
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"endpoints:\n    - name: rest\n      api: rest\n      visibility: public\n      exposure: none\n",
 		"modules/platform/services/gateway/service.codefly.yaml": "kind: service\nname: gateway\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"endpoints:\n    - name: rest\n      api: rest\n      visibility: public\n      exposure: none\n",
-		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: ordering\n" +
-			"domain: github.com/codefly-ai/ordering/payments\nservices:\n    - name: worker\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\n" +
+			"services:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"workspace-configuration-dependencies:\n    - work-context\n",

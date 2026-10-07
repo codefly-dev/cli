@@ -158,8 +158,8 @@ func TestNoDoctorDiagnosticCarriesTheConfigurationValue(t *testing.T) {
 	const canary = "sup3rs3cr3t-canary-value"
 	dir := writeTestWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: demo\nlayout: modules\nmodules:\n    - name: backend\n",
-		"modules/backend/module.codefly.yaml": "kind: module\nname: backend\nproject: demo\n" +
-			"domain: github.com/codefly-ai/demo/backend\nservices:\n    - name: api\n",
+		"modules/backend/module.codefly.yaml": "kind: module\nname: backend\n" +
+			"services:\n    - name: api\n",
 		"modules/backend/services/api/service.codefly.yaml": "kind: service\nname: api\nversion: 0.0.0\nmodule: backend\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"workspace-configuration-dependencies:\n    - platform\n",

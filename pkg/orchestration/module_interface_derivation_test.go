@@ -74,8 +74,7 @@ func TestTheModuleInterfaceDecidesReachAndNotTheService(t *testing.T) {
 			workspace := writeTempWorkspace(t, map[string]string{
 				"workspace.codefly.yaml": "name: derivation\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
 				// The module's interface IS the export declaration.
-				"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: derivation\n" +
-					"domain: github.com/codefly-ai/derivation/platform\n" +
+				"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
 					"interface:\n  endpoints:\n    - service: authority\n      " + test.interfaceEntry +
 					"services:\n    - name: authority\n",
 				// `admin` is a sibling the interface can export instead of `api`;
@@ -84,8 +83,8 @@ func TestTheModuleInterfaceDecidesReachAndNotTheService(t *testing.T) {
 					"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 					"endpoints:\n    - name: api\n      api: rest\n      visibility: " + test.authored + "\n" + statedExposure(test.authored) +
 					"    - name: admin\n      api: rest\n",
-				"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: derivation\n" +
-					"domain: github.com/codefly-ai/derivation/payments\nservices:\n    - name: worker\n",
+				"modules/payments/module.codefly.yaml": "kind: module\nname: payments\n" +
+					"services:\n    - name: worker\n",
 				"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
 					"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
 			})
@@ -132,8 +131,7 @@ func TestTheModuleInterfaceDecidesReachAndNotTheService(t *testing.T) {
 func TestTheDerivationLeavesTheServiceFileAuthoredAsWritten(t *testing.T) {
 	workspace := writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: derivation\nlayout: modules\nmodules:\n    - name: platform\n",
-		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: derivation\n" +
-			"domain: github.com/codefly-ai/derivation/platform\n" +
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
 			"interface:\n  endpoints:\n    - service: authority\n      endpoint: api\n      visibility: public\n" +
 			"services:\n    - name: authority\n",
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +

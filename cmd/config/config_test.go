@@ -31,7 +31,6 @@ environments:
 `,
 		"modules/platform/module.codefly.yaml": `kind: module
 name: platform
-project: config-fixture
 services:
     - name: api
 `,

@@ -17,8 +17,8 @@ func TestDependencyRuntimeCapabilitiesHonorEndpointScope(t *testing.T) {
 	// endpoints carry their declaration: internal, which permits "mind".
 	workspace := writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml":            "name: scope\nlayout: modules\nmodules:\n    - name: mind\n    - name: users\n",
-		"modules/mind/module.codefly.yaml":  "kind: module\nname: mind\nproject: scope\ndomain: github.com/codefly-ai/scope/mind\n",
-		"modules/users/module.codefly.yaml": "kind: module\nname: users\nproject: scope\ndomain: github.com/codefly-ai/scope/users\n",
+		"modules/mind/module.codefly.yaml":  "kind: module\nname: mind\n",
+		"modules/users/module.codefly.yaml": "kind: module\nname: users\n",
 	})
 	published := func(name, api string) *basev0.Endpoint {
 		return &basev0.Endpoint{Module: "users", Service: "accounts", Name: name, Api: api, Visibility: resources.VisibilityInternal}

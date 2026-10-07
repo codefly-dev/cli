@@ -104,7 +104,6 @@ environments:
 `,
 		"modules/web/module.codefly.yaml": `kind: module
 name: web
-project: recovery
 services:
     - name: gateway
 `,

@@ -98,7 +98,6 @@ modules:
 `,
 		"modules/app/module.codefly.yaml": `kind: module
 name: app
-project: unpinned
 services:
     - name: backend
 `,
@@ -192,7 +191,6 @@ modules:
 `,
 		"vendor/solutions/wiki/module.codefly.yaml": `kind: module
 name: wiki
-project: platform
 services:
     - name: backend
 `,
@@ -222,7 +220,6 @@ endpoints:
 `,
 		"vendor/lodestar/saas/module.codefly.yaml": `kind: module
 name: saas
-project: platform
 services:
     - name: auth-gateway
 `,
@@ -243,7 +240,6 @@ endpoints:
 `,
 		"vendor/lodestar/documents/module.codefly.yaml": `kind: module
 name: documents
-project: platform
 services:
     - name: api
 `,

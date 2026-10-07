@@ -256,10 +256,10 @@ func outputEnvProvenance(t *testing.T) resources.Provenance {
 	t.Helper()
 	return writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: output-env\nlayout: modules\nmodules:\n    - name: platform\n    - name: saas\n",
-		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: output-env\n" +
-			"domain: github.com/codefly-ai/output-env/platform\n",
-		"modules/saas/module.codefly.yaml": "kind: module\nname: saas\nproject: output-env\n" +
-			"domain: github.com/codefly-ai/output-env/saas\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
+			"",
+		"modules/saas/module.codefly.yaml": "kind: module\nname: saas\n" +
+			"",
 	})
 }
 

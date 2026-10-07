@@ -267,11 +267,46 @@ func authorityDocument(owned string, opts *RenderOptions, instance *AuthorityIns
 		ApprovedBuild:    build,
 		EffectiveFrom:    1,
 		Principals:       []solutionhost.PrincipalAuthority{{Principal: instance.Contract.Principal, Bindings: authorityBindings(binding, instance.Contract)}},
+		// The SUBJECT module's own declarations, written out rather than left
+		// to be inferred from the bindings above: the bindings carry at most
+		// ONE queue and ONE namespace each, so a module declaring several
+		// cannot be reconstructed from them, and a module declaring none is
+		// indistinguishable from a renderer that dropped the field. Core
+		// requires all three for exactly that reason and takes [] — not an
+		// absent key — as "the module declares none", so these are always
+		// non-nil.
+		Queues:        declaredStrings(instance.Contract.Queues),
+		Namespaces:    declaredStrings(instance.Contract.Namespaces),
+		ScopeCeilings: declaredScopeCeilings(instance.Contract.ScopeCeilings),
 	}
 	if err := document.Validate(); err != nil {
 		return nil, fmt.Errorf("authority of %s/%s is invalid: %w", instance.Module, instance.Service, err)
 	}
 	return document, nil
+}
+
+// declaredStrings projects a subject module's declared list for an authority
+// document. It never returns nil: core distinguishes "the module declares
+// none" ([]) from "the renderer dropped the field" (absent), and only the
+// first is a document it will accept.
+func declaredStrings(declared []string) []string {
+	projected := make([]string, 0, len(declared))
+	return append(projected, declared...)
+}
+
+// declaredScopeCeilings projects the subject module's own permission
+// vocabulary. The two types are field-identical and live in different
+// packages, so this is a copy rather than a conversion, and it is non-nil for
+// the same reason as declaredStrings.
+func declaredScopeCeilings(declared []modulecontract.ScopeCeiling) []solutionhost.ScopeCeiling {
+	projected := make([]solutionhost.ScopeCeiling, 0, len(declared))
+	for _, ceiling := range declared {
+		projected = append(projected, solutionhost.ScopeCeiling{
+			ResourceKind: ceiling.ResourceKind,
+			Actions:      declaredStrings(ceiling.Actions),
+		})
+	}
+	return projected
 }
 
 // authorityBindings derives the units of authority a contract asks for: one per
