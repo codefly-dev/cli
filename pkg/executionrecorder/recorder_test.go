@@ -3,7 +3,6 @@ package executionrecorder
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -280,10 +279,14 @@ func appendStartedBeforeProcessLoss(stateDir string) error {
 	if err != nil {
 		return err
 	}
-	signature := make([]byte, 64)
-	// An opaque carrier, not a parsed token: nothing on this side decodes it.
-	token := "e30." + base64.RawURLEncoding.EncodeToString(signature)
-	execution, err := workcontextgrpc.NewExecutionContext(token, "operation-process-loss")
+	verified, err := mintedCapability(ctx, evidenceScope(fixtureProducerID))
+	if err != nil {
+		return err
+	}
+	// The carrier is the capability's OWN encoded form. A dummy token stood
+	// here, paired with an unrelated capability, until the recorder started
+	// binding the two — see TestBeginRefusesACarrierThatIsNotTheVerifiedCapability.
+	execution, err := workcontextgrpc.NewExecutionContext(verified.Encoded(), "operation-process-loss")
 	if err != nil {
 		return err
 	}
@@ -301,10 +304,6 @@ func appendStartedBeforeProcessLoss(stateDir string) error {
 			Id: "codefly.execution", Component: "gateway", Release: "v0.1.27",
 		},
 	})
-	if err != nil {
-		return err
-	}
-	verified, err := mintedCapability(ctx, evidenceScope(fixtureProducerID))
 	if err != nil {
 		return err
 	}
@@ -392,9 +391,12 @@ func newRecorderFixture(t *testing.T) *recorderFixture {
 	}
 	t.Cleanup(func() { _ = journal.Close() })
 
-	signature := make([]byte, 64)
-	token := "e30." + base64.RawURLEncoding.EncodeToString(signature)
-	execution, err := workcontextgrpc.NewExecutionContext(token, "operation-1")
+	verified := verifiedFixture(t)
+	// The carrier is the capability's own encoded form: the recorder refuses a
+	// carrier that is not the capability that was verified, and a fixture
+	// pairing a dummy token with an unrelated capability is exactly what hid
+	// that hole.
+	execution, err := workcontextgrpc.NewExecutionContext(verified.Encoded(), "operation-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +417,7 @@ func newRecorderFixture(t *testing.T) *recorderFixture {
 	return &recorderFixture{
 		recorder: recorder, journal: journal, journalPath: journalPath,
 		attestor: attestor, authority: authority, producer: producer,
-		execution: execution, verified: verifiedFixture(t), clock: clock,
+		execution: execution, verified: verified, clock: clock,
 	}
 }
 
@@ -485,6 +487,52 @@ func TestBeginRefusesWithoutAVerifiedCapability(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "requires a verified Work Context") {
 		t.Fatalf("the refusal must say what is missing: %v", err)
+	}
+	pending, pendingErr := fixture.journal.Pending(t.Context(), 0, 10)
+	if pendingErr != nil {
+		t.Fatal(pendingErr)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("a refused execution must write no receipt, got %d", len(pending))
+	}
+}
+
+// A carrier that is not the capability that was verified is refused.
+//
+// The recorder takes both an ExecutionContext, which carries the token the
+// caller presented, and a *Verified produced by whoever could verify one.
+// Nothing tied them together: a caller could present one capability and hand
+// over another's verification, and the receipt would carry the verified
+// capability's digest and claims beside an operation admitted under a token
+// nobody checked.
+//
+// r16 executed that against this package's own fixture, which paired a dummy
+// `e30.` carrier with an unrelated conformance capability and succeeded. The
+// fixture now carries verified.Encoded(), and this test is the negative case:
+// two REAL capabilities, each verified, crossed over.
+func TestBeginRefusesACarrierThatIsNotTheVerifiedCapability(t *testing.T) {
+	fixture := newRecorderFixture(t)
+
+	// A second, genuine capability — minted and verified exactly like the
+	// first, differing only in being a different capability.
+	other, err := mintedCapability(t.Context(), evidenceScope(fixtureProducerID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.SHA256() == fixture.verified.SHA256() {
+		t.Fatal("the two capabilities are the same, so this test proves nothing")
+	}
+
+	crossed, err := workcontextgrpc.NewExecutionContext(other.Encoded(), "operation-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = fixture.recorder.Begin(t.Context(), crossed, fixture.verified, fixture.beginInput())
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("want ErrInvalid, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "not the capability that was verified") {
+		t.Fatalf("the refusal must name what is wrong: %v", err)
 	}
 	pending, pendingErr := fixture.journal.Pending(t.Context(), 0, 10)
 	if pendingErr != nil {

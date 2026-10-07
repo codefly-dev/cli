@@ -19,6 +19,7 @@ import (
 	"github.com/codefly-dev/core/executionreceipt"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
+	coreworkcontext "github.com/codefly-dev/core/workcontext"
 	workcontext "github.com/codefly-dev/sdk-go/workcontext"
 	workcontextgrpc "github.com/codefly-dev/sdk-go/workcontext/grpctransport"
 	"google.golang.org/protobuf/proto"
@@ -212,6 +213,26 @@ func (r *Recorder) Begin(
 	// receipt carries both these claims and verified.SHA256(), so taking them
 	// from two sources let a receipt attest to a tenant the digest's capability
 	// never named.
+	// The CARRIER the caller presented must be the capability that was
+	// verified.
+	//
+	// The recorder takes both: an ExecutionContext, which carries the token and
+	// the operation id, and a *Verified produced by whoever could verify it.
+	// Nothing tied them together, so a caller could present one capability and
+	// hand over another's verification — and the receipt would carry the
+	// verified capability's digest and claims beside an operation admitted
+	// under a token nobody checked. r16 executed that: the fixture here paired
+	// a dummy `e30.` carrier with an unrelated conformance capability and
+	// succeeded.
+	//
+	// core.Fingerprint is the comparison core exposes for exactly this, "so a
+	// caller holding only the encoded form can match it against a stored one",
+	// and it is the same digest Verify recorded.
+	if fingerprint := coreworkcontext.Fingerprint(execution.Capability()); fingerprint != verified.SHA256() {
+		return BeginResult{}, fmt.Errorf(
+			"%w: the presented Work Context carrier is not the capability that was verified (carrier %s, verified %s); a receipt must attest to the capability the caller actually presented",
+			ErrInvalid, fingerprint, verified.SHA256())
+	}
 	claims := verified.Context()
 	if claims == nil {
 		return BeginResult{}, fmt.Errorf("%w: the verified Work Context carries no claims", ErrInvalid)

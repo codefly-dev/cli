@@ -110,23 +110,43 @@ func (c Class) String() string {
 // to.
 var classes = map[string]Class{
 	// Reads.
-	"ListServices":              Observation,
-	"EvaluateStorageCapacity":   Observation,
-	"ReadFile":                  Observation,
-	"ListFiles":                 Observation,
-	"Search":                    Observation,
-	"ListAllCommands":           Observation,
+	"ListServices":            Observation,
+	"EvaluateStorageCapacity": Observation,
+	"ReadFile":                Observation,
+	"ListFiles":               Observation,
+	"Search":                  Observation,
+	// These four are READS whose answer comes from the service's language
+	// agent, and obtaining the agent STARTS it. A static call-graph guard
+	// (TestNoObservationReachesTheAgentDoor) found them after r16 had executed
+	// three others: GitDiff's unstaged path, GetSourceManifest and
+	// DiscoverCodeUnits reach the door through sourceExecute, GetSemanticIndex
+	// through rootedSourceExecute -> boundSource.
+	//
+	// This NARROWS the owner's ruling that a read is not an effect, and only
+	// for these: the effect is not the reading, it is starting a process to
+	// perform it. GitStatus, GitLog, GitDiff's staged path,
+	// ForgePullRequestStatus and ForgeNormalizeWebhook remain observations —
+	// they run in-process git or a pure transform and reach no door.
+	"GetSourceManifest": Effect,
+	"DiscoverCodeUnits": Effect,
+
+	// Reading metadata STARTS the service's language agent
+	// (AgentSupervisor.acquire). r16 executed the consequence: governed Build
+	// was refused at the transport boundary while governed ListAllCommands
+	// spawned go__0.0.63-dev. Starting a process is an effect whatever the
+	// answer is used for — and ListAllCommands IGNORES the error from
+	// executionServiceBehavior, so a refusal deeper down would otherwise be
+	// swallowed into a response quietly missing its agent commands.
+	"ListAllCommands":           Effect,
 	"GitStatus":                 Observation,
-	"GitDiff":                   Observation,
+	"GitDiff":                   Effect,
 	"GitLog":                    Observation,
 	"ForgePullRequestStatus":    Observation,
 	"ForgeNormalizeWebhook":     Observation,
-	"ListDependencies":          Observation,
-	"GetProjectInfo":            Observation,
-	"GetSemanticIndex":          Observation,
+	"ListDependencies":          Effect,
+	"GetProjectInfo":            Effect,
+	"GetSemanticIndex":          Effect,
 	"GetInstructionIndex":       Observation,
-	"GetSourceManifest":         Observation,
-	"DiscoverCodeUnits":         Observation,
 	"ListTerminals":             Observation,
 	"SubscribeWorkspaceChanges": Observation,
 

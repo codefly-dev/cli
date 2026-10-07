@@ -89,3 +89,8 @@ Thumbs.db
 
 # Prepared CLI-agent release compatibility artifacts
 /.release/
+
+# Rust build output. 1 MB of target/debug landed in a commit of mine through a
+# `git add -A` after a fixture compiled; matched at any depth because build
+# output is never wanted, and no tracked path under any target/ exists.
+target/
