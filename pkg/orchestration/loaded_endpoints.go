@@ -58,7 +58,7 @@ func reconcileLoadedEndpoints(service *resources.Service, reported []*basev0.End
 		if err := resources.ValidateEndpointDeclaration(declaration); err != nil {
 			return nil, err
 		}
-		clone := proto.Clone(endpoint).(*basev0.Endpoint)
+		clone := proto.CloneOf(endpoint)
 		clone.Visibility = manifest.Visibility
 		clone.Location = manifest.Location
 		clone.Exposure = manifest.Exposure
