@@ -27,14 +27,14 @@ func apiReferenceWorkspace(t *testing.T) *resources.Workspace {
 	t.Helper()
 	return writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
-		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
+			"services:\n    - name: authority\n",
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"endpoints:\n    - name: api\n      api: rest\n      visibility: public\n      exposure: none\n" +
 			"    - name: admin\n      api: rest\n      visibility: private\n",
-		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\n" +
+			"services:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
 		// An API-name reference: `rest` is the api of both endpoints above.
@@ -155,8 +155,8 @@ func TestAnAPINameReferenceCannotResolveToAnEndpointTheConsumerMayNotReach(t *te
 func TestAPrivateEndpointStillResolvesForAConsumerInItsOwnModule(t *testing.T) {
 	workspace := writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
-		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n    - name: sidecar\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
+			"services:\n    - name: authority\n    - name: sidecar\n",
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"endpoints:\n    - name: admin\n      api: rest\n      visibility: private\n",
@@ -164,8 +164,8 @@ func TestAPrivateEndpointStillResolvesForAConsumerInItsOwnModule(t *testing.T) {
 		// it, and the producer's export boundary does not apply inside a module.
 		"modules/platform/services/sidecar/service.codefly.yaml": "kind: service\nname: sidecar\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
-		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\n" +
+			"services:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
 		"configurations/local/work-context.env": "authority-endpoint=${endpoint:platform/authority/admin}\n",
@@ -211,15 +211,15 @@ func TestABareServiceDependencyIsNotAWayAroundTheExportBoundary(t *testing.T) {
 
 	files := map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
-		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
+			"services:\n    - name: authority\n",
 		// `api` first, which used to be what made core's check pass on it.
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"endpoints:\n    - name: api\n      api: rest\n      visibility: public\n      exposure: none\n" +
 			"    - name: rest\n      api: grpc\n      visibility: private\n",
-		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\n" +
+			"services:\n    - name: worker\n",
 		// A bare dependency: the service, with no endpoint list. And no
 		// workspace configuration group, so what it reads is the root's.
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
@@ -393,8 +393,8 @@ func TestAReferenceSeveralPermittedEndpointsSatisfyIsRefused(t *testing.T) {
 	ctx := context.Background()
 	workspace := writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
-		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n    - name: sidecar\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
+			"services:\n    - name: authority\n    - name: sidecar\n",
 		// Two endpoints a `rest` reference matches, BOTH by API and neither by
 		// name: nothing in the reference picks one. (If either were named
 		// `rest` the reference would name it exactly and resolve — see
@@ -406,8 +406,8 @@ func TestAReferenceSeveralPermittedEndpointsSatisfyIsRefused(t *testing.T) {
 		// In the producer's module, so both endpoints are reachable for it.
 		"modules/platform/services/sidecar/service.codefly.yaml": "kind: service\nname: sidecar\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
-		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\n" +
+			"services:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
 		"configurations/local/work-context.env": "authority-endpoint=${endpoint:platform/authority/rest}\n",
@@ -469,16 +469,16 @@ func TestAnAmbiguousReferenceInARootGroupRefusesEveryReceiver(t *testing.T) {
 	ctx := context.Background()
 	workspace := writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
-		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
+			"services:\n    - name: authority\n",
 		// Two endpoints a `rest` reference matches by API, neither by name, both
 		// visible to every module: ambiguous for whoever receives the group.
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"endpoints:\n    - name: api\n      api: rest\n      visibility: public\n      exposure: none\n" +
 			"    - name: admin\n      api: rest\n      visibility: public\n      exposure: none\n",
-		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n    - name: reader\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\n" +
+			"services:\n    - name: worker\n    - name: reader\n",
 		// Declares a DIFFERENT group, so its effective set is non-empty and the
 		// check really runs for it — `authority-pool` is simply not in it.
 		// (With an empty effective set the check returns early and the test
@@ -538,15 +538,15 @@ func TestAnExactEndpointNameWinsOverAnAPISibling(t *testing.T) {
 	ctx := context.Background()
 	workspace := writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
-		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
+			"services:\n    - name: authority\n",
 		// `grpc` by name, `admin` by API: the reference matches both.
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n      exposure: none\n" +
 			"    - name: admin\n      api: grpc\n      visibility: public\n      exposure: none\n",
-		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\n" +
+			"services:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
 		"configurations/local/work-context.env": "authority-endpoint=${endpoint:platform/authority/grpc}\n",
@@ -631,14 +631,14 @@ func TestAnotherProducersReferenceDoesNotKeepThisProducersSibling(t *testing.T) 
 	ctx := context.Background()
 	workspace := writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
-		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
+			"services:\n    - name: authority\n",
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n      exposure: none\n" +
 			"    - name: admin\n      api: grpc\n      visibility: public\n      exposure: none\n",
-		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n    - name: ledger\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\n" +
+			"services:\n    - name: worker\n    - name: ledger\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
 		// A second producer whose only endpoint matches `grpc` by API, so a
@@ -689,14 +689,14 @@ func TestDiscoveryBindsTheNamedEndpointEvenWhenADependencyCarriesItsAPISibling(t
 	ctx := context.Background()
 	workspace := writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
-		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
+			"services:\n    - name: authority\n",
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n      exposure: none\n" +
 			"    - name: admin\n      api: grpc\n      visibility: public\n      exposure: none\n",
-		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\n" +
+			"services:\n    - name: worker\n",
 		// The consumer depends on `admin` specifically, so its dependency
 		// mappings carry admin and nothing else.
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
@@ -743,15 +743,15 @@ func TestAnEndpointNameCoresSchemaRefusesFailsTheRender(t *testing.T) {
 	ctx := context.Background()
 	workspace := writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
-		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
+			"services:\n    - name: authority\n",
 		// Hyphenated, so illegal — and accepted by the YAML load, which is what
 		// makes it a trap.
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"endpoints:\n    - name: grpc-admin\n      api: grpc\n      visibility: public\n      exposure: none\n",
-		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\n" +
+			"services:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
 		"configurations/local/work-context.env": "authority-endpoint=${endpoint:platform/authority/grpc-admin}\n",
@@ -792,13 +792,13 @@ func twoReferenceWorkspaceOrdered(t *testing.T, values string, siblingFirst bool
 	}
 	return writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
-		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
+			"services:\n    - name: authority\n",
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			endpoints,
-		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\n" +
+			"services:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
 		"configurations/local/work-context.env": values,
@@ -966,15 +966,15 @@ func TestReferencesNamingEachOthersAPIsEachResolve(t *testing.T) {
 	ctx := context.Background()
 	workspace := writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
-		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
+			"services:\n    - name: authority\n",
 		// Each endpoint's name is the other's API.
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"endpoints:\n    - name: grpc\n      api: rest\n      visibility: public\n      exposure: none\n" +
 			"    - name: rest\n      api: grpc\n      visibility: public\n      exposure: none\n",
-		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\n" +
+			"services:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
 		"configurations/local/work-context.env": "one=${endpoint:platform/authority/grpc}\n" +
@@ -1114,15 +1114,15 @@ func TestTwoReferencesOverDistinctAPIsResolve(t *testing.T) {
 	ctx := context.Background()
 	workspace := writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
-		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
+			"services:\n    - name: authority\n",
 		// Distinct APIs: neither reference matches the other's endpoint.
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"endpoints:\n    - name: grpc\n      api: grpc\n      visibility: public\n      exposure: none\n" +
 			"    - name: rest\n      api: rest\n      visibility: public\n      exposure: none\n",
-		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\n" +
+			"services:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
 		"configurations/local/work-context.env": "grpc-address=${endpoint:platform/authority/grpc}\n" +
@@ -1340,13 +1340,13 @@ func twoSiblingWorkspace(t *testing.T, values string, siblings []string) *resour
 	}
 	return writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n",
-		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/platform\nservices:\n    - name: authority\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
+			"services:\n    - name: authority\n",
 		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			endpoints,
-		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\n" +
+			"services:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
 		"configurations/local/work-context.env": values,

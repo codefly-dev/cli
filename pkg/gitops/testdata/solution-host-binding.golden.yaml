@@ -10,7 +10,7 @@ metadata:
         codefly.dev/solution: crm
 data:
     solution-host-binding.codefly.yaml: |
-        schema: codefly/solution-host-binding/v2
+        schema: codefly/solution-host-binding/v1
         kind: solution
         binding: example.prod.crm
         generation: 1

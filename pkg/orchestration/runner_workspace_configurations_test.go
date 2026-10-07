@@ -193,13 +193,13 @@ func TestWorkspaceConfigurationsForResolvesEndpointsFromConsumerMappings(t *test
 	// than skipping it.
 	world.Workspace = writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: acme\nlayout: modules\nmodules:\n    - name: saas\n    - name: platform\n",
-		"modules/saas/module.codefly.yaml": "kind: module\nname: saas\nproject: acme\n" +
-			"domain: github.com/codefly-ai/acme/saas\nservices:\n    - name: auth-gateway\n",
+		"modules/saas/module.codefly.yaml": "kind: module\nname: saas\n" +
+			"services:\n    - name: auth-gateway\n",
 		"modules/saas/services/auth-gateway/service.codefly.yaml": "kind: service\nname: auth-gateway\nversion: 0.0.0\nmodule: saas\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
 			"endpoints:\n    - name: rest\n      api: rest\n      visibility: public\n      exposure: none\n",
-		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nproject: acme\n" +
-			"domain: github.com/codefly-ai/acme/platform\nservices:\n    - name: relay\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\n" +
+			"services:\n    - name: relay\n",
 		"modules/platform/services/relay/service.codefly.yaml": "kind: service\nname: relay\nversion: 0.0.0\nmodule: platform\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
 	})

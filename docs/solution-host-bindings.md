@@ -10,7 +10,7 @@ that POSTs them to the host's delivery API.
 
 The documents, their invariants and their conformance fixtures live in
 [codefly-dev/core `solutionhost`](https://github.com/codefly-dev/core): the
-presence document (`codefly/solution-host-binding/v2`), the authority document
+presence document (`codefly/solution-host-binding/v1`), the authority document
 (`codefly/solution-authority/v1`) and the signed carrier
 (`codefly/solution-host-signed/v1`). This page is about what the CLI puts in
 them and how they get there.
@@ -238,8 +238,20 @@ document has no field for — the module's own `scope_ceilings`, its
 `lookup.method` — is refused by name, with the field the document would need,
 rather than dropped between the contract and the signed document. A host
 cannot enforce a declaration it never receives, and a declaration that changed
-without the document changing would be enforced as before. A module declaring
-any of them waits on core growing `solutionhost.AuthorityBinding`.
+without the document changing would be enforced as before.
+
+Core **v0.15.0 grew half of that list**, and the two halves are now different
+things. At the *document* level it requires `queues`, `namespaces` and
+`scope_ceilings` — written out, and `[]` when the module declares none, so a
+renderer that dropped one cannot deliver a document at all; the render writes
+all three. At the *binding* level `solutionhost.AuthorityBinding` still carries
+one queue and one namespace, so the refusals above stand unchanged: a module
+declaring a second of either, any scope ceiling, any destination, a
+`binding_key` or a `lookup.method` is still refused by name. Which means the
+`scope_ceilings` the render writes today is always `[]` — the only contract
+that reaches the projection is one declaring none. Letting a real ceiling
+through is a change to what the host enforces, not a projection, and it is not
+done here.
 
 The contract declares the principal, the operation bindings the module redeems
 (each with the operations it needs and a scope ceiling per operation), the

@@ -1,6 +1,4 @@
 kind: module
 name: documents
-project: multi-root
-domain: github.com/codefly-dev/multi-root/documents
 services:
     - name: documents

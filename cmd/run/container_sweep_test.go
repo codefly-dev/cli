@@ -51,7 +51,6 @@ environments:
 `,
 		"modules/infra/module.codefly.yaml": `kind: module
 name: infra
-project: sweep
 services:
     - name: postgres
 `,

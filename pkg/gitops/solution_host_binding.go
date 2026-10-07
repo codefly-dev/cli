@@ -152,6 +152,7 @@ type SolutionEndpoint struct {
 	Module     string
 	API        string
 	Visibility string
+	Exposure   string
 }
 
 // SolutionModulePin is one effective module pin.
@@ -278,7 +279,7 @@ func solutionHostBinding(owned string, opts *RenderOptions, instance *SolutionIn
 	}
 	release := solutionhost.Release{Publisher: publisher, Name: name, Version: instance.Version, Digest: instance.ReleaseDigest}
 	document := &solutionhost.SolutionHostBinding{
-		Schema:     solutionhost.SchemaPresenceV2,
+		Schema:     solutionhost.SchemaPresenceV1,
 		Kind:       instance.Kind,
 		Binding:    id,
 		Generation: 1,
@@ -324,7 +325,7 @@ func solutionHostBinding(owned string, opts *RenderOptions, instance *SolutionIn
 	for _, endpoint := range instance.Endpoints {
 		document.Endpoints = append(document.Endpoints, solutionhost.Endpoint{
 			Name: endpoint.Name, Service: endpoint.Service, Module: endpoint.Module,
-			API: endpoint.API, Visibility: endpoint.Visibility,
+			API: endpoint.API, Visibility: endpoint.Visibility, Exposure: endpoint.Exposure,
 		})
 	}
 	for _, pin := range instance.Modules {
@@ -694,7 +695,7 @@ func presenceInstanceOf(
 			}
 			instance.Endpoints = append(instance.Endpoints, SolutionEndpoint{
 				Name: endpoint.Name, Service: service.Name, Module: module.Name,
-				API: endpoint.API, Visibility: endpoint.Visibility,
+				API: endpoint.API, Visibility: endpoint.Visibility, Exposure: endpoint.Exposure,
 			})
 		}
 	}

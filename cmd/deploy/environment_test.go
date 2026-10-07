@@ -22,7 +22,6 @@ modules:
 `,
 		"modules/web/module.codefly.yaml": `kind: module
 name: web
-project: deploy-env
 services:
     - name: gateway
 `,

@@ -233,7 +233,6 @@ environments:
 `,
 		"modules/web/module.codefly.yaml": `kind: module
 name: web
-project: env-flow
 services:
     - name: gateway
 `,

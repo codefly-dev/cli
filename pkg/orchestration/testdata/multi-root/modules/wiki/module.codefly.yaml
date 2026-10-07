@@ -1,6 +1,4 @@
 kind: module
 name: wiki
-project: multi-root
-domain: github.com/codefly-dev/multi-root/wiki
 services:
     - name: backend

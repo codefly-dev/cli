@@ -94,8 +94,8 @@ func TestTheFlowPlanGateFailsClosedOnAnUnreadableInvocation(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, filepath.Join(t.TempDir(), "home"))
 	workspace := writeTempWorkspace(t, map[string]string{
 		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: payments\n",
-		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nproject: boundary\n" +
-			"domain: github.com/codefly-ai/boundary/payments\nservices:\n    - name: worker\n",
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\n" +
+			"services:\n    - name: worker\n",
 		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
 			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
 		// Declared as supplied per profile, and this profile supplies nothing.

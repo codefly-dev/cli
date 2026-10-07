@@ -1096,7 +1096,20 @@ func settledAuthoritySet(
 		} else {
 			tombstone.Generation = previous.document.Generation + 1
 			tombstone.Removed = true
+			// A withdrawal clears everything that DESCRIBES the module, the
+			// subject declarations included: core requires queues, namespaces
+			// and scope_ceilings on a live generation and forbids them on a
+			// removed one, because a withdrawal that still describes what it
+			// withdraws leaves a host deciding which half meant it. So a
+			// tombstone is not the live document with a flag set.
 			tombstone.ApprovedBuild, tombstone.EffectiveFrom, tombstone.Principals = "", 0, nil
+			// EMPTY, not absent. The two rules only look contradictory: core
+			// requires the three keys on every generation, so nil is "the
+			// renderer dropped the field", and forbids them NON-EMPTY on a
+			// removed one, so a value is "the withdrawal still describes what
+			// it withdraws". Only an empty, present list satisfies both.
+			tombstone.Queues, tombstone.Namespaces = []string{}, []string{}
+			tombstone.ScopeCeilings = []solutionhost.ScopeCeiling{}
 			if err := tombstone.Validate(); err != nil {
 				return nil, fmt.Errorf("withdraw authority %s: %w", authority, err)
 			}
