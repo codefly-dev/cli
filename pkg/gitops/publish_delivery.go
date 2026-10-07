@@ -739,22 +739,6 @@ func priorDeliveredBindings(ctx context.Context, repo, baseBranch, overlayPath s
 			return nil, fmt.Errorf("read the delivered %s from %s: %w", name, baseBranch, err)
 		}
 		document, alias, carrier, ok, err := bindingFromConfigMap(data)
-		if errors.Is(err, solutionhost.ErrSchema) {
-			// Delivered against a schema this Core no longer reads. Settling a
-			// generation against it is impossible for the same reason the render
-			// cannot compare it (see nextGeneration): a document this Core cannot
-			// read is a document it cannot digest. Refusing here would make the
-			// FIRST delivery after a schema step impossible — every prior document
-			// in the tree is superseded at once — which is the opposite of what a
-			// distinct ErrSchema sentinel exists for.
-			//
-			// So it is not a comparable prior and the history restarts. What makes
-			// that safe rather than merely quiet is that a schema step also makes
-			// every host discard its applied records, so no host is holding a
-			// higher generation to refuse the new one as stale; the restart is
-			// visible in the delivered document rather than inferred.
-			continue
-		}
 		if err != nil {
 			return nil, fmt.Errorf("the delivered %s on %s cannot be read, so no generation can be settled against it: %w", name, baseBranch, err)
 		}

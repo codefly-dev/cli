@@ -3,7 +3,6 @@ package gitops
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -479,24 +478,6 @@ func unitDigest(root, relative string) (string, error) {
 // number to avoid it would be a renderer asserting a history it does not have.
 func nextGeneration(destination, environment string, candidate *solutionhost.SolutionHostBinding) (uint64, error) {
 	prior, err := priorSolutionHostBinding(destination, environment, candidate.Binding)
-	if errors.Is(err, solutionhost.ErrSchema) {
-		// The delivered tree holds a document this Core does not read: it was
-		// written by an older renderer, against a schema that has since been
-		// superseded. That is version SKEW, not a malformed delivery, and
-		// ErrSchema is a distinct sentinel so this caller can tell the two
-		// apart. Returning it would accuse delivery of writing a bad document
-		// when it only wrote an older one.
-		//
-		// A document it cannot read is a document it cannot compare, so there is
-		// no comparable prior and the history starts again. That is the same
-		// accepted failure this function already documents for a tree it cannot
-		// see at all, and it is loud in the same place: a host holding a higher
-		// generation refuses generation 1 as stale. What makes it safe rather
-		// than merely loud is that a schema step also makes every host discard
-		// its applied records, so after the cutover no higher generation is left
-		// to conflict with.
-		return 1, nil
-	}
 	if err != nil {
 		return 0, err
 	}

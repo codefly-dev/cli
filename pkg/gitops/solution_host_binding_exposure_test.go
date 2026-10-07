@@ -88,36 +88,46 @@ func TestTheDeliveredDocumentCarriesEachEndpointsExposure(t *testing.T) {
 	}
 }
 
-// A delivered tree written before a schema step holds documents this Core does
-// not read. That is version SKEW, and ErrSchema is a distinct sentinel so a
-// renderer can tell it from a malformed delivery: reporting it would accuse
-// delivery of writing a bad document when it only wrote an older one, and
-// would make the FIRST render after any schema step impossible.
-func TestRenderReadsASupersededSchemaAsSkewAndNotAsCorruption(t *testing.T) {
-	destination := filepath.Join(t.TempDir(), "modules", "crm")
-	options := solutionRenderOptions(destination)
-	if _, err := RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment)); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(destination, filepath.FromSlash(solutionHostBindingOverlay("prod")), "example.prod.crm.yaml")
-	delivered, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	superseded := strings.Replace(string(delivered), solutionhost.SchemaPresenceV1, "codefly/solution-host-binding/v0", 1)
-	if superseded == string(delivered) {
-		t.Fatal("the delivered document does not name the schema, so this test proves nothing")
-	}
-	if err = os.WriteFile(path, []byte(superseded), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment)); err != nil {
-		t.Fatalf("a superseded schema was reported as a render failure: %v", err)
-	}
-	// No comparable prior, so the history starts again rather than advancing
-	// from a generation that was read out of a document this Core cannot read.
-	if document := readDeliveredPresence(t, destination, "prod", "example.prod.crm"); document.Generation != 1 {
-		t.Fatalf("generation %d after a superseded prior; a document that cannot be read cannot be compared", document.Generation)
+// A delivered document this Core cannot read is REFUSED, whatever the reason —
+// an older spelling of our own schema, a foreign document, or a tampered one.
+// There is no "merely old, discard it" path: core's ErrSchema says only "this
+// Core does not read this", never "an earlier version of us wrote it", so a
+// reader that treated every ErrSchema as superseded would let a document whose
+// schema value was changed to anything at all discard the one it replaces and
+// restart the generation history on it.
+//
+// Nothing is lost by refusing: no delivery tree holds a presence document under
+// any earlier schema, because the first render had not happened when the schema
+// collapsed onto v1. A tree that somehow did would be told, loudly, rather than
+// silently rebased onto generation 1.
+func TestRenderRefusesEveryDeliveredDocumentItCannotRead(t *testing.T) {
+	for _, schema := range []string{
+		"codefly/solution-host-binding/v2",   // an earlier spelling of our own
+		"codefly/solution-host-authority/v1", // a sibling document, not this one
+		"evil",                               // arbitrary
+	} {
+		t.Run(schema, func(t *testing.T) {
+			destination := filepath.Join(t.TempDir(), "modules", "crm")
+			options := solutionRenderOptions(destination)
+			if _, err := RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment)); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(destination, filepath.FromSlash(solutionHostBindingOverlay("prod")), "example.prod.crm.yaml")
+			delivered, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rewritten := strings.Replace(string(delivered), solutionhost.SchemaPresenceV1, schema, 1)
+			if rewritten == string(delivered) {
+				t.Fatal("the delivered document does not name the schema, so this test proves nothing")
+			}
+			if err = os.WriteFile(path, []byte(rewritten), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment)); err == nil {
+				t.Fatalf("a delivered document carrying schema %q was accepted", schema)
+			}
+		})
 	}
 }
 
