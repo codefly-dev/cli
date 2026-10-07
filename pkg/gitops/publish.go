@@ -994,6 +994,7 @@ func prepareServicePublication(
 		UnitNames:                     snapshot.services,
 		OwnedPath:                     targetPath,
 		ModulePath:                    renderedInventory.ModulePath,
+		ModuleIncludesUnits:           renderedInventory.ModuleIncludesUnits,
 		Units:                         renderedInventory.Units,
 		Package:                       renderedInventory.Package,
 		Environment:                   renderedInventory.Environment,
@@ -1050,6 +1051,13 @@ func prepareServiceSnapshot(
 	if len(unitDirs) == 0 {
 		return serviceSnapshotPreparation{}, fmt.Errorf("rendered module contains no unit snapshot")
 	}
+	existingSnapshot, err := existingServiceSnapshot(ctx, repo, moduleName, environment, filepath.Join(target, "bootstrap"))
+	if err != nil {
+		return serviceSnapshotPreparation{}, err
+	}
+	if err = guardModuleAggregationTransition(ctx, repo, targetPath, existingSnapshot, renderedInventory); err != nil {
+		return serviceSnapshotPreparation{}, err
+	}
 	servicePaths := make([]string, 0, len(unitDirs))
 	for _, directory := range unitDirs {
 		renderedUnitDir := filepath.Join(rendered, directory)
@@ -1057,24 +1065,20 @@ func prepareServiceSnapshot(
 			return serviceSnapshotPreparation{}, fmt.Errorf("rendered module contains no %s snapshot", directory)
 		}
 		unitPath := filepath.ToSlash(filepath.Join(targetPath, directory))
-		if err := replaceCloneTree(renderedUnitDir, repo, unitPath); err != nil {
-			return serviceSnapshotPreparation{}, fmt.Errorf("stage rendered %s: %w", directory, err)
+		if stageErr := replaceCloneTree(renderedUnitDir, repo, unitPath); stageErr != nil {
+			return serviceSnapshotPreparation{}, fmt.Errorf("stage rendered %s: %w", directory, stageErr)
 		}
 		servicePaths = append(servicePaths, unitPath)
 	}
 	if renderedInventory.ModulePath != "" {
 		renderedModule := filepath.Join(rendered, filepath.FromSlash(renderedInventory.ModulePath))
 		modulePath := filepath.ToSlash(filepath.Join(targetPath, renderedInventory.ModulePath))
-		if err := replaceCloneTree(renderedModule, repo, modulePath); err != nil {
-			return serviceSnapshotPreparation{}, fmt.Errorf("stage rendered module resources: %w", err)
+		if stageErr := replaceCloneTree(renderedModule, repo, modulePath); stageErr != nil {
+			return serviceSnapshotPreparation{}, fmt.Errorf("stage rendered module resources: %w", stageErr)
 		}
 	}
-	if _, err := gitCommand(ctx, repo, append([]string{"add", "-A", "--"}, servicePaths...)...); err != nil {
-		return serviceSnapshotPreparation{}, err
-	}
-	existingSnapshot, err := existingServiceSnapshot(ctx, repo, moduleName, environment, filepath.Join(target, "bootstrap"))
-	if err != nil {
-		return serviceSnapshotPreparation{}, err
+	if _, stageErr := gitCommand(ctx, repo, append([]string{"add", "-A", "--"}, servicePaths...)...); stageErr != nil {
+		return serviceSnapshotPreparation{}, stageErr
 	}
 	if err = removePublicationRemainder(target, unitDirs); err != nil {
 		return serviceSnapshotPreparation{}, err
@@ -1095,6 +1099,7 @@ func prepareServiceSnapshot(
 		UnitNames:               serviceNames,
 		OwnedPath:               targetPath,
 		ModulePath:              renderedInventory.ModulePath,
+		ModuleIncludesUnits:     renderedInventory.ModuleIncludesUnits,
 		Units:                   renderedInventory.Units,
 		Package:                 renderedInventory.Package,
 		Environment:             renderedInventory.Environment,
@@ -1152,6 +1157,37 @@ func prepareServiceSnapshot(
 		servicePaths: servicePaths,
 		delivery:     delivery,
 	}, nil
+}
+
+// A changed Application boundary changes Argo's owner of the existing resources.
+// Removing old Applications with their resource finalizers can delete workloads;
+// publication cannot stand in for a governed, non-cascading ownership transfer.
+func guardModuleAggregationTransition(ctx context.Context, repo, targetPath, snapshot string, next *Inventory) error {
+	revision := snapshot
+	inventoryPath := filepath.ToSlash(filepath.Join(targetPath, InventoryFilename))
+	if revision == "" {
+		revision = "HEAD"
+		publishedPath, err := gitCommand(ctx, repo, "ls-tree", "--name-only", revision, "--", inventoryPath)
+		if err != nil {
+			return fmt.Errorf("resolve published Application ownership inventory: %w", err)
+		}
+		if publishedPath == "" {
+			return nil // No previous published module inventory: a new installation.
+		}
+	}
+	object := revision + ":" + inventoryPath
+	data, err := gitCommandBytes(ctx, repo, "show", object)
+	if err != nil {
+		return fmt.Errorf("read previous Application ownership inventory: %w", err)
+	}
+	previous, err := decodeInventory(data, "previous service snapshot")
+	if err != nil {
+		return err
+	}
+	if previous.ModuleIncludesUnits != next.ModuleIncludesUnits {
+		return fmt.Errorf("module %s changes its Argo Application ownership boundary; a governed non-cascading ownership transfer is required before publication (existing aggregate=%t, requested aggregate=%t)", next.Module, previous.ModuleIncludesUnits, next.ModuleIncludesUnits)
+	}
+	return nil
 }
 
 func verifyServiceSnapshotBinding(ctx context.Context, repo, snapshotRevision string, servicePaths []string) error {
@@ -1389,7 +1425,7 @@ func validateBootstrapUnits(root, targetPath string, inventory *Inventory, envir
 		expected[path] = struct{}{}
 	}
 	for _, unit := range inventory.Units {
-		if unit.Path == "" {
+		if unit.Path == "" || inventory.ModuleIncludesUnits {
 			continue
 		}
 		path := filepath.ToSlash(filepath.Join(targetPath, unit.Path, "overlays", environment))

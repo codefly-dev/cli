@@ -29,9 +29,7 @@ type moduleBundleEnvironment struct {
 	ResourcePath           string                       `json:"resourcePath"`
 	Services               []string                     `json:"services"`
 	ManagedServiceHandoffs []moduleBundleManagedHandoff `json:"managedServiceHandoffs,omitempty"`
-	// Keep required deploy steps visible even before this driver can implement
-	// them. Ignoring them would publish a successful but unseeded promotion.
-	DeployJobs []json.RawMessage `json:"deployJobs,omitempty"`
+	DeployJobs             []moduleBundleDeployJob      `json:"deployJobs,omitempty"`
 }
 
 type moduleBundleManagedHandoff struct {
@@ -94,6 +92,15 @@ func renderModuleBundle(
 	}
 	if _, err := projectResourceQuota(destination, environment.Name, namespace, environment.ResourceQuota); err != nil {
 		return fmt.Errorf("project module namespace resource quota: %w", err)
+	}
+	if len(selected.DeployJobs) != 0 {
+		services, err := loadModuleServices(ctx, module)
+		if err != nil {
+			return err
+		}
+		if err := renderModuleDeployJobs(module.Dir(), destination, environment.Name, namespace, module.Name, selected.DeployJobs, graph, services); err != nil {
+			return fmt.Errorf("render module deploy jobs: %w", err)
+		}
 	}
 	if err := validateTransportNeutralModuleBundle(destination); err != nil {
 		return err
@@ -307,12 +314,6 @@ func loadSelectedModuleBundle(
 	}
 	if selected == nil {
 		return moduleBundle{}, moduleBundleEnvironment{}, fmt.Errorf("module bundle has no environment %q", environment.Name)
-	}
-	if len(selected.DeployJobs) != 0 {
-		return moduleBundle{}, moduleBundleEnvironment{}, fmt.Errorf(
-			"module bundle environment %q declares deployJobs, but this CLI cannot execute module deploy jobs with dependency migration barriers; promotion refused",
-			environment.Name,
-		)
 	}
 	if namespace == "" {
 		return moduleBundle{}, moduleBundleEnvironment{}, fmt.Errorf(

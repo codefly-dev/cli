@@ -94,12 +94,47 @@ credentials. A job-capable promotion driver must inherit the resulting service
 configuration, including these defaults, instead of choosing a separate job
 default.
 
-Module bundle `deployJobs` entries currently require unsupported driver work:
-catalog mounts, the running service's immutable image and identity, resolved
-connection authority, inherited environment, and a barrier after dependency
-migrations that fails the promotion on a failed job. This CLI rejects a selected
-bundle containing those entries. ApplicationSet sync-wave annotations alone
-cannot provide that barrier across independently reconciling Applications.
+The GitOps driver projects module bundle `deployJobs` into required Sync-hook
+Jobs. `command` is a subcommand of the service image's existing entrypoint;
+the driver passes `-catalog` and, when declared, `-force`. It mounts the JSON
+catalog in an immutable ConfigMap named by its content digest. The Job inherits
+the running service's exact image digest, ServiceAccount, resolved environment,
+secret references, volumes and credential refresh/proxy containers. It never
+constructs a database credential from the write target. The command must use
+the inherited runtime connection capabilities, including their managed IAM
+rotation, or an explicitly supplied operator connection.
+
+For a module with deploy jobs, the module overlay references its unit overlays
+and one Argo Application owns all of them. Resource waves follow the runtime
+dependency graph: shared resources, a dependency's workload, its migration
+Jobs, the import Jobs, then the dependent workload. Migration and import Jobs
+share the Sync phase; a failed Job blocks subsequent waves. Every declared
+`after` service must have a rendered workload or, for a managed handoff, a
+rendered migration Job. Missing barriers, undeclared write endpoints, missing
+inherited settings and runtime cycles are refused. ApplicationSet sync-wave
+annotations alone cannot provide this barrier across independent Applications.
+
+Jobs use `BeforeHookCreation,HookSucceeded` and no TTL, so Argo observes the
+result before cleanup and reruns idempotent commands for each sync. Existing
+sidecars become native restartable init containers and injected Istio proxies
+use `sidecar.istio.io/nativeSidecar: "true"`; the supported target is Kubernetes
+1.33 or newer with an Istio injector supporting that annotation. Original
+policy and identity labels are retained; `codefly.dev/workload-role` separates
+service pods from job pods in Service selectors. A dev image change updates the
+service and its import Jobs together. Live cluster qualification remains an
+operation on the selected environment, separate from local render tests.
+
+This Application boundary supports new installations and upgrades that already
+use the same boundary. Publication refuses an existing module's transition
+between separate unit Applications and an aggregate Application before staging
+source trees. An old Application's resource finalizer can delete its workloads
+when ApplicationSet removes it; source publication cannot safely transfer that
+ownership. Existing installations require a separately governed migration that
+stops competing reconciliation, preserves the resources while removing the old
+owners without cascading deletion, transfers resource tracking to the aggregate
+owner, and records verified adoption before resuming promotion. This release
+does not implement or admit that migration. Editing finalizers or recorded
+inventory to bypass the guard is not a supported upgrade procedure.
 
 Injecting a workload's configuration and secrets needs four declarations and no
 others: the target (`name`, `namespace`, `cluster.context`), resolved values

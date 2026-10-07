@@ -285,6 +285,7 @@ func inventoryRenderOptions(inventory *Inventory) *RenderOptions {
 		Module: inventory.Module, Unit: inventory.Unit, Environment: inventory.Environment,
 		Namespace: inventory.Namespace, AppProject: inventory.AppProject, OwnedPath: inventory.OwnedPath,
 		ModulePath: inventory.ModulePath, Package: inventory.Package, Units: inventory.Units,
+		ModuleIncludesUnits: inventory.ModuleIncludesUnits,
 		// A dev deployment re-derives the inventory in place, so every field
 		// the render recorded has to be carried back or it is dropped without
 		// a diff. Dropping this one stops Argo delivering the declared
@@ -388,6 +389,13 @@ func applyDevImages(root string, inventory *Inventory, unit *InventoryUnit, imag
 	}
 	entry.Image = primary.image
 	entry.Digest = primary.image[strings.LastIndex(primary.image, "@")+1:]
+	jobPath, err := updateDeployJobImages(root, inventory, unit.Name, images)
+	if err != nil {
+		return nil, err
+	}
+	if jobPath != "" {
+		changed = append(changed, jobPath)
+	}
 
 	rebuilt, err := buildInventory(root, inventoryRenderOptions(inventory))
 	if err != nil {

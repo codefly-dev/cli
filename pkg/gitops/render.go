@@ -212,7 +212,8 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 	opts := &RenderOptions{
 		Module: inventory.Module, Unit: inventory.Unit,
 		OwnedPath: inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
-		Environment: inventory.Environment, Namespace: inventory.Namespace,
+		ModuleIncludesUnits: inventory.ModuleIncludesUnits,
+		Environment:         inventory.Environment, Namespace: inventory.Namespace,
 		AppProject: project, Promotable: promotable, Package: inventory.Package,
 		CheckUnitDirectories: inventory.Unit == "",
 	}
@@ -235,6 +236,9 @@ func ValidateServiceSnapshot(root string) error {
 	inventory, err := LoadInventory(root)
 	if err != nil {
 		return err
+	}
+	if boundaryErr := validateModuleDeployJobBoundary(root, inventoryRenderOptions(&inventory)); boundaryErr != nil {
+		return boundaryErr
 	}
 	if err = validateInventoryUnits(&inventory); err != nil {
 		return err
@@ -288,7 +292,8 @@ func ValidateServiceSnapshot(root string) error {
 	opts := &RenderOptions{
 		Module: inventory.Module, UnitNames: names,
 		OwnedPath: inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
-		Environment: inventory.Environment, Namespace: inventory.Namespace,
+		ModuleIncludesUnits: inventory.ModuleIncludesUnits,
+		Environment:         inventory.Environment, Namespace: inventory.Namespace,
 		AppProject: inventory.AppProject, Promotable: true, Package: inventory.Package,
 	}
 	actual, err := buildInventory(root, opts)
@@ -473,7 +478,20 @@ func validateInventory(inventory, actual *Inventory, label string) error {
 // raw manifests for everything else. The effective set is the single source of
 // truth callers reuse (e.g. sizing) instead of walking and building the tree a
 // second time.
+func validateModuleDeployJobBoundary(root string, opts *RenderOptions) error {
+	if opts.ModuleIncludesUnits && opts.ModulePath == "" {
+		return fmt.Errorf("moduleIncludesUnits requires a module bundle path")
+	}
+	if opts.Unit == "" && opts.ModulePath != "" && opts.ModuleIncludesUnits != moduleIncludesUnits(filepath.Join(root, filepath.FromSlash(opts.ModulePath)), opts.Environment) {
+		return fmt.Errorf("module deploy jobs and moduleIncludesUnits reconciliation boundary disagree")
+	}
+	return nil
+}
+
 func validateTree(root string, opts *RenderOptions) ([]manifest, error) {
+	if err := validateModuleDeployJobBoundary(root, opts); err != nil {
+		return nil, err
+	}
 	if opts.Unit == "" && opts.CheckUnitDirectories {
 		if err := validateUnitDirectories(root, renderedUnits(&Inventory{Units: opts.Units}), opts.Environment); err != nil {
 			return nil, err
@@ -1387,6 +1405,7 @@ func inventoryHead(opts *RenderOptions) Inventory {
 		Module:        opts.Module, Unit: opts.Unit, Environment: opts.Environment,
 		Namespace: opts.Namespace, AppProject: opts.AppProject, OwnedPath: filepath.ToSlash(opts.OwnedPath),
 		ModulePath: filepath.ToSlash(opts.ModulePath), Package: opts.Package,
+		ModuleIncludesUnits:     opts.ModuleIncludesUnits,
 		SolutionHostBindingPath: filepath.ToSlash(opts.SolutionHostBindingPath),
 		HostsDelivery:           opts.HostsDelivery || hostsDeliveryAPI(opts),
 		SolutionAuthorityPath:   filepath.ToSlash(opts.SolutionAuthorityPath),
