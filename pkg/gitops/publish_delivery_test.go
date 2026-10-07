@@ -695,6 +695,20 @@ func TestPublishRefusesAPairTheHostWouldNotActivate(t *testing.T) {
 	_, statErr := os.Stat(filepath.Join(repository.target, filepath.FromSlash(solutionAuthorityOverlay("prod")), "deliver-authority.yaml"))
 	require.True(t, os.IsNotExist(statErr), "a refused pair is never written as a delivery")
 
+	// Each half is held to the revision it is settled against, so neither is
+	// refused as moved: the presence half settled against the revision it was
+	// rendered for, the authority half re-rendered after the host block was
+	// re-reviewed and settled against the new one. The pair then reaches
+	// core's own re-read — both halves must name the revision the publish
+	// names — and the refusal says which half named which number.
+	inventory = repository.stageAuthorityRender(t, bindings)
+	rewrite(authorityFile, "envelope_revision: 1", "envelope_revision: 2")
+	settledPresence, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, &opts)
+	require.NoError(t, err)
+	_, err = settleAuthorityDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory, settledPresence, &reviewed)
+	require.ErrorIs(t, err, solutionhost.ErrNotActivated)
+	require.Contains(t, err.Error(), "binding example.prod.crm was validated against envelope revision 1 and this is revision 2")
+
 	// Delivered once under one domain, the authority does not migrate to
 	// another: the fold runs against what the base branch delivered. (The
 	// presence half moving domains is refused earlier, by its own settlement.)

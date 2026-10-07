@@ -98,6 +98,11 @@ func TestHostDeclarationRefusesAPartialOrMalformedIdentity(t *testing.T) {
 		"trust domain with path":   {yaml: strings.Replace(hostBlock, "cluster.example", "cluster.example/ns", 1), want: "host trust_domain"},
 		"unknown key":              {yaml: hostBlock + "      cordinate: typo\n", want: "unknown host field"},
 		"whitespace audience":      {yaml: strings.Replace(hostBlock, "audience: accounts", "audience: \"a b\"", 1), want: "host audience"},
+		// The delivery API is named by composition identity, never by address:
+		// absent, or a bare address, is a host block the publish cannot route
+		// a document through.
+		"no delivery":           {yaml: without("delivery"), want: "host delivery"},
+		"bare delivery address": {yaml: strings.Replace(hostBlock, "delivery: platform/accounts/rest", "delivery: delivery.example.test:443", 1), want: "host delivery"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			workspace, err := resources.LoadFromBytes[resources.Workspace]([]byte(
