@@ -125,7 +125,7 @@ func renderSystemdUnit(request *InstallServiceRequest, encodedContract string) [
 	}
 	out.WriteByte('\n')
 	if request.WorkingDirectory != "" {
-		fmt.Fprintf(&out, "WorkingDirectory=%s\n", systemdQuote(request.WorkingDirectory))
+		fmt.Fprintf(&out, "WorkingDirectory=%s\n", systemdPath(request.WorkingDirectory))
 	}
 	environment := append([]EnvironmentVariable(nil), request.Environment...)
 	sort.Slice(environment, func(i, j int) bool { return environment[i].Name < environment[j].Name })
@@ -144,14 +144,23 @@ func renderSystemdUnit(request *InstallServiceRequest, encodedContract string) [
 	out.WriteString("TimeoutStopSec=10s\n")
 	out.WriteString("UMask=0077\n")
 	if request.Logs.Mode == LogFiles {
-		fmt.Fprintf(&out, "StandardOutput=%s\n", systemdQuote("append:"+request.Logs.StdoutPath))
-		fmt.Fprintf(&out, "StandardError=%s\n", systemdQuote("append:"+request.Logs.StderrPath))
+		fmt.Fprintf(&out, "StandardOutput=%s\n", systemdPath("append:"+request.Logs.StdoutPath))
+		fmt.Fprintf(&out, "StandardError=%s\n", systemdPath("append:"+request.Logs.StderrPath))
 	} else {
 		out.WriteString("StandardOutput=journal\n")
 		out.WriteString("StandardError=journal\n")
 	}
 	out.WriteString("\n[Install]\nWantedBy=default.target\n")
 	return []byte(out.String())
+}
+
+// systemdPath escapes a path-valued directive (WorkingDirectory=, the
+// append: target of StandardOutput=/StandardError=). systemd consumes the
+// whole value as the path, so wrapping quotes become literal characters and
+// the directive is rejected as "path is not absolute". Escape specifiers and
+// control characters without quoting.
+func systemdPath(value string) string {
+	return strings.NewReplacer("%", "%%", "\\", "\\\\", "\n", `\n`, "\r", `\r`, "\t", `\t`).Replace(value)
 }
 
 func systemdQuote(value string) string {
