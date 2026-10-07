@@ -89,7 +89,7 @@ type inventory struct {
 	LatestResolvable string         `json:"latest_resolvable,omitempty"`
 }
 
-func (inv inventory) versionResolvable(version string) bool {
+func (inv *inventory) versionResolvable(version string) bool {
 	if version == latestAgentVersion {
 		return inv.LatestResolvable != ""
 	}
@@ -204,7 +204,7 @@ var VersionsCmd = &cobra.Command{
 		if versionsJSON {
 			return writeJSON(inv)
 		}
-		renderInventory(inv)
+		renderInventory(&inv)
 		return nil
 	},
 }
@@ -498,8 +498,8 @@ func fetchReleasesFromGitHub(ctx context.Context, agent *resources.Agent) ([]rel
 				if !ok {
 					continue
 				}
-				if platform, ok := strings.CutSuffix(platform, ".tar.gz"); ok {
-					platforms = append(platforms, platform)
+				if trimmed, ok := strings.CutSuffix(platform, ".tar.gz"); ok {
+					platforms = append(platforms, trimmed)
 				}
 			}
 			out = append(out, releaseInfo{version: version, platforms: platforms})
@@ -597,11 +597,11 @@ func fetchOCITagsFromRegistry(ctx context.Context, agent *resources.Agent) (bool
 		}
 	}
 	url := fmt.Sprintf("%s://%s/v2/agents/%s/%s/tags/list", scheme, registry, agent.Publisher, agent.Name)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil) //nolint:gosec // G704: the registry is the operator's AGENT_REGISTRY; listing its tags is this request
 	if err != nil {
 		return true, nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // G704: the same request
 	if err != nil {
 		return true, nil, err
 	}
@@ -621,7 +621,7 @@ func fetchOCITagsFromRegistry(ctx context.Context, agent *resources.Agent) (bool
 	return true, payload.Tags, nil
 }
 
-func renderInventory(inv inventory) {
+func renderInventory(inv *inventory) {
 	cli.Header(1, "%s", inv.Agent)
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -630,7 +630,7 @@ func renderInventory(inv inventory) {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			entry.Version,
 			presence(entry.Sources.Tag),
-			releaseCell(entry),
+			releaseCell(&entry),
 			ociMark(entry.Sources.OCI, inv.OCIConfigured),
 			presence(entry.Sources.PinnedHere),
 			presence(entry.Sources.LocalCache),
@@ -716,7 +716,7 @@ func writeJSON(payload any) error {
 // CI-platform asset (the resolvability signal) is present; any platforms the
 // release actually ships are listed so a host-only asset isn't misread as
 // "no artifact at all".
-func releaseCell(entry versionEntry) string {
+func releaseCell(entry *versionEntry) string {
 	if entry.Sources.GithubRelease {
 		return "✓ " + strings.Join(entry.ReleasePlatforms, ",")
 	}

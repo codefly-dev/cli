@@ -49,13 +49,21 @@ func (e *commandError) Unwrap() error {
 	return e.err
 }
 
+// The two platforms this lifecycle installs on, as runtime.GOOS names them,
+// and the state a supervisor reports for a unit that is up.
+const (
+	platformDarwin = "darwin"
+	platformLinux  = "linux"
+	stateActive    = "active"
+)
+
 // New returns the native local-service lifecycle for the current user.
 func New() (Installation, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve user home: %w", err)
 	}
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+	if runtime.GOOS != platformDarwin && runtime.GOOS != platformLinux {
 		return nil, unsupportedPlatform(runtime.GOOS)
 	}
 	return newManager(runtime.GOOS, home, os.Getuid(), executeCommand), nil
@@ -83,7 +91,7 @@ func unsupportedPlatform(platform string) error {
 	return fmt.Errorf("local services are unsupported on %s; supported platforms are macOS and Linux", platform)
 }
 
-func (m *manager) InstallService(ctx context.Context, request InstallServiceRequest) (InstalledService, error) {
+func (m *manager) InstallService(ctx context.Context, request *InstallServiceRequest) (InstalledService, error) {
 	request = m.normalizeRequest(request)
 	definition, err := renderDefinition(m.platform, request)
 	if err != nil {
@@ -114,7 +122,7 @@ func (m *manager) InstallService(ctx context.Context, request InstallServiceRequ
 			return InstalledService{}, fmt.Errorf("service %q contract changed without a version change", request.Ref.Label)
 		}
 		if string(previous) == string(definition) {
-			if err := m.applyLoginPolicy(ctx, request); err != nil {
+			if err = m.applyLoginPolicy(ctx, request); err != nil {
 				return InstalledService{}, err
 			}
 			return InstalledService{
@@ -170,12 +178,12 @@ func (m *manager) StartService(ctx context.Context, ref ServiceRef) (ServiceStat
 		}
 		return ServiceStatus{}, err
 	}
-	if err := m.start(ctx, request, path); err != nil {
+	if err := m.start(ctx, &request, path); err != nil {
 		unlock()
 		return ServiceStatus{}, err
 	}
 	unlock()
-	return m.waitForReadiness(ctx, request)
+	return m.waitForReadiness(ctx, &request)
 }
 
 func (m *manager) StopService(ctx context.Context, ref ServiceRef) (ServiceStatus, error) {
@@ -210,12 +218,12 @@ func (m *manager) RestartService(ctx context.Context, ref ServiceRef) (ServiceSt
 		}
 		return ServiceStatus{}, err
 	}
-	if err := m.restart(ctx, request, path); err != nil {
+	if err := m.restart(ctx, &request, path); err != nil {
 		unlock()
 		return ServiceStatus{}, err
 	}
 	unlock()
-	return m.waitForReadiness(ctx, request)
+	return m.waitForReadiness(ctx, &request)
 }
 
 func (m *manager) UninstallService(ctx context.Context, request UninstallServiceRequest) error {
@@ -240,10 +248,10 @@ func (m *manager) UninstallService(ctx context.Context, request UninstallService
 		if request.Version != "" {
 			return fmt.Errorf("cannot verify version of stale or corrupt service %q without its Codefly definition", request.Ref.Label)
 		}
-		if err := m.removeInstallation(ctx, request.Ref); err != nil {
+		if err = m.removeInstallation(ctx, request.Ref); err != nil {
 			return err
 		}
-		if err := m.reloadAfterRemoval(ctx, request.Ref); err != nil {
+		if err = m.reloadAfterRemoval(ctx, request.Ref); err != nil {
 			return err
 		}
 		return m.clearOperatorStopped(request.Ref)
@@ -284,7 +292,7 @@ func (m *manager) ServiceStatus(ctx context.Context, ref ServiceRef) (ServiceSta
 	if err != nil {
 		return ServiceStatus{}, fmt.Errorf("read service definition: %w", err)
 	}
-	if err := validateDefinitionFile(path, m.uid); err != nil {
+	if err = validateDefinitionFile(path, m.uid); err != nil {
 		return ServiceStatus{
 			Ref:       ref,
 			State:     ServiceStaleCorrupt,
@@ -309,7 +317,7 @@ func (m *manager) ServiceStatus(ctx context.Context, ref ServiceRef) (ServiceSta
 			},
 		}, nil
 	}
-	status, err := m.nativeStatus(ctx, request, path)
+	status, err := m.nativeStatus(ctx, &request, path)
 	if err != nil {
 		return ServiceStatus{}, err
 	}
@@ -331,12 +339,12 @@ func (m *manager) ServiceStatus(ctx context.Context, ref ServiceRef) (ServiceSta
 	}
 	status.Diagnostics.LogPaths = request.Logs.paths()
 	if status.State == ServiceFailed || status.State == ServiceCrashLooping || status.State == ServiceRunningUnhealthy {
-		status.Diagnostics.RecentLogs = m.recentLogs(ctx, request)
+		status.Diagnostics.RecentLogs = m.recentLogs(ctx, &request)
 	}
 	return status, nil
 }
 
-func (m *manager) waitForReadiness(ctx context.Context, request InstallServiceRequest) (ServiceStatus, error) {
+func (m *manager) waitForReadiness(ctx context.Context, request *InstallServiceRequest) (ServiceStatus, error) {
 	timeout := request.Health.Timeout
 	if timeout <= 0 {
 		timeout = 15 * time.Second
@@ -378,7 +386,7 @@ func (m *manager) installedRequest(ref ServiceRef) (InstallServiceRequest, strin
 	if err != nil {
 		return InstallServiceRequest{}, path, err
 	}
-	if err := validateDefinitionFile(path, m.uid); err != nil {
+	if err = validateDefinitionFile(path, m.uid); err != nil {
 		return InstallServiceRequest{}, path, fmt.Errorf("service %q definition is unsafe: %w", ref.Label, err)
 	}
 	request, err := validateDefinition(m.platform, definition)
@@ -388,7 +396,8 @@ func (m *manager) installedRequest(ref ServiceRef) (InstallServiceRequest, strin
 	return request, path, nil
 }
 
-func (m *manager) normalizeRequest(request InstallServiceRequest) InstallServiceRequest {
+func (m *manager) normalizeRequest(requested *InstallServiceRequest) *InstallServiceRequest {
+	request := *requested
 	request.Arguments = append([]ServiceArgument(nil), request.Arguments...)
 	request.Environment = append([]EnvironmentVariable(nil), request.Environment...)
 	request.Executable = cleanAbsolute(request.Executable)
@@ -408,7 +417,7 @@ func (m *manager) normalizeRequest(request InstallServiceRequest) InstallService
 		}
 	}
 	if request.Logs.Mode == "" {
-		if m.platform == "darwin" {
+		if m.platform == platformDarwin {
 			request.Logs.Mode = LogFiles
 		} else {
 			request.Logs.Mode = LogNative
@@ -428,10 +437,30 @@ func (m *manager) normalizeRequest(request InstallServiceRequest) InstallService
 	sort.Slice(request.Environment, func(i, j int) bool {
 		return request.Environment[i].Name < request.Environment[j].Name
 	})
-	return request
+	return &request
 }
 
-func validateRequest(request InstallServiceRequest) error {
+func validateRequest(request *InstallServiceRequest) error {
+	for _, validate := range []func(*InstallServiceRequest) error{
+		validateRequestIdentity,
+		validateRequestExecutable,
+		validateRequestArguments,
+		validateRequestWorkingDirectory,
+		validateRequestRestart,
+		validateRequestEnvironment,
+		validateRequestHealth,
+		validateRequestLogs,
+		validateRequestMaterializedValues,
+	} {
+		if err := validate(request); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateRequestIdentity holds the label and the version.
+func validateRequestIdentity(request *InstallServiceRequest) error {
 	if !labelPattern.MatchString(request.Ref.Label) {
 		return fmt.Errorf("service label %q is invalid", request.Ref.Label)
 	}
@@ -441,6 +470,11 @@ func validateRequest(request InstallServiceRequest) error {
 	if err := validateMaterializedString("service installation version", request.Version); err != nil {
 		return err
 	}
+	return nil
+}
+
+// validateRequestExecutable holds an absolute, regular, executable file.
+func validateRequestExecutable(request *InstallServiceRequest) error {
 	if !filepath.IsAbs(request.Executable) {
 		return fmt.Errorf("service executable must be absolute")
 	}
@@ -454,6 +488,11 @@ func validateRequest(request InstallServiceRequest) error {
 	if err := validateMaterializedString("service executable", request.Executable); err != nil {
 		return err
 	}
+	return nil
+}
+
+// validateRequestArguments holds every argument public and materializable.
+func validateRequestArguments(request *InstallServiceRequest) error {
 	for _, argument := range request.Arguments {
 		switch argument.Classification {
 		case ValuePublic:
@@ -466,6 +505,11 @@ func validateRequest(request InstallServiceRequest) error {
 			return err
 		}
 	}
+	return nil
+}
+
+// validateRequestWorkingDirectory holds an absolute directory when one is named.
+func validateRequestWorkingDirectory(request *InstallServiceRequest) error {
 	if request.WorkingDirectory != "" {
 		if !filepath.IsAbs(request.WorkingDirectory) {
 			return fmt.Errorf("service working directory must be absolute")
@@ -481,6 +525,11 @@ func validateRequest(request InstallServiceRequest) error {
 			return err
 		}
 	}
+	return nil
+}
+
+// validateRequestRestart holds a known policy with a whole-second delay.
+func validateRequestRestart(request *InstallServiceRequest) error {
 	switch request.Restart {
 	case RestartNever, RestartOnFailure:
 	default:
@@ -492,6 +541,11 @@ func validateRequest(request InstallServiceRequest) error {
 	if request.RestartDelay%time.Second != 0 {
 		return fmt.Errorf("restart delay must use whole-second precision")
 	}
+	return nil
+}
+
+// validateRequestEnvironment holds well-named, public, unrepeated variables.
+func validateRequestEnvironment(request *InstallServiceRequest) error {
 	seen := make(map[string]struct{}, len(request.Environment))
 	for _, variable := range request.Environment {
 		if !environmentPattern.MatchString(variable.Name) {
@@ -512,6 +566,11 @@ func validateRequest(request InstallServiceRequest) error {
 		}
 		seen[variable.Name] = struct{}{}
 	}
+	return nil
+}
+
+// validateRequestHealth holds a probe whose target fits its kind.
+func validateRequestHealth(request *InstallServiceRequest) error {
 	switch request.Health.Kind {
 	case HealthProbeNone:
 		if request.Health.Target != "" {
@@ -529,6 +588,11 @@ func validateRequest(request InstallServiceRequest) error {
 	default:
 		return fmt.Errorf("health probe kind %q is invalid", request.Health.Kind)
 	}
+	return nil
+}
+
+// validateRequestLogs holds a known mode with absolute file paths.
+func validateRequestLogs(request *InstallServiceRequest) error {
 	switch request.Logs.Mode {
 	case LogNative:
 	case LogFiles:
@@ -538,6 +602,11 @@ func validateRequest(request InstallServiceRequest) error {
 	default:
 		return fmt.Errorf("log mode %q is invalid", request.Logs.Mode)
 	}
+	return nil
+}
+
+// validateRequestMaterializedValues holds the health target and log paths as they will be written.
+func validateRequestMaterializedValues(request *InstallServiceRequest) error {
 	for _, value := range []struct {
 		name  string
 		value string
@@ -570,9 +639,9 @@ func (m *manager) definitionPath(ref ServiceRef) (string, error) {
 		return "", fmt.Errorf("service label %q is invalid", ref.Label)
 	}
 	switch m.platform {
-	case "darwin":
+	case platformDarwin:
 		return filepath.Join(m.home, "Library", "LaunchAgents", definitionName(m.platform, ref.Label)), nil
-	case "linux":
+	case platformLinux:
 		configHome := os.Getenv("XDG_CONFIG_HOME")
 		if configHome == "" {
 			configHome = filepath.Join(m.home, ".config")
@@ -599,22 +668,22 @@ func atomicWrite(path string, content []byte, permission os.FileMode) (returnErr
 			_ = os.Remove(temporaryPath)
 		}
 	}()
-	if err := file.Chmod(permission); err != nil {
+	if err = file.Chmod(permission); err != nil {
 		_ = file.Close()
 		return err
 	}
-	if _, err := file.Write(content); err != nil {
+	if _, err = file.Write(content); err != nil {
 		_ = file.Close()
 		return err
 	}
-	if err := file.Sync(); err != nil {
+	if err = file.Sync(); err != nil {
 		_ = file.Close()
 		return err
 	}
-	if err := file.Close(); err != nil {
+	if err = file.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(temporaryPath, path); err != nil {
+	if err = os.Rename(temporaryPath, path); err != nil {
 		return err
 	}
 	directory, err := os.Open(filepath.Dir(path))

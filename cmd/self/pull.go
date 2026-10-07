@@ -343,7 +343,7 @@ func pullRepo(ctx context.Context, repo, remote, branch string) (pullResult, err
 		}, nil
 	}
 
-	if out, err := git(ctx, repo, "fetch", "--", remote, branch); err != nil {
+	if out, outErr := git(ctx, repo, "fetch", "--", remote, branch); outErr != nil {
 		if ctx.Err() != nil {
 			return pullResult{}, ctx.Err()
 		}
@@ -370,7 +370,7 @@ func pullRepo(ctx context.Context, repo, remote, branch string) (pullResult, err
 		return pullResult{}, fmt.Errorf("inspect local changes: %s", firstLine(status))
 	}
 	if strings.TrimSpace(status) != "" {
-		if _, err := git(ctx, repo, "stash", "push", "--include-untracked", "-m", "codefly self pull"); err != nil {
+		if _, err = git(ctx, repo, "stash", "push", "--include-untracked", "-m", "codefly self pull"); err != nil {
 			return pullResult{}, fmt.Errorf("could not stash local changes; left untouched")
 		}
 		dirty = true
@@ -391,14 +391,14 @@ func pullRepo(ctx context.Context, repo, remote, branch string) (pullResult, err
 				)
 			}
 		}
-		if err := ctx.Err(); err != nil {
+		if err = ctx.Err(); err != nil {
 			return pullResult{}, err
 		}
 		return pullResult{}, fmt.Errorf("merge failed; local work restored (%s)", firstLine(mergeOut))
 	}
 
 	if dirty {
-		if restoreOut, err := git(ctx, repo, "stash", "pop"); err != nil {
+		if restoreOut, restoreOutErr := git(ctx, repo, "stash", "pop"); restoreOutErr != nil {
 			// Merge landed, but reapplying local changes hit conflicts: git
 			// left conflict markers in the tree AND retained the stash as a
 			// backup. This is not a successful pull: flag it for manual repair.

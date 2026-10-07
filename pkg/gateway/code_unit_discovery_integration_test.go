@@ -32,7 +32,7 @@ func TestGatewayDiscoversCodeUnitsThroughRootedSource(t *testing.T) {
 		}
 	}
 
-	server, err := NewServer(Config{WorkDir: root})
+	server, err := NewServer(&Config{WorkDir: root})
 	if err != nil {
 		t.Fatal(err)
 	}

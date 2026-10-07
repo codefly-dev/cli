@@ -12,6 +12,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// The shells whose completion script this command writes.
+const (
+	shellBash       = "bash"
+	shellZsh        = "zsh"
+	shellFish       = "fish"
+	shellPowerShell = "powershell"
+)
+
 var completionInstall bool
 
 var CompletionCmd = &cobra.Command{
@@ -25,7 +33,7 @@ write it to that shell's conventional location with --install.
 
 --install replaces scripts/build/add_code_completion.sh.`,
 	DisableFlagsInUseLine: true,
-	ValidArgs:             []string{"bash", "zsh", "fish", "powershell"},
+	ValidArgs:             []string{shellBash, shellZsh, shellFish, shellPowerShell},
 	// Require exactly one of the valid shell args. Without this, bare
 	// `codefly completion` indexed args[0] and panicked (index out of range).
 	Args: cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
@@ -36,13 +44,13 @@ write it to that shell's conventional location with --install.
 		var buf bytes.Buffer
 		var err error
 		switch args[0] {
-		case "bash":
+		case shellBash:
 			err = cmd.Root().GenBashCompletion(&buf)
-		case "zsh":
+		case shellZsh:
 			err = cmd.Root().GenZshCompletion(&buf)
-		case "fish":
+		case shellFish:
 			err = cmd.Root().GenFishCompletion(&buf, true)
-		case "powershell":
+		case shellPowerShell:
 			err = cmd.Root().GenPowerShellCompletionWithDesc(&buf)
 		default:
 			return fmt.Errorf("unsupported shell type %q", args[0])
@@ -52,7 +60,7 @@ write it to that shell's conventional location with --install.
 		}
 
 		if !completionInstall {
-			if _, err := os.Stdout.Write(buf.Bytes()); err != nil {
+			if _, err = os.Stdout.Write(buf.Bytes()); err != nil {
 				return fmt.Errorf("cannot write completion script: %w", err)
 			}
 			return nil
@@ -79,16 +87,16 @@ func completionInstallPath(shell string) (string, error) {
 		return "", err
 	}
 	switch shell {
-	case "zsh":
+	case shellZsh:
 		omz := filepath.Join(home, ".oh-my-zsh", "completions")
 		if info, statErr := os.Stat(filepath.Join(home, ".oh-my-zsh")); statErr == nil && info.IsDir() {
 			return filepath.Join(omz, "_codefly"), nil
 		}
 		return filepath.Join(home, ".zsh", "completions", "_codefly"), nil
-	case "bash":
+	case shellBash:
 		return filepath.Join(home, ".local", "share", "bash-completion", "completions", "codefly"), nil
-	case "fish":
-		return filepath.Join(home, ".config", "fish", "completions", "codefly.fish"), nil
+	case shellFish:
+		return filepath.Join(home, ".config", shellFish, "completions", "codefly.fish"), nil
 	default:
 		return "", fmt.Errorf("--install is not supported for %s; redirect stdout to the right location manually", shell)
 	}

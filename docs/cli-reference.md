@@ -2056,6 +2056,7 @@ Flags:
       --env string                                                                        Environment to promote (default "local")
       --local                                                                             Use a disposable local file Git remote for k3d qualification
       --promotion-branch string                                                           Promotion branch (deterministic default when empty)
+      --resign                                                                            Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied
       --skip-workspace-readiness codefly doctor workspace --env <env> --module <module>   Proceed even when codefly doctor workspace --env <env> --module <module> says the workspace is not ready (for an operator mid-repair; the skip is announced in the output)
 ```
 
@@ -2076,6 +2077,7 @@ Flags:
       --local                                                                             Use a disposable local file Git remote for k3d qualification
       --message string                                                                    Signed commit message
       --promotion-branch string                                                           Promotion branch (deterministic default when empty)
+      --resign                                                                            Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied
       --skip-workspace-readiness codefly doctor workspace --env <env> --module <module>   Proceed even when codefly doctor workspace --env <env> --module <module> says the workspace is not ready (for an operator mid-repair; the skip is announced in the output)
       --title string                                                                      Promotion pull request title
   -y, --yes                                                                               Publish the inspected plan without an interactive confirmation
@@ -2188,6 +2190,7 @@ Flags:
       --local                        Use a disposable local file Git remote for k3d qualification
       --message string               Signed commit message
       --promotion-branch string      Promotion branch (deterministic default when empty)
+      --resign                       Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied
       --title string                 Promotion pull request title
       --to-revision string           Previously reviewed Git revision to re-promote
   -y, --yes                          Publish the inspected plan without an interactive confirmation
@@ -2245,11 +2248,10 @@ Plan and write the secret-store values a rendered environment's ExternalSecrets 
 ```
 Reads every ExternalSecret `deploy gitops render` projected for --env under
 deployments/modules, and resolves each remote property to a source: kept (already
-stored), derived (federation credentials and the registrar's digests of them),
-propagated (a configuration value another remote key already holds), generated
-(declared random by the environment's service-secrets.generate), or required
-(supplied by the operator, and named). The store is the backend behind the
-SecretStore the render names, read from the environment's cluster.
+stored), propagated (a configuration value another remote key already holds),
+generated (declared random by the environment's service-secrets.generate), or
+required (supplied by the operator, and named). The store is the backend behind
+the SecretStore the render names, read from the environment's cluster.
 
 Each property is resolved by the secret key the render reads out of it, not by
 the property name the environment files that key under, so an environment that
@@ -2261,11 +2263,9 @@ Values are never printed: the plan names keys and sources only.
 --dry-run prints the plan and writes nothing. --metadata-only additionally never
 reads a stored value: it knows which remote keys exist, not what they hold.
 
---module limits the plan to the remote keys the named modules' services read,
-plus their federation counterpart — the registrar's digest properties encoding a
-credential those keys hold — and names that counterpart in the plan. Every other
-remote key is still read, so a scoped key keeps agreeing with what the store
-already holds, but nothing outside the scope is planned or written.
+--module limits the plan to the remote keys the named modules' services read.
+Every other remote key is still read, so a scoped key keeps agreeing with what
+the store already holds, but nothing outside the scope is planned or written.
 ```
 
 ```
@@ -2279,7 +2279,7 @@ Flags:
       --dry-run          Print the plan and write nothing
       --env string       Environment whose rendered ExternalSecrets to seed (default "local")
       --metadata-only    With --dry-run: never read a stored value, only which remote keys exist
-      --module strings   Plan only these modules' remote keys (comma-separated or repeated), plus the registrar digests of their credentials
+      --module strings   Plan only these modules' remote keys (comma-separated or repeated)
   -y, --yes              Write without an interactive confirmation
 ```
 

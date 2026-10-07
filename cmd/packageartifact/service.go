@@ -104,10 +104,10 @@ func PackageService(ctx context.Context, workspace *resources.Workspace, module 
 	if advertised, supported := orchestration.ValidationOperationSupport(instance.Info, orchestration.ValidationSourcePackage); advertised && !supported {
 		return nil, w.NewError("portable source packaging is explicitly unsupported by %s", service.Agent.Identifier())
 	}
-	if err := instance.LoadBuilder(ctx); err != nil {
+	if err = instance.LoadBuilder(ctx); err != nil {
 		return nil, w.Wrapf(err, "load builder agent")
 	}
-	if _, err := instance.Builder.Load(ctx); err != nil {
+	if _, err = instance.Builder.Load(ctx); err != nil {
 		return nil, w.Wrapf(err, "builder load")
 	}
 	response, err := instance.Builder.Package(ctx, request)

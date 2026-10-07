@@ -104,8 +104,12 @@ func projectServiceAutoscale(serviceRoot, service, environment, namespace string
 	if err != nil {
 		return false, err
 	}
-	overlay := filepath.Join(serviceRoot, "overlays", environment)
-	if info, statErr := os.Stat(overlay); statErr != nil || !info.IsDir() {
+	overlayName, err := pathSegment("environment", environment)
+	if err != nil {
+		return false, err
+	}
+	overlay := filepath.Join(serviceRoot, "overlays", overlayName)
+	if info, statErr := statWithin(serviceRoot, filepath.Join("overlays", overlayName)); statErr != nil || !info.IsDir() {
 		return false, fmt.Errorf("service %q declares autoscale but has no %q environment overlay to render it into", service, environment)
 	}
 	encoded, err := yaml.Marshal(autoscaleManifest(service, namespace, deployment, autoscale))
@@ -113,7 +117,7 @@ func projectServiceAutoscale(serviceRoot, service, environment, namespace string
 		return false, err
 	}
 	// The HPA is a plain scaling policy, world-readable like its siblings.
-	if err := os.WriteFile(filepath.Join(overlay, hpaFile), encoded, 0o644); err != nil { //nolint:gosec
+	if err = writeWithin(overlay, hpaFile, encoded); err != nil {
 		return false, err
 	}
 	return true, addKustomizationResource(overlay, hpaFile)
@@ -123,12 +127,12 @@ func projectServiceAutoscale(serviceRoot, service, environment, namespace string
 // service's rendered tree, which the HPA scales.
 func serviceDeploymentName(root, service string) (string, error) {
 	var names []string
-	err := walkRegularFiles(root, func(path, relative string, _ os.FileInfo) error {
+	err := walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
 		extension := strings.ToLower(filepath.Ext(relative))
 		if extension != yamlExtension && extension != ymlExtension && extension != jsonExtension {
 			return nil
 		}
-		data, err := os.ReadFile(path)
+		data, err := readWithin(root, relative)
 		if err != nil {
 			return err
 		}

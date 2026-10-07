@@ -49,7 +49,7 @@ func (g *mutationGate) currentMode() AuthorityMode {
 	return g.mode
 }
 
-func (p *planeImpl) ConfigureMutationAuthority(ctx context.Context, cfg AuthorityConfig) error {
+func (p *planeImpl) ConfigureMutationAuthority(_ context.Context, cfg AuthorityConfig) error {
 	switch cfg.Mode {
 	case AuthorityOpen, AuthorityPrepared:
 	default:
@@ -66,7 +66,7 @@ func (p *planeImpl) ConfigureMutationAuthority(ctx context.Context, cfg Authorit
 	return nil
 }
 
-func (p *planeImpl) PrepareMutation(ctx context.Context, m Mutation) (PreparedMutation, error) {
+func (p *planeImpl) PrepareMutation(_ context.Context, m Mutation) (PreparedMutation, error) {
 	if err := validateMutation(m); err != nil {
 		return PreparedMutation{}, err
 	}
@@ -114,7 +114,7 @@ func (p *planeImpl) ApplyPreparedMutation(ctx context.Context, token PreparedMut
 
 type mutationExecutor interface {
 	ApplyEdit(context.Context, Edit) error
-	runDeploy(context.Context, DeployRequest) (DeployResult, error)
+	runDeploy(context.Context, *DeployRequest) (DeployResult, error)
 	publishGitOps(context.Context, *gitops.PublishMutation, mutationauthority.PreparedPermit) (gitops.PublishResult, error)
 	rollbackGitOps(context.Context, *gitops.RollbackMutation, mutationauthority.PreparedPermit) (gitops.PublishResult, error)
 }
@@ -139,7 +139,7 @@ func executeMutation(ctx context.Context, executor mutationExecutor, m Mutation,
 		if !ok {
 			return MutationResult{}, fmt.Errorf("deploy mutation payload must be a DeployRequest, got %T", m.Payload)
 		}
-		result, err := executor.runDeploy(ctx, req)
+		result, err := executor.runDeploy(ctx, &req)
 		return MutationResult{Deploy: &result}, err
 	case MutationGitOpsPublish:
 		req, ok := m.Payload.(gitops.PublishMutation)

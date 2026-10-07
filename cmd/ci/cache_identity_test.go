@@ -200,7 +200,7 @@ func TestCICacheIdentityInstallsAPinnedAgentMissingFromTheMachine(t *testing.T) 
 	ctx := context.Background()
 	options := ScheduleOptions{Phase: "compile", RuntimeContext: "native"}
 	builder := newCICacheIdentityBuilder(ctx, workspace, "1.2.3", "runner-image@sha256:test")
-	identity := builder.identity(ctx, options, PlannedService{Service: "management/consumer"})
+	identity := builder.identity(ctx, options, &PlannedService{Service: "management/consumer"})
 
 	if len(installed) != 1 || installed[0] != "codefly.ai/go-grpc:0.0.16" {
 		t.Fatalf("installed agents = %v", installed)
@@ -212,7 +212,7 @@ func TestCICacheIdentityInstallsAPinnedAgentMissingFromTheMachine(t *testing.T) 
 		t.Fatalf("identity is ineligible: %s (limitations %v)", reason, identity.Limitations)
 	}
 
-	sharing := builder.identity(ctx, options, PlannedService{Service: "management/worker"})
+	sharing := builder.identity(ctx, options, &PlannedService{Service: "management/worker"})
 	if len(installed) != 1 {
 		t.Fatalf("shared agent pin installed %d times", len(installed))
 	}
@@ -229,7 +229,7 @@ func TestCICacheIdentityStaysIneligibleWhenThePinnedAgentCannotBeInstalled(t *te
 
 	ctx := context.Background()
 	builder := newCICacheIdentityBuilder(ctx, workspace, "1.2.3", "runner-image@sha256:test")
-	identity := builder.identity(ctx, ScheduleOptions{Phase: "compile", RuntimeContext: "native"}, PlannedService{Service: "management/consumer"})
+	identity := builder.identity(ctx, ScheduleOptions{Phase: "compile", RuntimeContext: "native"}, &PlannedService{Service: "management/consumer"})
 
 	if identity.Inputs.Agent.Digest != "" {
 		t.Fatalf("agent digest was bound without an installed binary: %q", identity.Inputs.Agent.Digest)
@@ -389,7 +389,7 @@ func cacheTestPlan(workspace *resources.Workspace, service string) *Plan {
 	}
 }
 
-func preparedCacheIdentity(t *testing.T, workspace *resources.Workspace, plan *Plan, options ScheduleOptions, version string) CICacheIdentity {
+func preparedCacheIdentity(t *testing.T, workspace *resources.Workspace, plan *Plan, options ScheduleOptions, version string) CacheIdentity {
 	t.Helper()
 	fixed := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
 	reporter, err := newCIReporter(plan, "codefly ci run", version, func() time.Time { return fixed })

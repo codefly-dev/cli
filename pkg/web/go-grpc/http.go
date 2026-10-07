@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	connectcors "connectrpc.com/cors"
 	cliconnect "github.com/codefly-dev/core/generated/go/codefly/cli/v0/v0connect"
@@ -14,7 +15,7 @@ import (
 	"github.com/rs/cors"
 )
 
-type HttpServer struct {
+type HTTPServer struct {
 	config *Configuration
 	impl   *Server
 
@@ -23,20 +24,20 @@ type HttpServer struct {
 	listener   net.Listener
 }
 
-func NewHttpServer(c *Configuration, impl *Server) (*HttpServer, error) {
-	server := &HttpServer{config: c, impl: impl}
+func NewHTTPServer(c *Configuration, impl *Server) (*HTTPServer, error) {
+	server := &HTTPServer{config: c, impl: impl}
 	// Begin HTTP server (and proxy calls to gRPC server endpoint)
 	return server, nil
 }
 
 // Address is the REST endpoint this server binds, e.g. "127.0.0.1:10001".
-func (s *HttpServer) Address() string {
+func (s *HTTPServer) Address() string {
 	return s.config.EndpointRest
 }
 
 // Listen claims the REST address, returning the listener it holds. See
 // Server.Listen for why binding is a separate, callable step.
-func (s *HttpServer) Listen() (net.Listener, error) {
+func (s *HTTPServer) Listen() (net.Listener, error) {
 	s.listenerMu.Lock()
 	defer s.listenerMu.Unlock()
 	if s.listener != nil {
@@ -52,7 +53,7 @@ func (s *HttpServer) Listen() (net.Listener, error) {
 
 // Close releases the claimed address. Safe to call at any point, including
 // while Run is serving on it.
-func (s *HttpServer) Close() {
+func (s *HTTPServer) Close() {
 	s.listenerMu.Lock()
 	defer s.listenerMu.Unlock()
 	if s.listener == nil {
@@ -62,7 +63,12 @@ func (s *HttpServer) Close() {
 	s.listener = nil
 }
 
-func (s *HttpServer) Run(ctx context.Context) error {
+// readHeaderTimeout bounds how long a connection may take to send its request
+// headers; without it a client holding a connection open starves the dashboard
+// of listeners (Slowloris).
+const readHeaderTimeout = 10 * time.Second
+
+func (s *HTTPServer) Run(ctx context.Context) error {
 	golor.Template(s.config).Println(`#(blue,bold)[Dashboard:] #(italic,white)[http://{{ .EndpointRest }}]`)
 
 	handler, err := s.handler()
@@ -70,7 +76,7 @@ func (s *HttpServer) Run(ctx context.Context) error {
 		return err
 	}
 
-	srv := &http.Server{Addr: s.config.EndpointRest, Handler: handler}
+	srv := &http.Server{Addr: s.config.EndpointRest, Handler: handler, ReadHeaderTimeout: readHeaderTimeout}
 	lis, err := s.Listen()
 	if err != nil {
 		return err
@@ -99,7 +105,7 @@ func (s *HttpServer) Run(ctx context.Context) error {
 // handler builds the dashboard HTTP handler: the Connect CLI service mounted at
 // its service path, the embedded static dashboard served at "/", and the whole
 // thing wrapped in Connect-aware CORS.
-func (s *HttpServer) handler() (http.Handler, error) {
+func (s *HTTPServer) handler() (http.Handler, error) {
 	mux := http.NewServeMux()
 
 	// Connect endpoint for the browser dashboard (Connect-ES) — the CLI service

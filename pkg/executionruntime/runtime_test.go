@@ -36,7 +36,7 @@ func TestDefaultStateDirIsStableAndWorkspaceIsolated(t *testing.T) {
 
 func TestOpenWithoutExportersCreatesPrivateProductNeutralRuntime(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "execution")
-	runtime, err := Open(context.Background(), Config{
+	runtime, err := Open(context.Background(), &Config{
 		WorkDir:         t.TempDir(),
 		StateDir:        stateDir,
 		AuthorityIssuer: "https://accounts.example.test",
@@ -70,7 +70,7 @@ func TestOpenWithoutExportersCreatesPrivateProductNeutralRuntime(t *testing.T) {
 
 func TestOpenRejectsIncompleteAuthorityBeforeState(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "must-not-exist")
-	_, err := Open(context.Background(), Config{
+	_, err := Open(context.Background(), &Config{
 		StateDir: stateDir,
 		Release:  "test",
 	})

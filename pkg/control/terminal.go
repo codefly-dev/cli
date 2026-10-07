@@ -121,7 +121,7 @@ func (p *planeImpl) OpenTerminal(ctx context.Context, req OpenTerminalRequest) (
 	if err != nil {
 		return "", err
 	}
-	cmd := exec.Command(shell)
+	cmd := exec.Command(shell) //nolint:gosec // G702: the shell is the one the request or $SHELL names; a terminal runs it by definition
 	cmd.Dir = dir
 	f, err := pty.Start(cmd)
 	if err != nil {
@@ -202,7 +202,7 @@ func (p *planeImpl) AttachTerminal(ctx context.Context, id TerminalID, onOutput 
 	return &terminalInput{pty: sess.ptyFile}, nil
 }
 
-func (p *planeImpl) ResizeTerminal(ctx context.Context, id TerminalID, cols, rows int) error {
+func (p *planeImpl) ResizeTerminal(_ context.Context, id TerminalID, cols, rows int) error {
 	sess, ok := p.terminals.get(id)
 	if !ok {
 		return fmt.Errorf("unknown terminal %s", id)
@@ -244,7 +244,7 @@ func (p *planeImpl) CloseTerminal(ctx context.Context, id TerminalID) error {
 	}
 }
 
-func (p *planeImpl) ListTerminals(ctx context.Context) ([]TerminalID, error) {
+func (p *planeImpl) ListTerminals(_ context.Context) ([]TerminalID, error) {
 	p.terminals.mu.Lock()
 	defer p.terminals.mu.Unlock()
 	ids := make([]TerminalID, 0, len(p.terminals.sessions))

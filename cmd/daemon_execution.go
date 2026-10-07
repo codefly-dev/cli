@@ -59,7 +59,7 @@ func (options gatewayExecutionOptions) open(
 	if err != nil {
 		return nil, fmt.Errorf("resolve Codefly CLI release for execution receipts: %w", err)
 	}
-	runtime, err := executionruntime.Open(ctx, executionruntime.Config{
+	runtime, err := executionruntime.Open(ctx, &executionruntime.Config{
 		WorkDir:         workDir,
 		StateDir:        options.stateDir,
 		AuthorityIssuer: options.authorityIssuer,

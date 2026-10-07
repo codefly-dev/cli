@@ -31,7 +31,7 @@ func TestGatewaySourceManifestUsesRootedCodeflySource(t *testing.T) {
 	writeGatewaySourceFile(t, root, "README.md", "worktree\n", 0o644)
 	writeGatewaySourceFile(t, root, "new.txt", "new\n", 0o644)
 
-	server, err := NewServer(Config{WorkDir: root})
+	server, err := NewServer(&Config{WorkDir: root})
 	if err != nil {
 		t.Fatal(err)
 	}

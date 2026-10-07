@@ -19,6 +19,6 @@ type DestinationExistsMessage struct {
 	Destination string
 }
 
-func DestinationExists(msg DestinationExistsMessage) {
+func DestinationExists(_ DestinationExistsMessage) {
 	golor.Println(`#(bold,cyan)[Service already found at <{{.Destination}}>. Use --override option. Exiting.]`)
 }

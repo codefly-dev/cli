@@ -166,7 +166,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		return fmt.Errorf("cannot load required service: %w", err)
 	}
 
-	if err := common.WithSilenceE(ctx, workspace, silent); err != nil {
+	if err = common.WithSilenceE(ctx, workspace, silent); err != nil {
 		return err
 	}
 
@@ -178,7 +178,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	}
 	runCoRoots = coRoots
 
-	derived, derivedErr := derivedInputsForRoots(ctx, workspace, module, service, serviceName, coRootServices)
+	derived, derivedErr := derivedInputsForRoots(module, service, serviceName, coRootServices)
 	if derivedErr != nil {
 		return derivedErr
 	}
@@ -192,61 +192,23 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		cli.Info("%s", note.Message)
 	}
 	derivedOverrides = derived.Overrides
-	derivedWorkspaceConfigurations = derived.WorkspaceConfigurations
 
-	var flow *orchestration.Flow
-
-	// flowManager, when the CLI server is up, is how the server's RPCs
-	// resolve this run's flow — never through a process-global, which would
-	// alias a second flow started elsewhere in the same process.
-	var flowManager *engine.FlowManager
-	registerFlow := func() {
-		if flowManager != nil && flow != nil {
-			_ = flowManager.Register(serviceName, flow)
-		}
-	}
+	run := &serviceRun{workspace: workspace, module: module, service: service, serviceName: serviceName}
 
 	var serverResult chan error
 	defer func() {
 		cancelRun()
 		if serverResult != nil {
-			if err := <-serverResult; err != nil {
-				returnErr = errors.Join(returnErr, fmt.Errorf("CLI server failed: %w", err))
+			if serverErr := <-serverResult; serverErr != nil {
+				returnErr = errors.Join(returnErr, fmt.Errorf("CLI server failed: %w", serverErr))
 			}
 		}
 	}()
 	if withCLIServer {
-		flowManager = engine.NewFlowManager()
-		// Propagate --naming-scope into the server's port derivation.
-		// The test SDK (WithDependencies) appends the naming scope to
-		// the workspace name when deriving CLIServerPort, so the spawned
-		// CLI MUST use the same derivation or the client connects to a
-		// port nobody's listening on — the documented cli-server ready
-		// flake. Deliberately the raw flag, NOT the resolved environment's
-		// naming scope: the SDK client only knows the scope it passed, so
-		// a workspace-declared scope must affect service naming only,
-		// never this port contract.
-		server, err := web.NewServer(web.ServerData{Workspace: workspace, NamingScope: namingScope, Flows: flowManager})
+		run.flowManager = engine.NewFlowManager()
+		serverResult, err = startCLIServer(ctx, workspace, run.flowManager, cancelRun)
 		if err != nil {
-			return fmt.Errorf("cannot create web server: %w", err)
-		}
-		// Own the control channel before the flow exists. A run that loses this
-		// race must not go on to start agents and containers that its own
-		// abort then has to reclaim — and the client driving Stop/Destroy over
-		// that address is talking to whoever won it, not to us.
-		if err := server.Listen(); err != nil {
 			return err
-		}
-		serverResult = make(chan error, 1)
-		go func() {
-			err := server.Start(ctx)
-			serverResult <- err
-			if err != nil {
-				cancelRun()
-			}
-		}()
-		if dashboardURL := server.DashboardURL(); dashboardURL != "" {
-			common.AnnounceDashboardWhenReady(ctx, dashboardURL, openDashboard)
 		}
 	}
 
@@ -256,342 +218,411 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 	// every exit path — including failures — so a partially-started flow
 	// never orphans agents or containers.
 	stopFresh := func() error {
-		if flowManager != nil {
-			flowManager.Release(serviceName, flow)
+		if run.flowManager != nil {
+			run.flowManager.Release(serviceName, run.flow)
 		}
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		err := stopService(shutdownCtx, flow)
+		err := stopService(shutdownCtx, run.flow)
 		shutdownCancel()
 		return err
 	}
 	defer func() { returnErr = errors.Join(returnErr, stopFresh()) }()
 
-	var runErr error
-
 	if isHeadless {
-		// Headless mode: plain log output, no TUI.
-		// Works in: MCP, Claude Code, CI, Docker, pipes, scripts.
-		//
-		// phase reports a lifecycle milestone using the SAME marker (">>")
-		// and vocabulary (tui.ServiceState.String()) as the core/tui
-		// aggregate layer, so headless and interactive runs share one form —
-		// ">> svc: Loading → Starting → Running" — instead of the old ad-hoc
-		// "[codefly] svc: ..." colon form that collided with the TUI's ">>".
-		// milestones de-dupes exact per-service repeats so the action loop
-		// and the readiness poller can't print the same ">>" line twice.
-		milestones := cli.NewMilestoneEmitter()
-		runStart := time.Now()
-		phase := func(state tui.ServiceState) {
-			var elapsed time.Duration
-			if state == tui.StateRunning {
-				elapsed = time.Since(runStart)
-			}
-			milestones.Emit(serviceName, cli.Milestone(serviceName, state.String(), 0, elapsed))
-		}
+		return run.headless(ctx)
+	}
+	if runErr := run.interactive(ctx); runErr != nil {
+		return fmt.Errorf("service %s stopped with an error: %w", serviceName, runErr)
+	}
+	return nil
+}
 
-		fmt.Printf("[codefly] %s\n", cli.Legend())
-		phase(tui.StateLoading)
-		var err error
-		flow, err = initRunService(ctx, workspace, module, service)
-		registerFlow()
-		if err != nil {
-			return fmt.Errorf("cannot initialize service %s: %w", serviceName, err)
+// serviceRun is what one `codefly run service` shares between its load, its
+// headless or interactive drive, and its teardown.
+type serviceRun struct {
+	workspace   *resources.Workspace
+	module      *resources.Module
+	service     *resources.Service
+	serviceName string
+	// flowManager, when the CLI server is up, is how the server's RPCs
+	// resolve this run's flow — never through a process-global, which would
+	// alias a second flow started elsewhere in the same process.
+	flowManager *engine.FlowManager
+	flow        *orchestration.Flow
+}
+
+func (run *serviceRun) registerFlow() {
+	if run.flowManager != nil && run.flow != nil {
+		_ = run.flowManager.Register(run.serviceName, run.flow)
+	}
+}
+
+// startCLIServer owns the control channel before the flow exists and serves
+// it for the run's lifetime; the returned channel carries the server's exit.
+func startCLIServer(ctx context.Context, workspace *resources.Workspace, flowManager *engine.FlowManager, cancelRun context.CancelFunc) (chan error, error) {
+	// Propagate --naming-scope into the server's port derivation.
+	// The test SDK (WithDependencies) appends the naming scope to
+	// the workspace name when deriving CLIServerPort, so the spawned
+	// CLI MUST use the same derivation or the client connects to a
+	// port nobody's listening on — the documented cli-server ready
+	// flake. Deliberately the raw flag, NOT the resolved environment's
+	// naming scope: the SDK client only knows the scope it passed, so
+	// a workspace-declared scope must affect service naming only,
+	// never this port contract.
+	server, err := web.NewServer(web.ServerData{Workspace: workspace, NamingScope: namingScope, Flows: flowManager})
+	if err != nil {
+		return nil, fmt.Errorf("cannot create web server: %w", err)
+	}
+	// Own the control channel before the flow exists. A run that loses this
+	// race must not go on to start agents and containers that its own
+	// abort then has to reclaim — and the client driving Stop/Destroy over
+	// that address is talking to whoever won it, not to us.
+	if listenErr := server.Listen(); listenErr != nil {
+		return nil, listenErr
+	}
+	serverResult := make(chan error, 1)
+	go func() {
+		startErr := server.Start(ctx)
+		serverResult <- startErr
+		if startErr != nil {
+			cancelRun()
 		}
-		// Print each dependency's lifecycle (Loading→Init→Starting→Running,
-		// or Failed) using the same ">>" milestone form as the origin, so a
-		// stalled dependency (e.g. vault waiting on its health probe) is
-		// visible in headless/MCP/CI logs instead of silent until timeout.
-		// printReady prints a dependency's "Running on :port" milestone
-		// exactly once, whichever source observes it first — the action-loop
-		// emit below or the readiness poller further down — so the loop's
-		// eventual StateRunning doesn't duplicate a line the poller printed.
-		var promotedMu sync.Mutex
+	}()
+	if dashboardURL := server.DashboardURL(); dashboardURL != "" {
+		common.AnnounceDashboardWhenReady(ctx, dashboardURL, openDashboard)
+	}
+	return serverResult, nil
+}
+
+// headless drives the run with plain log output and no TUI, which works in
+// MCP, Claude Code, CI, Docker, pipes and scripts. It returns when the run is
+// stopped, when readiness is missed, or — with --load-only or --init-only —
+// when the requested phase is done.
+func (run *serviceRun) headless(ctx context.Context) error {
+	serviceName := run.serviceName
+	// Headless mode: plain log output, no TUI.
+	// Works in: MCP, Claude Code, CI, Docker, pipes, scripts.
+	//
+	// phase reports a lifecycle milestone using the SAME marker (">>")
+	// and vocabulary (tui.ServiceState.String()) as the core/tui
+	// aggregate layer, so headless and interactive runs share one form —
+	// ">> svc: Loading → Starting → Running" — instead of the old ad-hoc
+	// "[codefly] svc: ..." colon form that collided with the TUI's ">>".
+	// milestones de-dupes exact per-service repeats so the action loop
+	// and the readiness poller can't print the same ">>" line twice.
+	milestones := cli.NewMilestoneEmitter()
+	runStart := time.Now()
+	phase := func(state tui.ServiceState) {
+		var elapsed time.Duration
+		if state == tui.StateRunning {
+			elapsed = time.Since(runStart)
+		}
+		milestones.Emit(serviceName, cli.Milestone(serviceName, state.String(), 0, elapsed))
+	}
+
+	fmt.Printf("[codefly] %s\n", cli.Legend())
+	phase(tui.StateLoading)
+	var err error
+	run.flow, err = initRunService(ctx, run.workspace, run.module, run.service)
+	run.registerFlow()
+	if err != nil {
+		return fmt.Errorf("cannot initialize service %s: %w", serviceName, err)
+	}
+	// Print each dependency's lifecycle (Loading→Init→Starting→Running,
+	// or Failed) using the same ">>" milestone form as the origin, so a
+	// stalled dependency (e.g. vault waiting on its health probe) is
+	// visible in headless/MCP/CI logs instead of silent until timeout.
+	// printReady prints a dependency's "Running on :port" milestone
+	// exactly once, whichever source observes it first — the action-loop
+	// emit below or the readiness poller further down — so the loop's
+	// eventual StateRunning doesn't duplicate a line the poller printed.
+	var promotedMu sync.Mutex
+	promoted := map[string]bool{}
+	printReady := func(service string, port int) {
+		promotedMu.Lock()
+		already := promoted[service]
+		promoted[service] = true
+		promotedMu.Unlock()
+		if already {
+			return
+		}
+		milestones.Emit(service, cli.Milestone(service, tui.StateRunning.String(), port, 0))
+	}
+
+	run.flow.WithStateListener(func(service string, state tui.ServiceState, port int) {
+		if service == serviceName {
+			return
+		}
+		if state == tui.StateRunning {
+			printReady(service, port)
+			return
+		}
+		milestones.Emit(service, cli.Milestone(service, state.String(), 0, 0))
+	})
+
+	phase(tui.StateStarting)
+
+	// In run mode runService blocks for the LIFETIME of the stack —
+	// the playbook action loop only returns on cancellation or a
+	// failure — so the "still starting" heartbeat below must be
+	// stopped by READINESS, not by runService returning. Without
+	// this, a healthy long-lived headless run (e.g. a bench under
+	// sdk.WithDependencies) prints "still starting <svc>… Ns"
+	// forever even though every dependency has been Running for
+	// hours. markRunning emits the Running milestone exactly once,
+	// whichever observer sees readiness first, and silences the
+	// heartbeat.
+	hbCtx, hbCancel := context.WithCancel(ctx)
+	defer hbCancel()
+	var runningOnce sync.Once
+	markRunning := func() {
+		runningOnce.Do(func() {
+			phase(tui.StateRunning)
+			hbCancel()
+		})
+	}
+	// Flow.Start owns the stack for its whole lifetime. Give WaitReady its
+	// own copy of the result so it can diagnose an early exit without
+	// stealing the result the shutdown path must still join.
+	runCtx, runCancel := context.WithCancel(ctx)
+	defer runCancel()
+	started := make(chan error, 1)
+	startDone := make(chan error, 1)
+	go func() {
+		startErr := runService(runCtx, run.flow)
+		started <- startErr
+		startDone <- startErr
+	}()
+
+	// hbCtx only scopes the heartbeat ticker. The flow itself stays under
+	// runCtx until the run is stopped, fails, or misses its readiness
+	// deadline.
+	err = common.WithHeartbeat(hbCtx, "still starting "+serviceName, func() error {
+		if !shouldWaitForRun(loadOnly, initOnly) {
+			return <-startDone
+		}
 		promoted := map[string]bool{}
-		printReady := func(service string, port int) {
-			promotedMu.Lock()
-			already := promoted[service]
-			promoted[service] = true
-			promotedMu.Unlock()
-			if already {
-				return
+		readinessErr := waitForServiceReadiness(runCtx, run.flow, started, readinessTimeout, func(probeCtx context.Context, _ *orchestration.ReadinessFailure) {
+			run.flow.PromoteReachable(probeCtx, serviceName, promoted, printReady)
+		})
+		if readinessErr != nil {
+			parentCanceled := runCtx.Err() != nil
+			runCancel()
+			startErr := <-startDone
+			if parentCanceled {
+				return startErr
 			}
-			milestones.Emit(service, cli.Milestone(service, tui.StateRunning.String(), port, 0))
+			return orFirst(readinessErr, startErr)
+		}
+		markRunning()
+		return <-startDone
+	})
+	if err != nil {
+		// Attribute the failure to the service that actually failed (e.g. a
+		// dependency that couldn't start), not always to the origin.
+		if culprit, phase, ok := run.flow.FailedService(); ok && culprit != serviceName {
+			return fmt.Errorf("service %s failed during %s (while starting %s): %w", culprit, phase, serviceName, err)
+		}
+		return fmt.Errorf("cannot start service %s: %w", serviceName, err)
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	if !shouldWaitForRun(loadOnly, initOnly) {
+		phase(tui.StateStopped)
+		return nil
+	}
+	// runningOnce keeps this from double-printing when the poller already
+	// announced readiness.
+	markRunning()
+
+	<-ctx.Done()
+	return nil
+}
+
+// interactive drives the run under the TUI and returns the error the run
+// stopped with, if any.
+func (run *serviceRun) interactive(ctx context.Context) (runErr error) {
+	serviceName := run.serviceName
+	logCh := tui.NewLogChannel()
+	cli.SuppressOutput()
+
+	// The TUI quits on a Ctrl-C KEYPRESS (raw mode → byte 0x03 →
+	// tea.Quit), NOT a SIGINT — so the process-level signal context is
+	// NOT cancelled when the user quits the TUI. We therefore drive the
+	// flow with our own cancelable context and cancel it explicitly once
+	// the TUI exits, so flow.Start's action loop unwinds before we stop.
+	runCtx, runCancel := context.WithCancel(ctx)
+	defer runCancel()
+
+	// runErr is written by the startFn goroutine and read only after
+	// <-finished, which the deferred close synchronizes — so the read
+	// (and the read of `flow` below) is race-free.
+	finished := make(chan struct{})
+
+	// The async update check started in cli.Init() lands at an arbitrary
+	// time. Routed to stderr (its default) it fires mid-render and leaves
+	// a stale duplicate of the status bar (#57); route it into the TUI as
+	// a one-shot log line above the live status bar instead. Set up the
+	// capture before the TUI starts so no notice ever reaches stderr while
+	// it owns the terminal, buffering until the ServiceTUI exists.
+	var noticeMu sync.Mutex
+	var noticeTUI *tui.ServiceTUI
+	var pendingNotice string
+	restoreNotice := cli.CaptureUpdateNotice(func(msg string) {
+		noticeMu.Lock()
+		defer noticeMu.Unlock()
+		if noticeTUI != nil {
+			noticeTUI.SendLog(wool.WARN, "codefly", msg)
+		} else {
+			pendingNotice = msg
+		}
+	})
+	defer restoreNotice()
+
+	tuiErr := tui.RunServiceTUI(serviceName, logCh, func(t *tui.ServiceTUI) {
+		defer close(finished)
+
+		noticeMu.Lock()
+		noticeTUI = t
+		if pendingNotice != "" {
+			t.SendLog(wool.WARN, "codefly", pendingNotice)
+			pendingNotice = ""
+		}
+		noticeMu.Unlock()
+
+		// Replay everything narrated before the TUI owned the screen
+		// (stale-process reaping, workspace load) so the log pane starts
+		// where a headless run does instead of mid-init.
+		for _, line := range cli.DrainCapture() {
+			t.SendLog(line.Level, "codefly", line.Message)
 		}
 
-		flow.WithStateListener(func(service string, state tui.ServiceState, port int) {
+		// Route codefly's own narration (e.g. "Handling <frontend> with
+		// these dependent services: …") into the TUI log pane while it
+		// owns the screen — otherwise it goes to stdout and the alt
+		// screen overwrites it, leaving a blank "Loading" for the whole
+		// init phase. Cleared when the flow returns so the post-TUI
+		// error report prints to the real terminal again.
+		cli.SetOutputSink(func(level wool.Loglevel, msg string) {
+			t.SendLog(level, "codefly", msg)
+		})
+		defer cli.SetOutputSink(nil)
+
+		var err error
+		t.SendState(serviceName, tui.StateLoading)
+		run.flow, err = initRunService(runCtx, run.workspace, run.module, run.service)
+		run.registerFlow()
+		if err != nil {
+			// Keep the full error: initRunService returns w.NewError
+			// (unwrapped) for an invalid runtime context, so Unwrap
+			// returned nil and silently swallowed the failure.
+			runErr = err
+			t.SendError(runErr)
+			t.SendDone(runErr) // quit the TUI instead of hanging on the error
+			return
+		}
+
+		// Drive per-dependency live status from the orchestrator so each
+		// dependency shows its own Loading→Init→Starting→Running (and any
+		// stall) instead of hiding behind the origin's spinner. The origin
+		// is already driven by the control flow here, so skip it to avoid
+		// double milestones.
+		run.flow.WithStateListener(func(service string, state tui.ServiceState, port int) {
 			if service == serviceName {
 				return
 			}
-			if state == tui.StateRunning {
-				printReady(service, port)
-				return
+			switch state {
+			case tui.StateRunning:
+				t.SendReady(service, port)
+			case tui.StateFailed:
+				t.SendFailed(service)
+			default:
+				t.SendState(service, state)
 			}
-			milestones.Emit(service, cli.Milestone(service, state.String(), 0, 0))
 		})
+		t.SendPlan(run.flow.OrderedServiceUniques())
 
-		phase(tui.StateStarting)
+		t.SendState(serviceName, tui.StateStarting)
 
-		// In run mode runService blocks for the LIFETIME of the stack —
-		// the playbook action loop only returns on cancellation or a
-		// failure — so the "still starting" heartbeat below must be
-		// stopped by READINESS, not by runService returning. Without
-		// this, a healthy long-lived headless run (e.g. a bench under
-		// sdk.WithDependencies) prints "still starting <svc>… Ns"
-		// forever even though every dependency has been Running for
-		// hours. markRunning emits the Running milestone exactly once,
-		// whichever observer sees readiness first, and silences the
-		// heartbeat.
-		hbCtx, hbCancel := context.WithCancel(ctx)
-		defer hbCancel()
-		var runningOnce sync.Once
-		markRunning := func() {
-			runningOnce.Do(func() {
-				phase(tui.StateRunning)
-				hbCancel()
-			})
-		}
-		// Flow.Start owns the stack for its whole lifetime. Give WaitReady its
-		// own copy of the result so it can diagnose an early exit without
-		// stealing the result the shutdown path must still join.
-		runCtx, runCancel := context.WithCancel(ctx)
-		defer runCancel()
+		// flow.Start runs the playbook action loop and only returns once
+		// runCtx is cancelled (or start fails). WaitReady receives one copy
+		// of that result, while startDone preserves a copy for the mandatory
+		// goroutine join before teardown.
 		started := make(chan error, 1)
 		startDone := make(chan error, 1)
 		go func() {
-			startErr := runService(runCtx, flow)
+			startErr := runService(runCtx, run.flow)
 			started <- startErr
 			startDone <- startErr
 		}()
 
-		// hbCtx only scopes the heartbeat ticker. The flow itself stays under
-		// runCtx until the run is stopped, fails, or misses its readiness
-		// deadline.
-		err = common.WithHeartbeat(hbCtx, "still starting "+serviceName, func() error {
-			if !shouldWaitForRun(loadOnly, initOnly) {
-				return <-startDone
-			}
-			promoted := map[string]bool{}
-			readinessErr := waitForServiceReadiness(runCtx, flow, started, readinessTimeout, func(probeCtx context.Context, _ *orchestration.ReadinessFailure) {
-				flow.PromoteReachable(probeCtx, serviceName, promoted, printReady)
-			})
-			if readinessErr != nil {
-				parentCanceled := runCtx.Err() != nil
-				runCancel()
-				startErr := <-startDone
-				if parentCanceled {
-					return startErr
-				}
-				return orFirst(readinessErr, startErr)
-			}
-			markRunning()
-			return <-startDone
+		// drainStart waits for the background flow.Start goroutine to
+		// return, so it is never still running when stopService begins.
+		drainStart := func() { runCancel(); runErr = orFirst(runErr, <-startDone) }
+
+		// While the action loop is blocked inside a long phase (the origin's
+		// go compile being the usual culprit), it can't emit a dependency's
+		// StateRunning even after that dependency is actually listening — so
+		// an up-and-ready postgres keeps showing as "slow". Promote each
+		// dependency to ready from a real readiness probe instead, so the
+		// live status reflects what's actually up rather than where the
+		// synchronous loop happens to be parked. `promoted` is touched only
+		// by this goroutine.
+		promoted := map[string]bool{}
+
+		readinessErr := waitForServiceReadiness(runCtx, run.flow, started, readinessTimeout, func(probeCtx context.Context, _ *orchestration.ReadinessFailure) {
+			run.flow.PromoteReachable(probeCtx, serviceName, promoted, t.SendReady)
 		})
-		if err != nil {
-			// Attribute the failure to the service that actually failed (e.g. a
-			// dependency that couldn't start), not always to the origin.
-			if culprit, phase, ok := flow.FailedService(); ok && culprit != serviceName {
-				return fmt.Errorf("service %s failed during %s (while starting %s): %w", culprit, phase, serviceName, err)
-			}
-			return fmt.Errorf("cannot start service %s: %w", serviceName, err)
-		}
-		if ctx.Err() != nil {
-			return nil
-		}
-		if !shouldWaitForRun(loadOnly, initOnly) {
-			phase(tui.StateStopped)
-			return nil
-		}
-		// runningOnce keeps this from double-printing when the poller already
-		// announced readiness.
-		markRunning()
-
-		<-ctx.Done()
-	} else {
-		// Interactive mode: TUI
-		logCh := tui.NewLogChannel()
-		cli.SuppressOutput()
-
-		// The TUI quits on a Ctrl-C KEYPRESS (raw mode → byte 0x03 →
-		// tea.Quit), NOT a SIGINT — so the process-level signal context is
-		// NOT cancelled when the user quits the TUI. We therefore drive the
-		// flow with our own cancelable context and cancel it explicitly once
-		// the TUI exits, so flow.Start's action loop unwinds before we stop.
-		runCtx, runCancel := context.WithCancel(ctx)
-		defer runCancel()
-
-		// runErr is written by the startFn goroutine and read only after
-		// <-finished, which the deferred close synchronizes — so the read
-		// (and the read of `flow` below) is race-free.
-		finished := make(chan struct{})
-
-		// The async update check started in cli.Init() lands at an arbitrary
-		// time. Routed to stderr (its default) it fires mid-render and leaves
-		// a stale duplicate of the status bar (#57); route it into the TUI as
-		// a one-shot log line above the live status bar instead. Set up the
-		// capture before the TUI starts so no notice ever reaches stderr while
-		// it owns the terminal, buffering until the ServiceTUI exists.
-		var noticeMu sync.Mutex
-		var noticeTUI *tui.ServiceTUI
-		var pendingNotice string
-		restoreNotice := cli.CaptureUpdateNotice(func(msg string) {
-			noticeMu.Lock()
-			defer noticeMu.Unlock()
-			if noticeTUI != nil {
-				noticeTUI.SendLog(wool.WARN, "codefly", msg)
+		if readinessErr != nil {
+			parentCanceled := runCtx.Err() != nil
+			runCancel()
+			startErr := <-startDone
+			if parentCanceled {
+				runErr = startErr
 			} else {
-				pendingNotice = msg
+				runErr = orFirst(readinessErr, startErr)
 			}
-		})
-		defer restoreNotice()
-
-		tuiErr := tui.RunServiceTUI(serviceName, logCh, func(t *tui.ServiceTUI) {
-			defer close(finished)
-
-			noticeMu.Lock()
-			noticeTUI = t
-			if pendingNotice != "" {
-				t.SendLog(wool.WARN, "codefly", pendingNotice)
-				pendingNotice = ""
-			}
-			noticeMu.Unlock()
-
-			// Replay everything narrated before the TUI owned the screen
-			// (stale-process reaping, workspace load) so the log pane starts
-			// where a headless run does instead of mid-init.
-			for _, line := range cli.DrainCapture() {
-				t.SendLog(line.Level, "codefly", line.Message)
-			}
-
-			// Route codefly's own narration (e.g. "Handling <frontend> with
-			// these dependent services: …") into the TUI log pane while it
-			// owns the screen — otherwise it goes to stdout and the alt
-			// screen overwrites it, leaving a blank "Loading" for the whole
-			// init phase. Cleared when the flow returns so the post-TUI
-			// error report prints to the real terminal again.
-			cli.SetOutputSink(func(level wool.Loglevel, msg string) {
-				t.SendLog(level, "codefly", msg)
-			})
-			defer cli.SetOutputSink(nil)
-
-			var err error
-			t.SendState(serviceName, tui.StateLoading)
-			flow, err = initRunService(runCtx, workspace, module, service)
-			registerFlow()
-			if err != nil {
-				// Keep the full error: initRunService returns w.NewError
-				// (unwrapped) for an invalid runtime context, so Unwrap
-				// returned nil and silently swallowed the failure.
-				runErr = err
+			if runErr != nil {
 				t.SendError(runErr)
-				t.SendDone(runErr) // quit the TUI instead of hanging on the error
-				return
 			}
-
-			// Drive per-dependency live status from the orchestrator so each
-			// dependency shows its own Loading→Init→Starting→Running (and any
-			// stall) instead of hiding behind the origin's spinner. The origin
-			// is already driven by the control flow here, so skip it to avoid
-			// double milestones.
-			flow.WithStateListener(func(service string, state tui.ServiceState, port int) {
-				if service == serviceName {
-					return
-				}
-				switch state {
-				case tui.StateRunning:
-					t.SendReady(service, port)
-				case tui.StateFailed:
-					t.SendFailed(service)
-				default:
-					t.SendState(service, state)
-				}
-			})
-			t.SendPlan(flow.OrderedServiceUniques())
-
-			t.SendState(serviceName, tui.StateStarting)
-
-			// flow.Start runs the playbook action loop and only returns once
-			// runCtx is cancelled (or start fails). WaitReady receives one copy
-			// of that result, while startDone preserves a copy for the mandatory
-			// goroutine join before teardown.
-			started := make(chan error, 1)
-			startDone := make(chan error, 1)
-			go func() {
-				startErr := runService(runCtx, flow)
-				started <- startErr
-				startDone <- startErr
-			}()
-
-			// drainStart waits for the background flow.Start goroutine to
-			// return, so it is never still running when stopService begins.
-			drainStart := func() { runCancel(); runErr = orFirst(runErr, <-startDone) }
-
-			// While the action loop is blocked inside a long phase (the origin's
-			// go compile being the usual culprit), it can't emit a dependency's
-			// StateRunning even after that dependency is actually listening — so
-			// an up-and-ready postgres keeps showing as "slow". Promote each
-			// dependency to ready from a real readiness probe instead, so the
-			// live status reflects what's actually up rather than where the
-			// synchronous loop happens to be parked. `promoted` is touched only
-			// by this goroutine.
-			promoted := map[string]bool{}
-
-			readinessErr := waitForServiceReadiness(runCtx, flow, started, readinessTimeout, func(probeCtx context.Context, _ *orchestration.ReadinessFailure) {
-				flow.PromoteReachable(probeCtx, serviceName, promoted, t.SendReady)
-			})
-			if readinessErr != nil {
-				parentCanceled := runCtx.Err() != nil
-				runCancel()
-				startErr := <-startDone
-				if parentCanceled {
-					runErr = startErr
-				} else {
-					runErr = orFirst(readinessErr, startErr)
-				}
-				if runErr != nil {
-					t.SendError(runErr)
-				}
-				t.SendDone(runErr)
-				return
-			}
-
-			t.SendReady(serviceName, 0)
-			// Tell the TUI which dependencies are running alongside the
-			// origin, so the shutdown view names exactly what gets torn down
-			// on quit (origin + these — none stay alive).
-			if _, deps := flow.ManagedServices(); len(deps) > 0 {
-				t.SendStopPlan(deps)
-			}
-			select {
-			case <-runCtx.Done():
-			case err := <-startDone:
-				// flow.Start returned on its own after readiness — already
-				// drained, so don't call drainStart (it would block).
-				runErr = err
-				if err != nil {
-					t.SendError(err)
-				}
-				t.SendDone(err)
-				return
-			}
-			drainStart()
 			t.SendDone(runErr)
-		})
-		if tuiErr != nil {
-			runErr = orFirst(runErr, fmt.Errorf("TUI error: %w", tuiErr))
+			return
 		}
 
-		// TUI exited (quit/Done). Cancel the run context so flow.Start
-		// unwinds, then wait for the startFn goroutine to finish before we
-		// tear down — this also establishes happens-before on `flow`.
-		runCancel()
-		<-finished
-		cli.RestoreOutput()
+		t.SendReady(serviceName, 0)
+		// Tell the TUI which dependencies are running alongside the
+		// origin, so the shutdown view names exactly what gets torn down
+		// on quit (origin + these — none stay alive).
+		if _, deps := run.flow.ManagedServices(); len(deps) > 0 {
+			t.SendStopPlan(deps)
+		}
+		select {
+		case <-runCtx.Done():
+		case err := <-startDone:
+			// flow.Start returned on its own after readiness — already
+			// drained, so don't call drainStart (it would block).
+			runErr = err
+			if err != nil {
+				t.SendError(err)
+			}
+			t.SendDone(err)
+			return
+		}
+		drainStart()
+		t.SendDone(runErr)
+	})
+	if tuiErr != nil {
+		runErr = orFirst(runErr, fmt.Errorf("TUI error: %w", tuiErr))
 	}
 
-	if runErr != nil {
-		return fmt.Errorf("service %s stopped with an error: %w", serviceName, runErr)
-	}
-	return nil
+	// TUI exited (quit/Done). Cancel the run context so flow.Start
+	// unwinds, then wait for the startFn goroutine to finish before we
+	// tear down — this also establishes happens-before on `flow`.
+	runCancel()
+	<-finished
+	cli.RestoreOutput()
+	return runErr
 }
 
 // shouldSweepStaleContainers keeps explicit Local/Nix runs independent of the
@@ -710,18 +741,17 @@ func loadCoRoots(ctx context.Context, workspace *resources.Workspace, args []str
 	return uniques, roots, nil
 }
 
-// derivedInputsForRoots resolves the solution injections for every root of the
+// derivedInputsForRoots resolves the solution injection for every root of the
 // run and merges them. Every root that is a solution's service-entry derives
-// its own — two solutions named as co-roots each declare a registration digest
-// to the same host — so the merge is solutionrun's, which joins declarations
-// instead of letting the last-named root replace the first's.
-func derivedInputsForRoots(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, serviceName string, coRoots []*rootService) (solutionrun.RunInputs, error) {
-	merged, err := solutionrun.DerivedRunInputs(ctx, workspace, module, service, serviceName)
+// its own projection onto its own unique, so the merge is solutionrun's, which
+// layers the roots' overrides key by key and keeps their notes in order.
+func derivedInputsForRoots(module *resources.Module, service *resources.Service, serviceName string, coRoots []*rootService) (solutionrun.RunInputs, error) {
+	merged, err := solutionrun.DerivedRunInputs(module, service, serviceName)
 	if err != nil {
 		return solutionrun.RunInputs{}, err
 	}
 	for _, root := range coRoots {
-		derived, err := solutionrun.DerivedRunInputs(ctx, workspace, root.module, root.service, root.unique)
+		derived, err := solutionrun.DerivedRunInputs(root.module, root.service, root.unique)
 		if err != nil {
 			return solutionrun.RunInputs{}, err
 		}
@@ -791,7 +821,9 @@ func resolveDockerHost(ctx context.Context) (contextName, endpoint string) {
 	if name == "" || name == "default" {
 		return name, ""
 	}
-	out, err := exec.CommandContext(ctx, "docker", "context", "inspect", name, "--format", "{{ .Endpoints.docker.Host }}").Output()
+	// docker resolves the active context itself (DOCKER_CONTEXT, then the
+	// configured current context), so the inspect names none.
+	out, err := exec.CommandContext(ctx, "docker", "context", "inspect", "--format", "{{ .Endpoints.docker.Host }}").Output()
 	if err != nil {
 		return name, ""
 	}
@@ -878,7 +910,7 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 		if outputEnv == "" {
 			return nil, w.NewError("--output-env-service requires --output-env")
 		}
-		if _, err := flow.ServiceFromUnique(outputEnvService); err != nil {
+		if _, err = flow.ServiceFromUnique(outputEnvService); err != nil {
 			return nil, w.Wrapf(err, "cannot select output environment service %q", outputEnvService)
 		}
 		flow.WithOutputEnvService(outputEnvService)
@@ -916,7 +948,6 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	// authoritative by construction, rather than by parseSetOverrides happening
 	// to let the final duplicate entry win.
 	flow.WithOverrides(mergeOverrides(derivedOverrides, overrides))
-	flow.WithWorkspaceConfigurationValues(derivedWorkspaceConfigurations)
 	flow.WithRemotes(remoteServices)
 	resolvedProfile, err := workspace.ResolveRunProfile(ctx, profile, resources.RunProfile{ExcludeDependencies: excludeDependencies})
 	if err != nil {

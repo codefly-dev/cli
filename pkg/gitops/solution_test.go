@@ -53,9 +53,12 @@ func (f *fakeSolutionExecutor) Render(_ context.Context, req *solutionv0.RenderR
 		return nil, err
 	}
 	files := map[string]string{
-		"kustomization.yaml": "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - namespace.yaml\n  - configmap.yaml\n",
+		"kustomization.yaml": "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - namespace.yaml\n  - configmap.yaml\n  - deployment.yaml\n",
 		"namespace.yaml":     fmt.Sprintf("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: %s\n", f.renderNamespace),
 		"configmap.yaml":     fmt.Sprintf("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: hello\n  namespace: %s\ndata:\n  release: qualified\n", f.renderNamespace),
+		// The workload the solution runs, pinned by digest and running as its
+		// own account: what a presence document names.
+		"deployment.yaml": fmt.Sprintf("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: hello\n  namespace: %s\nspec:\n  selector:\n    matchLabels:\n      app: hello\n  template:\n    metadata:\n      labels:\n        app: hello\n    spec:\n      serviceAccountName: hello\n      containers:\n        - name: hello\n          image: ghcr.io/example/hello@sha256:%s\n", f.renderNamespace, strings.Repeat("b", 64)),
 	}
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(overlay, name), []byte(body), 0o644); err != nil {
@@ -104,13 +107,28 @@ func installFakeSolutionExecutor(t *testing.T, server solutionv0.SolutionServer)
 func loadSolutionWorkspace(t *testing.T, remote string) *resources.Workspace {
 	t.Helper()
 	root := t.TempDir()
+	// An environment that composes a solution names the host it runs on;
+	// one that names none is refused at render.
 	config := fmt.Sprintf(`name: hello
 layout: flat
+services:
+  - name: host
 environments:
   - name: local
     namespace: hello
     cluster:
       kind: k3d
+    host:
+      coordinate: example/local/dev
+      component: platform-host
+      domain: example
+      audience: accounts
+      trust_domain: cluster.local
+      envelope_revision: 1
+      delivery: hello/host/rest
+    service-identity:
+      default:
+        principal: lastlogin@example.iam.test
 gitops:
   repo-url: file://%s
   fetch-repo-url: https://host.k3d.internal/manifests.git
@@ -118,6 +136,16 @@ gitops:
   branch: main
 `, remote)
 	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The host's delivery API is a service of the composition — here the
+	// flat workspace's own "host", serving "rest" — or the host block is
+	// refused as naming an endpoint the composition does not have.
+	hostService := filepath.Join(root, "services", "host", resources.ServiceConfigurationName)
+	if err := os.MkdirAll(filepath.Dir(hostService), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hostService, []byte(devServiceYAML("host")+"endpoints:\n  - name: rest\n    api: rest\n    visibility: internal\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)
@@ -283,6 +311,10 @@ func TestLocalGitopsPublishSolutionGeneratesBootstrap(t *testing.T) {
 	agent := &resources.Agent{
 		Kind: resources.SolutionAgent, Publisher: "codefly.dev", Name: "hello-solution", Version: "0.0.1",
 	}
+	// A hosted environment publishes nothing without its cell. A packaged
+	// solution derives none (RenderSolution renders no composition service;
+	// see the doc's "What is not verified"), so this test writes the entry by
+	// hand, and the render records it with the tree.
 	if _, err := RenderSolution(ctx, &SolutionRenderRequest{
 		Workspace: workspace, Environment: env, Agent: agent, Name: "lastlogin-go",
 		Source:     filepath.Join(workspace.Dir(), "solution-src"),
@@ -310,6 +342,21 @@ func TestLocalGitopsPublishSolutionGeneratesBootstrap(t *testing.T) {
 	if !strings.Contains(appSet, "kind: ApplicationSet") ||
 		!strings.Contains(appSet, "overlay: "+result.Path+"/solutions/lastlogin-go/overlays/local") {
 		t.Fatalf("published bootstrap does not stamp the solution Application:\n%s", appSet)
+	}
+	// Every Application reads the one immutable snapshot revision, the one
+	// delivering the bindings included — so the overlay it reads must be IN
+	// that revision, not only on the publication commit. It once was not:
+	// the overlays were settled after the snapshot was committed, and every
+	// delivery Application pointed at a revision where its path did not exist.
+	if !strings.Contains(appSet, "targetRevision: "+result.SnapshotRevision) {
+		t.Fatalf("the bootstrap does not target the snapshot %s:\n%s", result.SnapshotRevision, appSet)
+	}
+	overlay := result.Path + "/" + solutionHostBindingDir + "/overlays/local/"
+	snapshotOverlay := gitOutput(t, "", "--git-dir", remote, "ls-tree", "-r", "--name-only", result.SnapshotRevision, overlay)
+	for _, want := range []string{overlay + "hello.local.lastlogin-go.yaml", overlay + "kustomization.yaml"} {
+		if !strings.Contains(snapshotOverlay, want) {
+			t.Fatalf("the snapshot revision %s does not hold %s, so the delivery Application would read a path that does not exist:\n%s", result.SnapshotRevision, want, snapshotOverlay)
+		}
 	}
 	// The packaged solution's own Namespace is authorized by the generated
 	// AppProject: destination namespace plus a cluster-scoped Namespace whitelist.

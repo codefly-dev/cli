@@ -8,7 +8,7 @@ import (
 
 func TestRegistryListsAndCallsTools(t *testing.T) {
 	registry := NewRegistry()
-	if err := registry.Register(Tool{Name: "echo"}, func(_ context.Context, arguments map[string]string) ([]Content, error) {
+	if err := registry.Register(&Tool{Name: "echo"}, func(_ context.Context, arguments map[string]string) ([]Content, error) {
 		return []Content{TextContent(arguments["text"])}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -28,7 +28,7 @@ func TestRegistryListsAndCallsTools(t *testing.T) {
 
 func TestRegistryReturnsDetachedDefinitions(t *testing.T) {
 	registry := NewRegistry()
-	if err := registry.Register(Tool{
+	if err := registry.Register(&Tool{
 		Name: "echo",
 		InputSchema: InputSchema{
 			Required: []string{"text"},
@@ -57,7 +57,7 @@ func TestRegistryCloseRejectsCalls(t *testing.T) {
 	if _, err := registry.Call(context.Background(), "missing", nil); err == nil {
 		t.Fatal("Call() after Close() succeeded")
 	}
-	if err := registry.Register(Tool{Name: "late"}, func(context.Context, map[string]string) ([]Content, error) {
+	if err := registry.Register(&Tool{Name: "late"}, func(context.Context, map[string]string) ([]Content, error) {
 		return nil, nil
 	}); err == nil {
 		t.Fatal("Register() after Close() succeeded")

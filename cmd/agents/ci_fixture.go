@@ -27,7 +27,7 @@ func installFixtureDependencies(ctx context.Context, executable, workspaceDir, h
 }
 
 func fixtureDependencyCommand(ctx context.Context, executable, workspaceDir, home string, agent *resources.Agent) *exec.Cmd {
-	command := exec.CommandContext(ctx, executable, "--timestamps=false", "agent", "install", agent.Identifier(), "--kind", string(agent.Kind)) //nolint:gosec // G204: re-exec this CLI with validated identity as argv, never a shell.
+	command := exec.CommandContext(ctx, executable, withoutTimestamps, "agent", "install", agent.Identifier(), "--kind", string(agent.Kind)) //nolint:gosec // G204: re-exec this CLI with validated identity as argv, never a shell.
 	command.Dir = workspaceDir
 	command.Env = agentCIChildEnvironment(home, "CI=1", "CODEFLY_COLOR=never")
 	return command

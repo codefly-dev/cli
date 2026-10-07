@@ -195,7 +195,7 @@ func printLogLine(line string) {
 	var b strings.Builder
 	b.WriteString(e.Time)
 	b.WriteString("  ")
-	b.WriteString(fmt.Sprintf("%-5s", level))
+	fmt.Fprintf(&b, "%-5s", level)
 	if e.Header != "" {
 		b.WriteString("  [")
 		b.WriteString(e.Header)
@@ -205,7 +205,7 @@ func printLogLine(line string) {
 	b.WriteString(e.Message)
 	for _, fld := range e.Fields {
 		if fld != nil {
-			b.WriteString(fmt.Sprintf("  %s", fld))
+			fmt.Fprintf(&b, "  %s", fld)
 		}
 	}
 	fmt.Println(b.String())

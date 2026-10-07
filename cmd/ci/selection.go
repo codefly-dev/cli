@@ -65,7 +65,7 @@ type mutablePlanService struct {
 	paths          []string
 }
 
-func BuildPlan(ctx context.Context, workspace *resources.Workspace, opts PlanOptions) (*Plan, error) {
+func BuildPlan(ctx context.Context, workspace *resources.Workspace, opts *PlanOptions) (*Plan, error) {
 	if workspace == nil {
 		return nil, fmt.Errorf("workspace is nil")
 	}
@@ -132,10 +132,6 @@ func BuildPlan(ctx context.Context, workspace *resources.Workspace, opts PlanOpt
 		return nil, err
 	}
 	for _, changedPath := range plan.ChangedFiles {
-		absPath := changedPath
-		if !filepath.IsAbs(absPath) {
-			absPath = filepath.Join(repoRoot, filepath.FromSlash(changedPath))
-		}
 		if opts.All {
 			continue
 		}
@@ -328,9 +324,9 @@ func finalizePlan(ctx context.Context, workspace *resources.Workspace, plan *Pla
 		if !graph.HasNode(origin) {
 			continue
 		}
-		subgraph, err := graph.SubgraphFrom(origin)
-		if err != nil {
-			return nil, fmt.Errorf("expand dependents of %s: %w", origin, err)
+		subgraph, subgraphErr := graph.SubgraphFrom(origin)
+		if subgraphErr != nil {
+			return nil, fmt.Errorf("expand dependents of %s: %w", origin, subgraphErr)
 		}
 		for _, node := range subgraph.Nodes() {
 			if node.ID == origin {

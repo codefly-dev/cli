@@ -26,7 +26,7 @@ var errNotImplemented = errors.New("control: capability not yet lifted into the 
 // a decision for the server-adapter phase (one long-lived plane owns the log
 // channel); until then this reports not-implemented rather than silently
 // returning no logs.
-func (p *planeImpl) Logs(ctx context.Context, opts LogOptions, emit func(LogLine) error) error {
+func (p *planeImpl) Logs(_ context.Context, _ LogOptions, _ func(LogLine) error) error {
 	return errNotImplemented
 }
 
@@ -42,7 +42,7 @@ func (p *planeImpl) Logs(ctx context.Context, opts LogOptions, emit func(LogLine
 // lifecycle so the plugin resolves the SERVICE source tree (SourceLocation) —
 // merely dialing a Code client with WithWorkDir(workspace) makes it operate on
 // the wrong directory. That lifecycle is not lifted yet, so this stays stubbed.
-func (p *planeImpl) Fix(ctx context.Context, req FixRequest) (FixResult, error) {
+func (p *planeImpl) Fix(_ context.Context, _ FixRequest) (FixResult, error) {
 	return FixResult{}, errNotImplemented
 }
 
@@ -53,15 +53,15 @@ func (p *planeImpl) Fix(ctx context.Context, req FixRequest) (FixResult, error) 
 // lifecycle to resolve the service source dir before add/remove/list operate on
 // the right go.mod. Not lifted yet.
 
-func (p *planeImpl) ListDependencies(ctx context.Context, service string) ([]Dependency, error) {
+func (p *planeImpl) ListDependencies(_ context.Context, _ string) ([]Dependency, error) {
 	return nil, errNotImplemented
 }
 
-func (p *planeImpl) AddDependency(ctx context.Context, service string, dep Dependency) error {
+func (p *planeImpl) AddDependency(_ context.Context, _ string, _ Dependency) error {
 	return errNotImplemented
 }
 
-func (p *planeImpl) RemoveDependency(ctx context.Context, service string, dep Dependency) error {
+func (p *planeImpl) RemoveDependency(_ context.Context, _ string, _ Dependency) error {
 	return errNotImplemented
 }
 

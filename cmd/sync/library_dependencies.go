@@ -79,7 +79,7 @@ func syncLibraryDependencies() error {
 
 	if libSyncCleanup {
 		cli.Info("Cleaning up local development setup for <%s/%s>...", moduleName, serviceName)
-		if err := resolver.CleanupLocalDevelopment(ctx, svc); err != nil {
+		if err = resolver.CleanupLocalDevelopment(ctx, svc); err != nil {
 			return fmt.Errorf("failed to cleanup local development: %w", err)
 		}
 		cli.Header(2, "Local development cleanup complete")

@@ -17,6 +17,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// noWorkspaceDetected is the workspace context handed to the provider when
+// the working directory is in no workspace.
+const noWorkspaceDetected = `{"workspace_detected":false}`
+
 const (
 	defaultHelpProvider = "codefly-help"
 	maxHelpNames        = 50
@@ -43,7 +47,7 @@ If the provider is unavailable or not configured, the static help still succeeds
 		if err != nil {
 			return fmt.Errorf("render help for %s: %w", target.CommandPath(), err)
 		}
-		if _, err := fmt.Fprint(command.OutOrStdout(), staticHelp); err != nil {
+		if _, err = fmt.Fprint(command.OutOrStdout(), staticHelp); err != nil {
 			return fmt.Errorf("print static help: %w", err)
 		}
 
@@ -129,20 +133,9 @@ func (provider *helpProvider) explain(ctx context.Context, commandPath, staticHe
 		return "", fmt.Errorf("encode provider request: %w", err)
 	}
 
-	providerContext, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	process := exec.CommandContext(providerContext, provider.path, provider.args...)
-	process.Stdin = bytes.NewReader(payload)
-	output := newHelpProviderOutput(2 << 20)
-	process.Stdout = &output
-	if err := process.Run(); err != nil {
-		if providerContext.Err() != nil {
-			return "", fmt.Errorf("provider timed out: %w", providerContext.Err())
-		}
-		return "", fmt.Errorf("provider failed: %w", err)
-	}
-	if output.exceeded {
-		return "", fmt.Errorf("provider response exceeds 2 MiB")
+	output, err := runHelpProvider(ctx, provider.path, provider.args, payload)
+	if err != nil {
+		return "", err
 	}
 
 	var response helpprovider.Response
@@ -157,6 +150,27 @@ func (provider *helpProvider) explain(ctx context.Context, commandPath, staticHe
 		return "", fmt.Errorf("provider returned an empty explanation")
 	}
 	return response.Explanation, nil
+}
+
+// runHelpProvider hands the request to the provider executable on its stdin
+// and returns its bounded answer.
+func runHelpProvider(ctx context.Context, executable string, arguments []string, payload []byte) (*helpProviderOutput, error) {
+	providerContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	process := exec.CommandContext(providerContext, executable, arguments...)
+	process.Stdin = bytes.NewReader(payload)
+	output := newHelpProviderOutput(2 << 20)
+	process.Stdout = &output
+	if err := process.Run(); err != nil {
+		if providerContext.Err() != nil {
+			return nil, fmt.Errorf("provider timed out: %w", providerContext.Err())
+		}
+		return nil, fmt.Errorf("provider failed: %w", err)
+	}
+	if output.exceeded {
+		return nil, fmt.Errorf("provider response exceeds 2 MiB")
+	}
+	return &output, nil
 }
 
 type helpProviderOutput struct {
@@ -221,7 +235,7 @@ type helpWorkspaceInventory struct {
 func readHelpWorkspaceContext() string {
 	workingDirectory, err := os.Getwd()
 	if err != nil {
-		return `{"workspace_detected":false}`
+		return noWorkspaceDetected
 	}
 	return helpWorkspaceContext(workingDirectory)
 }
@@ -229,7 +243,7 @@ func readHelpWorkspaceContext() string {
 func helpWorkspaceContext(start string) string {
 	root, data := findHelpWorkspaceFile(start)
 	if root == "" {
-		return `{"workspace_detected":false}`
+		return noWorkspaceDetected
 	}
 	var workspace helpWorkspaceFile
 	if yaml.Unmarshal(data, &workspace) != nil {
@@ -280,7 +294,7 @@ func helpWorkspaceContext(start string) string {
 	inventory.Environments = normalizeHelpNames(inventory.Environments)
 	encoded, err := json.Marshal(inventory)
 	if err != nil {
-		return `{"workspace_detected":false}`
+		return noWorkspaceDetected
 	}
 	return string(encoded)
 }

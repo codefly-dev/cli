@@ -15,7 +15,7 @@ type Client struct {
 	baseURL string
 }
 
-func LoadToken(ctx context.Context, workspace *resources.Workspace) (string, error) {
+func LoadToken(_ context.Context, workspace *resources.Workspace) (string, error) {
 	// Load from environment variable first
 	token := os.Getenv("CODEFLY_TOKEN")
 	if token != "" {
@@ -55,7 +55,7 @@ func InitClient(ctx context.Context) error {
 	return nil
 }
 
-func NewClient(ctx context.Context) (*Client, error) {
+func NewClient(_ context.Context) (*Client, error) {
 	client := &Client{}
 	return client, nil
 }

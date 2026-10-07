@@ -1056,16 +1056,8 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 
 	provided := loadWorkspaceConfigurations(ctx, ws, runtimeEnv, relCfgDir, report)
 	if provided != nil {
-		byName := make(map[string]*basev0.ConfigurationInformation, len(provided.Infos))
-		var own, composed []*basev0.ConfigurationInformation
-		for _, info := range provided.Infos {
-			byName[info.Name] = info
-			if _, ok := provided.ComposedBy[info.Name]; ok {
-				composed = append(composed, info)
-			} else {
-				own = append(own, info)
-			}
-		}
+		declared := ownConfigurationNames(wsCfgDir)
+		byName, own, composed := classifyProvidedConfigurations(provided, declared)
 		// Only what nobody provides — a name no module ships, or one two modules
 		// disagree on — is what the workspace directory would have to hold; a
 		// module-shipped group is satisfied without it, exactly as in a run.
@@ -1115,15 +1107,18 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 				where, remedy := "exists under "+relCfgDir, fmt.Sprintf("populate the %s files for %q with the required keys", relCfgDir, name)
 				if fromModule {
 					where = fmt.Sprintf("is shipped by composed module %q", module)
-					remedy = fmt.Sprintf("add %s/%s.env with the required keys: the workspace's own definition overrides the module's", relCfgDir, name)
+					remedy = fmt.Sprintf("add %s/%s.env with the required keys: the workspace's values are overlaid per key onto the module's group", relCfgDir, name)
 				}
 				report.add(codeConfigurationMissing, "workspace configurations", "fail",
 					fmt.Sprintf("workspace configuration %q %s but defines no values (required by %s)", name, where, requiredByList), remedy)
 				continue
 			}
 			if fromModule {
-				report.add("", "workspace configuration "+name, "ok",
-					fmt.Sprintf("provided by composed module %q (required by %s)", module, requiredByList), "")
+				message := fmt.Sprintf("provided by composed module %q (required by %s)", module, requiredByList)
+				if declared[name] {
+					message = fmt.Sprintf("shipped by composed module %q, with the values under %s overlaid per key (required by %s)", module, relCfgDir, requiredByList)
+				}
+				report.add("", "workspace configuration "+name, "ok", message, "")
 			}
 		}
 		if serviceScoped {
@@ -1208,6 +1203,55 @@ func loadWorkspaceConfigurations(ctx context.Context, ws *resources.Workspace, e
 		reportDuplicateKeys(info, "workspace", where, report)
 	}
 	return provided
+}
+
+// classifyProvidedConfigurations indexes the provided groups by name and
+// sorts them into the workspace's own and the composed modules'. A group a
+// composed module ships that the workspace's own directory declares too is
+// BOTH: since core v0.9.1 the workspace's values are overlaid per key onto
+// the module's group, which stays the module's (its delivery scoped to the
+// services that declared it), so the file is listed as the workspace's own
+// and the group as composed.
+func classifyProvidedConfigurations(provided *configurations.WorkspaceConfigurations, declared map[string]bool) (byName map[string]*basev0.ConfigurationInformation, own, composed []*basev0.ConfigurationInformation) {
+	byName = make(map[string]*basev0.ConfigurationInformation, len(provided.Infos))
+	for _, info := range provided.Infos {
+		byName[info.Name] = info
+		_, fromModule := provided.ComposedBy[info.Name]
+		if fromModule {
+			composed = append(composed, info)
+		}
+		if !fromModule || declared[info.Name] {
+			own = append(own, info)
+		}
+	}
+	return byName, own, composed
+}
+
+// ownConfigurationNames is the set of configuration group names the
+// workspace's own profile directory declares — a <name>.env, <name>.secret.env
+// or <name>.secret.ref.env file, or a <name>/ directory — whether or not a
+// composed module ships a group of that name too. An unreadable or absent
+// directory declares none.
+func ownConfigurationNames(directory string) map[string]bool {
+	names := map[string]bool{}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return names
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() {
+			names[name] = true
+			continue
+		}
+		for _, suffix := range []string{".secret.ref.env", ".secret.env", ".env"} {
+			if strings.HasSuffix(name, suffix) {
+				names[strings.TrimSuffix(name, suffix)] = true
+				break
+			}
+		}
+	}
+	return names
 }
 
 // workspaceConfigurationOrigin labels where a workspace configuration in scope

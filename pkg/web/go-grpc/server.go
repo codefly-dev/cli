@@ -97,11 +97,11 @@ func (s *Server) activeFlow() *orchestration.Flow {
 	return flow
 }
 
-func (s *Server) Ping(ctx context.Context, empty *emptypb.Empty) (*emptypb.Empty, error) {
+func (s *Server) Ping(_ context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
 	return &emptypb.Empty{}, nil
 }
 
-func (s *Server) StopFlow(ctx context.Context, req *cli.StopFlowRequest) (*cli.StopFlowResponse, error) {
+func (s *Server) StopFlow(_ context.Context, _ *cli.StopFlowRequest) (*cli.StopFlowResponse, error) {
 	err := s.activeFlow().Stop()
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -109,7 +109,7 @@ func (s *Server) StopFlow(ctx context.Context, req *cli.StopFlowRequest) (*cli.S
 	return &cli.StopFlowResponse{}, nil
 }
 
-func (s *Server) DestroyFlow(ctx context.Context, req *cli.DestroyFlowRequest) (*cli.DestroyFlowResponse, error) {
+func (s *Server) DestroyFlow(_ context.Context, _ *cli.DestroyFlowRequest) (*cli.DestroyFlowResponse, error) {
 	// Destroy is the state-removing lifecycle operation. SDK dependency stacks
 	// rely on it to remove ephemeral containers, while Stop intentionally
 	// preserves stopped resources for ordinary local development.
@@ -120,7 +120,7 @@ func (s *Server) DestroyFlow(ctx context.Context, req *cli.DestroyFlowRequest) (
 	return &cli.DestroyFlowResponse{}, nil
 }
 
-func (s *Server) GetFlowStatus(ctx context.Context, empty *emptypb.Empty) (*cli.FlowStatus, error) {
+func (s *Server) GetFlowStatus(ctx context.Context, _ *emptypb.Empty) (*cli.FlowStatus, error) {
 	failure := s.activeFlow().Readiness(ctx)
 	s.reportReadiness(failure)
 	return &cli.FlowStatus{
@@ -247,7 +247,7 @@ func (s *Server) GetAddresses(ctx context.Context, req *cli.GetAddressRequest) (
 
 /* Active information */
 
-func (s *Server) GetActive(ctx context.Context, empty *emptypb.Empty) (*cli.ActiveResponse, error) {
+func (s *Server) GetActive(_ context.Context, _ *emptypb.Empty) (*cli.ActiveResponse, error) {
 	flow := s.activeFlow()
 	if flow == nil {
 		return nil, status.Error(codes.Internal, "nothing running")
@@ -264,7 +264,7 @@ func (s *Server) GetActive(ctx context.Context, empty *emptypb.Empty) (*cli.Acti
 
 }
 
-func (s *Server) ActiveLogHistory(ctx context.Context, request *observabilityv0.LogRequest) (*observabilityv0.LogResponse, error) {
+func (s *Server) ActiveLogHistory(_ context.Context, request *observabilityv0.LogRequest) (*observabilityv0.LogResponse, error) {
 	return s.logHistoryResponse(request), nil
 }
 
@@ -283,7 +283,7 @@ func (s *Server) GetAgentInformation(ctx context.Context, request *cli.GetAgentI
 
 }
 
-func (s *Server) GetWorkspaceInventory(ctx context.Context, request *emptypb.Empty) (*basev0.Workspace, error) {
+func (s *Server) GetWorkspaceInventory(ctx context.Context, _ *emptypb.Empty) (*basev0.Workspace, error) {
 	workspace, err := s.workspaceFor(ctx)
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
@@ -341,7 +341,7 @@ func serviceGraphResponse(deps *architecture.ServiceDependencies) *observability
 	return resp
 }
 
-func (s *Server) GetWorkspacePublicModulesDependencyGraph(ctx context.Context, request *emptypb.Empty) (*cli.MultiGraphResponse, error) {
+func (s *Server) GetWorkspacePublicModulesDependencyGraph(ctx context.Context, _ *emptypb.Empty) (*cli.MultiGraphResponse, error) {
 	workspace, err := s.workspaceFor(ctx)
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
@@ -357,7 +357,7 @@ func (s *Server) GetWorkspacePublicModulesDependencyGraph(ctx context.Context, r
 	return resp, nil
 }
 
-func (s *Server) LogHistory(ctx context.Context, request *observabilityv0.LogRequest) (*observabilityv0.LogResponse, error) {
+func (s *Server) LogHistory(_ context.Context, request *observabilityv0.LogRequest) (*observabilityv0.LogResponse, error) {
 	return s.logHistoryResponse(request), nil
 }
 
@@ -412,7 +412,7 @@ func (s *Server) recordLog(entry *observabilityv0.Log) {
 // including concurrent ones from multiple dashboard tabs, gets its own
 // independent copy of the live feed instead of racing others for lines off a
 // single shared channel.
-func (s *Server) Logs(empty *emptypb.Empty, server cli.CLI_LogsServer) error {
+func (s *Server) Logs(_ *emptypb.Empty, server cli.CLI_LogsServer) error {
 	const liveBuffer = 1000
 	snapshot, live, unsubscribe := s.history.Subscribe(liveBuffer)
 	defer unsubscribe()

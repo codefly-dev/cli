@@ -28,10 +28,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// CompanionInfo mirrors the fields read from <companion>/info.codefly.yaml.
+// Info mirrors the fields read from <companion>/info.codefly.yaml.
 // We only need version today; future fields (description, base image,
 // build args) extend this struct without breaking callers.
-type CompanionInfo struct {
+type Info struct {
 	// Version is the tag component of the published image reference; see
 	// Companion.Tag.
 	Version string `yaml:"version"`
@@ -47,7 +47,7 @@ type Companion struct {
 	// Dir is the absolute path to the companion directory.
 	Dir string
 	// Info is the parsed info.codefly.yaml.
-	Info CompanionInfo
+	Info Info
 	// HasFlake is true when a flake.nix exists alongside the
 	// Dockerfile. The proto companion is the pilot for nix-built
 	// images; we prefer the flake path when it's present AND nix is
@@ -71,7 +71,7 @@ func LoadCompanion(dir string) (*Companion, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", manifest, err)
 	}
-	var info CompanionInfo
+	var info Info
 	if err := yaml.Unmarshal(raw, &info); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", manifest, err)
 	}

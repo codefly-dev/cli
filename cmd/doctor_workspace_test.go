@@ -607,7 +607,7 @@ func TestDoctorWorkspaceComposedModuleConfigurations(t *testing.T) {
 			t.Fatal("doctor created the missing configurations directory")
 		}
 	})
-	t.Run("workspace file overrides a module-shipped one", func(t *testing.T) {
+	t.Run("workspace file overlays a module-shipped one", func(t *testing.T) {
 		dir := composedWorkspace(t, []string{"legal"}, map[string]string{
 			"configurations/local/legal.env": "LEGAL_URL=solution-legal\n",
 		}, legalFromHostA)
@@ -615,28 +615,24 @@ func TestDoctorWorkspaceComposedModuleConfigurations(t *testing.T) {
 		if report.Status != readinessStatusReady {
 			t.Fatalf("status = %q, want ready: %s", report.Status, reportJSON(t, report))
 		}
-		// core#694 (pinned as v0.9.1) changed what this means. An override of
-		// a composed module's group is now PER KEY and the group stays
-		// composed, so host-a is still its provider — it supplies every key
-		// the solution did not mention — and the doctor must credit it. It
-		// used to report nothing here, because core replaced the group whole
-		// and reclassified it as the workspace's own.
+		// Since core v0.9.1 (core#694) the workspace's values are overlaid per
+		// key onto the module's group, which stays the module's: the doctor
+		// credits the module AND names the overlay, and lists the file as the
+		// workspace's own.
 		check := findCheck(report, "workspace configuration legal")
-		if check == nil || check.Status != "ok" || !strings.Contains(check.Message, `"host-a"`) {
-			t.Fatalf("an overridden composed group is still provided by its module: %s", reportJSON(t, report))
+		if check == nil || check.Status != "ok" || !strings.Contains(check.Message, `"host-a"`) || !strings.Contains(check.Message, "overlaid per key") {
+			t.Fatalf("the overlaid group should credit the module and name the overlay: %s", reportJSON(t, report))
 		}
 		composed := findCheck(report, "composed module configurations")
-		if composed == nil || !strings.Contains(composed.Message, "legal (host-a)") {
-			t.Fatalf("and it is still listed as composed: %s", reportJSON(t, report))
+		if composed == nil || !strings.Contains(composed.Message, "legal") {
+			t.Fatalf("the module still ships the group: %s", reportJSON(t, report))
 		}
-		// The workspace's own list stays empty for the same reason: `legal` is
-		// not a group of the workspace's own, it is an override of one the
-		// module provides. That the operator's file under configurations/local
-		// is then invisible in this line is a reporting gap, recorded on the PR
-		// as a follow-up rather than redesigned here.
+		// The operator's file under configurations/local is listed as the
+		// workspace's own as well: the group is BOTH — the module's, with the
+		// workspace's values overlaid per key — so neither line hides it.
 		own := findCheck(report, "workspace configurations")
-		if own == nil || !strings.Contains(own.Message, "none under configurations/local") {
-			t.Fatalf("the overridden group is not reported as the workspace's own: %s", reportJSON(t, report))
+		if own == nil || !strings.Contains(own.Message, "legal") {
+			t.Fatalf("the workspace's own configuration should be listed: %s", reportJSON(t, report))
 		}
 	})
 	t.Run("unprovided configuration still fails", func(t *testing.T) {

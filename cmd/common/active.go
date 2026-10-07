@@ -67,20 +67,20 @@ func loadActiveContext(ctx context.Context, interactive bool) (*ActiveContext, e
 	active.Workspace = workspace
 
 	if workspace.Layout == resources.LayoutKindFlat {
-		module, err := workspace.LoadModuleFromName(ctx, workspace.Name)
-		if err != nil {
-			return nil, err
+		module, moduleErr := workspace.LoadModuleFromName(ctx, workspace.Name)
+		if moduleErr != nil {
+			return nil, moduleErr
 		}
 		active.Module = module
-		service, err := resources.LoadServiceFromCurrentPath(ctx)
-		if err != nil {
-			return nil, err
+		service, serviceErr := resources.LoadServiceFromCurrentPath(ctx)
+		if serviceErr != nil {
+			return nil, serviceErr
 		}
 		active.Service = service
 	} else {
-		module, service, err := resources.LoadModuleAndServiceFromCurrentPath(ctx)
-		if err != nil {
-			return nil, err
+		module, service, moduleErr := resources.LoadModuleAndServiceFromCurrentPath(ctx)
+		if moduleErr != nil {
+			return nil, moduleErr
 		}
 
 		active.Module = module

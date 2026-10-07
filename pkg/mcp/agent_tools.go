@@ -15,36 +15,29 @@ import (
 
 // registerAgentTools adds tools that report an agent's real manifest.
 func (s *Server) registerAgentTools() {
-	// Schema literals below ("object"/"string"/"agent") already recur ~25
-	// times across this package's other tool registrations; deduplicating
-	// them here alone would be a package-wide refactor out of scope for
-	// this change.
-	err := s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "agent_info",
 		Description: "Get an agent's real manifest: capabilities, protocols, languages, supported backends, toolchains, validation contract, configuration docs, techniques and README (from GetAgentInformation).",
 		InputSchema: InputSchema{
-			Type: "object", //nolint:goconst
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
-				"agent": { //nolint:goconst
-					Type:        "string", //nolint:goconst
+				fieldAgent: {
+					Type:        schemaTypeString,
 					Description: `Agent reference: "go-grpc", "codefly.dev/go-grpc", or "codefly.dev/go-grpc:0.0.16". "latest" resolves from the local cache first, then GitHub releases.`,
 				},
 				agentKindArg: {
-					Type:        "string",
+					Type:        schemaTypeString,
 					Description: "Agent kind (default: service) — must match the kind list_agents reported for this agent",
 					Enum:        agentKindEnumValues,
 				},
 				"include_prompts": {
-					Type:        "string",
+					Type:        schemaTypeString,
 					Description: `Include techniques[].prompt in the output when "true" (omitted by default)`,
 				},
 			},
-			Required: []string{"agent"},
+			Required: []string{fieldAgent},
 		},
 	}, s.agentInfo)
-	if err != nil {
-		panic(fmt.Errorf("register agent_info tool: %w", err))
-	}
 }
 
 // agentInfo loads the named agent and returns its GetAgentInformation manifest as JSON.
@@ -58,7 +51,7 @@ func (s *Server) agentInfo(ctx context.Context, args map[string]string) ([]Conte
 		kind = mapped
 	}
 
-	conf, err := resources.ParseAgent(ctx, kind, args["agent"])
+	conf, err := resources.ParseAgent(ctx, kind, args[fieldAgent])
 	if err != nil {
 		return nil, fmt.Errorf("cannot parse agent: %w", err)
 	}
@@ -70,7 +63,7 @@ func (s *Server) agentInfo(ctx context.Context, args map[string]string) ([]Conte
 	// directory entirely and manager.Load then exec.Command()s whatever it
 	// finds there.
 	if !isSafeAgentName(conf.Name) || !isSafeAgentName(conf.Publisher) || !isSafeAgentName(conf.Version) {
-		return nil, fmt.Errorf("invalid agent reference %q", args["agent"])
+		return nil, fmt.Errorf("invalid agent reference %q", args[fieldAgent])
 	}
 
 	if conf.Version == "latest" {
@@ -226,7 +219,7 @@ func mapAgentInformation(agentRef string, info *agentv0.AgentInformation, includ
 	}
 
 	return map[string]any{
-		"agent":                 agentRef,
+		fieldAgent:              agentRef,
 		"capabilities":          capabilities,
 		"protocols":             protocols,
 		"languages":             languages,

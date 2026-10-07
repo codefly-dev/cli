@@ -17,8 +17,15 @@ kind: Deployment
 metadata:
   name: api
 spec:
+  selector:
+    matchLabels:
+      app: api
   template:
+    metadata:
+      labels:
+        app: api
     spec:
+      serviceAccountName: api
       containers:
         - name: api
           image: ghcr.io/codefly-dev/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -236,7 +243,11 @@ func TestRenderInventoryRecordsOwnedUnitGraph(t *testing.T) {
 	}
 }
 
-func TestLoadInventoryAcceptsPriorSchemaVersion(t *testing.T) {
+// TestLoadInventoryRefusesAnOlderSchema: a tree an older CLI rendered carries
+// no settled delivery record and no group digests; reading it would deliver
+// its documents unsettled and let a changed group through. The schema is
+// refused, with the number, rather than read as if nothing were missing.
+func TestLoadInventoryRefusesAnOlderSchema(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "owned")
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: destination, Module: "payments", Environment: "production", Promotable: true,
@@ -251,19 +262,15 @@ func TestLoadInventoryAcceptsPriorSchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	downgraded := strings.Replace(string(data), `"schemaVersion": 5`, `"schemaVersion": 4`, 1)
+	downgraded := strings.Replace(string(data), `"schemaVersion": 7`, `"schemaVersion": 6`, 1)
 	if downgraded == string(data) {
 		t.Fatal("rendered inventory did not carry the current schema version")
 	}
 	if err := os.WriteFile(path, []byte(downgraded), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	inventory, err := LoadInventory(destination)
-	if err != nil {
-		t.Fatalf("prior schema version rejected: %v", err)
-	}
-	if inventory.SchemaVersion != priorSchemaVersion {
-		t.Fatalf("inventory.SchemaVersion = %d, want %d", inventory.SchemaVersion, priorSchemaVersion)
+	if _, err := LoadInventory(destination); err == nil || !strings.Contains(err.Error(), "unsupported") || !strings.Contains(err.Error(), "schema 6") {
+		t.Fatalf("an older schema must be refused by number, got %v", err)
 	}
 }
 
@@ -436,7 +443,7 @@ stringData:
   password: plaintext
 `), 0o644)
 	})
-	if err == nil || !strings.Contains(err.Error(), "Secret values") {
+	if err == nil || !strings.Contains(err.Error(), "Kubernetes Secret") {
 		t.Fatalf("render error = %v, want Secret rejection", err)
 	}
 	if _, err := os.Stat(previous); err != nil {
@@ -494,7 +501,7 @@ items:
 			}, func(ctx context.Context, root string) error {
 				return os.WriteFile(filepath.Join(root, test.filename), []byte(test.content), 0o644)
 			})
-			if err == nil || !strings.Contains(err.Error(), "Secret values") {
+			if err == nil || !strings.Contains(err.Error(), "Kubernetes Secret") {
 				t.Fatalf("error = %v, want Secret rejection", err)
 			}
 		})

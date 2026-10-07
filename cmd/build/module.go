@@ -101,13 +101,13 @@ func buildOneService(ctx context.Context, workspace *resources.Workspace, module
 		}
 	}()
 	flow.WithStandAlone(true)
-	if err := flow.InitManagers(ctx); err != nil {
+	if err = flow.InitManagers(ctx); err != nil {
 		return w.Wrapf(err, "cannot initialize managers")
 	}
-	if err := flow.Load(ctx); err != nil {
+	if err = flow.Load(ctx); err != nil {
 		return w.Wrap(err)
 	}
-	if err := flow.Build(ctx); err != nil {
+	if err = flow.Build(ctx); err != nil {
 		return w.Wrapf(err, "build failed")
 	}
 	err = flow.Stop()

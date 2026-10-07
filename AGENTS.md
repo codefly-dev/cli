@@ -79,6 +79,8 @@ new runbook (and its skill) whenever you do a multi-step operational task a seco
 - **Runnables** (what the CLI does with `runnable.codefly.yaml`, and what is deliberately not implemented yet) → [docs/runnable.md](docs/runnable.md)
 - **Product-owned selections** (Core resolution, local checkouts, evidence and execution blockers) → [docs/composition-selections.md](docs/composition-selections.md)
 - **Deployment completion stages** (rendered / applied / bootstrapped / healthy, bootstrap ordering, expand/contract schema rollout) → [docs/deployment-completion.md](docs/deployment-completion.md)
+- **Delivery documents** (presence and authority: the environment's `host` block, the module contract, what publish settles and signs, the carrier Jobs) → [docs/solution-host-bindings.md](docs/solution-host-bindings.md)
+- **Execution receipts** (the gateway's governed execution: Work Contexts verified with core's authenticator, the live sources it needs, why `--governed-execution` is unavailable until a client for them exists) → [docs/execution-receipts.md](docs/execution-receipts.md)
 - **The prerelease gate** (why a prerelease version never reaches `main`, the one labelled exception, and how each repo wires the check in) → [docs/prerelease-gate.md](docs/prerelease-gate.md)
 - **Agent CI & port isolation** (why sequential agent CI must not share a host port) → [docs/agent-ci-port-isolation.md](docs/agent-ci-port-isolation.md)
 - **Supported CLI/core/agent combinations** (the conformance matrix, and why a required row cannot skip itself) → [docs/supported-matrix.md](docs/supported-matrix.md)

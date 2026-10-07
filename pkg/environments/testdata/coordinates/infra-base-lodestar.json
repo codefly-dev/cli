@@ -49,9 +49,9 @@
             "name": "cell-secrets"
           },
           "remote-keys": {
-            "SOLUTION_REGISTRATION_SECRETS": {
+            "INTERNAL_AUTH_DIGEST": {
               "key": "obint-use1b-lodestar-internal-auth",
-              "property": "solution_registration.lastlogin-python"
+              "property": "internal_auth"
             },
             "CODEFLY__SERVICE_SECRET_CONFIGURATION__SAAS__CACHE__REDIS__CONNECTION": {
               "key": "obint-use1b-lodestar-auth-sidecar",
@@ -127,7 +127,7 @@
             "engine-version": "v2",
             "merge-policy": "Merge",
             "data": {
-              "SOLUTION_REGISTRATION_SECRETS": "lastlogin-python:{{ .SOLUTION_REGISTRATION_SECRETS | sha256sum }}"
+              "INTERNAL_AUTH_DIGEST": "{{ .INTERNAL_AUTH_DIGEST | sha256sum }}"
             }
           }
         }

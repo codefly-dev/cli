@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"sync"
@@ -131,7 +132,7 @@ func (s *Server) OpenTerminal(_ context.Context, req *gatewayv1.OpenTerminalRequ
 		}
 	}
 
-	cmd := exec.Command(shell)
+	cmd := exec.Command(shell) //nolint:gosec // G702: the shell is the one the request or $SHELL names; a terminal runs it by definition
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 
@@ -140,7 +141,7 @@ func (s *Server) OpenTerminal(_ context.Context, req *gatewayv1.OpenTerminalRequ
 		return nil, fmt.Errorf("start pty: %w", err)
 	}
 	if req.Rows > 0 && req.Cols > 0 {
-		_ = pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(req.Rows), Cols: uint16(req.Cols)})
+		_ = pty.Setsize(ptmx, &pty.Winsize{Rows: ptyCells(req.Rows), Cols: ptyCells(req.Cols)})
 	}
 
 	id := uuid.New().String()[:8]
@@ -204,7 +205,7 @@ func (s *Server) AttachTerminal(stream gatewayv1.Gateway_AttachTerminalServer) e
 				}
 			}
 			if rerr != nil {
-				_ = stream.Send(&gatewayv1.TerminalOutput{TerminalId: sess.id, Done: true, ExitCode: int32(sess.exitCode)})
+				_ = stream.Send(&gatewayv1.TerminalOutput{TerminalId: sess.id, Done: true, ExitCode: terminalExitCode(sess.exitCode)})
 				errCh <- rerr
 				return
 			}
@@ -243,7 +244,7 @@ func (s *Server) ResizeTerminal(_ context.Context, req *gatewayv1.ResizeTerminal
 	if !ok {
 		return nil, fmt.Errorf("terminal not found: %s", req.TerminalId)
 	}
-	if err := pty.Setsize(sess.ptmx, &pty.Winsize{Rows: uint16(req.Rows), Cols: uint16(req.Cols)}); err != nil {
+	if err := pty.Setsize(sess.ptmx, &pty.Winsize{Rows: ptyCells(req.Rows), Cols: ptyCells(req.Cols)}); err != nil {
 		return nil, fmt.Errorf("resize: %w", err)
 	}
 	return &gatewayv1.ResizeTerminalResponse{}, nil
@@ -285,4 +286,24 @@ func (s *Server) ListTerminals(_ context.Context, _ *gatewayv1.ListTerminalsRequ
 		})
 	}
 	return resp, nil
+}
+
+// ptyCells fits a requested terminal dimension into the pty's uint16; no
+// terminal is wider than that.
+func ptyCells(cells uint32) uint16 {
+	if cells > math.MaxUint16 {
+		return math.MaxUint16
+	}
+	return uint16(cells)
+}
+
+// terminalExitCode fits the shell's exit code into the response's int32.
+func terminalExitCode(code int) int32 {
+	switch {
+	case code > math.MaxInt32:
+		return math.MaxInt32
+	case code < math.MinInt32:
+		return math.MinInt32
+	}
+	return int32(code)
 }

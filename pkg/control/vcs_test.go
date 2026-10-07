@@ -451,7 +451,7 @@ func TestPublicHTTPSRepositorySnapshotIgnoresAmbientGitRewrite(t *testing.T) {
 		SnapshotDirectory: "worktrees/repository/lease",
 		RemoteAccess:      RepositoryRemoteAccessPublicHTTPS,
 	}
-	result, err := New().MaterializeRepositorySnapshot(t.Context(), request)
+	result, err := New().MaterializeRepositorySnapshot(t.Context(), &request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +461,7 @@ func TestPublicHTTPSRepositorySnapshotIgnoresAmbientGitRewrite(t *testing.T) {
 	if result.EquivalentSnapshotBytes == 0 {
 		t.Fatalf("materialized snapshot has no storage requirement: %+v", result)
 	}
-	retried, err := New().MaterializeRepositorySnapshot(t.Context(), request)
+	retried, err := New().MaterializeRepositorySnapshot(t.Context(), &request)
 	if err != nil || retried != result {
 		t.Fatalf("retried materialization = %+v, want %+v (error = %v)", retried, result, err)
 	}
@@ -488,7 +488,7 @@ func TestPublicHTTPSRepositorySnapshotIgnoresAmbientGitRewrite(t *testing.T) {
 		Dir: root, RepositoryURL: request.RepositoryURL, CacheDirectory: "mutable/repository",
 		Revision: revision, FetchIdentity: "public-checkout-test", RemoteAccess: RepositoryRemoteAccessPublicHTTPS,
 	}
-	checkout, err := New().PrepareRepositoryCheckout(t.Context(), checkoutRequest)
+	checkout, err := New().PrepareRepositoryCheckout(t.Context(), &checkoutRequest)
 	if err != nil || checkout.Revision != revision || checkout.DefaultBranch != "main" {
 		t.Fatalf("prepared checkout = %+v, want revision %s on main (error = %v)", checkout, revision, err)
 	}
@@ -496,7 +496,7 @@ func TestPublicHTTPSRepositorySnapshotIgnoresAmbientGitRewrite(t *testing.T) {
 	if err := os.WriteFile(junk, []byte("remove me"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New().PrepareRepositoryCheckout(t.Context(), checkoutRequest); err != nil {
+	if _, err := New().PrepareRepositoryCheckout(t.Context(), &checkoutRequest); err != nil {
 		t.Fatalf("retry mutable checkout: %v", err)
 	}
 	if _, err := os.Stat(junk); !os.IsNotExist(err) {
@@ -512,7 +512,7 @@ func TestPublicHTTPSRepositorySnapshotIgnoresAmbientGitRewrite(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(corruptPath, "partial-clone.tmp"), []byte("interrupted"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	recovered, err := New().PrepareRepositoryCheckout(t.Context(), corruptRequest)
+	recovered, err := New().PrepareRepositoryCheckout(t.Context(), &corruptRequest)
 	if err != nil || recovered.Revision != revision {
 		t.Fatalf("recovered interrupted checkout = %+v, want revision %s (error = %v)", recovered, revision, err)
 	}
@@ -536,7 +536,7 @@ func TestPrepareRepositoryCheckoutRepairsMissingOrigin(t *testing.T) {
 		Dir: root, RepositoryURL: "file://" + bare, CacheDirectory: "cache/repository",
 		Revision: revision, FetchIdentity: "missing-origin-repair", RemoteAccess: RepositoryRemoteAccessLocalFile,
 	}
-	if _, err := New().PrepareRepositoryCheckout(t.Context(), request); err != nil {
+	if _, err := New().PrepareRepositoryCheckout(t.Context(), &request); err != nil {
 		t.Fatal(err)
 	}
 	cachePath := filepath.Join(root, request.CacheDirectory)
@@ -546,7 +546,7 @@ func TestPrepareRepositoryCheckoutRepairsMissingOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	repaired, err := New().PrepareRepositoryCheckout(t.Context(), request)
+	repaired, err := New().PrepareRepositoryCheckout(t.Context(), &request)
 	if err != nil || repaired.Revision != revision {
 		t.Fatalf("repaired checkout = %+v, want revision %s (error = %v)", repaired, revision, err)
 	}
@@ -560,12 +560,12 @@ func TestPrepareRepositoryCheckoutRepairsMissingOrigin(t *testing.T) {
 	if _, err := os.Stat(junk); !os.IsNotExist(err) {
 		t.Fatalf("repaired checkout retained generated file (stat error = %v)", err)
 	}
-	if _, err := New().PrepareRepositoryCheckout(t.Context(), request); err != nil {
+	if _, err := New().PrepareRepositoryCheckout(t.Context(), &request); err != nil {
 		t.Fatalf("retry repaired checkout: %v", err)
 	}
 
 	runGit(t, cachePath, "remote", "set-url", "origin", "file://"+filepath.Join(serverRoot, "different.git"))
-	if _, err := New().PrepareRepositoryCheckout(t.Context(), request); err == nil || !strings.Contains(err.Error(), "does not match requested source") {
+	if _, err := New().PrepareRepositoryCheckout(t.Context(), &request); err == nil || !strings.Contains(err.Error(), "does not match requested source") {
 		t.Fatalf("mismatched origin error = %v, want source mismatch", err)
 	}
 }
@@ -638,7 +638,7 @@ func TestPrepareRepositoryCheckoutRepairsInterruptedCloneWithPartialGitMetadata(
 		FetchIdentity:  "interrupted-clone-retry",
 		RemoteAccess:   RepositoryRemoteAccessLocalFile,
 	}
-	prepared, err := New().PrepareRepositoryCheckout(t.Context(), request)
+	prepared, err := New().PrepareRepositoryCheckout(t.Context(), &request)
 	if err != nil {
 		t.Fatalf("repair interrupted clone: %v", err)
 	}
@@ -671,7 +671,7 @@ func TestPrepareRepositoryCheckoutCancelledContextPreservesCache(t *testing.T) {
 		FetchIdentity:  "cancelled-context-test",
 		RemoteAccess:   RepositoryRemoteAccessLocalFile,
 	}
-	if _, err := New().PrepareRepositoryCheckout(t.Context(), request); err != nil {
+	if _, err := New().PrepareRepositoryCheckout(t.Context(), &request); err != nil {
 		t.Fatal(err)
 	}
 	cachePath := filepath.Join(root, "cache", "repository")
@@ -681,7 +681,7 @@ func TestPrepareRepositoryCheckoutCancelledContextPreservesCache(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := New().PrepareRepositoryCheckout(ctx, request)
+	_, err := New().PrepareRepositoryCheckout(ctx, &request)
 	if err == nil {
 		t.Fatal("expected a context error from a cancelled checkout")
 	}

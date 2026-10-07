@@ -79,7 +79,7 @@ func DefaultStateDir(workDir string) (string, error) {
 // exporter plugins. JWKS retrieval remains lazy until the first governed
 // operation, allowing startup while the authority is temporarily unavailable
 // without weakening request-time admission.
-func Open(ctx context.Context, config Config) (*Runtime, error) {
+func Open(ctx context.Context, config *Config) (*Runtime, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("%w: context is required", ErrInvalid)
 	}

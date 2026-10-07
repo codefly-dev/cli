@@ -155,8 +155,8 @@ var imageLinePattern = regexp.MustCompile(`(?m)^\s*(?:-\s*)?image:\s*["']?([^\s"
 // digestImages collects the distinct digest-pinned image references under root.
 func digestImages(root string) ([]string, error) {
 	seen := map[string]bool{}
-	err := walkRegularFiles(root, func(path, _ string, _ os.FileInfo) error {
-		data, err := os.ReadFile(path)
+	err := walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
+		data, err := readWithin(root, relative)
 		if err != nil {
 			return err
 		}
@@ -186,6 +186,16 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 	inventory, unit, err := loadDevTarget(root, request.Module.Name, request.Service, request.Environment.Name, request.AppProject)
 	if err != nil {
 		return DevResult{}, err
+	}
+	// A tree that declares presence or authority pins, in signed documents,
+	// the exact build each workload runs. A dev re-pin changes the build
+	// under those documents and leaves them describing bytes nobody runs: the
+	// host refuses the new pod, and publishing the tree would sign a false
+	// declaration. The declaration is re-derived by a render, so a render is
+	// what a delivering module gets.
+	if inventory.SolutionHostBindingPath != "" || inventory.SolutionAuthorityPath != "" {
+		return DevResult{}, fmt.Errorf("module %s declares presence or authority to a host in environment %s, and a dev deployment would re-pin %s's image under documents that declare the build it runs; render the module instead (codefly deploy gitops %s --env %s), which re-derives the declaration with the new build",
+			request.Module.Name, request.Environment.Name, request.Service, request.Module.Name, request.Environment.Name)
 	}
 	service, err := loadDevService(ctx, request.Module, request.Service, request.Source)
 	if err != nil {
@@ -275,6 +285,15 @@ func inventoryRenderOptions(inventory *Inventory) *RenderOptions {
 		Module: inventory.Module, Unit: inventory.Unit, Environment: inventory.Environment,
 		Namespace: inventory.Namespace, AppProject: inventory.AppProject, OwnedPath: inventory.OwnedPath,
 		ModulePath: inventory.ModulePath, Package: inventory.Package, Units: inventory.Units,
+		// A dev deployment re-derives the inventory in place, so every field
+		// the render recorded has to be carried back or it is dropped without
+		// a diff. Dropping this one stops Argo delivering the declared
+		// bindings on the next publish while the documents stay in the tree.
+		SolutionHostBindingPath:       inventory.SolutionHostBindingPath,
+		HostsDelivery:                 inventory.HostsDelivery,
+		SolutionAuthorityPath:         inventory.SolutionAuthorityPath,
+		Delivered:                     inventory.Delivery,
+		WorkspaceConfigurationDigests: inventory.WorkspaceConfigurationDigests,
 	}
 }
 
@@ -330,8 +349,8 @@ func applyDevImages(root string, inventory *Inventory, unit *InventoryUnit, imag
 		rewrites = append(rewrites, &rewrite{pattern: imageRepositoryPattern(image), image: image})
 	}
 	var changed []string
-	err := walkRegularFiles(unitRoot, func(path, relative string, info os.FileInfo) error {
-		data, err := os.ReadFile(path)
+	err := walkRegularFiles(unitRoot, func(_, relative string, _ os.FileInfo) error {
+		data, err := readWithin(unitRoot, relative)
 		if err != nil {
 			return err
 		}
@@ -346,8 +365,9 @@ func applyDevImages(root string, inventory *Inventory, unit *InventoryUnit, imag
 		if string(updated) == string(data) {
 			return nil
 		}
-		// path is a regular file found by walking the rendered unit itself.
-		if err := os.WriteFile(path, updated, info.Mode().Perm()); err != nil { //nolint:gosec
+		// A regular file found by walking the rendered unit itself, written
+		// back through the unit's root.
+		if err := writeWithin(unitRoot, relative, updated); err != nil {
 			return err
 		}
 		changed = append(changed, filepath.ToSlash(filepath.Join(unit.Path, relative)))
@@ -385,7 +405,7 @@ func applyDevImages(root string, inventory *Inventory, unit *InventoryUnit, imag
 		return nil, err
 	}
 	// The inventory is public and inspectable beside the rendered files, as a render writes it.
-	if err := os.WriteFile(filepath.Join(root, InventoryFilename), data, 0o644); err != nil { //nolint:gosec
+	if err := os.WriteFile(filepath.Join(root, InventoryFilename), data, 0o600); err != nil {
 		return nil, fmt.Errorf("write render inventory: %w", err)
 	}
 	*inventory = rebuilt

@@ -67,8 +67,8 @@ func TestExcludedRootExportCarriesDerivedOverrides(t *testing.T) {
 	flow.WithOutputEnv(output)
 	flow.WithOverrides(map[string]map[string]string{
 		resources.WithUnique(service).Unique(): {
-			"CODEFLY__API_CONSUMES":                `[{"id":"documents"}]`,
-			"CODEFLY__MODULE_REGISTRATION_SECRETS": "documents:s3cr3t",
+			"CODEFLY__API_CONSUMES":           `[{"id":"documents"}]`,
+			"CODEFLY__MODULE_IDENTITY_SECRET": "documents:s3cr3t",
 		},
 	})
 
@@ -77,7 +77,7 @@ func TestExcludedRootExportCarriesDerivedOverrides(t *testing.T) {
 	body, err := os.ReadFile(output)
 	require.NoError(t, err)
 	require.Contains(t, string(body), `CODEFLY__API_CONSUMES=[{"id":"documents"}]`)
-	require.Contains(t, string(body), "CODEFLY__MODULE_REGISTRATION_SECRETS=documents:s3cr3t")
+	require.Contains(t, string(body), "CODEFLY__MODULE_IDENTITY_SECRET=documents:s3cr3t")
 }
 
 // An override aimed at another service must not ride the root's export: the
@@ -106,7 +106,7 @@ func TestExcludedRootExportCarriesOnlyItsOwnOverrides(t *testing.T) {
 	flow.WithExcludeRoot(true)
 	flow.WithOutputEnv(output)
 	flow.WithOverrides(map[string]map[string]string{
-		"documents/api": {"CODEFLY__MODULE_REGISTRATION_SECRET": "not-the-roots"},
+		"documents/api": {"CODEFLY__MODULE_IDENTITY_SECRET": "not-the-roots"},
 	})
 
 	require.NoError(t, flow.exportExcludedOriginEnvironment(ctx))

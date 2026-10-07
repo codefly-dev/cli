@@ -86,13 +86,13 @@ type Introspector interface {
 // to the `codefly` binary from an MCP tool.
 type Lifecycle interface {
 	Build(ctx context.Context, req BuildRequest) (BuildResult, error)
-	Test(ctx context.Context, req TestRequest) (CheckResult, error)
+	Test(ctx context.Context, req *TestRequest) (CheckResult, error)
 	Lint(ctx context.Context, req CheckRequest) (CheckResult, error)
 	Compile(ctx context.Context, req CheckRequest) (CheckResult, error)
 	RunChecks(ctx context.Context, req CheckRequest) (CheckResult, error)
 	// Run starts service and its dependency graph, returning once the flow is
 	// started (or, when req.Wait is set, once it is healthy).
-	Run(ctx context.Context, req RunRequest) (RunHandle, error)
+	Run(ctx context.Context, req *RunRequest) (RunHandle, error)
 	// Stop stops the flow named by req.FlowID (or the most-recently-started
 	// flow when empty), preserving stateful containers unless req.Destroy is
 	// set. It reports whether a flow was actually stopped, atomically with
@@ -102,7 +102,7 @@ type Lifecycle interface {
 	Stop(ctx context.Context, req StopRequest) (bool, error)
 	// Deploy ships service/module to an environment. It MUST be authorized
 	// through MutationAuthority (see PrepareMutation) before it will execute.
-	Deploy(ctx context.Context, req DeployRequest) (DeployResult, error)
+	Deploy(ctx context.Context, req *DeployRequest) (DeployResult, error)
 }
 
 // ServiceInstallation manages durable foreground services with the current
@@ -110,7 +110,7 @@ type Lifecycle interface {
 // RunHandle describes one process-local workspace flow, while these operations
 // remain authoritative across CLI processes, logout, and login.
 type ServiceInstallation interface {
-	InstallService(context.Context, InstallServiceRequest) (InstalledService, error)
+	InstallService(context.Context, *InstallServiceRequest) (InstalledService, error)
 	StartService(context.Context, ServiceRef) (InstalledServiceStatus, error)
 	StopService(context.Context, ServiceRef) (InstalledServiceStatus, error)
 	RestartService(context.Context, ServiceRef) (InstalledServiceStatus, error)
@@ -149,8 +149,8 @@ type VCS interface {
 	GitTag(ctx context.Context, req GitTagRequest) (GitAct, error)
 	GitMerge(ctx context.Context, req GitMergeRequest) (GitAct, error)
 	GitRevert(ctx context.Context, req GitRevertRequest) (GitAct, error)
-	MaterializeRepositorySnapshot(ctx context.Context, req MaterializeRepositorySnapshotRequest) (MaterializedRepositorySnapshot, error)
-	PrepareRepositoryCheckout(ctx context.Context, req PrepareRepositoryCheckoutRequest) (PreparedRepositoryCheckout, error)
+	MaterializeRepositorySnapshot(ctx context.Context, req *MaterializeRepositorySnapshotRequest) (MaterializedRepositorySnapshot, error)
+	PrepareRepositoryCheckout(ctx context.Context, req *PrepareRepositoryCheckoutRequest) (PreparedRepositoryCheckout, error)
 	ReleaseRepositorySnapshot(ctx context.Context, req ReleaseRepositorySnapshotRequest) error
 }
 

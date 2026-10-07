@@ -50,7 +50,7 @@ type Runner func(ctx context.Context, stdin []byte, name string, args ...string)
 // status only. Neither standard output nor standard error is safe to print:
 // backend diagnostics and HTTP tracing can include payloads.
 func ExecRunner(ctx context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
-	command := exec.CommandContext(ctx, name, args...)
+	command := exec.CommandContext(ctx, name, args...) //nolint:gosec // G702: the command is the configured secret backend; running it is this function
 	if stdin != nil {
 		command.Stdin = bytes.NewReader(stdin)
 	}

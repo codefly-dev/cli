@@ -58,17 +58,18 @@ var ModuleCmd = &cobra.Command{
 		}
 		if renderOnly {
 			cli.Header(2, "render-only mode — manifests written to disk, no kubectl apply")
-			result, err := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
+			result, resultErr := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
 				Workspace: workspace, Module: module, Environment: env,
 				AppProject: appProject, Sink: cli.NewOutputSink(),
 			})
-			if err != nil {
-				return fmt.Errorf("cannot render module: %w", err)
+			if resultErr != nil {
+				return fmt.Errorf("cannot render module: %w", resultErr)
 			}
 			cli.Info("Rendered %s", result.Path)
 			cli.Info("Digest %s", result.Inventory.Digest)
 			printSizingReport(result.Sizing)
 			printElidedNamespaces(result.ElidedNamespaces)
+			printSolutionHostBindings(&result)
 			printClearedDev(result.ClearedDev)
 			cli.Header(1, "Module render done!")
 			return nil
@@ -156,15 +157,15 @@ func deployOneService(ctx context.Context, workspace *resources.Workspace, modul
 	flow.WithStandAlone(true)
 	flow.WithRebuild(rebuildImages)
 
-	if err := flow.InitManagers(ctx); err != nil {
+	if err = flow.InitManagers(ctx); err != nil {
 		return w.Wrapf(err, "cannot initialize managers")
 	}
-	if err := flow.Load(ctx); err != nil {
+	if err = flow.Load(ctx); err != nil {
 		return w.Wrap(err)
 	}
 	flow.WithDeploymentManager(deploymentManager)
 
-	if err := flow.Deploy(ctx); err != nil {
+	if err = flow.Deploy(ctx); err != nil {
 		return w.Wrapf(err, "deploy failed")
 	}
 	err = flow.Stop()

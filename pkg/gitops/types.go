@@ -3,6 +3,7 @@ package gitops
 import (
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
@@ -10,11 +11,13 @@ import (
 
 const (
 	InventoryFilename = ".codefly-render.json"
-	SchemaVersion     = 5
-	// priorSchemaVersion is the last schema loadInventory still accepts: a
-	// render from before contract provenance existed, carrying no Package and
-	// no unit Contracts.
-	priorSchemaVersion    = 4
+	SchemaVersion     = 7
+	// There is no prior schema a loader still accepts. Schema 7 carries the
+	// settled, signed delivery record and the workspace configuration group
+	// digests; a tree without them is one an older CLI rendered, and reading
+	// it would deliver its documents unsettled and unsigned, and let a consumer
+	// of a changed group through with no digest to hold it against. The
+	// intermediate schema 6 was never released, so nothing is owed a read.
 	EvidenceSchemaVersion = 1
 )
 
@@ -87,12 +90,37 @@ type Inventory struct {
 	AppProject    string `json:"appProject"`
 	OwnedPath     string `json:"ownedPath"`
 	ModulePath    string `json:"modulePath,omitempty"`
+	// SolutionHostBindingPath is the render subdirectory holding the declared
+	// SolutionHostBinding documents, when this render declared any. Publish
+	// points an Argo Application at its environment overlay and derives the
+	// promotion's authority from it, exactly as it does for a unit.
+	SolutionHostBindingPath string `json:"solutionHostBindingPath,omitempty"`
+	// HostsDelivery is true for the module that serves the environment's
+	// delivery API: its own delivery cannot precede the API it posts to, so
+	// it is ordered after the module's units where every other module's
+	// delivery goes beside them.
+	HostsDelivery bool `json:"hostsDelivery,omitempty"`
+	// SolutionAuthorityPath is the render subdirectory holding the declared
+	// authority documents, when this render declared any. Delivered into the
+	// platform's authority namespace, through its own Argo component.
+	SolutionAuthorityPath string `json:"solutionAuthorityPath,omitempty"`
 	// Package identifies the module package this render was produced from
 	// (module.package.codefly.yaml id/version), when the module has one.
 	Package *InventoryPackage `json:"package,omitempty"`
-	Units   []InventoryUnit   `json:"units"`
-	Files   []InventoryFile   `json:"files"`
-	Digest  string            `json:"digest"`
+	// Delivery records the delivery documents publish settled and signed into
+	// this tree: each document's identity, generation and whether it is a
+	// tombstone, and the identity that signed them. A render records none; the
+	// generation is settled, and the signature made, at publish.
+	Delivery *InventoryDelivery `json:"delivery,omitempty"`
+	// WorkspaceConfigurationDigests records, per workspace configuration group
+	// the module's services consume, a digest of the group as the environment
+	// provided it to this render. A sibling module consuming the same group
+	// and recording another digest was rendered against another value, and the
+	// render refuses to deliver two values of one group.
+	WorkspaceConfigurationDigests map[string]string `json:"workspaceConfigurationDigests,omitempty"`
+	Units                         []InventoryUnit   `json:"units"`
+	Files                         []InventoryFile   `json:"files"`
+	Digest                        string            `json:"digest"`
 	// Dev lists the dev deployments (`codefly deploy dev`) applied on top of
 	// this render: services whose image was re-pinned to code no release
 	// describes. A full render re-derives the tree and never carries it over.
@@ -227,6 +255,50 @@ type RenderOptions struct {
 	ModulePath           string
 	Units                []InventoryUnit
 	Package              *InventoryPackage
+	// Workspace is the composing workspace's name. A solution host binding ID
+	// is scoped by it, so two workspaces delivering to one host never claim the
+	// same binding.
+	Workspace string
+	// Host is the deployment host this render delivers to, as the environment
+	// declares it. Absent, no solution host binding is rendered: a binding names
+	// a host, and a derived coordinate is a guess the host refuses later.
+	Host *environments.EnvironmentHost
+	// Target is the environment a hosted render delivers to: the delivery
+	// Jobs are declared against it.
+	Target *environments.Environment
+	// DeliveryTarget is the host's delivery API as this render resolved it from
+	// the host block's delivery endpoint; the delivery Jobs POST to it.
+	DeliveryTarget *DeliveryTarget
+	// Delivered is what publish settled and signed, recorded in the inventory.
+	Delivered *InventoryDelivery
+	// WorkspaceConfigurationDigests are the digests of the workspace
+	// configuration groups this render bakes in, recorded in the inventory.
+	WorkspaceConfigurationDigests map[string]string
+	// SolutionHostBindingPath is set by the render once it has written binding
+	// documents, so the inventory records the delivered path rather than the
+	// intent to write one.
+	SolutionHostBindingPath string
+	// HostsDelivery carries Inventory.HostsDelivery across a publish's
+	// re-render of the inventory.
+	HostsDelivery bool
+	// SolutionInstances are the solution instances of the resolved composition
+	// whose workloads this render delivers, resolved by the caller from the same
+	// resolution the workloads came from. One SolutionHostBinding is rendered
+	// per entry.
+	SolutionInstances []SolutionInstance
+	// UndeclaredPresence is why this render declares no presence for the
+	// module, when it declares none for a reason other than the environment
+	// naming no host.
+	UndeclaredPresence string
+	// AuthorityInstances are the authority documents this render declares, one
+	// per module-identity service of a module publishing a contract.
+	AuthorityInstances []AuthorityInstance
+	// SolutionAuthorityPath is set by the render once it has written authority
+	// documents, so the inventory records the delivered path.
+	SolutionAuthorityPath string
+	// UndeclaredAuthority is why this render declares no authority, when the
+	// reason is the module's own.
+	UndeclaredAuthority string
 }
 
 func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKubernetesOutput {
@@ -265,6 +337,69 @@ type RenderResult struct {
 	// ClearedDev are the dev deployments the tree this render replaced carried.
 	// A full render re-derives every image, so they no longer run.
 	ClearedDev []InventoryDevDeployment `json:"clearedDev,omitempty"`
+	// SolutionHostBindings are the SolutionHostBinding documents this render
+	// declared: what it says should be present on the host, one per solution
+	// instance.
+	SolutionHostBindings []DeclaredSolutionHostBinding `json:"solutionHostBindings,omitempty"`
+	// UndeclaredPresence says why the module declares no presence when the
+	// reason is the module's own — no package manifest to name a release from.
+	UndeclaredPresence string `json:"undeclaredPresence,omitempty"`
+	// SolutionAuthorities are the authority documents this render declared.
+	SolutionAuthorities []DeclaredAuthority `json:"solutionAuthorities,omitempty"`
+	// UndeclaredAuthority says why the module declares no authority: no
+	// contract, no module-identity service, or no presence to be effective from.
+	UndeclaredAuthority string `json:"undeclaredAuthority,omitempty"`
+	// StaleGroupConsumers maps a workspace configuration group this render
+	// consumes to the sibling modules whose rendered trees bake in another
+	// value of it: rendered before the group changed, to be rendered next.
+	// Reported here and refused at publish, where the sibling's render is the
+	// action that lifts the refusal.
+	StaleGroupConsumers map[string][]string `json:"staleGroupConsumers,omitempty"`
+}
+
+// InventoryDelivery is what publish settled into a tree: the delivery documents
+// at their settled generations, and the identity that signed them.
+type InventoryDelivery struct {
+	// Signed reports whether every document carries a signature. Unsigned
+	// documents are delivered only to a local qualification environment, and a
+	// host refuses them.
+	Signed bool `json:"signed"`
+	// Identity is who signed — the certificate subject and its issuer — when
+	// Signed. It is reporting, read from the bundle's certificate, and not a
+	// verification: the host verifies.
+	Identity string `json:"identity,omitempty"`
+	// Documents are the documents delivered, presence and authority alike.
+	Documents []InventoryDeliveredDocument `json:"documents,omitempty"`
+}
+
+// InventoryDeliveredDocument is one delivered document.
+type InventoryDeliveredDocument struct {
+	// Kind is "presence" or "authority".
+	Kind string `json:"kind"`
+	// ID is the binding ID of a presence document or the authority ID of an
+	// authority document.
+	ID         string `json:"id"`
+	Generation uint64 `json:"generation"`
+	// Removed marks a tombstone.
+	Removed bool `json:"removed,omitempty"`
+	// Digest is the document's canonical digest at this generation.
+	Digest string `json:"digest"`
+}
+
+// DeclaredSolutionHostBinding is one rendered binding document: where it was
+// written, which binding it declares, and at which generation.
+//
+// The generation is reported rather than left in the file because a reset is
+// otherwise invisible. The prior generation comes from the tree this render
+// replaced, and that tree is per module and not per environment — rendering
+// another environment replaces it whole. So rendering staging and then
+// production again finds no prior production document and starts at 1, which
+// the production host refuses as stale. Printing the generation is what turns
+// that into something an operator sees at the render instead of at the host.
+type DeclaredSolutionHostBinding struct {
+	Path       string `json:"path"`
+	Binding    string `json:"binding"`
+	Generation uint64 `json:"generation"`
 }
 
 type PublishRequest struct {
@@ -279,6 +414,18 @@ type PublishRequest struct {
 	// exposing module is not yet deployed in the target GitOps tree from a
 	// violation to a skipped check, for bootstrap ordering.
 	AllowUnresolvedContracts bool
+	// Signer signs the delivery documents this publish settles. nil means the
+	// process environment decides: the publishing workflow's OIDC identity, or
+	// none — in which case only a Local publish may deliver unsigned.
+	Signer signing.Signer `json:"-"`
+	// Carriers are the carriers an inspected plan signed, for the publish
+	// that executes the plan to deliver as they are. Set from the plan by
+	// the command; never part of a request's own JSON.
+	Carriers map[string][]byte `json:"-"`
+	// Resign lets the plan sign again a document whose delivered carrier the
+	// release policy no longer admits — after a signing identity rotated.
+	// Deliberate: without it such a carrier refuses the publish by name.
+	Resign bool `json:"resign,omitempty"`
 }
 
 type PublishPlan struct {
@@ -297,7 +444,19 @@ type PublishPlan struct {
 	SnapshotRevision string          `json:"snapshotRevision"`
 	Changed          []string        `json:"changed"`
 	Diff             string          `json:"diff"`
-	ContractChecks   []ContractCheck `json:"contractChecks,omitempty"`
+	ContractChecks   []ContractCheck `json:"contractChecks,omitempty"` // Delivery is what the publication settled and signed, for the plan's
+	// reader and the result.
+	Delivery *InventoryDelivery `json:"delivery,omitempty"`
+	// StaleConsumers names the modules the delivery base branch holds at
+	// another value of a workspace configuration group this publication bakes
+	// in — published before the group changed, and the next publish to run.
+	// Reported rather than refused: refusing would hold every consumer's
+	// publish on every other's.
+	StaleConsumers []string `json:"staleConsumers,omitempty"`
+	// Carriers are the carriers this plan signed, keyed by kind, ID and
+	// generation. The publish that executes the plan delivers exactly these
+	// bytes — signing is once, here — after holding each to its document.
+	Carriers map[string][]byte `json:"carriers,omitempty"`
 }
 
 // ContractCheck reports the admission result of one consumed API contract
@@ -314,6 +473,10 @@ type ContractCheck struct {
 type PublishMutation struct {
 	Request PublishRequest `json:"request"`
 	PlanID  string         `json:"planId"`
+	// Carriers are the carriers the inspected plan signed, delivered by this
+	// publish as they are; without them a release publish would sign again
+	// and its tree would no longer be the plan's.
+	Carriers map[string][]byte `json:"carriers,omitempty"`
 }
 
 type PublishResult struct {
@@ -330,6 +493,10 @@ type PublishResult struct {
 	PullRequest      string          `json:"pullRequest"`
 	PullRequestID    int             `json:"pullRequestId,omitempty"`
 	ContractChecks   []ContractCheck `json:"contractChecks,omitempty"`
+	// Delivery is what this publish settled and signed: every presence and
+	// authority document at its settled generation, and the identity that
+	// signed them.
+	Delivery *InventoryDelivery `json:"delivery,omitempty"`
 }
 
 type RollbackRequest struct {
@@ -343,8 +510,9 @@ type RollbackPlan struct {
 }
 
 type RollbackMutation struct {
-	Request RollbackRequest `json:"request"`
-	PlanID  string          `json:"planId"`
+	Request  RollbackRequest   `json:"request"`
+	PlanID   string            `json:"planId"`
+	Carriers map[string][]byte `json:"carriers,omitempty"`
 }
 
 type ObserveRequest struct {

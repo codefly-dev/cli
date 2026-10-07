@@ -293,7 +293,13 @@ func treeDigest(t *testing.T, root string) string {
 // {"staticValidation","serverSideValidation","restricted","violations"}. That
 // was verified by rendering the fixture and reading the installed inventory —
 // no "promotable" key remains anywhere in it.
-const undeclaredFixtureDigest = "ed0a83231a659a8c0c8e3a4d5245289fd3c1a0dbef09e508b201283a468e8347"
+//
+// It moved once more when cli#855 was rebased onto main 7b25258f: that branch's
+// render evidence carries its own inventory schema bumps (declared solution
+// presence; delivery documents settled and signed at publish) and now main's
+// restricted property beside them. The manifests are unchanged by either, and
+// the two cases below still agree, which is the property this digest pins.
+const undeclaredFixtureDigest = "fe83664635e75df2d8d13f24c9bed8a0b28dd14c74370e591258251f39b81b70"
 
 func TestRenderModuleWithoutDeclarationsIsByteIdentical(t *testing.T) {
 	installFakeAgents(t)

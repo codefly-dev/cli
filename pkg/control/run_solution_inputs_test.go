@@ -28,7 +28,6 @@ modules:
     - name: wiki
       path: .
     - name: documents
-    - name: host
 `
 	solutionInputsRootModuleYAML = `kind: module
 name: wiki
@@ -60,25 +59,6 @@ agent:
     name: go-grpc
     version: 0.0.16
     publisher: codefly.ai
-`
-	// The registrar: federation credentials are provisioned only when some
-	// service declares the group that carries their digests.
-	solutionInputsHostModuleYAML = `kind: module
-name: host
-services:
-    - name: accounts
-`
-	solutionInputsAccountsYAML = `kind: service
-name: accounts
-version: 0.0.0
-module: host
-agent:
-    kind: runtime::service
-    name: go-grpc
-    version: 0.0.16
-    publisher: codefly.ai
-workspace-configuration-dependencies:
-    - federation
 `
 	solutionInputsManifestYAML = `schema_version: codefly.solution-manifest/v0
 protocol_version: codefly.solution/v0
@@ -112,8 +92,6 @@ func writeSolutionInputsWorkspace(t *testing.T) string {
 		"services/backend/service.codefly.yaml":               solutionInputsBackendYAML,
 		"modules/documents/module.codefly.yaml":               solutionInputsDocumentsModuleYAML,
 		"modules/documents/services/api/service.codefly.yaml": solutionInputsDocumentsServiceYAML,
-		"modules/host/module.codefly.yaml":                    solutionInputsHostModuleYAML,
-		"modules/host/services/accounts/service.codefly.yaml": solutionInputsAccountsYAML,
 		manifest.FileName:                                     solutionInputsManifestYAML,
 	}
 	for rel, content := range files {
@@ -150,7 +128,7 @@ func startExcludedRootRun(t *testing.T, root string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	t.Cleanup(cancel)
 
-	if _, runErr := plane.Run(ctx, RunRequest{
+	if _, runErr := plane.Run(ctx, &RunRequest{
 		Service:        "wiki/backend",
 		RuntimeContext: resources.RuntimeContextNative,
 		ExcludeRoot:    true,
@@ -286,7 +264,7 @@ func TestStopJoinsTheRunGoroutine(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	t.Cleanup(cancel)
 
-	if _, runErr := plane.Run(ctx, RunRequest{
+	if _, runErr := plane.Run(ctx, &RunRequest{
 		Service:        "wiki/backend",
 		RuntimeContext: resources.RuntimeContextNative,
 		ExcludeRoot:    true,
@@ -451,12 +429,12 @@ func TestStopAllRunsCancelsEveryRunBeforeWaiting(t *testing.T) {
 }
 
 // A test process standing in for a solution backend runs the composition with
-// the root excluded and takes its environment from the export. The federation
-// inputs are derived for the root, so excluding it is exactly the case where
-// they have no running process to ride — and the hand-off must carry them, or
-// the composition boots with every consumed route unrouted.
+// the root excluded and takes its environment from the export. The api.consumes
+// projection is derived for the root, so excluding it is exactly the case where
+// it has no running process to ride — and the hand-off must carry it, or the
+// composition boots with every consumed route unrouted.
 //
-// The control plane derives them the same way the run command does: it drives
+// The control plane derives it the same way the run command does: it drives
 // the same lifecycle behind the MCP run tool, and an environment that depended
 // on which entry point composed it would be two contracts, not one.
 func TestRunExportsSolutionDerivedInputsForAnExcludedRoot(t *testing.T) {
@@ -479,18 +457,10 @@ func TestRunExportsSolutionDerivedInputsForAnExcludedRoot(t *testing.T) {
 	if len(decoded) != 1 || decoded[0].Module != "documents" || decoded[0].As != "documents" {
 		t.Fatalf("exported consumes projection = %+v, want the documents binding", decoded)
 	}
-
-	// The registration secrets are the other half: without them the backend can
-	// announce an upstream but never prove which module it is.
-	secrets := outputEnvironmentValue(environment, "CODEFLY__MODULE_REGISTRATION_SECRETS")
-	if !strings.HasPrefix(secrets, "documents:") {
-		t.Fatalf("excluded root received %q for the registration secrets, want a documents entry; keys=%v",
-			secrets, exportedEnvironmentKeys(environment))
-	}
 }
 
 // A workspace with no solution manifest derives nothing, so its excluded-root
-// environment must carry neither variable.
+// environment must not carry the projection.
 func TestRunExportsNoSolutionInputsWithoutAManifest(t *testing.T) {
 	root := writeSolutionInputsWorkspace(t)
 	if err := os.Remove(filepath.Join(root, manifest.FileName)); err != nil {
@@ -500,18 +470,16 @@ func TestRunExportsNoSolutionInputsWithoutAManifest(t *testing.T) {
 	outputEnvironment := startExcludedRootRun(t, root)
 	environment := waitForExportedEnvironment(t, outputEnvironment)
 
-	for _, key := range []string{manifest.APIConsumesEnvironmentVariable, "CODEFLY__MODULE_REGISTRATION_SECRETS"} {
-		if got := outputEnvironmentValue(environment, key); got != "" {
-			t.Errorf("a workspace with no solution manifest exported %s=%q", key, got)
-		}
+	if got := outputEnvironmentValue(environment, manifest.APIConsumesEnvironmentVariable); got != "" {
+		t.Errorf("a workspace with no solution manifest exported %s=%q", manifest.APIConsumesEnvironmentVariable, got)
 	}
 }
 
-// Deriving on this path means a manifest the run cannot encode now fails the
+// Deriving on this path means a manifest the run cannot project now fails the
 // run rather than booting a composition that federates nothing. Two entries
-// claiming one facade prefix would hand two modules the same credential, so the
-// run must refuse it here exactly as the run command does.
-func TestRunRejectsAManifestItCannotFederate(t *testing.T) {
+// claiming one facade prefix leave one route naming two modules, so the run
+// must refuse it here exactly as the run command does.
+func TestRunRejectsAManifestWithADuplicatedFacadePrefix(t *testing.T) {
 	root := writeSolutionInputsWorkspace(t)
 	broken := strings.Replace(solutionInputsManifestYAML, "lifecycle:", `    - id: archives
       protocol: connect
@@ -533,7 +501,7 @@ lifecycle:`, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	_, err = plane.Run(ctx, RunRequest{
+	_, err = plane.Run(ctx, &RunRequest{
 		Service:        "wiki/backend",
 		RuntimeContext: resources.RuntimeContextNative,
 		ExcludeRoot:    true,

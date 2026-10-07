@@ -346,13 +346,13 @@ func ReleaseCodeUnits(ctx context.Context, workDir, bump string, units []CodeUni
 		}
 		seenIDs[unit.CodeUnitID] = true
 		seenFiles[unit.VersionFile] = true
-		path, err := releaseManifestPath(root, unit.VersionFile)
-		if err != nil {
-			return CodeUnitReleaseResult{}, err
+		path, pathErr := releaseManifestPath(root, unit.VersionFile)
+		if pathErr != nil {
+			return CodeUnitReleaseResult{}, pathErr
 		}
-		version, err := readVersion(path)
-		if err != nil {
-			return CodeUnitReleaseResult{}, fmt.Errorf("release manifest %s: %w", unit.VersionFile, err)
+		version, versionErr := readVersion(path)
+		if versionErr != nil {
+			return CodeUnitReleaseResult{}, fmt.Errorf("release manifest %s: %w", unit.VersionFile, versionErr)
 		}
 		if len(manifests) > 0 && !version.Equal(manifests[0].Version) {
 			return CodeUnitReleaseResult{}, fmt.Errorf(

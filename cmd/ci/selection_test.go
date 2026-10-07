@@ -13,7 +13,7 @@ import (
 
 func TestBuildPlanExpandsTransitiveDependentsInDependencyOrder(t *testing.T) {
 	root, workspace := loadPlanFixture(t, "../../pkg/orchestration/testdata/module-layout")
-	plan, err := BuildPlan(context.Background(), workspace, PlanOptions{
+	plan, err := BuildPlan(context.Background(), workspace, &PlanOptions{
 		RepoRoot: root,
 		ChangedFiles: []string{
 			"modules/management/services/organization/code/organization.go",
@@ -36,7 +36,7 @@ func TestBuildPlanExpandsTransitiveDependentsInDependencyOrder(t *testing.T) {
 
 func TestBuildPlanLimitsModuleChangeToModuleServices(t *testing.T) {
 	root, workspace := loadPlanFixture(t, "../../pkg/orchestration/testdata/module-layout")
-	plan, err := BuildPlan(context.Background(), workspace, PlanOptions{
+	plan, err := BuildPlan(context.Background(), workspace, &PlanOptions{
 		RepoRoot:     root,
 		ChangedFiles: []string{"modules/web/module.codefly.yaml"},
 	})
@@ -54,7 +54,7 @@ func TestBuildPlanResolvesRepositoryPathThroughWorkspaceSymlink(t *testing.T) {
 	if err := os.Symlink(filepath.Join("modules", "management"), filepath.Join(root, "module")); err != nil {
 		t.Fatalf("create module alias: %v", err)
 	}
-	plan, err := BuildPlan(context.Background(), workspace, PlanOptions{
+	plan, err := BuildPlan(context.Background(), workspace, &PlanOptions{
 		RepoRoot:     root,
 		ChangedFiles: []string{"module/services/organization/code/deleted.go"},
 	})
@@ -74,7 +74,7 @@ func TestBuildPlanResolvesRepositoryPathThroughWorkspaceSymlink(t *testing.T) {
 
 func TestBuildPlanWorkspaceConfigurationSelectsAll(t *testing.T) {
 	root, workspace := loadPlanFixture(t, "../../pkg/orchestration/testdata/module-layout")
-	plan, err := BuildPlan(context.Background(), workspace, PlanOptions{
+	plan, err := BuildPlan(context.Background(), workspace, &PlanOptions{
 		RepoRoot:     root,
 		ChangedFiles: []string{"workspace.codefly.yaml"},
 	})
@@ -102,7 +102,7 @@ func TestBuildPlanWorkspaceConfigurationSelectsAll(t *testing.T) {
 
 func TestBuildPlanGlobalSelectionSupersedesDirectPathDetails(t *testing.T) {
 	root, workspace := loadPlanFixture(t, "../../pkg/orchestration/testdata/module-layout")
-	plan, err := BuildPlan(context.Background(), workspace, PlanOptions{
+	plan, err := BuildPlan(context.Background(), workspace, &PlanOptions{
 		RepoRoot: root,
 		ChangedFiles: []string{
 			"modules/management/services/organization/code/organization.go",
@@ -124,7 +124,7 @@ func TestBuildPlanGlobalSelectionSupersedesDirectPathDetails(t *testing.T) {
 
 func TestBuildPlanLibraryChangeSelectsConsumers(t *testing.T) {
 	root, workspace := loadPlanFixture(t, "testdata/with-library")
-	plan, err := BuildPlan(context.Background(), workspace, PlanOptions{
+	plan, err := BuildPlan(context.Background(), workspace, &PlanOptions{
 		RepoRoot:     root,
 		ChangedFiles: []string{"libraries/shared-models/go/model.go"},
 	})
@@ -139,7 +139,7 @@ func TestBuildPlanLibraryChangeSelectsConsumers(t *testing.T) {
 
 func TestBuildPlanIgnoresDocumentationAndProviderMetadata(t *testing.T) {
 	root, workspace := loadPlanFixture(t, "../../pkg/orchestration/testdata/module-layout")
-	plan, err := BuildPlan(context.Background(), workspace, PlanOptions{
+	plan, err := BuildPlan(context.Background(), workspace, &PlanOptions{
 		RepoRoot:     root,
 		ChangedFiles: []string{"docs/ci.md", ".github/CODEOWNERS"},
 	})
@@ -154,7 +154,7 @@ func TestBuildPlanIgnoresDocumentationAndProviderMetadata(t *testing.T) {
 func TestBuildPlanInCIWithoutBoundsFailsClosedToAll(t *testing.T) {
 	t.Setenv("CI", "true")
 	root, workspace := loadPlanFixture(t, "../../pkg/orchestration/testdata/module-layout")
-	plan, err := BuildPlan(context.Background(), workspace, PlanOptions{RepoRoot: root})
+	plan, err := BuildPlan(context.Background(), workspace, &PlanOptions{RepoRoot: root})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func loadComposedPlanFixture(t *testing.T) (string, *resources.Workspace) {
 
 func TestDeclarationEditDoesNotSelectUnrelatedSuites(t *testing.T) {
 	root, workspace := loadSchedulerFixture(t)
-	plan, err := BuildPlan(context.Background(), workspace, PlanOptions{RepoRoot: root, ChangedFiles: []string{"modules/web/services/frontend/service.codefly.yaml"}})
+	plan, err := BuildPlan(context.Background(), workspace, &PlanOptions{RepoRoot: root, ChangedFiles: []string{"modules/web/services/frontend/service.codefly.yaml"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestRemovedDeclarationUsesReferenceDependents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := BuildPlan(context.Background(), workspace, PlanOptions{Base: "HEAD", ChangedFiles: []string{"modules/management/services/organization/service.codefly.yaml"}})
+	plan, err := BuildPlan(context.Background(), workspace, &PlanOptions{Base: "HEAD", ChangedFiles: []string{"modules/management/services/organization/service.codefly.yaml"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,12 +346,12 @@ func TestCommittedRemovalRequiresReferenceContainingDeclaration(t *testing.T) {
 	runCacheTestGit(t, root, "add", ".")
 	runCacheTestGit(t, root, "-c", "user.name=CI Test", "-c", "user.email=ci@example.com", "commit", "-m", "remove producer")
 	for _, base := range []string{"", "HEAD"} {
-		_, err := BuildPlan(context.Background(), workspace, PlanOptions{Base: base, ChangedFiles: []string{"modules/management/services/organization/service.codefly.yaml"}})
+		_, err := BuildPlan(context.Background(), workspace, &PlanOptions{Base: base, ChangedFiles: []string{"modules/management/services/organization/service.codefly.yaml"}})
 		if err == nil || !strings.Contains(err.Error(), "supply --base with a revision containing the declaration") {
 			t.Fatalf("base %q accepted unresolvable deletion: %v", base, err)
 		}
 	}
-	plan, err := BuildPlan(context.Background(), workspace, PlanOptions{Base: "HEAD~1", ChangedFiles: []string{"modules/management/services/organization/service.codefly.yaml"}})
+	plan, err := BuildPlan(context.Background(), workspace, &PlanOptions{Base: "HEAD~1", ChangedFiles: []string{"modules/management/services/organization/service.codefly.yaml"}})
 	if err != nil {
 		t.Fatal(err)
 	}

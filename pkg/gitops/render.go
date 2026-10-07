@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -71,7 +72,7 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 		return RenderResult{}, fmt.Errorf("resolve render destination: %w", err)
 	}
 	parent := filepath.Dir(destination)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
+	if err = os.MkdirAll(parent, 0o755); err != nil {
 		return RenderResult{}, fmt.Errorf("create render parent: %w", err)
 	}
 	stage, err := os.MkdirTemp(parent, ".codefly-render-")
@@ -81,10 +82,10 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	defer os.RemoveAll(stage)
 
 	owned := filepath.Join(stage, "tree")
-	if err := os.Mkdir(owned, 0o755); err != nil {
+	if err = os.Mkdir(owned, 0o755); err != nil {
 		return RenderResult{}, fmt.Errorf("create staged owned tree: %w", err)
 	}
-	if err := generate(ctx, owned); err != nil {
+	if err = generate(ctx, owned); err != nil {
 		return RenderResult{}, fmt.Errorf("generate staged manifests: %w", err)
 	}
 	// Before anything measures or validates the staged tree: a promotable render
@@ -94,6 +95,22 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err != nil {
 		return RenderResult{}, err
 	}
+	// Declared presence, before anything validates or measures the tree: the
+	// binding pins the digest of every rendered artifact, so it is written once
+	// the artifacts are final, and it is written BEFORE validateTree so the
+	// ConfigMaps that carry it are held to the same promotable ruleset as the
+	// rest of the tree, and before buildInventory so they are hashed into the
+	// render digest like any other delivered file.
+	bindings, err := renderSolutionHostBindings(owned, destination, opts)
+	if err != nil {
+		return RenderResult{}, err
+	}
+	opts.SolutionHostBindingPath = deliveredBindingPath(bindings)
+	authorities, err := renderAuthorityDocuments(owned, opts)
+	if err != nil {
+		return RenderResult{}, err
+	}
+	opts.SolutionAuthorityPath = deliveredAuthorityPath(authorities)
 	manifests, err := validateTree(owned, opts)
 	if err != nil {
 		return RenderResult{}, err
@@ -119,7 +136,7 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	}
 	canonical = append(canonical, '\n')
 	// The inventory contains public manifest identities and must remain inspectable beside the rendered files.
-	if err := os.WriteFile(filepath.Join(owned, InventoryFilename), canonical, 0o644); err != nil { //nolint:gosec
+	if err := os.WriteFile(filepath.Join(owned, InventoryFilename), canonical, 0o600); err != nil {
 		return RenderResult{}, fmt.Errorf("write render inventory: %w", err)
 	}
 	// A dev deployment is only ever cleared by a render; read what the tree
@@ -132,15 +149,21 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err := replaceOwnedTree(owned, destination); err != nil {
 		return RenderResult{}, err
 	}
-	return RenderResult{Path: destination, Inventory: inventory, Sizing: sizing, ElidedNamespaces: elided, ClearedDev: cleared}, nil
+	return RenderResult{
+		Path: destination, Inventory: inventory, Sizing: sizing,
+		ElidedNamespaces: elided, ClearedDev: cleared,
+		SolutionHostBindings: bindings,
+		UndeclaredPresence:   opts.UndeclaredPresence,
+		SolutionAuthorities:  authorities, UndeclaredAuthority: opts.UndeclaredAuthority,
+	}, nil
 }
 
 func LoadInventory(root string) (Inventory, error) {
-	return loadInventory(filepath.Join(root, InventoryFilename), "render")
+	return loadInventory(root, "render")
 }
 
-func loadInventory(path, label string) (Inventory, error) {
-	data, err := os.ReadFile(path)
+func loadInventory(directory, label string) (Inventory, error) {
+	data, err := readWithin(directory, InventoryFilename)
 	if err != nil {
 		return Inventory{}, fmt.Errorf("read %s inventory: %w", label, err)
 	}
@@ -159,7 +182,7 @@ func decodeInventory(data []byte, label string) (Inventory, error) {
 	if err := json.Unmarshal(data, &inventory); err != nil {
 		return Inventory{}, fmt.Errorf("decode %s inventory: %w", label, err)
 	}
-	if inventory.SchemaVersion != SchemaVersion && inventory.SchemaVersion != priorSchemaVersion {
+	if inventory.SchemaVersion != SchemaVersion {
 		return Inventory{}, fmt.Errorf("unsupported %s inventory schema %d", label, inventory.SchemaVersion)
 	}
 	canonical, err := json.MarshalIndent(inventory, "", "  ")
@@ -216,7 +239,15 @@ func ValidateServiceSnapshot(root string) error {
 	if err = validateInventoryUnits(&inventory); err != nil {
 		return err
 	}
+	// The render record at the root, the inventory, is the snapshot's own.
 	allowed := map[string]struct{}{InventoryFilename: {}, moduleBundleDir: {}}
+	// The delivery overlays the inventory records are part of the snapshot:
+	// the Applications that deliver them read the snapshot revision.
+	for _, path := range []string{inventory.SolutionHostBindingPath, inventory.SolutionAuthorityPath} {
+		if path != "" {
+			allowed[path] = struct{}{}
+		}
+	}
 	rendered := renderedUnits(&inventory)
 	for _, unit := range rendered {
 		directory, ok := unitDirectory(unit.Kind)
@@ -281,6 +312,11 @@ func validateSnapshotCoverage(inventory *Inventory) error {
 	covered := make(map[string]bool)
 	if inventory.ModulePath != "" {
 		covered[inventory.ModulePath] = false
+	}
+	for _, path := range []string{inventory.SolutionHostBindingPath, inventory.SolutionAuthorityPath} {
+		if path != "" {
+			covered[path] = false
+		}
 	}
 	for _, unit := range inventory.Units {
 		if unit.Path != "" {
@@ -445,11 +481,12 @@ func validateTree(root string, opts *RenderOptions) ([]manifest, error) {
 	}
 	var manifests []manifest
 	var kustomizations []kustomization
-	err := walkRegularFiles(root, func(path, relative string, _ os.FileInfo) error {
+	err := walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
+		// The render record at the tree root is not a manifest.
 		if relative == InventoryFilename {
 			return nil
 		}
-		data, err := os.ReadFile(path)
+		data, err := readWithin(root, relative)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", relative, err)
 		}
@@ -581,8 +618,7 @@ func validateUnitDirectories(root string, units []InventoryUnit, environment str
 			return fmt.Errorf("rendered unit graph is missing units %v", missing)
 		}
 		for name := range byDirectory[directory] {
-			overlay := filepath.Join(unitRoot, name, "overlays", environment)
-			info, err := os.Stat(overlay)
+			info, err := statWithin(unitRoot, filepath.Join(name, "overlays", environment))
 			if err != nil {
 				return fmt.Errorf("unit %s environment overlay %s: %w", name, environment, err)
 			}
@@ -618,13 +654,13 @@ func decodeYAML(path string, data []byte) ([]manifest, *kustomization, error) {
 			continue
 		}
 		base := strings.ToLower(filepath.Base(path))
-		if base == "kustomization.yaml" || base == "kustomization.yml" || base == "kustomization" || root["kind"] == "Kustomization" {
+		if base == "kustomization.yaml" || base == "kustomization.yml" || base == "kustomization" || root["kind"] == kindKustomization {
 			if customization != nil {
 				return nil, nil, fmt.Errorf("%s contains multiple Kustomization documents", path)
 			}
-			found, err := validateKustomization(path, root)
-			if err != nil {
-				return nil, nil, err
+			found, kustomizeErr := validateKustomization(path, root)
+			if kustomizeErr != nil {
+				return nil, nil, kustomizeErr
 			}
 			customization = &kustomization{
 				path: path, directory: filepath.ToSlash(filepath.Dir(filepath.FromSlash(path))),
@@ -697,7 +733,7 @@ func validateKustomization(path string, root map[string]any) ([]string, error) {
 			if filepath.IsAbs(filepath.FromSlash(value)) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 				return nil, fmt.Errorf("%s: kustomize %s %q escapes the owned tree", path, key, value)
 			}
-			if key == "resources" || key == "bases" || key == "components" {
+			if key == resourcesKey || key == "bases" || key == "components" {
 				references = append(references, filepath.ToSlash(clean))
 			}
 		}
@@ -730,7 +766,7 @@ func renderKustomizations(root string, kustomizations []kustomization) (map[stri
 	for _, customization := range kustomizations {
 		byDirectory[customization.directory] = customization
 		for _, reference := range customization.references {
-			if info, err := os.Stat(filepath.Join(root, filepath.FromSlash(reference))); err == nil && info.IsDir() {
+			if info, err := statWithin(root, filepath.FromSlash(reference)); err == nil && info.IsDir() {
 				referencedDirectories[reference] = true
 			}
 		}
@@ -773,8 +809,7 @@ func markKustomizationCoverage(root string, customization kustomization, byDirec
 	}
 	visiting[customization.directory] = true
 	for _, reference := range customization.references {
-		path := filepath.Join(root, filepath.FromSlash(reference))
-		info, err := os.Stat(path)
+		info, err := statWithin(root, filepath.FromSlash(reference))
 		if err != nil {
 			continue
 		}
@@ -792,7 +827,7 @@ func markKustomizationCoverage(root string, customization kustomization, byDirec
 func selectProjectContract(manifests []manifest, selected string) (*projectContract, error) {
 	projects := map[string]*projectContract{}
 	for _, item := range manifests {
-		if item.group != argoAPIGroup || item.kind != "AppProject" {
+		if item.group != argoAPIGroup || item.kind != kindAppProject {
 			continue
 		}
 		name := metadataString(item.value, "name")
@@ -806,8 +841,8 @@ func selectProjectContract(manifests []manifest, selected string) (*projectContr
 			destination, _ := raw.(map[string]any)
 			namespace, _ := destination["namespace"].(string)
 			server, _ := destination["server"].(string)
-			name, _ := destination["name"].(string)
-			if strings.Contains(namespace, "*") || strings.Contains(server, "*") || strings.Contains(name, "*") {
+			clusterName, _ := destination["name"].(string)
+			if strings.Contains(namespace, "*") || strings.Contains(server, "*") || strings.Contains(clusterName, "*") {
 				return nil, fmt.Errorf("%s: AppProject %s contains wildcard authority", item.path, contract.name)
 			}
 			if namespace != "" {
@@ -863,9 +898,9 @@ func validateManifest(item manifest, contract *projectContract, promotable bool)
 		if promotable {
 			return fmt.Errorf("secret resources are not allowed")
 		}
-		for _, key := range []string{"data", "stringData"} {
+		for _, key := range []string{dataKey, "stringData"} {
 			if values, ok := item.value[key].(map[string]any); ok && len(values) > 0 {
-				return fmt.Errorf("Kubernetes Secret values are not allowed")
+				return fmt.Errorf("values of a Kubernetes Secret are not allowed")
 			}
 		}
 	}
@@ -896,11 +931,11 @@ func validateManifest(item manifest, contract *projectContract, promotable bool)
 		spec, _ := item.value["spec"].(map[string]any)
 		project, _ := spec["project"].(string)
 		if project != contract.name {
-			return fmt.Errorf("Application project %q differs from selected AppProject %q", project, contract.name)
+			return fmt.Errorf("application project %q differs from selected AppProject %q", project, contract.name)
 		}
 	}
 	var allowCredentialReference, allowExpression func([]string) bool
-	if item.group == "external-secrets.io" && item.kind == "ExternalSecret" {
+	if item.group == externalSecretsGroup && item.kind == kindExternalSecret {
 		allowCredentialReference = externalSecretCredentialReference
 		allowExpression = externalSecretTemplateDataPath
 	}
@@ -914,7 +949,7 @@ func onlyExternalSecrets(manifests []manifest) bool {
 		return false
 	}
 	for _, item := range manifests {
-		if item.group != "external-secrets.io" || item.kind != kindExternalSecret {
+		if item.group != externalSecretsGroup || item.kind != kindExternalSecret {
 			return false
 		}
 	}
@@ -929,7 +964,7 @@ func externalSecretTemplateDataPath(path []string) bool {
 		path[0] == "spec" &&
 		path[1] == "target" &&
 		path[2] == "template" &&
-		path[3] == "data"
+		path[3] == dataKey
 }
 
 // externalSecretTemplateAction reports whether a template value computes from
@@ -987,10 +1022,92 @@ func validateApplicationSet(item manifest, contract *projectContract) error {
 	template, _ := spec["template"].(map[string]any)
 	templateSpec, _ := template["spec"].(map[string]any)
 	project, _ := templateSpec["project"].(string)
-	if contract != nil && project != contract.name {
-		return fmt.Errorf("ApplicationSet template project %q differs from selected AppProject %q", project, contract.name)
+	if contract != nil {
+		switch project {
+		case contract.name:
+		case "{{ .project }}":
+			// Stamped per component: every element names the selected project,
+			// or the authority project — and that one only into the authority
+			// namespace, which is the whole reason it is a separate project.
+			if err := validateComponentProjects(spec, contract.name); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("ApplicationSet template project %q differs from selected AppProject %q", project, contract.name)
+		}
 	}
 	return inspectTemplatedValue(item.value, nil)
+}
+
+// validateComponentProjects walks the list generators' elements of a bootstrap
+// ApplicationSet and holds each component's project and namespace to the two
+// projects a module may stamp.
+func validateComponentProjects(spec map[string]any, selected string) error {
+	authority := argoAuthorityProjectName(selected)
+	var walk func(value any) error
+	walk = func(value any) error {
+		switch typed := value.(type) {
+		case map[string]any:
+			if elements, ok := typed["elements"].([]any); ok {
+				for _, raw := range elements {
+					element, _ := raw.(map[string]any)
+					// The fields the Application template consumes, every
+					// one required: the overlay is the path Argo syncs, the
+					// project its authority. An element naming none of them
+					// is another generator's — the tenant matrix — and skipped.
+					named := 0
+					for _, key := range []string{"component", "overlay", "project", "namespace"} {
+						if _, present := element[key]; present {
+							named++
+						}
+					}
+					if named == 0 {
+						continue
+					}
+					project, _ := element["project"].(string)
+					component, _ := element["component"].(string)
+					overlay, _ := element["overlay"].(string)
+					namespace, _ := element["namespace"].(string)
+					if component == "" || overlay == "" || project == "" || namespace == "" {
+						return fmt.Errorf("ApplicationSet component %q (overlay %q, project %q, namespace %q) lacks a component, overlay, project or namespace, or carries one that is not a string; every stamped Application needs all four", component, overlay, project, namespace)
+					}
+					// The authority overlay, the authority project and the
+					// authority namespace name each other: a component under
+					// the module's project may not point at the overlay, and
+					// one under the authority project may point at nothing else.
+					underAuthority := strings.Contains("/"+overlay+"/", "/"+solutionAuthorityDir+"/")
+					switch project {
+					case selected:
+						if underAuthority {
+							return fmt.Errorf("ApplicationSet component %q points at the authority overlay %s but is stamped under the module project %q; the authority overlay is delivered under %q only", component, overlay, selected, authority)
+						}
+					case authority:
+						if namespace != authorityNamespace {
+							return fmt.Errorf("ApplicationSet component %q is stamped under the authority project into namespace %q; that project reaches %s only", component, namespace, authorityNamespace)
+						}
+						if !underAuthority {
+							return fmt.Errorf("ApplicationSet component %q is stamped under the authority project %q but points at %s, which is not the authority overlay; that project delivers the authority overlay only", component, authority, overlay)
+						}
+					default:
+						return fmt.Errorf("ApplicationSet component %q is stamped under project %q, which is neither the selected AppProject %q nor its authority project", element["component"], project, selected)
+					}
+				}
+			}
+			for _, child := range typed {
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+		case []any:
+			for _, child := range typed {
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return walk(spec["generators"])
 }
 
 // inspectTemplatedValue applies the authority and credential guards of
@@ -1121,7 +1238,7 @@ func inspectValueAllowingExpressions(
 func externalSecretCredentialReference(path []string) bool {
 	return len(path) == 4 &&
 		path[0] == "spec" &&
-		path[1] == "data" &&
+		path[1] == dataKey &&
 		strings.HasPrefix(path[2], "[") &&
 		path[3] == "secretKey"
 }
@@ -1226,7 +1343,7 @@ func isConfigurationDataPath(path []string) bool {
 	if len(path) != 1 {
 		return false
 	}
-	return path[0] == "data" || path[0] == "stringData"
+	return path[0] == dataKey || path[0] == "stringData"
 }
 
 func scalarHasValue(value any) bool {
@@ -1262,13 +1379,25 @@ func metadataString(value map[string]any, key string) string {
 	return result
 }
 
-func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
+// inventoryHead is the inventory as the render options declare it, before the
+// tree's files are measured: what the cell record is derived from.
+func inventoryHead(opts *RenderOptions) Inventory {
 	inventory := Inventory{
 		SchemaVersion: SchemaVersion,
 		Module:        opts.Module, Unit: opts.Unit, Environment: opts.Environment,
 		Namespace: opts.Namespace, AppProject: opts.AppProject, OwnedPath: filepath.ToSlash(opts.OwnedPath),
 		ModulePath: filepath.ToSlash(opts.ModulePath), Package: opts.Package,
-		Units: append([]InventoryUnit(nil), opts.Units...),
+		SolutionHostBindingPath: filepath.ToSlash(opts.SolutionHostBindingPath),
+		HostsDelivery:           opts.HostsDelivery || hostsDeliveryAPI(opts),
+		SolutionAuthorityPath:   filepath.ToSlash(opts.SolutionAuthorityPath),
+		Units:                   append([]InventoryUnit(nil), opts.Units...),
+	}
+	inventory.Delivery = opts.Delivered
+	if len(opts.WorkspaceConfigurationDigests) > 0 {
+		inventory.WorkspaceConfigurationDigests = make(map[string]string, len(opts.WorkspaceConfigurationDigests))
+		for group, digest := range opts.WorkspaceConfigurationDigests {
+			inventory.WorkspaceConfigurationDigests[group] = digest
+		}
 	}
 	if len(inventory.Units) == 0 {
 		serviceDir, _ := unitDirectory(UnitKindService)
@@ -1283,12 +1412,17 @@ func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
 	sort.Slice(inventory.Units, func(i, j int) bool {
 		return inventory.Units[i].Name < inventory.Units[j].Name
 	})
+	return inventory
+}
+
+func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
+	inventory := inventoryHead(opts)
 	hash := sha256.New()
-	err := walkRegularFiles(root, func(path, relative string, info os.FileInfo) error {
+	err := walkRegularFiles(root, func(_, relative string, info os.FileInfo) error {
 		if relative == InventoryFilename {
 			return nil
 		}
-		file, err := os.Open(path)
+		file, err := openWithin(root, relative)
 		if err != nil {
 			return fmt.Errorf("open %s: %w", relative, err)
 		}
@@ -1313,36 +1447,45 @@ func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
 }
 
 func walkRegularFiles(root string, visit func(path, relative string, info os.FileInfo) error) error {
-	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+	// The walk is confined to root: an entry that resolves outside it is
+	// refused by the operating system, and a symbolic link is refused here
+	// before anything follows it.
+	confined, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer confined.Close()
+	return fs.WalkDir(confined.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
-		if path == root {
+		if name == "." {
 			return nil
 		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
+		relative := filepath.FromSlash(name)
+		if entry.Type()&fs.ModeSymlink != 0 {
 			return fmt.Errorf("%s: symbolic links are not allowed in rendered output", relative)
 		}
-		if info.IsDir() {
+		if entry.IsDir() {
 			return nil
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return infoErr
 		}
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("%s: non-regular files are not allowed in rendered output", relative)
 		}
-		return visit(path, relative, info)
+		return visit(filepath.Join(root, relative), relative, info)
 	})
 }
 
 func replaceOwnedTree(stage, destination string) error {
 	if _, err := os.Stat(destination); err == nil {
-		if err := exchangeDirectories(stage, destination); err != nil {
+		if err = exchangeDirectories(stage, destination); err != nil {
 			return fmt.Errorf("atomically replace rendered owned tree: %w", err)
 		}
-		if err := os.RemoveAll(stage); err != nil {
+		if err = os.RemoveAll(stage); err != nil {
 			return fmt.Errorf("remove previous owned tree: %w", err)
 		}
 		return nil
@@ -1406,4 +1549,15 @@ func copyTreeEntry(destination, path, relative string, info os.FileInfo) error {
 		return flushErr
 	}
 	return closeErr
+}
+
+// hostsDeliveryAPI reports whether the module being rendered serves the
+// environment's delivery API — the host's own module, whose delivery must
+// follow its units rather than go beside them.
+func hostsDeliveryAPI(opts *RenderOptions) bool {
+	if opts.Host == nil {
+		return false
+	}
+	module, _, _ := opts.Host.DeliveryEndpoint()
+	return module != "" && module == opts.Module
 }

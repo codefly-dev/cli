@@ -94,7 +94,7 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 	// Pre-flight tag-existence check uses the bumped version (not the
 	// current). Done after bump so we can name the actual tag we'd
 	// create in the error message.
-	if err := e.assertTagDoesNotExist(ctx, newTag); err != nil {
+	if err = e.assertTagDoesNotExist(ctx, newTag); err != nil {
 		return "", err
 	}
 
@@ -105,7 +105,7 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 	}
 
 	for _, manifest := range manifests {
-		if err := manifest.WriteVersion(newVer); err != nil {
+		if err = manifest.WriteVersion(newVer); err != nil {
 			if restoreErr := e.restoreManifest(ctx); restoreErr != nil {
 				return "", errors.Join(fmt.Errorf("write version: %w", err), restoreErr)
 			}
@@ -117,7 +117,7 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 	// version bump. A failure here (e.g. release CI failed, or a required
 	// platform is missing) must leave the repo exactly as it was found.
 	if e.BeforeCommit != nil {
-		if err := e.BeforeCommit(ctx, newTag); err != nil {
+		if err = e.BeforeCommit(ctx, newTag); err != nil {
 			if restoreErr := e.restoreManifest(ctx); restoreErr != nil {
 				return "", errors.Join(err, restoreErr)
 			}
@@ -125,7 +125,7 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 		}
 	}
 
-	if err := e.gitCommit(ctx, newTag); err != nil {
+	if err = e.gitCommit(ctx, newTag); err != nil {
 		commitErr := fmt.Errorf("commit: %w", err)
 		if restoreErr := e.restoreManifest(ctx); restoreErr != nil {
 			return "", errors.Join(commitErr, restoreErr)
@@ -335,8 +335,10 @@ func isReleaseCommitFor(subject, tag string) bool {
 // gitCommit stages the manifest and creates a release commit. The
 // commit message is `release: <tag>` — short, indexable.
 func (e *Engine) gitCommit(ctx context.Context, tag string) error {
-	args := []string{"add"}
-	for _, manifest := range e.manifests() {
+	manifests := e.manifests()
+	args := make([]string, 0, 1+len(manifests))
+	args = append(args, "add")
+	for _, manifest := range manifests {
 		args = append(args, manifest.Path)
 	}
 	if _, err := e.git(ctx, args...); err != nil {

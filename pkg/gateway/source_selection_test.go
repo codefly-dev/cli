@@ -28,7 +28,7 @@ func TestGatewayDiscoveryHonorsCancellationWithoutHoldingServiceLock(t *testing.
 	marker := filepath.Join(t.TempDir(), "started")
 	t.Setenv("TEST_SOURCE_STARTED", marker)
 	t.Setenv("TEST_SOURCE_STARTUP_DELAY", "30s")
-	server, err := NewServer(Config{WorkDir: root})
+	server, err := NewServer(&Config{WorkDir: root})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, server.Close()) })
 
@@ -90,7 +90,7 @@ func TestCodeUnitSelectionUsesDeclaredIdentityWithoutDiscovery(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	root := t.TempDir()
 	writeCodeUnitFixture(t, root, "mind.yaml", "source_agents:\n  .: example.test/unknown:0.0.1\n")
-	server, err := NewServer(Config{WorkDir: root})
+	server, err := NewServer(&Config{WorkDir: root})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, server.Close()) })
 	_, err = server.serviceBehaviorForCodeUnit(t.Context(), normalizedCodeUnitTarget{id: "root", path: ".", root: root}, "")
@@ -103,7 +103,7 @@ func TestCodeUnitSelectionRejectsUnreachableConfigurationKeys(t *testing.T) {
 		t.Run(key, func(t *testing.T) {
 			root := t.TempDir()
 			writeCodeUnitFixture(t, root, "mind.yaml", "source_agents:\n  "+key+": example.test/unknown\n")
-			_, err := NewServer(Config{WorkDir: root})
+			_, err := NewServer(&Config{WorkDir: root})
 			require.ErrorContains(t, err, "canonical unit paths")
 		})
 	}

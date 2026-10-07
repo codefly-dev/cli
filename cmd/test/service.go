@@ -91,10 +91,10 @@ func testServiceCommand(cmd *cobra.Command, args []string) error {
 	}
 	serviceName := resources.WithUnique(service).Unique()
 
-	// The same federation injections the run path derives: a solution tested
-	// here must boot with CODEFLY__API_CONSUMES and its registration secrets
-	// set, or its consumed routes stay unrouted under test but not under run.
-	derived, derivedErr := solutionrun.DerivedRunInputs(ctx, workspace, module, service, serviceName)
+	// The same solution injection the run path derives: a solution tested here
+	// must boot with CODEFLY__API_CONSUMES set, or its consumed routes stay
+	// unrouted under test but not under run.
+	derived, derivedErr := solutionrun.DerivedRunInputs(module, service, serviceName)
 	if derivedErr != nil {
 		return derivedErr
 	}
@@ -283,7 +283,6 @@ func initRunService(ctx context.Context, workspace *resources.Workspace, module 
 	flow.WithFixture(selectedFixture)
 	flow.WithOutputEnv(outputEnv)
 	flow.WithOverrides(derived.Overrides)
-	flow.WithWorkspaceConfigurationValues(derived.WorkspaceConfigurations)
 	flow.WithTemporaryPorts(temporaryPorts)
 	if shouldIsolateInvocation(temporaryPorts, namingScopeExplicit) {
 		if invocation := flow.WithIsolatedInvocation(); invocation != "" {

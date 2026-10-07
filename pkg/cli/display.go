@@ -22,6 +22,9 @@ import (
 var outputSink atomic.Pointer[func(level wool.Loglevel, msg string)]
 
 // SetOutputSink installs (or, with nil, removes) the narration sink.
+// errorTheme is the golor theme every error line is rendered in.
+const errorTheme = "#(bold,red)"
+
 func SetOutputSink(fn func(level wool.Loglevel, msg string)) {
 	if fn == nil {
 		outputSink.Store(nil)
@@ -200,7 +203,7 @@ func (wrapper *Wrapper) Error(s string, args ...any) {
 	if emitToSink(wool.ERROR, fmt.Sprintf(s, args...)) {
 		return
 	}
-	theme := "#(bold,red)"
+	theme := errorTheme
 	fmt.Fprintln(os.Stderr, tui.RenderError(wrapper.View(theme, s, args...)))
 }
 
@@ -208,7 +211,7 @@ func (wrapper *Wrapper) ErrorDetail(s string, args ...any) {
 	if emitToSink(wool.ERROR, fmt.Sprintf(s, args...)) {
 		return
 	}
-	theme := "#(bold,red)"
+	theme := errorTheme
 	fmt.Fprintln(os.Stderr, tui.RenderErrorDetail(wrapper.View(theme, s, args...)))
 }
 
@@ -226,7 +229,7 @@ func (wrapper *Wrapper) Focus(s string, args ...any) {
 	if emitToSink(wool.FOCUS, fmt.Sprintf(s, args...)) {
 		return
 	}
-	theme := "#(bold,red)"
+	theme := errorTheme
 	fmt.Println(tui.RenderFocus(wrapper.View(theme, s, args...)))
 }
 

@@ -128,11 +128,11 @@ Examples:
 					return fmt.Errorf("cannot get working directory: %w", err)
 				}
 			}
-			absDir, err := filepath.Abs(dir)
-			if err != nil {
-				return fmt.Errorf("cannot resolve directory: %w", err)
+			absDir, absDirErr := filepath.Abs(dir)
+			if absDirErr != nil {
+				return fmt.Errorf("cannot resolve directory: %w", absDirErr)
 			}
-			if err := buildAllAgents(ctx, absDir, opts); err != nil {
+			if err = buildAllAgents(ctx, absDir, opts); err != nil {
 				return fmt.Errorf("build --all failed: %w", err)
 			}
 			return nil
@@ -227,10 +227,10 @@ func buildAllAgents(ctx context.Context, root string, opts buildOptions) error {
 	return buildAgents(ctx, root, dirs, opts)
 }
 
-func buildAgents(ctx context.Context, root string, dirs []string, opts buildOptions) error {
-	var agents []string
-	var quarantined []quarantinedAgent
-	var discoveryFailures []error
+// discoverBuildableAgents reads each directory's manifest and sorts the
+// agents into buildable and quarantined; a directory without a manifest is
+// not an agent, and an unreadable manifest is a discovery failure.
+func discoverBuildableAgents(dirs []string) (agents []string, quarantined []quarantinedAgent, discoveryFailures []error) {
 	for _, dir := range dirs {
 		name := filepath.Base(dir)
 		yamlPath := filepath.Join(dir, "agent.codefly.yaml")
@@ -257,18 +257,58 @@ func buildAgents(ctx context.Context, root string, dirs []string, opts buildOpti
 		}
 		agents = append(agents, dir)
 	}
+	return agents, quarantined, discoveryFailures
+}
 
-	if len(quarantined) > 0 {
-		cli.Header(2, "Skipping %d quarantined agent(s) (not migrated to the new style):", len(quarantined))
-		for _, q := range quarantined {
-			if q.reason != "" {
-				cli.Info("  - %s — %s", q.name, q.reason)
-			} else {
-				cli.Info("  - %s", q.name)
-			}
-		}
-		cli.Info("  (build one explicitly with `codefly agent build --dir <path>` to work on it)")
+// reportQuarantined names the agents a bulk build skips.
+func reportQuarantined(quarantined []quarantinedAgent) {
+	if len(quarantined) == 0 {
+		return
 	}
+	cli.Header(2, "Skipping %d quarantined agent(s) (not migrated to the new style):", len(quarantined))
+	for _, q := range quarantined {
+		if q.reason != "" {
+			cli.Info("  - %s — %s", q.name, q.reason)
+		} else {
+			cli.Info("  - %s", q.name)
+		}
+	}
+	cli.Info("  (build one explicitly with `codefly agent build --dir <path>` to work on it)")
+}
+
+// summarizeAgentBuilds prints the build summary and returns the labels of
+// the builds that failed.
+func summarizeAgentBuilds(results []*agentBuildResult, elapsed time.Duration) []string {
+	var failed []string
+	var seq time.Duration
+	built := 0
+	for _, res := range results {
+		if res.err != nil {
+			failed = append(failed, res.label)
+			continue
+		}
+		built++
+		seq += res.native + res.linux
+	}
+
+	cli.Header(1, "Build summary")
+	for _, res := range results {
+		if res.err != nil {
+			cli.Error("  ✗ %s — %v", res.label, res.err)
+		}
+	}
+	speedup := ""
+	if elapsed > 0 && seq > elapsed {
+		speedup = fmt.Sprintf(", ~%.1f× faster than sequential (%s)",
+			float64(seq)/float64(elapsed), seq.Round(100*time.Millisecond))
+	}
+	cli.Info("  %d built, %d failed in %s%s", built, len(failed), elapsed.Round(100*time.Millisecond), speedup)
+	return failed
+}
+
+func buildAgents(ctx context.Context, root string, dirs []string, opts buildOptions) error {
+	agents, quarantined, discoveryFailures := discoverBuildableAgents(dirs)
+	reportQuarantined(quarantined)
 
 	if len(agents) == 0 {
 		if len(quarantined) > 0 {
@@ -340,33 +380,7 @@ func buildAgents(ctx context.Context, root string, dirs []string, opts buildOpti
 		}
 	}
 
-	var failed []string
-	var seq time.Duration
-	built := 0
-	for _, res := range results {
-		if res.err != nil {
-			failed = append(failed, res.label)
-			continue
-		}
-		built++
-		seq += res.native + res.linux
-	}
-
-	cli.Header(1, "Build summary")
-	if len(failed) > 0 {
-		for _, res := range results {
-			if res.err != nil {
-				cli.Error("  ✗ %s — %v", res.label, res.err)
-			}
-		}
-	}
-	speedup := ""
-	if elapsed > 0 && seq > elapsed {
-		speedup = fmt.Sprintf(", ~%.1f× faster than sequential (%s)",
-			float64(seq)/float64(elapsed), seq.Round(100*time.Millisecond))
-	}
-	cli.Info("  %d built, %d failed in %s%s", built, len(failed), elapsed.Round(100*time.Millisecond), speedup)
-
+	failed := summarizeAgentBuilds(results, elapsed)
 	if len(failed) > 0 {
 		discoveryFailures = append(discoveryFailures, fmt.Errorf("%d agent(s) failed to build: %s", len(failed), strings.Join(failed, ", ")))
 	}
@@ -489,7 +503,7 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 	}
 
 	var ag agentYAML
-	if err := yaml.Unmarshal(data, &ag); err != nil {
+	if err = yaml.Unmarshal(data, &ag); err != nil {
 		res.err = fmt.Errorf("parse agent.codefly.yaml: %w", err)
 		return res
 	}
@@ -543,9 +557,9 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 	}
 	packageOutput := filepath.Join(temporary, "artifacts")
 	arguments := []string{
-		"--timestamps=false",
+		withoutTimestamps,
 		"package", "service", "source",
-		"--format", "json",
+		"--format", formatJSON,
 		"--output-dir", packageOutput,
 		"--name", binaryName,
 		"--publisher", ag.Publisher,
@@ -554,7 +568,7 @@ func compileAgent(ctx context.Context, dir string, log *agentLogger, nativeOnly,
 		"--target", runtime.GOOS + "/" + runtime.GOARCH,
 	}
 	if !nativeOnly {
-		arguments = append(arguments, "--target", "linux/amd64")
+		arguments = append(arguments, "--target", containerPlatform)
 	}
 	started := time.Now()
 	command := exec.CommandContext(ctx, executable, arguments...)
@@ -725,7 +739,7 @@ func buildSourcePackager(ctx context.Context, sourceDir, destination string, boo
 		return fmt.Errorf("create temporary executable: %w", err)
 	}
 	temporaryPath := temporary.Name()
-	if err := temporary.Close(); err != nil {
+	if err = temporary.Close(); err != nil {
 		_ = os.Remove(temporaryPath)
 		return fmt.Errorf("close temporary executable: %w", err)
 	}
@@ -748,7 +762,7 @@ func buildSourcePackager(ctx context.Context, sourceDir, destination string, boo
 	if !info.Mode().IsRegular() || info.Size() == 0 {
 		return fmt.Errorf("source bootstrap must emit a nonempty regular executable at CODEFLY_AGENT_OUTPUT")
 	}
-	if err := os.Chmod(temporaryPath, 0o755); err != nil {
+	if err = os.Chmod(temporaryPath, 0o755); err != nil {
 		return fmt.Errorf("mark bootstrap executable: %w", err)
 	}
 	file, err := os.Open(temporaryPath)
@@ -786,7 +800,7 @@ func installAgentPackageArtifacts(artifacts []*builderv0.PackageArtifact, result
 				destinations = append(destinations, result.nativePath+".cdx.json")
 			}
 		}
-		if result.containerPath != "" && target == "linux/amd64" {
+		if result.containerPath != "" && target == containerPlatform {
 			if artifact.GetKind() == builderv0.PackageArtifact_EXECUTABLE {
 				destinations = append(destinations, result.containerPath)
 				installedLinux = true
@@ -951,7 +965,7 @@ func runAgentSourceAudit(ctx context.Context, dir string, manifest *agentYAML) (
 
 func agentSourceAuditCommand(ctx context.Context, executable, directory, home string) *exec.Cmd {
 	command := exec.CommandContext(ctx, executable,
-		"--timestamps=false",
+		withoutTimestamps,
 		"audit", "service", "source",
 		"--json",
 		"--outdated=true",

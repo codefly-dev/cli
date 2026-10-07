@@ -345,7 +345,7 @@ func incomingExecutionContext(t *testing.T, operationID string) context.Context 
 
 func TestSubscribeWorkspaceChangesStreamsExternalEditsAndReplaysReconnect(t *testing.T) {
 	root := t.TempDir()
-	srv, err := NewServer(Config{WorkDir: root})
+	srv, err := NewServer(&Config{WorkDir: root})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1584,28 +1584,28 @@ func TestGitStatusString(t *testing.T) {
 
 func TestConfigBindHostDefaultsToLoopback(t *testing.T) {
 	// Empty Host = local-only, the safe default.
-	if got := (Config{}).bindHost(); got != "127.0.0.1" {
+	if got := (&Config{}).bindHost(); got != "127.0.0.1" {
 		t.Fatalf("empty Host bindHost() = %q, want 127.0.0.1", got)
 	}
-	if got := (Config{Host: "  "}).bindHost(); got != "127.0.0.1" {
+	if got := (&Config{Host: "  "}).bindHost(); got != "127.0.0.1" {
 		t.Fatalf("blank Host bindHost() = %q, want 127.0.0.1", got)
 	}
 	// Explicit host is honored — 0.0.0.0 exposes the gateway for the
 	// codefly-in-Docker data-plane model.
-	if got := (Config{Host: "0.0.0.0"}).bindHost(); got != "0.0.0.0" {
+	if got := (&Config{Host: "0.0.0.0"}).bindHost(); got != "0.0.0.0" {
 		t.Fatalf("Host=0.0.0.0 bindHost() = %q, want 0.0.0.0", got)
 	}
 }
 
 func TestNewServerRequiresTokenForNonLoopbackBind(t *testing.T) {
-	if _, err := NewServer(Config{WorkDir: t.TempDir(), Host: "0.0.0.0"}); err == nil {
+	if _, err := NewServer(&Config{WorkDir: t.TempDir(), Host: "0.0.0.0"}); err == nil {
 		t.Fatal("non-loopback gateway started without authentication")
 	}
-	if _, err := NewServer(Config{WorkDir: t.TempDir(), Host: "0.0.0.0", Token: "secret"}); err == nil {
+	if _, err := NewServer(&Config{WorkDir: t.TempDir(), Host: "0.0.0.0", Token: "secret"}); err == nil {
 		t.Fatal("non-loopback gateway started without TLS")
 	}
 	certFile, keyFile := writeTestTLSCertificate(t)
-	if _, err := NewServer(Config{
+	if _, err := NewServer(&Config{
 		WorkDir: t.TempDir(), Host: "0.0.0.0", Token: "secret",
 		TLSCertFile: certFile, TLSKeyFile: keyFile,
 	}); err != nil {
@@ -1615,14 +1615,14 @@ func TestNewServerRequiresTokenForNonLoopbackBind(t *testing.T) {
 
 func TestNewServerTLSConfiguration(t *testing.T) {
 	certFile, keyFile := writeTestTLSCertificate(t)
-	if _, err := NewServer(Config{WorkDir: t.TempDir(), TLSCertFile: certFile}); err == nil {
+	if _, err := NewServer(&Config{WorkDir: t.TempDir(), TLSCertFile: certFile}); err == nil {
 		t.Fatal("gateway accepted a TLS certificate without a key")
 	}
-	if _, err := NewServer(Config{WorkDir: t.TempDir(), TLSClientCAFile: certFile}); err == nil {
+	if _, err := NewServer(&Config{WorkDir: t.TempDir(), TLSClientCAFile: certFile}); err == nil {
 		t.Fatal("gateway accepted a client CA without a server certificate")
 	}
 
-	s, err := NewServer(Config{
+	s, err := NewServer(&Config{
 		WorkDir: t.TempDir(), TLSCertFile: certFile, TLSKeyFile: keyFile,
 		TLSClientCAFile: certFile,
 	})
@@ -1669,7 +1669,7 @@ func writeTestTLSCertificate(t *testing.T) (string, string) {
 func TestNewServerNormalizesWorkDirToAbsolute(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
-	s, err := NewServer(Config{WorkDir: "."})
+	s, err := NewServer(&Config{WorkDir: "."})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1680,7 +1680,7 @@ func TestNewServerNormalizesWorkDirToAbsolute(t *testing.T) {
 }
 
 func TestGatewayCloseReapsTerminalsAndRejectsPathEscape(t *testing.T) {
-	s, err := NewServer(Config{WorkDir: t.TempDir()})
+	s, err := NewServer(&Config{WorkDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1748,7 +1748,7 @@ func TestFormattableChangedPaths(t *testing.T) {
 		{Path: "old.go -> new.go", Code: "R "}, // renamed: format the destination
 		{Path: "new.txt", Code: "??"},          // untracked new file: still format it
 	}}
-	got := formattableChangedPaths(st)
+	got := formattableChangedPaths(&st)
 	want := []string{"a.go", "new.go", "new.txt"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)

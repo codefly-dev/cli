@@ -81,9 +81,9 @@ type ciResultRecord struct {
 }
 
 type ciResultEvidence struct {
-	Audit     *CIReportAudit     `json:"audit,omitempty"`
-	Drift     *CIReportDrift     `json:"drift,omitempty"`
-	Artifacts []CIReportArtifact `json:"artifacts"`
+	Audit     *ReportAudit     `json:"audit,omitempty"`
+	Drift     *ReportDrift     `json:"drift,omitempty"`
+	Artifacts []ReportArtifact `json:"artifacts"`
 }
 
 func (record *ciResultRecord) sign(key []byte) (string, error) {
@@ -337,7 +337,7 @@ func missedReuse(reason string) ciReuseDecision {
 // lookup returns the verified record a task may stand on, or why it may not.
 // Artifacts are not restored here: nothing is written to the workspace until the
 // record itself has been accepted.
-func (reuse *ciResultReuse) lookup(identity *CICacheIdentity, phase string) ciReuseDecision {
+func (reuse *ciResultReuse) lookup(identity *CacheIdentity, phase string) ciReuseDecision {
 	if eligible, reason := identity.reuseEligibility(); !eligible {
 		return ineligibleReuse(reason)
 	}
@@ -400,7 +400,8 @@ func (reuse *ciResultReuse) lookup(identity *CICacheIdentity, phase string) ciRe
 // produced and verifies each one on disk, so a downstream task consuming a hit
 // reads the same bytes the original execution wrote.
 func (reuse *ciResultReuse) restore(record *ciResultRecord) error {
-	for _, artifact := range record.Evidence.Artifacts {
+	for index := range record.Evidence.Artifacts {
+		artifact := &record.Evidence.Artifacts[index]
 		payload, err := reuse.store.blob(artifact.SHA256)
 		if err != nil {
 			return fmt.Errorf("restore artifact %s: %w", artifact.Path, err)
@@ -434,10 +435,11 @@ func (reuse *ciResultReuse) artifactPath(relative string) (string, error) {
 // record captures a task that actually executed and passed. Artifact bytes are
 // read back from the workspace and re-hashed here, so a record can only name
 // content that exists and matches what the report claims.
-func (reuse *ciResultReuse) record(task *CIReportTask) (*ciResultRecord, map[string][]byte, error) {
+func (reuse *ciResultReuse) record(task *ReportTask) (*ciResultRecord, map[string][]byte, error) {
 	blobs := map[string][]byte{}
-	artifacts := make([]CIReportArtifact, 0, len(task.Artifacts))
-	for _, artifact := range task.Artifacts {
+	artifacts := make([]ReportArtifact, 0, len(task.Artifacts))
+	for index := range task.Artifacts {
+		artifact := &task.Artifacts[index]
 		path, err := reuse.artifactPath(artifact.Path)
 		if err != nil {
 			return nil, nil, err
@@ -450,7 +452,7 @@ func (reuse *ciResultReuse) record(task *CIReportTask) (*ciResultRecord, map[str
 			return nil, nil, fmt.Errorf("artifact %s changed after it was reported", artifact.Path)
 		}
 		blobs[artifact.SHA256] = payload
-		artifacts = append(artifacts, artifact)
+		artifacts = append(artifacts, *artifact)
 	}
 	record := &ciResultRecord{
 		Schema:         ciResultRecordSchema,
@@ -480,7 +482,7 @@ func (reuse *ciResultReuse) record(task *CIReportTask) (*ciResultRecord, map[str
 	return record, blobs, nil
 }
 
-func (reuse *ciResultReuse) publish(task *CIReportTask) error {
+func (reuse *ciResultReuse) publish(task *ReportTask) error {
 	record, blobs, err := reuse.record(task)
 	if err != nil {
 		return err

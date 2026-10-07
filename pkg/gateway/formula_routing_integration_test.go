@@ -12,7 +12,7 @@ import (
 // A formula describes work, not an agent identity or a compatibility exception.
 func TestFormulaDoesNotSelectConcreteAgentOnMarkerlessSource(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
-	server, err := NewServer(Config{WorkDir: t.TempDir()})
+	server, err := NewServer(&Config{WorkDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}

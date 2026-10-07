@@ -72,7 +72,7 @@ func recommendedMain(ctx context.Context, cmds []dockerfile.Command) (*MainServi
 	return nil, fmt.Errorf("no FROM command found")
 }
 
-func RecommendBaseFromDocker(ctx context.Context, image string) (*MainServiceRecommendation, error) {
+func RecommendBaseFromDocker(_ context.Context, _ string) (*MainServiceRecommendation, error) {
 	return NewGoBase([]AgentRecommendation{
 		{Name: "codefly.ai/go:latest", Description: "Go base image", Reason: "Go is awesome"},
 		{Name: "codefly.ai/go-grpc:latest", Description: "Go with gRPC/REST", Reason: "Get a lot more done with less code"},

@@ -19,7 +19,7 @@ import (
 type CodeflyServer struct {
 	// app    *module.Module
 	server *go_grpc.Server
-	rest   *go_grpc.HttpServer
+	rest   *go_grpc.HTTPServer
 }
 
 type ServerData struct {
@@ -66,7 +66,7 @@ func NewServer(input ServerData) (*CodeflyServer, error) {
 	if config.ControlSocket != "" {
 		return &CodeflyServer{server: server}, nil
 	}
-	rest, err := go_grpc.NewHttpServer(&config, server)
+	rest, err := go_grpc.NewHTTPServer(&config, server)
 	if err != nil {
 		return nil, err
 	}

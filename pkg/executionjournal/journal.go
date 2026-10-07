@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,9 +37,9 @@ var (
 	ErrInvalid = errors.New("invalid Codefly execution journal input")
 	// ErrConflict is returned when an immutable receipt, stage, or attempt
 	// binding is reused with different facts.
-	ErrConflict = errors.New("Codefly execution journal conflict")
+	ErrConflict = errors.New("execution journal conflict")
 	// ErrClosed is returned after the journal has been closed.
-	ErrClosed = errors.New("Codefly execution journal is closed")
+	ErrClosed = errors.New("execution journal is closed")
 
 	metaBucket           = []byte("meta")
 	recordsBucket        = []byte("records")
@@ -186,7 +187,11 @@ func (j *Journal) Append(ctx context.Context, attestation *executionv1.Execution
 	if err != nil {
 		return AppendResult{}, err
 	}
-	stageKey := appendStage(attemptKey, receipt.GetStage())
+	stageCode, err := stageByte(receipt.GetStage())
+	if err != nil {
+		return AppendResult{}, err
+	}
+	stageKey := appendStage(attemptKey, stageCode)
 
 	var result AppendResult
 	err = j.db.Update(func(tx *bolt.Tx) error {
@@ -211,13 +216,13 @@ func (j *Journal) Append(ctx context.Context, attestation *executionv1.Execution
 			return fmt.Errorf("%w: attempt already has a terminal stage", ErrConflict)
 		}
 		if receipt.GetStage() == executionv1.ExecutionStage_EXECUTION_STAGE_ADMITTED {
-			startedKey := appendStage(attemptKey, executionv1.ExecutionStage_EXECUTION_STAGE_STARTED)
+			startedKey := appendStage(attemptKey, byte(executionv1.ExecutionStage_EXECUTION_STAGE_STARTED))
 			if stages.Get(startedKey) != nil {
 				return fmt.Errorf("%w: ADMITTED cannot be appended after STARTED", ErrConflict)
 			}
 		}
 		if terminal(receipt.GetStage()) {
-			startedKey := appendStage(attemptKey, executionv1.ExecutionStage_EXECUTION_STAGE_STARTED)
+			startedKey := appendStage(attemptKey, byte(executionv1.ExecutionStage_EXECUTION_STAGE_STARTED))
 			if stages.Get(startedKey) == nil {
 				return fmt.Errorf("%w: terminal stage requires a durable STARTED receipt", ErrConflict)
 			}
@@ -227,22 +232,22 @@ func (j *Journal) Append(ctx context.Context, attestation *executionv1.Execution
 			if !bytes.Equal(existing, bindingHash[:]) {
 				return fmt.Errorf("%w: attempt binding changed between stages", ErrConflict)
 			}
-		} else if err := bindings.Put(attemptKey, bindingHash[:]); err != nil {
+		} else if err = bindings.Put(attemptKey, bindingHash[:]); err != nil {
 			return err
 		}
 
-		sequence, err := nextSequence(tx.Bucket(metaBucket))
-		if err != nil {
-			return err
+		sequence, sequenceErr := nextSequence(tx.Bucket(metaBucket))
+		if sequenceErr != nil {
+			return sequenceErr
 		}
 		sequenceKey := encodeSequence(sequence)
-		if err := tx.Bucket(recordsBucket).Put(sequenceKey, payload); err != nil {
+		if err = tx.Bucket(recordsBucket).Put(sequenceKey, payload); err != nil {
 			return err
 		}
-		if err := index.Put([]byte(receipt.GetReceiptId()), encodeIndex(sequence, recordHash)); err != nil {
+		if err = index.Put([]byte(receipt.GetReceiptId()), encodeIndex(sequence, recordHash)); err != nil {
 			return err
 		}
-		if err := stages.Put(stageKey, []byte(receipt.GetReceiptId())); err != nil {
+		if err = stages.Put(stageKey, []byte(receipt.GetReceiptId())); err != nil {
 			return err
 		}
 		result = AppendResult{Sequence: sequence}
@@ -523,7 +528,7 @@ func (j *Journal) PruneAcknowledgedThroughFor(
 				return err
 			}
 			attestation := &executionv1.ExecutionAttestationV1{}
-			if err := proto.Unmarshal(value, attestation); err != nil {
+			if err = proto.Unmarshal(value, attestation); err != nil {
 				return err
 			}
 			attemptKey, _, err := attemptIdentity(attestation.GetReceipt())
@@ -563,7 +568,11 @@ func (j *Journal) PruneAcknowledgedThroughFor(
 				if err := deleteReceiptAcknowledgements(tx.Bucket(ackBucket), receipt.GetReceiptId()); err != nil {
 					return err
 				}
-				if err := tx.Bucket(stageIndexBucket).Delete(appendStage(attemptKey, receipt.GetStage())); err != nil {
+				stageCode, codeErr := stageByte(receipt.GetStage())
+				if codeErr != nil {
+					return codeErr
+				}
+				if err := tx.Bucket(stageIndexBucket).Delete(appendStage(attemptKey, stageCode)); err != nil {
 					return err
 				}
 				pruned++
@@ -655,7 +664,7 @@ func ensurePrivateDirectory(path string) error {
 	info, err := os.Lstat(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		if err := os.MkdirAll(path, 0o700); err != nil {
+		if err = os.MkdirAll(path, 0o700); err != nil {
 			return fmt.Errorf("create execution journal directory: %w", err)
 		}
 		info, err = os.Lstat(path)
@@ -751,14 +760,21 @@ func attemptIdentity(receipt *executionv1.ExecutionReceiptV1) ([]byte, [sha256.S
 		receipt.GetOperationId(),
 		receipt.GetAttemptId(),
 	} {
+		size := len(value)
+		if size > math.MaxInt32 {
+			return nil, [sha256.Size]byte{}, fmt.Errorf("%w: receipt identity component of %d bytes", ErrInvalid, size)
+		}
 		var length [4]byte
-		binary.BigEndian.PutUint32(length[:], uint32(len(value)))
+		binary.BigEndian.PutUint32(length[:], uint32(size))
 		_, _ = keyHash.Write(length[:])
 		_, _ = keyHash.Write([]byte(value))
 	}
 	attemptKey := keyHash.Sum(nil)
 
-	binding := proto.Clone(receipt).(*executionv1.ExecutionReceiptV1)
+	binding, ok := proto.Clone(receipt).(*executionv1.ExecutionReceiptV1)
+	if !ok {
+		return nil, [sha256.Size]byte{}, fmt.Errorf("%w: cloned receipt is a %T", ErrInvalid, proto.Clone(receipt))
+	}
 	binding.ReceiptId = ""
 	binding.Stage = executionv1.ExecutionStage_EXECUTION_STAGE_UNSPECIFIED
 	binding.CompletedAt = nil
@@ -774,10 +790,19 @@ func attemptIdentity(receipt *executionv1.ExecutionReceiptV1) ([]byte, [sha256.S
 	return attemptKey, sha256.Sum256(payload), nil
 }
 
-func appendStage(attemptKey []byte, stage executionv1.ExecutionStage) []byte {
+// stageByte is a stage as the stage key carries it, one byte: a value no
+// named stage has is refused rather than wrapped into another stage's key.
+func stageByte(stage executionv1.ExecutionStage) (byte, error) {
+	if _, named := executionv1.ExecutionStage_name[int32(stage)]; !named || stage < 0 || stage > math.MaxUint8 {
+		return 0, fmt.Errorf("%w: execution stage %d is not one this journal records", ErrInvalid, stage)
+	}
+	return byte(stage), nil
+}
+
+func appendStage(attemptKey []byte, stage byte) []byte {
 	key := make([]byte, len(attemptKey)+1)
 	copy(key, attemptKey)
-	key[len(attemptKey)] = byte(stage)
+	key[len(attemptKey)] = stage
 	return key
 }
 
@@ -801,11 +826,11 @@ func terminal(stage executionv1.ExecutionStage) bool {
 }
 
 func hasTerminal(stages *bolt.Bucket, attemptKey []byte) bool {
-	for _, stage := range []executionv1.ExecutionStage{
-		executionv1.ExecutionStage_EXECUTION_STAGE_SUCCEEDED,
-		executionv1.ExecutionStage_EXECUTION_STAGE_FAILED,
-		executionv1.ExecutionStage_EXECUTION_STAGE_COMPENSATED,
-		executionv1.ExecutionStage_EXECUTION_STAGE_UNCERTAIN,
+	for _, stage := range []byte{
+		byte(executionv1.ExecutionStage_EXECUTION_STAGE_SUCCEEDED),
+		byte(executionv1.ExecutionStage_EXECUTION_STAGE_FAILED),
+		byte(executionv1.ExecutionStage_EXECUTION_STAGE_COMPENSATED),
+		byte(executionv1.ExecutionStage_EXECUTION_STAGE_UNCERTAIN),
 	} {
 		if stages.Get(appendStage(attemptKey, stage)) != nil {
 			return true

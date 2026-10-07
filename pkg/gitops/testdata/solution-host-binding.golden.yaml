@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: solution-host-binding-example.prod.crm
+    namespace: crm
+    labels:
+        app.kubernetes.io/managed-by: codefly
+        codefly.dev/binding: example.prod.crm
+        codefly.dev/document: solution-host-binding
+        codefly.dev/solution: crm
+data:
+    solution-host-binding.codefly.yaml: |
+        schema: codefly/solution-host-binding/v2
+        kind: solution
+        binding: example.prod.crm
+        generation: 1
+        ownership_domain: example
+        envelope_revision: 1
+        host:
+            coordinate: example/prod/region-a
+            component: platform-host
+        release:
+            publisher: example
+            name: crm
+            version: 1.4.0
+            digest: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+        routes:
+            - alias: crm
+              surface: backend
+        artifacts:
+            - surface: backend
+              name: api
+              release: example/crm@1.4.0
+              digest: sha256:08d4291cfc0199399fc5e9a411a323862828304e948357159a3b1f98d02841df
+        workloads:
+            - name: api
+              artifact: api
+              container: api
+              image:
+                repository: ghcr.io/codefly-dev/api
+                digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+              identity:
+                audience: accounts
+                subject: crm@example.iam.test
+                spiffe_id: spiffe://cluster.example/ns/crm/sa/api
+              non_authenticating: []
+        modules:
+            - module: crm
+              package: example/crm
+              version: 1.4.0
+        endpoints:
+            - name: grpc
+              service: api
+              module: crm
+              api: grpc
+              visibility: internal

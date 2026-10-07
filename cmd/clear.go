@@ -213,91 +213,13 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 		w.Info("full reset")
 	}
 
-	if !options.keepProcesses {
-		// Match codefly-owned processes by their EXECUTABLE, not by a substring
-		// over the whole command line. The old `ps aux | grep codefly.dev`
-		// matched any process whose argv merely mentioned the repo path — an
-		// editor, a `tail -f`, a build — and kill -9'd it. Agent binaries always
-		// live under ~/.codefly/agents/, and the CLI itself is the `codefly`
-		// executable; nothing else qualifies.
-		self := os.Getpid()
-		pids, err := codeflyOwnedPIDs(ctx, self, options.scope)
-		if err != nil {
-			w.Warn("cannot enumerate codefly processes", wool.ErrField(err))
-			failures = append(failures, err)
-		}
-		switch {
-		case options.dryRun:
-			w.Info("would kill codefly processes", wool.Field("count", len(pids)), wool.Field("pids", pids))
-		case len(pids) == 0:
-			w.Info("no codefly processes running")
-		default:
-			killed := 0
-			for _, pid := range pids {
-				p, err := os.FindProcess(pid)
-				if err != nil {
-					failures = append(failures, fmt.Errorf("find process %d: %w", pid, err))
-					continue
-				}
-				if err := p.Kill(); err != nil {
-					failures = append(failures, fmt.Errorf("kill process %d: %w", pid, err))
-					continue
-				}
-				killed++
-			}
-			w.Info("killed codefly processes", wool.Field("killed", killed), wool.Field("total", len(pids)))
-			// SIGKILL is asynchronous: the agents we just signalled are not yet
-			// reaped, so the native binaries they supervised have not yet
-			// reparented to init. The orphan sweeps below decide a group is
-			// reapable only once its supervisor is gone (groupIsStale), so racing
-			// them against a still-dying agent would leave the just-orphaned
-			// binary looking supervised and skip it. Wait for the agents to exit
-			// before sweeping so a `clear` that killed a live run still reaps the
-			// natives it just orphaned.
-			waitProcessesExited(ctx, pids, killedProcessSettle)
-		}
-	} else {
+	if options.keepProcesses {
 		w.Info("keeping processes (--keep-processes)")
-	}
-
-	// Stale state left by crashed/exited CLIs: per-spawn UDS sockets under
-	// /tmp/codefly-uds and process-group tracking files under ~/.codefly/runs.
-	// These accumulate over time and were never cleaned by `clear`.
-	if options.dryRun {
-		if n := manager.CountStaleAgentSockets(); n > 0 {
-			w.Info("would remove stale agent sockets", wool.Field("count", n))
-		} else {
-			w.Info("no stale agent sockets")
-		}
 	} else {
-		if n := manager.SweepStaleAgentSockets(); n > 0 {
-			w.Info("removed stale agent sockets", wool.Field("count", n))
-		} else {
-			w.Info("no stale agent sockets")
-		}
-		var processEvidence processgroup.CleanupEvidence
-		var processErr error
-		if options.keepProcesses {
-			processEvidence, processErr = processgroup.ReapStaleProcessGroupsWithEvidence(ctx, options.scope)
-		} else {
-			processEvidence, processErr = processgroup.StopManagedProcessGroups(ctx, options.scope)
-		}
-		if processErr != nil {
-			w.Warn("cannot reap stale process groups", wool.ErrField(processErr))
-			failures = append(failures, fmt.Errorf("reap stale process groups: %w", processErr))
-		} else if recovered := processEvidence.RecoveredPGIDs(); len(recovered) > 0 {
-			w.Info("reaped managed process groups", wool.Field("count", len(recovered)), wool.Field("pgids", recovered))
-		} else {
-			w.Info("managed process groups reconciled")
-		}
-		// Say what was deliberately left running. Silence here reads as "nothing
-		// was up", which is the opposite of the truth and the reason someone
-		// reaches for --all without knowing what it will take with it.
-		if left := processEvidence.OutOfScope; len(left) > 0 {
-			w.Info("left other workspaces' process groups running", wool.Field("count", len(left)), wool.Field("pgids", left), wool.Field("hint", "--all to include them"))
-		}
+		failures = append(failures, killCodeflyProcesses(ctx, w, options)...)
 	}
 
+	failures = append(failures, sweepStaleState(ctx, w, options)...)
 	failures = append(failures, reapOrphanedDevServers(ctx, w, options)...)
 	failures = append(failures, reapOrphanedNativeServices(ctx, w, options)...)
 
@@ -312,7 +234,7 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 		return errors.Join(failures...)
 	}
 	defer func() {
-		if err := dockerCLI.Close(); err != nil {
+		if err = dockerCLI.Close(); err != nil {
 			returnErr = errors.Join(returnErr, fmt.Errorf("close docker client: %w", err))
 		}
 	}()
@@ -326,31 +248,142 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 		return errors.Join(failures...)
 	}
 
+	removed, removeFailures := removeCodeflyContainers(ctx, w, dockerCLI, cos, args, options.dryRun)
+	failures = append(failures, removeFailures...)
+	switch {
+	case removed == 0 && len(args) > 0:
+		w.Info("no containers matched filter", wool.Field("filter", args))
+	case removed == 0:
+		w.Info("no codefly containers found")
+	case options.dryRun:
+		w.Info("containers would be removed", wool.Field("count", removed))
+	default:
+		w.Info("removed containers", wool.Field("count", removed))
+	}
+	clearNixDataNote(w)
+	return errors.Join(failures...)
+}
+
+// killCodeflyProcesses kills every codefly-owned process in scope, or lists
+// them on a dry run, and waits for the killed ones to exit.
+func killCodeflyProcesses(ctx context.Context, w *wool.Wool, options clearOptions) []error {
+	var failures []error
+	// Match codefly-owned processes by their EXECUTABLE, not by a substring
+	// over the whole command line. The old `ps aux | grep codefly.dev`
+	// matched any process whose argv merely mentioned the repo path — an
+	// editor, a `tail -f`, a build — and kill -9'd it. Agent binaries always
+	// live under ~/.codefly/agents/, and the CLI itself is the `codefly`
+	// executable; nothing else qualifies.
+	self := os.Getpid()
+	pids, err := codeflyOwnedPIDs(ctx, self, options.scope)
+	if err != nil {
+		w.Warn("cannot enumerate codefly processes", wool.ErrField(err))
+		failures = append(failures, err)
+	}
+	switch {
+	case options.dryRun:
+		w.Info("would kill codefly processes", wool.Field("count", len(pids)), wool.Field("pids", pids))
+	case len(pids) == 0:
+		w.Info("no codefly processes running")
+	default:
+		killed := 0
+		for _, pid := range pids {
+			p, findErr := os.FindProcess(pid)
+			if findErr != nil {
+				failures = append(failures, fmt.Errorf("find process %d: %w", pid, findErr))
+				continue
+			}
+			if killErr := p.Kill(); killErr != nil {
+				failures = append(failures, fmt.Errorf("kill process %d: %w", pid, killErr))
+				continue
+			}
+			killed++
+		}
+		w.Info("killed codefly processes", wool.Field("killed", killed), wool.Field("total", len(pids)))
+		// SIGKILL is asynchronous: the agents we just signalled are not yet
+		// reaped, so the native binaries they supervised have not yet
+		// reparented to init. The orphan sweeps below decide a group is
+		// reapable only once its supervisor is gone (groupIsStale), so racing
+		// them against a still-dying agent would leave the just-orphaned
+		// binary looking supervised and skip it. Wait for the agents to exit
+		// before sweeping so a `clear` that killed a live run still reaps the
+		// natives it just orphaned.
+		waitProcessesExited(ctx, pids, killedProcessSettle)
+	}
+	return failures
+}
+
+// sweepStaleState removes the state crashed or exited CLIs left behind —
+// per-spawn UDS sockets under /tmp/codefly-uds and process-group tracking
+// files under ~/.codefly/runs — or counts it on a dry run.
+func sweepStaleState(ctx context.Context, w *wool.Wool, options clearOptions) []error {
+	if options.dryRun {
+		if n := manager.CountStaleAgentSockets(); n > 0 {
+			w.Info("would remove stale agent sockets", wool.Field("count", n))
+		} else {
+			w.Info("no stale agent sockets")
+		}
+		return nil
+	}
+	if n := manager.SweepStaleAgentSockets(); n > 0 {
+		w.Info("removed stale agent sockets", wool.Field("count", n))
+	} else {
+		w.Info("no stale agent sockets")
+	}
+	var processEvidence processgroup.CleanupEvidence
+	var processErr error
+	if options.keepProcesses {
+		processEvidence, processErr = processgroup.ReapStaleProcessGroupsWithEvidence(ctx, options.scope)
+	} else {
+		processEvidence, processErr = processgroup.StopManagedProcessGroups(ctx, options.scope)
+	}
+	var failures []error
+	if processErr != nil {
+		w.Warn("cannot reap stale process groups", wool.ErrField(processErr))
+		failures = append(failures, fmt.Errorf("reap stale process groups: %w", processErr))
+	} else if recovered := processEvidence.RecoveredPGIDs(); len(recovered) > 0 {
+		w.Info("reaped managed process groups", wool.Field("count", len(recovered)), wool.Field("pgids", recovered))
+	} else {
+		w.Info("managed process groups reconciled")
+	}
+	// Say what was deliberately left running. Silence here reads as "nothing
+	// was up", which is the opposite of the truth and the reason someone
+	// reaches for --all without knowing what it will take with it.
+	if left := processEvidence.OutOfScope; len(left) > 0 {
+		w.Info("left other workspaces' process groups running", wool.Field("count", len(left)), wool.Field("pgids", left), wool.Field("hint", "--all to include them"))
+	}
+	return failures
+}
+
+// containerMatchesFilter: with no filter everything codefly-owned matches;
+// with one, the name must contain at least one of its words.
+func containerMatchesFilter(name string, args []string) bool {
+	if len(args) == 0 {
+		return true
+	}
+	for _, arg := range args {
+		if strings.Contains(name, arg) {
+			return true
+		}
+	}
+	return false
+}
+
+// removeCodeflyContainers removes every codefly-owned container the filter
+// matches, or counts them on a dry run.
+func removeCodeflyContainers(ctx context.Context, w *wool.Wool, dockerCLI *client.Client, containers []container.Summary, args []string, dryRun bool) (int, []error) {
 	removed := 0
-	for _, c := range cos {
+	var failures []error
+	for index := range containers {
+		c := &containers[index]
 		if len(c.Names) == 0 {
 			continue
 		}
 		name := c.Names[0]
-		if !strings.HasPrefix(name, "/codefly") {
+		if !strings.HasPrefix(name, "/codefly") || !containerMatchesFilter(name, args) {
 			continue
 		}
-		// Filter: if any args were given, the container name must
-		// contain at least one of them. With no args, everything
-		// codefly-owned matches.
-		if len(args) > 0 {
-			match := false
-			for _, arg := range args {
-				if strings.Contains(name, arg) {
-					match = true
-					break
-				}
-			}
-			if !match {
-				continue
-			}
-		}
-		if options.dryRun {
+		if dryRun {
 			w.Info("would remove container", wool.Field("container", strings.TrimPrefix(name, "/")), wool.Field("state", c.State))
 			removed++
 			continue
@@ -369,18 +402,7 @@ func clearCommand(ctx context.Context, args []string, options clearOptions) (ret
 		}
 		removed++
 	}
-	switch {
-	case removed == 0 && len(args) > 0:
-		w.Info("no containers matched filter", wool.Field("filter", args))
-	case removed == 0:
-		w.Info("no codefly containers found")
-	case options.dryRun:
-		w.Info("containers would be removed", wool.Field("count", removed))
-	default:
-		w.Info("removed containers", wool.Field("count", removed))
-	}
-	clearNixDataNote(w)
-	return errors.Join(failures...)
+	return removed, failures
 }
 
 // clearNixDataNote explains the one thing `clear` deliberately does NOT touch:

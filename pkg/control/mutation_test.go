@@ -126,7 +126,7 @@ func TestDeployRefusedUnderPreparedAuthority(t *testing.T) {
 	}
 	// A direct Deploy must be refused before any flow work under prepared
 	// authority — this resolves before loading a workspace, so it's hermetic.
-	if _, err := p.Deploy(ctx, DeployRequest{Service: "backend/api"}); err == nil {
+	if _, err := p.Deploy(ctx, &DeployRequest{Service: "backend/api"}); err == nil {
 		t.Error("direct Deploy should be refused under prepared authority")
 	}
 }
@@ -139,7 +139,7 @@ func (mutationExecutorStub) ApplyEdit(context.Context, Edit) error {
 	return nil
 }
 
-func (s mutationExecutorStub) runDeploy(context.Context, DeployRequest) (DeployResult, error) {
+func (s mutationExecutorStub) runDeploy(context.Context, *DeployRequest) (DeployResult, error) {
 	return s.deployResult, nil
 }
 

@@ -104,14 +104,14 @@ func TestServeIOHandlesRequestsConcurrentlySoASlowToolDoesNotBlockOthers(t *test
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	if err := server.RegisterTool(Tool{Name: "blocking_tool"}, func(_ context.Context, _ map[string]string) ([]Content, error) {
+	if err := server.RegisterTool(&Tool{Name: "blocking_tool"}, func(_ context.Context, _ map[string]string) ([]Content, error) {
 		close(entered)
 		<-release
 		return []Content{TextContent("slow done")}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := server.RegisterTool(Tool{Name: "fast_tool"}, func(_ context.Context, _ map[string]string) ([]Content, error) {
+	if err := server.RegisterTool(&Tool{Name: "fast_tool"}, func(_ context.Context, _ map[string]string) ([]Content, error) {
 		return []Content{TextContent("fast done")}, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -288,7 +288,7 @@ func TestMCPToolsAreCallableThroughInProcessToolbox(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = server.Close() })
 
-	server.RegisterTool(Tool{Name: "in_process_echo"}, func(_ context.Context, arguments map[string]string) ([]Content, error) {
+	server.RegisterTool(&Tool{Name: "in_process_echo"}, func(_ context.Context, arguments map[string]string) ([]Content, error) {
 		return []Content{TextContent(arguments["text"])}, nil
 	})
 	content, err := server.Toolbox().Call(context.Background(), "in_process_echo", map[string]string{"text": "shared"})

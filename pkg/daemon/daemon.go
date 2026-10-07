@@ -57,7 +57,7 @@ func WritePID() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o644)
+	return os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o600)
 }
 
 // ReadPID reads the PID from the PID file. Returns 0 if the file doesn't exist.
@@ -113,7 +113,7 @@ func isOurDaemon(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	out, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+	out, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // G204: ps with a fixed argv; the only variable is the numeric pid
 	if err != nil {
 		return true // can't introspect — fall back to liveness-only
 	}
@@ -183,7 +183,7 @@ func Start(args []string) (int, error) {
 	// Don't inherit stdin
 	cmd.Stdin = nil
 
-	if err := cmd.Start(); err != nil {
+	if err = cmd.Start(); err != nil {
 		logFile.Close()
 		return 0, fmt.Errorf("cannot start daemon: %w", err)
 	}
@@ -196,7 +196,7 @@ func Start(args []string) (int, error) {
 	if err != nil {
 		return pid, err
 	}
-	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0o644); err != nil {
+	if err = os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0o600); err != nil {
 		return pid, fmt.Errorf("cannot write PID file: %w", err)
 	}
 

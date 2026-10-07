@@ -114,7 +114,7 @@ func checkCodeflyHome(_ context.Context) checkResult {
 	}
 	// Confirm writability with a temp file.
 	probe := filepath.Join(home, ".doctor-probe")
-	if err := os.WriteFile(probe, []byte("ok"), 0o644); err != nil {
+	if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil {
 		r.status = statusFail
 		r.detail = fmt.Sprintf("%s is not writable: %v", home, err)
 		r.fix = "check permissions on " + home
@@ -180,7 +180,15 @@ func checkDiskSpace(_ context.Context) checkResult {
 		r.detail = "cannot stat filesystem: " + err.Error()
 		return r
 	}
-	freeBytes := st.Bavail * uint64(st.Bsize)
+	// The block size is int64 on Linux and uint32 on Darwin; a filesystem
+	// reporting no positive block size is one the doctor cannot measure.
+	blockSize := int64(st.Bsize)
+	if blockSize <= 0 {
+		r.status = statusWarn
+		r.detail = fmt.Sprintf("cannot read the filesystem's block size (%d) on %s", blockSize, home)
+		return r
+	}
+	freeBytes := st.Bavail * uint64(blockSize)
 	freeGB := float64(freeBytes) / (1024 * 1024 * 1024)
 	switch {
 	case freeGB < 2:

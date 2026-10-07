@@ -24,11 +24,11 @@ func (l *LocalSourceImporter) Analyze(ctx context.Context) (*Recommendation, err
 }
 
 func (l *LocalSourceImporter) Import(context.Context, string) error {
-	//w := wool.Get(ctx).In("import.LocalSourceImporter.Import")
-	//err := shared.Copy(ctx, l.dir, target)
-	//if err != nil {
+	// w := wool.Get(ctx).In("import.LocalSourceImporter.Import")
+	// err := shared.Copy(ctx, l.dir, target)
+	// if err != nil {
 	//	return w.Wrapf(err, "cannot copy directory")
-	//}
+	// }
 	return nil
 }
 

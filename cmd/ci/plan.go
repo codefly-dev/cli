@@ -55,7 +55,7 @@ var PlanCmd = &cobra.Command{
 		base := firstNonEmpty(planBase, os.Getenv("CODEFLY_CI_BASE"))
 		head := firstNonEmpty(planHead, os.Getenv("CODEFLY_CI_HEAD"))
 
-		plan, err := BuildPlan(ctx, workspace, PlanOptions{
+		plan, err := BuildPlan(ctx, workspace, &PlanOptions{
 			Base:         base,
 			Head:         head,
 			ChangedFiles: changed,

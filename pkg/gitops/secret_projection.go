@@ -18,6 +18,7 @@ import (
 const (
 	externalSecretAPIVersion = "external-secrets.io/v1"
 	kindExternalSecret       = "ExternalSecret"
+	externalSecretsGroup     = "external-secrets.io"
 	// secretRefreshInterval keeps the External Secrets Operator re-reading the
 	// remote store on a fixed cadence so a rotated vault value propagates into the
 	// in-cluster Secret. Omitting it lets the field default to "0" on some ESO
@@ -314,8 +315,12 @@ func projectServiceSecrets(serviceRoot string, scope unitScope, service, environ
 	if projection == nil {
 		return false, nil
 	}
-	overlay := filepath.Join(serviceRoot, "overlays", environment)
-	if info, statErr := os.Stat(overlay); statErr != nil || !info.IsDir() {
+	overlayName, segmentErr := pathSegment("environment", environment)
+	if segmentErr != nil {
+		return false, segmentErr
+	}
+	overlay := filepath.Join(serviceRoot, "overlays", overlayName)
+	if info, statErr := statWithin(serviceRoot, filepath.Join("overlays", overlayName)); statErr != nil || !info.IsDir() {
 		return false, fmt.Errorf("service %q references secret-%s but has no %q environment overlay to project it into", service, service, environment)
 	}
 	projected, err := yaml.Marshal(projection)
@@ -324,7 +329,7 @@ func projectServiceSecrets(serviceRoot string, scope unitScope, service, environ
 	}
 	// The projection is an ExternalSecret — a reference to remote keys, never a
 	// secret value — so it stays a world-readable manifest like its siblings.
-	if err := os.WriteFile(filepath.Join(overlay, "external-secret.yaml"), projected, 0o644); err != nil { //nolint:gosec
+	if err := writeWithin(overlay, "external-secret.yaml", projected); err != nil {
 		return false, err
 	}
 	return true, addKustomizationResource(overlay, "external-secret.yaml")
@@ -335,12 +340,12 @@ func projectServiceSecrets(serviceRoot string, scope unitScope, service, environ
 func serviceSecretKeys(root, service string) ([]string, error) {
 	secretName := "secret-" + service
 	seen := map[string]struct{}{}
-	err := walkRegularFiles(root, func(path, relative string, _ os.FileInfo) error {
+	err := walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
 		extension := strings.ToLower(filepath.Ext(relative))
 		if extension != yamlExtension && extension != ymlExtension && extension != jsonExtension {
 			return nil
 		}
-		data, err := os.ReadFile(path)
+		data, err := readWithin(root, relative)
 		if err != nil {
 			return err
 		}
@@ -399,20 +404,20 @@ func addKustomizationResource(directory, resource string) error {
 	if err = yaml.Unmarshal(data, &document); err != nil {
 		return fmt.Errorf("decode %s: %w", path, err)
 	}
-	existing, _ := document["resources"].([]any)
-	document["resources"] = append(existing, resource)
+	existing, _ := document[resourcesKey].([]any)
+	document[resourcesKey] = append(existing, resource)
 	updated, err := yaml.Marshal(document)
 	if err != nil {
 		return err
 	}
 	// A kustomization is a plain manifest index, world-readable like its siblings.
-	return os.WriteFile(path, updated, 0o644) //nolint:gosec
+	return os.WriteFile(path, updated, 0o600)
 }
 
 func kustomizationPath(directory string) (string, error) {
 	for _, name := range []string{"kustomization.yaml", "kustomization.yml", kindKustomization} {
 		path := filepath.Join(directory, name)
-		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		if info, err := statWithin(directory, name); err == nil && !info.IsDir() {
 			return path, nil
 		}
 	}

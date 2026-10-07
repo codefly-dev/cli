@@ -3,6 +3,7 @@ package status
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +31,9 @@ func init() {
 	releaseCmd.Flags().Bool("create-issues", false, "auto-create GitHub issues for out-of-date agents")
 }
 
+// unknownVersion is reported when a go.mod names no core version.
+const unknownVersion = "unknown"
+
 type AgentStatus struct {
 	Name       string
 	CoreVer    string
@@ -49,11 +53,18 @@ func runRelease(cmd *cobra.Command, _ []string) error {
 
 	fmt.Printf("==> Release Status Report\n\n")
 
+	// Every read stays under the development directory.
+	root, err := os.OpenRoot(baseDir)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", baseDir, err)
+	}
+	defer func() { _ = root.Close() }()
+
 	// Get core version
-	coreVer, err := getCoreVersion(filepath.Join(baseDir, "core"))
+	coreVer, err := getCoreVersion(root)
 	if err != nil {
 		fmt.Printf("⚠ Could not determine core version: %v\n", err)
-		coreVer = "unknown"
+		coreVer = unknownVersion
 	}
 	fmt.Printf("Latest Core: %s\n\n", color.GreenString(coreVer))
 
@@ -62,7 +73,7 @@ func runRelease(cmd *cobra.Command, _ []string) error {
 	fmt.Printf("%-30s %-15s %-15s %s\n", "Agent", "Core Ver", "Delta", "Health")
 	fmt.Printf("%s\n", strings.Repeat("-", 90))
 
-	statuses := scanAgents(baseDir, coreVer)
+	statuses := scanAgents(root, coreVer)
 	sort.Slice(statuses, func(i, j int) bool {
 		return statuses[i].Delta > statuses[j].Delta
 	})
@@ -121,7 +132,7 @@ func runRelease(cmd *cobra.Command, _ []string) error {
 					fmt.Printf("⏭ Skipping archived repo %s\n", s.Name)
 					continue
 				}
-				if err := createAgentIssue(baseDir, s); err != nil {
+				if err := createAgentIssue(baseDir, &s); err != nil {
 					fmt.Printf("⚠ Failed to create issue for %s: %v\n", s.Name, err)
 				} else {
 					fmt.Printf("✓ Created issue for %s\n", s.Name)
@@ -135,10 +146,10 @@ func runRelease(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func scanAgents(baseDir, latestCore string) []AgentStatus {
+func scanAgents(root *os.Root, latestCore string) []AgentStatus {
 	var statuses []AgentStatus
 
-	entries, err := os.ReadDir(baseDir)
+	entries, err := fs.ReadDir(root.FS(), ".")
 	if err != nil {
 		return statuses
 	}
@@ -153,14 +164,13 @@ func scanAgents(baseDir, latestCore string) []AgentStatus {
 			continue
 		}
 
-		agentPath := filepath.Join(baseDir, name)
-		gomod := filepath.Join(agentPath, "go.mod")
+		gomod := filepath.Join(name, "go.mod")
 
-		if _, err := os.Stat(gomod); err != nil {
+		if _, err := root.Stat(gomod); err != nil {
 			continue
 		}
 
-		coreVer := getAgentCoreVersion(gomod)
+		coreVer := getAgentCoreVersion(root, gomod)
 		status := AgentStatus{
 			Name:       name,
 			CoreVer:    coreVer,
@@ -172,7 +182,7 @@ func scanAgents(baseDir, latestCore string) []AgentStatus {
 		status.Delta = versionDelta(latestCore, coreVer)
 
 		// Check for issues
-		status.Issues = checkAgentHealth(agentPath)
+		status.Issues = checkAgentHealth(root, name)
 		if len(status.Issues) == 0 {
 			status.Health = "healthy"
 		} else {
@@ -185,23 +195,23 @@ func scanAgents(baseDir, latestCore string) []AgentStatus {
 	return statuses
 }
 
-func getCoreVersion(corePath string) (string, error) {
-	ver, err := readVersionFromGoMod(filepath.Join(corePath, "go.mod"), "github.com/codefly-dev/core")
+func getCoreVersion(root *os.Root) (string, error) {
+	ver, err := readVersionFromGoMod(root, filepath.Join("core", "go.mod"), "github.com/codefly-dev/core")
 	if err != nil {
 		return "", err
 	}
 	return ver, nil
 }
 
-func getAgentCoreVersion(gomodPath string) string {
-	ver, _ := readVersionFromGoMod(gomodPath, "github.com/codefly-dev/core")
+func getAgentCoreVersion(root *os.Root, gomodPath string) string {
+	ver, _ := readVersionFromGoMod(root, gomodPath, "github.com/codefly-dev/core")
 	return ver
 }
 
-func readVersionFromGoMod(gomodPath, module string) (string, error) {
-	data, err := os.ReadFile(gomodPath)
+func readVersionFromGoMod(root *os.Root, gomodPath, module string) (string, error) {
+	data, err := root.ReadFile(gomodPath)
 	if err != nil {
-		return "unknown", err
+		return unknownVersion, err
 	}
 
 	for _, line := range strings.Split(string(data), "\n") {
@@ -212,7 +222,7 @@ func readVersionFromGoMod(gomodPath, module string) (string, error) {
 			}
 		}
 	}
-	return "unknown", nil
+	return unknownVersion, nil
 }
 
 func versionDelta(v1, v2 string) int {
@@ -227,26 +237,28 @@ func extractVersionNumber(v string) int {
 	parts := strings.Split(strings.TrimPrefix(v, "v"), ".")
 	if len(parts) >= 3 {
 		var num int
-		fmt.Sscanf(parts[2], "%d", &num)
+		if _, err := fmt.Sscanf(parts[2], "%d", &num); err != nil {
+			return 0
+		}
 		return num
 	}
 	return 0
 }
 
-func checkAgentHealth(agentPath string) []string {
+func checkAgentHealth(root *os.Root, agent string) []string {
 	var issues []string
 
 	// Check manifest
-	agentYaml := filepath.Join(agentPath, "agent.codefly.yaml")
-	if _, err := os.Stat(agentYaml); err != nil {
+	agentYaml := filepath.Join(agent, "agent.codefly.yaml")
+	if _, err := root.Stat(agentYaml); err != nil {
 		// Try alternative paths
-		agentYaml = filepath.Join(agentPath, "module.codefly.yaml")
-		if _, err := os.Stat(agentYaml); err != nil {
+		agentYaml = filepath.Join(agent, "module.codefly.yaml")
+		if _, err := root.Stat(agentYaml); err != nil {
 			return issues
 		}
 	}
 
-	data, _ := os.ReadFile(agentYaml)
+	data, _ := root.ReadFile(agentYaml)
 	content := string(data)
 
 	if !strings.Contains(content, "publisher:") {
@@ -276,7 +288,7 @@ func repoIsArchived(ctx context.Context, path string) bool {
 	return gh.Archived(ctx, owner, repo)
 }
 
-func createAgentIssue(baseDir string, status AgentStatus) error {
+func createAgentIssue(baseDir string, status *AgentStatus) error {
 	agentPath := filepath.Join(baseDir, status.Name)
 
 	title := fmt.Sprintf("chore: update core to %s (currently %s, %d versions behind)",

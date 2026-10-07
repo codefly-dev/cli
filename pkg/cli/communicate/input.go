@@ -8,7 +8,7 @@ import (
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 )
 
-func Input(ctx context.Context, msg *agentv0.Message, c *agentv0.Input) (*agentv0.Answer, error) {
+func Input(_ context.Context, msg *agentv0.Message, c *agentv0.Input) (*agentv0.Answer, error) {
 	cli.Header(2, "%s", msg.Description)
 	// TODO: Deal with int
 	input, err := models.Input(msg.Message, c.GetStringDefault())

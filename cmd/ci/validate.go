@@ -49,16 +49,16 @@ func runValidationCommand(selection *SelectionFlags, action Action, phase string
 	if err != nil {
 		return err
 	}
-	if err := common.WithSilenceE(ctx, workspace, silent); err != nil {
+	if err = common.WithSilenceE(ctx, workspace, silent); err != nil {
 		return fmt.Errorf("cannot configure silent services: %w", err)
 	}
 	plan, err := selection.BuildPlan(ctx, workspace, ReplayInvocation{Phases: []string{phase}, Suites: testSuites, RuntimeContext: runtimeContext})
 	if err != nil {
 		return fmt.Errorf("cannot build affected-service plan: %w", err)
 	}
-	return runWithCIReport(ctx, workspace, plan, "codefly ci "+phase, func(reporter *CIReporter) error {
+	return runWithCIReport(ctx, workspace, plan, "codefly ci "+phase, func(reporter *Reporter) error {
 		options := commandScheduleOptions(false, phase, "", reporter)
-		if err := CIWithPlanOptions(ctx, workspace, plan, action, options); err != nil {
+		if err := WithPlanOptions(ctx, workspace, plan, action, options); err != nil {
 			return fmt.Errorf("cannot run CI %s: %w", phase, err)
 		}
 		return ctx.Err()

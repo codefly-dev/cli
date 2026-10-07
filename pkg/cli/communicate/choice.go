@@ -10,7 +10,7 @@ import (
 
 func Choice(ctx context.Context, msg *agentv0.Message, c *agentv0.Choice) (*agentv0.Answer, error) {
 	cli.Header(2, "%s", msg.Description)
-	var entries []*models.Entry
+	entries := make([]*models.Entry, 0, len(c.Options))
 	toNames := make(map[string]string)
 	for _, option := range c.Options {
 		entry := &models.Entry{

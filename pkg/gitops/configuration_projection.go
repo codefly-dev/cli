@@ -321,7 +321,7 @@ func validateProjectedSecret(documents []manifest, expected *externalSecret) err
 	}
 	matched := 0
 	for _, doc := range documents {
-		if doc.group != "external-secrets.io" || doc.kind != kindExternalSecret || metadataString(doc.value, "namespace") != expected.Metadata.Namespace {
+		if doc.group != externalSecretsGroup || doc.kind != kindExternalSecret || metadataString(doc.value, "namespace") != expected.Metadata.Namespace {
 			continue
 		}
 		spec := mapField(doc.value, "spec")

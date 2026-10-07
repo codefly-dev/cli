@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -201,6 +202,163 @@ func TestLocalGitopsPublishPlansThenCreatesSignedExactRefs(t *testing.T) {
 	if receipt.SnapshotRevision != result.SnapshotRevision || receipt.Commit != result.Commit || receipt.Tree != result.Tree {
 		t.Fatalf("receipt = %+v, publication = %+v", receipt, result)
 	}
+}
+
+// TestLocalGitopsPublishDeliversSignedCarriersAndTheJob runs the whole
+// publish path over a tree that declares presence to a host: the plan is
+// prepared through preparePublish (the host block shaping the delivery
+// options, the delivery target resolved, the groups held), the documents are
+// settled against the base branch and signed, the carriers and the Job are
+// written and validated as part of the tree, and the commit carries them. It
+// is the path the settlement tests call into piecewise, run whole.
+// hostedPublishWorkspace is a workspace whose production environment declares
+// a host, with the payments module rendered for it: the fixture every publish
+// that delivers signed carriers starts from.
+func hostedPublishWorkspace(t *testing.T) (ctx context.Context, workspace *resources.Workspace, env *environments.Environment, remote string) {
+	t.Helper()
+	ctx = context.Background()
+	remote = createBareRepository(t)
+	workspace = loadGitopsWorkspaceWithServices(t, remote, []string{"api", "host"})
+	config, err := os.ReadFile(filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hosted := strings.Replace(string(config), "  - name: production\n    cluster:\n      kind: k3d\n",
+		"  - name: production\n    namespace: payments\n    cluster:\n      kind: k3d\n    host:\n      coordinate: example/prod/region-a\n      component: platform-host\n      domain: example\n      audience: accounts\n      trust_domain: cluster.example\n      envelope_revision: 1\n      delivery: payments/host/rest\n      release:\n        repository: codefly-test/payments\n        workflow: .github/workflows/release.yml\n        refs:\n          - refs/tags/v[0-9]+[.][0-9]+[.][0-9]+\n", 1)
+	if hosted == string(config) {
+		t.Fatal("the fixture's environment was not found")
+	}
+	if err := os.WriteFile(filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName), []byte(hosted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hostService := filepath.Join(workspace.Dir(), "services", "host", resources.ServiceConfigurationName)
+	if err := os.MkdirAll(filepath.Dir(hostService), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hostService, []byte(devServiceYAML("host")+"endpoints:\n  - name: rest\n    api: rest\n    visibility: internal\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err = resources.LoadWorkspaceFromDir(ctx, workspace.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	env = selectedEnvironment(t, workspace, "production")
+	renderHostedPayments(t, workspace, env, pinnedDeployment, hostedPaymentsInstances())
+	configureSSHSigning(t)
+	return ctx, workspace, env, remote
+}
+
+// TestReleasePublishRefusesToDeliverWithoutItsWorkflowIdentity: a hosted
+// environment is delivered signed carriers, and a release publish signs and
+// checks them under the workflow identity it runs with. With no such
+// identity — the checks the self-check and the reuse policy are built from
+// are nil wherever the workflow metadata is absent, local or not — the
+// publish refuses before it reads a document; with the identity it proceeds
+// to the signer.
+func TestReleasePublishRefusesToDeliverWithoutItsWorkflowIdentity(t *testing.T) {
+	ctx, workspace, _, remote := hostedPublishWorkspace(t)
+	// A release publish is refused a file repository, so the fixture's bare
+	// repository answers for a GitHub one, the way git itself rewrites it.
+	repository := "https://github.com/codefly-test/manifests.git"
+	gitopsDefaults, err := environments.WorkspaceGitops(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitopsDefaults.RepoURL = repository
+	setWorkspaceGitops(t, workspace, gitopsDefaults)
+	configured, err := strconv.Atoi(os.Getenv("GIT_CONFIG_COUNT"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_COUNT", strconv.Itoa(configured+1))
+	t.Setenv(fmt.Sprintf("GIT_CONFIG_KEY_%d", configured), "url.file://"+remote+".insteadOf")
+	t.Setenv(fmt.Sprintf("GIT_CONFIG_VALUE_%d", configured), repository)
+	for _, name := range []string{"GITHUB_REPOSITORY", "GITHUB_WORKFLOW_REF"} {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := PublishRequest{Module: "payments", Environment: "production", PromotionBranch: "codefly/promote-payments-production"}
+	_, err = PlanPublish(ctx, workspace, &request)
+	if err == nil || !strings.Contains(err.Error(), "run it from the release workflow") {
+		t.Fatalf("a hosted release publish with no workflow identity was not refused: %v", err)
+	}
+	// An identity the reviewed policy does not admit — another repository,
+	// another workflow, a branch, a tag outside the pattern — is refused
+	// before anything is signed.
+	for name, identity := range map[string][2]string{
+		"another repository": {"codefly-test/manifests", "codefly-test/manifests/.github/workflows/release.yml@refs/tags/v1.0.0"},
+		"another workflow":   {"codefly-test/payments", "codefly-test/payments/.github/workflows/ci.yml@refs/tags/v1.0.0"},
+		"a branch":           {"codefly-test/payments", "codefly-test/payments/.github/workflows/release.yml@refs/heads/main"},
+		"a tag outside":      {"codefly-test/payments", "codefly-test/payments/.github/workflows/release.yml@refs/tags/nightly"},
+	} {
+		t.Setenv("GITHUB_REPOSITORY", identity[0])
+		t.Setenv("GITHUB_WORKFLOW_REF", identity[1])
+		_, err = PlanPublish(ctx, workspace, &request)
+		if err == nil || !strings.Contains(err.Error(), "release policy") {
+			t.Fatalf("%s: not refused by the release policy: %v", name, err)
+		}
+	}
+	t.Setenv("GITHUB_REPOSITORY", "codefly-test/payments")
+	t.Setenv("GITHUB_WORKFLOW_REF", "codefly-test/payments/.github/workflows/release.yml@refs/tags/v1.0.0")
+	_, err = PlanPublish(ctx, workspace, &request)
+	if err == nil || strings.Contains(err.Error(), "run it from the release workflow") || strings.Contains(err.Error(), "release policy") {
+		t.Fatalf("with the admitted identity the publish must reach its signer, which this process does not hold: %v", err)
+	}
+	if !strings.Contains(err.Error(), "sign") {
+		t.Fatalf("the error past the policy is not the signer's: %v", err)
+	}
+}
+
+func TestLocalGitopsPublishDeliversSignedCarriersAndTheJob(t *testing.T) {
+	ctx, workspace, _, remote := hostedPublishWorkspace(t)
+	signer := &fakeSigner{nonce: true}
+	request := PublishRequest{
+		Module: "payments", Environment: "production", Local: true, Signer: signer,
+		PromotionBranch: "codefly/promote-payments-production",
+	}
+	plan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Delivery == nil || !plan.Delivery.Signed || len(plan.Delivery.Documents) != 1 || plan.Delivery.Documents[0].ID != "payments.production.payments" {
+		t.Fatalf("the plan does not report the settled, signed delivery: %+v", plan.Delivery)
+	}
+	if signer.signed != 1 {
+		t.Fatalf("the plan signed %d documents, want the one presence document", signer.signed)
+	}
+	// The publish executes the inspected plan with the carriers it signed:
+	// every bundle this signer makes is different, so only reuse keeps the
+	// published tree the plan's.
+	result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signer.signed != 1 {
+		t.Fatalf("the publish signed again (%d signatures): the plan's carriers were not reused", signer.signed)
+	}
+	overlay := result.Path + "/" + solutionHostBindingDir + "/overlays/production/"
+	job := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+overlay+"deliver-presence.yaml")
+	for _, want := range []string{
+		"name: deliver-presence-payments-production-", "serviceAccountName: delivery", "namespace: payments",
+		"DELIVERY_IDENTITY_FILE", "http://host.payments.svc.cluster.local:8080", "audience: accounts",
+		"argocd.argoproj.io/hook: Sync",
+	} {
+		if !strings.Contains(job, want) {
+			t.Fatalf("the published Job lacks %q:\n%s", want, job)
+		}
+	}
+	carrier := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+overlay+"payments.production.payments.yaml")
+	if !strings.Contains(carrier, presenceCarrierKey) || !strings.Contains(carrier, "generation: 1") {
+		t.Fatalf("the published carrier is not the signed generation-1 document:\n%s", carrier)
+	}
+	inventory := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+result.Path+"/"+InventoryFilename)
+	if !strings.Contains(inventory, `"signed": true`) {
+		t.Fatalf("the published inventory does not record a signed delivery:\n%s", inventory)
+	}
+	// (The Argo Application that delivers the overlay is pinned by
+	// TestDeclaredBindingsReachArgo; a flat workspace generates no bootstrap.)
 }
 
 func TestPlanPublishReportsOkContractCheckAgainstDeployedHost(t *testing.T) {
@@ -1391,6 +1549,18 @@ gitops:
 	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(config), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Every referenced service exists as a manifest: a publish derives the
+	// configuration groups the module consumes from its services, so a
+	// reference with nothing behind it is a broken workspace, not a fixture.
+	for _, service := range services {
+		manifest := filepath.Join(root, "services", service, resources.ServiceConfigurationName)
+		if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(manifest, []byte(devServiceYAML(service)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
@@ -1465,6 +1635,13 @@ services:
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(moduleDir, resources.ModuleConfigurationName), []byte(module), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest := filepath.Join(moduleDir, "services", "api", resources.ServiceConfigurationName)
+	if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, []byte(devServiceYAML("api")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)
@@ -1575,4 +1752,63 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
 	}
 	return strings.TrimSpace(string(output))
+}
+
+// TestPublishRefusesEnvironmentsSharingADeliveryPath: two environments
+// delivering to one repository, branch and path replace each other's module
+// trees whole, so the one declaring a host is refused until it has a path of
+// its own; distinct paths share nothing.
+func TestPublishRefusesEnvironmentsSharingADeliveryPath(t *testing.T) {
+	root := t.TempDir()
+	write := func(stagingGitops string) *resources.Workspace {
+		t.Helper()
+		config := `name: payments
+layout: flat
+services:
+  - name: api
+environments:
+  - name: production
+    namespace: payments
+    cluster:
+      kind: k3d
+    host:
+      coordinate: example/prod/region-a
+      component: platform-host
+      domain: example
+      audience: https://host.example
+      trust_domain: cluster.example
+      envelope_revision: 1
+      delivery: payments/api/rest
+  - name: staging
+    cluster:
+      kind: k3d
+` + stagingGitops + `gitops:
+  repo-url: file://` + root + `/remote.git
+  fetch-repo-url: https://host.k3d.internal/manifests.git
+  path: environments
+  branch: main
+`
+		if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(config), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		manifest := filepath.Join(root, "services", "api", resources.ServiceConfigurationName)
+		if err := os.MkdirAll(filepath.Dir(manifest), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(manifest, []byte(devServiceYAML("api")), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return workspace
+	}
+	err := refuseSharedDeliveryPath(write(""), "production", true)
+	if err == nil || !strings.Contains(err.Error(), "both deliver to") {
+		t.Fatalf("a shared delivery path was not refused: %v", err)
+	}
+	if err := refuseSharedDeliveryPath(write("    gitops:\n      path: environments/staging\n"), "production", true); err != nil {
+		t.Fatalf("distinct paths were refused: %v", err)
+	}
 }

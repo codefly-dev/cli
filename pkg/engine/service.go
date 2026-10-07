@@ -107,9 +107,12 @@ func (s *Service) Test(ctx context.Context, request *runtimev0.TestRequest) (*ru
 		message := "env-blocked (runtime-initialization): " + initializationError.Error()
 		run := &runtimev0.TestRun{Runner: "codefly-agent"}
 		if request != nil && request.GetSelection() != nil {
-			run.RequestedSelection = proto.Clone(request.GetSelection()).(*runtimev0.TestSelection)
+			if selection, ok := proto.Clone(request.GetSelection()).(*runtimev0.TestSelection); ok {
+				run.RequestedSelection = selection
+			}
 			run.SelectionId = request.GetSelectionId()
 		}
+		//nolint:staticcheck // SA1019: the proto keeps the flat fields populated for consumers that have not migrated to the structured tree
 		return &runtimev0.TestResponse{
 			Status: &runtimev0.TestStatus{
 				State: runtimev0.TestStatus_ERROR, Message: message,

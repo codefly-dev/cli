@@ -45,5 +45,5 @@ func (flags *SelectionFlags) BuildPlan(ctx context.Context, workspace *resources
 		}
 		return readReplayPlan(ctx, workspace, flags.planFile, &options, invocation)
 	}
-	return BuildPlan(ctx, workspace, options)
+	return BuildPlan(ctx, workspace, &options)
 }

@@ -77,7 +77,7 @@ func (p *planeImpl) RunChecks(ctx context.Context, req CheckRequest) (CheckResul
 	if len(parts) == 0 {
 		return CheckResult{}, fmt.Errorf("empty command")
 	}
-	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
+	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...) //nolint:gosec // G204: the check's command is the request; this is the boundary that runs it in the service directory
 	cmd.Dir = service.Dir()
 	out, err := cmd.CombinedOutput()
 	output := string(out)

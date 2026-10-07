@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"sync"
@@ -70,7 +71,7 @@ func (s *TerminalServer) Open(_ context.Context, req *cliv0.OpenTerminalRequest)
 	}
 
 	// Create command
-	cmd := exec.Command(shell)
+	cmd := exec.Command(shell) //nolint:gosec // G702: the shell is the one the request or $SHELL names; a terminal runs it by definition
 	cmd.Dir = workDir
 	cmd.Env = os.Environ()
 
@@ -83,8 +84,8 @@ func (s *TerminalServer) Open(_ context.Context, req *cliv0.OpenTerminalRequest)
 	// Set initial size
 	if req.Rows > 0 && req.Cols > 0 {
 		_ = pty.Setsize(ptmx, &pty.Winsize{
-			Rows: uint16(req.Rows),
-			Cols: uint16(req.Cols),
+			Rows: terminalDimension(req.Rows),
+			Cols: terminalDimension(req.Cols),
 		})
 	}
 
@@ -159,7 +160,7 @@ func (s *TerminalServer) Attach(stream cliv0.TerminalService_AttachServer) error
 				_ = stream.Send(&cliv0.TerminalOutput{
 					SessionId: sess.ID,
 					Done:      true,
-					ExitCode:  int32(exitCode(sess.Cmd)),
+					ExitCode:  exitCode(sess.Cmd),
 				})
 				errCh <- err
 				return
@@ -204,8 +205,8 @@ func (s *TerminalServer) Resize(_ context.Context, req *cliv0.ResizeTerminalRequ
 	}
 
 	if err := pty.Setsize(sess.PTY, &pty.Winsize{
-		Rows: uint16(req.Rows),
-		Cols: uint16(req.Cols),
+		Rows: terminalDimension(req.Rows),
+		Cols: terminalDimension(req.Cols),
 	}); err != nil {
 		return nil, fmt.Errorf("cannot resize: %w", err)
 	}
@@ -243,7 +244,7 @@ func (s *TerminalServer) List(_ context.Context, _ *cliv0.ListTerminalsRequest) 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var terminals []*cliv0.TerminalInfo
+	terminals := make([]*cliv0.TerminalInfo, 0, len(s.sessions))
 	for _, sess := range s.sessions {
 		terminals = append(terminals, &cliv0.TerminalInfo{
 			SessionId:  sess.ID,
@@ -285,9 +286,28 @@ func (s *TerminalServer) Shutdown() {
 	}
 }
 
-func exitCode(cmd *exec.Cmd) int {
-	if cmd.ProcessState != nil {
-		return cmd.ProcessState.ExitCode()
+// exitCode is the process's exit status as the wire carries it; -1 while the
+// process has not exited. ExitCode is an int by API, so it is held to the
+// int32 range before the conversion rather than wrapped.
+func exitCode(cmd *exec.Cmd) int32 {
+	if cmd.ProcessState == nil {
+		return -1
 	}
-	return -1
+	code := cmd.ProcessState.ExitCode()
+	switch {
+	case code > math.MaxInt32:
+		return math.MaxInt32
+	case code < math.MinInt32:
+		return math.MinInt32
+	}
+	return int32(code)
+}
+
+// terminalDimension clamps a requested row or column count to what a pty
+// window can hold.
+func terminalDimension(value uint32) uint16 {
+	if value > math.MaxUint16 {
+		return math.MaxUint16
+	}
+	return uint16(value)
 }

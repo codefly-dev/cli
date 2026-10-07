@@ -14,7 +14,7 @@ func SetRepository(repo string) {
 	repository = repo
 }
 
-func DockerBuildContext(ctx context.Context, workspace *resources.Workspace) (*builderv0.DockerBuildContext, error) {
+func DockerBuildContext(_ context.Context, workspace *resources.Workspace) (*builderv0.DockerBuildContext, error) {
 	repo := repository
 	if workspace.Layout != resources.LayoutKindFlat {
 		repo = fmt.Sprintf("%s/%s", repo, workspace.Name)

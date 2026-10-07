@@ -404,7 +404,7 @@ func TestReleaseCellReflectsPlatforms(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := releaseCell(tc.entry); got != tc.want {
+			if got := releaseCell(&tc.entry); got != tc.want {
 				t.Fatalf("releaseCell = %q, want %q", got, tc.want)
 			}
 		})

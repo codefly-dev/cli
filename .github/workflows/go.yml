@@ -238,12 +238,19 @@ jobs:
           if-no-files-found: warn
 
   # golangci-lint runs as its own job, not a quality gate, for two reasons:
-  # only-new-issues has a well-defined baseline only against a pull-request base
-  # branch (on push there is no diff to gate against), and a cold-cache
-  # whole-repository analysis needs more headroom than the 5-minute quality
-  # budget. Pinned to match the version documented in the Makefile (`make
-  # lint`). only-new-issues gates the PR on newly introduced findings so the
-  # pre-existing backlog does not block work while the standard is enforced.
+  # a new-issues baseline has a well-defined meaning only against a
+  # pull-request base branch (on push there is no diff to gate against), and a
+  # cold-cache whole-repository analysis needs more headroom than the 5-minute
+  # quality budget. Pinned to match the version documented in the Makefile
+  # (`make lint`). New issues gate the PR so the pre-existing backlog does not
+  # block work while the standard is enforced.
+  #
+  # No baseline: the whole repository is linted, and the rule is that the
+  # full run is clean at the head — pre-existing findings are fixed in the
+  # PR that meets them, never hidden behind "new issues only". (The action's
+  # only-new-issues stays off for a second reason: it fetches the PR's patch
+  # through a GitHub API that refuses diffs past 20,000 lines and then
+  # reports every issue as new.) `make lint` runs the same gate locally.
   lint:
     name: lint
     runs-on: ubuntu-latest
@@ -285,12 +292,7 @@ jobs:
           # one ("the Go language version used to build golangci-lint is lower
           # than the targeted Go version"). Matches `make lint`.
           install-mode: goinstall
-          # Not only-new-issues: that mode fetches the PR patch from GitHub
-          # and silently reports everything when the patch is too large to
-          # serve (see the checkout step). The linter computes the merge-base
-          # against the PR's base branch itself, from the full history, which
-          # works for any diff size and is what `make lint` can reproduce.
-          args: --new-from-merge-base=origin/${{ github.base_ref }}
+          only-new-issues: false
 
   # pkg/web/go-grpc/out is a committed, generated artifact: web/dashboard builds
   # into it and go:embed ships it inside the CLI binary (see the Makefile's

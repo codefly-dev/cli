@@ -43,14 +43,14 @@ type ServiceScope interface {
 	GitTag(ctx context.Context, req GitTagRequest) (GitAct, error)
 	GitMerge(ctx context.Context, req GitMergeRequest) (GitAct, error)
 	GitRevert(ctx context.Context, req GitRevertRequest) (GitAct, error)
-	MaterializeRepositorySnapshot(ctx context.Context, req MaterializeRepositorySnapshotRequest) (MaterializedRepositorySnapshot, error)
-	PrepareRepositoryCheckout(ctx context.Context, req PrepareRepositoryCheckoutRequest) (PreparedRepositoryCheckout, error)
+	MaterializeRepositorySnapshot(ctx context.Context, req *MaterializeRepositorySnapshotRequest) (MaterializedRepositorySnapshot, error)
+	PrepareRepositoryCheckout(ctx context.Context, req *PrepareRepositoryCheckoutRequest) (PreparedRepositoryCheckout, error)
 	ReleaseRepositorySnapshot(ctx context.Context, req ReleaseRepositorySnapshotRequest) error
 
 	// Lifecycle / checks / commands (this service; any Service on the request is
 	// overridden with the scoped one)
 	Build(ctx context.Context, req BuildRequest) (BuildResult, error)
-	Test(ctx context.Context, req TestRequest) (CheckResult, error)
+	Test(ctx context.Context, req *TestRequest) (CheckResult, error)
 	Lint(ctx context.Context, req CheckRequest) (CheckResult, error)
 	Compile(ctx context.Context, req CheckRequest) (CheckResult, error)
 	RunChecks(ctx context.Context, req CheckRequest) (CheckResult, error)
@@ -194,18 +194,20 @@ func (s *serviceScope) GitRevert(ctx context.Context, req GitRevertRequest) (Git
 
 func (s *serviceScope) MaterializeRepositorySnapshot(
 	ctx context.Context,
-	req MaterializeRepositorySnapshotRequest,
+	req *MaterializeRepositorySnapshotRequest,
 ) (MaterializedRepositorySnapshot, error) {
-	req.Dir = s.dir
-	return s.plane.MaterializeRepositorySnapshot(ctx, req)
+	scoped := *req
+	scoped.Dir = s.dir
+	return s.plane.MaterializeRepositorySnapshot(ctx, &scoped)
 }
 
 func (s *serviceScope) PrepareRepositoryCheckout(
 	ctx context.Context,
-	req PrepareRepositoryCheckoutRequest,
+	req *PrepareRepositoryCheckoutRequest,
 ) (PreparedRepositoryCheckout, error) {
-	req.Dir = s.dir
-	return s.plane.PrepareRepositoryCheckout(ctx, req)
+	scoped := *req
+	scoped.Dir = s.dir
+	return s.plane.PrepareRepositoryCheckout(ctx, &scoped)
 }
 
 func (s *serviceScope) ReleaseRepositorySnapshot(ctx context.Context, req ReleaseRepositorySnapshotRequest) error {
@@ -230,7 +232,7 @@ func (s *serviceScope) Build(ctx context.Context, req BuildRequest) (BuildResult
 	return s.plane.Build(ctx, req)
 }
 
-func (s *serviceScope) Test(ctx context.Context, req TestRequest) (CheckResult, error) {
+func (s *serviceScope) Test(ctx context.Context, req *TestRequest) (CheckResult, error) {
 	// A fixture (explicit, or declared by a selected environment) is resolved
 	// while building the flow, which the in-process behavior path skips
 	// entirely — so a fixture request must go the long way round rather than be
@@ -249,8 +251,9 @@ func (s *serviceScope) Test(ctx context.Context, req TestRequest) (CheckResult, 
 			Output: orchestration.RenderTestReport(response),
 		}, nil
 	}
-	req.Service = s.name
-	return s.plane.Test(ctx, req)
+	scoped := *req
+	scoped.Service = s.name
+	return s.plane.Test(ctx, &scoped)
 }
 
 func (s *serviceScope) Lint(ctx context.Context, req CheckRequest) (CheckResult, error) {

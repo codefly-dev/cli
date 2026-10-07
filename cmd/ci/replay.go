@@ -83,13 +83,13 @@ func buildReplayPlan(ctx context.Context, workspace *resources.Workspace, plan *
 		return nil, err
 	}
 	for _, selected := range plan.Services {
-		closure, err := architecture.SelectClosure(ctx, workspace, selected.Service)
-		if err != nil {
-			return nil, err
+		closure, closureErr := architecture.SelectClosure(ctx, workspace, selected.Service)
+		if closureErr != nil {
+			return nil, closureErr
 		}
-		draft, err := closure.Draft(ctx, architecture.PlanOptions{Phase: executionplan.PhaseBuild, StatePolicy: executionplan.StatePolicy{Lifecycle: executionplan.LifecycleStop}})
-		if err != nil {
-			return nil, err
+		draft, draftErr := closure.Draft(ctx, architecture.PlanOptions{Phase: executionplan.PhaseBuild, StatePolicy: executionplan.StatePolicy{Lifecycle: executionplan.LifecycleStop}})
+		if draftErr != nil {
+			return nil, draftErr
 		}
 		if len(draft.SchemaSteps) > 0 {
 			return nil, fmt.Errorf("CI replay has no executor for schema job %s", draft.SchemaSteps[0].ID)
@@ -99,7 +99,7 @@ func buildReplayPlan(ctx context.Context, workspace *resources.Workspace, plan *
 		// resolveScheduledTasks, which validates Core's stage graphs and supplies
 		// the exact prerequisite edges executed and fingerprinted below.
 		draft.Edges = nil
-		if err := draft.Validate(); err != nil {
+		if err = draft.Validate(); err != nil {
 			return nil, err
 		}
 	}
@@ -215,13 +215,13 @@ func replayInputs(ctx context.Context, workspace *resources.Workspace, root stri
 	if len(tracked) == 0 && (os.IsNotExist(statErr) || (statErr == nil && info.IsDir())) {
 		snapshot.output = cleanAbs(output)
 	}
-	digests := make([]CICacheResourceDigest, 0, len(inputs))
+	digests := make([]CacheResourceDigest, 0, len(inputs))
 	for _, input := range inputs {
 		digest, hashErr := snapshot.digest(ctx, input.Path)
 		if hashErr != nil {
 			return "", fmt.Errorf("hash %s: %w", input.Label, hashErr)
 		}
-		digests = append(digests, CICacheResourceDigest{Resource: input.Label, Digest: digest})
+		digests = append(digests, CacheResourceDigest{Resource: input.Label, Digest: digest})
 	}
 	return aggregateCacheDigests(digests), nil
 }
@@ -344,7 +344,7 @@ func readReplayPlan(ctx context.Context, workspace *resources.Workspace, path st
 	if options.Base == "" && len(options.ChangedFiles) == 0 && !options.All {
 		return nil, fmt.Errorf("--plan requires independent --base, --changed-file, or --all selection bounds")
 	}
-	expected, err := BuildPlan(ctx, workspace, *options)
+	expected, err := BuildPlan(ctx, workspace, options)
 	if err != nil {
 		return nil, err
 	}

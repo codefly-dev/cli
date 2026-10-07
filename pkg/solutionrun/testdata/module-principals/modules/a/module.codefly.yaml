@@ -1,4 +1,0 @@
-kind: module
-name: a
-services:
-    - name: api

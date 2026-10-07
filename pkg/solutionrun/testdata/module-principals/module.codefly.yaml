@@ -1,5 +1,0 @@
-kind: module
-name: app
-service-entry: backend
-services:
-    - name: backend

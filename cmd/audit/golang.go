@@ -115,7 +115,7 @@ func LoadSuppressions(dir string) ([]Suppression, string, error) {
 			var doc struct {
 				Suppressions []Suppression `yaml:"suppressions"`
 			}
-			if err := yaml.Unmarshal(data, &doc); err != nil {
+			if err = yaml.Unmarshal(data, &doc); err != nil {
 				return nil, p, fmt.Errorf("parse %s: %w", p, err)
 			}
 			return doc.Suppressions, p, nil

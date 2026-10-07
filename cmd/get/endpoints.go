@@ -63,7 +63,8 @@ Examples:
 		anyUp := false
 		for _, ep := range endpoints {
 			resolved, rErr := common.ResolvePreferredNative(ctx, workspace.Name, module.Name, service.Name, namingScope, ep)
-			address, statusText := "-", "-"
+			address := "-"
+			var statusText string
 			switch {
 			case rErr != nil:
 				statusText = "error"

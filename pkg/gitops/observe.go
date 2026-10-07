@@ -145,9 +145,9 @@ func Observe(ctx context.Context, input *ObserveRequest) (ObserveResult, error) 
 		current := map[string]ApplicationEvidence{}
 		allHealthy := true
 		for _, name := range names {
-			_, evidence, done, err := observeApplication(observeCtx, &project, name, request, servicePaths)
-			if err != nil {
-				return ObserveResult{}, err
+			_, evidence, done, observeErr := observeApplication(observeCtx, &project, name, request, servicePaths)
+			if observeErr != nil {
+				return ObserveResult{}, observeErr
 			}
 			last[name] = evidence
 			if done {
@@ -174,7 +174,7 @@ func Observe(ctx context.Context, input *ObserveRequest) (ObserveResult, error) 
 				state := last[name]
 				states = append(states, fmt.Sprintf("%s(sync=%s health=%s operation=%s revision=%s)", name, state.Sync, state.Health, state.Operation, state.Revision))
 			}
-			return ObserveResult{}, fmt.Errorf("Argo CD health observation timed out: %s", strings.Join(states, ", "))
+			return ObserveResult{}, fmt.Errorf("health observation on Argo CD timed out: %s", strings.Join(states, ", "))
 		case <-timer.C:
 		}
 	}
@@ -273,7 +273,7 @@ func validateObserveRequest(input *ObserveRequest) (*ObserveRequest, error) {
 			return nil, err
 		}
 		if _, exists := seenApplications[application]; exists {
-			return nil, fmt.Errorf("Argo CD application %s is selected more than once", application)
+			return nil, fmt.Errorf("application %s is selected more than once", application)
 		}
 		seenApplications[application] = struct{}{}
 	}
@@ -300,7 +300,7 @@ func loadArgoProject(ctx context.Context, name string) (argoProject, error) {
 		return argoProject{}, fmt.Errorf("decode Argo CD AppProject %s: %w", name, err)
 	}
 	if project.Metadata.Name != name {
-		return argoProject{}, fmt.Errorf("Argo CD returned AppProject %q, expected %q", project.Metadata.Name, name)
+		return argoProject{}, fmt.Errorf("the AppProject Argo CD returned is %q, expected %q", project.Metadata.Name, name)
 	}
 	for _, destination := range project.Spec.Destinations {
 		if strings.Contains(destination.Server, "*") || strings.Contains(destination.Name, "*") || strings.Contains(destination.Namespace, "*") {
@@ -343,11 +343,11 @@ func observeApplication(
 		return argoApplication{}, ApplicationEvidence{}, false, fmt.Errorf("observe Argo CD application %s: %w", name, err)
 	}
 	var app argoApplication
-	if err := json.Unmarshal([]byte(output), &app); err != nil {
+	if err = json.Unmarshal([]byte(output), &app); err != nil {
 		return argoApplication{}, ApplicationEvidence{}, false, fmt.Errorf("decode Argo CD application %s: %w", name, err)
 	}
 	if app.Metadata.Name != name {
-		return argoApplication{}, ApplicationEvidence{}, false, fmt.Errorf("Argo CD returned application %q, expected %q", app.Metadata.Name, name)
+		return argoApplication{}, ApplicationEvidence{}, false, fmt.Errorf("the application Argo CD returned is %q, expected %q", app.Metadata.Name, name)
 	}
 	sourcePath, err := validateApplicationSource(project, name, &app, request, servicePaths)
 	if err != nil {
@@ -369,7 +369,7 @@ func observeApplication(
 	}
 	switch app.Status.OperationState.Phase {
 	case "Error", "Failed":
-		return app, evidence, false, fmt.Errorf("Argo CD application %s operation %s", name, app.Status.OperationState.Phase)
+		return app, evidence, false, fmt.Errorf("application %s operation %s", name, app.Status.OperationState.Phase)
 	}
 	done := app.Status.Sync.Status == "Synced" &&
 		app.Status.Health.Status == healthyStatus &&
@@ -379,11 +379,11 @@ func observeApplication(
 	}
 	for _, observed := range []string{revision, app.Status.OperationState.SyncResult.Revision} {
 		if observed != "" && observed != request.Revision {
-			return app, evidence, false, fmt.Errorf("Argo CD application %s reconciled revision %s, expected %s", name, observed, request.Revision)
+			return app, evidence, false, fmt.Errorf("application %s reconciled revision %s, expected %s", name, observed, request.Revision)
 		}
 	}
 	if revision == "" {
-		return app, evidence, false, fmt.Errorf("Argo CD application %s did not report a reconciled revision", name)
+		return app, evidence, false, fmt.Errorf("application %s did not report a reconciled revision", name)
 	}
 	return app, evidence, true, nil
 }
@@ -396,10 +396,10 @@ func validateApplicationSource(
 	servicePaths map[string]struct{},
 ) (string, error) {
 	if len(app.Spec.Sources) > 0 {
-		return "", fmt.Errorf("Argo CD application %s uses multiple sources; exact publication identity is ambiguous", name)
+		return "", fmt.Errorf("application %s uses multiple sources; exact publication identity is ambiguous", name)
 	}
 	if app.Spec.Source.RepoURL == "" || app.Spec.Source.Path == "" {
-		return "", fmt.Errorf("Argo CD application %s source repository and path are required", name)
+		return "", fmt.Errorf("application %s source repository and path are required", name)
 	}
 	if app.Spec.Source.TargetRevision != request.Revision {
 		return "", fmt.Errorf(
@@ -410,7 +410,7 @@ func validateApplicationSource(
 		)
 	}
 	if !projectAllowsSource(project, app.Spec.Source.RepoURL) {
-		return "", fmt.Errorf("Argo CD application %s source repository is outside AppProject %s", name, project.Metadata.Name)
+		return "", fmt.Errorf("application %s source repository is outside AppProject %s", name, project.Metadata.Name)
 	}
 	if !request.Local {
 		matches, err := repositoriesMatch(request.Repository, app.Spec.Source.RepoURL)
@@ -418,12 +418,12 @@ func validateApplicationSource(
 			return "", err
 		}
 		if !matches {
-			return "", fmt.Errorf("Argo CD application %s observes repository %s, expected %s", name, app.Spec.Source.RepoURL, request.Repository)
+			return "", fmt.Errorf("application %s observes repository %s, expected %s", name, app.Spec.Source.RepoURL, request.Repository)
 		}
 	}
 	sourcePath, err := validateRelativePath(app.Spec.Source.Path)
 	if err != nil {
-		return "", fmt.Errorf("Argo CD application %s source path: %w", name, err)
+		return "", fmt.Errorf("application %s source path: %w", name, err)
 	}
 	if _, exists := servicePaths[sourcePath]; !exists {
 		expected := make([]string, 0, len(servicePaths))
@@ -438,12 +438,12 @@ func validateApplicationSource(
 
 func validateApplicationAuthority(project *argoProject, name string, app *argoApplication, appProject string) (string, error) {
 	if app.Spec.Project != appProject {
-		return "", fmt.Errorf("Argo CD application %s belongs to AppProject %s, expected %s", name, app.Spec.Project, appProject)
+		return "", fmt.Errorf("application %s belongs to AppProject %s, expected %s", name, app.Spec.Project, appProject)
 	}
 	for _, condition := range app.Status.Conditions {
 		kind := strings.ToLower(condition.Type + " " + condition.Message)
 		if strings.Contains(kind, "sharedresource") || strings.Contains(kind, "shared resource") || strings.Contains(kind, "repeatedresource") {
-			return "", fmt.Errorf("Argo CD application %s reports shared resources: %s", name, condition.Message)
+			return "", fmt.Errorf("application %s reports shared resources: %s", name, condition.Message)
 		}
 	}
 	cluster := app.Spec.Destination.Server
@@ -451,12 +451,12 @@ func validateApplicationAuthority(project *argoProject, name string, app *argoAp
 		cluster = app.Spec.Destination.Name
 	}
 	if !projectAllows(project, app.Spec.Destination.Server, app.Spec.Destination.Name, app.Spec.Destination.Namespace) {
-		return "", fmt.Errorf("Argo CD application %s destination is outside AppProject %s", name, project.Metadata.Name)
+		return "", fmt.Errorf("application %s destination is outside AppProject %s", name, project.Metadata.Name)
 	}
 	for _, resource := range app.Status.Resources {
 		if !projectAllowsResource(project, app.Spec.Destination.Server, app.Spec.Destination.Name, resource.Group, resource.Kind, resource.Namespace) {
 			return "", fmt.Errorf(
-				"Argo CD application %s resource %s/%s is outside AppProject %s authority",
+				"application %s resource %s/%s is outside AppProject %s authority",
 				name, resource.Kind, resource.Name, project.Metadata.Name,
 			)
 		}
@@ -476,7 +476,7 @@ func applicationRevision(name string, app *argoApplication) (string, error) {
 		revision = app.Status.OperationState.SyncResult.Revisions[0]
 	}
 	if len(app.Status.Sync.Revisions) > 1 || len(app.Status.OperationState.SyncResult.Revisions) > 1 {
-		return "", fmt.Errorf("Argo CD application %s uses multiple source revisions; exact publication identity is ambiguous", name)
+		return "", fmt.Errorf("application %s uses multiple source revisions; exact publication identity is ambiguous", name)
 	}
 	return revision, nil
 }
@@ -559,45 +559,17 @@ func verifyPublishedRevision(ctx context.Context, request *ObserveRequest) (Inve
 	}
 	defer os.RemoveAll(temp)
 	repo := filepath.Join(temp, "repo")
-	if _, err := gitCommand(ctx, temp, "clone", "--quiet", "--no-checkout", "--", request.Repository, repo); err != nil {
+	if _, err = gitCommand(ctx, temp, "clone", "--quiet", "--no-checkout", "--", request.Repository, repo); err != nil {
 		return Inventory{}, fmt.Errorf("clone published repository: %w", err)
 	}
-	revision, err := gitCommand(ctx, repo, "rev-parse", request.Revision+"^{commit}")
-	if err != nil {
-		return Inventory{}, fmt.Errorf("resolve published revision %s: %w", request.Revision, err)
-	}
-	if revision != request.Revision {
-		return Inventory{}, fmt.Errorf("published revision resolved to %s, expected %s", revision, request.Revision)
-	}
-	commit, err := gitCommand(ctx, repo, "rev-parse", request.Commit+"^{commit}")
-	if err != nil {
-		return Inventory{}, fmt.Errorf("resolve signed publication commit %s: %w", request.Commit, err)
-	}
-	if commit != request.Commit {
-		return Inventory{}, fmt.Errorf("signed publication commit resolved to %s, expected %s", commit, request.Commit)
-	}
-	if _, err := gitCommand(ctx, repo, "merge-base", "--is-ancestor", request.Revision, request.Commit); err != nil {
-		return Inventory{}, fmt.Errorf("service snapshot %s is not contained in signed publication commit %s", request.Revision, request.Commit)
-	}
-	tree, err := gitCommand(ctx, repo, "rev-parse", request.Commit+"^{tree}")
-	if err != nil {
+	if err = verifySignedPublicationCommit(ctx, repo, request); err != nil {
 		return Inventory{}, err
 	}
-	if tree != request.Tree {
-		return Inventory{}, fmt.Errorf("signed publication commit tree is %s, expected %s", tree, request.Tree)
-	}
-	rawCommit, err := gitCommand(ctx, repo, "cat-file", "-p", request.Commit)
-	if err != nil {
-		return Inventory{}, err
-	}
-	if !strings.Contains(rawCommit, "\ngpgsig ") {
-		return Inventory{}, fmt.Errorf("publication commit %s is not signed", request.Commit)
-	}
-	if _, err := gitCommand(ctx, repo, "checkout", "--quiet", request.Commit, "--", targetPath); err != nil {
+	if _, err = gitCommand(ctx, repo, "checkout", "--quiet", request.Commit, "--", targetPath); err != nil {
 		return Inventory{}, fmt.Errorf("checkout published path %s at %s: %w", targetPath, request.Commit, err)
 	}
 	target := filepath.Join(repo, filepath.FromSlash(targetPath))
-	if err := ValidateRenderedTree(target, request.AppProject, true); err != nil {
+	if err = ValidateRenderedTree(target, request.AppProject, true); err != nil {
 		return Inventory{}, fmt.Errorf("validate reconciled Git tree: %w", err)
 	}
 	inventory, err := LoadInventory(target)
@@ -607,12 +579,60 @@ func verifyPublishedRevision(ctx context.Context, request *ObserveRequest) (Inve
 	if inventory.Digest != request.RenderDigest {
 		return Inventory{}, fmt.Errorf("reconciled Git tree digest is %s, expected %s", inventory.Digest, request.RenderDigest)
 	}
+	if err = verifyImmutableServiceSnapshot(ctx, repo, target, targetPath, request, &inventory); err != nil {
+		return Inventory{}, err
+	}
+	return inventory, nil
+}
+
+// verifySignedPublicationCommit resolves the revision and the commit the
+// request names and holds the commit to what a publication signed: the
+// snapshot revision contained in it, the tree it recorded, a signature on it.
+func verifySignedPublicationCommit(ctx context.Context, repo string, request *ObserveRequest) error {
+	revision, err := gitCommand(ctx, repo, "rev-parse", request.Revision+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("resolve published revision %s: %w", request.Revision, err)
+	}
+	if revision != request.Revision {
+		return fmt.Errorf("published revision resolved to %s, expected %s", revision, request.Revision)
+	}
+	commit, err := gitCommand(ctx, repo, "rev-parse", request.Commit+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("resolve signed publication commit %s: %w", request.Commit, err)
+	}
+	if commit != request.Commit {
+		return fmt.Errorf("signed publication commit resolved to %s, expected %s", commit, request.Commit)
+	}
+	if _, err = gitCommand(ctx, repo, "merge-base", "--is-ancestor", request.Revision, request.Commit); err != nil {
+		return fmt.Errorf("service snapshot %s is not contained in signed publication commit %s", request.Revision, request.Commit)
+	}
+	tree, err := gitCommand(ctx, repo, "rev-parse", request.Commit+"^{tree}")
+	if err != nil {
+		return err
+	}
+	if tree != request.Tree {
+		return fmt.Errorf("signed publication commit tree is %s, expected %s", tree, request.Tree)
+	}
+	rawCommit, err := gitCommand(ctx, repo, "cat-file", "-p", request.Commit)
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(rawCommit, "\ngpgsig ") {
+		return fmt.Errorf("publication commit %s is not signed", request.Commit)
+	}
+	return nil
+}
+
+// verifyImmutableServiceSnapshot checks that the publication commit changed
+// nothing of the immutable snapshot, and that the snapshot revision describes
+// the same publication: the same identity and the same units.
+func verifyImmutableServiceSnapshot(ctx context.Context, repo, target, targetPath string, request *ObserveRequest, inventory *Inventory) error {
 	// The immutable snapshot spans every unit directory plus the module bundle.
 	// Deriving it from the reconciled inventory keeps non-service kinds inside
 	// the immutability guarantee instead of a hardcoded services/module pair.
-	unitDirs, err := inventoryUnitDirectories(&inventory)
+	unitDirs, err := inventoryUnitDirectories(inventory)
 	if err != nil {
-		return Inventory{}, err
+		return err
 	}
 	snapshotPaths := make([]string, 0, len(unitDirs)+1)
 	for _, directory := range unitDirs {
@@ -622,23 +642,23 @@ func verifyPublishedRevision(ctx context.Context, request *ObserveRequest) (Inve
 	args := append([]string{"diff", "--name-only", request.Revision, request.Commit, "--"}, snapshotPaths...)
 	changedServices, err := gitCommand(ctx, repo, args...)
 	if err != nil {
-		return Inventory{}, fmt.Errorf("compare reviewed service snapshot: %w", err)
+		return fmt.Errorf("compare reviewed service snapshot: %w", err)
 	}
 	if changedServices != "" {
-		return Inventory{}, fmt.Errorf(
+		return fmt.Errorf(
 			"signed publication changes immutable service snapshot files: %s",
 			strings.Join(strings.Fields(changedServices), ", "),
 		)
 	}
-	if _, err := gitCommand(ctx, repo, "checkout", "--quiet", request.Revision, "--", targetPath); err != nil {
-		return Inventory{}, fmt.Errorf("checkout service snapshot %s at %s: %w", targetPath, request.Revision, err)
+	if _, err = gitCommand(ctx, repo, "checkout", "--quiet", request.Revision, "--", targetPath); err != nil {
+		return fmt.Errorf("checkout service snapshot %s at %s: %w", targetPath, request.Revision, err)
 	}
-	if err := ValidateServiceSnapshot(target); err != nil {
-		return Inventory{}, fmt.Errorf("validate immutable service snapshot: %w", err)
+	if err = ValidateServiceSnapshot(target); err != nil {
+		return fmt.Errorf("validate immutable service snapshot: %w", err)
 	}
 	snapshotInventory, err := LoadInventory(target)
 	if err != nil {
-		return Inventory{}, err
+		return err
 	}
 	if snapshotInventory.Module != inventory.Module ||
 		snapshotInventory.Environment != inventory.Environment ||
@@ -647,9 +667,9 @@ func verifyPublishedRevision(ctx context.Context, request *ObserveRequest) (Inve
 		snapshotInventory.OwnedPath != inventory.OwnedPath ||
 		snapshotInventory.ModulePath != inventory.ModulePath ||
 		!reflect.DeepEqual(snapshotInventory.Units, inventory.Units) {
-		return Inventory{}, fmt.Errorf("immutable service snapshot identity differs from the reviewed publication")
+		return fmt.Errorf("immutable service snapshot identity differs from the reviewed publication")
 	}
-	return inventory, nil
+	return nil
 }
 
 func loadClusterIdentity(ctx context.Context, cluster string) (string, error) {
@@ -662,14 +682,14 @@ func loadClusterIdentity(ctx context.Context, cluster string) (string, error) {
 		Name   string         `json:"name"`
 		Config map[string]any `json:"config"`
 	}
-	if err := json.Unmarshal([]byte(output), &value); err != nil {
+	if err = json.Unmarshal([]byte(output), &value); err != nil {
 		return "", fmt.Errorf("decode Argo CD cluster %s: %w", cluster, err)
 	}
 	if value.Server == "" && value.Name == "" {
-		return "", fmt.Errorf("Argo CD cluster %s has no registered identity", cluster)
+		return "", fmt.Errorf("cluster %s has no registered identity in Argo CD", cluster)
 	}
 	if value.Server != cluster && value.Name != cluster {
-		return "", fmt.Errorf("Argo CD returned cluster %s/%s, expected %s", value.Name, value.Server, cluster)
+		return "", fmt.Errorf("the cluster Argo CD returned is %s/%s, expected %s", value.Name, value.Server, cluster)
 	}
 	canonical, err := json.Marshal(value)
 	if err != nil {

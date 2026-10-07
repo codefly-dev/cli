@@ -207,7 +207,7 @@ func (session *SelectionSession) acquireExecutionBatch(ctx context.Context, reso
 		if artifact.MediaType != "application/octet-stream" {
 			return nil, errors.New("staging supports only raw application/octet-stream native executors; no archive or media inference")
 		}
-		path, err := session.acquireArtifact(ctx, client, artifact)
+		path, err := session.acquireArtifact(ctx, client, &artifact)
 		if err != nil {
 			return nil, err
 		}

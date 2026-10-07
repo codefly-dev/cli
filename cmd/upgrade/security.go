@@ -171,7 +171,7 @@ func upgradeModuleSecurity(ctx context.Context, dir string, dryRun bool) error {
 
 	// Apply: toolchain first (so go get resolves against the right stdlib).
 	if toolchain != "" {
-		if err := runGo(ctx, dir, "mod", "edit", "-toolchain=go"+toolchain); err != nil {
+		if err = runGo(ctx, dir, "mod", "edit", "-toolchain=go"+toolchain); err != nil {
 			return fmt.Errorf("set toolchain go%s: %w", toolchain, err)
 		}
 	}
@@ -185,11 +185,11 @@ func upgradeModuleSecurity(ctx context.Context, dir string, dryRun bool) error {
 		for _, b := range modBumps {
 			getArgs = append(getArgs, b.module+"@"+b.version)
 		}
-		if err := runGo(ctx, dir, getArgs...); err != nil {
+		if err = runGo(ctx, dir, getArgs...); err != nil {
 			return fmt.Errorf("go get: %w", err)
 		}
 	}
-	if err := runGo(ctx, dir, "mod", "tidy"); err != nil {
+	if err = runGo(ctx, dir, "mod", "tidy"); err != nil {
 		return fmt.Errorf("go mod tidy: %w", err)
 	}
 

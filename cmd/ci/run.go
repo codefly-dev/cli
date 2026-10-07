@@ -52,7 +52,7 @@ var RunCmd = &cobra.Command{
 		if err = refuseServiceOverrides(ctx, workspace, runAllowServiceOverrides, "codefly ci run"); err != nil {
 			return err
 		}
-		if err := common.WithSilenceE(ctx, workspace, silent); err != nil {
+		if err = common.WithSilenceE(ctx, workspace, silent); err != nil {
 			return fmt.Errorf("cannot configure silent services: %w", err)
 		}
 		plan, err := runSelection.BuildPlan(ctx, workspace, ReplayInvocation{Phases: runPhases, Suites: testSuites, RuntimeContext: runtimeContext})
@@ -64,7 +64,7 @@ var RunCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runWithCIReport(ctx, workspace, plan, "codefly ci run", func(reporter *CIReporter) error {
+		return runWithCIReport(ctx, workspace, plan, "codefly ci run", func(reporter *Reporter) error {
 			if err := validateAgentVersions(ctx, workspace, plan); err != nil {
 				return err
 			}
@@ -143,7 +143,7 @@ func runCIPhases(ctx context.Context, phases []string, failFast bool, execute fu
 // executeCIPhase runs a single phase. The test phase fans out over its named
 // suites, applying the same fail-fast continuation across suites that
 // runCIPhases applies across phases.
-func executeCIPhase(ctx context.Context, reporter *CIReporter, workspace *resources.Workspace, plan *Plan, phase string, suites []string, failFast bool) error {
+func executeCIPhase(ctx context.Context, reporter *Reporter, workspace *resources.Workspace, plan *Plan, phase string, suites []string, failFast bool) error {
 	switch phase {
 	case ciPhaseTest:
 		var errs error
@@ -152,7 +152,7 @@ func executeCIPhase(ctx context.Context, reporter *CIReporter, workspace *resour
 				cli.Header(2, "CI test suite: %s", suite)
 			}
 			options := commandScheduleOptions(true, phase, suite, reporter)
-			suiteErr := CIWithPlanOptions(ctx, workspace, plan, runTestServiceForSuite(suite, failFast), options)
+			suiteErr := WithPlanOptions(ctx, workspace, plan, runTestServiceForSuite(suite, failFast), options)
 			if suiteErr != nil {
 				errs = errors.Join(errs, suiteErr)
 				if failFast {
@@ -170,7 +170,7 @@ func executeCIPhase(ctx context.Context, reporter *CIReporter, workspace *resour
 	default:
 		action := runPhaseAction(phase)
 		options := commandScheduleOptions(phaseLocksDependencyClosure(phase), phase, "", reporter)
-		return CIWithPlanOptions(ctx, workspace, plan, action, options)
+		return WithPlanOptions(ctx, workspace, plan, action, options)
 	}
 }
 

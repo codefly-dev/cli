@@ -141,7 +141,7 @@ func readVersion(path string) (*semver.Version, error) {
 	var probe struct {
 		Version string `yaml:"version"`
 	}
-	if err := yaml.Unmarshal(raw, &probe); err != nil {
+	if err = yaml.Unmarshal(raw, &probe); err != nil {
 		return nil, fmt.Errorf("parse YAML: %w", err)
 	}
 	if probe.Version == "" {
@@ -211,7 +211,16 @@ func (m *Manifest) Bump(bumpType string) (*semver.Version, error) {
 // existing tag.sh sed used, so it produces byte-for-byte identical
 // output for the same input — making the migration a no-op diff.
 func (m *Manifest) WriteVersion(newVer *semver.Version) error {
-	raw, err := os.ReadFile(m.Path) //nolint:gosec
+	// The read and the write both go through a root on the manifest's own
+	// directory, so the rewrite cannot leave it.
+	directory := filepath.Dir(m.Path)
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", directory, err)
+	}
+	defer func() { _ = root.Close() }()
+	name := filepath.Base(m.Path)
+	raw, err := root.ReadFile(name)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", m.Path, err)
 	}
@@ -223,7 +232,7 @@ func (m *Manifest) WriteVersion(newVer *semver.Version) error {
 	// created with; we read+write so an existing wider mode (e.g.
 	// 0o644) gets normalized — that's intentional, the manifest
 	// is sensitive enough not to be world-readable.
-	if err := os.WriteFile(m.Path, updated, 0o600); err != nil {
+	if err := root.WriteFile(name, updated, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", m.Path, err)
 	}
 	m.Version = newVer

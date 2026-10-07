@@ -54,21 +54,21 @@ func renderModuleBundle(
 	defer os.RemoveAll(stage)
 
 	stagedModule := filepath.Join(stage, workspaceStagedModulePath(workspace, module))
-	if err := copyModuleInputTree(module.Dir(), stagedModule); err != nil {
+	if err = copyModuleInputTree(module.Dir(), stagedModule); err != nil {
 		return fmt.Errorf("stage module bundle input: %w", err)
 	}
 	moduleWorkspaceData, err := encodeTransportNeutralModuleWorkspace(workspace, module.Name)
 	if err != nil {
 		return fmt.Errorf("prepare transport-neutral module workspace: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(stage, resources.WorkspaceConfigurationName), moduleWorkspaceData, 0o600); err != nil {
+	if err = os.WriteFile(filepath.Join(stage, resources.WorkspaceConfigurationName), moduleWorkspaceData, 0o600); err != nil {
 		return err
 	}
 	moduleEnvironment, err := transportNeutralModuleEnvironment(stage)
 	if err != nil {
 		return fmt.Errorf("prepare transport-neutral module environment: %w", err)
 	}
-	if _, err := commandWithEnvironment(ctx, stage, moduleEnvironment, binary, stagedModule, module.Name); err != nil {
+	if _, err = commandWithEnvironment(ctx, stage, moduleEnvironment, binary, stagedModule, module.Name); err != nil {
 		return fmt.Errorf("generate transport-neutral module bundle: %w", err)
 	}
 
@@ -384,12 +384,12 @@ func equalStrings(left, right []string) bool {
 }
 
 func validateTransportNeutralModuleBundle(root string) error {
-	return walkRegularFiles(root, func(path, relative string, _ os.FileInfo) error {
+	return walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
 		extension := strings.ToLower(filepath.Ext(relative))
-		if extension != ".yaml" && extension != ".yml" && extension != jsonExtension {
+		if extension != yamlExtension && extension != ymlExtension && extension != jsonExtension {
 			return nil
 		}
-		data, err := os.ReadFile(path)
+		data, err := readWithin(root, relative)
 		if err != nil {
 			return err
 		}
@@ -402,7 +402,7 @@ func validateTransportNeutralModuleBundle(root string) error {
 				continue
 			}
 			switch item.kind {
-			case "Application", "ApplicationSet", "AppProject":
+			case kindApplication, kindApplicationSet, kindAppProject:
 				return fmt.Errorf(
 					"module bundle contains CLI-owned Argo transport resource %s in %s",
 					item.kind,
@@ -425,12 +425,12 @@ func retainManagedBundle(
 	secretRefs []environments.EnvironmentManagedSecretReference,
 ) (bool, error) {
 	var jobs []map[string]any
-	err := walkRegularFiles(root, func(path, relative string, _ os.FileInfo) error {
+	err := walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
 		extension := filepath.Ext(relative)
-		if extension != ".yaml" && extension != ".yml" {
+		if extension != yamlExtension && extension != ymlExtension {
 			return nil
 		}
-		data, err := os.ReadFile(path)
+		data, err := readWithin(root, relative)
 		if err != nil {
 			return err
 		}
@@ -458,7 +458,7 @@ func retainManagedBundle(
 		return false, err
 	}
 	if len(jobs) == 0 && projection == nil {
-		if err := os.RemoveAll(root); err != nil {
+		if err = os.RemoveAll(root); err != nil {
 			return false, err
 		}
 		return false, nil
@@ -471,20 +471,20 @@ func retainManagedBundle(
 	defer os.RemoveAll(replacement)
 	base := filepath.Join(replacement, "base")
 	overlay := filepath.Join(replacement, "overlays", environment)
-	if err := os.MkdirAll(base, 0o755); err != nil {
+	if err = os.MkdirAll(base, 0o755); err != nil {
 		return false, err
 	}
-	if err := os.MkdirAll(overlay, 0o755); err != nil {
+	if err = os.MkdirAll(overlay, 0o755); err != nil {
 		return false, err
 	}
 	var resourcesList []string
 	for index, job := range jobs {
 		name := fmt.Sprintf("job-%d.yaml", index+1)
-		data, err := yaml.Marshal(job)
-		if err != nil {
-			return false, err
+		encoded, marshalErr := yaml.Marshal(job)
+		if marshalErr != nil {
+			return false, marshalErr
 		}
-		if err := os.WriteFile(filepath.Join(base, name), data, 0o644); err != nil {
+		if err = os.WriteFile(filepath.Join(base, name), encoded, 0o600); err != nil {
 			return false, err
 		}
 		resourcesList = append(resourcesList, name)
@@ -496,33 +496,33 @@ func retainManagedBundle(
 		}
 		// The projection is an ExternalSecret — a reference to remote keys, never a
 		// secret value — so it stays a world-readable manifest like its siblings.
-		if writeErr := os.WriteFile(filepath.Join(base, "external-secret.yaml"), projected, 0o644); writeErr != nil { //nolint:gosec
+		if writeErr := os.WriteFile(filepath.Join(base, "external-secret.yaml"), projected, 0o600); writeErr != nil {
 			return false, writeErr
 		}
 		resourcesList = append(resourcesList, "external-secret.yaml")
 	}
 	baseKustomization := map[string]any{
 		"apiVersion": "kustomize.config.k8s.io/v1beta1",
-		"kind":       "Kustomization",
-		"resources":  resourcesList,
+		"kind":       kindKustomization,
+		resourcesKey: resourcesList,
 	}
 	data, err := yaml.Marshal(baseKustomization)
 	if err != nil {
 		return false, err
 	}
-	if err := os.WriteFile(filepath.Join(base, "kustomization.yaml"), data, 0o644); err != nil {
+	if err = os.WriteFile(filepath.Join(base, "kustomization.yaml"), data, 0o600); err != nil {
 		return false, err
 	}
 	kustomization := map[string]any{
 		"apiVersion": "kustomize.config.k8s.io/v1beta1",
-		"kind":       "Kustomization",
-		"resources":  []string{"../../base"},
+		"kind":       kindKustomization,
+		resourcesKey: []string{"../../base"},
 	}
 	data, err = yaml.Marshal(kustomization)
 	if err != nil {
 		return false, err
 	}
-	if err := os.WriteFile(filepath.Join(overlay, "kustomization.yaml"), data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(overlay, "kustomization.yaml"), data, 0o600); err != nil {
 		return false, err
 	}
 	if err := os.RemoveAll(root); err != nil {

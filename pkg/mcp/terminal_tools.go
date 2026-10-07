@@ -35,61 +35,61 @@ func (s *Server) terminalClient() (cliv0.TerminalServiceClient, *grpc.ClientConn
 
 // registerTerminalTools adds terminal MCP tools.
 func (s *Server) registerTerminalTools() {
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "open_terminal",
 		Description: "Open a new terminal session scoped to a module/service directory",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
-				"module":  {Type: "string", Description: "Module name (optional)"},
-				"service": {Type: "string", Description: "Service name (optional)"},
-				"shell":   {Type: "string", Description: "Shell override (default: $SHELL)"},
+				fieldModule:  {Type: schemaTypeString, Description: "Module name (optional)"},
+				fieldService: {Type: schemaTypeString, Description: "Service name (optional)"},
+				"shell":      {Type: schemaTypeString, Description: "Shell override (default: $SHELL)"},
 			},
 		},
 	}, s.openTerminal)
 
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "send_terminal_input",
 		Description: "Send input to a terminal session and return output. Include \\n for enter key.",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
-				"session_id": {Type: "string", Description: "Terminal session ID"},
-				"input":      {Type: "string", Description: "Input to send (include \\n for newline)"},
+				fieldSessionID: {Type: schemaTypeString, Description: describeTerminalSession},
+				"input":        {Type: schemaTypeString, Description: "Input to send (include \\n for newline)"},
 			},
-			Required: []string{"session_id", "input"},
+			Required: []string{fieldSessionID, "input"},
 		},
 	}, s.sendTerminalInput)
 
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "read_terminal_output",
 		Description: "Read latest output from a terminal session",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
-				"session_id": {Type: "string", Description: "Terminal session ID"},
+				fieldSessionID: {Type: schemaTypeString, Description: describeTerminalSession},
 			},
-			Required: []string{"session_id"},
+			Required: []string{fieldSessionID},
 		},
 	}, s.readTerminalOutput)
 
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "close_terminal",
 		Description: "Close a terminal session",
 		InputSchema: InputSchema{
-			Type: "object",
+			Type: schemaTypeObject,
 			Properties: map[string]PropertySchema{
-				"session_id": {Type: "string", Description: "Terminal session ID"},
+				fieldSessionID: {Type: schemaTypeString, Description: describeTerminalSession},
 			},
-			Required: []string{"session_id"},
+			Required: []string{fieldSessionID},
 		},
 	}, s.closeTerminal)
 
-	s.RegisterTool(Tool{
+	s.register(&Tool{
 		Name:        "list_terminals",
 		Description: "List active terminal sessions",
 		InputSchema: InputSchema{
-			Type:       "object",
+			Type:       schemaTypeObject,
 			Properties: map[string]PropertySchema{},
 		},
 	}, s.listTerminals)
@@ -103,8 +103,8 @@ func (s *Server) openTerminal(ctx context.Context, args map[string]string) ([]Co
 	defer conn.Close()
 
 	resp, err := client.Open(ctx, &cliv0.OpenTerminalRequest{
-		Module:  args["module"],
-		Service: args["service"],
+		Module:  args[fieldModule],
+		Service: args[fieldService],
 		Shell:   args["shell"],
 		Rows:    40,
 		Cols:    120,
@@ -114,9 +114,9 @@ func (s *Server) openTerminal(ctx context.Context, args map[string]string) ([]Co
 	}
 
 	result := map[string]string{
-		"session_id":  resp.SessionId,
-		"shell":       resp.Shell,
-		"working_dir": resp.WorkingDir,
+		fieldSessionID: resp.SessionId,
+		"shell":        resp.Shell,
+		"working_dir":  resp.WorkingDir,
 	}
 	data, _ := json.MarshalIndent(result, "", "  ")
 	return []Content{TextContent(string(data))}, nil
@@ -129,7 +129,7 @@ func (s *Server) sendTerminalInput(ctx context.Context, args map[string]string) 
 	}
 	defer conn.Close()
 
-	sessionID := args["session_id"]
+	sessionID := args[fieldSessionID]
 	input := args["input"]
 	if sessionID == "" || input == "" {
 		return nil, fmt.Errorf("session_id and input are required")
@@ -156,7 +156,7 @@ func (s *Server) readTerminalOutput(ctx context.Context, args map[string]string)
 	}
 	defer conn.Close()
 
-	sessionID := args["session_id"]
+	sessionID := args[fieldSessionID]
 	if sessionID == "" {
 		return nil, fmt.Errorf("session_id is required")
 	}
@@ -179,7 +179,7 @@ func (s *Server) closeTerminal(ctx context.Context, args map[string]string) ([]C
 	}
 	defer conn.Close()
 
-	sessionID := args["session_id"]
+	sessionID := args[fieldSessionID]
 	if sessionID == "" {
 		return nil, fmt.Errorf("session_id is required")
 	}
@@ -192,7 +192,7 @@ func (s *Server) closeTerminal(ctx context.Context, args map[string]string) ([]C
 	return []Content{TextContent("closed")}, nil
 }
 
-func (s *Server) listTerminals(ctx context.Context, args map[string]string) ([]Content, error) {
+func (s *Server) listTerminals(ctx context.Context, _ map[string]string) ([]Content, error) {
 	client, conn, err := s.terminalClient()
 	if err != nil {
 		return nil, err
@@ -243,7 +243,10 @@ func collectTerminalOutput(ctx context.Context, client cliv0.TerminalServiceClie
 	if err != nil {
 		return nil, fmt.Errorf("cannot attach: %w", err)
 	}
-	defer stream.CloseSend()
+	// The send half is closed once the read loop has returned, and its error
+	// then has nothing left to affect: the read context is cancelled on
+	// return, and the output is already collected or refused.
+	defer func() { _ = stream.CloseSend() }()
 	if err := stream.Send(input); err != nil {
 		return nil, fmt.Errorf("cannot send: %w", err)
 	}

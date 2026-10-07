@@ -1,5 +1,0 @@
-kind: module
-name: b
-services:
-    - name: worker
-    - name: web

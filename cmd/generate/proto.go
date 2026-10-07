@@ -220,7 +220,7 @@ func generateProtoCode(ctx context.Context, protoDir string, outputDir string) (
 
 	defer func() {
 		cleanupCtx := context.WithoutCancel(ctx)
-		if err := runner.Shutdown(cleanupCtx); err != nil {
+		if err = runner.Shutdown(cleanupCtx); err != nil {
 			// The runner resolves its name and owns an immutable container ID.
 			// Report that acquired ID, never the unresolved name supplied above.
 			containerID, idErr := runner.ContainerID()

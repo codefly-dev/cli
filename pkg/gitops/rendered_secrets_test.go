@@ -325,9 +325,9 @@ func TestRenderedServiceSecretsRefusesAnEntryWithNoSecretKey(t *testing.T) {
 
 func TestRenderedSecretsKeepActualServicePropertyBindings(t *testing.T) {
 	workspace := t.TempDir()
-	key := "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__SOLUTION_REGISTRATION__SECRET"
-	writeMappedRender(t, workspace, "first", "api", "staging", "shared", map[string][]string{"first_registration": {key}})
-	writeMappedRender(t, workspace, "second", "api", "staging", "shared", map[string][]string{"second_registration": {key}})
+	key := "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__SHARED__SIGNING_KEY"
+	writeMappedRender(t, workspace, "first", "api", "staging", "shared", map[string][]string{"first_signing": {key}})
+	writeMappedRender(t, workspace, "second", "api", "staging", "shared", map[string][]string{"second_signing": {key}})
 	rendered, err := RenderedServiceSecrets(workspace, "staging")
 	if err != nil {
 		t.Fatal(err)

@@ -202,7 +202,7 @@ func routeCodeUnitTestRequest(request *runtimev0.TestRequest, targets []normaliz
 	}
 	base := &runtimev0.TestRequest{}
 	if request != nil {
-		base = proto.Clone(request).(*runtimev0.TestRequest)
+		base = cloneProto(request)
 	}
 	selection := base.GetSelection()
 	if selection == nil {
@@ -222,7 +222,7 @@ func routeCodeUnitTestRequest(request *runtimev0.TestRequest, targets []normaliz
 	if !ok {
 		return nil, fmt.Errorf("authoritative test selection cannot be assigned to one declared code unit (path=%q package=%q)", selectionPath, packageID)
 	}
-	forwarded := proto.Clone(base).(*runtimev0.TestRequest)
+	forwarded := cloneProto(base)
 	if selectionPath != "" {
 		relative, err := selectionPathWithinCodeUnit(selectionPath, owner.path, len(targets) == 1)
 		if err != nil {
@@ -238,7 +238,7 @@ func testRunsForAllCodeUnits(request *runtimev0.TestRequest, targets []normalize
 	for _, target := range targets {
 		runs = append(runs, codeUnitTestRun{
 			target:  target,
-			request: proto.Clone(request).(*runtimev0.TestRequest),
+			request: cloneProto(request),
 		})
 	}
 	return runs
@@ -362,11 +362,12 @@ func rewriteSelectionPath(selection *runtimev0.TestSelection, value string) {
 	}
 }
 
-func codeUnitTestError(request *runtimev0.TestRequest, message string) *runtimev0.TestResponse {
+func codeUnitTestError(_ *runtimev0.TestRequest, message string) *runtimev0.TestResponse {
 	message = strings.TrimSpace(message)
 	if message == "" {
 		message = "code-unit runtime failed"
 	}
+	//nolint:staticcheck // SA1019: the proto keeps the flat fields populated for consumers that have not migrated to the structured tree
 	return &runtimev0.TestResponse{
 		Status: &runtimev0.TestStatus{State: runtimev0.TestStatus_ERROR, Message: message},
 		Run:    &runtimev0.TestRun{Runner: "codefly-gateway"},
@@ -380,7 +381,7 @@ func rebaseCodeUnitTestResponse(target normalizedCodeUnitTarget, originalRequest
 	if response == nil {
 		return codeUnitTestError(originalRequest, fmt.Sprintf("code unit %q returned no runtime response", target.id))
 	}
-	out := proto.Clone(response).(*runtimev0.TestResponse)
+	out := cloneProto(response)
 	for _, suite := range out.GetSuites() {
 		rebaseCodeUnitSuite(target.path, suite)
 	}
@@ -388,7 +389,7 @@ func rebaseCodeUnitTestResponse(target normalizedCodeUnitTarget, originalRequest
 		if out.Run == nil {
 			out.Run = &runtimev0.TestRun{}
 		}
-		out.Run.RequestedSelection = proto.Clone(originalRequest.GetSelection()).(*runtimev0.TestSelection)
+		out.Run.RequestedSelection = cloneProto(originalRequest.GetSelection())
 		out.Run.SelectionId = originalRequest.GetSelectionId()
 	}
 	return out
@@ -470,8 +471,8 @@ func aggregateCodeUnitTestResponses(request *runtimev0.TestRequest, results []co
 	truncation := &runtimev0.TestTruncation{}
 	state := runtimev0.TestRunResult_PASSED
 	var duration time.Duration
-	var suites []*runtimev0.TestSuite
-	var summaries []string
+	suites := make([]*runtimev0.TestSuite, 0, len(results))
+	summaries := make([]string, 0, len(results))
 	var output strings.Builder
 	for _, result := range results {
 		response := result.response
@@ -511,7 +512,7 @@ func aggregateCodeUnitTestResponses(request *runtimev0.TestRequest, results []co
 		suites = append(suites, &runtimev0.TestSuite{
 			Name:   "code-unit:" + result.target.id,
 			File:   result.target.path,
-			Counts: proto.Clone(unitCounts).(*runtimev0.TestCounts),
+			Counts: cloneProto(unitCounts),
 			Suites: cloneTestSuites(response.GetSuites()),
 		})
 		appendBoundedCodeUnitOutput(&output, result.target, response)
@@ -529,13 +530,14 @@ func aggregateCodeUnitTestResponses(request *runtimev0.TestRequest, results []co
 	if request != nil {
 		run.SuiteName = request.GetSuite()
 		if request.GetSelection() != nil {
-			run.RequestedSelection = proto.Clone(request.GetSelection()).(*runtimev0.TestSelection)
+			run.RequestedSelection = cloneProto(request.GetSelection())
 			run.SelectionId = request.GetSelectionId()
 		}
 	}
 	if duration > 0 {
 		run.Duration = durationpb.New(duration)
 	}
+	//nolint:staticcheck // SA1019: the proto keeps the flat fields populated for consumers that have not migrated to the structured tree
 	response := &runtimev0.TestResponse{
 		Status:       &runtimev0.TestStatus{State: statusState, Message: message},
 		Run:          run,
@@ -604,7 +606,7 @@ func cloneTestSuites(suites []*runtimev0.TestSuite) []*runtimev0.TestSuite {
 	out := make([]*runtimev0.TestSuite, 0, len(suites))
 	for _, suite := range suites {
 		if suite != nil {
-			out = append(out, proto.Clone(suite).(*runtimev0.TestSuite))
+			out = append(out, cloneProto(suite))
 		}
 	}
 	return out
@@ -614,7 +616,7 @@ func appendBoundedCodeUnitOutput(output *strings.Builder, target normalizedCodeU
 	if output.Len() >= maxCodeUnitAggregateOutputSize {
 		return
 	}
-	body := strings.TrimSpace(response.GetOutput())
+	body := strings.TrimSpace(response.GetOutput()) //nolint:staticcheck // SA1019: the flat field is the fallback for agents that have not migrated to the structured tree
 	if body == "" {
 		body = strings.TrimSpace(response.GetResult().GetMessage())
 	}
@@ -644,4 +646,14 @@ func truncateToUTF8Boundary(s string, limit int) string {
 		break
 	}
 	return truncated
+}
+
+// cloneProto is proto.Clone with its result typed: Clone returns the message's
+// own concrete type, so the assertion cannot fail for a non-nil message.
+func cloneProto[T proto.Message](message T) T {
+	cloned, ok := proto.Clone(message).(T)
+	if !ok {
+		panic(fmt.Sprintf("proto.Clone returned %T for %T", proto.Clone(message), message))
+	}
+	return cloned
 }

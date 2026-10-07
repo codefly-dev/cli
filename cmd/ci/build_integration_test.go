@@ -94,7 +94,7 @@ func TestCIBuildOrdersRealImagePrerequisites(t *testing.T) {
 			reporter := fixedCIReporter(t, plan)
 			producerStarted := make(chan struct{})
 			independentBuilt := make(chan struct{})
-			runErr := CIWithPlanOptions(ctx, workspace, plan, func(ctx context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
+			runErr := WithPlanOptions(ctx, workspace, plan, func(ctx context.Context, _ *resources.Workspace, _ *resources.Module, service *resources.Service) error {
 				switch service.Name {
 				case "organization":
 					close(producerStarted)

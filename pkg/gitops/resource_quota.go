@@ -164,7 +164,7 @@ func writeOverlayResource(overlay, name string, manifest any) error {
 		return err
 	}
 	// A quota/limit manifest is a plain resource cap, world-readable like its siblings.
-	if err := os.WriteFile(filepath.Join(overlay, name), encoded, 0o644); err != nil { //nolint:gosec
+	if err := os.WriteFile(filepath.Join(overlay, name), encoded, 0o600); err != nil {
 		return err
 	}
 	return addKustomizationResource(overlay, name)

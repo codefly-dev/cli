@@ -97,7 +97,7 @@ func (session *SelectionSession) contractSnapshot(ctx context.Context, resolved 
 		if acquisition.Target != target || acquisition.Artifact.Name != name || acquisition.Artifact.Purpose != core.ArtifactContracts {
 			continue
 		}
-		path, err := session.acquireArtifact(ctx, client, acquisition.Artifact)
+		path, err := session.acquireArtifact(ctx, client, &acquisition.Artifact)
 		if err != nil {
 			return nil, err
 		}

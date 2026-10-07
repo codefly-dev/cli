@@ -181,12 +181,14 @@ func (d *Dispatcher) dispatchExporter(
 			return report, fmt.Errorf("%w: journal sequence %d has incomplete receipt identity", ErrInvalid, entry.Sequence)
 		}
 		report.Attempted++
+		exported, ok := proto.Clone(attestation).(*executionv1.ExecutionAttestationV1)
+		if !ok {
+			return report, fmt.Errorf("%w: journal sequence %d clones as a %T", ErrInvalid, entry.Sequence, proto.Clone(attestation))
+		}
 		callContext, cancel := context.WithTimeout(ctx, d.exportTimeout)
 		response, exportErr := exporter.Client.Export(
 			callContext,
-			&executionv1.ExportExecutionRequest{
-				Attestation: proto.Clone(attestation).(*executionv1.ExecutionAttestationV1),
-			},
+			&executionv1.ExportExecutionRequest{Attestation: exported},
 		)
 		cancel()
 		if exportErr != nil {

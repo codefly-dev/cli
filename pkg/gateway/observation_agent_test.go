@@ -36,7 +36,7 @@ func TestNoObservationStartsAnAgent(t *testing.T) {
 	// to spawn.
 	writeAgentRequiringWorkspace(t, root)
 
-	server, err := NewServer(Config{WorkDir: root})
+	server, err := NewServer(&Config{WorkDir: root})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -44,6 +44,10 @@ type Server struct {
 	// and is cancelled by Close, so a stack started over MCP stops with the server.
 	runCtx    context.Context
 	cancelRun context.CancelFunc
+	// registerErr is the first tool registration that failed while the
+	// server was built; NewServer returns it instead of a server missing a
+	// tool it advertises.
+	registerErr error
 }
 
 // WithVFS sets the VFS for file operations. If not set, falls back to os calls.
@@ -90,12 +94,26 @@ func NewServer(ctx context.Context, version string, opts ...func(*Server)) (*Ser
 	s.registerMutationTools()
 	s.registerTerminalTools()
 	s.registerResources()
+	if s.registerErr != nil {
+		s.cancelRun()
+		return nil, s.registerErr
+	}
 	return s, nil
 }
 
 // RegisterTool adds a tool to the shared registry.
-func (s *Server) RegisterTool(tool Tool, handler ToolHandler) error {
+func (s *Server) RegisterTool(tool *Tool, handler ToolHandler) error {
 	return s.toolbox.Register(tool, handler)
+}
+
+// register adds one of the server's own tools and keeps the first failure
+// for NewServer: a duplicate or malformed registration is a defect in this
+// package, and the server must not come up advertising fewer tools than it
+// declares.
+func (s *Server) register(tool *Tool, handler ToolHandler) {
+	if err := s.RegisterTool(tool, handler); err != nil && s.registerErr == nil {
+		s.registerErr = err
+	}
 }
 
 // RegisterResource adds a resource to the server
@@ -416,7 +434,7 @@ func (s *Server) handleRequest(ctx context.Context, req *JSONRPCRequest) *JSONRP
 	}
 }
 
-func (s *Server) handleInitialize(ctx context.Context, req *JSONRPCRequest) *JSONRPCResponse {
+func (s *Server) handleInitialize(_ context.Context, req *JSONRPCRequest) *JSONRPCResponse {
 	result := InitializeResult{
 		ProtocolVersion: MCPProtocolVersion,
 		Capabilities: ServerCapabilities{
@@ -431,7 +449,7 @@ func (s *Server) handleInitialize(ctx context.Context, req *JSONRPCRequest) *JSO
 	return s.successResponse(req.ID, result)
 }
 
-func (s *Server) handleListTools(ctx context.Context, req *JSONRPCRequest) *JSONRPCResponse {
+func (s *Server) handleListTools(_ context.Context, req *JSONRPCRequest) *JSONRPCResponse {
 	result := ListToolsResult{
 		Tools: s.toolbox.Definitions(),
 	}

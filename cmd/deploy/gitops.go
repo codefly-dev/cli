@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -60,6 +61,7 @@ var gitOpsRenderCmd = &cobra.Command{
 		cli.Info("Digest %s", result.Inventory.Digest)
 		printSizingReport(result.Sizing)
 		printElidedNamespaces(result.ElidedNamespaces)
+		printSolutionHostBindings(&result)
 		printClearedDev(result.ClearedDev)
 		return nil
 	},
@@ -95,6 +97,7 @@ var gitOpsSnapshotCmd = &cobra.Command{
 		cli.Info("Digest %s", result.Inventory.Digest)
 		printSizingReport(result.Sizing)
 		printElidedNamespaces(result.ElidedNamespaces)
+		printSolutionHostBindings(&result)
 		printClearedDev(result.ClearedDev)
 		return nil
 	},
@@ -152,13 +155,13 @@ var gitOpsPublishCmd = &cobra.Command{
 		if !gitOpsYes && !models.Confirm(ctx, "Publish this signed promotion and open or update its pull request?", false) {
 			return fmt.Errorf("publication not confirmed")
 		}
-		if err := plane.ConfigureMutationAuthority(ctx, control.AuthorityConfig{Mode: control.AuthorityPrepared}); err != nil {
+		if err = plane.ConfigureMutationAuthority(ctx, control.AuthorityConfig{Mode: control.AuthorityPrepared}); err != nil {
 			return err
 		}
 		prepared, err := plane.PrepareMutation(ctx, control.Mutation{
 			Kind:    control.MutationGitOpsPublish,
 			Summary: "Publish reviewed GitOps promotion",
-			Payload: gitops.PublishMutation{Request: request, PlanID: plan.ID},
+			Payload: gitops.PublishMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers},
 		})
 		if err != nil {
 			return err
@@ -174,9 +177,30 @@ var gitOpsPublishCmd = &cobra.Command{
 		cli.Info("Service snapshot %s", result.SnapshotRevision)
 		cli.Info("Signed commit %s", result.Commit)
 		cli.Info("Tree %s", result.Tree)
+		printDelivery(result.Delivery)
 		cli.Info("Pull request %s", result.PullRequest)
 		return nil
 	},
+}
+
+// printDelivery reports the delivery documents a publish settled and signed,
+// and says plainly when they are unsigned: a host refuses those.
+func printDelivery(delivery *gitops.InventoryDelivery) {
+	if delivery == nil {
+		return
+	}
+	for _, document := range delivery.Documents {
+		state := "settled"
+		if document.Removed {
+			state = "withdrawn by a tombstone"
+		}
+		cli.Info("Delivered %s document %s at generation %d, %s", document.Kind, document.ID, document.Generation, state)
+	}
+	if delivery.Signed {
+		cli.Info("Delivery documents signed by %s", delivery.Identity)
+		return
+	}
+	cli.Warning("Delivery documents are UNSIGNED: no signing identity in this process; a host refuses them, and no Job delivers them. Publish from the release workflow.")
 }
 
 var gitOpsObserveCmd = &cobra.Command{
@@ -246,13 +270,13 @@ var gitOpsRollbackCmd = &cobra.Command{
 		if !gitOpsYes && !models.Confirm(ctx, "Publish this reviewed GitOps re-promotion?", false) {
 			return fmt.Errorf("rollback publication not confirmed")
 		}
-		if err := plane.ConfigureMutationAuthority(ctx, control.AuthorityConfig{Mode: control.AuthorityPrepared}); err != nil {
+		if err = plane.ConfigureMutationAuthority(ctx, control.AuthorityConfig{Mode: control.AuthorityPrepared}); err != nil {
 			return err
 		}
 		prepared, err := plane.PrepareMutation(ctx, control.Mutation{
 			Kind:    control.MutationGitOpsRollback,
 			Summary: "Re-promote reviewed GitOps tree",
-			Payload: gitops.RollbackMutation{Request: request, PlanID: plan.ID},
+			Payload: gitops.RollbackMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers},
 		})
 		if err != nil {
 			return err
@@ -417,6 +441,7 @@ func publishRequest(module string) gitops.PublishRequest {
 		PromotionBranch: gitOpsBranch, CommitMessage: gitOpsMessage,
 		Title: gitOpsTitle, Body: gitOpsBody, Local: gitOpsLocal,
 		AllowUnresolvedContracts: gitOpsAllowUnresolvedContracts,
+		Resign:                   gitOpsResign,
 	}
 }
 
@@ -436,6 +461,25 @@ func printElidedNamespaces(elided []string) {
 	cli.Warning("%d Namespace manifest(s) claiming the destination namespace were dropped: the namespace is provisioned outside this render (Argo Applications carry CreateNamespace=false)", len(elided))
 	for _, path := range elided {
 		cli.Warning("  %s — its service agent should elide the Namespace under a restricted output profile", path)
+	}
+}
+
+// printSolutionHostBindings reports what this render DECLARED should be
+// present on the host, and what it could not declare. The second half matters
+// as much as the first: a composition with no solution and one whose
+// environment names no host both render zero bindings, and only this tells
+// them apart.
+func printSolutionHostBindings(result *gitops.RenderResult) {
+	for _, declared := range result.SolutionHostBindings {
+		cli.Info("Declared solution host binding %s at provisional generation %d (%s); publish settles the generation against the delivery repository and signs the document", declared.Binding, declared.Generation, declared.Path)
+	}
+	groups := make([]string, 0, len(result.StaleGroupConsumers))
+	for group := range result.StaleGroupConsumers {
+		groups = append(groups, group)
+	}
+	sort.Strings(groups)
+	for _, group := range groups {
+		cli.Warning("Workspace configuration group %s changed since %s rendered it; render those modules next — publish refuses this one until they bake in the same value", group, strings.Join(result.StaleGroupConsumers[group], ", "))
 	}
 }
 
@@ -490,6 +534,9 @@ func printPublishPlan(plan *gitops.PublishPlan) {
 		cli.Info("Contract checks:")
 		cli.Info("%s", formatContractChecks(plan.ContractChecks))
 	}
+	for _, stale := range plan.StaleConsumers {
+		cli.Warning("Delivered consumer %s bakes in another value of a workspace configuration group this publication carries; publish it next, so %s does not keep delivering two values of one group", stale, plan.Environment)
+	}
 	if plan.Diff != "" {
 		cli.Info("%s", plan.Diff)
 	}
@@ -509,6 +556,7 @@ var (
 	gitOpsYes                      bool
 	gitOpsLocal                    bool
 	gitOpsAllowUnresolvedContracts bool
+	gitOpsResign                   bool
 	gitOpsValidateCluster          bool
 	gitOpsRebuild                  bool
 )
@@ -541,6 +589,8 @@ func init() {
 	for _, command := range []*cobra.Command{gitOpsPlanCmd, gitOpsPublishCmd, gitOpsRollbackCmd} {
 		command.Flags().BoolVar(&gitOpsAllowUnresolvedContracts, "allow-unresolved-contracts", false,
 			"Downgrade a consumed contract whose exposing module is not yet deployed to a warning, for bootstrap ordering")
+		command.Flags().BoolVar(&gitOpsResign, "resign", false,
+			"Sign again a delivered document whose carrier the release policy no longer admits (a rotated signing identity); deliberate, never implied")
 	}
 	for _, command := range []*cobra.Command{gitOpsPublishCmd, gitOpsRollbackCmd} {
 		command.Flags().StringVar(&gitOpsMessage, "message", "", "Signed commit message")
