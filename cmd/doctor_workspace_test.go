@@ -627,14 +627,12 @@ func TestDoctorWorkspaceComposedModuleConfigurations(t *testing.T) {
 		if composed == nil || !strings.Contains(composed.Message, "legal") {
 			t.Fatalf("the module still ships the group: %s", reportJSON(t, report))
 		}
-		// The workspace's own list stays empty for the same reason: `legal` is
-		// not a group of the workspace's own, it is an override of one the
-		// module provides. That the operator's file under configurations/local
-		// is then invisible in this line is a reporting gap, recorded on the PR
-		// as a follow-up rather than redesigned here.
+		// The operator's file under configurations/local is listed as the
+		// workspace's own as well: the group is BOTH — the module's, with the
+		// workspace's values overlaid per key — so neither line hides it.
 		own := findCheck(report, "workspace configurations")
-		if own == nil || !strings.Contains(own.Message, "none under configurations/local") {
-			t.Fatalf("the overridden group is not reported as the workspace's own: %s", reportJSON(t, report))
+		if own == nil || !strings.Contains(own.Message, "legal") {
+			t.Fatalf("the workspace's own configuration should be listed: %s", reportJSON(t, report))
 		}
 	})
 	t.Run("unprovided configuration still fails", func(t *testing.T) {

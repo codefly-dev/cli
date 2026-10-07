@@ -589,23 +589,7 @@ func dominantTestState(current, candidate runtimev0.TestRunResult_State) runtime
 // aggregate as a passing one, and dominantTestState's ranking of UNKNOWN above
 // FAILED never saw the case it exists for.
 func effectiveRuntimeTestState(response *runtimev0.TestResponse) runtimev0.TestRunResult_State {
-	if response == nil {
-		return runtimev0.TestRunResult_ERRORED
-	}
-	if state := response.GetResult().GetState(); state != runtimev0.TestRunResult_UNKNOWN {
-		return state
-	}
-	// Some production agents still expose a successful composite invocation
-	// through typed status/counts while leaving the additive run-result enum at
-	// UNKNOWN. Match the gateway's established success interpretation so an
-	// aggregate does not turn real passing evidence into a false error.
-	if runtimeTestSuccess(response) {
-		return runtimev0.TestRunResult_PASSED
-	}
-	if response.GetStatus().GetState() == runtimev0.TestStatus_ERROR { //nolint:staticcheck // SA1019: the flat field is the fallback for agents that have not migrated to the structured tree
-		return runtimev0.TestRunResult_ERRORED
-	}
-	return runtimev0.TestRunResult_FAILED
+	return testrun.State(response)
 }
 
 func smallestPositive(current, candidate int32) int32 {

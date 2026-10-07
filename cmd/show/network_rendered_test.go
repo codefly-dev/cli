@@ -27,6 +27,10 @@ func renderAccounts(t *testing.T, root, env string) {
 		Units: []gitops.InventoryUnit{{
 			Kind: gitops.UnitKindService, Module: "saas", Name: "accounts", Path: filepath.ToSlash(unit),
 			Output: &gitops.InventoryKubernetesOutput{
+				// RESTRICTED, not the deprecated PROMOTABLE_GITOPS_V1. This
+				// literal was r15's concrete bypass: it drove profile 2
+				// through the exported renderer, which installed the
+				// inventory without validating it.
 				Kind: "KUSTOMIZE", Profile: "KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1",
 				ContractVersion: "codefly.dev/kubernetes-manifest/v1",
 				Validation: &gitops.InventoryKubernetesValidation{

@@ -146,12 +146,15 @@ func testReceipt() *executionv1.ExecutionReceiptV1 {
 			AuthorizationRevision: 4, ReplayPolicy: "idempotent",
 			TenantId: "tenant-codefly", OwnerPrincipalId: "principal-antoine",
 			TaskId: "task-1", SessionId: "session-1",
+			// Core v0.9.1 requires the seal: a capability names the
+			// installation it is held through and the execution it was minted
+			// for. The execution pair is optional but must be whole.
 			Seal: &basev0.WorkSealV1{
-				// core#692 seals every capability to one installation. The owner here is a
-				// person at a session, and a human bears no execution: the seal carries no
-				// build pair (a workload\'s would carry both, never one), and a verifier
-				// refuses a human capability that has acquired one.
-				PrincipalEpoch: 1, InstallationId: "installation-1", InstallationRevision: 1,
+				PrincipalEpoch:       1,
+				InstallationId:       "installation-warden",
+				InstallationRevision: 3,
+				BuildIncarnation:     uint64Pointer(7),
+				ImageDigest:          stringPointer("sha256:" + strings.Repeat("a", 64)),
 			},
 		},
 		WorkContextSha256: hex.EncodeToString(contextDigest[:]),

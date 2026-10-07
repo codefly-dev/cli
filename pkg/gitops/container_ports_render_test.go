@@ -272,19 +272,34 @@ func treeDigest(t *testing.T, root string) string {
 }
 
 // undeclaredFixtureDigest is treeDigest of the fixture's module render with
-// no declaration. A render that declares nothing must stay byte-identical.
+// no declaration, captured on main before the container-port check existed
+// (b990c162, with only the serviceFlow seam added). A render that declares
+// nothing must stay byte-identical.
+// The digest moved with the output profile: the render records the profile it
+// requested in its own evidence file (.codefly-render.json), so switching from
+// PROMOTABLE_GITOPS_V1 to RESTRICTED_PORTABLE_V1 changes that one string and
+// therefore the tree digest. The MANIFESTS are unchanged — the two profiles
+// render the identical restricted bundle, which core's proto states and
+// service-vault's own deployment test proves byte-for-byte — and the two cases
+// below still agree with each other, which is the property this digest pins.
 //
-// It was captured on main before the container-port check existed (b990c162,
-// with only the serviceFlow seam added) as
-// "aaca0799de4ebe4f9afa38c7cb84594a63b7b2dfd984251de5d90c4fd03cee0d", and
-// re-captured when the render inventory schema went from 5 to 6 for declared
-// solution presence, again from 6 to 7 when publish took over settling and
-// signing the delivery documents, and once more when the output profile the
-// render requests and records became RESTRICTED_PORTABLE_V1 (the deprecated
-// PROMOTABLE_GITOPS_V1 retired). Each bump is the ONLY difference: a module
-// with no solution instance renders the same tree, byte for byte, with one
-// field changed in .codefly-render.json.
-const undeclaredFixtureDigest = "702022b9cb5b9174cbe00b48c0918a52fb6c4f381766231d3fd94ea3ca999f3c"
+// Every committed .codefly-render.json in the fleet records the old string and
+// will show this one-line change on its next render.
+//
+// It moved again when the inventory started persisting the RESTRICTED security
+// property instead of the `promotable` delivery decision: the rendered
+// manifests are byte-identical, and the one differing byte range is
+// render-inventory.json's validation object, now
+// {"staticValidation","serverSideValidation","restricted","violations"}. That
+// was verified by rendering the fixture and reading the installed inventory —
+// no "promotable" key remains anywhere in it.
+//
+// It moved once more when cli#855 was rebased onto main 7b25258f: that branch's
+// render evidence carries its own inventory schema bumps (declared solution
+// presence; delivery documents settled and signed at publish) and now main's
+// restricted property beside them. The manifests are unchanged by either, and
+// the two cases below still agree, which is the property this digest pins.
+const undeclaredFixtureDigest = "fe83664635e75df2d8d13f24c9bed8a0b28dd14c74370e591258251f39b81b70"
 
 func TestRenderModuleWithoutDeclarationsIsByteIdentical(t *testing.T) {
 	installFakeAgents(t)

@@ -332,7 +332,14 @@ func TestWithContainerReachableAsPublicMirrorsContainerOnlyEndpoint(t *testing.T
 	container := resources.NewHTTPNetworkInstance("saas-vault.saas.svc.cluster.local", 8080, false)
 	container.Access = resources.NewContainerNetworkAccess()
 	mappings := []*basev0.NetworkMapping{{
-		Endpoint:  &basev0.Endpoint{Module: "saas", Service: "vault", Name: "http", Api: "http", Visibility: resources.VisibilityInternal},
+		// withContainerReachableAsPublic reads INSTANCES only, so this
+		// endpoint's visibility is incidental to what the test asserts.
+		// `public` says that and authors no allow-list — core#711 derives
+		// allow_modules from consumers' service-dependencies and refuses an
+		// authored one, so a fixture should not name the field unless the
+		// field is what it is testing.
+		Endpoint: &basev0.Endpoint{Module: "saas", Service: "vault", Name: "http", Api: "http",
+			Visibility: resources.VisibilityPublic},
 		Instances: []*basev0.NetworkInstance{container},
 	}}
 

@@ -20,7 +20,6 @@ import (
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	"github.com/codefly-dev/core/resources"
 	coreservices "github.com/codefly-dev/core/services"
-	"github.com/codefly-dev/core/workcontext"
 )
 
 const (
@@ -40,13 +39,6 @@ type Config struct {
 	WorkDir         string
 	StateDir        string
 	AuthorityIssuer string
-	// Revisions and Seals are the issuer's LIVE state — its authorization
-	// revision per tenant, and the installation, principal-epoch, approved
-	// build and operation-binding seals — which core's authenticator verifies
-	// every capability against. Both are required: there is no mode in which
-	// the revision or the seal comparison is skipped.
-	Revisions       workcontext.RevisionSource
-	Seals           workcontext.SealSource
 	Release         string
 	ExporterSpecs   []string
 	OnDispatchError func(error)
@@ -94,20 +86,8 @@ func Open(ctx context.Context, config *Config) (*Runtime, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if config == nil {
-		return nil, fmt.Errorf("%w: configuration is required", ErrInvalid)
-	}
-	if strings.TrimSpace(config.AuthorityJWKS) == "" {
-		return nil, fmt.Errorf("%w: authority JWKS URL is required", ErrInvalid)
-	}
 	if strings.TrimSpace(config.AuthorityIssuer) == "" {
 		return nil, fmt.Errorf("%w: authority issuer is required", ErrInvalid)
-	}
-	if config.Revisions == nil {
-		return nil, fmt.Errorf("%w: the issuer's authorization-revision source is required: core's Work Context authenticator holds every capability to the issuer's live revision", ErrInvalid)
-	}
-	if config.Seals == nil {
-		return nil, fmt.Errorf("%w: the issuer's seal source is required: core's Work Context authenticator compares every capability's seal against the live installation, epoch, build and binding state", ErrInvalid)
 	}
 	release := strings.TrimSpace(config.Release)
 	if release == "" {
@@ -147,17 +127,20 @@ func Open(ctx context.Context, config *Config) (*Runtime, error) {
 		}
 	}()
 
-	keys, err := executionrecorder.NewJWKSKeys(config.AuthorityJWKS, executionrecorder.JWKSOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("configure Work Context verification keys: %w", err)
-	}
+	// No verifier is constructed, and that is the design rather than a gap.
+	// Core's Verifier requires the authorization revision, the replay store,
+	// the grant source and the SEAL source; this process holds none of them,
+	// and one fed invented state would PASS rather than fail. The JWKS
+	// verifier that stood here was from the JSON era and is deleted with its
+	// flag and its config field: a flag that exists only to refuse is a
+	// compatibility shim.
+	//
+	// The recorder therefore authorizes a capability its caller has already
+	// verified, and refuses when there is none.
 	authority, err := executionrecorder.NewWorkContextAuthority(
-		&executionrecorder.WorkContextAuthorityConfig{
-			Issuer:    config.AuthorityIssuer,
-			Audience:  executionrecorder.ExecutionWorkContextAudience,
-			Keys:      keys,
-			Revisions: config.Revisions,
-			Seals:     config.Seals,
+		executionrecorder.WorkContextAuthorityConfig{
+			Issuer:   config.AuthorityIssuer,
+			Audience: executionrecorder.ExecutionWorkContextAudience,
 		},
 	)
 	if err != nil {

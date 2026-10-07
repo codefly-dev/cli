@@ -20,6 +20,8 @@ import (
 	"github.com/codefly-dev/core/executionreceipt"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
+	coreworkcontext "github.com/codefly-dev/core/workcontext"
+	workcontext "github.com/codefly-dev/sdk-go/workcontext"
 	workcontextgrpc "github.com/codefly-dev/sdk-go/workcontext/grpctransport"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -44,22 +46,35 @@ type Admission struct {
 	Target        *executionv1.ExecutionTargetV1
 }
 
-// Authority verifies the opaque capability (the encoded Work Context) and
-// returns trusted claims.
+// Authority decides whether an ALREADY-VERIFIED capability may do this, and
+// returns nothing but that decision.
+//
+// It deliberately does NOT return claims. It used to, and the claims it
+// returned were then signed into the receipt beside verified.SHA256() — two
+// sources for one fact, so a receipt could attest to a tenant, workspace or
+// actor the capability never named, while its digest pointed at a capability
+// that said something else. Comparing the two before signing would have caught
+// that; not having a second source cannot be forgotten. The recorder reads the
+// claims from the capability itself.
+//
+// The parameter is a *workcontext.Verified, which only core's Verifier
+// constructs, so an unverified capability cannot reach this interface: there is
+// no token parameter to pass one through. See WorkContextAuthority for why this
+// component does not verify.
 type Authority interface {
-	Verify(context.Context, string, Admission) (*basev0.WorkContextV1, error)
+	Authorize(context.Context, *workcontext.Verified, Admission) error
 }
 
 // AuthorityFunc adapts a function into Authority.
-type AuthorityFunc func(context.Context, string, Admission) (*basev0.WorkContextV1, error)
+type AuthorityFunc func(context.Context, *workcontext.Verified, Admission) error
 
 // Authorize implements Authority.
 func (fn AuthorityFunc) Authorize(
 	ctx context.Context,
-	encoded string,
+	verified *workcontext.Verified,
 	admission Admission,
-) (*basev0.WorkContextV1, error) {
-	return fn(ctx, encoded, admission)
+) error {
+	return fn(ctx, verified, admission)
 }
 
 // Journal is the minimal durable outbox contract used by the recorder.
@@ -145,31 +160,42 @@ func New(config Config) (*Recorder, error) {
 	}, nil
 }
 
+// validateBeginInput refuses what Begin cannot record: no context, no target,
+// an unbounded operation kind, an unspecified assurance, or an operation input
+// digest that is not canonical.
+func validateBeginInput(ctx context.Context, input *BeginInput) error {
+	if ctx == nil {
+		return fmt.Errorf("%w: context is required", ErrInvalid)
+	}
+	if input.Target == nil {
+		return fmt.Errorf("%w: target is required", ErrInvalid)
+	}
+	if strings.TrimSpace(input.OperationKind) == "" || len(input.OperationKind) > 128 {
+		return fmt.Errorf("%w: bounded operation kind is required", ErrInvalid)
+	}
+	if input.Assurance == executionv1.ExecutionAssurance_EXECUTION_ASSURANCE_UNSPECIFIED {
+		return fmt.Errorf("%w: execution assurance is required", ErrInvalid)
+	}
+	if !canonicalSHA256(input.OperationInputSHA256) {
+		return fmt.Errorf("%w: operation input SHA-256 must be canonical", ErrInvalid)
+	}
+	return nil
+}
+
 // Begin verifies the carried capability, detects operation replay before the effect,
 // and durably appends STARTED. A non-nil Existing means the caller must not
 // execute the effect again.
 func (r *Recorder) Begin(
 	ctx context.Context,
 	execution workcontextgrpc.ExecutionContext,
+	verified *workcontext.Verified,
 	input BeginInput,
 ) (BeginResult, error) {
 	if r == nil {
 		return BeginResult{}, fmt.Errorf("%w: recorder is nil", ErrInvalid)
 	}
-	if ctx == nil {
-		return BeginResult{}, fmt.Errorf("%w: context is required", ErrInvalid)
-	}
-	if input.Target == nil {
-		return BeginResult{}, fmt.Errorf("%w: target is required", ErrInvalid)
-	}
-	if strings.TrimSpace(input.OperationKind) == "" || len(input.OperationKind) > 128 {
-		return BeginResult{}, fmt.Errorf("%w: bounded operation kind is required", ErrInvalid)
-	}
-	if input.Assurance == executionv1.ExecutionAssurance_EXECUTION_ASSURANCE_UNSPECIFIED {
-		return BeginResult{}, fmt.Errorf("%w: execution assurance is required", ErrInvalid)
-	}
-	if !canonicalSHA256(input.OperationInputSHA256) {
-		return BeginResult{}, fmt.Errorf("%w: operation input SHA-256 must be canonical", ErrInvalid)
+	if err := validateBeginInput(ctx, &input); err != nil {
+		return BeginResult{}, err
 	}
 	resources, err := withOperationInput(input.OperationInputSHA256, input.Resources)
 	if err != nil {
@@ -183,9 +209,13 @@ func (r *Recorder) Begin(
 		Assurance:     input.Assurance,
 		Target:        target,
 	}
-	claims, err := r.authority.Verify(ctx, execution.Capability(), admission)
-	if err != nil {
-		return BeginResult{}, fmt.Errorf("%w: verify Work Context: %v", ErrInvalid, err)
+	// Refused here, before the authority, because the receipt this call writes
+	// carries the capability's digest: without a verified capability there is
+	// nothing to digest, and a receipt attesting to an unverified execution is
+	// worse than no receipt. An Authority implementation could also refuse, but
+	// the recorder must not depend on every implementation remembering to.
+	if verified == nil {
+		return BeginResult{}, fmt.Errorf("%w: a governed execution requires a verified Work Context; this recorder does not verify capabilities and will not attest to an unverified one", ErrInvalid)
 	}
 	if authorizeErr := r.authority.Authorize(ctx, verified, admission); authorizeErr != nil {
 		return BeginResult{}, fmt.Errorf("%w: authorize Work Context: %v", ErrInvalid, authorizeErr)
@@ -240,7 +270,9 @@ func (r *Recorder) Begin(
 	}
 	admission.Target = target
 	attemptID := stableAttemptID(claims.GetTenantId(), r.producer.GetId(), execution.OperationID())
-	tokenDigest := sha256.Sum256([]byte(execution.Capability()))
+	// core computed this over the capability it verified, so the receipt's
+	// digest and the verification cannot describe different bytes.
+	tokenDigest := verified.SHA256()
 
 	existing, startedReceipt, found, lookupErr := r.findExisting(ctx, claims.GetTenantId(), execution.OperationID(), attemptID)
 	if lookupErr != nil {
@@ -271,7 +303,7 @@ func (r *Recorder) Begin(
 		Producer:          cloneProto(r.producer),
 		Assurance:         input.Assurance,
 		WorkContext:       claims,
-		WorkContextSha256: hex.EncodeToString(tokenDigest[:]),
+		WorkContextSha256: tokenDigest,
 		Target:            cloneProto(target),
 		StartedAt:         timestamppb.New(r.now().UTC()),
 		Resources:         resources,

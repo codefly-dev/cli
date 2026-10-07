@@ -43,7 +43,7 @@ func TestEveryEffectOfTheContractIsRefusedBeforeItsHandler(t *testing.T) {
 	seedWorkspace(t, root)
 	before := workspaceDigest(t, root)
 
-	server, err := NewServer(Config{WorkDir: root})
+	server, err := NewServer(&Config{WorkDir: root})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestEveryEffectOfTheContractIsRefusedBeforeItsHandler(t *testing.T) {
 // of a chain assembled by the test.
 func TestTheServedChainRefusesAGovernedEffect(t *testing.T) {
 	root := t.TempDir()
-	server, err := NewServer(Config{WorkDir: root})
+	server, err := NewServer(&Config{WorkDir: root})
 	if err != nil {
 		t.Fatal(err)
 	}

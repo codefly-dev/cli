@@ -216,11 +216,6 @@ type World struct {
 	Env  *environments.Environment
 	Mode Mode
 
-	// declaredEndpoints answers which endpoints each service of the workspace
-	// declares, read once for every resolution of this world (consumerContext).
-	declaredEndpoints   resources.DeclaredEndpoints
-	declaredEndpointsMu sync.Mutex
-
 	// containerRecoveryIdentity is the ownership acknowledgement every agent
 	// spawned for this flow must return before it can create Docker resources.
 	containerRecoveryIdentity string
@@ -353,6 +348,13 @@ type World struct {
 	// producer's address is not a function of its identity, so it cannot be
 	// derived before that producer initializes (localProducerMappings).
 	temporaryPorts bool
+
+	// workspaceConfigurationValues are values the run path derives itself,
+	// keyed group -> key -> value. They are layered onto the resolved workspace
+	// configurations of every service declaring that group, so a derived value
+	// reaches a service through the same carrier a declared one does rather
+	// than through a raw process variable the service has no contract to read.
+	workspaceConfigurationValues map[string]map[string]string
 
 	// OutputSink receives narration otherwise printed directly via pkg/cli.
 	// Always non-nil: NewFlow defaults it to a no-op sink.
@@ -657,12 +659,65 @@ func (flow *Flow) resolveDockerFallback(ctx context.Context) error {
 	}
 	resolutions, needsDocker := flow.classifyFreeBackends()
 
-	// Phase 1 — classify every "free" service WITHOUT mutating it yet. The plugin
-	// already filtered SupportedBackends to what is installed on THIS host, in
-	// preference order (LOCAL > NIX > DOCKER), so trust it (single source of
-	// truth). When Docker was probed and is unreachable, skip Docker; otherwise
-	// it remains a selectable backend. An empty choice means no backend can run.
-	resolutions, needsDocker := flow.classifyFreeRunners()
+	// If a service can ONLY run under Docker, try to start the engine before
+	// falling back/blocking — much better UX than erroring when OrbStack/Docker
+	// Desktop is merely stopped. Re-resolve after a successful start so every
+	// service receives its concrete backend.
+	if needsDocker && flow.dockerProbed && !flow.docker.Running && flow.startDocker {
+		started, name, derr := dockerstart.EnsureRunning(ctx, flow.docker.Context)
+		if derr == nil {
+			if started {
+				w.Info(fmt.Sprintf("Started the Docker engine via %s.", name))
+			}
+			flow.docker.Running = true
+			return flow.resolveDockerFallback(ctx)
+		}
+		w.Debug("could not auto-start Docker", wool.ErrField(derr))
+	}
+
+	fellBack, nixFallbacks, blocked := flow.applyBackendResolutions(resolutions)
+	return flow.reportBackendResolution(w, fellBack, nixFallbacks, blocked)
+}
+
+// classifyFreeBackends classifies every "free" service WITHOUT mutating it, and
+// reports whether any of them can run under Docker alone.
+//
+// The plugin already filtered SupportedBackends to what is installed on THIS
+// host, in preference order (LOCAL > NIX > DOCKER), so trust it (single source
+// of truth). When Docker was probed and is unreachable, skip Docker; otherwise
+// it remains a selectable backend. An empty choice means no backend can run.
+func (flow *Flow) classifyFreeBackends() ([]runtimeResolution, bool) {
+	var resolutions []runtimeResolution
+	needsDocker := false
+	for _, m := range flow.hub.managers {
+		manager, ok := m.(*Manager)
+		if !ok || manager.Runner == nil {
+			continue
+		}
+		runner := manager.Runner
+		// Only the "free" default auto-resolves; an explicit context (native/
+		// nix/container, or a per-service preference) is honored untouched.
+		if runner.runtimeContext != resources.RuntimeContextFree {
+			continue
+		}
+		backends := runner.SupportedBackends()
+		// An agent that advertises NO backends gives us no capability information
+		// to resolve "free" against. Blocking it here would regress every agent
+		// that predates SupportedBackends (or simply leaves it unset), which ran
+		// fine on the unresolved "free" hint. Leave it untouched; a genuinely
+		// unrunnable agent fails later with its own diagnostic. Only agents that
+		// advertise backends but none currently selectable are "blocked".
+		if len(backends) == 0 {
+			continue
+		}
+		chosen := flow.firstSelectableBackend(backends)
+		resolutions = append(resolutions, runtimeResolution{runner: runner, chosen: chosen})
+		if chosen == "" {
+			needsDocker = true
+		}
+	}
+	return resolutions, needsDocker
+}
 
 // firstSelectableBackend is the runtime context of the first backend this host
 // can actually run, in the plugin's own preference order.
@@ -682,9 +737,30 @@ func (flow *Flow) firstSelectableBackend(backends []agentv0.Backend_Type) string
 	return ""
 }
 
-	// Phase 2 — apply concrete selections and collect services with no viable
-	// backend. Explicit runtime contexts were excluded above and remain intact.
-	fellBack, nixFallbacks, blocked := flow.applyFreeResolutions(resolutions)
+// applyBackendResolutions applies the concrete selections and collects the
+// services with no viable backend. Explicit runtime contexts were excluded
+// during classification and remain intact.
+func (flow *Flow) applyBackendResolutions(resolutions []runtimeResolution) (fellBack, nixFallbacks, blocked []string) {
+	dockerDown := flow.dockerProbed && !flow.docker.Running
+	for _, r := range resolutions {
+		switch r.chosen {
+		case "":
+			blocked = append(blocked, r.runner.Unique())
+		case resources.RuntimeContextNix:
+			r.runner.WithRuntimeContext(r.chosen)
+			if dockerDown {
+				fellBack = append(fellBack, r.runner.Unique()+" → nix")
+				nixFallbacks = append(nixFallbacks, r.runner.Unique())
+			}
+		default:
+			r.runner.WithRuntimeContext(r.chosen)
+			if dockerDown {
+				fellBack = append(fellBack, r.runner.Unique()+" → native")
+			}
+		}
+	}
+	return fellBack, nixFallbacks, blocked
+}
 
 // reportBackendResolution refuses a run no backend can serve, and warns about
 // the fallbacks it did make.
@@ -715,90 +791,6 @@ func (flow *Flow) reportBackendResolution(w *wool.Wool, fellBack, nixFallbacks, 
 	return nil
 }
 
-// freeResolution is a runner on the "free" default and the backend chosen for
-// it: native, nix, container, or "" when no backend can run.
-type freeResolution struct {
-	runner *Runner
-	chosen string
-}
-
-// classifyFreeRunners chooses a backend for every runner on the "free"
-// default and reports whether one of them can run under Docker only.
-func (flow *Flow) classifyFreeRunners() ([]freeResolution, bool) {
-	var resolutions []freeResolution
-	needsDocker := false
-	for _, m := range flow.hub.managers {
-		manager, ok := m.(*Manager)
-		if !ok || manager.Runner == nil {
-			continue
-		}
-		runner := manager.Runner
-		// Only the "free" default auto-resolves; an explicit context (native/
-		// nix/container, or a per-service preference) is honored untouched.
-		if runner.runtimeContext != resources.RuntimeContextFree {
-			continue
-		}
-		backends := runner.SupportedBackends()
-		// An agent that advertises NO backends gives us no capability information
-		// to resolve "free" against. Blocking it here would regress every agent
-		// that predates SupportedBackends (or simply leaves it unset), which ran
-		// fine on the unresolved "free" hint. Leave it untouched; a genuinely
-		// unrunnable agent fails later with its own diagnostic. Only agents that
-		// advertise backends but none currently selectable are "blocked".
-		if len(backends) == 0 {
-			continue
-		}
-		chosen := flow.chooseBackend(backends)
-		resolutions = append(resolutions, freeResolution{runner: runner, chosen: chosen})
-		if chosen == "" {
-			needsDocker = true
-		}
-	}
-	return resolutions, needsDocker
-}
-
-// chooseBackend takes the first advertised backend this host can run; Docker
-// only when it was not probed or is running.
-func (flow *Flow) chooseBackend(backends []agentv0.Backend_Type) string {
-	for _, backend := range backends {
-		switch backend {
-		case agentv0.Backend_LOCAL:
-			return resources.RuntimeContextNative
-		case agentv0.Backend_NIX:
-			return resources.RuntimeContextNix
-		case agentv0.Backend_DOCKER:
-			if !flow.dockerProbed || flow.docker.Running {
-				return resources.RuntimeContextContainer
-			}
-		}
-	}
-	return ""
-}
-
-// applyFreeResolutions sets each resolved runner's runtime context and names
-// the services that fell back off Docker, those that fell back to nix, and
-// those with no viable backend.
-func (flow *Flow) applyFreeResolutions(resolutions []freeResolution) (fellBack, nixFallbacks, blocked []string) {
-	for _, r := range resolutions {
-		switch r.chosen {
-		case "":
-			blocked = append(blocked, r.runner.Unique())
-		case resources.RuntimeContextNix:
-			r.runner.WithRuntimeContext(r.chosen)
-			if flow.dockerProbed && !flow.docker.Running {
-				fellBack = append(fellBack, r.runner.Unique()+" → nix")
-				nixFallbacks = append(nixFallbacks, r.runner.Unique())
-			}
-		default:
-			r.runner.WithRuntimeContext(r.chosen)
-			if flow.dockerProbed && !flow.docker.Running {
-				fellBack = append(fellBack, r.runner.Unique()+" → native")
-			}
-		}
-	}
-	return fellBack, nixFallbacks, blocked
-}
-
 func (flow *Flow) Load(ctx context.Context) error {
 	if flow.validationSkipped {
 		return nil
@@ -809,29 +801,6 @@ func (flow *Flow) Load(ctx context.Context) error {
 		w.Debug("running in stand-alone Mode")
 	}
 
-	if err := flow.loadConfiguration(ctx, w); err != nil {
-		return err
-	}
-
-	playbook, err := flow.newPlaybook(ctx, w)
-	if err != nil {
-		return err
-	}
-	flow.playbook = playbook
-
-	// Fix the callback
-	for _, manager := range flow.hub.managers {
-		manager.DoSetCallback(flow.playbook.Seed)
-		// Wire post-start crashes into the flow so Start cancels the playbook.
-		manager.DoSetFailureSink(flow.reportFailure)
-	}
-
-	return nil
-}
-
-// loadConfiguration admits the run's services to the configuration manager
-// and loads it.
-func (flow *Flow) loadConfiguration(ctx context.Context, w *wool.Wool) error {
 	// LoadRequired the resources
 	var identities []*resources.ServiceIdentity
 	for _, service := range flow.services {
@@ -865,148 +834,22 @@ func (flow *Flow) loadConfiguration(ctx context.Context, w *wool.Wool) error {
 
 	w.Debug("got resources",
 		wool.Field("dns", flow.ConfigurationManager.DNS()))
-	return nil
-}
 
-// playbookWith adopts the policy and creates the playbook that plays it.
-func (flow *Flow) playbookWith(ctx context.Context, w *wool.Wool, policy PlaybookPolicy) (*Playbook, error) {
-	flow.WithPolicy(policy)
-	playbook, err := NewPlaybook(ctx, flow.world)
+	// The policy and the playbook this operation runs under, by mode.
+	playbook, err := flow.playbookForMode(ctx)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot create playbook")
+		return w.Wrap(err)
 	}
-	playbook.WithPolicy(policy)
-	return playbook, nil
-}
+	flow.playbook = playbook
 
-// stopAfterRequestedPhase stops the playbook after the roots' load or init
-// when only that much was asked for.
-func (flow *Flow) stopAfterRequestedPhase(w *wool.Wool, playbook *Playbook) {
-	if flow.loadOnly {
-		w.Debug("load only")
-		playbook.WithStoppingAfter(stopAfterRoots(flow.rootUniques(), RuntimeLoad))
+	// Fix the callback
+	for _, manager := range flow.hub.managers {
+		manager.DoSetCallback(flow.playbook.Seed)
+		// Wire post-start crashes into the flow so Start cancels the playbook.
+		manager.DoSetFailureSink(flow.reportFailure)
 	}
-	if flow.initOnly {
-		w.Debug("init only")
-		playbook.WithStoppingAfter(stopAfterRoots(flow.rootUniques(), RuntimeInit))
-	}
-}
 
-// newPlaybook creates the mode's policy and the playbook that plays it until
-// the mode's terminal action on the origin.
-func (flow *Flow) newPlaybook(ctx context.Context, w *wool.Wool) (*Playbook, error) {
-	switch flow.world.Mode {
-	case RunMode:
-		policy, err := NewRuntimeStartPolicy(ctx, flow.world.Dependencies, flow)
-		if err != nil {
-			return nil, w.Wrapf(err, "cannot create policy")
-		}
-		playbook, err := flow.playbookWith(ctx, w, policy)
-		if err != nil {
-			return nil, err
-		}
-		flow.stopAfterRequestedPhase(w, playbook)
-		return playbook, nil
-	case TestMode:
-		policy, err := NewRuntimeTestPolicy(
-			ctx,
-			flow.world.Dependencies,
-			flow,
-			resources.WithUnique(flow.originService).Unique(),
-			flow.testDependencyMode,
-		)
-		if err != nil {
-			return nil, w.Wrapf(err, "cannot create policy")
-		}
-		playbook, err := flow.playbookWith(ctx, w, policy)
-		if err != nil {
-			return nil, err
-		}
-		flow.stopAfterRequestedPhase(w, playbook)
-		playbook.WithStoppingAfter(func(_ context.Context, action Action) bool {
-			return action.Service == resources.WithUnique(flow.originService).Unique() && action.Type == RuntimeTest
-		})
-		return playbook, nil
-	case LintMode, CompileMode:
-		terminal := RuntimeLint
-		if flow.world.Mode == CompileMode {
-			terminal = RuntimeBuild
-		}
-		origin := resources.WithUnique(flow.originService).Unique()
-		policy, err := NewRuntimeValidationPolicy(ctx, flow.world.Dependencies, flow, origin, terminal)
-		if err != nil {
-			return nil, w.Wrapf(err, "cannot create validation policy")
-		}
-		playbook, err := flow.playbookWith(ctx, w, policy)
-		if err != nil {
-			return nil, err
-		}
-		playbook.WithStoppingAfter(func(_ context.Context, action Action) bool {
-			return action.Service == origin && action.Type == terminal
-		})
-		return playbook, nil
-	case BuildMode:
-		policy, err := NewBuildPolicy(ctx, flow.hub, flow.world)
-		if err != nil {
-			return nil, w.Wrapf(err, "cannot create policy")
-		}
-		playbook, err := flow.playbookWith(ctx, w, policy)
-		if err != nil {
-			return nil, err
-		}
-		playbook.WithStoppingAfter(func(_ context.Context, action Action) bool {
-			return action.Service == resources.WithUnique(flow.originService).Unique() && action.Type == BuilderBuild
-		})
-		return playbook, nil
-	case SyncMode:
-		var policy PlaybookPolicy
-		var err error
-		origin := resources.WithUnique(flow.originService).Unique()
-		if flow.syncRequest.GetDryRun() {
-			policy, err = NewSyncDriftPolicy(ctx, flow.world.Dependencies, flow, origin)
-		} else {
-			policy, err = NewSyncPolicy(ctx, flow.world.Dependencies, flow)
-		}
-		if err != nil {
-			return nil, w.Wrapf(err, "cannot create policy")
-		}
-		playbook, err := flow.playbookWith(ctx, w, policy)
-		if err != nil {
-			return nil, err
-		}
-		playbook.WithStoppingAfter(func(_ context.Context, action Action) bool {
-			return action.Service == origin && action.Type == BuilderSync
-		})
-		return playbook, nil
-	case DeployMode:
-		policy, err := NewDeployPolicy(ctx, flow.world.Dependencies, flow)
-		if err != nil {
-			return nil, w.Wrapf(err, "cannot create policy")
-		}
-		playbook, err := flow.playbookWith(ctx, w, policy)
-		if err != nil {
-			return nil, err
-		}
-		playbook.WithStoppingAfter(func(_ context.Context, action Action) bool {
-			return action.Service == resources.WithUnique(flow.originService).Unique() && action.Type == BuilderDeploy
-		})
-		return playbook, nil
-	case SnapshotMode:
-		policy, err := NewSnapshotPolicy(ctx, flow.world.Dependencies, flow)
-		if err != nil {
-			return nil, w.Wrapf(err, "cannot create policy")
-		}
-		policy.standAlone = flow.standAlone
-		playbook, err := flow.playbookWith(ctx, w, policy)
-		if err != nil {
-			return nil, err
-		}
-		playbook.WithStoppingAfter(func(_ context.Context, action Action) bool {
-			return policy.completed(action)
-		})
-		return playbook, nil
-	}
-	return nil, nil
+	return nil
 }
 
 func (flow *Flow) WithPolicy(policy PlaybookPolicy) *Flow {
@@ -1952,15 +1795,14 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	// and can create containers from its Init onwards.
 	containerRecoveryProjection.Lock()
 	defer containerRecoveryProjection.Unlock()
-	if _, projectErr := flow.projectContainerRecovery(); projectErr != nil {
-		w.Warn("cannot project container recovery ownership; operations requiring recovery will be refused", wool.Field("error", projectErr.Error()))
+	if _, err := flow.projectContainerRecovery(); err != nil {
+		w.Warn("cannot project container recovery ownership; operations requiring recovery will be refused", wool.Field("error", err.Error()))
 	}
-	remotes, dependencyOptions, err := flow.resolveDependencies(ctx, w)
-	if err != nil {
-		return err
+	remotes, dependencyOptions := flow.dependencyGraphOptions()
+	if err := flow.rebuildDependencyGraph(ctx, dependencyOptions); err != nil {
+		return w.Wrap(err)
 	}
-
-	if err = flow.selectDependencyStage(); err != nil {
+	if err := flow.selectDependencyStage(); err != nil {
 		return w.Wrap(err)
 	}
 
@@ -1969,11 +1811,11 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	// and moved behind dependency managers once the run set is known, preserving
 	// target-first teardown.
 	flow.hub = &Hub{}
-	preloadedOrigin, skipped, err := flow.preloadOrigin(ctx, w, remotes)
+	preloadedOrigin, validationSkipped, err := flow.preloadOriginForValidation(ctx, remotes)
 	if err != nil {
-		return err
+		return w.Wrap(err)
 	}
-	if skipped {
+	if validationSkipped {
 		return nil
 	}
 
@@ -1981,9 +1823,9 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	// selected operation needs a live dependency graph.
 	var required []string
 	if !flow.standAlone {
-		order, orderErr := flow.managerDependencies(ctx)
-		if orderErr != nil {
-			return w.Wrapf(orderErr, "cannot order services")
+		order, err := flow.managerDependencies(ctx)
+		if err != nil {
+			return w.Wrapf(err, "cannot order services")
 		}
 		for _, service := range order {
 			required = append(required, service.Unique)
@@ -1993,11 +1835,11 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	// We run in the proper order
 	slices.Reverse(required)
 	if len(flow.coRoots) > 0 {
-		if err = flow.scopeDependenciesToRun(ctx, required, dependencyOptions); err != nil {
+		if err := flow.scopeDependenciesToRun(ctx, required, dependencyOptions); err != nil {
 			return w.Wrap(err)
 		}
 	}
-	if err = flow.validateDependencyEndpointDeclarations(required); err != nil {
+	if err := flow.validateDependencyEndpointDeclarations(required); err != nil {
 		return w.Wrap(err)
 	}
 	// Fail on a configuration error before any dependency's manager is created
@@ -2008,100 +1850,19 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	// preflight runner reachable through flow.Stop(), as every other partial
 	// InitManagers failure does.
 	flow.world.setRunProducers(required, flow.originService)
-	if err = flow.checkConfigurationReferences(ctx, required); err != nil {
+	if err := flow.checkConfigurationReferences(ctx, required); err != nil {
 		return err
 	}
-	if err = flow.logRunPlan(ctx, required, remotes); err != nil {
+	if err := flow.logRunPlan(ctx, required, remotes); err != nil {
 		return w.Wrapf(err, "cannot describe service run plan")
 	}
 
-	if err = flow.createDependencyManagers(ctx, w, required, remotes); err != nil {
-		return err
-	}
-	if err = flow.addOriginManager(ctx, w, preloadedOrigin, remotes); err != nil {
-		return err
-	}
-
-	// Now that every agent is loaded and advertises its SupportedBackends,
-	// finalize the Docker/nix decision per service — falling back where safe and
-	// stopping early where a service genuinely needs Docker.
-	if err = flow.resolveDockerFallback(ctx); err != nil {
-		return w.Wrap(err)
-	}
-	return nil
-}
-
-// resolveDependencies builds the dependency graph the run needs — cut off at
-// the remote services, without the excluded ones — and indexes the remotes.
-func (flow *Flow) resolveDependencies(ctx context.Context, w *wool.Wool) (map[string]*Remote, []architecture.DependencyOption, error) {
-	remotes := make(map[string]*Remote)
-	var dependencyOptions []architecture.DependencyOption
-	if flow.configurationReferences != nil {
-		dependencyOptions = append(dependencyOptions, flow.configurationReferences)
-	}
-	if len(flow.remoteServices) > 0 {
-		cutoffs := make([]string, 0, len(flow.remoteServices))
-		for _, remote := range flow.remoteServices {
-			remotes[remote.Unique()] = remote
-			cutoffs = append(cutoffs, remote.Unique())
-		}
-		dependencyOptions = append(dependencyOptions, architecture.SkipDependencyFor(cutoffs...))
-	}
-	if len(flow.excludedDependencyServices) > 0 {
-		dependencyOptions = append(dependencyOptions, architecture.ExcludeServices(flow.excludedDependencyServices...))
-	}
-	if len(dependencyOptions) > 0 {
-		dep, err := architecture.NewServiceDependencies(ctx, flow.dependencyWorkspace(), dependencyOptions...)
-		if err != nil {
-			return nil, nil, w.Wrap(err)
-		}
-		flow.world.Dependencies = dep
-		if flow.SharedState != nil {
-			flow.SharedState.SetDependencies(dep)
-		}
-	}
-	return remotes, dependencyOptions, nil
-}
-
-// preloadOrigin loads the origin's manager first in a validation mode, as the
-// preflight that reads what its agent advertises; it reports true when the
-// agent advertises no capability for the operation, which skips the run.
-func (flow *Flow) preloadOrigin(ctx context.Context, w *wool.Wool, remotes map[string]*Remote) (*Manager, bool, error) {
-	if !isRuntimeValidationMode(flow.world.Mode) || flow.excludeRoot {
-		return nil, false, nil
-	}
-	manager, err := New(ctx, flow.originModule, flow.originService, flow.world)
-	flow.output().RegisterLoggingResource(resources.WithUnique(flow.originService).Unique())
-	if err != nil {
-		return nil, false, w.Wrap(err)
-	}
-	flow.hub.managers = append(flow.hub.managers, manager)
-	flow.configureRunner(manager.Runner, flow.originService)
-	if remote, ok := remotes[resources.WithUnique(flow.originService).Unique()]; ok {
-		manager.Runner.WithRemote(remote.Environment)
-	}
-	if flow.world.Mode == TestMode {
-		if testErr := flow.configureTestExecution(manager.Runner); testErr != nil {
-			return nil, false, w.Wrap(testErr)
-		}
-	}
-	operation := validationOperationForMode(flow.world.Mode)
-	if advertised, supported := ValidationOperationSupport(manager.Runner.instance.Info, operation); advertised && !supported {
-		flow.validationSkipped = true
-		flow.services = append(flow.services, flow.originService)
-		flow.output().Info("Agent for <%s> advertises no %s capability; skipping before runtime initialization", manager.Unique(), operation)
-		return manager, true, nil
-	}
-	return manager, false, nil
-}
-
-// createDependencyManagers creates the manager of every required service,
-// registering each the moment it is created. New() spawns the service's agent
-// process (and its pgid tracking file), so a failure partway through must
-// still leave every already-spawned runner reachable by flow.Stop() —
-// otherwise a partial init orphans those agents (and any process group they
-// hold) until the next run's reaper sweeps them.
-func (flow *Flow) createDependencyManagers(ctx context.Context, w *wool.Wool, required []string, remotes map[string]*Remote) error {
+	// Register each manager the moment it is
+	// created. New() spawns the service's agent process (and its pgid tracking
+	// file), so a failure partway through must still leave every
+	// already-spawned runner reachable by flow.Stop() — otherwise a partial
+	// init orphans those agents (and any process group they hold) until the
+	// next run's reaper sweeps them.
 	for _, unique := range required {
 		flow.output().RegisterLoggingResource(unique)
 		// Register source to handle "pretty" logging
@@ -2135,13 +1896,8 @@ func (flow *Flow) createDependencyManagers(ctx context.Context, w *wool.Wool, re
 		}
 		flow.hub.managers = append(flow.hub.managers, manager)
 	}
-	return nil
-}
 
-// addOriginManager adds the origin last, so Stop() tears down the target
-// before its stack: the preloaded one rotated to the end, a new one, or — for
-// an excluded root — a no-op that keeps the origin in the playbook.
-func (flow *Flow) addOriginManager(ctx context.Context, w *wool.Wool, preloadedOrigin *Manager, remotes map[string]*Remote) error {
+	// Now add the current one
 	switch {
 	case preloadedOrigin != nil:
 		flow.services = append(flow.services, flow.originService)
@@ -2177,6 +1933,14 @@ func (flow *Flow) addOriginManager(ctx context.Context, w *wool.Wool, preloadedO
 		} else {
 			flow.hub.managers = append(flow.hub.managers, &noOp)
 		}
+
+	}
+
+	// Now that every agent is loaded and advertises its SupportedBackends,
+	// finalize the Docker/nix decision per service — falling back where safe and
+	// stopping early where a service genuinely needs Docker.
+	if err := flow.resolveDockerFallback(ctx); err != nil {
+		return w.Wrap(err)
 	}
 	return nil
 }
@@ -2564,6 +2328,17 @@ func (flow *Flow) WithFixture(fixture string) {
 
 func (flow *Flow) WithOverrides(overrides map[string]map[string]string) {
 	flow.overrides = overrides
+}
+
+// WithWorkspaceConfigurationValues sets values the run path derives for named
+// workspace configuration groups (group -> key -> value). They reach only the
+// services that declare a dependency on the group, exactly as a declared value
+// would.
+func (flow *Flow) WithWorkspaceConfigurationValues(values map[string]map[string]string) {
+	if flow.world == nil {
+		return
+	}
+	flow.world.workspaceConfigurationValues = values
 }
 
 // overridesFor returns the runtime overrides targeting service, layering the

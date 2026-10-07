@@ -54,6 +54,15 @@ type golangciExclusions struct {
 	Paths []string `yaml:"paths"`
 }
 
+func checkoutStep(job goWorkflowJob) (goWorkflowStep, bool) {
+	for _, step := range job.Steps {
+		if regexp.MustCompile(`^actions/checkout`).MatchString(step.Uses) {
+			return step, true
+		}
+	}
+	return goWorkflowStep{}, false
+}
+
 func lintStep(job goWorkflowJob) (goWorkflowStep, bool) {
 	for _, step := range job.Steps {
 		if regexp.MustCompile(`^golangci/golangci-lint-action`).MatchString(step.Uses) {

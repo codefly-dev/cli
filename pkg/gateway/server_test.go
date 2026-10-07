@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -21,7 +20,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -38,8 +36,7 @@ import (
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	toolingv0 "github.com/codefly-dev/core/generated/go/codefly/services/tooling/v0"
 	gatewayv1 "github.com/codefly-dev/core/generated/go/mind/gateway/v1"
-	"github.com/codefly-dev/core/workcontext"
-	sdkworkcontext "github.com/codefly-dev/sdk-go/workcontext"
+	workcontext "github.com/codefly-dev/sdk-go/workcontext"
 	workcontextgrpc "github.com/codefly-dev/sdk-go/workcontext/grpctransport"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -292,32 +289,12 @@ func enableGovernedGateway(
 	}
 	t.Cleanup(func() { _ = journal.Close() })
 
-	now := time.Now().UTC()
-	workspaceID := "workspace-codefly"
-	projectID := "project-warden"
-	claims := &basev0.WorkContextV1{
-		Typ: "codefly.work-context/v1", Algorithm: "Ed25519",
-		KeyId: "accounts-key-1", Issuer: "accounts", Audience: "codefly.execution",
-		NotBeforeUnix: now.Add(-time.Minute).Unix(), IssuedAtUnix: now.Add(-time.Minute).Unix(),
-		ExpiresAtUnix: now.Add(4 * time.Minute).Unix(), Nonce: "gateway-test-nonce",
-		AuthorizationRevision: 7, ReplayPolicy: "idempotent",
-		TenantId: "tenant-codefly", OwnerPrincipalId: "principal-antoine",
-		TaskId: "task-1", SessionId: "session-1",
-		WorkspaceId: &workspaceID, ProjectId: &projectID,
-		Seal: &basev0.WorkSealV1{
-			// core#692 seals every capability to one installation. The owner here is a
-			// person at a session, and a human bears no execution: the seal carries no
-			// build pair (a workload\'s would carry both, never one), and a verifier
-			// refuses a human capability that has acquired one.
-			PrincipalEpoch: 1, InstallationId: "installation-1", InstallationRevision: 1,
-		},
-	}
 	recorder, err := executionrecorder.New(executionrecorder.Config{
 		Journal:  journal,
 		Attestor: attestor,
 		Authority: executionrecorder.AuthorityFunc(func(
 			_ context.Context,
-			_ string,
+			_ *workcontext.Verified,
 			admission executionrecorder.Admission,
 		) error {
 			if admission.OperationID != operationID {
@@ -341,7 +318,12 @@ func enableGovernedGateway(
 
 func incomingExecutionContext(t *testing.T, operationID string) context.Context {
 	t.Helper()
-	token := testCapability(t)
+	// A real capability from core's conformance kit. The hand-made `e30.` JSON
+	// carrier this used to build is refused outright now ("not a core token:
+	// the payload is a JSON object"), which is the cutover: the carrier is a
+	// deterministic protobuf encoding. This side still neither parses nor
+	// verifies it — it only has to be well formed enough to travel.
+	token := conformanceCarrier(t)
 	execution, err := workcontextgrpc.NewExecutionContext(token, operationID)
 	if err != nil {
 		t.Fatal(err)
@@ -471,58 +453,17 @@ func TestSubscribeWorkspaceChangesStreamsExternalEditsAndReplaysReconnect(t *tes
 	}
 }
 
-func TestWriteFileAcceptsSDKExecutionContextOverRealGRPC(t *testing.T) {
-	root := t.TempDir()
-	srv, err := NewServer(&Config{WorkDir: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	listener := bufconn.Listen(1 << 20)
-	grpcServer := grpc.NewServer()
-	gatewayv1.RegisterGatewayServer(grpcServer, srv)
-	go func() { _ = grpcServer.Serve(listener) }()
-	t.Cleanup(grpcServer.Stop)
-	connection, err := grpc.NewClient(
-		"passthrough:///execution-context",
-		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
-			return listener.DialContext(ctx)
-		}),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = connection.Close() })
-
-	workContext := testCapability(t)
-	execution, err := workcontextgrpc.NewExecutionContext(workContext, "operation-write-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, err := workcontextgrpc.WithGRPCExecutionContext(t.Context(), execution)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	response, err := gatewayv1.NewGatewayClient(connection).WriteFile(
-		ctx,
-		&gatewayv1.WriteFileRequest{Path: "receipt.txt", Content: "executed\n"},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !response.GetSuccess() {
-		t.Fatalf("WriteFile failed: %s", response.GetError())
-	}
-	content, err := os.ReadFile(filepath.Join(root, "receipt.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(content) != "executed\n" {
-		t.Fatalf("unexpected written content %q", content)
-	}
-}
+// TestWriteFileAcceptsSDKExecutionContextOverRealGRPC stood here, and r15 was
+// right that it asserted the bypass: it registered a BARE grpc.NewServer with
+// no interceptors, presented a real capability to WriteFile, and required the
+// write to succeed. What it proved was that a chain without the effect
+// boundary has no effect boundary.
+//
+// Its replacement is TestTheServedChainRefusesAGovernedEffect in
+// effect_boundary_test.go, which serves through serverOptions() — the chain
+// Serve installs — and requires the refusal, the absent file, and the same
+// call succeeding when it is not governed. The SDK carrier still makes a real
+// gRPC hop there, so that coverage is kept rather than dropped.
 
 type gatewayWorkspaceReceiveResult struct {
 	event *gatewayv1.WorkspaceChangeEvent
@@ -877,48 +818,6 @@ func TestApplyEditGovernedReceiptBracketsEffectAndSuppressesReplay(t *testing.T)
 	}
 	if len(pending) != 0 {
 		t.Fatalf("a refused execution must write no receipt, got %d", len(pending))
-	}
-}
-
-// TestApplyEditGovernedEffectRefusesACallWithNoCarrier: with governed
-// execution configured, a governed effect carrying no Work Context is refused
-// — it used to run ungoverned, which was the optional-carrier escape hatch
-// the SDK closed on its side by deleting its "if present" extraction.
-func TestApplyEditGovernedEffectRefusesACallWithNoCarrier(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nold code\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	var calls int
-	editor := editingMock(t, dir)
-	server := newTestServerWithWorkDir(&mockCodeClient{applyEditFn: func(
-		ctx context.Context,
-		request *codev0.ApplyEditRequest,
-		options ...grpc.CallOption,
-	) (*codev0.ApplyEditResponse, error) {
-		calls++
-		return editor.applyEditFn(ctx, request, options...)
-	}}, dir)
-	enableGovernedGateway(t, server, "operation-no-carrier-1")
-	request := &gatewayv1.ApplyEditRequest{
-		Service: "test-svc", File: "main.go", Find: "old code", Replace: "new code",
-		FixMode: basev0.FixMode_FIX_MODE_SAFE,
-	}
-	_, err := server.ApplyEdit(t.Context(), request)
-	if status.Code(err) != codes.Unauthenticated {
-		t.Fatalf("error=%v, want Unauthenticated", err)
-	}
-	if calls != 0 {
-		t.Fatalf("effect ran without a carrier; calls=%d", calls)
-	}
-	// Half a carrier is not a carrier either: the capability without its
-	// installation pre-checks is refused as malformed, never read as absent.
-	half := metadata.NewIncomingContext(t.Context(), metadata.Pairs(sdkworkcontext.HeaderName, testCapability(t)))
-	if _, err := server.ApplyEdit(half, request); status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("half carrier error=%v, want InvalidArgument", err)
-	}
-	if calls != 0 {
-		t.Fatalf("effect ran with half a carrier; calls=%d", calls)
 	}
 }
 
@@ -1861,53 +1760,31 @@ func TestFormattableChangedPaths(t *testing.T) {
 	}
 }
 
-var (
-	testCapabilityOnce  sync.Once
-	testCapabilityToken string
-	testCapabilityErr   error
-)
+func uint64Pointer(value uint64) *uint64 { return &value }
 
-// testCapability is one capability minted by core's Authority — the one mint —
-// over a key generated for the test process, so the SDK's carrier has a
-// sealed capability to read. It is minted once: the recorder tells a repeated
-// operation from a conflicting one by the capability's digest among other
-// facts, so every test presents the same bytes. The gateway fixtures inject
-// their own Authority and never verify it.
-func testCapability(t *testing.T) string {
+func stringPointer(value string) *string { return &value }
+
+// conformanceCarrier is a well-formed Work Context carrier, as a caller would
+// present it on the wire.
+//
+// It comes from core's conformance fixtures because the carrier is a
+// deterministic protobuf encoding now: a hand-built JSON token is refused
+// before it reaches anything this package does. Nothing here verifies it —
+// this gateway cannot — so any valid fixture serves.
+func conformanceCarrier(t *testing.T) string {
 	t.Helper()
-	testCapabilityOnce.Do(func() {
-		_, private, err := ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			testCapabilityErr = err
-			return
-		}
-		const owner = "principal-antoine"
-		seals := workcontext.NewMemorySealSource()
-		for _, step := range []func() error{
-			func() error {
-				return seals.Put(owner, workcontext.Seal{InstallationID: "installation-1", InstallationRevision: 1})
-			},
-			func() error { return seals.PutEpoch(owner, 1) },
-			func() error { return seals.PutBearsNoExecution(owner) },
-		} {
-			if err := step(); err != nil {
-				testCapabilityErr = err
-				return
-			}
-		}
-		authority := &workcontext.Authority{
-			Issuer: "https://accounts.example.test", KeyID: "key-1", Key: private,
-			Revisions: workcontext.FixedRevision(7), Seals: seals,
-		}
-		testCapabilityToken, _, testCapabilityErr = authority.Start(context.Background(), workcontext.StartInput{
-			TenantID: "tenant-codefly", OwnerPrincipalID: owner, OwnerPrincipalKind: "human",
-			OrganizationID: "organization-codefly", TaskID: "task-1",
-			Audience: executionrecorder.ExecutionWorkContextAudience, WorkspaceID: "workspace-1",
-			InstallationID: "installation-1", TTL: time.Hour,
-		})
-	})
-	if testCapabilityErr != nil {
-		t.Fatalf("mint the test capability: %v", testCapabilityErr)
+	fixtures, err := coreworkcontext.Fixtures(time.Date(2026, time.July, 23, 19, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("core's conformance fixtures: %v", err)
 	}
-	return testCapabilityToken
+	// Only an ACCEPTED fixture: the kit deliberately includes rejected ones to
+	// exercise refusals, and one of those is not a carrier a caller would
+	// present.
+	for _, fixture := range fixtures {
+		if fixture.Outcome == coreworkcontext.OutcomeAccepted && fixture.Token != "" {
+			return fixture.Token
+		}
+	}
+	t.Fatal("core's conformance kit produced no accepted capability carrier")
+	return ""
 }

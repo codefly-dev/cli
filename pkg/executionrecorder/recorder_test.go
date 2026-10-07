@@ -17,6 +17,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/executiondispatcher"
 	"github.com/codefly-dev/cli/pkg/executionjournal"
 	executionv1 "github.com/codefly-dev/core/generated/go/codefly/execution/v1"
+	workcontext "github.com/codefly-dev/sdk-go/workcontext"
 	workcontextgrpc "github.com/codefly-dev/sdk-go/workcontext/grpctransport"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
@@ -185,7 +186,7 @@ func TestRecorderProcessLossRecoversAndExportsStartedThenUncertain(t *testing.T)
 		Attestor: attestor,
 		Authority: AuthorityFunc(func(
 			context.Context,
-			string,
+			*workcontext.Verified,
 			Admission,
 		) error {
 			return errors.New("recovery must not re-authorize an already admitted start")
@@ -278,9 +279,14 @@ func appendStartedBeforeProcessLoss(stateDir string) error {
 	if err != nil {
 		return err
 	}
-	signature := make([]byte, 64)
-	token := "e30." + base64.RawURLEncoding.EncodeToString(signature)
-	execution, err := workcontextgrpc.NewExecutionContext(token, "operation-process-loss")
+	verified, err := mintedCapability(ctx, evidenceScope(fixtureProducerID))
+	if err != nil {
+		return err
+	}
+	// The carrier is the capability's OWN encoded form. A dummy token stood
+	// here, paired with an unrelated capability, until the recorder started
+	// binding the two — see TestBeginRefusesACarrierThatIsNotTheVerifiedCapability.
+	execution, err := workcontextgrpc.NewExecutionContext(verified.Encoded(), "operation-process-loss")
 	if err != nil {
 		return err
 	}
@@ -289,7 +295,7 @@ func appendStartedBeforeProcessLoss(stateDir string) error {
 		Attestor: attestor,
 		Authority: AuthorityFunc(func(
 			context.Context,
-			string,
+			*workcontext.Verified,
 			Admission,
 		) error {
 			return nil
@@ -318,7 +324,7 @@ func TestRecorderRejectsAuthorityFailureBeforeJournal(t *testing.T) {
 		Attestor: fixture.attestor,
 		Authority: AuthorityFunc(func(
 			context.Context,
-			string,
+			*workcontext.Verified,
 			Admission,
 		) error {
 			return errors.New("forged")
@@ -367,6 +373,7 @@ type recorderFixture struct {
 	authority   Authority
 	producer    *executionv1.ExecutionProducerV1
 	execution   workcontextgrpc.ExecutionContext
+	verified    *workcontext.Verified
 	clock       *testClock
 }
 
@@ -384,23 +391,19 @@ func newRecorderFixture(t *testing.T) *recorderFixture {
 	}
 	t.Cleanup(func() { _ = journal.Close() })
 
-	signature := make([]byte, 64)
-	token := "e30." + base64.RawURLEncoding.EncodeToString(signature)
-	execution, err := workcontextgrpc.NewExecutionContext(token, "operation-1")
+	verified := verifiedFixture(t)
+	// The carrier is the capability's own encoded form: the recorder refuses a
+	// carrier that is not the capability that was verified, and a fixture
+	// pairing a dummy token with an unrelated capability is exactly what hid
+	// that hole.
+	execution, err := workcontextgrpc.NewExecutionContext(verified.Encoded(), "operation-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	claims := testClaims()
-	authority := AuthorityFunc(func(
-		_ context.Context,
-		_ string,
-		admission Admission,
-	) (*basev0.WorkContextV1, error) {
-		if admission.OperationID != "operation-1" || admission.ProducerID != "codefly.execution" {
-			return nil, errors.New("unexpected admission")
-		}
-		return proto.Clone(claims).(*basev0.WorkContextV1), nil
-	})
+	// The REAL authority, over the capability's own scopes. A stub permitting
+	// everything would have left the whole authorization path untested here
+	// and, worse, been the second source of claims round 15 found.
+	authority := fixtureAuthority(t)
 	producer := &executionv1.ExecutionProducerV1{
 		Id: "codefly.execution", Component: "gateway", Release: "v0.1.25",
 	}
@@ -439,29 +442,6 @@ func testBeginInput() BeginInput {
 			Kind: "workspace.path", Reference: "modules/warden/main.go",
 			BeforeSha256: stringPointer(hexDigest(before)),
 		}},
-	}
-}
-
-func testClaims() *basev0.WorkContextV1 {
-	started := time.Date(2026, time.July, 23, 19, 0, 0, 0, time.UTC)
-	workspaceID := "workspace-codefly"
-	projectID := "project-warden"
-	return &basev0.WorkContextV1{
-		Typ: "codefly.work-context/v1", Algorithm: "Ed25519",
-		KeyId: "accounts-key-1", Issuer: "accounts", Audience: "codefly.execution",
-		NotBeforeUnix: started.Add(-time.Minute).Unix(), IssuedAtUnix: started.Add(-time.Minute).Unix(),
-		ExpiresAtUnix: started.Add(4 * time.Minute).Unix(), Nonce: "nonce-1",
-		AuthorizationRevision: 4, ReplayPolicy: "idempotent",
-		TenantId: "tenant-codefly", OwnerPrincipalId: "principal-antoine",
-		TaskId: "task-1", SessionId: "session-1",
-		WorkspaceId: &workspaceID, ProjectId: &projectID,
-		Seal: &basev0.WorkSealV1{
-			// core#692 seals every capability to one installation. The owner here is a
-			// person at a session, and a human bears no execution: the seal carries no
-			// build pair (a workload\'s would carry both, never one), and a verifier
-			// refuses a human capability that has acquired one.
-			PrincipalEpoch: 1, InstallationId: "installation-1", InstallationRevision: 1,
-		},
 	}
 }
 

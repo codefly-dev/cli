@@ -38,25 +38,16 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot load service instance")
 	}
 
-	// A deployed service reaches its dependencies inside the cluster, so its
-	// ${endpoint:…} references resolve to their in-cluster addresses: its
-	// dependencies' and those of every producer its declared groups reference
-	// (referencedProducerMappings), derived as their own deploy records them.
-	referenced, err := b.world.referencedProducerMappings(ctx, b.instance.Service,
-		b.instance.Service.WorkspaceConfigurationDependencies, dependenciesNetworkMappings)
-	if err != nil {
-		return nil, w.Wrap(err)
-	}
-	consumerMappings := append(slices.Clone(dependenciesNetworkMappings), referenced...)
-	consumerModule, declaredEndpoints, err := b.world.consumerContext(ctx, b.instance.Service)
-	if err != nil {
-		return nil, w.Wrap(err)
-	}
-	workspaceConfigurations, err := b.world.ConfigurationManager.
-		ForConsumer(consumerMappings, resources.NewContainerNetworkAccess()).
-		ForConsumerModule(consumerModule, declaredEndpoints).
-		WithRunProducers(b.world.producerInRun()).
-		GetWorkspaceDependenciesConfigurations(ctx, b.instance.Service.WorkspaceConfigurationDependencies...)
+	// The groups the deployed service receives: the one resolution every
+	// delivery path shares (pkg/orchestration/workspace_configurations.go), so
+	// the set is the set `codefly run` resolves for the same service. A deployed
+	// service reaches its dependencies inside the cluster, so its ${endpoint:…}
+	// references resolve to their in-cluster addresses — its dependencies' and
+	// those of every producer its effective groups reference, the composition
+	// root's as well as its declared ones, derived from each producer's identity
+	// and namespace. That address family is the only thing the render resolves
+	// differently.
+	workspaceConfigurations, err := b.workspaceConfigurations(ctx, dependenciesNetworkMappings)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot get workspace configurations")
 	}
@@ -67,9 +58,24 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	}
 	dependenciesConfigurations = append(workspaceConfigurations, dependenciesConfigurations...)
 	profile := kubernetesOutputProfile(b.world)
-	conf, dependenciesConfigurations, secretReferences, err := b.profileConfigurations(profile, conf, dependenciesConfigurations)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot prepare promotable configuration")
+	var secretReferences map[string]*builderv0.KubernetesSecretKeyReference
+	if profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1 {
+		secretName := "secret-" + b.instance.Service.Name
+		conf, dependenciesConfigurations, secretReferences, err = promotableDeploymentConfigurations(
+			conf,
+			dependenciesConfigurations,
+			secretName,
+		)
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot prepare promotable configuration")
+		}
+		// Key names only: this records which secret keys this service's own
+		// ExternalSecret fetches, never any value.
+		b.deployedSecretKeys = make([]string, 0, len(secretReferences))
+		for key := range secretReferences {
+			b.deployedSecretKeys = append(b.deployedSecretKeys, key)
+		}
+		sort.Strings(b.deployedSecretKeys)
 	}
 
 	networkMappings, err := b.world.RemoteNetworkManager.GenerateNetworkMappings(ctx, b.world.Env, b.world.Workspace, b.instance.Identity, b.endpoints)
@@ -110,10 +116,20 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if b.world.DeploymentDestination != nil {
 		deploy.GetKubernetes().Destination = b.world.DeploymentDestination(b.instance.Module, b.instance.Service)
 	}
-	validationContext, err := b.applyClusterValidation(ctx, w, deploy, profile, namespace)
+	validation, err := resolveClusterValidation(ctx, b.world, profile, namespace)
 	if err != nil {
-		return nil, err
+		return nil, w.Wrapf(err, "cannot resolve promotable GitOps validation target")
 	}
+	if validation.Skipped != "" {
+		w.Warn(validation.Skipped)
+		if b.world.OutputSink != nil {
+			b.world.OutputSink.Info("%s", validation.Skipped)
+		}
+	}
+	deploy.GetKubernetes().ValidateServerSide = validation.Enabled()
+	deploy.GetKubernetes().ValidationKubeconfig = validation.Kubeconfig
+	deploy.GetKubernetes().ValidationContext = validation.Context
+	validationContext := validation.Context
 
 	w.Debug("deployments", wool.Field("deployments", deploy))
 
@@ -128,60 +144,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot deploy service instance")
 	}
-	return b.recordDeployment(ctx, w, resp, profile, validationContext)
-}
 
-// profileConfigurations prepares the configurations the output profile needs:
-// a promotable GitOps deployment carries secret references in place of the
-// values, and records which keys its own ExternalSecret fetches.
-func (b *Builder) profileConfigurations(profile builderv0.KubernetesOutputProfile, conf *basev0.Configuration, dependenciesConfigurations []*basev0.Configuration) (*basev0.Configuration, []*basev0.Configuration, map[string]*builderv0.KubernetesSecretKeyReference, error) {
-	//nolint:staticcheck // SA1019 deliberately: this names a value on the wire to a released builder agent, and core's own proto says the deprecated form is retained so existing callers keep rendering the identical bundle during migration. Switching it is a plugin-contract change that needs the agent owners, and nothing in CI would catch a released agent rejecting the new value. Tracked as a follow-up.
-	if profile != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
-		return conf, dependenciesConfigurations, nil, nil
-	}
-	secretName := "secret-" + b.instance.Service.Name
-	conf, dependenciesConfigurations, secretReferences, err := promotableDeploymentConfigurations(
-		conf,
-		dependenciesConfigurations,
-		secretName,
-	)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	// Key names only: this records which secret keys this service's own
-	// ExternalSecret fetches, never any value.
-	b.deployedSecretKeys = make([]string, 0, len(secretReferences))
-	for key := range secretReferences {
-		b.deployedSecretKeys = append(b.deployedSecretKeys, key)
-	}
-	sort.Strings(b.deployedSecretKeys)
-	return conf, dependenciesConfigurations, secretReferences, nil
-}
-
-// applyClusterValidation resolves the server-side validation target of a
-// promotable deployment, records it on the deployment and returns the
-// validation context.
-func (b *Builder) applyClusterValidation(ctx context.Context, w *wool.Wool, deploy *builderv0.Deployment, profile builderv0.KubernetesOutputProfile, namespace string) (string, error) {
-	validation, err := resolveClusterValidation(ctx, b.world, profile, namespace)
-	if err != nil {
-		return "", w.Wrapf(err, "cannot resolve promotable GitOps validation target")
-	}
-	if validation.Skipped != "" {
-		w.Warn(validation.Skipped)
-		if b.world.OutputSink != nil {
-			b.world.OutputSink.Info("%s", validation.Skipped)
-		}
-	}
-	deploy.GetKubernetes().ValidateServerSide = validation.Enabled()
-	deploy.GetKubernetes().ValidationKubeconfig = validation.Kubeconfig
-	deploy.GetKubernetes().ValidationContext = validation.Context
-	return validation.Context, nil
-}
-
-// recordDeployment verifies the agent's deployment response, keeps what the
-// sync needs of it, exposes the configuration and hands the deployment to the
-// remote manager.
-func (b *Builder) recordDeployment(ctx context.Context, w *wool.Wool, resp *builderv0.DeploymentResponse, profile builderv0.KubernetesOutputProfile, validationContext string) (*OutputProperty, error) {
 	if resp.State != nil && resp.State.State != builderv0.DeploymentStatus_SUCCESS {
 		return nil, w.NewError("cant deploy service instance")
 	}
@@ -200,7 +163,7 @@ func (b *Builder) recordDeployment(ctx context.Context, w *wool.Wool, resp *buil
 	if resp.Configuration != nil {
 		b.deployedConfiguration = proto.CloneOf(resp.Configuration)
 	}
-	err := b.world.ConfigurationManager.ExposeConfiguration(ctx, b.instance.Identity, resp.Configuration)
+	err = b.world.ConfigurationManager.ExposeConfiguration(ctx, b.instance.Identity, resp.Configuration)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record shared configuration configurations")
 	}
@@ -608,8 +571,19 @@ func validateKubernetesDeploymentOutput(
 	if kubernetes.GetProfile() != requested {
 		return fmt.Errorf("plugin returned Kubernetes output profile %s, requested %s", kubernetes.GetProfile(), requested)
 	}
-	//nolint:staticcheck // SA1019 deliberately: this names a value on the wire to a released builder agent, and core's own proto says the deprecated form is retained so existing callers keep rendering the identical bundle during migration. Switching it is a plugin-contract change that needs the agent owners, and nothing in CI would catch a released agent rejecting the new value. Tracked as a follow-up.
-	if requested != builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_PROMOTABLE_GITOPS_V1 {
+	// Only the local-apply profile is exempt, and it is exempt BY NAME.
+	// This read "anything that is not the restricted profile needs no
+	// evidence", so the deprecated PROMOTABLE_GITOPS_V1 — and any profile
+	// added to the enum later — was accepted on the strength of the plugin
+	// echoing back the profile it was asked for.
+	switch requested {
+	case builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1:
+		// Checked below.
+	case builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_EPHEMERAL_LOCAL_APPLY_V1:
+		// A direct apply into a local cluster produces no promotable artifact
+		// and nothing persists it, so there is no restricted-rendering
+		// property to attest. The exemption follows the validated operation
+		// type rather than being the default for everything unrecognised.
 		return nil
 	default:
 		return fmt.Errorf(
@@ -625,8 +599,12 @@ func validateKubernetesDeploymentOutput(
 		)
 	}
 	validation := kubernetes.GetValidation()
-	//nolint:staticcheck // SA1019 deliberately: this names a value on the wire to a released builder agent, and core's own proto says the deprecated form is retained so existing callers keep rendering the identical bundle during migration. Switching it is a plugin-contract change that needs the agent owners, and nothing in CI would catch a released agent rejecting the new value. Tracked as a follow-up.
-	if !validation.GetPromotable() ||
+	// `restricted`, not `promotable`: core's proto says promotable "names a
+	// delivery decision in a plugin-facing contract" and is retained only for
+	// migration, always carrying the same value, while restricted "reports a
+	// security property, never a delivery decision". The security property is
+	// what this gate is actually asserting.
+	if !validation.GetRestricted() ||
 		validation.GetStaticValidation() != builderv0.KubernetesManifestValidation_STATUS_PASSED {
 		return fmt.Errorf("plugin did not return a successfully validated restricted Kubernetes output")
 	}

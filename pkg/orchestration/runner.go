@@ -280,49 +280,15 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 
 	inputs, err := runner.gatherInitInputs(ctx, cfgCtx, w)
 	if err != nil {
-		return nil, initReadError(cfgCtx, w, err, "dependencies endpoints", "dependencies endpoints")
+		return nil, err
 	}
-	dependenciesNetworkMappings, err := runner.world.SharedState.GetDependenciesNetworkMappings(cfgCtx, runner.instance.Service)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot get initialized dependency network mappings")
-	}
-	if runner.testRequest != nil && !runner.serviceRunningForTest && len(dependenciesNetworkMappings) > 0 &&
-		!slices.Contains(runner.instance.Info.GetContract().GetCapabilities(), contract.RuntimeInitDependencyMappings) {
-		return nil, w.NewError("dependency-only tests require agent capability %s to consume accepted addresses at Init", contract.RuntimeInitDependencyMappings)
-	}
-
-	conf, err := runner.world.ConfigurationManager.GetServiceConfiguration(cfgCtx, runner.instance.Identity)
-	if err != nil {
-		return nil, initReadError(cfgCtx, w, err, "service configuration", "service configuration")
-	}
-
-	runtimeContext, err := resources.NewRuntimeContext(runner.runtimeContext)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot create runtime context: <%s>", runner.runtimeContext)
-	}
-
-	workspaceConfigurations, err := runner.world.workspaceConfigurationsFor(cfgCtx, runner.instance.Service,
-		dependenciesNetworkMappings, resources.NetworkAccessFromRuntimeContext(runtimeContext))
-	if err != nil {
-		return nil, initReadError(cfgCtx, w, err, "workspace dependencies configurations", "project configurations")
-	}
-
-	dependenciesConfigurations, err := runner.world.SharedState.GetDependentConfigurationsFor(cfgCtx, runner.instance.Identity)
-	if err != nil {
-		return nil, initReadError(cfgCtx, w, err, "dependencies configurations", "configuration for dependencies")
-	}
-
-	networkMappings, err := runner.world.LocalNetworkManager.GenerateNetworkMappings(ctx, runner.world.Env.Runtime(), runner.world.Workspace, runner.instance.Identity, runner.endpoints, runtimeContext)
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot generate network mappings for service endpoints")
-	}
-
-	w.Debug("configuration",
-		wool.Field("network mappings", resources.MakeManyNetworkMappingSummary(networkMappings)),
-		wool.Field("service configuration", resources.MakeConfigurationSummary(conf)),
-		wool.Field("dependencies endpoints", resources.MakeManyEndpointSummary(dependenciesEndpoints)),
-		wool.Field("project configurations", resources.MakeManyConfigurationSummary(workspaceConfigurations)),
-		wool.Field("dependencies configurations", resources.MakeManyConfigurationSummary(dependenciesConfigurations)))
+	dependenciesEndpoints := inputs.dependenciesEndpoints
+	dependenciesNetworkMappings := inputs.dependenciesNetworkMappings
+	conf := inputs.conf
+	runtimeContext := inputs.runtimeContext
+	workspaceConfigurations := inputs.workspaceConfigurations
+	dependenciesConfigurations := inputs.dependenciesConfigurations
+	networkMappings := inputs.networkMappings
 
 	// Init is the only lifecycle call guaranteed to reach a service under test:
 	// a test policy replaces the origin's Start with a barrier or skips it
@@ -356,39 +322,17 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.NewError("cannot initialize %s: agent returned no status", runner.instance.Unique())
 	}
 	if resp.Status.State != runtimev0.InitStatus_READY {
-		return runner.failedInit(ctx, w, resp.Status.Message)
+		message := statusDiagnostic(resp.Status.Message, "agent reported initialization failure")
+		w.Warn(fmt.Sprintf("initialization failed for %s: %s", runner.instance.Unique(), message))
+		if runner.outputPropertyForInit.processed == nil {
+			return nil, w.NewError("cannot initialize %s: %s", runner.instance.Unique(), message)
+		}
+		if err = runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{failing: true}); err != nil {
+			return nil, w.Wrapf(err, "cannot set failed init output for %s", runner.instance.Unique())
+		}
+		return runner.outputPropertyForInit.Process(ctx)
 	}
-	return runner.recordInit(ctx, w, runtimeContext, conf, workspaceConfigurations, networkMappings, resp)
-}
 
-// initReadError names a bounded Init read's failure: a stalled provider is
-// reported as the timeout it is, anything else as what it is.
-func initReadError(cfgCtx context.Context, w *wool.Wool, err error, timeoutWhat, what string) error {
-	if ContextDeadlineExceeded(err) || ContextDeadlineExceeded(cfgCtx.Err()) {
-		w.Warn(fmt.Sprintf("timeout waiting for %s after 30s; check that dependency services are reachable", timeoutWhat))
-		return w.Wrapf(err, "init timeout: %s not available within 30s", timeoutWhat)
-	}
-	return w.Wrapf(err, "cannot get %s", what)
-}
-
-// failedInit reports the agent's initialization failure: as the error when
-// nothing consumes the init output, else as a failing output.
-func (runner *Runner) failedInit(ctx context.Context, w *wool.Wool, statusMessage string) (*OutputProperty, error) {
-	message := statusDiagnostic(statusMessage, "agent reported initialization failure")
-	w.Warn(fmt.Sprintf("initialization failed for %s: %s", runner.instance.Unique(), message))
-	if runner.outputPropertyForInit.processed == nil {
-		return nil, w.NewError("cannot initialize %s: %s", runner.instance.Unique(), message)
-	}
-	if err := runner.outputPropertyForInit.Set(ctx, &RunnerInitOutput{failing: true}); err != nil {
-		return nil, w.Wrapf(err, "cannot set failed init output for %s", runner.instance.Unique())
-	}
-	return runner.outputPropertyForInit.Process(ctx)
-}
-
-// recordInit publishes what the agent accepted — its network mappings, its
-// runtime configurations and, when requested, the process environment file —
-// and produces the init output.
-func (runner *Runner) recordInit(ctx context.Context, w *wool.Wool, runtimeContext *basev0.RuntimeContext, conf *basev0.Configuration, workspaceConfigurations []*basev0.Configuration, networkMappings []*basev0.NetworkMapping, resp *runtimev0.InitResponse) (*OutputProperty, error) {
 	// The agent, not the proposal, decides the addresses this service serves.
 	// The validated accepted set is the only one published: runner, shared
 	// state and the exported environment must never hold different views of
@@ -458,112 +402,11 @@ func (world *World) setRunProducers(required []string, origin *resources.Service
 
 // producerInRun is the run set as core asks for it: nil before the flow has
 // decided one, so no reference is provably to a producer of the run.
-// consumerContext is what a resolution for service must know about its
-// consumer: the module receiving the addresses and the endpoints every service
-// of the workspace declares, read once per world from the manifests the
-// plan-time check reads.
-//
-// Neither half is invented here: a service without a module identity names no
-// consumer, and a world without a workspace declares nothing, and core refuses
-// the resolution of a reference on either — a value carrying no reference needs
-// neither. Only a workspace that cannot be read is an error of this read.
-func (world *World) consumerContext(ctx context.Context, service *resources.Service) (string, resources.DeclaredEndpoints, error) {
-	consumerModule := ""
-	if identity, err := service.Identity(); err == nil && identity != nil {
-		consumerModule = identity.Module
-	}
-	declared, err := world.declaredEndpointsLookup(ctx)
-	if err != nil {
-		return "", nil, err
-	}
-	return consumerModule, declared, nil
-}
-
-// declaredEndpointsLookup answers resources.DeclaredEndpoints from the
-// workspace's services, memoized for the world.
-func (world *World) declaredEndpointsLookup(ctx context.Context) (resources.DeclaredEndpoints, error) {
-	world.declaredEndpointsMu.Lock()
-	defer world.declaredEndpointsMu.Unlock()
-	if world.declaredEndpoints != nil {
-		return world.declaredEndpoints, nil
-	}
-	if world.Workspace == nil {
-		return nil, nil
-	}
-	services, err := world.Workspace.LoadServices(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("cannot read this workspace's services, so no ${endpoint:…} reference can be resolved against what its producer declares: %w", err)
-	}
-	world.declaredEndpoints = resources.DeclaredEndpointsOf(services)
-	return world.declaredEndpoints, nil
-}
-
 func (world *World) producerInRun() func(unique string) bool {
 	if world.runProducers == nil {
 		return nil
 	}
 	return func(unique string) bool { return world.runProducers[unique] }
-}
-
-// workspaceConfigurationsFor resolves the workspace configurations one service
-// receives. ${endpoint:…} references resolve against that service's dependency
-// mappings, in the address family of its access, plus the mappings of every
-// producer in the run that a configuration the service declares names (see
-// referencedProducerMappings).
-func (world *World) workspaceConfigurationsFor(
-	ctx context.Context, service *resources.Service,
-	dependencyMappings []*basev0.NetworkMapping, access *basev0.NetworkAccess,
-) ([]*basev0.Configuration, error) {
-	dependencies := make([]string, 0, len(service.WorkspaceConfigurationDependencies))
-	for _, dependency := range service.WorkspaceConfigurationDependencies {
-		if !world.excludedWorkspaceConfigurations[dependency] {
-			dependencies = append(dependencies, dependency)
-		}
-	}
-	referenced, err := world.referencedProducerMappings(ctx, service, dependencies, dependencyMappings)
-	if err != nil {
-		return nil, err
-	}
-	mappings := append(slices.Clone(dependencyMappings), referenced...)
-	// Which endpoint a reference names is core's answer (core v0.11, the cold
-	// cutover of endpoint selection): a resolution must say who the consumer
-	// is — the module, the export boundary — and what each producer declares,
-	// or it is refused. The mappings alone decide neither.
-	consumerModule, declaredEndpoints, err := world.consumerContext(ctx, service)
-	if err != nil {
-		return nil, err
-	}
-	manager := world.ConfigurationManager.ForConsumer(mappings, access).
-		ForConsumerModule(consumerModule, declaredEndpoints).
-		WithRunProducers(world.producerInRun())
-	declared, err := manager.GetWorkspaceDependenciesConfigurations(ctx, dependencies...)
-	if err != nil {
-		return nil, err
-	}
-	// The composition root injects its own workspace configurations into every
-	// service, so a composed-module service resolves root-provided values
-	// without redeclaring them as dependencies. A service that declares a
-	// dependency on one of the root's own configurations (e.g. the root service
-	// itself) yields that name in both sets, so union by name to avoid emitting
-	// it twice.
-	root, err := manager.GetCompositionRootWorkspaceConfigurations(ctx)
-	if err != nil {
-		return nil, err
-	}
-	seen := make(map[string]bool, len(declared))
-	for _, conf := range declared {
-		for _, info := range conf.Infos {
-			seen[info.Name] = true
-		}
-	}
-	out := declared
-	for _, conf := range root {
-		if world.workspaceConfigurationExcluded(conf) || world.workspaceConfigurationSeen(conf, seen) {
-			continue
-		}
-		out = append(out, conf)
-	}
-	return out, nil
 }
 
 // referencedProducerMappings returns the network mappings of the producers the
@@ -998,32 +841,6 @@ func (world *World) deploys() bool {
 	}
 }
 
-// workspaceConfigurationSeen reports whether every Info name in a resolved
-// workspace configuration is already present in seen (all Infos of a workspace
-// configuration share one name), i.e. the configuration was already emitted via
-// the declared-dependency set.
-func (world *World) workspaceConfigurationSeen(conf *basev0.Configuration, seen map[string]bool) bool {
-	for _, info := range conf.Infos {
-		if seen[info.Name] {
-			return true
-		}
-	}
-	return false
-}
-
-// workspaceConfigurationExcluded reports whether a resolved workspace
-// configuration is profile-excluded. Workspace configurations carry their name
-// on each Info (the Configuration.Origin is always "workspace"), and every Info
-// in a given configuration shares that name.
-func (world *World) workspaceConfigurationExcluded(conf *basev0.Configuration) bool {
-	for _, info := range conf.Infos {
-		if world.excludedWorkspaceConfigurations[info.Name] {
-			return true
-		}
-	}
-	return false
-}
-
 func (flow *Flow) WorkspaceConfigurationsFor(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error) {
 	if flow == nil || flow.world == nil {
 		return nil, nil
@@ -1432,13 +1249,8 @@ func (runner *Runner) Test(ctx context.Context) (*OutputProperty, error) {
 	// cases and exit with an accurate code, regardless of pass/fail.
 	runner.testResponse = resp
 
-	//nolint:staticcheck // SA1019 deliberately: the deprecated field is what
-	// released runtime agents still populate, so reading the replacement would
-	// silently see a zero value from every agent in the field — a test run that
-	// reports success whatever happened. A migration needs the agent owners, and
-	// nothing in CI would catch it. Tracked as a follow-up.
-	if resp.GetStatus() != nil && resp.GetStatus().GetState() != runtimev0.TestStatus_SUCCESS {
-		return nil, w.NewError("tests failed for %s: %s", runner.Unique(), summarizeTestResponse(resp))
+	if verdict := refuseUnlessTestRunPassed(resp, runner.Unique()); verdict != nil {
+		return nil, verdict
 	}
 
 	err = runner.outputPropertyForTest.Set(ctx, &RunnerTestOutput{})

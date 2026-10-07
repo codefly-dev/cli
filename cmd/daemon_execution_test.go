@@ -2,9 +2,8 @@ package cmd
 
 import (
 	"context"
-	"os"
 	"path/filepath"
-	"strings"
+	"reflect"
 	"testing"
 )
 
@@ -20,28 +19,26 @@ func TestGatewayExecutionOptionsRequireExplicitEnablement(t *testing.T) {
 	}
 }
 
-// TestGatewayExecutionIsUnavailableWithoutTheIssuersLiveSources: core's
-// authenticator verifies against the issuer's live revision and seals, and
-// this release has no client for them, so a complete flag set is refused by
-// name — before a child process or any durable state — rather than starting
-// a gateway that would verify nothing.
-func TestGatewayExecutionIsUnavailableWithoutTheIssuersLiveSources(t *testing.T) {
+func TestGatewayExecutionChildArgsPreserveEveryExporter(t *testing.T) {
 	options := gatewayExecutionOptions{
 		enabled:         true,
 		authorityIssuer: "https://accounts.example.test",
 		stateDir:        filepath.Join(t.TempDir(), "state"),
 		exporters:       []string{"example/a:1.0.0", "example/b:2.0.0"},
 	}
-	_, err := options.childArgs()
-	if err == nil || !strings.Contains(err.Error(), "live authorization-revision and seal sources") {
-		t.Fatalf("child args error = %v", err)
+	got, err := options.childArgs()
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, err = options.open(context.Background(), t.TempDir())
-	if err == nil || !strings.Contains(err.Error(), "governed execution is unavailable") {
-		t.Fatalf("open error = %v", err)
+	want := []string{
+		"--governed-execution",
+		"--execution-authority-issuer", options.authorityIssuer,
+		"--execution-state-dir", options.stateDir,
+		"--execution-exporter", options.exporters[0],
+		"--execution-exporter", options.exporters[1],
 	}
-	if _, statErr := os.Stat(options.stateDir); !os.IsNotExist(statErr) {
-		t.Fatalf("refused configuration created durable state: %v", statErr)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("child args = %#v, want %#v", got, want)
 	}
 }
 
