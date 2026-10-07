@@ -115,6 +115,8 @@ github.com/codefly-dev/sdk-go/workcontext v0.0.0-20260919105812-8b263f353cdc h1:
 github.com/codefly-dev/sdk-go/workcontext v0.0.0-20260919105812-8b263f353cdc/go.mod h1:+dBVgXykVPLyAugPaMVHos3pHIguPi7jlCVEfRjg+4k=
 github.com/codefly-dev/sdk-go/workcontext v0.0.0-20261005062635-dd6ca019c685 h1:yk/xDIcWasCQNrETwHJpLmZriCAOUS/9mQoYL9lANoQ=
 github.com/codefly-dev/sdk-go/workcontext v0.0.0-20261005062635-dd6ca019c685/go.mod h1:MychiSpNDcTy+aI5zGDuiPnE+jgNyYkmWJOCg3EICrc=
+github.com/codefly-dev/sdk-go/workcontext v0.0.0-20261007042459-a9cae91487bc h1:vMmiHD2H2fzDKCpxH4g1uckQZ0qPJtYLLIl4Bf/CJ2c=
+github.com/codefly-dev/sdk-go/workcontext v0.0.0-20261007042459-a9cae91487bc/go.mod h1:EHNxoL5T8Ym+ouX0gaBx/utL06BgBhT1NdpKfBvaevU=
 github.com/compose-spec/compose-go v1.20.2 h1:u/yfZHn4EaHGdidrZycWpxXgFffjYULlTbRfJ51ykjQ=
 github.com/compose-spec/compose-go v1.20.2/go.mod h1:+MdqXV4RA7wdFsahh/Kb8U0pAJqkg7mr4PM9tFKU8RM=
 github.com/containerd/errdefs v1.0.0 h1:tg5yIfIlQIrxYtu9ajqY42W3lpS19XqdxRQeEwYG8PI=
