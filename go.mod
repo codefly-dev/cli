@@ -41,7 +41,15 @@ require (
 	golang.org/x/sync v0.23.0
 	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0
-	google.golang.org/grpc v1.84.0
+	// HELD at v1.83.2: v1.84.0 is affected by GO-2026-6443 (server panic via a
+	// missing :authority/Host header) and the advisory's only fix for the 1.84
+	// line is an unreleased v1.85.0-dev pseudo-version, so there is nothing to
+	// bump to. v1.83.2 is itself the patched release for the 1.83 line. The
+	// `bootstrap-audit` gate fails on this as an actionable finding, which is
+	// correct -- do NOT add a .govulncheck.yaml suppression to get past it.
+	// Raise this to v1.85.0 (or a patched v1.84.x) once one ships; see
+	// .github/dependabot.yml, which ignores only the known-bad v1.84.0.
+	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
 	oras.land/oras-go/v2 v2.6.2
