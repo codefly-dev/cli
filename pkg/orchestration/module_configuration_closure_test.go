@@ -24,7 +24,12 @@ func configurationClosureFlow(t *testing.T, visibility string, reciprocal ...boo
 		if module == "provider" {
 			endpointVisibility = visibility
 		}
-		service := fmt.Sprintf("kind: service\nname: api\nversion: 0.0.0\nmodule: %s\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.0.16\n  publisher: codefly.ai\nendpoints:\n  - name: http\n    api: http\n    visibility: %s\n", module, endpointVisibility)
+		service := fmt.Sprintf("kind: service\nname: api\nversion: 0.0.0\nmodule: %s\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.0.16\n  publisher: codefly.ai\nendpoints:\n  - name: http\n    api: http\n    visibility: %s\n    exposure: %s\n", module, endpointVisibility, func() string {
+			if endpointVisibility == "public" {
+				return "public"
+			}
+			return "none"
+		}())
 		switch module {
 		case "app":
 			service += "workspace-configuration-dependencies:\n  - provider\n"
