@@ -559,7 +559,18 @@ func TestReaperRejectsRecordForUnrelatedReusedGroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	recordedAt := leader.started.Add(-time.Second)
+	// A record "written before the process started" needs a margin wider than
+	// one second. On Linux a process's start time is not measured, it is
+	// DERIVED: gopsutil computes `starttime_ticks / ClockTicks + bootTime` in
+	// whole seconds, so the value is already truncated, and the bootTime term
+	// is cached and re-derived — two reads of the same process can differ by a
+	// second. A one-second margin against a quantity with one-second
+	// granularity and one-second instability is a coin flip: it passes on
+	// macOS, where the boot time comes from sysctl exactly, and fails on CI.
+	// The margin's size is not what this test is about, so it is wide enough
+	// that the ordering cannot be in doubt.
+	recordPredatesBy := time.Minute
+	recordedAt := leader.started.Add(-recordPredatesBy)
 
 	rewriteRecordField(t, recordPath, "started", strconv.FormatInt(leader.started.Unix(), 10))
 	if err := os.Chtimes(recordPath, recordedAt, recordedAt); err != nil {
@@ -600,7 +611,18 @@ func TestReaperRejectsReusedLeaderlessGroup(t *testing.T) {
 	pid, recordPath := spawnLeaderlessListener(t, port)
 	defer cleanupGroup(pid, recordPath)
 	memberStarted := processGroupMemberStart(t, pid)
-	recordedAt := memberStarted.Add(-time.Second)
+	// A record "written before the process started" needs a margin wider than
+	// one second. On Linux a process's start time is not measured, it is
+	// DERIVED: gopsutil computes `starttime_ticks / ClockTicks + bootTime` in
+	// whole seconds, so the value is already truncated, and the bootTime term
+	// is cached and re-derived — two reads of the same process can differ by a
+	// second. A one-second margin against a quantity with one-second
+	// granularity and one-second instability is a coin flip: it passes on
+	// macOS, where the boot time comes from sysctl exactly, and fails on CI.
+	// The margin's size is not what this test is about, so it is wide enough
+	// that the ordering cannot be in doubt.
+	recordPredatesBy := time.Minute
+	recordedAt := memberStarted.Add(-recordPredatesBy)
 	rewriteRecordField(t, recordPath, "started", strconv.FormatInt(memberStarted.Unix(), 10))
 	if err := os.Chtimes(recordPath, recordedAt, recordedAt); err != nil {
 		t.Fatal(err)
