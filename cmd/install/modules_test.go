@@ -54,7 +54,7 @@ func TestInstallModulesPreservesLocalOverride(t *testing.T) {
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "editable"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "editable", resources.ModuleConfigurationName), []byte("name: local\nversion: 1.0.0\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "editable", resources.ModuleConfigurationName), []byte("name: local\n"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, resources.WorkspaceConfigurationName), []byte("name: test\nlayout: modules\nmodules:\n  - name: local\n    source: example/module\n    version: 1.0.0\n"), 0o600))
 	overlay := []byte("resolve:\n  local:\n    path: ./editable\n")
 	path := filepath.Join(dir, resources.LocalOverlayConfigurationName)

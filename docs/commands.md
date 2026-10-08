@@ -3409,8 +3409,12 @@ origin of each overlaid key. `configuration_origins` supplies Core's final
 pre-invocation group/key/document file origins, with coverage
 `composed-group-key-origins`. These are collected historical results, not a
 complete input binding, superseded-candidate trace or runtime configuration.
-This local development API requires the companion Core origin change (the
-explorer's development workspace links the v0.8.1-based Core worktree).
+These evidence messages use Core's generated `codefly.base.v0` schema and
+protobuf JSON with explicit false markers. The companion change is
+[Core #746](https://github.com/codefly-dev/core/pull/746).
+This review branch pins that public fork commit in `go.mod`; no local `go.work`
+is needed. Replace the review dependency with an upstream immutable Core version
+after that PR merges, before releasing this CLI.
 A source-only
 `ready` result cannot establish credentials, provider access or runtime health.
 Unmaterialized modules remain diagnostic failures; this command does not pull
@@ -3459,8 +3463,9 @@ Service overrides are flagged separately; cache paths and configuration values a
 not exported. Missing or unreadable receipts remain explicit.
 
 Source-only configuration reports also expose `configuration_decisions` for
-Core's executed `workspace-group-replaces-module-default` and
-`workspace-group-replaces-imported-group` rules. Records name the module or
+Core's executed `workspace-key-replaces-module-default`,
+`workspace-document-replaces-module-default`, `workspace-group-replaces-module-default`
+and `workspace-group-replaces-imported-group` rules. Records name the module or
 workspaces and both sides' value-free file/key origins. `final` distinguishes a
 choice contributing to the collected result from an intermediate choice that was
 subsequently replaced. Derived profiles emit `profile-key-replaces-base-key`

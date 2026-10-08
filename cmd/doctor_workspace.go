@@ -101,13 +101,13 @@ type configurationSourceGroup struct {
 }
 
 type workspaceReadinessReport struct {
-	ConfigurationProfiles  []configurations.ConfigurationProfileSelection `json:"configuration_profiles,omitempty"`
-	ConfigurationDecisions []configurations.ConfigurationDecision         `json:"configuration_decisions,omitempty"`
-	ConfigurationOrigins   []configurations.ConfigurationOrigin           `json:"configuration_origins,omitempty"`
-	ConfigurationEvidence  *configurationEvidence                         `json:"configuration_evidence,omitempty"`
-	SourceOnly             bool                                           `json:"source_only,omitempty"`
-	ConfigurationGroups    []configurationSourceGroup                     `json:"configuration_groups,omitempty"`
-	ConfigurationResolved  bool                                           `json:"configuration_resolved,omitempty"`
+	ConfigurationProfiles  []*basev0.ConfigurationProfileSelection `json:"configuration_profiles,omitempty"`
+	ConfigurationDecisions []*basev0.ConfigurationDecision         `json:"configuration_decisions,omitempty"`
+	ConfigurationOrigins   []*basev0.ConfigurationOrigin           `json:"configuration_origins,omitempty"`
+	ConfigurationEvidence  *configurationEvidence                  `json:"configuration_evidence,omitempty"`
+	SourceOnly             bool                                    `json:"source_only,omitempty"`
+	ConfigurationGroups    []configurationSourceGroup              `json:"configuration_groups,omitempty"`
+	ConfigurationResolved  bool                                    `json:"configuration_resolved,omitempty"`
 
 	SchemaVersion       int                   `json:"schema_version"`
 	Workspace           string                `json:"workspace,omitempty"`
