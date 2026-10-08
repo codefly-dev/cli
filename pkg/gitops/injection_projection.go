@@ -38,7 +38,32 @@ func (injections renderInjections) forService(module, service string) serviceInj
 // composed solutions with the self-endpoint carriers of the services the render
 // deployed. Both are public/secret splits of the same shape; a key is never
 // derived by both, so the join is a plain union.
-func deriveRenderInjections(ctx context.Context, workspace *resources.Workspace, selfEndpoints map[string]map[string]string, sink orchestration.OutputSink) (renderInjections, error) {
+//
+// It is also where a deployed render holds the whole composition to the two
+// rules that are properties of the composition rather than of one service: that
+// the environment fixes an origin for every endpoint the composition exposes,
+// and that no solution declares a path around its host. The second belongs
+// beside these carriers in particular, because they ARE the host-mediated path a
+// solution takes.
+//
+// A local cluster is left alone: both rules exist so that rules someone else
+// writes can hold — an edge that binds a host, a policy that names a principal —
+// and a developer's own cluster has none.
+func deriveRenderInjections(
+	ctx context.Context,
+	workspace *resources.Workspace,
+	env *environments.Environment,
+	selfEndpoints map[string]map[string]string,
+	sink orchestration.OutputSink,
+) (renderInjections, error) {
+	if env.Deployed() {
+		if err := requirePublicOriginsFixed(ctx, workspace, env); err != nil {
+			return nil, err
+		}
+		if err := solutionrun.SolutionBoundaries(ctx, workspace, hostSurface(env)); err != nil {
+			return nil, err
+		}
+	}
 	solutions, err := solutionrun.DerivedDeployInputs(ctx, workspace)
 	if err != nil {
 		return nil, err
@@ -73,15 +98,16 @@ func deriveRenderInjections(ctx context.Context, workspace *resources.Workspace,
 // classifies as credential-bearing. A solution's public carrier names routes,
 // never credentials, so a sensitive public key means a secret was misfiled —
 // and a render is committed to a repository, so the only safe answer is to
-// stop. Self-endpoint carriers are the one exception, because their names
-// embed module, service and endpoint names ("auth-gateway") that trip the broad
-// markers exactly as the builder's own CODEFLY__ENDPOINT__ carriers do; their
-// values are addresses, and an address carrying credentials is refused instead.
+// stop. The address carriers — a service's own reachable address and the origin
+// it is reached by — are the one exception, because their names embed module,
+// service and endpoint names that trip the broad markers exactly as the
+// builder's own CODEFLY__ENDPOINT__ carriers do; their values are addresses, and
+// an address carrying credentials is refused instead.
 func validateInjectionClassification(service string, injection serviceInjection) error {
 	for key, value := range injection.Public {
-		if strings.HasPrefix(key, resources.SelfEndpointPrefix+"__") {
+		if strings.HasPrefix(key, resources.SelfEndpointPrefix+"__") || isPublicOriginCarrier(key) {
 			if parsed, err := url.Parse(value); err == nil && parsed.User != nil {
-				return fmt.Errorf("service %q self endpoint %s carries credentials in its address", service, key)
+				return fmt.Errorf("service %q address carrier %s carries credentials in its address", service, key)
 			}
 			continue
 		}

@@ -118,7 +118,10 @@ func exposedEndpoints(ctx context.Context, module string, service *resources.Ser
 		}
 		hosts := hostOverride
 		if len(hosts) == 0 {
-			hosts = ingressHosts(env, module, service.Name, ep.Name)
+			// The matching rule lives with the declaration it reads
+			// (environments.IngressHosts), so the render of a route and the
+			// public origin derived from the same declaration cannot drift apart.
+			hosts = environments.IngressHosts(env, module, service.Name, ep.Name)
 		}
 		endpoint := routing.ExposedEndpoint{
 			Name:  ep.Name,
@@ -201,33 +204,6 @@ func inClusterPorts(ctx context.Context, module, service string, endpoints []*re
 		ports[item.endpoint.Name] = port
 	}
 	return ports
-}
-
-// ingressHosts returns the hosts an environment ingress route binds to this
-// endpoint. A route matches when it names the service (by bare name or
-// module/service unique) and either names this endpoint or is service-wide
-// (empty Endpoint). The per-endpoint Endpoint field is honored so a host meant
-// for one endpoint is not applied to another.
-func ingressHosts(env *environments.Environment, module, service, endpoint string) []string {
-	unique := resources.ServiceUnique(module, service)
-	var hosts []string
-	seen := make(map[string]struct{})
-	for _, route := range env.Ingress {
-		if route.Service != service && route.Service != unique {
-			continue
-		}
-		if route.Endpoint != "" && route.Endpoint != endpoint {
-			continue
-		}
-		for _, host := range route.Hosts {
-			if _, ok := seen[host]; ok {
-				continue
-			}
-			seen[host] = struct{}{}
-			hosts = append(hosts, host)
-		}
-	}
-	return hosts
 }
 
 func init() {

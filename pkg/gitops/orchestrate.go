@@ -157,7 +157,7 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 	if err = collectRenderTemplates(r.scope.Templates, rendered.deployed, rendered.secretKeys); err != nil {
 		return err
 	}
-	injections, err := deriveRenderInjections(ctx, r.workspace, rendered.selfEndpoints, r.sink)
+	injections, err := deriveRenderInjections(ctx, r.workspace, r.env, rendered.selfEndpoints, r.sink)
 	if err != nil {
 		return err
 	}
@@ -305,6 +305,11 @@ func (r *moduleRender) inventoryUnits(
 	injections renderInjections,
 ) error {
 	unitDir, _ := unitDirectory(UnitKindService)
+	// A principal belongs to one service. Within a module the accounts this
+	// render derives are distinct by construction, but a service whose agent
+	// names its own can collide with another's, and only something that sees
+	// every service of the render can tell.
+	claimed := namespaceAccounts{}
 	for _, service := range services {
 		managedService, managed := r.env.ManagedService(r.module.Name, service.Name)
 		entry := InventoryUnit{
@@ -355,6 +360,13 @@ func (r *moduleRender) inventoryUnits(
 				rendered.inClusterPorts[unique],
 			); portsErr != nil {
 				return portsErr
+			}
+			if claimErr := claimed.recordUnit(
+				filepath.Join(stage, unitDir, service.Name),
+				r.env,
+				resources.ServiceUnique(r.module.Name, service.Name),
+			); claimErr != nil {
+				return claimErr
 			}
 		}
 		r.options.Units = append(r.options.Units, entry)
@@ -527,7 +539,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		); err != nil {
 			return err
 		}
-		injections, err := deriveRenderInjections(ctx, workspace, selfEndpoints, sink)
+		injections, err := deriveRenderInjections(ctx, workspace, env, selfEndpoints, sink)
 		if err != nil {
 			return err
 		}

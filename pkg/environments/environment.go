@@ -1099,6 +1099,11 @@ type Environment struct {
 
 	Ingress []EnvironmentIngressRoute `yaml:"ingress,omitempty"`
 
+	// SolutionBoundary declares what a composed solution may reach directly in
+	// this environment. Absent, it may reach nothing outside its own module.
+	// CLI-side; not serialized to proto.
+	SolutionBoundary *EnvironmentSolutionBoundary `yaml:"solution-boundary,omitempty"`
+
 	// Host names the deployment host this environment delivers to: the
 	// coordinate that identifies it, the component instance within it, the
 	// ownership domain this composition delivers under, the audience a workload

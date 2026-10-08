@@ -18,6 +18,15 @@ func projectServiceConfiguration(ctx context.Context, root string, service *reso
 	if err := projectConfigurationValues(ctx, root, service.Name, env); err != nil {
 		return fmt.Errorf("project service %s configuration: %w", service.Name, err)
 	}
+	// The public origin of this service's exposed endpoints, from the
+	// environment's declarations alone. An origin that names the machine the
+	// workload runs on refuses here, before anything is written; an endpoint the
+	// environment fixes no origin for is refused for the whole composition where
+	// the carriers are derived.
+	injection, err := withPublicOriginCarriers(scope.Module, service, env, injection)
+	if err != nil {
+		return err
+	}
 	// Before the secret projection: the derived secretKeyRefs are part of what
 	// the ExternalSecret must materialize.
 	if err := projectServiceInjection(ctx, root, service.Name, env, injection); err != nil {
@@ -35,12 +44,41 @@ func projectServiceConfiguration(ctx context.Context, root string, service *reso
 	if err := validateProjectedConfiguration(root, service, env, scope); err != nil {
 		return err
 	}
-	return validateProjectedInjection(root, service.Name, env, injection)
+	if err := validateProjectedInjection(root, service.Name, env, injection); err != nil {
+		return err
+	}
+	if !env.Deployed() {
+		return nil
+	}
+	// Last, and unconditionally: the identity guarantee is about what the cluster
+	// receives, so it is checked after every projection and every validation that
+	// could have a more specific thing to say about the same overlay.
+	return requireOwnServiceAccount(root, env.Name, scope.Module, service.Name)
 }
 
-// projectManagedIdentity applies only the declared runtime identity, into the
-// namespace the service's manifests bind to. Endpoint addresses and container
-// choices remain owned by their existing renderers.
+// projectManagedIdentity binds the service's pods to a service account of their
+// own, carrying the declared runtime identity when the environment declares one.
+// Endpoint addresses and container choices remain owned by their existing
+// renderers.
+//
+// Every deployed workload runs under an account of its own, declared identity or
+// not, because the account is what anything downstream has to name to tell two
+// workloads apart: an authorization rule, a network identity and a cloud binding
+// all name a principal, and a principal shared by several workloads grants each
+// of them whatever any one of them was granted. An account with no annotations
+// carries no privilege by itself; it only makes the workload nameable.
+//
+// The projection writes the account the service does not already have, and
+// requireOwnServiceAccount then holds the EFFECTIVE render to the rule —
+// whatever the file layout underneath it, and whatever an overlay does after
+// this ran. Writing and checking are separate on purpose: the write is a
+// convenience, the check is the guarantee, and a shape the write cannot reach
+// (an account bound only by a patch, a workload in a file no base scan sees) is
+// then refused rather than missed.
+//
+// A local cluster keeps the previous behaviour: these accounts exist to be named
+// in rules someone else writes, and a developer's own cluster has no such rules,
+// so a render there is left byte-for-byte as it was.
 func projectManagedIdentity(
 	ctx context.Context,
 	serviceRoot string,
@@ -55,14 +93,50 @@ func projectManagedIdentity(
 	if err != nil {
 		return err
 	}
-	if identity == nil {
+	if identity == nil && !env.Deployed() {
 		return nil
 	}
+	base := filepath.Join(serviceRoot, "base")
+	if env.Deployed() {
+		state, err := deployedAccountState(serviceRoot, base, env.Name)
+		if err != nil {
+			return err
+		}
+		switch state {
+		case accountIsSomeoneElses:
+			// Writing cannot fix an identity that is already someone else's, and
+			// taking the name already bound is how two services end up sharing one
+			// principal. The render leaves the tree alone; requireOwnServiceAccount
+			// is what refuses it, after the configuration checks have had their say
+			// about the same overlay.
+			return nil
+		case accountHasNoWorkload:
+			// Nothing to tell apart from another's. A declared identity is
+			// different — it names a principal the cell has already bound — so
+			// that case falls through to core's own refusal.
+			if identity == nil {
+				return nil
+			}
+		case accountIsItsOwn:
+			// Already nameable. Only a declared identity's annotations are still
+			// worth writing.
+			if identity == nil {
+				return nil
+			}
+		case accountIsUnbound:
+		}
+	}
+	account := &coreservices.WorkloadServiceAccount{}
+	var podLabels map[string]string
+	if identity != nil {
+		account.Annotations = identity.Annotations
+		podLabels = identity.Labels
+	}
 	overlay := &coreservices.PodTemplateOverlay{}
-	if err := overlay.AttachServiceAccount(&coreservices.WorkloadServiceAccount{Annotations: identity.Annotations}, identity.Labels); err != nil {
+	if err := overlay.AttachServiceAccount(account, podLabels); err != nil {
 		return err
 	}
-	return coreservices.ProjectServiceAccount(ctx, filepath.Join(serviceRoot, "base"), scope.Namespace, service.Name, overlay)
+	return coreservices.ProjectServiceAccount(ctx, base, scope.Namespace, service.Name, overlay)
 }
 
 // managedConsumption is one managed service a workload dials, named by the
@@ -153,6 +227,10 @@ func projectRenderedServiceConfiguration(
 	if err != nil {
 		return err
 	}
+	// Two modules rendering into one namespace is the identity question a single
+	// service cannot answer, and this is the only place that sees every service
+	// of the render.
+	claimed := namespaceAccounts{}
 	for _, moduleEntry := range moduleEntries {
 		if !moduleEntry.IsDir() {
 			continue
@@ -169,6 +247,11 @@ func projectRenderedServiceConfiguration(
 			if !serviceEntry.IsDir() {
 				continue
 			}
+			// A directory entry's name is one path component. Joining it as read
+			// would let a name the filesystem returned decide where the render
+			// looks, so it is reduced to its base here, once, and the unit path
+			// below cannot leave the tree it was listed from.
+			serviceName := filepath.Base(serviceEntry.Name())
 			service := graph[resources.ServiceUnique(moduleEntry.Name(), serviceEntry.Name())]
 			if service == nil {
 				continue
@@ -177,7 +260,7 @@ func projectRenderedServiceConfiguration(
 			scope.Templates = templates
 			if err := projectServiceConfiguration(
 				ctx,
-				filepath.Join(servicesRoot, serviceEntry.Name()),
+				filepath.Join(servicesRoot, serviceName),
 				service,
 				env,
 				scope,
@@ -185,6 +268,13 @@ func projectRenderedServiceConfiguration(
 			); err != nil {
 
 				return fmt.Errorf("project service %s configuration: %w", serviceEntry.Name(), err)
+			}
+			if claimErr := claimed.recordUnit(
+				filepath.Join(servicesRoot, serviceName),
+				env,
+				resources.ServiceUnique(moduleEntry.Name(), serviceEntry.Name()),
+			); claimErr != nil {
+				return claimErr
 			}
 		}
 	}
