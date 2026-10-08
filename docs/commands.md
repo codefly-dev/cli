@@ -3378,3 +3378,99 @@ untouched and require explicit recovery by container ID; startup never relabels 
 In the same scope, stopped orphans and running ephemeral orphans remain eligible,
 while live owners, running stateful containers and session-ledger-owned containers are preserved. Startup
 removal does not request deletion of volumes.
+
+
+### Source-only configuration diagnostics
+
+`codefly doctor workspace --env <environment> --sources-only --json` runs
+source diagnostics without external provider checks or secret-reference
+resolution. The report adds `source_only`, `configuration_resolved` and
+`configuration_groups` (group name, group owner, key names, secret-key names,
+and whether the group is a structured document). It never exports values or
+secret URIs. These fields are additive to the version-one diagnostic contract.
+
+Each group's `consumers` lists the sorted service identities declaring that exact
+workspace configuration dependency in the collected scope. These are group-level
+manifest declarations, not per-key reads or observed runtime usage. An empty list
+means no declaring service in that scope; older reports without the field have
+unknown consumer coverage.
+
+`configuration_evidence` records the collection start/end in UTC, the running
+executable's SHA-256 and its linked Core version (or replacement marker). It
+explicitly reports `input_binding: unavailable`: the complete resolver input
+closure is not yet fingerprinted. The binary digest identifies a producer; it
+does not authenticate it. Consumers must not attach this saved inventory to a
+current checkout based only on its workspace name or collection time. Failed
+collections also have a collection interval; this does not make them resolved.
+
+Groups come from Core's `ReadWorkspaceConfigurations`, the same composition
+reader used by normal readiness checks. Group ownership does not identify the
+origin of each overlaid key. `configuration_origins` supplies Core's final
+pre-invocation group/key/document file origins, with coverage
+`composed-group-key-origins`. These are collected historical results, not a
+complete input binding, superseded-candidate trace or runtime configuration.
+This local development API requires the companion Core origin change (the
+explorer's development workspace links the v0.8.1-based Core worktree).
+A source-only
+`ready` result cannot establish credentials, provider access or runtime health.
+Unmaterialized modules remain diagnostic failures; this command does not pull
+packages, create local overlays, start agents, or render deployments.
+
+
+### Prepare selected modules without starting them
+
+`codefly install modules` uses the existing workspace materializer to fetch selected
+packages under the configured trust policy, preserve local checkout overrides, and
+record machine-local resolution paths. It can add ignore entries for those local
+files. It fails if any selected module is still unloadable; it does not build, run,
+render, apply, or resolve secret values. Follow with
+`codefly doctor workspace --env staging --sources-only --json` for source diagnostics.
+
+This command is intentionally CLI-only for now: the dashboard reads evidence and
+must not implicitly fetch dependencies or mutate workspace overlays.
+
+### Inspect composed workspace selections
+
+`codefly show selection` emits JSON containing the modules selected by Core's
+workspace loader, each module's declaration-owner directory, the resolved workspace
+import tree and the product's own environment names. It does not load module
+services or resolve configuration values. Local path imports work; release imports
+without host resolution fail explicitly. The output describes current declarations,
+not rendered artifacts, runtime or a complete input snapshot. Consumers must not
+apply a working-tree report to an immutable product commit.
+
+For immutable declaration inspection, run from the product repository root with
+`codefly show selection --revision <40-character-commit>` and repeat
+`--import-revision /absolute/workspace/path=<40-character-commit>` for every
+relative workspace import. All pins must be used. The command copies only the
+pinned workspace manifests into an isolated temporary tree, then lets Core apply
+its usual composition validation. Output maps declaration owners back to their
+original repositories and records each commit and manifest hash. Local overlays
+and resolution receipts are excluded. Modules layout and relative local workspace
+imports are supported; other acquisition forms fail explicitly. This reconstructs
+selected declarations, not module files, configuration, renders or a build.
+
+Each module also includes a value-free local resolution receipt status. Matching
+uses the existing request/source/module/mode rules; a stale request or active local
+override suppresses receipt version/commit attribution. Matching records expose
+their recorded version, mode and full commit when present. This does not revalidate
+materialized contents or establish a Git tag, build, deployment or runtime identity.
+Service overrides are flagged separately; cache paths and configuration values are
+not exported. Missing or unreadable receipts remain explicit.
+
+Source-only configuration reports also expose `configuration_decisions` for
+Core's executed `workspace-group-replaces-module-default` and
+`workspace-group-replaces-imported-group` rules. Records name the module or
+workspaces and both sides' value-free file/key origins. `final` distinguishes a
+choice contributing to the collected result from an intermediate choice that was
+subsequently replaced. Derived profiles emit `profile-key-replaces-base-key`
+or `profile-document-replaces-base-document`, naming the selected profile and
+one selected/shadowed key or document. Key replacement retains other inherited
+keys; document replacement is whole-document. Ambiguity decisions remain outside
+this partial precedence coverage. The report remains historical without full input binding.
+
+Source-only reports expose `configuration_profiles`: per-location candidate
+profile order, `found`, and actual `layers` in base-first derivation order.
+An absent location has `found: false` and no layers. Directory selection does
+not imply that individual missing files fall back to later candidates. This
+metadata does not supply complete input binding or observed runtime values.

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/cmd/publish"
+	"github.com/codefly-dev/cli/pkg/cli"
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
@@ -25,6 +26,7 @@ import (
 	"github.com/codefly-dev/core/provider/configuration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/tui"
+	"github.com/codefly-dev/core/wool"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -44,6 +46,7 @@ const (
 	codeConfigurationInvalid       = "configuration_invalid"
 	codeConfigurationDuplicate     = "configuration_duplicate"
 	codeConfigurationReference     = "configuration_reference_unresolved"
+	codeConfigurationProducer      = "configuration_producer_unavailable"
 	codeProviderNotConfigured      = "provider_not_configured"
 	codeProviderExecutableMissing  = "provider_executable_missing"
 	codeProviderAuthRequired       = "provider_authentication_required"
@@ -86,7 +89,26 @@ type workspaceDiagnostic struct {
 	Remediation string `json:"remediation,omitempty"`
 }
 
+// configurationSourceGroup is a value-free inventory emitted by Core's resolver.
+// Owner describes the composed group, not the author of every overlaid key.
+type configurationSourceGroup struct {
+	Consumers  []string `json:"consumers"`
+	Name       string   `json:"name"`
+	Owner      string   `json:"owner"`
+	Keys       []string `json:"keys"`
+	SecretKeys []string `json:"secret_keys,omitempty"`
+	Document   bool     `json:"document"`
+}
+
 type workspaceReadinessReport struct {
+	ConfigurationProfiles  []configurations.ConfigurationProfileSelection `json:"configuration_profiles,omitempty"`
+	ConfigurationDecisions []configurations.ConfigurationDecision         `json:"configuration_decisions,omitempty"`
+	ConfigurationOrigins   []configurations.ConfigurationOrigin           `json:"configuration_origins,omitempty"`
+	ConfigurationEvidence  *configurationEvidence                         `json:"configuration_evidence,omitempty"`
+	SourceOnly             bool                                           `json:"source_only,omitempty"`
+	ConfigurationGroups    []configurationSourceGroup                     `json:"configuration_groups,omitempty"`
+	ConfigurationResolved  bool                                           `json:"configuration_resolved,omitempty"`
+
 	SchemaVersion       int                   `json:"schema_version"`
 	Workspace           string                `json:"workspace,omitempty"`
 	WorkspaceDir        string                `json:"workspace_dir,omitempty"`
@@ -108,6 +130,8 @@ func (report *workspaceReadinessReport) add(code, name, status, message, remedia
 }
 
 type workspaceReadinessOptions struct {
+	sourceOnly bool
+
 	// dir pins the workspace directory (tests). Empty means the usual upward
 	// discovery from the current directory.
 	dir string
@@ -134,8 +158,20 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 
 	report := &workspaceReadinessReport{
 		SchemaVersion: doctorWorkspaceSchemaVersion,
+		SourceOnly:    opts.sourceOnly,
 		Environment:   opts.env,
 		Status:        readinessStatusReady,
+	}
+	if opts.sourceOnly {
+		var err error
+		report.ConfigurationEvidence, err = newConfigurationEvidence()
+		defer func() {
+			report.ConfigurationEvidence.CompletedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		}()
+		if err != nil {
+			report.add(codeConfigurationProducer, "configuration evidence", checkStatusFail,
+				"Cannot identify the executable producing this report", "Check access to the running Codefly executable and retry")
+		}
 	}
 
 	ws := checkWorkspace(ctx, opts, report)
@@ -156,9 +192,14 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 		return report
 	}
 
-	checkProviderBindings(ctx, ws, env, report)
-
-	resolvers, unavailable := checkSecretProviders(env, report)
+	if !opts.sourceOnly {
+		checkProviderBindings(ctx, ws, env, report)
+	}
+	var resolvers map[string]configurations.SecretResolver
+	var unavailable map[string]bool
+	if !opts.sourceOnly {
+		resolvers, unavailable = checkSecretProviders(env, report)
+	}
 
 	// Everything from here loads the workspace's services, which core refuses
 	// for a composed module nobody has materialized on this machine. The
@@ -180,7 +221,40 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 
 	checkConfigurationReferences(ctx, ws, env, provided, scope, report)
 
-	checkSecretReferences(ctx, env, resolvers, unavailable, toResolve, report)
+	if opts.sourceOnly {
+		if provided != nil {
+			report.ConfigurationResolved = true
+			report.ConfigurationOrigins = provided.Origins
+			report.ConfigurationProfiles = provided.ProfileSelections
+			report.ConfigurationDecisions = provided.Decisions
+			if report.ConfigurationEvidence != nil {
+				report.ConfigurationEvidence.Coverage = "composed-group-key-origins"
+			}
+			for _, info := range provided.Infos {
+				group := configurationSourceGroup{Name: info.Name, Owner: workspaceConfigurationOrigin(info.Name, provided.ComposedBy), Document: info.GetData() != nil, Keys: []string{}}
+				group.Consumers = []string{}
+				seenConsumers := map[string]bool{}
+				for _, consumer := range requiredBy[info.Name] {
+					if !seenConsumers[consumer] {
+						group.Consumers = append(group.Consumers, consumer)
+						seenConsumers[consumer] = true
+					}
+				}
+				sort.Strings(group.Consumers)
+				for _, value := range info.GetConfigurationValues() {
+					group.Keys = append(group.Keys, value.GetKey())
+					if value.GetSecret() {
+						group.SecretKeys = append(group.SecretKeys, value.GetKey())
+					}
+				}
+				sort.Strings(group.Keys)
+				sort.Strings(group.SecretKeys)
+				report.ConfigurationGroups = append(report.ConfigurationGroups, group)
+			}
+		}
+	} else {
+		checkSecretReferences(ctx, env, resolvers, unavailable, toResolve, report)
+	}
 
 	return report
 }
@@ -581,7 +655,7 @@ func checkModulesMaterialized(ctx context.Context, ws *resources.Workspace, repo
 		}
 		report.add(codeModuleNotMaterialized, "materialization of "+module.Name, "fail",
 			message,
-			fmt.Sprintf("run `codefly run service <service>` or `codefly deploy gitops render <module> --env <env>` once: either materializes every declared module and records it in %s, which doctor never writes; the service-scoped checks are skipped until then", resources.LocalOverlayConfigurationName))
+			fmt.Sprintf("run `codefly install modules`: it materializes the selected modules without starting services or rendering deployments and records it in %s, which doctor never writes; the service-scoped checks are skipped until then", resources.LocalOverlayConfigurationName))
 	}
 	return len(missing) == 0
 }
@@ -1529,11 +1603,12 @@ type machineReadableDoctorError struct{ error }
 func (machineReadableDoctorError) MachineReadable() bool { return true }
 
 var (
-	doctorWorkspaceEnv     string
-	doctorWorkspaceModule  string
-	doctorWorkspaceService string
-	doctorWorkspaceJSON    bool
-	doctorWorkspaceTimeout time.Duration
+	doctorWorkspaceEnv        string
+	doctorWorkspaceModule     string
+	doctorWorkspaceService    string
+	doctorWorkspaceJSON       bool
+	doctorWorkspaceSourceOnly bool
+	doctorWorkspaceTimeout    time.Duration
 )
 
 var DoctorWorkspaceCmd = &cobra.Command{
@@ -1558,6 +1633,11 @@ and the failure would otherwise only surface mid-orchestration.
 Exit codes:
   0  the workspace is ready (warnings allowed)
   1  at least one check failed, or the command itself failed
+
+With --sources-only, skip provider checks and secret reference resolution. The
+JSON report includes resolved workspace group/key names and group ownership,
+never values. Ownership does not establish each key's override origin. A ready
+source-only report does not establish credentials or runtime readiness.
 
 With --json, a versioned report is printed to stdout:
   {schema_version, workspace, workspace_dir, environment, environment_declared,
@@ -1584,11 +1664,21 @@ timeout. External provider
 binding checks add external_provider.* codes (bindings_unreadable,
 bindings_schema_unknown, and the per-binding validation codes).`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		report := workspaceReadiness(cmd.Context(), workspaceReadinessOptions{
-			env:     doctorWorkspaceEnv,
-			module:  doctorWorkspaceModule,
-			service: doctorWorkspaceService,
-			timeout: doctorWorkspaceTimeout,
+		ctx := cmd.Context()
+		if doctorWorkspaceJSON {
+			restore := cli.ProtectResultStream()
+			defer restore()
+			logger := wool.New(ctx, resources.CLI.AsResource())
+			logger.WithLogger(cli.GetLogger())
+			defer logger.Done()
+			ctx = logger.Inject(ctx)
+		}
+		report := workspaceReadiness(ctx, workspaceReadinessOptions{
+			env:        doctorWorkspaceEnv,
+			sourceOnly: doctorWorkspaceSourceOnly,
+			module:     doctorWorkspaceModule,
+			service:    doctorWorkspaceService,
+			timeout:    doctorWorkspaceTimeout,
 		})
 
 		if doctorWorkspaceJSON {
@@ -1636,6 +1726,7 @@ func init() {
 	DoctorWorkspaceCmd.Flags().StringVar(&doctorWorkspaceEnv, "env", "local", "Environment to validate against")
 	DoctorWorkspaceCmd.Flags().StringVar(&doctorWorkspaceModule, "module", "", "Restrict validation to one module's services and their declared configuration dependencies")
 	DoctorWorkspaceCmd.Flags().StringVar(&doctorWorkspaceService, "service", "", "Restrict validation to one service's declared configuration dependencies")
+	DoctorWorkspaceCmd.Flags().BoolVar(&doctorWorkspaceSourceOnly, "sources-only", false, "Report resolver group/key inventory without provider checks or secret resolution")
 	DoctorWorkspaceCmd.Flags().BoolVar(&doctorWorkspaceJSON, "json", false, "Print a machine-readable report to stdout")
 	DoctorWorkspaceCmd.Flags().DurationVar(&doctorWorkspaceTimeout, "timeout", 30*time.Second, "Overall bound; secret resolution is cancelled when it expires")
 	DoctorCmd.AddCommand(DoctorWorkspaceCmd)
