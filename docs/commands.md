@@ -1971,7 +1971,10 @@ codefly publish --dry-run    # show the plan, change nothing
 
 Pre-flight is strict and aborts with no side effects: clean tree, on `main`, in
 sync with `origin/main`, target tag free locally and remotely. Nothing is ever
-pushed with `--force`. A service-agent repository additionally runs release-grade
+pushed with `--force`. The repository it addresses on GitHub comes from `origin`
+as git itself resolves it, so a `url.insteadOf` rewrite or a CI checkout, whose
+remote carries a credential, is read as the repository it points at rather than
+refused. A service-agent repository additionally runs release-grade
 agent CI against the bumped version, then creates the GitHub release, uploads the
 loader archives and SBOMs, and verifies each resolves through the install URL.
 That final read uses the publisher's authenticated GitHub client through Core's
