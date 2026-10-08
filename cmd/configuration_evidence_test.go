@@ -60,7 +60,7 @@ func TestConfigurationEvidenceJSONRetainsFalseMarkersFromGeneratedMessages(t *te
 		ConfigurationDecisions: []*basev0.ConfigurationDecision{{Group: "app", Final: false,
 			Selected: []*basev0.ConfigurationOrigin{{Group: "app", Key: "URL", File: "/base/app.env", Document: false}}}},
 	}
-	encoded, err := json.Marshal(report)
+	encoded, err := json.Marshal(&report)
 	if err != nil {
 		t.Fatal(err)
 	}

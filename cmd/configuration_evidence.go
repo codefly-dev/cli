@@ -4,12 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 	"io"
 	"os"
 	buildinfo "runtime/debug"
 	"time"
+
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 // configurationEvidence identifies the collection and producer, not the full
@@ -67,7 +68,7 @@ func newConfigurationEvidence() (*configurationEvidence, error) {
 // MarshalJSON preserves protobuf's defined JSON representation inside the
 // existing doctor envelope. Explicit false booleans distinguish intermediate
 // decisions and absent profiles for consumers of this versioned report.
-func (r workspaceReadinessReport) MarshalJSON() ([]byte, error) {
+func (r *workspaceReadinessReport) MarshalJSON() ([]byte, error) {
 	type envelope workspaceReadinessReport
 	profiles, err := evidenceJSON(r.ConfigurationProfiles)
 	if err != nil {
@@ -86,7 +87,7 @@ func (r workspaceReadinessReport) MarshalJSON() ([]byte, error) {
 		Profiles  []json.RawMessage `json:"configuration_profiles,omitempty"`
 		Decisions []json.RawMessage `json:"configuration_decisions,omitempty"`
 		Origins   []json.RawMessage `json:"configuration_origins,omitempty"`
-	}{envelope: (*envelope)(&r), Profiles: profiles, Decisions: decisions, Origins: origins})
+	}{envelope: (*envelope)(r), Profiles: profiles, Decisions: decisions, Origins: origins})
 }
 
 func evidenceJSON[T proto.Message](messages []T) ([]json.RawMessage, error) {

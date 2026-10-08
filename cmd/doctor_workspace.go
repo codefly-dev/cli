@@ -149,7 +149,7 @@ type workspaceReadinessOptions struct {
 // must not create, modify, or delete any file, and must not start agents,
 // containers, or services. Secret references are resolved in memory through
 // the environment's configured backend and the values discarded immediately.
-func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *workspaceReadinessReport {
+func workspaceReadiness(ctx context.Context, opts *workspaceReadinessOptions) *workspaceReadinessReport {
 	if opts.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, opts.timeout)
@@ -259,7 +259,7 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	return report
 }
 
-func checkWorkspace(ctx context.Context, opts workspaceReadinessOptions, report *workspaceReadinessReport) *resources.Workspace {
+func checkWorkspace(ctx context.Context, opts *workspaceReadinessOptions, report *workspaceReadinessReport) *resources.Workspace {
 	dir := opts.dir
 	if dir == "" {
 		found, err := resources.FindUp[resources.Workspace](ctx)
@@ -1673,7 +1673,7 @@ bindings_schema_unknown, and the per-binding validation codes).`,
 			defer logger.Done()
 			ctx = logger.Inject(ctx)
 		}
-		report := workspaceReadiness(ctx, workspaceReadinessOptions{
+		report := workspaceReadiness(ctx, &workspaceReadinessOptions{
 			env:        doctorWorkspaceEnv,
 			sourceOnly: doctorWorkspaceSourceOnly,
 			module:     doctorWorkspaceModule,

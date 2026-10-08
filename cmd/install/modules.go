@@ -32,7 +32,7 @@ A successful installation is not runtime readiness or configuration validation.`
 		if err != nil {
 			return err
 		}
-		if err := installWorkspaceModules(ctx, workspace); err != nil {
+		if err = installWorkspaceModules(ctx, workspace); err != nil {
 			return err
 		}
 		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Prepared %d selected modules; services were not started.\n", len(workspace.Modules))
