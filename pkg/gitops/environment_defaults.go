@@ -17,7 +17,7 @@ var environmentDefaultKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // below the environment's explicit values and secret references. It copies the
 // affected mappings: projecting one service must not change the environment
 // subsequently handed to another service or to the module bundle generator.
-func withServiceEnvironmentDefaults(service *resources.Service, env *environments.Environment) (*environments.Environment, error) {
+func withServiceEnvironmentDefaults(root string, service *resources.Service, env *environments.Environment) (*environments.Environment, error) {
 	raw, declared := service.Spec["environment-defaults"]
 	if !declared {
 		return env, nil
@@ -52,6 +52,18 @@ func withServiceEnvironmentDefaults(service *resources.Service, env *environment
 			delete(values, key)
 		}
 	}
+	// A reference the service's own render already bound overrides the default
+	// too, which is what the configuration contract says and what the
+	// environment's own secret references do above. Projecting the default as a
+	// literal beside it instead made bindContainerConfiguration refuse the
+	// whole render for declaring a fallback the service never needed.
+	bound, boundErr := renderedValueFromKeys(root, env.Name, service.Name)
+	if boundErr != nil {
+		return nil, boundErr
+	}
+	for key := range bound {
+		delete(values, key)
+	}
 	if env.ServiceConfig != nil {
 		maps.Copy(values, env.ServiceConfig.Services[service.Name].Values)
 	}
@@ -62,4 +74,50 @@ func withServiceEnvironmentDefaults(service *resources.Service, env *environment
 		resolved.ServiceConfig = &config
 	}
 	return &resolved, nil
+}
+
+// renderedValueFromKeys returns the environment keys the service's own rendered
+// containers already bind through a valueFrom — an agent-rendered secretKeyRef,
+// typically. Only a service that declares defaults is walked, so a service
+// without them pays nothing for this.
+func renderedValueFromKeys(root, environment, service string) (map[string]struct{}, error) {
+	files, err := configurationSources(root, environment)
+	if err != nil {
+		return nil, err
+	}
+	all := make([]manifest, 0, len(files))
+	for _, documents := range files {
+		all = append(all, documents...)
+	}
+	configMaps, err := indexConfigurationMaps(all)
+	if err != nil {
+		return nil, err
+	}
+	bound := map[string]struct{}{}
+	for _, document := range all {
+		spec, ok := podSpec(document)
+		if !ok {
+			continue
+		}
+		for _, raw := range sliceField(spec, deployContainersField) {
+			container := mapFieldOrEmpty(raw)
+			if container == nil {
+				continue
+			}
+			identity, identityErr := configMaps.service(container, metadataString(document.value, deployNamespaceField))
+			if identityErr != nil {
+				return nil, identityErr
+			}
+			if identity != service {
+				continue
+			}
+			for _, item := range sliceField(container, deployEnvField) {
+				entry := mapFieldOrEmpty(item)
+				if entry[deployValueFromField] != nil {
+					bound[quantityString(entry[envEntryName])] = struct{}{}
+				}
+			}
+		}
+	}
+	return bound, nil
 }

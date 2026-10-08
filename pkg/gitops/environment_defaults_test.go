@@ -53,7 +53,7 @@ func TestServiceEnvironmentDefaultYieldsToExplicitSecret(t *testing.T) {
 
 func TestServiceEnvironmentDefaultsRejectInvalidDeclarations(t *testing.T) {
 	for _, value := range []any{nil, "postgres", map[string]any{}, map[string]any{"AUDIT_SINK": 1}, map[string]any{"AUDIT_SINK": " "}, map[string]any{"CODEFLY__SERVICE": "other"}, map[string]any{"BAD=KEY": "value"}} {
-		_, err := withServiceEnvironmentDefaults(&resources.Service{Name: "accounts", Spec: map[string]any{"environment-defaults": value}}, &environments.Environment{Name: "production"})
+		_, err := withServiceEnvironmentDefaults(t.TempDir(), &resources.Service{Name: "accounts", Spec: map[string]any{"environment-defaults": value}}, &environments.Environment{Name: "production"})
 		require.Error(t, err)
 	}
 }

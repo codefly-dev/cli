@@ -15,7 +15,7 @@ import (
 )
 
 func projectServiceConfiguration(ctx context.Context, root string, service *resources.Service, env *environments.Environment, scope unitScope, injection serviceInjection) error {
-	resolved, err := withServiceEnvironmentDefaults(service, env)
+	resolved, err := withServiceEnvironmentDefaults(root, service, env)
 	if err != nil {
 		return err
 	}
