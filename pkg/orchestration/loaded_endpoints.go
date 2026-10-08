@@ -13,6 +13,11 @@ import (
 // declarations belong to the composition, as in World.exportableTo, not to a
 // runtime's protobuf schema: an older agent cannot report a field it predates.
 // No absent declaration is defaulted and no undeclared endpoint is admitted.
+//
+// Both Load paths run this: Runner.Load for a run, Builder.Load for a build,
+// sync, deploy or snapshot. They publish into the same shared state and the same
+// network mappings, so reconciling one of them only would make `codefly run` and
+// `codefly deploy` disagree about the same manifest and the same agent.
 func reconcileLoadedEndpoints(service *resources.Service, reported []*basev0.Endpoint) ([]*basev0.Endpoint, error) {
 	if service == nil {
 		return nil, fmt.Errorf("runtime endpoints have no producer manifest")

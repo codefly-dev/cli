@@ -6,9 +6,13 @@ import (
 	"testing"
 
 	agentservices "github.com/codefly-dev/core/agents/services"
+	"github.com/codefly-dev/core/architecture"
+	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/resources"
+	coreservices "github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -153,4 +157,108 @@ func TestRunnerLoadRefusesAnUndeclaredEndpointWithoutPublishing(t *testing.T) {
 	require.Equal(t, before, runner.endpoints)
 	require.Equal(t, before, world.SharedState.RecordedEndpoints("web/gateway"))
 	require.Nil(t, runner.outputPropertyForLoad.processed)
+}
+
+// builderLoadPeer behaves like a released pre-exposure agent at the Builder
+// boundary: Load reports endpoints with no exposure.
+type builderLoadPeer struct {
+	builderv0.UnimplementedBuilderServer
+	endpoints []*basev0.Endpoint
+}
+
+func (peer *builderLoadPeer) Load(context.Context, *builderv0.LoadRequest) (*builderv0.LoadResponse, error) {
+	return &builderv0.LoadResponse{
+		State:     &builderv0.LoadStatus{State: builderv0.LoadStatus_READY},
+		Endpoints: peer.endpoints,
+	}, nil
+}
+
+// gatewayBuilder is gatewayRunner's Builder twin: the same workspace, module and
+// service, wired to a builder agent instead of a runtime one.
+func gatewayBuilder(t *testing.T, peer *builderLoadPeer) (*Builder, *World, *resources.ServiceIdentity) {
+	t.Helper()
+	ctx := context.Background()
+	server := grpc.NewServer()
+	builderv0.RegisterBuilderServer(server, peer)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+	conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, "testdata/module-layout")
+	require.NoError(t, err)
+	module, err := workspace.LoadModuleFromName(ctx, "web")
+	require.NoError(t, err)
+	service, err := module.LoadServiceFromName(ctx, "gateway")
+	require.NoError(t, err)
+	identity, err := service.Identity()
+	require.NoError(t, err)
+	identity.Workspace = workspace.Name
+	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+	configurationManager, err := configurations.NewManager(ctx, workspace)
+	require.NoError(t, err)
+	require.NoError(t, configurationManager.Load(ctx, env.Runtime()))
+	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
+	require.NoError(t, err)
+	sharedState, err := NewStateManager(ctx, configurationManager, dependencies, workspace)
+	require.NoError(t, err)
+	world := &World{
+		Env: env, Workspace: workspace, Dependencies: dependencies,
+		SharedState: sharedState, ConfigurationManager: configurationManager, Mode: DeployMode,
+	}
+	instance := &coreservices.Instance{Workspace: workspace, Module: module, Service: service, Identity: identity}
+	instance.Builder = &coreservices.BuilderInstance{
+		Instance: instance,
+		Builder:  agentservices.NewBuilderAgentClient(conn),
+	}
+	builder, err := NewBuilder(ctx, instance, world)
+	require.NoError(t, err)
+	return builder, world, identity
+}
+
+// The regression for the Load path the reconciliation first missed. Builder.Load
+// publishes into the same shared state and the same network mappings as
+// Runner.Load, so an older agent's missing exposure has to be restored there too
+// — otherwise `codefly deploy` drops an outward address that `codefly run`
+// allocates, for one manifest and one agent.
+func TestBuilderLoadPreservesAnOlderAgentsDeclaredExposure(t *testing.T) {
+	peer := &builderLoadPeer{}
+	builder, world, identity := gatewayBuilder(t, peer)
+	declared, err := builder.instance.Service.LoadEndpoints(context.Background())
+	require.NoError(t, err)
+	require.NotEmpty(t, declared)
+	for _, endpoint := range declared {
+		require.Equal(t, resources.ExposurePublic, endpoint.Exposure, "the fixture must declare an exposure to lose")
+		older := proto.CloneOf(endpoint)
+		older.Exposure = ""
+		peer.endpoints = append(peer.endpoints, older)
+	}
+
+	_, err = builder.Load(context.Background())
+	require.NoError(t, err)
+
+	for _, endpoint := range builder.endpoints {
+		require.Equal(t, resources.ExposurePublic, endpoint.Exposure,
+			"the endpoint handed to GenerateNetworkMappings must carry the manifest's exposure")
+		require.True(t, resources.IsExposedEndpoint(endpoint))
+	}
+	for _, endpoint := range world.SharedState.RecordedEndpoints(identity.Unique()) {
+		require.Equal(t, resources.ExposurePublic, endpoint.Exposure,
+			"shared state must carry the manifest's exposure")
+	}
+}
+
+func TestBuilderLoadRefusesAnUndeclaredEndpoint(t *testing.T) {
+	peer := &builderLoadPeer{endpoints: []*basev0.Endpoint{
+		{Module: "web", Service: "gateway", Name: "admin", Api: "rest"},
+	}}
+	builder, world, identity := gatewayBuilder(t, peer)
+	_, err := builder.Load(context.Background())
+	require.ErrorContains(t, err, "not declared by the producer manifest")
+	require.Nil(t, builder.endpoints)
+	require.Empty(t, world.SharedState.RecordedEndpoints(identity.Unique()))
 }
