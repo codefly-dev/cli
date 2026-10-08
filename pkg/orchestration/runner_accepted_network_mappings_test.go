@@ -169,6 +169,9 @@ func exportedConfigurations(mode string, req *runtimev0.InitRequest) []*basev0.C
 	values := []*basev0.ConfigurationValue{{Key: "session", Value: "exposed"}}
 	if mode == realAgentInputs {
 		values = []*basev0.ConfigurationValue{{Key: "fixture", Value: req.GetFixture()}}
+		if req.GetRuntimeImage() != "" {
+			values = append(values, &basev0.ConfigurationValue{Key: "runtime-image", Value: req.GetRuntimeImage()})
+		}
 		for key, value := range req.GetOverrides() {
 			values = append(values, &basev0.ConfigurationValue{Key: key, Value: value})
 		}
