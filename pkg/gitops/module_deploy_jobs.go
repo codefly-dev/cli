@@ -562,7 +562,7 @@ func deployJobPod(job *moduleBundleDeployJob, documents []manifest, namespace st
 		labels = map[string]any{}
 	}
 	labels["codefly.dev/deploy-job"] = job.Name
-	labels[deployWorkloadRoleLabel] = "deploy-job"
+	labels[deployWorkloadRoleLabel] = deployRoleJob
 	metadata[deployLabelsField] = labels
 	annotations := mapField(metadata, deployAnnotationsField)
 	if annotations == nil {
