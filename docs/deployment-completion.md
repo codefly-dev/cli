@@ -113,10 +113,17 @@ ordering is expressed twice, once per reconciliation mechanism:
   a completed schema service gates the next one.
 - **GitOps.** A module declaring `deployJobs` renders its module and unit
   overlays into one Application. Resource waves inside that Application order
-  shared prerequisites, dependency workloads, migration Jobs, import Jobs and
-  dependent workloads. Migration and import Jobs are Sync hooks; later waves
-  remain blocked until they complete. A missing managed migration barrier is
-  refused. For modules without deploy jobs, the ApplicationSet retains separate
+  shared prerequisites, then each service's band, with a service's import Job
+  immediately before that service's own workload. A Job placed in a wave is
+  already a barrier — Argo reports it Progressing until it completes and
+  Degraded when it fails — so later waves stay blocked without the Job being
+  converted into a hook. Where a **unit's own** Job sits relative to its own
+  workload is the unit's to declare, with
+  `codefly.dev/deploy-barrier: before-workload` or `after-workload`; an
+  `argocd.argoproj.io/hook` phase it declares is preserved, and a Job carrying
+  its own sync-wave or `hook: Skip` is left untouched. Only the generated
+  import Jobs are Sync hooks. A missing managed migration barrier is refused.
+  For modules without deploy jobs, the ApplicationSet retains separate
   Applications and its annotations order them only when a parent explicitly
   synchronizes them by wave; independently reconciling Applications do not
   acquire a dependency barrier from those annotations.

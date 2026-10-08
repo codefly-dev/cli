@@ -86,9 +86,12 @@ Proxy containers, image choices and loopback routing are not part of this contra
 A service may declare non-secret raw environment defaults under
 `spec.environment-defaults` in its `service.codefly.yaml`, for example
 `AUDIT_SINK: postgres`. GitOps rendering projects these into the service's
-identified container. Explicit `service-config` values or `service-secrets`
-remote keys take precedence. Defaults are nonempty strings with environment
-variable names; the `CODEFLY__` namespace is reserved for resolved runtime
+identified container. A default is the lowest precedence there is: an explicit
+`service-config` value wins, a `service-secrets` remote key wins, and so does a
+`valueFrom` reference the service's own agent already rendered for that key — a
+default is a fallback for a key nothing else binds, never a competing literal
+beside a reference. Defaults are nonempty strings with environment variable
+names; the `CODEFLY__` namespace is reserved for resolved runtime
 configuration. Defaults do not change the imported coordinate or supply secret
 credentials. A job-capable promotion driver must inherit the resulting service
 configuration, including these defaults, instead of choosing a separate job
@@ -96,8 +99,16 @@ default.
 
 The GitOps driver projects module bundle `deployJobs` into required Sync-hook
 Jobs. `command` is a subcommand of the service image's existing entrypoint;
-the driver passes `-catalog` and, when declared, `-force`. It mounts the JSON
-catalog in an immutable ConfigMap named by its content digest. The Job inherits
+the driver passes `-catalog` and, when declared, `-force`. `backoffLimit` and
+`activeDeadlineSeconds` move the Job's budget off its 3-retry, 600-second
+default, within 0..10 and 1..21600. It mounts the JSON catalog in an immutable
+ConfigMap named by its content digest; the catalog is at most 384 KiB, because
+client-side apply — Argo CD's default unless `ServerSideApply=true` is set on
+the Application or on that ConfigMap — keeps a second copy of the whole object
+in its `kubectl.kubernetes.io/last-applied-configuration` annotation, and both
+copies have to fit the API server's request limit. A larger catalog needs
+server-side apply enabled deliberately, which this release does not turn on.
+The Job inherits
 the running service's exact image digest, ServiceAccount, resolved environment,
 secret references, volumes and credential refresh/proxy containers. It never
 constructs a database credential from the write target. The command must use
@@ -106,22 +117,50 @@ rotation, or an explicitly supplied operator connection.
 
 For a module with deploy jobs, the module overlay references its unit overlays
 and one Argo Application owns all of them. Resource waves follow the runtime
-dependency graph: shared resources, a dependency's workload, its migration
-Jobs, the import Jobs, then the dependent workload. Migration and import Jobs
-share the Sync phase; a failed Job blocks subsequent waves. Every declared
-`after` service must have a rendered workload or, for a managed handoff, a
-rendered migration Job. Missing barriers, undeclared write endpoints, missing
-inherited settings and runtime cycles are refused. ApplicationSet sync-wave
-annotations alone cannot provide this barrier across independent Applications.
+dependency graph: shared resources first, then each service's band, with the
+import Job of a service immediately before that service's own workload. A
+failed Job blocks subsequent waves — Argo reports a Job Progressing until it
+completes and Degraded when it fails, so a Job placed in a wave is a barrier
+without being converted into a hook. Every declared `after` service must have a
+rendered workload or, for a managed handoff, a rendered migration Job. Missing
+barriers, undeclared write endpoints, missing inherited settings and runtime
+cycles are refused. ApplicationSet sync-wave annotations alone cannot provide
+this barrier across independent Applications.
 
-Jobs use `BeforeHookCreation,HookSucceeded` and no TTL, so Argo observes the
-result before cleanup and reruns idempotent commands for each sync. Existing
+A Job a **unit** renders belongs to that unit, and the aggregate never decides
+its phase. Where it sits relative to its own workload cannot be read off the
+manifest — "after" is right for a Job migrating a *dependency's* datastore,
+which needs that datastore running first, and wrong for a Job preparing the
+schema its own workload is about to serve — so the unit declares it with
+`codefly.dev/deploy-barrier: before-workload` or `after-workload`. Without that
+annotation the Job shares its unit's own band, which is where it reconciled when
+every unit had an Application to itself; any `argocd.argoproj.io/hook` phase it
+declares is preserved, so a `PreSync` migration still runs before the whole Sync
+phase. A Job that declares its own `argocd.argoproj.io/sync-wave`, or
+`argocd.argoproj.io/hook: Skip`, is left exactly as the renderer wrote it: the
+wave is already the author's placement, and a `Skip` is a manifest shipped for
+someone else to run. An unrecognised barrier value is refused rather than
+guessed. A unit Job that sets `ttlSecondsAfterFinished` keeps it, and Argo will
+recreate — and so re-run — the Job once the TTL deletes it, so a one-shot
+barrier should omit the TTL.
+
+Only the import Jobs the driver generates itself are Sync hooks.
+
+They use `BeforeHookCreation,HookSucceeded` and no TTL, so Argo observes the
+result before cleanup and reruns the idempotent command for each sync. Existing
 sidecars become native restartable init containers and injected Istio proxies
 use `sidecar.istio.io/nativeSidecar: "true"`; the supported target is Kubernetes
-1.33 or newer with an Istio injector supporting that annotation. Original
-policy and identity labels are retained; `codefly.dev/workload-role` separates
-service pods from job pods in Service selectors. A dev image change updates the
-service and its import Jobs together. Live cluster qualification remains an
+1.33 or newer with an Istio injector supporting that annotation. Every inherited
+container, the pod's own init containers included, must be digest-pinned, and
+the identified service container must carry a name. Original policy and identity
+labels are retained; `codefly.dev/workload-role` separates service pods from job
+pods in Service selectors. Because that label narrows every Service selector,
+it is added to every pod-bearing kind a unit can render — `Pod` and `CronJob`
+as well as the Deployment family — so no Service is left selecting pods that
+cannot carry it. Two deploy jobs on the same service share one wave and run
+concurrently; ordering one after the other is not expressible yet, so a module
+needing that must fold the work into a single job. A dev image change updates
+the service and its import Jobs together. Live cluster qualification remains an
 operation on the selected environment, separate from local render tests.
 
 This Application boundary supports new installations and upgrades that already
