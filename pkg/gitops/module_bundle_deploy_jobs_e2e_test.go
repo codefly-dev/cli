@@ -21,11 +21,20 @@ import (
 // directly, so nothing covered the loadSelectedModuleBundle -> DeployJobs ->
 // moduleIncludesUnits chain the Argo Application boundary rests on.
 func TestRenderModuleBundleDrivesDeployJobsEndToEnd(t *testing.T) {
+	// Every spelling kustomize recognises, through the real bundle: the
+	// generator writes its overlay under that name and the projection has to
+	// find it, rewrite that same file, and leave a tree kustomize can build.
+	for _, spelling := range kustomizationFileNames {
+		t.Run(spelling, func(t *testing.T) { renderModuleBundleDeployJobsEndToEnd(t, spelling) })
+	}
+}
+
+func renderModuleBundleDeployJobsEndToEnd(t *testing.T, spelling string) {
 	ctx := context.Background()
 	root := t.TempDir()
 	moduleDir := filepath.Join(t.TempDir(), "accounts")
 	writeDeployJobModuleWorkspace(t, root, moduleDir)
-	installDeployJobBundleGenerator(t)
+	installDeployJobBundleGenerator(t, spelling)
 
 	workspace, err := resources.LoadWorkspaceFromDir(ctx, root)
 	require.NoError(t, err)
@@ -83,14 +92,15 @@ func TestRenderModuleBundleDrivesDeployJobsEndToEnd(t *testing.T) {
 	// overlays, which is only a resolvable reference from the owned tree. That
 	// is why the bundle's own validation runs before the deploy jobs are
 	// projected and the references are checked over the owned tree instead.
-	data, err := os.ReadFile(filepath.Join(destination, "overlays", "production", kustomizationFile))
+	rewritten, data, err := readDeployKustomization(filepath.Join(destination, "overlays", "production"), "accounts", "production")
 	require.NoError(t, err)
+	require.Equal(t, spelling, filepath.Base(rewritten), "the projection must rewrite the file it read, not a new one")
 	var customization map[string]any
 	require.NoError(t, yaml.Unmarshal(data, &customization))
 	require.Contains(t, sliceField(customization, resourcesKey), "../../../services/accounts/overlays/production")
-	_, ownedErr := validateKustomization(filepath.ToSlash(filepath.Join(moduleBundleDir, "overlays", "production", kustomizationFile)), customization)
+	_, ownedErr := validateKustomization(filepath.ToSlash(filepath.Join(moduleBundleDir, "overlays", "production", spelling)), customization)
 	require.NoError(t, ownedErr, "owned-tree-relative, the unit references resolve")
-	_, bundleErr := validateKustomization(filepath.ToSlash(filepath.Join("overlays", "production", kustomizationFile)), customization)
+	_, bundleErr := validateKustomization(filepath.ToSlash(filepath.Join("overlays", "production", spelling)), customization)
 	require.ErrorContains(t, bundleErr, "escapes the owned tree",
 		"bundle-relative they do not, so renderModuleDeployJobs must run after validateTransportNeutralModuleBundle")
 }
@@ -165,7 +175,7 @@ environments:
 
 // installDeployJobBundleGenerator installs a codefly:module agent whose bundle
 // declares a required deploy job for the accounts service.
-func installDeployJobBundleGenerator(t *testing.T) {
+func installDeployJobBundleGenerator(t *testing.T, spelling string) {
 	t.Helper()
 	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
 	agent := &resources.Agent{Kind: resources.ModuleAgent, Publisher: "codefly.dev", Name: "gitops-test", Version: "1.0.0"}
@@ -177,7 +187,7 @@ set -eu
 module_dir="$1"
 destination="$module_dir/deployment/kustomize"
 mkdir -p "$destination/overlays/production"
-cat > "$destination/overlays/production/kustomization.yaml" <<'EOF'
+cat > "$destination/overlays/production/` + spelling + `" <<'EOF'
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources: []
