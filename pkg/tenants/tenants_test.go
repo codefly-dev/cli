@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -511,5 +512,123 @@ tenants:
 	}
 	if _, err := Generate(root, model); err == nil {
 		t.Fatal("expected error when base directory is absent")
+	}
+}
+
+// A base ExternalSecret that selects a store per key, through ESO's
+// spec.data[].sourceRef.storeRef, cannot be given a tenant's store: the overlay
+// patches /spec/secretStoreRef/name and nothing else, so the override would
+// survive untouched and the tenant's Secret would read that key from the shared
+// base backend. The storeApplied check does not notice, because the one
+// reference it inspects was patched — so the refusal has to be its own.
+const perKeySourceRefExternalSecret = `apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: api-store
+spec:
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: base
+  target:
+    name: api-store
+  data:
+    - secretKey: connection
+      remoteRef:
+        key: api/store
+        property: connection
+    - secretKey: IDENTITY_CLIENT_SECRET
+      remoteRef:
+        key: identity/oauth
+        property: client_secret
+      sourceRef:
+        storeRef:
+          kind: ClusterSecretStore
+          name: shared-identity
+`
+
+func writeBaseWithExternalSecret(t *testing.T, root, externalSecret string) {
+	t.Helper()
+	base := filepath.Join(root, "base")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"kustomization.yaml":   baseKustomization,
+		"virtualservice.yaml":  baseVirtualService,
+		"external-secret.yaml": externalSecret,
+	} {
+		if err := os.WriteFile(filepath.Join(base, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestGenerateRefusesAPerKeyStoreTheTenantPatchCannotReach(t *testing.T) {
+	root := t.TempDir()
+	writeBaseWithExternalSecret(t, root, perKeySourceRefExternalSecret)
+	modelPath := writeModel(t, root, `schema-version: codefly.dev/tenant-model/v1
+base: base
+tenants:
+  - name: acme
+    cloud: aws
+    host: acme.example.com
+    secret-store: acme-vault
+`)
+	model, err := LoadModel(modelPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Generate(root, model)
+	if err == nil {
+		t.Fatal("a per-key sourceRef the tenant store patch cannot reach was accepted")
+	}
+	for _, want := range []string{"IDENTITY_CLIENT_SECRET", "sourceRef", "shared-identity", "acme-aws"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal does not name %q: %v", want, err)
+		}
+	}
+}
+
+// A per-key sourceRef that already names the tenant's own store is reachable by
+// definition and is not refused.
+func TestGenerateAcceptsAPerKeySourceRefNamingTheTenantStore(t *testing.T) {
+	root := t.TempDir()
+	writeBaseWithExternalSecret(t, root,
+		strings.Replace(perKeySourceRefExternalSecret, "name: shared-identity", "name: acme-vault", 1))
+	modelPath := writeModel(t, root, `schema-version: codefly.dev/tenant-model/v1
+base: base
+tenants:
+  - name: acme
+    cloud: aws
+    host: acme.example.com
+    secret-store: acme-vault
+`)
+	model, err := LoadModel(modelPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Generate(root, model); err != nil {
+		t.Fatalf("a sourceRef naming the tenant's own store was refused: %v", err)
+	}
+}
+
+// A tenant that declares no store of its own patches nothing, so a per-key
+// override is nobody's problem.
+func TestGenerateAllowsAPerKeySourceRefWithoutATenantStore(t *testing.T) {
+	root := t.TempDir()
+	writeBaseWithExternalSecret(t, root, perKeySourceRefExternalSecret)
+	modelPath := writeModel(t, root, `schema-version: codefly.dev/tenant-model/v1
+base: base
+tenants:
+  - name: acme
+    cloud: aws
+    host: acme.example.com
+`)
+	model, err := LoadModel(modelPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Generate(root, model); err != nil {
+		t.Fatalf("a store-less tenant was refused: %v", err)
 	}
 }
