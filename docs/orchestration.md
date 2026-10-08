@@ -744,6 +744,22 @@ endpoints and unknown wire declarations are refused before shared state is
 updated. A missing exposure in the manifest is still invalid and is never
 filled from the agent's response.
 
+An `api` the manifest does not state is the one part of this the agent owns, not
+the composition: core defaults an endpoint's API from its name when that name is
+a standard API, so an absent `api:` is read as whatever the endpoint serves and
+the agent's reported value is accepted. A manifest that does state an API is a
+declaration, and a report contradicting it is refused, naming both so one of
+them can be corrected.
+
+The same reconciliation runs on **both** Load paths — `Runner.Load` for a run and
+`Builder.Load` for a build, sync, deploy or snapshot. They publish into the same
+shared state and the same network mappings, and whether an endpoint is allocated
+an outward address is read off the endpoint there, so reconciling one of them
+only would make `codefly run` and `codefly deploy` disagree about one manifest and
+one agent. A refused report is reported as that service's own load failure, the
+same degradation an agent error or a non-`READY` status takes, rather than as an
+error of the whole run.
+
 **Builder actions (for `build`, `sync`, `deploy`):**
 
 ```
