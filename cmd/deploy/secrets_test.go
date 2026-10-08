@@ -3,6 +3,7 @@ package deploy
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -145,8 +146,17 @@ func (store *backendRoutingStore) Write(_ context.Context, key string, document 
 	return nil
 }
 
+// Each backend is read and written on its own: a value one backend holds is
+// propagated inside it and never reaches the other. Each backend carries its OWN
+// configuration key here, because one key holding two different values in two
+// backends is a divergence the planner refuses outright
+// (TestSecretPlansRefuseOneConfigurationValueHeldTwoWaysAcrossBackends).
 func TestSecretPlansRouteReadsAndWritesToEachBackend(t *testing.T) {
 	ctx := context.Background()
+	keys := map[string]string{
+		"database": "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__DATABASE__TOKEN",
+		"identity": "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__IDENTITY__TOKEN",
+	}
 	stores := map[string]*backendRoutingStore{
 		"database": {name: "database", document: map[string]string{"token": "database-secret-value"}},
 		"identity": {name: "identity", document: map[string]string{"token": "identity-secret-value"}},
@@ -160,27 +170,28 @@ func TestSecretPlansRouteReadsAndWritesToEachBackend(t *testing.T) {
 			}
 			rendered.Secrets = append(rendered.Secrets, gitops.RenderedServiceSecret{
 				Store:     environments.EnvironmentSecretStoreReference{Name: name, Kind: "ClusterSecretStore"},
-				RemoteKey: remote, Services: []string{"app/api"}, Properties: []gitops.RenderedSecretProperty{{Property: property, Keys: []string{routedConfigurationKey}}},
+				RemoteKey: remote + "-" + name, Services: []string{"app/api"},
+				Properties: []gitops.RenderedSecretProperty{{Property: property, Keys: []string{keys[name]}}},
 			})
 		}
 	}
-	plans, err := planSecretStores(ctx, &deploysecrets.Inputs{Rendered: rendered, ReadPayloads: true}, func(group gitops.RenderedEnvironment) (deploysecrets.Store, error) {
+	plans, err := deploysecrets.BuildAll(ctx, &deploysecrets.Inputs{Rendered: rendered, ReadPayloads: true}, func(group gitops.RenderedEnvironment) (deploysecrets.Store, error) {
 		return stores[group.Secrets[0].Store.Name], nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plans) != 2 || plans[0].plan.Store != "database" || plans[1].plan.Store != "identity" {
+	if len(plans) != 2 || plans[0].Plan.Store != "database" || plans[1].Plan.Store != "identity" {
 		t.Fatalf("unstable backend ordering")
 	}
 	var output bytes.Buffer
 	for _, planned := range plans {
-		printSecretsPlan(&output, "staging", planned.rendered, planned.plan)
+		printSecretsPlan(&output, "staging", planned.Rendered, planned.Plan)
 	}
 	if strings.Contains(output.String(), "secret-value") {
 		t.Fatal("plan printed secret payload")
 	}
-	if err := finishSecretPlans(ctx, plans, false, false, func(plannedSecretStore) bool { return true }); err != nil {
+	if err := finishSecretPlans(ctx, plans, false, false, func(*deploysecrets.BackendPlan) bool { return true }); err != nil {
 		t.Fatal(err)
 	}
 	for _, store := range stores {
@@ -190,23 +201,188 @@ func TestSecretPlansRouteReadsAndWritesToEachBackend(t *testing.T) {
 	}
 }
 
-func TestSecretStoreGroupingRespectsNamespace(t *testing.T) {
-	rendered := gitops.RenderedEnvironment{}
-	for _, kind := range []string{"SecretStore", "ClusterSecretStore"} {
-		for _, namespace := range []string{"a", "b"} {
-			rendered.Secrets = append(rendered.Secrets, gitops.RenderedServiceSecret{Store: environments.EnvironmentSecretStoreReference{Name: "store", Kind: kind}, Namespace: namespace, RemoteKey: "key"})
+// The regression for the blocker this grouping introduced: one configuration
+// value, declared random, read by two services whose secrets live in two
+// backends and held by neither. It is minted ONCE and both backends receive the
+// same value. Minting per backend wrote two different values for one key, which
+// no later run could even report, because each backend agreed with itself.
+func TestSecretPlansMintOneValueForAConfigurationKeyReadInTwoBackends(t *testing.T) {
+	generator := environments.EnvironmentSecretGenerator{Scope: "workspace", Configuration: "internal-auth", Keys: []string{"token"}}
+	key := generator.StoredKeys(nil)[0]
+	alpha := &backendRoutingStore{name: "alpha-project", document: map[string]string{}}
+	beta := &backendRoutingStore{name: "beta-project", document: map[string]string{}}
+	rendered := gitops.RenderedEnvironment{Modules: []string{"app", "web"}, Secrets: []gitops.RenderedServiceSecret{
+		{Store: environments.EnvironmentSecretStoreReference{Name: "alpha", Kind: "ClusterSecretStore"},
+			RemoteKey: "alpha-key", Services: []string{"app/api"},
+			Properties: []gitops.RenderedSecretProperty{{Property: "token", Keys: []string{key}}}},
+		{Store: environments.EnvironmentSecretStoreReference{Name: "beta", Kind: "ClusterSecretStore"},
+			RemoteKey: "beta-key", Services: []string{"web/console"},
+			Properties: []gitops.RenderedSecretProperty{{Property: "shared_token", Keys: []string{key}}}},
+	}}
+	plans, err := deploysecrets.BuildAll(t.Context(), &deploysecrets.Inputs{
+		Rendered: rendered, ReadPayloads: true,
+		Generators: []environments.EnvironmentSecretGenerator{generator},
+	}, func(group gitops.RenderedEnvironment) (deploysecrets.Store, error) {
+		if group.Secrets[0].Store.Name == "alpha" {
+			return alpha, nil
+		}
+		return beta, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := finishSecretPlans(t.Context(), plans, false, false, func(*deploysecrets.BackendPlan) bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	if alpha.written["token"] == "" || beta.written["shared_token"] == "" {
+		t.Fatalf("expected both backends written: alpha=%v beta=%v", alpha.written, beta.written)
+	}
+	if alpha.written["token"] != beta.written["shared_token"] {
+		t.Fatal("one configuration value was minted twice: the two backends hold different values")
+	}
+}
+
+// A configuration value two backends already hold DIFFERENTLY is refused naming
+// both, rather than reported as `keep` on each side. Without this the mint-twice
+// bug above is permanent: the first run creates the divergence and no later run
+// can see it.
+func TestSecretPlansRefuseOneConfigurationValueHeldTwoWaysAcrossBackends(t *testing.T) {
+	alpha := &backendRoutingStore{name: "alpha-project", document: map[string]string{"token": "value-A"}}
+	beta := &backendRoutingStore{name: "beta-project", document: map[string]string{"token": "value-B"}}
+	rendered := gitops.RenderedEnvironment{Secrets: []gitops.RenderedServiceSecret{
+		{Store: environments.EnvironmentSecretStoreReference{Name: "alpha", Kind: "ClusterSecretStore"},
+			RemoteKey: "alpha-key", Services: []string{"app/api"},
+			Properties: []gitops.RenderedSecretProperty{{Property: "token", Keys: []string{routedConfigurationKey}}}},
+		{Store: environments.EnvironmentSecretStoreReference{Name: "beta", Kind: "ClusterSecretStore"},
+			RemoteKey: "beta-key", Services: []string{"web/console"},
+			Properties: []gitops.RenderedSecretProperty{{Property: "token", Keys: []string{routedConfigurationKey}}}},
+	}}
+	_, err := deploysecrets.BuildAll(t.Context(), &deploysecrets.Inputs{Rendered: rendered, ReadPayloads: true},
+		func(group gitops.RenderedEnvironment) (deploysecrets.Store, error) {
+			if group.Secrets[0].Store.Name == "alpha" {
+				return alpha, nil
+			}
+			return beta, nil
+		})
+	if err == nil {
+		t.Fatal("two backends holding one configuration value differently were planned as keep")
+	}
+	if !strings.Contains(err.Error(), "one configuration value cannot be two") {
+		t.Fatalf("refusal does not name the divergence: %v", err)
+	}
+	if strings.Contains(err.Error(), "value-A") || strings.Contains(err.Error(), "value-B") {
+		t.Fatalf("refusal printed a stored value: %v", err)
+	}
+	for _, store := range []*backendRoutingStore{alpha, beta} {
+		if store.written != nil {
+			t.Fatalf("backend %s was written during a refused plan", store.name)
 		}
 	}
-	groups := groupSecretStores(rendered)
-	if len(groups) != 3 || len(groups[0].Secrets) != 2 || groups[1].Secrets[0].Namespace != "a" || groups[2].Secrets[0].Namespace != "b" {
-		t.Fatalf("grouped wrong store scope: %+v", groups)
+}
+
+// A configuration value one backend holds and another lacks is REQUIRED in the
+// one that lacks it, naming where it already is. It is neither copied (that
+// moves a value between backends, which a per-key store declaration exists to
+// prevent) nor minted (that is the divergence above).
+func TestSecretPlansRequireRatherThanCopyOrMintAcrossBackends(t *testing.T) {
+	generator := environments.EnvironmentSecretGenerator{Scope: "workspace", Configuration: "internal-auth", Keys: []string{"token"}}
+	key := generator.StoredKeys(nil)[0]
+	held := &backendRoutingStore{name: "held-project", document: map[string]string{"token": "already-seeded"}}
+	empty := &backendRoutingStore{name: "empty-project", document: map[string]string{}}
+	rendered := gitops.RenderedEnvironment{Secrets: []gitops.RenderedServiceSecret{
+		{Store: environments.EnvironmentSecretStoreReference{Name: "held", Kind: "ClusterSecretStore"},
+			RemoteKey: "held-key", Services: []string{"app/api"},
+			Properties: []gitops.RenderedSecretProperty{{Property: "token", Keys: []string{key}}}},
+		{Store: environments.EnvironmentSecretStoreReference{Name: "empty", Kind: "ClusterSecretStore"},
+			RemoteKey: "empty-key", Services: []string{"web/console"},
+			Properties: []gitops.RenderedSecretProperty{{Property: "token", Keys: []string{key}}}},
+	}}
+	plans, err := deploysecrets.BuildAll(t.Context(), &deploysecrets.Inputs{
+		Rendered: rendered, ReadPayloads: true,
+		Generators: []environments.EnvironmentSecretGenerator{generator},
+	}, func(group gitops.RenderedEnvironment) (deploysecrets.Store, error) {
+		if group.Secrets[0].Store.Name == "held" {
+			return held, nil
+		}
+		return empty, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var required []string
+	for _, planned := range plans {
+		required = append(required, planned.Plan.Required()...)
+	}
+	if len(required) != 1 || !strings.Contains(required[0], "empty-key#token") {
+		t.Fatalf("the backend lacking the value did not require it: %v", required)
+	}
+	var sources []string
+	for _, planned := range plans {
+		for _, secret := range planned.Plan.Secrets {
+			for _, property := range secret.Properties {
+				sources = append(sources, string(property.Action)+" "+property.Source)
+			}
+		}
+	}
+	joined := strings.Join(sources, " | ")
+	if !strings.Contains(joined, "held-project held-key#token") {
+		t.Fatalf("the refusal does not say where the value already is: %s", joined)
+	}
+	if strings.Contains(joined, "generate") {
+		t.Fatalf("a value another backend already holds was minted beside it: %s", joined)
+	}
+	if strings.Contains(joined, "already-seeded") {
+		t.Fatalf("plan source printed a stored value: %s", joined)
+	}
+	// Nothing is written: the value has to be supplied, not moved.
+	if err := finishSecretPlans(t.Context(), plans, false, false, func(*deploysecrets.BackendPlan) bool { return true }); err == nil {
+		t.Fatal("a plan with an unsourced property was applied")
+	}
+	if empty.written != nil || held.written != nil {
+		t.Fatal("a value was moved between backends")
+	}
+}
+
+// --module is a scope on credentials and reads too, not only on writes: a
+// backend no scoped key reads is never resolved, so the run neither needs
+// access to it nor reads its payloads.
+func TestSecretPlansSkipABackendNoScopedModuleReads(t *testing.T) {
+	alpha := &backendRoutingStore{name: "alpha-project", document: map[string]string{"token": "A"}}
+	var resolved []string
+	rendered := gitops.RenderedEnvironment{Modules: []string{"app", "web"}, Secrets: []gitops.RenderedServiceSecret{
+		{Store: environments.EnvironmentSecretStoreReference{Name: "alpha", Kind: "ClusterSecretStore"},
+			RemoteKey: "alpha-key", Services: []string{"app/api"},
+			Properties: []gitops.RenderedSecretProperty{{Property: "token", Keys: []string{"APP_TOKEN"}}}},
+		{Store: environments.EnvironmentSecretStoreReference{Name: "beta", Kind: "ClusterSecretStore"},
+			RemoteKey: "beta-key", Services: []string{"web/console"},
+			Properties: []gitops.RenderedSecretProperty{{Property: "token", Keys: []string{"WEB_TOKEN"}}}},
+	}}
+	plans, err := deploysecrets.BuildAll(t.Context(), &deploysecrets.Inputs{
+		Rendered: rendered, ReadPayloads: true, Modules: []string{"app"},
+	}, func(group gitops.RenderedEnvironment) (deploysecrets.Store, error) {
+		name := group.Secrets[0].Store.Name
+		resolved = append(resolved, name)
+		if name == "alpha" {
+			return alpha, nil
+		}
+		// An operator scoped to module app may hold no credential for beta at all.
+		return nil, fmt.Errorf("beta is not reachable from here")
+	})
+	if err != nil {
+		t.Fatalf("a scoped run failed on an out-of-scope backend: %v", err)
+	}
+	if len(resolved) != 1 || resolved[0] != "alpha" {
+		t.Fatalf("scoped run resolved %v, want only alpha", resolved)
+	}
+	if len(plans) != 1 || plans[0].Plan.Store != "alpha-project" {
+		t.Fatalf("scoped run planned %d backends", len(plans))
 	}
 }
 
 func TestSecretPlansValidateAllBackendsBeforeWriting(t *testing.T) {
 	ctx := context.Background()
 	store := &backendRoutingStore{name: "store", document: map[string]string{"present": "never-print-this"}}
-	var plans []plannedSecretStore
+	var plans []*deploysecrets.BackendPlan
 	for _, complete := range []bool{true, false} {
 		rendered := gitops.RenderedEnvironment{Secrets: []gitops.RenderedServiceSecret{
 			{RemoteKey: "source", Properties: []gitops.RenderedSecretProperty{{Property: "present", Keys: []string{routedConfigurationKey}}}},
@@ -219,10 +395,10 @@ func TestSecretPlansValidateAllBackendsBeforeWriting(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		plans = append(plans, plannedSecretStore{store: store, plan: plan})
+		plans = append(plans, &deploysecrets.BackendPlan{Store: store, Plan: plan})
 	}
 	confirmed := false
-	err := finishSecretPlans(ctx, plans, false, false, func(plannedSecretStore) bool { confirmed = true; return true })
+	err := finishSecretPlans(ctx, plans, false, false, func(*deploysecrets.BackendPlan) bool { confirmed = true; return true })
 	if err == nil || confirmed || store.written != nil {
 		t.Fatal("an incomplete later backend allowed confirmation or writes")
 	}
@@ -237,7 +413,7 @@ func TestSecretPlansKeepImportedCredentialsInTheirSourceBackend(t *testing.T) {
 		{Store: environments.EnvironmentSecretStoreReference{Name: "identity", Kind: "ClusterSecretStore"}, RemoteKey: "credentials", Properties: []gitops.RenderedSecretProperty{{Property: "client_secret", Keys: []string{"USER_SUPPLIED_CLIENT_SECRET"}}}},
 		{Store: environments.EnvironmentSecretStoreReference{Name: "data", Kind: "ClusterSecretStore"}, RemoteKey: "app", Properties: []gitops.RenderedSecretProperty{{Property: "internal_token", Keys: []string{generatedKey}}}},
 	}}
-	plans, err := planSecretStores(t.Context(), &deploysecrets.Inputs{Rendered: rendered, ReadPayloads: true, Generators: []environments.EnvironmentSecretGenerator{generator}}, func(group gitops.RenderedEnvironment) (deploysecrets.Store, error) {
+	plans, err := deploysecrets.BuildAll(t.Context(), &deploysecrets.Inputs{Rendered: rendered, ReadPayloads: true, Generators: []environments.EnvironmentSecretGenerator{generator}}, func(group gitops.RenderedEnvironment) (deploysecrets.Store, error) {
 		if group.Secrets[0].Store.Name == "identity" {
 			return identity, nil
 		}
@@ -246,7 +422,7 @@ func TestSecretPlansKeepImportedCredentialsInTheirSourceBackend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := finishSecretPlans(t.Context(), plans, false, false, func(plannedSecretStore) bool { return true }); err != nil {
+	if err := finishSecretPlans(t.Context(), plans, false, false, func(*deploysecrets.BackendPlan) bool { return true }); err != nil {
 		t.Fatal(err)
 	}
 	if identity.written != nil || len(data.written) != 1 || data.written["internal_token"] == "" {

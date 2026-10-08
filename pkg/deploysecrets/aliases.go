@@ -5,7 +5,12 @@ import (
 	"sort"
 )
 
-type propertyLocation struct{ remote, property string }
+// propertyLocation identifies one property of one remote key in one backend. The
+// backend is part of it because the alias index spans every backend a run read
+// and two backends may hold a remote key of the same NAME: without it, two
+// unrelated properties would share an index entry and one of them would be
+// resolved against the other's alias group.
+type propertyLocation struct{ backend, remote, property string }
 
 // configurationAliases finds connected properties, not just equal key spellings
 // on one pair. A property reading A+B makes all other properties reading either
@@ -29,7 +34,7 @@ func configurationAliases(states []*remoteState) map[propertyLocation][]string {
 	for _, state := range states {
 		for _, property := range state.secret.Properties {
 			i := len(nodes)
-			nodes = append(nodes, node{propertyLocation{state.secret.RemoteKey, property.Property}, property.Keys})
+			nodes = append(nodes, node{propertyLocation{state.backend, state.secret.RemoteKey, property.Property}, property.Keys})
 			parent = append(parent, i)
 			for _, key := range property.Keys {
 				if !configurationKey(key) {

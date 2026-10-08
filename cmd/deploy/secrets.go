@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"slices"
-	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -85,7 +84,7 @@ the store already holds, but nothing outside the scope is planned or written.`,
 				return fmt.Errorf("--module %s: not a module rendered for %s (rendered: %s)", module, env.Name, strings.Join(rendered.Modules, ", "))
 			}
 		}
-		plans, err := planSecretStores(ctx, &deploysecrets.Inputs{
+		plans, err := deploysecrets.BuildAll(ctx, &deploysecrets.Inputs{
 			Rendered:     rendered,
 			Generators:   env.ServiceSecrets.Generate,
 			Services:     workspaceServiceUniques(ctx, workspace),
@@ -98,97 +97,41 @@ the store already holds, but nothing outside the scope is planned or written.`,
 		if err != nil {
 			return err
 		}
-		for _, planned := range plans {
-			printSecretsPlan(cmd.OutOrStdout(), env.Name, planned.rendered, planned.plan)
+		if len(plans) == 0 {
+			cli.Info("No rendered service of the selected modules reads a secret")
+			return nil
 		}
-		return finishSecretPlans(ctx, plans, secretsDryRun, secretsAllowMissing, func(planned plannedSecretStore) bool {
-			return secretsYes || models.Confirm(ctx, fmt.Sprintf("Write %d remote keys to %s?", len(planned.plan.Changes()), planned.plan.Store), false)
+		for _, planned := range plans {
+			printSecretsPlan(cmd.OutOrStdout(), env.Name, planned.Rendered, planned.Plan)
+		}
+		return finishSecretPlans(ctx, plans, secretsDryRun, secretsAllowMissing, func(planned *deploysecrets.BackendPlan) bool {
+			return secretsYes || models.Confirm(ctx, fmt.Sprintf("Write %d remote keys to %s?", len(planned.Plan.Changes()), planned.Plan.Store), false)
 		})
 	},
 }
 
-// Each backend has its own plan and writes. Namespace is part of a SecretStore's
-// identity, whereas a ClusterSecretStore is shared across namespaces.
-func groupSecretStores(rendered gitops.RenderedEnvironment) []gitops.RenderedEnvironment {
-	type address struct {
-		store     environments.EnvironmentSecretStoreReference
-		namespace string
-	}
-	groups := map[address]gitops.RenderedEnvironment{}
-	for _, secret := range rendered.Secrets {
-		key := address{store: secret.Store}
-		if secret.Store.Kind == "SecretStore" {
-			key.namespace = secret.Namespace
-		}
-		group, found := groups[key]
-		if !found {
-			group = gitops.RenderedEnvironment{Modules: rendered.Modules, Skipped: rendered.Skipped}
-		}
-		group.Secrets = append(group.Secrets, secret)
-		groups[key] = group
-	}
-	keys := make([]address, 0, len(groups))
-	for key := range groups {
-		keys = append(keys, key)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		a, b := keys[i], keys[j]
-		if a.store.Kind != b.store.Kind {
-			return a.store.Kind < b.store.Kind
-		}
-		if a.store.Name != b.store.Name {
-			return a.store.Name < b.store.Name
-		}
-		return a.namespace < b.namespace
-	})
-	result := make([]gitops.RenderedEnvironment, 0, len(groups))
-	for _, key := range keys {
-		result = append(result, groups[key])
-	}
-	return result
-}
-
-type plannedSecretStore struct {
-	rendered gitops.RenderedEnvironment
-	store    deploysecrets.Store
-	plan     *deploysecrets.Plan
-}
-
-func planSecretStores(ctx context.Context, inputs *deploysecrets.Inputs, resolve func(gitops.RenderedEnvironment) (deploysecrets.Store, error)) ([]plannedSecretStore, error) {
-	var result []plannedSecretStore
-	for _, group := range groupSecretStores(inputs.Rendered) {
-		store, err := resolve(group)
-		if err != nil {
-			return nil, err
-		}
-		groupInputs := *inputs
-		groupInputs.Rendered, groupInputs.Store = group, store
-		plan, err := deploysecrets.Build(ctx, &groupInputs)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, plannedSecretStore{rendered: group, store: store, plan: plan})
-	}
-	return result, nil
-}
-
-// Validate and confirm every backend before writing to any of them.
-func finishSecretPlans(ctx context.Context, plans []plannedSecretStore, dryRun, allowMissing bool, confirm func(plannedSecretStore) bool) error {
+// finishSecretPlans validates every backend's plan, then confirms every backend,
+// and only then writes any of them: a run that would leave one backend seeded
+// and another refused is stopped before the first write rather than halfway
+// through. An apply that fails partway can still leave earlier backends written,
+// which is the same guarantee one backend's own keys have.
+func finishSecretPlans(ctx context.Context, plans []*deploysecrets.BackendPlan, dryRun, allowMissing bool,
+	confirm func(*deploysecrets.BackendPlan) bool) error {
 	if dryRun {
 		return nil
 	}
 	for _, planned := range plans {
-		if err := planned.plan.ValidateApply(allowMissing); err != nil {
+		if err := planned.Plan.ValidateApply(allowMissing); err != nil {
 			return err
 		}
 	}
 	for _, planned := range plans {
-		if len(planned.plan.Changes()) > 0 && !confirm(planned) {
+		if len(planned.Plan.Changes()) > 0 && !confirm(planned) {
 			return fmt.Errorf("write not confirmed")
 		}
 	}
 	for _, planned := range plans {
-		if err := finishSecretsPlan(ctx, planned.plan, planned.store, false, allowMissing, func() bool { return true }); err != nil {
+		if err := finishSecretsPlan(ctx, planned.Plan, planned.Store, false, allowMissing, func() bool { return true }); err != nil {
 			return err
 		}
 	}
