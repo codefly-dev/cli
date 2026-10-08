@@ -54,7 +54,11 @@ func newDeployJobFixture(t *testing.T, explicit string) deployJobFixture {
 		podSpec["containers"] = append(sliceField(podSpec, "containers"), map[string]any{"name": "db-proxy", "image": "registry.example.com/proxy@sha256:" + strings.Repeat("c", 64)})
 	})
 	require.NoError(t, projectServiceConfiguration(t.Context(), accountsRoot, accounts, env, scopeOf(env), serviceInjection{}))
-	bootstrap := map[string]any{"apiVersion": "batch/v1", "kind": "Job", "metadata": map[string]any{"name": "store-migrate", "namespace": "accounts", "labels": map[string]any{"codefly.dev/bootstrap-service": "store"}, "annotations": map[string]any{"argocd.argoproj.io/hook": "PreSync"}}, "spec": map[string]any{"ttlSecondsAfterFinished": 30, "template": map[string]any{"spec": map[string]any{"restartPolicy": "Never", "containers": []any{map[string]any{"name": "migrate", "image": "registry.example.com/store@sha256:" + strings.Repeat("d", 64)}}}}}}
+	// The store's migration runs against the store this same Application
+	// deploys, so it belongs AFTER the store's own workload. That is what the
+	// barrier annotation declares; it cannot be read off the manifest, and a
+	// PreSync hook would say the opposite — before the whole Sync phase.
+	bootstrap := map[string]any{"apiVersion": "batch/v1", "kind": "Job", "metadata": map[string]any{"name": "store-migrate", "namespace": "accounts", "labels": map[string]any{"codefly.dev/bootstrap-service": "store"}, "annotations": map[string]any{deployBarrierAnnotation: deployBarrierAfter}}, "spec": map[string]any{"ttlSecondsAfterFinished": 30, "template": map[string]any{"spec": map[string]any{"restartPolicy": "Never", "containers": []any{map[string]any{"name": "migrate", "image": "registry.example.com/store@sha256:" + strings.Repeat("d", 64)}}}}}}
 	storeBase := filepath.Join(f.root, "services", "store", "base")
 	require.NoError(t, writeArgoYAML(filepath.Join(storeBase, "migration.yaml"), bootstrap))
 	updateDeployTestYAML(t, filepath.Join(storeBase, kustomizationFile), func(doc map[string]any) { doc[resourcesKey] = append(sliceField(doc, resourcesKey), "migration.yaml") })
@@ -156,13 +160,20 @@ func TestModuleDeployJobsInheritResolvedRuntimeAndGateConsumers(t *testing.T) {
 			require.Less(t, wave(kindDeployment, "store"), wave(kindJob, "store-migrate"))
 			require.Less(t, wave(kindJob, "store-migrate"), wave(kindJob, "role-catalog-import"))
 			require.Less(t, wave(kindJob, "role-catalog-import"), wave(kindDeployment, "accounts"))
-			for _, name := range []string{"store-migrate", "role-catalog-import"} {
-				job := deployObject(t, documents, kindJob, name)
-				annotations := mapField(mapField(job.value, "metadata"), "annotations")
-				require.Equal(t, "Sync", annotations["argocd.argoproj.io/hook"])
-				require.Equal(t, "BeforeHookCreation,HookSucceeded", annotations["argocd.argoproj.io/hook-delete-policy"])
-				require.NotContains(t, mapField(job.value, "spec"), "ttlSecondsAfterFinished")
-			}
+			// The import Job is the CLI's own, so it is the one the aggregate
+			// makes a Sync hook. The unit's Job keeps its own spec: Argo makes
+			// a plain Job in a wave a barrier without a hook conversion, and
+			// converting one would re-run it on every sync.
+			importer := deployObject(t, documents, kindJob, "role-catalog-import")
+			importAnnotations := mapField(mapField(importer.value, "metadata"), "annotations")
+			require.Equal(t, "Sync", importAnnotations["argocd.argoproj.io/hook"])
+			require.Equal(t, "BeforeHookCreation,HookSucceeded", importAnnotations["argocd.argoproj.io/hook-delete-policy"])
+			require.NotContains(t, mapField(importer.value, "spec"), "ttlSecondsAfterFinished")
+			migration := deployObject(t, documents, kindJob, "store-migrate")
+			migrationAnnotations := mapField(mapField(migration.value, "metadata"), "annotations")
+			require.NotContains(t, migrationAnnotations, "argocd.argoproj.io/hook")
+			require.NotContains(t, migrationAnnotations, "argocd.argoproj.io/hook-delete-policy")
+			require.Equal(t, 30, mapField(migration.value, "spec")["ttlSecondsAfterFinished"])
 			selector := mapField(mapField(deployObject(t, documents, "Service", "accounts-http").value, "spec"), "selector")
 			require.Equal(t, "service", selector["codefly.dev/workload-role"])
 			require.Equal(t, "accounts", selector["app"])

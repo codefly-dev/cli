@@ -31,6 +31,47 @@ const (
 	deployTemplateField       = "template"
 	deployNamespaceField      = "namespace"
 	deployAnnotationsField    = "annotations"
+	deployJobTemplateField    = "jobTemplate"
+	deployEnvField            = "env"
+	deployValueFromField      = "valueFrom"
+	deploySelectorField       = "selector"
+	kindService               = "Service"
+	deployRoleJob             = "deploy-job"
+
+	// deploySharedWave is where the namespace-level prerequisites every unit
+	// reads reconcile: before any workload band.
+	deploySharedWave = -100
+
+	// deployBarrierAnnotation is how a unit DECLARES where its own Job belongs
+	// relative to its own workload. The aggregate cannot read that from the
+	// manifest: "after" is right for a Job migrating a DEPENDENCY's datastore,
+	// which needs that datastore's workload up first, and wrong for a Job
+	// preparing the schema its own workload is about to serve. Absent, the Job
+	// shares its unit's own band, which is how it reconciled when every unit
+	// had an Application of its own.
+	deployBarrierAnnotation = "codefly.dev/deploy-barrier"
+	deployBarrierBefore     = "before-workload"
+	deployBarrierAfter      = "after-workload"
+
+	// argoHookSkip marks a Job the renderer ships but Argo must never apply.
+	argoHookSkip = "Skip"
+
+	// The generated import Job's budget, and the bounds a module bundle may
+	// move it within.
+	deployJobBackoffLimit    = 3
+	deployJobDeadlineSeconds = 600
+	deployJobMaxBackoffLimit = 10
+	deployJobMaxDeadline     = 21600
+
+	// deployCatalogMaxBytes bounds the catalog a Job mounts. A ConfigMap's
+	// data is capped at 1 MiB, and under client-side apply — Argo CD's default
+	// unless ServerSideApply is enabled — the
+	// kubectl.kubernetes.io/last-applied-configuration annotation carries a
+	// second full copy of the object, so the bound has to leave room for the
+	// catalog TWICE plus the Job's own documents inside the API server's
+	// request limit. See docs/configuration-contract.md for the
+	// ServerSideApply alternative a larger catalog needs.
+	deployCatalogMaxBytes = 384 * 1024
 )
 
 var deployJobName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
@@ -45,6 +86,10 @@ type moduleBundleDeployJob struct {
 	Writes             moduleBundleDeployTarget `json:"writes"`
 	After              []string                 `json:"after,omitempty"`
 	ServiceEnvironment []string                 `json:"serviceEnvironment,omitempty"`
+	// BackoffLimit and ActiveDeadlineSeconds move the generated Job's budget
+	// off its default. Absent means the default; see deployJobBudget.
+	BackoffLimit          *int `json:"backoffLimit,omitempty"`
+	ActiveDeadlineSeconds *int `json:"activeDeadlineSeconds,omitempty"`
 }
 
 type moduleBundleDeployTarget struct {
@@ -102,8 +147,7 @@ func renderModuleDeployJobs(moduleRoot, destination, environment, namespace, mod
 	if writeErr := writeDeploymentDocuments(filepath.Join(overlay, deployJobsFile), generated); writeErr != nil {
 		return writeErr
 	}
-	path := filepath.Join(overlay, kustomizationFile)
-	data, err := os.ReadFile(path)
+	path, data, err := readDeployKustomization(overlay, module, environment)
 	if err != nil {
 		return err
 	}
@@ -119,7 +163,13 @@ func renderModuleDeployJobs(moduleRoot, destination, environment, namespace, mod
 	}
 	patches := sliceField(customization, "patches")
 	for _, doc := range shared {
-		patches = append(patches, deployWavePatch(doc, -100, false))
+		patch, patchErr := deployDocumentPatch(doc, deploySharedWave, module)
+		if patchErr != nil {
+			return patchErr
+		}
+		if patch != nil {
+			patches = append(patches, patch)
+		}
 	}
 	resources := sliceField(customization, resourcesKey)
 	resources = append(resources, deployJobsFile)
@@ -133,14 +183,17 @@ func renderModuleDeployJobs(moduleRoot, destination, environment, namespace, mod
 		}
 		resources = append(resources, filepath.ToSlash(relative))
 		for _, doc := range documents[unit.Name] {
-			wave := -100
+			band := deploySharedWave
 			if _, workload := podSpec(doc); workload {
-				wave = levels[unit.Name] * 3
-				if doc.kind == kindJob {
-					wave++
-				}
+				band = levels[unit.Name] * 3
 			}
-			patches = append(patches, deployWavePatch(doc, wave, doc.kind == kindJob))
+			patch, patchErr := deployDocumentPatch(doc, band, unit.Name)
+			if patchErr != nil {
+				return patchErr
+			}
+			if patch != nil {
+				patches = append(patches, patch)
+			}
 		}
 	}
 	customization[resourcesKey], customization["patches"] = resources, patches
@@ -166,8 +219,15 @@ func buildDeployJobDocuments(moduleRoot, namespace, module string, job *moduleBu
 	if err != nil {
 		return nil, fmt.Errorf("deploy job %q catalog: %w", job.Name, err)
 	}
-	if len(catalog) > 900*1024 || !json.Valid(catalog) {
-		return nil, fmt.Errorf("deploy job %q catalog must be JSON smaller than 900 KiB", job.Name)
+	if len(catalog) > deployCatalogMaxBytes || !json.Valid(catalog) {
+		return nil, fmt.Errorf(
+			"deploy job %q catalog must be JSON of at most %d KiB: it is mounted from a ConfigMap, and client-side apply stores a second copy of that object in its last-applied-configuration annotation",
+			job.Name, deployCatalogMaxBytes/1024,
+		)
+	}
+	backoff, deadline, err := deployJobBudget(job)
+	if err != nil {
+		return nil, err
 	}
 	pod, container, err := deployJobPod(job, documents[job.Service], namespace)
 	if err != nil {
@@ -190,11 +250,35 @@ func buildDeployJobDocuments(moduleRoot, namespace, module string, job *moduleBu
 		args = append(args, "-force")
 	}
 	container["args"] = args
-	annotations := map[string]any{argoSyncWaveAnnotation: strconv.Itoa(levels[job.Service]*3 - 1), "argocd.argoproj.io/hook": "Sync", "argocd.argoproj.io/hook-delete-policy": "BeforeHookCreation,HookSucceeded"}
+	// The import Job is the CLI's own, generated here rather than patched onto
+	// something a unit wrote, so it is the one Job the aggregate makes a Sync
+	// hook: the command is idempotent and re-runs with each sync.
+	annotations := map[string]any{argoSyncWaveAnnotation: strconv.Itoa(levels[job.Service]*3 - 1), argoHookAnnotation: argoHookSync, argoHookDeletePolicy: argoHookBeforeHookCreation + ",HookSucceeded"}
 	return []map[string]any{
-		{deployAPIVersionField: "v1", clusterKindKind: kindConfigMap, deployMetadataField: map[string]any{envEntryName: catalogName, deployNamespaceField: namespace, deployAnnotationsField: map[string]any{argoSyncWaveAnnotation: "-100"}}, "immutable": true, "data": map[string]any{"catalog.json": string(catalog)}},
-		{deployAPIVersionField: "batch/v1", clusterKindKind: "Job", deployMetadataField: map[string]any{envEntryName: job.Name, deployNamespaceField: namespace, deployAnnotationsField: annotations, deployLabelsField: map[string]any{"codefly.dev/deploy-service": job.Service}}, deploySpecField: map[string]any{"backoffLimit": 3, "activeDeadlineSeconds": 600, deployTemplateField: pod}},
+		{deployAPIVersionField: "v1", clusterKindKind: kindConfigMap, deployMetadataField: map[string]any{envEntryName: catalogName, deployNamespaceField: namespace, deployAnnotationsField: map[string]any{argoSyncWaveAnnotation: strconv.Itoa(deploySharedWave)}}, "immutable": true, "data": map[string]any{"catalog.json": string(catalog)}},
+		{deployAPIVersionField: "batch/v1", clusterKindKind: kindJob, deployMetadataField: map[string]any{envEntryName: job.Name, deployNamespaceField: namespace, deployAnnotationsField: annotations, deployLabelsField: map[string]any{"codefly.dev/deploy-service": job.Service}}, deploySpecField: map[string]any{"backoffLimit": backoff, "activeDeadlineSeconds": deadline, deployTemplateField: pod}},
 	}, nil
+}
+
+// deployJobBudget resolves the generated Job's retry and deadline budget. A
+// catalog import that needs longer than the default blocks its consumer's wave
+// by design, so the module bundle can move the budget inside bounds that keep a
+// stuck Job from holding a sync open indefinitely.
+func deployJobBudget(job *moduleBundleDeployJob) (backoff, deadline int, err error) {
+	backoff, deadline = deployJobBackoffLimit, deployJobDeadlineSeconds
+	if job.BackoffLimit != nil {
+		if *job.BackoffLimit < 0 || *job.BackoffLimit > deployJobMaxBackoffLimit {
+			return 0, 0, fmt.Errorf("deploy job %q backoffLimit %d is outside 0..%d", job.Name, *job.BackoffLimit, deployJobMaxBackoffLimit)
+		}
+		backoff = *job.BackoffLimit
+	}
+	if job.ActiveDeadlineSeconds != nil {
+		if *job.ActiveDeadlineSeconds < 1 || *job.ActiveDeadlineSeconds > deployJobMaxDeadline {
+			return 0, 0, fmt.Errorf("deploy job %q activeDeadlineSeconds %d is outside 1..%d", job.Name, *job.ActiveDeadlineSeconds, deployJobMaxDeadline)
+		}
+		deadline = *job.ActiveDeadlineSeconds
+	}
+	return backoff, deadline, nil
 }
 
 func validateDeployWrite(module string, service *resources.Service, job *moduleBundleDeployJob, units map[string]InventoryUnit, docs map[string][]manifest) error {
@@ -220,6 +304,12 @@ func validateDeployWrite(module string, service *resources.Service, job *moduleB
 		barrier := false
 		for _, doc := range docs[after] {
 			_, workload := podSpec(doc)
+			// A Skip hook is never applied, so it is a manifest and not a
+			// barrier. It only looked like one while the aggregate rewrote
+			// every unit Job into a Sync hook and made it run.
+			if deployJobSkipped(doc) {
+				continue
+			}
 			barrier = barrier || (workload && (!unit.Managed || doc.kind == kindJob))
 		}
 		if !barrier {
@@ -274,29 +364,132 @@ func deployServiceLevels(module string, services map[string]*resources.Service) 
 	return levels, nil
 }
 
-func deployWavePatch(doc manifest, wave int, hook bool) map[string]any {
-	annotations := map[string]any{argoSyncWaveAnnotation: strconv.Itoa(wave)}
-	if hook {
-		annotations["argocd.argoproj.io/hook"] = "Sync"
-		annotations["argocd.argoproj.io/hook-delete-policy"] = "BeforeHookCreation,HookSucceeded"
+// readDeployKustomization resolves the overlay's kustomization under every
+// spelling kustomize — and the rest of this package — accepts, and returns the
+// path it found so the rewrite lands on the same file. A missing kustomization
+// is named by module and environment: the bare open error said only that a
+// path the caller never wrote did not exist.
+func readDeployKustomization(overlay, module, environment string) (string, []byte, error) {
+	for _, name := range kustomizationFileNames {
+		path := filepath.Join(overlay, name)
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return path, data, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", nil, err
+		}
 	}
-	metadata := map[string]any{envEntryName: metadataString(doc.value, envEntryName), deployAnnotationsField: annotations}
+	return "", nil, fmt.Errorf(
+		"module %s environment %s declares no kustomization in its bundle overlay %s (one of %s is required)",
+		module, environment, overlay, strings.Join(kustomizationFileNames, ", "),
+	)
+}
+
+// deployDocumentPatch orders one document of the aggregate, or returns no patch
+// when the document carries its author's own placement.
+//
+// A Job the unit renders belongs to the unit, not to the aggregate. Argo
+// already makes a plain Job in a wave a barrier — it reports Progressing until
+// the Job completes and Degraded when it fails — so ordering this module needs
+// no hook conversion, and converting one silently turned a `Skip` into a Job
+// Argo ran on every sync and re-ran on the next. Only the wave is the
+// aggregate's to set, and only when nothing else claims it.
+func deployDocumentPatch(doc manifest, band int, owner string) (map[string]any, error) {
+	if doc.kind != kindJob && doc.kind != kindCronJob {
+		return deployWavePatch(doc, band), nil
+	}
+	offset, ordered, err := deployJobOrdering(doc, owner)
+	if err != nil || !ordered {
+		return nil, err
+	}
+	return deployWavePatch(doc, band+offset), nil
+}
+
+// deployJobSkipped reports whether a document is a hook Argo must never apply.
+func deployJobSkipped(doc manifest) bool {
+	annotations := mapField(mapField(doc.value, deployMetadataField), deployAnnotationsField)
+	return quantityString(annotations[argoHookAnnotation]) == argoHookSkip
+}
+
+// deployJobOrdering returns the wave offset, relative to its own unit's band, of
+// a Job or CronJob the unit renders. ordered is false when the document must be
+// left exactly as the renderer wrote it.
+func deployJobOrdering(doc manifest, owner string) (offset int, ordered bool, err error) {
+	annotations := mapField(mapField(doc.value, deployMetadataField), deployAnnotationsField)
+	name := metadataString(doc.value, envEntryName)
+	// A declared sync-wave IS the placement. Replacing it discarded the only
+	// statement anyone made about where the Job belongs.
+	if quantityString(annotations[argoSyncWaveAnnotation]) != "" {
+		return 0, false, nil
+	}
+	// A Skip hook is a manifest shipped for someone else to run. Ordering it
+	// would be the first step towards applying it.
+	if deployJobSkipped(doc) {
+		return 0, false, nil
+	}
+	switch barrier := quantityString(annotations[deployBarrierAnnotation]); barrier {
+	case deployBarrierBefore:
+		return -1, true, nil
+	case deployBarrierAfter:
+		return 1, true, nil
+	case "":
+		// Nothing declared. The Job keeps its unit's own band, which is where
+		// it reconciled when the unit had an Application to itself. Its phase,
+		// when it declares one, still says what it says: a PreSync hook runs
+		// before the whole Sync phase, its own workload included.
+		return 0, true, nil
+	default:
+		return 0, false, fmt.Errorf(
+			"%s %s/%s declares %s: %q; the aggregate orders a Job by %q or %q",
+			doc.kind, owner, name, deployBarrierAnnotation, barrier, deployBarrierBefore, deployBarrierAfter,
+		)
+	}
+}
+
+// deployWorkloadRole is the discriminator a kind's pods carry. Job and CronJob
+// pods are never a Service endpoint; every other pod-bearing kind's are.
+func deployWorkloadRole(kind string) string {
+	if kind == kindJob || kind == kindCronJob {
+		return deployRoleJob
+	}
+	return UnitKindService
+}
+
+// deployPodTemplateLabels nests the discriminator under the path a kind carries
+// its pod template at. EVERY kind podSpec/podTemplate counts as a workload has
+// to be reachable here: a Service's selector is narrowed with the same label,
+// so a selectable kind left unlabelled would leave its Service resolving to no
+// endpoints at all while every manifest still applied cleanly.
+func deployPodTemplateLabels(kind, role string) map[string]any {
+	labels := map[string]any{deployMetadataField: map[string]any{deployLabelsField: map[string]any{deployWorkloadRoleLabel: role}}}
+	if kind == kindCronJob {
+		return map[string]any{deployJobTemplateField: map[string]any{deploySpecField: map[string]any{deployTemplateField: labels}}}
+	}
+	return map[string]any{deployTemplateField: labels}
+}
+
+func deployWavePatch(doc manifest, wave int) map[string]any {
+	metadata := map[string]any{
+		envEntryName:           metadataString(doc.value, envEntryName),
+		deployAnnotationsField: map[string]any{argoSyncWaveAnnotation: strconv.Itoa(wave)},
+	}
 	if namespace := metadataString(doc.value, deployNamespaceField); namespace != "" {
 		metadata[deployNamespaceField] = namespace
 	}
 	patch := map[string]any{deployAPIVersionField: doc.value[deployAPIVersionField], clusterKindKind: doc.kind, deployMetadataField: metadata}
-	if doc.kind == "Service" && len(mapField(mapField(doc.value, deploySpecField), "selector")) != 0 {
-		patch[deploySpecField] = map[string]any{"selector": map[string]any{deployWorkloadRoleLabel: UnitKindService}}
+	if doc.kind == kindService && len(mapField(mapField(doc.value, deploySpecField), deploySelectorField)) != 0 {
+		patch[deploySpecField] = map[string]any{deploySelectorField: map[string]any{deployWorkloadRoleLabel: UnitKindService}}
 	}
-	if doc.kind == kindDeployment || doc.kind == kindStatefulSet || doc.kind == kindDaemonSet || doc.kind == kindReplicaSet || hook {
-		role := UnitKindService
-		if hook {
-			role = "deploy-job"
+	if _, workload := podSpec(doc); workload {
+		role := deployWorkloadRole(doc.kind)
+		if doc.kind == kindPod {
+			// A bare Pod IS its own template, so the discriminator goes beside
+			// the name and namespace this patch already carries.
+			metadata[deployLabelsField] = map[string]any{deployWorkloadRoleLabel: role}
+		} else {
+			patch[deploySpecField] = deployPodTemplateLabels(doc.kind, role)
 		}
-		patch[deploySpecField] = map[string]any{deployTemplateField: map[string]any{deployMetadataField: map[string]any{deployLabelsField: map[string]any{deployWorkloadRoleLabel: role}}}}
-	}
-	if hook {
-		mapField(patch, deploySpecField)["ttlSecondsAfterFinished"] = nil
 	}
 	data, _ := yaml.Marshal(patch) // the patch holds only YAML scalar/map values
 	_, version, qualified := strings.Cut(quantityString(doc.value[deployAPIVersionField]), "/")
@@ -320,6 +513,15 @@ func deployJobPod(job *moduleBundleDeployJob, documents []manifest, namespace st
 		spec, _ := podSpec(doc)
 		for _, raw := range sliceField(spec, deployContainersField) {
 			container := mapFieldOrEmpty(raw)
+			// The name is how the copied pod's primary container is found
+			// again. Without one nothing matches it later, and the Job would
+			// be assembled around a container that does not exist.
+			if quantityString(container[envEntryName]) == "" {
+				return nil, nil, fmt.Errorf(
+					"deploy job %q cannot inherit service %q: its %s %s declares a container with no name",
+					job.Name, job.Service, doc.kind, metadataString(doc.value, envEntryName),
+				)
+			}
 			identity, identityErr := configMaps.service(container, namespace)
 			if identityErr != nil {
 				return nil, nil, identityErr
@@ -369,25 +571,9 @@ func deployJobPod(job *moduleBundleDeployJob, documents []manifest, namespace st
 	}
 	annotations["sidecar.istio.io/nativeSidecar"] = "true"
 	delete(annotations, "sidecar.istio.io/status")
-	var primary map[string]any
-	inits := sliceField(spec, deployInitContainersField)
-	for _, raw := range sliceField(spec, deployContainersField) {
-		container := mapFieldOrEmpty(raw)
-		image, _ := container[deployImageField].(string)
-		if !digestImagePattern.MatchString(image) {
-			return nil, nil, fmt.Errorf("deploy job %q inherits an image that is not digest-pinned", job.Name)
-		}
-		if container[envEntryName] == primaryName {
-			primary = container
-			for _, key := range []string{"ports", "livenessProbe", "readinessProbe", "startupProbe", "lifecycle"} {
-				delete(container, key)
-			}
-			continue
-		}
-		// Native sidecars terminate with the command; ordinary sidecars would
-		// keep a successful Job running forever.
-		container["restartPolicy"] = "Always"
-		inits = append(inits, container)
+	primary, inits, containerErr := deployJobContainers(job, spec, primaryName)
+	if containerErr != nil {
+		return nil, nil, containerErr
 	}
 	for _, key := range job.ServiceEnvironment {
 		found := false
@@ -484,4 +670,47 @@ func updateDeployJobImages(root string, inventory *Inventory, service string, im
 		return "", err
 	}
 	return filepath.ToSlash(relative), nil
+}
+
+// deployJobContainers partitions the copied pod's containers into the Job's one
+// command container and the sidecars that become native restartable init
+// containers, and holds every inherited image to the digest the Job claims.
+//
+// The init containers the pod already carries are inherited as they are, so
+// they are checked too: updateDeployJobImages rewrites their images on a dev
+// deployment, and an unpinned one would make "inherits the service's exact
+// digest" untrue.
+func deployJobContainers(job *moduleBundleDeployJob, spec map[string]any, primaryName string) (map[string]any, []any, error) {
+	inits := sliceField(spec, deployInitContainersField)
+	for _, raw := range inits {
+		container := mapFieldOrEmpty(raw)
+		if image, _ := container[deployImageField].(string); !digestImagePattern.MatchString(image) {
+			return nil, nil, fmt.Errorf(
+				"deploy job %q inherits init container %q with an image that is not digest-pinned",
+				job.Name, quantityString(container[envEntryName]),
+			)
+		}
+	}
+	var primary map[string]any
+	for _, raw := range sliceField(spec, deployContainersField) {
+		container := mapFieldOrEmpty(raw)
+		if image, _ := container[deployImageField].(string); !digestImagePattern.MatchString(image) {
+			return nil, nil, fmt.Errorf("deploy job %q inherits an image that is not digest-pinned", job.Name)
+		}
+		if quantityString(container[envEntryName]) == primaryName {
+			primary = container
+			for _, key := range []string{"ports", "livenessProbe", "readinessProbe", "startupProbe", "lifecycle"} {
+				delete(container, key)
+			}
+			continue
+		}
+		// Native sidecars terminate with the command; ordinary sidecars would
+		// keep a successful Job running forever.
+		container["restartPolicy"] = "Always"
+		inits = append(inits, container)
+	}
+	if primary == nil {
+		return nil, nil, fmt.Errorf("deploy job %q lost its service container %q copying the pod template", job.Name, primaryName)
+	}
+	return primary, inits, nil
 }
