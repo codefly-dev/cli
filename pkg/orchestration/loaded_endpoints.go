@@ -49,8 +49,17 @@ func reconcileLoadedEndpoints(service *resources.Service, reported []*basev0.End
 		if !ok {
 			return nil, fmt.Errorf("runtime endpoint %s is not declared by the producer manifest", resources.EndpointDestination(endpoint))
 		}
-		if manifest.API != endpoint.GetApi() {
-			return nil, fmt.Errorf("runtime endpoint %s reports API %q, but the producer manifest declares %q", resources.EndpointDestination(endpoint), endpoint.GetApi(), manifest.API)
+		// An API the manifest does not state is the one thing here the agent, not
+		// the composition, owns: core itself defaults it from the endpoint's name
+		// when that name is a standard API (Endpoint.postLoad), so an absent
+		// `api:` is an omission the model already reads as "whatever this
+		// endpoint serves" rather than a declaration of nothing. Refusing it
+		// would stop a local run that worked, for the older agents this
+		// reconciliation exists to accommodate. A manifest that DOES state an API
+		// is a declaration, and a report contradicting it is still refused.
+		if manifest.API != "" && manifest.API != endpoint.GetApi() {
+			return nil, fmt.Errorf("runtime endpoint %s reports API %q, but the producer manifest declares %q: correct the manifest's api, or the agent's reported API, so the two name one contract",
+				resources.EndpointDestination(endpoint), endpoint.GetApi(), manifest.API)
 		}
 		if seen[endpoint.GetName()] {
 			return nil, fmt.Errorf("runtime endpoint %s was reported twice", resources.EndpointDestination(endpoint))

@@ -207,7 +207,19 @@ func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 
 	endpoints, err := reconcileLoadedEndpoints(runner.instance.Service, resp.Endpoints)
 	if err != nil {
-		return nil, w.Wrapf(err, "cannot accept runtime endpoints")
+		// Reported like any other load failure of this service, rather than as an
+		// error of the whole run: the same degradation the agent's own error and a
+		// non-READY status take just above, so one service's bad endpoint report
+		// does not decide the fate of every other service being loaded beside it.
+		w.Warn(fmt.Sprintf("cannot accept runtime endpoints for %s: %v", runner.instance.Unique(), err))
+		if runner.outputPropertyForLoad.processed == nil {
+			return nil, w.Wrapf(err, "cannot accept runtime endpoints for %s", runner.instance.Unique())
+		}
+		err = runner.outputPropertyForLoad.Set(ctx, &RunnerLoadOutput{Err: err.Error()})
+		if err != nil {
+			return nil, w.Wrapf(err, "cannot set outputProperty for load")
+		}
+		return runner.outputPropertyForLoad.Process(ctx)
 	}
 	runner.endpoints = endpoints
 

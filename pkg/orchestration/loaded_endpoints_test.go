@@ -262,3 +262,34 @@ func TestBuilderLoadRefusesAnUndeclaredEndpoint(t *testing.T) {
 	require.Nil(t, builder.endpoints)
 	require.Empty(t, world.SharedState.RecordedEndpoints(identity.Unique()))
 }
+
+// An `api:` the manifest does not state is the agent's to report: core itself
+// defaults it from the endpoint name when that name is a standard API, so an
+// absent one is an omission the model reads as "whatever this endpoint serves".
+// Refusing it stopped a local run that worked, for exactly the older agents this
+// reconciliation accommodates.
+func TestLoadedEndpointsAcceptTheAgentsAPIWhenTheManifestStatesNone(t *testing.T) {
+	service := &resources.Service{Name: "store", Endpoints: []*resources.Endpoint{
+		{Name: "write", Visibility: "private"},
+	}}
+	service.WithModule("data")
+	require.Empty(t, service.Endpoints[0].API, "the fixture must omit the api the agent reports")
+
+	accepted, err := reconcileLoadedEndpoints(service, []*basev0.Endpoint{
+		{Module: "data", Service: "store", Name: "write", Api: "tcp"},
+	})
+	require.NoError(t, err)
+	require.Len(t, accepted, 1)
+	require.Equal(t, "tcp", accepted[0].Api, "the agent's discovered API is what the manifest left open")
+	require.Equal(t, "private", accepted[0].Visibility)
+}
+
+// A manifest that DOES state an API is a declaration, and a report contradicting
+// it is still refused — with a message naming what to correct.
+func TestLoadedEndpointsStillRefuseAContradictedAPI(t *testing.T) {
+	_, err := reconcileLoadedEndpoints(declaredFrontend("public", "public"), []*basev0.Endpoint{
+		{Module: "saas", Service: "frontend", Name: "http", Api: "grpc"},
+	})
+	require.ErrorContains(t, err, `reports API "grpc", but the producer manifest declares "http"`)
+	require.ErrorContains(t, err, "correct the manifest's api")
+}
