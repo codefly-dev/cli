@@ -341,23 +341,31 @@ func TestManagedProducerWithoutASecretReferenceIsRefused(t *testing.T) {
 	require.ErrorContains(t, err, "declares no secret reference for "+writerPassword)
 }
 
-// An ExternalSecret reads through one store. A producer whose keys live in
-// another one cannot be assembled from this service's ExternalSecret at all:
-// reading them from this service's store would address an entry nobody wrote.
-func TestProducerResolvingThroughAnotherStoreIsRefused(t *testing.T) {
-	secrets := stagingLikeSecrets()
-	secrets.Services = map[string]environments.EnvironmentServiceSecretMapping{
-		"store": {SecretStore: &environments.EnvironmentSecretStoreReference{Name: "pg-vault", Kind: "SecretStore"}},
+// Producer primitives keep their own backend while one consumer Secret owns the assembly.
+func TestProducerResolvingThroughAnotherStoreUsesSourceRef(t *testing.T) {
+	for _, perKey := range []bool{false, true} {
+		secrets := stagingLikeSecrets()
+		other := environments.EnvironmentSecretStoreReference{Name: "pg-vault", Kind: "SecretStore"}
+		mapping := environments.EnvironmentServiceSecretMapping{SecretStore: &other}
+		if perKey {
+			mapping = environments.EnvironmentServiceSecretMapping{RemoteKeys: map[string]environments.EnvironmentSecretRemoteRef{
+				writerPassword: {Key: "producer-document", Property: "password", SecretStore: &other},
+			}}
+		}
+		secrets.Services = map[string]environments.EnvironmentServiceSecretMapping{"store": mapping}
+		projection, err := serviceSecretProjection(templatedScope(t, nil), "tasks", secrets, []string{connectionKey, audienceKey})
+		require.NoError(t, err)
+		require.Equal(t, "cell-secrets", projection.Spec.SecretStoreRef.Name)
+		require.Equal(t, "Replace", projection.Spec.Target.Template.MergePolicy)
+		require.NotContains(t, projection.Spec.Target.Template.Data, writerPassword)
+		for _, data := range projection.Spec.Data {
+			if data.SecretKey == writerPassword {
+				require.Equal(t, &externalSecretSourceRef{StoreRef: externalSecretStoreRef{Name: "pg-vault", Kind: "SecretStore"}}, data.SourceRef)
+			} else {
+				require.Nil(t, data.SourceRef)
+			}
+		}
 	}
-	_, err := serviceSecretProjection(templatedScope(t, nil), "tasks", secrets, []string{connectionKey})
-	require.ErrorContains(t, err, "reads from store SecretStore/pg-vault, not this service's ClusterSecretStore/cell-secrets")
-
-	// The same producer store, declared per-service rather than inherited, is
-	// the ordinary case and still resolves.
-	same := stagingLikeSecrets()
-	same.Services = map[string]environments.EnvironmentServiceSecretMapping{"store": {SecretStore: &[]environments.EnvironmentSecretStoreReference{cellStore()}[0]}}
-	_, err = serviceSecretProjection(templatedScope(t, nil), "tasks", same, []string{connectionKey})
-	require.NoError(t, err)
 }
 
 // A template may only assemble from keys the producer's own deployment reads

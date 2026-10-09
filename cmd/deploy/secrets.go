@@ -84,27 +84,58 @@ the store already holds, but nothing outside the scope is planned or written.`,
 				return fmt.Errorf("--module %s: not a module rendered for %s (rendered: %s)", module, env.Name, strings.Join(rendered.Modules, ", "))
 			}
 		}
-		store, err := resolveSecretStore(ctx, env, rendered)
-		if err != nil {
-			return err
-		}
-		plan, err := deploysecrets.Build(ctx, &deploysecrets.Inputs{
+		plans, err := deploysecrets.BuildAll(ctx, &deploysecrets.Inputs{
 			Rendered:     rendered,
 			Generators:   env.ServiceSecrets.Generate,
 			Services:     workspaceServiceUniques(ctx, workspace),
-			Store:        store,
 			ReadPayloads: !secretsMetadataOnly,
 			Modules:      secretsModules,
 			MayBeEmpty:   env.ServiceSecrets.MayBeEmpty,
+		}, func(group gitops.RenderedEnvironment) (deploysecrets.Store, error) {
+			return resolveSecretStore(ctx, env, group)
 		})
 		if err != nil {
 			return err
 		}
-		printSecretsPlan(cmd.OutOrStdout(), env.Name, rendered, plan)
-		return finishSecretsPlan(ctx, plan, store, secretsDryRun, secretsAllowMissing, func() bool {
-			return secretsYes || models.Confirm(ctx, fmt.Sprintf("Write %d remote keys to %s?", len(plan.Changes()), plan.Store), false)
+		if len(plans) == 0 {
+			cli.Info("No rendered service of the selected modules reads a secret")
+			return nil
+		}
+		for _, planned := range plans {
+			printSecretsPlan(cmd.OutOrStdout(), env.Name, planned.Rendered, planned.Plan)
+		}
+		return finishSecretPlans(ctx, plans, secretsDryRun, secretsAllowMissing, func(planned *deploysecrets.BackendPlan) bool {
+			return secretsYes || models.Confirm(ctx, fmt.Sprintf("Write %d remote keys to %s?", len(planned.Plan.Changes()), planned.Plan.Store), false)
 		})
 	},
+}
+
+// finishSecretPlans validates every backend's plan, then confirms every backend,
+// and only then writes any of them: a run that would leave one backend seeded
+// and another refused is stopped before the first write rather than halfway
+// through. An apply that fails partway can still leave earlier backends written,
+// which is the same guarantee one backend's own keys have.
+func finishSecretPlans(ctx context.Context, plans []*deploysecrets.BackendPlan, dryRun, allowMissing bool,
+	confirm func(*deploysecrets.BackendPlan) bool) error {
+	if dryRun {
+		return nil
+	}
+	for _, planned := range plans {
+		if err := planned.Plan.ValidateApply(allowMissing); err != nil {
+			return err
+		}
+	}
+	for _, planned := range plans {
+		if len(planned.Plan.Changes()) > 0 && !confirm(planned) {
+			return fmt.Errorf("write not confirmed")
+		}
+	}
+	for _, planned := range plans {
+		if err := finishSecretsPlan(ctx, planned.Plan, planned.Store, false, allowMissing, func() bool { return true }); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // finishSecretsPlan validates completeness before even a no-op apply succeeds.
@@ -135,7 +166,7 @@ func resolveSecretStore(ctx context.Context, env *environments.Environment, rend
 	first := rendered.Secrets[0]
 	for _, secret := range rendered.Secrets[1:] {
 		if secret.Store != first.Store || (first.Store.Kind == "SecretStore" && secret.Namespace != first.Namespace) {
-			return nil, fmt.Errorf("the render reads through more than one secret store (%s and %s); planning several stores at once is not supported yet", first.Store.Name, secret.Store.Name)
+			return nil, fmt.Errorf("the render reads through more than one secret store (%s and %s); a backend plan must contain exactly one store", first.Store.Name, secret.Store.Name)
 		}
 	}
 	if env.Cluster == nil || env.Cluster.Context == "" {

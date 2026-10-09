@@ -138,6 +138,29 @@ Neither secrets nor configuration are implicitly copied to sidecars. Rendering
 refuses a declaration that cannot bind to a service container, and a literal
 configuration value cannot replace a rendered secret reference.
 
+A `remote-keys` mapping or `defaults` template may carry an optional
+`secret-store: {name, kind}`. This key's store wins over the service store,
+which wins over the environment store. One source answers a whole reference: a
+key an explicit `remote-keys` entry names takes its key, property and store from
+that entry, so a `defaults` template's `secret-store` governs only the keys the
+template itself resolves. Scalar remote keys and mappings without an override
+retain their existing behavior. The renderer keeps one ExternalSecret and one
+target Secret per service, selecting an override through ESO v1's
+`spec.data[].sourceRef.storeRef`. It does not fetch a secret value.
+
+A per-key override and a tenant model are mutually exclusive. A tenant's store is
+applied to the rendered ExternalSecret with a single patch on
+`/spec/secretStoreRef/name`, which does not reach `spec.data[].sourceRef`, so an
+overridden key would keep reading the shared base backend inside every tenant.
+Overlay generation refuses that combination rather than rewriting a declaration
+whose point is that the key lives elsewhere.
+
+Seeding is per backend and the identity of a configuration value is not. `codefly
+deploy secrets` never copies a value between backends, generates a value the
+environment declares random once for the secret key rather than once per backend,
+refuses a configuration value two backends already hold differently, and reports
+a value only another backend holds as one to supply here.
+
 A per-service secret mapping may specify `refresh-interval` and a `template`
 with `engine-version: v2`, `merge-policy: Merge` and `data` expressions for its
 explicit remote keys. These are External Secrets declarations, evaluated only by
@@ -153,9 +176,9 @@ value from the store. The translation reproduces core's
 `EvaluateConfigurationValueTemplate` byte for byte. A template of literals only
 is refused: under a credential-named key it would be a value in the tree. So is
 a template referencing a key the producer's own deployment does not read as a
-secret, and a producer whose keys resolve through a different store than the
-consumer. The template is emitted with `mergePolicy: Replace` and an entry for
-every key the consumer references, so the primitives it reads are fetched but
+secret. Producer keys from another store use `data[].sourceRef.storeRef` on
+the same ExternalSecret. The template is emitted with `mergePolicy: Replace` and
+an entry for every key the consumer references, so the primitives it reads are fetched but
 never emitted into the consumer's Secret.
 Rendered manifests admit template delimiters, and credential-named keys, only at
 an ExternalSecret's `spec.target.template.data.<key>`, and only for a value that

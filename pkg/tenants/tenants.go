@@ -350,6 +350,9 @@ func verifyOverlay(dir string, tenant *Tenant) error {
 			if externalSecretStore(document) == tenant.SecretStore {
 				storeApplied = true
 			}
+			if err := refuseUnpatchedSourceRefs(document, tenant); err != nil {
+				return err
+			}
 		}
 	}
 	if !hostApplied {
@@ -376,6 +379,54 @@ func externalSecretStore(document map[string]any) string {
 	spec, _ := document["spec"].(map[string]any)
 	ref, _ := spec["secretStoreRef"].(map[string]any)
 	name, _ := ref["name"].(string)
+	return name
+}
+
+// refuseUnpatchedSourceRefs rejects a base ExternalSecret that selects a store
+// PER KEY, through External Secrets' spec.data[].sourceRef.storeRef, while this
+// tenant declares a secret-store of its own.
+//
+// A tenant's store is applied with one patch, replace /spec/secretStoreRef/name,
+// which reaches the ExternalSecret's own store reference and nothing else. A
+// per-key sourceRef therefore survives the overlay untouched and keeps naming
+// whatever backend the shared base named — so the tenant's Secret is
+// materialized with that key read from outside the tenant, and the storeApplied
+// check above still passes because the one reference it inspects was patched.
+// Silence is the dangerous answer here, so this is refused rather than guessed
+// at: rewriting the override to the tenant's store would contradict a
+// declaration whose whole point is that the key lives somewhere else, and
+// leaving it is a cross-tenant read.
+//
+// An operator who wants both has to say which they mean: drop the per-key
+// override so the key comes from the tenant's own store, or model that key's
+// backend per tenant so no override is needed.
+func refuseUnpatchedSourceRefs(document map[string]any, tenant *Tenant) error {
+	if tenant.SecretStore == "" {
+		return nil
+	}
+	spec, _ := document["spec"].(map[string]any)
+	data, _ := spec["data"].([]any)
+	for _, raw := range data {
+		entry, _ := raw.(map[string]any)
+		source, _ := entry["sourceRef"].(map[string]any)
+		if source == nil {
+			continue
+		}
+		storeRef, _ := source["storeRef"].(map[string]any)
+		name, _ := storeRef["name"].(string)
+		if name == tenant.SecretStore {
+			continue
+		}
+		key, _ := entry["secretKey"].(string)
+		return fmt.Errorf("overlay %q: secret key %q of ExternalSecret %q reads store %q through spec.data[].sourceRef.storeRef, which the tenant store patch (/spec/secretStoreRef/name) does not reach; it would still read %q inside tenant %q — remove the per-key secret-store override, or give that key a per-tenant backend",
+			tenant.Overlay(), key, metadataName(document), name, name, tenant.SecretStore)
+	}
+	return nil
+}
+
+func metadataName(document map[string]any) string {
+	metadata, _ := document["metadata"].(map[string]any)
+	name, _ := metadata["name"].(string)
 	return name
 }
 

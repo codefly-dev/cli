@@ -73,10 +73,29 @@ type RenderedEnvironment struct {
 	Skipped []string
 }
 
+type renderedSecretLocation struct {
+	Store     environments.EnvironmentSecretStoreReference
+	Namespace string
+	Key       string
+}
+
+func (a renderedSecretLocation) less(b renderedSecretLocation) bool {
+	if a.Key != b.Key {
+		return a.Key < b.Key
+	}
+	if a.Store.Kind != b.Store.Kind {
+		return a.Store.Kind < b.Store.Kind
+	}
+	if a.Store.Name != b.Store.Name {
+		return a.Store.Name < b.Store.Name
+	}
+	return a.Namespace < b.Namespace
+}
+
 // RenderedServiceSecrets reads the ExternalSecrets `deploy gitops render`
 // projected into every module rendered under the workspace for environment,
-// grouped by remote key. A module whose inventory records another environment is
-// skipped rather than read: `deployments/modules/<module>` holds one render, and
+// grouped by store and remote key. A module whose inventory records another
+// environment is skipped rather than read: `deployments/modules/<module>` holds one render, and
 // the overlay of a different environment would name that environment's keys.
 func RenderedServiceSecrets(workspaceDir, environment string) (RenderedEnvironment, error) {
 	modulesRoot := filepath.Join(workspaceDir, "deployments", "modules")
@@ -88,7 +107,7 @@ func RenderedServiceSecrets(workspaceDir, environment string) (RenderedEnvironme
 		return RenderedEnvironment{}, err
 	}
 	var rendered RenderedEnvironment
-	byKey := map[string]*RenderedServiceSecret{}
+	byKey := map[renderedSecretLocation]*RenderedServiceSecret{}
 	for _, entry := range entries {
 		// A dot-directory is a render's staging area, never a rendered module.
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
@@ -125,21 +144,19 @@ func RenderedServiceSecrets(workspaceDir, environment string) (RenderedEnvironme
 					return RenderedEnvironment{}, fmt.Errorf("service %s reads %s#%s into no secret key: nothing names what that value is",
 						unique, data.RemoteRef.Key, data.RemoteRef.Property)
 				}
-				secret, seen := byKey[data.RemoteRef.Key]
-				store := environments.EnvironmentSecretStoreReference{Name: projection.Spec.SecretStoreRef.Name, Kind: projection.Spec.SecretStoreRef.Kind}
-				switch {
-				case !seen:
+				source := data.store(projection.Spec.SecretStoreRef)
+				store := environments.EnvironmentSecretStoreReference{Name: source.Name, Kind: source.Kind}
+				if source.Name == "" || (source.Kind != kindSecretStore && source.Kind != kindClusterSecretStore) {
+					return RenderedEnvironment{}, fmt.Errorf("service %s secret key %s has an invalid store reference", unique, data.SecretKey)
+				}
+				address := renderedSecretLocation{Store: store, Key: data.RemoteRef.Key}
+				if store.Kind == kindSecretStore {
+					address.Namespace = projection.Metadata.Namespace
+				}
+				secret, seen := byKey[address]
+				if !seen {
 					secret = &RenderedServiceSecret{Store: store, Namespace: projection.Metadata.Namespace, RemoteKey: data.RemoteRef.Key}
-					byKey[data.RemoteRef.Key] = secret
-				case secret.Store != store:
-					return RenderedEnvironment{}, fmt.Errorf("remote key %s is read through two stores (%s and %s)", data.RemoteRef.Key, secret.Store.Name, store.Name)
-				case store.Kind == "SecretStore" && secret.Namespace != projection.Metadata.Namespace:
-					// A SecretStore is namespaced, so the same name in two namespaces is
-					// two objects, resolving through two backends. Grouping by remote key
-					// alone would collapse them and leave whichever namespace was read
-					// first deciding the backend for both.
-					return RenderedEnvironment{}, fmt.Errorf("remote key %s is read through the namespaced SecretStore %s in namespaces %s and %s, which are two different stores",
-						data.RemoteRef.Key, store.Name, secret.Namespace, projection.Metadata.Namespace)
+					byKey[address] = secret
 				}
 				if !slices.Contains(secret.Services, unique) {
 					secret.Services = append(secret.Services, unique)
@@ -161,11 +178,11 @@ func RenderedServiceSecrets(workspaceDir, environment string) (RenderedEnvironme
 			}
 		}
 	}
-	keys := make([]string, 0, len(byKey))
+	keys := make([]renderedSecretLocation, 0, len(byKey))
 	for key := range byKey {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	sort.Slice(keys, func(i, j int) bool { return keys[i].less(keys[j]) })
 	for _, key := range keys {
 		secret := byKey[key]
 		sort.Strings(secret.Services)

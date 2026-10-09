@@ -815,6 +815,10 @@ service-secrets:
         CODEFLY__…__IDENTITY_CLIENT_SECRET:
           key: lodestar-identity
           property: client_secret
+          # optional: this key comes from another store
+          secret-store:
+            name: identity-secrets
+            kind: ClusterSecretStore
       # defaults template: applies to every key not listed above; "{service}"
       # and "{key}" are substituted
       defaults:
@@ -827,7 +831,47 @@ A key with no matching `remote-keys` entry and no `defaults` falls back to the
 source; the store is seeded from it with `codefly deploy secrets`, never by hand,
 and nobody hand-authors ExternalSecrets.
 
+A `remote-keys` entry or a `defaults` template may carry an optional
+`secret-store`, which overrides the per-service store and then the environment
+store. One source answers the whole reference: a key an explicit `remote-keys`
+entry names takes its key, property AND store from that entry, so a `defaults`
+template's `secret-store` applies only to the keys the template itself resolves.
+ESO v1 `data[].sourceRef.storeRef` selects that backend within the same
+ExternalSecret, keeping one owner for `secret-<service>`. The installed ESO must
+support this field.
+
+A per-key override cannot be combined with a tenant model: `codefly deploy
+tenants` applies a tenant's store with one patch on `/spec/secretStoreRef/name`,
+which does not reach a `sourceRef`, so the override would keep naming the shared
+base backend inside every tenant. Generating the overlays refuses it, naming the
+key and both stores — remove the override, or give that key a per-tenant backend.
+
 #### `codefly deploy secrets` — seed the store from the render
+
+The command plans each backend separately and prints it before its keys. A
+namespaced SecretStore is distinct in each namespace, and two store references
+that resolve to one backend (the same Secret Manager project, say) are one plan.
+Values are never printed.
+
+Reads and writes stay within a backend: no value is ever copied from one to
+another. What is NOT per backend is the identity of a configuration value, which
+is one value however many backends hold it:
+
+- a value this run must generate is generated **once** for the secret key and
+  written to every backend that reads it, never once per backend;
+- a value two backends already hold **differently** is refused, naming both,
+  rather than reported as `keep` on each side;
+- a value one backend holds and another lacks is `require` in the one that lacks
+  it, naming where it already is. It is deliberately neither copied nor
+  generated beside the existing one.
+
+`--module` scopes credentials and reads as well as writes: a backend no scoped
+key reads is never resolved, so the run needs no access to it and reads none of
+its payloads. Within a backend the run does reach, every key is still read, so a
+scoped key keeps agreeing with what that backend holds.
+
+All backend plans must be complete and confirmed before the first write. A
+backend failure during apply can still leave earlier backend writes complete.
 
 ```bash
 codefly deploy secrets --env staging --dry-run --metadata-only  # which keys exist; reads no value
@@ -926,8 +970,10 @@ primitives. An environment `template` may not also assemble such a key.
 The producer's location is whichever surface the producer itself resolves
 through: a managed service's keys come from its `secret-references`
 (`remote-key`/`property`), a regular service's from `service-secrets` under the
-producer's own scope. A producer resolving through a different `secret-store`
-than the consumer is refused — one ExternalSecret reads through one store. A
+producer's own scope. A regular-service producer resolving through a different
+`secret-store` uses a per-key `sourceRef.storeRef`, preserving that producer's
+backend; a managed service's own `secret-references` must still all resolve
+through one store. A
 template may only reference keys the producer's own deployment reads as
 secrets; a reference to one of its plain values is refused at render.
 

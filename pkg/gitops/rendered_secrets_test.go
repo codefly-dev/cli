@@ -182,7 +182,7 @@ func TestRenderedServiceSecretsRefusesADeletedProjection(t *testing.T) {
 // A SecretStore is namespaced, so the same name in two namespaces is two objects
 // resolving through two backends. Grouping by remote key alone collapses them and
 // leaves whichever namespace was read first deciding the backend for both.
-func TestRenderedServiceSecretsRefusesOneKeyThroughTwoNamespacedStores(t *testing.T) {
+func TestRenderedServiceSecretsSeparatesOneKeyThroughTwoNamespacedStores(t *testing.T) {
 	workspace := t.TempDir()
 	for _, module := range []string{"billing", "search"} {
 		root := filepath.Join(workspace, "deployments", "modules", module)
@@ -210,9 +210,12 @@ func TestRenderedServiceSecretsRefusesOneKeyThroughTwoNamespacedStores(t *testin
 			t.Fatal(err)
 		}
 	}
-	_, err := RenderedServiceSecrets(workspace, "staging")
-	if err == nil || !strings.Contains(err.Error(), "two different stores") {
-		t.Fatalf("RenderedServiceSecrets = %v, want a refusal naming the two namespaces", err)
+	rendered, err := RenderedServiceSecrets(workspace, "staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rendered.Secrets) != 2 || rendered.Secrets[0].Namespace == rendered.Secrets[1].Namespace {
+		t.Fatalf("collapsed stores: %+v", rendered.Secrets)
 	}
 }
 
@@ -340,5 +343,45 @@ func TestRenderedSecretsKeepActualServicePropertyBindings(t *testing.T) {
 		if !reflect.DeepEqual(readers, []RenderedSecretReader{{Service: service, Key: key}}) {
 			t.Fatal("service/key association was lost")
 		}
+	}
+}
+
+func TestRenderedServiceSecretsReadsPerKeySourceStores(t *testing.T) {
+	workspace := t.TempDir()
+	root := writeRenderedModule(t, workspace, "app", "staging", map[string][]string{"api": {"A", "B"}})
+	relative := "services/api/overlays/staging/external-secret.yaml"
+	path := filepath.Join(root, filepath.FromSlash(relative))
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content = []byte(strings.Replace(string(content), "        - secretKey: B", "        - sourceRef:\n            storeRef:\n              name: identity\n              kind: SecretStore\n          secretKey: B", 1))
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := LoadInventory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(content)
+	inventory.Files[0].SHA256 = "sha256:" + hex.EncodeToString(sum[:])
+	inventory.Files[0].Size = int64(len(content))
+	encoded, _ := json.MarshalIndent(inventory, "", "  ")
+	if err := os.WriteFile(filepath.Join(root, InventoryFilename), append(encoded, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := RenderedServiceSecrets(workspace, "staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rendered.Secrets) != 2 {
+		t.Fatalf("requirements = %+v", rendered.Secrets)
+	}
+	stores := map[string]string{}
+	for _, secret := range rendered.Secrets {
+		stores[secret.Properties[0].Keys[0]] = secret.Store.Name
+	}
+	if stores["A"] != "cell-secrets" || stores["B"] != "identity" {
+		t.Fatalf("wrong backend: %+v", stores)
 	}
 }

@@ -74,8 +74,20 @@ type externalSecretTemplate struct {
 }
 
 type externalSecretData struct {
-	SecretKey string               `yaml:"secretKey"`
-	RemoteRef externalSecretRemote `yaml:"remoteRef"`
+	SecretKey string                   `yaml:"secretKey"`
+	RemoteRef externalSecretRemote     `yaml:"remoteRef"`
+	SourceRef *externalSecretSourceRef `yaml:"sourceRef,omitempty"`
+}
+
+type externalSecretSourceRef struct {
+	StoreRef externalSecretStoreRef `yaml:"storeRef"`
+}
+
+func (data externalSecretData) store(defaultStore externalSecretStoreRef) externalSecretStoreRef {
+	if data.SourceRef != nil {
+		return data.SourceRef.StoreRef
+	}
+	return defaultStore
 }
 
 type externalSecretRemote struct {
@@ -91,9 +103,8 @@ type externalSecretRemote struct {
 // keys into the in-cluster Secret the promotable manifests already reference — no
 // secret value ever entering git, state, or manifests.
 //
-// Every reference of one managed service must resolve through the same store: an
-// ExternalSecret owns a single target Secret, so mixing stores would silently
-// drop all but one store's keys.
+// Managed-service declarations currently require one store for all references.
+// Regular services resolve per-key overrides in serviceSecretProjection below.
 func managedSecretProjection(service, namespace string, refs []environments.EnvironmentManagedSecretReference) (*externalSecret, error) {
 	if len(refs) == 0 {
 		return nil, nil
@@ -135,13 +146,11 @@ func serviceSecretProjection(scope unitScope, service string, secrets *environme
 	// mirroring EnvironmentManagedSecretReference's per-reference store; without
 	// this the per-service secret-store declaration would load, validate, and then
 	// be silently projected against the environment-wide store.
-	store := secrets.SecretStore
-	if mapping.SecretStore != nil {
-		store = *mapping.SecretStore
-	}
+	store := secrets.RemoteStore(service, environments.EnvironmentSecretRemoteRef{})
 	remotes := make(map[string]environments.EnvironmentSecretRemoteRef, len(keys))
-	read := func(key string, remote environments.EnvironmentSecretRemoteRef) error {
-		if prior, seen := remotes[key]; seen && prior != remote {
+	read := func(key string, remote environments.EnvironmentSecretRemoteRef, source environments.EnvironmentSecretStoreReference) error {
+		remote.SecretStore = &source
+		if prior, seen := remotes[key]; seen && (prior.Key != remote.Key || prior.Property != remote.Property || *prior.SecretStore != source) {
 			return fmt.Errorf("service %q reads secret key %s from two remote locations", service, key)
 		}
 		remotes[key] = remote
@@ -168,16 +177,7 @@ func serviceSecretProjection(scope unitScope, service string, secrets *environme
 			if err != nil {
 				return nil, fmt.Errorf("service %q secret key %s: %w", service, key, err)
 			}
-			// An ExternalSecret reads through one store. A producer whose keys
-			// live in another one cannot be assembled here at all; reading them
-			// from this service's store would address an entry nobody wrote.
-			if primitiveStore != store {
-				return nil, fmt.Errorf(
-					"service %q secret key %s is assembled from %s, which producer %s reads from store %s/%s, not this service's %s/%s",
-					service, key, primitive, delivered.producer,
-					primitiveStore.Kind, primitiveStore.Name, store.Kind, store.Name)
-			}
-			if err := read(primitive, remote); err != nil {
+			if err := read(primitive, remote, primitiveStore); err != nil {
 				return nil, err
 			}
 		}
@@ -190,7 +190,8 @@ func serviceSecretProjection(scope unitScope, service string, secrets *environme
 		if _, claimed := remotes[key]; claimed {
 			continue
 		}
-		if err := read(key, secrets.RemoteRef(scope.secretScope(service), key)); err != nil {
+		remote := secrets.RemoteRef(scope.secretScope(service), key)
+		if err := read(key, remote, secrets.RemoteStore(service, remote)); err != nil {
 			return nil, err
 		}
 	}
@@ -202,10 +203,7 @@ func serviceSecretProjection(scope unitScope, service string, secrets *environme
 	data := make([]externalSecretData, 0, len(projected))
 	for _, key := range projected {
 		remote := remotes[key]
-		data = append(data, externalSecretData{
-			SecretKey: key,
-			RemoteRef: externalSecretRemote{Key: remote.Key, Property: remote.Property},
-		})
+		data = append(data, serviceSecretData(key, remote, store))
 	}
 	projection, err := externalSecretProjection(service, namespace, store, data)
 	if err != nil {
@@ -264,6 +262,14 @@ func serviceSecretProjection(scope unitScope, service string, secrets *environme
 	return projection, nil
 }
 
+func serviceSecretData(key string, remote environments.EnvironmentSecretRemoteRef, store environments.EnvironmentSecretStoreReference) externalSecretData {
+	entry := externalSecretData{SecretKey: key, RemoteRef: externalSecretRemote{Key: remote.Key, Property: remote.Property}}
+	if remote.SecretStore != nil && *remote.SecretStore != store {
+		entry.SourceRef = &externalSecretSourceRef{StoreRef: externalSecretStoreRef{Name: remote.SecretStore.Name, Kind: remote.SecretStore.Kind}}
+	}
+	return entry
+}
+
 // externalSecretProjection assembles the ExternalSecret shared by the managed- and
 // app-service projections: same target (secret-<service>), same rotation cadence,
 // same store-kind guard. An environment declaration naming a backend type
@@ -278,6 +284,15 @@ func externalSecretProjection(service, namespace string, store environments.Envi
 	}
 	if _, ok := externalSecretStoreKinds[store.Kind]; !ok {
 		return nil, fmt.Errorf("service %q secret store kind %q must be SecretStore or ClusterSecretStore", service, store.Kind)
+	}
+	for _, entry := range data {
+		source := entry.store(externalSecretStoreRef{Name: store.Name, Kind: store.Kind})
+		if source.Name == "" || source.Kind == "" {
+			return nil, fmt.Errorf("service %q secret key %s store requires both name and kind", service, entry.SecretKey)
+		}
+		if _, ok := externalSecretStoreKinds[source.Kind]; !ok {
+			return nil, fmt.Errorf("service %q secret key %s store kind %q must be SecretStore or ClusterSecretStore", service, entry.SecretKey, source.Kind)
+		}
 	}
 	target := "secret-" + service
 	return &externalSecret{

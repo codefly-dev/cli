@@ -168,24 +168,48 @@ type Inputs struct {
 type remoteState struct {
 	secret      gitops.RenderedServiceSecret
 	description Description
+	// backend identifies the store this key was read from, as Store.Name()
+	// reports it. A render that reads through several backends resolves every
+	// property against all of their states at once — one configuration value is
+	// one value wherever it is held — while propagating and writing only within
+	// a backend. See pkg/deploysecrets/backends.go.
+	backend string
 	// document is nil when the key exists and was not read.
 	document map[string]string
 }
 
 func (state *remoteState) known() bool { return state.document != nil }
 
-// Build resolves every property the rendered environment reads to a source.
+// Build resolves every property the rendered environment reads to a source,
+// through one store. A render whose keys read through several backends is
+// resolved by BuildAll, which holds the rules that span them.
 func Build(ctx context.Context, in *Inputs) (*Plan, error) {
-	plan := &Plan{Store: in.Store.Name(), Modules: in.Modules}
+	if err := validateRenderedProperties(in.Rendered); err != nil {
+		return nil, err
+	}
+	backend := in.Store.Name()
+	states, err := readStates(ctx, in, in.Store, backend, in.Rendered.Secrets)
+	if err != nil {
+		return nil, err
+	}
+	generators, err := generatorIndex(in.Generators, in.Services)
+	if err != nil {
+		return nil, err
+	}
+	return planBackend(in, backend, states, states, generators, map[string]string{}, configurationAliases(states))
+}
 
-	for _, secret := range in.Rendered.Secrets {
+// validateRenderedProperties refuses a render that cannot be planned at all,
+// before any backend is resolved or read.
+func validateRenderedProperties(rendered gitops.RenderedEnvironment) error {
+	for _, secret := range rendered.Secrets {
 		for _, property := range secret.Properties {
 			if property.Property == "" {
-				return nil, fmt.Errorf("remote key %s is read as a bare value; only a JSON document read by property can be planned", secret.RemoteKey)
+				return fmt.Errorf("remote key %s is read as a bare value; only a JSON document read by property can be planned", secret.RemoteKey)
 			}
 			for _, key := range property.Keys {
 				if strings.TrimSpace(key) == "" {
-					return nil, fmt.Errorf("remote key %s property %s records an empty secret key", secret.RemoteKey, property.Property)
+					return fmt.Errorf("remote key %s property %s records an empty secret key", secret.RemoteKey, property.Property)
 				}
 			}
 			if len(property.Keys) == 0 {
@@ -193,26 +217,25 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 				// configuration value or a declared generator, and both would fall
 				// to `require` — the hand-typed outcome this verb exists to remove.
 				// Refuse rather than read the property name as if it were the key.
-				return nil, fmt.Errorf("remote key %s property %s records no secret key: re-render the environment so the plan knows what that value is",
+				return fmt.Errorf("remote key %s property %s records no secret key: re-render the environment so the plan knows what that value is",
 					secret.RemoteKey, property.Property)
 			}
 		}
 	}
-	states, err := readStates(ctx, in)
-	if err != nil {
-		return nil, err
-	}
+	return nil
+}
 
-	generators, err := generatorIndex(in.Generators, in.Services)
-	if err != nil {
-		return nil, err
-	}
-	aliases := configurationAliases(states)
-
-	// generated holds one value per stored configuration key, so every remote key
-	// reading it receives the same one.
-	generated := map[string]string{}
-	for _, state := range states {
+// planBackend resolves one backend's share of a render.
+//
+// local are the states of this backend; all are the states of every backend the
+// run read, which is what the one-value rules are judged against. generated is
+// shared by every backend, so a value this run mints for a stored key is minted
+// once and written wherever that key is read.
+func planBackend(in *Inputs, backend string, local, all []*remoteState,
+	generators map[string]environments.EnvironmentSecretGenerator, generated map[string]string,
+	aliases map[propertyLocation][]string) (*Plan, error) {
+	plan := &Plan{Store: backend, Modules: in.Modules}
+	for _, state := range local {
 		if !planning(&state.secret, in.Modules) {
 			continue
 		}
@@ -225,7 +248,7 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 		}
 		changes := map[string]string{}
 		for _, property := range state.secret.Properties {
-			propertyPlan, value, err := planConfigured(state, property, states, generators, generated, aliases[propertyLocation{state.secret.RemoteKey, property.Property}])
+			propertyPlan, value, err := planConfigured(state, property, all, generators, generated, aliases[propertyLocation{state.backend, state.secret.RemoteKey, property.Property}])
 			if err != nil {
 				return nil, err
 			}
@@ -259,16 +282,17 @@ const storeReaders = 8
 // plan reads payloads. A key's own failure is recorded against its index and the
 // first in the render's order is returned, so a failure names the same key
 // however the work happened to be scheduled.
-func readStates(ctx context.Context, in *Inputs) ([]*remoteState, error) {
-	states := make([]*remoteState, len(in.Rendered.Secrets))
-	errs := make([]error, len(in.Rendered.Secrets))
+func readStates(ctx context.Context, in *Inputs, store Store, backend string,
+	secrets []gitops.RenderedServiceSecret) ([]*remoteState, error) {
+	states := make([]*remoteState, len(secrets))
+	errs := make([]error, len(secrets))
 	// The first failure cancels the rest: there is no plan without every key, and
 	// a store that refuses one command usually refuses the next hundred too.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wait sync.WaitGroup
 	slots := make(chan struct{}, storeReaders)
-	for i := range in.Rendered.Secrets {
+	for i := range secrets {
 		wait.Add(1)
 		go func(i int) {
 			defer wait.Done()
@@ -277,7 +301,7 @@ func readStates(ctx context.Context, in *Inputs) ([]*remoteState, error) {
 			if ctx.Err() != nil {
 				return
 			}
-			secret := in.Rendered.Secrets[i]
+			secret := secrets[i]
 			// fail records a failure only when it is this key's own. Once one key
 			// has failed, every other key's command fails too, with the
 			// cancellation — recording those would bury the one error that says
@@ -292,16 +316,16 @@ func readStates(ctx context.Context, in *Inputs) ([]*remoteState, error) {
 				}
 				return true
 			}
-			description, err := in.Store.Describe(ctx, secret.RemoteKey)
+			description, err := store.Describe(ctx, secret.RemoteKey)
 			if fail(wrapKeyError("describe", secret.RemoteKey, err)) {
 				return
 			}
-			state := &remoteState{secret: secret, description: description}
+			state := &remoteState{secret: secret, description: description, backend: backend}
 			switch {
 			case !description.Exists || !description.HasVersion:
 				state.document = map[string]string{}
 			case in.ReadPayloads:
-				document, err := in.Store.Read(ctx, secret.RemoteKey)
+				document, err := store.Read(ctx, secret.RemoteKey)
 				if fail(wrapKeyError("read", secret.RemoteKey, err)) {
 					return
 				}
@@ -426,6 +450,19 @@ func sharesConfigurationKey(a, b gitops.RenderedSecretProperty) bool {
 // or not a third key needs it propagated. Keeping what each key happens to hold
 // would report the divergence as `keep`, which is the one reading an operator
 // cannot act on.
+//
+// states spans every backend this run read, and the two roles a holder can play
+// are deliberately different (see pkg/deploysecrets/backends.go):
+//
+//   - a holder in THIS backend is compared with and propagated from. One value
+//     is one value, and a key its own backend already holds elsewhere is the one
+//     place it was seeded.
+//   - a holder in ANOTHER backend is compared with and never propagated from.
+//     Comparing is what makes a divergence between backends observable at all;
+//     propagating would move a value between backends, which a per-key store
+//     declaration exists to prevent. A property only another backend holds is
+//     therefore REQUIRED here, naming where the value already is — not minted,
+//     because minting beside an existing value is exactly the divergence.
 func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, states []*remoteState,
 	generators map[string]environments.EnvironmentSecretGenerator, generated map[string]string, keys []string) (PropertyPlan, string, error) {
 	lookup := property
@@ -433,37 +470,15 @@ func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, 
 	if _, _, err := declaredGenerator(lookup, generators); err != nil {
 		return PropertyPlan{}, "", err
 	}
-	var holders, unread []string
-	var holderValue string
-	for _, other := range states {
-		for _, candidate := range other.secret.Properties {
-			if (other != state || candidate.Property != property.Property) && !sharesConfigurationKey(lookup, candidate) {
-				continue
-			}
-			location := other.secret.RemoteKey + "#" + candidate.Property
-			if !other.known() {
-				unread = append(unread, location)
-				continue
-			}
-			value, present := other.document[candidate.Property]
-			if !present {
-				continue
-			}
-			if len(holders) > 0 && value != holderValue {
-				return PropertyPlan{}, "", fmt.Errorf("one configuration value cannot be two: different values in %s and %s; resolve it before planning", holders[0], location)
-			}
-			holders = append(holders, location)
-			holderValue = value
-		}
+	held, err := gatherConfigurationHolders(state, property, lookup, states)
+	if err != nil {
+		return PropertyPlan{}, "", err
 	}
-	if state.known() {
-		if stored, present := state.document[property.Property]; present {
-			if len(holders) > 0 && stored != holderValue {
-				return PropertyPlan{}, "", fmt.Errorf("%s holds different values in %s and %s: one configuration value cannot be two; resolve it before planning",
-					strings.Join(property.Keys, ", "), state.secret.RemoteKey, holders[0])
-			}
-			return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionKeep, Source: "stored"}, "", nil
-		}
+	if err = held.agree(state, property); err != nil {
+		return PropertyPlan{}, "", err
+	}
+	if _, present := state.stored(property.Property); present {
+		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionKeep, Source: "stored"}, "", nil
 	}
 	fallback, value, err := fallbackSource(lookup, generators, generated)
 	if err != nil {
@@ -472,19 +487,137 @@ func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, 
 	fallback.Keys = property.Keys
 	switch {
 	case !state.known():
-		source := fallback.Source
-		if len(holders) > 0 {
-			source = "propagated from " + strings.Join(holders, ", ")
-		}
-		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionUnverified, Source: "if absent: " + source}, "", nil
-	case len(holders) > 0:
-		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionPropagate, Source: "from " + strings.Join(holders, ", ")}, holderValue, nil
-	case len(unread) > 0:
 		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionUnverified,
-			Source: fmt.Sprintf("may propagate from %s (not read); else %s", strings.Join(unread, ", "), fallback.Source)}, "", nil
+			Source: "if absent: " + held.ifAbsent(fallback.Source)}, "", nil
+	case len(held.local) > 0:
+		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionPropagate,
+			Source: "from " + strings.Join(held.local, ", ")}, held.value, nil
+	case len(held.foreign) > 0:
+		// Neither minted nor copied: see the contract above. The operator is told
+		// which backend already holds the value so the copy is theirs to make.
+		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionRequire,
+			Source: held.elsewhere()}, "", nil
+	case len(held.unread) > 0:
+		return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionUnverified,
+			Source: fmt.Sprintf("may propagate from %s (not read); else %s", strings.Join(held.unread, ", "), fallback.Source)}, "", nil
 	default:
 		return fallback, value, nil
 	}
+}
+
+// stored is what this key holds for a property, when the key was read at all.
+func (state *remoteState) stored(property string) (string, bool) {
+	if !state.known() {
+		return "", false
+	}
+	value, present := state.document[property]
+	return value, present
+}
+
+// configurationHolders is what every other key of a run holds for one
+// property's configuration value: the locations in THIS backend, which may be
+// propagated from, and the locations in other backends, which may only be
+// compared with. See BuildAll for why the two differ.
+type configurationHolders struct {
+	local []string
+	value string
+
+	foreign      []string
+	foreignValue string
+
+	// unread are locations in this backend that exist and were not read, so
+	// whether they hold the value is unknown.
+	unread []string
+}
+
+// gatherConfigurationHolders collects every location holding the same
+// configuration value as this property, refusing two locations of one backend
+// that disagree as it goes.
+func gatherConfigurationHolders(state *remoteState, property, lookup gitops.RenderedSecretProperty,
+	states []*remoteState) (*configurationHolders, error) {
+	held := &configurationHolders{}
+	for _, other := range states {
+		for _, candidate := range other.secret.Properties {
+			if (other != state || candidate.Property != property.Property) && !sharesConfigurationKey(lookup, candidate) {
+				continue
+			}
+			location := other.secret.RemoteKey + "#" + candidate.Property
+			if other.backend != state.backend {
+				// Another backend: compared, never propagated from.
+				value, present := other.stored(candidate.Property)
+				if !present {
+					continue
+				}
+				elsewhere := other.backend + " " + location
+				if len(held.foreign) > 0 && value != held.foreignValue {
+					return held, divergedConfigurationValue(held.foreign[0], elsewhere)
+				}
+				held.foreign = append(held.foreign, elsewhere)
+				held.foreignValue = value
+				continue
+			}
+			if !other.known() {
+				held.unread = append(held.unread, location)
+				continue
+			}
+			value, present := other.stored(candidate.Property)
+			if !present {
+				continue
+			}
+			if len(held.local) > 0 && value != held.value {
+				return held, divergedConfigurationValue(held.local[0], location)
+			}
+			held.local = append(held.local, location)
+			held.value = value
+		}
+	}
+	return held, nil
+}
+
+// agree refuses what the holders and this key's own stored value say when they
+// cannot all be one value — across backends as much as within one, because a
+// divergence no run reports is one no operator can act on.
+func (held *configurationHolders) agree(state *remoteState, property gitops.RenderedSecretProperty) error {
+	if len(held.local) > 0 && len(held.foreign) > 0 && held.value != held.foreignValue {
+		return divergedConfigurationValue(held.local[0], held.foreign[0])
+	}
+	stored, present := state.stored(property.Property)
+	if !present {
+		return nil
+	}
+	if len(held.local) > 0 && stored != held.value {
+		return fmt.Errorf("%s holds different values in %s and %s: one configuration value cannot be two; resolve it before planning",
+			strings.Join(property.Keys, ", "), state.secret.RemoteKey, held.local[0])
+	}
+	if len(held.foreign) > 0 && stored != held.foreignValue {
+		return fmt.Errorf("%s holds different values in %s %s and %s: one configuration value cannot be two; resolve it before planning",
+			strings.Join(property.Keys, ", "), state.backend, state.secret.RemoteKey, held.foreign[0])
+	}
+	return nil
+}
+
+// ifAbsent is what would produce this property if the unread key turns out not
+// to hold it.
+func (held *configurationHolders) ifAbsent(fallback string) string {
+	switch {
+	case len(held.local) > 0:
+		return "propagated from " + strings.Join(held.local, ", ")
+	case len(held.foreign) > 0:
+		return held.elsewhere()
+	default:
+		return fallback
+	}
+}
+
+// elsewhere names where a configuration value already lives when it lives in a
+// backend this plan does not write.
+func (held *configurationHolders) elsewhere() string {
+	return "held in another backend (" + strings.Join(held.foreign, ", ") +
+		"): `codefly deploy secrets` never moves a value between backends, so supply it here"
+}
+
+func divergedConfigurationValue(one, other string) error {
+	return fmt.Errorf("one configuration value cannot be two: different values in %s and %s; resolve it before planning", one, other)
 }
 
 // fallbackSource is what produces a property no remote key holds: a declared

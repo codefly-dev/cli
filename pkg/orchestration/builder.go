@@ -126,9 +126,22 @@ func (b *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 
 	w.Debug("loaded", wool.Field("endpoints", resources.MakeManyEndpointSummary(resp.Endpoints)))
 
-	b.endpoints = resp.Endpoints
+	// The same reconciliation Runner.Load applies, for the same reason: what
+	// reaches b.endpoints is handed to RemoteNetworkManager.GenerateNetworkMappings
+	// and recorded as this producer's mappings, and whether an endpoint is
+	// allocated an outward address is read off the endpoint there
+	// (resources.IsExposedEndpoint). An agent that predates `exposure` reports
+	// none, so without this a deployed render drops an address its manifest
+	// declares — and `codefly run`, which does reconcile, would allocate one for
+	// the very same endpoint.
+	endpoints, err := reconcileLoadedEndpoints(b.instance.Service, resp.Endpoints)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot accept builder endpoints for %s", b.instance.Unique())
+	}
 
-	err = b.outputPropertyForLoad.Set(ctx, &BuilderLoadOutput{Endpoints: resp.Endpoints})
+	b.endpoints = endpoints
+
+	err = b.outputPropertyForLoad.Set(ctx, &BuilderLoadOutput{Endpoints: endpoints})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for load")
 	}
@@ -138,7 +151,7 @@ func (b *Builder) Load(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot process outputProperty for load")
 	}
 
-	err = b.world.SharedState.RecordEndpoints(ctx, b.instance.Identity, resp.Endpoints)
+	err = b.world.SharedState.RecordEndpoints(ctx, b.instance.Identity, endpoints)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot record endpoints")
 	}

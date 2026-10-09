@@ -790,3 +790,48 @@ func TestValidateInventoryUnitsGovernSecretsBearingManagedBootstrapUnit(t *testi
 		t.Fatal("managed bootstrap unit without deployment evidence was accepted")
 	}
 }
+
+func TestServiceSecretProjectionPerKeyStoresKeepOneTarget(t *testing.T) {
+	root := environments.EnvironmentSecretStoreReference{Name: "root", Kind: "ClusterSecretStore"}
+	service := environments.EnvironmentSecretStoreReference{Name: "service", Kind: "SecretStore"}
+	identity := environments.EnvironmentSecretStoreReference{Name: "identity", Kind: "ClusterSecretStore"}
+	secrets := &environments.EnvironmentServiceSecrets{
+		SecretStore: root,
+		Services: map[string]environments.EnvironmentServiceSecretMapping{"accounts": {
+			SecretStore: &service, RefreshInterval: "5m",
+			RemoteKeys: map[string]environments.EnvironmentSecretRemoteRef{
+				"B": {Key: "shared", Property: "client_secret", SecretStore: &identity},
+				"A": {Key: "shared", Property: "password"},
+				"C": {Key: "shared", SecretStore: &service},
+			},
+			Template: &environments.EnvironmentSecretTemplate{EngineVersion: "v2", MergePolicy: "Merge", Data: map[string]string{"B": "{{ .B | b64enc }}"}},
+		}},
+	}
+	projection, err := serviceSecretProjection(unitScope{Namespace: "staging"}, "accounts", secrets, []string{"C", "B", "A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.Spec.Target.Name != "secret-accounts" || projection.Spec.SecretStoreRef.Name != "service" || projection.Spec.RefreshInterval != "5m" {
+		t.Fatalf("projection = %+v", projection)
+	}
+	if projection.Spec.Data[0].SecretKey != "A" || projection.Spec.Data[0].SourceRef != nil || projection.Spec.Data[2].SourceRef != nil {
+		t.Fatalf("default-store keys = %+v", projection.Spec.Data)
+	}
+	if got := projection.Spec.Data[1]; got.SourceRef == nil || got.SourceRef.StoreRef.Name != "identity" || got.RemoteRef.Property != "client_secret" {
+		t.Fatalf("override = %+v", got)
+	}
+	first, _ := yaml.Marshal(projection)
+	again, err := serviceSecretProjection(unitScope{Namespace: "staging"}, "accounts", secrets, []string{"A", "B", "C"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _ := yaml.Marshal(again)
+	if string(first) != string(second) || !strings.Contains(string(first), "sourceRef:") || !strings.Contains(string(first), "{{ .B | b64enc }}") {
+		t.Fatalf("unstable or lost template:\n%s", first)
+	}
+	invalid := environments.EnvironmentSecretStoreReference{Name: "bad", Kind: "vault"}
+	secrets.Services["accounts"].RemoteKeys["B"] = environments.EnvironmentSecretRemoteRef{Key: "shared", SecretStore: &invalid}
+	if _, err := serviceSecretProjection(unitScope{Namespace: "staging"}, "accounts", secrets, []string{"B"}); err == nil {
+		t.Fatal("invalid per-key store admitted")
+	}
+}
