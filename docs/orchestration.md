@@ -1092,3 +1092,22 @@ advertisement never grants a skip. A supported operation that returns Unimplemen
 remains a contract failure. CI records unsupported operations as skipped with
 `agent_no_lint_capability`, `agent_no_compile_capability`, or
 `agent_no_test_capability`, rather than reporting a successful check.
+
+### Local composition-owned module federation (opt-in)
+
+`run service --composition-federation --runtime-context nix` (or `native`)
+keeps consumed modules' route-registration credentials in the CLI process. The
+solution receives its own registration credential and `api.consumes` metadata,
+but not `CODEFLY__MODULE_REGISTRATION_SECRETS`. Include the consumed module's
+service as a run root: this option does not infer extra service roots.
+
+The flow resolves gateway and upstream endpoints from Codefly, uses the existing
+host prefix-token/registration protocol, and restores routes periodically while
+it runs. Readiness waits for registration. Conflicting facade targets or
+credentials fail, as do missing credentials. This mode rejects remote services
+and non-native/Nix placements, including per-service preferences; loopback
+addresses cannot stand in for container-to-container routing.
+
+This is an opt-in local capability, not a deployed registration controller or
+qualification of a newer host registration protocol. Stop the flow to stop its
+registration loop. Existing runs without the flag retain their prior behavior.

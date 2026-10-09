@@ -145,6 +145,9 @@ func (flow *Flow) Readiness(ctx context.Context) *ReadinessFailure {
 	if failure, ok := flow.Failure(); ok {
 		return &ReadinessFailure{Service: failure.Service, Predicate: PredicateRunner, Reason: failure.Message}
 	}
+	if flow.compositionFederation && !flow.federationReady.Load() {
+		return &ReadinessFailure{Predicate: PredicateRequirements, Reason: "composition module routes have not been registered"}
+	}
 	requirements, err := flow.readinessRequirements(ctx)
 	if err != nil {
 		return &ReadinessFailure{Predicate: PredicateRequirements, Reason: err.Error()}

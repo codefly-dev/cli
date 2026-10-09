@@ -34,6 +34,8 @@ import (
 )
 
 // ServiceCmd represents the run command
+var compositionFederation bool
+
 var ServiceCmd = &cobra.Command{
 	Use:   "service [service...]",
 	Short: "Start one or more services locally with their dependency graph",
@@ -189,7 +191,11 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 			cli.Warning("%s", note.Message)
 			continue
 		}
-		cli.Info("%s", note.Message)
+		if compositionFederation && strings.Contains(note.Message, "MODULE_REGISTRATION_SECRETS") {
+			cli.Info("module routing credentials retained by composition federation")
+		} else {
+			cli.Info("%s", note.Message)
+		}
 	}
 	derivedOverrides = derived.Overrides
 
@@ -884,6 +890,9 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 		return nil, w.NewError("Invalid runtime context: %s", runtimeContext)
 	}
 
+	if compositionFederation && (runtimeContext != resources.RuntimeContextNative && runtimeContext != resources.RuntimeContextNix || len(remotes) > 0) {
+		return nil, fmt.Errorf("--composition-federation requires explicit native or nix runtime context and no remotes")
+	}
 	env, err := runEnvironment(workspace)
 	if err != nil {
 		return nil, w.Wrap(err)
@@ -947,6 +956,7 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	// --set is layered last so an operator pinning a key by hand is
 	// authoritative by construction, rather than by parseSetOverrides happening
 	// to let the final duplicate entry win.
+	flow.WithCompositionFederation(compositionFederation)
 	flow.WithOverrides(mergeOverrides(derivedOverrides, overrides))
 	flow.WithRemotes(remoteServices)
 	resolvedProfile, err := workspace.ResolveRunProfile(ctx, profile, resources.RunProfile{ExcludeDependencies: excludeDependencies})
@@ -1102,6 +1112,7 @@ func stopService(ctx context.Context, flow *orchestration.Flow) error {
 }
 
 func init() {
+	ServiceCmd.Flags().BoolVar(&compositionFederation, "composition-federation", false, "Maintain module routes in the local composition process instead of giving solutions routing credentials")
 	ServiceCmd.Flags().BoolVar(&withCLIServer, "cli-server", false, "Start CLI server")
 	ServiceCmd.Flags().BoolVar(&openDashboard, "open", false, "Open the dashboard in the default browser (requires --cli-server)")
 	ServiceCmd.Flags().StringVar(&runtimeContext, "runtime-context", defaultRuntimeContext(), "Runtime context for the flow (native/container/nix/free; free picks the first advertised backend)")

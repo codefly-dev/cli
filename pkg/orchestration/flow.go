@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/deployments"
@@ -104,8 +105,10 @@ type Flow struct {
 	endpoints       map[string][]*basev0.Endpoint
 	networkMappings map[string][]*basev0.NetworkMapping
 
-	loadOnly bool
-	initOnly bool
+	compositionFederation bool
+	federationReady       atomic.Bool
+	loadOnly              bool
+	initOnly              bool
 
 	standAlone  bool
 	excludeRoot bool
@@ -877,6 +880,12 @@ func (flow *Flow) Start(ctx context.Context) error {
 	flow.beginStart(cancel)
 	defer flow.clearStart()
 
+	if flow.compositionFederation {
+		if err := flow.validateCompositionFederation(); err != nil {
+			return err
+		}
+		go flow.maintainModuleFederation(runCtx)
+	}
 	err := flow.playbook.Begin(runCtx, flow.rootBeginActions()...)
 	failure, failed := flow.endStart()
 	if failed {
@@ -2354,19 +2363,18 @@ func (flow *Flow) overridesFor(service *resources.Service) map[string]string {
 	if len(flow.overrides) == 0 || service == nil {
 		return nil
 	}
-	byName := flow.overrides[service.Name]
-	byUnique := flow.overrides[resources.WithUnique(service).Unique()]
-	if byName == nil {
-		return byUnique
+	merged := make(map[string]string)
+	maps.Copy(merged, flow.overrides[service.Name])
+	maps.Copy(merged, flow.overrides[resources.WithUnique(service).Unique()])
+	if flow.compositionFederation {
+		delete(merged, "CODEFLY__MODULE_REGISTRATION_SECRETS")
 	}
-	if byUnique == nil {
-		return byName
-	}
-	merged := make(map[string]string, len(byName)+len(byUnique))
-	maps.Copy(merged, byName)
-	maps.Copy(merged, byUnique)
 	return merged
 }
+
+// WithCompositionFederation keeps module-routing credentials in this local
+// composition process. Solutions retain only their own registration credential.
+func (flow *Flow) WithCompositionFederation(enabled bool) { flow.compositionFederation = enabled }
 
 func (flow *Flow) WithExcludeRoot(excludeRoot bool) {
 	flow.excludeRoot = excludeRoot
