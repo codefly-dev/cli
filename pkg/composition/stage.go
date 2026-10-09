@@ -11,13 +11,16 @@ import (
 	"slices"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/core/agents/manager"
 	"github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/artifactexecution"
 	core "github.com/codefly-dev/core/composition"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	solutionv0 "github.com/codefly-dev/core/generated/go/codefly/services/solution/v0"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/solution"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -71,6 +74,9 @@ func (session *SelectionSession) StageRender(ctx context.Context, files *Deploym
 	err = session.withResolved(ctx, func(snapshot *selectionSnapshot, resolved *core.ResolvedComposition) (runErr error) {
 		if parentErr := session.checkStagingParent(parent, snapshot.local); parentErr != nil {
 			return parentErr
+		}
+		if bindErr := session.bindRenderProvenance(ctx, requests); bindErr != nil {
+			return bindErr
 		}
 		prepared, prepareErr := session.prepareRender(ctx, resolved, files)
 		if prepareErr != nil {
@@ -245,6 +251,31 @@ func (session *SelectionSession) completeRender(ctx context.Context, snapshot *s
 
 const renderShutdownTimeout = 10 * time.Second
 
+// Selection metadata selects artifacts; it does not declare workspace member
+// roles. Read those once from the session's owning composition, never an
+// executor's cache or caller-authored request JSON.
+func (session *SelectionSession) bindRenderProvenance(ctx context.Context, requests []renderInput) error {
+	var provenance *builderv0.CompositionProvenance
+	for _, input := range requests {
+		request, ok := input.request.(*builderv0.DeploymentRequest)
+		if !ok {
+			continue
+		}
+		if provenance == nil {
+			workspace, err := resources.LoadWorkspaceFromDir(WithWorkspaceResolver(ctx), filepath.Dir(session.trustPath))
+			if err != nil {
+				return fmt.Errorf("load rendering composition: %w", err)
+			}
+			provenance, err = deployments.CompositionProvenance(workspace)
+			if err != nil {
+				return err
+			}
+		}
+		request.CompositionProvenance = proto.CloneOf(provenance)
+	}
+	return nil
+}
+
 func invokeRender(ctx context.Context, path string, execution *basev0.ArtifactExecution, payload proto.Message, directory string, opts []manager.LoadOption) (receipt *basev0.ArtifactExecutionReceipt, renderErr error) {
 	if execution == nil || (execution.Protocol != artifactexecution.BuilderRender && execution.Protocol != artifactexecution.SolutionRender) {
 		return nil, errors.New("unsupported render protocol")
@@ -289,6 +320,16 @@ func invokeArtifactExecution(ctx context.Context, path string, execution *basev0
 		request, ok := proto.Clone(payload).(*builderv0.DeploymentRequest)
 		if !ok {
 			return nil, errors.New("builder render payload type mismatch")
+		}
+		if request.CompositionProvenance == nil {
+			return nil, errors.New("builder render requires host-owned composition provenance")
+		}
+		info, err := agentv0.NewAgentClient(conn.GRPCConn()).GetAgentInformation(ctx, &agentv0.AgentInformationRequest{})
+		if err != nil {
+			return nil, fmt.Errorf("inspect builder composition provenance capability: %w", err)
+		}
+		if err := deployments.RequireCompositionProvenance(info); err != nil {
+			return nil, err
 		}
 		request.Execution, request.OutputDirectory = execution, directory
 		client := services.NewBuilderAgentClient(conn.GRPCConn())
