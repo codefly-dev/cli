@@ -4024,6 +4024,7 @@ Flags:
 
 ```
       --cli-server                     Start CLI server
+      --composition-federation         Maintain module routes in the local composition process instead of giving solutions routing credentials
       --env string                     Workspace environment to run (default "local")
       --exclude-dependency strings     Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)
       --exclude-root                   Exclude root service
