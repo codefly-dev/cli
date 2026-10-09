@@ -2657,8 +2657,10 @@ contracts/runnables/
 digest over, so what a composition reads and what was hashed are the same
 bytes. `operation.json` is kept beside it rather than inside it: policy and
 authority are installed with a binding, and two installations of one contract
-may differ in both. `index.json` is what a composition reads to prepare
-bindings — identity, digest, full method, input and output message names and
+may differ in both. Required scope slots and optional tool exposure are preserved
+in `operation.json`; generation does not select resource IDs. `index.json` is
+what a composition reads to prepare bindings — identity, digest, full method,
+input and output message names and
 endpoint coordinates per row.
 
 The tree is fully owned: a method that no longer carries the option loses its
@@ -2704,32 +2706,41 @@ and the MCP `list_runnables` tool, with facility `service` and a `source` of
 
 #### generate runnable-bindings
 
-`codefly generate runnable-bindings [--env <env>] [--check]` prepares, for one
-environment, the binding of every operation the workspace's modules derived
-(`contracts/runnables/index.json`). Each becomes one key of the workspace
-configuration group `runnable-bindings`, in
-`configurations/<profile>/runnable-bindings.env`, whose value is a JSON document:
-the canonical `package`, the `binding` core prepared and verified against it
-(SERVICE facility, targeting the owner endpoint at the address the environment
-resolves: the native address locally, the in-cluster Service in a Kubernetes
-environment), the method's `operation` policy and authority, and a
-`descriptor_set` reference: the digest of the owner endpoint's descriptor set.
-The key is `<MODULE>__<OPERATION>`, upper-cased. Each referenced set is written
-once beside the values, under `DESCRIPTOR_SET__<digest>`: the endpoint's
-published `contract.binpb` without source info, base64. Every operation on one
-endpoint shares it, the installer refuses a set whose digest is not the one
-referenced, and a contract whose bytes the catalog did not record is refused
-here (run `generate contracts`). The value schema is
-`codefly.runnable-prepared/v2`; an installer refuses the older embedded form, so
-regenerate the group after upgrading. A set is larger than a process
-environment should carry, so Codefly delivers it by file (core
-`docs/runnable-binding-delivery.md`).
+`codefly generate runnable-bindings [--env <env>] [--check]` prepares every
+operation the workspace's modules derived (`contracts/runnables/index.json`).
+The existing environment declaration in `workspace.codefly.yaml` supplies both
+endpoint facts and `runnable-scope-selections`: a map from output binding key to
+a list of Core `ScopeSelection` messages. See [the selection YAML and refusal
+rules](runnable.md#required-scope-slots-and-tool-exposure).
+
+Core's `OperationSpec.ResolveScopeSlots` resolves each selection once, preserving
+fixed scopes and adding the selected exact scopes. Missing selections name the
+slot and configuration key; wildcards, overlapping kinds, undeclared slots and
+unknown binding keys fail before output is written. An operation with fixed
+scopes and no slots needs no selection. Owner-declared `tool` exposure is
+preserved; absence still means the operation is not exposed as a tool.
+
+Each binding becomes one key in the workspace configuration group
+`runnable-bindings`, at `configurations/<profile>/runnable-bindings.env`. The
+key is `<MODULE>__<OPERATION>`, upper-cased with non-alphanumeric characters
+replaced by underscores. Its value is Core's `codefly.runnable-prepared/v3`
+JSON: owner operation coordinates, resolved call address and Connect/REST
+route, bounded contract with its digest, and the concrete policy. No descriptor
+set is delivered. A gRPC owner is called over its declared Connect endpoint;
+one without that endpoint is refused. A directly published Connect operation
+uses its own endpoint. Addresses are resolved as for a run or
+render: native locally, in-cluster in a Kubernetes environment.
 
 A service that installs derived operations declares `runnable-bindings` as a
-workspace configuration dependency and receives them like any other group, so an
-installer never names an owner module. `--check` exits non-zero when the file is
-stale. Run it after `generate runnables` in every module it binds, and again
-whenever an owner endpoint moves.
+workspace configuration dependency and receives it like any other group. Run
+the command after `generate runnables` in every module it binds, and after an
+owner endpoint or scope selection changes. The output uses the environment's
+first configuration profile; selections are specific to the named environment.
+
+| Flag | Description |
+|------|-------------|
+| `--env` | Environment supplying resolved addresses and `runnable-scope-selections` (default: `local`) |
+| `--check` | Regenerate in memory; exit non-zero if the output is stale, including after a selection changes; write nothing |
 
 ## Infrastructure
 

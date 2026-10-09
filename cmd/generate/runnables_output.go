@@ -21,19 +21,21 @@ import (
 
 func newOperationDocument(spec *corerunnable.OperationSpec) *runnablespkg.Operation {
 	return &runnablespkg.Operation{
-		Method:         spec.Method,
-		AttemptTimeout: spec.AttemptTimeout.String(),
-		TotalTimeout:   spec.TotalTimeout.String(),
-		MaxAttempts:    spec.MaxAttempts,
-		Backoff:        spec.Backoff.String(),
-		RetryableCodes: spec.RetryableCodes,
-		Audience:       spec.Audience,
-		InvokeScopes:   scopeDocuments(spec.InvokeScopes),
-		LookupScopes:   scopeDocuments(spec.LookupScopes),
-		LookupMethod:   spec.LookupMethod,
-		MaxInputBytes:  spec.MaxInputBytes,
-		MaxOutputBytes: spec.MaxOutputBytes,
-		Completion:     spec.Completion.String(),
+		Method:             spec.Method,
+		AttemptTimeout:     spec.AttemptTimeout.String(),
+		TotalTimeout:       spec.TotalTimeout.String(),
+		MaxAttempts:        spec.MaxAttempts,
+		Backoff:            spec.Backoff.String(),
+		RetryableCodes:     spec.RetryableCodes,
+		Audience:           spec.Audience,
+		InvokeScopes:       scopeDocuments(spec.InvokeScopes),
+		LookupScopes:       scopeDocuments(spec.LookupScopes),
+		LookupMethod:       spec.LookupMethod,
+		MaxInputBytes:      spec.MaxInputBytes,
+		MaxOutputBytes:     spec.MaxOutputBytes,
+		Completion:         spec.Completion.String(),
+		Tool:               spec.Tool,
+		RequiredScopeSlots: spec.RequiredScopeSlots,
 	}
 }
 

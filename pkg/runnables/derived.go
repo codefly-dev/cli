@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	runnablev0 "github.com/codefly-dev/core/generated/go/codefly/runnable/v0"
 	"github.com/codefly-dev/core/resources"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -158,6 +159,10 @@ type Operation struct {
 	// derived before this field existed therefore fails to prepare, by name,
 	// instead of being prepared as something the owner never declared.
 	Completion string `json:"completion"`
+	// Keep Core's metadata types: these are owner declarations, not a CLI
+	// policy vocabulary. Slots remain unresolved until the composition binds.
+	Tool               *runnablev0.ToolExposure `json:"tool,omitempty"`
+	RequiredScopeSlots []*runnablev0.ScopeSlot  `json:"required_scope_slots,omitempty"`
 }
 
 // Scope is one authority a binding is minted for.

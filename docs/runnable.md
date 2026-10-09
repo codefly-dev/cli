@@ -20,6 +20,7 @@ not; nothing here is a promise about the unimplemented parts.
 | `codefly add runnable <name> --agent=<name>:<version> --handler=<path>` | Create a declaration and scaffold through the real Builder agent |
 | `codefly build runnable <name> [--output=<new-directory>] [--json]` | Prepare and package through the agent, verify archive bytes, write `artifacts/runnable-package.json` |
 | `codefly generate runnables [module] [--check]` | Derive a SERVICE-facility package for every gRPC method a module's contracts mark with the operation option |
+| `codefly generate runnable-bindings [--env=<env>] [--check]` | Resolve the environment's scope selections and owner endpoints into prepared bindings |
 | `codefly list runnables [--module=<m>] [--json]` | List the workspace's runnables with their immutable identity, pinned agent, execution facilities and timeout |
 | `codefly show runnable <name> [--version=<v>] [--json]` | Show one runnable's contract, execution bounds and dependency resolution |
 | `codefly agent install <language>:<version> --kind=runnable` | Download a released runnable language agent into the local Codefly cache |
@@ -64,6 +65,79 @@ layout, the refusal rules and how the release version is derived. What this
 does *not* do is invoke anything: no CLI command invokes a Runnable, derived or
 authored. Preparing each operation's binding for an environment is
 [`generate runnable-bindings`](commands.md#generate-runnable-bindings).
+
+### Required scope slots and tool exposure
+
+`generate runnables` preserves every field of Core's `Operation` in
+`operation.json`, including `required_scope_slots` and optional `tool` exposure.
+A slot-only operation may declare no fixed scopes. Generation keeps its slots
+unresolved; it cannot choose resource IDs for the installing composition.
+
+The composition answers each slot in the existing `workspace.codefly.yaml`
+environment selected by `generate runnable-bindings --env`. Under
+`runnable-scope-selections`, the key is the output binding key:
+`<MODULE>__<OPERATION>`, upper-cased with non-alphanumeric characters replaced
+by underscores. The operation name comes from `contracts/runnables/index.json`.
+Each value is a list of Core `ScopeSelection` messages (`slot`, `invoke`,
+`lookup`), using Core's scope fields. For example:
+
+```yaml
+environments:
+  - name: staging
+    runnable-scope-selections:
+      SAAS_STARTER__ACCOUNTS_AUTHORITY_INVOKE_SOURCE_OPERATION: &source-scopes
+        - slot: source
+          invoke:
+            - resource_kind: datasource.sources
+              actions: [invoke, read]
+              resource_ids: [source-a]
+          lookup:
+            - resource_kind: datasource.sources
+              actions: [read]
+              resource_ids: [source-a]
+      SAAS_STARTER__ACCOUNTS_CONNECT_INVOKE_SOURCE_OPERATION: *source-scopes
+```
+
+`source-a` is an illustrative ID; select the exact resources this installation
+may use. Quote IDs that look like YAML numbers. The owner of
+`InvokeSourceOperation` requires `source` with actions `invoke` and `read`, and
+`lookup: true`, so its lookup must cover the same exact IDs with action `read`.
+When a module publishes the same operation on several endpoints, each index row
+is a binding and needs its own selection. The saas-starter catalog publishes
+this descriptor on both `authority` and `connect`; select
+`SAAS_STARTER__ACCOUNTS_CONNECT_INVOKE_SOURCE_OPERATION` as well.
+
+```sh
+codefly generate runnables saas-starter
+codefly generate runnable-bindings --env staging
+codefly generate runnable-bindings --env staging --check
+```
+
+Preparation calls Core's `OperationSpec.ResolveScopeSlots` once per operation
+and delivers its `Policy()`: fixed scopes stay in place, selected scopes are
+appended, and no unresolved slot reaches a prepared binding. Missing selections
+name the operation, slot and `runnable-scope-selections` key to set. An owner
+declaring neither fixed scopes nor slots is still refused as declaring no
+authority. Wildcards (including omitted IDs), collisions with a fixed scope's
+kind or another slot's kind, duplicate/undeclared slots, unknown fields and
+selection keys naming no derived operation are refused. A failed preparation
+writes nothing and preserves the previous output.
+
+The generated `configurations/<profile>/runnable-bindings.env` carries Core's
+`codefly.runnable-prepared/v3` bindings: owner coordinates, the resolved JSON
+call target, bounded contract and digest, and concrete policy. Tool metadata
+survives preparation; absence remains `ErrNotATool`, and exposure grants no
+authority. A gRPC operation is called on the owner's Connect endpoint; an
+operation published directly on Connect uses that endpoint. Endpoint
+addresses still come from the existing network resolver.
+
+Changing a selection requires regeneration, and `--check` detects that change.
+The configuration profile chooses the output directory; selections belong to
+the named environment even when environments share a profile. These declarations
+are installation input and are not sent to agents as runtime configuration.
+There is no additional selection file, CLI policy vocabulary or CLI scope
+resolver. Tests verify the prepared binding and the identical policy as a Core
+resolved-policy receipt; this command emits the binding configuration only.
 
 ### Identity and coexistence
 

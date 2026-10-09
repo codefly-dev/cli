@@ -25,7 +25,6 @@ import (
 	corerunnable "github.com/codefly-dev/core/runnable"
 	"github.com/codefly-dev/core/standards"
 	"github.com/spf13/cobra"
-	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 // RunnableBindingsGroup is the workspace configuration group the prepared
@@ -67,21 +66,29 @@ For each derived operation the value is one JSON document
                    changed contract is refused rather than called with a payload
                    shaped for the one it used to publish
   policy           the execution policy and Work Context authority the owner
-                   declared on its method option or x-codefly-operation marker
+                   declared, with required scope slots resolved from this
+                   environment's runnable-scope-selections
 
 An owner is called with JSON, so no protobuf descriptor is delivered to anyone.
 A gRPC owner is therefore called on its **Connect** endpoint: a service that
 publishes a runnable-marked method and declares no connect endpoint is refused
 here, by name, rather than at a call.
+An operation published directly on a Connect endpoint uses that endpoint.
 
 The address is resolved, never configured: it is the one a run or a render of
 the same environment gives the owner. A service that installs derived
 operations declares ` + RunnableBindingsGroup + ` as a workspace configuration dependency and
 receives them like any other group, so the installer names no owner module.
 
+In workspace.codefly.yaml, environments[].runnable-scope-selections maps each
+binding key (MODULE__OPERATION) to Core ScopeSelection messages: slot, invoke,
+and lookup. Every required slot needs exact resource kinds, actions and ids;
+missing selections, wildcards and overlapping kinds are refused. Tool exposure
+is carried from the owner. See docs/runnable.md for the selection YAML.
+
 The output is configurations/<profile>/` + RunnableBindingsGroup + `.env in the workspace, for the
 environment's first configuration profile. --check regenerates in memory and
-exits non-zero when the file differs.
+exits non-zero when the file differs, including after a scope selection changes.
 
 Examples:
   codefly generate runnable-bindings
@@ -141,7 +148,7 @@ Examples:
 }
 
 func init() {
-	RunnableBindingsCmd.Flags().StringVar(&runnableBindingsEnv, "env", "local", "environment whose resolved addresses the bindings target")
+	RunnableBindingsCmd.Flags().StringVar(&runnableBindingsEnv, "env", "local", "environment supplying resolved addresses and runnable-scope-selections")
 	RunnableBindingsCmd.Flags().BoolVar(&runnableBindingsCheck, "check", false, "do not write; exit 1 if the on-disk file differs from what would be generated")
 }
 
@@ -180,6 +187,11 @@ func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace
 				return nil, 0, fmt.Errorf("two operations bind under key %s", key)
 			}
 			lines[key] = string(value)
+		}
+	}
+	for _, key := range sortedKeys(env.RunnableScopeSelections) {
+		if _, bound := lines[key]; !bound {
+			return nil, 0, fmt.Errorf("environment %s runnable-scope-selections[%s] names no derived operation", env.Name, key)
 		}
 	}
 	count := len(lines)
@@ -226,9 +238,18 @@ func prepareRunnable(ctx context.Context, module *resources.Module, operation *r
 	if err = verifyPublishedContract(module, operation.Entry.Service, operation.Entry.Endpoint, kind); err != nil {
 		return nil, err
 	}
-	policy, err := preparedPolicy(operation.Operation)
+	codes := corerunnable.GRPCStatusNames
+	if kind == composition.APIContractKindOpenAPI {
+		codes = corerunnable.HTTPStatusCodes
+	}
+	spec, err := operationSpec(operation.Operation, descriptor.GetOperation(), codes)
 	if err != nil {
 		return nil, err
+	}
+	key := RunnableBindingKey(module.Name, operation.Entry.Name)
+	resolved, err := spec.ResolveScopeSlots(resolver.env.RunnableScopeSelections[key])
+	if err != nil {
+		return nil, fmt.Errorf("environment %s runnable-scope-selections[%s] in workspace.codefly.yaml: %w", resolver.env.Name, key, err)
 	}
 	return &runnablev0.PreparedBinding{
 		Operation: &runnablev0.PreparedOperation{
@@ -239,16 +260,14 @@ func prepareRunnable(ctx context.Context, module *resources.Module, operation *r
 		},
 		Call:     call,
 		Contract: pkg.GetContract(),
-		Policy:   policy,
+		Policy:   resolved.Policy(),
 	}, nil
 }
 
-// preparedPolicy is the declared policy as the message core validates. The
-// derived operation's own document is a second spelling of
-// codefly.runnable.v0.Operation, so this reads it back into that message rather
-// than into a third: core then holds the result to the installation bounds, and
-// a field this drops is a field an installer never sees.
-func preparedPolicy(declared *runnablespkg.Operation) (*runnablev0.Operation, error) {
+// operationSpec reads the derived document back into Core's spec so Core can
+// resolve its slots once and write the resulting policy with Policy(). The
+// document round-trip test holds both conversions to every Operation field.
+func operationSpec(declared *runnablespkg.Operation, spelling string, codes corerunnable.CodeVocabulary) (*corerunnable.OperationSpec, error) {
 	if declared == nil {
 		return nil, errors.New("the operation declares no execution policy")
 	}
@@ -269,19 +288,23 @@ func preparedPolicy(declared *runnablespkg.Operation) (*runnablev0.Operation, er
 		return nil, fmt.Errorf("completion %q is not a completion mode; %s and %s are the two",
 			declared.Completion, basev0.RunnableExecution_COMPLETION_CALL, basev0.RunnableExecution_COMPLETION_SUBMIT)
 	}
-	return &runnablev0.Operation{
-		AttemptTimeout: durationpb.New(durations["attempt_timeout"]),
-		TotalTimeout:   durationpb.New(durations["total_timeout"]),
-		MaxAttempts:    declared.MaxAttempts,
-		Backoff:        durationpb.New(durations["backoff"]),
-		RetryableCodes: declared.RetryableCodes,
-		Audience:       declared.Audience,
-		InvokeScopes:   preparedScopes(declared.InvokeScopes),
-		LookupScopes:   preparedScopes(declared.LookupScopes),
-		LookupMethod:   declared.LookupMethod,
-		MaxInputBytes:  declared.MaxInputBytes,
-		MaxOutputBytes: declared.MaxOutputBytes,
-		Completion:     basev0.RunnableExecution_Completion(completion),
+	return &corerunnable.OperationSpec{
+		Method:             spelling,
+		Codes:              codes,
+		AttemptTimeout:     durations["attempt_timeout"],
+		TotalTimeout:       durations["total_timeout"],
+		MaxAttempts:        declared.MaxAttempts,
+		Backoff:            durations["backoff"],
+		RetryableCodes:     declared.RetryableCodes,
+		Audience:           declared.Audience,
+		InvokeScopes:       preparedScopes(declared.InvokeScopes),
+		LookupScopes:       preparedScopes(declared.LookupScopes),
+		LookupMethod:       declared.LookupMethod,
+		MaxInputBytes:      declared.MaxInputBytes,
+		MaxOutputBytes:     declared.MaxOutputBytes,
+		Completion:         basev0.RunnableExecution_Completion(completion),
+		Tool:               declared.Tool,
+		RequiredScopeSlots: declared.RequiredScopeSlots,
 	}, nil
 }
 
@@ -370,8 +393,11 @@ func (r *endpointResolver) callTarget(ctx context.Context, module *resources.Mod
 		return nil, "", fmt.Errorf("service %s/%s declares no endpoint %s", module.Name, serviceName, publishedName)
 	}
 	switch published.GetApi() {
-	case standards.GRPC:
-		connect := endpointWithAPI(endpoints, standards.CONNECT)
+	case standards.GRPC, standards.CONNECT:
+		connect := published
+		if published.GetApi() == standards.GRPC {
+			connect = endpointWithAPI(endpoints, standards.CONNECT)
+		}
 		if connect == nil {
 			return nil, "", fmt.Errorf("%s/%s publishes %s on its %s endpoint but declares no %s endpoint: a Runnable owner is called with JSON, so mark the method only on a service that serves Connect",
 				module.Name, serviceName, spelling, publishedName, standards.CONNECT)
@@ -398,8 +424,8 @@ func (r *endpointResolver) callTarget(ctx context.Context, module *resources.Mod
 			Route:   &runnablev0.PreparedCall_Rest{Rest: &runnablev0.HTTPRoute{Verb: verb, Path: path}},
 		}, composition.APIContractKindOpenAPI, nil
 	default:
-		return nil, "", fmt.Errorf("%s/%s/%s is a %s endpoint, and a derived operation is called over %s or %s",
-			module.Name, serviceName, publishedName, published.GetApi(), standards.GRPC, standards.REST)
+		return nil, "", fmt.Errorf("%s/%s/%s is a %s endpoint, and a derived operation is called over %s, %s or %s",
+			module.Name, serviceName, publishedName, published.GetApi(), standards.GRPC, standards.CONNECT, standards.REST)
 	}
 }
 
