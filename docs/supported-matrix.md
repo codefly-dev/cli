@@ -27,6 +27,11 @@ When `go.mod` moves to a new core release line, update the `core` field in
 `go test ./pkg/conformance/...` before the full coverage and race gates.
 `TestMatrixCoreMatchesGoMod` refuses a stale declared version.
 
+The current pin targets the `v0.16.1` line using core #752's pre-release
+composition-provenance contract. It must be replaced with the released core
+after #752 lands. This source matrix does not qualify released agents for the
+new `deployment-composition-provenance/v1` capability.
+
 A missing receipt can be a consequence of an earlier failure: coverage and race
 run `go test -failfast`, so a failed package can stop the npm tests in
 `pkg/librarystore` before they emit `linux-amd64-native-npm` receipts. Each job
