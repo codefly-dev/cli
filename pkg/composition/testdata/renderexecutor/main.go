@@ -52,6 +52,9 @@ type solutionRenderer struct {
 
 func (r *agentRenderer) GetAgentInformation(context.Context, *agentv0.AgentInformationRequest) (*agentv0.AgentInformation, error) {
 	declaration := contract.Current()
+	if os.Getenv("RENDER_TEST_MODE") != "missing-provenance" {
+		declaration.Capabilities = append(declaration.Capabilities, contract.DeploymentCompositionProvenance)
+	}
 	if os.Getenv("RENDER_TEST_MODE") == "missing-protocol" {
 		declaration = &agentv0.AgentContract{}
 	}
@@ -91,6 +94,9 @@ func (r *builderRenderer) Build(ctx context.Context, request *builderv0.BuildReq
 }
 
 func (r *builderRenderer) Deploy(ctx context.Context, request *builderv0.DeploymentRequest) (*builderv0.DeploymentResponse, error) {
+	if request.CompositionProvenance == nil {
+		return nil, errors.New("missing host composition provenance")
+	}
 	receipt, err := r.emit(ctx, request.Execution, artifactexecution.BuilderRender, request.OutputDirectory)
 	state := builderv0.DeploymentStatus_SUCCESS
 	if os.Getenv("RENDER_TEST_MODE") == "failed" {

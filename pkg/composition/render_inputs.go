@@ -57,8 +57,8 @@ func decodeRenderInputs(inputs []RenderInput) ([]renderInput, error) {
 		}
 		switch value := request.(type) {
 		case *builderv0.DeploymentRequest:
-			if value.Execution != nil || value.OutputDirectory != "" {
-				return nil, errors.New("render execution and staging directory are host-owned")
+			if value.Execution != nil || value.OutputDirectory != "" || value.CompositionProvenance != nil {
+				return nil, errors.New("render execution, staging directory and composition provenance are host-owned")
 			}
 		case *solutionv0.RenderRequest:
 			if value.Execution != nil || value.Destination != "" || value.ArtifactReference != "" || value.Context.GetArtifact() != nil {

@@ -133,7 +133,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 
 	w.Debug("deployments", wool.Field("deployments", deploy))
 
-	resp, err := b.instance.Builder.Deploy(ctx, &builderv0.DeploymentRequest{
+	resp, err := b.deployRequest(ctx, &builderv0.DeploymentRequest{
 		Environment:                 env,
 		Deployment:                  deploy,
 		Configuration:               conf,
@@ -186,6 +186,23 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot handle deployment")
 	}
 	return outputProperty, nil
+}
+
+// deployRequest is the final handoff for every orchestration deployment.
+func (b *Builder) deployRequest(ctx context.Context, request *builderv0.DeploymentRequest) (*builderv0.DeploymentResponse, error) {
+	provenance, err := deployments.CompositionProvenance(b.world.Workspace)
+	if err != nil {
+		return nil, err
+	}
+	if err := deployments.RequireCompositionProvenance(b.instance.Info); err != nil {
+		return nil, err
+	}
+	// Use this exact loaded composition on both sides of the RPC. In particular,
+	// a pinned module's physical cache directory is not its composition.
+	b.instance.Builder.Workspace = b.world.Workspace
+
+	request.CompositionProvenance = provenance
+	return b.instance.Builder.Deploy(ctx, request)
 }
 
 // withContainerReachableAsPublic normalizes a service's remote network mappings

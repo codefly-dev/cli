@@ -8,7 +8,7 @@
 
 - **Module:** `github.com/codefly-dev/cli`
 - **Repository:** `https://github.com/codefly-dev/cli`
-- **Language:** Go 1.26 (`go.mod` is the source of truth — see [Bump the Go version](docs/runbooks/bump-go-version.md))
+- **Language:** Go 1.27.2 (`go.mod` is the source of truth — see [Bump the Go version](docs/runbooks/bump-go-version.md))
 
 The CLI is the primary interface for codefly. It orchestrates agent lifecycles, manages the
 daemon, runs services with their dependency graphs, and exposes an MCP server for AI tool

@@ -799,6 +799,25 @@ Used for `codefly deploy service`:
 BuilderBegin → BuilderLoad → BuilderInit → BuilderBuild → BuilderDeploy → done
 ```
 
+Every builder deployment request carries `composition_provenance`, a snapshot of
+`World.Workspace.Members()`: every composed name, its declared module/solution
+role, and its declaring workspace, preserved through imports. The final handoff
+sets `services.BuilderInstance.Workspace` to that same loaded workspace before
+the CLI judges dependency addresses. This applies to checkouts and pinned modules,
+including requests without dependency mappings. The agent judges with the request;
+the development workspace above a module cache is not a second authority. For
+example, a package locally called `saas-starter` but composed as `saas` is sent as
+`saas`. A solution's direct route to a module endpoint still refuses with
+`ErrSolutionReachesThroughHost`.
+
+Deployment requires the running builder's `AgentContract` to advertise
+`deployment-composition-provenance/v1`. A missing capability refuses before the
+Deploy RPC; the CLI's linked Core version cannot establish agent adoption.
+The wire field and request-backed judge are supplied by
+[core#752](https://github.com/codefly-dev/core/pull/752), following
+[handbook#266](https://github.com/obin-ai/handbook/pull/266). This CLI change alone
+does not qualify released agents or an end-to-end staging render.
+
 For a full module GitOps render (`codefly deploy gitops render`), the render
 inventory's contract provenance — a service's exposed API contracts (from the
 module's `contracts/api/catalog.codefly.json`) and its package identity (from
