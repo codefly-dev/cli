@@ -271,6 +271,10 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	if err := runner.checkInitialPortAvailability(ctx); err != nil {
 		return nil, w.Wrapf(err, "cannot initialize %s", runner.instance.Unique())
 	}
+	runtimeImage, err := runner.localRuntimeImage(ctx)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot prepare local runtime image for %s", runner.instance.Unique())
+	}
 
 	// Configuration reads can block on a stalled provider (e.g. a dependency
 	// service that failed to export its config). Bound each read with a
@@ -296,6 +300,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	// every dependency and never the service the suite is about. Start still
 	// carries both, and the agent takes the first non-empty.
 	req := &runtimev0.InitRequest{
+		RuntimeImage:                runtimeImage,
 		RuntimeContext:              runtimeContext,
 		ProposedNetworkMappings:     networkMappings,
 		DependenciesEndpoints:       dependenciesEndpoints,

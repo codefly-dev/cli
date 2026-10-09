@@ -13,7 +13,7 @@ loop that changes the CLI itself, see [development.md](development.md).
 ## The cycle
 
 ```
-edit ──▶ codefly run service          local, no image build       seconds
+edit ──▶ codefly run service          local, builds runtime recipes when needed
       └▶ codefly deploy gitops render builds + pushes images      minutes (kept when nothing changed)
          codefly deploy secrets       seeds the environment store one store read per key
          codefly deploy gitops plan   the publication diff        seconds
@@ -23,7 +23,7 @@ edit ──▶ codefly run service          local, no image build       seconds
 
 | Step | Verb | What it does | Cost |
 |---|---|---|---|
-| Run it locally | `codefly run service <name>` | Starts the service and its dependency graph on this machine, injecting connection strings as env vars. No image is built — a docker-backed dependency runs from an image it already has. | Seconds. This is the inner loop; stay in it as long as you can. |
+| Run it locally | `codefly run service <name>` | Starts the service and its dependency graph on this machine, injecting connection strings as env vars. Container services with agent-emitted recipes build and load their runtime image before Init; unchanged inputs reuse the loaded image. Stock-image services retain their own image selection. | Seconds when images are already built; the first recipe build can take minutes. |
 | Render | `codefly deploy gitops render <module> --env <env>` | Resolves the module, builds and pushes every service image, writes the promotable tree under `deployments/modules/<module>/` and records `.codefly-render.json`. | Minutes — the image builds. Images whose inputs did not change are kept, so a configuration-only edit costs the render and no build. |
 | Seed secrets | `codefly deploy secrets --env <env>` | Reads the ExternalSecrets the render projected and resolves each remote property to a source — kept, derived, propagated, generated or required — then writes the store. Values are never printed. | One backend read per remote key, eight at a time: seconds for a small environment, longer for a large one. Run it after a render that added a service or a secret key. |
 | Plan | `codefly deploy gitops plan <module> --env <env>` | Shows the exact publication diff — what publishing would change in the GitOps repository — and writes nothing. | Seconds. |
@@ -38,6 +38,47 @@ after the images are built. Every flag of every verb is in
 [commands.md](commands.md) and [cli-reference.md](cli-reference.md).
 
 ---
+
+## Local container runtime images
+
+After selecting the container backend, the CLI loads and initializes the agent's
+builder and asks it for its recipe when the manifest names no runtime image.
+A single-image recipe is built using the
+same verified buildx execution path as deploy, with `--load` for the local
+Docker engine's architecture and no registry push. Native and Nix runtimes do
+not enter this path. An agent that emits no recipe, or declares artifact builds
+unsupported, retains its existing runtime image selection.
+
+The running agent must advertise `runtime-init-image/v1` before the CLI builds
+and supplies a recipe image through `InitRequest.runtime_image` (field 10).
+Bindings alone do not prove adoption. An older recipe-producing agent without
+the capability is refused before image execution. This handoff follows
+[handbook proposal #260](https://github.com/obin-ai/handbook/pull/260) and
+[Core #748](https://github.com/codefly-dev/core/issues/748).
+
+The image tag is `codefly-local/runtime:sha256-<64 hex digits>`. The hash uses
+the existing image-input identity: verified recipe files, Docker's effective
+build context, target and build arguments, selected platform, Go module
+manifests and resolved base-image digests. The destination image is normalized
+in the build invocation before hashing, avoiding a circular hash; the original
+agent plan digest, including its metadata, remains an input. Temporary paths
+and builder names are normalized by the existing cache.
+There is no timestamp, checkout path or `latest` in the result.
+
+The next run emits and verifies the recipe again, then reuses the cached image
+only if its inputs match and Docker still holds the recorded image ID. A source,
+recipe, argument or base-image change changes the tag. Inputs that cannot be
+identified, or a context that changes during the build, fail the local handoff.
+Network downloads inside a Dockerfile's `RUN` remain subject to the same
+limitation as the build cache described below.
+
+Generated recipes and their image references stay under
+`.codefly/runtime-build/<module>/<service>/`; reuse records stay under
+`.codefly/build-cache/`. Nothing is written into `spec.runtime-image` or the
+authored service tree. The agent retains responsibility for manifest precedence
+and reference validation, including refusing an invalid explicit manifest value
+even when the request supplies a valid image. Remote runtime initialization does
+not receive a local image.
 
 ## What is expensive, and what is kept
 
@@ -58,7 +99,9 @@ So:
 - **Reuse is verified, not assumed.** A pushed image is reused only if the
   registry still serves the recorded manifest digest, a loaded one only if the
   daemon still holds the recorded image ID. Anything the key cannot account for —
-  an unresolvable base image, an unwalkable context — builds.
+  an unresolvable base image, an unwalkable context — builds on the deployment
+  path. A local runtime handoff refuses those inputs because it cannot derive
+  an identifiable tag for them.
 
 The full rules, the exclusions, and what no digest over inputs can bind are in
 [commands.md → Keeping an image whose inputs did not change](commands.md#keeping-an-image-whose-inputs-did-not-change).
