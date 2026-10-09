@@ -275,3 +275,5 @@ require (
 	k8s.io/kube-openapi v0.0.0-20260721132016-d427ff9ee9ad // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+replace github.com/codefly-dev/core => github.com/gael-obin/core v0.0.0-20261008202204-411349b479c7
