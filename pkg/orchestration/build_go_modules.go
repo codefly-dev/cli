@@ -131,19 +131,36 @@ func pruneToProxy(modCache string) error {
 // lands as golang.org/toolchain@… with 0555 directories regardless, and
 // os.RemoveAll stops at the first entry it cannot unlink. Each directory is
 // made writable on the way down, as `go clean -modcache` does, then the tree
-// is removed; a tree that is already gone is not an error.
+// is removed; a tree that is already gone is not an error. The walk is scoped
+// to the tree's own root so a path swapped under it cannot redirect the chmod.
 func removeTree(root string) error {
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+	info, err := os.Lstat(root)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return err
+	case !info.IsDir():
+		return os.Remove(root)
+	}
+	scoped, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	walkErr := fs.WalkDir(scoped.FS(), ".", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if entry.IsDir() {
-			return os.Chmod(path, 0o755)
+			return scoped.Chmod(path, 0o755)
 		}
 		return nil
 	})
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
+	if err := scoped.Close(); err != nil && walkErr == nil {
+		walkErr = err
+	}
+	if walkErr != nil {
+		return walkErr
 	}
 	return os.RemoveAll(root)
 }
