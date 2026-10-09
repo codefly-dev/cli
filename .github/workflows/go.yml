@@ -194,7 +194,7 @@ jobs:
       # cmd/generate/container_recovery_docker_test.go.
       - name: Pull the interrupted-generate proof's image
         if: matrix.gate == 'control-integration'
-        run: docker pull alpine:3.22
+        run: docker pull mirror.gcr.io/library/alpine:3.22
 
       # `codefly generate` builds its containers in the CLI process rather than
       # through an agent, so no fleet rebuild can make them recoverable and no

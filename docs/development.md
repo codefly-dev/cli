@@ -18,14 +18,16 @@ then uses the compiler already installed by setup-go. The deployment-contract
 workflow reads `contracts/deployment/go.mod` separately, so update that directive
 with the root when adopting a security patch.
 
-The ordered-teardown acceptance test and its `control-integration` pre-pull use
-`mirror.gcr.io/library/postgres:16-alpine`, the public mirror of the official
-Postgres image. Hosted runners share Docker Hub's anonymous pull quota; exhausting
-that quota otherwise fails the image prerequisite and cancels the other quality
-jobs through matrix fail-fast. The explicit registry prevents Docker's daemon
-mirror fallback from returning to that exhausted quota. The test's Postgres
-version, assertions and all CI requirements remain unchanged; a failed pull
-still fails the gate.
+The Docker-backed quality fixtures use explicit `mirror.gcr.io/library/` image
+references: Postgres 16 Alpine for ordered teardown, Go 1.27 Alpine for the
+credential-free module build, Alpine 3.22 for generate recovery and bind-mount
+proofs, and Registry 2 for authenticated OCI acquisition. CI pre-pulls the same
+references as their tests. Hosted runners share Docker Hub's anonymous pull
+quota; exhausting it otherwise fails a prerequisite and cancels the other
+quality jobs through matrix fail-fast. Explicit references prevent Docker's
+daemon mirror fallback from returning to that exhausted quota. Image versions,
+assertions and all CI and conformance requirements remain unchanged; a failed
+pull still fails the gate.
 
 ## Repository Structure
 
