@@ -18,6 +18,15 @@ then uses the compiler already installed by setup-go. The deployment-contract
 workflow reads `contracts/deployment/go.mod` separately, so update that directive
 with the root when adopting a security patch.
 
+The `control-integration` runner configures Docker's public Docker Hub mirror
+(`https://mirror.gcr.io`) before pulling its acceptance-test fixtures. Hosted
+runners share Docker Hub's anonymous pull quota; exhausting that quota otherwise
+fails the image prerequisite and cancels the other quality jobs through matrix
+fail-fast. The daemon configuration preserves other runner settings and is
+verified after Docker restarts. Fixture image names and all test, audit, coverage,
+race and conformance requirements stay the same. Mirror misses still follow
+Docker's normal upstream fallback; pull failures remain failures.
+
 ## Repository Structure
 
 ```
