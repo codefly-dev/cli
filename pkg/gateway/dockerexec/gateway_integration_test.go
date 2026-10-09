@@ -1,6 +1,7 @@
 package dockerexec
 
 import (
+	"bytes"
 	"context"
 	"os/exec"
 	"strings"
@@ -20,9 +21,12 @@ func TestGatewayAlpineEndToEnd(t *testing.T) {
 	if err := exec.Command("docker", "version").Run(); err != nil {
 		t.Fatalf("Docker daemon is required: %v", err)
 	}
-	output, err := exec.Command("docker", "run", "-d", "--rm", "alpine:3.21", "sleep", "3600").Output()
+	command := exec.Command("docker", "run", "-d", "--rm", "mirror.gcr.io/library/alpine:3.21", "sleep", "3600")
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	output, err := command.Output()
 	if err != nil {
-		t.Fatalf("start real Alpine container: %v", err)
+		t.Fatalf("start real Alpine container: %v\n%s", err, stderr.String())
 	}
 	containerID := strings.TrimSpace(string(output))
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", containerID).Run() })
