@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -105,7 +106,7 @@ func pruneToProxy(modCache string) error {
 		if entry.Name() == "cache" {
 			continue
 		}
-		if err = os.RemoveAll(filepath.Join(modCache, entry.Name())); err != nil {
+		if err = removeTree(filepath.Join(modCache, entry.Name())); err != nil {
 			return err
 		}
 	}
@@ -117,11 +118,34 @@ func pruneToProxy(modCache string) error {
 		if entry.Name() == "download" {
 			continue
 		}
-		if err = os.RemoveAll(filepath.Join(modCache, "cache", entry.Name())); err != nil {
+		if err = removeTree(filepath.Join(modCache, "cache", entry.Name())); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// removeTree removes a tree the go tool may have written read-only. -modcacherw
+// keeps the modules it extracts writable, but a toolchain it downloads into the
+// module cache — GOTOOLCHAIN=auto, a go directive newer than the host's go —
+// lands as golang.org/toolchain@… with 0555 directories regardless, and
+// os.RemoveAll stops at the first entry it cannot unlink. Each directory is
+// made writable on the way down, as `go clean -modcache` does, then the tree
+// is removed; a tree that is already gone is not an error.
+func removeTree(root string) error {
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return os.Chmod(path, 0o755)
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return os.RemoveAll(root)
 }
 
 // proxiesFor fetches every download a recipe declares and returns the proxy to
@@ -169,7 +193,7 @@ func (p *goModulePrefetch) Close() error {
 	if p.root == "" {
 		return nil
 	}
-	err := os.RemoveAll(p.root)
+	err := removeTree(p.root)
 	p.root = ""
 	p.fetched = map[string]string{}
 	return err
@@ -182,7 +206,8 @@ func (p *goModulePrefetch) Close() error {
 // host's `go` does. GOWORK is off because a build resolves its module alone, as
 // the recipe does; -modcacherw keeps the cache removable; -mod=readonly makes an
 // incomplete go.sum fail here, as it would in the build, instead of being
-// repaired. The one thing it does impose on git is gitPrefetchConfig.
+// repaired (a downloaded toolchain ignores -modcacherw; removeTree covers it).
+// The one thing it does impose on git is gitPrefetchConfig.
 func goPrefetchEnv(base []string, modCache string) []string {
 	configured := hostGitConfigCount(base)
 	env := make([]string, 0, len(base)+4+2*len(gitPrefetchConfig))
