@@ -18,14 +18,14 @@ then uses the compiler already installed by setup-go. The deployment-contract
 workflow reads `contracts/deployment/go.mod` separately, so update that directive
 with the root when adopting a security patch.
 
-The `control-integration` runner configures Docker's public Docker Hub mirror
-(`https://mirror.gcr.io`) before pulling its acceptance-test fixtures. Hosted
-runners share Docker Hub's anonymous pull quota; exhausting that quota otherwise
-fails the image prerequisite and cancels the other quality jobs through matrix
-fail-fast. The daemon configuration preserves other runner settings and is
-verified after Docker restarts. Fixture image names and all test, audit, coverage,
-race and conformance requirements stay the same. Mirror misses still follow
-Docker's normal upstream fallback; pull failures remain failures.
+The ordered-teardown acceptance test and its `control-integration` pre-pull use
+`mirror.gcr.io/library/postgres:16-alpine`, the public mirror of the official
+Postgres image. Hosted runners share Docker Hub's anonymous pull quota; exhausting
+that quota otherwise fails the image prerequisite and cancels the other quality
+jobs through matrix fail-fast. The explicit registry prevents Docker's daemon
+mirror fallback from returning to that exhausted quota. The test's Postgres
+version, assertions and all CI requirements remain unchanged; a failed pull
+still fails the gate.
 
 ## Repository Structure
 

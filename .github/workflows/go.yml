@@ -61,27 +61,6 @@ jobs:
       - name: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Hosted runners share Docker Hub's anonymous pull quota. Route the
-      # control fixtures through Docker's registry-mirror support to avoid
-      # quota failures cancelling the other quality jobs via matrix fail-fast.
-      # Keep the image names and the acceptance tests themselves unchanged.
-      - name: Configure the control runner's Docker Hub mirror
-        if: matrix.gate == 'control-integration'
-        run: |
-          set -euo pipefail
-          sudo mkdir -p /etc/docker
-          if sudo test -f /etc/docker/daemon.json; then
-            sudo cat /etc/docker/daemon.json | tee "${RUNNER_TEMP}/docker-daemon.json" > /dev/null
-          else
-            echo '{}' > "${RUNNER_TEMP}/docker-daemon.json"
-          fi
-          jq '."registry-mirrors" = (["https://mirror.gcr.io"] + (."registry-mirrors" // []) | unique)' \
-            "${RUNNER_TEMP}/docker-daemon.json" > "${RUNNER_TEMP}/docker-daemon-mirrored.json"
-          sudo install -m 0644 "${RUNNER_TEMP}/docker-daemon-mirrored.json" /etc/docker/daemon.json
-          sudo systemctl restart docker
-          docker info --format '{{json .RegistryConfig.Mirrors}}' | \
-            jq -e 'any(.[]; . == "https://mirror.gcr.io/" or . == "https://mirror.gcr.io")'
-
       - name: Set up Go
         if: matrix.gate == 'coverage' || matrix.gate == 'race'
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -181,7 +160,7 @@ jobs:
       # pkg/orchestration/teardown_postgres_integration_test.go.
       - name: Pull the ordered-teardown proof's database image
         if: matrix.gate == 'control-integration'
-        run: docker pull postgres:16-alpine
+        run: docker pull mirror.gcr.io/library/postgres:16-alpine
 
       # Ordered teardown (F09): the consumer holds its drain open and commits a
       # final transaction to a disposable Postgres; the database must not begin
