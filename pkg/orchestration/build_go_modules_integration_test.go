@@ -68,7 +68,7 @@ func goModuleContext(t *testing.T, source string) string {
 
 	dockerfile := `FROM scratch AS gomodproxy
 
-FROM golang:1.27-alpine
+FROM mirror.gcr.io/library/golang:1.27-alpine
 WORKDIR /app
 COPY code/go.mod code/go.sum code/
 RUN --mount=type=bind,from=gomodproxy,target=/gomodproxy \

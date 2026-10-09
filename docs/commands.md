@@ -2237,6 +2237,34 @@ codefly agent deps --pin vX.Y.Z      # Pin Core across root, base and generated 
 codefly agent deps --pin vX.Y.Z --dependency github.com/codefly-dev/sdk-go@vA.B.C
 ```
 
+`codefly agent release` gates a service-agent release, opens its version PR,
+waits for a human merge, tags the merge commit and verifies published assets.
+Before the `source` stage it queries GitHub check runs for the checkout's exact
+HEAD SHA and matches them to a completed, successful CI workflow run in the
+same repository. CI means a workflow named `ci` (case-insensitive) or stored at
+`.github/workflows/ci.yml` or `.github/workflows/ci.yaml`. A passing individual
+job alone does not attest a workflow.
+
+With that attestation, local source tests are skipped; source preparation,
+build, audit, conformance and drift checks still run. Without it (including an
+API lookup failure), source tests run locally as usual. A checkout changed from
+HEAD, including changes from `--pin`, also requires local tests.
+`--no-attestation` forces the local run without querying CI:
+
+```bash
+codefly agent release --no-wait                # gate and open the version PR
+codefly agent release --no-attestation        # force local source tests
+```
+
+The command prints the chosen source path and the location of
+`release-report.json` in a temporary directory outside the checkout, retained
+with `report.json` and CI artifacts even if CI fails. The release report
+records `source.path` (`attested`, `local`, or `not-run` when an earlier stage
+fails), the reason, and the attesting workflow name, run ID and full SHA when
+present, alongside the full CI report. The version PR also records the source
+path and attestation. Standalone `codefly agent ci` always runs source tests
+locally.
+
 `agent deps --dependency` is repeatable and requires `--pin`. It updates only
 modules that already require the selected library, then verifies their standalone
 builds and regenerates factory locks. After pinning, every owned module (root

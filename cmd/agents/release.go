@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -38,7 +39,7 @@ var ReleaseCmd = &cobra.Command{
 	Short: "Bump, PR, tag-on-merge, and verify a service agent's release",
 	Long: `release turns the manual per-repo release cascade into one verb:
 
-  1. gate locally BEFORE tagging: pin core (--pin) then run agent CI
+  1. gate BEFORE tagging: pin core (--pin) then run agent CI
   2. bump the manifest to the next version above the authoritative remote tag
   3. open a PR from a release branch — a human merges it, per branch policy
   4. tag the merge commit, then verify the release published a downloadable
@@ -48,6 +49,11 @@ It is safe to re-run: an open PR is waited on, a merged PR is tagged, and a
 release already tagged through this flow whose asset has not published yet is
 re-verified rather than superseded by a higher version. Pass --no-wait to open
 the PR and stop (tag + verify on a later re-run).
+
+Successful CI for the exact checkout HEAD can attest source tests; the release
+report records the workflow, run ID and SHA. Otherwise source tests run locally.
+Pass --no-attestation to force local source tests. Build, audit and conformance
+still run. A changed checkout (including a core pin) requires local source tests.
 
 Requires the gh CLI to be authenticated (or GITHUB_TOKEN / GH_TOKEN set).
 
@@ -69,6 +75,7 @@ Examples:
 		o.bump, _ = cmd.Flags().GetString("bump")
 		o.platform, _ = cmd.Flags().GetString("platform")
 		o.noWait, _ = cmd.Flags().GetBool("no-wait")
+		o.noAttestation, _ = cmd.Flags().GetBool("no-attestation")
 		return runAgentRelease(ctx, o)
 	},
 }
@@ -78,15 +85,17 @@ func init() {
 	ReleaseCmd.Flags().String("pin", "", "Pin core to this published version before the CI gate (e.g. latest, v0.3.11)")
 	ReleaseCmd.Flags().String("bump", "patch", "Version bump from the latest tag: patch | minor | major")
 	ReleaseCmd.Flags().String("platform", "", "Additional os_arch the release must ship (e.g. linux_arm64); linux_amd64 is always required")
+	ReleaseCmd.Flags().Bool("no-attestation", false, "Run local source tests even when the head SHA has successful CI attestation")
 	ReleaseCmd.Flags().Bool("no-wait", false, "Open the PR and stop; re-run after merge to tag and verify")
 }
 
 type releaseOptions struct {
-	dir      string
-	pin      string
-	bump     string
-	platform string
-	noWait   bool
+	dir           string
+	pin           string
+	bump          string
+	platform      string
+	noWait        bool
+	noAttestation bool
 }
 
 // Poll cadence for the two waits (merge, then asset publish). Package-level so
@@ -98,7 +107,7 @@ var (
 	assetPollTimeout  = 20 * time.Minute
 )
 
-// runReleaseGate runs the pre-tag local gate (pin core, then agent CI). A seam
+// runReleaseGate runs the pre-tag gate (pin core, then agent CI). A seam
 // so tests can drive the release flow without a real, minutes-long CI build.
 var runReleaseGate = runReleaseGateExec
 
@@ -334,7 +343,7 @@ func (t *releaseTarget) latestRemoteTag(ctx context.Context) (*semver.Version, e
 	return best, nil
 }
 
-// openReleasePR runs the local gate, bumps the manifest on a release branch,
+// openReleasePR runs the release gate, bumps the manifest on a release branch,
 // commits (pin + version bump together), pushes, and opens the PR. On any
 // failure before the PR is open it restores the working tree to main so the
 // operator's checkout is left exactly as it was found.
@@ -357,7 +366,8 @@ func (t *releaseTarget) openReleasePR(ctx context.Context, o releaseOptions, m *
 	}()
 
 	from := m.Version.String()
-	if err = runReleaseGate(ctx, t.dir, o.pin); err != nil {
+	sourceReport, err := runReleaseGate(ctx, t, o)
+	if err != nil {
 		return nil, err
 	}
 	if err = m.WriteVersion(newVer); err != nil {
@@ -377,7 +387,7 @@ func (t *releaseTarget) openReleasePR(ctx context.Context, o releaseOptions, m *
 		Title: github.Ptr("release: " + newTag),
 		Head:  github.Ptr(branch),
 		Base:  github.Ptr("main"),
-		Body:  github.Ptr(releasePRBody(o, from, newTag)),
+		Body:  github.Ptr(releasePRBody(o, from, newTag, sourceReport)),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open release pull request: %w", err)
@@ -394,13 +404,16 @@ func (t *releaseTarget) openReleasePR(ctx context.Context, o releaseOptions, m *
 	return pr, nil
 }
 
-func releasePRBody(o releaseOptions, from, tag string) string {
+func releasePRBody(o releaseOptions, from, tag string, sourceReport *releaseSourceReport) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Release %s (from %s).\n\n", tag, from)
 	if o.pin != "" {
 		fmt.Fprintf(&b, "- core pinned to `%s`\n", o.pin)
 	}
 	b.WriteString("- gated on `agent ci` before tagging\n")
+	if sourceReport != nil {
+		fmt.Fprintf(&b, "- %s\n", sourceReport.summary())
+	}
 	b.WriteString("- tag is cut on merge; the published asset is verified after\n")
 	return b.String()
 }
@@ -698,27 +711,48 @@ var gitRun = func(ctx context.Context, dir string, args ...string) (string, erro
 	return string(out), nil
 }
 
-func runReleaseGateExec(ctx context.Context, dir, pin string) error {
+func runReleaseGateExec(ctx context.Context, target *releaseTarget, options releaseOptions) (*releaseSourceReport, error) {
 	self, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("resolve codefly executable: %w", err)
+		return nil, fmt.Errorf("resolve codefly executable: %w", err)
 	}
-	if pin != "" {
-		if err = runSelf(ctx, self, dir, "agent", "deps", "--pin", pin, "--dir", dir); err != nil {
-			return fmt.Errorf("pin core to %s: %w", pin, err)
+	if options.pin != "" {
+		if err = runSelf(ctx, self, target.dir, "agent", "deps", "--pin", options.pin, "--dir", target.dir); err != nil {
+			return nil, fmt.Errorf("pin core to %s: %w", options.pin, err)
 		}
 	}
-	// CI writes its report/artifacts to a temp dir so the release branch stays
-	// clean except for the pin and version bump we intend to commit.
+	// Keep the report and artifacts outside the checkout, including on failure.
 	output, err := os.MkdirTemp("", "codefly-agent-release-ci-*")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer os.RemoveAll(output)
-	if err = runSelf(ctx, self, dir, "agent", "ci", "--dir", dir, "--output", output); err != nil {
-		return fmt.Errorf("agent ci gate failed — not tagging: %w", err)
+	sourceReport := &releaseSourceReport{Path: "not-run", Reason: "source stage was not reached"}
+	report, runErr := runAgentCI(ctx, agentCIOptions{
+		dir: target.dir, output: output, failOnVuln: true,
+		sourceAttestation: func(ctx context.Context) bool {
+			*sourceReport = target.sourceAttestation(ctx, options.noAttestation)
+			cli.Info("%s", sourceReport.summary())
+			return sourceReport.Attestation != nil
+		},
+	})
+	payload, reportErr := marshalAgentCIReport(report)
+	if reportErr == nil {
+		reportErr = atomicWrite(filepath.Join(output, agentCIReportFilename), payload, 0o644)
 	}
-	return nil
+	releasePayload, releaseErr := json.MarshalIndent(struct {
+		Source *releaseSourceReport `json:"source"`
+		CI     json.RawMessage      `json:"ci"`
+	}{sourceReport, payload}, "", "  ")
+	if releaseErr == nil {
+		releaseErr = atomicWrite(filepath.Join(output, "release-report.json"), append(releasePayload, '\n'), 0o644)
+	}
+	summary := report.GetSummary()
+	cli.Header(1, "Codefly agent CI %s: %d passed, %d failed, %d skipped", report.GetStatus(), summary.GetPassed(), summary.GetFailed(), summary.GetSkipped())
+	cli.Info("Release report: %s", filepath.Join(output, "release-report.json"))
+	if err := errors.Join(runErr, reportErr, releaseErr); err != nil {
+		return sourceReport, fmt.Errorf("agent ci gate failed — not tagging: %w", err)
+	}
+	return sourceReport, nil
 }
 
 func runSelf(ctx context.Context, self, dir string, args ...string) error {
