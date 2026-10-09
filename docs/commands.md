@@ -2624,6 +2624,49 @@ service with no proto, and a `rest` endpoint with no OpenAPI document. An
 interface may export such an endpoint so composed modules can reach it (a
 gateway's REST surface, say); that export is reachability, not a contract.
 
+For a restricted protobuf listener, the owner generates a procedure inventory
+from the same registration/routing tables its runtime uses. In
+`service.codefly.yaml`, point `spec.api-contract-surfaces` at that generated JSON
+file, relative to the service directory:
+
+```yaml
+spec:
+  api-contract-surfaces: generated/api-contract-surfaces.json
+```
+
+The document maps endpoint names to Core's existing API catalog service records:
+
+```json
+{
+  "connect": [{
+    "name": "Worker", "fullName": "example.v1.Worker",
+    "procedures": ["/example.v1.Worker/Apply", "/example.v1.Worker/Lookup"]
+  }],
+  "receipts": [{
+    "name": "Worker", "fullName": "example.v1.Worker",
+    "procedures": ["/example.v1.Worker/Lookup"]
+  }]
+}
+```
+
+This inventory describes all served methods, not just Runnable operations.
+Generate it with the owner's routing artifacts; do not hand-maintain a second
+list. Every exported protobuf endpoint needs an entry when the setting is used.
+Unknown endpoints, fields, services, methods and duplicate procedures are
+refused. The file must stay within the service directory. Descriptor bytes remain
+complete and unchanged; the inventory supplies each catalog row's served
+`services[].procedures`. A service exporting multiple protobuf endpoints must
+supply the inventory, since copying a full descriptor to each cannot prove which
+listener serves a method. A single endpoint keeps the full-descriptor default;
+restricted single listeners must also supply their inventory.
+
+After adopting this setting, regenerate contracts and runnables together. Older
+catalogs may list the full surface on every endpoint; derivation cannot infer
+runtime restrictions missing from the published catalog. For saas-starter,
+authority's source is `ModuleAuthorityProcedures`; Connect's source is its full
+service registration catalog. The gateway route catalog alone omits internal
+procedures and is not a complete listener inventory.
+
 Run it before `module-package build`; the package carries the result. `--check`
 is the CI drift gate.
 
@@ -2643,8 +2686,11 @@ authoring: the option says which methods are operations and under what
 execution policy, and the message descriptors say what the contract is.
 
 The input is what `generate contracts` already wrote — each gRPC/connect
-endpoint's `contract.binpb` — so run that first. No flag names a method; the
-option is the only selector.
+endpoint's served `services[].procedures` in the API catalog and its
+`contract.binpb` — so run that first. A method is derived only when that endpoint
+serves it and its descriptor carries the option. Its paired Lookup must also be
+served there; descriptor availability alone is insufficient. Catalog procedures
+absent from the endpoint's descriptor package are refused. No flag names a method.
 
 ```
 contracts/runnables/
@@ -2663,8 +2709,9 @@ what a composition reads to prepare bindings — identity, digest, full method,
 input and output message names and
 endpoint coordinates per row.
 
-The tree is fully owned: a method that no longer carries the option loses its
-directory. Only the three file names a generation produces are removed, and
+The tree is fully owned: a method that no longer carries the option or is no
+longer served on an endpoint loses that endpoint's directory. Only the three
+file names a generation produces are removed, and
 only the directories that empties, so pointing `--output` at a directory this
 command shares — `--output=contracts`, one word short of `contracts/runnables`
 — never destroys what is beside it. A module with no marked method, and a

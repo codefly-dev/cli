@@ -43,6 +43,16 @@ owns the option, the descriptor-to-bounded-schema projection and
 published contracts, the layout on disk and the drift gate. Nothing about the
 contract is authored twice — it is the projection of the method's own messages.
 
+Derivation is endpoint-specific: `catalog.codefly.json`'s
+`endpoints[].services[].procedures` declares the served surface; descriptor bytes
+supply each method's option and schema. Sharing a descriptor does not make every
+method callable on every listener. Unknown catalog methods are refused, and a
+marked method's paired Lookup must also be served on that endpoint. Removing a
+method from an endpoint removes its derived package; `--check` detects the change.
+Owners with restricted listeners generate the procedure inventory from their
+registration/routing tables and configure
+[`spec.api-contract-surfaces`](commands.md#generate-contracts) before exporting.
+
 This is a separate path from `build runnable`, not a branch in it. A SERVICE
 package has no archive and no launch command: the implementation is the method
 itself, reached on the owner's endpoint, inside the process the owner already
@@ -85,7 +95,7 @@ Each value is a list of Core `ScopeSelection` messages (`slot`, `invoke`,
 environments:
   - name: staging
     runnable-scope-selections:
-      SAAS_STARTER__ACCOUNTS_AUTHORITY_INVOKE_SOURCE_OPERATION: &source-scopes
+      SAAS_STARTER__ACCOUNTS_CONNECT_INVOKE_SOURCE_OPERATION:
         - slot: source
           invoke:
             - resource_kind: datasource.sources
@@ -95,17 +105,18 @@ environments:
             - resource_kind: datasource.sources
               actions: [read]
               resource_ids: [source-a]
-      SAAS_STARTER__ACCOUNTS_CONNECT_INVOKE_SOURCE_OPERATION: *source-scopes
 ```
 
 `source-a` is an illustrative ID; select the exact resources this installation
 may use. Quote IDs that look like YAML numbers. The owner of
 `InvokeSourceOperation` requires `source` with actions `invoke` and `read`, and
 `lookup: true`, so its lookup must cover the same exact IDs with action `read`.
-When a module publishes the same operation on several endpoints, each index row
-is a binding and needs its own selection. The saas-starter catalog publishes
-this descriptor on both `authority` and `connect`; select
-`SAAS_STARTER__ACCOUNTS_CONNECT_INVOKE_SOURCE_OPERATION` as well.
+When an operation is actually served on several published endpoints, each index
+row is a binding and needs its own selection. Saas-starter serves this operation
+and its Lookup on `connect`; its `authority` listener does not serve them even
+though both endpoints carry the complete descriptor. Receipt pruning is a
+separate operation and selection key,
+`SAAS_STARTER__ACCOUNTS_CONNECT_PRUNE_SOURCE_OPERATION_RECEIPTS`.
 
 ```sh
 codefly generate runnables saas-starter

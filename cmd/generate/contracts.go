@@ -51,6 +51,12 @@ plus a copy of the service's proto sources; REST endpoints get their OpenAPI
 document (openapi.json). HTTP, TCP, and MCP endpoints have no machine-readable
 contract and are skipped, as is a connect endpoint whose service has no proto.
 
+For restricted listeners, service.codefly.yaml's spec.api-contract-surfaces
+names an owner-generated JSON inventory of endpoint procedures, relative to the
+service directory. It uses the catalog's service/procedure shape. Multiple
+exported protobuf endpoints require this inventory; a full descriptor alone
+does not establish what each listener serves. See docs/commands.md.
+
 Run it before module-package build; the package carries the result. --check
 is the CI drift gate: it regenerates into a temporary directory and compares
 against what's on disk, without writing anything.
@@ -180,6 +186,10 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 		if len(carriers) == 0 {
 			continue
 		}
+		surfaces, surfaceErr := loadContractSurfaces(service, carriers)
+		if surfaceErr != nil {
+			return nil, surfaceErr
+		}
 
 		loaded, loadErr := generators.LoadServiceEndpoints(ctx, workspace, module, service)
 		if loadErr != nil {
@@ -195,7 +205,7 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 			if !ok {
 				return nil, fmt.Errorf("service %s does not report endpoint %q at Builder.Load", serviceName, endpoint.Name)
 			}
-			contractEndpoint, writeErr := writeEndpointContract(ctx, module, service, actual, opts)
+			contractEndpoint, writeErr := writeEndpointContract(ctx, module, service, actual, surfaces[endpoint.Name], opts)
 			if writeErr != nil {
 				return nil, fmt.Errorf("cannot write contract for %s/%s: %w", serviceName, endpoint.Name, writeErr)
 			}
@@ -321,7 +331,7 @@ func endpointCarriesContract(api string) bool {
 
 // writeEndpointContract writes one endpoint's contract files and returns its
 // catalog entry.
-func writeEndpointContract(ctx context.Context, module *resources.Module, service *resources.Service, endpoint *basev0.Endpoint, opts generateOptions) (*composition.APIContractEndpoint, error) {
+func writeEndpointContract(ctx context.Context, module *resources.Module, service *resources.Service, endpoint *basev0.Endpoint, surface []composition.APIContractService, opts generateOptions) (*composition.APIContractEndpoint, error) {
 	physicalDir := filepath.Join(opts.writeDir, service.Name, endpoint.Name)
 	canonicalDir := filepath.Join(opts.canonicalOutput, service.Name, endpoint.Name)
 	if err := os.RemoveAll(physicalDir); err != nil {
@@ -332,7 +342,7 @@ func writeEndpointContract(ctx context.Context, module *resources.Module, servic
 	}
 
 	if endpoint.Api == standards.CONNECT || resources.IsGRPC(ctx, endpoint) != nil {
-		return writeProtobufContract(ctx, module, service, endpoint, physicalDir, canonicalDir)
+		return writeProtobufContract(ctx, module, service, endpoint, surface, physicalDir, canonicalDir)
 	}
 	if rest := resources.IsRest(ctx, endpoint); rest != nil {
 		return writeRestContract(ctx, module, endpoint, rest, physicalDir, canonicalDir)
@@ -346,7 +356,7 @@ func writeEndpointContract(ctx context.Context, module *resources.Module, servic
 // an HTTP-shaped endpoint that carries no GrpcAPI, so the package and services
 // are derived from the built descriptor set rather than from endpoint API
 // details.
-func writeProtobufContract(ctx context.Context, module *resources.Module, service *resources.Service, endpoint *basev0.Endpoint, physicalDir, canonicalDir string) (*composition.APIContractEndpoint, error) {
+func writeProtobufContract(ctx context.Context, module *resources.Module, service *resources.Service, endpoint *basev0.Endpoint, surface []composition.APIContractService, physicalDir, canonicalDir string) (*composition.APIContractEndpoint, error) {
 	protoDir := filepath.Join(service.Dir(), "proto")
 	if ok, _ := shared.FileExists(ctx, filepath.Join(protoDir, "buf.yaml")); !ok {
 		return nil, fmt.Errorf("service %s has no proto/buf.yaml; cannot build a descriptor set for endpoint %s", service.Name, endpoint.Name)
@@ -356,15 +366,33 @@ func writeProtobufContract(ctx context.Context, module *resources.Module, servic
 	if err != nil {
 		return nil, fmt.Errorf("cannot build descriptor set: %w", err)
 	}
+	return writeBuiltProtobufContract(ctx, module, service, endpoint, surface, physicalDir, canonicalDir, descriptorSet)
+}
 
+// writeBuiltProtobufContract keeps the export boundary independently testable
+// with real descriptor bytes, without a provider toolchain or released agent.
+func writeBuiltProtobufContract(ctx context.Context, module *resources.Module, service *resources.Service, endpoint *basev0.Endpoint, surface []composition.APIContractService, physicalDir, canonicalDir string, descriptorSet []byte) (*composition.APIContractEndpoint, error) {
+	protoDir := filepath.Join(service.Dir(), "proto")
 	var set descriptorpb.FileDescriptorSet
-	if err = googleproto.Unmarshal(descriptorSet, &set); err != nil {
+	if err := googleproto.Unmarshal(descriptorSet, &set); err != nil {
 		return nil, fmt.Errorf("cannot parse generated descriptor set: %w", err)
 	}
 
 	pkg, err := serviceContractPackage(&set, protoDir)
 	if err != nil {
 		return nil, fmt.Errorf("service %s endpoint %s: %w", service.Name, endpoint.Name, err)
+	}
+	entry := &composition.APIContractEndpoint{
+		Service: service.Name, Endpoint: endpoint.Name, API: endpoint.Api,
+		Kind: composition.APIContractKindProtobuf, Package: pkg,
+		Digest:   composition.APIContractDigest(descriptorSet),
+		Services: surface,
+	}
+	if entry.Services == nil {
+		entry.Services = composition.ProtobufServices(&set, pkg)
+	}
+	if _, err = endpointProcedures(&set, entry); err != nil {
+		return nil, err
 	}
 
 	contractPath := filepath.Join(physicalDir, "contract.binpb")
@@ -380,16 +408,8 @@ func writeProtobufContract(ctx context.Context, module *resources.Module, servic
 		return nil, err
 	}
 
-	return &composition.APIContractEndpoint{
-		Service:  service.Name,
-		Endpoint: endpoint.Name,
-		API:      endpoint.Api,
-		Kind:     composition.APIContractKindProtobuf,
-		Package:  pkg,
-		Path:     relPath,
-		Digest:   composition.APIContractDigest(descriptorSet),
-		Services: composition.ProtobufServices(&set, pkg),
-	}, nil
+	entry.Path = relPath
+	return entry, nil
 }
 
 // serviceContractPackage returns the single proto package that the service's

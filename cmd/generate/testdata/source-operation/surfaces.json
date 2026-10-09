@@ -1,0 +1,523 @@
+{
+  "authority": [
+    {
+      "name": "ModuleCapabilitiesService",
+      "fullName": "saas.accounts.v1.ModuleCapabilitiesService",
+      "procedures": [
+        "/saas.accounts.v1.ModuleCapabilitiesService/AckJob",
+        "/saas.accounts.v1.ModuleCapabilitiesService/ApproveExecutableArtifact",
+        "/saas.accounts.v1.ModuleCapabilitiesService/AuthorizeExecutableArtifact",
+        "/saas.accounts.v1.ModuleCapabilitiesService/CancelApproval",
+        "/saas.accounts.v1.ModuleCapabilitiesService/CheckWorkContextRecordAccess",
+        "/saas.accounts.v1.ModuleCapabilitiesService/ClaimJobs",
+        "/saas.accounts.v1.ModuleCapabilitiesService/DeclareAuditEventTypes",
+        "/saas.accounts.v1.ModuleCapabilitiesService/EmitAuditEvent",
+        "/saas.accounts.v1.ModuleCapabilitiesService/EnqueueJob",
+        "/saas.accounts.v1.ModuleCapabilitiesService/ExchangeDelegatedOperationAudience",
+        "/saas.accounts.v1.ModuleCapabilitiesService/ExchangeDelegatedReadAudience",
+        "/saas.accounts.v1.ModuleCapabilitiesService/FetchDatasourceBlob",
+        "/saas.accounts.v1.ModuleCapabilitiesService/FetchDatasourceFiles",
+        "/saas.accounts.v1.ModuleCapabilitiesService/GetApproval",
+        "/saas.accounts.v1.ModuleCapabilitiesService/GetCurrentInstallation",
+        "/saas.accounts.v1.ModuleCapabilitiesService/HeartbeatJob",
+        "/saas.accounts.v1.ModuleCapabilitiesService/ListReadableSourceCollections",
+        "/saas.accounts.v1.ModuleCapabilitiesService/ListSubjectVisibility",
+        "/saas.accounts.v1.ModuleCapabilitiesService/ListSubscriptions",
+        "/saas.accounts.v1.ModuleCapabilitiesService/NackJob",
+        "/saas.accounts.v1.ModuleCapabilitiesService/NotifyOrgAdmins",
+        "/saas.accounts.v1.ModuleCapabilitiesService/NotifyUser",
+        "/saas.accounts.v1.ModuleCapabilitiesService/PlaceRecord",
+        "/saas.accounts.v1.ModuleCapabilitiesService/PublishEvent",
+        "/saas.accounts.v1.ModuleCapabilitiesService/ReplayEvents",
+        "/saas.accounts.v1.ModuleCapabilitiesService/RequestApproval",
+        "/saas.accounts.v1.ModuleCapabilitiesService/RevokeExecutableArtifact",
+        "/saas.accounts.v1.ModuleCapabilitiesService/Subscribe",
+        "/saas.accounts.v1.ModuleCapabilitiesService/Unsubscribe"
+      ]
+    },
+    {
+      "name": "WorkContextService",
+      "fullName": "saas.accounts.v1.WorkContextService",
+      "procedures": [
+        "/saas.accounts.v1.WorkContextService/AuthorizeEvidenceRead",
+        "/saas.accounts.v1.WorkContextService/CheckAuthorizationRevision"
+      ]
+    }
+  ],
+  "connect": [
+    {
+      "name": "APIKeyService",
+      "fullName": "saas.accounts.v1.APIKeyService",
+      "procedures": [
+        "/saas.accounts.v1.APIKeyService/CreateAPIKey",
+        "/saas.accounts.v1.APIKeyService/ListAPIKeys",
+        "/saas.accounts.v1.APIKeyService/RevokeAPIKey",
+        "/saas.accounts.v1.APIKeyService/ValidateAPIKey"
+      ]
+    },
+    {
+      "name": "AccessibleScopeService",
+      "fullName": "saas.accounts.v1.AccessibleScopeService",
+      "procedures": [
+        "/saas.accounts.v1.AccessibleScopeService/ListMyAccessibleScopes"
+      ]
+    },
+    {
+      "name": "ApprovalReviewService",
+      "fullName": "saas.accounts.v1.ApprovalReviewService",
+      "procedures": [
+        "/saas.accounts.v1.ApprovalReviewService/DecideApprovalReview",
+        "/saas.accounts.v1.ApprovalReviewService/GetApprovalReview"
+      ]
+    },
+    {
+      "name": "AuditService",
+      "fullName": "saas.accounts.v1.AuditService",
+      "procedures": [
+        "/saas.accounts.v1.AuditService/AggregateAuditLog",
+        "/saas.accounts.v1.AuditService/ExportAuditLog",
+        "/saas.accounts.v1.AuditService/ListAuditEventTypes",
+        "/saas.accounts.v1.AuditService/QueryAuditLog"
+      ]
+    },
+    {
+      "name": "AuthService",
+      "fullName": "saas.accounts.v1.AuthService",
+      "procedures": [
+        "/saas.accounts.v1.AuthService/Authenticate",
+        "/saas.accounts.v1.AuthService/BeginOAuth",
+        "/saas.accounts.v1.AuthService/BeginWebAuthnMFAChallenge",
+        "/saas.accounts.v1.AuthService/CompleteMFAChallenge",
+        "/saas.accounts.v1.AuthService/CompleteWebAuthnMFAChallenge",
+        "/saas.accounts.v1.AuthService/ExchangeClientToken",
+        "/saas.accounts.v1.AuthService/GetJWKS",
+        "/saas.accounts.v1.AuthService/IssueClientAuthorizationCode",
+        "/saas.accounts.v1.AuthService/Logout",
+        "/saas.accounts.v1.AuthService/RefreshToken",
+        "/saas.accounts.v1.AuthService/SwitchOrganization",
+        "/saas.accounts.v1.AuthService/ValidateClientAuthorization"
+      ]
+    },
+    {
+      "name": "BillingService",
+      "fullName": "saas.accounts.v1.BillingService",
+      "procedures": [
+        "/saas.accounts.v1.BillingService/ListInvoices",
+        "/saas.accounts.v1.BillingService/ListPublicPlans",
+        "/saas.accounts.v1.BillingService/OpenPortal"
+      ]
+    },
+    {
+      "name": "ClientRegistryService",
+      "fullName": "saas.accounts.v1.ClientRegistryService",
+      "procedures": [
+        "/saas.accounts.v1.ClientRegistryService/ListRegisteredClients"
+      ]
+    },
+    {
+      "name": "ConsentService",
+      "fullName": "saas.accounts.v1.ConsentService",
+      "procedures": [
+        "/saas.accounts.v1.ConsentService/AcceptTerms",
+        "/saas.accounts.v1.ConsentService/GetStatus",
+        "/saas.accounts.v1.ConsentService/UpdatePreferences"
+      ]
+    },
+    {
+      "name": "DashboardService",
+      "fullName": "saas.accounts.v1.DashboardService",
+      "procedures": [
+        "/saas.accounts.v1.DashboardService/CreateDashboard",
+        "/saas.accounts.v1.DashboardService/DeleteDashboard",
+        "/saas.accounts.v1.DashboardService/GetDashboard",
+        "/saas.accounts.v1.DashboardService/ListDashboards",
+        "/saas.accounts.v1.DashboardService/ShareDashboard",
+        "/saas.accounts.v1.DashboardService/UpdateDashboard"
+      ]
+    },
+    {
+      "name": "DatasourceService",
+      "fullName": "saas.accounts.v1.DatasourceService",
+      "procedures": [
+        "/saas.accounts.v1.DatasourceService/AddGitHubSource",
+        "/saas.accounts.v1.DatasourceService/AddSource",
+        "/saas.accounts.v1.DatasourceService/BeginDatasourceAccountLink",
+        "/saas.accounts.v1.DatasourceService/BeginGitHubAppSetup",
+        "/saas.accounts.v1.DatasourceService/BindDatasourceGroup",
+        "/saas.accounts.v1.DatasourceService/ClaimDatasourceDomain",
+        "/saas.accounts.v1.DatasourceService/CompleteDatasourceAccountLink",
+        "/saas.accounts.v1.DatasourceService/CompleteGitHubAppSetup",
+        "/saas.accounts.v1.DatasourceService/DeclareSourceOperations",
+        "/saas.accounts.v1.DatasourceService/DeleteDatasourceAccountLink",
+        "/saas.accounts.v1.DatasourceService/DeleteDatasourceDomain",
+        "/saas.accounts.v1.DatasourceService/DeleteSource",
+        "/saas.accounts.v1.DatasourceService/GetDatasourceCatalog",
+        "/saas.accounts.v1.DatasourceService/GetDatasourceDirectory",
+        "/saas.accounts.v1.DatasourceService/GetSource",
+        "/saas.accounts.v1.DatasourceService/GetSourceSync",
+        "/saas.accounts.v1.DatasourceService/InvokeSourceOperation",
+        "/saas.accounts.v1.DatasourceService/ListMyDatasourceAccountLinks",
+        "/saas.accounts.v1.DatasourceService/ListSourceDelegations",
+        "/saas.accounts.v1.DatasourceService/ListSourceOperations",
+        "/saas.accounts.v1.DatasourceService/ListSources",
+        "/saas.accounts.v1.DatasourceService/LookupInvokeSourceOperation",
+        "/saas.accounts.v1.DatasourceService/LookupPruneSourceOperationReceipts",
+        "/saas.accounts.v1.DatasourceService/MigrateGitHubSourceToApp",
+        "/saas.accounts.v1.DatasourceService/PruneSourceOperationReceipts",
+        "/saas.accounts.v1.DatasourceService/RevokeSourceDelegation",
+        "/saas.accounts.v1.DatasourceService/SyncSource",
+        "/saas.accounts.v1.DatasourceService/UnbindDatasourceGroup",
+        "/saas.accounts.v1.DatasourceService/VerifyDatasourceDomain"
+      ]
+    },
+    {
+      "name": "DelegationService",
+      "fullName": "saas.accounts.v1.DelegationService",
+      "procedures": [
+        "/saas.accounts.v1.DelegationService/DecideDelegation",
+        "/saas.accounts.v1.DelegationService/ListPendingDelegations",
+        "/saas.accounts.v1.DelegationService/RequestDelegation",
+        "/saas.accounts.v1.DelegationService/WaitForDelegation"
+      ]
+    },
+    {
+      "name": "DirectoryService",
+      "fullName": "saas.accounts.v1.DirectoryService",
+      "procedures": [
+        "/saas.accounts.v1.DirectoryService/ListOrganizationMembers",
+        "/saas.accounts.v1.DirectoryService/ListTeamMembers",
+        "/saas.accounts.v1.DirectoryService/ListTeams"
+      ]
+    },
+    {
+      "name": "GDPRService",
+      "fullName": "saas.accounts.v1.GDPRService",
+      "procedures": [
+        "/saas.accounts.v1.GDPRService/GetDeletionStatus",
+        "/saas.accounts.v1.GDPRService/GetExportStatus",
+        "/saas.accounts.v1.GDPRService/RequestDeletion",
+        "/saas.accounts.v1.GDPRService/RequestExport"
+      ]
+    },
+    {
+      "name": "IdentityService",
+      "fullName": "saas.accounts.v1.IdentityService",
+      "procedures": [
+        "/saas.accounts.v1.IdentityService/ResolveIdentity"
+      ]
+    },
+    {
+      "name": "InstallationService",
+      "fullName": "saas.accounts.v1.InstallationService",
+      "procedures": [
+        "/saas.accounts.v1.InstallationService/GetInstallation",
+        "/saas.accounts.v1.InstallationService/InstallSolution",
+        "/saas.accounts.v1.InstallationService/ListAvailableSolutions",
+        "/saas.accounts.v1.InstallationService/ListInstallations",
+        "/saas.accounts.v1.InstallationService/TransferInstallationOwnership",
+        "/saas.accounts.v1.InstallationService/UninstallSolution"
+      ]
+    },
+    {
+      "name": "IntrospectionService",
+      "fullName": "saas.accounts.v1.IntrospectionService",
+      "procedures": [
+        "/saas.accounts.v1.IntrospectionService/GetServiceInfo"
+      ]
+    },
+    {
+      "name": "InvitationService",
+      "fullName": "saas.accounts.v1.InvitationService",
+      "procedures": [
+        "/saas.accounts.v1.InvitationService/AcceptInvitation",
+        "/saas.accounts.v1.InvitationService/CreateInvitation",
+        "/saas.accounts.v1.InvitationService/InspectInvitation",
+        "/saas.accounts.v1.InvitationService/InspectInvitationById",
+        "/saas.accounts.v1.InvitationService/IssueInvitationLink",
+        "/saas.accounts.v1.InvitationService/ListInvitations",
+        "/saas.accounts.v1.InvitationService/ResendInvitation",
+        "/saas.accounts.v1.InvitationService/RevokeInvitation"
+      ]
+    },
+    {
+      "name": "MFAService",
+      "fullName": "saas.accounts.v1.MFAService",
+      "procedures": [
+        "/saas.accounts.v1.MFAService/BeginWebAuthnRegistration",
+        "/saas.accounts.v1.MFAService/FinishWebAuthnRegistration",
+        "/saas.accounts.v1.MFAService/GenerateBackupCodes",
+        "/saas.accounts.v1.MFAService/ListDevices",
+        "/saas.accounts.v1.MFAService/RevokeDevice",
+        "/saas.accounts.v1.MFAService/SetupTOTP",
+        "/saas.accounts.v1.MFAService/VerifyTOTP"
+      ]
+    },
+    {
+      "name": "ModuleCapabilitiesService",
+      "fullName": "saas.accounts.v1.ModuleCapabilitiesService",
+      "procedures": [
+        "/saas.accounts.v1.ModuleCapabilitiesService/AckJob",
+        "/saas.accounts.v1.ModuleCapabilitiesService/ApproveExecutableArtifact",
+        "/saas.accounts.v1.ModuleCapabilitiesService/AuthorizeExecutableArtifact",
+        "/saas.accounts.v1.ModuleCapabilitiesService/CancelApproval",
+        "/saas.accounts.v1.ModuleCapabilitiesService/CheckWorkContextRecordAccess",
+        "/saas.accounts.v1.ModuleCapabilitiesService/ClaimJobs",
+        "/saas.accounts.v1.ModuleCapabilitiesService/DeclareAuditEventTypes",
+        "/saas.accounts.v1.ModuleCapabilitiesService/EmitAuditEvent",
+        "/saas.accounts.v1.ModuleCapabilitiesService/EnqueueJob",
+        "/saas.accounts.v1.ModuleCapabilitiesService/ExchangeDelegatedOperationAudience",
+        "/saas.accounts.v1.ModuleCapabilitiesService/ExchangeDelegatedReadAudience",
+        "/saas.accounts.v1.ModuleCapabilitiesService/FetchDatasourceBlob",
+        "/saas.accounts.v1.ModuleCapabilitiesService/FetchDatasourceFiles",
+        "/saas.accounts.v1.ModuleCapabilitiesService/GetApproval",
+        "/saas.accounts.v1.ModuleCapabilitiesService/GetCurrentInstallation",
+        "/saas.accounts.v1.ModuleCapabilitiesService/HeartbeatJob",
+        "/saas.accounts.v1.ModuleCapabilitiesService/ListReadableSourceCollections",
+        "/saas.accounts.v1.ModuleCapabilitiesService/ListSubjectVisibility",
+        "/saas.accounts.v1.ModuleCapabilitiesService/ListSubscriptions",
+        "/saas.accounts.v1.ModuleCapabilitiesService/MintModuleOperationContext",
+        "/saas.accounts.v1.ModuleCapabilitiesService/MintModuleRegistration",
+        "/saas.accounts.v1.ModuleCapabilitiesService/MintModuleWorkContext",
+        "/saas.accounts.v1.ModuleCapabilitiesService/MintSolutionRegistration",
+        "/saas.accounts.v1.ModuleCapabilitiesService/MintSourceOperationContext",
+        "/saas.accounts.v1.ModuleCapabilitiesService/NackJob",
+        "/saas.accounts.v1.ModuleCapabilitiesService/NotifyOrgAdmins",
+        "/saas.accounts.v1.ModuleCapabilitiesService/NotifyUser",
+        "/saas.accounts.v1.ModuleCapabilitiesService/PlaceRecord",
+        "/saas.accounts.v1.ModuleCapabilitiesService/PublishEvent",
+        "/saas.accounts.v1.ModuleCapabilitiesService/ReplayEvents",
+        "/saas.accounts.v1.ModuleCapabilitiesService/RequestApproval",
+        "/saas.accounts.v1.ModuleCapabilitiesService/RevokeExecutableArtifact",
+        "/saas.accounts.v1.ModuleCapabilitiesService/Subscribe",
+        "/saas.accounts.v1.ModuleCapabilitiesService/Unsubscribe"
+      ]
+    },
+    {
+      "name": "NotificationService",
+      "fullName": "saas.accounts.v1.NotificationService",
+      "procedures": [
+        "/saas.accounts.v1.NotificationService/DeleteNotification",
+        "/saas.accounts.v1.NotificationService/GetUnreadCount",
+        "/saas.accounts.v1.NotificationService/ListNotifications",
+        "/saas.accounts.v1.NotificationService/MarkAllRead",
+        "/saas.accounts.v1.NotificationService/MarkRead",
+        "/saas.accounts.v1.NotificationService/ResolveNotificationAction"
+      ]
+    },
+    {
+      "name": "OnboardingService",
+      "fullName": "saas.accounts.v1.OnboardingService",
+      "procedures": [
+        "/saas.accounts.v1.OnboardingService/CompleteStep",
+        "/saas.accounts.v1.OnboardingService/GetProgress",
+        "/saas.accounts.v1.OnboardingService/SkipStep"
+      ]
+    },
+    {
+      "name": "OrganizationService",
+      "fullName": "saas.accounts.v1.OrganizationService",
+      "procedures": [
+        "/saas.accounts.v1.OrganizationService/AddMember",
+        "/saas.accounts.v1.OrganizationService/CreateOrganization",
+        "/saas.accounts.v1.OrganizationService/DeleteOrganization",
+        "/saas.accounts.v1.OrganizationService/GetOrgSettings",
+        "/saas.accounts.v1.OrganizationService/GetOrganization",
+        "/saas.accounts.v1.OrganizationService/GetOrganizationSettings",
+        "/saas.accounts.v1.OrganizationService/LeaveOrganization",
+        "/saas.accounts.v1.OrganizationService/ListMembers",
+        "/saas.accounts.v1.OrganizationService/ListOrganizations",
+        "/saas.accounts.v1.OrganizationService/RemoveMember",
+        "/saas.accounts.v1.OrganizationService/UpdateOrgSettings",
+        "/saas.accounts.v1.OrganizationService/UpdateOrganization",
+        "/saas.accounts.v1.OrganizationService/UpdateOrganizationSettings"
+      ]
+    },
+    {
+      "name": "PermissionService",
+      "fullName": "saas.accounts.v1.PermissionService",
+      "procedures": [
+        "/saas.accounts.v1.PermissionService/AssignRole",
+        "/saas.accounts.v1.PermissionService/CheckAccess",
+        "/saas.accounts.v1.PermissionService/CheckPermission",
+        "/saas.accounts.v1.PermissionService/CreateRole",
+        "/saas.accounts.v1.PermissionService/Decide",
+        "/saas.accounts.v1.PermissionService/DeleteRole",
+        "/saas.accounts.v1.PermissionService/ExplainPermission",
+        "/saas.accounts.v1.PermissionService/GrantScope",
+        "/saas.accounts.v1.PermissionService/ListAccessibleScopes",
+        "/saas.accounts.v1.PermissionService/ListCollectionAccess",
+        "/saas.accounts.v1.PermissionService/ListRoleAssignments",
+        "/saas.accounts.v1.PermissionService/ListRoles",
+        "/saas.accounts.v1.PermissionService/ListShares",
+        "/saas.accounts.v1.PermissionService/RegisterScopeNode",
+        "/saas.accounts.v1.PermissionService/RevokeRole",
+        "/saas.accounts.v1.PermissionService/RevokeScope",
+        "/saas.accounts.v1.PermissionService/RevokeShare",
+        "/saas.accounts.v1.PermissionService/ShareRecord",
+        "/saas.accounts.v1.PermissionService/UpdateRole"
+      ]
+    },
+    {
+      "name": "PlatformAdminService",
+      "fullName": "saas.accounts.v1.PlatformAdminService",
+      "procedures": [
+        "/saas.accounts.v1.PlatformAdminService/GetEventOperations",
+        "/saas.accounts.v1.PlatformAdminService/GetJob",
+        "/saas.accounts.v1.PlatformAdminService/GetJobOperations",
+        "/saas.accounts.v1.PlatformAdminService/GetOrgEntitlements",
+        "/saas.accounts.v1.PlatformAdminService/GetOrganizationRoster",
+        "/saas.accounts.v1.PlatformAdminService/GrantPlatformRole",
+        "/saas.accounts.v1.PlatformAdminService/ImpersonateUser",
+        "/saas.accounts.v1.PlatformAdminService/ListActiveSessions",
+        "/saas.accounts.v1.PlatformAdminService/ListAllOrganizations",
+        "/saas.accounts.v1.PlatformAdminService/ListEventSubscriptions",
+        "/saas.accounts.v1.PlatformAdminService/ListFeatureFlags",
+        "/saas.accounts.v1.PlatformAdminService/ListJobs",
+        "/saas.accounts.v1.PlatformAdminService/ListPlatformAdmins",
+        "/saas.accounts.v1.PlatformAdminService/ListPlatformCatalogue",
+        "/saas.accounts.v1.PlatformAdminService/OverrideEntitlement",
+        "/saas.accounts.v1.PlatformAdminService/ReplayJob",
+        "/saas.accounts.v1.PlatformAdminService/RevokePlatformRole",
+        "/saas.accounts.v1.PlatformAdminService/RevokeSession",
+        "/saas.accounts.v1.PlatformAdminService/SearchUsers",
+        "/saas.accounts.v1.PlatformAdminService/StopImpersonation",
+        "/saas.accounts.v1.PlatformAdminService/SuspendUser",
+        "/saas.accounts.v1.PlatformAdminService/UnsuspendUser",
+        "/saas.accounts.v1.PlatformAdminService/UpsertFeatureFlag"
+      ]
+    },
+    {
+      "name": "PrincipalService",
+      "fullName": "saas.accounts.v1.PrincipalService",
+      "procedures": [
+        "/saas.accounts.v1.PrincipalService/CreateAgentPrincipal",
+        "/saas.accounts.v1.PrincipalService/DisableAgentPrincipal",
+        "/saas.accounts.v1.PrincipalService/EnableAgentPrincipal",
+        "/saas.accounts.v1.PrincipalService/GetAgentPrincipal",
+        "/saas.accounts.v1.PrincipalService/GetPrincipal",
+        "/saas.accounts.v1.PrincipalService/ListPrincipals",
+        "/saas.accounts.v1.PrincipalService/RevokePrincipal"
+      ]
+    },
+    {
+      "name": "ResourceFollowService",
+      "fullName": "saas.accounts.v1.ResourceFollowService",
+      "procedures": [
+        "/saas.accounts.v1.ResourceFollowService/Follow",
+        "/saas.accounts.v1.ResourceFollowService/Unfollow"
+      ]
+    },
+    {
+      "name": "SSOAdminService",
+      "fullName": "saas.accounts.v1.SSOAdminService",
+      "procedures": [
+        "/saas.accounts.v1.SSOAdminService/Disable",
+        "/saas.accounts.v1.SSOAdminService/GetSSO",
+        "/saas.accounts.v1.SSOAdminService/StartSetup"
+      ]
+    },
+    {
+      "name": "SolutionEntitlementService",
+      "fullName": "saas.accounts.v1.SolutionEntitlementService",
+      "procedures": [
+        "/saas.accounts.v1.SolutionEntitlementService/ListSolutionEntitlements"
+      ]
+    },
+    {
+      "name": "SolutionRegistryService",
+      "fullName": "saas.accounts.v1.SolutionRegistryService",
+      "procedures": [
+        "/saas.accounts.v1.SolutionRegistryService/ListSolutionHostBindings",
+        "/saas.accounts.v1.SolutionRegistryService/ListSolutionRegistrations"
+      ]
+    },
+    {
+      "name": "TeamService",
+      "fullName": "saas.accounts.v1.TeamService",
+      "procedures": [
+        "/saas.accounts.v1.TeamService/AddMember",
+        "/saas.accounts.v1.TeamService/CreateTeam",
+        "/saas.accounts.v1.TeamService/DeleteTeam",
+        "/saas.accounts.v1.TeamService/ListMembers",
+        "/saas.accounts.v1.TeamService/ListTeams",
+        "/saas.accounts.v1.TeamService/RemoveMember",
+        "/saas.accounts.v1.TeamService/UpdateTeam"
+      ]
+    },
+    {
+      "name": "UsageService",
+      "fullName": "saas.accounts.v1.UsageService",
+      "procedures": [
+        "/saas.accounts.v1.UsageService/ConsumeUsage",
+        "/saas.accounts.v1.UsageService/GetUsage",
+        "/saas.accounts.v1.UsageService/GetUsageHistory",
+        "/saas.accounts.v1.UsageService/ListUsageMeters"
+      ]
+    },
+    {
+      "name": "UserService",
+      "fullName": "saas.accounts.v1.UserService",
+      "procedures": [
+        "/saas.accounts.v1.UserService/AddIdentity",
+        "/saas.accounts.v1.UserService/DeleteUser",
+        "/saas.accounts.v1.UserService/FindUserByIdentity",
+        "/saas.accounts.v1.UserService/GetSelf",
+        "/saas.accounts.v1.UserService/GetUser",
+        "/saas.accounts.v1.UserService/ListUserIdentities",
+        "/saas.accounts.v1.UserService/ListUsers",
+        "/saas.accounts.v1.UserService/RegisterUser",
+        "/saas.accounts.v1.UserService/UpdateUser",
+        "/saas.accounts.v1.UserService/Version"
+      ]
+    },
+    {
+      "name": "UserSettingsService",
+      "fullName": "saas.accounts.v1.UserSettingsService",
+      "procedures": [
+        "/saas.accounts.v1.UserSettingsService/Get",
+        "/saas.accounts.v1.UserSettingsService/Update"
+      ]
+    },
+    {
+      "name": "WaitlistService",
+      "fullName": "saas.accounts.v1.WaitlistService",
+      "procedures": [
+        "/saas.accounts.v1.WaitlistService/GetAcquisitionStatus",
+        "/saas.accounts.v1.WaitlistService/Invite",
+        "/saas.accounts.v1.WaitlistService/Join",
+        "/saas.accounts.v1.WaitlistService/List",
+        "/saas.accounts.v1.WaitlistService/Review",
+        "/saas.accounts.v1.WaitlistService/Verify"
+      ]
+    },
+    {
+      "name": "WebhookService",
+      "fullName": "saas.accounts.v1.WebhookService",
+      "procedures": [
+        "/saas.accounts.v1.WebhookService/CreateSubscription",
+        "/saas.accounts.v1.WebhookService/DeleteSubscription",
+        "/saas.accounts.v1.WebhookService/GetDelivery",
+        "/saas.accounts.v1.WebhookService/ListDeliveries",
+        "/saas.accounts.v1.WebhookService/ListSubscriptions",
+        "/saas.accounts.v1.WebhookService/ReplayDelivery",
+        "/saas.accounts.v1.WebhookService/RotateSecret",
+        "/saas.accounts.v1.WebhookService/TestWebhook"
+      ]
+    },
+    {
+      "name": "WorkContextService",
+      "fullName": "saas.accounts.v1.WorkContextService",
+      "procedures": [
+        "/saas.accounts.v1.WorkContextService/AuthorizeEvidenceRead",
+        "/saas.accounts.v1.WorkContextService/CheckAuthorizationRevision",
+        "/saas.accounts.v1.WorkContextService/ConsumeSingleUse",
+        "/saas.accounts.v1.WorkContextService/ExchangeAudience",
+        "/saas.accounts.v1.WorkContextService/RenewWorkContext",
+        "/saas.accounts.v1.WorkContextService/StartChildSession",
+        "/saas.accounts.v1.WorkContextService/StartInstallationTask",
+        "/saas.accounts.v1.WorkContextService/StartRootSession",
+        "/saas.accounts.v1.WorkContextService/StartTask"
+      ]
+    }
+  ]
+}

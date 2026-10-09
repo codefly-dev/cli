@@ -2686,6 +2686,12 @@ plus a copy of the service's proto sources; REST endpoints get their OpenAPI
 document (openapi.json). HTTP, TCP, and MCP endpoints have no machine-readable
 contract and are skipped, as is a connect endpoint whose service has no proto.
 
+For restricted listeners, service.codefly.yaml's spec.api-contract-surfaces
+names an owner-generated JSON inventory of endpoint procedures, relative to the
+service directory. It uses the catalog's service/procedure shape. Multiple
+exported protobuf endpoints require this inventory; a full descriptor alone
+does not establish what each listener serves. See docs/commands.md.
+
 Run it before module-package build; the package carries the result. --check
 is the CI drift gate: it regenerates into a temporary directory and compares
 against what's on disk, without writing anything.
@@ -2824,9 +2830,10 @@ Runnable by derivation, not by authoring: the method option says which methods
 are operations and under what execution policy, and the message descriptors say
 what the contract is. Nothing is written twice.
 
-The input is what `codefly generate contracts` already wrote — the serialized
-FileDescriptorSet of each gRPC/connect endpoint. Run that first; no flag names a
-method, because the option is the only selector.
+The input is what `codefly generate contracts` already wrote — each endpoint's
+served procedures in the API catalog and its serialized FileDescriptorSet.
+Run that first. Only served methods carrying the option are derived; their
+paired Lookup must be served on the same endpoint. No flag names a method.
 
 For each marked method this writes, under contracts/runnables:
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -43,9 +44,10 @@ Runnable by derivation, not by authoring: the method option says which methods
 are operations and under what execution policy, and the message descriptors say
 what the contract is. Nothing is written twice.
 
-The input is what ` + "`codefly generate contracts`" + ` already wrote — the serialized
-FileDescriptorSet of each gRPC/connect endpoint. Run that first; no flag names a
-method, because the option is the only selector.
+The input is what ` + "`codefly generate contracts`" + ` already wrote — each endpoint's
+served procedures in the API catalog and its serialized FileDescriptorSet.
+Run that first. Only served methods carrying the option are derived; their
+paired Lookup must be served on the same endpoint. No flag names a method.
 
 For each marked method this writes, under contracts/runnables:
 
@@ -265,16 +267,13 @@ func deriveEndpoint(module *resources.Module, endpoint *composition.APIContractE
 		Endpoint: endpoint.Endpoint,
 		Agent:    agent,
 	}
-	// The methods come from the contract bytes rather than the catalog's
-	// summary of them, filtered to the package the endpoint publishes services
-	// in: a transitive import's service is not this endpoint's to derive from,
-	// and a catalog that has drifted from the descriptor it names must not
-	// decide which methods exist.
-	for _, service := range composition.ProtobufServices(&set, endpoint.Package) {
-		for _, method := range service.Procedures {
-			if err = deriveMethod(module, endpoint, owner, files, method, derived); err != nil {
-				return err
-			}
+	methods, err := endpointProcedures(&set, endpoint)
+	if err != nil {
+		return err
+	}
+	for _, method := range methods {
+		if err = deriveMethod(module, endpoint, owner, files, method, methods, derived); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -283,7 +282,7 @@ func deriveEndpoint(module *resources.Module, endpoint *composition.APIContractE
 // deriveMethod derives one method. A method that carries no option is not an
 // operation, which is an answer rather than a failure; anything else the
 // derivation refuses is recorded and the walk continues.
-func deriveMethod(module *resources.Module, endpoint *composition.APIContractEndpoint, owner corerunnable.ServiceOwner, files *protoregistry.Files, fullMethod string, derived *derivation) error {
+func deriveMethod(module *resources.Module, endpoint *composition.APIContractEndpoint, owner corerunnable.ServiceOwner, files *protoregistry.Files, fullMethod string, served []string, derived *derivation) error {
 	name := methodName(fullMethod)
 	relativeDir, err := derivedRelativeDir(derived.workspaceDir, module, endpoint, name)
 	if err != nil {
@@ -306,6 +305,10 @@ func deriveMethod(module *resources.Module, endpoint *composition.APIContractEnd
 			return nil
 		}
 		derived.refusals = append(derived.refusals, fmt.Sprintf("%s: %v", fullMethod, err))
+		return nil
+	}
+	if spec.LookupMethod != "" && !slices.Contains(served, spec.LookupMethod) {
+		derived.refusals = append(derived.refusals, fmt.Sprintf("%s: endpoint %s/%s does not serve lookup method %s", fullMethod, endpoint.Service, endpoint.Endpoint, spec.LookupMethod))
 		return nil
 	}
 
