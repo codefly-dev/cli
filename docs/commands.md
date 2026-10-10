@@ -2624,6 +2624,61 @@ service with no proto, and a `rest` endpoint with no OpenAPI document. An
 interface may export such an endpoint so composed modules can reach it (a
 gateway's REST surface, say); that export is reachability, not a contract.
 
+For a restricted protobuf listener, publish a procedure inventory projected from
+its runtime registration/routing tables. Configure it in the module's
+CLI-owned `contracts.codefly.yaml`, alongside `module.codefly.yaml`:
+
+```yaml
+schema: codefly/module-contracts-config/v1
+surfaces:
+  accounts: generated/api-contract-surfaces.json
+```
+
+`surfaces` maps declared service names to JSON files relative to that service's
+directory. This is publication configuration; the CLI does not read it from the
+agent's `service.codefly.yaml` `spec:` map. Codefly consumes this inventory; it
+does not generate it. The owner's routing generator must emit and check it.
+
+The document maps endpoint names to Core's existing API catalog service records:
+
+```json
+{
+  "connect": [{
+    "name": "Worker", "fullName": "example.v1.Worker",
+    "procedures": ["/example.v1.Worker/Apply", "/example.v1.Worker/Lookup"]
+  }],
+  "receipts": [{
+    "name": "Worker", "fullName": "example.v1.Worker",
+    "procedures": ["/example.v1.Worker/Lookup"]
+  }]
+}
+```
+
+This inventory describes all served methods, not just Runnable operations.
+Produce it with the owner's routing artifacts; do not hand-maintain a second
+list. Every exported protobuf endpoint needs an entry when the setting is used.
+Unknown endpoints, fields, services, methods and duplicate procedures are
+refused. The file must stay within the service directory. Descriptor bytes remain
+complete and unchanged; the inventory supplies each catalog row's served
+`services[].procedures`. A service exporting multiple protobuf endpoints must
+supply the inventory, since copying a full descriptor to each cannot prove which
+listener serves a method. A single endpoint keeps the full-descriptor default;
+restricted single listeners must also supply their inventory.
+
+This input is a stopgap for the released Core/agent endpoint report. In Core
+v0.18.0, `GrpcAPI.rpcs` is loaded from the service's shared proto, without
+listener filtering, while Connect is reported as `HttpAPI` with no RPC list.
+Neither can establish distinct restricted served sets today. An agent/Core
+contract that reports each listener's complete set, including Connect and
+explicit empty-versus-absent semantics, can replace this input.
+
+After adopting this setting, regenerate contracts and runnables together. Older
+catalogs may list the full surface on every endpoint; derivation cannot infer
+runtime restrictions missing from the published catalog. For saas-starter,
+authority's source is `ModuleAuthorityProcedures`; Connect's source is its full
+service registration catalog. The gateway route catalog alone omits internal
+procedures and is not a complete listener inventory.
+
 Run it before `module-package build`; the package carries the result. `--check`
 is the CI drift gate.
 
@@ -2643,8 +2698,11 @@ authoring: the option says which methods are operations and under what
 execution policy, and the message descriptors say what the contract is.
 
 The input is what `generate contracts` already wrote — each gRPC/connect
-endpoint's `contract.binpb` — so run that first. No flag names a method; the
-option is the only selector.
+endpoint's served `services[].procedures` in the API catalog and its
+`contract.binpb` — so run that first. A method is derived only when that endpoint
+serves it and its descriptor carries the option. Its paired Lookup must also be
+served there; descriptor availability alone is insufficient. Catalog procedures
+absent from the endpoint's descriptor package are refused. No flag names a method.
 
 ```
 contracts/runnables/
@@ -2657,12 +2715,15 @@ contracts/runnables/
 digest over, so what a composition reads and what was hashed are the same
 bytes. `operation.json` is kept beside it rather than inside it: policy and
 authority are installed with a binding, and two installations of one contract
-may differ in both. `index.json` is what a composition reads to prepare
-bindings — identity, digest, full method, input and output message names and
+may differ in both. Required scope slots and optional tool exposure are preserved
+in `operation.json`; generation does not select resource IDs. `index.json` is
+what a composition reads to prepare bindings — identity, digest, full method,
+input and output message names and
 endpoint coordinates per row.
 
-The tree is fully owned: a method that no longer carries the option loses its
-directory. Only the three file names a generation produces are removed, and
+The tree is fully owned: a method that no longer carries the option or is no
+longer served on an endpoint loses that endpoint's directory. Only the three
+file names a generation produces are removed, and
 only the directories that empties, so pointing `--output` at a directory this
 command shares — `--output=contracts`, one word short of `contracts/runnables`
 — never destroys what is beside it. A module with no marked method, and a
@@ -2704,32 +2765,50 @@ and the MCP `list_runnables` tool, with facility `service` and a `source` of
 
 #### generate runnable-bindings
 
-`codefly generate runnable-bindings [--env <env>] [--check]` prepares, for one
-environment, the binding of every operation the workspace's modules derived
-(`contracts/runnables/index.json`). Each becomes one key of the workspace
-configuration group `runnable-bindings`, in
-`configurations/<profile>/runnable-bindings.env`, whose value is a JSON document:
-the canonical `package`, the `binding` core prepared and verified against it
-(SERVICE facility, targeting the owner endpoint at the address the environment
-resolves: the native address locally, the in-cluster Service in a Kubernetes
-environment), the method's `operation` policy and authority, and a
-`descriptor_set` reference: the digest of the owner endpoint's descriptor set.
-The key is `<MODULE>__<OPERATION>`, upper-cased. Each referenced set is written
-once beside the values, under `DESCRIPTOR_SET__<digest>`: the endpoint's
-published `contract.binpb` without source info, base64. Every operation on one
-endpoint shares it, the installer refuses a set whose digest is not the one
-referenced, and a contract whose bytes the catalog did not record is refused
-here (run `generate contracts`). The value schema is
-`codefly.runnable-prepared/v2`; an installer refuses the older embedded form, so
-regenerate the group after upgrading. A set is larger than a process
-environment should carry, so Codefly delivers it by file (core
-`docs/runnable-binding-delivery.md`).
+`codefly generate runnable-bindings [--env <env>] [--check]` prepares every
+operation the workspace's modules derived (`contracts/runnables/index.json`).
+The existing environment declaration in `workspace.codefly.yaml` supplies both
+endpoint facts and `runnable-scope-selections`: a map from output binding key to
+a list of Core `ScopeSelection` messages. See [the selection YAML and refusal
+rules](runnable.md#required-scope-slots-and-tool-exposure).
+
+Core's `OperationSpec.ResolveScopeSlots` resolves each selection once, preserving
+fixed scopes and adding the selected exact scopes. Missing selections name the
+slot and configuration key; wildcards, overlapping kinds, undeclared slots and
+unknown binding keys fail before output is written. An operation with fixed
+scopes and no slots needs no selection. Owner-declared `tool` exposure is
+preserved; absence still means the operation is not exposed as a tool.
+
+Each binding becomes one key in the workspace configuration group
+`runnable-bindings`, at `configurations/<profile>/runnable-bindings.env`. The
+key is `<MODULE>__<OPERATION>`, upper-cased with non-alphanumeric characters
+replaced by underscores. Its value is Core's `codefly.runnable-prepared/v3`
+JSON: owner operation coordinates, resolved call address and Connect/REST
+route, bounded contract with its digest, and the concrete policy. No descriptor
+set is delivered. A gRPC owner is called only over a Connect endpoint whose
+published catalog row serves both the operation and its paired Lookup. Missing
+membership and multiple matching Connect listeners are refused by name. A
+directly published Connect operation uses its own endpoint with the same checks.
+A legacy catalog exporting only gRPC must first export the called Connect
+listener and regenerate contracts; a declared HTTP address alone is insufficient. Addresses are resolved as for a run or
+render: native locally, in-cluster in a Kubernetes environment.
+
+The derived name includes the service and endpoint. Moving an operation to a
+different endpoint changes its binding/selection key: update the environment's
+`runnable-scope-selections` and consumers, then regenerate. Old keys fail as
+unused selections; authority is never transferred by guessing. An operation
+published on two endpoints has two derived identities and separate selections.
 
 A service that installs derived operations declares `runnable-bindings` as a
-workspace configuration dependency and receives them like any other group, so an
-installer never names an owner module. `--check` exits non-zero when the file is
-stale. Run it after `generate runnables` in every module it binds, and again
-whenever an owner endpoint moves.
+workspace configuration dependency and receives it like any other group. Run
+the command after `generate runnables` in every module it binds, and after an
+owner endpoint or scope selection changes. The output uses the environment's
+first configuration profile; selections are specific to the named environment.
+
+| Flag | Description |
+|------|-------------|
+| `--env` | Environment supplying resolved addresses and `runnable-scope-selections` (default: `local`) |
+| `--check` | Regenerate in memory; exit non-zero if the output is stale, including after a selection changes; write nothing |
 
 ## Infrastructure
 

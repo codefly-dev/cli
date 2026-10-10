@@ -20,6 +20,7 @@ not; nothing here is a promise about the unimplemented parts.
 | `codefly add runnable <name> --agent=<name>:<version> --handler=<path>` | Create a declaration and scaffold through the real Builder agent |
 | `codefly build runnable <name> [--output=<new-directory>] [--json]` | Prepare and package through the agent, verify archive bytes, write `artifacts/runnable-package.json` |
 | `codefly generate runnables [module] [--check]` | Derive a SERVICE-facility package for every gRPC method a module's contracts mark with the operation option |
+| `codefly generate runnable-bindings [--env=<env>] [--check]` | Resolve the environment's scope selections and owner endpoints into prepared bindings |
 | `codefly list runnables [--module=<m>] [--json]` | List the workspace's runnables with their immutable identity, pinned agent, execution facilities and timeout |
 | `codefly show runnable <name> [--version=<v>] [--json]` | Show one runnable's contract, execution bounds and dependency resolution |
 | `codefly agent install <language>:<version> --kind=runnable` | Download a released runnable language agent into the local Codefly cache |
@@ -42,11 +43,25 @@ owns the option, the descriptor-to-bounded-schema projection and
 published contracts, the layout on disk and the drift gate. Nothing about the
 contract is authored twice — it is the projection of the method's own messages.
 
+Derivation is endpoint-specific: `catalog.codefly.json`'s
+`endpoints[].services[].procedures` declares the served surface; descriptor bytes
+supply each method's option and schema. Sharing a descriptor does not make every
+method callable on every listener. Unknown catalog methods are refused, and a
+marked method's paired Lookup must also be served on that endpoint. Removing a
+method from an endpoint removes its derived package; `--check` detects the change.
+Owners with restricted listeners generate the procedure inventory from their
+registration/routing tables and configure
+[the module's `contracts.codefly.yaml`](commands.md#generate-contracts) before exporting.
+
 This is a separate path from `build runnable`, not a branch in it. A SERVICE
 package has no archive and no launch command: the implementation is the method
 itself, reached on the owner's endpoint, inside the process the owner already
 operates. `pkg/runnable.assemble` only ever emits NATIVE artifacts and is
 untouched.
+
+Core message fields in `operation.json` use protobuf JSON, including named tool
+effects. Unknown nested fields are refused so a newer declaration cannot lose
+authority metadata silently.
 
 The package is the contract; the execution policy and the authority a binding
 is minted for sit **beside** it in `operation.json`, because they are installed
@@ -64,6 +79,89 @@ layout, the refusal rules and how the release version is derived. What this
 does *not* do is invoke anything: no CLI command invokes a Runnable, derived or
 authored. Preparing each operation's binding for an environment is
 [`generate runnable-bindings`](commands.md#generate-runnable-bindings).
+
+### Required scope slots and tool exposure
+
+`generate runnables` preserves every field of Core's `Operation` in
+`operation.json`, including `required_scope_slots` and optional `tool` exposure.
+A slot-only operation may declare no fixed scopes. Generation keeps its slots
+unresolved; it cannot choose resource IDs for the installing composition.
+
+The composition answers each slot in the existing `workspace.codefly.yaml`
+environment selected by `generate runnable-bindings --env`. Under
+`runnable-scope-selections`, the key is the output binding key:
+`<MODULE>__<OPERATION>`, upper-cased with non-alphanumeric characters replaced
+by underscores. The operation name comes from `contracts/runnables/index.json`.
+Each value is a list of Core `ScopeSelection` messages (`slot`, `invoke`,
+`lookup`), using Core's scope fields. For example:
+
+```yaml
+environments:
+  - name: staging
+    runnable-scope-selections:
+      SAAS_STARTER__ACCOUNTS_CONNECT_INVOKE_SOURCE_OPERATION:
+        - slot: source
+          invoke:
+            - resource_kind: datasource.sources
+              actions: [invoke, read]
+              resource_ids: [source-a]
+          lookup:
+            - resource_kind: datasource.sources
+              actions: [read]
+              resource_ids: [source-a]
+```
+
+`source-a` is an illustrative ID; select the exact resources this installation
+may use. Quote IDs that look like YAML numbers. The owner of
+`InvokeSourceOperation` requires `source` with actions `invoke` and `read`, and
+`lookup: true`, so its lookup must cover the same exact IDs with action `read`.
+When an operation is actually served on several published endpoints, each index
+row is a binding and needs its own selection. Saas-starter serves this operation
+and its Lookup on `connect`; its `authority` listener does not serve them even
+though both endpoints carry the complete descriptor. Receipt pruning is a
+separate operation and selection key,
+`SAAS_STARTER__ACCOUNTS_CONNECT_PRUNE_SOURCE_OPERATION_RECEIPTS`.
+
+```sh
+codefly generate runnables saas-starter
+codefly generate runnable-bindings --env staging
+codefly generate runnable-bindings --env staging --check
+```
+
+Preparation calls Core's `OperationSpec.ResolveScopeSlots` once per operation
+and delivers its `Policy()`: fixed scopes stay in place, selected scopes are
+appended, and no unresolved slot reaches a prepared binding. Missing selections
+name the operation, slot and `runnable-scope-selections` key to set. An owner
+declaring neither fixed scopes nor slots is still refused as declaring no
+authority. Wildcards (including omitted IDs), collisions with a fixed scope's
+kind or another slot's kind, duplicate/undeclared slots, unknown fields and
+selection keys naming no derived operation are refused. A failed preparation
+writes nothing and preserves the previous output.
+
+The generated `configurations/<profile>/runnable-bindings.env` carries Core's
+`codefly.runnable-prepared/v3` bindings: owner coordinates, the resolved JSON
+call target, bounded contract and digest, and concrete policy. Tool metadata
+survives preparation; absence remains `ErrNotATool`, and exposure grants no
+authority. A gRPC operation is called only on a Connect endpoint whose
+published served set contains both the operation and its Lookup; no match or
+multiple matches are refused. A directly published Connect operation uses that
+endpoint with the same membership checks. Legacy gRPC-only catalogs must publish
+the called Connect surface before binding. Endpoint addresses still come from
+the existing network resolver.
+
+Binding and selection keys contain the derived service/endpoint/method name.
+Moving a method between endpoints changes its key: update the composition's
+selections and consumers and regenerate. Old selection keys are refused as
+unused; they do not silently grant authority to the new identity. Publishing a
+method on two endpoints gives two identities with separate selections.
+
+Changing a selection requires regeneration, and `--check` detects that change.
+The configuration profile chooses the output directory; selections belong to
+the named environment even when environments share a profile. These declarations
+are installation input and are not sent to agents as runtime configuration.
+There is no additional selection file, CLI policy vocabulary or CLI scope
+resolver. Tests verify the prepared binding and the identical policy as a Core
+resolved-policy receipt; this command emits the binding configuration only.
 
 ### Identity and coexistence
 

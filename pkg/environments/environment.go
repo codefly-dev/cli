@@ -1115,6 +1115,11 @@ type Environment struct {
 	// profile it holds (resources.Environment.ConfigurationProfiles).
 	ConfigurationProfiles []string `yaml:"configuration-profiles,omitempty"`
 
+	// RunnableScopeSelections answers owner-declared slots per binding key
+	// (the same MODULE__OPERATION key generate runnable-bindings emits).
+	// Installation input only: Runtime deliberately does not send it to agents.
+	RunnableScopeSelections map[string]ScopeSelections `yaml:"runnable-scope-selections,omitempty"`
+
 	// Deploy-target overrides (CLI-side; not serialized to proto).
 	// Empty values fall back to legacy defaults (local k3d, ~/.kube/config,
 	// the default namespace, the --org flag's hardcoded registry) so
