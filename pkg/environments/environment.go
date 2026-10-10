@@ -507,7 +507,17 @@ func (i *EnvironmentServiceIdentity) Validate() error {
 		return err
 	}
 	for name, identity := range i.Services {
-		if err := validateResourcePathComponent("service-identity service", name); err != nil {
+		// `<module>/<service>` names one module's service; a bare name applies
+		// when the composition has one service by that name.
+		module, service, qualified := strings.Cut(name, "/")
+		if qualified {
+			if err := validateResourcePathComponent("service-identity module", module); err != nil {
+				return err
+			}
+		} else {
+			service = name
+		}
+		if err := validateResourcePathComponent("service-identity service", service); err != nil {
 			return err
 		}
 		if err := identity.validate(fmt.Sprintf("service-identity service %q", name)); err != nil {
@@ -517,18 +527,35 @@ func (i *EnvironmentServiceIdentity) Validate() error {
 	return nil
 }
 
-// WorkloadIdentity returns what a service authenticates as in this environment,
-// or nil when nothing is declared for it. A per-service entry wins over the
-// environment-wide default. The result is independent of the declaration, so
-// both paths behave the same way under mutation by a caller.
+// WorkloadIdentity returns what a service authenticates as in this environment
+// when the service is named bare, or nil when nothing is declared for it. It is
+// WorkloadIdentityFor with no module: a module-qualified entry is never
+// considered, so a caller that knows the module uses WorkloadIdentityFor.
+func (env *Environment) WorkloadIdentity(service string) *EnvironmentWorkloadIdentity {
+	return env.WorkloadIdentityFor("", service)
+}
+
+// WorkloadIdentityFor returns what a module's service authenticates as in this
+// environment, or nil when nothing is declared for it. A module-qualified entry
+// (`<module>/<service>`) wins, then a bare entry for the service name, then the
+// environment-wide default. The qualified form is what lets a composition whose
+// modules share a service name — two modules each with a `cache` — declare one
+// of them; ValidateEnvironments refuses a bare entry that would match several.
+// The result is independent of the declaration, so both paths behave the same
+// way under mutation by a caller.
 //
 // It resolves service-identity alone. A managed service's own identity is keyed
 // by that managed service, and which services consume it is not something an
 // Environment can see, so composing the two belongs to the consumer that knows
 // the service graph.
-func (env *Environment) WorkloadIdentity(service string) *EnvironmentWorkloadIdentity {
+func (env *Environment) WorkloadIdentityFor(module, service string) *EnvironmentWorkloadIdentity {
 	if env == nil || env.ServiceIdentity == nil {
 		return nil
+	}
+	if module != "" {
+		if identity, declared := env.ServiceIdentity.Services[module+"/"+service]; declared {
+			return identity.clone()
+		}
 	}
 	if identity, declared := env.ServiceIdentity.Services[service]; declared {
 		return identity.clone()

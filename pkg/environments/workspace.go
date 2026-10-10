@@ -180,6 +180,15 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 		}
 		for block, names := range env.serviceScopedNames() {
 			for _, name := range names {
+				// A module-qualified service-identity key names exactly one
+				// service of that module, or nothing (a typo that would leave
+				// the workload on the default identity with no report).
+				if _, service, qualified := strings.Cut(name, "/"); qualified && block == "service-identity" {
+					if !slices.Contains(byName[service], name) {
+						return w.Wrap(fmt.Errorf("environment %q %s references unknown service %q", env.Name, block, name))
+					}
+					continue
+				}
 				switch len(byName[name]) {
 				case 0:
 					return w.Wrap(fmt.Errorf("environment %q %s references unknown service %q", env.Name, block, name))
