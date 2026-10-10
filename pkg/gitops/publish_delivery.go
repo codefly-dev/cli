@@ -1146,7 +1146,7 @@ func refuseUnbumpedBindings(prior, candidate *solutionhost.AuthorityDocument) er
 			if before.Revision != binding.Revision {
 				continue
 			}
-			if before.Audience != binding.Audience || before.Scope != binding.Scope || before.Queue != binding.Queue || before.Namespace != binding.Namespace {
+			if !sameBindingMeaning(&before, &binding) {
 				unbumped = append(unbumped, binding.ID)
 			}
 		}
@@ -1366,13 +1366,50 @@ func authorityCarrierOf(data []byte) []byte {
 // signs it, no Job reads it, and no reader of the overlay's YAML sees it.
 const bindingLedgerFile = "bindings.ledger"
 
+// ledgerEntry records a binding's revision and its whole meaning: every field
+// of solutionhost.AuthorityBinding but the ID, which keys the ledger.
+// BindingKey and LookupMethod are omitted when empty, so a ledger written
+// before a unit could carry them reads unchanged — and correctly, since no
+// unit delivered then carried either.
 type ledgerEntry struct {
-	Authority string `json:"authority"`
-	Revision  uint64 `json:"revision"`
-	Audience  string `json:"audience"`
-	Scope     string `json:"scope"`
-	Queue     string `json:"queue"`
-	Namespace string `json:"namespace"`
+	Authority    string `json:"authority"`
+	Revision     uint64 `json:"revision"`
+	Audience     string `json:"audience"`
+	Scope        string `json:"scope"`
+	Queue        string `json:"queue"`
+	Namespace    string `json:"namespace"`
+	BindingKey   string `json:"binding_key,omitempty"`
+	LookupMethod string `json:"lookup_method,omitempty"`
+}
+
+// ledgerEntryOf is the ledger's record of one delivered unit.
+func ledgerEntryOf(authority string, binding *solutionhost.AuthorityBinding) ledgerEntry {
+	return ledgerEntry{
+		Authority: authority, Revision: binding.Revision,
+		Audience: binding.Audience, Scope: binding.Scope, Queue: binding.Queue, Namespace: binding.Namespace,
+		BindingKey: binding.BindingKey, LookupMethod: binding.LookupMethod,
+	}
+}
+
+// sameMeaning reports whether two records grant the same thing, whoever
+// delivered them and at whatever revision.
+func (entry *ledgerEntry) sameMeaning(other *ledgerEntry) bool {
+	a, b := *entry, *other
+	a.Authority, a.Revision = "", 0
+	b.Authority, b.Revision = "", 0
+	return a == b
+}
+
+// sameBindingMeaning reports whether two units of authority grant the same
+// thing: every field but the ID and the revision. Core keeps AuthorityBinding
+// comparable, so this is the whole unit — a field core adds is compared here
+// without this function changing, and a change to any of them without a
+// revision bump is refused.
+func sameBindingMeaning(before, after *solutionhost.AuthorityBinding) bool {
+	a, b := *before, *after
+	a.ID, a.Revision = "", 0
+	b.ID, b.Revision = "", 0
+	return a == b
 }
 
 type bindingLedger map[string]ledgerEntry
@@ -1405,10 +1442,11 @@ func (ledger bindingLedger) refuseRewinds(document *solutionhost.AuthorityDocume
 			if !known {
 				continue
 			}
+			candidate := ledgerEntryOf(mark.Authority, &binding)
 			switch {
 			case binding.Revision < mark.Revision:
 				rewound = append(rewound, fmt.Sprintf("%s (%d, delivered at %d under %s)", binding.ID, binding.Revision, mark.Revision, mark.Authority))
-			case binding.Revision == mark.Revision && (binding.Audience != mark.Audience || binding.Scope != mark.Scope || binding.Queue != mark.Queue || binding.Namespace != mark.Namespace):
+			case binding.Revision == mark.Revision && !mark.sameMeaning(&candidate):
 				remeant = append(remeant, fmt.Sprintf("%s (revision %d under %s)", binding.ID, binding.Revision, mark.Authority))
 			}
 		}
@@ -1420,7 +1458,7 @@ func (ledger bindingLedger) refuseRewinds(document *solutionhost.AuthorityDocume
 		return fmt.Errorf("authority %s reintroduces the bindings %s below the revision they were delivered at; a binding's revision only increases across its whole history under this environment, removal and reintroduction included, since a credential sealed to a revision holds it against the live one",
 			document.Authority, strings.Join(rewound, ", "))
 	case len(remeant) > 0:
-		return fmt.Errorf("authority %s gives the bindings %s another meaning at the revision they were delivered with; a change of audience, scope, queue or namespace is a new revision",
+		return fmt.Errorf("authority %s gives the bindings %s another meaning at the revision they were delivered with; a change of audience, scope, queue, namespace, binding key or lookup method is a new revision",
 			document.Authority, strings.Join(remeant, ", "))
 	}
 	return nil
@@ -1433,7 +1471,7 @@ func (ledger bindingLedger) record(document *solutionhost.AuthorityDocument) {
 			if mark, known := ledger[binding.ID]; known && mark.Revision > binding.Revision {
 				continue
 			}
-			ledger[binding.ID] = ledgerEntry{Authority: document.Authority, Revision: binding.Revision, Audience: binding.Audience, Scope: binding.Scope, Queue: binding.Queue, Namespace: binding.Namespace}
+			ledger[binding.ID] = ledgerEntryOf(document.Authority, &binding)
 		}
 	}
 }

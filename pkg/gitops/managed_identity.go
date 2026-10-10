@@ -51,7 +51,7 @@ func projectManagedIdentity(
 	if err := env.Validate(); err != nil {
 		return err
 	}
-	identity, err := soleWorkloadIdentity(service.Name, consumedManagedServices(service, scope.Module, env), env)
+	identity, err := soleWorkloadIdentity(scope.Module, service.Name, consumedManagedServices(service, scope.Module, env), env)
 	if err != nil {
 		return err
 	}
@@ -114,8 +114,8 @@ func consumedManagedServices(service *resources.Service, module string, env *env
 // last would win and the other endpoint would refuse the workload at runtime
 // with nothing in the deploy to show for it. Several endpoints reached as the
 // same principal are one identity and render as one.
-func soleWorkloadIdentity(service string, consumed []managedConsumption, env *environments.Environment) (*environments.EnvironmentWorkloadIdentity, error) {
-	identity := env.WorkloadIdentity(service)
+func soleWorkloadIdentity(module, service string, consumed []managedConsumption, env *environments.Environment) (*environments.EnvironmentWorkloadIdentity, error) {
+	identity := env.WorkloadIdentityFor(module, service)
 	var declaring []string
 	for _, consumption := range consumed {
 		declared := consumption.managed.Identity

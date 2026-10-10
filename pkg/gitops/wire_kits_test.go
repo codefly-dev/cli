@@ -24,7 +24,7 @@ import (
 // refuses is refused here with the same sentinel and reason. Every fixture
 // core accepts is read, and then either derives authority instances or is
 // refused by the derivation for the ONE reason it names past the reader (a
-// field the signed authority document cannot carry yet); which accepted
+// destination naming an endpoint the module does not render); which accepted
 // fixtures that is holds as a fixed set, so a derivation failing for any
 // other reason — an unresolved slot, a configuration it cannot read, a
 // defect — fails the kit instead of passing as acceptance.
@@ -66,7 +66,7 @@ func TestTheModuleContractKitRunsThroughTheRender(t *testing.T) {
 	var uncarried []string
 	modulecontract.Run(t, func(document []byte) error {
 		require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), modulecontract.FileName), document, 0o600))
-		instances, _, err := authorityInstancesOf(ctx, workspace, module, services, env, units)
+		instances, _, err := authorityInstancesOf(ctx, workspace, module, services, env, units, nil)
 		verdict, past := kitVerdict(instances, err)
 		if past {
 			uncarried = append(uncarried, names[string(document)])
@@ -74,15 +74,17 @@ func TestTheModuleContractKitRunsThroughTheRender(t *testing.T) {
 		return verdict
 	})
 	sort.Strings(uncarried)
-	// The accepted fixtures declaring scope ceilings, destinations or a
-	// lookup method — what the document cannot carry — and no other.
+	// The accepted fixtures declaring a destination this kit's module does
+	// not render (it renders no endpoint), and no other: scope ceilings,
+	// several queues or namespaces, binding keys and lookup methods are
+	// carried by the document since core#735.
 	require.Equal(t, []string{"upper-case-slot-key", "valid"}, uncarried)
 }
 
 // kitVerdict maps the renderer's verdict on a kit document to what the kit
 // checks. Core's sentinels pass through: the reader refused. A contract the
 // reader accepted and the derivation refused for the one reason it names past
-// the reader (errUncarriedAuthority) is acceptance for the kit, reported as
+// the reader (errUnrenderedDestination) is acceptance for the kit, reported as
 // past so the test can hold the set of such fixtures. A success must have
 // derived instances. Anything else is a failure the kit must see: mapping it
 // to acceptance would make the run green about a name.
@@ -95,7 +97,7 @@ func kitVerdict(instances []AuthorityInstance, err error) (verdict error, past b
 		return nil, false
 	case errors.Is(err, modulecontract.ErrInvalid), errors.Is(err, modulecontract.ErrSchema):
 		return err, false
-	case errors.Is(err, errUncarriedAuthority):
+	case errors.Is(err, errUnrenderedDestination):
 		return nil, true
 	}
 	return fmt.Errorf("the renderer failed for a reason the kit does not name, so this run proves nothing about the reader: %w", err), false
@@ -133,7 +135,7 @@ func TestTheModuleContractKitAdapterFailsOnUnrelatedErrors(t *testing.T) {
 	verdict, past = kitVerdict(nil, fmt.Errorf("%w: tenancy", modulecontract.ErrInvalid))
 	require.ErrorIs(t, verdict, modulecontract.ErrInvalid, "the reader's refusal reaches the kit as is")
 	require.False(t, past)
-	verdict, past = kitVerdict(nil, fmt.Errorf("%w: module shop declares scope_ceilings", errUncarriedAuthority))
+	verdict, past = kitVerdict(nil, fmt.Errorf("%w: module shop declares the destinations chat-http (chat/http)", errUnrenderedDestination))
 	require.NoError(t, verdict, "the derivation's named refusal past the reader is the reader's acceptance")
 	require.True(t, past)
 	verdict, past = kitVerdict(nil, nil)
