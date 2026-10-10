@@ -51,11 +51,11 @@ plus a copy of the service's proto sources; REST endpoints get their OpenAPI
 document (openapi.json). HTTP, TCP, and MCP endpoints have no machine-readable
 contract and are skipped, as is a connect endpoint whose service has no proto.
 
-For restricted listeners, service.codefly.yaml's spec.api-contract-surfaces
-names an owner-generated JSON inventory of endpoint procedures, relative to the
-service directory. It uses the catalog's service/procedure shape. Multiple
-exported protobuf endpoints require this inventory; a full descriptor alone
-does not establish what each listener serves. See docs/commands.md.
+For restricted listeners, module contracts.codefly.yaml maps service names under
+surfaces to service-relative JSON procedure inventories. This is CLI publication
+configuration, separate from the agent's spec. Multiple exported protobuf
+endpoints require an inventory; a full descriptor alone does not establish what
+each listener serves. See docs/commands.md#generate-contracts.
 
 Run it before module-package build; the package carries the result. --check
 is the CI drift gate: it regenerates into a temporary directory and compares
@@ -148,6 +148,10 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 	}
 
 	serviceNames, byService := exportedEndpointsByService(endpoints)
+	surfacePaths, err := loadContractSurfacePaths(module)
+	if err != nil {
+		return nil, err
+	}
 
 	if _, err = shared.CheckDirectoryOrCreate(ctx, opts.writeDir); err != nil {
 		return nil, fmt.Errorf("cannot create output directory: %w", err)
@@ -186,9 +190,9 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 		if len(carriers) == 0 {
 			continue
 		}
-		surfaces, surfaceErr := loadContractSurfaces(service, carriers)
+		surfaces, surfaceErr := loadContractSurfaces(service, carriers, surfacePaths[serviceName])
 		if surfaceErr != nil {
-			return nil, surfaceErr
+			return nil, fmt.Errorf("module %s: %w", module.Name, surfaceErr)
 		}
 
 		loaded, loadErr := generators.LoadServiceEndpoints(ctx, workspace, module, service)

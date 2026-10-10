@@ -16,6 +16,7 @@ import (
 	corerunnable "github.com/codefly-dev/core/runnable"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"gopkg.in/yaml.v3"
 )
 
@@ -45,7 +46,7 @@ func TestOperationDocumentRoundTripsEveryCoreField(t *testing.T) {
 	declared.MaxInputBytes, declared.MaxOutputBytes = 1024, 2048
 	declared.InvokeScopes[0].ResourceIds = []string{"document-a"}
 	declared.LookupScopes[0].ResourceIds = []string{"document-a"}
-	root, moduleDir := saveRunnableFixture(t, context.Background(), descriptorSet(t, ingestionFile(declared)), "0.1.0", connectEndpoint())
+	root, moduleDir := saveConnectRunnableFixture(t, context.Background(), descriptorSet(t, ingestionFile(declared)), "0.1.0")
 	t.Chdir(root)
 	resetRunnablesFlags(t)
 	require.NoError(t, RunnablesCmd.RunE(RunnablesCmd, []string{"documents"}))
@@ -57,6 +58,8 @@ func TestOperationDocumentRoundTripsEveryCoreField(t *testing.T) {
 	require.NoError(t, err)
 	var fields map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(data, &fields))
+	requireEveryMessageFieldPopulated(t, declared.ProtoReflect())
+	require.Contains(t, string(data), `"effect":"EFFECT_MUTATION"`)
 	message := declared.ProtoReflect()
 	coreFields := message.Descriptor().Fields()
 	for i := 0; i < coreFields.Len(); i++ {
@@ -70,6 +73,43 @@ func TestOperationDocumentRoundTripsEveryCoreField(t *testing.T) {
 	require.True(t, proto.Equal(declared, spec.Policy()), "declared %v; read %v", declared, spec.Policy())
 	// Check the Go shape too, so an omitempty zero cannot hide a new field.
 	require.Equal(t, coreFields.Len()+1, reflect.TypeFor[runnablespkg.Operation]().NumField())
+}
+
+// Descend into every message, including repeated scopes and slots. A future
+// nested field must be populated before proto.Equal can prove it survived.
+func requireEveryMessageFieldPopulated(t *testing.T, message protoreflect.Message) {
+	t.Helper()
+	fields := message.Descriptor().Fields()
+	for i := 0; i < fields.Len(); i++ {
+		field := fields.Get(i)
+		require.Truef(t, message.Has(field), "populate %s in the round-trip fixture", field.FullName())
+		if field.Message() == nil {
+			continue
+		}
+		// Well-known durations have a scalar JSON spelling. Their seconds/nanos
+		// representation is protobuf-owned, rather than a document field list.
+		if field.Message().FullName() == "google.protobuf.Duration" {
+			continue
+		}
+		if field.IsList() {
+			list := message.Get(field).List()
+			for j := 0; j < list.Len(); j++ {
+				requireEveryMessageFieldPopulated(t, list.Get(j).Message())
+			}
+		} else {
+			requireEveryMessageFieldPopulated(t, message.Get(field).Message())
+		}
+	}
+}
+
+func TestOperationDocumentRefusesUnknownNestedCoreFields(t *testing.T) {
+	for _, data := range []string{
+		`{"tool":{"name":"invoke_source","new_authority":true}}`,
+		`{"required_scope_slots":[{"name":"source","new_authority":true}]}`,
+	} {
+		var document runnablespkg.Operation
+		require.ErrorContains(t, json.Unmarshal([]byte(data), &document), "unknown field")
+	}
 }
 
 func writeSelectionEnvironment(t *testing.T, root string, selections map[string]environments.ScopeSelections) {
@@ -130,7 +170,7 @@ func TestGenerateRunnableBindingsResolvesThreeOperationFixtures(t *testing.T) {
 	file := ingestionFile(slotOperation(false),
 		markedMethod("SlotAndFixed", ".documents.ingest.v1.ApplyTextRequest", ".documents.ingest.v1.ApplyTextResponse", both),
 		markedMethod("FixedOnly", ".documents.ingest.v1.ApplyTextRequest", ".documents.ingest.v1.ApplyTextResponse", fixed))
-	root, moduleDir := saveRunnableFixture(t, context.Background(), descriptorSet(t, file), "0.1.0", connectEndpoint())
+	root, moduleDir := saveConnectRunnableFixture(t, context.Background(), descriptorSet(t, file), "0.1.0")
 	t.Chdir(root)
 	resetRunnablesFlags(t)
 	resetRunnableBindingsFlags(t)
@@ -240,7 +280,7 @@ func TestRunnableScopeSelectionRefusals(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			selections := tt.change(tt.operation, sourceSelection())
-			root, moduleDir := saveRunnableFixture(t, context.Background(), descriptorSet(t, ingestionFile(tt.operation)), "0.1.0", connectEndpoint())
+			root, moduleDir := saveConnectRunnableFixture(t, context.Background(), descriptorSet(t, ingestionFile(tt.operation)), "0.1.0")
 			t.Chdir(root)
 			resetRunnablesFlags(t)
 			resetRunnableBindingsFlags(t)
@@ -257,7 +297,7 @@ func TestRunnableScopeSelectionRefusals(t *testing.T) {
 }
 
 func TestFixedOnlyWithoutSelectionAndUnknownBindingKey(t *testing.T) {
-	root, _ := saveRunnableFixture(t, context.Background(), descriptorSet(t, ingestionFile(conformingOperation())), "0.1.0", connectEndpoint())
+	root, _ := saveConnectRunnableFixture(t, context.Background(), descriptorSet(t, ingestionFile(conformingOperation())), "0.1.0")
 	t.Chdir(root)
 	resetRunnablesFlags(t)
 	resetRunnableBindingsFlags(t)
@@ -275,7 +315,7 @@ func TestFixedOnlyWithoutSelectionAndUnknownBindingKey(t *testing.T) {
 }
 
 func TestRunnableBindingsEnvSelectsAuthorityIndependentlyOfOutputProfile(t *testing.T) {
-	root, moduleDir := saveRunnableFixture(t, context.Background(), descriptorSet(t, ingestionFile(slotOperation(false))), "0.1.0", connectEndpoint())
+	root, moduleDir := saveConnectRunnableFixture(t, context.Background(), descriptorSet(t, ingestionFile(slotOperation(false))), "0.1.0")
 	t.Chdir(root)
 	resetRunnablesFlags(t)
 	resetRunnableBindingsFlags(t)

@@ -40,13 +40,13 @@ func TestGenerateRealSourceOperations(t *testing.T) {
 	service := &resources.Service{Name: "accounts", Version: "0.0.0",
 		Agent:     &resources.Agent{Kind: resources.ServiceAgent, Name: "go-grpc", Version: "0.1.53", Publisher: "codefly.dev"},
 		Endpoints: []*resources.Endpoint{{Name: "authority", API: "grpc", Visibility: resources.VisibilityInternal}, {Name: "connect", API: "connect", Visibility: resources.VisibilityInternal}},
-		Spec:      map[string]any{apiContractSurfacesSetting: "generated/surfaces.json"},
 	}
 	root, moduleDir := saveFixtureWorkspace(t, context.Background(), "saas-starter",
 		&resources.ModuleInterface{Endpoints: []*resources.InterfaceEndpoint{{Service: "accounts", Endpoint: "authority", Visibility: resources.VisibilityInternal}, {Service: "accounts", Endpoint: "connect", Visibility: resources.VisibilityInternal}}},
 		service)
 	writeFixtureFile(t, filepath.Join(service.Dir(), "generated/surfaces.json"), surfaceBytes)
-	surfaces, err := loadContractSurfaces(service, []*basev0.Endpoint{{Name: "authority", Api: "grpc"}, {Name: "connect", Api: "connect"}})
+	surfacePath := fixtureSurfacePath(t, moduleDir, service.Name, "generated/surfaces.json")
+	surfaces, err := loadContractSurfaces(service, []*basev0.Endpoint{{Name: "authority", Api: "grpc"}, {Name: "connect", Api: "connect"}}, surfacePath)
 	require.NoError(t, err)
 	const contractPath = "contracts/api/accounts/authority/contract.binpb"
 	writeFixtureFile(t, filepath.Join(moduleDir, contractPath), contract)

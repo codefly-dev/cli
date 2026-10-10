@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -231,7 +232,7 @@ func prepareRunnable(ctx context.Context, module *resources.Module, operation *r
 		return nil, fmt.Errorf("a derived package carries exactly one service operation, found %d", len(pkg.GetServiceOperations()))
 	}
 	descriptor := pkg.GetServiceOperations()[0]
-	call, kind, err := resolver.callTarget(ctx, module, operation.Entry.Service, operation.Entry.Endpoint, descriptor.GetOperation())
+	call, kind, err := resolver.callTarget(ctx, module, operation.Entry.Service, operation.Entry.Endpoint, descriptor.GetOperation(), operation.Operation.LookupMethod)
 	if err != nil {
 		return nil, err
 	}
@@ -383,7 +384,7 @@ func newEndpointResolver(ctx context.Context, workspace *resources.Workspace, en
 // service that publishes a runnable-marked method and declares no connect
 // endpoint is refused here rather than at a call — the address a caller would
 // otherwise be handed is one that answers nothing it can send.
-func (r *endpointResolver) callTarget(ctx context.Context, module *resources.Module, serviceName, publishedName, spelling string) (*runnablev0.PreparedCall, string, error) {
+func (r *endpointResolver) callTarget(ctx context.Context, module *resources.Module, serviceName, publishedName, spelling, lookup string) (*runnablev0.PreparedCall, string, error) {
 	identity, endpoints, err := r.load(ctx, module, serviceName)
 	if err != nil {
 		return nil, "", err
@@ -394,13 +395,9 @@ func (r *endpointResolver) callTarget(ctx context.Context, module *resources.Mod
 	}
 	switch published.GetApi() {
 	case standards.GRPC, standards.CONNECT:
-		connect := published
-		if published.GetApi() == standards.GRPC {
-			connect = endpointWithAPI(endpoints, standards.CONNECT)
-		}
-		if connect == nil {
-			return nil, "", fmt.Errorf("%s/%s publishes %s on its %s endpoint but declares no %s endpoint: a Runnable owner is called with JSON, so mark the method only on a service that serves Connect",
-				module.Name, serviceName, spelling, publishedName, standards.CONNECT)
+		connect, err := servedConnectEndpoint(module, serviceName, published, endpoints, spelling, lookup)
+		if err != nil {
+			return nil, "", err
 		}
 		address, err := r.address(ctx, identity, endpoints, connect)
 		if err != nil {
@@ -438,13 +435,49 @@ func endpointNamed(endpoints []*basev0.Endpoint, name string) *basev0.Endpoint {
 	return nil
 }
 
-func endpointWithAPI(endpoints []*basev0.Endpoint, api string) *basev0.Endpoint {
-	for _, candidate := range endpoints {
-		if candidate.GetApi() == api {
-			return candidate
-		}
+// Select from the published served surface, including the paired lookup.
+// The first declared Connect listener is not evidence that it serves a method.
+func servedConnectEndpoint(module *resources.Module, service string, published *basev0.Endpoint, endpoints []*basev0.Endpoint, spelling, lookup string) (*basev0.Endpoint, error) {
+	catalog, err := composition.LoadAPIContractCatalog(module.Dir())
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	var candidates, eligible []string
+	var selected *basev0.Endpoint
+	for _, endpoint := range endpoints {
+		if endpoint.GetApi() != standards.CONNECT || (published.GetApi() == standards.CONNECT && endpoint.Name != published.Name) {
+			continue
+		}
+		candidates = append(candidates, endpoint.Name)
+		var serves, servesLookup bool
+		for i := range catalog.Endpoints {
+			entry := &catalog.Endpoints[i]
+			if entry.Service != service || entry.Endpoint != endpoint.Name || entry.API != standards.CONNECT || entry.Kind != composition.APIContractKindProtobuf {
+				continue
+			}
+			for _, svc := range entry.Services {
+				serves = serves || slices.Contains(svc.Procedures, spelling)
+				servesLookup = servesLookup || slices.Contains(svc.Procedures, lookup)
+			}
+		}
+		if !serves || (lookup != "" && !servesLookup) {
+			continue
+		}
+		if err := verifyPublishedContract(module, service, endpoint.Name, composition.APIContractKindProtobuf); err != nil {
+			return nil, err
+		}
+		eligible = append(eligible, endpoint.Name)
+		selected = endpoint
+	}
+	sort.Strings(candidates)
+	sort.Strings(eligible)
+	if len(eligible) == 0 {
+		return nil, fmt.Errorf("%s/%s/%s: no connect endpoint among %v publishes served procedure %s and lookup %q in contracts/api/catalog.codefly.json; export the called endpoint in module.codefly.yaml and run `codefly generate contracts %s`; see docs/commands.md#generate-contracts", module.Name, service, published.Name, candidates, spelling, lookup, module.Name)
+	}
+	if len(eligible) > 1 {
+		return nil, fmt.Errorf("%s/%s/%s: ambiguous connect endpoints %v serving %s and lookup %q; derive the operation under the intended Connect endpoint", module.Name, service, published.Name, eligible, spelling, lookup)
+	}
+	return selected, nil
 }
 
 func (r *endpointResolver) load(ctx context.Context, module *resources.Module, serviceName string) (*resources.ServiceIdentity, []*basev0.Endpoint, error) {

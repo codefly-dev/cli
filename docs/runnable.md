@@ -51,13 +51,17 @@ marked method's paired Lookup must also be served on that endpoint. Removing a
 method from an endpoint removes its derived package; `--check` detects the change.
 Owners with restricted listeners generate the procedure inventory from their
 registration/routing tables and configure
-[`spec.api-contract-surfaces`](commands.md#generate-contracts) before exporting.
+[the module's `contracts.codefly.yaml`](commands.md#generate-contracts) before exporting.
 
 This is a separate path from `build runnable`, not a branch in it. A SERVICE
 package has no archive and no launch command: the implementation is the method
 itself, reached on the owner's endpoint, inside the process the owner already
 operates. `pkg/runnable.assemble` only ever emits NATIVE artifacts and is
 untouched.
+
+Core message fields in `operation.json` use protobuf JSON, including named tool
+effects. Unknown nested fields are refused so a newer declaration cannot lose
+authority metadata silently.
 
 The package is the contract; the execution policy and the authority a binding
 is minted for sit **beside** it in `operation.json`, because they are installed
@@ -138,9 +142,18 @@ The generated `configurations/<profile>/runnable-bindings.env` carries Core's
 `codefly.runnable-prepared/v3` bindings: owner coordinates, the resolved JSON
 call target, bounded contract and digest, and concrete policy. Tool metadata
 survives preparation; absence remains `ErrNotATool`, and exposure grants no
-authority. A gRPC operation is called on the owner's Connect endpoint; an
-operation published directly on Connect uses that endpoint. Endpoint
-addresses still come from the existing network resolver.
+authority. A gRPC operation is called only on a Connect endpoint whose
+published served set contains both the operation and its Lookup; no match or
+multiple matches are refused. A directly published Connect operation uses that
+endpoint with the same membership checks. Legacy gRPC-only catalogs must publish
+the called Connect surface before binding. Endpoint addresses still come from
+the existing network resolver.
+
+Binding and selection keys contain the derived service/endpoint/method name.
+Moving a method between endpoints changes its key: update the composition's
+selections and consumers and regenerate. Old selection keys are refused as
+unused; they do not silently grant authority to the new identity. Publishing a
+method on two endpoints gives two identities with separate selections.
 
 Changing a selection requires regeneration, and `--check` detects that change.
 The configuration profile chooses the output directory; selections belong to

@@ -19,7 +19,7 @@ The fixture selects illustrative exact ID `source-a`; it grants no live source
 authority. The CLI resolves endpoint addresses.
 
 `surfaces.json` is a **fixture projection**, not an artifact emitted by that
-producer head. It uses the generic `spec.api-contract-surfaces` input added in
+producer head. It uses the CLI-owned module `contracts.codefly.yaml` / `surfaces` input added in
 this PR. The source lists are:
 
 - `authority`: the 31 literal entries of `moduleAuthorityProcedures` in
@@ -35,10 +35,18 @@ Neither Invoke/Lookup nor Prune/Lookup belongs to authority's set. The host's
 `generated/gateway-routes.json` also routes those four procedures to Connect,
 but is not a complete listener inventory because it omits internal methods.
 
-The host must generate this inventory from its routing owners, set
-`spec.api-contract-surfaces`, and rerun contract/runnable generation. Its existing
+The host must generate this inventory from its routing owners, configure
+`contracts.codefly.yaml` with `surfaces: {accounts: generated/api-contract-surfaces.json}`, and rerun contract/runnable generation. Its existing
 published catalog at this head incorrectly lists all procedures on authority.
 The test qualifies the CLI export-input/derivation/preparation boundary against
 these exact contracts and declared surfaces; it does not claim that the old host
 catalog is corrected or that a live invocation was exercised. Never widen the
 authority listener or hand-edit generated output to satisfy the test.
+
+Core v0.18.0's `GrpcAPI.rpcs` reads `proto/codefly/api.proto`, a 10-RPC
+dependency facade at this host head, rather than the 31-method authority
+restriction. Connect carries `HttpAPI`, which has no procedures. This
+fixture therefore retains the inventory fallback; it never writes CLI keys
+into the agent's `spec:`. #1052 must carry the routing-derived inventory and
+configuration together with its CLI adoption after #947 merges and the CLI
+release is published by the coordinator.
