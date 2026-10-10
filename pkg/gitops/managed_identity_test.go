@@ -195,27 +195,56 @@ func TestProjectManagedIdentityRefusesConflictingIdentities(t *testing.T) {
 
 // TestProjectManagedIdentityLeavesNonConsumersAlone pins that the projection
 // follows the declared dependency graph: a service that never dials the managed
-// endpoint does not acquire the endpoint's identity.
+// endpoint does not acquire the endpoint's identity. It still gets an account of
+// its own, which is what any rule naming it has to name.
 func TestProjectManagedIdentityLeavesNonConsumersAlone(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "frontend")
 	writeConsumerTree(t, root, "production", "payments", "frontend", "store.payments.svc:5432")
-	before := readTree(t, root)
 
 	if err := projectManagedIdentity(
 		context.Background(), root, &resources.Service{Name: "frontend"}, consumerEnvironment(managedIdentityService()), consumerScope(),
 	); err != nil {
 		t.Fatal(err)
 	}
-	if after := readTree(t, root); after != before {
-		t.Errorf("tree of a non-consuming service changed:\n%s", after)
+	requireOwnAccountWithoutDeclaredIdentity(t, root, "production", "frontend")
+}
+
+// requireOwnAccountWithoutDeclaredIdentity holds a rendered tree to what a
+// deployed render gives a service no declared identity applies to: an account of
+// its own, named after it and bound to its pods, carrying none of a declared
+// identity's annotations and stamping none of its pod labels.
+func requireOwnAccountWithoutDeclaredIdentity(t *testing.T, root, environment, service string) {
+	t.Helper()
+	rendered := buildOverlay(t, root, environment)
+	account := manifestOfKind(t, rendered, "ServiceAccount")
+	metadata, _ := account.value["metadata"].(map[string]any)
+	if metadata["name"] != service {
+		t.Errorf("ServiceAccount name = %v, want the service's own name %q", metadata["name"], service)
+	}
+	if annotations, present := metadata["annotations"].(map[string]any); present && len(annotations) > 0 {
+		t.Errorf("ServiceAccount annotations = %v, want none: no identity was declared", annotations)
+	}
+	deployment := manifestOfKind(t, rendered, kindDeployment)
+	spec, ok := podSpec(deployment)
+	if !ok {
+		t.Fatal("rendered Deployment carries no pod spec")
+	}
+	if spec["serviceAccountName"] != service {
+		t.Errorf("pod serviceAccountName = %v, want %q rather than the namespace default", spec["serviceAccountName"], service)
+	}
+	template, _ := mapField(deployment.value, "spec")["template"].(map[string]any)
+	labels, _ := mapField(template, "metadata")["labels"].(map[string]any)
+	if len(labels) != 1 || labels["app"] != service {
+		t.Errorf("pod labels = %v, want only the builder's own app label", labels)
 	}
 }
 
-// A service without a declared identity retains the renderer-owned configuration.
+// A service whose managed dependency declares no identity keeps the
+// renderer-owned configuration and acquires no annotations, with an account of
+// its own.
 func TestProjectManagedIdentityLeavesAbsentIdentityAlone(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "accounts")
 	writeConsumerTree(t, root, "production", "payments", "accounts", "store.payments.svc:5432")
-	before := readTree(t, root)
 
 	legacy := environments.EnvironmentManagedService{
 		Kind:         "external",
@@ -227,8 +256,11 @@ func TestProjectManagedIdentityLeavesAbsentIdentityAlone(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if after := readTree(t, root); after != before {
-		t.Errorf("tree changed for a managed service that declares no identity:\n%s", after)
+	requireOwnAccountWithoutDeclaredIdentity(t, root, "production", "accounts")
+
+	data := mapField(manifestOfKind(t, buildOverlay(t, root, "production"), "ConfigMap").value, "data")
+	if got := data["CODEFLY__ENDPOINT__PAYMENTS__STORE__TCP__TCP"]; got != "store.payments.svc:5432" {
+		t.Errorf("dial address = %v, want the original rendered endpoint", got)
 	}
 }
 
@@ -256,7 +288,6 @@ func readTree(t *testing.T, root string) string {
 func TestProjectManagedIdentityIgnoresBuildOnlyEdge(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "accounts")
 	writeConsumerTree(t, root, "production", "payments", "accounts", "store.payments.svc:5432")
-	before := readTree(t, root)
 
 	service := &resources.Service{
 		Name:                "accounts",
@@ -267,9 +298,7 @@ func TestProjectManagedIdentityIgnoresBuildOnlyEdge(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if after := readTree(t, root); after != before {
-		t.Errorf("tree changed for a build-only edge:\n%s", after)
-	}
+	requireOwnAccountWithoutDeclaredIdentity(t, root, "production", "accounts")
 }
 
 // TestProjectManagedIdentityFollowsTheDependencysModule pins that the identity a
@@ -304,7 +333,6 @@ func TestProjectManagedIdentityFollowsTheDependencysModule(t *testing.T) {
 func TestProjectManagedIdentityIgnoresAnotherModulesManagedService(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "accounts")
 	writeConsumerTree(t, root, "production", "payments", "accounts", "store.payments.svc:5432")
-	before := readTree(t, root)
 
 	env := consumerEnvironment(managedIdentityService())
 	delete(env.ManagedServices, "store")
@@ -315,9 +343,7 @@ func TestProjectManagedIdentityIgnoresAnotherModulesManagedService(t *testing.T)
 	); err != nil {
 		t.Fatal(err)
 	}
-	if after := readTree(t, root); after != before {
-		t.Errorf("a consumer was stamped with another module's managed identity:\n%s", after)
-	}
+	requireOwnAccountWithoutDeclaredIdentity(t, root, "production", "accounts")
 }
 
 // A dependency naming its own module resolves there, not in the consuming

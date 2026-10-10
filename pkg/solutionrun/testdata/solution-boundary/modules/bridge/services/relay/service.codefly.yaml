@@ -1,0 +1,17 @@
+kind: service
+name: relay
+version: 0.0.0
+module: bridge
+agent:
+    kind: runtime::service
+    name: go
+    version: 0.0.1
+    publisher: codefly.dev
+service-dependencies:
+    - name: gateway
+      module: host
+      endpoints:
+          - name: rest
+endpoints:
+    - name: http
+      api: http

@@ -1,0 +1,7 @@
+name: platform
+layout: modules
+modules:
+    - name: host
+    - name: bridge
+    - name: app
+    - name: consumer

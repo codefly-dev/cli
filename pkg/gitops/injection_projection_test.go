@@ -165,29 +165,79 @@ func TestDerivedInjectionRejectsDisagreementAndOverlayOverrides(t *testing.T) {
 
 // Projection rewrites only the files it changes; a builder file it does not
 // touch keeps its bytes, comments included.
+//
+// The baseline is the same tree projected with no derived carriers at all, so
+// what this pins is the carrier projection's own footprint rather than every
+// other projection's: a deployed render also binds the workload to its own
+// service account, which writes the Deployment whatever the carriers are.
 func TestDerivedInjectionLeavesUntouchedFilesByteForByte(t *testing.T) {
 	env := storeEnvironment()
-	root := t.TempDir()
-	writeConsumerTree(t, root, env.Name, env.Namespace, "backend", "documents.example:8080")
-	path := filepath.Join(root, "base", "deployment.yaml")
-	original, err := os.ReadFile(path)
-	require.NoError(t, err)
-	commented := append([]byte("# rendered by the builder\n"), original...)
-	require.NoError(t, os.WriteFile(path, commented, 0o600))
+	comment := []byte("# rendered by the builder\n")
+	commentedTree := func(t *testing.T) string {
+		t.Helper()
+		root := t.TempDir()
+		writeConsumerTree(t, root, env.Name, env.Namespace, "backend", "documents.example:8080")
+		path := filepath.Join(root, "base", "deployment.yaml")
+		original, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(path, append(comment, original...), 0o600))
+		return root
+	}
 
+	baselineRoot := commentedTree(t)
+	require.NoError(t, projectServiceConfiguration(t.Context(), baselineRoot, &resources.Service{Name: "backend"}, env, scopeOf(env), serviceInjection{}))
+	baseline, err := os.ReadFile(filepath.Join(baselineRoot, "base", "deployment.yaml"))
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(string(baseline), string(comment)), "the builder's comment survives the render")
+
+	root := commentedTree(t)
 	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "backend"}, env, scopeOf(env), serviceInjection{
 		Public: map[string]string{apiConsumesKey: "[]"},
 	}))
 
-	after, err := os.ReadFile(path)
+	after, err := os.ReadFile(filepath.Join(root, "base", "deployment.yaml"))
 	require.NoError(t, err)
-	require.Equal(t, string(commented), string(after))
+	require.Equal(t, string(baseline), string(after))
+}
+
+// A deployed render holds the composition's solutions to the environment's
+// declared surface, before it derives any carrier for them; the same composition
+// renders on a local cluster, which has no rules for the boundary to hold.
+func TestDeployedRenderRefusesASolutionPathAroundItsHost(t *testing.T) {
+	workspace, err := resources.LoadWorkspaceFromDir(t.Context(), filepath.Join("..", "solutionrun", "testdata", "solution-boundary"))
+	require.NoError(t, err)
+
+	// The environment fixes a public origin, so the composition reaches the
+	// boundary rule rather than stopping at the origin one.
+	env := storeEnvironment()
+	env.DNS = &environments.EnvironmentDNS{AppHostSuffix: "cell.example.com"}
+	_, err = deriveRenderInjections(t.Context(), workspace, env, nil, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "consumer/backend depends on bridge/relay")
+
+	// The surface the environment declares is the one the render reads: naming
+	// the host's doors admits them and nothing else.
+	env.SolutionBoundary = &environments.EnvironmentSolutionBoundary{
+		HostSurface: []environments.EnvironmentHostSurfaceEntry{
+			{Service: "host/frontend", Endpoint: "http"},
+			{Service: "host/gateway", Endpoint: "rest"},
+		},
+	}
+	_, err = deriveRenderInjections(t.Context(), workspace, env, nil, nil)
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "depends on host/frontend")
+	require.NotContains(t, err.Error(), "depends on host/gateway")
+	require.Contains(t, err.Error(), "depends on bridge/relay")
+
+	local := &environments.Environment{Name: "local", Cluster: &environments.EnvironmentCluster{Kind: environments.ClusterKindK3d}}
+	_, err = deriveRenderInjections(t.Context(), workspace, local, nil, nil)
+	require.NoError(t, err)
 }
 
 // A workspace composing no solution derives nothing of its own, so the render's
 // injections are exactly the self-endpoint carriers of the services it deployed.
 func TestRenderInjectionsJoinSelfEndpoints(t *testing.T) {
-	injections, err := deriveRenderInjections(t.Context(), singleModuleWorkspace(), map[string]map[string]string{
+	injections, err := deriveRenderInjections(t.Context(), singleModuleWorkspace(), storeEnvironment(), map[string]map[string]string{
 		"wiki/backend": {selfEndpointKey: "http://backend.example-wiki.svc.cluster.local:8080"},
 	}, nil)
 	require.NoError(t, err)
@@ -203,6 +253,10 @@ func TestDerivedInjectionSkipsOfferedCarriersNoContainerClaims(t *testing.T) {
 	env := storeEnvironment()
 	root := t.TempDir()
 	writeConsumerTree(t, root, env.Name, env.Namespace, "backend", "documents.example:8080")
+	// The baseline is the tree with no derived carriers: a deployed render binds
+	// the workload to its own service account either way, and what this pins is
+	// that an unread carrier adds nothing on top of that.
+	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "cache"}, env, scopeOf(env), serviceInjection{}))
 	before, err := os.ReadFile(filepath.Join(root, "base", "deployment.yaml"))
 	require.NoError(t, err)
 

@@ -1,0 +1,44 @@
+kind: service
+name: backend
+version: 0.0.0
+module: consumer
+agent:
+    kind: runtime::service
+    name: go
+    version: 0.0.1
+    publisher: codefly.dev
+service-dependencies:
+    # Its own module's worker: inside the solution, no boundary crossed.
+    - name: worker
+      endpoints:
+          - name: grpc
+    # The host surface the solution arrives through.
+    - name: frontend
+      module: host
+      endpoints:
+          - name: http
+    - name: gateway
+      module: host
+      endpoints:
+          - name: rest
+    # The host's own api, which the manifest already declares it consumes.
+    - name: accounts
+      module: host
+      endpoints:
+          - name: connect
+    # A module the composition does not make reachable from a solution.
+    - name: relay
+      module: bridge
+      endpoints:
+          - name: http
+    # Read by a toolchain, never opened by the workload.
+    - name: backend
+      module: app
+      kind: build
+      endpoints:
+          - name: http
+endpoints:
+    - name: http
+      api: http
+      visibility: public
+      exposure: none
