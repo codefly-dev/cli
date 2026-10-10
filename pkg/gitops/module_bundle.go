@@ -29,6 +29,7 @@ type moduleBundleEnvironment struct {
 	ResourcePath           string                       `json:"resourcePath"`
 	Services               []string                     `json:"services"`
 	ManagedServiceHandoffs []moduleBundleManagedHandoff `json:"managedServiceHandoffs,omitempty"`
+	DeployJobs             []moduleBundleDeployJob      `json:"deployJobs,omitempty"`
 }
 
 type moduleBundleManagedHandoff struct {
@@ -94,6 +95,22 @@ func renderModuleBundle(
 	}
 	if err := validateTransportNeutralModuleBundle(destination); err != nil {
 		return err
+	}
+	// AFTER the bundle validation, which holds the GENERATOR's output to a
+	// tree that stands on its own. The aggregate the deploy jobs need does not:
+	// its overlay references the unit overlays beside the bundle, which
+	// validateKustomization reads as escaping when the bundle is the root. The
+	// references are checked where they are resolvable instead — validateTree
+	// over the whole owned tree, from which services/<unit>/overlays/<env> is
+	// an ordinary path.
+	if len(selected.DeployJobs) != 0 {
+		services, err := loadModuleServices(ctx, module)
+		if err != nil {
+			return err
+		}
+		if err := renderModuleDeployJobs(module.Dir(), destination, environment.Name, namespace, module.Name, selected.DeployJobs, graph, services); err != nil {
+			return fmt.Errorf("render module deploy jobs: %w", err)
+		}
 	}
 	return nil
 }

@@ -111,15 +111,38 @@ ordering is expressed twice, once per reconciliation mechanism:
 
   Across services, the module deploy loop walks services in dependency order, so
   a completed schema service gates the next one.
-- **GitOps.** The generated ApplicationSet stamps Argo CD sync waves: module
-  resources reconcile first, then units that prepare schema
-  (`InventoryUnit.Bootstrap`), then their consumers. Argo CD only starts a wave
-  once the previous one is healthy.
+- **GitOps.** A module declaring `deployJobs` renders its module and unit
+  overlays into one Application. Resource waves inside that Application order
+  shared prerequisites, then each service's band, with a service's import Job
+  immediately before that service's own workload. A Job placed in a wave is
+  already a barrier — Argo reports it Progressing until it completes and
+  Degraded when it fails — so later waves stay blocked without the Job being
+  converted into a hook. Where a **unit's own** Job sits relative to its own
+  workload is the unit's to declare, with
+  `codefly.dev/deploy-barrier: before-workload` or `after-workload`; an
+  `argocd.argoproj.io/hook` phase it declares is preserved, and a Job carrying
+  its own sync-wave or `hook: Skip` is left untouched. Only the generated
+  import Jobs are Sync hooks. A missing managed migration barrier is refused.
+  For modules without deploy jobs, the ApplicationSet retains separate
+  Applications and its annotations order them only when a parent explicitly
+  synchronizes them by wave; independently reconciling Applications do not
+  acquire a dependency barrier from those annotations.
 
 The publish/reconcile boundary is unchanged. GitOps still reaches `healthy`
 through Argo CD reconciliation and reports it on its own evidence receipt; the
 CLI gains no direct mutation access to a remote cluster. Direct apply remains
 restricted to an exact, verified local k3d target.
+
+Aggregate deploy-job ownership supports new installations. For an existing
+installation, publication refuses a change from separate unit Applications to
+one aggregate Application, or the reverse. The old owners have resource
+finalizers: removing them can cascade-delete workloads. A governed owner
+transfer must preserve resources, prevent competing reconciliation, establish
+the new owner's resource tracking and record verified adoption. This release
+has no such transfer operation; existing cells using separate Applications must
+complete that prerequisite through supported migration tooling before this
+upgrade can be admitted. Removing finalizers or rewriting inventory by hand is
+not a supported bypass.
 
 ## Partial revisions
 
