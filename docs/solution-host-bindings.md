@@ -232,26 +232,32 @@ The contract's **principal is the module's own name** — the contract says so
 of itself, and it is held to that at render: the contract is written in the
 module's repository, so a principal it names is self-asserted, and a module
 claiming another's principal would claim that principal's bindings. And the
-contract is carried **whole or refused**: a declaration core's authority
-document has no field for — the module's own `scope_ceilings`, its
-`destinations`, a second queue or namespace, a binding's `binding_key` or
-`lookup.method` — is refused by name, with the field the document would need,
-rather than dropped between the contract and the signed document. A host
-cannot enforce a declaration it never receives, and a declaration that changed
-without the document changing would be enforced as before.
+contract is carried **whole**: nothing it declares is dropped between the
+contract and the signed document, because a host cannot enforce a declaration
+it never receives, and a declaration that changed without the document
+changing would be enforced as before.
 
-Core **v0.15.0 grew half of that list**, and the two halves are now different
-things. At the *document* level it requires `queues`, `namespaces` and
-`scope_ceilings` — written out, and `[]` when the module declares none, so a
-renderer that dropped one cannot deliver a document at all; the render writes
-all three. At the *binding* level `solutionhost.AuthorityBinding` still carries
-one queue and one namespace, so the refusals above stand unchanged: a module
-declaring a second of either, any scope ceiling, any destination, a
-`binding_key` or a `lookup.method` is still refused by name. Which means the
-`scope_ceilings` the render writes today is always `[]` — the only contract
-that reaches the projection is one declaring none. Letting a real ceiling
-through is a change to what the host enforces, not a projection, and it is not
-done here.
+Since core **v0.15.0** (core#735) the document carries every declaration but
+one. The module's own `queues`, `namespaces` and `scope_ceilings` are on the
+*document* — written out, and `[]` when the module declares none, so a renderer
+that dropped one cannot deliver a document at all. A binding's `binding_key`
+and `lookup.method` are on each of its *units* (`binding_key`,
+`lookup_method`). A unit's queue and namespace stay the unit's and
+single-valued: a module declaring exactly one of each puts it on every unit,
+and one declaring none or several puts none on any — a narrower grant, never
+every queue — while the document lists what the module owns. A carried scope
+ceiling widens nothing the host grants: the host holds each one **whole**
+against the owner-written envelope, so a ceiling the envelope does not hold is
+refused there.
+
+`destinations` are the one declaration the document does not restate. Their
+service and endpoint are already the presence document's — the same fact signed
+twice is how two readers come to disagree — and their kind is the vocabulary
+of the host's envelope, which a document never carries. So the render holds
+each destination to the endpoints the presence document lists for the
+instance, and refuses one naming an endpoint the module does not render (or
+another module's) by name, rather than delivering a route the host can never
+take.
 
 The contract declares the principal, the operation bindings the module redeems
 (each with the operations it needs and a scope ceiling per operation), the

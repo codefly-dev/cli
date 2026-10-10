@@ -390,7 +390,7 @@ func (r *moduleRender) declareInstances(ctx context.Context, services []*resourc
 		return nil
 	}
 	r.options.SolutionInstances = []SolutionInstance{*instance}
-	r.options.AuthorityInstances, r.options.UndeclaredAuthority, err = authorityInstancesOf(ctx, r.workspace, r.module, services, r.env, instance.Units)
+	r.options.AuthorityInstances, r.options.UndeclaredAuthority, err = authorityInstancesOf(ctx, r.workspace, r.module, services, r.env, instance.Units, instance.Endpoints)
 	return err
 }
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
@@ -121,31 +122,13 @@ func TestRenderDerivesAuthorityFromTheModuleContract(t *testing.T) {
 	services := loadServices(t, workspace, "shop", "api")
 	units := []SolutionArtifactUnit{{Name: "api", Path: "services/api", Subject: "shop-api@example.iam.test"}}
 
-	instances, undeclared, err := authorityInstancesOf(ctx, workspace, module, services, env, units)
+	instances, undeclared, err := authorityInstancesOf(ctx, workspace, module, services, env, units, nil)
 	require.NoError(t, err)
 	require.Empty(t, undeclared)
 	require.Len(t, instances, 1)
 	require.Equal(t, "api", instances[0].Service)
 
-	destination := moduleRenderDestination(workspace, "shop")
-	result, err := RenderOwnedTree(ctx, &RenderOptions{
-		Destination: destination, Module: "shop", Environment: "staging", Namespace: "acme-shop", AppProject: "acme-staging",
-		Promotable: true, OwnedPath: "deployments/modules/shop", Workspace: "acme", Host: env.Host,
-		Units:   promotableServiceGraph("shop", []string{"api"}),
-		Package: &InventoryPackage{ID: "acme/shop", Version: "1.2.0"},
-		SolutionInstances: []SolutionInstance{{
-			Kind: solutionhost.KindModule, Name: "shop", Package: "acme/shop", Version: "1.2.0",
-			ReleaseDigest: testReleaseDigest, Units: units,
-		}},
-		AuthorityInstances: instances,
-	}, func(_ context.Context, root string) error {
-		overlay := filepath.Join(root, "services", "api", "overlays", "staging")
-		if err := os.MkdirAll(overlay, 0o755); err != nil {
-			return err
-		}
-		return os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(hostedDeployment), 0o644)
-	})
-	require.NoError(t, err)
+	destination, result := renderShopAuthority(t, workspace, env, units, instances)
 	require.Equal(t, solutionAuthorityDir, result.Inventory.SolutionAuthorityPath)
 	require.Len(t, result.SolutionAuthorities, 1)
 	declared := result.SolutionAuthorities[0]
@@ -183,6 +166,33 @@ func TestRenderDerivesAuthorityFromTheModuleContract(t *testing.T) {
 	require.Contains(t, string(kustomization), "acme.staging.shop-authority.yaml")
 }
 
+// renderShopAuthority renders the shop module's owned tree with the given
+// authority instances, through the render a module takes, and returns where it
+// landed.
+func renderShopAuthority(t *testing.T, workspace *resources.Workspace, env *environments.Environment, units []SolutionArtifactUnit, instances []AuthorityInstance) (string, RenderResult) {
+	t.Helper()
+	destination := moduleRenderDestination(workspace, "shop")
+	result, err := RenderOwnedTree(context.Background(), &RenderOptions{
+		Destination: destination, Module: "shop", Environment: "staging", Namespace: "acme-shop", AppProject: "acme-staging",
+		Promotable: true, OwnedPath: "deployments/modules/shop", Workspace: "acme", Host: env.Host,
+		Units:   promotableServiceGraph("shop", []string{"api"}),
+		Package: &InventoryPackage{ID: "acme/shop", Version: "1.2.0"},
+		SolutionInstances: []SolutionInstance{{
+			Kind: solutionhost.KindModule, Name: "shop", Package: "acme/shop", Version: "1.2.0",
+			ReleaseDigest: testReleaseDigest, Units: units,
+		}},
+		AuthorityInstances: instances,
+	}, func(_ context.Context, root string) error {
+		overlay := filepath.Join(root, "services", "api", "overlays", "staging")
+		if err := os.MkdirAll(overlay, 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(overlay, "deployment.yaml"), []byte(hostedDeployment), 0o644)
+	})
+	require.NoError(t, err)
+	return destination, result
+}
+
 func TestAuthorityIsNotDerivedWithoutAContractOrAnIdentity(t *testing.T) {
 	ctx := context.Background()
 	workspace := writeHostedWorkspace(t)
@@ -190,7 +200,7 @@ func TestAuthorityIsNotDerivedWithoutAContractOrAnIdentity(t *testing.T) {
 	module, err := workspace.LoadModuleFromName(ctx, "shop")
 	require.NoError(t, err)
 	services := loadServices(t, workspace, "shop", "api")
-	instances, undeclared, err := authorityInstancesOf(ctx, workspace, module, services, env, nil)
+	instances, undeclared, err := authorityInstancesOf(ctx, workspace, module, services, env, nil, nil)
 	require.NoError(t, err)
 	require.Nil(t, instances)
 	require.Contains(t, undeclared, modulecontract.FileName)
@@ -198,7 +208,7 @@ func TestAuthorityIsNotDerivedWithoutAContractOrAnIdentity(t *testing.T) {
 	// A contract with no module-identity service is a request nothing would
 	// present: refused, never dropped.
 	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), modulecontract.FileName), []byte(authorityContract), 0o644))
-	instances, _, err = authorityInstancesOf(ctx, workspace, module, services, env, nil)
+	instances, _, err = authorityInstancesOf(ctx, workspace, module, services, env, nil, nil)
 	require.Error(t, err)
 	require.Nil(t, instances)
 	require.Contains(t, err.Error(), "module-identity")
@@ -252,7 +262,7 @@ func TestAuthorityIsPresentedByOneService(t *testing.T) {
 	services := loadServices(t, workspace, "shop", "api", "worker")
 	units := []SolutionArtifactUnit{{Name: "api", Path: "services/api"}, {Name: "worker", Path: "services/worker"}}
 
-	_, _, err = authorityInstancesOf(ctx, workspace, module, services, env, units)
+	_, _, err = authorityInstancesOf(ctx, workspace, module, services, env, units, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "module-identity on the services api, worker")
 	require.Contains(t, err.Error(), "one authority record per binding")
@@ -268,18 +278,20 @@ func TestAuthorityRefusesAPrincipalThatIsNotTheModule(t *testing.T) {
 	env := selectedEnvironment(t, workspace, "staging")
 	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), modulecontract.FileName), []byte(strings.Replace(authorityContract, "principal: shop", "principal: billing", 1)), 0o644))
 	services := loadServices(t, workspace, "shop", "api")
-	_, _, err := authorityInstancesOf(ctx, workspace, module, services, env, []SolutionArtifactUnit{{Name: "api", Path: "services/api"}})
+	_, _, err := authorityInstancesOf(ctx, workspace, module, services, env, []SolutionArtifactUnit{{Name: "api", Path: "services/api"}}, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), `principal is "billing"`)
 	require.Contains(t, err.Error(), "the contract declares principal: shop")
 }
 
-// TestAuthorityRefusesWhatTheDocumentCannotCarry: a declaration the signed
-// authority document has no field for is refused, by name, rather than dropped
-// between the contract and the document — a host cannot enforce what it never
-// receives, and a changed declaration that leaves the document unchanged is
-// enforced as before. Each names the field core's AuthorityBinding would need.
-func TestAuthorityRefusesWhatTheDocumentCannotCarry(t *testing.T) {
+// TestAuthorityCarriesWhatTheContractDeclares: since core#735 the signed
+// document carries a contract whole. The module's own declarations — several
+// queues, several namespaces, its scope ceilings — are on the document, written
+// out; a binding's key and lookup method are on each of its units. A unit's
+// queue and namespace stay the unit's and single-valued, so a module declaring
+// several grants no queue- or namespace-scoped authority on any unit, which is
+// narrower, never wider. Read back through core's own parser.
+func TestAuthorityCarriesWhatTheContractDeclares(t *testing.T) {
 	ctx := context.Background()
 	workspace, module := writeAuthorityWorkspace(t)
 	env := selectedEnvironment(t, workspace, "staging")
@@ -287,14 +299,51 @@ func TestAuthorityRefusesWhatTheDocumentCannotCarry(t *testing.T) {
 		[]byte("MODEL_AUDIENCE=model-gateway\nMODEL_RESOURCE_KIND=modelservice.profiles\nMODEL_BINDING=model-binding\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), modulecontract.FileName), []byte(uncarriedContract), 0o644))
 	services := loadServices(t, workspace, "shop", "api")
-	_, _, err := authorityInstancesOf(ctx, workspace, module, services, env, []SolutionArtifactUnit{{Name: "api", Path: "services/api"}})
-	require.Error(t, err)
-	for _, want := range []string{
-		"2 queues", "2 namespaces", "scope_ceilings", "destinations",
-		"binding model binding_key", "binding model lookup.method",
-		"needs core's solutionhost.AuthorityBinding to grow those fields",
+	units := []SolutionArtifactUnit{{Name: "api", Path: "services/api", Subject: "shop-api@example.iam.test"}}
+	endpoints := []SolutionEndpoint{{Module: "shop", Service: "api", Name: "http", API: "http"}}
+
+	instances, _, err := authorityInstancesOf(ctx, workspace, module, services, env, units, endpoints)
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+
+	destination, _ := renderShopAuthority(t, workspace, env, units, instances)
+	document, _ := readDeliveredAuthority(t, destination, "staging", "acme.staging.shop-authority.yaml")
+	require.Equal(t, []string{"shop.default", "shop.bulk"}, document.Queues)
+	require.Equal(t, []string{"shop", "shop-audit"}, document.Namespaces)
+	require.Equal(t, []solutionhost.ScopeCeiling{{ResourceKind: "shop.tasks", Actions: []string{"execute"}}}, document.ScopeCeilings)
+	require.Len(t, document.Principals, 1)
+	require.Equal(t, []solutionhost.AuthorityBinding{
+		{ID: "acme.staging.shop:model:invoke", Revision: 1, Audience: "model-gateway", Scope: "modelservice.profiles:invoke", BindingKey: "model-binding", LookupMethod: "header"},
+		{ID: "acme.staging.shop:model:lookup", Revision: 1, Audience: "model-gateway", Scope: "modelservice.profiles:read", BindingKey: "model-binding", LookupMethod: "header"},
+	}, document.Principals[0].Bindings, "each unit carries its binding's key and lookup method, and no queue or namespace the module declares several of")
+}
+
+// TestAuthorityRefusesADestinationThePresenceDoesNotList: a destination is not
+// restated in the authority document — its service and endpoint are the
+// presence document's, its kind the envelope's vocabulary (core#735) — so the
+// render holds it to the endpoints the presence lists for this instance. One
+// naming an endpoint the module does not render, or another module's, is
+// refused by name rather than delivered as a route the host can never take.
+func TestAuthorityRefusesADestinationThePresenceDoesNotList(t *testing.T) {
+	ctx := context.Background()
+	workspace, module := writeAuthorityWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	require.NoError(t, os.WriteFile(filepath.Join(workspace.Dir(), "configurations", "staging", "assistant.env"),
+		[]byte("MODEL_AUDIENCE=model-gateway\nMODEL_RESOURCE_KIND=modelservice.profiles\nMODEL_BINDING=model-binding\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), modulecontract.FileName), []byte(uncarriedContract), 0o644))
+	services := loadServices(t, workspace, "shop", "api")
+	units := []SolutionArtifactUnit{{Name: "api", Path: "services/api"}}
+
+	for name, endpoints := range map[string][]SolutionEndpoint{
+		"no endpoint rendered":            nil,
+		"another endpoint of the service": {{Module: "shop", Service: "api", Name: "grpc", API: "grpc"}},
+		"the endpoint of another module":  {{Module: "billing", Service: "api", Name: "http", API: "http"}},
 	} {
-		require.Contains(t, err.Error(), want)
+		t.Run(name, func(t *testing.T) {
+			_, _, err := authorityInstancesOf(ctx, workspace, module, services, env, units, endpoints)
+			require.ErrorIs(t, err, errUnrenderedDestination)
+			require.Contains(t, err.Error(), "chat-http (api/http)")
+		})
 	}
 }
 
@@ -304,7 +353,7 @@ func TestAuthorityRefusesAnUnresolvedSlot(t *testing.T) {
 	env := selectedEnvironment(t, workspace, "staging")
 	require.NoError(t, os.WriteFile(filepath.Join(workspace.Dir(), "configurations", "staging", "assistant.env"), []byte("MODEL_AUDIENCE=model-gateway\n"), 0o644))
 	services := loadServices(t, workspace, "shop", "api")
-	_, _, err := authorityInstancesOf(ctx, workspace, module, services, env, []SolutionArtifactUnit{{Name: "api", Path: "services/api"}})
+	_, _, err := authorityInstancesOf(ctx, workspace, module, services, env, []SolutionArtifactUnit{{Name: "api", Path: "services/api"}}, nil)
 	require.ErrorIs(t, err, modulecontract.ErrUnresolvedSlot)
 	require.Contains(t, err.Error(), "assistant/model-resource-kind")
 }
