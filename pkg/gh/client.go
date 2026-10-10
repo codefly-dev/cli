@@ -5,6 +5,7 @@ package gh
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -58,28 +59,66 @@ func Token() string {
 }
 
 // ParseRemote resolves a git remote URL to its GitHub owner and repository.
-// Accepts the three forms git itself writes for github.com — scp-style
+// Accepts the forms git itself writes for github.com — scp-style
 // (git@github.com:owner/repo), https, and ssh:// — with or without the .git
-// suffix. Anything else is an error rather than a guess: the callers use the
-// result to address the API, and a mis-parsed remote would address the wrong
-// repository.
+// suffix, and whether or not the URL carries userinfo: a url.insteadOf rewrite
+// (and a GitHub Actions checkout) resolves origin to a credential-bearing URL,
+// which addresses the same repository. Raw captured command output is fine;
+// surrounding whitespace is trimmed here. Anything else is an error rather than
+// a guess: the callers use the result to address the API, and a mis-parsed
+// remote would address the wrong repository.
 func ParseRemote(remote string) (string, string, error) {
-	trimmed := strings.TrimSuffix(strings.TrimSpace(remote), ".git")
-	switch {
-	case strings.HasPrefix(trimmed, "git@github.com:"):
-		trimmed = strings.TrimPrefix(trimmed, "git@github.com:")
-	case strings.HasPrefix(trimmed, "https://github.com/"):
-		trimmed = strings.TrimPrefix(trimmed, "https://github.com/")
-	case strings.HasPrefix(trimmed, "ssh://git@github.com/"):
-		trimmed = strings.TrimPrefix(trimmed, "ssh://git@github.com/")
-	case strings.HasPrefix(trimmed, "ssh://github.com/"):
-		trimmed = strings.TrimPrefix(trimmed, "ssh://github.com/")
-	default:
-		return "", "", fmt.Errorf("unrecognized GitHub remote %q", remote)
+	path, ok := githubRepositoryPath(strings.TrimSuffix(strings.TrimSpace(remote), ".git"))
+	if !ok {
+		return "", "", unrecognizedRemote(remote)
 	}
-	owner, repo, ok := strings.Cut(trimmed, "/")
+	owner, repo, ok := strings.Cut(path, "/")
 	if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
-		return "", "", fmt.Errorf("unrecognized GitHub remote %q", remote)
+		return "", "", unrecognizedRemote(remote)
 	}
 	return owner, repo, nil
+}
+
+// githubRepositoryPath reduces a github.com remote to its owner/repo path.
+func githubRepositoryPath(remote string) (string, bool) {
+	if path, ok := strings.CutPrefix(remote, "git@github.com:"); ok {
+		return path, true
+	}
+	parsed, err := url.Parse(remote)
+	if err != nil || parsed.Hostname() != "github.com" {
+		return "", false
+	}
+	if parsed.Scheme != "https" && parsed.Scheme != "ssh" {
+		return "", false
+	}
+	return strings.TrimPrefix(parsed.Path, "/"), true
+}
+
+// unrecognizedRemote names a remote the parser cannot read, with the secret
+// half of any userinfo masked. A url.insteadOf rewrite puts a live access token
+// in the resolved URL, and this message is printed to a terminal and pasted
+// into bug reports.
+func unrecognizedRemote(remote string) error {
+	return fmt.Errorf("unrecognized GitHub remote %q", maskUserinfo(strings.TrimSpace(remote)))
+}
+
+func maskUserinfo(remote string) string {
+	scheme := strings.Index(remote, "://")
+	if scheme < 0 {
+		return remote
+	}
+	authority := remote[scheme+3:]
+	host := strings.IndexByte(authority, '/')
+	if host < 0 {
+		host = len(authority)
+	}
+	at := strings.LastIndexByte(authority[:host], '@')
+	if at < 0 {
+		return remote
+	}
+	masked := "***"
+	if name, _, hasSecret := strings.Cut(authority[:at], ":"); hasSecret {
+		masked = name + ":***"
+	}
+	return remote[:scheme+3] + masked + authority[at:]
 }

@@ -461,6 +461,7 @@ func TestOriginRepository(t *testing.T) {
 		{remote: "git@github.com:codefly-dev/cli.git", owner: "codefly-dev", repo: "cli"},
 		{remote: "https://github.com/codefly-dev/cli", owner: "codefly-dev", repo: "cli"},
 		{remote: "ssh://git@github.com/codefly-dev/cli.git", owner: "codefly-dev", repo: "cli"},
+		{remote: "https://x-access-token:gho_notarealtoken@github.com/codefly-dev/cli.git", owner: "codefly-dev", repo: "cli"},
 		{remote: "https://gitlab.com/codefly-dev/cli.git", wantErr: true},
 	} {
 		t.Run(tc.remote, func(t *testing.T) {
@@ -477,6 +478,25 @@ func TestOriginRepository(t *testing.T) {
 			require.Equal(t, tc.repo, repo)
 		})
 	}
+}
+
+// TestOriginRepositoryResolvesARewrittenRemote covers a checkout whose git
+// config rewrites github.com to a credential-bearing URL. `git remote get-url`
+// expands insteadOf, so pre-flight only ever sees the rewritten form — and
+// refusing it made publish unrunnable in such a checkout.
+func TestOriginRepositoryResolvesARewrittenRemote(t *testing.T) {
+	dir := t.TempDir()
+	gitIn(t, dir, "init", "-b", "main")
+	gitIn(t, dir, "remote", "add", "origin", "https://github.test.invalid/codefly-dev/cli.git")
+	gitIn(t, dir, "config", "url.https://x-access-token:gho_notarealtoken@github.com/.insteadOf", "https://github.test.invalid/")
+
+	require.Equal(t, "https://x-access-token:gho_notarealtoken@github.com/codefly-dev/cli.git",
+		gitIn(t, dir, "remote", "get-url", "origin"), "the rewrite this test relies on must be in effect")
+
+	owner, repo, err := originRepository(context.Background(), dir)
+	require.NoError(t, err)
+	require.Equal(t, "codefly-dev", owner)
+	require.Equal(t, "cli", repo)
 }
 
 func TestIsReleaseCommitFor(t *testing.T) {
