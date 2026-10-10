@@ -143,7 +143,7 @@ as a label value.
 the document names the one container that authenticates — the container named
 after the service, or the only container when there is one — its image
 repository and digest, the identity it must present (the host's audience, the
-principal the environment declares for the service, and the SPIFFE ID
+principal the environment declares for the service (`service-identity.services`, keyed `<service>`, or `<module>/<service>` when two composed modules share the name — a bare key matching several is refused), and the SPIFFE ID
 `spiffe://<trust_domain>/ns/<namespace>/sa/<service account>`), and every
 other container, init containers included, as one that must never be accepted
 as the workload. A unit with several containers and none named after the

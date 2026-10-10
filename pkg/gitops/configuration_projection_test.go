@@ -204,7 +204,7 @@ func TestServiceIdentityConflictsWithManagedDependencyIdentity(t *testing.T) {
 	env := injectionContract(t)
 	env.ManagedServices = map[string]environments.EnvironmentManagedService{"store": managedIdentityService()}
 	consumer := &resources.Service{Name: "api", ServiceDependencies: []*resources.ServiceDependency{{Name: "store"}}}
-	_, err := soleWorkloadIdentity("api", consumedManagedServices(consumer, "saas", env), env)
+	_, err := soleWorkloadIdentity("app", "api", consumedManagedServices(consumer, "saas", env), env)
 	require.ErrorContains(t, err, "different runtime identities")
 }
 
