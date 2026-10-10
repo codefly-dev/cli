@@ -197,8 +197,8 @@ func TestRunnableScopeSelectionRefusals(t *testing.T) {
 		change    func(*runnablev0.Operation, *runnablev0.ScopeSelection) environments.ScopeSelections
 		want      string
 	}{
-		{"slot-only missing", slotOperation(false), func(_ *runnablev0.Operation, _ *runnablev0.ScopeSelection) environments.ScopeSelections { return nil }, `requires scope slot "source"`},
-		{"slot-plus-fixed missing", slotOperation(true), func(_ *runnablev0.Operation, _ *runnablev0.ScopeSelection) environments.ScopeSelections { return nil }, `requires scope slot "source"`},
+		{"slot-only missing", slotOperation(false), func(_ *runnablev0.Operation, _ *runnablev0.ScopeSelection) environments.ScopeSelections { return nil }, `required scope slot "source" but no ScopeSelection was supplied`},
+		{"slot-plus-fixed missing", slotOperation(true), func(_ *runnablev0.Operation, _ *runnablev0.ScopeSelection) environments.ScopeSelections { return nil }, `required scope slot "source" but no ScopeSelection was supplied`},
 		{"wildcard id", slotOperation(false), func(_ *runnablev0.Operation, s *runnablev0.ScopeSelection) environments.ScopeSelections {
 			s.Invoke[0].ResourceIds = []string{"*"}
 			return environments.ScopeSelections{s}
