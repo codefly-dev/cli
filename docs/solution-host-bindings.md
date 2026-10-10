@@ -345,10 +345,12 @@ The derivation:
   removed from one generation and reintroduced later cannot come back below
   that revision, or at it with another meaning. The ledger is the
   publisher's own record under the repository's trust;
-  nothing signs it and no Job reads it; the module's queue and namespace
-  when it declares one of each — absence grants no queue- or namespace-scoped
-  authority, never every queue, and several are refused rather than granted
-  none;
+  nothing signs it and no Job reads it. What the binding grants is the whole
+  unit — audience, scope, queue, namespace, binding key and lookup method —
+  so a change to any of them is a new revision; the module's queue and
+  namespace when it declares exactly one of each — none or several put none
+  on any unit (a narrower grant, never every queue), while the document lists
+  the module's own queues and namespaces whole;
 - **effective from** the presence generation settled in the same publish.
 
 The host's envelope must list the same binding IDs for core's exact-inclusion

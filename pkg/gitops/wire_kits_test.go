@@ -24,7 +24,7 @@ import (
 // refuses is refused here with the same sentinel and reason. Every fixture
 // core accepts is read, and then either derives authority instances or is
 // refused by the derivation for the ONE reason it names past the reader (a
-// field the signed authority document cannot carry yet); which accepted
+// destination naming an endpoint the module does not render); which accepted
 // fixtures that is holds as a fixed set, so a derivation failing for any
 // other reason — an unresolved slot, a configuration it cannot read, a
 // defect — fails the kit instead of passing as acceptance.

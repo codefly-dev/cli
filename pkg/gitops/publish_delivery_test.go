@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -639,6 +640,73 @@ func TestPublishRefusesABindingChangeThatKeepsItsRevision(t *testing.T) {
 	require.Contains(t, err.Error(), "moves the revision of the bindings example.prod.crm:model:invoke (1, delivered at 2) backwards")
 }
 
+// TestPublishRefusesAKeyOrLookupChangeThatKeepsItsRevision: a unit now carries
+// its binding's key and lookup method, so a change to either is a change to
+// what the unit grants — the host installs the binding under the key and
+// discovers through the method — and keeping the revision is refused exactly
+// as a scope change is. Each field on its own, from absent to present and
+// between two values; the bumped revision is a new generation.
+func TestPublishRefusesAKeyOrLookupChangeThatKeepsItsRevision(t *testing.T) {
+	keyed := func(revision uint64, key, method string) modulecontract.ResolvedBinding {
+		binding := modelBinding(revision, "modelservice.profiles:invoke")
+		binding.BindingKey = key
+		if method != "" {
+			binding.Lookup = &modulecontract.Lookup{Method: method}
+		}
+		return binding
+	}
+	for name, change := range map[string][2]modulecontract.ResolvedBinding{
+		"a key appears":             {keyed(1, "", ""), keyed(1, "model", "")},
+		"the key changes":           {keyed(1, "model", ""), keyed(1, "model-v2", "")},
+		"a lookup method appears":   {keyed(1, "", ""), keyed(1, "", "header")},
+		"the lookup method changes": {keyed(1, "", "header"), keyed(1, "", "query")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			repository := newDeliveryRepository(t)
+			opts := deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", EnvelopeRevision: 1, Module: "crm"}
+			settleBoth(t, repository, repository.stageAuthorityRender(t, []modulecontract.ResolvedBinding{change[0]}), &opts)
+			repository.deliver(t)
+
+			changed := repository.stageAuthorityRender(t, []modulecontract.ResolvedBinding{change[1]})
+			presence, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", changed, &opts)
+			require.NoError(t, err)
+			_, err = settleAuthorityDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", changed, presence, &opts)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "without bumping their revision")
+
+			bumped := change[1]
+			bumped.Revision = 2
+			delivery := settleBoth(t, repository, repository.stageAuthorityRender(t, []modulecontract.ResolvedBinding{bumped}), &opts)
+			require.Equal(t, uint64(2), documentByID(delivery, "example.prod.crm-authority").Generation)
+		})
+	}
+}
+
+// TestTheLedgerRecordsEveryFieldOfAUnit: the ledger holds a binding to its
+// meaning across removal and reintroduction, so it must record every field
+// of a unit but the ID it is keyed by. A field core adds to AuthorityBinding
+// and the ledger does not record would be free to change at the same
+// revision across a removal; this fails first.
+func TestTheLedgerRecordsEveryFieldOfAUnit(t *testing.T) {
+	unit := reflect.TypeOf(solutionhost.AuthorityBinding{})
+	entry := reflect.TypeOf(ledgerEntry{})
+	recorded := map[string]bool{}
+	for i := 0; i < entry.NumField(); i++ {
+		recorded[entry.Field(i).Name] = true
+	}
+	for i := 0; i < unit.NumField(); i++ {
+		name := unit.Field(i).Name
+		if name == "ID" {
+			continue
+		}
+		require.Truef(t, recorded[name], "the binding ledger does not record AuthorityBinding.%s", name)
+	}
+	binding := solutionhost.AuthorityBinding{ID: "b", Revision: 3, Audience: "a", Scope: "k:x", Queue: "q", Namespace: "n", BindingKey: "key", LookupMethod: "header"}
+	got := ledgerEntryOf("auth", &binding)
+	require.Equal(t, ledgerEntry{Authority: "auth", Revision: 3, Audience: "a", Scope: "k:x", Queue: "q", Namespace: "n", BindingKey: "key", LookupMethod: "header"}, got)
+}
+
 // TestPublishRefusesAPairTheHostWouldNotActivate: before an authority document
 // is signed, publish holds it against the presence document it is granted over
 // with core's own activation rules — so a pair the host would refuse at
@@ -1179,6 +1247,13 @@ func TestPublishHoldsABindingToItsRevisionAcrossRemovalAndReintroduction(t *test
 	require.Contains(t, err.Error(), "delivered at 5")
 	// At the revision it was delivered at, with another meaning: refused.
 	err = settle(other, modelBinding(5, "modelservice.profiles:read"))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "another meaning")
+	// At the revision it was delivered at, with the same scope and a key it
+	// was never delivered with: another meaning, refused.
+	keyed := modelBinding(5, "modelservice.profiles:invoke")
+	keyed.BindingKey = "model"
+	err = settle(other, keyed)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "another meaning")
 	// Above it: a new generation.

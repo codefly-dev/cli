@@ -46,9 +46,10 @@ bindings:
 destinations: []
 `
 
-// uncarriedContract declares everything core's authority document has no
-// field for: a module ceiling, a destination, a second namespace, two queues,
-// a binding key and a lookup method.
+// uncarriedContract declares everything core's authority document carried
+// only after core#735 — a module ceiling, a second namespace, two queues, a
+// binding key and a lookup method — and a destination, which the document
+// never carries and the render holds to the presence document's endpoints.
 const uncarriedContract = `schema: codefly/module-contract/v1
 principal: shop
 namespaces: [shop, shop-audit]
@@ -169,7 +170,7 @@ func TestRenderDerivesAuthorityFromTheModuleContract(t *testing.T) {
 // renderShopAuthority renders the shop module's owned tree with the given
 // authority instances, through the render a module takes, and returns where it
 // landed.
-func renderShopAuthority(t *testing.T, workspace *resources.Workspace, env *environments.Environment, units []SolutionArtifactUnit, instances []AuthorityInstance) (string, RenderResult) {
+func renderShopAuthority(t *testing.T, workspace *resources.Workspace, env *environments.Environment, units []SolutionArtifactUnit, instances []AuthorityInstance, endpoints ...SolutionEndpoint) (string, RenderResult) {
 	t.Helper()
 	destination := moduleRenderDestination(workspace, "shop")
 	result, err := RenderOwnedTree(context.Background(), &RenderOptions{
@@ -179,7 +180,7 @@ func renderShopAuthority(t *testing.T, workspace *resources.Workspace, env *envi
 		Package: &InventoryPackage{ID: "acme/shop", Version: "1.2.0"},
 		SolutionInstances: []SolutionInstance{{
 			Kind: solutionhost.KindModule, Name: "shop", Package: "acme/shop", Version: "1.2.0",
-			ReleaseDigest: testReleaseDigest, Units: units,
+			ReleaseDigest: testReleaseDigest, Units: units, Endpoints: endpoints,
 		}},
 		AuthorityInstances: instances,
 	}, func(_ context.Context, root string) error {
@@ -300,14 +301,23 @@ func TestAuthorityCarriesWhatTheContractDeclares(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), modulecontract.FileName), []byte(uncarriedContract), 0o644))
 	services := loadServices(t, workspace, "shop", "api")
 	units := []SolutionArtifactUnit{{Name: "api", Path: "services/api", Subject: "shop-api@example.iam.test"}}
-	endpoints := []SolutionEndpoint{{Module: "shop", Service: "api", Name: "http", API: "http"}}
+	endpoints := []SolutionEndpoint{{Module: "shop", Service: "api", Name: "http", API: "http", Visibility: "public", Exposure: "public"}}
 
 	instances, _, err := authorityInstancesOf(ctx, workspace, module, services, env, units, endpoints)
 	require.NoError(t, err)
 	require.Len(t, instances, 1)
 
-	destination, _ := renderShopAuthority(t, workspace, env, units, instances)
+	destination, _ := renderShopAuthority(t, workspace, env, units, instances, endpoints...)
 	document, _ := readDeliveredAuthority(t, destination, "staging", "acme.staging.shop-authority.yaml")
+	// The destination is not restated in the authority document: the presence
+	// document the same render delivers lists the endpoint it names, under the
+	// binding the authority is granted over.
+	presence := readDeliveredPresence(t, destination, "staging", document.PresenceBinding)
+	var listed []string
+	for _, endpoint := range presence.Endpoints {
+		listed = append(listed, endpoint.Module+"/"+endpoint.Service+"/"+endpoint.Name)
+	}
+	require.Contains(t, listed, "shop/api/http")
 	require.Equal(t, []string{"shop.default", "shop.bulk"}, document.Queues)
 	require.Equal(t, []string{"shop", "shop-audit"}, document.Namespaces)
 	require.Equal(t, []solutionhost.ScopeCeiling{{ResourceKind: "shop.tasks", Actions: []string{"execute"}}}, document.ScopeCeilings)
@@ -344,6 +354,66 @@ func TestAuthorityRefusesADestinationThePresenceDoesNotList(t *testing.T) {
 			require.ErrorIs(t, err, errUnrenderedDestination)
 			require.Contains(t, err.Error(), "chat-http (api/http)")
 		})
+	}
+}
+
+// TestTheRenderHoldsDestinationsToTheEndpointsItDeclares drives
+// declareInstances — the render's own derivation of the presence instance and
+// its authority — so the destination check sees the endpoints the presence
+// document will list, not a list a test supplies. The api service declares
+// grpc and http: a destination on http derives authority; one on an endpoint
+// the service does not declare is refused.
+func TestTheRenderHoldsDestinationsToTheEndpointsItDeclares(t *testing.T) {
+	ctx := context.Background()
+	workspace, module := writeAuthorityWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	require.NoError(t, os.WriteFile(filepath.Join(workspace.Dir(), "configurations", "staging", "assistant.env"),
+		[]byte("MODEL_AUDIENCE=model-gateway\nMODEL_RESOURCE_KIND=modelservice.profiles\nMODEL_BINDING=model-binding\n"), 0o644))
+	services := loadServices(t, workspace, "shop", "api")
+	declare := func(contract string) (*moduleRender, error) {
+		require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), modulecontract.FileName), []byte(contract), 0o644))
+		render := &moduleRender{workspace: workspace, module: module, env: env, options: &RenderOptions{
+			Package: &InventoryPackage{ID: "acme/shop", Version: "1.2.0"},
+			Units:   promotableServiceGraph("shop", []string{"api"}),
+		}}
+		return render, render.declareInstances(ctx, services)
+	}
+
+	render, err := declare(uncarriedContract)
+	require.NoError(t, err)
+	require.Len(t, render.options.SolutionInstances, 1)
+	require.Contains(t, render.options.SolutionInstances[0].Endpoints, SolutionEndpoint{Name: "http", Service: "api", Module: "shop", API: "http", Visibility: "public", Exposure: "public"})
+	require.Len(t, render.options.AuthorityInstances, 1)
+
+	_, err = declare(strings.Replace(uncarriedContract, "endpoint: http", "endpoint: admin", 1))
+	require.ErrorIs(t, err, errUnrenderedDestination)
+	require.Contains(t, err.Error(), "chat-http (api/admin)")
+}
+
+// TestAUnitCarriesTheModulesQueueAndNamespaceOnlyWhenItDeclaresOne: a unit's
+// queue and namespace are single-valued. A module declaring exactly one puts
+// it on every unit; none or several put none on any — a narrower grant, never
+// every queue — and the document carries the module's own lists whole.
+func TestAUnitCarriesTheModulesQueueAndNamespaceOnlyWhenItDeclaresOne(t *testing.T) {
+	binding := modulecontract.ResolvedBinding{ID: "model", Revision: 1, Operations: []string{"invoke"}, Audience: "model-gateway", Scopes: map[string][]string{"invoke": {"modelservice.profiles:invoke"}}}
+	for _, declared := range []struct {
+		queues, namespaces []string
+		queue, namespace   string
+	}{
+		{nil, nil, "", ""},
+		{[]string{"q"}, nil, "q", ""},
+		{nil, []string{"n"}, "", "n"},
+		{[]string{"q"}, []string{"n"}, "q", "n"},
+		{[]string{"q1", "q2"}, []string{"n"}, "", "n"},
+		{[]string{"q"}, []string{"n1", "n2"}, "q", ""},
+		{[]string{"q1", "q2"}, []string{"n1", "n2"}, "", ""},
+	} {
+		units := authorityBindings("acme.staging.shop", &modulecontract.Resolved{
+			Principal: "shop", Queues: declared.queues, Namespaces: declared.namespaces, Bindings: []modulecontract.ResolvedBinding{binding},
+		})
+		require.Len(t, units, 1)
+		require.Equalf(t, declared.queue, units[0].Queue, "queues %v", declared.queues)
+		require.Equalf(t, declared.namespace, units[0].Namespace, "namespaces %v", declared.namespaces)
 	}
 }
 
