@@ -1025,10 +1025,22 @@ type scopedConfiguration struct {
 // reference resolution.
 func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env *environments.Environment, serviceScoped bool, scope []*resources.Service, requiredBy map[string][]string, report *workspaceReadinessReport) ([]scopedConfiguration, *configurations.WorkspaceConfigurations) {
 	required := make([]string, 0, len(requiredBy))
+	var renderOwned []string
 	for name := range requiredBy {
+		// On a local k3d environment the render supplies these per workload and
+		// an authored file for them is refused, so no directory holds them.
+		if env.DeclaresLocalK3d() && environments.RenderOwnedWorkspaceConfiguration(name) {
+			renderOwned = append(renderOwned, name)
+			continue
+		}
 		required = append(required, name)
 	}
 	sort.Strings(required)
+	sort.Strings(renderOwned)
+	for _, name := range renderOwned {
+		report.add("", "workspace configurations", "ok",
+			fmt.Sprintf("%q is supplied per workload by the render (required by %s)", name, strings.Join(requiredBy[name], ", ")), "")
+	}
 
 	var toResolve []scopedConfiguration
 

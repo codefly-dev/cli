@@ -139,3 +139,32 @@ func TestReadinessScopedToAnUnknownModule(t *testing.T) {
 	}
 	requireCode(t, report, codeModuleNotFound, "fail")
 }
+
+// On a local k3d environment the render supplies workload-identity and
+// module-authority per workload, so no configuration directory has to hold
+// them; anywhere else a service declaring them is not ready.
+func TestReadinessCountsRenderOwnedGroupsAsSuppliedOnlyOnLocalK3d(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cluster string
+		ready   bool
+	}{
+		{"local k3d", "    cluster:\n      kind: k3d\n      context: k3d-demo\n", true},
+		{"not k3d", "    cluster:\n      kind: eks\n      context: other\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTestWorkspace(t, map[string]string{
+				"workspace.codefly.yaml":                            "name: demo\nlayout: modules\nmodules:\n    - name: backend\nenvironments:\n  - name: local\n" + tc.cluster,
+				"modules/backend/module.codefly.yaml":               testModuleYAML("api"),
+				"modules/backend/services/api/service.codefly.yaml": testServiceYAML("api", "workload-identity", "module-authority"),
+			})
+			report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+			if got := report.Status == readinessStatusReady; got != tc.ready {
+				t.Fatalf("ready = %v, want %v\n%s", got, tc.ready, reportJSON(t, report))
+			}
+			if !tc.ready {
+				requireCode(t, report, codeConfigurationMissing, "fail")
+			}
+		})
+	}
+}
