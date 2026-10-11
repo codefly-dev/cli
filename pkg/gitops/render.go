@@ -101,6 +101,11 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	// ConfigMaps that carry it are held to the same promotable ruleset as the
 	// rest of the tree, and before buildInventory so they are hashed into the
 	// render digest like any other delivered file.
+	// Before presence digests the units: the projections are part of what
+	// runs, so they are part of the bytes the document pins.
+	if err = projectWorkloadIdentity(owned, opts); err != nil {
+		return RenderResult{}, err
+	}
 	bindings, err := renderSolutionHostBindings(owned, destination, opts)
 	if err != nil {
 		return RenderResult{}, err

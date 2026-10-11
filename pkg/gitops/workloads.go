@@ -32,6 +32,7 @@ type renderedWorkload struct {
 	Containers     []renderedContainer
 	InitContainers []renderedContainer
 	tokenMounts    map[string][]tokenMount
+	volumes        []string
 }
 
 // renderedContainer is one container of a pod template and its pinned image.
@@ -80,6 +81,13 @@ func renderedWorkloads(unitDir, environment string) ([]renderedWorkload, error) 
 			workload.ServiceAccount = defaultServiceAccount
 		}
 		tokens := audienceTokenVolumes(sliceField(spec, "volumes"))
+		for _, entry := range sliceField(spec, "volumes") {
+			if volume, _ := entry.(map[string]any); volume != nil {
+				if name, _ := volume["name"].(string); name != "" {
+					workload.volumes = append(workload.volumes, name)
+				}
+			}
+		}
 		containers, err := renderedContainers(workload.Name, sliceField(spec, "containers"), tokens, workload.tokenMounts)
 		if err != nil {
 			return nil, err

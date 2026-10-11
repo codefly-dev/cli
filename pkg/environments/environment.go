@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -258,6 +259,13 @@ type EnvironmentHost struct {
 	// allowlist check, so only a k3d environment may declare them: a
 	// deployment manifest naming a developer is the leak this refuses.
 	Developers []HostDeveloper `yaml:"developers,omitempty"`
+	// TrustAnchor is the path the host reads its trust anchor from — its
+	// trusted root and verification policy — a constant of the host, stated
+	// here so a local cluster run can mount the local trust anchor it
+	// provisions where the host reads it, the way a cell's platform mounts
+	// its own. It moves nothing on the host: a wrong path leaves the host
+	// with no anchor, and it refuses to start. A k3d environment only.
+	TrustAnchor string `yaml:"trust_anchor,omitempty"`
 }
 
 // HostDeveloper is one developer identity a local host admits: the OIDC
@@ -289,8 +297,15 @@ func (developer *HostDeveloper) Validate() error {
 	if err != nil || issuer.Scheme != "https" || issuer.Host == "" {
 		return fmt.Errorf("host developer issuer %q is not an https OIDC issuer (such as https://github.com/login/oauth)", developer.Issuer)
 	}
-	if strings.TrimSpace(developer.Subject) == "" || strings.ContainsFunc(developer.Subject, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
-		return fmt.Errorf("host developer subject %q must be the single-line identity the signing certificate names (the verified address)", developer.Subject)
+	// The host admits a person by an exact issuer and an exact e-mail
+	// address: no wildcard, no URI subject (which would read as a workflow),
+	// no surrounding space — refused here as the host refuses it at boot.
+	if strings.Contains(developer.Issuer, "*") {
+		return fmt.Errorf("host developer issuer %q is matched exactly and may not carry a wildcard", developer.Issuer)
+	}
+	if local, domain, found := strings.Cut(developer.Subject, "@"); !found || local == "" || domain == "" || strings.Contains(domain, "@") ||
+		strings.ContainsAny(developer.Subject, "*/:") || strings.ContainsFunc(developer.Subject, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+		return fmt.Errorf("host developer subject %q must be the exact e-mail address the signing certificate names (the verified address)", developer.Subject)
 	}
 	return nil
 }
@@ -345,7 +360,7 @@ func (policy *HostReleasePolicy) Validate() error {
 }
 
 // hostFields are the keys a host block may carry, in declaration order.
-var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "envelope_revision", "delivery", "release", "developers"}
+var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "envelope_revision", "delivery", "release", "developers", "trust_anchor"}
 
 // deliveryPattern is a composition identity: <module>/<service>/<endpoint>,
 // each a lowercase name.
@@ -402,6 +417,9 @@ func (host *EnvironmentHost) Validate() error {
 	}
 	if !deliveryPattern.MatchString(host.Delivery) {
 		return fmt.Errorf("host delivery %q is not the composition identity <module>/<service>/<endpoint> of the host's delivery API", host.Delivery)
+	}
+	if host.TrustAnchor != "" && (!filepath.IsAbs(host.TrustAnchor) || filepath.Clean(host.TrustAnchor) != host.TrustAnchor || host.TrustAnchor == "/") {
+		return fmt.Errorf("host trust_anchor %q is not a clean absolute path (the directory the host reads its trust anchor from)", host.TrustAnchor)
 	}
 	seen := map[HostDeveloper]bool{}
 	for i := range host.Developers {

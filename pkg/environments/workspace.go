@@ -121,6 +121,11 @@ func (env *Environment) Validate() error {
 	if env.Host != nil && len(env.Host.Developers) > 0 && !env.IsK3d() {
 		return fmt.Errorf("environment %s declares host.developers, which only a local cluster's host admits; a deployed host accepts carriers from its release workflow (host.release) and nothing else", env.Name)
 	}
+	// The trust anchor a deployed host reads is mounted by its cell's
+	// platform; only a local cluster run mounts one it provisioned.
+	if env.Host != nil && env.Host.TrustAnchor != "" && !env.IsK3d() {
+		return fmt.Errorf("environment %s declares host.trust_anchor, which only a local cluster run mounts; a deployed host's trust anchor is its platform's", env.Name)
+	}
 	if err := env.validateServiceKeyCollisions(); err != nil {
 		return err
 	}

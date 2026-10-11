@@ -107,10 +107,15 @@ func TestHostDeclarationRefusesAPartialOrMalformedIdentity(t *testing.T) {
 		// A developer identity a local host admits is an https issuer and
 		// the subject its certificate names, each required, neither
 		// misspelled, none twice.
-		"developer without subject":  {yaml: hostBlock + "      developers:\n        - issuer: https://github.com/login/oauth\n", want: "host developer subject"},
-		"developer with http issuer": {yaml: hostBlock + "      developers:\n        - issuer: http://github.com/login/oauth\n          subject: dev@example.test\n", want: "host developer issuer"},
-		"developer with unknown key": {yaml: hostBlock + "      developers:\n        - issuer: https://github.com/login/oauth\n          email: dev@example.test\n", want: "unknown host.developers field"},
-		"developer declared twice":   {yaml: hostBlock + "      developers:\n        - issuer: https://github.com/login/oauth\n          subject: dev@example.test\n        - issuer: https://github.com/login/oauth\n          subject: dev@example.test\n", want: "declared twice"},
+		"developer without subject":       {yaml: hostBlock + "      developers:\n        - issuer: https://github.com/login/oauth\n", want: "host developer subject"},
+		"developer with http issuer":      {yaml: hostBlock + "      developers:\n        - issuer: http://github.com/login/oauth\n          subject: dev@example.test\n", want: "host developer issuer"},
+		"developer with unknown key":      {yaml: hostBlock + "      developers:\n        - issuer: https://github.com/login/oauth\n          email: dev@example.test\n", want: "unknown host.developers field"},
+		"developer subject not an e-mail": {yaml: hostBlock + "      developers:\n        - issuer: https://github.com/login/oauth\n          subject: https://github.com/dev\n", want: "exact e-mail"},
+		"developer wildcard subject":      {yaml: hostBlock + "      developers:\n        - issuer: https://github.com/login/oauth\n          subject: \"*@example.test\"\n", want: "exact e-mail"},
+		"developer wildcard issuer":       {yaml: hostBlock + "      developers:\n        - issuer: https://*.example.test\n          subject: dev@example.test\n", want: "wildcard"},
+		"relative trust anchor":           {yaml: hostBlock + "      trust_anchor: etc/trust\n", want: "trust_anchor"},
+		"unclean trust anchor":            {yaml: hostBlock + "      trust_anchor: /etc//trust\n", want: "trust_anchor"},
+		"developer declared twice":        {yaml: hostBlock + "      developers:\n        - issuer: https://github.com/login/oauth\n          subject: dev@example.test\n        - issuer: https://github.com/login/oauth\n          subject: dev@example.test\n", want: "declared twice"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			workspace, err := resources.LoadFromBytes[resources.Workspace]([]byte(
@@ -150,5 +155,13 @@ func TestHostDevelopersAreALocalClustersAllowlist(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "only a local cluster's host admits") {
 		t.Fatalf("a hosted environment declaring developers was not refused: %v", err)
+	}
+	anchored, err := resources.LoadFromBytes[resources.Workspace]([]byte(
+		"name: example\nenvironments:\n  - name: prod\n    namespace: example\n    cluster:\n      kind: gke\n    host:\n" + hostBlock + "      trust_anchor: /etc/host/delivery-trust\n"))
+	if err == nil {
+		_, err = Select(anchored, "prod")
+	}
+	if err == nil || !strings.Contains(err.Error(), "only a local cluster run mounts") {
+		t.Fatalf("a hosted environment stating a trust anchor was not refused: %v", err)
 	}
 }

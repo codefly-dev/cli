@@ -85,7 +85,16 @@ the local host in its own local profile, which enforces it independently. A
 deployed host's allowlist names its release workflow and nothing else, so it
 refuses a developer's carrier by the ordinary check; refusing the declaration
 outside a k3d environment keeps a person's identity out of every manifest a
-hosted environment renders. See "Local runs" below.
+hosted environment renders. A developer is an exact issuer and an exact
+e-mail address — no wildcard, no URI subject — as the host admits a person
+signer.
+
+A k3d environment also states `trust_anchor`: the path the host reads its
+trust anchor (trusted root and verification policy) from, which is a constant
+of the host. A local cluster run mounts the local trust anchor it provisions
+there, the way a cell's platform mounts its own; stating another path moves
+nothing on the host, which then has no anchor and refuses to start. Refused on
+any environment that is not k3d. See "Local runs" below.
 
 Nothing here is derived. A derived coordinate is a guess a host silently
 refuses at reconcile time; an unlisted ownership domain is refused by the host
@@ -173,6 +182,17 @@ or CronJob: those run their own images and never authenticate as the service,
 so they are not here, where their image would be a build the host accepts a
 token for; a managed service's bootstrap bundle is never a presence artifact
 for the same reason.
+
+Every serving workload a presence document declares **projects a
+ServiceAccount token minted for the host's audience** into its authenticating
+container, read-only, at `/var/run/secrets/codefly/token` — the path the SDK's
+mint client reads — unless that container already mounts one for the
+audience. The render writes it as a patch in the unit's environment overlay
+(into the manifests of an overlay that has no kustomization), before presence
+digests the unit, so the projection is part of the bytes the document pins.
+It is how the pod proves who it is when it mints: the host reviews the token
+and reads the pod's running image. No secret, prefix or registration value is
+projected.
 
 A serving workload names its own ServiceAccount: one running as the
 namespace's `default` account — every pod's that names none — is refused,
@@ -589,6 +609,13 @@ the check refuses, stops the publish with the reason. The developer's address
 is recorded in the public transparency log, as every keyless signature's
 identity is.
 
+Every carrier check — a release's self-check, a developer's, and the check a
+delivered carrier is held to before reuse — is one verifier at the host's
+strength: the Fulcio chain, the Rekor entry and its signed entry timestamp, an
+observer timestamp, **and an embedded SCT from a CT log the trusted root
+names** (the host requires one of every signer). The public-good Fulcio embeds
+one in every certificate.
+
 A release publish **checks its own carriers**, right after signing each one,
 as a host will: offline, against the public-good trusted root fetched through
 TUF, under a policy pinning exactly this workflow's identity — repository,
@@ -870,7 +897,7 @@ cluster with:
 
 ```bash
 codefly run cluster --env local --app-project <project>           # every composed module
-codefly run cluster documents robin --env local --app-project <p>  # or the ones named
+codefly run cluster documents billing --env local --app-project <p>  # or the ones named
 ```
 
 It takes each step a cell takes, in order, and reports each delivery Job's
@@ -883,7 +910,10 @@ receipts:
    it is. And the `platform-authority` namespace with its `delivery`
    ServiceAccount (no default token mounted), which a cell's platform
    provides and the rendered tree cannot: the authority AppProject admits
-   ConfigMaps and Jobs there and nothing else.
+   ConfigMaps and Jobs there and nothing else. The modules' namespaces, which
+   every Application expects provisioned (`CreateNamespace=false`). And **the
+   local host's trust anchor** (below), before any module syncs, because the
+   host reads it at boot.
 2. **Each module rendered**, exactly as `deploy gitops render` renders it: its
    images built and pushed to the environment's `registry.url` (a registry the
    cluster pulls from, such as the one `k3d cluster create --registry-create`
@@ -953,33 +983,43 @@ wires into every module credential. A module that still requires a projected
 `MODULE_IDENTITY_PREFIX` at boot (annotations 0.2.14) fails on this path by
 design: its SDK must read the projected token instead.
 
-**What the host's local profile must contain** (the host's to provide; the
-CLI provides the cluster pieces above). Stated against the host as it reads
-delivery today (module-saas-starter `accounts`, at core v0.17):
+**The local host's trust anchor** (module-saas-starter#1066, its
+`SOLUTION_REGISTRATION.md` §8 "The local profile's trust anchor"). A host
+reads its trusted root and verification policy from one constant path, which
+the composition never writes; on a local cluster the run provides it, as a
+cell's platform does:
 
-- **Delivery turned on for the local coordinate**: the host's solution-host
-  coordinate equal to the environment's `host.coordinate`, its accepted
-  ownership domains including `host.domain`, and its delivery API being the
-  service the environment's `host.delivery` names.
-- **The trust root**: the Sigstore public-good `trusted_root.json`, the root
-  the publish checks every carrier against.
-- **The verification policy**: one signer per `host.developers` entry — the
-  certificate's issuer and subject alternative name exactly as listed, and
-  `domains: [<host.domain>]`, which is the signer → ownership-domain map that
-  lets that developer speak for the environment's domain. **The host refuses
-  such an entry today**: its policy validation requires every signer to name a
-  source repository or a build configuration, which a person's certificate
-  does not carry. Admitting a person signer — issuer and subject, exact, in
-  the local profile only — is a host change, and until it lands a
-  developer-signed carrier is refused at the host by the ordinary allowlist
-  check.
-- **The envelope**: the record a platform administrator writes (saas#1055), at
-  the revision the environment's `host.envelope_revision` declares, holding
-  the authority binding IDs the local modules' contracts ask for (core's
-  exact-inclusion check), whatever ceiling the developer wants to test under.
-- **Cluster access for the host itself**: permission to create TokenReviews
-  and to read the pods of the module namespaces, which the delivery check and
-  the module mint (saas#1056) both use.
+- **`trusted_root.json`** — the Sigstore public-good trusted root, fetched
+  through TUF verbatim: the root the publish checks every carrier against, with
+  the CT log keys an SCT is checked against.
+- **`verification_policy.json`** — the local profile: a `local` block holding
+  `clusterCertificateAuthoritySha256`, the lowercase hex SHA-256 of the DER of
+  the cluster's certificate authority (read from the `kube-root-ca.crt` bundle
+  Kubernetes projects into every pod; a bundle holding more than one CA is
+  refused rather than guessed), and one signer per `host.developers` entry:
+  `{"name": <address>, "kind": "person", "issuer": <issuer>,
+  "subjectAlternativeName": <address>, "domains": [<host.domain>]}` — the
+  `domains` list being the signer → ownership-domain map.
+
+The two documents are written as a ConfigMap and a Secret named
+`codefly-delivery-trust` in the namespace of the module `host.delivery` names,
+and the render of that module, on a k3d environment stating
+`host.trust_anchor`, mounts them into the verifier's authenticating container
+at that path: one projected volume whose only sources are the two objects,
+keys not remapped, read-only — the shape a cell's admission pins a verifier to.
+The host proves the binding at boot (the CA in its projected bundle, and a TLS
+handshake to its API server with that CA alone), so a profile copied to any
+other cluster refuses the boot. Every run recomputes the fingerprint and
+re-writes the anchor; when it changed — a recreated cluster, a changed
+developer list — the run restarts the workloads that mount it.
+
+**What the host itself must still be configured with** (its own local
+configuration, not the trust anchor): its solution-host coordinate equal to
+`host.coordinate`; its accepted ownership domains including `host.domain`;
+its delivery API being the service `host.delivery` names; permission to
+create TokenReviews and to read the pods of the module namespaces; and the
+envelope record at `host.envelope_revision` holding the binding IDs the local
+contracts ask for (saas#1055).
 
 **The cost, and the alternative the host would accept.** Requiring a local
 cluster changes the laptop story from a container runtime to a container
