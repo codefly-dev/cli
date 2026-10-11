@@ -76,12 +76,22 @@ type DeliveryJob struct {
 // the Application matching ALL of it — never one found by its path alone,
 // which every tenant's Application of the overlay shares.
 type DeliveryApplication struct {
-	Name           string `json:"name"`
-	RepoURL        string `json:"repoURL"`
-	TargetRevision string `json:"targetRevision"`
-	Path           string `json:"path"`
-	Server         string `json:"server"`
-	Namespace      string `json:"namespace"`
+	Name           string                 `json:"name"`
+	RepoURL        string                 `json:"repoURL"`
+	TargetRevision string                 `json:"targetRevision"`
+	Path           string                 `json:"path"`
+	Server         string                 `json:"server"`
+	Namespace      string                 `json:"namespace"`
+	Owner          ApplicationSetIdentity `json:"owner"`
+}
+
+// ApplicationSetIdentity names the rendered owner; UID is bound from the apply response.
+type ApplicationSetIdentity struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	Namespace  string `json:"namespace"`
+	UID        string `json:"uid"`
 }
 
 // DeliveryJobsOf lists the delivery Jobs a module's promoted tree renders for
@@ -200,6 +210,7 @@ func inClusterApplications(files fs.FS, file string) (map[string]DeliveryApplica
 			Name:    prefix + "-" + component.Component,
 			RepoURL: set.Spec.Template.Spec.Source.RepoURL, TargetRevision: set.Spec.Template.Spec.Source.TargetRevision,
 			Path: component.Overlay, Server: tenant.Server, Namespace: component.Namespace,
+			Owner: ApplicationSetIdentity{APIVersion: set.APIVersion, Kind: set.Kind, Name: set.Metadata.Name, Namespace: set.Metadata.Namespace},
 		}
 	}
 	return applications, nil

@@ -11,7 +11,7 @@ import (
 )
 
 // jobsAnswer is `kubectl get jobs -o json` for one Job attempt, or none.
-func jobsAnswer(uid, created, condition string) string {
+func jobsAnswer(uid, created, condition string, nonces ...string) string {
 	if uid == "" {
 		return `{"items":[]}`
 	}
@@ -19,8 +19,12 @@ func jobsAnswer(uid, created, condition string) string {
 	if condition != "" {
 		conditions = append(conditions, map[string]string{"type": condition, "status": "True"})
 	}
+	nonce := ""
+	if len(nonces) > 0 {
+		nonce = nonces[0]
+	}
 	encoded, _ := json.Marshal(map[string]any{"items": []any{map[string]any{
-		"metadata": map[string]string{"uid": uid, "creationTimestamp": created},
+		"metadata": map[string]any{"uid": uid, "creationTimestamp": created, "annotations": map[string]string{deliveryAttemptAnnotation: nonce}},
 		"status":   map[string]any{"conditions": conditions},
 	}}})
 	return string(encoded)
@@ -40,12 +44,13 @@ func TestARunReadsOnlyItsOwnDeliveryAttempt(t *testing.T) {
 	answers := []string{
 		jobsAnswer("old", "2026-10-10T11:00:00Z", "Complete"),
 		jobsAnswer("stray", "2026-10-10T11:59:00Z", "Complete"), // another UID, but older than this run's sync
-		jobsAnswer("new", "2026-10-10T12:00:05Z", ""),
-		jobsAnswer("new", "2026-10-10T12:00:05Z", "Failed"),
+		jobsAnswer("new", "2026-10-10T12:00:05Z", "", "accepted"),
+		jobsAnswer("new", "2026-10-10T12:00:05Z", "Failed", "accepted"),
 	}
 	var calls []string
 	driver := &ClusterDriver{
 		AwaitTimeout: time.Minute, Poll: time.Millisecond,
+		attemptNonces: map[string]string{key: "accepted"},
 		priorAttempts: map[string]string{key: "old"}, attemptStarts: map[string]time.Time{key: started},
 		Kubectl: func(_ context.Context, _ string, args ...string) (string, error) {
 			call := strings.Join(args, " ")
@@ -73,6 +78,7 @@ func TestARunReadsOnlyItsOwnDeliveryAttempt(t *testing.T) {
 
 	stuck := &ClusterDriver{
 		AwaitTimeout: 5 * time.Millisecond, Poll: time.Millisecond,
+		attemptNonces: map[string]string{"payments/job": "accepted"},
 		priorAttempts: map[string]string{"payments/job": "old"}, attemptStarts: map[string]time.Time{"payments/job": started},
 		Kubectl: func(context.Context, string, ...string) (string, error) {
 			return jobsAnswer("old", "2026-10-10T11:00:00Z", "Complete"), nil
@@ -101,7 +107,7 @@ type fakeArgo struct {
 
 func newFakeArgo(server string) *fakeArgo {
 	return &fakeArgo{app: map[string]any{
-		"metadata": map[string]any{"name": "in-cluster-payments-solution-host-bindings", "resourceVersion": "1"},
+		"metadata": map[string]any{"name": "in-cluster-payments-solution-host-bindings", "resourceVersion": "1", "ownerReferences": []any{map[string]any{"apiVersion": "argoproj.io/v1alpha1", "kind": "ApplicationSet", "name": "payments-local", "uid": "applied-set", "controller": true}}},
 		"spec": map[string]any{
 			"source":      map[string]any{"repoURL": "https://fetch.example.test/repo.git", "targetRevision": "abc", "path": "env/payments/solution-host-bindings/overlays/local"},
 			"destination": map[string]any{"server": server, "namespace": "payments"},
@@ -154,6 +160,7 @@ func deliveryApplication() gitops.DeliveryApplication {
 		Name: "in-cluster-payments-solution-host-bindings", RepoURL: "https://fetch.example.test/repo.git",
 		TargetRevision: "abc", Path: "env/payments/solution-host-bindings/overlays/local",
 		Server: "https://kubernetes.default.svc", Namespace: "payments",
+		Owner: gitops.ApplicationSetIdentity{APIVersion: "argoproj.io/v1alpha1", Kind: "ApplicationSet", Name: "payments-local", Namespace: "argocd", UID: "applied-set"},
 	}
 }
 

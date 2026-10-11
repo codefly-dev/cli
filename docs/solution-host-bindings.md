@@ -200,7 +200,9 @@ token for the audience whose file lands at that path, mounted without
 `subPath` (a `subPath` mount is never refreshed, so the token would stop
 rotating), living at most 600 s (unset is the kubelet's 3600 s), and hidden by
 no other mount (one at the same directory, at or below the token, or between
-the two). A container whose mounts occupy that path otherwise is refused, with
+the two). Every other source in the same projected volume must also write
+explicit, disjoint paths: a duplicate token path, a path above or below it,
+or a Secret/ConfigMap with unrestricted keys refuses reuse. A container whose mounts occupy that path otherwise is refused, with
 the volume and the path; a token for the audience elsewhere does not stand in. The render writes it as a patch in the unit's environment overlay
 (into the manifests of an overlay that has no kustomization), before presence
 digests the unit, so the projection is part of the bytes the document pins.
@@ -962,13 +964,17 @@ receipts:
    always: the Application is the one the CLI rendered, held to its full
    identity (the name the module's ApplicationSet gives the in-cluster
    tenant's component, its repository, revision and path, the in-cluster
-   server and the namespace) and never found by path, which every tenant's
+   server and the namespace, plus the ApplicationSet controller kind/name/UID
+   returned by bootstrap apply). Unowned Applications, foreign owners and
+   multi-source overrides are refused. It is never found by path, which every tenant's
    Application of an overlay shares; the run waits for its operation slot to
    be idle, requests a sync carrying a nonce of its own conditionally on the
    version it read, and holds out until Argo CD's operation state carries that
-   nonce, re-requesting one another operation consumed. The answer is the
-   attempt whose UID is not the recorded one and that was created no earlier
-   than the accepted sync started, read from that attempt's own pods. It prints each
+   nonce and its per-operation Kustomize source override, re-requesting one
+   another operation consumed. That override stamps the hook with
+   `codefly.dev/delivery-attempt`; the awaited Job must carry that accepted
+   nonce, have a fresh UID, and be the single matching Job. A creation time
+   alone cannot identify an operation. Receipts come from that attempt's own pods. It prints each
    document's answer (delivered with the host's receipt, refused with its
    verdict, given up on) and fails when any was refused; an attempt that never
    appears is a timeout, never an earlier success.
@@ -997,7 +1003,11 @@ repository **directly**, never through a push: the environment's `file://`
 repository is resolved to its path — following every symbolic link the way
 the filesystem traverses it (`EvalSymlinks`), never cleaned lexically, since
 `alias/../manifests.git` through a directory link names the link target's
-sibling — and must be a bare repository there; it is changed by a git that
+sibling — and must be a bare repository there. Planning records that resolved
+path and the directory's device/inode in the plan ID. A retargeted link or
+replacement directory invalidates the plan even with identical Git history.
+Every local snapshot, review, promotion and base-ref access verifies that
+binding before and after it runs. The repository is changed by a git that
 reads no
 configuration but that repository's own (no global or system configuration,
 no `GIT_*` variable of the process, the file transport only), so no

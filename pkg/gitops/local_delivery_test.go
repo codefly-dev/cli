@@ -400,7 +400,14 @@ func TestALocalPromotionAdvancesTheDeclaredRepositoryWhateverGitIsConfiguredToDo
 			count, _ := strconv.Atoi(os.Getenv("GIT_CONFIG_COUNT"))
 			t.Setenv("GIT_CONFIG_COUNT", strconv.Itoa(count+1))
 			t.Setenv(fmt.Sprintf("GIT_CONFIG_KEY_%d", count), "url.file://"+redirected+"."+rewrite)
-			t.Setenv(fmt.Sprintf("GIT_CONFIG_VALUE_%d", count), "file://"+declared)
+			// The rewrite names the repository as the publish reaches it
+			// (resolved, since the clone reads the bound repository by its
+			// resolved path), so every git read and write is rewritten.
+			resolved, err := filepath.EvalSymlinks(declared)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(fmt.Sprintf("GIT_CONFIG_VALUE_%d", count), "file://"+resolved)
 
 			request := PublishRequest{Module: "payments", Environment: "production", Local: true}
 			plan, err := PlanPublish(ctx, workspace, &request)
@@ -413,25 +420,11 @@ func TestALocalPromotionAdvancesTheDeclaredRepositoryWhateverGitIsConfiguredToDo
 			if got := gitOutput(t, "", "--git-dir", redirected, "rev-parse", "main"); got != before {
 				t.Fatalf("the rewritten destination's base moved from %s to %s", before, got)
 			}
-			switch rewrite {
-			case "insteadOf":
-				// Every read and write is rewritten alike, so the publish
-				// completes — and the promotion lands in the declared repository.
-				if err != nil {
-					t.Fatal(err)
-				}
-				if got := gitOutput(t, "", "--git-dir", declared, "rev-parse", "main"); !result.Promoted || got != result.Commit {
-					t.Fatalf("the declared repository's base is %s, want the promoted %s (promoted=%v)", got, result.Commit, result.Promoted)
-				}
-			case "pushInsteadOf":
-				// Writes go elsewhere than reads: the publish's own read-back
-				// of what it pushed fails, before any promotion.
-				if err == nil {
-					t.Fatal("a publish whose pushes were redirected away from the declared repository succeeded")
-				}
-				if got := gitOutput(t, "", "--git-dir", declared, "rev-parse", "main"); got != before {
-					t.Fatalf("the declared base moved from %s to %s on a refused publish", before, got)
-				}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gitOutput(t, "", "--git-dir", declared, "rev-parse", "main"); !result.Promoted || got != result.Commit {
+				t.Fatalf("declared base = %s, want %s (promoted=%v)", got, result.Commit, result.Promoted)
 			}
 		})
 	}
@@ -499,6 +492,7 @@ func TestADeliveryJobNamesTheApplicationTheCLIRendered(t *testing.T) {
 		Name: "in-cluster-" + component, RepoURL: "https://fetch.example.test/repo.git",
 		TargetRevision: "0123456789abcdef0123456789abcdef01234567", Path: overlay,
 		Server: "https://kubernetes.default.svc", Namespace: "payments",
+		Owner: ApplicationSetIdentity{APIVersion: argoAPIVersion, Kind: kindApplicationSet, Name: "payments-local", Namespace: "argocd"},
 	}
 	if len(jobs) != 1 || jobs[0].Application != want {
 		t.Fatalf("jobs %+v, want the Application %+v", jobs, want)
@@ -546,5 +540,97 @@ func TestALocalPromotionFollowsTheRepositoryPathAsTheFilesystemDoes(t *testing.T
 	}
 	if got := gitOutput(t, "", "--git-dir", decoy, "rev-parse", "main"); got != before {
 		t.Fatalf("the lexical sibling moved from %s to %s", before, got)
+	}
+}
+
+// TestReviewECFRepositoryReplacementAfterPlan inverts the
+// review's ECF probe: after the plan, the declared repository is replaced —
+// its link retargeted at another repository, or another directory renamed
+// into its place — with the same history, so ancestry and the compare-and-
+// swap would pass. The plan is bound to the repository on disk (resolved
+// path, device and inode), so the publish refuses the plan as stale, nothing
+// moves anywhere; and a replacement between a publish's own binding and its
+// promotion is refused at the promotion.
+func TestReviewECFRepositoryReplacementAfterPlan(t *testing.T) {
+	for _, replacement := range []string{"retarget-symlink", "replace-directory"} {
+		t.Run(replacement, func(t *testing.T) {
+			ctx, workspace, declared := developerPublishWorkspace(t)
+			installDeveloperSigning(t, &developerSigning{signer: &fakeSigner{nonce: true}})
+			decoy := filepath.Join(t.TempDir(), "decoy.git")
+			gitRun(t, "", "clone", "--quiet", "--bare", declared, decoy)
+			before := gitOutput(t, "", "--git-dir", declared, "rev-parse", "main")
+			alias := filepath.Join(t.TempDir(), "declared.git")
+			if err := os.Symlink(declared, alias); err != nil {
+				t.Fatal(err)
+			}
+			config, err := environments.WorkspaceGitops(workspace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			config.RepoURL = "file://" + alias
+			setWorkspaceGitops(t, workspace, config)
+			request := PublishRequest{Module: "payments", Environment: "production", Local: true}
+			plan, err := PlanPublish(ctx, workspace, &request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original, replaced := declared, decoy
+			replace := func() {
+				t.Helper()
+				if replacement == "retarget-symlink" {
+					if err := os.Remove(alias); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(decoy, alias); err != nil {
+						t.Fatal(err)
+					}
+					return
+				}
+				original = declared + ".original"
+				if err := os.Rename(declared, original); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(decoy, declared); err != nil {
+					t.Fatal(err)
+				}
+				replaced = declared
+			}
+			replace()
+			if _, err = Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers}, preparedPermit); err == nil {
+				t.Fatal("a plan whose repository was replaced was executed")
+			}
+			for name, repository := range map[string]string{"the original": original, "the replacement": replaced} {
+				if got := gitOutput(t, "", "--git-dir", repository, "rev-parse", "main"); got != before {
+					t.Fatalf("%s repository moved from %s to %s", name, before, got)
+				}
+			}
+		})
+	}
+
+	// Between the binding and the promotion of one publish.
+	ctx, workspace, declared := developerPublishWorkspace(t)
+	installDeveloperSigning(t, &developerSigning{signer: &fakeSigner{nonce: true}})
+	request := PublishRequest{Module: "payments", Environment: "production", Local: true, PromotionBranch: "codefly/promote-payments-production"}
+	prepared, err := preparePublish(ctx, workspace, &request, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepared.cleanup()
+	gitRun(t, prepared.dir, "-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "--quiet", "--allow-empty", "-m", "promotion")
+	commit := gitOutput(t, prepared.dir, "rev-parse", "HEAD")
+	before := gitOutput(t, "", "--git-dir", declared, "rev-parse", "main")
+	swapped := filepath.Join(t.TempDir(), "swapped.git")
+	gitRun(t, "", "clone", "--quiet", "--bare", declared, swapped)
+	if err = os.Rename(declared, declared+".original"); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Rename(swapped, declared); err != nil {
+		t.Fatal(err)
+	}
+	if err = promoteLocally(ctx, prepared, commit); err == nil || !strings.Contains(err.Error(), "changed since the plan was bound") {
+		t.Fatalf("a promotion into a repository swapped in after the binding was not refused: %v", err)
+	}
+	if got := gitOutput(t, "", "--git-dir", declared, "rev-parse", "main"); got != before {
+		t.Fatalf("the swapped-in repository moved from %s to %s", before, got)
 	}
 }

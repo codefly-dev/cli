@@ -53,18 +53,25 @@ func (d *ClusterDriver) acquireAttempts(ctx context.Context, jobs []gitops.Deliv
 		d.nonce = hex.EncodeToString(random)
 	}
 	d.attemptStarts = map[string]time.Time{}
+	d.attemptNonces = map[string]string{}
 	started := map[string]time.Time{}
+	applications := map[string]gitops.DeliveryApplication{}
 	for index := range jobs {
 		job := &jobs[index]
 		at, acquired := started[job.Application.Name]
+		if acquired && applications[job.Application.Name] != job.Application {
+			return fmt.Errorf("ambiguous delivery Application %s: conflicting rendered identities", job.Application.Name)
+		}
 		if !acquired {
 			var err error
 			if at, err = d.acquireSync(ctx, &job.Application); err != nil {
 				return err
 			}
 			started[job.Application.Name] = at
+			applications[job.Application.Name] = job.Application
 		}
 		d.attemptStarts[attemptKey(job)] = at
+		d.attemptNonces[attemptKey(job)] = d.nonce + "-" + job.Application.Name
 	}
 	return nil
 }
@@ -73,9 +80,17 @@ func (d *ClusterDriver) acquireAttempts(ctx context.Context, jobs []gitops.Deliv
 type applicationState struct {
 	Metadata struct {
 		ResourceVersion string `json:"resourceVersion"`
+		OwnerReferences []struct {
+			APIVersion string `json:"apiVersion"`
+			Kind       string `json:"kind"`
+			Name       string `json:"name"`
+			UID        string `json:"uid"`
+			Controller bool   `json:"controller"`
+		} `json:"ownerReferences"`
 	} `json:"metadata"`
 	Spec struct {
-		Source struct {
+		Sources []json.RawMessage `json:"sources"`
+		Source  struct {
 			RepoURL        string `json:"repoURL"`
 			TargetRevision string `json:"targetRevision"`
 			Path           string `json:"path"`
@@ -91,6 +106,13 @@ type applicationState struct {
 			Phase     string `json:"phase"`
 			StartedAt string `json:"startedAt"`
 			Operation struct {
+				Sync struct {
+					Source struct {
+						Kustomize struct {
+							CommonAnnotations map[string]string `json:"commonAnnotations"`
+						} `json:"kustomize"`
+					} `json:"source"`
+				} `json:"sync"`
 				Info []struct {
 					Name  string `json:"name"`
 					Value string `json:"value"`
@@ -103,8 +125,13 @@ type applicationState struct {
 // mismatch names the first part of the Application's identity that is not
 // the one the CLI rendered, or "".
 func (state *applicationState) mismatch(want *gitops.DeliveryApplication) string {
+	if mismatch := state.ownerMismatch(&want.Owner); mismatch != "" {
+		return mismatch
+	}
 	source, destination := &state.Spec.Source, &state.Spec.Destination
 	switch {
+	case len(state.Spec.Sources) != 0:
+		return "spec.sources overrides the rendered singular source"
 	case source.RepoURL != want.RepoURL:
 		return fmt.Sprintf("it syncs %q, not %q", source.RepoURL, want.RepoURL)
 	case source.TargetRevision != want.TargetRevision:
@@ -119,6 +146,21 @@ func (state *applicationState) mismatch(want *gitops.DeliveryApplication) string
 	return ""
 }
 
+// ownerMismatch requires the controller that the bootstrap apply returned.
+func (state *applicationState) ownerMismatch(want *gitops.ApplicationSetIdentity) string {
+	if want.Kind != "ApplicationSet" || want.Name == "" || want.UID == "" || want.APIVersion == "" || want.Namespace != "argocd" {
+		return "the rendered ApplicationSet has no bound identity from bootstrap apply"
+	}
+	if len(state.Metadata.OwnerReferences) != 1 {
+		return "it must have exactly one ApplicationSet owner"
+	}
+	owner := state.Metadata.OwnerReferences[0]
+	if !owner.Controller || owner.APIVersion != want.APIVersion || owner.Kind != want.Kind || owner.Name != want.Name || owner.UID != want.UID {
+		return "its controller is not the ApplicationSet applied by this run"
+	}
+	return ""
+}
+
 // acceptedNonce is the attempt nonce of the operation Argo CD is running or
 // ran last, or "".
 func (state *applicationState) acceptedNonce() string {
@@ -127,7 +169,9 @@ func (state *applicationState) acceptedNonce() string {
 	}
 	for _, info := range state.Status.OperationState.Operation.Info {
 		if info.Name == attemptInfo {
-			return info.Value
+			if state.Status.OperationState.Operation.Sync.Source.Kustomize.CommonAnnotations[deliveryAttemptAnnotation] == info.Value {
+				return info.Value
+			}
 		}
 	}
 	return ""
@@ -141,6 +185,23 @@ func (state *applicationState) idle() bool {
 }
 
 const attemptInfo = "codefly-attempt"
+const deliveryAttemptAnnotation = "codefly.dev/delivery-attempt"
+
+// syncOperation stamps the nonce through Argo's per-operation source override.
+// Delivery overlays are Kustomizations; the override annotates the hook itself
+// before creation without mutating the Application or the published carriers.
+func syncOperation(want *gitops.DeliveryApplication, nonce string) map[string]any {
+	return map[string]any{
+		"revision": want.TargetRevision,
+		"source": map[string]any{
+			"repoURL": want.RepoURL, "targetRevision": want.TargetRevision, "path": want.Path,
+			"kustomize": map[string]any{
+				"commonAnnotations":      map[string]string{deliveryAttemptAnnotation: nonce},
+				"forceCommonAnnotations": true,
+			},
+		},
+	}
+}
 
 // acquireSync waits for the Application the CLI rendered to exist with its
 // full identity and an idle operation slot, requests a sync carrying this
@@ -179,7 +240,7 @@ func (d *ClusterDriver) acquireSync(ctx context.Context, want *gitops.DeliveryAp
 				"operation": map[string]any{
 					"initiatedBy": map[string]any{"username": "codefly-run-cluster"},
 					"info":        []any{map[string]string{"name": attemptInfo, "value": nonce}},
-					"sync":        map[string]any{"revision": want.TargetRevision},
+					"sync":        syncOperation(want, nonce),
 				},
 			})
 			if marshalErr != nil {
@@ -230,6 +291,7 @@ func (d *ClusterDriver) application(ctx context.Context, name string) (*applicat
 // and, once finished, whether it completed.
 type jobAttempt struct {
 	uid      string
+	nonce    string
 	created  time.Time
 	finished bool
 	complete bool
@@ -243,8 +305,9 @@ func (d *ClusterDriver) jobAttempt(ctx context.Context, job *gitops.DeliveryJob)
 	var jobs struct {
 		Items []struct {
 			Metadata struct {
-				UID               string `json:"uid"`
-				CreationTimestamp string `json:"creationTimestamp"`
+				UID               string            `json:"uid"`
+				CreationTimestamp string            `json:"creationTimestamp"`
+				Annotations       map[string]string `json:"annotations"`
 			} `json:"metadata"`
 			Status struct {
 				Conditions []struct {
@@ -260,8 +323,11 @@ func (d *ClusterDriver) jobAttempt(ctx context.Context, job *gitops.DeliveryJob)
 	if len(jobs.Items) == 0 {
 		return jobAttempt{}, nil
 	}
+	if len(jobs.Items) != 1 {
+		return jobAttempt{}, fmt.Errorf("ambiguous delivery Job %s: %d matches", attemptKey(job), len(jobs.Items))
+	}
 	item := &jobs.Items[0]
-	attempt := jobAttempt{uid: item.Metadata.UID}
+	attempt := jobAttempt{uid: item.Metadata.UID, nonce: item.Metadata.Annotations[deliveryAttemptAnnotation]}
 	attempt.created, _ = time.Parse(time.RFC3339, item.Metadata.CreationTimestamp)
 	for _, condition := range item.Status.Conditions {
 		if condition.Status == "True" && (condition.Type == "Complete" || condition.Type == "Failed") {
@@ -285,15 +351,15 @@ func (d *ClusterDriver) pause(ctx context.Context) error {
 }
 
 // Await waits for THIS run's attempt of a delivery Job — a Job of that name
-// whose UID is not the one that existed before the run delivered, created no
-// earlier than this run's accepted sync started — to complete or fail, and
+// carrying the accepted operation's nonce, with a fresh UID — to complete or fail, and
 // reads the receipts of that attempt's own pods.
 func (d *ClusterDriver) Await(ctx context.Context, job *gitops.DeliveryJob) (Delivery, error) {
 	deadline := time.Now().Add(d.AwaitTimeout)
 	delivery := Delivery{Job: *job}
 	prior := d.priorAttempts[attemptKey(job)]
 	notBefore, synced := d.attemptStarts[attemptKey(job)]
-	if !synced {
+	nonce := d.attemptNonces[attemptKey(job)]
+	if !synced || nonce == "" {
 		return delivery, fmt.Errorf("this run acquired no sync for delivery Job %s, so no attempt of it is this run's", attemptKey(job))
 	}
 	for {
@@ -301,7 +367,7 @@ func (d *ClusterDriver) Await(ctx context.Context, job *gitops.DeliveryJob) (Del
 		if err != nil {
 			return delivery, err
 		}
-		if attempt.uid != "" && attempt.uid != prior && !attempt.created.Before(notBefore) && attempt.finished {
+		if attempt.nonce == nonce && attempt.uid != "" && attempt.uid != prior && !attempt.created.Before(notBefore) && attempt.finished {
 			delivery.Succeeded, delivery.Attempt = attempt.complete, attempt.uid
 			break
 		}

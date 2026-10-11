@@ -138,7 +138,7 @@ func projectIdentityToken(owned string, opts *RenderOptions, unit SolutionArtifa
 		if provided {
 			continue
 		}
-		volume := projectedVolume(identityTokenVolume, map[string]any{"serviceAccountToken": map[string]any{
+		volume := projectedVolume(identityTokenVolume, map[string]any{serviceAccountTokenProjection: map[string]any{
 			"audience": opts.Host.Audience, "expirationSeconds": identityTokenSeconds, "path": identityTokenFile,
 		}})
 		mount := readOnlyMount(identityTokenVolume, identityTokenMount)
@@ -213,6 +213,9 @@ func providesIdentityToken(workload *renderedWorkload, container, audience strin
 	for _, mount := range workload.tokenMounts[container] {
 		if mount.audience != audience || mount.file != required || mount.subPathed {
 			continue
+		}
+		if mount.projectionConflict != "" {
+			return false, fmt.Errorf("container %s volume %s cannot reuse the identity token: %s", container, mount.volume, mount.projectionConflict)
 		}
 		// The workload's own projection is never kept when it lives
 		// longer than the host admits: every mint from the pod would be
