@@ -467,6 +467,9 @@ type PublishPlan struct {
 	// is the approval, and the publish fast-forwards the local delivery
 	// repository's base branch to its commit itself (see promoteLocally).
 	SelfPromotes bool `json:"selfPromotes,omitempty"`
+	// LocalRepository is the repository on disk a self-promoting plan is
+	// bound to; part of the plan's identity.
+	LocalRepository *LocalRepositoryIdentity `json:"localRepository,omitempty"`
 }
 
 // ContractCheck reports the admission result of one consumed API contract

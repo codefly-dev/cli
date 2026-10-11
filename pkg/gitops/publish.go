@@ -82,7 +82,7 @@ func Publish(ctx context.Context, workspace *resources.Workspace, mutation *Publ
 		return PublishResult{}, fmt.Errorf("publish plan is stale: prepared %s, current %s", mutation.PlanID, current)
 	}
 	inspected.cleanup()
-	prepared, err := preparePublish(ctx, workspace, &mutation.Request, "", true)
+	prepared, err := preparePublish(ctx, workspace, &mutation.Request, "", true, inspected.plan.LocalRepository)
 	if err != nil {
 		return PublishResult{}, err
 	}
@@ -126,7 +126,7 @@ func Rollback(ctx context.Context, workspace *resources.Workspace, mutation *Rol
 	// The rollback's snapshot — the restored workloads with their re-settled
 	// documents — is advertised as a publish's is, so the Applications can
 	// reach the revision they are stamped with.
-	prepared, _, err := prepareRollback(ctx, workspace, &mutation.Request, true)
+	prepared, _, err := prepareRollback(ctx, workspace, &mutation.Request, true, inspected.plan.LocalRepository)
 	if err != nil {
 		return PublishResult{}, err
 	}
@@ -150,6 +150,7 @@ func preparePublish(
 	request *PublishRequest,
 	restoreRevision string,
 	publishSnapshot bool,
+	expected ...*LocalRepositoryIdentity,
 ) (*preparedRepository, error) {
 	if err := validatePublishRequest(workspace, request); err != nil {
 		return nil, err
@@ -197,7 +198,11 @@ func preparePublish(
 		promotionBranch = "codefly/promote-" + sanitizeRef(request.Module) + "-" + sanitizeRef(request.Environment)
 	}
 	selfPromotes := publication.selfPromotes(env)
-	repo, cleanup, baseRevision, branchRevision, err := clonePromotionRepository(ctx, config.RepoURL, baseBranch, promotionBranch, selfPromotes)
+	source, bound, err := publication.bindRepository(ctx, config.RepoURL, selfPromotes, expected)
+	if err != nil {
+		return nil, err
+	}
+	repo, cleanup, baseRevision, branchRevision, err := clonePromotionRepository(ctx, source, baseBranch, promotionBranch, selfPromotes, bound)
 	if err != nil {
 		return nil, err
 	}
@@ -266,10 +271,16 @@ func preparePublish(
 		Module:         request.Module, Environment: request.Environment,
 		RenderDigest: inventory.Digest, SnapshotRevision: snapshotRevision,
 		Changed: changed, Diff: diff, ContractChecks: contractChecks,
-		Delivery:       inventory.Delivery,
-		StaleConsumers: staleConsumers,
-		Carriers:       publication.options.Carriers,
-		SelfPromotes:   selfPromotes,
+		Delivery:        inventory.Delivery,
+		StaleConsumers:  staleConsumers,
+		Carriers:        publication.options.Carriers,
+		SelfPromotes:    selfPromotes,
+		LocalRepository: bound,
+	}
+	if bound != nil {
+		if err = bound.verify(ctx, config.RepoURL); err != nil {
+			return fail(err)
+		}
 	}
 	plan.ID, err = publishPlanID(&plan, restoreRevision)
 	if err != nil {
@@ -1211,7 +1222,7 @@ func prepareServiceSnapshot(
 		}
 	}
 	if publishSnapshot {
-		if err := publishServiceSnapshot(ctx, repo, moduleName, environment, snapshotRevision); err != nil {
+		if err := publishServiceSnapshot(ctx, repo, moduleName, environment, snapshotRevision, publication); err != nil {
 			return serviceSnapshotPreparation{}, err
 		}
 	}
@@ -1384,8 +1395,11 @@ func commitServiceSnapshot(ctx context.Context, repo, module, environment, previ
 	return revision, nil
 }
 
-func publishServiceSnapshot(ctx context.Context, repo, module, environment, revision string) error {
+func publishServiceSnapshot(ctx context.Context, repo, module, environment, revision string, publication *deliveryPublication) error {
 	snapshotBranch := serviceSnapshotBranch(module, environment)
+	if publication.localRepository != nil {
+		return publication.localRepository.publishRef(ctx, publication.repositoryURL, repo, revision, "refs/heads/"+snapshotBranch)
+	}
 	refspec := revision + ":refs/heads/" + snapshotBranch
 	if _, err := gitCommand(ctx, repo, "push", "--porcelain", "--", "origin", refspec); err != nil {
 		return fmt.Errorf("publish immutable service snapshot without force: %w", err)
@@ -1618,7 +1632,7 @@ func validatePublishRequest(workspace *resources.Workspace, request *PublishRequ
 	return nil
 }
 
-func prepareRollback(ctx context.Context, workspace *resources.Workspace, request *RollbackRequest, publishSnapshot bool) (*preparedRepository, string, error) {
+func prepareRollback(ctx context.Context, workspace *resources.Workspace, request *RollbackRequest, publishSnapshot bool, expected ...*LocalRepositoryIdentity) (*preparedRepository, string, error) {
 	if request == nil {
 		return nil, "", fmt.Errorf("rollback request is required")
 	}
@@ -1656,7 +1670,7 @@ func prepareRollback(ctx context.Context, workspace *resources.Workspace, reques
 	if err != nil {
 		return nil, "", fmt.Errorf("resolve rollback revision: %w", err)
 	}
-	prepared, err := preparePublish(ctx, workspace, &request.PublishRequest, revision, publishSnapshot)
+	prepared, err := preparePublish(ctx, workspace, &request.PublishRequest, revision, publishSnapshot, expected...)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1730,27 +1744,51 @@ func promoteLocally(ctx context.Context, prepared *preparedRepository, commit st
 	if plan.Delivery != nil && len(plan.Delivery.Documents) > 0 && !plan.Delivery.Signed {
 		return fmt.Errorf("a local promotion is the developer's signed publish, and this delivery is unsigned; nothing is promoted")
 	}
-	repository, err := localRepositoryPath(ctx, plan.Repository)
+	if plan.LocalRepository == nil {
+		return fmt.Errorf("a local promotion acts on the repository its plan was bound to, and this plan bound none")
+	}
+	return plan.LocalRepository.advance(ctx, plan.Repository, prepared.dir, commit, "refs/heads/"+plan.BaseBranch, plan.BaseRevision)
+}
+
+// LocalRepositoryIdentity is the one repository on disk a local promotion is
+// bound to: the path the declared repository resolved to, and the
+// filesystem identity (device and inode) of that directory when it was bound.
+// Both are in the plan, so a publish executing a plan whose repository was
+// replaced is a stale plan, and the promotion re-checks both before and after
+// it writes.
+type LocalRepositoryIdentity struct {
+	Path   string `json:"path"`
+	Device uint64 `json:"device"`
+	Inode  uint64 `json:"inode"`
+}
+
+// bindLocalRepository resolves the declared repository and reads its
+// filesystem identity.
+func bindLocalRepository(ctx context.Context, declared string) (*LocalRepositoryIdentity, error) {
+	resolved, err := localRepositoryPath(ctx, declared)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if _, err = isolatedGit(ctx, repository, "fetch", "--no-tags", "--quiet", prepared.dir, "refs/heads/"+plan.PromotionBranch); err != nil {
-		return fmt.Errorf("bring the promotion commit into the local delivery repository %s: %w", repository, err)
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return nil, fmt.Errorf("read the identity of the local delivery repository %s: %w", resolved, err)
 	}
-	fetched, err := isolatedGit(ctx, repository, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
-	if err != nil || fetched != commit {
-		return fmt.Errorf("the publication checkout's promotion branch is %q, not the signed commit %s; nothing is promoted (%v)", fetched, commit, err)
+	device, inode, ok := fileIdentity(info)
+	if !ok {
+		return nil, fmt.Errorf("a local promotion binds the repository by its filesystem identity, which this platform does not report for %s", resolved)
 	}
-	if _, err = isolatedGit(ctx, repository, "merge-base", "--is-ancestor", plan.BaseRevision, commit); err != nil {
-		return fmt.Errorf("the signed commit %s does not descend from the base %s the plan settled against; a local promotion only fast-forwards", commit, plan.BaseRevision)
+	return &LocalRepositoryIdentity{Path: resolved, Device: device, Inode: inode}, nil
+}
+
+// verify holds the declared repository to the bound one: it must still
+// resolve to the same path, and that path must still be the same directory.
+func (bound *LocalRepositoryIdentity) verify(ctx context.Context, declared string) error {
+	current, err := bindLocalRepository(ctx, declared)
+	if err != nil {
+		return fmt.Errorf("the local delivery repository the plan was bound to (%s) can no longer be read: %w", bound.Path, err)
 	}
-	ref := "refs/heads/" + plan.BaseBranch
-	if _, err = isolatedGit(ctx, repository, "update-ref", "-m", "codefly: local promotion of a developer-signed publish", ref, commit, plan.BaseRevision); err != nil {
-		return fmt.Errorf("fast-forward %s in %s from %s to %s (the base moved since the plan settled against it, or the ref is locked): %w", ref, repository, plan.BaseRevision, commit, err)
-	}
-	moved, err := isolatedGit(ctx, repository, "rev-parse", "--verify", ref+"^{commit}")
-	if err != nil || moved != commit {
-		return fmt.Errorf("the local base branch %s in %s reads %q after promotion, expected %s (%v)", plan.BaseBranch, repository, moved, commit, err)
+	if *current != *bound {
+		return fmt.Errorf("the local delivery repository changed since the plan was bound to it: %q now reaches %s (device %d, inode %d), and the plan was bound to %s (device %d, inode %d); nothing is promoted — plan again", declared, current.Path, current.Device, current.Inode, bound.Path, bound.Device, bound.Inode)
 	}
 	return nil
 }
@@ -1792,7 +1830,7 @@ func localRepositoryPath(ctx context.Context, declared string) (string, error) {
 // configuration; GIT_DIR and friends redirect it), no prompt, and file the
 // only transport it may use.
 func isolatedGit(ctx context.Context, repository string, args ...string) (string, error) {
-	full := append([]string{"-c", "protocol.allow=never", "-c", "protocol.file.allow=always", "--git-dir", repository}, args...)
+	full := append([]string{"-c", "protocol.allow=never", "-c", "protocol.file.allow=always", "--git-dir", "."}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
 	cmd.Dir = repository
 	for _, variable := range os.Environ() {
@@ -1843,13 +1881,17 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 	// A local promotion also pushes an unchanged branch: one the base had
 	// moved past restarts from the base, and the remote branch must follow
 	// it (a fast-forward) before it is verified below.
-	if len(prepared.plan.Changed) > 0 || prepared.plan.SelfPromotes {
+	if prepared.plan.SelfPromotes {
+		if err = prepared.plan.LocalRepository.publishRef(ctx, prepared.plan.Repository, prepared.dir, commit, "refs/heads/"+prepared.plan.PromotionBranch); err != nil {
+			return PublishResult{}, err
+		}
+	} else if len(prepared.plan.Changed) > 0 {
 		refspec := "refs/heads/" + prepared.plan.PromotionBranch + ":refs/heads/" + prepared.plan.PromotionBranch
 		if _, err = gitCommand(ctx, prepared.dir, "push", "--porcelain", "--set-upstream", "--", "origin", refspec); err != nil {
 			return PublishResult{}, fmt.Errorf("push promotion branch without force: %w", err)
 		}
 	}
-	remote, err := gitCommand(ctx, prepared.dir, "ls-remote", "--exit-code", "--refs", "origin", "refs/heads/"+prepared.plan.PromotionBranch)
+	remote, err := publicationRemoteRef(ctx, prepared, "refs/heads/"+prepared.plan.PromotionBranch)
 	if err != nil {
 		return PublishResult{}, fmt.Errorf("verify promotion branch: %w", err)
 	}
@@ -1882,14 +1924,19 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 	return result, nil
 }
 
-func clonePromotionRepository(ctx context.Context, repository, baseBranch, promotionBranch string, selfPromotes bool) (string, func(), string, string, error) {
+func clonePromotionRepository(ctx context.Context, repository, baseBranch, promotionBranch string, selfPromotes bool, bound *LocalRepositoryIdentity) (string, func(), string, string, error) {
 	temp, err := os.MkdirTemp("", "codefly-gitops-publish-")
 	if err != nil {
 		return "", nil, "", "", fmt.Errorf("create publication checkout: %w", err)
 	}
 	cleanup := func() { _ = os.RemoveAll(temp) }
 	repo := filepath.Join(temp, "repo")
-	if _, err = gitCommand(ctx, temp, "clone", "--quiet", "--no-checkout", "--", repository, repo); err != nil {
+	if bound != nil {
+		_, err = bound.git(ctx, repository, "clone", "--quiet", "--no-checkout", "--no-local", "--", repository, repo)
+	} else {
+		_, err = gitCommand(ctx, temp, "clone", "--quiet", "--no-checkout", "--", repository, repo)
+	}
+	if err != nil {
 		cleanup()
 		return "", nil, "", "", err
 	}
@@ -2042,7 +2089,13 @@ func openOrUpdatePullRequest(ctx context.Context, prepared *preparedRepository, 
 	if prepared.plan.RepositorySlug == "" {
 		reviewRef := localReviewRef(prepared.plan.PromotionBranch, commit)
 		refspec := commit + ":" + reviewRef
-		if _, err := gitCommand(ctx, prepared.dir, "push", "--porcelain", "--", "origin", refspec); err != nil {
+		var err error
+		if prepared.plan.SelfPromotes {
+			err = prepared.plan.LocalRepository.publishRef(ctx, prepared.plan.Repository, prepared.dir, commit, reviewRef)
+		} else {
+			_, err = gitCommand(ctx, prepared.dir, "push", "--porcelain", "--", "origin", refspec)
+		}
+		if err != nil {
 			return "", 0, fmt.Errorf("publish local review ref: %w", err)
 		}
 		return prepared.plan.Repository + "#" + reviewRef, 0, nil
@@ -2478,8 +2531,10 @@ func commandWithEnvironment(
 // beyond the staged tree: the base branch they are settled against, the signer
 // and target, and the cell file to carry into the repository.
 type deliveryPublication struct {
-	baseBranch string
-	options    deliveryPublishOptions
+	localRepository *LocalRepositoryIdentity
+	repositoryURL   string
+	baseBranch      string
+	options         deliveryPublishOptions
 	// workspace and env are the services the tree's units render, and the
 	// host block, which the delivery documents are settled against.
 	workspace *resources.Workspace

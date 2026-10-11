@@ -51,6 +51,7 @@ type ClusterDriver struct {
 	// earliest a Job of this run's attempt was created.
 	priorAttempts map[string]string
 	attemptStarts map[string]time.Time
+	attemptNonces map[string]string
 	// nonce identifies this run's sync operations (random when empty).
 	nonce string
 }
@@ -212,10 +213,20 @@ func (d *ClusterDriver) Bootstrap(ctx context.Context, revision string, publishe
 	if err = d.recordPriorAttempts(ctx, jobs); err != nil {
 		return nil, err
 	}
+	var appliedSets []gitops.ApplicationSetIdentity
 	for _, bootstrap := range bootstraps {
-		if _, err = d.Kubectl(ctx, "", "apply", "-k", bootstrap); err != nil {
-			return nil, fmt.Errorf("apply the Argo bootstrap at %s: %w", bootstrap, err)
+		applied, applyErr := d.Kubectl(ctx, "", "apply", "-k", bootstrap, "-o", "json")
+		if applyErr != nil {
+			return nil, fmt.Errorf("apply the Argo bootstrap at %s: %w", bootstrap, applyErr)
 		}
+		sets, readErr := appliedApplicationSets(applied)
+		if readErr != nil {
+			return nil, readErr
+		}
+		appliedSets = append(appliedSets, sets...)
+	}
+	if err = bindApplicationOwners(jobs, appliedSets); err != nil {
+		return nil, err
 	}
 	return jobs, d.acquireAttempts(ctx, jobs)
 }
