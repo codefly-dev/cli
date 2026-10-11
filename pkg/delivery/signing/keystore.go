@@ -6,10 +6,12 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +31,8 @@ var developerKeyID = regexp.MustCompile(`^dev-[0-9a-f]{16}$`)
 type Keychain interface {
 	Load(keyID string) ([]byte, error)
 	Store(keyID string, privatePEM []byte) error
+	// Holds reports whether custody keeps any developer key, indexed or not.
+	Holds() (bool, error)
 }
 
 // DeveloperKeyStore holds one machine key, selected by its private current index.
@@ -50,6 +54,17 @@ func (k FileKeychain) Load(id string) ([]byte, error) {
 	}
 	return readPrivate(filepath.Join(k.Directory, id+".pem"))
 }
+func (k FileKeychain) Holds() (bool, error) {
+	if err := privatePath(k.Directory, true); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	held, err := filepath.Glob(filepath.Join(k.Directory, "dev-*.pem"))
+	return len(held) > 0, err
+}
+
 func (k FileKeychain) Store(id string, data []byte) error {
 	if !developerKeyID.MatchString(id) {
 		return errors.New("invalid developer key ID")
@@ -158,7 +173,18 @@ func (s *DeveloperKeyStore) LoadOrCreate() (solutionhost.Signer, error) {
 	if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	// Only an absent index permits generation; a missing indexed key must fail.
+	// Only an absent index over empty custody permits generation. An index lost
+	// while custody still holds a key would otherwise mint a second identity
+	// beside the one the environment admits.
+	held, err := s.backend().Holds()
+	if err != nil {
+		return nil, err
+	}
+	if held {
+		return nil, fmt.Errorf("developer key custody (service %q) already holds a key but its index %s is missing; "+
+			"write that key's id (dev-…, the account of the custody entry) into the index to recover it — a second developer key is never created",
+			keychainService, filepath.Join(s.Directory, "current"))
+	}
 	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -222,9 +248,14 @@ func writePrivate(path string, data []byte) error {
 
 type commandKeychain struct{ command string }
 
+// The macOS keychain stores the key base64-encoded and receives it on stdin
+// through security's interactive mode: an argument would put the private key
+// in every process listing on the machine.
+func (k commandKeychain) macOS() bool { return k.command == "security" }
+
 func (k commandKeychain) Load(id string) ([]byte, error) {
 	var args []string
-	if k.command == "security" {
+	if k.macOS() {
 		args = []string{"find-generic-password", "-s", keychainService, "-a", id, "-w"}
 	} else {
 		args = []string{"lookup", "service", keychainService, "account", id}
@@ -233,18 +264,54 @@ func (k commandKeychain) Load(id string) ([]byte, error) {
 	if err != nil {
 		return nil, errors.New("OS keychain could not read the developer key")
 	}
+	if k.macOS() {
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(out)))
+		if err != nil {
+			return nil, errors.New("OS keychain holds an unreadable developer key")
+		}
+		return decoded, nil
+	}
 	return out, nil
 }
+
+func (k commandKeychain) Holds() (bool, error) {
+	var cmd *exec.Cmd
+	if k.macOS() {
+		cmd = exec.Command(k.command, "find-generic-password", "-s", keychainService)
+	} else {
+		cmd = exec.Command(k.command, "lookup", "service", keychainService)
+	}
+	// Only the exit status matters; nothing read here is kept.
+	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+	if err := cmd.Run(); err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return false, nil
+		}
+		return false, errors.New("OS keychain could not be queried")
+	}
+	return true, nil
+}
+
 func (k commandKeychain) Store(id string, secret []byte) error {
 	var cmd *exec.Cmd
-	if k.command == "security" {
-		cmd = exec.Command(k.command, "add-generic-password", "-s", keychainService, "-a", id, "-w", string(secret))
+	if k.macOS() {
+		cmd = exec.Command(k.command, "-i")
+		cmd.Stdin = strings.NewReader(fmt.Sprintf("add-generic-password -s %s -a %s -w %s\n",
+			keychainService, id, base64.StdEncoding.EncodeToString(secret)))
 	} else {
 		cmd = exec.Command(k.command, "store", "--label=Codefly delivery signing", "service", keychainService, "account", id)
 		cmd.Stdin = bytes.NewReader(secret)
 	}
+	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
 	if err := cmd.Run(); err != nil {
 		return errors.New("OS keychain could not store the developer key")
+	}
+	// Interactive mode exits 0 when a command inside it fails: read the key
+	// back before trusting custody with it.
+	stored, err := k.Load(id)
+	if err != nil || !bytes.Equal(bytes.TrimSpace(stored), bytes.TrimSpace(secret)) {
+		return errors.New("OS keychain did not keep the developer key")
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package signing
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/ed25519"
 	"crypto/x509"
@@ -68,7 +69,8 @@ func NewVaultTransit(lookup func(string) (string, bool)) (*VaultTransit, error) 
 		return nil, errors.New("Transit mount and key name must be clean path components")
 	}
 	signer := &VaultTransit{address: strings.TrimRight(address, "/"), token: token, mount: mount, name: name, client: &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout:   30 * time.Second,
+		Transport: vaultTransport(parsed.Scheme == "http"),
 		// A redirect must never forward the token to a different endpoint.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
@@ -198,4 +200,34 @@ func (s *VaultTransit) request(method, operation string, body []byte, result any
 		return fmt.Errorf("Vault Transit %s returned unreadable JSON", operation)
 	}
 	return nil
+}
+
+// vaultTransport keeps a cleartext request on this machine. The environment's
+// proxy is never consulted for one — Go's localhost exemption is
+// case-sensitive, so http://LOCALHOST would otherwise send the token to a proxy
+// in the clear — and every address it dials must be loopback.
+func vaultTransport(cleartext bool) http.RoundTripper {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if !cleartext {
+		return transport
+	}
+	transport.Proxy = nil
+	dialer := &net.Dialer{Timeout: 30 * time.Second}
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		for _, candidate := range addresses {
+			if candidate.IP.IsLoopback() {
+				return dialer.DialContext(ctx, network, net.JoinHostPort(candidate.IP.String(), port))
+			}
+		}
+		return nil, errors.New("a cleartext Vault address must resolve to loopback")
+	}
+	return transport
 }
