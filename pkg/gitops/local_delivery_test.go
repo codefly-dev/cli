@@ -13,9 +13,10 @@ import (
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/solutionhost"
 )
 
-const localDeveloper = "      developers:\n        - issuer: https://github.com/login/oauth\n          subject: dev@example.test\n"
+const localDeveloper = "      developers:\n        - key_id: dev-0123456789abcdef\n"
 
 // developerPublishWorkspace is hostedPublishWorkspace with the k3d
 // environment's host listing one developer: the identity the LOCAL host's
@@ -28,7 +29,7 @@ func developerPublishWorkspace(t *testing.T) (context.Context, *resources.Worksp
 	if err != nil {
 		t.Fatal(err)
 	}
-	anchor := "          - refs/tags/v[0-9]+[.][0-9]+[.][0-9]+\n"
+	anchor := "        key_id: release-v1\n"
 	withDeveloper := strings.Replace(string(config), anchor, anchor+localDeveloper, 1)
 	if withDeveloper == string(config) {
 		t.Fatal("the fixture's host block was not found")
@@ -50,49 +51,33 @@ func developerPublishWorkspace(t *testing.T) (context.Context, *resources.Worksp
 	return ctx, workspace, remote
 }
 
-// developerSigning stands in for the developer signer and its check: the
-// real ones reach Fulcio, Rekor and the public-good trusted root. It records
-// the policy and token source the publish built them from, and every check.
+// developerSigning supplies custody without touching the machine keychain.
 type developerSigning struct {
-	signer   signing.Signer
-	policies []*signing.DeveloperPolicy
-	sources  []signing.IDTokenSource
-	checked  int
-	refuse   error
+	signer signing.Signer
+	loaded int
+	refuse error
 }
 
 func installDeveloperSigning(t *testing.T, fake *developerSigning) {
 	t.Helper()
-	signer, check := developerSigner, developerCheck
-	t.Cleanup(func() { developerSigner, developerCheck = signer, check })
-	developerSigner = func(policy *signing.DeveloperPolicy, source signing.IDTokenSource, _ signing.KeylessOptions) (signing.Signer, error) {
-		fake.policies = append(fake.policies, policy)
-		fake.sources = append(fake.sources, source)
-		return fake.signer, nil
-	}
-	developerCheck = func(policy *signing.DeveloperPolicy) (signing.SelfCheck, error) {
-		return func(context.Context, []byte, []byte) error {
-			fake.checked++
-			return fake.refuse
-		}, nil
-	}
+	before := developerSigner
+	t.Cleanup(func() { developerSigner = before })
+	developerSigner = func() (solutionhost.Signer, error) { fake.loaded++; return fake.signer, fake.refuse }
 }
 
 // TestLocalPublishSignsAsTheDeveloperAndDeliversThroughTheJobs is cli#918's
 // path: a local qualification publish to an environment whose host lists a
 // developer signs every document under the developer's identity — the
-// developer signer, built from host.developers and the request's token
-// source — checks each fresh carrier as the local host will, and writes the
+// developer key, admitted by host.developers — checks each fresh carrier as the local host will, and writes the
 // SAME carriers and Jobs a cell receives. The publish executing the plan
-// reuses the plan's carriers (held to the same check), so one login signs
+// reuses the plan's carriers (held to the same check), so one key signs
 // one promotion.
 func TestLocalPublishSignsAsTheDeveloperAndDeliversThroughTheJobs(t *testing.T) {
 	ctx, workspace, remote := developerPublishWorkspace(t)
 	fake := &developerSigning{signer: &fakeSigner{nonce: true}}
 	installDeveloperSigning(t, fake)
-	source := signing.IDTokenSource(func(context.Context) (string, error) { return "a.b.c", nil })
 	request := PublishRequest{
-		Module: "payments", Environment: "production", Local: true, DeveloperIDToken: source,
+		Module: "payments", Environment: "production", Local: true,
 		PromotionBranch: "codefly/promote-payments-production",
 	}
 	plan, err := PlanPublish(ctx, workspace, &request)
@@ -102,19 +87,25 @@ func TestLocalPublishSignsAsTheDeveloperAndDeliversThroughTheJobs(t *testing.T) 
 	if plan.Delivery == nil || !plan.Delivery.Signed {
 		t.Fatalf("a local publish to a host listing a developer did not sign: %+v", plan.Delivery)
 	}
-	if len(fake.policies) == 0 {
-		t.Fatal("the developer signer was never built")
+	if fake.loaded == 0 {
+		t.Fatal("developer custody was never loaded")
 	}
-	policy := fake.policies[0]
-	if len(policy.Developers) != 1 || policy.Developers[0] != (signing.DeveloperIdentity{Issuer: "https://github.com/login/oauth", Subject: "dev@example.test"}) {
-		t.Fatalf("the developer signer was built from %+v, not from host.developers", policy)
+	signer := fake.signer.(*fakeSigner)
+	if signer.signed != 1 {
+		t.Fatalf("the plan signed %d documents", signer.signed)
 	}
-	if fake.sources[0] == nil {
-		t.Fatal("the request's token source did not reach the developer signer")
-	}
-	signer, ok := fake.signer.(*fakeSigner)
-	if !ok || signer.signed != 1 || fake.checked != 1 {
-		t.Fatalf("the plan signed %d documents and checked %d carriers, want the one presence document each", signer.signed, fake.checked)
+	for _, raw := range plan.Carriers {
+		carrier, err := solutionhost.ParseSigned(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		check, err := signing.KeyCheck(signer, solutionhost.KeyKindPerson, "example", signer.KeyID())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = check(ctx, carrier.Envelope, carrier.Document); err != nil {
+			t.Fatal(err)
+		}
 	}
 	result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers}, preparedPermit)
 	if err != nil {
@@ -122,9 +113,6 @@ func TestLocalPublishSignsAsTheDeveloperAndDeliversThroughTheJobs(t *testing.T) 
 	}
 	if signer.signed != 1 {
 		t.Fatalf("the publish signed again (%d signatures): the plan's carriers were not reused", signer.signed)
-	}
-	if fake.checked < 2 {
-		t.Fatal("the publish reused the plan's carrier without holding it to the developer check")
 	}
 	overlay := result.Path + "/" + solutionHostBindingDir + "/overlays/production/"
 	job := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+overlay+"deliver-presence.yaml")
@@ -147,12 +135,12 @@ func TestLocalPublishAsADeveloperNeverFallsBackToUnsigned(t *testing.T) {
 	ctx, workspace, _ := developerPublishWorkspace(t)
 	request := PublishRequest{Module: "payments", Environment: "production", Local: true, PromotionBranch: "codefly/promote-payments-production"}
 
-	installDeveloperSigning(t, &developerSigning{signer: &signing.Unavailable{Reason: "the browser login was abandoned"}})
-	if _, err := PlanPublish(ctx, workspace, &request); !errors.Is(err, signing.ErrNoIdentity) || !strings.Contains(err.Error(), "browser login was abandoned") {
+	installDeveloperSigning(t, &developerSigning{refuse: fmt.Errorf("custody unavailable: %w", signing.ErrNoIdentity)})
+	if _, err := PlanPublish(ctx, workspace, &request); !errors.Is(err, signing.ErrNoIdentity) || !strings.Contains(err.Error(), "custody unavailable") {
 		t.Fatalf("a developer publish with no token was not refused with the reason: %v", err)
 	}
 
-	refused := errors.New("the certificate names someone@example.test")
+	refused := errors.New("custody could not load the key")
 	installDeveloperSigning(t, &developerSigning{signer: &fakeSigner{}, refuse: refused})
 	if _, err := PlanPublish(ctx, workspace, &request); !errors.Is(err, refused) {
 		t.Fatalf("a carrier the developer check refuses was delivered: %v", err)
@@ -161,7 +149,7 @@ func TestLocalPublishAsADeveloperNeverFallsBackToUnsigned(t *testing.T) {
 
 // TestADeveloperIdentityNeverSignsARelease: host.developers shapes a --local
 // publish only. A release publish to the same environment is held to its
-// release workflow as before — with no workflow identity it refuses, and the
+// release key — with no release custody it refuses, and the
 // developer signer is never built.
 func TestADeveloperIdentityNeverSignsARelease(t *testing.T) {
 	ctx, workspace, remote := developerPublishWorkspace(t)
@@ -183,17 +171,17 @@ func TestADeveloperIdentityNeverSignsARelease(t *testing.T) {
 	t.Setenv("GIT_CONFIG_COUNT", strconv.Itoa(configured+1))
 	t.Setenv(fmt.Sprintf("GIT_CONFIG_KEY_%d", configured), "url.file://"+remote+".insteadOf")
 	t.Setenv(fmt.Sprintf("GIT_CONFIG_VALUE_%d", configured), repository)
-	for _, name := range []string{"GITHUB_REPOSITORY", "GITHUB_WORKFLOW_REF"} {
+	for _, name := range []string{"VAULT_ADDR", "VAULT_TOKEN", "CODEFLY_RELEASE_TRANSIT_KEY"} {
 		t.Setenv(name, "")
 		if err := os.Unsetenv(name); err != nil {
 			t.Fatal(err)
 		}
 	}
 	request := PublishRequest{Module: "payments", Environment: "production", PromotionBranch: "codefly/promote-payments-production"}
-	if _, err = PlanPublish(ctx, workspace, &request); err == nil || !strings.Contains(err.Error(), "run it from the release workflow") {
-		t.Fatalf("a release publish was not held to the release workflow: %v", err)
+	if _, err = PlanPublish(ctx, workspace, &request); err == nil || !strings.Contains(err.Error(), "VAULT_ADDR") {
+		t.Fatalf("a release publish was not held to release custody: %v", err)
 	}
-	if len(fake.policies) != 0 {
+	if fake.loaded != 0 {
 		t.Fatal("a release publish built the developer signer")
 	}
 }
@@ -303,7 +291,7 @@ func TestAFailedVerificationPromotesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fake.refuse = errors.New("the certificate names someone@example.test")
+	fake.refuse = errors.New("custody could not load the key")
 	if _, err = Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers}, preparedPermit); err == nil {
 		t.Fatal("a publish whose carrier fails the developer check succeeded")
 	}
@@ -348,7 +336,7 @@ func TestOnlyADeveloperSignedLocalPublishSelfPromotes(t *testing.T) {
 	}
 	// The legacy reading (an environment NAMED local, no cluster kind) is
 	// never a local cluster here: not for promotion, not for signing.
-	developers := []environments.HostDeveloper{{Issuer: "https://github.com/login/oauth", Subject: "dev@example.test"}}
+	developers := []environments.HostDeveloper{{KeyID: "dev-0123456789abcdef"}}
 	for name, cluster := range map[string]*environments.EnvironmentCluster{
 		"no cluster":            nil,
 		"a non-k3d context":     {Context: "gke-production"},

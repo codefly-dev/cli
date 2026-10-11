@@ -3,7 +3,12 @@ package gitops
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"os"
 	"os/exec"
@@ -20,23 +25,44 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// fakeSigner signs by wrapping the payload's length: enough to prove the
-// carrier holds the bytes it was handed and a bundle the signer produced.
-// fakeSigner counts what it signs. With nonce set, every bundle differs — a
-// keyless signer's fresh key and log entry on each call — so a test can show
-// that nothing depends on signing being repeatable.
+// fakeSigner uses real keys. Randomized ECDSA signatures make accidental
+// re-signing observable; the stable Ed25519 key serves deterministic tests.
 type fakeSigner struct {
-	signed int
-	nonce  bool
+	signed     int
+	nonce      bool
+	key        solutionhost.Signer
+	signatures [][]byte
+	fail       error
 }
 
-func (signer *fakeSigner) Sign(_ context.Context, payload []byte) ([]byte, error) {
-	signer.signed++
-	bundle := map[string]any{"mediaType": signing.MediaTypeBundle, "signedBytes": len(payload)}
-	if signer.nonce {
-		bundle["nonce"] = signer.signed
+func (s *fakeSigner) custody() solutionhost.Signer {
+	if s.key == nil {
+		var key crypto.PrivateKey = ed25519.NewKeyFromSeed(make([]byte, 32))
+		if s.nonce {
+			var err error
+			key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			if err != nil {
+				panic(err)
+			}
+		}
+		var err error
+		s.key, err = solutionhost.NewInMemorySigner("dev-0123456789abcdef", key)
+		if err != nil {
+			panic(err)
+		}
 	}
-	return json.Marshal(bundle)
+	return s.key
+}
+func (s *fakeSigner) KeyID() string            { return s.custody().KeyID() }
+func (s *fakeSigner) Public() crypto.PublicKey { return s.custody().Public() }
+func (s *fakeSigner) Sign(message []byte) ([]byte, error) {
+	s.signed++
+	if s.fail != nil {
+		return nil, s.fail
+	}
+	signature, err := s.custody().Sign(message)
+	s.signatures = append(s.signatures, signature)
+	return signature, err
 }
 
 // deliveryRepository is a clone-shaped repository whose base branch is reachable
@@ -137,7 +163,6 @@ func TestPublishSettlesGenerationsAgainstTheBaseBranch(t *testing.T) {
 	require.Contains(t, carrier.Data, solutionhost.FileName)
 	signed, err := solutionhost.ParseSigned([]byte(carrier.Data[presenceCarrierKey]))
 	require.NoError(t, err)
-	require.Equal(t, solutionhost.SchemaSignedV1, signed.Schema)
 	// The host's own reader of a verified payload: it refuses any payload that
 	// is not the canonical encoding of the document it decodes to — the YAML
 	// written beside the carrier would be refused even under a genuine
@@ -151,7 +176,7 @@ func TestPublishSettlesGenerationsAgainstTheBaseBranch(t *testing.T) {
 	yamlHalf := []byte(carrier.Data[solutionhost.FileName])
 	_, err = solutionhost.PresenceFromVerified(yamlHalf)
 	require.Error(t, err, "the YAML half is for the repository; the host refuses it as a signed payload")
-	require.Contains(t, string(signed.Bundle), signing.MediaTypeBundle)
+	require.Contains(t, string(signed.Envelope), `"signatures"`)
 	// The Job delivers the carrier and the account exists; the kustomization
 	// lists all three.
 	kustomization, err := os.ReadFile(filepath.Join(repository.target, filepath.FromSlash(solutionHostBindingOverlay("prod")), kustomizationFile))
@@ -287,7 +312,9 @@ func TestPublishRefusesUnsignedDocumentsOutsideLocalQualification(t *testing.T) 
 		&deliveryPublishOptions{Signer: unsigned, Target: testDeliveryTarget(), Domain: "example", Module: "crm"})
 	require.True(t, errors.Is(err, signing.ErrNoIdentity), "got %v", err)
 	require.Contains(t, err.Error(), "example.prod.crm")
-	require.Contains(t, err.Error(), "release workflow")
+	require.Contains(t, err.Error(), "VAULT_ADDR")
+	require.Contains(t, err.Error(), "VAULT_TOKEN")
+	require.Contains(t, err.Error(), "CODEFLY_RELEASE_TRANSIT_KEY")
 
 	delivery, err := settlePresenceDelivery(ctx, repository.repo, "main", repository.target, repository.targetPath, "prod", inventory,
 		&deliveryPublishOptions{Signer: unsigned, Target: testDeliveryTarget(), Domain: "example", Module: "crm", AllowUnsigned: true})
@@ -990,7 +1017,7 @@ func TestPublishResignsAReusedCarrierTheReleasePolicyNoLongerAdmits(t *testing.T
 	// (the signer's first bundle) is refused; what the current identity
 	// signs is admitted.
 	opts.ReuseCheck = func(_ context.Context, bundle, _ []byte) error {
-		if bytes.Contains(bundle, []byte(`"nonce":1,`)) {
+		if bytes.Contains(bundle, []byte(base64.StdEncoding.EncodeToString(signer.signatures[0]))) {
 			return errors.New("the signing identity rotated")
 		}
 		return nil
@@ -1050,7 +1077,7 @@ func TestPublishExecutesThePlanItInspectedForBothHalves(t *testing.T) {
 	// two bundles, one per half) are refused; what the current identity signs
 	// is admitted.
 	rotated.ReuseCheck = func(_ context.Context, bundle, _ []byte) error {
-		if bytes.Contains(bundle, []byte(`"nonce":1,`)) || bytes.Contains(bundle, []byte(`"nonce":2,`)) {
+		if bytes.Contains(bundle, []byte(base64.StdEncoding.EncodeToString(signer.signatures[0]))) || bytes.Contains(bundle, []byte(base64.StdEncoding.EncodeToString(signer.signatures[1]))) {
 			return errors.New("rotated")
 		}
 		return nil
@@ -1166,14 +1193,14 @@ func TestReleasePublishRequiresTheWorkflowIdentityToDeliver(t *testing.T) {
 	for name, options := range map[string]deliveryPublishOptions{
 		"local":              {AllowUnsigned: true},
 		"supplied signer":    {Signer: &fakeSigner{}},
-		"workflow identity":  {SelfCheck: check, ReuseCheck: check},
+		"admitted key":       {Signer: &fakeSigner{}, SelfCheck: check, ReuseCheck: check},
 		"self-check only":    {SelfCheck: check},
 		"reuse policy only":  {ReuseCheck: check},
 		"no identity at all": {},
 	} {
 		err := (&deliveryPublication{options: options}).requireReleaseIdentity()
 		refused := err != nil
-		if want := name == "self-check only" || name == "reuse policy only" || name == "no identity at all"; refused != want {
+		if want := name == "supplied signer" || name == "self-check only" || name == "reuse policy only" || name == "no identity at all"; refused != want {
 			t.Fatalf("%s: err = %v", name, err)
 		}
 	}
@@ -1200,15 +1227,15 @@ func TestOnlyHostedDeliveryNeedsTheWorkflowIdentity(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "host.release")
 	// With the policy, the workflow identity is required.
-	host.Release = &environments.HostReleasePolicy{Repository: "codefly-test/payments", Workflow: ".github/workflows/release.yml", Refs: []string{`refs/tags/v[0-9]+\.[0-9]+\.[0-9]+`}}
-	for _, name := range []string{"GITHUB_REPOSITORY", "GITHUB_WORKFLOW_REF"} {
+	host.Release = &environments.HostReleasePolicy{KeyID: "release-v1"}
+	for _, name := range []string{"VAULT_ADDR", "VAULT_TOKEN", "CODEFLY_RELEASE_TRANSIT_KEY"} {
 		t.Setenv(name, "")
 		require.NoError(t, os.Unsetenv(name))
 	}
 	hosted = &deliveryPublication{baseBranch: "main"}
 	err = hosted.addressHost(ctx, nil, &environments.Environment{Name: "production", Host: host})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "run it from the release workflow")
+	require.Contains(t, err.Error(), "VAULT_ADDR")
 }
 
 // TestPublishHoldsABindingToItsRevisionAcrossRemovalAndReintroduction: the

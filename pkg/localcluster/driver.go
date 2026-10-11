@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/control"
-	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
@@ -41,9 +40,6 @@ type ClusterDriver struct {
 	// RolloutTimeout bounds the wait for a trust-anchor rollout to reach
 	// every pod (zero: five minutes).
 	RolloutTimeout time.Duration
-	// TrustedRoot fetches the trusted root the local host's anchor holds
-	// (nil: the public-good root, through TUF).
-	TrustedRoot func(ctx context.Context) ([]byte, error)
 
 	// priorAttempts holds, per delivery Job, the UID of the attempt that
 	// existed before this run delivered ("" for none); attemptStarts, when
@@ -87,7 +83,7 @@ func (d *ClusterDriver) EnsureNamespaces(ctx context.Context, modules []string) 
 }
 
 // ProvisionTrustAnchor binds the local profile to this cluster's CA, writes
-// it with the public-good trusted root into the verifier's namespace, and
+// its public-key policy into the verifier's namespace, and
 // reconciles every workload that mounts it to the anchor's digest
 // (reconcileTrustAnchor): the host reads its anchor at boot, so a changed
 // anchor — a recreated cluster, a developer added or REMOVED — is in force
@@ -105,27 +101,19 @@ func (d *ClusterDriver) ProvisionTrustAnchor(ctx context.Context) (string, error
 	if err != nil {
 		return "", err
 	}
-	fetch := d.TrustedRoot
-	if fetch == nil {
-		fetch = signing.PublicGoodTrustedRootJSON
-	}
-	trustedRoot, err := fetch(ctx)
-	if err != nil {
-		return "", err
-	}
 	hostModule, _, _ := d.Environment.Host.DeliveryEndpoint()
 	namespace := d.Environment.ModuleNamespace(d.Workspace, hostModule)
 	if namespace == "" {
 		return "", fmt.Errorf("environment %s names no namespace for the host's module %s", d.Environment.Name, hostModule)
 	}
-	manifest, err := TrustAnchorManifest(namespace, policy, trustedRoot)
+	manifest, err := TrustAnchorManifest(namespace, policy)
 	if err != nil {
 		return "", err
 	}
 	if _, err = d.Kubectl(ctx, manifest, "apply", "-f", "-"); err != nil {
 		return "", fmt.Errorf("write the local trust anchor into %s: %w", namespace, err)
 	}
-	return fingerprint, d.reconcileTrustAnchor(ctx, namespace, AnchorDigest(policy, trustedRoot))
+	return fingerprint, d.reconcileTrustAnchor(ctx, namespace, AnchorDigest(policy))
 }
 
 func (d *ClusterDriver) Render(ctx context.Context, name string) error {

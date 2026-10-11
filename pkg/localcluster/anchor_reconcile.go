@@ -19,10 +19,10 @@ import (
 // Argo CD never owns a value that would revert the stamp.
 const TrustAnchorAnnotation = gitops.TrustAnchorAnnotation
 
-// AnchorDigest is the digest of both trust-anchor objects' contents, by file.
-func AnchorDigest(policy, trustedRoot []byte) string {
+// AnchorDigest is the digest of the verification policy, including its file name.
+func AnchorDigest(policy []byte) string {
 	hash := sha256.New()
-	for _, part := range [][]byte{[]byte(VerificationPolicyFile), policy, []byte(TrustedRootFile), trustedRoot} {
+	for _, part := range [][]byte{[]byte(VerificationPolicyFile), policy} {
 		_, _ = fmt.Fprintf(hash, "%d:", len(part))
 		hash.Write(part)
 	}
@@ -60,25 +60,24 @@ func (workload *anchorWorkload) reference() string {
 	return strings.ToLower(workload.Kind) + "/" + workload.Metadata.Name
 }
 
-// consumesAnchor reports whether a pod template reads either trust-anchor
-// object by any means — a configMap or secret volume, a projected source,
+// consumesAnchor reports whether a pod template reads the policy ConfigMap
+// by any means — a configMap volume, a projected source,
 // envFrom, or an env valueFrom — whatever the volume or variable is named.
 func consumesAnchor(spec map[string]any) bool {
 	names := func(value any) bool {
 		object, _ := value.(map[string]any)
 		name, _ := object["name"].(string)
-		secretName, _ := object["secretName"].(string)
-		return name == gitops.LocalTrustAnchorObjects || secretName == gitops.LocalTrustAnchorObjects
+		return name == gitops.LocalTrustAnchorObjects
 	}
 	for _, raw := range asList(spec["volumes"]) {
 		volume, _ := raw.(map[string]any)
-		if names(volume["configMap"]) || names(volume["secret"]) {
+		if names(volume["configMap"]) {
 			return true
 		}
 		projected, _ := volume["projected"].(map[string]any)
 		for _, source := range asList(projected["sources"]) {
 			entry, _ := source.(map[string]any)
-			if names(entry["configMap"]) || names(entry["secret"]) {
+			if names(entry["configMap"]) {
 				return true
 			}
 		}
@@ -88,14 +87,14 @@ func consumesAnchor(spec map[string]any) bool {
 			container, _ := raw.(map[string]any)
 			for _, from := range asList(container["envFrom"]) {
 				entry, _ := from.(map[string]any)
-				if names(entry["configMapRef"]) || names(entry["secretRef"]) {
+				if names(entry["configMapRef"]) {
 					return true
 				}
 			}
 			for _, variable := range asList(container["env"]) {
 				entry, _ := variable.(map[string]any)
 				valueFrom, _ := entry["valueFrom"].(map[string]any)
-				if names(valueFrom["configMapKeyRef"]) || names(valueFrom["secretKeyRef"]) {
+				if names(valueFrom["configMapKeyRef"]) {
 					return true
 				}
 			}

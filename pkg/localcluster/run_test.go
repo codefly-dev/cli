@@ -15,7 +15,7 @@ func localEnvironment() *environments.Environment {
 		Name:    "local",
 		Cluster: &environments.EnvironmentCluster{Kind: environments.ClusterKindK3d, Context: "k3d-dev"},
 		Host: &environments.EnvironmentHost{
-			Developers:  []environments.HostDeveloper{{Issuer: "https://github.com/login/oauth", Subject: "dev@example.test"}},
+			Developers:  []environments.HostDeveloper{{KeyID: "dev-0123456789abcdef"}},
 			TrustAnchor: "/etc/host/delivery-trust",
 		},
 	}

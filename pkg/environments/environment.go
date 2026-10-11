@@ -3,12 +3,12 @@ package environments
 import (
 	"fmt"
 	"maps"
-	"net/url"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
@@ -239,122 +239,54 @@ type EnvironmentHost struct {
 	// composition names which endpoint is the delivery API and never where it
 	// lives.
 	Delivery string `yaml:"delivery"`
-	// Release is the identity the host accepts delivered carriers from — the
-	// release workflow, reviewed with this composition: the repository, the
-	// workflow path, and the refs it may run at, each an anchored regular
-	// expression. A hosted release publish holds its own workflow identity to
-	// this policy before it signs anything, and reuses a carrier delivered
-	// earlier only when the identity that signed it is within it. The host
-	// publishes the same literal and enforces it independently.
+	// Release names the platform-owned key accepted for release delivery.
 	Release *HostReleasePolicy `yaml:"release,omitempty"`
-	// Developers are the identities a LOCAL host's allowlist names: the
-	// developers whose own OIDC identity signs what a local run delivers to a
-	// host on a local cluster (cli#918). A local qualification publish signs
-	// under one of them — through the same Sigstore keyless flow a release
-	// signs with, with an interactive token instead of the workflow's — and
-	// holds the certificate it gets to this list before anything is written;
-	// with none declared it delivers unsigned, as before. The host publishes
-	// the same identities in its local profile and enforces them
-	// independently, and a deployed host refuses them by the ordinary
-	// allowlist check, so only a k3d environment may declare them: a
-	// deployment manifest naming a developer is the leak this refuses.
+	// Developers lists machine keys admitted only by a local k3d host.
 	Developers []HostDeveloper `yaml:"developers,omitempty"`
-	// TrustAnchor is the path the host reads its trust anchor from — its
-	// trusted root and verification policy — a constant of the host, stated
-	// here so a local cluster run can mount the local trust anchor it
-	// provisions where the host reads it, the way a cell's platform mounts
-	// its own. It moves nothing on the host: a wrong path leaves the host
-	// with no anchor, and it refuses to start. A k3d environment only.
+	// TrustAnchor is the local host's mounted verification-policy directory.
 	TrustAnchor string `yaml:"trust_anchor,omitempty"`
 }
 
-// HostDeveloper is one developer identity a local host admits: the OIDC
-// issuer the signing certificate names (for a GitHub login through the
-// Sigstore public-good instance, https://github.com/login/oauth) and the
-// certificate's subject — the address the identity provider verified.
+// HostDeveloper names a developer key admitted by a local host.
 type HostDeveloper struct {
-	Issuer  string `yaml:"issuer"`
-	Subject string `yaml:"subject"`
+	KeyID string `yaml:"key_id"`
 }
 
-var developerFields = []string{"issuer", "subject"}
-
-// UnmarshalYAML refuses a key a developer identity does not have: a
-// misspelled `subject` would otherwise read as an identity admitting nobody.
 func (developer *HostDeveloper) UnmarshalYAML(node *yaml.Node) error {
-	if err := rejectUnknownKeys(node, "host.developers", developerFields...); err != nil {
+	if err := rejectUnknownKeys(node, "host.developers", "key_id"); err != nil {
 		return err
 	}
 	type plain HostDeveloper
 	return node.Decode((*plain)(developer))
 }
 
-// Validate holds a developer identity to its shape: an https issuer and a
-// single-line subject. Nothing here decides who may sign — the local host's
-// allowlist does; this refuses a declaration that could admit nobody.
+var developerKeyPattern = regexp.MustCompile(`^dev-[0-9a-f]{16}$`)
+
 func (developer *HostDeveloper) Validate() error {
-	issuer, err := url.Parse(developer.Issuer)
-	if err != nil || issuer.Scheme != "https" || issuer.Host == "" {
-		return fmt.Errorf("host developer issuer %q is not an https OIDC issuer (such as https://github.com/login/oauth)", developer.Issuer)
-	}
-	// The host admits a person by an exact issuer and an exact e-mail
-	// address: no wildcard, no URI subject (which would read as a workflow),
-	// no surrounding space — refused here as the host refuses it at boot.
-	if strings.Contains(developer.Issuer, "*") {
-		return fmt.Errorf("host developer issuer %q is matched exactly and may not carry a wildcard", developer.Issuer)
-	}
-	if local, domain, found := strings.Cut(developer.Subject, "@"); !found || local == "" || domain == "" || strings.Contains(domain, "@") ||
-		strings.ContainsAny(developer.Subject, "*/:") || strings.ContainsFunc(developer.Subject, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
-		return fmt.Errorf("host developer subject %q must be the exact e-mail address the signing certificate names (the verified address)", developer.Subject)
+	if !developerKeyPattern.MatchString(developer.KeyID) {
+		return fmt.Errorf("host developer key_id %q must match dev- followed by 16 lowercase hexadecimal characters", developer.KeyID)
 	}
 	return nil
 }
 
-// HostReleasePolicy is one repository, one workflow path, and the refs that
-// workflow may run at.
+// HostReleasePolicy names the platform's current release key.
 type HostReleasePolicy struct {
-	Repository string   `yaml:"repository"`
-	Workflow   string   `yaml:"workflow"`
-	Refs       []string `yaml:"refs"`
+	KeyID string `yaml:"key_id"`
 }
 
-var releasePolicyFields = []string{"repository", "workflow", "refs"}
-
-// UnmarshalYAML refuses a key the policy does not have: a misspelled `refs`
-// would otherwise read as a policy admitting no ref.
 func (policy *HostReleasePolicy) UnmarshalYAML(node *yaml.Node) error {
-	if err := rejectUnknownKeys(node, "host.release", releasePolicyFields...); err != nil {
+	if err := rejectUnknownKeys(node, "host.release", "key_id"); err != nil {
 		return err
 	}
 	type plain HostReleasePolicy
 	return node.Decode((*plain)(policy))
 }
-
-var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?/[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$`)
-
-// Validate holds the policy to its shape: an owner/repository, a workflow
-// path inside it, and at least one ref pattern that compiles and names a ref
-// (it starts with `refs/`).
 func (policy *HostReleasePolicy) Validate() error {
 	if policy == nil {
 		return nil
 	}
-	if !repositoryPattern.MatchString(policy.Repository) {
-		return fmt.Errorf("host release repository %q is not <owner>/<repository>", policy.Repository)
-	}
-	if policy.Workflow == "" || strings.HasPrefix(policy.Workflow, "/") || strings.ContainsAny(policy.Workflow, " \t\n@") {
-		return fmt.Errorf("host release workflow %q is not a workflow path inside the repository (such as .github/workflows/release.yml)", policy.Workflow)
-	}
-	if len(policy.Refs) == 0 {
-		return fmt.Errorf("host release refs must name at least one ref the release workflow may run at (an anchored regular expression such as refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+)")
-	}
-	for _, ref := range policy.Refs {
-		if !strings.HasPrefix(ref, "refs/") {
-			return fmt.Errorf("host release ref %q does not name a ref (it starts with refs/)", ref)
-		}
-		if _, err := regexp.Compile("^(?:" + ref + ")$"); err != nil {
-			return fmt.Errorf("host release ref %q is not a regular expression: %v", ref, err)
-		}
+	if policy.KeyID == "" || strings.ContainsFunc(policy.KeyID, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
+		return fmt.Errorf("host release key_id %q must be a single-line identity without spaces", policy.KeyID)
 	}
 	return nil
 }
@@ -427,7 +359,7 @@ func (host *EnvironmentHost) Validate() error {
 			return err
 		}
 		if seen[host.Developers[i]] {
-			return fmt.Errorf("host developer %s (%s) is declared twice", host.Developers[i].Subject, host.Developers[i].Issuer)
+			return fmt.Errorf("host developer %s is declared twice", host.Developers[i].KeyID)
 		}
 		seen[host.Developers[i]] = true
 	}
@@ -464,8 +396,8 @@ type EnvironmentWorkloadIdentity struct {
 
 // validate reports whether a declared identity names the principal a
 // ServiceAccount authenticates as and keys every attachment it stamps. label
-// names the offending block so an identity that would reach the cluster as a
-// keyless annotation, or as a ServiceAccount bound to no principal, fails at
+// names the offending block so an identity that would reach the cluster as an
+// empty annotation, or as a ServiceAccount bound to no principal, fails at
 // load instead. A nil receiver is a valid "not declared" state.
 func (identity *EnvironmentWorkloadIdentity) validate(label string) error {
 	if identity == nil {
