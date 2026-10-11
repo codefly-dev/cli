@@ -56,9 +56,11 @@ const (
 	// image adds git's http-backend to the base, behind nginx through fcgiwrap,
 	// from the base's own Alpine release at pinned versions (owner-approved
 	// third party, local build time only).
-	remoteGitPackage       = "git=2.45.4-r0"
+	// git-http-backend ships in git-daemon, a subpackage of the same git
+	// build at the same version.
+	remoteGitPackage       = "git=2.45.4-r0 git-daemon=2.45.4-r0"
 	remoteFcgiwrapPackage  = "fcgiwrap=1.1.0-r8"
-	remoteFcgiSocket       = "/var/run/fcgiwrap.sock"
+	remoteFcgiSocket       = "/var/run/fcgiwrap/fcgiwrap.sock"
 	remoteServerRepository = "codefly/gitops-remote"
 	remoteUploadPackType   = "application/x-git-upload-pack-advertisement"
 
@@ -406,10 +408,17 @@ func remoteServerDockerfile(base string) string {
 // socket and every git process belong to the nginx user, never root.
 const remoteServerEntrypoint = `#!/bin/sh
 set -eu
-su -s /bin/sh nginx -c "fcgiwrap -s unix:` + remoteFcgiSocket + `" &
+socket=` + remoteFcgiSocket + `
+mkdir -p "$(dirname "$socket")"
+chown nginx:nginx "$(dirname "$socket")"
+su -s /bin/sh nginx -c "fcgiwrap -s unix:$socket" &
 waited=0
-while [ ! -S ` + remoteFcgiSocket + ` ] && [ "$waited" -lt 50 ]; do
+while [ ! -S "$socket" ]; do
   waited=$((waited + 1))
+  if [ "$waited" -gt 50 ]; then
+    echo "fcgiwrap did not open $socket; git http-backend is unavailable" >&2
+    exit 1
+  fi
   sleep 0.1
 done
 exec nginx -g 'daemon off;'

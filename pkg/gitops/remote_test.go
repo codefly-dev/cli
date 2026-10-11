@@ -553,7 +553,7 @@ func TestMirrorServesReviewedRevision(t *testing.T) {
 // pinned versions; a floating package would be a mutable image by another name.
 func TestRemoteServerDockerfilePinsItsPackages(t *testing.T) {
 	dockerfile := remoteServerDockerfile(remoteImage)
-	for _, want := range []string{"FROM " + remoteImage + "\n", "git=2.45.4-r0", "fcgiwrap=1.1.0-r8", "ENTRYPOINT"} {
+	for _, want := range []string{"FROM " + remoteImage + "\n", "git=2.45.4-r0", "git-daemon=2.45.4-r0", "fcgiwrap=1.1.0-r8", "ENTRYPOINT"} {
 		if !strings.Contains(dockerfile, want) {
 			t.Fatalf("server Dockerfile lacks %q:\n%s", want, dockerfile)
 		}
