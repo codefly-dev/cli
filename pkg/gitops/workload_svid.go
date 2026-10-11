@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -164,29 +163,17 @@ func (peers workloadPeers) files(host *environments.EnvironmentHost, unique stri
 // projectWorkloadSVID uses the token projection seam, before presence hashes
 // the unit. Only the authenticating container receives private credentials.
 func projectWorkloadSVID(root string, service *resources.Service, env *environments.Environment, scope unitScope) error {
+	overlay, err := serviceRenderOverlay(root, scope.Module, service.Name, env.Name)
+	if err != nil {
+		return err
+	}
 	unique := resources.ServiceUnique(scope.Module, service.Name)
 	peer, exists := scope.WorkloadPeers[unique]
 	if !requestsWorkloadIdentity(service) {
 		// A gateway can obtain credentials from the platform independently of
 		// this group. Its account must still match the ID its consumers trust.
 		if exists {
-			workloads, err := renderedWorkloads(root, env.Name)
-			if err != nil {
-				return err
-			}
-			count := 0
-			for i := range workloads {
-				if !servingKind(workloads[i].Kind) {
-					continue
-				}
-				count++
-				if err := verifyWorkloadPeer(&workloads[i], peer, env.Host, scope.Namespace); err != nil {
-					return err
-				}
-			}
-			if count == 0 {
-				return fmt.Errorf("gateway %s renders no serving workload", unique)
-			}
+			return verifyGatewayWorkloads(root, unique, peer, env, scope.Namespace)
 		}
 		return nil
 	}
@@ -201,42 +188,9 @@ func projectWorkloadSVID(root string, service *resources.Service, env *environme
 	if err != nil {
 		return err
 	}
-	workloads, err := renderedWorkloads(root, env.Name)
+	patches, err := workloadSVIDPatches(root, scope.Module, service.Name, peer, env, scope.Namespace, values)
 	if err != nil {
 		return err
-	}
-	var patches []podProjection
-	count := 0
-	for i := range workloads {
-		workload := &workloads[i]
-		if !servingKind(workload.Kind) {
-			continue
-		}
-		count++
-		if err := verifyWorkloadPeer(workload, peer, env.Host, scope.Namespace); err != nil {
-			return err
-		}
-		container, _, err := authenticatingContainer(service.Name, workload)
-		if err != nil {
-			return err
-		}
-		for _, reserved := range []struct{ name, mount string }{{svidVolume, svidMount}, {peersVolume, peersMount}} {
-			if workload.hasVolume(reserved.name) {
-				return fmt.Errorf("workload %s already declares reserved volume %s", workload.Name, reserved.name)
-			}
-			for _, mount := range workload.mounts[container.Name] {
-				if mountOverlaps(mount.path, reserved.mount) {
-					return fmt.Errorf("workload %s mount %s shadows workload-identity path %s", workload.Name, mount.path, reserved.mount)
-				}
-			}
-		}
-		patches = append(patches,
-			podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: map[string]any{"name": svidVolume, "csi": map[string]any{"driver": "spiffe.csi.cert-manager.io", "readOnly": true}}, mount: readOnlyMount(svidVolume, svidMount), env: values},
-			podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: map[string]any{"name": peersVolume, "configMap": map[string]any{"name": service.Name + "-workload-peers"}}, mount: readOnlyMount(peersVolume, peersMount)},
-		)
-	}
-	if count == 0 {
-		return fmt.Errorf("workload-identity service %s renders no serving workload", unique)
 	}
 	// This also supports services declaring no presence document, including the
 	// gateway: opting in always projects a token for the same host audience.
@@ -247,12 +201,78 @@ func projectWorkloadSVID(root string, service *resources.Service, env *environme
 	if err := addOverlayPatches(root, env.Name, patches); err != nil {
 		return err
 	}
-	name := service.Name + "-workload-identity"
-	metadata := func(name string) map[string]any { return map[string]any{"name": name, "namespace": scope.Namespace} }
+	return writeWorkloadSVIDResources(overlay, service.Name, scope.Namespace, peer.Account, files)
+}
+
+func verifyGatewayWorkloads(root, unique string, peer workloadPeer, env *environments.Environment, namespace string) error {
+	workloads, err := renderedWorkloads(root, env.Name)
+	if err != nil {
+		return err
+	}
+	count := 0
+	for i := range workloads {
+		if !servingKind(workloads[i].Kind) {
+			continue
+		}
+		count++
+		if err := verifyWorkloadPeer(&workloads[i], peer, env.Host, namespace); err != nil {
+			return err
+		}
+	}
+	if count == 0 {
+		return fmt.Errorf("gateway %s renders no serving workload", unique)
+	}
+	return nil
+}
+
+func workloadSVIDPatches(root, module, service string, peer workloadPeer, env *environments.Environment, namespace string, values map[string]string) ([]podProjection, error) {
+	workloads, err := renderedWorkloads(root, env.Name)
+	if err != nil {
+		return nil, err
+	}
+	var patches []podProjection
+	count := 0
+	for i := range workloads {
+		workload := &workloads[i]
+		if !servingKind(workload.Kind) {
+			continue
+		}
+		count++
+		if err := verifyWorkloadPeer(workload, peer, env.Host, namespace); err != nil {
+			return nil, err
+		}
+		container, _, err := authenticatingContainer(service, workload)
+		if err != nil {
+			return nil, err
+		}
+		for _, reserved := range []struct{ name, mount string }{{svidVolume, svidMount}, {peersVolume, peersMount}} {
+			if workload.hasVolume(reserved.name) {
+				return nil, fmt.Errorf("workload %s already declares reserved volume %s", workload.Name, reserved.name)
+			}
+			for _, mount := range workload.mounts[container.Name] {
+				if mountOverlaps(mount.path, reserved.mount) {
+					return nil, fmt.Errorf("workload %s mount %s shadows workload-identity path %s", workload.Name, mount.path, reserved.mount)
+				}
+			}
+		}
+		patches = append(patches,
+			podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: map[string]any{keyName: svidVolume, "csi": map[string]any{"driver": "spiffe.csi.cert-manager.io", "readOnly": true}}, mount: readOnlyMount(svidVolume, svidMount), env: values},
+			podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: map[string]any{keyName: peersVolume, keyConfigMap: map[string]any{keyName: service + "-workload-peers"}}, mount: readOnlyMount(peersVolume, peersMount)},
+		)
+	}
+	if count == 0 {
+		return nil, fmt.Errorf("workload-identity service %s renders no serving workload", resources.ServiceUnique(module, service))
+	}
+	return patches, nil
+}
+
+func writeWorkloadSVIDResources(overlay, service, namespace, account string, files map[string]string) error {
+	name := service + "-workload-identity"
+	metadata := func(name string) map[string]any { return map[string]any{keyName: name, keyNamespace: namespace} }
 	docs := []map[string]any{
-		{"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": metadata(name), "rules": []any{map[string]any{"apiGroups": []string{"cert-manager.io"}, "resources": []string{"certificaterequests"}, "verbs": []string{"create"}}}},
-		{"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": metadata(name), "roleRef": map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": name}, "subjects": []any{map[string]any{"kind": "ServiceAccount", "name": peer.Account, "namespace": scope.Namespace}}},
-		{"apiVersion": "v1", "kind": "ConfigMap", "metadata": metadata(service.Name + "-workload-peers"), "data": files},
+		{keyAPIVersion: "rbac.authorization.k8s.io/v1", keyKind: "Role", keyMetadata: metadata(name), "rules": []any{map[string]any{"apiGroups": []string{"cert-manager.io"}, "resources": []string{"certificaterequests"}, "verbs": []string{"create"}}}},
+		{keyAPIVersion: "rbac.authorization.k8s.io/v1", keyKind: "RoleBinding", keyMetadata: metadata(name), "roleRef": map[string]any{"apiGroup": "rbac.authorization.k8s.io", keyKind: "Role", keyName: name}, "subjects": []any{map[string]any{keyKind: "ServiceAccount", keyName: account, keyNamespace: namespace}}},
+		{keyAPIVersion: "v1", keyKind: kindConfigMap, keyMetadata: metadata(service + "-workload-peers"), "data": files},
 	}
 	var output bytes.Buffer
 	encoder := yaml.NewEncoder(&output)
@@ -264,20 +284,19 @@ func projectWorkloadSVID(root string, service *resources.Service, env *environme
 	if err := encoder.Close(); err != nil {
 		return err
 	}
-	overlay := filepath.Join(root, "overlays", env.Name)
 	const file = "workload-identity.yaml"
-	if _, err := os.Stat(filepath.Join(overlay, file)); err == nil {
+	if _, err := statWithin(overlay, file); err == nil {
 		return fmt.Errorf("reserved workload-identity resource file already exists")
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(overlay, file), output.Bytes(), 0o600); err != nil {
+	if err := writeWithin(overlay, file, output.Bytes()); err != nil {
 		return err
 	}
 	// Both plain manifests and kustomize overlays are supported by the token
 	// seam. Add the resource to the index when the overlay has one.
 	for _, name := range []string{kustomizationFile, kustomizationFileAlt, kindKustomization} {
-		if _, err := os.Stat(filepath.Join(overlay, name)); err == nil {
+		if _, err := statWithin(overlay, name); err == nil {
 			return addKustomizationResource(overlay, file)
 		} else if !os.IsNotExist(err) {
 			return err

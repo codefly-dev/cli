@@ -5,6 +5,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/codefly-dev/core/resources/names"
 )
 
 // The render reads and inspects files by names it derives — an environment,
@@ -73,4 +76,24 @@ func pathSegment(what, value string) (string, error) {
 		return "", fmt.Errorf("%s %q is not one path element", what, value)
 	}
 	return segment, nil
+}
+
+// Validate composition names before any projection writes files derived from
+// them. The module/service grammar is Core's; environments use the same safe
+// path-component rule as GitOps publication. confinedJoin checks filepath.Rel
+// against the render root and refuses symlinked directories as well.
+func serviceRenderOverlay(root, module, service, environment string) (string, error) {
+	const environmentComponent = "environment"
+	for _, component := range []struct{ kind, value string }{{"module", module}, {"service", service}, {environmentComponent, environment}} {
+		if strings.ContainsAny(component.value, "/\\") || strings.Contains(component.value, "..") {
+			return "", fmt.Errorf("%s %q is not a safe path component", component.kind, component.value)
+		}
+		if err := validatePathComponent(component.kind, component.value); err != nil {
+			return "", err
+		}
+		if component.kind != environmentComponent && !names.IsModule(component.value) {
+			return "", fmt.Errorf("%s %q must contain lowercase alphanumerics and single dashes", component.kind, component.value)
+		}
+	}
+	return confinedJoin(root, filepath.Join("overlays", environment))
 }

@@ -19,7 +19,7 @@ type configurationMaps map[namespacedName]map[string]any
 func indexConfigurationMaps(documents []manifest) (configurationMaps, error) {
 	index := configurationMaps{}
 	for _, doc := range documents {
-		if doc.group != "" || doc.kind != "ConfigMap" {
+		if doc.group != "" || doc.kind != kindConfigMap {
 			continue
 		}
 		key := namespacedName{namespace: metadataString(doc.value, "namespace"), name: metadataString(doc.value, "name")}

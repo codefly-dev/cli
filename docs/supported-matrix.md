@@ -27,7 +27,7 @@ When `go.mod` moves to a new core release line, update the `core` field in
 `go test ./pkg/conformance/...` before the full coverage and race gates.
 `TestMatrixCoreMatchesGoMod` refuses a stale declared version.
 
-The current pin is released core `v0.18.0` (`59cd7b06`), which carries
+The current pin is released core `v0.18.2`, which carries
 ToolProjection and slot-only authority (#755), ciguard (#750), caller tokens,
 image-lock/publish evidence (#759), and configuration-origin evidence (#746),
 in addition to #752's composition-provenance contract. This source matrix does

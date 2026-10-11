@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -180,6 +181,62 @@ func TestWorkloadSVIDRefusesConflictsAndDoesNotProjectNonConsumers(t *testing.T)
 			require.ErrorContains(t, err, tc.want)
 		})
 	}
+}
+
+func TestWorkloadSVIDRefusesHostileRenderNamesBeforeWriting(t *testing.T) {
+	workspace, env := workloadIdentityComposition(t)
+	peers, err := resolveWorkloadPeers(t.Context(), workspace, env)
+	require.NoError(t, err)
+	for _, field := range []string{"module", "service", "environment"} {
+		invalid := []string{"", ".", "..", "../escape", "nested/api", `nested\api`, "/absolute", "api..escape", "api\x00"}
+		if field != "environment" {
+			invalid = append(invalid, "Uppercase", "api_service", "api.service", "api--service")
+		}
+		for _, name := range invalid {
+			t.Run(field+"/"+name, func(t *testing.T) {
+				root := t.TempDir()
+				require.NoError(t, kustomizedWorkload(pinnedDeployment)(t.Context(), root))
+				before := snapshotTree(t, root)
+				unit := filepath.Join(root, "services", "api")
+				scope := moduleScope(env, workspace, "app")
+				scope.WorkloadPeers = peers
+				service := &resources.Service{Name: "api", WorkspaceConfigurationDependencies: []string{environments.WorkloadIdentityConfiguration}}
+				target := *env
+				switch field {
+				case "module":
+					scope.Module = name
+				case "service":
+					service.Name = name
+				case "environment":
+					target.Name = name
+				}
+				require.ErrorContains(t, projectWorkloadSVID(unit, service, &target, scope), fmt.Sprintf("%s %q", field, name))
+				// The outer projection must refuse the name before earlier steps
+				// can use it to write a ServiceAccount or configuration resource.
+				require.ErrorContains(t, projectServiceConfiguration(t.Context(), unit, service, &target, scope, serviceInjection{}), fmt.Sprintf("%s %q", field, name))
+				require.Equal(t, before, snapshotTree(t, root))
+			})
+		}
+	}
+}
+
+func TestWorkloadSVIDRefusesOverlayOutsideRenderRoot(t *testing.T) {
+	workspace, env := workloadIdentityComposition(t)
+	peers, err := resolveWorkloadPeers(t.Context(), workspace, env)
+	require.NoError(t, err)
+	scope := moduleScope(env, workspace, "app")
+	scope.WorkloadPeers = peers
+	service := &resources.Service{Name: "api", WorkspaceConfigurationDependencies: []string{environments.WorkloadIdentityConfiguration}}
+	root := t.TempDir()
+	external := t.TempDir()
+	require.NoError(t, kustomizedWorkload(pinnedDeployment)(t.Context(), root))
+	unit := filepath.Join(root, "services", "api")
+	overlay := filepath.Join(unit, "overlays", env.Name)
+	require.NoError(t, os.Rename(overlay, filepath.Join(external, env.Name)))
+	require.NoError(t, os.Symlink(filepath.Join(external, env.Name), overlay))
+	before := snapshotTree(t, external)
+	require.ErrorContains(t, projectWorkloadSVID(unit, service, env, scope), "symbolic link")
+	require.Equal(t, before, snapshotTree(t, external))
 }
 
 func TestWorkloadSVIDPlainOverlayReplacesAuthoredPathSources(t *testing.T) {

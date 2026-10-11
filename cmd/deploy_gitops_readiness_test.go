@@ -142,15 +142,18 @@ func TestReadinessScopedToAnUnknownModule(t *testing.T) {
 
 // On a local k3d environment the render supplies workload-identity and
 // module-authority per workload, so no configuration directory has to hold
-// them; anywhere else a service declaring them is not ready.
+// them. Elsewhere their absence warns and leaves the service to decide whether
+// it can run without those values.
 func TestReadinessCountsRenderOwnedGroupsAsSuppliedOnlyOnLocalK3d(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		cluster string
-		ready   bool
+		status  string
+		message string
 	}{
-		{"local k3d", "    cluster:\n      kind: k3d\n      context: k3d-demo\n", true},
-		{"not k3d", "    cluster:\n      kind: eks\n      context: other\n", false},
+		{"local k3d", "    cluster:\n      kind: k3d\n      context: k3d-demo\n", "ok", "supplied per workload by the render"},
+		{"not k3d", "    cluster:\n      kind: eks\n      context: other\n", "warn", "supplied only by a local k3d or cell render; absent here"},
+		{"no cluster", "", "warn", "supplied only by a local k3d or cell render; absent here"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writeTestWorkspace(t, map[string]string{
@@ -159,11 +162,26 @@ func TestReadinessCountsRenderOwnedGroupsAsSuppliedOnlyOnLocalK3d(t *testing.T) 
 				"modules/backend/services/api/service.codefly.yaml": testServiceYAML("api", "workload-identity", "module-authority"),
 			})
 			report := runReadiness(t, workspaceReadinessOptions{dir: dir})
-			if got := report.Status == readinessStatusReady; got != tc.ready {
-				t.Fatalf("ready = %v, want %v\n%s", got, tc.ready, reportJSON(t, report))
+			if report.Status != readinessStatusReady {
+				t.Fatalf("status = %q, want ready\n%s", report.Status, reportJSON(t, report))
 			}
-			if !tc.ready {
-				requireCode(t, report, codeConfigurationMissing, "fail")
+			requireNoCode(t, report, codeConfigurationMissing)
+			requireNoCode(t, report, codeConfigurationDirMissing)
+			for _, group := range []string{"workload-identity", "module-authority"} {
+				found := false
+				for _, check := range report.Checks {
+					if check.Name == "workspace configurations" && check.Status == tc.status &&
+						strings.Contains(check.Message, `"`+group+`"`) && strings.Contains(check.Message, tc.message) &&
+						strings.Contains(check.Message, "backend/api") {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("missing %s report for %s: %s", tc.status, group, reportJSON(t, report))
+				}
+			}
+			if dirExists(dir + "/configurations/local") {
+				t.Fatal("doctor created the missing configurations directory")
 			}
 		})
 	}

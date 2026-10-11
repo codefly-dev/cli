@@ -146,21 +146,26 @@ them in one place, `pkg/orchestration/workspace_configurations.go`, by one rule:
       − the groups the selected run profile excludes
 
 The render-owned `workload-identity` and `module-authority` groups are supplied
-per workload by the render's projections. Build and deployment resolution omit
-exactly these groups from manager dependencies; the render refuses authored
-files for them. See [workload identities](solution-host-bindings.md#local-runs)
-for their values and environment requirements.
+per workload by the render's projections. Every resolution path, including
+runtime-init, local runs and CI compile/lint/test, omits these groups from manager
+dependencies; the render refuses authored files for them. Outside a render,
+absent groups supply no values and each service decides whether it can run
+without them. `doctor workspace` reports them as supplied on local k3d and warns
+elsewhere: "supplied only by a local k3d or cell render; absent here". See
+[workload identities](solution-host-bindings.md#local-runs) for their values and
+environment requirements.
 
 The composition root's own `configurations/<profile>/*` (and any
 invocation-scoped override) reach **every** service of the composition, so a
 composed module's service reads a root-provided value without redeclaring it. A
 group a composed module ships reaches only the services that declare it.
 
-**The rendered deployment is the source of truth for that set, and the local run
-resolves the identical one.** For a run of the whole composition, `codefly run`
-and `codefly deploy gitops render` hand a given service the same group names, and
-the same keys inside them *except where a rule below removes a key from both* —
-a credential the service does not declare is withheld in each path, not in one.
+**The rendered deployment is the source of truth for manager-resolved groups,
+and the local run resolves the identical set.** For a run of the whole
+composition, `codefly run` and `codefly deploy gitops render` hand a given service
+the same group names and keys inside them *except where a rule below removes a
+key from both* — a credential the service does not declare is withheld in each
+path, not in one.
 Where a key reaches both, only the address family differs: a value naming
 `${endpoint:<module>/<service>/<endpoint>}` resolves to the producer's loopback
 address for a local run and to its in-cluster address in a render.

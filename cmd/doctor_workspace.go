@@ -1027,9 +1027,9 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 	required := make([]string, 0, len(requiredBy))
 	var renderOwned []string
 	for name := range requiredBy {
-		// On a local k3d environment the render supplies these per workload and
-		// an authored file for them is refused, so no directory holds them.
-		if env.DeclaresLocalK3d() && environments.RenderOwnedWorkspaceConfiguration(name) {
+		// These groups belong to the render, which refuses authored files for
+		// them. Outside a render their absence is left to the service to judge.
+		if environments.RenderOwnedWorkspaceConfiguration(name) {
 			renderOwned = append(renderOwned, name)
 			continue
 		}
@@ -1038,8 +1038,12 @@ func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env
 	sort.Strings(required)
 	sort.Strings(renderOwned)
 	for _, name := range renderOwned {
-		report.add("", "workspace configurations", "ok",
-			fmt.Sprintf("%q is supplied per workload by the render (required by %s)", name, strings.Join(requiredBy[name], ", ")), "")
+		status, message := "warn", "supplied only by a local k3d or cell render; absent here"
+		if env.DeclaresLocalK3d() {
+			status, message = "ok", "supplied per workload by the render"
+		}
+		report.add("", "workspace configurations", status,
+			fmt.Sprintf("%q is %s (required by %s)", name, message, strings.Join(requiredBy[name], ", ")), "")
 	}
 
 	var toResolve []scopedConfiguration

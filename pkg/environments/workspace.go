@@ -177,8 +177,8 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 		if env == nil {
 			continue
 		}
-		if _, err := WorkloadIdentityServices(ctx, workspace, env); err != nil {
-			return w.Wrap(err)
+		if _, wiErr := WorkloadIdentityServices(ctx, workspace, env); wiErr != nil {
+			return w.Wrap(wiErr)
 		}
 	}
 	needsGraph := false

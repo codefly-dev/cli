@@ -15,6 +15,9 @@ import (
 )
 
 func projectServiceConfiguration(ctx context.Context, root string, service *resources.Service, env *environments.Environment, scope unitScope, injection serviceInjection) error {
+	if _, err := serviceRenderOverlay(root, scope.Module, service.Name, env.Name); err != nil {
+		return err
+	}
 	injection, err := moduleAuthorityInjection(service, env, scope, injection)
 	if err != nil {
 		return err

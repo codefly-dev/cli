@@ -22,8 +22,9 @@ import (
 //	    (core's GetCompositionRootWorkspaceConfigurations)
 //	  − the groups the selected run profile excludes
 //
-// Build and deployment paths leave render-owned groups to the per-workload
-// projections, so those declarations never become manager dependencies here.
+// Every path leaves render-owned groups to the per-workload projections, so
+// those declarations never become manager dependencies here. Outside a render
+// they supply no values; the service decides whether it can run without them.
 //
 // The rendered deployment is the source of truth for that set, and the local run
 // resolves the identical one. The two must not differ in either direction. A
@@ -69,10 +70,10 @@ func (world *World) workspaceConfigurationsFor(
 ) ([]*basev0.Configuration, error) {
 	declared := make([]string, 0, len(service.WorkspaceConfigurationDependencies))
 	for _, dependency := range service.WorkspaceConfigurationDependencies {
-		// Build/runtime peers and deployment builders share this resolver. The
-		// render projects these groups per workload after the agent renders;
-		// asking Core for them here requires a file that must never exist.
-		if world.deploys() && environments.RenderOwnedWorkspaceConfiguration(dependency) {
+		// Run, CI and deployment peers share this resolver. Only the render
+		// projects these groups per workload; asking Core for them here requires
+		// a file the render refuses, even when no render is involved.
+		if environments.RenderOwnedWorkspaceConfiguration(dependency) {
 			continue
 		}
 		if !world.excludedWorkspaceConfigurations[dependency] {

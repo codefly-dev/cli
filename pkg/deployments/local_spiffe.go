@@ -40,6 +40,9 @@ var certManagerImages = map[string]string{
 	"quay.io/jetstack/cert-manager-webhook:v1.21.2":    "sha256:a60e2dac46dbb8a7f3df95c54ce941012f54c2fe022f0ee55aaa1ab40ed957ae",
 }
 
+// metadataNamespace is the object metadata key the CA material is written under.
+const metadataNamespace = "namespace"
+
 func pinnedSPIFFEManifest(raw []byte, digest, trustDomain string) ([]byte, error) {
 	if err := environments.ValidateTrustDomain(trustDomain); err != nil {
 		return nil, err
@@ -105,13 +108,13 @@ func ensureWorkloadIssuer(ctx context.Context, kubectl Kubectl, fetch Fetch, tru
 	if strings.TrimSpace(existing) != "" {
 		// Only our managed CA is rotated; an externally provisioned issuer stays
 		// entirely under its owner's control.
-		cert, err := readLocalSPIFFECA(ctx, kubectl)
-		if err != nil {
-			return false, err
+		cert, readErr := readLocalSPIFFECA(ctx, kubectl)
+		if readErr != nil {
+			return false, readErr
 		}
 		if cert != "" {
-			if err := ensureLocalSPIFFECA(ctx, kubectl, cert, time.Now()); err != nil {
-				return false, err
+			if caErr := ensureLocalSPIFFECA(ctx, kubectl, cert, time.Now()); caErr != nil {
+				return false, caErr
 			}
 			return false, waitSPIFFEIssuer(ctx, kubectl)
 		}
@@ -126,22 +129,22 @@ func ensureWorkloadIssuer(ctx context.Context, kubectl Kubectl, fetch Fetch, tru
 		if fetch == nil {
 			fetch = fetchHTTPS
 		}
-		raw, err := fetch(ctx, certManagerManifest)
-		if err != nil {
-			return false, fmt.Errorf("fetch cert-manager: %w", err)
+		raw, fetchErr := fetch(ctx, certManagerManifest)
+		if fetchErr != nil {
+			return false, fmt.Errorf("fetch cert-manager: %w", fetchErr)
 		}
 		cm, err = pinnedCertManagerManifest(raw, cmDigest, cmImages)
 		if err != nil {
 			return false, err
 		}
 	} else {
-		args, err := kubectl(ctx, "", "get", "deployment", "cert-manager", "-n", certManagerNamespace, "-o", "jsonpath={.spec.template.spec.containers[*].args}")
-		if err != nil {
-			return false, fmt.Errorf("inspect cert-manager controller: %w", err)
+		args, argsErr := kubectl(ctx, "", "get", "deployment", "cert-manager", "-n", certManagerNamespace, "-o", "jsonpath={.spec.template.spec.containers[*].args}")
+		if argsErr != nil {
+			return false, fmt.Errorf("inspect cert-manager controller: %w", argsErr)
 		}
 		var declared []string
-		if err := json.Unmarshal([]byte(args), &declared); err != nil {
-			return false, fmt.Errorf("read cert-manager controller arguments: %w", err)
+		if decodeErr := json.Unmarshal([]byte(args), &declared); decodeErr != nil {
+			return false, fmt.Errorf("read cert-manager controller arguments: %w", decodeErr)
 		}
 		disabled := false
 		for _, arg := range declared {
@@ -154,20 +157,20 @@ func ensureWorkloadIssuer(ctx context.Context, kubectl Kubectl, fetch Fetch, tru
 		}
 	}
 	if len(cm) > 0 {
-		if _, err := kubectl(ctx, string(cm), "apply", "--server-side", "--force-conflicts", "-f", "-"); err != nil {
-			return false, fmt.Errorf("install cert-manager: %w", err)
+		if _, applyErr := kubectl(ctx, string(cm), "apply", "--server-side", "--force-conflicts", "-f", "-"); applyErr != nil {
+			return false, fmt.Errorf("install cert-manager: %w", applyErr)
 		}
 	}
 	// The CA issuer uses the webhook; wait for its Deployment and the injector
 	// that populates the admission webhook's CA before creating the issuer.
 	for _, deployment := range []string{"cert-manager", "cert-manager-cainjector", "cert-manager-webhook"} {
-		if err := issuerRollout(ctx, kubectl, "deployment/"+deployment); err != nil {
-			return false, err
+		if rolloutErr := issuerRollout(ctx, kubectl, "deployment/"+deployment); rolloutErr != nil {
+			return false, rolloutErr
 		}
 	}
 	for _, kind := range []string{"mutatingwebhookconfiguration", "validatingwebhookconfiguration"} {
-		if _, err := kubectl(ctx, "", "wait", "--for=jsonpath={.webhooks[0].clientConfig.caBundle}", kind+"/cert-manager-webhook", "--timeout=2m"); err != nil {
-			return false, fmt.Errorf("wait for cert-manager webhook trust: %w", err)
+		if _, waitErr := kubectl(ctx, "", "wait", "--for=jsonpath={.webhooks[0].clientConfig.caBundle}", kind+"/cert-manager-webhook", "--timeout=2m"); waitErr != nil {
+			return false, fmt.Errorf("wait for cert-manager webhook trust: %w", waitErr)
 		}
 	}
 	cert, err := readLocalSPIFFECA(ctx, kubectl)
@@ -247,7 +250,7 @@ func ensureLocalSPIFFECA(ctx context.Context, kubectl Kubectl, encoded string, n
 		if err != nil {
 			return err
 		}
-		secret := map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": spiffeCAName, "namespace": certManagerNamespace}, "type": "kubernetes.io/tls", "data": map[string][]byte{"tls.crt": certPEM, "tls.key": keyPEM}}
+		secret := map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": spiffeCAName, metadataNamespace: certManagerNamespace}, "type": "kubernetes.io/tls", "data": map[string][]byte{"tls.crt": certPEM, "tls.key": keyPEM}}
 		body, err := json.Marshal(secret)
 		if err != nil {
 			return err
@@ -258,7 +261,7 @@ func ensureLocalSPIFFECA(ctx context.Context, kubectl Kubectl, encoded string, n
 			return fmt.Errorf("apply local SPIFFE CA Secret failed (details withheld because they may contain the private key)")
 		}
 	}
-	bundle := map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": "spiffe-trust-bundle", "namespace": certManagerNamespace}, "data": map[string][]byte{"ca.pem": certPEM}}
+	bundle := map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": "spiffe-trust-bundle", metadataNamespace: certManagerNamespace}, "data": map[string][]byte{"ca.pem": certPEM}}
 	body, err := json.Marshal(bundle)
 	if err != nil {
 		return err

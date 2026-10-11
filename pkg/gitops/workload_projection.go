@@ -65,6 +65,9 @@ const (
 	keyKind                = "kind"
 	keySpec                = "spec"
 	keyAPIVersion          = "apiVersion"
+	keyMetadata            = "metadata"
+	keyConfigMap           = "configMap"
+	keyNamespace           = "namespace"
 	LocalTrustAnchorVolume = "codefly-delivery-trust"
 )
 
@@ -292,7 +295,7 @@ func (projection *podProjection) environmentEntries() []any {
 	for _, key := range keys {
 		// Clear a previous source in a strategic-merge patch: a path is a
 		// literal, even when an authored group previously sourced this key.
-		entries = append(entries, map[string]any{"name": key, "value": projection.env[key], "valueFrom": nil})
+		entries = append(entries, map[string]any{envEntryName: key, "value": projection.env[key], "valueFrom": nil})
 	}
 	return entries
 }
@@ -336,7 +339,7 @@ func (projection *podProjection) applyTo(document map[string]any) bool {
 				var retained []any
 				for _, raw := range sliceField(container, "env") {
 					variable, _ := raw.(map[string]any)
-					name, _ := variable["name"].(string)
+					name, _ := variable[envEntryName].(string)
 					if _, replaced := projection.env[name]; !replaced {
 						retained = append(retained, raw)
 					}
