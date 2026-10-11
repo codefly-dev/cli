@@ -68,7 +68,12 @@ func Verify(bundle, payload []byte, trusted *root.TrustedRoot, policy Policy) (I
 	if !entity.HasInclusionPromise() && !entity.HasInclusionProof() {
 		return Identity{}, fmt.Errorf("%w: the bundle has no transparency-log entry with an inclusion promise or proof", ErrNoTransparency)
 	}
-	verifier, err := verify.NewVerifier(trusted, verify.WithTransparencyLog(1), verify.WithObserverTimestamps(1))
+	// An embedded SCT from a CT log the root names is required, as the host
+	// requires it of every signer (module-saas-starter#1066): one verifier,
+	// one strength, so a carrier this check admits is never one the host
+	// refuses for a certificate no CT log saw. The public-good Fulcio embeds
+	// one in every certificate and its root carries the CT log keys.
+	verifier, err := verify.NewVerifier(trusted, verify.WithTransparencyLog(1), verify.WithObserverTimestamps(1), verify.WithSignedCertificateTimestamps(1))
 	if err != nil {
 		return Identity{}, fmt.Errorf("signing: configuring the Sigstore verifier: %w", err)
 	}
