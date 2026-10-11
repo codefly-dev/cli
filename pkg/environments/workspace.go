@@ -173,6 +173,14 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 	if nsErr := validateModuleNamespaces(workspace, environments); nsErr != nil {
 		return w.Wrap(nsErr)
 	}
+	for _, env := range environments {
+		if env == nil {
+			continue
+		}
+		if _, err := WorkloadIdentityServices(ctx, workspace, env); err != nil {
+			return w.Wrap(err)
+		}
+	}
 	needsGraph := false
 
 	for _, env := range environments {

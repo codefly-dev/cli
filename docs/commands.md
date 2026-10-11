@@ -504,7 +504,13 @@ codefly run cluster documents --env local --app-project platform --yes
 ```
 
 It installs Argo CD if the cluster has none (the release the k3d qualification
-pins), provisions the `platform-authority` namespace and its `delivery`
+pins), and the local SPIFFE issuer: cert-manager v1.21.2 with its default
+CertificateRequest approver disabled, csi-driver-spiffe v0.15.0, and a cluster
+CA kept in Kubernetes. Both manifests are verified before applying and every
+image is pinned by digest. Existing components are used as installed; an
+existing cert-manager must already disable its default approver before the
+CLI can add the SPIFFE driver. It waits for the webhook, issuer, driver and
+approver before rendering modules. It provisions the `platform-authority` namespace and its `delivery`
 ServiceAccount and the modules' namespaces, writes the local host's trust
 anchor — the public-good trusted root and a verification policy admitting the
 listed developers, bound to this cluster's CA fingerprint, re-written (and the
@@ -518,6 +524,15 @@ for each document. A refused delivery fails the run. `--delivery-timeout`
 bounds each wait. Stopping a run is not removal: a binding is withdrawn by a
 published tombstone. See [delivery documents, "Local runs"](solution-host-bindings.md#local-runs),
 which also lists what the local host's profile must contain.
+
+A service requesting `workspace-configuration-dependencies: [workload-identity]`
+requires `host.gateway: <module>/<service>` in the environment. The render
+mounts its SVID at `/var/run/secrets/spiffe.io`, grants its ServiceAccount
+permission to create CertificateRequests, and mounts three peer allowlists at
+`/etc/codefly/workload-peers`. It supplies the configuration group's seven
+file paths, including the existing projected token. Peer identities come
+from the composition: each consumer trusts the gateway; the gateway trusts
+every explicit consumer, including itself when it requests the group.
 
 ### `codefly build runnable <name>`
 

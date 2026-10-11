@@ -37,6 +37,9 @@ func (d *fakeDriver) step(name string) error {
 }
 
 func (d *fakeDriver) EnsureArgoCD(context.Context) (bool, error) { return true, d.step("argocd") }
+func (d *fakeDriver) EnsureWorkloadIssuer(context.Context) (bool, error) {
+	return true, d.step("issuer")
+}
 func (d *fakeDriver) EnsureDeliveryAccount(context.Context) error {
 	return d.step("delivery-account")
 }
@@ -85,7 +88,7 @@ func TestARunTakesEveryModuleThroughTheCellsSteps(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"argocd", "delivery-account", "namespaces host,documents", "trust-anchor",
+		"argocd", "issuer", "delivery-account", "namespaces host,documents", "trust-anchor",
 		"render host", "publish host", "render documents", "publish documents",
 		"latest", "serve abc", "bootstrap abc",
 		"await deliver-modules/host", "await deliver-modules/documents",
@@ -93,7 +96,7 @@ func TestARunTakesEveryModuleThroughTheCellsSteps(t *testing.T) {
 	if strings.Join(driver.steps, "|") != strings.Join(want, "|") {
 		t.Fatalf("steps:\n%v\nwant:\n%v", driver.steps, want)
 	}
-	if !report.ArgoCDInstalled || report.ClusterAuthority != "f00d" || report.Revision != "abc" || len(report.Deliveries) != 2 {
+	if !report.ArgoCDInstalled || !report.WorkloadIssuerInstalled || report.ClusterAuthority != "f00d" || report.Revision != "abc" || len(report.Deliveries) != 2 {
 		t.Fatalf("report %+v", report)
 	}
 }
@@ -102,6 +105,10 @@ func TestARunTakesEveryModuleThroughTheCellsSteps(t *testing.T) {
 // stops the run there; a publish that did not promote is refused rather than
 // served; a delivery the host refused fails the run with its receipts kept.
 func TestARunStopsWhereItFailsAndNeverServesAnUnpromotedRevision(t *testing.T) {
+	issuerFailure := &fakeDriver{promoted: true, fail: "issuer"}
+	if _, err := Run(context.Background(), localEnvironment(), []string{"host"}, issuerFailure, quiet); err == nil || strings.Join(issuerFailure.steps, ",") != "argocd,issuer" {
+		t.Fatalf("issuer failure did not stop before rendering: steps=%v err=%v", issuerFailure.steps, err)
+	}
 	failing := &fakeDriver{promoted: true, fail: "publish host"}
 	if _, err := Run(context.Background(), localEnvironment(), []string{"host", "documents"}, failing, quiet); err == nil {
 		t.Fatal("a failed publish did not stop the run")

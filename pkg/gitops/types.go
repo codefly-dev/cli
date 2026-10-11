@@ -220,6 +220,8 @@ type unitScope struct {
 	// nowhere else, so resolving one of its primitives has to consult this
 	// rather than EnvironmentServiceSecrets.
 	Managed map[string]environments.EnvironmentManagedService
+	// WorkloadPeers is the complete composition's resolved identity set.
+	WorkloadPeers workloadPeers
 }
 
 // moduleScope is the scope of every unit a module renders in an environment.

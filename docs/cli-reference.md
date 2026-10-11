@@ -3958,7 +3958,7 @@ Run the composition on the local k3d cluster through the signed delivery a cell 
 Run the composition on the environment's local k3d cluster, through the same
 delivery a cell receives (docs/solution-host-bindings.md, "Local runs"):
 
-  1. Argo CD in the cluster (installed if absent), the platform-authority
+  1. Argo CD and the SPIFFE workload issuer (installed if absent), the platform-authority
      namespace with its delivery ServiceAccount, the modules' namespaces, and
      the local host's trust anchor (the public-good trusted root and a
      verification policy admitting host.developers, bound to this cluster's
@@ -3973,7 +3973,9 @@ delivery a cell receives (docs/solution-host-bindings.md, "Local runs"):
 
 The environment must declare a k3d cluster (kind and context), a host,
 host.developers, and host.trust_anchor (the path the host reads its trust
-anchor from). Stopping a run is not removal: withdrawing a binding is a
+anchor from). Services declaring workload-identity also require host.gateway
+(<module>/<service>); their SVIDs and peer files are projected by the render.
+Stopping a run is not removal: withdrawing a binding is a
 published tombstone.
 ```
 

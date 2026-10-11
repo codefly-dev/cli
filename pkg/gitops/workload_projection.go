@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -277,17 +278,38 @@ func readOnlyMount(name, path string) map[string]any {
 type podProjection struct {
 	kind, name, container string
 	volume, mount         map[string]any
+	// env binds CLI-owned file paths to the same container as their volume.
+	env map[string]string
+}
+
+func (projection *podProjection) environmentEntries() []any {
+	keys := make([]string, 0, len(projection.env))
+	for key := range projection.env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	entries := make([]any, 0, len(keys))
+	for _, key := range keys {
+		// Clear a previous source in a strategic-merge patch: a path is a
+		// literal, even when an authored group previously sourced this key.
+		entries = append(entries, map[string]any{"name": key, "value": projection.env[key], "valueFrom": nil})
+	}
+	return entries
 }
 
 // patch is the projection as an inline strategic-merge patch.
 func (projection *podProjection) patch() (map[string]any, error) {
+	container := map[string]any{keyName: projection.container, "volumeMounts": []any{projection.mount}}
+	if len(projection.env) > 0 {
+		container["env"] = projection.environmentEntries()
+	}
 	body := map[string]any{
 		keyAPIVersion: "apps/v1",
 		keyKind:       projection.kind,
 		"metadata":    map[string]any{keyName: projection.name},
 		keySpec: map[string]any{"template": map[string]any{keySpec: map[string]any{
 			"volumes":    []any{projection.volume},
-			"containers": []any{map[string]any{keyName: projection.container, "volumeMounts": []any{projection.mount}}},
+			"containers": []any{container},
 		}}},
 	}
 	encoded, err := yaml.Marshal(body)
@@ -310,6 +332,17 @@ func (projection *podProjection) applyTo(document map[string]any) bool {
 	for _, entry := range sliceField(spec, "containers") {
 		if container, _ := entry.(map[string]any); container != nil && container[keyName] == projection.container {
 			container["volumeMounts"] = append(sliceField(container, "volumeMounts"), projection.mount)
+			if len(projection.env) > 0 {
+				var retained []any
+				for _, raw := range sliceField(container, "env") {
+					variable, _ := raw.(map[string]any)
+					name, _ := variable["name"].(string)
+					if _, replaced := projection.env[name]; !replaced {
+						retained = append(retained, raw)
+					}
+				}
+				container["env"] = append(retained, projection.environmentEntries()...)
+			}
 		}
 	}
 	return true

@@ -925,7 +925,16 @@ receipts:
    v3.4.1 pinned by what cannot move: the manifest at the commit the tag names,
    its SHA-256 verified before anything is applied, and every image it runs
    rewritten to its digest (an image no digest pins refuses the install). An
-   Argo CD already there is used as it is. And the `platform-authority` namespace with its `delivery`
+   Argo CD already there is used as it is. The **SPIFFE workload issuer** is
+   installed when absent: cert-manager v1.21.2 and csi-driver-spiffe v0.15.0,
+   with the manifest hashes verified before applying anything and every image
+   pinned by digest. The default `certificaterequests-approver` controller is
+   disabled: only the SPIFFE approver may approve these requests. Existing
+   components are used as installed; an existing cert-manager must already
+   disable its default approver before the CLI adds the driver. The run waits
+   for cert-manager's webhook and its trust, provisions the CA and
+   ClusterIssuer, then waits for the driver DaemonSet and approver Deployment.
+   And the `platform-authority` namespace with its `delivery`
    ServiceAccount (no default token mounted), which a cell's platform
    provides and the rendered tree cannot: the authority AppProject admits
    ConfigMaps and Jobs there and nothing else. The modules' namespaces, which
@@ -985,6 +994,52 @@ install into), a `host` block, `host.developers`, and the gitops
 `fetch-repo-url` naming the fetch remote. The same steps stay available one by
 one: `deploy gitops render`, `deploy gitops publish --local`, and
 `deploy gitops remote up` with no module (the latest local promotion).
+
+**Workload identities (cli#958).** Every composed service declaring
+`workspace-configuration-dependencies: [workload-identity]` receives the CSI
+volume from `spiffe.csi.cert-manager.io`, mounted read-only at
+`/var/run/secrets/spiffe.io` into its authenticating container. The driver
+requests a certificate as the pod's ServiceAccount; the render emits a
+namespace Role and RoleBinding granting that account only `create` on
+`cert-manager.io/certificaterequests`. The gateway receives the same volume
+and RBAC when it declares the group.
+
+The environment must name `host.gateway: <module>/<service>`, the composed
+service that fronts solutions and serves the mint. The render resolves each
+module's namespace and Core's ServiceAccount name, verifies the rendered pod
+uses that account, and uses the same `EnvironmentHost.SPIFFEID` function as
+presence documents. A peer ConfigMap supplies `allowed-callers`, `mint-peers`
+and `gateway-peers`, mounted read-only at `/etc/codefly/workload-peers` without
+subPath so updates propagate. Each file contains the gateway's SPIFFE ID,
+one per line with a final newline. For the gateway itself, each file lists
+every explicit consumer's ID, including the gateway when it opts in.
+
+The normal workspace configuration resolver supplies these derived values
+only to services declaring the group:
+
+| Key in `workload-identity` | Path |
+|---|---|
+| `TOKEN_FILE` | `/var/run/secrets/codefly/token` (the existing host-audience projection) |
+| `CERT_FILE` | `/var/run/secrets/spiffe.io/tls.crt` |
+| `KEY_FILE` | `/var/run/secrets/spiffe.io/tls.key` |
+| `TRUST_BUNDLE_FILE` | `/var/run/secrets/spiffe.io/ca.crt` |
+| `ALLOWED_CALLERS_FILE` | `/etc/codefly/workload-peers/allowed-callers` |
+| `MINT_PEERS_FILE` | `/etc/codefly/workload-peers/mint-peers` |
+| `GATEWAY_PEERS_FILE` | `/etc/codefly/workload-peers/gateway-peers` |
+
+The local ECDSA P-256 CA lives in the TLS Secret
+`cert-manager/csi-driver-spiffe-ca`; its certificate is also published as
+`ca.pem` in `cert-manager/spiffe-trust-bundle`. The ClusterIssuer
+`csi-driver-spiffe-ca` uses that Secret. The CA lasts 30 days and is reused
+until it has at most 24 hours left, when a run rotates it. Reuse reads only
+the public certificate; the private key is generated in memory, passed to
+Kubernetes through stdin, and never saved to a local file or logged. An
+externally provisioned issuer without this CA Secret is left to its owner.
+The driver's two trust-domain arguments use the validated `host.trust_domain`.
+The vendored CSI manifest and image pins live in
+`pkg/deployments/manifests`; `bash scripts/regenerate-spiffe-manifest.sh`
+reproduces it from the verified chart with Helm and reports the new digest
+for review in `pkg/deployments/local_spiffe.go`.
 
 **Local promotion is the developer's signed publish.** On a k3d environment
 whose host lists developers there is no reviewer: the developer is the author

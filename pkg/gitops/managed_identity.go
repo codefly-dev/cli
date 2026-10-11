@@ -32,15 +32,18 @@ func projectServiceConfiguration(ctx context.Context, root string, service *reso
 	if err := projectManagedIdentity(ctx, root, service, env, scope); err != nil {
 		return fmt.Errorf("project service %s managed identity: %w", service.Name, err)
 	}
+	if err := projectWorkloadSVID(root, service, env, scope); err != nil {
+		return fmt.Errorf("project service %s workload identity: %w", service.Name, err)
+	}
 	if err := validateProjectedConfiguration(root, service, env, scope); err != nil {
 		return err
 	}
 	return validateProjectedInjection(root, service.Name, env, injection)
 }
 
-// projectManagedIdentity applies only the declared runtime identity, into the
-// namespace the service's manifests bind to. Endpoint addresses and container
-// choices remain owned by their existing renderers.
+// projectManagedIdentity attaches the declared runtime identity and gives
+// workload-identity consumers and the gateway Core's resolved ServiceAccount.
+// Endpoint addresses and container choices remain owned by their renderers.
 func projectManagedIdentity(
 	ctx context.Context,
 	serviceRoot string,
@@ -56,7 +59,10 @@ func projectManagedIdentity(
 		return err
 	}
 	if identity == nil {
-		return nil
+		if !requestsWorkloadIdentity(service) && (env.Host == nil || env.Host.Gateway != resources.ServiceUnique(scope.Module, service.Name)) {
+			return nil
+		}
+		identity = &environments.EnvironmentWorkloadIdentity{}
 	}
 	overlay := &coreservices.PodTemplateOverlay{}
 	if err := overlay.AttachServiceAccount(&coreservices.WorkloadServiceAccount{Annotations: identity.Annotations}, identity.Labels); err != nil {
@@ -145,6 +151,18 @@ func projectRenderedServiceConfiguration(
 	injections renderInjections,
 	templates renderTemplates,
 ) error {
+	var peers workloadPeers
+	for unique, service := range graph {
+		if !requestsWorkloadIdentity(service) && (env.Host == nil || env.Host.Gateway != unique) {
+			continue
+		}
+		var err error
+		peers, err = resolveWorkloadPeers(ctx, workspace, env)
+		if err != nil {
+			return err
+		}
+		break
+	}
 	modulesRoot := filepath.Join(stage, "modules")
 	moduleEntries, err := os.ReadDir(modulesRoot)
 	if os.IsNotExist(err) {
@@ -174,6 +192,7 @@ func projectRenderedServiceConfiguration(
 				continue
 			}
 			scope := moduleScope(env, workspace, moduleEntry.Name())
+			scope.WorkloadPeers = peers
 			scope.Templates = templates
 			if err := projectServiceConfiguration(
 				ctx,

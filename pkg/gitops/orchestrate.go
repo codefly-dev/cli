@@ -58,6 +58,11 @@ func renderModuleTree(
 	// destinations derived from it, the quota and the secret projections all
 	// take it from here.
 	scope := moduleScope(env, workspace, module.Name)
+	peers, err := resolveWorkloadPeers(ctx, workspace, env)
+	if err != nil {
+		return RenderResult{}, err
+	}
+	scope.WorkloadPeers = peers
 	// The host's delivery API is resolved before anything renders: a host block
 	// naming an endpoint the composition does not have is refused here, not
 	// after images are built.
@@ -627,6 +632,9 @@ func renderServiceFlow(
 		return err
 	}
 	flow.WithPush(true)
+	flow.WithWorkspaceConfigurationValues(map[string]map[string]string{
+		environments.WorkloadIdentityConfiguration: workloadIdentityPaths(),
+	})
 	if sink != nil {
 		flow.WithOutputSink(sink)
 	}
