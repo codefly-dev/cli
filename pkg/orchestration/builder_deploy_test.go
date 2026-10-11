@@ -228,6 +228,36 @@ func TestPromotableDeploymentInputsPreserveWorkspaceConfigurationAndExtractSecre
 	}, references)
 }
 
+// Both configurations have a sensitive group and a plain key. The service
+// case also has a sensitive service name, which must not promote its audience.
+func TestPromotableDeploymentClassifiesConfigurationGroups(t *testing.T) {
+	for _, test := range []struct {
+		name, origin, secretKey string
+	}{
+		{"workspace", resources.ConfigurationWorkspace, "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__DATASOURCE_OAUTH__PROVIDERS"},
+		{"service", "saas/auth-gateway", "CODEFLY__SERVICE_SECRET_CONFIGURATION__SAAS__AUTH_GATEWAY__DATASOURCE_OAUTH__PROVIDERS"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			configuration := &basev0.Configuration{
+				Origin: test.origin,
+				Infos: []*basev0.ConfigurationInformation{
+					{Name: "datasource-oauth", ConfigurationValues: []*basev0.ConfigurationValue{{Key: "providers", Value: "{}"}}},
+					{Name: "identity", ConfigurationValues: []*basev0.ConfigurationValue{{Key: "audience", Value: "api"}}},
+				},
+			}
+			original := proto.CloneOf(configuration)
+			safe, _, references, err := promotableDeploymentConfigurations(configuration, nil, "secret-api")
+			require.NoError(t, err)
+			require.True(t, proto.Equal(original, configuration), "promotion must not change the shared configuration")
+			require.Equal(t, map[string]*builderv0.KubernetesSecretKeyReference{
+				test.secretKey: {Name: "secret-api", Key: test.secretKey},
+			}, references)
+			require.Len(t, safe.GetInfos(), 1)
+			require.True(t, proto.Equal(configuration.GetInfos()[1], safe.GetInfos()[0]), "audience must stay inline even for auth-gateway")
+		})
+	}
+}
+
 func TestKubernetesOutputProfileReservesEphemeralForDirectLocalApply(t *testing.T) {
 	require.Equal(t,
 		builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1,

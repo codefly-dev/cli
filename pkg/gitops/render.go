@@ -1315,9 +1315,9 @@ var manifestFieldNormalizer = strings.NewReplacer("-", "", "_", "", ".", "")
 // name, a key of a ConfigMap/Secret data map. Those are environment variable
 // names, and many are codefly carriers whose name embeds module, service and
 // endpoint names, so they go through resources.IsSensitiveEnvironmentVariable,
-// which classifies the configuration key a carrier holds and never its
-// structure: CODEFLY__ENDPOINT__SAAS__AUTH_GATEWAY__GRPC__GRPC is an address,
-// not a credential, although the service is called auth-gateway. A plaintext
+// which classifies the configuration group and key a carrier holds, excluding
+// structural identities: CODEFLY__ENDPOINT__SAAS__AUTH_GATEWAY__GRPC__GRPC is an
+// address, not a credential, although the service is called auth-gateway. A plaintext
 // value the guard sees under a name core calls sensitive escaped promotion, and
 // one core does not (MAX_OUTPUT_TOKENS: a model output-token limit, core#645)
 // is ordinary configuration the guard must not refuse.

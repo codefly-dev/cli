@@ -511,9 +511,15 @@ happens. Fixing it needs a core API that resolves a named subset; it is listed
 with the other core changes below. What an operator meets is that a service
 needing a root credential must say so, which is the same thing a declared group
 has always required. "Credential" is the render's own classifier: an explicit
-`secret:` flag, or a credential-named key (`resources.IsSensitiveKey`) — exactly
-what promotes a value to a `secretKeyRef` and what `codefly deploy secrets` plans
-a store entry for.
+`secret:` flag, or a sensitive delivered carrier name
+(`resources.IsSensitiveEnvironmentVariable` applied to
+`resources.ConfigurationValueEnvironmentKey`). The configuration group counts:
+`datasource-oauth/providers` is promoted to a `secretKeyRef` even though
+`providers` alone is plain. Module and service names do not count, so a service
+called `auth-gateway` can still deliver `identity/audience` inline. Withholding
+uses the same classification, so a root group's credentials reach only services
+that declare it. The existing OIDC endpoint-key exception still requires an
+explicit secret declaration rather than automatic promotion.
 
 **The durable fixes are in core,** and the above are shims until they land:
 

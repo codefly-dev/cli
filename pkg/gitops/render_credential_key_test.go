@@ -13,17 +13,19 @@ import (
 const modelOutputTokensKey = "CODEFLY__WORKSPACE_CONFIGURATION__MODEL_INSTALLATION__MAX_OUTPUT_TOKENS"
 
 // The render guard classifies configuration names through core's
-// resources.IsSensitiveKey, the same function orchestration promotes secrets
-// with. A model output-token limit is a count, not a credential (core#645), so a
-// render carrying it must not be refused; every credential name must still be.
+// resources.IsSensitiveEnvironmentVariable, the same function orchestration
+// promotes secrets with. A model output-token limit is a count, not a credential
+// (core#645), so a render carrying it must not be refused; every credential name
+// must still be.
 func TestRenderGuardClassifiesConfigurationNamesThroughCore(t *testing.T) {
 	public := []string{modelOutputTokensKey, "MAX_OUTPUT_TOKENS", "TOKENS_LIMIT", "LOG_LEVEL"}
 	credential := []string{
 		"ACCESS_TOKEN", "CODEFLY_INTERNAL_TOKEN", "TOKEN", "MAX_TOKEN", "TOKENS",
 		"JWT_SECRET", "WEBHOOK_SECRET", "CLIENT_SECRET", "DATABASE_PASSWORD", "API_KEY",
+		"CODEFLY__WORKSPACE_CONFIGURATION__DATASOURCE_OAUTH__PROVIDERS",
 	}
 	for _, key := range public {
-		if resources.IsSensitiveKey(key) {
+		if resources.IsSensitiveEnvironmentVariable(key) {
 			t.Fatalf("precondition: core classifies %s as sensitive", key)
 		}
 		for name, value := range configurationShapes(key) {
@@ -120,6 +122,7 @@ func TestRenderGuardIgnoresCarrierStructure(t *testing.T) {
 		"CODEFLY__ENDPOINT__SAAS__AUTH_GATEWAY__REST__REST",
 		"CODEFLY__SELF_ENDPOINT__SAAS__AUTH_GATEWAY__GRPC__GRPC",
 		"CODEFLY__SERVICE_CONFIGURATION__SAAS__AUTH_GATEWAY__IDENTITY__AUTHORITY_ISSUER",
+		"CODEFLY__SERVICE_CONFIGURATION__SAAS__AUTH_GATEWAY__IDENTITY__AUDIENCE",
 		"AUTHORITY_ISSUER",
 	}
 	credential := []string{
