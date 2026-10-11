@@ -21,9 +21,11 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 )
@@ -41,13 +43,24 @@ const (
 	// mutate a container that does not carry it.
 	remoteRole = "gitops-fetch-remote"
 
-	// remoteImage is the digest-pinned runtime image. Serving is dumb HTTP over
-	// TLS from a read-only tree, so a static file server is enough. Pin only by
-	// digest — a floating tag is a mutable image, which NewRemoteSpec rejects.
-	// This digest is a placeholder pending a reviewed pin; operators override it
-	// with CODEFLY_GITOPS_REMOTE_IMAGE, and the disposable k3d qualification
-	// pins the digest it actually pulled.
+	// remoteImage is the digest-pinned base the served image is built from.
+	// Pin only by digest — a floating tag is a mutable image, which
+	// NewRemoteSpec rejects. Operators override it with
+	// CODEFLY_GITOPS_REMOTE_IMAGE, and an override is run as given: it must
+	// serve the smart HTTP protocol itself.
 	remoteImage = "nginx:1.27.3-alpine@sha256:41523187cf7d7a2f2677a80609d9caa14388bf5c1fbca9c410ba3de602aaaab4"
+
+	// Argo CD lists refs with go-git, which speaks only Git's smart HTTP
+	// protocol: a static (dumb HTTP) server answers its info/refs request with
+	// text/plain and every sync fails with "unexpected EOF". So the served
+	// image adds git's http-backend to the base, behind nginx through fcgiwrap,
+	// from the base's own Alpine release at pinned versions (owner-approved
+	// third party, local build time only).
+	remoteGitPackage       = "git=2.45.4-r0"
+	remoteFcgiwrapPackage  = "fcgiwrap=1.1.0-r8"
+	remoteFcgiSocket       = "/var/run/fcgiwrap.sock"
+	remoteServerRepository = "codefly/gitops-remote"
+	remoteUploadPackType   = "application/x-git-upload-pack-advertisement"
 
 	remoteContainerPort = 443
 	loopbackIPv4        = "127.0.0.1"
@@ -83,15 +96,18 @@ func remoteImageDefault() string {
 // environment, so status and teardown can rebuild the exact identity without a
 // module publication.
 type RemoteConfig struct {
-	WorkspaceRoot    string
-	Owner            string
-	Workspace        string
-	Environment      string
-	Cluster          string
-	Network          string
-	RepositorySlug   string
-	SourceRepo       string
-	Image            string
+	WorkspaceRoot  string
+	Owner          string
+	Workspace      string
+	Environment    string
+	Cluster        string
+	Network        string
+	RepositorySlug string
+	SourceRepo     string
+	Image          string
+	// Registry is the environment's registry, where the served image is pushed
+	// so the container runs by digest.
+	Registry         string
 	HostAddr         string
 	HostPort         int
 	CertValidity     time.Duration
@@ -113,6 +129,7 @@ type RemoteSpec struct {
 	ContainerName    string
 	DNSName          string
 	Image            string
+	Registry         string
 	HostAddr         string
 	HostPort         int
 	ContainerPort    int
@@ -226,6 +243,7 @@ func NewRemoteSpec(cfg *RemoteConfig) (RemoteSpec, error) {
 		ContainerName:    name,
 		DNSName:          name,
 		Image:            image,
+		Registry:         strings.TrimSpace(cfg.Registry),
 		HostAddr:         hostAddr,
 		HostPort:         hostPort,
 		ContainerPort:    remoteContainerPort,
@@ -254,7 +272,7 @@ func (s *RemoteSpec) ArgoRepository() string {
 // hostVerifyURL is the loopback-only dumb-HTTP endpoint the CLI probes at the
 // discovered host port; it is never an Argo fetch path.
 func (s *RemoteSpec) hostVerifyURL(hostPort string) string {
-	return "https://" + net.JoinHostPort(s.HostAddr, hostPort) + "/repo.git/info/refs"
+	return "https://" + net.JoinHostPort(s.HostAddr, hostPort) + "/repo.git/info/refs?service=git-upload-pack"
 }
 
 // hostBinding renders the loopback host binding for display; a zero HostPort is
@@ -286,7 +304,7 @@ func (s *RemoteSpec) Labels(revision, caFingerprint string, notAfter time.Time) 
 // invariant the issue names is encoded here so tests assert it directly: a
 // loopback-only host binding, the private network, read-only mounts, a
 // digest-pinned image, and exact ownership labels.
-func (s *RemoteSpec) dockerRunArgs(labels map[string]string) []string {
+func (s *RemoteSpec) dockerRunArgs(labels map[string]string, image string) []string {
 	args := []string{
 		"run", "--detach",
 		"--name", s.ContainerName,
@@ -317,7 +335,7 @@ func (s *RemoteSpec) dockerRunArgs(labels map[string]string) []string {
 	for _, key := range keys {
 		args = append(args, "--label", key+"="+labels[key])
 	}
-	return append(args, s.Image)
+	return append(args, image)
 }
 
 // publishSpec binds the host verification port to IPv4 loopback only. A zero
@@ -343,6 +361,27 @@ http {
     ssl_certificate_key ` + remoteMountTLS + `/server.key;
     ssl_protocols TLSv1.2 TLSv1.3;
     root /srv;
+    # Read-only: a push is refused before it reaches git.
+    location ~ ^/repo\.git/git-receive-pack$ {
+      return 403;
+    }
+    # The smart protocol Argo CD's go-git speaks: the ref advertisement and
+    # the pack negotiation, through git http-backend over a read-only mount.
+    location ~ ^/repo\.git/(info/refs|git-upload-pack)$ {
+      limit_except GET POST { deny all; }
+      if ($arg_service = "git-receive-pack") {
+        return 403;
+      }
+      include fastcgi_params;
+      fastcgi_param SCRIPT_FILENAME /usr/libexec/git-core/git-http-backend;
+      fastcgi_param GIT_PROJECT_ROOT /srv;
+      fastcgi_param GIT_HTTP_EXPORT_ALL "";
+      fastcgi_param PATH_INFO $uri;
+      fastcgi_param GIT_CONFIG_COUNT 1;
+      fastcgi_param GIT_CONFIG_KEY_0 safe.directory;
+      fastcgi_param GIT_CONFIG_VALUE_0 ` + remoteMountRepo + `;
+      fastcgi_pass unix:` + remoteFcgiSocket + `;
+    }
     location / {
       autoindex off;
       limit_except GET HEAD { deny all; }
@@ -351,6 +390,30 @@ http {
 }
 `
 }
+
+// remoteServerDockerfile builds the served image: the pinned base, git's
+// http-backend and fcgiwrap at pinned versions, and an entrypoint that starts
+// fcgiwrap as nginx's user before nginx.
+func remoteServerDockerfile(base string) string {
+	return "FROM " + base + "\n" +
+		"RUN apk add --no-cache " + remoteGitPackage + " " + remoteFcgiwrapPackage + "\n" +
+		"COPY entrypoint.sh /codefly-remote-entrypoint.sh\n" +
+		"RUN chmod 0755 /codefly-remote-entrypoint.sh\n" +
+		"ENTRYPOINT [\"/codefly-remote-entrypoint.sh\"]\n"
+}
+
+// remoteServerEntrypoint runs git http-backend with nginx's privileges: the
+// socket and every git process belong to the nginx user, never root.
+const remoteServerEntrypoint = `#!/bin/sh
+set -eu
+su -s /bin/sh nginx -c "fcgiwrap -s unix:` + remoteFcgiSocket + `" &
+waited=0
+while [ ! -S ` + remoteFcgiSocket + ` ] && [ "$waited" -lt 50 ]; do
+  waited=$((waited + 1))
+  sleep 0.1
+done
+exec nginx -g 'daemon off;'
+`
 
 // RemotePlan is the read-only description of what Up would create.
 type RemotePlan struct {
@@ -815,11 +878,20 @@ func NewFetchRemote(workspace *resources.Workspace, environment string) (*FetchR
 		Cluster:        cluster,
 		RepositorySlug: repository,
 		SourceRepo:     config.RepoURL,
+		Registry:       environmentRegistry(env),
 	})
 	if err != nil {
 		return nil, err
 	}
 	return &FetchRemote{Spec: spec}, nil
+}
+
+// environmentRegistry is the registry an environment declares, or "".
+func environmentRegistry(env *environments.Environment) string {
+	if env == nil || env.Registry == nil {
+		return ""
+	}
+	return strings.TrimSpace(env.Registry.URL)
 }
 
 func currentOwner() string {
@@ -884,8 +956,12 @@ func (r *FetchRemote) Up(ctx context.Context, revision string) (RemoteStatus, er
 	if err = r.removeExisting(ctx); err != nil {
 		return RemoteStatus{}, err
 	}
+	image, err := r.serverImage(ctx)
+	if err != nil {
+		return RemoteStatus{}, err
+	}
 	labels := r.Spec.Labels(revision, material.CAFingerprint, material.NotAfter)
-	if _, err = dockerRun(ctx, r.Spec.dockerRunArgs(labels)...); err != nil {
+	if _, err = dockerRun(ctx, r.Spec.dockerRunArgs(labels, image)...); err != nil {
 		return RemoteStatus{}, fmt.Errorf("start fetch remote: %w", err)
 	}
 	started, err := r.inspect(ctx)
@@ -979,6 +1055,78 @@ func loopbackHostPort(state *ContainerState, containerPort int) (string, error) 
 	return "", fmt.Errorf("fetch remote %s has no host binding for %s", state.Name, want)
 }
 
+// serverImage returns the digest of the image the remote runs. An operator
+// override is run as given. The built-in base is extended with the smart
+// protocol (remoteServerDockerfile), built locally, pushed to the
+// environment's registry and run by the digest the push recorded, so the
+// container's image stays pinned like every other.
+func (r *FetchRemote) serverImage(ctx context.Context) (string, error) {
+	if r.Spec.Image != remoteImage {
+		return r.Spec.Image, nil
+	}
+	if r.Spec.Registry == "" {
+		return "", fmt.Errorf("environment %q declares no registry.url; the fetch remote's image is built and pushed there", r.Spec.Environment)
+	}
+	dockerfile := remoteServerDockerfile(r.Spec.Image)
+	sum := sha256.Sum256([]byte(dockerfile + remoteServerEntrypoint))
+	repository := strings.TrimRight(r.Spec.Registry, "/") + "/" + remoteServerRepository
+	tag := repository + ":" + hex.EncodeToString(sum[:8])
+	buildDir, err := os.MkdirTemp("", "codefly-gitops-remote-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(buildDir)
+	if err = writeFileMode(filepath.Join(buildDir, "Dockerfile"), []byte(dockerfile), 0o600); err != nil {
+		return "", err
+	}
+	if err = writeFileMode(filepath.Join(buildDir, "entrypoint.sh"), []byte(remoteServerEntrypoint), 0o600); err != nil {
+		return "", err
+	}
+	if _, err = dockerRun(ctx, "build", "--quiet", "--tag", tag, buildDir); err != nil {
+		return "", fmt.Errorf("build the fetch remote image: %w", err)
+	}
+	if _, err = dockerRun(ctx, "push", "--quiet", tag); err != nil {
+		return "", fmt.Errorf("push the fetch remote image to %s: %w", r.Spec.Registry, err)
+	}
+	digests, err := dockerRun(ctx, "image", "inspect", "--format", "{{range .RepoDigests}}{{println .}}{{end}}", tag)
+	if err != nil {
+		return "", fmt.Errorf("read the fetch remote image digest: %w", err)
+	}
+	for _, digest := range strings.Fields(digests) {
+		if strings.HasPrefix(digest, repository+"@sha256:") {
+			return digest, nil
+		}
+	}
+	return "", fmt.Errorf("the pushed fetch remote image %s has no digest in %s", tag, repository)
+}
+
+// smartRefsAdvertiseRevision reports whether a smart-HTTP ref advertisement —
+// what Argo CD's go-git reads — lists the reviewed revision. The body is
+// pkt-lines: four hex digits of length, then "<oid> <ref>", the first ref
+// carrying capabilities after a NUL.
+func smartRefsAdvertiseRevision(body []byte, revision string) bool {
+	revision = strings.ToLower(strings.TrimSpace(revision))
+	for len(body) >= 4 {
+		size, err := strconv.ParseUint(string(body[:4]), 16, 16)
+		if err != nil {
+			return false
+		}
+		if size == 0 {
+			body = body[4:]
+			continue
+		}
+		if size < 4 || int(size) > len(body) {
+			return false
+		}
+		line := string(body[4:size])
+		body = body[size:]
+		if oid, _, found := strings.Cut(line, " "); found && strings.ToLower(oid) == revision {
+			return true
+		}
+	}
+	return false
+}
+
 // refsAdvertisesRevision reports whether a dumb-HTTP info/refs advertisement
 // lists the reviewed revision, so the probe verifies the remote actually serves
 // the exact revision rather than merely returning any static file.
@@ -1022,7 +1170,9 @@ func (r *FetchRemote) probe(ctx context.Context, caPEM []byte, hostPort, revisio
 			switch {
 			case response.StatusCode != http.StatusOK:
 				lastErr = fmt.Errorf("host verification returned %s", response.Status)
-			case !refsAdvertisesRevision(body, revision):
+			case response.Header.Get("Content-Type") != remoteUploadPackType:
+				lastErr = fmt.Errorf("host verification answered %q, not the smart protocol Argo CD fetches with", response.Header.Get("Content-Type"))
+			case !smartRefsAdvertiseRevision(body, revision):
 				lastErr = fmt.Errorf("host verification did not advertise reviewed revision %s", revision)
 			default:
 				return nil

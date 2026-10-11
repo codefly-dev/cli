@@ -108,7 +108,7 @@ func TestNewRemoteSpecIdentityIndependentOfOwner(t *testing.T) {
 func TestDockerRunArgsEncodeInvariants(t *testing.T) {
 	spec := mustSpec(t, testConfig())
 	labels := spec.Labels("a1b2c3d4e5f60718293a4b5c6d7e8f9012345678", "sha256:deadbeef", time.Unix(0, 0))
-	args := spec.dockerRunArgs(labels)
+	args := spec.dockerRunArgs(labels, spec.Image)
 	joined := strings.Join(args, " ")
 
 	if !slices.Contains(args, "--read-only") {
@@ -148,7 +148,7 @@ func TestDockerRunArgsEncodeInvariants(t *testing.T) {
 	fixed := testConfig()
 	fixed.HostPort = 55555
 	fixedSpec := mustSpec(t, fixed)
-	if got := strings.Join(fixedSpec.dockerRunArgs(labels), " "); !strings.Contains(got, "--publish 127.0.0.1:55555:443") {
+	if got := strings.Join(fixedSpec.dockerRunArgs(labels, fixedSpec.Image), " "); !strings.Contains(got, "--publish 127.0.0.1:55555:443") {
 		t.Fatalf("explicit host port not published: %q", got)
 	}
 }
@@ -546,5 +546,62 @@ func TestMirrorServesReviewedRevision(t *testing.T) {
 	}
 	if served := runExternal(t, "", nil, "git", "--git-dir", spec.RepoDir(), "rev-parse", remoteServeRef); served != first {
 		t.Fatalf("serving ref after update = %q, want the pinned %q", served, first)
+	}
+}
+
+// The served image is the pinned base plus git's http-backend and fcgiwrap at
+// pinned versions; a floating package would be a mutable image by another name.
+func TestRemoteServerDockerfilePinsItsPackages(t *testing.T) {
+	dockerfile := remoteServerDockerfile(remoteImage)
+	for _, want := range []string{"FROM " + remoteImage + "\n", "git=2.45.4-r0", "fcgiwrap=1.1.0-r8", "ENTRYPOINT"} {
+		if !strings.Contains(dockerfile, want) {
+			t.Fatalf("server Dockerfile lacks %q:\n%s", want, dockerfile)
+		}
+	}
+	if !strings.Contains(remoteServerEntrypoint, "su -s /bin/sh nginx") {
+		t.Fatal("git http-backend must run as nginx's user, never root")
+	}
+}
+
+// Argo CD fetches with the smart protocol, and the remote stays read-only: the
+// advertisement and the pack negotiation go through git http-backend, and a
+// push is refused before it reaches git.
+func TestNginxConfigServesSmartHTTPReadOnly(t *testing.T) {
+	spec := mustSpec(t, testConfig())
+	config := spec.nginxConfig()
+	for _, want := range []string{
+		"location ~ ^/repo\\.git/git-receive-pack$ {\n      return 403;",
+		"location ~ ^/repo\\.git/(info/refs|git-upload-pack)$",
+		"if ($arg_service = \"git-receive-pack\")",
+		"fastcgi_param SCRIPT_FILENAME /usr/libexec/git-core/git-http-backend;",
+		"fastcgi_param GIT_CONFIG_VALUE_0 " + remoteMountRepo + ";",
+		"fastcgi_pass unix:" + remoteFcgiSocket + ";",
+	} {
+		if !strings.Contains(config, want) {
+			t.Fatalf("nginx config lacks %q:\n%s", want, config)
+		}
+	}
+	if !strings.HasSuffix(spec.hostVerifyURL("1"), "/repo.git/info/refs?service=git-upload-pack") {
+		t.Fatalf("the probe does not ask what Argo CD asks: %s", spec.hostVerifyURL("1"))
+	}
+}
+
+func TestSmartRefsAdvertiseRevision(t *testing.T) {
+	revision := "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+	pkt := func(line string) string { return fmt.Sprintf("%04x%s", len(line)+4, line) }
+	advertisement := pkt("# service=git-upload-pack\n") + "0000" +
+		pkt(revision+" HEAD\x00multi_ack side-band-64k\n") +
+		pkt(revision+" refs/heads/codefly-fetch\n") + "0000"
+	if !smartRefsAdvertiseRevision([]byte(advertisement), revision) {
+		t.Fatal("the reviewed revision in a smart advertisement was not recognized")
+	}
+	other := pkt("# service=git-upload-pack\n") + "0000" + pkt("0000000000000000000000000000000000000000 refs/heads/main\n") + "0000"
+	if smartRefsAdvertiseRevision([]byte(other), revision) {
+		t.Fatal("an advertisement without the reviewed revision was accepted")
+	}
+	// The dumb info/refs file — what the static server returned — is not a
+	// smart advertisement.
+	if smartRefsAdvertiseRevision([]byte(revision+"\trefs/heads/codefly-fetch\n"), revision) {
+		t.Fatal("a dumb-HTTP body was accepted as the smart protocol")
 	}
 }
