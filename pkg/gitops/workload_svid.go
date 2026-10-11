@@ -24,8 +24,7 @@ const (
 	peersMount  = "/etc/codefly/workload-peers"
 )
 
-// The same group resolver that carries authored configuration carries these
-// derived paths. They apply only to explicit workload-identity consumers.
+// The render supplies these paths only to explicit workload-identity consumers.
 func workloadIdentityPaths() map[string]string {
 	return map[string]string{
 		"TOKEN_FILE":           path.Join(identityTokenMount, identityTokenFile),
@@ -38,9 +37,8 @@ func workloadIdentityPaths() map[string]string {
 	}
 }
 
-// Bind the group's carrier keys with Core's encoder. The flow receives these
-// values through its normal resolver; the projection also binds the paths to
-// the authenticating container so an agent's overlay cannot redirect them
+// Bind the group's carrier keys with Core's encoder. Projection binds the paths
+// to the authenticating container so an agent's overlay cannot redirect them
 // away from the volumes the CLI owns.
 func workloadIdentityEnvironment(environment string) (map[string]string, error) {
 	info := &basev0.ConfigurationInformation{Name: environments.WorkloadIdentityConfiguration}
@@ -111,6 +109,9 @@ func resolveWorkloadPeers(ctx context.Context, workspace *resources.Workspace, e
 	}
 	if len(consumers) == 0 {
 		return nil, nil
+	}
+	if !env.DeclaresLocalK3d() {
+		return nil, fmt.Errorf("environment %s cannot render workload-identity: SVID issuance requires a declared local k3d cluster (cluster.kind: k3d, cluster.context: k3d-<name>)", env.Name)
 	}
 	peers := workloadPeers{}
 	add := func(module, service string, consumer bool) error {

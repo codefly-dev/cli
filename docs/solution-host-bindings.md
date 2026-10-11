@@ -1014,8 +1014,10 @@ subPath so updates propagate. Each file contains the gateway's SPIFFE ID,
 one per line with a final newline. For the gateway itself, each file lists
 every explicit consumer's ID, including the gateway when it opts in.
 
-The normal workspace configuration resolver supplies these derived values
-only to services declaring the group:
+The render supplies these derived values only to services declaring the group.
+It requires a declared local k3d cluster (`cluster.kind: k3d` and
+`cluster.context: k3d-<name>`), where the local run installs SVID issuance;
+other environments are refused before builds begin.
 
 | Key in `workload-identity` | Path |
 |---|---|
@@ -1046,8 +1048,10 @@ with a `secretKeyRef` to
 in `secret-<service>`. The existing ExternalSecret projection delivers that
 key from the environment's service secret store; no token value is copied into
 the render. A missing workload identity, host audience or service secret store
-refuses the render. An authored `module-authority` group anywhere in the selected
-composition is also refused: the render is the sole source of these values.
+refuses the render. Both `workload-identity` and `module-authority` bypass the
+configuration manager during build and deployment: their values are projected
+per workload after the agent renders. An authored file for either group anywhere
+in the selected composition is refused, even when no service declares the group.
 
 The local ECDSA P-256 CA lives in the TLS Secret
 `cert-manager/csi-driver-spiffe-ca`; its certificate is also published as

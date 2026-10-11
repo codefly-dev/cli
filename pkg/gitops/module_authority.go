@@ -12,47 +12,27 @@ import (
 	"github.com/codefly-dev/core/resources"
 )
 
-// The render owns this group, including when an authored group would agree.
+// The render owns these groups, including when an authored group would agree
+// or no service declares it as a dependency.
 // Read through Core so composed modules, imports and profile selection follow
 // the same rules as every other workspace configuration.
-func refuseAuthoredModuleAuthority(ctx context.Context, workspace *resources.Workspace, env *resources.Environment) error {
+func refuseAuthoredRenderConfigurations(ctx context.Context, workspace *resources.Workspace, env *resources.Environment) error {
 	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env)
 	if err != nil {
 		return err
 	}
-	group := environments.ModuleAuthorityConfiguration
-	if _, ambiguous := provided.Ambiguous[group]; ambiguous || slices.ContainsFunc(provided.Infos, func(info *basev0.ConfigurationInformation) bool {
-		return info.Name == group
-	}) {
-		return fmt.Errorf("workspace configuration %q is owned by the render; remove the authored group file from the composition", group)
+	for _, info := range provided.Infos {
+		if environments.RenderOwnedWorkspaceConfiguration(info.Name) {
+			return fmt.Errorf("workspace configuration %q is owned by the render; remove the authored group file from the composition", info.Name)
+		}
+	}
+	for _, group := range slices.Sorted(maps.Keys(provided.Ambiguous)) {
+		if environments.RenderOwnedWorkspaceConfiguration(group) {
+			return fmt.Errorf("workspace configuration %q is owned by the render; remove the authored group file from the composition", group)
+		}
 	}
 	return nil
 }
-
-// moduleAuthorityLoader declares the render-owned dependency to Core without
-// inventing a workspace-wide principal. Its values are supplied per service by
-// moduleAuthorityInjection once the composition's workload identities resolve.
-type moduleAuthorityLoader struct {
-	workspace *resources.Workspace
-	configs   []*basev0.Configuration
-}
-
-func newModuleAuthorityLoader(workspace *resources.Workspace) *moduleAuthorityLoader {
-	return &moduleAuthorityLoader{workspace: workspace, configs: []*basev0.Configuration{{
-		Origin: resources.ConfigurationWorkspace,
-		Infos:  []*basev0.ConfigurationInformation{{Name: environments.ModuleAuthorityConfiguration}},
-	}}}
-}
-
-func (*moduleAuthorityLoader) Identity() string { return "render-module-authority" }
-
-func (loader *moduleAuthorityLoader) Load(ctx context.Context, env *resources.Environment) error {
-	return refuseAuthoredModuleAuthority(ctx, loader.workspace, env)
-}
-
-func (loader *moduleAuthorityLoader) Configurations() []*basev0.Configuration { return loader.configs }
-
-func (*moduleAuthorityLoader) DNS() []*basev0.DNS { return nil }
 
 // moduleAuthorityInjection uses the same composition module and resolved peer
 // as presence. projectWorkloadSVID verifies that the effective serving pods run

@@ -49,7 +49,7 @@ func renderModuleTree(
 	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
 		return RenderResult{}, err
 	}
-	if err := refuseAuthoredModuleAuthority(ctx, workspace, env.Runtime()); err != nil {
+	if err := refuseAuthoredRenderConfigurations(ctx, workspace, env.Runtime()); err != nil {
 		return RenderResult{}, err
 	}
 	ownedPath, err := moduleOwnedPath(workspace, env, module.Name)
@@ -487,7 +487,10 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
 		return RenderResult{}, err
 	}
-	if err := refuseAuthoredModuleAuthority(ctx, workspace, env.Runtime()); err != nil {
+	if err := refuseAuthoredRenderConfigurations(ctx, workspace, env.Runtime()); err != nil {
+		return RenderResult{}, err
+	}
+	if _, err := resolveWorkloadPeers(ctx, workspace, env); err != nil {
 		return RenderResult{}, err
 	}
 	serviceDir, _ := unitDirectory(UnitKindService)
@@ -638,10 +641,6 @@ func renderServiceFlow(
 		return err
 	}
 	flow.WithPush(true)
-	flow.ConfigurationManager.WithLoader(newModuleAuthorityLoader(workspace))
-	flow.WithWorkspaceConfigurationValues(map[string]map[string]string{
-		environments.WorkloadIdentityConfiguration: workloadIdentityPaths(),
-	})
 	if sink != nil {
 		flow.WithOutputSink(sink)
 	}

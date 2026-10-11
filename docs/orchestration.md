@@ -145,6 +145,12 @@ them in one place, `pkg/orchestration/workspace_configurations.go`, by one rule:
       ∪ the groups the composition root provides run-wide
       − the groups the selected run profile excludes
 
+The render-owned `workload-identity` and `module-authority` groups are supplied
+per workload by the render's projections. Build and deployment resolution omit
+exactly these groups from manager dependencies; the render refuses authored
+files for them. See [workload identities](solution-host-bindings.md#local-runs)
+for their values and environment requirements.
+
 The composition root's own `configurations/<profile>/*` (and any
 invocation-scoped override) reach **every** service of the composition, so a
 composed module's service reads a root-provided value without redeclaring it. A

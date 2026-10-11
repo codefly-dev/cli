@@ -23,6 +23,9 @@ modules:
 environments:
   - name: prod
     namespace: example
+    cluster:
+      kind: k3d
+      context: k3d-example
     host:
       coordinate: example/local/dev
       component: host

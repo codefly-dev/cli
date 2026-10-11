@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
@@ -20,6 +21,9 @@ import (
 //	  ∪ the groups the composition root provides run-wide
 //	    (core's GetCompositionRootWorkspaceConfigurations)
 //	  − the groups the selected run profile excludes
+//
+// Build and deployment paths leave render-owned groups to the per-workload
+// projections, so those declarations never become manager dependencies here.
 //
 // The rendered deployment is the source of truth for that set, and the local run
 // resolves the identical one. The two must not differ in either direction. A
@@ -65,6 +69,12 @@ func (world *World) workspaceConfigurationsFor(
 ) ([]*basev0.Configuration, error) {
 	declared := make([]string, 0, len(service.WorkspaceConfigurationDependencies))
 	for _, dependency := range service.WorkspaceConfigurationDependencies {
+		// Build/runtime peers and deployment builders share this resolver. The
+		// render projects these groups per workload after the agent renders;
+		// asking Core for them here requires a file that must never exist.
+		if world.deploys() && environments.RenderOwnedWorkspaceConfiguration(dependency) {
+			continue
+		}
 		if !world.excludedWorkspaceConfigurations[dependency] {
 			declared = append(declared, dependency)
 		}

@@ -15,6 +15,13 @@ const WorkloadIdentityConfiguration = "workload-identity"
 // ModuleAuthorityConfiguration requests per-workload authority from the render.
 const ModuleAuthorityConfiguration = "module-authority"
 
+// RenderOwnedWorkspaceConfiguration names the groups supplied per workload by
+// the render. They are never dependencies of the configuration manager and
+// cannot be provided by authored workspace configuration files.
+func RenderOwnedWorkspaceConfiguration(group string) bool {
+	return group == WorkloadIdentityConfiguration || group == ModuleAuthorityConfiguration
+}
+
 // WorkloadIdentityServices selects explicit consumers, never composition-root
 // inheritance, and validates the gateway against the same complete composition.
 func WorkloadIdentityServices(ctx context.Context, workspace *resources.Workspace, env *Environment) ([]*resources.ServiceWithModule, error) {

@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/environments"
-	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
@@ -24,7 +23,7 @@ func TestModuleAuthorityMatchesDeliveredPresenceAndReusesInternalSecret(t *testi
 	configurationDir := filepath.Join(workspace.Dir(), "configurations", env.Name)
 	require.NoError(t, os.MkdirAll(configurationDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(configurationDir, "internal-auth.secret.env"), []byte("CODEFLY_INTERNAL_TOKEN="+secretValue+"\n"), 0o600))
-	require.NoError(t, refuseAuthoredModuleAuthority(t.Context(), workspace, env.Runtime()))
+	require.NoError(t, refuseAuthoredRenderConfigurations(t.Context(), workspace, env.Runtime()))
 	peers, err := resolveWorkloadPeers(t.Context(), workspace, env)
 	require.NoError(t, err)
 	principals := map[string]string{}
@@ -146,56 +145,49 @@ func TestModuleAuthorityRequiresAnExplicitConsumerAndRefusesOverlayOverrides(t *
 	}
 }
 
-func TestModuleAuthorityLoaderOwnsGroupWithoutAFile(t *testing.T) {
-	workspace, env := workloadIdentityComposition(t)
-	manager, err := configurations.NewManager(t.Context(), workspace)
-	require.NoError(t, err)
-	local, err := configurations.NewConfigurationLocalReader(t.Context(), workspace)
-	require.NoError(t, err)
-	manager.WithLoader(local).WithLoader(newModuleAuthorityLoader(workspace))
-	require.NoError(t, manager.Load(t.Context(), env.Runtime()))
-	resolved, err := manager.GetWorkspaceDependenciesConfigurations(t.Context(), "module-authority")
-	require.NoError(t, err)
-	require.Len(t, resolved, 1)
-	variables, err := resources.ConfigurationAsEnvironmentVariables(resolved[0], env.Name, false)
-	require.NoError(t, err)
-	require.Empty(t, variables, "no workspace-wide authority may reach the builder")
-	_, err = manager.GetWorkspaceDependenciesConfigurations(t.Context(), "unprovided")
-	require.ErrorContains(t, err, "no configuration found")
-}
-
-func TestModuleAuthorityRefusesAuthoredCompositionGroups(t *testing.T) {
-	for _, location := range []string{"configurations/prod", "modules/app/configurations/prod", "ambiguous", "empty"} {
-		for _, extension := range []string{".env", ".secret.env"} {
-			t.Run(location+extension, func(t *testing.T) {
-				workspace, env := workloadIdentityComposition(t)
-				// A composed module's own workspace is its configuration boundary.
-				for _, name := range []string{"app", "edge"} {
-					path := filepath.Join(workspace.Dir(), "modules", name, resources.WorkspaceConfigurationName)
-					require.NoError(t, os.WriteFile(path, []byte("name: "+name+"\nlayout: flat\n"), 0o600))
-				}
-				locations := []string{location}
-				if location == "ambiguous" {
-					locations = []string{"modules/app/configurations/prod", "modules/edge/configurations/prod"}
-				} else if location == "empty" {
-					locations = []string{"configurations/prod"}
-				}
-				for _, directory := range locations {
-					path := filepath.Join(workspace.Dir(), directory, "module-authority"+extension)
-					require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-					body := "PRINCIPAL=" + directory + "\n"
-					if location == "empty" {
-						body = ""
+func TestRenderRefusesAuthoredCompositionGroups(t *testing.T) {
+	for _, group := range []string{"workload-identity", "module-authority"} {
+		for _, location := range []string{"configurations/prod", "modules/app/configurations/prod", "ambiguous", "empty"} {
+			for _, extension := range []string{".env", ".secret.env"} {
+				t.Run(group+"/"+location+extension, func(t *testing.T) {
+					workspace, env := workloadIdentityComposition(t)
+					// A composed module's own workspace is its configuration boundary.
+					for name, service := range map[string]string{"app": "api", "edge": "gateway"} {
+						path := filepath.Join(workspace.Dir(), "modules", name, resources.WorkspaceConfigurationName)
+						require.NoError(t, os.WriteFile(path, []byte("name: "+name+"\nlayout: flat\n"), 0o600))
+						// Even an unconsumed file is refused, before any build starts.
+						path = filepath.Join(workspace.Dir(), "modules", name, "services", service, resources.ServiceConfigurationName)
+						require.NoError(t, os.WriteFile(path, []byte(hostedServiceYAML(service)), 0o600))
 					}
-					require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
-				}
-				module, err := workspace.LoadModuleFromName(t.Context(), "app")
-				require.NoError(t, err)
-				_, err = RenderModule(t.Context(), workspace, module, env, "example", nil)
-				require.ErrorContains(t, err, "owned by the render")
-				require.False(t, strings.Contains(err.Error(), "registry"), "refuse before builds")
-				require.ErrorContains(t, newModuleAuthorityLoader(workspace).Load(t.Context(), env.Runtime()), "owned by the render")
-			})
+					var err error
+					workspace, err = resources.LoadWorkspaceFromDir(t.Context(), workspace.Dir())
+					require.NoError(t, err)
+					locations := []string{location}
+					if location == "ambiguous" {
+						locations = []string{"modules/app/configurations/prod", "modules/edge/configurations/prod"}
+					} else if location == "empty" {
+						locations = []string{"configurations/prod"}
+					}
+					for _, directory := range locations {
+						path := filepath.Join(workspace.Dir(), directory, group+extension)
+						require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+						body := "PRINCIPAL=" + directory + "\n"
+						if location == "empty" {
+							body = ""
+						}
+						require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+					}
+					module, err := workspace.LoadModuleFromName(t.Context(), "app")
+					require.NoError(t, err)
+					_, err = RenderModule(t.Context(), workspace, module, env, "example", nil)
+					require.ErrorContains(t, err, "owned by the render")
+					require.False(t, strings.Contains(err.Error(), "registry"), "refuse before builds")
+					service, err := module.LoadServiceFromName(t.Context(), "api")
+					require.NoError(t, err)
+					_, err = RenderService(t.Context(), workspace, module, service, env, "example", false, nil)
+					require.ErrorContains(t, err, "owned by the render")
+				})
+			}
 		}
 	}
 }
