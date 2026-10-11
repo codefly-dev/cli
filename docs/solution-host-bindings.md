@@ -1027,6 +1027,28 @@ only to services declaring the group:
 | `MINT_PEERS_FILE` | `/etc/codefly/workload-peers/mint-peers` |
 | `GATEWAY_PEERS_FILE` | `/etc/codefly/workload-peers/gateway-peers` |
 
+Services declaring `module-authority` must also declare `workload-identity`.
+The render supplies this group per service, using the same resolved identity
+and composed module name as the presence document:
+
+| Key in `module-authority` | Rendered source |
+|---|---|
+| `PRINCIPAL` | The workload's SPIFFE ID |
+| `AUDIENCE` | The composed module's declared name |
+| `PROJECTION_AUDIENCE` | The environment's `host.audience` |
+| Secret `INTERNAL_TOKEN` | A reference to the existing `internal-auth` workspace secret `CODEFLY_INTERNAL_TOKEN` |
+
+Public values use `CODEFLY__WORKSPACE_CONFIGURATION__MODULE_AUTHORITY__<KEY>`
+in the service's bound ConfigMap. The secret uses
+`CODEFLY__WORKSPACE_SECRET_CONFIGURATION__MODULE_AUTHORITY__INTERNAL_TOKEN`
+with a `secretKeyRef` to
+`CODEFLY__WORKSPACE_SECRET_CONFIGURATION__INTERNAL_AUTH__CODEFLY_INTERNAL_TOKEN`
+in `secret-<service>`. The existing ExternalSecret projection delivers that
+key from the environment's service secret store; no token value is copied into
+the render. A missing workload identity, host audience or service secret store
+refuses the render. An authored `module-authority` group anywhere in the selected
+composition is also refused: the render is the sole source of these values.
+
 The local ECDSA P-256 CA lives in the TLS Secret
 `cert-manager/csi-driver-spiffe-ca`; its certificate is also published as
 `ca.pem` in `cert-manager/spiffe-trust-bundle`. The ClusterIssuer

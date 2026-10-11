@@ -5,14 +5,15 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/codefly-dev/cli/pkg/engine"
 	"github.com/codefly-dev/cli/pkg/internal/protocoltest"

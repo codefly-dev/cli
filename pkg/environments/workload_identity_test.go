@@ -81,3 +81,39 @@ func TestHostGatewayRequiredByExplicitConsumersAndMustExist(t *testing.T) {
 		})
 	}
 }
+
+func TestModuleAuthorityRequiresWorkloadIdentityAndHostAudience(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		identity bool
+		audience string
+		want     string
+	}{
+		{"missing identity", false, "mint", "must also declare workload-identity"},
+		{"missing audience", true, "", "requires host.audience"},
+		{"valid", true, "mint", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := identityWorkspace(t, "app/api", tc.identity)
+			path := filepath.Join(workspace.Dir(), "modules/app/services/api", resources.ServiceConfigurationName)
+			body, err := os.ReadFile(path)
+			require.NoError(t, err)
+			if !tc.identity {
+				body = append(body, []byte("workspace-configuration-dependencies:\n")...)
+			}
+			body = append(body, []byte("  - module-authority\n")...)
+			require.NoError(t, os.WriteFile(path, body, 0o600))
+			workspace, err = resources.LoadWorkspaceFromDir(t.Context(), workspace.Dir())
+			require.NoError(t, err)
+			env, err := Select(workspace, "prod")
+			require.NoError(t, err)
+			env.Host.Audience = tc.audience
+			_, err = WorkloadIdentityServices(t.Context(), workspace, env)
+			if tc.want == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, tc.want)
+			}
+		})
+	}
+}

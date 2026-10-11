@@ -12,6 +12,9 @@ import (
 // WorkloadIdentityConfiguration is the service opt-in to projected workload credentials.
 const WorkloadIdentityConfiguration = "workload-identity"
 
+// ModuleAuthorityConfiguration requests per-workload authority from the render.
+const ModuleAuthorityConfiguration = "module-authority"
+
 // WorkloadIdentityServices selects explicit consumers, never composition-root
 // inheritance, and validates the gateway against the same complete composition.
 func WorkloadIdentityServices(ctx context.Context, workspace *resources.Workspace, env *Environment) ([]*resources.ServiceWithModule, error) {
@@ -31,6 +34,14 @@ func WorkloadIdentityServices(ctx context.Context, workspace *resources.Workspac
 		service, err := workspace.LoadService(ctx, ref)
 		if err != nil {
 			return nil, err
+		}
+		if slices.Contains(service.WorkspaceConfigurationDependencies, ModuleAuthorityConfiguration) {
+			if !slices.Contains(service.WorkspaceConfigurationDependencies, WorkloadIdentityConfiguration) {
+				return nil, fmt.Errorf("service %s/%s declares module-authority but must also declare workload-identity", ref.Module, ref.Name)
+			}
+			if env.Host == nil || env.Host.Audience == "" {
+				return nil, fmt.Errorf("service %s/%s declares module-authority, which requires host.audience", ref.Module, ref.Name)
+			}
 		}
 		if slices.Contains(service.WorkspaceConfigurationDependencies, WorkloadIdentityConfiguration) {
 			if _, managed := env.ManagedService(ref.Module, ref.Name); managed {

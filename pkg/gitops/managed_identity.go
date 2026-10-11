@@ -15,6 +15,10 @@ import (
 )
 
 func projectServiceConfiguration(ctx context.Context, root string, service *resources.Service, env *environments.Environment, scope unitScope, injection serviceInjection) error {
+	injection, err := moduleAuthorityInjection(service, env, scope, injection)
+	if err != nil {
+		return err
+	}
 	if err := projectConfigurationValues(ctx, root, service.Name, env); err != nil {
 		return fmt.Errorf("project service %s configuration: %w", service.Name, err)
 	}
