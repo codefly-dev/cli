@@ -137,7 +137,7 @@ func TestHostDeclarationRefusesAPartialOrMalformedIdentity(t *testing.T) {
 func TestHostDevelopersAreALocalClustersAllowlist(t *testing.T) {
 	developers := "      developers:\n        - issuer: https://github.com/login/oauth\n          subject: dev@example.test\n"
 	local, err := resources.LoadFromBytes[resources.Workspace]([]byte(
-		"name: example\nenvironments:\n  - name: local\n    namespace: example\n    cluster:\n      kind: k3d\n    host:\n" + hostBlock + developers))
+		"name: example\nenvironments:\n  - name: local\n    namespace: example\n    cluster:\n      kind: k3d\n      context: k3d-dev\n    host:\n" + hostBlock + developers))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,6 +155,24 @@ func TestHostDevelopersAreALocalClustersAllowlist(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "only a local cluster's host admits") {
 		t.Fatalf("a hosted environment declaring developers was not refused: %v", err)
+	}
+	// The legacy reading takes an environment NAMED local with no cluster
+	// kind for k3d; a developer identity is never admitted on that reading —
+	// not with no cluster at all, not with a context that is not k3d's, not
+	// with the kind and no context.
+	for name, cluster := range map[string]string{
+		"no cluster":            "",
+		"a non-k3d context":     "    cluster:\n      context: gke-production\n",
+		"a kind and no context": "    cluster:\n      kind: k3d\n",
+	} {
+		legacy, loadErr := resources.LoadFromBytes[resources.Workspace]([]byte(
+			"name: example\nenvironments:\n  - name: local\n    namespace: example\n" + cluster + "    host:\n" + hostBlock + developers))
+		if loadErr == nil {
+			_, loadErr = Select(legacy, "local")
+		}
+		if loadErr == nil || !strings.Contains(loadErr.Error(), "only a local cluster's host admits") {
+			t.Errorf("%s: an environment named local that declares no k3d cluster admitted a developer: %v", name, loadErr)
+		}
 	}
 	anchored, err := resources.LoadFromBytes[resources.Workspace]([]byte(
 		"name: example\nenvironments:\n  - name: prod\n    namespace: example\n    cluster:\n      kind: gke\n    host:\n" + hostBlock + "      trust_anchor: /etc/host/delivery-trust\n"))

@@ -118,13 +118,16 @@ func (env *Environment) Validate() error {
 	// A developer identity is a local host's allowlist entry. A deployed host
 	// refuses it anyway, by its own allowlist; refusing it here keeps a
 	// developer's identity out of every manifest a hosted environment renders.
-	if env.Host != nil && len(env.Host.Developers) > 0 && !env.IsK3d() {
-		return fmt.Errorf("environment %s declares host.developers, which only a local cluster's host admits; a deployed host accepts carriers from its release workflow (host.release) and nothing else", env.Name)
+	// Both are a DECLARED local k3d cluster's alone (cluster.kind: k3d and a
+	// k3d-… context, written): the name "local" with no cluster declared is
+	// not one, whatever IsK3d's legacy reading says.
+	if env.Host != nil && len(env.Host.Developers) > 0 && !env.DeclaresLocalK3d() {
+		return fmt.Errorf("environment %s declares host.developers, which only a local cluster's host admits; declare the cluster it runs on (cluster.kind: k3d, cluster.context: k3d-<name>) — a deployed host accepts carriers from its release workflow (host.release) and nothing else", env.Name)
 	}
 	// The trust anchor a deployed host reads is mounted by its cell's
 	// platform; only a local cluster run mounts one it provisioned.
-	if env.Host != nil && env.Host.TrustAnchor != "" && !env.IsK3d() {
-		return fmt.Errorf("environment %s declares host.trust_anchor, which only a local cluster run mounts; a deployed host's trust anchor is its platform's", env.Name)
+	if env.Host != nil && env.Host.TrustAnchor != "" && !env.DeclaresLocalK3d() {
+		return fmt.Errorf("environment %s declares host.trust_anchor, which only a local cluster run mounts; declare the cluster it runs on (cluster.kind: k3d, cluster.context: k3d-<name>) — a deployed host's trust anchor is its platform's", env.Name)
 	}
 	if err := env.validateServiceKeyCollisions(); err != nil {
 		return err

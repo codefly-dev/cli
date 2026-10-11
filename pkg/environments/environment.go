@@ -1311,6 +1311,18 @@ func LocalEnvironment() *Environment {
 	}
 }
 
+// DeclaresLocalK3d reports whether the environment DECLARES a local k3d
+// cluster: cluster.kind k3d and a k3d context, both written. It is the gate
+// for everything a developer's own cluster may do that a deployed one may
+// not — admitting a developer identity, mounting a local trust anchor,
+// self-promoting a signed publish — and so, unlike IsK3d, it never reads an
+// undeclared environment named "local" as k3d: omitting a field must narrow
+// what an environment may do, never widen it.
+func (env *Environment) DeclaresLocalK3d() bool {
+	return env != nil && env.Cluster != nil && env.Cluster.Kind == ClusterKindK3d &&
+		strings.HasPrefix(env.Cluster.Context, "k3d-") && len(env.Cluster.Context) > len("k3d-")
+}
+
 // IsK3d reports whether the environment targets a k3d cluster. Used to
 // decide whether to import freshly-built images into the cluster
 // (k3d-only — EKS/GKE pull from a registry instead).

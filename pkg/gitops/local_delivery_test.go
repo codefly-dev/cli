@@ -33,6 +33,13 @@ func developerPublishWorkspace(t *testing.T) (context.Context, *resources.Worksp
 	if withDeveloper == string(config) {
 		t.Fatal("the fixture's host block was not found")
 	}
+	// A developer signs only for a DECLARED local cluster: kind and context.
+	cluster := "  - name: production\n    namespace: payments\n    cluster:\n      kind: k3d\n"
+	declared := strings.Replace(withDeveloper, cluster, cluster+"      context: k3d-dev\n", 1)
+	if declared == withDeveloper {
+		t.Fatal("the fixture's cluster block was not found")
+	}
+	withDeveloper = declared
 	if err = os.WriteFile(path, []byte(withDeveloper), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -339,6 +346,23 @@ func TestOnlyADeveloperSignedLocalPublishSelfPromotes(t *testing.T) {
 	if !(&deliveryPublication{local: true}).selfPromotes(env) {
 		t.Fatal("a developer-signed local publish would not promote itself")
 	}
+	// The legacy reading (an environment NAMED local, no cluster kind) is
+	// never a local cluster here: not for promotion, not for signing.
+	developers := []environments.HostDeveloper{{Issuer: "https://github.com/login/oauth", Subject: "dev@example.test"}}
+	for name, cluster := range map[string]*environments.EnvironmentCluster{
+		"no cluster":            nil,
+		"a non-k3d context":     {Context: "gke-production"},
+		"a kind and no context": {Kind: environments.ClusterKindK3d},
+	} {
+		legacy := &environments.Environment{Name: "local", Cluster: cluster, Host: &environments.EnvironmentHost{Developers: developers}}
+		publication := &deliveryPublication{local: true}
+		if publication.selfPromotes(legacy) {
+			t.Errorf("%s: an undeclared cluster would self-promote", name)
+		}
+		if err := publication.signAsDeveloper(legacy); err == nil || !strings.Contains(err.Error(), "declares no local k3d cluster") {
+			t.Errorf("%s: an undeclared cluster would sign as a developer: %v", name, err)
+		}
+	}
 }
 
 // TestDeliveryReceiptsAreTheJobsAnswers: a run reports what the host answered
@@ -355,5 +379,89 @@ func TestDeliveryReceiptsAreTheJobsAnswers(t *testing.T) {
 	got := DeliveryReceipts(log)
 	if len(got) != 4 || !strings.HasPrefix(got[0], "delivered a.json") || !strings.HasPrefix(got[1], "refused b.json") || !strings.HasPrefix(got[2], "giving up on c.json") || !strings.HasPrefix(got[3], "delivered 1 document(s)") {
 		t.Fatalf("receipts %q", got)
+	}
+}
+
+// TestALocalPromotionAdvancesTheDeclaredRepositoryWhateverGitIsConfiguredToDo
+// is the attack: ambient git configuration rewrites the declared file:// URL
+// (insteadOf, pushInsteadOf, injected through GIT_CONFIG_* the way any global
+// configuration would) to ANOTHER repository. The promotion acts on the
+// declared repository directly, through no configuration but its own: the
+// declared base advances to the signed commit, the rewritten destination's
+// base never moves.
+func TestALocalPromotionAdvancesTheDeclaredRepositoryWhateverGitIsConfiguredToDo(t *testing.T) {
+	for _, rewrite := range []string{"insteadOf", "pushInsteadOf"} {
+		t.Run(rewrite, func(t *testing.T) {
+			ctx, workspace, declared := developerPublishWorkspace(t)
+			installDeveloperSigning(t, &developerSigning{signer: &fakeSigner{nonce: true}})
+			redirected := filepath.Join(t.TempDir(), "other.git")
+			gitRun(t, "", "clone", "--quiet", "--bare", declared, redirected)
+			before := gitOutput(t, "", "--git-dir", declared, "rev-parse", "main")
+			count, _ := strconv.Atoi(os.Getenv("GIT_CONFIG_COUNT"))
+			t.Setenv("GIT_CONFIG_COUNT", strconv.Itoa(count+1))
+			t.Setenv(fmt.Sprintf("GIT_CONFIG_KEY_%d", count), "url.file://"+redirected+"."+rewrite)
+			t.Setenv(fmt.Sprintf("GIT_CONFIG_VALUE_%d", count), "file://"+declared)
+
+			request := PublishRequest{Module: "payments", Environment: "production", Local: true}
+			plan, err := PlanPublish(ctx, workspace, &request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers}, preparedPermit)
+			// Whatever the publish concludes, the rewritten destination's base
+			// never moves, and a promotion it reports is the declared base.
+			if got := gitOutput(t, "", "--git-dir", redirected, "rev-parse", "main"); got != before {
+				t.Fatalf("the rewritten destination's base moved from %s to %s", before, got)
+			}
+			switch rewrite {
+			case "insteadOf":
+				// Every read and write is rewritten alike, so the publish
+				// completes — and the promotion lands in the declared repository.
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := gitOutput(t, "", "--git-dir", declared, "rev-parse", "main"); !result.Promoted || got != result.Commit {
+					t.Fatalf("the declared repository's base is %s, want the promoted %s (promoted=%v)", got, result.Commit, result.Promoted)
+				}
+			case "pushInsteadOf":
+				// Writes go elsewhere than reads: the publish's own read-back
+				// of what it pushed fails, before any promotion.
+				if err == nil {
+					t.Fatal("a publish whose pushes were redirected away from the declared repository succeeded")
+				}
+				if got := gitOutput(t, "", "--git-dir", declared, "rev-parse", "main"); got != before {
+					t.Fatalf("the declared base moved from %s to %s on a refused publish", before, got)
+				}
+			}
+		})
+	}
+}
+
+// TestALocalPromotionIsACompareAndSwapOnTheSettledBase: the base ref moves
+// only from the base the plan settled its generations against. A base that
+// moved in between — another promotion — refuses this one, and the other's
+// commit stays.
+func TestALocalPromotionIsACompareAndSwapOnTheSettledBase(t *testing.T) {
+	ctx, workspace, declared := developerPublishWorkspace(t)
+	installDeveloperSigning(t, &developerSigning{signer: &fakeSigner{nonce: true}})
+	request := PublishRequest{Module: "payments", Environment: "production", Local: true, PromotionBranch: "codefly/promote-payments-production"}
+	prepared, err := preparePublish(ctx, workspace, &request, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prepared.cleanup()
+	gitRun(t, prepared.dir, "-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "--quiet", "--allow-empty", "-m", "promotion")
+	commit := gitOutput(t, prepared.dir, "rev-parse", "HEAD")
+	// Another promotion lands first.
+	other := filepath.Join(t.TempDir(), "other")
+	gitRun(t, "", "clone", "--quiet", declared, other)
+	gitRun(t, other, "-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "--quiet", "--allow-empty", "-m", "the other promotion")
+	gitRun(t, other, "push", "--quiet", "origin", "HEAD:main")
+	landed := gitOutput(t, "", "--git-dir", declared, "rev-parse", "main")
+	if err = promoteLocally(ctx, prepared, commit); err == nil || !strings.Contains(err.Error(), "base moved") {
+		t.Fatalf("a promotion over a base that moved was not refused: %v", err)
+	}
+	if got := gitOutput(t, "", "--git-dir", declared, "rev-parse", "main"); got != landed {
+		t.Fatalf("the other promotion %s was overwritten by %s", landed, got)
 	}
 }

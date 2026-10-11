@@ -123,18 +123,57 @@ func TestEveryWorkloadAHostAdmitsProjectsItsIdentityToken(t *testing.T) {
 	}
 }
 
-// TestAWorkloadThatAlreadyProjectsTheTokenIsLeftAsItIs: an agent that
-// projects the host-audience token itself keeps its own projection; the
-// render adds no second one.
-func TestAWorkloadThatAlreadyProjectsTheTokenIsLeftAsItIs(t *testing.T) {
-	own := strings.Replace(pinnedDeployment, "      containers:\n", "      volumes:\n        - name: own-token\n          projected:\n            sources:\n              - serviceAccountToken:\n                  audience: accounts\n                  path: token\n      containers:\n", 1)
-	own += "          volumeMounts:\n            - name: own-token\n              mountPath: /var/run/secrets/own\n"
-	destination := filepath.Join(t.TempDir(), "modules", "crm")
-	if _, err := RenderOwnedTree(context.Background(), solutionRenderOptions(destination), kustomizedWorkload(own)); err != nil {
+// withTokenMount is pinnedDeployment whose api container mounts a projected
+// token for audience at mountPath, the token at file inside the volume, with
+// subPath when set.
+func withTokenMount(audience, mountPath, file, subPath string) string {
+	body := strings.Replace(pinnedDeployment, "      containers:\n", "      volumes:\n        - name: own-token\n          projected:\n            sources:\n              - serviceAccountToken:\n                  audience: "+audience+"\n                  path: "+file+"\n      containers:\n", 1)
+	body += "          volumeMounts:\n            - name: own-token\n              mountPath: " + mountPath + "\n"
+	if subPath != "" {
+		body += "              subPath: " + subPath + "\n"
+	}
+	return body
+}
+
+// TestAnExistingTokenIsReusedOnlyWhereTheSDKReadsIt: the render reuses a
+// workload's own projection only when it provides the rotating host-audience
+// token at exactly the SDK's path. Anywhere else, ours is added beside it; a
+// mount that occupies the path with something else — another audience, a
+// subPath (never refreshed, so the token stops rotating), another volume — is
+// refused with what is there, since adding ours would shadow it or be
+// shadowed.
+func TestAnExistingTokenIsReusedOnlyWhereTheSDKReadsIt(t *testing.T) {
+	render := func(t *testing.T, body string) (string, error) {
+		t.Helper()
+		destination := filepath.Join(t.TempDir(), "modules", "crm")
+		_, err := RenderOwnedTree(context.Background(), solutionRenderOptions(destination), kustomizedWorkload(body))
+		return destination, err
+	}
+	destination, err := render(t, withTokenMount("accounts", "/var/run/secrets/codefly", "token", ""))
+	if err != nil {
 		t.Fatal(err)
 	}
 	if volume, _ := renderedVolume(t, destination, identityTokenVolume); volume != nil {
-		t.Fatal("a second identity token was projected beside the agent's own")
+		t.Fatal("a second token was projected beside one already at the SDK's path")
+	}
+
+	destination, err = render(t, withTokenMount("accounts", "/var/run/secrets/own", "token", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if volume, mounts := renderedVolume(t, destination, identityTokenVolume); volume == nil || mounts["api"][0]["mountPath"] != identityTokenMount {
+		t.Fatalf("a token elsewhere suppressed the one at the SDK's path: %v %v", volume, mounts)
+	}
+
+	for name, body := range map[string]string{
+		"a subPath mount of the token": withTokenMount("accounts", "/var/run/secrets/codefly/token", "token", "token"),
+		"another audience at the path": withTokenMount("other", "/var/run/secrets/codefly", "token", ""),
+		"another volume at the path":   withTokenMount("accounts", "/var/run/secrets/codefly", "jwt", ""),
+		"a volume above the path":      withTokenMount("accounts", "/var/run/secrets", "token", ""),
+	} {
+		if _, err = render(t, body); err == nil || !strings.Contains(err.Error(), "/var/run/secrets/codefly/token") {
+			t.Errorf("%s: not refused with the path it occupies: %v", name, err)
+		}
 	}
 }
 

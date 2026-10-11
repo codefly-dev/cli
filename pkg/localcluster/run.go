@@ -53,9 +53,12 @@ type Driver interface {
 
 // Delivery is what one delivery Job answered.
 type Delivery struct {
-	Job       gitops.DeliveryJob `json:"job"`
-	Succeeded bool               `json:"succeeded"`
-	Receipts  []string           `json:"receipts"`
+	Job gitops.DeliveryJob `json:"job"`
+	// Attempt is the UID of the Job attempt this run read: never one that
+	// existed before the run delivered.
+	Attempt   string   `json:"attempt"`
+	Succeeded bool     `json:"succeeded"`
+	Receipts  []string `json:"receipts"`
 }
 
 // Report is what a run did.
@@ -76,7 +79,7 @@ func Check(env *environments.Environment) error {
 	if env == nil {
 		return fmt.Errorf("an environment is required")
 	}
-	if env.Cluster == nil || env.Cluster.Kind != environments.ClusterKindK3d || strings.TrimSpace(env.Cluster.Context) == "" {
+	if !env.DeclaresLocalK3d() {
 		return fmt.Errorf("environment %s does not declare a k3d cluster with its context (cluster.kind: k3d, cluster.context: k3d-<name>); a local cluster run takes a composition onto a developer's k3d cluster only", env.Name)
 	}
 	if env.Host == nil {

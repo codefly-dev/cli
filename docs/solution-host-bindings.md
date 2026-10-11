@@ -68,8 +68,15 @@ independently; a hosted environment that states no `release` cannot be
 released to. It is optional in the schema only because a `--local` publish
 never signs under it.
 
-A **k3d** environment — and only one: any other environment declaring it is
-refused at load — may also list the developers its local host admits:
+A **declared local k3d** environment — `cluster.kind: k3d` and a
+`cluster.context` of `k3d-<name>`, both written, and only such an environment:
+any other declaring it is refused at load — may also list the developers its
+local host admits. (The legacy reading that takes an undeclared environment
+NAMED `local` for k3d never applies here, nor to self-promotion or the local
+trust anchor: omitting a field must narrow what an environment may do, never
+widen it. That reading survives only where nothing is admitted on it — the
+unsigned `publish --local` qualification guard and the observe path, and the
+fetch remote, which requires a `k3d-` context of its own.)
 
 ```yaml
     host:
@@ -186,8 +193,12 @@ for the same reason.
 Every serving workload a presence document declares **projects a
 ServiceAccount token minted for the host's audience** into its authenticating
 container, read-only, at `/var/run/secrets/codefly/token` — the path the SDK's
-mint client reads — unless that container already mounts one for the
-audience. The render writes it as a patch in the unit's environment overlay
+mint client reads — unless that container already provides exactly that: a
+projected token for the audience whose file lands at that path, mounted
+without `subPath` (a `subPath` mount is never refreshed, so the token would
+stop rotating). A container whose mounts occupy that path otherwise — another
+volume at or above it, another audience, a `subPath` mount — is refused, with
+what it mounts there; a token for the audience elsewhere does not stand in. The render writes it as a patch in the unit's environment overlay
 (into the manifests of an overlay that has no kustomization), before presence
 digests the unit, so the projection is part of the bytes the document pins.
 It is how the pod proves who it is when it mints: the host reviews the token
@@ -905,9 +916,11 @@ receipts:
 
 1. **The platform's prerequisites, locally.** Argo CD, installed into the
    cluster when it does not serve the ApplicationSet API yet — the one
-   installer (`deployments.InstallArgoCD`, the release the k3d qualification
-   pins) the qualification tests use too; an Argo CD already there is used as
-   it is. And the `platform-authority` namespace with its `delivery`
+   installer (`deployments.InstallArgoCD`) the k3d qualification uses too, of
+   v3.4.1 pinned by what cannot move: the manifest at the commit the tag names,
+   its SHA-256 verified before anything is applied, and every image it runs
+   rewritten to its digest (an image no digest pins refuses the install). An
+   Argo CD already there is used as it is. And the `platform-authority` namespace with its `delivery`
    ServiceAccount (no default token mounted), which a cell's platform
    provides and the rendered tree cannot: the authority AppProject admits
    ConfigMaps and Jobs there and nothing else. The modules' namespaces, which
@@ -939,9 +952,15 @@ receipts:
    the `delivery` ServiceAccount, each POSTing to
    `/platform/_delivery/{presence,authority}` with a projected token for the
    host's audience, so the host's TokenReview, signer policy and idempotency
-   run locally exactly as in a cell. The run prints each document's answer
-   (delivered with the host's receipt, refused with its verdict, given up on)
-   and fails when any was refused.
+   run locally exactly as in a cell. The run reads **its own** attempt of each
+   Job: an unchanged carrier set keeps the Job's name, so the attempt that
+   existed before the run (an earlier run's, finished or not) is recorded
+   first, its Application is asked for a fresh sync (the Sync hook runs again,
+   a new Job with a new UID), and the answer is the attempt whose UID is not
+   the recorded one, read from that attempt's own pods. It prints each
+   document's answer (delivered with the host's receipt, refused with its
+   verdict, given up on) and fails when any was refused; an attempt that never
+   appears is a timeout, never an earlier success.
 
 The environment declares `cluster.kind: k3d` and `cluster.context` (the legacy
 reading that an undeclared local environment is k3d never selects a cluster to
@@ -962,8 +981,17 @@ reason is the generation: a publish settles generations against the base
 branch, the one record of what was delivered, and a base branch that never
 moves would settle every rebuild at generation 1 with other content — a
 rewrite the host refuses. Promoted, a rebuilt module lands at generation 2
-with its new digest, the next at 3. The promotion is never forced and never
-reaches a hosted repository: a promotion branch the base has moved past
+with its new digest, the next at 3. The promotion acts on the declared local
+repository **directly**, never through a push: the environment's `file://`
+repository is resolved to its path and changed by a git that reads no
+configuration but that repository's own (no global or system configuration,
+no `GIT_*` variable of the process, the file transport only), so no
+`insteadOf` or `pushInsteadOf` can send it elsewhere. The signed commit is
+fetched into it from the publication checkout, held to descend from the base
+the plan settled against, and the base ref is moved by a compare-and-swap on
+that base — a promotion that landed in between refuses this one rather than
+being overwritten — then read back from that repository. It is never forced
+and never reaches a hosted repository: a promotion branch the base has moved past
 (another module's promotion since) starts again from the base, one that
 diverged from it is refused by name, and the base branch of a non-k3d
 environment — or of a local one whose host lists no developer — moves only by
@@ -1009,9 +1037,14 @@ at that path: one projected volume whose only sources are the two objects,
 keys not remapped, read-only — the shape a cell's admission pins a verifier to.
 The host proves the binding at boot (the CA in its projected bundle, and a TLS
 handshake to its API server with that CA alone), so a profile copied to any
-other cluster refuses the boot. Every run recomputes the fingerprint and
-re-writes the anchor; when it changed — a recreated cluster, a changed
-developer list — the run restarts the workloads that mount it.
+other cluster refuses the boot. Every run recomputes the fingerprint,
+re-writes the anchor, and **reconciles** every Deployment, StatefulSet and
+DaemonSet that mounts it: the digest of both objects' contents is stamped on
+its pod template (`codefly.dev/trust-anchor`) when it differs, and its rollout
+is awaited. Convergence is read from the workloads, never from what an apply
+reported, so a stamp or rollout that failed — after a developer was removed,
+say — is retried by the next run until the running pods started on the anchor
+in force.
 
 **What the host itself must still be configured with** (its own local
 configuration, not the trust anchor): its solution-host coordinate equal to

@@ -618,7 +618,7 @@ func installArgoCD(t *testing.T, kubeconfig string) {
 		out, err := command.CombinedOutput()
 		return string(out), err
 	}
-	if err := deployments.InstallArgoCD(context.Background(), kubectl); err != nil {
+	if err := deployments.InstallArgoCD(context.Background(), kubectl, nil); err != nil {
 		t.Fatal(err)
 	}
 }

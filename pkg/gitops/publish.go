@@ -369,6 +369,12 @@ func (p *deliveryPublication) signAsDeveloper(env *environments.Environment) err
 	if !p.local || len(env.Host.Developers) == 0 {
 		return nil
 	}
+	// Workspace validation already refuses developers anywhere else; this is
+	// the signer's own gate, so a path that skipped validation still cannot
+	// sign as a developer for an undeclared cluster.
+	if !env.DeclaresLocalK3d() {
+		return fmt.Errorf("environment %s lists host.developers but declares no local k3d cluster (cluster.kind: k3d, cluster.context: k3d-<name>); a developer signs only for a declared local cluster", env.Name)
+	}
 	p.options.AllowUnsigned = false
 	policy := &signing.DeveloperPolicy{}
 	for _, developer := range env.Host.Developers {
@@ -401,7 +407,7 @@ func (p *deliveryPublication) signAsDeveloper(env *environments.Environment) err
 // rewrite. A non-local publish, or a local one to a host listing no
 // developer, keeps the review: its base branch moves only by a merge.
 func (p *deliveryPublication) selfPromotes(env *environments.Environment) bool {
-	return p.local && env.IsK3d() && env.Host != nil && len(env.Host.Developers) > 0
+	return p.local && env.DeclaresLocalK3d() && env.Host != nil && len(env.Host.Developers) > 0
 }
 
 // addressHost points the publication at the environment's host: the delivery
@@ -1698,10 +1704,24 @@ func gitIsAncestor(ctx context.Context, repo, ancestor, descendant string) bool 
 }
 
 // promoteLocally is the local promotion a self-promoting plan makes once its
-// signed commit is pushed: it fast-forwards the local delivery repository's
-// base branch to that commit — never forced, never a hosted repository, and
-// only for a delivery that is signed (or declares no document at all), since
-// the developer's checked signature is the approval.
+// signed commit is pushed: it fast-forwards the base branch of the local
+// delivery repository the environment declares to that commit — that exact
+// repository on disk, never a hosted one, never forced — and only for a
+// delivery that is signed (or declares no document at all), since the
+// developer's checked signature is the approval.
+//
+// It does not push through "origin": a push resolves its destination through
+// whatever git configuration is in force (url.<base>.insteadOf and
+// pushInsteadOf from the global, system or GIT_CONFIG_* environment
+// configuration), and a rewritten destination would be advanced without
+// review while the declared one stayed put. So the declared repository is
+// resolved to its path and acted on DIRECTLY, by a git that reads no
+// configuration but that repository's own (isolatedGit): the commit is
+// fetched into it from the publication checkout, held to descend from the
+// base the plan settled against, and the base ref is moved by a
+// compare-and-swap on that base — a concurrent promotion between the plan and
+// this step fails it rather than being overwritten — then read back from that
+// same repository.
 func promoteLocally(ctx context.Context, prepared *preparedRepository, commit string) error {
 	plan := &prepared.plan
 	if plan.RepositorySlug != "" {
@@ -1710,18 +1730,78 @@ func promoteLocally(ctx context.Context, prepared *preparedRepository, commit st
 	if plan.Delivery != nil && len(plan.Delivery.Documents) > 0 && !plan.Delivery.Signed {
 		return fmt.Errorf("a local promotion is the developer's signed publish, and this delivery is unsigned; nothing is promoted")
 	}
-	refspec := commit + ":refs/heads/" + plan.BaseBranch
-	if _, err := gitCommand(ctx, prepared.dir, "push", "--porcelain", "--", "origin", refspec); err != nil {
-		return fmt.Errorf("fast-forward the local base branch %s to %s (never forced): %w", plan.BaseBranch, commit, err)
-	}
-	remote, err := gitCommand(ctx, prepared.dir, "ls-remote", "--exit-code", "--refs", "origin", "refs/heads/"+plan.BaseBranch)
+	repository, err := localRepositoryPath(ctx, plan.Repository)
 	if err != nil {
-		return fmt.Errorf("verify the local base branch: %w", err)
+		return err
 	}
-	if fields := strings.Fields(remote); len(fields) < 2 || fields[0] != commit {
-		return fmt.Errorf("local base branch %s resolved to %q after promotion, expected %s", plan.BaseBranch, remote, commit)
+	if _, err = isolatedGit(ctx, repository, "fetch", "--no-tags", "--quiet", prepared.dir, "refs/heads/"+plan.PromotionBranch); err != nil {
+		return fmt.Errorf("bring the promotion commit into the local delivery repository %s: %w", repository, err)
+	}
+	fetched, err := isolatedGit(ctx, repository, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
+	if err != nil || fetched != commit {
+		return fmt.Errorf("the publication checkout's promotion branch is %q, not the signed commit %s; nothing is promoted (%v)", fetched, commit, err)
+	}
+	if _, err = isolatedGit(ctx, repository, "merge-base", "--is-ancestor", plan.BaseRevision, commit); err != nil {
+		return fmt.Errorf("the signed commit %s does not descend from the base %s the plan settled against; a local promotion only fast-forwards", commit, plan.BaseRevision)
+	}
+	ref := "refs/heads/" + plan.BaseBranch
+	if _, err = isolatedGit(ctx, repository, "update-ref", "-m", "codefly: local promotion of a developer-signed publish", ref, commit, plan.BaseRevision); err != nil {
+		return fmt.Errorf("fast-forward %s in %s from %s to %s (the base moved since the plan settled against it, or the ref is locked): %w", ref, repository, plan.BaseRevision, commit, err)
+	}
+	moved, err := isolatedGit(ctx, repository, "rev-parse", "--verify", ref+"^{commit}")
+	if err != nil || moved != commit {
+		return fmt.Errorf("the local base branch %s in %s reads %q after promotion, expected %s (%v)", plan.BaseBranch, repository, moved, commit, err)
 	}
 	return nil
+}
+
+// localRepositoryPath resolves the declared local delivery repository —
+// a file:// URL or an absolute path — to the bare repository on disk.
+func localRepositoryPath(ctx context.Context, declared string) (string, error) {
+	path := declared
+	if strings.Contains(declared, "://") {
+		parsed, err := url.Parse(declared)
+		if err != nil || parsed.Scheme != "file" || parsed.Host != "" && parsed.Host != "localhost" {
+			return "", fmt.Errorf("a local promotion acts on a repository on this machine, and %q is not a file:// URL", declared)
+		}
+		path = parsed.Path
+	}
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("the local delivery repository %q is not an absolute path", declared)
+	}
+	path = filepath.Clean(path)
+	bare, err := isolatedGit(ctx, path, "rev-parse", "--is-bare-repository")
+	if err != nil || bare != "true" {
+		return "", fmt.Errorf("the local delivery repository %s is not a bare git repository (%v)", path, err)
+	}
+	return path, nil
+}
+
+// isolatedGit runs git against one repository with no configuration but that
+// repository's own: no global or system configuration, no GIT_* variable from
+// this process (GIT_CONFIG_COUNT/KEY/VALUE and GIT_CONFIG_PARAMETERS inject
+// configuration; GIT_DIR and friends redirect it), no prompt, and file the
+// only transport it may use.
+func isolatedGit(ctx context.Context, repository string, args ...string) (string, error) {
+	full := append([]string{"-c", "protocol.allow=never", "-c", "protocol.file.allow=always", "--git-dir", repository}, args...)
+	cmd := exec.CommandContext(ctx, "git", full...)
+	cmd.Dir = repository
+	for _, variable := range os.Environ() {
+		if !strings.HasPrefix(variable, "GIT_") {
+			cmd.Env = append(cmd.Env, variable)
+		}
+	}
+	cmd.Env = append(cmd.Env, "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
+	}
+	return strings.TrimSpace(stdout.String()), nil
 }
 
 func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepared *preparedRepository, request *PublishRequest) (PublishResult, error) {

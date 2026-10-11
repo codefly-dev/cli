@@ -27,6 +27,9 @@ import (
 const (
 	TrustedRootFile        = "trusted_root.json"
 	VerificationPolicyFile = "verification_policy.json"
+
+	// keyMetadata is a manifest's metadata key.
+	keyMetadata = "metadata"
 )
 
 // ClusterCAFingerprint is the lowercase hex SHA-256 of the DER of the
@@ -124,15 +127,15 @@ func TrustAnchorManifest(namespace string, policy, trustedRoot []byte) (string, 
 	labels := map[string]string{"app.kubernetes.io/managed-by": "codefly-local-cluster-run"}
 	configMap, err := json.Marshal(map[string]any{
 		"apiVersion": "v1", "kind": "ConfigMap",
-		"metadata": metadata{Name: gitops.LocalTrustAnchorObjects, Namespace: namespace, Labels: labels},
-		"data":     map[string]string{VerificationPolicyFile: string(policy)},
+		keyMetadata: metadata{Name: gitops.LocalTrustAnchorObjects, Namespace: namespace, Labels: labels},
+		"data":      map[string]string{VerificationPolicyFile: string(policy)},
 	})
 	if err != nil {
 		return "", err
 	}
 	secret, err := json.Marshal(map[string]any{
 		"apiVersion": "v1", "kind": "Secret", "type": "Opaque",
-		"metadata":   metadata{Name: gitops.LocalTrustAnchorObjects, Namespace: namespace, Labels: labels},
+		keyMetadata:  metadata{Name: gitops.LocalTrustAnchorObjects, Namespace: namespace, Labels: labels},
 		"stringData": map[string]string{TrustedRootFile: string(trustedRoot)},
 	})
 	if err != nil {

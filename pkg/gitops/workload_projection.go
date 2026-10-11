@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -91,7 +92,11 @@ func projectIdentityToken(owned string, opts *RenderOptions, unit SolutionArtifa
 		if err != nil {
 			return fmt.Errorf("workload %s: %w", workload.Name, err)
 		}
-		if mountsAudience(workload, container.Name, opts.Host.Audience) {
+		provided, err := providesIdentityToken(workload, container.Name, opts.Host.Audience)
+		if err != nil {
+			return fmt.Errorf("workload %s: %w", workload.Name, err)
+		}
+		if provided {
 			continue
 		}
 		volume := projectedVolume(identityTokenVolume, map[string]any{"serviceAccountToken": map[string]any{
@@ -109,7 +114,7 @@ func projectIdentityToken(owned string, opts *RenderOptions, unit SolutionArtifa
 // projectTrustAnchor mounts the local trust anchor into the verifier, on a
 // k3d environment that declares the host's trust-anchor path.
 func projectTrustAnchor(owned string, opts *RenderOptions) error {
-	if opts.Target == nil || opts.Target.Cluster == nil || opts.Target.Cluster.Kind != clusterKindK3D || opts.Host.TrustAnchor == "" {
+	if !opts.Target.DeclaresLocalK3d() || opts.Host.TrustAnchor == "" {
 		return nil
 	}
 	module, service, _ := opts.Host.DeliveryEndpoint()
@@ -157,14 +162,27 @@ func servingKind(kind string) bool {
 	return kind == kindDeployment || kind == kindStatefulSet || kind == kindDaemonSet
 }
 
-// mountsAudience reports whether the container mounts a token for audience.
-func mountsAudience(workload *renderedWorkload, container, audience string) bool {
+// providesIdentityToken reports whether the container already has the
+// rotating host-audience token at exactly the path the SDK reads: a projected
+// token for the audience, mounted without subPath (a subPath mount is never
+// refreshed, so the token would stop rotating), landing at that file. A
+// container whose mounts occupy that path otherwise — another volume at or
+// above it, a token for another audience, a subPath mount — is refused with
+// what it mounts there: adding ours beside it would shadow it or be shadowed.
+func providesIdentityToken(workload *renderedWorkload, container, audience string) (bool, error) {
+	required := path.Join(identityTokenMount, identityTokenFile)
 	for _, mount := range workload.tokenMounts[container] {
-		if mount.audience == audience {
-			return true
+		if mount.audience == audience && mount.file == required && !mount.subPathed {
+			return true, nil
 		}
 	}
-	return false
+	for _, mounted := range workload.mountPaths[container] {
+		cleaned := path.Clean(mounted)
+		if cleaned == identityTokenMount || cleaned == required || strings.HasPrefix(identityTokenMount, cleaned+"/") || strings.HasPrefix(cleaned, identityTokenMount+"/") {
+			return false, fmt.Errorf("container %s mounts something at %s, where the render projects the %q token the SDK reads at %s (a projected serviceAccountToken for audience %q at that file, mounted without subPath); mount it exactly so, or move what is there", container, mounted, audience, required, audience)
+		}
+	}
+	return false, nil
 }
 
 // projectedVolume is a pod volume projecting the sources, keys not remapped.
