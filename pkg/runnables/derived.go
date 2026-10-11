@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	runnablev0 "github.com/codefly-dev/core/generated/go/codefly/runnable/v0"
 	"github.com/codefly-dev/core/resources"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -158,6 +159,63 @@ type Operation struct {
 	// derived before this field existed therefore fails to prepare, by name,
 	// instead of being prepared as something the owner never declared.
 	Completion string `json:"completion"`
+	// Keep Core's metadata types: these are owner declarations, not a CLI
+	// policy vocabulary. Slots remain unresolved until the composition binds.
+	Tool               *runnablev0.ToolExposure `json:"tool,omitempty"`
+	RequiredScopeSlots []*runnablev0.ScopeSlot  `json:"required_scope_slots,omitempty"`
+}
+
+// operationJSON preserves the existing document's scalar spellings and order,
+// while Core message fields use protobuf JSON (named enums, strict reads).
+// The alias suppresses recursion through MarshalJSON/UnmarshalJSON.
+type operationAlias Operation
+type operationJSON struct {
+	*operationAlias
+	Tool               json.RawMessage   `json:"tool,omitempty"`
+	RequiredScopeSlots []json.RawMessage `json:"required_scope_slots,omitempty"`
+}
+
+// A value receiver also protects callers encoding an Operation value.
+func (o Operation) MarshalJSON() ([]byte, error) { //nolint:gocritic // Both values and pointers must use protobuf JSON, rather than Go struct tags.
+	document := operationJSON{operationAlias: (*operationAlias)(&o)}
+	if o.Tool != nil {
+		data, err := CanonicalJSON(o.Tool)
+		if err != nil {
+			return nil, err
+		}
+		document.Tool = data
+	}
+	for _, slot := range o.RequiredScopeSlots {
+		data, err := CanonicalJSON(slot)
+		if err != nil {
+			return nil, err
+		}
+		document.RequiredScopeSlots = append(document.RequiredScopeSlots, data)
+	}
+	return json.Marshal(document)
+}
+
+func (o *Operation) UnmarshalJSON(data []byte) error {
+	var decoded Operation
+	document := operationJSON{operationAlias: (*operationAlias)(&decoded)}
+	if err := json.Unmarshal(data, &document); err != nil {
+		return err
+	}
+	if len(document.Tool) > 0 && string(document.Tool) != "null" {
+		decoded.Tool = new(runnablev0.ToolExposure)
+		if err := protojson.Unmarshal(document.Tool, decoded.Tool); err != nil {
+			return fmt.Errorf("tool: %w", err)
+		}
+	}
+	for i, raw := range document.RequiredScopeSlots {
+		slot := new(runnablev0.ScopeSlot)
+		if err := protojson.Unmarshal(raw, slot); err != nil {
+			return fmt.Errorf("required_scope_slots[%d]: %w", i, err)
+		}
+		decoded.RequiredScopeSlots = append(decoded.RequiredScopeSlots, slot)
+	}
+	*o = decoded
+	return nil
 }
 
 // Scope is one authority a binding is minted for.

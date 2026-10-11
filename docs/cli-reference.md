@@ -2686,6 +2686,12 @@ plus a copy of the service's proto sources; REST endpoints get their OpenAPI
 document (openapi.json). HTTP, TCP, and MCP endpoints have no machine-readable
 contract and are skipped, as is a connect endpoint whose service has no proto.
 
+For restricted listeners, module contracts.codefly.yaml maps service names under
+surfaces to service-relative JSON procedure inventories. This is CLI publication
+configuration, separate from the agent's spec. Multiple exported protobuf
+endpoints require an inventory; a full descriptor alone does not establish what
+each listener serves. See docs/commands.md#generate-contracts.
+
 Run it before module-package build; the package carries the result. --check
 is the CI drift gate: it regenerates into a temporary directory and compares
 against what's on disk, without writing anything.
@@ -2770,21 +2776,29 @@ For each derived operation the value is one JSON document
                    changed contract is refused rather than called with a payload
                    shaped for the one it used to publish
   policy           the execution policy and Work Context authority the owner
-                   declared on its method option or x-codefly-operation marker
+                   declared, with required scope slots resolved from this
+                   environment's runnable-scope-selections
 
 An owner is called with JSON, so no protobuf descriptor is delivered to anyone.
 A gRPC owner is therefore called on its **Connect** endpoint: a service that
 publishes a runnable-marked method and declares no connect endpoint is refused
 here, by name, rather than at a call.
+An operation published directly on a Connect endpoint uses that endpoint.
 
 The address is resolved, never configured: it is the one a run or a render of
 the same environment gives the owner. A service that installs derived
 operations declares runnable-bindings as a workspace configuration dependency and
 receives them like any other group, so the installer names no owner module.
 
+In workspace.codefly.yaml, environments[].runnable-scope-selections maps each
+binding key (MODULE__OPERATION) to Core ScopeSelection messages: slot, invoke,
+and lookup. Every required slot needs exact resource kinds, actions and ids;
+missing selections, wildcards and overlapping kinds are refused. Tool exposure
+is carried from the owner. See docs/runnable.md for the selection YAML.
+
 The output is configurations/<profile>/runnable-bindings.env in the workspace, for the
 environment's first configuration profile. --check regenerates in memory and
-exits non-zero when the file differs.
+exits non-zero when the file differs, including after a scope selection changes.
 
 Examples:
   codefly generate runnable-bindings
@@ -2800,7 +2814,7 @@ Flags:
 
 ```
       --check        do not write; exit 1 if the on-disk file differs from what would be generated
-      --env string   environment whose resolved addresses the bindings target (default "local")
+      --env string   environment supplying resolved addresses and runnable-scope-selections (default "local")
 ```
 
 ## `codefly generate runnables`
@@ -2816,9 +2830,10 @@ Runnable by derivation, not by authoring: the method option says which methods
 are operations and under what execution policy, and the message descriptors say
 what the contract is. Nothing is written twice.
 
-The input is what `codefly generate contracts` already wrote — the serialized
-FileDescriptorSet of each gRPC/connect endpoint. Run that first; no flag names a
-method, because the option is the only selector.
+The input is what `codefly generate contracts` already wrote — each endpoint's
+served procedures in the API catalog and its serialized FileDescriptorSet.
+Run that first. Only served methods carrying the option are derived; their
+paired Lookup must be served on the same endpoint. No flag names a method.
 
 For each marked method this writes, under contracts/runnables:
 
