@@ -204,6 +204,12 @@ func authorityInstancesOf(
 // under one ID, the second silently overwriting the first, so the pair is
 // refused here as it is where the instances are derived.
 func renderAuthorityDocuments(owned string, opts *RenderOptions) ([]DeclaredAuthority, error) {
+	tree, err := inspectRenderRoot(owned, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseRenderRoot(tree, opts)
+
 	if len(opts.AuthorityInstances) == 0 || opts.Host == nil {
 		return nil, nil
 	}
@@ -217,7 +223,7 @@ func renderAuthorityDocuments(owned string, opts *RenderOptions) ([]DeclaredAuth
 		return nil, fmt.Errorf("the render names %s as presenting an authority, and a module presents its one authority document from one service", strings.Join(services, ", "))
 	}
 	directory := filepath.Join(owned, filepath.FromSlash(solutionAuthorityOverlay(opts.Environment)))
-	if err := os.MkdirAll(directory, 0o755); err != nil {
+	if err := tree.mkdirAll(directory); err != nil {
 		return nil, fmt.Errorf("create authority directory: %w", err)
 	}
 	declared := make([]DeclaredAuthority, 0, len(instances))
@@ -227,7 +233,7 @@ func renderAuthorityDocuments(owned string, opts *RenderOptions) ([]DeclaredAuth
 		if err != nil {
 			return nil, err
 		}
-		file, err := writeAuthorityDocument(directory, document, instances[index].Module)
+		file, err := writeAuthorityDocumentInTree(tree, directory, document, instances[index].Module)
 		if err != nil {
 			return nil, err
 		}
@@ -236,7 +242,7 @@ func renderAuthorityDocuments(owned string, opts *RenderOptions) ([]DeclaredAuth
 		})
 		names = append(names, file)
 	}
-	if err := writeAuthorityKustomization(owned, opts.Environment, names); err != nil {
+	if err := writeAuthorityKustomizationInTree(tree, owned, opts.Environment, names); err != nil {
 		return nil, err
 	}
 	return declared, nil
@@ -408,6 +414,15 @@ func authorityConfigMapName(authority string) string {
 // namespace and returns its file name; carrier is the signed carrier when there
 // is one.
 func writeAuthorityDocument(directory string, document *solutionhost.AuthorityDocument, module string, carrier ...[]byte) (string, error) {
+	tree, err := newRenderRoot(directory)
+	if err != nil {
+		return "", err
+	}
+	defer tree.Close()
+	return writeAuthorityDocumentInTree(tree, directory, document, module, carrier...)
+}
+
+func writeAuthorityDocumentInTree(tree *renderRoot, directory string, document *solutionhost.AuthorityDocument, module string, carrier ...[]byte) (string, error) {
 	encoded, err := solutionhost.MarshalAuthority(document)
 	if err != nil {
 		return "", fmt.Errorf("marshal authority %q: %w", document.Authority, err)
@@ -439,7 +454,7 @@ func writeAuthorityDocument(directory string, document *solutionhost.AuthorityDo
 		return "", fmt.Errorf("encode authority %q: %w", document.Authority, err)
 	}
 	file := document.Authority + ".yaml"
-	if err := os.WriteFile(filepath.Join(directory, file), body, 0o600); err != nil {
+	if err := tree.write(directory, file, body); err != nil {
 		return "", fmt.Errorf("write authority %q: %w", document.Authority, err)
 	}
 	return file, nil
@@ -448,13 +463,22 @@ func writeAuthorityDocument(directory string, document *solutionhost.AuthorityDo
 // writeAuthorityKustomization lists the delivered documents so the overlay
 // builds, exactly as the presence overlay does.
 func writeAuthorityKustomization(owned, environment string, names []string) error {
+	tree, err := newRenderRoot(owned)
+	if err != nil {
+		return err
+	}
+	defer tree.Close()
+	return writeAuthorityKustomizationInTree(tree, owned, environment, names)
+}
+
+func writeAuthorityKustomizationInTree(tree *renderRoot, owned, environment string, names []string) error {
 	sort.Strings(names)
 	body, err := yaml.Marshal(kustomizationManifest{APIVersion: kustomizeAPIVersion, Kind: kindKustomization, Resources: names})
 	if err != nil {
 		return fmt.Errorf("encode authority kustomization: %w", err)
 	}
 	path := filepath.Join(owned, filepath.FromSlash(solutionAuthorityOverlay(environment)), kustomizationFile)
-	if err := os.WriteFile(path, body, 0o600); err != nil {
+	if err := tree.write(filepath.Dir(path), filepath.Base(path), body); err != nil {
 		return fmt.Errorf("write authority kustomization: %w", err)
 	}
 	return nil
@@ -478,7 +502,13 @@ func deliveredAuthorityPath(declared []DeclaredAuthority) string {
 // does not decide the approved build. A unit whose serving workloads run two
 // distinct builds cannot be approved by one document and is refused.
 func servingBuild(owned string, opts *RenderOptions, unit SolutionArtifactUnit) (solutionhost.ImageDigest, error) {
-	rendered, err := renderedWorkloads(filepath.Join(owned, filepath.FromSlash(unit.Path)), opts.Environment)
+	tree, err := inspectRenderRoot(owned, opts)
+	if err != nil {
+		return "", err
+	}
+	defer releaseRenderRoot(tree, opts)
+
+	rendered, err := renderedWorkloadsInTree(tree, filepath.Join(owned, filepath.FromSlash(unit.Path)), opts.Environment)
 	if err != nil {
 		return "", err
 	}

@@ -2,7 +2,6 @@ package gitops
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -144,7 +143,7 @@ func projectResourceQuota(tree *renderRoot, bootstrapRoot, environment, namespac
 	if err = tree.inspect(bootstrapRoot); err != nil {
 		return false, err
 	}
-	if info, err := os.Stat(overlay); err != nil || !info.IsDir() {
+	if info, err := tree.stat(overlay, "."); err != nil || !info.IsDir() {
 		return false, fmt.Errorf("environment %q declares a resource-quota but its bootstrap has no %q overlay to render it into", environment, environment)
 	}
 	projected := false
@@ -168,6 +167,7 @@ func writeOverlayResource(overlay, name string, manifest any) error {
 	if err != nil {
 		return err
 	}
+	defer tree.Close()
 	return writeOverlayResourceInTree(tree, tree.path, name, manifest)
 }
 

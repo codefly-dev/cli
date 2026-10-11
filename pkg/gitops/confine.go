@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/google/uuid"
@@ -16,8 +17,12 @@ import (
 // renderRoot is the one trusted boundary of a render. Resolve that boundary
 // once; never promote a service directory (or an overlay) to a new boundary.
 type renderRoot struct {
-	path     string
-	declared string
+	path       string
+	declared   string
+	root       *os.Root
+	anchor     *os.Root
+	anchorPath string
+	identity   fs.FileInfo
 }
 
 func newRenderRoot(directory string) (*renderRoot, error) {
@@ -29,7 +34,54 @@ func newRenderRoot(directory string) (*renderRoot, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &renderRoot{path: resolved, declared: declared}, nil
+	root, err := os.OpenRoot(resolved)
+	if err != nil {
+		return nil, err
+	}
+	identity, err := root.Stat(".")
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	// Keep an anchor for detecting ancestor replacement too. A handle to the
+	// immediate parent would move with that parent and miss its displacement.
+	anchorDirectory := filepath.VolumeName(resolved) + string(filepath.Separator)
+	anchor, err := os.OpenRoot(anchorDirectory)
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	anchorPath, err := filepath.Rel(anchorDirectory, resolved)
+	if err != nil {
+		_ = root.Close()
+		_ = anchor.Close()
+		return nil, err
+	}
+	tree := &renderRoot{path: resolved, declared: declared, root: root, identity: identity, anchor: anchor, anchorPath: anchorPath}
+	if err := tree.checkIdentity(); err != nil {
+		_ = tree.Close()
+		return nil, err
+	}
+	return tree, nil
+}
+
+func (tree *renderRoot) Close() error { return errors.Join(tree.root.Close(), tree.anchor.Close()) }
+
+// This pathname check only detects displacement so a stale render fails. It is
+// not the confinement boundary: all content I/O uses the original descriptor,
+// even if an ancestor is replaced between this check and the operation.
+func (tree *renderRoot) checkIdentity() error {
+	info, err := tree.anchor.Lstat(tree.anchorPath)
+	if err != nil {
+		return fmt.Errorf("render root changed: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("render root %s became a symbolic link", tree.path)
+	}
+	if !os.SameFile(tree.identity, info) {
+		return fmt.Errorf("render root %s changed during render", tree.path)
+	}
+	return nil
 }
 
 // checkedPath Lstats every component below the root, including the final file.
@@ -52,32 +104,16 @@ func (tree *renderRoot) checkedPath(name string) (string, error) {
 	if !filepath.IsLocal(name) {
 		return "", fmt.Errorf("render path %q escapes root %s", name, tree.path)
 	}
-	// The already-resolved boundary itself must not have been replaced by a
-	// link. Use rooted Lstat for this check as well as all descendant checks.
-	parent, err := os.OpenRoot(filepath.Dir(tree.path))
-	if err != nil {
+	if err := tree.checkIdentity(); err != nil {
 		return "", err
 	}
-	info, statErr := parent.Lstat(filepath.Base(tree.path))
-	closeErr := parent.Close()
-	if err = errors.Join(statErr, closeErr); err != nil {
-		return "", err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("render root %s became a symbolic link", tree.path)
-	}
-	root, err := os.OpenRoot(tree.path)
-	if err != nil {
-		return "", err
-	}
-	defer root.Close()
 	current := tree.path
 	relative := "."
 	parts := strings.Split(filepath.Clean(name), string(filepath.Separator))
 	for i, component := range parts {
 		relative = filepath.Join(relative, component)
 		current = filepath.Join(current, component)
-		info, statErr := root.Lstat(relative)
+		info, statErr := tree.root.Lstat(relative)
 		if os.IsNotExist(statErr) {
 			continue
 		}
@@ -94,8 +130,8 @@ func (tree *renderRoot) checkedPath(name string) (string, error) {
 	return current, nil
 }
 
-// inspect checks a subtree before handing it to a library that reads or writes
-// paths itself (Core projections and Kustomize). WalkDir does not follow links.
+// inspect rejects links and special files before projections or builds use
+// the retained filesystem. WalkDir does not follow links.
 func (tree *renderRoot) inspect(directory string) error {
 	return tree.walk(directory, func(name string, entry fs.DirEntry) error {
 		if !entry.IsDir() && !entry.Type().IsRegular() {
@@ -110,7 +146,6 @@ func (tree *renderRoot) walk(directory string, visit func(string, fs.DirEntry) e
 	if err != nil {
 		return err
 	}
-	defer root.Close()
 	return fs.WalkDir(root.FS(), filepath.ToSlash(relative), func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -139,8 +174,7 @@ func (tree *renderRoot) access(directory, name string) (*os.Root, string, error)
 	if err != nil {
 		return nil, "", err
 	}
-	root, err := os.OpenRoot(tree.path)
-	return root, relative, err
+	return tree.root, relative, nil
 }
 
 func (tree *renderRoot) read(directory, name string) ([]byte, error) {
@@ -148,7 +182,6 @@ func (tree *renderRoot) read(directory, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer root.Close()
 	return root.ReadFile(relative)
 }
 
@@ -157,7 +190,6 @@ func (tree *renderRoot) write(directory, name string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	defer root.Close()
 	// Replace the directory entry, never truncate an inode supplied by an
 	// agent. A hard link into another tree must not change that tree's bytes.
 	temporary := filepath.Join(filepath.Dir(relative), ".codefly-write-"+uuid.NewString())
@@ -173,7 +205,10 @@ func (tree *renderRoot) write(directory, name string, data []byte) error {
 	if _, err = tree.checkedPath(filepath.Join(directory, name)); err != nil {
 		return err
 	}
-	return root.Rename(temporary, relative)
+	if err := root.Rename(temporary, relative); err != nil {
+		return err
+	}
+	return tree.checkIdentity()
 }
 
 func (tree *renderRoot) stat(directory, name string) (fs.FileInfo, error) {
@@ -181,8 +216,129 @@ func (tree *renderRoot) stat(directory, name string) (fs.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer root.Close()
 	return root.Lstat(relative)
+}
+
+func (tree *renderRoot) open(directory, name string) (*os.File, error) {
+	root, relative, err := tree.access(directory, name)
+	if err != nil {
+		return nil, err
+	}
+	return root.Open(relative)
+}
+
+func (tree *renderRoot) readDir(directory string) ([]fs.DirEntry, error) {
+	file, err := tree.open(directory, ".")
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	entries, err := file.ReadDir(-1)
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	return entries, err
+}
+
+func (tree *renderRoot) mkdirAll(directory string) error {
+	root, relative, err := tree.access(directory, ".")
+	if err != nil {
+		return err
+	}
+	current := "."
+	for _, part := range strings.Split(relative, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		if err := root.Mkdir(current, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		info, err := tree.stat(tree.path, current)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("render directory %s is not a directory", current)
+		}
+	}
+	return tree.checkIdentity()
+}
+
+func (tree *renderRoot) remove(directory, name string) error {
+	root, relative, err := tree.access(directory, name)
+	if err != nil {
+		return err
+	}
+	return root.Remove(relative)
+}
+
+func (tree *renderRoot) removeAll(directory string) error {
+	root, relative, err := tree.access(directory, ".")
+	if err != nil {
+		return err
+	}
+	return root.RemoveAll(relative)
+}
+
+func (tree *renderRoot) rename(source, destination string) error {
+	root, from, err := tree.access(filepath.Dir(source), filepath.Base(source))
+	if err != nil {
+		return err
+	}
+	_, to, err := tree.access(filepath.Dir(destination), filepath.Base(destination))
+	if err != nil {
+		return err
+	}
+	if err = root.Rename(from, to); err != nil {
+		return err
+	}
+	return tree.checkIdentity()
+}
+
+// copyFrom reads a separately trusted source through its retained handle and
+// writes each entry through this render's handle. Neither pathname is reopened.
+func (tree *renderRoot) copyFrom(source *renderRoot, sourcePath, destination string) error {
+	return source.walk(sourcePath, func(name string, entry fs.DirEntry) error {
+		relative, err := filepath.Rel(sourcePath, name)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destination, relative)
+		if entry.IsDir() {
+			return tree.mkdirAll(target)
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("%s: non-regular files are not allowed", name)
+		}
+		data, err := source.read(filepath.Dir(name), filepath.Base(name))
+		if err != nil {
+			return err
+		}
+		if err = tree.mkdirAll(filepath.Dir(target)); err != nil {
+			return err
+		}
+		return tree.write(filepath.Dir(target), filepath.Base(target), data)
+	})
+}
+
+func (tree *renderRoot) walkRegularFiles(directory string, visit func(string, string, fs.FileInfo) error) error {
+	checked, err := tree.checkedPath(directory)
+	if err != nil {
+		return err
+	}
+	return tree.walk(checked, func(name string, entry fs.DirEntry) error {
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%s: non-regular files are not allowed in rendered output", name)
+		}
+		relative, err := filepath.Rel(checked, name)
+		if err != nil {
+			return err
+		}
+		return visit(name, filepath.ToSlash(relative), info)
+	})
 }
 
 // These helpers also serve non-render callers whose directory is their trusted
@@ -192,6 +348,7 @@ func readWithin(directory, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer tree.Close()
 	return tree.read(tree.path, name)
 }
 
@@ -200,11 +357,11 @@ func openWithin(directory, name string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer tree.Close()
 	root, relative, err := tree.access(tree.path, name)
 	if err != nil {
 		return nil, err
 	}
-	defer root.Close()
 	return root.Open(relative)
 }
 
@@ -213,28 +370,8 @@ func writeWithin(directory, name string, data []byte) error {
 	if err != nil {
 		return err
 	}
+	defer tree.Close()
 	return tree.write(tree.path, name, data)
-}
-
-func removeWithin(directory, name string) error {
-	tree, err := newRenderRoot(directory)
-	if err != nil {
-		return err
-	}
-	root, relative, err := tree.access(tree.path, name)
-	if err != nil {
-		return err
-	}
-	defer root.Close()
-	return root.Remove(relative)
-}
-
-func statWithin(directory, name string) (fs.FileInfo, error) {
-	tree, err := newRenderRoot(directory)
-	if err != nil {
-		return nil, err
-	}
-	return tree.stat(tree.path, name)
 }
 
 // pathSegment admits value as one path element — an environment or a unit
@@ -288,5 +425,32 @@ func inspectRenderRoot(root string, opts *RenderOptions) (*renderRoot, error) {
 			return nil, err
 		}
 	}
-	return tree, tree.inspect(tree.path)
+	if err := tree.inspect(tree.path); err != nil {
+		releaseRenderRoot(tree, opts)
+		return nil, err
+	}
+	return tree, nil
+}
+
+func releaseRenderRoot(tree *renderRoot, opts *RenderOptions) {
+	if tree != opts.renderRoot {
+		_ = tree.Close()
+	}
+}
+
+// os.Root.Rename handles initial publication. Replacing a nonempty directory
+// requires the platform's atomic exchange, with both parent directories opened
+// through the retained root before passing their descriptors to the syscall.
+func exchangeDirectoriesInRoot(root *os.Root, left, right string) error {
+	leftParent, err := root.Open(filepath.Dir(left))
+	if err != nil {
+		return err
+	}
+	defer leftParent.Close()
+	rightParent, err := root.Open(filepath.Dir(right))
+	if err != nil {
+		return err
+	}
+	defer rightParent.Close()
+	return exchangeDirectoriesAt(leftParent, filepath.Base(left), rightParent, filepath.Base(right))
 }

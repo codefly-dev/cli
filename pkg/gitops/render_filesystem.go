@@ -40,7 +40,6 @@ func (filesystem *renderFileSystem) Open(name string) (filesys.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer root.Close()
 	return root.Open(relative)
 }
 
@@ -72,7 +71,6 @@ func (filesystem *renderFileSystem) ReadDir(name string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer root.Close()
 	file, err := root.Open(relative)
 	if err != nil {
 		return nil, err
@@ -137,4 +135,20 @@ func (*renderFileSystem) RemoveAll(name string) error              { return rend
 func (*renderFileSystem) WriteFile(name string, _ []byte) error    { return renderReadOnly(name) }
 func renderReadOnly(name string) error {
 	return fmt.Errorf("cannot write render input %s while building Kustomize", name)
+}
+
+// Core owns the projection and its validation. Its filesystem-based API may
+// replace files in the staged tree, while Kustomize and ordinary readers get
+// the read-only adapter. Both use the same retained descriptor.
+type projectionFileSystem struct {
+	filesys.FileSystem
+	tree *renderRoot
+}
+
+func (filesystem *projectionFileSystem) WriteFile(name string, data []byte) error {
+	checked, err := filesystem.tree.checkedPath(name)
+	if err != nil {
+		return err
+	}
+	return filesystem.tree.write(filepath.Dir(checked), filepath.Base(checked), data)
 }

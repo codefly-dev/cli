@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 )
 
 // Versions do not distinguish Kubernetes objects. Namespace defaulting happens
@@ -15,12 +14,10 @@ type objectIdentity struct {
 
 func (doc manifest) identity(targetNamespace string) objectIdentity {
 	namespace := metadataString(doc.value, keyNamespace)
-	if _, clusterScoped := clusterScopedKinds[doc.kind]; clusterScoped {
-		namespace = ""
-	} else if namespace == "" {
-		namespace = doc.namespace
-		if namespace == "" {
-			namespace = targetNamespace
+	if namespace == "" {
+		namespace = targetNamespace
+		if doc.namespace != nil {
+			namespace = *doc.namespace
 		}
 	}
 	return objectIdentity{doc.group, doc.kind, namespace, metadataString(doc.value, keyName)}
@@ -33,15 +30,25 @@ func (id objectIdentity) String() string {
 func validateObjectIdentities(documents []manifest, namespace string) error {
 	seen := make(map[objectIdentity]string, len(documents))
 	for i := range documents {
-		if documents[i].namespace == "" {
-			documents[i].namespace = namespace
+		if documents[i].namespace == nil {
+			documents[i].namespace = &namespace
 		}
 		doc := documents[i]
 		id := doc.identity(namespace)
-		if previous, exists := seen[id]; exists {
-			return fmt.Errorf("%s must occur exactly once in the promoted tree: produced by both %s and %s", id, previous, doc.path)
+		identities := []objectIdentity{id}
+		// Namespace-free output may be cluster-scoped. Index it globally as
+		// well as at its applying destination, without a brittle kind roster.
+		if metadataString(doc.value, keyNamespace) == "" && id.namespace != "" {
+			global := id
+			global.namespace = ""
+			identities = append(identities, global)
 		}
-		seen[id] = doc.path
+		for _, identity := range identities {
+			if previous, exists := seen[identity]; exists {
+				return fmt.Errorf("%s must occur exactly once in the promoted tree: produced by both %s and %s", identity, previous, doc.path)
+			}
+			seen[identity] = doc.path
+		}
 	}
 	return nil
 }
@@ -56,24 +63,4 @@ func sameObjectBytes(left, right manifest) (bool, error) {
 	}
 	b, err := json.Marshal(right.value)
 	return bytes.Equal(a, b), err
-}
-
-// An Application still applies its overlay when another overlay references it.
-// Build both; shared resources must not silently disappear from the inventory.
-func appliedOverlay(directory string, opts *RenderOptions) bool {
-	if opts.Environment != "" && filepath.Base(directory) == opts.Environment && filepath.Base(filepath.Dir(directory)) == overlaysDirectory {
-		return true
-	}
-	for _, unit := range opts.Units {
-		if unit.Path != "" && directory == filepath.ToSlash(filepath.Join(unit.Path, "overlays", opts.Environment)) {
-			return true
-		}
-	}
-	for i := range opts.workloadIdentityChecks {
-		check := &opts.workloadIdentityChecks[i]
-		if directory == filepath.ToSlash(filepath.Join(check.path, "overlays", check.environment.Name)) {
-			return true
-		}
-	}
-	return false
 }

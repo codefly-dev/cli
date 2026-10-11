@@ -8,14 +8,17 @@ import (
 	"strings"
 	"testing"
 
+	coreservices "github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
+	"sigs.k8s.io/kustomize/kyaml/filesys"
 )
 
 func testRenderRoot(t *testing.T, directory string) *renderRoot {
 	t.Helper()
 	tree, err := newRenderRoot(directory)
 	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, tree.Close()) })
 	return tree
 }
 
@@ -157,4 +160,149 @@ func TestRenderRootResolvesRelativeBoundaryOnce(t *testing.T) {
 	require.NoError(t, kustomizedWorkload(sidecarDeployment)(t.Context(), root))
 	_, err = validateTree(relative, &RenderOptions{Environment: "prod", Namespace: "target", Promotable: true})
 	require.NoError(t, err)
+}
+
+func TestRenderRootRefusesReplacementOfRootOrAncestor(t *testing.T) {
+	for _, ancestor := range []bool{false, true} {
+		t.Run(fmt.Sprint(ancestor), func(t *testing.T) {
+			parent := filepath.Join(t.TempDir(), "stage")
+			directory := filepath.Join(parent, "tree")
+			require.NoError(t, os.MkdirAll(directory, 0o755))
+			tree := testRenderRoot(t, directory)
+			require.NoError(t, tree.write(directory, "victim", []byte("owned")))
+			filesystem, err := tree.fileSystem()
+			require.NoError(t, err)
+			outside := t.TempDir()
+			replacement := directory
+			if ancestor {
+				replacement = parent
+				require.NoError(t, os.Mkdir(filepath.Join(outside, "tree"), 0o755))
+			}
+			victim := filepath.Join(outside, "victim")
+			if ancestor {
+				victim = filepath.Join(outside, "tree", "victim")
+			}
+			require.NoError(t, os.WriteFile(victim, []byte("external"), 0o600))
+			require.NoError(t, os.Rename(replacement, replacement+"-original"))
+			require.NoError(t, os.Symlink(outside, replacement))
+			require.Error(t, tree.write(directory, "victim", []byte("changed")))
+			_, err = filesystem.ReadFile(filepath.Join(directory, "victim"))
+			require.Error(t, err)
+			require.Error(t, tree.mkdirAll(filepath.Join(directory, "new")))
+			data, err := os.ReadFile(victim)
+			require.NoError(t, err)
+			require.Equal(t, "external", string(data))
+		})
+	}
+}
+
+// Swap after access has checked the paths. The returned handle must still be
+// the original root, even when the pathname is temporarily redirected.
+func TestRenderAccessRetainsOriginalHandle(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "stage")
+	directory := filepath.Join(parent, "tree")
+	require.NoError(t, os.MkdirAll(directory, 0o755))
+	tree := testRenderRoot(t, directory)
+	handle, relative, err := tree.access(directory, "victim")
+	require.NoError(t, err)
+	outside := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(outside, "tree"), 0o755))
+	victim := filepath.Join(outside, "tree", "victim")
+	require.NoError(t, os.WriteFile(victim, []byte("external"), 0o600))
+	require.NoError(t, os.Rename(parent, parent+"-original"))
+	require.NoError(t, os.Symlink(outside, parent))
+	require.NoError(t, handle.WriteFile(relative, []byte("original handle"), 0o600))
+	data, err := os.ReadFile(victim)
+	require.NoError(t, err)
+	require.Equal(t, "external", string(data))
+	require.Error(t, tree.checkIdentity())
+}
+
+func TestServiceAccountProjectionRefusesRootReplacementDuringWrite(t *testing.T) {
+	workspace, env := workloadIdentityComposition(t)
+	scope := moduleScope(env, workspace, "app")
+	parent := filepath.Join(t.TempDir(), "stage")
+	directory := filepath.Join(parent, "tree")
+	require.NoError(t, os.MkdirAll(directory, 0o755))
+	require.NoError(t, kustomizedWorkload(sidecarDeployment)(t.Context(), directory))
+	tree := testRenderRoot(t, directory)
+	filesystem, err := tree.fileSystem()
+	require.NoError(t, err)
+	outside := t.TempDir()
+	require.NoError(t, copyTree(directory, filepath.Join(outside, "tree")))
+	before := snapshotTree(t, outside)
+	projection := &coreservices.PodTemplateOverlay{}
+	require.NoError(t, projection.AttachServiceAccount(&coreservices.WorkloadServiceAccount{}, nil))
+	writer := &replaceRootOnWrite{
+		FileSystem: &projectionFileSystem{FileSystem: filesystem, tree: tree},
+		replace: func() {
+			require.NoError(t, os.Rename(parent, parent+"-original"))
+			require.NoError(t, os.Symlink(outside, parent))
+		},
+	}
+	err = coreservices.ProjectServiceAccountOnFS(t.Context(), writer, filepath.Join(directory, "services", "api", "base"), scope.Namespace, "api", projection)
+	require.Error(t, err)
+	require.Equal(t, before, snapshotTree(t, outside))
+}
+
+type replaceRootOnWrite struct {
+	filesys.FileSystem
+	replace func()
+}
+
+func (filesystem *replaceRootOnWrite) WriteFile(name string, data []byte) error {
+	if filesystem.replace != nil {
+		filesystem.replace()
+		filesystem.replace = nil
+	}
+	return filesystem.FileSystem.WriteFile(name, data)
+}
+
+func TestRenderPromotionRefusesReplacedStagingParent(t *testing.T) {
+	outside := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(outside, "tree"), 0o755))
+	victim := filepath.Join(outside, "tree", InventoryFilename)
+	require.NoError(t, os.WriteFile(victim, []byte("external"), 0o600))
+	before := snapshotTree(t, outside)
+	opts := &RenderOptions{Destination: filepath.Join(t.TempDir(), "promoted"), Environment: "prod", Promotable: true}
+	_, err := RenderOwnedTree(t.Context(), opts, func(ctx context.Context, root string) error {
+		require.NoError(t, kustomizedWorkload(sidecarDeployment)(ctx, root))
+		parent := filepath.Dir(root)
+		require.NoError(t, os.Rename(parent, parent+"-original"))
+		require.NoError(t, os.Symlink(outside, parent))
+		return nil
+	})
+	require.Error(t, err)
+	require.Equal(t, before, snapshotTree(t, outside))
+	_, err = os.Stat(opts.Destination)
+	require.True(t, os.IsNotExist(err))
+}
+
+func TestRenderBundleOperationsRefuseReplacedRoot(t *testing.T) {
+	for _, operation := range []string{"bootstrap", "managed"} {
+		t.Run(operation, func(t *testing.T) {
+			parent := filepath.Join(t.TempDir(), "stage")
+			directory := filepath.Join(parent, "tree")
+			require.NoError(t, os.MkdirAll(directory, 0o755))
+			tree := testRenderRoot(t, directory)
+			outside := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(outside, "tree", "bundle"), 0o755))
+			victim := filepath.Join(outside, "tree", "bundle", "victim.yaml")
+			require.NoError(t, os.WriteFile(victim, []byte("external"), 0o600))
+			before := snapshotTree(t, outside)
+			source := t.TempDir()
+			require.NoError(t, os.MkdirAll(filepath.Join(source, "overlays", "prod"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(source, "victim.yaml"), []byte("changed"), 0o600))
+			require.NoError(t, os.Rename(parent, parent+"-original"))
+			require.NoError(t, os.Symlink(outside, parent))
+			var err error
+			if operation == "bootstrap" {
+				err = copyEnvironmentBootstrapInTree(tree, source, "prod", filepath.Join(directory, "bundle"))
+			} else {
+				_, err = retainManagedBundleInTree(tree, filepath.Join(directory, "bundle"), "cache", "prod", "app", nil)
+			}
+			require.Error(t, err)
+			require.Equal(t, before, snapshotTree(t, outside))
+		})
+	}
 }

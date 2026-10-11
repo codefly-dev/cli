@@ -301,10 +301,19 @@ func externalSecretProjection(service, namespace string, store environments.Envi
 // Secret must hold. It is a no-op — reporting false — when the environment declares
 // no service secret store or the service references no such Secret.
 func projectServiceSecrets(serviceRoot string, scope unitScope, service, environment string, secrets *environments.EnvironmentServiceSecrets) (bool, error) {
+	tree, err := newRenderRoot(serviceRoot)
+	if err != nil {
+		return false, err
+	}
+	defer tree.Close()
+	return projectServiceSecretsInTree(tree, serviceRoot, scope, service, environment, secrets)
+}
+
+func projectServiceSecretsInTree(tree *renderRoot, serviceRoot string, scope unitScope, service, environment string, secrets *environments.EnvironmentServiceSecrets) (bool, error) {
 	if secrets == nil {
 		return false, nil
 	}
-	keys, err := serviceSecretKeys(serviceRoot, service)
+	keys, err := serviceSecretKeysInTree(tree, serviceRoot, service)
 	if err != nil {
 		return false, err
 	}
@@ -320,7 +329,7 @@ func projectServiceSecrets(serviceRoot string, scope unitScope, service, environ
 		return false, segmentErr
 	}
 	overlay := filepath.Join(serviceRoot, "overlays", overlayName)
-	if info, statErr := statWithin(serviceRoot, filepath.Join("overlays", overlayName)); statErr != nil || !info.IsDir() {
+	if info, statErr := tree.stat(serviceRoot, filepath.Join("overlays", overlayName)); statErr != nil || !info.IsDir() {
 		return false, fmt.Errorf("service %q references secret-%s but has no %q environment overlay to project it into", service, service, environment)
 	}
 	projected, err := yaml.Marshal(projection)
@@ -329,23 +338,32 @@ func projectServiceSecrets(serviceRoot string, scope unitScope, service, environ
 	}
 	// The projection is an ExternalSecret — a reference to remote keys, never a
 	// secret value — so it stays a world-readable manifest like its siblings.
-	if err := writeWithin(overlay, "external-secret.yaml", projected); err != nil {
+	if err := tree.write(overlay, "external-secret.yaml", projected); err != nil {
 		return false, err
 	}
-	return true, addKustomizationResource(overlay, "external-secret.yaml")
+	return true, addKustomizationResourceInTree(tree, overlay, "external-secret.yaml")
 }
 
 // serviceSecretKeys collects, sorted and de-duplicated, the keys a service's
 // rendered manifests reference from its secret-<service> Secret via secretKeyRef.
 func serviceSecretKeys(root, service string) ([]string, error) {
+	tree, err := newRenderRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer tree.Close()
+	return serviceSecretKeysInTree(tree, root, service)
+}
+
+func serviceSecretKeysInTree(tree *renderRoot, root, service string) ([]string, error) {
 	secretName := "secret-" + service
 	seen := map[string]struct{}{}
-	err := walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
+	err := tree.walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
 		extension := strings.ToLower(filepath.Ext(relative))
 		if extension != yamlExtension && extension != ymlExtension && extension != jsonExtension {
 			return nil
 		}
-		data, err := readWithin(root, relative)
+		data, err := tree.read(root, relative)
 		if err != nil {
 			return err
 		}
@@ -396,6 +414,7 @@ func addKustomizationResource(directory, resource string) error {
 	if err != nil {
 		return err
 	}
+	defer tree.Close()
 	return addKustomizationResourceInTree(tree, tree.path, resource)
 }
 
@@ -419,20 +438,6 @@ func addKustomizationResourceInTree(tree *renderRoot, directory, resource string
 		return err
 	}
 	return tree.write(directory, filepath.Base(path), updated)
-}
-
-func kustomizationPath(directory string) (string, error) {
-	tree, err := newRenderRoot(directory)
-	if err != nil {
-		return "", err
-	}
-	path, err := kustomizationPathInTree(tree, tree.path)
-	if err != nil {
-		return "", err
-	}
-	// Callers use this path relative to their declared directory; preserve
-	// that spelling even when the trusted root resolves an alias such as /var.
-	return filepath.Join(directory, filepath.Base(path)), nil
 }
 
 func kustomizationPathInTree(tree *renderRoot, directory string) (string, error) {

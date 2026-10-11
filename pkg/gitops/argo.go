@@ -13,7 +13,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 	"sigs.k8s.io/kustomize/api/krusty"
-	"sigs.k8s.io/kustomize/kyaml/filesys"
 )
 
 const (
@@ -423,6 +422,15 @@ func argoRepository(config *repositoryConfig, localFetchHost string) (string, er
 }
 
 func snapshotAuthority(target string, inventory *Inventory, environment string) ([]argoResourceAuthority, []argoResourceAuthority, error) {
+	tree, err := newRenderRoot(target)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer tree.Close()
+	filesystem, err := tree.fileSystem()
+	if err != nil {
+		return nil, nil, err
+	}
 	var sources []string
 	if inventory.ModulePath != "" {
 		sources = append(sources, filepath.Join(target, filepath.FromSlash(inventory.ModulePath), "overlays", environment))
@@ -441,7 +449,7 @@ func snapshotAuthority(target string, inventory *Inventory, environment string) 
 	namespaced := make(map[string]argoResourceAuthority)
 	for _, source := range sources {
 		kustomizer := krusty.MakeKustomizer(krusty.MakeDefaultOptions())
-		rendered, err := kustomizer.Run(filesys.MakeFsOnDisk(), source)
+		rendered, err := kustomizer.Run(filesystem, source)
 		if err != nil {
 			return nil, nil, fmt.Errorf("build promotion source %s: %w", source, err)
 		}
@@ -459,7 +467,7 @@ func snapshotAuthority(target string, inventory *Inventory, environment string) 
 		for _, item := range manifests {
 			authority := argoResourceAuthority{Group: item.group, Kind: item.kind}
 			key := authority.Group + "/" + authority.Kind
-			_, knownClusterScoped := clusterScopedKinds[item.kind]
+			knownClusterScoped := item.knownClusterScoped()
 			customClusterScoped := item.group != "" && !isBuiltInAPIGroup(item.group) &&
 				item.group != argoAPIGroup && metadataString(item.value, "namespace") == ""
 			if knownClusterScoped || customClusterScoped {

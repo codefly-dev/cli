@@ -21,8 +21,10 @@ import (
 	coreservices "github.com/codefly-dev/core/agents/services"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
+	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
-	"sigs.k8s.io/kustomize/api/krusty"
+	"sigs.k8s.io/kustomize/kyaml/openapi"
+	kyaml "sigs.k8s.io/kustomize/kyaml/yaml"
 )
 
 var (
@@ -35,28 +37,19 @@ const argoAPIGroup = "argoproj.io"
 const overlaysDirectory = "overlays"
 const rbacAPIGroup = "rbac.authorization.k8s.io"
 
-var clusterScopedKinds = map[string]struct{}{
-	"APIService": {}, "CSIDriver": {}, "CSINode": {}, "ClusterIssuer": {},
-	"ClusterRole": {}, "ClusterRoleBinding": {}, "CustomResourceDefinition": {},
-	"IngressClass": {}, "MutatingWebhookConfiguration": {}, kindNamespace: {},
-	"Node": {}, "PersistentVolume": {}, "PriorityClass": {}, "RuntimeClass": {},
-	"StorageClass": {}, "ValidatingWebhookConfiguration": {}, "VolumeAttachment": {},
-}
-
 type manifest struct {
 	path  string
 	group string
 	kind  string
 	value map[string]any
-	// Namespace supplied by the applying overlay when the object omits it.
-	namespace string
+	// Destination namespace supplied by the applying Application when output omits it.
+	namespace *string
 }
 
 type kustomization struct {
 	path       string
 	directory  string
 	references []string
-	namespace  string
 }
 
 type projectContract struct {
@@ -79,20 +72,26 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err = os.MkdirAll(parent, 0o755); err != nil {
 		return RenderResult{}, fmt.Errorf("create render parent: %w", err)
 	}
-	stage, err := os.MkdirTemp(parent, ".codefly-render-")
+	parentRoot, err := os.OpenRoot(parent)
 	if err != nil {
-		return RenderResult{}, fmt.Errorf("create render staging directory: %w", err)
+		return RenderResult{}, err
 	}
-	defer os.RemoveAll(stage)
-
+	defer parentRoot.Close()
+	stageName := ".codefly-render-" + uuid.NewString()
+	if err = parentRoot.Mkdir(stageName, 0o755); err != nil {
+		return RenderResult{}, err
+	}
+	defer func() { _ = parentRoot.RemoveAll(stageName) }()
+	stage := filepath.Join(parent, stageName)
 	owned := filepath.Join(stage, "tree")
-	if err = os.Mkdir(owned, 0o755); err != nil {
+	if err = parentRoot.Mkdir(filepath.Join(stageName, "tree"), 0o755); err != nil {
 		return RenderResult{}, fmt.Errorf("create staged owned tree: %w", err)
 	}
 	tree, err := newRenderRoot(owned)
 	if err != nil {
 		return RenderResult{}, err
 	}
+	defer tree.Close()
 	opts.renderRoot = tree
 	defer func() { opts.renderRoot = nil }()
 	owned = tree.path
@@ -165,7 +164,10 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if previous, previousErr := LoadInventory(destination); previousErr == nil {
 		cleared = previous.Dev
 	}
-	if err := replaceOwnedTree(owned, destination); err != nil {
+	if err := tree.checkIdentity(); err != nil {
+		return RenderResult{}, err
+	}
+	if err := replaceOwnedTree(parentRoot, filepath.Join(stageName, "tree"), filepath.Base(destination)); err != nil {
 		return RenderResult{}, err
 	}
 	return RenderResult{
@@ -216,7 +218,17 @@ func decodeInventory(data []byte, label string) (Inventory, error) {
 }
 
 func ValidateRenderedTree(root, project string, promotable bool) error {
-	inventory, err := LoadInventory(root)
+	tree, err := newRenderRoot(root)
+	if err != nil {
+		return err
+	}
+	defer tree.Close()
+	root = tree.path
+	data, err := tree.read(root, InventoryFilename)
+	if err != nil {
+		return err
+	}
+	inventory, err := decodeInventory(data, "render")
 	if err != nil {
 		return err
 	}
@@ -230,6 +242,8 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 	}
 	opts := &RenderOptions{
 		Module: inventory.Module, Unit: inventory.Unit,
+		renderRoot:              tree,
+		SolutionHostBindingPath: inventory.SolutionHostBindingPath, SolutionAuthorityPath: inventory.SolutionAuthorityPath,
 		OwnedPath: inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
 		Environment: inventory.Environment, Namespace: inventory.Namespace,
 		AppProject: project, Promotable: promotable, Package: inventory.Package,
@@ -251,7 +265,17 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 }
 
 func ValidateServiceSnapshot(root string) error {
-	inventory, err := LoadInventory(root)
+	tree, err := newRenderRoot(root)
+	if err != nil {
+		return err
+	}
+	defer tree.Close()
+	root = tree.path
+	data, err := tree.read(root, InventoryFilename)
+	if err != nil {
+		return err
+	}
+	inventory, err := decodeInventory(data, "render")
 	if err != nil {
 		return err
 	}
@@ -275,7 +299,7 @@ func ValidateServiceSnapshot(root string) error {
 		}
 		allowed[directory] = struct{}{}
 	}
-	entries, err := os.ReadDir(root)
+	entries, err := tree.readDir(root)
 	if err != nil {
 		return err
 	}
@@ -284,18 +308,8 @@ func ValidateServiceSnapshot(root string) error {
 			return fmt.Errorf("service snapshot contains unexpected path %s", entry.Name())
 		}
 	}
-	if err = validateUnitDirectories(root, rendered, inventory.Environment); err != nil {
+	if err = validateUnitDirectoriesInTree(tree, root, rendered, inventory.Environment); err != nil {
 		return err
-	}
-	for _, unit := range rendered {
-		opts := &RenderOptions{
-			Module: inventory.Module, Unit: unit.Name,
-			Environment: inventory.Environment, Namespace: inventory.Namespace,
-			AppProject: inventory.AppProject, Promotable: true,
-		}
-		if _, err = validateTree(filepath.Join(root, filepath.FromSlash(unit.Path)), opts); err != nil {
-			return fmt.Errorf("validate unit %s: %w", unit.Name, err)
-		}
 	}
 	if err = validateSnapshotCoverage(&inventory); err != nil {
 		return err
@@ -306,9 +320,17 @@ func ValidateServiceSnapshot(root string) error {
 	}
 	opts := &RenderOptions{
 		Module: inventory.Module, UnitNames: names,
+		renderRoot:              tree,
+		SolutionHostBindingPath: inventory.SolutionHostBindingPath, SolutionAuthorityPath: inventory.SolutionAuthorityPath,
 		OwnedPath: inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
 		Environment: inventory.Environment, Namespace: inventory.Namespace,
 		AppProject: inventory.AppProject, Promotable: true, Package: inventory.Package,
+	}
+	// Validate the applied graph with its original root. A service may import
+	// shared inputs outside its own directory, and independently applied units
+	// must be compared with one another, not checked in isolated subtrees.
+	if _, err = validateTree(root, opts); err != nil {
+		return err
 	}
 	actual, err := buildInventory(root, opts)
 	if err != nil {
@@ -497,13 +519,14 @@ func validateTree(root string, opts *RenderOptions) ([]manifest, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer releaseRenderRoot(tree, opts)
 	root = tree.path
-	if err = validateRenderDirectories(root, opts); err != nil {
+	if err = validateRenderDirectories(tree, root, opts); err != nil {
 		return nil, err
 	}
 	var manifests []manifest
 	var kustomizations []kustomization
-	err = walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
+	err = tree.walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
 		// The render record at the tree root is not a manifest.
 		if relative == InventoryFilename {
 			return nil
@@ -582,7 +605,7 @@ func validateTree(root string, opts *RenderOptions) ([]manifest, error) {
 // promotable ruleset against both the built output and any manifests no
 // kustomization covers, without counting covered source files a second time.
 func promotableEffectiveManifests(tree *renderRoot, root string, manifests []manifest, kustomizations []kustomization, contract *projectContract, opts *RenderOptions) ([]manifest, error) {
-	covered, effective, err := renderKustomizations(tree, root, kustomizations, opts)
+	covered, effective, err := renderKustomizations(tree, root, manifests, kustomizations, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -605,14 +628,14 @@ func promotableEffectiveManifests(tree *renderRoot, root string, manifests []man
 	return result, nil
 }
 
-func validateRenderDirectories(root string, opts *RenderOptions) error {
+func validateRenderDirectories(tree *renderRoot, root string, opts *RenderOptions) error {
 	if opts.Unit == "" && opts.CheckUnitDirectories {
-		return validateUnitDirectories(root, renderedUnits(&Inventory{Units: opts.Units}), opts.Environment)
+		return validateUnitDirectoriesInTree(tree, root, renderedUnits(&Inventory{Units: opts.Units}), opts.Environment)
 	}
 	return nil
 }
 
-func validateUnitDirectories(root string, units []InventoryUnit, environment string) error {
+func validateUnitDirectoriesInTree(tree *renderRoot, root string, units []InventoryUnit, environment string) error {
 	byDirectory := make(map[string]map[string]struct{})
 	for _, unit := range units {
 		directory, ok := unitDirectory(unit.Kind)
@@ -631,7 +654,7 @@ func validateUnitDirectories(root string, units []InventoryUnit, environment str
 	sort.Strings(directories)
 	for _, directory := range directories {
 		unitRoot := filepath.Join(root, directory)
-		entries, err := os.ReadDir(unitRoot)
+		entries, err := tree.readDir(unitRoot)
 		if err != nil {
 			return fmt.Errorf("read rendered unit graph: %w", err)
 		}
@@ -657,7 +680,7 @@ func validateUnitDirectories(root string, units []InventoryUnit, environment str
 			return fmt.Errorf("rendered unit graph is missing units %v", missing)
 		}
 		for name := range byDirectory[directory] {
-			info, err := statWithin(unitRoot, filepath.Join(name, "overlays", environment))
+			info, err := tree.stat(unitRoot, filepath.Join(name, "overlays", environment))
 			if err != nil {
 				return fmt.Errorf("unit %s environment overlay %s: %w", name, environment, err)
 			}
@@ -705,7 +728,6 @@ func decodeYAML(path string, data []byte) ([]manifest, *kustomization, error) {
 				path: path, directory: filepath.ToSlash(filepath.Dir(filepath.FromSlash(path))),
 				references: found,
 			}
-			customization.namespace, _ = root[keyNamespace].(string)
 			continue
 		}
 		decoded, err := decodeManifest(path, fmt.Sprintf("%d", document), root)
@@ -796,81 +818,117 @@ func validateKustomization(path string, root map[string]any) ([]string, error) {
 	return references, nil
 }
 
-func renderKustomizations(tree *renderRoot, root string, kustomizations []kustomization, opts *RenderOptions) (map[string]bool, []manifest, error) {
+func renderKustomizations(tree *renderRoot, root string, manifests []manifest, kustomizations []kustomization, opts *RenderOptions) (map[string]bool, []manifest, error) {
 	covered := map[string]bool{}
-	if len(kustomizations) == 0 {
-		return covered, nil, nil
-	}
 	byDirectory := map[string]kustomization{}
-	referencedDirectories := map[string]bool{}
 	for _, customization := range kustomizations {
 		byDirectory[customization.directory] = customization
-		for _, reference := range customization.references {
-			if info, err := statWithin(root, filepath.FromSlash(reference)); err == nil && info.IsDir() {
-				referencedDirectories[reference] = true
+	}
+	// Source documents are inputs, not independently applied manifests.
+	for _, customization := range kustomizations {
+		markKustomizationCoverage(customization, byDirectory, covered, map[string]bool{})
+	}
+	pending := map[appliedRoot]bool{}
+	for _, applied := range inventoryAppliedRoots(opts) {
+		if _, err := tree.stat(root, filepath.FromSlash(applied.directory)); os.IsNotExist(err) && !opts.CheckUnitDirectories {
+			// Older direct renders inventory a plain unit directory.
+			applied.directory = filepath.ToSlash(filepath.Dir(filepath.Dir(applied.directory)))
+			if opts.Unit != "" && applied.directory == filepath.ToSlash(serviceRenderPath(opts.Module, opts.Unit)) {
+				if _, statErr := tree.stat(root, filepath.FromSlash(applied.directory)); os.IsNotExist(statErr) {
+					// A directly supplied standalone unit occupies the root;
+					// RenderService uses the module-qualified flow layout.
+					applied.directory = "."
+				}
 			}
 		}
+		pending[applied] = true
 	}
-	var roots []kustomization
-	for _, customization := range kustomizations {
-		if !referencedDirectories[customization.directory] || appliedOverlay(customization.directory, opts) {
-			roots = append(roots, customization)
+	declared := map[appliedRoot]bool{}
+	applicationDirectories := map[string]bool{}
+	addApplications := func(documents []manifest) error {
+		for _, doc := range documents {
+			roots, err := applicationRoots(doc, opts)
+			if err != nil {
+				return err
+			}
+			for _, applied := range roots {
+				pending[applied] = true
+				declared[applied] = true
+				applicationDirectories[applied.directory] = true
+			}
+		}
+		return nil
+	}
+	var raw []manifest
+	for _, doc := range manifests {
+		if !covered[strings.SplitN(doc.path, "#", 2)[0]] {
+			raw = append(raw, doc)
 		}
 	}
-	sort.Slice(roots, func(i, j int) bool { return roots[i].path < roots[j].path })
-	filesystem, err := tree.fileSystem()
-	if err != nil {
+	if err := addApplications(raw); err != nil {
 		return nil, nil, err
 	}
+	built := map[appliedRoot]bool{}
+	outputs := map[appliedRoot][]manifest{}
+	for {
+		progress := false
+		for _, applied := range sortedAppliedRoots(pending) {
+			if built[applied] {
+				continue
+			}
+			built[applied], progress = true, true
+			directory, err := tree.checkedPath(filepath.Join(root, filepath.FromSlash(applied.directory)))
+			if err != nil {
+				return nil, nil, err
+			}
+			decoded, err := overlayManifestsInTree(tree, directory)
+			if err != nil {
+				return nil, nil, err
+			}
+			for i := range decoded {
+				decoded[i].namespace = &applied.namespace
+				decoded[i].path = strings.ReplaceAll(decoded[i].path, root+string(filepath.Separator), "")
+				if strings.HasPrefix(decoded[i].path, "kustomize:") {
+					decoded[i].path = strings.Replace(decoded[i].path, "#", "/rendered.yaml#", 1)
+				}
+			}
+			// Plain directory sources also belong to their applying root only.
+			if _, customized := byDirectory[applied.directory]; !customized {
+				for _, doc := range decoded {
+					covered[strings.SplitN(doc.path, "#", 2)[0]] = true
+				}
+			}
+			outputs[applied] = decoded
+			if err := addApplications(decoded); err != nil {
+				return nil, nil, err
+			}
+		}
+		if !progress {
+			break
+		}
+	}
+	// A concrete Application owns destination defaulting for its root.
 	var effective []manifest
-	for _, customization := range roots {
-		markKustomizationCoverage(root, customization, byDirectory, covered, map[string]bool{})
-		kustomizer := krusty.MakeKustomizer(krusty.MakeDefaultOptions())
-		directory, err := tree.checkedPath(filepath.Join(root, filepath.FromSlash(customization.directory)))
-		if err != nil {
-			return nil, nil, err
+	for _, applied := range sortedAppliedRoots(pending) {
+		if applicationDirectories[applied.directory] && !declared[applied] {
+			continue
 		}
-		resources, err := kustomizer.Run(filesystem, directory)
-		if err != nil {
-			return nil, nil, fmt.Errorf("%s: build Kustomize output: %w", customization.path, err)
-		}
-		output, err := resources.AsYaml()
-		if err != nil {
-			return nil, nil, fmt.Errorf("%s: encode Kustomize output: %w", customization.path, err)
-		}
-		renderedPath := "kustomize:" + filepath.ToSlash(filepath.Join(customization.directory, "rendered.yaml"))
-		decoded, nested, err := decodeYAML(renderedPath, output)
-		if err != nil {
-			return nil, nil, err
-		}
-		if nested != nil {
-			return nil, nil, fmt.Errorf("%s: Kustomize output contains a Kustomization", customization.path)
-		}
-		for i := range decoded {
-			decoded[i].namespace = customization.namespace
-		}
-		effective = append(effective, decoded...)
+		effective = append(effective, outputs[applied]...)
 	}
 	return covered, effective, nil
 }
 
-func markKustomizationCoverage(root string, customization kustomization, byDirectory map[string]kustomization, covered, visiting map[string]bool) {
+func markKustomizationCoverage(customization kustomization, byDirectory map[string]kustomization, covered, visiting map[string]bool) {
 	if visiting[customization.directory] {
 		return
 	}
 	visiting[customization.directory] = true
 	for _, reference := range customization.references {
-		info, err := statWithin(root, filepath.FromSlash(reference))
-		if err != nil {
-			continue
+		if nested, ok := byDirectory[reference]; ok {
+			markKustomizationCoverage(nested, byDirectory, covered, visiting)
+		} else {
+			covered[reference] = true
 		}
-		if info.IsDir() {
-			if nested, ok := byDirectory[reference]; ok {
-				markKustomizationCoverage(root, nested, byDirectory, covered, visiting)
-			}
-			continue
-		}
-		covered[reference] = true
 	}
 	delete(visiting, customization.directory)
 }
@@ -955,7 +1013,7 @@ func validateManifest(item manifest, contract *projectContract, promotable bool)
 			}
 		}
 	}
-	_, knownClusterScoped := clusterScopedKinds[item.kind]
+	knownClusterScoped := item.knownClusterScoped()
 	customClusterScoped := item.group != "" && !isBuiltInAPIGroup(item.group) &&
 		item.group != argoAPIGroup && metadataString(item.value, "namespace") == ""
 	if knownClusterScoped || customClusterScoped {
@@ -1467,20 +1525,25 @@ func inventoryHead(opts *RenderOptions) Inventory {
 }
 
 func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
+	tree, err := inspectRenderRoot(root, opts)
+	if err != nil {
+		return Inventory{}, err
+	}
+	defer releaseRenderRoot(tree, opts)
 	inventory := inventoryHead(opts)
 	hash := sha256.New()
-	err := walkRegularFiles(root, func(_, relative string, info os.FileInfo) error {
+	err = tree.walkRegularFiles(root, func(_, relative string, info os.FileInfo) error {
 		if relative == InventoryFilename {
 			return nil
 		}
-		file, err := openWithin(root, relative)
-		if err != nil {
-			return fmt.Errorf("open %s: %w", relative, err)
+		file, openErr := tree.open(root, relative)
+		if openErr != nil {
+			return fmt.Errorf("open %s: %w", relative, openErr)
 		}
 		defer file.Close()
 		fileHash := sha256.New()
-		if _, err := io.Copy(fileHash, file); err != nil {
-			return fmt.Errorf("hash %s: %w", relative, err)
+		if _, copyErr := io.Copy(fileHash, file); copyErr != nil {
+			return fmt.Errorf("hash %s: %w", relative, copyErr)
 		}
 		digest := hex.EncodeToString(fileHash.Sum(nil))
 		inventory.Files = append(inventory.Files, InventoryFile{Path: filepath.ToSlash(relative), SHA256: "sha256:" + digest, Size: info.Size()})
@@ -1531,19 +1594,19 @@ func walkRegularFiles(root string, visit func(path, relative string, info os.Fil
 	})
 }
 
-func replaceOwnedTree(stage, destination string) error {
-	if _, err := os.Stat(destination); err == nil {
-		if err = exchangeDirectories(stage, destination); err != nil {
+func replaceOwnedTree(root *os.Root, stage, destination string) error {
+	if _, err := root.Lstat(destination); err == nil {
+		if err = exchangeDirectoriesInRoot(root, stage, destination); err != nil {
 			return fmt.Errorf("atomically replace rendered owned tree: %w", err)
 		}
-		if err = os.RemoveAll(stage); err != nil {
+		if err = root.RemoveAll(stage); err != nil {
 			return fmt.Errorf("remove previous owned tree: %w", err)
 		}
 		return nil
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect previous owned tree: %w", err)
 	}
-	if err := os.Rename(stage, destination); err != nil {
+	if err := root.Rename(stage, destination); err != nil {
 		return fmt.Errorf("install rendered owned tree: %w", err)
 	}
 	return nil
@@ -1611,4 +1674,11 @@ func hostsDeliveryAPI(opts *RenderOptions) bool {
 	}
 	module, _, _ := opts.Host.DeliveryEndpoint()
 	return module != "" && module == opts.Module
+}
+
+// Authority classification uses the schema Kustomize itself uses. Object
+// uniqueness never depends on this partial scope knowledge.
+func (item manifest) knownClusterScoped() bool {
+	apiVersion, _ := item.value[keyAPIVersion].(string)
+	return openapi.IsCertainlyClusterScoped(kyaml.TypeMeta{APIVersion: apiVersion, Kind: item.kind})
 }

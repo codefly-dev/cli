@@ -236,7 +236,12 @@ func overlayManifestsInTree(tree *renderRoot, overlay string) ([]manifest, error
 // unit an agent rendered always has one; a tree assembled directly in a test
 // may not, and what it says about its workloads is the same either way.
 func overlayManifests(overlay string) ([]manifest, error) {
-	return overlayManifestsOnFS(overlay, filesys.MakeFsOnDisk())
+	tree, err := newRenderRoot(filepath.Dir(filepath.Dir(overlay)))
+	if err != nil {
+		return nil, err
+	}
+	defer tree.Close()
+	return overlayManifestsInTree(tree, overlay)
 }
 
 func overlayManifestsOnFS(overlay string, filesystem filesys.FileSystem) ([]manifest, error) {

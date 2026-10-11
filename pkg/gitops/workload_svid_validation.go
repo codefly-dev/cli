@@ -46,8 +46,8 @@ func (check *workloadIdentityCheck) currentObjects(tree *renderRoot, root string
 			continue
 		}
 		doc.path = strings.TrimPrefix(strings.TrimPrefix(doc.path, "kustomize:"), tree.path+string(filepath.Separator))
-		if doc.namespace == "" {
-			doc.namespace = check.scope.Namespace
+		if doc.namespace == nil {
+			doc.namespace = &check.scope.Namespace
 		}
 		owned = append(owned, doc)
 	}

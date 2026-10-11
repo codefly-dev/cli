@@ -434,7 +434,7 @@ func addOverlayPatches(tree *renderRoot, unitDir, environment string, projection
 
 // projectIntoManifests applies the projections to the overlay's manifests.
 func projectIntoManifests(tree *renderRoot, overlay string, projections []podProjection) error {
-	entries, err := os.ReadDir(overlay)
+	entries, err := tree.readDir(overlay)
 	if err != nil {
 		return err
 	}

@@ -25,21 +25,21 @@ func projectServiceConfiguration(ctx context.Context, tree *renderRoot, root str
 	if err != nil {
 		return err
 	}
-	if err := projectConfigurationValues(ctx, root, service.Name, env); err != nil {
+	if err := projectConfigurationValuesInTree(ctx, tree, root, service.Name, env); err != nil {
 		return fmt.Errorf("project service %s configuration: %w", service.Name, err)
 	}
 	// Before the secret projection: the derived secretKeyRefs are part of what
 	// the ExternalSecret must materialize.
-	if err := projectServiceInjection(ctx, root, service.Name, env, injection); err != nil {
+	if err := projectServiceInjectionInTree(ctx, tree, root, service.Name, env, injection); err != nil {
 		return fmt.Errorf("project service %s derived configuration: %w", service.Name, err)
 	}
-	if _, err := projectServiceSecrets(root, scope, service.Name, env.Name, env.ServiceSecrets); err != nil {
+	if _, err := projectServiceSecretsInTree(tree, root, scope, service.Name, env.Name, env.ServiceSecrets); err != nil {
 		return fmt.Errorf("project service %s secrets: %w", service.Name, err)
 	}
-	if _, err := projectServiceAutoscale(root, service.Name, env.Name, scope.Namespace, service.Autoscale); err != nil {
+	if _, err := projectServiceAutoscaleInTree(tree, root, service.Name, env.Name, scope.Namespace, service.Autoscale); err != nil {
 		return fmt.Errorf("project service %s autoscale: %w", service.Name, err)
 	}
-	if err := projectManagedIdentity(ctx, root, service, env, scope); err != nil {
+	if err := projectManagedIdentityInTree(ctx, tree, root, service, env, scope); err != nil {
 		return fmt.Errorf("project service %s managed identity: %w", service.Name, err)
 	}
 	if err := projectWorkloadSVID(tree, root, service, env, scope); err != nil {
@@ -48,10 +48,10 @@ func projectServiceConfiguration(ctx context.Context, tree *renderRoot, root str
 	if err := validateProjectedWorkloadSVID(tree, root, service, env, scope); err != nil {
 		return err
 	}
-	if err := validateProjectedConfiguration(root, service, env, scope); err != nil {
+	if err := validateProjectedConfigurationInTree(tree, root, service, env, scope); err != nil {
 		return err
 	}
-	return validateProjectedInjection(root, service.Name, env, injection)
+	return validateProjectedInjectionInTree(tree, root, service.Name, env, injection)
 }
 
 // projectManagedIdentity attaches the declared runtime identity and gives
@@ -59,6 +59,22 @@ func projectServiceConfiguration(ctx context.Context, tree *renderRoot, root str
 // Endpoint addresses and container choices remain owned by their renderers.
 func projectManagedIdentity(
 	ctx context.Context,
+	serviceRoot string,
+	service *resources.Service,
+	env *environments.Environment,
+	scope unitScope,
+) error {
+	tree, err := newRenderRoot(serviceRoot)
+	if err != nil {
+		return err
+	}
+	defer tree.Close()
+	return projectManagedIdentityInTree(ctx, tree, serviceRoot, service, env, scope)
+}
+
+func projectManagedIdentityInTree(
+	ctx context.Context,
+	tree *renderRoot,
 	serviceRoot string,
 	service *resources.Service,
 	env *environments.Environment,
@@ -78,10 +94,14 @@ func projectManagedIdentity(
 		identity = &environments.EnvironmentWorkloadIdentity{}
 	}
 	overlay := &coreservices.PodTemplateOverlay{}
-	if err := overlay.AttachServiceAccount(&coreservices.WorkloadServiceAccount{Annotations: identity.Annotations}, identity.Labels); err != nil {
+	if err = overlay.AttachServiceAccount(&coreservices.WorkloadServiceAccount{Annotations: identity.Annotations}, identity.Labels); err != nil {
 		return err
 	}
-	return coreservices.ProjectServiceAccount(ctx, filepath.Join(serviceRoot, "base"), scope.Namespace, service.Name, overlay)
+	filesystem, err := tree.fileSystem()
+	if err != nil {
+		return err
+	}
+	return coreservices.ProjectServiceAccountOnFS(ctx, &projectionFileSystem{FileSystem: filesystem, tree: tree}, filepath.Join(serviceRoot, "base"), scope.Namespace, service.Name, overlay)
 }
 
 // managedConsumption is one managed service a workload dials, named by the
@@ -182,7 +202,7 @@ func projectRenderedServiceConfiguration(
 		return err
 	}
 	modulesRoot := filepath.Join(stage, "modules")
-	moduleEntries, err := os.ReadDir(modulesRoot)
+	moduleEntries, err := tree.readDir(modulesRoot)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -194,7 +214,7 @@ func projectRenderedServiceConfiguration(
 			continue
 		}
 		servicesRoot := filepath.Join(modulesRoot, moduleEntry.Name(), serviceUnitDir)
-		serviceEntries, err := os.ReadDir(servicesRoot)
+		serviceEntries, err := tree.readDir(servicesRoot)
 		if os.IsNotExist(err) {
 			continue
 		}

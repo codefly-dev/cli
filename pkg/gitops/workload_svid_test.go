@@ -419,6 +419,7 @@ func TestWorkloadSVIDRechecksPeersBeforeTreePromotion(t *testing.T) {
 				require.NoError(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, unit), unit, service, env, scope, serviceInjection{}))
 				options := &RenderOptions{
 					Module: module, Environment: env.Name, Namespace: scope.Namespace, Promotable: true,
+					UnitNames:              []string{"api"},
 					workloadIdentityChecks: []workloadIdentityCheck{{path: "services/api", service: service, environment: env, scope: scope}},
 				}
 				captureIdentityChecks(t, root, options)
