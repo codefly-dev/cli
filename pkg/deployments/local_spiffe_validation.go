@@ -131,23 +131,38 @@ func validateIssuerWorkload(ctx context.Context, kubectl Kubectl, kind, name str
 	return nil
 }
 
-// Reject missing, split or repeated flags: accepting one matching occurrence
-// would let a later argument restore the default approver or change the signer.
+// Security flags take string values: --flag=value and --flag value are
+// equivalent, the last value wins, and -- ends flag parsing. Other flags must
+// use = so their arity cannot hide a security flag as an unparsed value. Refuse
+// positional/ambiguous arguments rather than guess how an issuer parses them.
 func requireIssuerArgument(workload string, container *issuerContainer, expected string) error {
-	flag, _, _ := strings.Cut(expected, "=")
-	count := 0
-	for _, arg := range container.Args {
-		key, _, _ := strings.Cut(arg, "=")
-		if key != flag {
+	flag, want, _ := strings.Cut(expected, "=")
+	flagName := strings.TrimLeft(flag, "-")
+	var effective string
+	found := false
+	for i := 0; i < len(container.Args); i++ {
+		arg := container.Args[i]
+		if arg == "--" {
+			break
+		}
+		key, value, inline := strings.Cut(arg, "=")
+		if strings.TrimLeft(key, "-") != flagName || !strings.HasPrefix(key, "-") {
+			if !strings.HasPrefix(key, "-") || !inline {
+				return fmt.Errorf("%s container %s must declare %s; cannot verify ambiguous argument %q (use --name=value for other flags)", workload, container.Name, expected, arg)
+			}
 			continue
 		}
-		if arg != expected {
-			return fmt.Errorf("%s container %s must declare %s; found %q", workload, container.Name, expected, arg)
+		if !inline {
+			i++
+			if i == len(container.Args) {
+				return fmt.Errorf("%s container %s must declare %s; %s has no value", workload, container.Name, expected, flag)
+			}
+			value = container.Args[i]
 		}
-		count++
+		effective, found = value, true
 	}
-	if count != 1 {
-		return fmt.Errorf("%s container %s must declare %s exactly once", workload, container.Name, expected)
+	if !found || effective != want {
+		return fmt.Errorf("%s container %s must declare %s; effective %s value is %q", workload, container.Name, expected, flag, effective)
 	}
 	return nil
 }

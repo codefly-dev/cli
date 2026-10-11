@@ -359,18 +359,23 @@ func addOverlayPatches(unitDir, environment string, projections []podProjection)
 	if len(projections) == 0 {
 		return nil
 	}
-	overlay := filepath.Join(unitDir, "overlays", environment)
+	overlay, err := renderOverlay(unitDir, environment)
+	if err != nil {
+		return err
+	}
 	var path string
 	for _, name := range []string{kustomizationFile, kustomizationFileAlt} {
-		if _, err := os.Stat(filepath.Join(overlay, name)); err == nil {
-			path = filepath.Join(overlay, name)
+		if _, statErr := statWithin(overlay, name); statErr == nil {
+			path = name
 			break
+		} else if !os.IsNotExist(statErr) {
+			return statErr
 		}
 	}
 	if path == "" {
 		return projectIntoManifests(overlay, projections)
 	}
-	data, err := os.ReadFile(path)
+	data, err := readWithin(overlay, path)
 	if err != nil {
 		return err
 	}
@@ -394,7 +399,7 @@ func addOverlayPatches(unitDir, environment string, projections []podProjection)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, encoded, 0o600)
+	return writeWithin(overlay, path, encoded)
 }
 
 // projectIntoManifests applies the projections to the overlay's manifests.
@@ -445,7 +450,7 @@ func projectIntoManifests(overlay string, projections []podProjection) error {
 		if err = encoder.Close(); err != nil {
 			return err
 		}
-		if err = os.WriteFile(path, out.Bytes(), 0o600); err != nil {
+		if err = writeWithin(overlay, entry.Name(), out.Bytes()); err != nil {
 			return err
 		}
 	}

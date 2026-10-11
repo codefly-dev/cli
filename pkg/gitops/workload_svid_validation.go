@@ -2,7 +2,6 @@ package gitops
 
 import (
 	"fmt"
-	"path/filepath"
 	"reflect"
 	"strings"
 
@@ -26,7 +25,11 @@ func validateProjectedWorkloadSVID(root string, service *resources.Service, env 
 	if _, exists := scope.WorkloadPeers[unique]; !exists && !requestsWorkloadIdentity(service) {
 		return nil
 	}
-	documents, err := overlayManifests(filepath.Join(root, "overlays", env.Name))
+	overlay, err := serviceRenderOverlay(root, scope.Module, service.Name, env.Name)
+	if err != nil {
+		return err
+	}
+	documents, err := overlayManifests(overlay)
 	if err != nil {
 		return err
 	}
@@ -36,10 +39,25 @@ func validateProjectedWorkloadSVID(root string, service *resources.Service, env 
 // Use validateTree's effective set, not another build of a nested overlay that
 // could miss a transformation made by an enclosing Kustomization.
 func validateWorkloadIdentityChecks(documents []manifest, checks []workloadIdentityCheck) error {
+	// Every overlay is applied to the same cluster. Judge peer object identity
+	// across the whole tree before narrowing workload bindings to their owner.
+	for _, check := range checks {
+		if !requestsWorkloadIdentity(check.service) {
+			continue
+		}
+		unique := resources.ServiceUnique(check.scope.Module, check.service.Name)
+		files, err := check.scope.WorkloadPeers.files(check.environment.Host, unique)
+		if err != nil {
+			return err
+		}
+		if err = validateWorkloadPeerFiles(documents, check.service.Name, check.scope.Namespace, files, check.path); err != nil {
+			return err
+		}
+	}
 	for _, check := range checks {
 		var unit []manifest
 		for _, doc := range documents {
-			if strings.HasPrefix(strings.TrimPrefix(doc.path, "kustomize:"), check.path+"/") {
+			if manifestFromService(doc, check.path) {
 				unit = append(unit, doc)
 			}
 		}
@@ -48,6 +66,10 @@ func validateWorkloadIdentityChecks(documents []manifest, checks []workloadIdent
 		}
 	}
 	return nil
+}
+
+func manifestFromService(doc manifest, servicePath string) bool {
+	return strings.HasPrefix(strings.TrimPrefix(doc.path, "kustomize:"), servicePath+"/")
 }
 
 func validateWorkloadSVIDManifests(documents []manifest, service *resources.Service, env *environments.Environment, scope unitScope) error {
@@ -70,7 +92,7 @@ func validateWorkloadSVIDManifests(documents []manifest, service *resources.Serv
 	if err != nil {
 		return err
 	}
-	if err = validateWorkloadPeerFiles(documents, service.Name, scope.Namespace, files); err != nil {
+	if err = validateWorkloadPeerFiles(documents, service.Name, scope.Namespace, files, ""); err != nil {
 		return err
 	}
 	workloads, err := workloadsFromManifests(documents)
@@ -113,25 +135,31 @@ func validateWorkloadSVIDManifests(documents []manifest, service *resources.Serv
 	return nil
 }
 
-func validateWorkloadPeerFiles(documents []manifest, service, namespace string, files map[string]string) error {
+func validateWorkloadPeerFiles(documents []manifest, service, namespace string, files map[string]string, ownerPath string) error {
 	name := service + "-workload-peers"
+	var found *manifest
+	for i := range documents {
+		doc := &documents[i]
+		if doc.kind != kindConfigMap || metadataString(doc.value, keyName) != name || metadataString(doc.value, keyNamespace) != namespace {
+			continue
+		}
+		if found != nil {
+			return fmt.Errorf("ConfigMap %s/%s must occur exactly once in the effective workload peer plan: produced by both %s and %s", namespace, name, found.path, doc.path)
+		}
+		found = doc
+	}
+	if found == nil {
+		return fmt.Errorf("ConfigMap %s/%s must occur exactly once in the effective workload peer plan", namespace, name)
+	}
+	if ownerPath != "" && !manifestFromService(*found, ownerPath) {
+		return fmt.Errorf("ConfigMap %s/%s is produced by %s, but its workload peer plan belongs to %s/", namespace, name, found.path, ownerPath)
+	}
 	expected := make(map[string]any, len(files))
 	for key, value := range files {
 		expected[key] = value
 	}
-	count := 0
-	for _, doc := range documents {
-		if doc.kind != kindConfigMap || metadataString(doc.value, keyName) != name {
-			continue
-		}
-		count++
-		if doc.group != "" || metadataString(doc.value, keyNamespace) != namespace ||
-			!reflect.DeepEqual(mapField(doc.value, dataKey), expected) || len(mapField(doc.value, "binaryData")) != 0 {
-			return fmt.Errorf("ConfigMap %s/%s differs from the composition workload peer plan", namespace, name)
-		}
-	}
-	if count != 1 {
-		return fmt.Errorf("ConfigMap %s/%s must occur exactly once in the effective workload peer plan", namespace, name)
+	if found.group != "" || !reflect.DeepEqual(mapField(found.value, dataKey), expected) || len(mapField(found.value, "binaryData")) != 0 {
+		return fmt.Errorf("ConfigMap %s/%s at %s differs from the composition workload peer plan", namespace, name, found.path)
 	}
 	return nil
 }

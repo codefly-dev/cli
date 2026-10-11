@@ -83,17 +83,28 @@ func pathSegment(what, value string) (string, error) {
 // path-component rule as GitOps publication. confinedJoin checks filepath.Rel
 // against the render root and refuses symlinked directories as well.
 func serviceRenderOverlay(root, module, service, environment string) (string, error) {
-	const environmentComponent = "environment"
-	for _, component := range []struct{ kind, value string }{{"module", module}, {"service", service}, {environmentComponent, environment}} {
-		if strings.ContainsAny(component.value, "/\\") || strings.Contains(component.value, "..") {
-			return "", fmt.Errorf("%s %q is not a safe path component", component.kind, component.value)
-		}
-		if err := validatePathComponent(component.kind, component.value); err != nil {
+	for _, component := range []struct{ kind, value string }{{"module", module}, {"service", service}} {
+		if err := validateRenderComponent(component.kind, component.value); err != nil {
 			return "", err
 		}
-		if component.kind != environmentComponent && !names.IsModule(component.value) {
+		if !names.IsModule(component.value) {
 			return "", fmt.Errorf("%s %q must contain lowercase alphanumerics and single dashes", component.kind, component.value)
 		}
+	}
+	return renderOverlay(root, environment)
+}
+
+func validateRenderComponent(kind, value string) error {
+	if strings.ContainsAny(value, "/\\") || strings.Contains(value, "..") {
+		return fmt.Errorf("%s %q is not a safe path component", kind, value)
+	}
+	return validatePathComponent(kind, value)
+}
+
+// Shared by service projection and the token/trust-anchor patch writer.
+func renderOverlay(root, environment string) (string, error) {
+	if err := validateRenderComponent("environment", environment); err != nil {
+		return "", err
 	}
 	return confinedJoin(root, filepath.Join("overlays", environment))
 }

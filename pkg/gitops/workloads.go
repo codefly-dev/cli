@@ -212,7 +212,7 @@ func renderedContainers(workload string, raw []any, tokens map[string][]tokenSou
 // may not, and what it says about its workloads is the same either way.
 func overlayManifests(overlay string) ([]manifest, error) {
 	for _, name := range []string{kustomizationFile, kustomizationFileAlt} {
-		if _, err := os.Stat(filepath.Join(overlay, name)); err == nil {
+		if _, err := statWithin(overlay, name); err == nil {
 			kustomizer := krusty.MakeKustomizer(krusty.MakeDefaultOptions())
 			built, buildErr := kustomizer.Run(filesys.MakeFsOnDisk(), overlay)
 			if buildErr != nil {
@@ -224,6 +224,8 @@ func overlayManifests(overlay string) ([]manifest, error) {
 			}
 			manifests, _, decodeErr := decodeYAML("kustomize:"+filepath.ToSlash(overlay), output)
 			return manifests, decodeErr
+		} else if !os.IsNotExist(err) {
+			return nil, err
 		}
 	}
 	entries, err := os.ReadDir(overlay)

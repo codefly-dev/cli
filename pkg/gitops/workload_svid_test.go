@@ -212,6 +212,7 @@ func TestWorkloadSVIDRefusesHostileRenderNamesBeforeWriting(t *testing.T) {
 					target.Name = name
 				}
 				require.ErrorContains(t, projectWorkloadSVID(unit, service, &target, scope), fmt.Sprintf("%s %q", field, name))
+				require.ErrorContains(t, validateProjectedWorkloadSVID(unit, service, &target, scope), fmt.Sprintf("%s %q", field, name))
 				// The outer projection must refuse the name before earlier steps
 				// can use it to write a ServiceAccount or configuration resource.
 				require.ErrorContains(t, projectServiceConfiguration(t.Context(), unit, service, &target, scope, serviceInjection{}), fmt.Sprintf("%s %q", field, name))
@@ -237,6 +238,7 @@ func TestWorkloadSVIDRefusesOverlayOutsideRenderRoot(t *testing.T) {
 	require.NoError(t, os.Symlink(filepath.Join(external, env.Name), overlay))
 	before := snapshotTree(t, external)
 	require.ErrorContains(t, projectWorkloadSVID(unit, service, env, scope), "symbolic link")
+	require.ErrorContains(t, validateProjectedWorkloadSVID(unit, service, env, scope), "symbolic link")
 	require.Equal(t, before, snapshotTree(t, external))
 }
 
@@ -424,6 +426,80 @@ func TestWorkloadSVIDRechecksPeersBeforeTreePromotion(t *testing.T) {
 				appendIdentityPatch(t, unit, env.Name, kindConfigMap, name+"-workload-peers", "- op: add\n  path: /data/"+key+"\n  value: spiffe://local.example/ns/example-app/sa/non-declaring\n")
 				_, err = validateTree(root, options)
 				require.ErrorContains(t, err, "ConfigMap "+scope.Namespace+"/"+name+"-workload-peers")
+			})
+		}
+	}
+}
+
+func TestWorkloadSVIDRefusesSiblingPeerConfigMaps(t *testing.T) {
+	workspace, env := workloadIdentityComposition(t)
+	peers, err := resolveWorkloadPeers(t.Context(), workspace, env)
+	require.NoError(t, err)
+	for module, name := range map[string]string{"app": "api", "edge": "gateway"} {
+		for _, variant := range []string{"changed data", "identical data", "different namespace", "wrong owner"} {
+			t.Run(module+"/"+variant, func(t *testing.T) {
+				scope := moduleScope(env, workspace, module)
+				scope.WorkloadPeers = peers
+				service := &resources.Service{Name: name, WorkspaceConfigurationDependencies: []string{"workload-identity"}}
+				sibling := &resources.Service{Name: "sibling"}
+				root := t.TempDir()
+				for _, svc := range []*resources.Service{service, sibling} {
+					staging := t.TempDir()
+					body := strings.ReplaceAll(sidecarDeployment, "name: api", "name: "+svc.Name)
+					body = strings.ReplaceAll(body, "serviceAccountName: api", "serviceAccountName: "+svc.Name)
+					body = strings.Replace(body, "metadata:\n", "metadata:\n  namespace: "+scope.Namespace+"\n", 1)
+					require.NoError(t, kustomizedWorkload(body)(t.Context(), staging))
+					require.NoError(t, os.MkdirAll(filepath.Join(root, "services"), 0o755))
+					unit := filepath.Join(root, "services", svc.Name)
+					require.NoError(t, os.Rename(filepath.Join(staging, "services", "api"), unit))
+					require.NoError(t, projectServiceConfiguration(t.Context(), unit, svc, env, scope, serviceInjection{}))
+				}
+				options := &RenderOptions{
+					Module: module, Environment: env.Name, Namespace: scope.Namespace, Promotable: true,
+					CheckUnitDirectories: true,
+					Units: []InventoryUnit{
+						{Name: name, Kind: "service", Path: "services/" + name},
+						{Name: sibling.Name, Kind: "service", Path: "services/" + sibling.Name},
+					},
+					workloadIdentityChecks: []workloadIdentityCheck{
+						{path: "services/" + name, service: service, environment: env, scope: scope},
+						{path: "services/" + sibling.Name, service: sibling, environment: env, scope: scope},
+					},
+				}
+				_, err := validateTree(root, options)
+				require.NoError(t, err)
+				files, err := peers.files(env.Host, resources.ServiceUnique(module, name))
+				require.NoError(t, err)
+				if variant == "changed data" {
+					for key := range files {
+						files[key] = "spiffe://local.example/ns/example-app/sa/non-declaring\n"
+					}
+				}
+				namespace := scope.Namespace
+				if variant == "different namespace" {
+					namespace += "-other"
+				}
+				collision := map[string]any{
+					keyAPIVersion: "v1", keyKind: kindConfigMap,
+					keyMetadata: map[string]any{keyName: name + "-workload-peers", keyNamespace: namespace},
+					dataKey:     files,
+				}
+				data, err := yaml.Marshal(collision)
+				require.NoError(t, err)
+				overlay := filepath.Join(root, "services", sibling.Name, "overlays", env.Name)
+				require.NoError(t, os.WriteFile(filepath.Join(overlay, "collision.yaml"), data, 0o600))
+				require.NoError(t, addKustomizationResource(overlay, "collision.yaml"))
+				if variant == "wrong owner" {
+					appendIdentityPatch(t, filepath.Join(root, "services", name), env.Name, kindConfigMap, name+"-workload-peers", "- op: replace\n  path: /metadata/name\n  value: renamed-peers\n")
+				}
+				_, err = validateTree(root, options)
+				if variant == "different namespace" {
+					require.NoError(t, err)
+					return
+				}
+				require.ErrorContains(t, err, "ConfigMap "+scope.Namespace+"/"+name+"-workload-peers")
+				require.ErrorContains(t, err, "services/"+name+"/")
+				require.ErrorContains(t, err, "services/sibling/overlays/"+env.Name+"/rendered.yaml")
 			})
 		}
 	}

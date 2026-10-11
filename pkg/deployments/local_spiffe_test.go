@@ -312,7 +312,7 @@ func TestExistingIssuerRefusesChangedSecurityArguments(t *testing.T) {
 		{"cert-manager-csi-driver-spiffe-driver", "--issuer-name", "other"},
 		{"cert-manager-csi-driver-spiffe-driver", "--trust-domain", "other.test"},
 	} {
-		for _, change := range []string{"missing", "replaced", "duplicate", "split"} {
+		for _, change := range []string{"missing", "replaced", "duplicate", "split", "terminated"} {
 			t.Run(tc.name+"/"+tc.flag+"/"+change, func(t *testing.T) {
 				workloads := reviewedIssuerWorkloads(t)
 				containers := workloads[tc.name].Spec.Template.Spec.Containers
@@ -330,6 +330,8 @@ func TestExistingIssuerRefusesChangedSecurityArguments(t *testing.T) {
 							args = append(args, arg, tc.flag+"="+tc.value)
 						case "split":
 							args = append(args, tc.flag, tc.value)
+						case "terminated":
+							args = append(args, "--", arg)
 						}
 					}
 					containers[i].Args = args
@@ -346,5 +348,35 @@ func TestExistingIssuerRefusesChangedSecurityArguments(t *testing.T) {
 				require.ErrorContains(t, err, tc.flag)
 			})
 		}
+	}
+}
+
+func TestIssuerArgumentUsesEffectiveFlagValue(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		valid bool
+	}{
+		{"plain", []string{disableDefaultApprover}, true},
+		{"split", []string{"--controllers", "*,-certificaterequests-approver"}, true},
+		{"terminated before", []string{"--cluster-resource-namespace=cert-manager", "--", disableDefaultApprover}, false},
+		{"terminated after", []string{disableDefaultApprover, "--", "--controllers=*"}, true},
+		{"later enabled", []string{disableDefaultApprover, "--controllers=*"}, false},
+		{"later enabled split", []string{disableDefaultApprover, "--controllers", "*"}, false},
+		{"single dash override", []string{disableDefaultApprover, "-controllers=*"}, false},
+		{"later disabled", []string{"--controllers=*", disableDefaultApprover}, true},
+		{"missing value", []string{disableDefaultApprover, "--controllers"}, false},
+		{"empty value", []string{disableDefaultApprover, "--controllers="}, false},
+		{"consumed by another flag", []string{"--cluster-resource-namespace", disableDefaultApprover}, false},
+		{"terminator consumed as value", []string{"--controllers", "--", disableDefaultApprover}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := requireIssuerArgument("cert-manager", &issuerContainer{Name: certManagerController, Args: tc.args}, disableDefaultApprover)
+			if tc.valid {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, disableDefaultApprover)
+			}
+		})
 	}
 }

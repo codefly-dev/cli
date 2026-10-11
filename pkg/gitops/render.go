@@ -541,8 +541,8 @@ func validateTree(root string, opts *RenderOptions) ([]manifest, error) {
 		contract.clusterResources["/Namespace"] = struct{}{}
 	}
 	for _, item := range manifests {
-		if err := validateManifest(item, contract, false); err != nil {
-			return nil, fmt.Errorf("%s: %w", item.path, err)
+		if validationErr := validateManifest(item, contract, false); validationErr != nil {
+			return nil, fmt.Errorf("%s: %w", item.path, validationErr)
 		}
 	}
 	if !opts.Promotable {
