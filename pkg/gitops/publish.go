@@ -1769,12 +1769,21 @@ func localRepositoryPath(ctx context.Context, declared string) (string, error) {
 	if !filepath.IsAbs(path) {
 		return "", fmt.Errorf("the local delivery repository %q is not an absolute path", declared)
 	}
-	path = filepath.Clean(path)
-	bare, err := isolatedGit(ctx, path, "rev-parse", "--is-bare-repository")
-	if err != nil || bare != "true" {
-		return "", fmt.Errorf("the local delivery repository %s is not a bare git repository (%v)", path, err)
+	// Resolved the way the filesystem traverses it — every symbolic link
+	// followed in turn, ".." taken from where the link led — never cleaned
+	// lexically: "alias/../manifests.git" through a directory link names
+	// the link target's sibling, which is the repository git itself opened
+	// for every other step of this publish, while a lexical clean names
+	// another one beside the link.
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve the local delivery repository %q: %w", declared, err)
 	}
-	return path, nil
+	bare, err := isolatedGit(ctx, resolved, "rev-parse", "--is-bare-repository")
+	if err != nil || bare != "true" {
+		return "", fmt.Errorf("the local delivery repository %s (resolved from %q) is not a bare git repository (%v)", resolved, declared, err)
+	}
+	return resolved, nil
 }
 
 // isolatedGit runs git against one repository with no configuration but that

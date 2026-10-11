@@ -65,6 +65,23 @@ type DeliveryJob struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
 	Path      string `json:"path"`
+	// Application is the Argo CD Application the module's ApplicationSet
+	// stamps for the Job's overlay on the in-cluster tenant, as the CLI
+	// rendered it: the one Application a local run may ask for a delivery.
+	Application DeliveryApplication `json:"application"`
+}
+
+// DeliveryApplication is an Argo CD Application's full identity: its name and
+// what it syncs, from where, to where. A local run asks for a sync only from
+// the Application matching ALL of it — never one found by its path alone,
+// which every tenant's Application of the overlay shares.
+type DeliveryApplication struct {
+	Name           string `json:"name"`
+	RepoURL        string `json:"repoURL"`
+	TargetRevision string `json:"targetRevision"`
+	Path           string `json:"path"`
+	Server         string `json:"server"`
+	Namespace      string `json:"namespace"`
 }
 
 // DeliveryJobsOf lists the delivery Jobs a module's promoted tree renders for
@@ -120,7 +137,81 @@ func DeliveryJobsOf(tree, publishedPath, environment string) ([]DeliveryJob, err
 		return nil, err
 	}
 	sort.Slice(jobs, func(i, j int) bool { return jobs[i].Path < jobs[j].Path })
+	if len(jobs) == 0 {
+		return jobs, nil
+	}
+	// A tree with no Argo bootstrap (a flat workspace) identifies no
+	// Application; the jobs carry none, and a local run refuses to ask for a
+	// delivery it cannot address.
+	set := path.Join(start, "bootstrap", "applicationset.yaml")
+	if _, statErr := fs.Stat(files, set); errors.Is(statErr, fs.ErrNotExist) {
+		return jobs, nil
+	}
+	applications, err := inClusterApplications(files, set)
+	if err != nil {
+		return nil, err
+	}
+	for index := range jobs {
+		overlay := path.Dir(jobs[index].Path)
+		application, found := applications[overlay]
+		if !found {
+			return nil, fmt.Errorf("the module's ApplicationSet stamps no in-cluster Application for the delivery overlay %s", overlay)
+		}
+		jobs[index].Application = application
+	}
 	return jobs, nil
+}
+
+// inClusterApplications reads the module's rendered ApplicationSet and returns
+// the Application it stamps on the in-cluster tenant for each overlay, by
+// overlay path: the name its template gives, the repository and revision it
+// syncs, and the destination.
+func inClusterApplications(files fs.FS, file string) (map[string]DeliveryApplication, error) {
+	data, err := fs.ReadFile(files, file)
+	if err != nil {
+		return nil, fmt.Errorf("read the module's ApplicationSet %s: %w", file, err)
+	}
+	var set argoApplicationSetManifest
+	if err = yaml.Unmarshal(data, &set); err != nil {
+		return nil, fmt.Errorf("read the module's ApplicationSet %s: %w", file, err)
+	}
+	if set.Kind != kindApplicationSet || len(set.Spec.Generators) == 0 || len(set.Spec.Generators[0].Matrix.Generators) != 2 {
+		return nil, fmt.Errorf("%s is not the ApplicationSet the CLI renders (an in-cluster fan-out first)", file)
+	}
+	tenants, components := set.Spec.Generators[0].Matrix.Generators[0].List, set.Spec.Generators[0].Matrix.Generators[1].List
+	if tenants == nil || components == nil || len(tenants.Elements) != 1 {
+		return nil, fmt.Errorf("%s is not the ApplicationSet the CLI renders (one in-cluster tenant, then its components)", file)
+	}
+	var tenant argoTenantElement
+	if err = remarshal(tenants.Elements[0], &tenant); err != nil || tenant.Tenant != defaultTenant || tenant.Server != inClusterServer {
+		return nil, fmt.Errorf("%s does not fan out to the in-cluster tenant first (%v)", file, err)
+	}
+	prefix := tenant.Tenant
+	if len(prefix) > tenantNameBudget {
+		prefix = prefix[:tenantNameBudget]
+	}
+	applications := map[string]DeliveryApplication{}
+	for _, raw := range components.Elements {
+		var component argoComponentElement
+		if err = remarshal(raw, &component); err != nil {
+			return nil, err
+		}
+		applications[component.Overlay] = DeliveryApplication{
+			Name:    prefix + "-" + component.Component,
+			RepoURL: set.Spec.Template.Spec.Source.RepoURL, TargetRevision: set.Spec.Template.Spec.Source.TargetRevision,
+			Path: component.Overlay, Server: tenant.Server, Namespace: component.Namespace,
+		}
+	}
+	return applications, nil
+}
+
+// remarshal decodes a generic YAML value into a typed one.
+func remarshal(value, into any) error {
+	encoded, err := yaml.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return yaml.Unmarshal(encoded, into)
 }
 
 // DeliveryReceipts are the lines of a delivery Job's log that answer for a

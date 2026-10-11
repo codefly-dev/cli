@@ -34,8 +34,10 @@ type renderedWorkload struct {
 	InitContainers []renderedContainer
 	tokenMounts    map[string][]tokenMount
 	volumes        []string
-	// mountPaths are every container's mount paths, by container name.
-	mountPaths map[string][]string
+	// mounts are every container's volume mounts, by container name.
+	mounts map[string][]containerMount
+	// templateAnnotations are the pod template's annotations.
+	templateAnnotations map[string]any
 }
 
 // renderedContainer is one container of a pod template and its pinned image.
@@ -61,6 +63,17 @@ type tokenMount struct {
 	audience  string
 	file      string
 	subPathed bool
+	// lifetime is the projection's expirationSeconds; 0 when unset, which
+	// the kubelet reads as 3600.
+	lifetime int64
+	// mountPath is where the volume is mounted.
+	mountPath string
+}
+
+// containerMount is one volume mount of a container.
+type containerMount struct {
+	volume string
+	path   string
 }
 
 // tokenSource is a projected token volume's audience and the path of the
@@ -68,6 +81,7 @@ type tokenMount struct {
 type tokenSource struct {
 	audience string
 	path     string
+	lifetime int64
 }
 
 // renderedWorkloads reads the pod-template-bearing workloads out of a unit's
@@ -90,8 +104,10 @@ func renderedWorkloads(unitDir, environment string) ([]renderedWorkload, error) 
 		if !ok {
 			continue
 		}
-		workload := renderedWorkload{Name: metadataString(item.value, "name"), Kind: item.kind, tokenMounts: map[string][]tokenMount{}, mountPaths: map[string][]string{}}
+		workload := renderedWorkload{Name: metadataString(item.value, "name"), Kind: item.kind, tokenMounts: map[string][]tokenMount{}, mounts: map[string][]containerMount{}}
 		workload.ServiceAccount, _ = spec["serviceAccountName"].(string)
+		workload.templateAnnotations = mapField(mapField(mapField(item.value, "spec"), "template"), "metadata")
+		workload.templateAnnotations = mapField(workload.templateAnnotations, "annotations")
 		if workload.ServiceAccount == "" {
 			workload.ServiceAccount = defaultServiceAccount
 		}
@@ -103,12 +119,12 @@ func renderedWorkloads(unitDir, environment string) ([]renderedWorkload, error) 
 				}
 			}
 		}
-		containers, err := renderedContainers(workload.Name, sliceField(spec, "containers"), tokens, workload.tokenMounts, workload.mountPaths)
+		containers, err := renderedContainers(workload.Name, sliceField(spec, "containers"), tokens, workload.tokenMounts, workload.mounts)
 		if err != nil {
 			return nil, err
 		}
 		workload.Containers = containers
-		if workload.InitContainers, err = renderedContainers(workload.Name, sliceField(spec, "initContainers"), tokens, workload.tokenMounts, workload.mountPaths); err != nil {
+		if workload.InitContainers, err = renderedContainers(workload.Name, sliceField(spec, "initContainers"), tokens, workload.tokenMounts, workload.mounts); err != nil {
 			return nil, err
 		}
 		workloads = append(workloads, workload)
@@ -132,7 +148,7 @@ func audienceTokenVolumes(raw []any) map[string]tokenSource {
 			token := mapField(projected, "serviceAccountToken")
 			if audience, _ := token["audience"].(string); audience != "" && name != "" {
 				path, _ := token["path"].(string)
-				audiences[name] = tokenSource{audience: audience, path: path}
+				audiences[name] = tokenSource{audience: audience, path: path, lifetime: integerField(token, "expirationSeconds")}
 			}
 		}
 	}
@@ -141,7 +157,7 @@ func audienceTokenVolumes(raw []any) map[string]tokenSource {
 
 // renderedContainers reads a pod template's containers, their pinned images
 // and the audience-bearing token volumes each mounts.
-func renderedContainers(workload string, raw []any, tokens map[string]tokenSource, mounts map[string][]tokenMount, paths map[string][]string) ([]renderedContainer, error) {
+func renderedContainers(workload string, raw []any, tokens map[string]tokenSource, mounts map[string][]tokenMount, paths map[string][]containerMount) ([]renderedContainer, error) {
 	var containers []renderedContainer
 	for _, entry := range raw {
 		container, _ := entry.(map[string]any)
@@ -161,7 +177,7 @@ func renderedContainers(workload string, raw []any, tokens map[string]tokenSourc
 			mount, _ := raw.(map[string]any)
 			volume, _ := mount["name"].(string)
 			mountPath, _ := mount["mountPath"].(string)
-			paths[name] = append(paths[name], mountPath)
+			paths[name] = append(paths[name], containerMount{volume: volume, path: path.Clean(mountPath)})
 			if source, carries := tokens[volume]; carries {
 				subPath, _ := mount["subPath"].(string)
 				subPathExpr, _ := mount["subPathExpr"].(string)
@@ -173,7 +189,7 @@ func renderedContainers(workload string, raw []any, tokens map[string]tokenSourc
 					file = path.Join(mountPath, strings.TrimPrefix(strings.TrimPrefix(source.path, subPath), "/"))
 				}
 				mounts[name] = append(mounts[name], tokenMount{
-					volume: volume, audience: source.audience, file: file,
+					volume: volume, audience: source.audience, file: file, lifetime: source.lifetime, mountPath: path.Clean(mountPath),
 					subPathed: subPath != "" || subPathExpr != "",
 				})
 			}
@@ -223,4 +239,23 @@ func overlayManifests(overlay string) ([]manifest, error) {
 		manifests = append(manifests, decoded...)
 	}
 	return manifests, nil
+}
+
+// integerField reads an integer a manifest decodes as int, int64, uint64 or
+// float64, or 0 when absent or not a number.
+func integerField(value map[string]any, key string) int64 {
+	switch number := value[key].(type) {
+	case int:
+		return int64(number)
+	case int64:
+		return number
+	case uint64:
+		if number > 1<<62 {
+			return 1 << 62
+		}
+		return int64(number)
+	case float64:
+		return int64(number)
+	}
+	return 0
 }

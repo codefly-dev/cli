@@ -41,14 +41,23 @@ const (
 	identityTokenVolume = "codefly-workload-identity"
 	identityTokenMount  = "/var/run/secrets/codefly" //nolint:gosec // G101: a mount path, not a credential
 	identityTokenFile   = "token"
-	// identityTokenSeconds is the token's lifetime; the kubelet rotates it at
-	// 80% and the SDK re-reads the file before every mint.
-	identityTokenSeconds = 3600
+	// identityTokenSeconds is the token's lifetime: the longest a host admits
+	// for a mint token (module-saas-starter#1068 refuses one spanning more
+	// than 600 s, so a copied token is replayable for at most that long), and
+	// the shortest the kubelet projects. It rotates at 80% and the SDK
+	// re-reads the file before every mint.
+	identityTokenSeconds = 600
 
 	// LocalTrustAnchorObjects names the ConfigMap (verification_policy.json)
 	// and the Secret (trusted_root.json) a local cluster run provisions in the
 	// verifier's namespace, and the render mounts into the verifier.
 	LocalTrustAnchorObjects = "codefly-delivery-trust"
+
+	// TrustAnchorAnnotation is the pod-template annotation a local cluster
+	// run stamps with the trust anchor's digest. It is the run's, and the
+	// render refuses a workload that carries it in desired state: a value
+	// Argo CD owned would revert the stamp the revocation depends on.
+	TrustAnchorAnnotation = "codefly.dev/trust-anchor"
 
 	// The manifest keys a projection writes and reads.
 	keyName                = "name"
@@ -63,6 +72,9 @@ func projectWorkloadIdentity(owned string, opts *RenderOptions) error {
 	if opts.Host == nil {
 		return nil
 	}
+	if err := refuseReservedAnnotation(owned, opts); err != nil {
+		return err
+	}
 	for index := range opts.SolutionInstances {
 		for _, unit := range opts.SolutionInstances[index].Units {
 			if err := projectIdentityToken(owned, opts, unit); err != nil {
@@ -71,6 +83,33 @@ func projectWorkloadIdentity(owned string, opts *RenderOptions) error {
 		}
 	}
 	return projectTrustAnchor(owned, opts)
+}
+
+// refuseReservedAnnotation refuses a workload whose pod template carries the
+// trust-anchor annotation in desired state: a local cluster run stamps it,
+// and a value Argo CD owned would revert the stamp a revocation depends on.
+func refuseReservedAnnotation(owned string, opts *RenderOptions) error {
+	for index := range opts.Units {
+		unit := &opts.Units[index]
+		if unit.Path == "" {
+			continue
+		}
+		unitDir := filepath.Join(owned, filepath.FromSlash(unit.Path))
+		if _, err := os.Stat(filepath.Join(unitDir, "overlays", opts.Environment)); err != nil {
+			continue
+		}
+		workloads, err := renderedWorkloads(unitDir, opts.Environment)
+		if err != nil {
+			return err
+		}
+		for index := range workloads {
+			workload := &workloads[index]
+			if _, reserved := workload.templateAnnotations[TrustAnchorAnnotation]; reserved {
+				return fmt.Errorf("%s %s of %s carries the pod-template annotation %s, which a local cluster run stamps with its trust anchor's digest; remove it from the manifests", workload.Kind, workload.Name, unit.Name, TrustAnchorAnnotation)
+			}
+		}
+	}
+	return nil
 }
 
 // projectIdentityToken projects the host-audience token into the
@@ -172,17 +211,52 @@ func servingKind(kind string) bool {
 func providesIdentityToken(workload *renderedWorkload, container, audience string) (bool, error) {
 	required := path.Join(identityTokenMount, identityTokenFile)
 	for _, mount := range workload.tokenMounts[container] {
-		if mount.audience == audience && mount.file == required && !mount.subPathed {
-			return true, nil
+		if mount.audience != audience || mount.file != required || mount.subPathed {
+			continue
 		}
+		// The workload's own projection is never kept when it lives
+		// longer than the host admits: every mint from the pod would be
+		// refused. Unset is the kubelet's 3600 s.
+		if mount.lifetime == 0 || mount.lifetime > identityTokenSeconds {
+			lifetime := "unset, which the kubelet projects for 3600 s"
+			if mount.lifetime != 0 {
+				lifetime = fmt.Sprintf("%d s", mount.lifetime)
+			}
+			return false, fmt.Errorf("container %s projects the %q token at %s with expirationSeconds %s, and a host refuses a mint token living longer than %d s; set expirationSeconds: %d on volume %s", container, audience, required, lifetime, identityTokenSeconds, identityTokenSeconds, mount.volume)
+		}
+		// Kept only when nothing else is mounted where it would hide the
+		// token: at the same directory, at or below the token's path, or
+		// between the projection's mount and the token.
+		if shadow := shadowingMount(workload.mounts[container], mount.volume, mount.mountPath, required); shadow != nil {
+			return false, fmt.Errorf("container %s projects the %q token at %s, and mounts volume %s at %s, which hides it; the SDK would read that instead — move it", container, audience, required, shadow.volume, shadow.path)
+		}
+		return true, nil
 	}
-	for _, mounted := range workload.mountPaths[container] {
-		cleaned := path.Clean(mounted)
-		if cleaned == identityTokenMount || cleaned == required || strings.HasPrefix(identityTokenMount, cleaned+"/") || strings.HasPrefix(cleaned, identityTokenMount+"/") {
-			return false, fmt.Errorf("container %s mounts something at %s, where the render projects the %q token the SDK reads at %s (a projected serviceAccountToken for audience %q at that file, mounted without subPath); mount it exactly so, or move what is there", container, mounted, audience, required, audience)
+	for _, mounted := range workload.mounts[container] {
+		if mounted.path == identityTokenMount || mounted.path == required || strings.HasPrefix(identityTokenMount, mounted.path+"/") || strings.HasPrefix(mounted.path, identityTokenMount+"/") {
+			return false, fmt.Errorf("container %s mounts volume %s at %s, where the render projects the %q token the SDK reads at %s (a projected serviceAccountToken for audience %q at that file, expirationSeconds %d, mounted without subPath); mount it exactly so, or move what is there", container, mounted.volume, mounted.path, audience, required, audience, identityTokenSeconds)
 		}
 	}
 	return false, nil
+}
+
+// shadowingMount is a mount other than (volume at mountPath) that hides the
+// file at required: one at the same directory, at or below the file, or
+// between the directory and the file.
+func shadowingMount(mounts []containerMount, volume, mountPath, required string) *containerMount {
+	for index := range mounts {
+		other := &mounts[index]
+		if other.volume == volume && other.path == mountPath {
+			continue
+		}
+		switch {
+		case other.path == mountPath,
+			other.path == required || strings.HasPrefix(other.path, required+"/"),
+			strings.HasPrefix(other.path, mountPath+"/") && strings.HasPrefix(required, other.path+"/"):
+			return other
+		}
+	}
+	return nil
 }
 
 // projectedVolume is a pod volume projecting the sources, keys not remapped.

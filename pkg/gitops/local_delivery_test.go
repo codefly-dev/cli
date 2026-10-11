@@ -465,3 +465,86 @@ func TestALocalPromotionIsACompareAndSwapOnTheSettledBase(t *testing.T) {
 		t.Fatalf("the other promotion %s was overwritten by %s", landed, got)
 	}
 }
+
+// TestADeliveryJobNamesTheApplicationTheCLIRendered: the Application a local
+// run may ask for a delivery is read from the ApplicationSet the CLI itself
+// rendered — the name its template gives the in-cluster tenant's component,
+// the repository and revision it syncs, its destination server and namespace
+// — so the run can hold the cluster's Application to all of it.
+func TestADeliveryJobNamesTheApplicationTheCLIRendered(t *testing.T) {
+	tree := t.TempDir()
+	module := "env/deployments/modules/payments"
+	overlay := module + "/solution-host-bindings/overlays/local"
+	if err := os.MkdirAll(filepath.Join(tree, filepath.FromSlash(overlay)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	job := "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: deliver-presence-payments-local-abc\n  namespace: payments\n  labels:\n    codefly.dev/delivery: presence\n"
+	if err := os.WriteFile(filepath.Join(tree, filepath.FromSlash(overlay), "deliver-presence.yaml"), []byte(job), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	component := argoBoundedName(componentNameBudget, "payments", "solution-host-bindings")
+	if err := os.MkdirAll(filepath.Join(tree, filepath.FromSlash(module), "bootstrap"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeArgoApplicationSet(filepath.Join(tree, filepath.FromSlash(module), "bootstrap", "applicationset.yaml"),
+		"payments-local", "payments", "https://fetch.example.test/repo.git", "0123456789abcdef0123456789abcdef01234567",
+		"tenants/local", "payments", []argoBootstrapComponent{{Component: component, Overlay: overlay, Wave: "1"}}); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := DeliveryJobsOf(tree, module, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := DeliveryApplication{
+		Name: "in-cluster-" + component, RepoURL: "https://fetch.example.test/repo.git",
+		TargetRevision: "0123456789abcdef0123456789abcdef01234567", Path: overlay,
+		Server: "https://kubernetes.default.svc", Namespace: "payments",
+	}
+	if len(jobs) != 1 || jobs[0].Application != want {
+		t.Fatalf("jobs %+v, want the Application %+v", jobs, want)
+	}
+}
+
+// TestALocalPromotionFollowsTheRepositoryPathAsTheFilesystemDoes is the
+// attack: the declared repository is reached through a directory link and a
+// "..", file://<base>/alias/../payments.git. The filesystem — and git, for
+// every other step of the publish — follows alias to its target and takes ".."
+// from there; a lexical clean names <base>/payments.git, another repository
+// beside the link. The promotion advances the repository the filesystem
+// reaches, and the lexical sibling never moves.
+func TestALocalPromotionFollowsTheRepositoryPathAsTheFilesystemDoes(t *testing.T) {
+	ctx, workspace, declared := developerPublishWorkspace(t)
+	installDeveloperSigning(t, &developerSigning{signer: &fakeSigner{nonce: true}})
+	if err := os.MkdirAll(filepath.Join(filepath.Dir(declared), "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	base := t.TempDir()
+	if err := os.Symlink(filepath.Join(filepath.Dir(declared), "sub"), filepath.Join(base, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	decoy := filepath.Join(base, filepath.Base(declared))
+	gitRun(t, "", "clone", "--quiet", "--bare", declared, decoy)
+	before := gitOutput(t, "", "--git-dir", decoy, "rev-parse", "main")
+	gitopsDefaults, err := environments.WorkspaceGitops(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitopsDefaults.RepoURL = "file://" + filepath.Join(base, "alias") + "/../" + filepath.Base(declared)
+	setWorkspaceGitops(t, workspace, gitopsDefaults)
+
+	request := PublishRequest{Module: "payments", Environment: "production", Local: true}
+	plan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gitOutput(t, "", "--git-dir", declared, "rev-parse", "main"); !result.Promoted || got != result.Commit {
+		t.Fatalf("the repository the path reaches is at %s, want the promoted %s", got, result.Commit)
+	}
+	if got := gitOutput(t, "", "--git-dir", decoy, "rev-parse", "main"); got != before {
+		t.Fatalf("the lexical sibling moved from %s to %s", before, got)
+	}
+}

@@ -31,7 +31,7 @@ data:
             - surface: backend
               name: api
               release: example/crm@1.4.0
-              digest: sha256:9ed0e822237699451bf597defbb9f92d344c9e353ec119ab4c61ff35d3105b0b
+              digest: sha256:fbaa92037844fb6c57968c766db2037891b386591933ad4cdeebc21c6dc7c7f6
         workloads:
             - name: api
               artifact: api

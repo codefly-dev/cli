@@ -48,7 +48,7 @@ type Driver interface {
 	// revision and returns the delivery Jobs that revision renders.
 	Bootstrap(ctx context.Context, revision string, published []gitops.PublishResult) ([]gitops.DeliveryJob, error)
 	// Await waits for a delivery Job to finish and returns its receipts.
-	Await(ctx context.Context, job gitops.DeliveryJob) (Delivery, error)
+	Await(ctx context.Context, job *gitops.DeliveryJob) (Delivery, error)
 }
 
 // Delivery is what one delivery Job answered.
@@ -159,7 +159,8 @@ func Run(ctx context.Context, env *environments.Environment, modules []string, d
 		return report, err
 	}
 	var failed []string
-	for _, job := range jobs {
+	for index := range jobs {
+		job := &jobs[index]
 		say("Awaiting delivery Job %s/%s (%s)", job.Namespace, job.Name, job.Kind)
 		delivery, awaitErr := driver.Await(ctx, job)
 		if awaitErr != nil {

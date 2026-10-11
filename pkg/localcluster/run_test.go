@@ -65,10 +65,10 @@ func (d *fakeDriver) Bootstrap(_ context.Context, revision string, published []g
 	}
 	return jobs, d.step("bootstrap " + revision)
 }
-func (d *fakeDriver) Await(_ context.Context, job gitops.DeliveryJob) (Delivery, error) {
+func (d *fakeDriver) Await(_ context.Context, job *gitops.DeliveryJob) (Delivery, error) {
 	delivery, known := d.deliveries[job.Name]
 	if !known {
-		delivery = Delivery{Job: job, Succeeded: true, Receipts: []string{"delivered " + job.Name + ".json: {}"}}
+		delivery = Delivery{Job: *job, Succeeded: true, Receipts: []string{"delivered " + job.Name + ".json: {}"}}
 	}
 	return delivery, d.step("await " + job.Name)
 }

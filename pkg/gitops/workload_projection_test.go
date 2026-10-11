@@ -109,8 +109,8 @@ func TestEveryWorkloadAHostAdmitsProjectsItsIdentityToken(t *testing.T) {
 				t.Fatal("the workload projects no identity token")
 			}
 			token := mapField(sliceField(mapField(volume, "projected"), "sources")[0].(map[string]any), "serviceAccountToken")
-			if token["audience"] != "accounts" || token["path"] != "token" {
-				t.Fatalf("the projected token is %v, want audience accounts at token", token)
+			if token["audience"] != "accounts" || token["path"] != "token" || integerField(token, "expirationSeconds") != 600 {
+				t.Fatalf("the projected token is %v, want audience accounts at token, living 600 s", token)
 			}
 			if len(mounts) != 1 || len(mounts["api"]) != 1 || mounts["api"][0]["mountPath"] != "/var/run/secrets/codefly" || mounts["api"][0]["readOnly"] != true {
 				t.Fatalf("the token is mounted as %v, want into the authenticating container alone, read-only, at the SDK's path", mounts)
@@ -127,7 +127,17 @@ func TestEveryWorkloadAHostAdmitsProjectsItsIdentityToken(t *testing.T) {
 // token for audience at mountPath, the token at file inside the volume, with
 // subPath when set.
 func withTokenMount(audience, mountPath, file, subPath string) string {
-	body := strings.Replace(pinnedDeployment, "      containers:\n", "      volumes:\n        - name: own-token\n          projected:\n            sources:\n              - serviceAccountToken:\n                  audience: "+audience+"\n                  path: "+file+"\n      containers:\n", 1)
+	return withTokenLifetime(audience, mountPath, file, subPath, "600")
+}
+
+// withTokenLifetime is withTokenMount with the projection's expirationSeconds
+// ("" leaves it unset, which the kubelet reads as 3600).
+func withTokenLifetime(audience, mountPath, file, subPath, lifetime string) string {
+	expiration := ""
+	if lifetime != "" {
+		expiration = "                  expirationSeconds: " + lifetime + "\n"
+	}
+	body := strings.Replace(pinnedDeployment, "      containers:\n", "      volumes:\n        - name: own-token\n          projected:\n            sources:\n              - serviceAccountToken:\n                  audience: "+audience+"\n"+expiration+"                  path: "+file+"\n      containers:\n", 1)
 	body += "          volumeMounts:\n            - name: own-token\n              mountPath: " + mountPath + "\n"
 	if subPath != "" {
 		body += "              subPath: " + subPath + "\n"
@@ -163,6 +173,14 @@ func TestAnExistingTokenIsReusedOnlyWhereTheSDKReadsIt(t *testing.T) {
 	}
 	if volume, mounts := renderedVolume(t, destination, identityTokenVolume); volume == nil || mounts["api"][0]["mountPath"] != identityTokenMount {
 		t.Fatalf("a token elsewhere suppressed the one at the SDK's path: %v %v", volume, mounts)
+	}
+
+	// A host refuses a mint token living longer than 600 s: a projection at
+	// the right path that lives longer is refused, never kept.
+	for name, lifetime := range map[string]string{"an hour": "3600", "unset (the kubelet's hour)": ""} {
+		if _, err = render(t, withTokenLifetime("accounts", "/var/run/secrets/codefly", "token", "", lifetime)); err == nil || !strings.Contains(err.Error(), "expirationSeconds: 600") {
+			t.Errorf("%s: a token outliving the host's limit was kept: %v", name, err)
+		}
 	}
 
 	for name, body := range map[string]string{
@@ -223,5 +241,63 @@ func TestALocalHostMountsItsTrustAnchorWhereItReadsIt(t *testing.T) {
 	}
 	if volume, _ := renderedVolume(t, hosted, LocalTrustAnchorVolume); volume != nil {
 		t.Fatal("a hosted environment's render mounted a local trust anchor")
+	}
+}
+
+// TestPresenceDeclaresEveryContainerOfTheWorkload: the presence document
+// names every container of a workload a host admits — the authenticating one
+// with its image digest, every sidecar and init container as one never
+// accepted as it — and every one of them must be pinned by digest, or the
+// render refuses. (Core's presence schema, codefly/solution-host-binding/v1
+// through core v0.18.1, carries the other containers by NAME only; their
+// digests are read here and cannot be declared until the schema carries them.)
+func TestPresenceDeclaresEveryContainerOfTheWorkload(t *testing.T) {
+	withInit := strings.Replace(sidecarDeployment, "      containers:\n", "      initContainers:\n        - name: migrate\n          image: ghcr.io/codefly-dev/migrate@sha256:"+strings.Repeat("c", 64)+"\n      containers:\n", 1)
+	destination := filepath.Join(t.TempDir(), "modules", "crm")
+	if _, err := RenderOwnedTree(context.Background(), solutionRenderOptions(destination), kustomizedWorkload(withInit)); err != nil {
+		t.Fatal(err)
+	}
+	workload := deliveredBinding(t, destination, "example.prod.crm").Workloads[0]
+	if workload.Container != "api" || workload.NonAuthenticating == nil || strings.Join(*workload.NonAuthenticating, ",") != "migrate,proxy" {
+		t.Fatalf("the presence document declares %s and %v, want api and every other container (migrate, proxy)", workload.Container, workload.NonAuthenticating)
+	}
+	unpinned := strings.Replace(withInit, "ghcr.io/codefly-dev/proxy@sha256:"+strings.Repeat("b", 64), "ghcr.io/codefly-dev/proxy:latest", 1)
+	if _, err := RenderOwnedTree(context.Background(), solutionRenderOptions(filepath.Join(t.TempDir(), "modules", "crm")), kustomizedWorkload(unpinned)); err == nil || !strings.Contains(err.Error(), "not pinned by digest") {
+		t.Fatalf("a sidecar running an unpinned image was rendered: %v", err)
+	}
+}
+
+// TestAProjectionAnotherMountHidesIsNeverKept is the review's attack: the
+// workload's own token is exactly where the SDK reads it, but another mount
+// hides it — an emptyDir at the token's path, or at the projection's own
+// directory. The token the SDK would read is not the token; the render
+// refuses with the mount that hides it rather than keeping the projection.
+func TestAProjectionAnotherMountHidesIsNeverKept(t *testing.T) {
+	for name, shadow := range map[string]string{
+		"at the token's path":         "/var/run/secrets/codefly/token",
+		"at the projection's own dir": "/var/run/secrets/codefly",
+	} {
+		body := withTokenMount("accounts", "/var/run/secrets/codefly", "token", "")
+		body = strings.Replace(body, "      volumes:\n", "      volumes:\n        - name: scratch\n          emptyDir: {}\n", 1)
+		body += "            - name: scratch\n              mountPath: " + shadow + "\n"
+		_, err := RenderOwnedTree(context.Background(), solutionRenderOptions(filepath.Join(t.TempDir(), "modules", "crm")), kustomizedWorkload(body))
+		if err == nil || !strings.Contains(err.Error(), "volume scratch at "+shadow) {
+			t.Errorf("%s: a hidden token was kept: %v", name, err)
+		}
+	}
+}
+
+// TestTheTrustAnchorAnnotationIsReservedForTheLocalRun: a local run stamps
+// codefly.dev/trust-anchor on the pod templates that read its trust anchor,
+// and a value Argo CD owned in desired state would revert that stamp — and
+// with it a revocation. The render refuses a workload carrying it.
+func TestTheTrustAnchorAnnotationIsReservedForTheLocalRun(t *testing.T) {
+	owned := strings.Replace(pinnedDeployment, "      labels:\n        app: api\n", "      labels:\n        app: api\n      annotations:\n        codefly.dev/trust-anchor: sha256:pinned-in-git\n", 1)
+	if owned == pinnedDeployment {
+		t.Fatal("the fixture's pod template was not found")
+	}
+	_, err := RenderOwnedTree(context.Background(), solutionRenderOptions(filepath.Join(t.TempDir(), "modules", "crm")), kustomizedWorkload(owned))
+	if err == nil || !strings.Contains(err.Error(), TrustAnchorAnnotation) {
+		t.Fatalf("a workload owning the run's annotation in desired state was rendered: %v", err)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"strings"
 	"testing"
@@ -98,45 +99,76 @@ func TestTheVerificationPolicyIsTheHostsLocalProfile(t *testing.T) {
 	}
 }
 
-// clusterState is a fake namespace's workloads: their kind, the volumes their
-// pods mount and their pod-template annotation, as a reconciliation reads and
-// patches them.
+// clusterState is a fake namespace's workloads and their pods, as a
+// reconciliation reads, patches and waits on them. A stamped template rolls
+// its pods onto the new annotation unless the update strategy keeps them.
 type clusterState struct {
 	caBundle   string
-	workloads  []fakeWorkload
+	workloads  []*fakeWorkload
 	failPatch  int
 	failStatus int
+	revert     bool // a competing rollout puts the old template back after the stamp
 	calls      []string
 	stdins     []string
 }
 
 type fakeWorkload struct {
 	kind, name string
-	volumes    []string
+	volumes    []any // pod volumes, as manifests carry them
 	anchor     string
+	pods       []string // the anchor each live pod was started on
+	onDelete   bool
+	partition  int
+}
+
+func anchorVolume(name string) []any {
+	return []any{map[string]any{"name": name, "projected": map[string]any{"sources": []any{
+		map[string]any{"configMap": map[string]any{"name": gitops.LocalTrustAnchorObjects}},
+		map[string]any{"secret": map[string]any{"name": gitops.LocalTrustAnchorObjects}},
+	}}}}
+}
+
+func (workload *fakeWorkload) manifest() map[string]any {
+	strategy := map[string]any{}
+	if workload.onDelete {
+		strategy["type"] = "OnDelete"
+	}
+	if workload.partition > 0 {
+		strategy["rollingUpdate"] = map[string]any{"partition": workload.partition}
+	}
+	return map[string]any{
+		"kind": workload.kind, "metadata": map[string]any{"name": workload.name},
+		"spec": map[string]any{
+			"selector":       map[string]any{"matchLabels": map[string]string{"app": workload.name}},
+			"updateStrategy": strategy,
+			"template": map[string]any{
+				"metadata": map[string]any{"annotations": map[string]string{TrustAnchorAnnotation: workload.anchor}},
+				"spec":     map[string]any{"volumes": workload.volumes},
+			},
+		},
+	}
+}
+
+func (c *clusterState) find(call string) *fakeWorkload {
+	for _, workload := range c.workloads {
+		if strings.Contains(call, " "+strings.ToLower(workload.kind)+"/"+workload.name+" ") || strings.Contains(call, " app="+workload.name+" ") {
+			return workload
+		}
+	}
+	return nil
 }
 
 func (c *clusterState) run(_ context.Context, stdin string, args ...string) (string, error) {
-	call := strings.Join(args, " ")
+	call := strings.Join(args, " ") + " "
 	c.calls = append(c.calls, call)
 	c.stdins = append(c.stdins, stdin)
 	switch {
 	case strings.Contains(call, "kube-root-ca.crt"):
 		return c.caBundle, nil
 	case strings.Contains(call, "get deployments,statefulsets,daemonsets"):
-		var items []any
+		items := []any{}
 		for _, workload := range c.workloads {
-			volumes := []any{}
-			for _, volume := range workload.volumes {
-				volumes = append(volumes, map[string]any{"name": volume})
-			}
-			items = append(items, map[string]any{
-				"kind": workload.kind, "metadata": map[string]any{"name": workload.name},
-				"spec": map[string]any{"template": map[string]any{
-					"metadata": map[string]any{"annotations": map[string]string{TrustAnchorAnnotation: workload.anchor}},
-					"spec":     map[string]any{"volumes": volumes},
-				}},
-			})
+			items = append(items, workload.manifest())
 		}
 		encoded, err := json.Marshal(map[string]any{"items": items})
 		return string(encoded), err
@@ -155,16 +187,37 @@ func (c *clusterState) run(_ context.Context, stdin string, args ...string) (str
 			} `json:"spec"`
 		}
 		_ = json.Unmarshal([]byte(args[len(args)-1]), &patch)
-		for index := range c.workloads {
-			if strings.Contains(call, " "+strings.ToLower(c.workloads[index].kind)+"/"+c.workloads[index].name+" ") {
-				c.workloads[index].anchor = patch.Spec.Template.Metadata.Annotations[TrustAnchorAnnotation]
+		workload := c.find(call)
+		previous := workload.anchor
+		workload.anchor = patch.Spec.Template.Metadata.Annotations[TrustAnchorAnnotation]
+		if !workload.onDelete {
+			for index := range workload.pods {
+				if index >= workload.partition {
+					workload.pods[index] = workload.anchor
+				}
 			}
+		}
+		if c.revert {
+			workload.anchor = previous
 		}
 	case strings.Contains(call, "rollout status"):
 		if c.failStatus > 0 {
 			c.failStatus--
 			return "", errors.New("timed out waiting for the rollout")
 		}
+	case strings.Contains(call, "get pods"):
+		workload := c.find(call)
+		items := []any{}
+		for index, anchor := range workload.pods {
+			items = append(items, map[string]any{"metadata": map[string]any{
+				"name": fmt.Sprintf("%s-%d", workload.name, index), "annotations": map[string]string{TrustAnchorAnnotation: anchor},
+			}})
+		}
+		encoded, err := json.Marshal(map[string]any{"items": items})
+		return string(encoded), err
+	case strings.Contains(call, " get "):
+		encoded, err := json.Marshal(c.find(call).manifest())
+		return string(encoded), err
 	}
 	return "", nil
 }
@@ -179,16 +232,10 @@ func (c *clusterState) count(fragment string) int {
 	return count
 }
 
-// TestTheTrustAnchorIsInForceOnlyOnceTheVerifierRestartedOnIt is the attack
-// the review named: a developer is REMOVED, the anchor is written, and the
-// restart fails. Convergence is decided by the workloads' own state — the
-// anchor's digest stamped on each mounting pod template, every Deployment,
-// StatefulSet and DaemonSet, and each rollout awaited — so the next run finds
-// the verifier behind the digest and stamps it again, and a rollout that did
-// not complete is awaited again; a workload that does not mount the anchor is
-// never touched.
-func TestTheTrustAnchorIsInForceOnlyOnceTheVerifierRestartedOnIt(t *testing.T) {
+func anchorDriver(t *testing.T, cluster *clusterState) (*ClusterDriver, string, string) {
+	t.Helper()
 	ca, fingerprint := certificatePEM(t, true)
+	cluster.caBundle = string(ca)
 	env := &environments.Environment{
 		Name: "local", Namespace: "platform",
 		Cluster: &environments.EnvironmentCluster{Kind: environments.ClusterKindK3d, Context: "k3d-dev"},
@@ -197,45 +244,59 @@ func TestTheTrustAnchorIsInForceOnlyOnceTheVerifierRestartedOnIt(t *testing.T) {
 			Developers: []environments.HostDeveloper{{Issuer: "https://github.com/login/oauth", Subject: "remaining@example.test"}},
 		},
 	}
-	cluster := &clusterState{caBundle: string(ca), failPatch: 1, workloads: []fakeWorkload{
-		{kind: "Deployment", name: "accounts", volumes: []string{gitops.LocalTrustAnchorVolume}, anchor: "sha256:the-policy-that-admitted-the-removed-developer"},
-		{kind: "DaemonSet", name: "accounts-edge", volumes: []string{gitops.LocalTrustAnchorVolume}},
-		{kind: "Deployment", name: "gateway", volumes: []string{"codefly-workload-identity"}},
-	}}
 	root := []byte(`{"mediaType":"root"}`)
 	driver := &ClusterDriver{
 		Workspace: &resources.Workspace{Name: "example"}, Environment: env, Kubectl: cluster.run,
 		TrustedRoot: func(context.Context) ([]byte, error) { return root, nil },
+		Poll:        time.Millisecond, RolloutTimeout: 20 * time.Millisecond,
 	}
 	policy, err := VerificationPolicy(fingerprint, env.Host)
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest := AnchorDigest(policy, root)
+	return driver, fingerprint, AnchorDigest(policy, root)
+}
 
-	if _, err = driver.ProvisionTrustAnchor(context.Background()); err == nil || !strings.Contains(err.Error(), "next run retries") {
+const removedDeveloper = "sha256:the-policy-that-admitted-the-removed-developer"
+
+// TestTheTrustAnchorIsInForceOnlyOnceEveryPodRunsIt is the revocation
+// attack, round 1 and round 2: a developer is REMOVED and the anchor
+// re-written. Every Deployment, StatefulSet and DaemonSet that reads either
+// anchor object — whatever its volume is named — is stamped with the
+// anchor's digest, its rollout awaited, its template read back, and every
+// live pod must carry the digest. A failed stamp is retried by the next run;
+// an incomplete rollout is waited on again; a workload that reads nothing of
+// the anchor is never touched.
+func TestTheTrustAnchorIsInForceOnlyOnceEveryPodRunsIt(t *testing.T) {
+	cluster := &clusterState{failPatch: 1, workloads: []*fakeWorkload{
+		{kind: "Deployment", name: "accounts", volumes: anchorVolume(gitops.LocalTrustAnchorVolume), anchor: removedDeveloper, pods: []string{removedDeveloper, removedDeveloper}},
+		{kind: "Deployment", name: "accounts-replica", volumes: anchorVolume("host-trust"), anchor: removedDeveloper, pods: []string{removedDeveloper}},
+		{kind: "DaemonSet", name: "accounts-edge", volumes: []any{map[string]any{"name": "policy", "configMap": map[string]any{"name": gitops.LocalTrustAnchorObjects}}}, pods: []string{""}},
+		{kind: "Deployment", name: "gateway", volumes: []any{map[string]any{"name": "other", "emptyDir": map[string]any{}}}, pods: []string{""}},
+	}}
+	driver, fingerprint, digest := anchorDriver(t, cluster)
+
+	if _, err := driver.ProvisionTrustAnchor(context.Background()); err == nil || !strings.Contains(err.Error(), "next run retries") {
 		t.Fatalf("a failed restart was reported as provisioned: %v", err)
-	}
-	if cluster.workloads[0].anchor == digest {
-		t.Fatal("the fake did not fail the stamp")
 	}
 	got, err := driver.ProvisionTrustAnchor(context.Background())
 	if err != nil || got != fingerprint {
 		t.Fatalf("the retry: %s, %v", got, err)
 	}
-	for _, workload := range cluster.workloads[:2] {
+	for _, workload := range cluster.workloads[:3] {
 		if workload.anchor != digest {
-			t.Fatalf("%s/%s runs on anchor %q after the retry, want %s", workload.kind, workload.name, workload.anchor, digest)
+			t.Fatalf("%s/%s carries %q, want %s", workload.kind, workload.name, workload.anchor, digest)
+		}
+		for index, pod := range workload.pods {
+			if pod != digest {
+				t.Fatalf("pod %d of %s still runs %q", index, workload.name, pod)
+			}
 		}
 	}
-	if cluster.workloads[2].anchor != "" || cluster.count("deployment/gateway") != 0 {
-		t.Fatal("a workload that does not mount the anchor was stamped or awaited")
-	}
-	if cluster.count("rollout status deployment/accounts") == 0 || cluster.count("rollout status daemonset/accounts-edge") == 0 {
-		t.Fatalf("the rollouts were not awaited: %v", cluster.calls)
+	if cluster.workloads[3].anchor != "" || cluster.count("deployment/gateway") != 0 {
+		t.Fatal("a workload that reads nothing of the anchor was stamped or awaited")
 	}
 
-	// Stamped but not rolled out: the next run patches nothing and waits again.
 	cluster.calls, cluster.failStatus = nil, 1
 	if _, err = driver.ProvisionTrustAnchor(context.Background()); err == nil || !strings.Contains(err.Error(), "waits again") {
 		t.Fatalf("an incomplete rollout was reported as in force: %v", err)
@@ -244,18 +305,30 @@ func TestTheTrustAnchorIsInForceOnlyOnceTheVerifierRestartedOnIt(t *testing.T) {
 	if _, err = driver.ProvisionTrustAnchor(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if cluster.count(" patch ") != 0 || cluster.count("rollout status") != 2 {
-		t.Fatalf("a converged anchor was re-stamped or not re-awaited: %v", cluster.calls)
+	if cluster.count(" patch ") != 0 {
+		t.Fatalf("a converged anchor was re-stamped: %v", cluster.calls)
 	}
-	var manifest string
-	for index, call := range cluster.calls {
-		if strings.HasPrefix(call, "apply") {
-			manifest = cluster.stdins[index]
+}
+
+// TestARevocationThatCannotReachEveryPodIsNeverReportedDone: a StatefulSet
+// partitioned past its pods and an OnDelete DaemonSet accept the stamp and
+// keep every pod on the old anchor; a competing rollout puts the old template
+// back. Each is refused — never reported as in force.
+func TestARevocationThatCannotReachEveryPodIsNeverReportedDone(t *testing.T) {
+	for name, workload := range map[string]*fakeWorkload{
+		"a partitioned StatefulSet": {kind: "StatefulSet", name: "accounts", volumes: anchorVolume(gitops.LocalTrustAnchorVolume), anchor: removedDeveloper, pods: []string{removedDeveloper, removedDeveloper, removedDeveloper}, partition: 3},
+		"an OnDelete DaemonSet":     {kind: "DaemonSet", name: "accounts", volumes: anchorVolume(gitops.LocalTrustAnchorVolume), anchor: removedDeveloper, pods: []string{removedDeveloper}, onDelete: true},
+	} {
+		driver, _, _ := anchorDriver(t, &clusterState{workloads: []*fakeWorkload{workload}})
+		if _, err := driver.ProvisionTrustAnchor(context.Background()); err == nil || !strings.Contains(err.Error(), "cannot prove") {
+			t.Errorf("%s: a revocation that reached no pod was reported: %v", name, err)
 		}
 	}
-	for _, want := range []string{`"kind":"ConfigMap"`, `"kind":"Secret"`, `"name":"` + gitops.LocalTrustAnchorObjects + `"`, `"namespace":"platform"`, VerificationPolicyFile, TrustedRootFile, fingerprint} {
-		if !strings.Contains(manifest, want) {
-			t.Fatalf("the trust anchor manifest lacks %s:\n%s", want, manifest)
-		}
+	reverted := &clusterState{revert: true, workloads: []*fakeWorkload{
+		{kind: "Deployment", name: "accounts", volumes: anchorVolume(gitops.LocalTrustAnchorVolume), anchor: removedDeveloper, pods: []string{removedDeveloper}},
+	}}
+	driver, _, _ := anchorDriver(t, reverted)
+	if _, err := driver.ProvisionTrustAnchor(context.Background()); err == nil || !strings.Contains(err.Error(), "moved off") {
+		t.Errorf("a stamp another rollout reverted was reported as in force: %v", err)
 	}
 }

@@ -193,12 +193,15 @@ for the same reason.
 Every serving workload a presence document declares **projects a
 ServiceAccount token minted for the host's audience** into its authenticating
 container, read-only, at `/var/run/secrets/codefly/token` — the path the SDK's
-mint client reads — unless that container already provides exactly that: a
-projected token for the audience whose file lands at that path, mounted
-without `subPath` (a `subPath` mount is never refreshed, so the token would
-stop rotating). A container whose mounts occupy that path otherwise — another
-volume at or above it, another audience, a `subPath` mount — is refused, with
-what it mounts there; a token for the audience elsewhere does not stand in. The render writes it as a patch in the unit's environment overlay
+mint client reads — living **600 s** (`expirationSeconds: 600`, the longest
+mint token a host admits, which bounds how long a copied token can be
+replayed) — unless that container already provides exactly that: a projected
+token for the audience whose file lands at that path, mounted without
+`subPath` (a `subPath` mount is never refreshed, so the token would stop
+rotating), living at most 600 s (unset is the kubelet's 3600 s), and hidden by
+no other mount (one at the same directory, at or below the token, or between
+the two). A container whose mounts occupy that path otherwise is refused, with
+the volume and the path; a token for the audience elsewhere does not stand in. The render writes it as a patch in the unit's environment overlay
 (into the manifests of an overlay that has no kustomization), before presence
 digests the unit, so the projection is part of the bytes the document pins.
 It is how the pod proves who it is when it mints: the host reviews the token
@@ -953,11 +956,19 @@ receipts:
    `/platform/_delivery/{presence,authority}` with a projected token for the
    host's audience, so the host's TokenReview, signer policy and idempotency
    run locally exactly as in a cell. The run reads **its own** attempt of each
-   Job: an unchanged carrier set keeps the Job's name, so the attempt that
-   existed before the run (an earlier run's, finished or not) is recorded
-   first, its Application is asked for a fresh sync (the Sync hook runs again,
-   a new Job with a new UID), and the answer is the attempt whose UID is not
-   the recorded one, read from that attempt's own pods. It prints each
+   Job. An unchanged carrier set keeps the Job's name, so the attempt that
+   existed before the run (an earlier run's — finished, failed or deleted) is
+   recorded first; then the run acquires a sync of every delivery Application,
+   always: the Application is the one the CLI rendered, held to its full
+   identity (the name the module's ApplicationSet gives the in-cluster
+   tenant's component, its repository, revision and path, the in-cluster
+   server and the namespace) and never found by path, which every tenant's
+   Application of an overlay shares; the run waits for its operation slot to
+   be idle, requests a sync carrying a nonce of its own conditionally on the
+   version it read, and holds out until Argo CD's operation state carries that
+   nonce, re-requesting one another operation consumed. The answer is the
+   attempt whose UID is not the recorded one and that was created no earlier
+   than the accepted sync started, read from that attempt's own pods. It prints each
    document's answer (delivered with the host's receipt, refused with its
    verdict, given up on) and fails when any was refused; an attempt that never
    appears is a timeout, never an earlier success.
@@ -983,7 +994,11 @@ moves would settle every rebuild at generation 1 with other content — a
 rewrite the host refuses. Promoted, a rebuilt module lands at generation 2
 with its new digest, the next at 3. The promotion acts on the declared local
 repository **directly**, never through a push: the environment's `file://`
-repository is resolved to its path and changed by a git that reads no
+repository is resolved to its path — following every symbolic link the way
+the filesystem traverses it (`EvalSymlinks`), never cleaned lexically, since
+`alias/../manifests.git` through a directory link names the link target's
+sibling — and must be a bare repository there; it is changed by a git that
+reads no
 configuration but that repository's own (no global or system configuration,
 no `GIT_*` variable of the process, the file transport only), so no
 `insteadOf` or `pushInsteadOf` can send it elsewhere. The signed commit is
@@ -1039,12 +1054,20 @@ The host proves the binding at boot (the CA in its projected bundle, and a TLS
 handshake to its API server with that CA alone), so a profile copied to any
 other cluster refuses the boot. Every run recomputes the fingerprint,
 re-writes the anchor, and **reconciles** every Deployment, StatefulSet and
-DaemonSet that mounts it: the digest of both objects' contents is stamped on
-its pod template (`codefly.dev/trust-anchor`) when it differs, and its rollout
-is awaited. Convergence is read from the workloads, never from what an apply
-reported, so a stamp or rollout that failed — after a developer was removed,
-say — is retried by the next run until the running pods started on the anchor
-in force.
+DaemonSet that READS it — any configMap or secret volume, projected source,
+`envFrom` or `valueFrom` naming either object, whatever the volume is called:
+the digest of both objects' contents is stamped on its pod template
+(`codefly.dev/trust-anchor`) when it differs, its rollout is awaited, its
+template is read back (a competing rollout that put the old one back is
+caught), and **every live pod** it selects must carry the digest. An update
+strategy that keeps old pods by design — `OnDelete`, a partitioned
+StatefulSet — cannot be proven and is refused rather than reported done. The
+annotation is the run's: the render refuses a workload that carries it in
+desired state, so Argo CD never owns a value that would revert the stamp.
+Convergence is read from the cluster, never from what an apply reported, so a
+stamp, rollout or pod that failed — after a developer was removed, say — is
+retried by the next run until every running pod started on the anchor in
+force.
 
 **What the host itself must still be configured with** (its own local
 configuration, not the trust anchor): its solution-host coordinate equal to
