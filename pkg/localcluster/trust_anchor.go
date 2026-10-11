@@ -111,9 +111,9 @@ func VerificationPolicy(fingerprint string, host *environments.EnvironmentHost) 
 			if developer.KeyID != signer.KeyID() {
 				continue
 			}
-			public, err := signing.PublicKeyPEM(signer)
-			if err != nil {
-				return nil, err
+			public, pemErr := signing.PublicKeyPEM(signer)
+			if pemErr != nil {
+				return nil, pemErr
 			}
 			if _, err = solutionhost.NewPinnedKeySet(solutionhost.PinnedKey{KeyID: signer.KeyID(), PublicKeyPEM: public, Kind: solutionhost.KeyKindPerson, OwnershipDomains: []string{host.Domain}}); err != nil {
 				return nil, err

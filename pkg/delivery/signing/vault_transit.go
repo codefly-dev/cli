@@ -23,6 +23,9 @@ import (
 	"github.com/codefly-dev/core/solutionhost"
 )
 
+// vaultKeyECDSAP256 is Vault Transit's name for an ECDSA P-256 key.
+const vaultKeyECDSAP256 = "ecdsa-p256"
+
 // VaultTransit holds public metadata and an authenticated transport; the private
 // key never leaves the platform's Transit engine.
 type VaultTransit struct {
@@ -58,7 +61,7 @@ func NewVaultTransit(lookup func(string) (string, bool)) (*VaultTransit, error) 
 	host := parsed.Hostname()
 	ip := net.ParseIP(host)
 	loopback := strings.EqualFold(host, "localhost") || ip != nil && ip.IsLoopback()
-	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && loopback) {
+	if parsed.Scheme != "https" && (parsed.Scheme != "http" || !loopback) {
 		return nil, errors.New("VAULT_ADDR requires https (http is allowed only for a loopback host)")
 	}
 	mount := get("CODEFLY_RELEASE_TRANSIT_MOUNT")
@@ -66,7 +69,7 @@ func NewVaultTransit(lookup func(string) (string, bool)) (*VaultTransit, error) 
 		mount = "transit"
 	}
 	if !vaultPath(mount, true) || !vaultPath(name, false) {
-		return nil, errors.New("Transit mount and key name must be clean path components")
+		return nil, errors.New("the Transit mount and key name must be clean path components")
 	}
 	signer := &VaultTransit{address: strings.TrimRight(address, "/"), token: token, mount: mount, name: name, client: &http.Client{
 		Timeout:   30 * time.Second,
@@ -88,40 +91,40 @@ func NewVaultTransit(lookup func(string) (string, bool)) (*VaultTransit, error) 
 	}
 	signer.keyType, signer.version = response.Data.Type, response.Data.LatestVersion
 	if signer.version < 1 {
-		return nil, errors.New("Vault Transit returned an invalid latest key version")
+		return nil, errors.New("the Vault Transit key has an invalid latest version")
 	}
 	encoded := response.Data.Keys[strconv.Itoa(signer.version)].PublicKey
 	var publicPEM string
 	switch signer.keyType {
 	case "ed25519":
-		raw, err := base64.StdEncoding.DecodeString(encoded)
-		if err != nil {
-			return nil, errors.New("Vault Transit returned an unreadable Ed25519 public key")
+		raw, decodeErr := base64.StdEncoding.DecodeString(encoded)
+		if decodeErr != nil {
+			return nil, errors.New("the Vault Transit returned an unreadable Ed25519 public key")
 		}
 		signer.public = ed25519.PublicKey(raw)
 		publicPEM, err = PublicKeyPEM(signer)
 		if err != nil {
-			return nil, errors.New("Vault Transit returned an invalid public key")
+			return nil, errors.New("the Vault Transit returned an invalid public key")
 		}
-	case "ecdsa-p256":
+	case vaultKeyECDSAP256:
 		publicPEM = encoded
 	default:
-		return nil, errors.New("Vault Transit key type must be ed25519 or ecdsa-p256")
+		return nil, errors.New("the Vault Transit key type must be ed25519 or ecdsa-p256")
 	}
 	// Core owns PEM shape and key validity. Parse the already validated key only
 	// to supply Public(), because PinnedKeySet intentionally hides its key map.
 	if _, err = solutionhost.NewPinnedKeySet(solutionhost.PinnedKey{KeyID: signer.KeyID(), PublicKeyPEM: publicPEM, Kind: solutionhost.KeyKindRelease, OwnershipDomains: []string{"transit-custody"}}); err != nil {
-		return nil, errors.New("Vault Transit returned an invalid public key")
+		return nil, errors.New("the Vault Transit returned an invalid public key")
 	}
 	block, _ := pem.Decode([]byte(publicPEM))
 	signer.public, err = x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
-		return nil, errors.New("Vault Transit returned an unreadable public key")
+		return nil, errors.New("the Vault Transit returned an unreadable public key")
 	}
 	// Enforce the advertised algorithm as well as core's supported-key set.
-	if signer.keyType == "ecdsa-p256" {
+	if signer.keyType == vaultKeyECDSAP256 {
 		if _, ok := signer.public.(ed25519.PublicKey); ok {
-			return nil, errors.New("Vault Transit public key does not match ecdsa-p256")
+			return nil, errors.New("the Vault Transit public key does not match ecdsa-p256")
 		}
 	}
 	return signer, nil
@@ -136,7 +139,7 @@ func vaultPath(value string, nested bool) bool {
 			return false
 		}
 		for _, r := range part {
-			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+			if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' && r != '_' && r != '.' {
 				return false
 			}
 		}
@@ -151,7 +154,7 @@ func (s *VaultTransit) Public() crypto.PublicKey {
 }
 func (s *VaultTransit) Sign(message []byte) ([]byte, error) {
 	body := map[string]any{"input": base64.StdEncoding.EncodeToString(message), "key_version": s.version}
-	if s.keyType == "ecdsa-p256" {
+	if s.keyType == vaultKeyECDSAP256 {
 		body["hash_algorithm"] = "sha2-256"
 		body["marshaling_algorithm"] = "asn1"
 	}
@@ -169,11 +172,11 @@ func (s *VaultTransit) Sign(message []byte) ([]byte, error) {
 	}
 	prefix := "vault:v" + strconv.Itoa(s.version) + ":"
 	if !strings.HasPrefix(response.Data.Signature, prefix) {
-		return nil, errors.New("Vault Transit signature version does not match the requested key version")
+		return nil, errors.New("the Vault Transit signature version does not match the requested key version")
 	}
 	signature, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(response.Data.Signature, prefix))
 	if err != nil || len(signature) == 0 {
-		return nil, errors.New("Vault Transit returned an unreadable signature")
+		return nil, errors.New("the Vault Transit returned an unreadable signature")
 	}
 	return signature, nil
 }
@@ -190,14 +193,14 @@ func (s *VaultTransit) request(method, operation string, body []byte, result any
 	// Transport errors and response bodies can echo credentials. Neither is
 	// copied into an error; status and operation suffice to diagnose the stage.
 	if err != nil {
-		return fmt.Errorf("Vault Transit %s request failed", operation)
+		return fmt.Errorf("the Vault Transit %s request failed", operation)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("Vault Transit %s returned HTTP %d", operation, response.StatusCode)
+		return fmt.Errorf("the Vault Transit %s returned HTTP %d", operation, response.StatusCode)
 	}
 	if err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(result); err != nil {
-		return fmt.Errorf("Vault Transit %s returned unreadable JSON", operation)
+		return fmt.Errorf("the Vault Transit %s returned unreadable JSON", operation)
 	}
 	return nil
 }
@@ -207,7 +210,11 @@ func (s *VaultTransit) request(method, operation string, body []byte, result any
 // case-sensitive, so http://LOCALHOST would otherwise send the token to a proxy
 // in the clear — and every address it dials must be loopback.
 func vaultTransport(cleartext bool) http.RoundTripper {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		base = &http.Transport{}
+	}
+	transport := base.Clone()
 	if !cleartext {
 		return transport
 	}

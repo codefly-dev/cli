@@ -94,10 +94,11 @@ func machineKeyStore() (*DeveloperKeyStore, error) {
 		return nil, err
 	}
 	store := &DeveloperKeyStore{Directory: filepath.Join(home, ".codefly", "delivery-keys")}
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		store.Keychain = commandKeychain{command: "security"}
-	} else if runtime.GOOS == "linux" {
-		if path, err := exec.LookPath("secret-tool"); err == nil {
+	case "linux":
+		if path, lookErr := exec.LookPath("secret-tool"); lookErr == nil {
 			store.Keychain = commandKeychain{command: path}
 		}
 	}
@@ -155,7 +156,11 @@ func (s *DeveloperKeyStore) Load() (solutionhost.Signer, error) {
 	if !ok {
 		return nil, errors.New("developer custody requires an Ed25519 key")
 	}
-	derived, err := developerID(private.Public().(ed25519.PublicKey))
+	public, isEd25519 := private.Public().(ed25519.PublicKey)
+	if !isEd25519 {
+		return nil, errors.New("developer custody requires an Ed25519 key")
+	}
+	derived, err := developerID(public)
 	if err != nil {
 		return nil, err
 	}
@@ -202,7 +207,11 @@ func (s *DeveloperKeyStore) LoadOrCreate() (solutionhost.Signer, error) {
 	if err != nil {
 		return nil, err
 	}
-	id, err := developerID(private.Public().(ed25519.PublicKey))
+	public, isEd25519 := private.Public().(ed25519.PublicKey)
+	if !isEd25519 {
+		return nil, errors.New("generated developer key is not Ed25519")
+	}
+	id, err := developerID(public)
 	if err != nil {
 		return nil, err
 	}
@@ -273,7 +282,7 @@ func (k commandKeychain) Load(id string) ([]byte, error) {
 	} else {
 		args = []string{"lookup", "service", keychainService, "account", id}
 	}
-	out, err := exec.Command(k.command, args...).Output()
+	out, err := exec.Command(k.command, args...).Output() //nolint:gosec // G204: a fixed credential tool (security, or secret-tool found on PATH) with constant arguments and a key ID validated as dev-<16 hex>; never a shell.
 	if err != nil {
 		return nil, errors.New("OS keychain could not read the developer key")
 	}
@@ -294,11 +303,11 @@ func (k commandKeychain) Holds() (bool, error) {
 	var stdout, stderr bytes.Buffer
 	var cmd *exec.Cmd
 	if k.macOS() {
-		cmd = exec.Command(k.command, "find-generic-password", "-s", keychainService)
+		cmd = exec.Command(k.command, "find-generic-password", "-s", keychainService) //nolint:gosec // G204: a fixed credential tool (security, or secret-tool found on PATH) with constant arguments and a key ID validated as dev-<16 hex>; never a shell.
 	} else {
 		// search prints each match (secret included) into a buffer that is only
 		// measured here, never kept or shown.
-		cmd = exec.Command(k.command, "search", "--all", "service", keychainService)
+		cmd = exec.Command(k.command, "search", "--all", "service", keychainService) //nolint:gosec // G204: a fixed credential tool (security, or secret-tool found on PATH) with constant arguments and a key ID validated as dev-<16 hex>; never a shell.
 	}
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -324,11 +333,11 @@ func (k commandKeychain) Holds() (bool, error) {
 func (k commandKeychain) Store(id string, secret []byte) error {
 	var cmd *exec.Cmd
 	if k.macOS() {
-		cmd = exec.Command(k.command, "-i")
+		cmd = exec.Command(k.command, "-i") //nolint:gosec // G204: a fixed credential tool (security, or secret-tool found on PATH) with constant arguments and a key ID validated as dev-<16 hex>; never a shell.
 		cmd.Stdin = strings.NewReader(fmt.Sprintf("add-generic-password -s %s -a %s -w %s\n",
 			keychainService, id, base64.StdEncoding.EncodeToString(secret)))
 	} else {
-		cmd = exec.Command(k.command, "store", "--label=Codefly delivery signing", "service", keychainService, "account", id)
+		cmd = exec.Command(k.command, "store", "--label=Codefly delivery signing", "service", keychainService, "account", id) //nolint:gosec // G204: a fixed credential tool (security, or secret-tool found on PATH) with constant arguments and a key ID validated as dev-<16 hex>; never a shell.
 		cmd.Stdin = bytes.NewReader(secret)
 	}
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
