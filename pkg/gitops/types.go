@@ -418,6 +418,11 @@ type PublishRequest struct {
 	// process environment decides: the publishing workflow's OIDC identity, or
 	// none — in which case only a Local publish may deliver unsigned.
 	Signer signing.Signer `json:"-"`
+	// DeveloperIDToken is where a Local publish to an environment whose host
+	// lists developers gets the developer's OIDC token. nil means
+	// SIGSTORE_ID_TOKEN when set, otherwise the interactive login of the
+	// Sigstore public-good instance.
+	DeveloperIDToken signing.IDTokenSource `json:"-"`
 	// Carriers are the carriers an inspected plan signed, for the publish
 	// that executes the plan to deliver as they are. Set from the plan by
 	// the command; never part of a request's own JSON.

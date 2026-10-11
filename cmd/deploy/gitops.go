@@ -200,7 +200,7 @@ func printDelivery(delivery *gitops.InventoryDelivery) {
 		cli.Info("Delivery documents signed by %s", delivery.Identity)
 		return
 	}
-	cli.Warning("Delivery documents are UNSIGNED: no signing identity in this process; a host refuses them, and no Job delivers them. Publish from the release workflow.")
+	cli.Warning("Delivery documents are UNSIGNED: no signing identity in this process; a host refuses them, and no Job delivers them. Publish from the release workflow — or, to a host on a local cluster, list your identity in the k3d environment's host.developers and publish --local to sign as yourself.")
 }
 
 var gitOpsObserveCmd = &cobra.Command{

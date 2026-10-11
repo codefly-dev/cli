@@ -66,7 +66,26 @@ and reuses a carrier delivered earlier only when the identity that signed it
 is within it. The host publishes the same literal and enforces it
 independently; a hosted environment that states no `release` cannot be
 released to. It is optional in the schema only because a `--local` publish
-never signs.
+never signs under it.
+
+A **k3d** environment — and only one: any other environment declaring it is
+refused at load — may also list the developers its local host admits:
+
+```yaml
+    host:
+      # … the fields above …
+      developers:                              # the LOCAL host's allowlist
+        - issuer: https://github.com/login/oauth   # the provider the certificate names
+          subject: dev@example.com                 # the verified address it names
+```
+
+`developers` is to a local run what `release` is to a release: the identity a
+`--local` publish signs under, stated with the composition and published by
+the local host in its own local profile, which enforces it independently. A
+deployed host's allowlist names its release workflow and nothing else, so it
+refuses a developer's carrier by the ordinary check; refusing the declaration
+outside a k3d environment keeps a person's identity out of every manifest a
+hosted environment renders. See "Local runs" below.
 
 Nothing here is derived. A derived coordinate is a guess a host silently
 refuses at reconcile time; an unlisted ownership domain is refused by the host
@@ -363,7 +382,8 @@ A host admits **delivered** documents: core's `Host.Admit` takes the type only
 its `VerifyDelivered` constructs, so no sequence of calls reaches a host's
 admission without an attestation having held over exactly those bytes. The
 renderer is the signer, and the set it is about to write is not signed yet —
-signing happens at publish, and a `--local` qualification publish never signs.
+signing happens at publish, and a `--local` qualification publish signs only as
+a developer the environment's host lists (and otherwise never).
 So the render and the publish settlement run core's `AdmitRendered` over the
 parsed set, which takes no `Host` on purpose (nothing applied, no coordinate, no
 signer policy — those need an attestation to be checkable) and refuses what a
@@ -494,9 +514,11 @@ must parse, its signed bytes must be exactly the document's canonical bytes,
 and on a release publish it must still pass the self-check a host will run —
 a carrier the base branch holds that disagrees with the document beside it,
 or that cannot be read, refuses the publish rather than being republished as
-signed. A local qualification publish never reuses a signed carrier: it
-delivers unsigned whatever the base branch holds, so `signed: false` holds
-for the whole set.
+signed. A local qualification publish to a host that lists no developer never
+reuses a signed carrier: it delivers unsigned whatever the base branch holds,
+so `signed: false` holds for the whole set. One whose host lists developers
+reuses a carrier only when it verifies as one of those developers', exactly as
+a release reuses one only under its release policy.
 
 **Signed once.** A keyless signature is fresh on every call — a new key, a
 new log entry — so a publish that signed in the plan and again in the publish
@@ -546,10 +568,26 @@ over GitHub Actions OIDC: an ephemeral key certified by Fulcio for the workflow
 identity, recorded in the transparency log, packaged as a Sigstore bundle
 (`application/vnd.dev.sigstore.bundle.v0.3+json`). The `codefly` binary holds
 no key, and there is no option to supply one (`pkg/delivery/signing`). A
-`--local` qualification publish **never signs** — not "signs when it can":
-its signer is the one a process with no identity gets, so a workflow holding
-an OIDC identity cannot deliver signed carriers to a qualification cluster
-under the release identity.
+`--local` qualification publish **never signs under the release identity** —
+not "signs when it can": a workflow holding an OIDC identity cannot deliver
+signed carriers to a qualification cluster under it. It signs only as a
+**developer** the k3d environment's `host.developers` lists, through the same
+keyless flow with the developer's own token (below), and with none listed its
+signer is the one a process with no identity gets.
+
+A **developer-signed** local publish obtains the token from
+`SIGSTORE_ID_TOKEN` when it is set, and otherwise from the Sigstore
+public-good login (`https://oauth2.sigstore.dev/auth`), which opens the
+browser — preselecting the provider when every listed developer uses the same
+one. The token is held to `host.developers` **before** anything is signed (a
+token naming anyone else never reaches Fulcio), reused across the documents of
+one promotion until shortly before it expires, and every carrier — fresh, or
+delivered before and about to be reused — is checked offline against the
+public-good root under exactly the listed identities, as the local host will
+check it. Nothing falls back to unsigned: a sign-in that fails, or a carrier
+the check refuses, stops the publish with the reason. The developer's address
+is recorded in the public transparency log, as every keyless signature's
+identity is.
 
 A release publish **checks its own carriers**, right after signing each one,
 as a host will: offline, against the public-good trusted root fetched through
@@ -568,7 +606,8 @@ set, local or not; a hosted release publish run without it (from a laptop, or
 from a workflow that does not expose it) is **refused before it reads a
 document**, rather than signing unchecked or reusing delivered carriers under
 no policy at all. A publish to an environment with no host needs no identity
-— it delivers nothing signed — and a `--local` publish never signs. A
+— it delivers nothing signed — and a `--local` publish signs only as a
+listed developer. A
 carrier a host would refuse —
 a certificate naming another workflow, a log entry the root cannot verify, a
 bundle with no transparency evidence — is refused at publish, in front of
@@ -598,9 +637,11 @@ its own identity policy. Rotation is a trust-root update; a disconnected
 perimeter verifies offline from the bundle against a mirrored trust root.
 
 A publish with no signing identity — a laptop — **refuses**, naming the
-documents, unless it is a `--local` qualification publish, which delivers them
-unsigned, records `signed: false` in the inventory, and renders no Job to POST
-them, because the host refuses an unsigned document. A local render always
+documents, unless it is a `--local` qualification publish to a host that lists
+no developer, which delivers them unsigned, records `signed: false` in the
+inventory, and renders no Job to POST them, because the host refuses an
+unsigned document. A `--local` publish to a host that lists developers is
+signed or refused, never unsigned, and renders the same Jobs a cell receives. A local render always
 produces unsigned documents and says so.
 
 ## The carrier Jobs
@@ -812,23 +853,70 @@ opposite answers to "the desired set is empty" is the failure its tests exist
 to prevent. Stopping a run feels like removal and is not: withdrawing a binding
 is a POSTed tombstone generation.
 
-**The ceiling locally** is a developer-authored envelope file in the host's
-`local` configuration profile, with the same schema as the reviewed envelope,
-at a path the host names when it builds the envelope table. The attestation's
+**The ceiling locally** is the envelope record the local host holds, with the
+same schema as the reviewed envelope, written the way the host writes it
+everywhere — the host is moving the envelope from a boot-time file to a record
+a platform administrator writes at runtime (saas#1055), and the CLI names no
+file for it. The render never reads it, locally or not; it only stamps the
+revision the k3d environment's `host.envelope_revision` declares, and the host
+refuses a document naming another. The attestation's
 own authority is deliberately not the ceiling: effective authority is the
 intersection of binding, envelope and installation, and collapsing two of the
 three locally would have a developer test a different authorisation shape than
 production computes.
 
-**What this PR does on a laptop, and what it does not.** A local render emits
-unsigned documents and says so. `codefly deploy gitops publish --local` (a
-k3d qualification environment) delivers them unsigned, records `signed: false`
-in the inventory and renders no Job — a host refuses an unsigned document, and
-the CLI says so rather than POST what will be refused. Not built here: the
-local-cluster run path for `codefly run`, and signing with a developer OIDC
-identity (the keyless flow with an interactive token instead of the workflow's).
-Until both exist, a local run of a host and its solutions has no presence on
-the host.
+**What a laptop runs today (cli#918).** The local half is the gitops path
+pointed at a k3d environment whose host lists the developer:
+
+```bash
+codefly deploy gitops render <module> --env local          # builds the images, renders presence + authority
+codefly deploy gitops publish <module> --env local --local # signs as you (browser, or SIGSTORE_ID_TOKEN), renders the Jobs
+codefly deploy gitops remote up <module> --env local       # serves the reviewed revision to the cluster's Argo CD
+```
+
+The render derives presence and authority with the one derivation a cell's
+render uses (`presenceInstanceOf`, `authorityInstancesOf`, `authorityDocument`)
+from the real bytes the local build produced: manifest digests, image manifest
+digests, the account-derived SPIFFE ID. The publish settles them against the
+local delivery repository, signs them as the developer, checks each carrier as
+the local host will, and writes the same `{document, bundle}` carriers and the
+same delivery Jobs a cell receives: the presence Job in the module's namespace
+and the authority Job in `platform-authority`, each as the `delivery`
+ServiceAccount, each POSTing to `/platform/_delivery/{presence,authority}` with
+a projected token for the host's audience — so the host's TokenReview, signer
+policy and idempotency run locally exactly as in the cell. With no developer
+listed the publish delivers unsigned and renders no Job, as before.
+
+**How a local pod's identity reaches the host.** Not through anything the run
+projects: there is no `MODULE_IDENTITY_PREFIX`, no secret and no
+`MODULE_PRINCIPALS` line, and nothing self-registers (cli#855 removed that on
+purpose). A module's pod runs as its own ServiceAccount; the presence document
+names that account's SPIFFE ID and the image digest it must run, and the
+authority document approves that build for the module's principal. The pod
+presents its projected ServiceAccount token, minted for the host's audience;
+the host reviews it (TokenReview), reads the pod's running image, and
+compares both to what the delivered documents approve — the mint saas#1056
+wires into every module credential. A module that still requires a projected
+`MODULE_IDENTITY_PREFIX` at boot (annotations 0.2.14) fails on this path by
+design: its SDK must read the projected token instead.
+
+**What the local run needs from the host** (none of it is the CLI's): Argo CD
+in the local cluster, with the module's ApplicationSet applied, to sync the
+tree and run the Jobs as Sync hooks; the `platform-authority` namespace and its
+`delivery` ServiceAccount, which the platform provisions in a cell; the local
+host's delivery trust — the public-good `trusted_root.json` and a verification
+policy naming the listed developers (issuer and subject), with the signer →
+ownership-domain map letting each speak for the environment's `host.domain`;
+and the local envelope record at the declared revision.
+
+**Not built yet.** One command for the whole composition (`codefly run`
+driving the three verbs above for every composed module): the local gitops
+path serves ONE reviewed revision per environment (`remote up`), and a local
+publish never advances the base branch it settles generations against — the
+review ref is the promotion, and nothing merges it locally — so a rebuild of
+a module whose previous local promotion was not merged settles at the same
+generation with different content, which the host refuses as a rewrite. Both
+are decisions about the local review loop, not about delivery.
 
 **The cost, and the alternative the host would accept.** Requiring a local
 cluster changes the laptop story from a container runtime to a container

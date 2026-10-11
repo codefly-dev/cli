@@ -106,6 +106,24 @@ type deliveryPublishOptions struct {
 	// publisher. nil runs no check: a local publish signs nothing, and a test
 	// signer produces no bundle a root could verify.
 	SelfCheck signing.SelfCheck
+	// Signs names who signs this publish's documents, for the refusal a
+	// publish that may not deliver unsigned gives when its signer had no
+	// identity: the release workflow, or — a developer-signed local
+	// publish — the developers the host lists. Empty means the release
+	// workflow.
+	Signs string
+}
+
+// unsignedRefusal is the refusal of a publish that may not deliver unsigned
+// and could not sign: the documents left unsigned, why the signer had no
+// identity, and who signs instead.
+func unsignedRefusal(what string, unsigned []string, environment string, cause error, opts *deliveryPublishOptions) error {
+	signs := opts.Signs
+	if signs == "" {
+		signs = "publish from the release workflow, whose OIDC identity signs them"
+	}
+	return fmt.Errorf("%w: the %s documents %s cannot be delivered unsigned to %s (%v); %s",
+		signing.ErrNoIdentity, what, strings.Join(unsigned, ", "), environment, cause, signs)
 }
 
 // deliveredPresenceDocument is one presence document after settling.
@@ -473,6 +491,7 @@ func signPresenceSet(ctx context.Context, settled map[string]deliveredPresenceDo
 	}
 	delivery := &InventoryDelivery{Signed: true}
 	var unsigned []string
+	var unsignedCause error
 	if opts.Carriers == nil {
 		opts.Carriers = map[string][]byte{}
 	}
@@ -528,6 +547,9 @@ func signPresenceSet(ctx context.Context, settled map[string]deliveredPresenceDo
 		case errors.Is(signErr, signing.ErrNoIdentity):
 			unsigned = append(unsigned, binding)
 			delivery.Signed = false
+			if unsignedCause == nil {
+				unsignedCause = signErr
+			}
 		default:
 			return nil, fmt.Errorf("sign binding %s: %w", binding, signErr)
 		}
@@ -541,9 +563,7 @@ func signPresenceSet(ctx context.Context, settled map[string]deliveredPresenceDo
 		settled[binding] = entry
 	}
 	if len(unsigned) > 0 && !opts.AllowUnsigned {
-		return nil, fmt.Errorf(
-			"%w: the presence documents %s cannot be delivered unsigned to %s; publish from the release workflow, whose OIDC identity signs them",
-			signing.ErrNoIdentity, strings.Join(unsigned, ", "), environment)
+		return nil, unsignedRefusal("presence", unsigned, environment, unsignedCause, opts)
 	}
 	return delivery, nil
 }
@@ -1175,6 +1195,7 @@ func signAuthoritySet(ctx context.Context, settled map[string]deliveredAuthority
 	}
 	delivery := &InventoryDelivery{Signed: true}
 	var unsigned []string
+	var unsignedCause error
 	if opts.Carriers == nil {
 		opts.Carriers = map[string][]byte{}
 	}
@@ -1230,6 +1251,9 @@ func signAuthoritySet(ctx context.Context, settled map[string]deliveredAuthority
 		case errors.Is(signErr, signing.ErrNoIdentity):
 			unsigned = append(unsigned, authority)
 			delivery.Signed = false
+			if unsignedCause == nil {
+				unsignedCause = signErr
+			}
 		default:
 			return nil, fmt.Errorf("sign authority %s: %w", authority, signErr)
 		}
@@ -1243,9 +1267,7 @@ func signAuthoritySet(ctx context.Context, settled map[string]deliveredAuthority
 		settled[authority] = entry
 	}
 	if len(unsigned) > 0 && !opts.AllowUnsigned {
-		return nil, fmt.Errorf(
-			"%w: the authority documents %s cannot be delivered unsigned to %s; publish from the release workflow, whose OIDC identity signs them",
-			signing.ErrNoIdentity, strings.Join(unsigned, ", "), environment)
+		return nil, unsignedRefusal("authority", unsigned, environment, unsignedCause, opts)
 	}
 	return delivery, nil
 }
