@@ -418,6 +418,11 @@ type PublishRequest struct {
 	// process environment decides: the publishing workflow's OIDC identity, or
 	// none — in which case only a Local publish may deliver unsigned.
 	Signer signing.Signer `json:"-"`
+	// DeveloperIDToken is where a Local publish to an environment whose host
+	// lists developers gets the developer's OIDC token. nil means
+	// SIGSTORE_ID_TOKEN when set, otherwise the interactive login of the
+	// Sigstore public-good instance.
+	DeveloperIDToken signing.IDTokenSource `json:"-"`
 	// Carriers are the carriers an inspected plan signed, for the publish
 	// that executes the plan to deliver as they are. Set from the plan by
 	// the command; never part of a request's own JSON.
@@ -457,6 +462,11 @@ type PublishPlan struct {
 	// generation. The publish that executes the plan delivers exactly these
 	// bytes — signing is once, here — after holding each to its document.
 	Carriers map[string][]byte `json:"carriers,omitempty"`
+	// SelfPromotes marks a local publish to a k3d environment whose host
+	// lists developers: there is no reviewer, the developer's signed publish
+	// is the approval, and the publish fast-forwards the local delivery
+	// repository's base branch to its commit itself (see promoteLocally).
+	SelfPromotes bool `json:"selfPromotes,omitempty"`
 }
 
 // ContractCheck reports the admission result of one consumed API contract
@@ -497,6 +507,9 @@ type PublishResult struct {
 	// authority document at its settled generation, and the identity that
 	// signed them.
 	Delivery *InventoryDelivery `json:"delivery,omitempty"`
+	// Promoted reports that this publish advanced the base branch itself: a
+	// developer-signed local promotion (PublishPlan.SelfPromotes).
+	Promoted bool `json:"promoted,omitempty"`
 }
 
 type RollbackRequest struct {

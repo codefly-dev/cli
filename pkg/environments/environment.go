@@ -3,6 +3,8 @@ package environments
 import (
 	"fmt"
 	"maps"
+	"net/url"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -245,6 +247,67 @@ type EnvironmentHost struct {
 	// earlier only when the identity that signed it is within it. The host
 	// publishes the same literal and enforces it independently.
 	Release *HostReleasePolicy `yaml:"release,omitempty"`
+	// Developers are the identities a LOCAL host's allowlist names: the
+	// developers whose own OIDC identity signs what a local run delivers to a
+	// host on a local cluster (cli#918). A local qualification publish signs
+	// under one of them — through the same Sigstore keyless flow a release
+	// signs with, with an interactive token instead of the workflow's — and
+	// holds the certificate it gets to this list before anything is written;
+	// with none declared it delivers unsigned, as before. The host publishes
+	// the same identities in its local profile and enforces them
+	// independently, and a deployed host refuses them by the ordinary
+	// allowlist check, so only a k3d environment may declare them: a
+	// deployment manifest naming a developer is the leak this refuses.
+	Developers []HostDeveloper `yaml:"developers,omitempty"`
+	// TrustAnchor is the path the host reads its trust anchor from — its
+	// trusted root and verification policy — a constant of the host, stated
+	// here so a local cluster run can mount the local trust anchor it
+	// provisions where the host reads it, the way a cell's platform mounts
+	// its own. It moves nothing on the host: a wrong path leaves the host
+	// with no anchor, and it refuses to start. A k3d environment only.
+	TrustAnchor string `yaml:"trust_anchor,omitempty"`
+}
+
+// HostDeveloper is one developer identity a local host admits: the OIDC
+// issuer the signing certificate names (for a GitHub login through the
+// Sigstore public-good instance, https://github.com/login/oauth) and the
+// certificate's subject — the address the identity provider verified.
+type HostDeveloper struct {
+	Issuer  string `yaml:"issuer"`
+	Subject string `yaml:"subject"`
+}
+
+var developerFields = []string{"issuer", "subject"}
+
+// UnmarshalYAML refuses a key a developer identity does not have: a
+// misspelled `subject` would otherwise read as an identity admitting nobody.
+func (developer *HostDeveloper) UnmarshalYAML(node *yaml.Node) error {
+	if err := rejectUnknownKeys(node, "host.developers", developerFields...); err != nil {
+		return err
+	}
+	type plain HostDeveloper
+	return node.Decode((*plain)(developer))
+}
+
+// Validate holds a developer identity to its shape: an https issuer and a
+// single-line subject. Nothing here decides who may sign — the local host's
+// allowlist does; this refuses a declaration that could admit nobody.
+func (developer *HostDeveloper) Validate() error {
+	issuer, err := url.Parse(developer.Issuer)
+	if err != nil || issuer.Scheme != "https" || issuer.Host == "" {
+		return fmt.Errorf("host developer issuer %q is not an https OIDC issuer (such as https://github.com/login/oauth)", developer.Issuer)
+	}
+	// The host admits a person by an exact issuer and an exact e-mail
+	// address: no wildcard, no URI subject (which would read as a workflow),
+	// no surrounding space — refused here as the host refuses it at boot.
+	if strings.Contains(developer.Issuer, "*") {
+		return fmt.Errorf("host developer issuer %q is matched exactly and may not carry a wildcard", developer.Issuer)
+	}
+	if local, domain, found := strings.Cut(developer.Subject, "@"); !found || local == "" || domain == "" || strings.Contains(domain, "@") ||
+		strings.ContainsAny(developer.Subject, "*/:") || strings.ContainsFunc(developer.Subject, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+		return fmt.Errorf("host developer subject %q must be the exact e-mail address the signing certificate names (the verified address)", developer.Subject)
+	}
+	return nil
 }
 
 // HostReleasePolicy is one repository, one workflow path, and the refs that
@@ -297,7 +360,7 @@ func (policy *HostReleasePolicy) Validate() error {
 }
 
 // hostFields are the keys a host block may carry, in declaration order.
-var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "envelope_revision", "delivery", "release"}
+var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "envelope_revision", "delivery", "release", "developers", "trust_anchor"}
 
 // deliveryPattern is a composition identity: <module>/<service>/<endpoint>,
 // each a lowercase name.
@@ -354,6 +417,19 @@ func (host *EnvironmentHost) Validate() error {
 	}
 	if !deliveryPattern.MatchString(host.Delivery) {
 		return fmt.Errorf("host delivery %q is not the composition identity <module>/<service>/<endpoint> of the host's delivery API", host.Delivery)
+	}
+	if host.TrustAnchor != "" && (!filepath.IsAbs(host.TrustAnchor) || filepath.Clean(host.TrustAnchor) != host.TrustAnchor || host.TrustAnchor == "/") {
+		return fmt.Errorf("host trust_anchor %q is not a clean absolute path (the directory the host reads its trust anchor from)", host.TrustAnchor)
+	}
+	seen := map[HostDeveloper]bool{}
+	for i := range host.Developers {
+		if err := host.Developers[i].Validate(); err != nil {
+			return err
+		}
+		if seen[host.Developers[i]] {
+			return fmt.Errorf("host developer %s (%s) is declared twice", host.Developers[i].Subject, host.Developers[i].Issuer)
+		}
+		seen[host.Developers[i]] = true
 	}
 	return host.Release.Validate()
 }
@@ -1233,6 +1309,18 @@ func LocalEnvironment() *Environment {
 			Kind: ClusterKindK3d,
 		},
 	}
+}
+
+// DeclaresLocalK3d reports whether the environment DECLARES a local k3d
+// cluster: cluster.kind k3d and a k3d context, both written. It is the gate
+// for everything a developer's own cluster may do that a deployed one may
+// not — admitting a developer identity, mounting a local trust anchor,
+// self-promoting a signed publish — and so, unlike IsK3d, it never reads an
+// undeclared environment named "local" as k3d: omitting a field must narrow
+// what an environment may do, never widen it.
+func (env *Environment) DeclaresLocalK3d() bool {
+	return env != nil && env.Cluster != nil && env.Cluster.Kind == ClusterKindK3d &&
+		strings.HasPrefix(env.Cluster.Context, "k3d-") && len(env.Cluster.Context) > len("k3d-")
 }
 
 // IsK3d reports whether the environment targets a k3d cluster. Used to

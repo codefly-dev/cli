@@ -147,38 +147,24 @@ var gitOpsPublishCmd = &cobra.Command{
 			return err
 		}
 		defer plane.Close()
-		plan, err := plane.PlanGitOpsPublish(ctx, &request)
-		if err != nil {
-			return err
-		}
-		printPublishPlan(&plan)
-		if !gitOpsYes && !models.Confirm(ctx, "Publish this signed promotion and open or update its pull request?", false) {
-			return fmt.Errorf("publication not confirmed")
-		}
-		if err = plane.ConfigureMutationAuthority(ctx, control.AuthorityConfig{Mode: control.AuthorityPrepared}); err != nil {
-			return err
-		}
-		prepared, err := plane.PrepareMutation(ctx, control.Mutation{
-			Kind:    control.MutationGitOpsPublish,
-			Summary: "Publish reviewed GitOps promotion",
-			Payload: gitops.PublishMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers},
+		result, err := control.PublishGitOps(ctx, plane, &request, func(plan *gitops.PublishPlan) error {
+			printPublishPlan(plan)
+			if !gitOpsYes && !models.Confirm(ctx, "Publish this signed promotion and open or update its pull request?", false) {
+				return fmt.Errorf("publication not confirmed")
+			}
+			return nil
 		})
 		if err != nil {
 			return err
 		}
-		mutationResult, err := plane.ApplyPreparedMutation(ctx, prepared)
-		if err != nil {
-			return err
-		}
-		if mutationResult.GitOpsPublish == nil {
-			return fmt.Errorf("publication returned no result")
-		}
-		result := *mutationResult.GitOpsPublish
 		cli.Info("Service snapshot %s", result.SnapshotRevision)
 		cli.Info("Signed commit %s", result.Commit)
 		cli.Info("Tree %s", result.Tree)
 		printDelivery(result.Delivery)
 		cli.Info("Pull request %s", result.PullRequest)
+		if result.Promoted {
+			cli.Info("Promoted locally: %s now points at %s (the developer's signed publish is the approval on a local cluster)", result.BaseBranch, result.Commit)
+		}
 		return nil
 	},
 }
@@ -200,7 +186,7 @@ func printDelivery(delivery *gitops.InventoryDelivery) {
 		cli.Info("Delivery documents signed by %s", delivery.Identity)
 		return
 	}
-	cli.Warning("Delivery documents are UNSIGNED: no signing identity in this process; a host refuses them, and no Job delivers them. Publish from the release workflow.")
+	cli.Warning("Delivery documents are UNSIGNED: no signing identity in this process; a host refuses them, and no Job delivers them. Publish from the release workflow — or, to a host on a local cluster, list your identity in the k3d environment's host.developers and publish --local to sign as yourself.")
 }
 
 var gitOpsObserveCmd = &cobra.Command{
@@ -319,7 +305,7 @@ var gitOpsRemotePlanCmd = &cobra.Command{
 
 var gitOpsRemoteUpCmd = &cobra.Command{
 	Use:   "up [module]",
-	Short: "Create or refresh the read-only fetch remote for the reviewed revision",
+	Short: "Create or refresh the read-only fetch remote for the reviewed revision (no module: the latest local promotion)",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
@@ -400,7 +386,14 @@ func loadFetchRemote(ctx context.Context, args []string, requireRevision bool) (
 		return remote, "", nil
 	}
 	if len(args) == 0 {
-		return nil, "", fmt.Errorf("a module is required to locate the reviewed revision to serve")
+		// With no module, the environment's latest LOCAL PROMOTION: what a
+		// developer's signed publish promoted on a k3d environment whose host
+		// lists developers (the base branch of the local delivery repository).
+		revision, promotionErr := gitops.LatestLocalPromotion(ctx, workspace, gitOpsEnv)
+		if promotionErr != nil {
+			return nil, "", fmt.Errorf("name a module to serve its reviewed revision, or promote one locally first: %w", promotionErr)
+		}
+		return remote, revision, nil
 	}
 	publication, err := gitops.LoadPublishResult(workspace.Dir(), args[0], gitOpsEnv)
 	if err != nil {

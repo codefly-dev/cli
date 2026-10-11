@@ -2143,7 +2143,7 @@ Flags:
 
 ## `codefly deploy gitops remote up`
 
-Create or refresh the read-only fetch remote for the reviewed revision
+Create or refresh the read-only fetch remote for the reviewed revision (no module: the latest local promotion)
 
 ```
 codefly deploy gitops remote up [module]
@@ -3929,10 +3929,52 @@ codefly run <subcommand>
 
 Subcommands:
 
+- [`codefly run cluster`](#codefly-run-cluster)
 - [`codefly run command`](#codefly-run-command)
 - [`codefly run job`](#codefly-run-job)
 - [`codefly run service`](#codefly-run-service)
 - [`codefly run solution`](#codefly-run-solution)
+
+## `codefly run cluster`
+
+Run the composition on the local k3d cluster through the signed delivery a cell receives
+
+```
+Run the composition on the environment's local k3d cluster, through the same
+delivery a cell receives (docs/solution-host-bindings.md, "Local runs"):
+
+  1. Argo CD in the cluster (installed if absent), the platform-authority
+     namespace with its delivery ServiceAccount, the modules' namespaces, and
+     the local host's trust anchor (the public-good trusted root and a
+     verification policy admitting host.developers, bound to this cluster's
+     CA; re-written, and the host restarted, when the cluster is recreated);
+  2. for each module (every composed module when none is named): build and
+     push its images, render its tree with its presence and authority
+     documents, sign them as you (a developer the environment's
+     host.developers lists — the browser opens, or SIGSTORE_ID_TOKEN), and
+     promote it locally;
+  3. the latest promotion served to the cluster's Argo CD, each module's Argo
+     bootstrap applied, and every delivery Job awaited, with its receipts.
+
+The environment must declare a k3d cluster (kind and context), a host,
+host.developers, and host.trust_anchor (the path the host reads its trust
+anchor from). Stopping a run is not removal: withdrawing a binding is a
+published tombstone.
+```
+
+```
+codefly run cluster [module...]
+```
+
+Flags:
+
+```
+      --app-project string          AppProject contract each module's Argo bootstrap is stamped with
+      --delivery-timeout duration   Maximum time to wait for each delivery Job (the Job itself gives up after 25 minutes) (default 30m0s)
+      --env string                  k3d environment to run on (declares cluster.kind k3d, cluster.context, host, host.developers and host.trust_anchor) (default "local")
+      --rebuild                     Build every image even when no input of it changed
+  -y, --yes                         Sign and promote every module without an interactive confirmation
+```
 
 ## `codefly run command`
 

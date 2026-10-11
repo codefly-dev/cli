@@ -40,6 +40,26 @@ func PublicGoodTrustedRoot(ctx context.Context) (*root.TrustedRoot, error) {
 	return trusted, nil
 }
 
+// PublicGoodTrustedRootJSON fetches the Sigstore public-good trusted root
+// through TUF and returns it as the TUF repository serves it
+// (trusted_root.json), verified against the embedded TUF root — the file a
+// host's trust anchor holds, byte for byte, with the CT log keys an SCT is
+// checked against.
+func PublicGoodTrustedRootJSON(ctx context.Context) ([]byte, error) {
+	client, err := tuf.New(tuf.DefaultOptions().WithContext(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("opening the Sigstore public-good TUF repository (%s): %w", tuf.DefaultMirror, err)
+	}
+	raw, err := client.GetTarget("trusted_root.json")
+	if err != nil {
+		return nil, fmt.Errorf("fetching trusted_root.json from the Sigstore public-good TUF repository: %w", err)
+	}
+	if _, err = root.NewTrustedRootFromJSON(raw); err != nil {
+		return nil, fmt.Errorf("the public-good trusted_root.json does not parse: %w", err)
+	}
+	return raw, nil
+}
+
 // Verify verifies that bundle is a valid Sigstore bundle whose signature covers exactly payload,
 // signed under an identity the policy admits, with a transparency-log entry establishing that
 // the signature was logged and when (or a signed timestamp for the when), against the trusted
@@ -68,7 +88,12 @@ func Verify(bundle, payload []byte, trusted *root.TrustedRoot, policy Policy) (I
 	if !entity.HasInclusionPromise() && !entity.HasInclusionProof() {
 		return Identity{}, fmt.Errorf("%w: the bundle has no transparency-log entry with an inclusion promise or proof", ErrNoTransparency)
 	}
-	verifier, err := verify.NewVerifier(trusted, verify.WithTransparencyLog(1), verify.WithObserverTimestamps(1))
+	// An embedded SCT from a CT log the root names is required, as the host
+	// requires it of every signer (module-saas-starter#1066): one verifier,
+	// one strength, so a carrier this check admits is never one the host
+	// refuses for a certificate no CT log saw. The public-good Fulcio embeds
+	// one in every certificate and its root carries the CT log keys.
+	verifier, err := verify.NewVerifier(trusted, verify.WithTransparencyLog(1), verify.WithObserverTimestamps(1), verify.WithSignedCertificateTimestamps(1))
 	if err != nil {
 		return Identity{}, fmt.Errorf("signing: configuring the Sigstore verifier: %w", err)
 	}

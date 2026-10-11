@@ -2,8 +2,6 @@ package signing
 
 import (
 	"bytes"
-	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"regexp"
 	"strings"
@@ -13,10 +11,7 @@ import (
 	protocommon "github.com/sigstore/protobuf-specs/gen/pb-go/common/v1"
 	protorekor "github.com/sigstore/protobuf-specs/gen/pb-go/rekor/v1"
 	"github.com/sigstore/sigstore-go/pkg/root"
-	"github.com/sigstore/sigstore-go/pkg/testing/ca"
-	"github.com/sigstore/sigstore-go/pkg/tlog"
 	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -24,135 +19,53 @@ const (
 	releaseSubject = "https://github.com/codefly-dev/cli/.github/workflows/release.yaml@refs/tags/v1.2.3"
 )
 
-// virtualRelease is a document signed by an in-memory Sigstore: a Fulcio-style CA, a Rekor log
-// and a timestamp authority whose keys exist only for this test, and the trusted root pinning them.
+// virtualRelease is a document signed by an in-memory Sigstore whose
+// certificates are what the public-good Fulcio issues (sctSigstore): a Fulcio
+// chain, the issuer extension, an embedded SCT, a Rekor entry with its signed
+// entry timestamp — and the trusted root pinning keys that exist only for this
+// test.
 type virtualRelease struct {
-	sigstore *ca.VirtualSigstore
-	payload  []byte
-	bundle   []byte
-	trusted  *root.TrustedRoot
+	payload []byte
+	bundle  []byte
+	trusted *root.TrustedRoot
 }
 
-// signVirtually signs payload for subject at issuer. sigstore-go's test CA yields a
-// verify.SignedEntity rather than a bundle, so the bundle is laid out here the way sign.Bundle
-// lays it out: the leaf certificate, the message signature over the payload digest, and the
-// hashedrekord log entry with its inclusion promise and proof (plus the RFC 3161 timestamp when
-// asked, as a signer configured with a TimestampURL would add).
+// signVirtually signs payload for subject at issuer, with an RFC 3161
+// timestamp beside the log entry when asked (as a signer configured with a
+// TimestampURL would add).
 func signVirtually(t *testing.T, subject, issuer string, payload []byte, withTimestamp bool) virtualRelease {
 	t.Helper()
-	sigstore, err := ca.NewVirtualSigstore()
-	if err != nil {
-		t.Fatalf("NewVirtualSigstore: %v", err)
-	}
-	entity, err := sigstore.Sign(subject, issuer, payload)
-	if err != nil {
-		t.Fatalf("virtual Sign: %v", err)
-	}
-	verification, err := entity.VerificationContent()
-	if err != nil {
-		t.Fatalf("VerificationContent: %v", err)
-	}
-	signature, err := entity.SignatureContent()
-	if err != nil {
-		t.Fatalf("SignatureContent: %v", err)
-	}
-	message := signature.MessageSignatureContent()
-	entries, err := entity.TlogEntries()
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("TlogEntries: %v (%d entries)", err, len(entries))
-	}
+	return signVirtuallyWith(t, subject, issuer, payload, sctSigning{timestamp: withTimestamp})
+}
 
+// signVirtuallyWith is signVirtually with the certificate's SCT chosen.
+func signVirtuallyWith(t *testing.T, subject, issuer string, payload []byte, how sctSigning) virtualRelease {
+	t.Helper()
+	sigstore := newSCTSigstore(t)
+	signed := sigstore.sign(t, subject, issuer, payload, how)
 	bundle := &protobundle.Bundle{
 		MediaType: MediaTypeBundle,
 		VerificationMaterial: &protobundle.VerificationMaterial{
 			Content: &protobundle.VerificationMaterial_Certificate{
-				Certificate: &protocommon.X509Certificate{RawBytes: verification.Certificate().Raw},
+				Certificate: &protocommon.X509Certificate{RawBytes: signed.leaf.Raw},
 			},
-			TlogEntries: []*protorekor.TransparencyLogEntry{completeLogEntry(t, sigstore, entries[0])},
+			TlogEntries: []*protorekor.TransparencyLogEntry{signed.entry},
 		},
 		Content: &protobundle.Bundle_MessageSignature{MessageSignature: &protocommon.MessageSignature{
-			MessageDigest: &protocommon.HashOutput{
-				Algorithm: protocommon.HashAlgorithm(protocommon.HashAlgorithm_value[message.DigestAlgorithm()]),
-				Digest:    message.Digest(),
-			},
-			Signature: message.Signature(),
+			MessageDigest: &protocommon.HashOutput{Algorithm: protocommon.HashAlgorithm_SHA2_256, Digest: signed.digest},
+			Signature:     signed.signature,
 		}},
 	}
-	if withTimestamp {
-		timestamps, err := entity.Timestamps()
-		if err != nil {
-			t.Fatalf("Timestamps: %v", err)
+	if how.timestamp {
+		bundle.VerificationMaterial.TimestampVerificationData = &protobundle.TimestampVerificationData{
+			Rfc3161Timestamps: []*protocommon.RFC3161SignedTimestamp{{SignedTimestamp: signed.timestamp}},
 		}
-		data := &protobundle.TimestampVerificationData{}
-		for _, timestamp := range timestamps {
-			data.Rfc3161Timestamps = append(data.Rfc3161Timestamps, &protocommon.RFC3161SignedTimestamp{SignedTimestamp: timestamp})
-		}
-		bundle.VerificationMaterial.TimestampVerificationData = data
 	}
 	raw, err := protojson.Marshal(bundle)
 	if err != nil {
 		t.Fatalf("protojson.Marshal: %v", err)
 	}
-	return virtualRelease{sigstore: sigstore, payload: payload, bundle: raw, trusted: trustedRootOf(t, sigstore)}
-}
-
-// completeLogEntry finishes the virtual log entry: the test CA records the body, the log and the
-// integrated time but leaves the kind, the signed entry timestamp and the inclusion proof to the
-// caller. The log holds this single leaf, so the entry sits at the proof's index.
-func completeLogEntry(t *testing.T, sigstore *ca.VirtualSigstore, entry *tlog.Entry) *protorekor.TransparencyLogEntry {
-	t.Helper()
-	tle, ok := proto.Clone(entry.TransparencyLogEntry()).(*protorekor.TransparencyLogEntry)
-	if !ok {
-		t.Fatalf("TransparencyLogEntry cloned as %T", proto.Clone(entry.TransparencyLogEntry()))
-	}
-	proof, err := sigstore.GetInclusionProof(tle.CanonicalizedBody)
-	if err != nil {
-		t.Fatalf("GetInclusionProof: %v", err)
-	}
-	tle.LogIndex = *proof.LogIndex
-	tle.KindVersion = &protorekor.KindVersion{Kind: "hashedrekord", Version: "0.0.1"}
-
-	set, err := sigstore.RekorSignPayload(tlog.RekorPayload{
-		Body:           base64.StdEncoding.EncodeToString(tle.CanonicalizedBody),
-		IntegratedTime: tle.IntegratedTime,
-		LogIndex:       tle.LogIndex,
-		LogID:          hex.EncodeToString(tle.LogId.KeyId),
-	})
-	if err != nil {
-		t.Fatalf("RekorSignPayload: %v", err)
-	}
-	tle.InclusionPromise = &protorekor.InclusionPromise{SignedEntryTimestamp: set}
-
-	rootHash, err := hex.DecodeString(*proof.RootHash)
-	if err != nil {
-		t.Fatalf("root hash: %v", err)
-	}
-	hashes := make([][]byte, 0, len(proof.Hashes))
-	for _, encoded := range proof.Hashes {
-		hash, err := hex.DecodeString(encoded)
-		if err != nil {
-			t.Fatalf("proof hash: %v", err)
-		}
-		hashes = append(hashes, hash)
-	}
-	tle.InclusionProof = &protorekor.InclusionProof{
-		LogIndex:   *proof.LogIndex,
-		RootHash:   rootHash,
-		TreeSize:   *proof.TreeSize,
-		Hashes:     hashes,
-		Checkpoint: &protorekor.Checkpoint{Envelope: *proof.Checkpoint},
-	}
-	return tle
-}
-
-func trustedRootOf(t *testing.T, sigstore *ca.VirtualSigstore) *root.TrustedRoot {
-	t.Helper()
-	trusted, err := root.NewTrustedRoot(root.TrustedRootMediaType01,
-		sigstore.FulcioCertificateAuthorities(), sigstore.CTLogs(), sigstore.TimestampingAuthorities(), sigstore.RekorLogs())
-	if err != nil {
-		t.Fatalf("NewTrustedRoot: %v", err)
-	}
-	return trusted
+	return virtualRelease{payload: payload, bundle: raw, trusted: sigstore.trustedRoot(t)}
 }
 
 func exactPolicy(issuer, subject string) Policy {
@@ -336,6 +249,27 @@ func TestMalformedBundlesAreRefusedReadably(t *testing.T) {
 		}
 		if err == nil || strings.TrimSpace(strings.TrimPrefix(err.Error(), ErrBundle.Error())) == "" {
 			t.Errorf("ReadIdentity(%s): the error must say what is wrong, got %v", name, err)
+		}
+	}
+}
+
+// TestVerifyRequiresAnSCTFromALogTheRootNames: the check runs at the host's
+// strength — a certificate no CT log saw, or one whose SCT comes from a log
+// the trusted root does not name, is refused as a failing signature, with the
+// signature, the log entry and the identity otherwise sound. It holds for a
+// developer's carrier and a release's alike: one verifier.
+func TestVerifyRequiresAnSCTFromALogTheRootNames(t *testing.T) {
+	for _, identity := range [][2]string{{releaseIssuer, releaseSubject}, {"https://github.com/login/oauth", "dev@example.test"}} {
+		sound := signVirtually(t, identity[1], identity[0], []byte("presence document"), false)
+		if _, err := Verify(sound.bundle, sound.payload, sound.trusted, exactPolicy(identity[0], identity[1])); err != nil {
+			t.Fatalf("%s: the control, a certificate with its SCT, must verify: %v", identity[1], err)
+		}
+		for name, how := range map[string]sctSigning{"no SCT": {noSCT: true}, "an SCT from an unnamed log": {unknownLogs: true}} {
+			release := signVirtuallyWith(t, identity[1], identity[0], []byte("presence document"), how)
+			_, err := Verify(release.bundle, release.payload, release.trusted, exactPolicy(identity[0], identity[1]))
+			if !errors.Is(err, ErrSignature) || !strings.Contains(err.Error(), "SCT") {
+				t.Errorf("%s, %s: err = %v, want a refused SCT", identity[1], name, err)
+			}
 		}
 	}
 }

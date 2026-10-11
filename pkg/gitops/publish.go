@@ -196,7 +196,8 @@ func preparePublish(
 	if promotionBranch == "" {
 		promotionBranch = "codefly/promote-" + sanitizeRef(request.Module) + "-" + sanitizeRef(request.Environment)
 	}
-	repo, cleanup, baseRevision, branchRevision, err := clonePromotionRepository(ctx, config.RepoURL, baseBranch, promotionBranch)
+	selfPromotes := publication.selfPromotes(env)
+	repo, cleanup, baseRevision, branchRevision, err := clonePromotionRepository(ctx, config.RepoURL, baseBranch, promotionBranch, selfPromotes)
 	if err != nil {
 		return nil, err
 	}
@@ -268,6 +269,7 @@ func preparePublish(
 		Delivery:       inventory.Delivery,
 		StaleConsumers: staleConsumers,
 		Carriers:       publication.options.Carriers,
+		SelfPromotes:   selfPromotes,
 	}
 	plan.ID, err = publishPlanID(&plan, restoreRevision)
 	if err != nil {
@@ -279,17 +281,18 @@ func preparePublish(
 }
 
 // newDeliveryPublication shapes how a publish signs and checks what it
-// delivers. A local qualification publish never signs — not "signs when it
-// can": run from a workflow that holds an OIDC identity, it would otherwise
-// deliver signed carriers and a Job to a qualification cluster under the
-// release identity. The signer is the one a process with no identity gets,
-// unless the caller supplied one. A release publish signs under the
+// delivers. A local qualification publish never signs under the release
+// identity — not "signs when it can": run from a workflow that holds an OIDC
+// identity, it would otherwise deliver signed carriers and a Job to a
+// qualification cluster under it. The signer is the one a process with no
+// identity gets, unless the caller supplied one, or the environment's host
+// lists developers — then addressHost makes it the developer's (cli#918). A release publish signs under the
 // workflow's identity and checks each carrier the way a host will: a carrier
 // a host would refuse is refused here, in front of whoever ran the release.
 func newDeliveryPublication(request *PublishRequest, baseBranch string) (*deliveryPublication, error) {
 	publication := &deliveryPublication{baseBranch: baseBranch, options: deliveryPublishOptions{
 		Signer: request.Signer, AllowUnsigned: request.Local, Module: request.Module,
-	}}
+	}, local: request.Local, supplied: request.Signer != nil, developerToken: request.DeveloperIDToken}
 	if request.Local && request.Signer == nil {
 		publication.options.Signer = &signing.Unavailable{Reason: "a local qualification publish delivers its documents unsigned"}
 	}
@@ -344,6 +347,69 @@ func (p *deliveryPublication) holdToReleasePolicy(env *environments.Environment)
 	return nil
 }
 
+// developerSigner and developerCheck build the signer and the carrier check
+// of a developer-signed local publish; tests replace them, since the real
+// ones reach Fulcio, Rekor and the public-good trusted root.
+var (
+	developerSigner = signing.NewDeveloper
+	developerCheck  = signing.DeveloperCheckUnder
+)
+
+// signAsDeveloper makes a local qualification publish to an environment whose
+// host lists developers a SIGNED delivery (cli#918): the documents are signed
+// through the same keyless flow a release signs with, under the developer's
+// own OIDC identity, every fresh carrier is checked the way the local host
+// will check it, a carrier delivered before is reused only when it is one of
+// those developers', and nothing is delivered unsigned — so the Jobs that
+// POST the carriers are rendered as in a cell. With no developer declared a
+// local publish delivers unsigned, as it always did, and a release publish
+// is untouched: a developer identity never signs anything but a --local
+// publish, and the environment it is declared on is a k3d one.
+func (p *deliveryPublication) signAsDeveloper(env *environments.Environment) error {
+	if !p.local || len(env.Host.Developers) == 0 {
+		return nil
+	}
+	// Workspace validation already refuses developers anywhere else; this is
+	// the signer's own gate, so a path that skipped validation still cannot
+	// sign as a developer for an undeclared cluster.
+	if !env.DeclaresLocalK3d() {
+		return fmt.Errorf("environment %s lists host.developers but declares no local k3d cluster (cluster.kind: k3d, cluster.context: k3d-<name>); a developer signs only for a declared local cluster", env.Name)
+	}
+	p.options.AllowUnsigned = false
+	policy := &signing.DeveloperPolicy{}
+	for _, developer := range env.Host.Developers {
+		policy.Developers = append(policy.Developers, signing.DeveloperIdentity{Issuer: developer.Issuer, Subject: developer.Subject})
+	}
+	p.options.Signs = "a local publish to " + env.Name + " signs as a developer its host lists (host.developers): sign in as one of them, or set SIGSTORE_ID_TOKEN to such a developer's token"
+	if p.supplied {
+		return nil
+	}
+	check, err := developerCheck(policy)
+	if err != nil {
+		return err
+	}
+	signer, err := developerSigner(policy, p.developerToken, signing.KeylessOptions{})
+	if err != nil {
+		return err
+	}
+	p.options.Signer, p.options.SelfCheck, p.options.ReuseCheck = signer, check, check
+	return nil
+}
+
+// selfPromotes reports whether this publish is a LOCAL PROMOTION: a --local
+// publish to a k3d environment whose host lists developers. There is no
+// reviewer on a developer's own cluster — the developer is author and
+// approver, and the Sigstore signature the publish makes and checks against
+// host.developers is the approval — so the publish advances the base branch
+// of the local delivery repository itself. Generations are settled against
+// that branch, so without the promotion every rebuild would settle at the
+// generation of the last one with other content, which a host refuses as a
+// rewrite. A non-local publish, or a local one to a host listing no
+// developer, keeps the review: its base branch moves only by a merge.
+func (p *deliveryPublication) selfPromotes(env *environments.Environment) bool {
+	return p.local && env.DeclaresLocalK3d() && env.Host != nil && len(env.Host.Developers) > 0
+}
+
 // addressHost points the publication at the environment's host: the delivery
 // API its Jobs post to, and the envelope revision and the domain its
 // documents must declare.
@@ -353,6 +419,9 @@ func (p *deliveryPublication) addressHost(ctx context.Context, workspace *resour
 	// dropped its host while documents are rendered for it is refused later,
 	// by refuseUnaddressedDocuments, not admitted here.)
 	if env.Host != nil {
+		if err := p.signAsDeveloper(env); err != nil {
+			return err
+		}
 		if err := p.holdToReleasePolicy(env); err != nil {
 			return err
 		}
@@ -1628,6 +1697,122 @@ func requireReviewedRevision(root, module, environment, revision string) error {
 	return fmt.Errorf("rollback target %s has no reviewed Healthy promotion evidence", revision)
 }
 
+// gitIsAncestor reports whether ancestor is reachable from descendant.
+func gitIsAncestor(ctx context.Context, repo, ancestor, descendant string) bool {
+	_, err := gitCommand(ctx, repo, "merge-base", "--is-ancestor", ancestor, descendant)
+	return err == nil
+}
+
+// promoteLocally is the local promotion a self-promoting plan makes once its
+// signed commit is pushed: it fast-forwards the base branch of the local
+// delivery repository the environment declares to that commit — that exact
+// repository on disk, never a hosted one, never forced — and only for a
+// delivery that is signed (or declares no document at all), since the
+// developer's checked signature is the approval.
+//
+// It does not push through "origin": a push resolves its destination through
+// whatever git configuration is in force (url.<base>.insteadOf and
+// pushInsteadOf from the global, system or GIT_CONFIG_* environment
+// configuration), and a rewritten destination would be advanced without
+// review while the declared one stayed put. So the declared repository is
+// resolved to its path and acted on DIRECTLY, by a git that reads no
+// configuration but that repository's own (isolatedGit): the commit is
+// fetched into it from the publication checkout, held to descend from the
+// base the plan settled against, and the base ref is moved by a
+// compare-and-swap on that base — a concurrent promotion between the plan and
+// this step fails it rather than being overwritten — then read back from that
+// same repository.
+func promoteLocally(ctx context.Context, prepared *preparedRepository, commit string) error {
+	plan := &prepared.plan
+	if plan.RepositorySlug != "" {
+		return fmt.Errorf("a local promotion fast-forwards the CLI's local delivery repository only, and %s is a hosted one; its base branch moves by review", plan.Repository)
+	}
+	if plan.Delivery != nil && len(plan.Delivery.Documents) > 0 && !plan.Delivery.Signed {
+		return fmt.Errorf("a local promotion is the developer's signed publish, and this delivery is unsigned; nothing is promoted")
+	}
+	repository, err := localRepositoryPath(ctx, plan.Repository)
+	if err != nil {
+		return err
+	}
+	if _, err = isolatedGit(ctx, repository, "fetch", "--no-tags", "--quiet", prepared.dir, "refs/heads/"+plan.PromotionBranch); err != nil {
+		return fmt.Errorf("bring the promotion commit into the local delivery repository %s: %w", repository, err)
+	}
+	fetched, err := isolatedGit(ctx, repository, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
+	if err != nil || fetched != commit {
+		return fmt.Errorf("the publication checkout's promotion branch is %q, not the signed commit %s; nothing is promoted (%v)", fetched, commit, err)
+	}
+	if _, err = isolatedGit(ctx, repository, "merge-base", "--is-ancestor", plan.BaseRevision, commit); err != nil {
+		return fmt.Errorf("the signed commit %s does not descend from the base %s the plan settled against; a local promotion only fast-forwards", commit, plan.BaseRevision)
+	}
+	ref := "refs/heads/" + plan.BaseBranch
+	if _, err = isolatedGit(ctx, repository, "update-ref", "-m", "codefly: local promotion of a developer-signed publish", ref, commit, plan.BaseRevision); err != nil {
+		return fmt.Errorf("fast-forward %s in %s from %s to %s (the base moved since the plan settled against it, or the ref is locked): %w", ref, repository, plan.BaseRevision, commit, err)
+	}
+	moved, err := isolatedGit(ctx, repository, "rev-parse", "--verify", ref+"^{commit}")
+	if err != nil || moved != commit {
+		return fmt.Errorf("the local base branch %s in %s reads %q after promotion, expected %s (%v)", plan.BaseBranch, repository, moved, commit, err)
+	}
+	return nil
+}
+
+// localRepositoryPath resolves the declared local delivery repository —
+// a file:// URL or an absolute path — to the bare repository on disk.
+func localRepositoryPath(ctx context.Context, declared string) (string, error) {
+	path := declared
+	if strings.Contains(declared, "://") {
+		parsed, err := url.Parse(declared)
+		if err != nil || parsed.Scheme != "file" || parsed.Host != "" && parsed.Host != "localhost" {
+			return "", fmt.Errorf("a local promotion acts on a repository on this machine, and %q is not a file:// URL", declared)
+		}
+		path = parsed.Path
+	}
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("the local delivery repository %q is not an absolute path", declared)
+	}
+	// Resolved the way the filesystem traverses it — every symbolic link
+	// followed in turn, ".." taken from where the link led — never cleaned
+	// lexically: "alias/../manifests.git" through a directory link names
+	// the link target's sibling, which is the repository git itself opened
+	// for every other step of this publish, while a lexical clean names
+	// another one beside the link.
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve the local delivery repository %q: %w", declared, err)
+	}
+	bare, err := isolatedGit(ctx, resolved, "rev-parse", "--is-bare-repository")
+	if err != nil || bare != "true" {
+		return "", fmt.Errorf("the local delivery repository %s (resolved from %q) is not a bare git repository (%v)", resolved, declared, err)
+	}
+	return resolved, nil
+}
+
+// isolatedGit runs git against one repository with no configuration but that
+// repository's own: no global or system configuration, no GIT_* variable from
+// this process (GIT_CONFIG_COUNT/KEY/VALUE and GIT_CONFIG_PARAMETERS inject
+// configuration; GIT_DIR and friends redirect it), no prompt, and file the
+// only transport it may use.
+func isolatedGit(ctx context.Context, repository string, args ...string) (string, error) {
+	full := append([]string{"-c", "protocol.allow=never", "-c", "protocol.file.allow=always", "--git-dir", repository}, args...)
+	cmd := exec.CommandContext(ctx, "git", full...)
+	cmd.Dir = repository
+	for _, variable := range os.Environ() {
+		if !strings.HasPrefix(variable, "GIT_") {
+			cmd.Env = append(cmd.Env, variable)
+		}
+	}
+	cmd.Env = append(cmd.Env, "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
 func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepared *preparedRepository, request *PublishRequest) (PublishResult, error) {
 	message := strings.TrimSpace(request.CommitMessage)
 	if message == "" {
@@ -1655,7 +1840,10 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 	if !strings.Contains(rawCommit, "\ngpgsig ") {
 		return PublishResult{}, fmt.Errorf("promotion commit %s is not signed", commit)
 	}
-	if len(prepared.plan.Changed) > 0 {
+	// A local promotion also pushes an unchanged branch: one the base had
+	// moved past restarts from the base, and the remote branch must follow
+	// it (a fast-forward) before it is verified below.
+	if len(prepared.plan.Changed) > 0 || prepared.plan.SelfPromotes {
 		refspec := "refs/heads/" + prepared.plan.PromotionBranch + ":refs/heads/" + prepared.plan.PromotionBranch
 		if _, err = gitCommand(ctx, prepared.dir, "push", "--porcelain", "--set-upstream", "--", "origin", refspec); err != nil {
 			return PublishResult{}, fmt.Errorf("push promotion branch without force: %w", err)
@@ -1673,6 +1861,11 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 	if err != nil {
 		return PublishResult{}, err
 	}
+	if prepared.plan.SelfPromotes {
+		if err = promoteLocally(ctx, prepared, commit); err != nil {
+			return PublishResult{}, err
+		}
+	}
 	result := PublishResult{
 		PlanID: prepared.plan.ID, Repository: prepared.plan.Repository, Path: prepared.plan.Path,
 		BaseBranch: prepared.plan.BaseBranch, PromotionBranch: prepared.plan.PromotionBranch,
@@ -1681,6 +1874,7 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 		PullRequest: prURL, PullRequestID: prID,
 		ContractChecks: prepared.plan.ContractChecks,
 		Delivery:       prepared.plan.Delivery,
+		Promoted:       prepared.plan.SelfPromotes,
 	}
 	if err := writeReceipt(workspace.Dir(), "publications", request.Module+"-"+request.Environment+jsonExtension, result); err != nil {
 		return PublishResult{}, err
@@ -1688,7 +1882,7 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 	return result, nil
 }
 
-func clonePromotionRepository(ctx context.Context, repository, baseBranch, promotionBranch string) (string, func(), string, string, error) {
+func clonePromotionRepository(ctx context.Context, repository, baseBranch, promotionBranch string, selfPromotes bool) (string, func(), string, string, error) {
 	temp, err := os.MkdirTemp("", "codefly-gitops-publish-")
 	if err != nil {
 		return "", nil, "", "", fmt.Errorf("create publication checkout: %w", err)
@@ -1715,6 +1909,21 @@ func clonePromotionRepository(ctx context.Context, repository, baseBranch, promo
 	}
 	remoteRef := "refs/remotes/origin/" + promotionBranch
 	branchRevision, branchErr := gitCommand(ctx, repo, "rev-parse", "--verify", remoteRef+"^{commit}")
+	if branchErr == nil && selfPromotes {
+		// A local promotion continues from the last one: a promotion branch
+		// the base already contains (this module's, or one another module's
+		// promotion since moved past) starts again from the base, so the
+		// commit made here fast-forwards both. One the base does not contain
+		// is a promotion that never landed; it is continued when it descends
+		// from the base and refused when the two diverged, since a
+		// fast-forward can then never land it and nothing local is forced.
+		if contained := gitIsAncestor(ctx, repo, branchRevision, baseRevision); contained {
+			remoteRef, branchRevision = baseRef, baseRevision
+		} else if !gitIsAncestor(ctx, repo, baseRevision, branchRevision) {
+			cleanup()
+			return "", nil, "", "", fmt.Errorf("local promotion branch %s carries commits the base branch %s does not, and %s has moved past it; a local promotion fast-forwards %s and never forces, so delete the stale branch in the local delivery repository and publish again", promotionBranch, baseBranch, baseBranch, baseBranch)
+		}
+	}
 	if branchErr == nil {
 		if _, err = gitCommand(ctx, repo, "checkout", "--quiet", "-b", promotionBranch, remoteRef); err != nil {
 			cleanup()
@@ -1725,6 +1934,12 @@ func clonePromotionRepository(ctx context.Context, repository, baseBranch, promo
 		if _, err = gitCommand(ctx, repo, "checkout", "--quiet", "-b", promotionBranch, baseRef); err != nil {
 			cleanup()
 			return "", nil, "", "", err
+		}
+		// A local promotion with no branch yet starts from the last
+		// promotion, which is the base: nothing new is then "already
+		// promoted", not "no changes".
+		if selfPromotes {
+			branchRevision = baseRevision
 		}
 	}
 	status, err := gitCommand(ctx, repo, "status", "--porcelain=v1")
@@ -2269,6 +2484,14 @@ type deliveryPublication struct {
 	// host block, which the delivery documents are settled against.
 	workspace *resources.Workspace
 	env       *environments.Environment
+	// local is a qualification publish to a k3d environment; supplied is a
+	// caller's own signer (the test seam, which brings its own checks); and
+	// developerToken is where a developer signer's token comes from when the
+	// environment's host lists developers (nil: SIGSTORE_ID_TOKEN, else the
+	// interactive login).
+	local          bool
+	supplied       bool
+	developerToken signing.IDTokenSource
 }
 
 // stageAndSettleDelivery copies the render's delivery documents into the

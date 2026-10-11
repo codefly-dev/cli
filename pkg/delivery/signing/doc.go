@@ -32,4 +32,17 @@
 // OIDC identity gets an Unavailable signer, whose Sign returns ErrNoIdentity
 // naming the release workflow as the only signer, rather than a hint to supply
 // a key.
+//
+// # A developer, for a local host
+//
+// A local run delivers to a host on a local cluster through the same delivery
+// a cell uses, so it signs through the same keyless flow, with one difference:
+// the OIDC identity is the developer's own, obtained interactively (or from
+// SIGSTORE_ID_TOKEN) instead of from the workflow (NewDeveloper). The token is
+// held to the developers the local host admits before anything is signed, and
+// every carrier is checked against them afterwards (DeveloperCheckUnder). That
+// is not a trust mode: a deployed host's allowlist names its release workflow
+// and nothing else, so it refuses a developer's carrier by the ordinary check.
+// A developer's address is recorded in the public transparency log, as any
+// keyless signature's identity is.
 package signing

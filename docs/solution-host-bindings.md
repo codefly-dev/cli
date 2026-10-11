@@ -66,7 +66,42 @@ and reuses a carrier delivered earlier only when the identity that signed it
 is within it. The host publishes the same literal and enforces it
 independently; a hosted environment that states no `release` cannot be
 released to. It is optional in the schema only because a `--local` publish
-never signs.
+never signs under it.
+
+A **declared local k3d** environment — `cluster.kind: k3d` and a
+`cluster.context` of `k3d-<name>`, both written, and only such an environment:
+any other declaring it is refused at load — may also list the developers its
+local host admits. (The legacy reading that takes an undeclared environment
+NAMED `local` for k3d never applies here, nor to self-promotion or the local
+trust anchor: omitting a field must narrow what an environment may do, never
+widen it. That reading survives only where nothing is admitted on it — the
+unsigned `publish --local` qualification guard and the observe path, and the
+fetch remote, which requires a `k3d-` context of its own.)
+
+```yaml
+    host:
+      # … the fields above …
+      developers:                              # the LOCAL host's allowlist
+        - issuer: https://github.com/login/oauth   # the provider the certificate names
+          subject: dev@example.com                 # the verified address it names
+```
+
+`developers` is to a local run what `release` is to a release: the identity a
+`--local` publish signs under, stated with the composition and published by
+the local host in its own local profile, which enforces it independently. A
+deployed host's allowlist names its release workflow and nothing else, so it
+refuses a developer's carrier by the ordinary check; refusing the declaration
+outside a k3d environment keeps a person's identity out of every manifest a
+hosted environment renders. A developer is an exact issuer and an exact
+e-mail address — no wildcard, no URI subject — as the host admits a person
+signer.
+
+A k3d environment also states `trust_anchor`: the path the host reads its
+trust anchor (trusted root and verification policy) from, which is a constant
+of the host. A local cluster run mounts the local trust anchor it provisions
+there, the way a cell's platform mounts its own; stating another path moves
+nothing on the host, which then has no anchor and refuses to start. Refused on
+any environment that is not k3d. See "Local runs" below.
 
 Nothing here is derived. A derived coordinate is a guess a host silently
 refuses at reconcile time; an unlisted ownership domain is refused by the host
@@ -154,6 +189,24 @@ or CronJob: those run their own images and never authenticate as the service,
 so they are not here, where their image would be a build the host accepts a
 token for; a managed service's bootstrap bundle is never a presence artifact
 for the same reason.
+
+Every serving workload a presence document declares **projects a
+ServiceAccount token minted for the host's audience** into its authenticating
+container, read-only, at `/var/run/secrets/codefly/token` — the path the SDK's
+mint client reads — living **600 s** (`expirationSeconds: 600`, the longest
+mint token a host admits, which bounds how long a copied token can be
+replayed) — unless that container already provides exactly that: a projected
+token for the audience whose file lands at that path, mounted without
+`subPath` (a `subPath` mount is never refreshed, so the token would stop
+rotating), living at most 600 s (unset is the kubelet's 3600 s), and hidden by
+no other mount (one at the same directory, at or below the token, or between
+the two). A container whose mounts occupy that path otherwise is refused, with
+the volume and the path; a token for the audience elsewhere does not stand in. The render writes it as a patch in the unit's environment overlay
+(into the manifests of an overlay that has no kustomization), before presence
+digests the unit, so the projection is part of the bytes the document pins.
+It is how the pod proves who it is when it mints: the host reviews the token
+and reads the pod's running image. No secret, prefix or registration value is
+projected.
 
 A serving workload names its own ServiceAccount: one running as the
 namespace's `default` account — every pod's that names none — is refused,
@@ -363,7 +416,8 @@ A host admits **delivered** documents: core's `Host.Admit` takes the type only
 its `VerifyDelivered` constructs, so no sequence of calls reaches a host's
 admission without an attestation having held over exactly those bytes. The
 renderer is the signer, and the set it is about to write is not signed yet —
-signing happens at publish, and a `--local` qualification publish never signs.
+signing happens at publish, and a `--local` qualification publish signs only as
+a developer the environment's host lists (and otherwise never).
 So the render and the publish settlement run core's `AdmitRendered` over the
 parsed set, which takes no `Host` on purpose (nothing applied, no coordinate, no
 signer policy — those need an attestation to be checkable) and refuses what a
@@ -494,9 +548,11 @@ must parse, its signed bytes must be exactly the document's canonical bytes,
 and on a release publish it must still pass the self-check a host will run —
 a carrier the base branch holds that disagrees with the document beside it,
 or that cannot be read, refuses the publish rather than being republished as
-signed. A local qualification publish never reuses a signed carrier: it
-delivers unsigned whatever the base branch holds, so `signed: false` holds
-for the whole set.
+signed. A local qualification publish to a host that lists no developer never
+reuses a signed carrier: it delivers unsigned whatever the base branch holds,
+so `signed: false` holds for the whole set. One whose host lists developers
+reuses a carrier only when it verifies as one of those developers', exactly as
+a release reuses one only under its release policy.
 
 **Signed once.** A keyless signature is fresh on every call — a new key, a
 new log entry — so a publish that signed in the plan and again in the publish
@@ -546,10 +602,33 @@ over GitHub Actions OIDC: an ephemeral key certified by Fulcio for the workflow
 identity, recorded in the transparency log, packaged as a Sigstore bundle
 (`application/vnd.dev.sigstore.bundle.v0.3+json`). The `codefly` binary holds
 no key, and there is no option to supply one (`pkg/delivery/signing`). A
-`--local` qualification publish **never signs** — not "signs when it can":
-its signer is the one a process with no identity gets, so a workflow holding
-an OIDC identity cannot deliver signed carriers to a qualification cluster
-under the release identity.
+`--local` qualification publish **never signs under the release identity** —
+not "signs when it can": a workflow holding an OIDC identity cannot deliver
+signed carriers to a qualification cluster under it. It signs only as a
+**developer** the k3d environment's `host.developers` lists, through the same
+keyless flow with the developer's own token (below), and with none listed its
+signer is the one a process with no identity gets.
+
+A **developer-signed** local publish obtains the token from
+`SIGSTORE_ID_TOKEN` when it is set, and otherwise from the Sigstore
+public-good login (`https://oauth2.sigstore.dev/auth`), which opens the
+browser — preselecting the provider when every listed developer uses the same
+one. The token is held to `host.developers` **before** anything is signed (a
+token naming anyone else never reaches Fulcio), reused across the documents of
+one promotion until shortly before it expires, and every carrier — fresh, or
+delivered before and about to be reused — is checked offline against the
+public-good root under exactly the listed identities, as the local host will
+check it. Nothing falls back to unsigned: a sign-in that fails, or a carrier
+the check refuses, stops the publish with the reason. The developer's address
+is recorded in the public transparency log, as every keyless signature's
+identity is.
+
+Every carrier check — a release's self-check, a developer's, and the check a
+delivered carrier is held to before reuse — is one verifier at the host's
+strength: the Fulcio chain, the Rekor entry and its signed entry timestamp, an
+observer timestamp, **and an embedded SCT from a CT log the trusted root
+names** (the host requires one of every signer). The public-good Fulcio embeds
+one in every certificate.
 
 A release publish **checks its own carriers**, right after signing each one,
 as a host will: offline, against the public-good trusted root fetched through
@@ -568,7 +647,8 @@ set, local or not; a hosted release publish run without it (from a laptop, or
 from a workflow that does not expose it) is **refused before it reads a
 document**, rather than signing unchecked or reusing delivered carriers under
 no policy at all. A publish to an environment with no host needs no identity
-— it delivers nothing signed — and a `--local` publish never signs. A
+— it delivers nothing signed — and a `--local` publish signs only as a
+listed developer. A
 carrier a host would refuse —
 a certificate naming another workflow, a log entry the root cannot verify, a
 bundle with no transparency evidence — is refused at publish, in front of
@@ -598,9 +678,11 @@ its own identity policy. Rotation is a trust-root update; a disconnected
 perimeter verifies offline from the bundle against a mirrored trust root.
 
 A publish with no signing identity — a laptop — **refuses**, naming the
-documents, unless it is a `--local` qualification publish, which delivers them
-unsigned, records `signed: false` in the inventory, and renders no Job to POST
-them, because the host refuses an unsigned document. A local render always
+documents, unless it is a `--local` qualification publish to a host that lists
+no developer, which delivers them unsigned, records `signed: false` in the
+inventory, and renders no Job to POST them, because the host refuses an
+unsigned document. A `--local` publish to a host that lists developers is
+signed or refused, never unsigned, and renders the same Jobs a cell receives. A local render always
 produces unsigned documents and says so.
 
 ## The carrier Jobs
@@ -812,23 +894,188 @@ opposite answers to "the desired set is empty" is the failure its tests exist
 to prevent. Stopping a run feels like removal and is not: withdrawing a binding
 is a POSTed tombstone generation.
 
-**The ceiling locally** is a developer-authored envelope file in the host's
-`local` configuration profile, with the same schema as the reviewed envelope,
-at a path the host names when it builds the envelope table. The attestation's
+**The ceiling locally** is the envelope record the local host holds, with the
+same schema as the reviewed envelope, written the way the host writes it
+everywhere — the host is moving the envelope from a boot-time file to a record
+a platform administrator writes at runtime (saas#1055), and the CLI names no
+file for it. The render never reads it, locally or not; it only stamps the
+revision the k3d environment's `host.envelope_revision` declares, and the host
+refuses a document naming another. The attestation's
 own authority is deliberately not the ceiling: effective authority is the
 intersection of binding, envelope and installation, and collapsing two of the
 three locally would have a developer test a different authorisation shape than
 production computes.
 
-**What this PR does on a laptop, and what it does not.** A local render emits
-unsigned documents and says so. `codefly deploy gitops publish --local` (a
-k3d qualification environment) delivers them unsigned, records `signed: false`
-in the inventory and renders no Job — a host refuses an unsigned document, and
-the CLI says so rather than POST what will be refused. Not built here: the
-local-cluster run path for `codefly run`, and signing with a developer OIDC
-identity (the keyless flow with an interactive token instead of the workflow's).
-Until both exist, a local run of a host and its solutions has no presence on
-the host.
+**One command (cli#918).** A developer runs the composition on their k3d
+cluster with:
+
+```bash
+codefly run cluster --env local --app-project <project>           # every composed module
+codefly run cluster documents billing --env local --app-project <p>  # or the ones named
+```
+
+It takes each step a cell takes, in order, and reports each delivery Job's
+receipts:
+
+1. **The platform's prerequisites, locally.** Argo CD, installed into the
+   cluster when it does not serve the ApplicationSet API yet — the one
+   installer (`deployments.InstallArgoCD`) the k3d qualification uses too, of
+   v3.4.1 pinned by what cannot move: the manifest at the commit the tag names,
+   its SHA-256 verified before anything is applied, and every image it runs
+   rewritten to its digest (an image no digest pins refuses the install). An
+   Argo CD already there is used as it is. And the `platform-authority` namespace with its `delivery`
+   ServiceAccount (no default token mounted), which a cell's platform
+   provides and the rendered tree cannot: the authority AppProject admits
+   ConfigMaps and Jobs there and nothing else. The modules' namespaces, which
+   every Application expects provisioned (`CreateNamespace=false`). And **the
+   local host's trust anchor** (below), before any module syncs, because the
+   host reads it at boot.
+2. **Each module rendered**, exactly as `deploy gitops render` renders it: its
+   images built and pushed to the environment's `registry.url` (a registry the
+   cluster pulls from, such as the one `k3d cluster create --registry-create`
+   makes — the tree pins images by registry digest, so an image imported into
+   the cluster by tag would not be the one the documents name), and presence
+   and authority derived with the one derivation a cell's render uses
+   (`presenceInstanceOf`, `authorityInstancesOf`, `authorityDocument`) from the
+   real bytes the build produced: manifest digests, image manifest digests, the
+   account-derived SPIFFE ID.
+3. **Each module published and promoted**: settled against the local delivery
+   repository, signed as the developer, every carrier checked as the local
+   host will check it, the same `{document, bundle}` carriers and delivery
+   Jobs a cell receives written — then promoted (below). The plan is shown and
+   confirmed unless `--yes`.
+4. **The latest promotion served**: the fetch remote brought up on the base
+   branch tip, the cluster's Argo CD made to trust the remote's CA
+   (`argocd-tls-certs-cm`, keyed by its name), and each published module's
+   Argo bootstrap (its AppProjects and ApplicationSet) applied from the
+   promoted revision.
+5. **The deliveries awaited**: Argo CD syncs each module's delivery
+   Applications and runs their Jobs as Sync hooks — the presence Job in the
+   module's namespace and the authority Job in `platform-authority`, each as
+   the `delivery` ServiceAccount, each POSTing to
+   `/platform/_delivery/{presence,authority}` with a projected token for the
+   host's audience, so the host's TokenReview, signer policy and idempotency
+   run locally exactly as in a cell. The run reads **its own** attempt of each
+   Job. An unchanged carrier set keeps the Job's name, so the attempt that
+   existed before the run (an earlier run's — finished, failed or deleted) is
+   recorded first; then the run acquires a sync of every delivery Application,
+   always: the Application is the one the CLI rendered, held to its full
+   identity (the name the module's ApplicationSet gives the in-cluster
+   tenant's component, its repository, revision and path, the in-cluster
+   server and the namespace) and never found by path, which every tenant's
+   Application of an overlay shares; the run waits for its operation slot to
+   be idle, requests a sync carrying a nonce of its own conditionally on the
+   version it read, and holds out until Argo CD's operation state carries that
+   nonce, re-requesting one another operation consumed. The answer is the
+   attempt whose UID is not the recorded one and that was created no earlier
+   than the accepted sync started, read from that attempt's own pods. It prints each
+   document's answer (delivered with the host's receipt, refused with its
+   verdict, given up on) and fails when any was refused; an attempt that never
+   appears is a timeout, never an earlier success.
+
+The environment declares `cluster.kind: k3d` and `cluster.context` (the legacy
+reading that an undeclared local environment is k3d never selects a cluster to
+install into), a `host` block, `host.developers`, and the gitops
+`fetch-repo-url` naming the fetch remote. The same steps stay available one by
+one: `deploy gitops render`, `deploy gitops publish --local`, and
+`deploy gitops remote up` with no module (the latest local promotion).
+
+**Local promotion is the developer's signed publish.** On a k3d environment
+whose host lists developers there is no reviewer: the developer is the author
+and the approver, and the Sigstore signature the publish makes — checked
+against `host.developers` before it is written — is the approval. So
+`publish --local` there **advances the environment's local base branch
+itself**, a fast-forward of the local delivery repository the CLI owns, as the
+last step of a publish whose every carrier passed its check (a failed check
+stops the publish before any commit lands, and nothing is promoted). The
+reason is the generation: a publish settles generations against the base
+branch, the one record of what was delivered, and a base branch that never
+moves would settle every rebuild at generation 1 with other content — a
+rewrite the host refuses. Promoted, a rebuilt module lands at generation 2
+with its new digest, the next at 3. The promotion acts on the declared local
+repository **directly**, never through a push: the environment's `file://`
+repository is resolved to its path — following every symbolic link the way
+the filesystem traverses it (`EvalSymlinks`), never cleaned lexically, since
+`alias/../manifests.git` through a directory link names the link target's
+sibling — and must be a bare repository there; it is changed by a git that
+reads no
+configuration but that repository's own (no global or system configuration,
+no `GIT_*` variable of the process, the file transport only), so no
+`insteadOf` or `pushInsteadOf` can send it elsewhere. The signed commit is
+fetched into it from the publication checkout, held to descend from the base
+the plan settled against, and the base ref is moved by a compare-and-swap on
+that base — a promotion that landed in between refuses this one rather than
+being overwritten — then read back from that repository. It is never forced
+and never reaches a hosted repository: a promotion branch the base has moved past
+(another module's promotion since) starts again from the base, one that
+diverged from it is refused by name, and the base branch of a non-k3d
+environment — or of a local one whose host lists no developer — moves only by
+a merge after review, as before. `remote up` with no module serves the latest
+promotion, and re-running it after a new one moves Argo CD to it.
+
+**How a local pod's identity reaches the host.** Not through anything the run
+projects: there is no `MODULE_IDENTITY_PREFIX`, no secret and no
+`MODULE_PRINCIPALS` line, and nothing self-registers (cli#855 removed that on
+purpose). A module's pod runs as its own ServiceAccount; the presence document
+names that account's SPIFFE ID and the image digest it must run, and the
+authority document approves that build for the module's principal. The pod
+presents its projected ServiceAccount token, minted for the host's audience;
+the host reviews it (TokenReview), reads the pod's running image, and
+compares both to what the delivered documents approve — the mint saas#1056
+wires into every module credential. A module that still requires a projected
+`MODULE_IDENTITY_PREFIX` at boot (annotations 0.2.14) fails on this path by
+design: its SDK must read the projected token instead.
+
+**The local host's trust anchor** (module-saas-starter#1066, its
+`SOLUTION_REGISTRATION.md` §8 "The local profile's trust anchor"). A host
+reads its trusted root and verification policy from one constant path, which
+the composition never writes; on a local cluster the run provides it, as a
+cell's platform does:
+
+- **`trusted_root.json`** — the Sigstore public-good trusted root, fetched
+  through TUF verbatim: the root the publish checks every carrier against, with
+  the CT log keys an SCT is checked against.
+- **`verification_policy.json`** — the local profile: a `local` block holding
+  `clusterCertificateAuthoritySha256`, the lowercase hex SHA-256 of the DER of
+  the cluster's certificate authority (read from the `kube-root-ca.crt` bundle
+  Kubernetes projects into every pod; a bundle holding more than one CA is
+  refused rather than guessed), and one signer per `host.developers` entry:
+  `{"name": <address>, "kind": "person", "issuer": <issuer>,
+  "subjectAlternativeName": <address>, "domains": [<host.domain>]}` — the
+  `domains` list being the signer → ownership-domain map.
+
+The two documents are written as a ConfigMap and a Secret named
+`codefly-delivery-trust` in the namespace of the module `host.delivery` names,
+and the render of that module, on a k3d environment stating
+`host.trust_anchor`, mounts them into the verifier's authenticating container
+at that path: one projected volume whose only sources are the two objects,
+keys not remapped, read-only — the shape a cell's admission pins a verifier to.
+The host proves the binding at boot (the CA in its projected bundle, and a TLS
+handshake to its API server with that CA alone), so a profile copied to any
+other cluster refuses the boot. Every run recomputes the fingerprint,
+re-writes the anchor, and **reconciles** every Deployment, StatefulSet and
+DaemonSet that READS it — any configMap or secret volume, projected source,
+`envFrom` or `valueFrom` naming either object, whatever the volume is called:
+the digest of both objects' contents is stamped on its pod template
+(`codefly.dev/trust-anchor`) when it differs, its rollout is awaited, its
+template is read back (a competing rollout that put the old one back is
+caught), and **every live pod** it selects must carry the digest. An update
+strategy that keeps old pods by design — `OnDelete`, a partitioned
+StatefulSet — cannot be proven and is refused rather than reported done. The
+annotation is the run's: the render refuses a workload that carries it in
+desired state, so Argo CD never owns a value that would revert the stamp.
+Convergence is read from the cluster, never from what an apply reported, so a
+stamp, rollout or pod that failed — after a developer was removed, say — is
+retried by the next run until every running pod started on the anchor in
+force.
+
+**What the host itself must still be configured with** (its own local
+configuration, not the trust anchor): its solution-host coordinate equal to
+`host.coordinate`; its accepted ownership domains including `host.domain`;
+its delivery API being the service `host.delivery` names; permission to
+create TokenReviews and to read the pods of the module namespaces; and the
+envelope record at `host.envelope_revision` holding the binding IDs the local
+contracts ask for (saas#1055).
 
 **The cost, and the alternative the host would accept.** Requiring a local
 cluster changes the laptop story from a container runtime to a container
