@@ -10,9 +10,8 @@ that POSTs them to the host's delivery API.
 
 The documents, their invariants and their conformance fixtures live in
 [codefly-dev/core `solutionhost`](https://github.com/codefly-dev/core): the
-presence document (`codefly/solution-host-binding/v1`), the authority document
-(`codefly/solution-authority/v1`) and the signed carrier
-(`codefly/solution-host-signed/v1`). This page is about what the CLI puts in
+presence document (`codefly/solution-host-binding/v2`), the authority document
+(`codefly/solution-authority/v1`) and the signed `{document, envelope}` carrier. This page is about what the CLI puts in
 them and how they get there.
 
 ## The static half, and what the render never reads
@@ -51,22 +50,15 @@ environments:
       trust_domain: cluster.example             # the SPIFFE trust domain of the host's identity issuer
       envelope_revision: 3                      # the envelope revision this composition was reviewed against
       delivery: platform/accounts/rest          # the host's delivery API, by composition identity
-      release:                                  # the identity the host accepts delivered carriers from
-        repository: example/payments            # the release workflow's repository
-        workflow: .github/workflows/release.yml # its path in that repository
-        refs:                                   # the refs it may run at (anchored regular expressions)
-          - refs/tags/v[0-9]+[.][0-9]+[.][0-9]+
+      release:
+        key_id: delivery-v3                     # the platform Vault Transit key version
 ```
 
-`release` is the host's **reviewed allowlist**, stated here so it is reviewed
-with the composition and read by nothing else: a release publish holds the
-workflow identity it runs under to it before it signs anything — another
-repository, another workflow, a branch, a tag outside the pattern never sign —
-and reuses a carrier delivered earlier only when the identity that signed it
-is within it. The host publishes the same literal and enforces it
-independently; a hosted environment that states no `release` cannot be
-released to. It is optional in the schema only because a `--local` publish
-never signs under it.
+`release.key_id` is the host's reviewed release-key declaration. The publisher
+holds the custody key to it before signing, and checks every fresh or reused
+carrier against that key and `host.domain`. The host independently pins the
+same public key. A hosted release publish needs this declaration; a local
+publish uses the developer declaration instead.
 
 A **declared local k3d** environment — `cluster.kind: k3d` and a
 `cluster.context` of `k3d-<name>`, both written, and only such an environment:
@@ -82,22 +74,17 @@ fetch remote, which requires a `k3d-` context of its own.)
     host:
       # … the fields above …
       developers:                              # the LOCAL host's allowlist
-        - issuer: https://github.com/login/oauth   # the provider the certificate names
-          subject: dev@example.com                 # the verified address it names
+        - key_id: dev-0123456789abcdef
 ```
 
-`developers` is to a local run what `release` is to a release: the identity a
-`--local` publish signs under, stated with the composition and published by
-the local host in its own local profile, which enforces it independently. A
-deployed host's allowlist names its release workflow and nothing else, so it
-refuses a developer's carrier by the ordinary check; refusing the declaration
-outside a k3d environment keeps a person's identity out of every manifest a
-hosted environment renders. A developer is an exact issuer and an exact
-e-mail address — no wildcard, no URI subject — as the host admits a person
-signer.
+`developers` lists machine keys admitted by a local host. Run
+`codefly delivery key` to create or load this machine's key and print its ID
+and public PEM. A developer ID is `dev-` followed by 16 lowercase hexadecimal
+characters derived from its public key. Release IDs are single-line values
+without spaces. Unknown declaration fields are refused.
 
 A k3d environment also states `trust_anchor`: the path the host reads its
-trust anchor (trusted root and verification policy) from, which is a constant
+trust anchor (the public verification policy) from, which is a constant
 of the host. A local cluster run mounts the local trust anchor it provisions
 there, the way a cell's platform mounts its own; stating another path moves
 nothing on the host, which then has no anchor and refuses to start. Refused on
@@ -110,9 +97,8 @@ revisions named — and earlier, at publish, which holds every authority pair
 against the revision this block declares *then*, so a render made before the
 block was re-reviewed never leaves the publisher. A document **asserts** its own `domain`, so the host also
 holds a policy saying which **signer identity** may make that assertion
-(core's `Host.DomainsBySigner`, keyed by the certificate SAN the host's bundle
-verification names — for a release workflow,
-`https://github.com/<owner>/<repo>/.github/workflows/<file>@refs/tags/<tag>`).
+(core's `Host.DomainsBySigner`, keyed by the key ID the host's envelope
+verification names, such as `delivery-v3`).
 That policy is the platform's, provisioned beside the identity allowlist and
 never by a delivered document; the composition carries its domain (here, in
 every document it renders) and nothing about who may
@@ -556,20 +542,13 @@ so `signed: false` holds for the whole set. One whose host lists developers
 reuses a carrier only when it verifies as one of those developers', exactly as
 a release reuses one only under its release policy.
 
-**Signed once.** A keyless signature is fresh on every call — a new key, a
-new log entry — so a publish that signed in the plan and again in the publish
-could never match the plan it executes. The plan signs, hands its carriers to
-the publish that executes it (`carriers` in the plan, keyed by kind, ID and
-generation), and that publish delivers exactly those bytes after holding each
-to its document the way any carrier signed before is held. A carrier signed
-by an earlier release is reused under the **release policy** — the same
-repository and workflow, any release tag — and one the policy no longer
-admits (a rotated signing identity, a run that was never a release) is
-signed again only **deliberately**: a plan made with `--resign` signs it
-once, the publish executing that plan reuses that signature, and without
-`--resign` the plan refuses and names the carrier. A publish never produces a
-signature the plan it executes did not: it reuses the plan's — tried before
-any signature, even where the delivered carrier was rejected — or refuses.
+**Signed once.** Signatures need not be repeatable, so the plan signs and
+hands its exact carriers to the publish that executes it (`carriers`, keyed
+by kind, ID and generation). Execution verifies those bytes under the current
+key declaration before reuse. A carrier under a removed or rotated key is
+signed again only deliberately: plan with `--resign`, then execute that plan.
+Without `--resign` the publisher refuses and names the carrier. Execution
+never produces a signature its plan did not contain.
 
 **Rollback re-settles.** A rollback restores the workloads an earlier revision
 delivered and settles their documents anew against the base branch — the old
@@ -597,95 +576,52 @@ at 1 and lose every tombstone.
 
 ## Signing
 
-A release is signed only by CI, never by a person. Publish signs each
-document's canonical bytes (`CanonicalBytes()`, the exact payload the host
-re-canonicalizes) with the publishing workflow's **Sigstore keyless** identity
-over GitHub Actions OIDC: an ephemeral key certified by Fulcio for the workflow
-identity, recorded in the transparency log, packaged as a Sigstore bundle
-(`application/vnd.dev.sigstore.bundle.v0.3+json`). The `codefly` binary holds
-no key, and there is no option to supply one (`pkg/delivery/signing`). A
-`--local` qualification publish **never signs under the release identity** —
-not "signs when it can": a workflow holding an OIDC identity cannot deliver
-signed carriers to a qualification cluster under it. It signs only as a
-**developer** the k3d environment's `host.developers` lists, through the same
-keyless flow with the developer's own token (below), and with none listed its
-signer is the one a process with no identity gets.
+Delivery uses platform-owned keys, as decided in
+`delivery-signed-with-platform-owned-keys`. Core's `solutionhost.Signer`
+is the custody boundary and `SignEnvelope` creates a DSSE envelope over each
+canonical document. Core also verifies the returned signature against the
+signer's public key before it can leave the publisher. No third-party service
+participates in signing or verification.
 
-A **developer-signed** local publish obtains the token from
-`SIGSTORE_ID_TOKEN` when it is set, and otherwise from the Sigstore
-public-good login (`https://oauth2.sigstore.dev/auth`), which opens the
-browser — preselecting the provider when every listed developer uses the same
-one. The token is held to `host.developers` **before** anything is signed (a
-token naming anyone else never reaches Fulcio), reused across the documents of
-one promotion until shortly before it expires, and every carrier — fresh, or
-delivered before and about to be reused — is checked offline against the
-public-good root under exactly the listed identities, as the local host will
-check it. Nothing falls back to unsigned: a sign-in that fails, or a carrier
-the check refuses, stops the publish with the reason. The developer's address
-is recorded in the public transparency log, as every keyless signature's
-identity is.
+Release custody is the platform's Vault Transit, configured only for a release
+publish with `VAULT_ADDR`, `VAULT_TOKEN`, and `CODEFLY_RELEASE_TRANSIT_KEY`.
+`CODEFLY_RELEASE_TRANSIT_MOUNT` defaults to `transit`. The address requires
+HTTPS, with HTTP admitted only for loopback. The CLI uses the supplied Vault
+token; it performs no login and sends that token only in `X-Vault-Token`.
+It reads the latest public key version and signs using that exact version.
+Only Ed25519 and ECDSA P-256 are supported. The derived ID is `<name>-v<version>`;
+a mismatch with `host.release.key_id` refuses before signing and names both.
+Rotation is: pin the new public key on the host, deliver with its new key ID,
+then remove the old pin.
 
-Every carrier check — a release's self-check, a developer's, and the check a
-delivered carrier is held to before reuse — is one verifier at the host's
-strength: the Fulcio chain, the Rekor entry and its signed entry timestamp, an
-observer timestamp, **and an embedded SCT from a CT log the trusted root
-names** (the host requires one of every signer). The public-good Fulcio embeds
-one in every certificate.
+Developer custody is one Ed25519 key per machine. `codefly delivery key`
+creates or loads it and prints only its ID and public PEM. Its ID is `dev-`
+plus the first 16 lowercase hex characters of SHA-256 over the public key's
+PKIX DER. macOS uses the OS keychain (`codefly-delivery-signing`, account equal
+to the ID); Linux uses `secret-tool` when available. Otherwise a 0600 PKCS#8
+PEM file lives in the 0700 `~/.codefly/delivery-keys` directory. The 0600
+`current` index selects that one key; broader permissions and symlinks are
+refused. A failed keychain lookup never silently replaces an indexed key.
 
-A release publish **checks its own carriers**, right after signing each one,
-as a host will: offline, against the public-good trusted root fetched through
-TUF, under a policy pinning exactly this workflow's identity — repository,
-workflow path and ref, as GitHub Actions states them to the job
-(`GITHUB_REPOSITORY`, `GITHUB_WORKFLOW_REF`) — and that identity is held to
-the environment's reviewed `host.release` policy **first**, so a workflow or
-a ref the host would refuse never signs. A carrier delivered earlier is held
-to the policy itself (its repository and workflow at any of its refs) before
-it is reused — and so is the carrier an inspected plan carries, under the
-policy **as it is at publish**: a plan records reused carriers as well as
-fresh signatures, and a policy tightened between the plan and the publish
-reaches both; a plan the policy no longer admits is stale and refused by
-name, with nothing signed. The workflow identity exists only where those two variables are
-set, local or not; a hosted release publish run without it (from a laptop, or
-from a workflow that does not expose it) is **refused before it reads a
-document**, rather than signing unchecked or reusing delivered carriers under
-no policy at all. A publish to an environment with no host needs no identity
-— it delivers nothing signed — and a `--local` publish signs only as a
-listed developer. A
-carrier a host would refuse —
-a certificate naming another workflow, a log entry the root cannot verify, a
-bundle with no transparency evidence — is refused at publish, in front of
-whoever ran the release, and nothing is written for a Job to deliver.
+A local publish uses that key only when `host.developers` lists its ID.
+An unlisted key is reported with the exact declaration to add, before any
+signature. A release publish never loads developer custody. A local host with
+no developers retains unsigned qualification delivery; one listing developers
+must sign successfully or refuse.
 
-The bundle is verifiable **offline**, which the host relies on: delivered
-namespaces egress nothing, so a verifier that looked up Rekor or Fulcio would
-hang rather than fail. The signer is the Sigstore public-good instance (Fulcio
-and Rekor, no timestamp authority), and the bundle carries the log entry whole
-— the signed entry timestamp and the inclusion proof with its checkpoint — so
-a verifier needs only a mirrored trusted root holding the public-good Fulcio
-chain, Rekor key and CT log keys (`LoadTrustedRoot`), never the log. A bundle
-carrying no such evidence is refused by its own name (`ErrNoTransparency`),
-distinct from a signature that fails (`ErrSignature`), on both sides of the
-wire: a signer configured without a transparency log is fixed at the signer,
-a bad signature is investigated, and the two must not reach an operator
-looking alike.
+Fresh and reused carriers pass the same core verifier over a pinned set holding
+the custody signer's own public key, its kind (`release` or `person`), and the
+environment's ownership domain. A changed declaration between planning and
+execution therefore reaches both fresh and previously delivered carriers.
+The host performs its own offline check using pins provisioned by its operator.
 
-The carrier written beside each document (data key
+The carrier beside each document (data key
 `solution-host-binding.signed.codefly.yaml` or
-`solution-authority.signed.codefly.yaml`) is core's `Signed`: the canonical
-bytes verbatim and the bundle, a JSON object the host verifies against its own
-trust root and identity allowlist — issuer, repository, workflow path, ref
-pattern; never a key. The bundle's certificate is evidence checked against the
-host's allowlist, never read as authority, and neither document can nominate
-its own identity policy. Rotation is a trust-root update; a disconnected
-perimeter verifies offline from the bundle against a mirrored trust root.
-
-A publish with no signing identity — a laptop — **refuses**, naming the
-documents, unless it is a `--local` qualification publish to a host that lists
-no developer, which delivers them unsigned, records `signed: false` in the
-inventory, and renders no Job to POST them, because the host refuses an
-unsigned document. A `--local` publish to a host that lists developers is
-signed or refused, never unsigned, and renders the same Jobs a cell receives. A local render always
-produces unsigned documents and says so.
+`solution-authority.signed.codefly.yaml`) is core's `Signed`:
+`{document, envelope}`. The envelope carries exactly one signature and its key
+ID; public keys and admission rules come from the host's own anchor. An
+unsigned render says so, and unsigned qualification delivery renders no Job
+to submit a document the host would refuse.
 
 ## The carrier Jobs
 
@@ -817,14 +753,9 @@ digests, and is refused by number.
 
 ## CI wiring
 
-The signing identity is the composition repository's **own release workflow,
-running on a tag**. The host's allowlist pins three literals and one pattern —
-the OIDC issuer, the repository, the workflow path (`.github/workflows/release.yml`)
-and the ref (`refs/tags/v*`) — and refuses everything else: a branch build, a
-dispatch off a branch, another workflow file in the same repository, and a
-reusable workflow in another repository (whose certificate names the called
-workflow, not the caller). So the publish step lives in that file, needs
-`id-token: write` and nothing else, and no key or secret exists anywhere:
+The signing key is the platform's Vault Transit release key, pinned by the
+host and declared as `host.release.key_id`. Publisher and host both hold the
+signed document to its ownership domain.
 
 ```yaml
 # .github/workflows/release.yml of the composition repository
@@ -836,15 +767,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@<pinned>
       - run: codefly deploy gitops render --env production
+      # VAULT_TOKEN is supplied by the pipeline's own Vault authentication.
       - run: codefly deploy gitops publish --env production
+        env:
+          VAULT_ADDR: ${{ vars.VAULT_ADDR }}
+          VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+          CODEFLY_RELEASE_TRANSIT_KEY: ${{ vars.CODEFLY_RELEASE_TRANSIT_KEY }}
 ```
 
-A publish from any other identity produces documents the host refuses, by the
-same check that refuses any unlisted identity.
+A publish with another custody key is refused before signing. The host also
+refuses every carrier whose key ID is absent from its pins.
 
 ## Local runs
 
@@ -873,18 +808,13 @@ ID is the account-derived identity the pod runs as — core checks that field
 for well-formedness only, and whether anything verifies it on the wire stays
 conditional on a projected trust bundle, so no local issuer is required.
 
-**One trust model.** A local document is signed through the same Sigstore
-keyless flow as a deployed one, with the **developer's own OIDC identity**. A
-deployed host's allowlist names the reviewed-change workflow identity and
-nothing else, so a locally signed document is refused there by the ordinary
-check that refuses any unlisted identity — not a mode, not a coordinate
-comparison, not an environment variable. (A variable that selected a trust
-model would be a variable that leaks into a deployment manifest once and is
-never noticed.) The host accepts no `policy` field in a request: a caller that
-could name its own trust model is what the allowlist exists to decide.
+**One trust model.** Local and deployed documents use the same envelope and
+pinned-key verification. The local host admits a machine's developer key as
+`person`, bound to its cluster CA; a deployed host pins platform release keys.
+The host accepts no request field that can change those pins or the trust policy.
 
 **Same delivery, same mint.** The same two routes, the same `{document,
-bundle}` carrier, the same idempotency on generation and content hash, the
+envelope}` carrier, the same idempotency on generation and content hash, the
 same receipt. A local pod mints with its projected ServiceAccount token, and
 the host runs TokenReview and reads the pod's image locally too — `codefly run`
 exercises the real path rather than a simulation of it.
@@ -943,7 +873,7 @@ receipts:
    account-derived SPIFFE ID.
 3. **Each module published and promoted**: settled against the local delivery
    repository, signed as the developer, every carrier checked as the local
-   host will check it, the same `{document, bundle}` carriers and delivery
+   host will check it, the same `{document, envelope}` carriers and delivery
    Jobs a cell receives written — then promoted (below). The plan is shown and
    confirmed unless `--yes`.
 4. **The latest promotion served**: the fetch remote brought up on the base
@@ -988,7 +918,7 @@ one: `deploy gitops render`, `deploy gitops publish --local`, and
 
 **Local promotion is the developer's signed publish.** On a k3d environment
 whose host lists developers there is no reviewer: the developer is the author
-and the approver, and the Sigstore signature the publish makes — checked
+and the approver, and the key signature the publish makes — checked
 against `host.developers` before it is written — is the approval. So
 `publish --local` there **advances the environment's local base branch
 itself**, a fast-forward of the local delivery repository the CLI owns, as the
@@ -1038,35 +968,30 @@ design: its SDK must read the projected token instead.
 
 **The local host's trust anchor** (module-saas-starter#1066, its
 `SOLUTION_REGISTRATION.md` §8 "The local profile's trust anchor"). A host
-reads its trusted root and verification policy from one constant path, which
-the composition never writes; on a local cluster the run provides it, as a
-cell's platform does:
+reads one public policy file from its constant anchor path. On a local cluster
+the run provides it, as a cell's platform does:
 
-- **`trusted_root.json`** — the Sigstore public-good trusted root, fetched
-  through TUF verbatim: the root the publish checks every carrier against, with
-  the CT log keys an SCT is checked against.
-- **`verification_policy.json`** — the local profile: a `local` block holding
-  `clusterCertificateAuthoritySha256`, the lowercase hex SHA-256 of the DER of
-  the cluster's certificate authority (read from the `kube-root-ca.crt` bundle
-  Kubernetes projects into every pod; a bundle holding more than one CA is
-  refused rather than guessed), and one signer per `host.developers` entry:
-  `{"name": <address>, "kind": "person", "issuer": <issuer>,
-  "subjectAlternativeName": <address>, "domains": [<host.domain>]}` — the
-  `domains` list being the signer → ownership-domain map.
+- **`verification_policy.json`** has a `local` block holding
+  `clusterCertificateAuthoritySha256`, the lowercase hex SHA-256 of the CA DER
+  from `kube-root-ca.crt`. A multi-CA bundle is refused. Its `signers` array
+  contains only this machine's held developer key when the host lists its ID:
+  `{"name": <key ID>, "kind": "person", "keyId": <key ID>,
+  "publicKey": <public PEM>, "domains": [<host.domain>]}`.
+  Another developer's public key cannot be inferred from an ID.
 
-The two documents are written as a ConfigMap and a Secret named
-`codefly-delivery-trust` in the namespace of the module `host.delivery` names,
-and the render of that module, on a k3d environment stating
-`host.trust_anchor`, mounts them into the verifier's authenticating container
-at that path: one projected volume whose only sources are the two objects,
-keys not remapped, read-only — the shape a cell's admission pins a verifier to.
+The policy is one ConfigMap named `codefly-delivery-trust` in the namespace
+of the module `host.delivery` names. On k3d, `host.trust_anchor` makes the
+render mount that ConfigMap alone, read-only with keys unchanged, into the
+verifier's authenticating container. Provisioning fetches no trust material
+and writes no Secret. The host's `SOLUTION_HOST_TRUST_POLICY` is `keys`.
+
 The host proves the binding at boot (the CA in its projected bundle, and a TLS
 handshake to its API server with that CA alone), so a profile copied to any
 other cluster refuses the boot. Every run recomputes the fingerprint,
 re-writes the anchor, and **reconciles** every Deployment, StatefulSet and
-DaemonSet that READS it — any configMap or secret volume, projected source,
-`envFrom` or `valueFrom` naming either object, whatever the volume is called:
-the digest of both objects' contents is stamped on its pod template
+DaemonSet that READS it — any configMap volume, projected source,
+`envFrom` or `valueFrom` naming the anchor, whatever the volume is called:
+the digest of the policy's contents is stamped on its pod template
 (`codefly.dev/trust-anchor`) when it differs, its rollout is awaited, its
 template is read back (a competing rollout that put the old one back is
 caught), and **every live pod** it selects must carry the digest. An update
@@ -1110,9 +1035,9 @@ module declaring neither, a dev deployment is what it was.
 
 No cluster and no host have applied these documents: the shapes are agreed
 with the host's reconciler and the platform's issuer, but agreement is not a
-running system. Keyless signing against the public Sigstore instance, and the
-publisher's self-check against the public-good root, are exercised only
-through an offline virtual Sigstore in tests. The packaged solution path
+running system. Vault custody is exercised with a loopback HTTP server;
+cryptographic verification uses core's real verifier. Real Vault, OS keychains,
+and cluster delivery require integration verification. The packaged solution path
 (`RenderSolution`) runs through an in-process executor.
 
 Named and not built: a **withdrawal path for a whole module** — a module

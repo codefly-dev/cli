@@ -25,6 +25,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/solutionhost"
 	"github.com/google/go-github/v89/github"
 )
 
@@ -291,19 +292,11 @@ func preparePublish(
 	}, nil
 }
 
-// newDeliveryPublication shapes how a publish signs and checks what it
-// delivers. A local qualification publish never signs under the release
-// identity — not "signs when it can": run from a workflow that holds an OIDC
-// identity, it would otherwise deliver signed carriers and a Job to a
-// qualification cluster under it. The signer is the one a process with no
-// identity gets, unless the caller supplied one, or the environment's host
-// lists developers — then addressHost makes it the developer's (cli#918). A release publish signs under the
-// workflow's identity and checks each carrier the way a host will: a carrier
-// a host would refuse is refused here, in front of whoever ran the release.
+// newDeliveryPublication selects the custody and reuse rules for this publish.
 func newDeliveryPublication(request *PublishRequest, baseBranch string) (*deliveryPublication, error) {
 	publication := &deliveryPublication{baseBranch: baseBranch, options: deliveryPublishOptions{
 		Signer: request.Signer, AllowUnsigned: request.Local, Module: request.Module,
-	}, local: request.Local, supplied: request.Signer != nil, developerToken: request.DeveloperIDToken}
+	}, local: request.Local, supplied: request.Signer != nil}
 	if request.Local && request.Signer == nil {
 		publication.options.Signer = &signing.Unavailable{Reason: "a local qualification publish delivers its documents unsigned"}
 	}
@@ -316,90 +309,31 @@ func newDeliveryPublication(request *PublishRequest, baseBranch string) (*delive
 	return publication, nil
 }
 
-// requireReleaseIdentity: an environment that declares a host is delivered
-// signed carriers, so a release publish to it needs the identity it signs and
-// checks under — the workflow's, as GitHub Actions states it to the job. The
-// checks are built from that environment and are nil wherever it is absent,
-// local or not; without them an unchanged render could reuse delivered
-// carriers under no verification policy at all and a fresh signature would
-// go unchecked, so a hosted release publish with no identity refuses before
-// it reads a document. A local qualification publish never signs, and a
-// caller-supplied signer is the test seam that brings its own checks.
+// requireReleaseIdentity refuses hosted publication without both key checks.
 func (p *deliveryPublication) requireReleaseIdentity() error {
-	if p.options.AllowUnsigned || p.options.Signer != nil || p.options.SelfCheck != nil && p.options.ReuseCheck != nil {
+	if p.options.AllowUnsigned || p.options.Signer != nil && p.options.SelfCheck != nil && p.options.ReuseCheck != nil {
 		return nil
 	}
-	return errors.New("the environment declares a host, so this publish delivers signed carriers; a release publish signs and checks them under the workflow identity it runs with, and this process has none (GITHUB_REPOSITORY and GITHUB_WORKFLOW_REF are not both set): run it from the release workflow, or publish --local to a qualification cluster")
+	return signing.ErrNoIdentity
 }
 
-// holdToReleasePolicy builds, for a release publish, the two checks its
-// carriers are held to from the policy the composition states beside the
-// host block: the fresh-signature check is this workflow's exact identity,
-// admitted by the policy first, and the reuse check is the policy itself. A
-// hosted environment that states no policy cannot be released to, since
-// nothing reviewed would say which identity the host accepts.
+// holdToReleasePolicy admits the custody key before any document is signed.
 func (p *deliveryPublication) holdToReleasePolicy(env *environments.Environment) error {
-	if p.options.AllowUnsigned || p.options.Signer != nil {
+	if p.local {
 		return nil
 	}
 	if env.Host.Release == nil {
-		return fmt.Errorf("environment %s declares a host but no release policy; a release publish signs under the identity the host accepts, which the composition states as host.release (repository, workflow, refs)", env.Name)
+		return fmt.Errorf("environment %s declares a host but no host.release.key_id", env.Name)
 	}
-	policy := &signing.ReleasePolicy{Repository: env.Host.Release.Repository, Workflow: env.Host.Release.Workflow, Refs: env.Host.Release.Refs}
-	selfCheck, err := signing.SelfCheckUnder(nil, policy)
-	if err != nil {
+	signer := p.options.Signer
+	if signer == nil {
+		signer = signing.FromEnvironment(nil)
+	}
+	if unavailable, ok := signer.(*signing.Unavailable); ok {
+		_, err := unavailable.Sign(nil)
 		return err
 	}
-	reuseCheck, err := signing.ReleaseCheckUnder(policy)
-	if err != nil {
-		return err
-	}
-	p.options.SelfCheck, p.options.ReuseCheck = selfCheck, reuseCheck
-	return nil
-}
-
-// developerSigner and developerCheck build the signer and the carrier check
-// of a developer-signed local publish; tests replace them, since the real
-// ones reach Fulcio, Rekor and the public-good trusted root.
-var (
-	developerSigner = signing.NewDeveloper
-	developerCheck  = signing.DeveloperCheckUnder
-)
-
-// signAsDeveloper makes a local qualification publish to an environment whose
-// host lists developers a SIGNED delivery (cli#918): the documents are signed
-// through the same keyless flow a release signs with, under the developer's
-// own OIDC identity, every fresh carrier is checked the way the local host
-// will check it, a carrier delivered before is reused only when it is one of
-// those developers', and nothing is delivered unsigned — so the Jobs that
-// POST the carriers are rendered as in a cell. With no developer declared a
-// local publish delivers unsigned, as it always did, and a release publish
-// is untouched: a developer identity never signs anything but a --local
-// publish, and the environment it is declared on is a k3d one.
-func (p *deliveryPublication) signAsDeveloper(env *environments.Environment) error {
-	if !p.local || len(env.Host.Developers) == 0 {
-		return nil
-	}
-	// Workspace validation already refuses developers anywhere else; this is
-	// the signer's own gate, so a path that skipped validation still cannot
-	// sign as a developer for an undeclared cluster.
-	if !env.DeclaresLocalK3d() {
-		return fmt.Errorf("environment %s lists host.developers but declares no local k3d cluster (cluster.kind: k3d, cluster.context: k3d-<name>); a developer signs only for a declared local cluster", env.Name)
-	}
-	p.options.AllowUnsigned = false
-	policy := &signing.DeveloperPolicy{}
-	for _, developer := range env.Host.Developers {
-		policy.Developers = append(policy.Developers, signing.DeveloperIdentity{Issuer: developer.Issuer, Subject: developer.Subject})
-	}
-	p.options.Signs = "a local publish to " + env.Name + " signs as a developer its host lists (host.developers): sign in as one of them, or set SIGSTORE_ID_TOKEN to such a developer's token"
-	if p.supplied {
-		return nil
-	}
-	check, err := developerCheck(policy)
-	if err != nil {
-		return err
-	}
-	signer, err := developerSigner(policy, p.developerToken, signing.KeylessOptions{})
+	check, err := signing.KeyCheck(signer, solutionhost.KeyKindRelease, env.Host.Domain, env.Host.Release.KeyID)
 	if err != nil {
 		return err
 	}
@@ -407,10 +341,53 @@ func (p *deliveryPublication) signAsDeveloper(env *environments.Environment) err
 	return nil
 }
 
+// Tests replace custody only; verification remains core's real verifier.
+var developerSigner = signing.LoadOrCreateDeveloperKey
+
+// signAsDeveloper uses the one machine key only when the local host lists it.
+func (p *deliveryPublication) signAsDeveloper(env *environments.Environment) error {
+	if !p.local {
+		return nil
+	}
+	if len(env.Host.Developers) == 0 {
+		p.options.Signer = &signing.Unavailable{Reason: "a local qualification host lists no developer key"}
+		p.options.AllowUnsigned = true
+		return nil
+	}
+	if !env.DeclaresLocalK3d() {
+		return fmt.Errorf("environment %s lists host.developers but declares no local k3d cluster (cluster.kind: k3d, cluster.context: k3d-<name>); a developer signs only for a declared local cluster", env.Name)
+	}
+	p.options.AllowUnsigned = false
+	signer := p.options.Signer
+	if !p.supplied {
+		var err error
+		signer, err = developerSigner()
+		if err != nil {
+			return err
+		}
+	}
+	admitted := false
+	for _, developer := range env.Host.Developers {
+		if developer.KeyID == signer.KeyID() {
+			admitted = true
+		}
+	}
+	if !admitted {
+		return fmt.Errorf("your developer key is %s; add `- key_id: %s` under host.developers of environment %s", signer.KeyID(), signer.KeyID(), env.Name)
+	}
+	check, err := signing.KeyCheck(signer, solutionhost.KeyKindPerson, env.Host.Domain, signer.KeyID())
+	if err != nil {
+		return err
+	}
+	p.options.Signs = "a local publish to " + env.Name + " requires its admitted developer key"
+	p.options.Signer, p.options.SelfCheck, p.options.ReuseCheck = signer, check, check
+	return nil
+}
+
 // selfPromotes reports whether this publish is a LOCAL PROMOTION: a --local
 // publish to a k3d environment whose host lists developers. There is no
 // reviewer on a developer's own cluster — the developer is author and
-// approver, and the Sigstore signature the publish makes and checks against
+// approver, and the key signature the publish makes and checks against
 // host.developers is the approval — so the publish advances the base branch
 // of the local delivery repository itself. Generations are settled against
 // that branch, so without the promotion every rebuild would settle at the
@@ -2539,14 +2516,9 @@ type deliveryPublication struct {
 	// host block, which the delivery documents are settled against.
 	workspace *resources.Workspace
 	env       *environments.Environment
-	// local is a qualification publish to a k3d environment; supplied is a
-	// caller's own signer (the test seam, which brings its own checks); and
-	// developerToken is where a developer signer's token comes from when the
-	// environment's host lists developers (nil: SIGSTORE_ID_TOKEN, else the
-	// interactive login).
-	local          bool
-	supplied       bool
-	developerToken signing.IDTokenSource
+	// local selects qualification; supplied records explicit custody.
+	local    bool
+	supplied bool
 }
 
 // stageAndSettleDelivery copies the render's delivery documents into the

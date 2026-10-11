@@ -49,6 +49,7 @@ Subcommands:
 - [`codefly config`](#codefly-config)
 - [`codefly daemon`](#codefly-daemon)
 - [`codefly delete`](#codefly-delete)
+- [`codefly delivery`](#codefly-delivery)
 - [`codefly deploy`](#codefly-deploy)
 - [`codefly doctor`](#codefly-doctor)
 - [`codefly endpoint`](#codefly-endpoint)
@@ -1955,6 +1956,34 @@ Remove a service and clean up its dependency references
 
 ```
 codefly delete service [flags]
+```
+
+## `codefly delivery`
+
+Manage delivery signing keys
+
+```
+Manage the local keys used to sign delivery documents for a local cluster.
+```
+
+```
+codefly delivery <subcommand>
+```
+
+Subcommands:
+
+- [`codefly delivery key`](#codefly-delivery-key)
+
+## `codefly delivery key`
+
+Create or show this machine's developer delivery key
+
+```
+Create or load the machine's developer signing key and print its key ID and public key PEM. Add the key ID under host.developers of a local k3d environment. The private key remains in local custody.
+```
+
+```
+codefly delivery key [flags]
 ```
 
 ## `codefly deploy`
@@ -3960,13 +3989,13 @@ delivery a cell receives (docs/solution-host-bindings.md, "Local runs"):
 
   1. Argo CD in the cluster (installed if absent), the platform-authority
      namespace with its delivery ServiceAccount, the modules' namespaces, and
-     the local host's trust anchor (the public-good trusted root and a
-     verification policy admitting host.developers, bound to this cluster's
+     the local host's trust anchor (one public-key verification policy admitting
+     this machine's key when host.developers lists it, bound to this cluster's
      CA; re-written, and the host restarted, when the cluster is recreated);
   2. for each module (every composed module when none is named): build and
      push its images, render its tree with its presence and authority
      documents, sign them as you (a developer the environment's
-     host.developers lists — the browser opens, or SIGSTORE_ID_TOKEN), and
+     host.developers lists — using this machine's delivery key), and
      promote it locally;
   3. the latest promotion served to the cluster's Argo CD, each module's Argo
      bootstrap applied, and every delivery Job awaited, with its receipts.

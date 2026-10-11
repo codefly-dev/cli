@@ -102,20 +102,18 @@ func TestHostDeclarationRefusesAPartialOrMalformedIdentity(t *testing.T) {
 		// The delivery API is named by composition identity, never by address:
 		// absent, or a bare address, is a host block the publish cannot route
 		// a document through.
-		"no delivery":           {yaml: without("delivery"), want: "host delivery"},
-		"bare delivery address": {yaml: strings.Replace(hostBlock, "delivery: platform/accounts/rest", "delivery: delivery.example.test:443", 1), want: "host delivery"},
-		// A developer identity a local host admits is an https issuer and
-		// the subject its certificate names, each required, neither
-		// misspelled, none twice.
-		"developer without subject":       {yaml: hostBlock + "      developers:\n        - issuer: https://github.com/login/oauth\n", want: "host developer subject"},
-		"developer with http issuer":      {yaml: hostBlock + "      developers:\n        - issuer: http://github.com/login/oauth\n          subject: dev@example.test\n", want: "host developer issuer"},
-		"developer with unknown key":      {yaml: hostBlock + "      developers:\n        - issuer: https://github.com/login/oauth\n          email: dev@example.test\n", want: "unknown host.developers field"},
-		"developer subject not an e-mail": {yaml: hostBlock + "      developers:\n        - issuer: https://github.com/login/oauth\n          subject: https://github.com/dev\n", want: "exact e-mail"},
-		"developer wildcard subject":      {yaml: hostBlock + "      developers:\n        - issuer: https://github.com/login/oauth\n          subject: \"*@example.test\"\n", want: "exact e-mail"},
-		"developer wildcard issuer":       {yaml: hostBlock + "      developers:\n        - issuer: https://*.example.test\n          subject: dev@example.test\n", want: "wildcard"},
-		"relative trust anchor":           {yaml: hostBlock + "      trust_anchor: etc/trust\n", want: "trust_anchor"},
-		"unclean trust anchor":            {yaml: hostBlock + "      trust_anchor: /etc//trust\n", want: "trust_anchor"},
-		"developer declared twice":        {yaml: hostBlock + "      developers:\n        - issuer: https://github.com/login/oauth\n          subject: dev@example.test\n        - issuer: https://github.com/login/oauth\n          subject: dev@example.test\n", want: "declared twice"},
+		"no delivery":                {yaml: without("delivery"), want: "host delivery"},
+		"bare delivery address":      {yaml: strings.Replace(hostBlock, "delivery: platform/accounts/rest", "delivery: delivery.example.test:443", 1), want: "host delivery"},
+		"developer missing key":      {yaml: hostBlock + "      developers:\n        - key_id: ''\n", want: "host developer key_id"},
+		"developer malformed key":    {yaml: hostBlock + "      developers:\n        - key_id: dev-ABCDEF0123456789\n", want: "host developer key_id"},
+		"developer with unknown key": {yaml: hostBlock + "      developers:\n        - issuer: removed\n", want: "unknown host.developers field"},
+		"release missing key":        {yaml: hostBlock + "      release:\n        key_id: ''\n", want: "host release key_id"},
+		"release with space":         {yaml: hostBlock + "      release:\n        key_id: a b\n", want: "host release key_id"},
+		"release with newline":       {yaml: hostBlock + "      release:\n        key_id: |\n          a\n          b\n", want: "host release key_id"},
+		"release with unknown key":   {yaml: hostBlock + "      release:\n        repository: removed\n", want: "unknown host.release field"},
+		"relative trust anchor":      {yaml: hostBlock + "      trust_anchor: etc/trust\n", want: "trust_anchor"},
+		"unclean trust anchor":       {yaml: hostBlock + "      trust_anchor: /etc//trust\n", want: "trust_anchor"},
+		"developer declared twice":   {yaml: hostBlock + "      developers:\n        - key_id: dev-0123456789abcdef\n        - key_id: dev-0123456789abcdef\n", want: "declared twice"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			workspace, err := resources.LoadFromBytes[resources.Workspace]([]byte(
@@ -135,7 +133,7 @@ func TestHostDeclarationRefusesAPartialOrMalformedIdentity(t *testing.T) {
 // on any other, where a deployed host would refuse it anyway and the
 // declaration would only carry a person's identity into a hosted render.
 func TestHostDevelopersAreALocalClustersAllowlist(t *testing.T) {
-	developers := "      developers:\n        - issuer: https://github.com/login/oauth\n          subject: dev@example.test\n"
+	developers := "      developers:\n        - key_id: dev-0123456789abcdef\n"
 	local, err := resources.LoadFromBytes[resources.Workspace]([]byte(
 		"name: example\nenvironments:\n  - name: local\n    namespace: example\n    cluster:\n      kind: k3d\n      context: k3d-dev\n    host:\n" + hostBlock + developers))
 	if err != nil {
@@ -145,7 +143,7 @@ func TestHostDevelopersAreALocalClustersAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a k3d environment's developers were refused: %v", err)
 	}
-	if want := []HostDeveloper{{Issuer: "https://github.com/login/oauth", Subject: "dev@example.test"}}; !reflect.DeepEqual(env.Host.Developers, want) {
+	if want := []HostDeveloper{{KeyID: "dev-0123456789abcdef"}}; !reflect.DeepEqual(env.Host.Developers, want) {
 		t.Fatalf("developers %+v, want %+v", env.Host.Developers, want)
 	}
 	hosted, err := resources.LoadFromBytes[resources.Workspace]([]byte(

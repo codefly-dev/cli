@@ -31,9 +31,6 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/rs/cors v1.11.1
 	github.com/shirou/gopsutil/v3 v3.24.5
-	github.com/sigstore/protobuf-specs v0.5.1
-	github.com/sigstore/sigstore v1.10.8
-	github.com/sigstore/sigstore-go v1.2.2
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.12.1
@@ -209,9 +206,6 @@ require (
 	github.com/shibumi/go-pathspec v1.3.0 // indirect
 	github.com/shoenig/go-m1cpu v0.2.2 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
-	github.com/sigstore/rekor v1.5.3 // indirect
-	github.com/sigstore/rekor-tiles/v2 v2.3.0 // indirect
-	github.com/sigstore/timestamp-authority/v2 v2.1.2 // indirect
 	github.com/sirupsen/logrus v1.10.0 // indirect
 	github.com/skeema/knownhosts v1.3.2 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
@@ -267,6 +261,7 @@ require (
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
+	google.golang.org/genproto v0.0.0-20260319201613-d00831a3d3e7 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect

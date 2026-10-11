@@ -18,9 +18,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/solutionhost"
 )
 
 func certificatePEM(t *testing.T, isCA bool) ([]byte, string) {
@@ -61,41 +63,70 @@ func TestTheLocalProfileIsBoundToTheClustersAuthority(t *testing.T) {
 	}
 }
 
-// TestTheVerificationPolicyIsTheHostsLocalProfile pins the document to the
-// host's schema (module-saas-starter#1066): the local block with the cluster
-// fingerprint, one person signer per listed developer with the exact issuer
-// and address, each speaking for the environment's ownership domain.
+func installLocalKey(t *testing.T) solutionhost.Signer {
+	t.Helper()
+	store := &signing.DeveloperKeyStore{Directory: t.TempDir() + "/keys"}
+	signer, err := store.LoadOrCreate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := localDeveloperKey
+	localDeveloperKey = store.Load
+	t.Cleanup(func() { localDeveloperKey = before })
+	return signer
+}
+
 func TestTheVerificationPolicyIsTheHostsLocalProfile(t *testing.T) {
+	signer := installLocalKey(t)
 	fingerprint := strings.Repeat("ab", 32)
-	host := &environments.EnvironmentHost{Domain: "example", Developers: []environments.HostDeveloper{
-		{Issuer: "https://github.com/login/oauth", Subject: "zed@example.test"},
-		{Issuer: "https://accounts.google.com", Subject: "ann@example.test"},
-	}}
+	host := &environments.EnvironmentHost{Domain: "example", Developers: []environments.HostDeveloper{{KeyID: "dev-0123456789abcdef"}, {KeyID: signer.KeyID()}}}
 	raw, err := VerificationPolicy(fingerprint, host)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var policy map[string]any
-	if err = json.Unmarshal(raw, &policy); err != nil {
+	var policy verificationPolicy
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(&policy); err != nil {
 		t.Fatal(err)
 	}
-	if len(policy) != 2 || policy["local"].(map[string]any)["clusterCertificateAuthoritySha256"] != fingerprint {
-		t.Fatalf("policy %s does not bind the cluster", raw)
+	public, _ := signing.PublicKeyPEM(signer)
+	if len(policy.Signers) != 1 || policy.Signers[0].KeyID != signer.KeyID() || policy.Signers[0].Name != signer.KeyID() || policy.Signers[0].PublicKey != public || policy.Signers[0].Kind != "person" || len(policy.Signers[0].Domains) != 1 || policy.Signers[0].Domains[0] != "example" || policy.Local.ClusterCertificateAuthoritySha256 != fingerprint {
+		t.Fatalf("wrong policy: %s", raw)
 	}
-	signers := policy["signers"].([]any)
-	first := signers[0].(map[string]any)
-	if len(signers) != 2 || len(first) != 5 || first["kind"] != "person" || first["issuer"] != "https://accounts.google.com" ||
-		first["subjectAlternativeName"] != "ann@example.test" || first["name"] != "ann@example.test" ||
-		len(first["domains"].([]any)) != 1 || first["domains"].([]any)[0] != "example" {
-		t.Fatalf("signers %s are not the listed developers as persons of the environment's domain", raw)
+	again, _ := VerificationPolicy(fingerprint, host)
+	if string(again) != string(raw) {
+		t.Fatal("unstable policy")
 	}
-	for name, fp := range map[string]string{"short": "abcd", "upper": strings.Repeat("AB", 32)} {
+	host.Developers = host.Developers[:1]
+	removed, err := VerificationPolicy(fingerprint, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(removed), public) || strings.Contains(string(removed), signer.KeyID()) {
+		t.Fatal("removed local key still pinned")
+	}
+	if AnchorDigest(raw) == AnchorDigest(removed) {
+		t.Fatal("removal did not change anchor digest")
+	}
+	for _, fp := range []string{"abcd", strings.Repeat("AB", 32), strings.Repeat("zz", 32)} {
 		if _, err = VerificationPolicy(fp, host); err == nil {
-			t.Errorf("%s fingerprint accepted", name)
+			t.Fatal("invalid fingerprint accepted")
 		}
 	}
-	if _, err = VerificationPolicy(fingerprint, &environments.EnvironmentHost{Domain: "example"}); err == nil {
-		t.Error("a profile admitting nobody was written")
+	manifest, err := TrustAnchorManifest("platform", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Kind string
+		Data map[string]string
+	}
+	if err = json.Unmarshal([]byte(manifest), &config); err != nil {
+		t.Fatal(err)
+	}
+	if config.Kind != "ConfigMap" || len(config.Data) != 1 || config.Data[VerificationPolicyFile] != string(raw) {
+		t.Fatal("anchor is not exactly one public policy ConfigMap")
 	}
 }
 
@@ -124,7 +155,6 @@ type fakeWorkload struct {
 func anchorVolume(name string) []any {
 	return []any{map[string]any{"name": name, "projected": map[string]any{"sources": []any{
 		map[string]any{"configMap": map[string]any{"name": gitops.LocalTrustAnchorObjects}},
-		map[string]any{"secret": map[string]any{"name": gitops.LocalTrustAnchorObjects}},
 	}}}}
 }
 
@@ -234,6 +264,7 @@ func (c *clusterState) count(fragment string) int {
 
 func anchorDriver(t *testing.T, cluster *clusterState) (*ClusterDriver, string, string) {
 	t.Helper()
+	signer := installLocalKey(t)
 	ca, fingerprint := certificatePEM(t, true)
 	cluster.caBundle = string(ca)
 	env := &environments.Environment{
@@ -241,20 +272,18 @@ func anchorDriver(t *testing.T, cluster *clusterState) (*ClusterDriver, string, 
 		Cluster: &environments.EnvironmentCluster{Kind: environments.ClusterKindK3d, Context: "k3d-dev"},
 		Host: &environments.EnvironmentHost{
 			Domain: "example", Delivery: "saas/accounts/rest", TrustAnchor: "/etc/host/delivery-trust",
-			Developers: []environments.HostDeveloper{{Issuer: "https://github.com/login/oauth", Subject: "remaining@example.test"}},
+			Developers: []environments.HostDeveloper{{KeyID: signer.KeyID()}},
 		},
 	}
-	root := []byte(`{"mediaType":"root"}`)
 	driver := &ClusterDriver{
 		Workspace: &resources.Workspace{Name: "example"}, Environment: env, Kubectl: cluster.run,
-		TrustedRoot: func(context.Context) ([]byte, error) { return root, nil },
-		Poll:        time.Millisecond, RolloutTimeout: 20 * time.Millisecond,
+		Poll: time.Millisecond, RolloutTimeout: 20 * time.Millisecond,
 	}
 	policy, err := VerificationPolicy(fingerprint, env.Host)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return driver, fingerprint, AnchorDigest(policy, root)
+	return driver, fingerprint, AnchorDigest(policy)
 }
 
 const removedDeveloper = "sha256:the-policy-that-admitted-the-removed-developer"
@@ -330,5 +359,22 @@ func TestARevocationThatCannotReachEveryPodIsNeverReportedDone(t *testing.T) {
 	driver, _, _ := anchorDriver(t, reverted)
 	if _, err := driver.ProvisionTrustAnchor(context.Background()); err == nil || !strings.Contains(err.Error(), "moved off") {
 		t.Errorf("a stamp another rollout reverted was reported as in force: %v", err)
+	}
+}
+
+func TestAnchorReconciliationFollowsOnlyThePolicyConfigMap(t *testing.T) {
+	name := gitops.LocalTrustAnchorObjects
+	for label, spec := range map[string]map[string]any{
+		"volume":    {"volumes": []any{map[string]any{"configMap": map[string]any{"name": name}}}},
+		"projected": {"volumes": anchorVolume("trust")},
+		"envFrom":   {"containers": []any{map[string]any{"envFrom": []any{map[string]any{"configMapRef": map[string]any{"name": name}}}}}},
+		"initEnv":   {"initContainers": []any{map[string]any{"env": []any{map[string]any{"valueFrom": map[string]any{"configMapKeyRef": map[string]any{"name": name}}}}}}},
+	} {
+		if !consumesAnchor(spec) {
+			t.Fatalf("%s did not consume the policy", label)
+		}
+	}
+	if consumesAnchor(map[string]any{"volumes": []any{map[string]any{"secret": map[string]any{"secretName": name}}}}) {
+		t.Fatal("an unrelated Secret is treated as the policy")
 	}
 }

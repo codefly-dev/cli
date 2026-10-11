@@ -38,8 +38,7 @@ import (
 //     seeing it. Nothing is ever withdrawn by a document disappearing.
 //
 // And the SIGNATURE is made here, because the generation is inside the signed
-// bytes and because the signing identity is the publishing workflow's own: a
-// release is signed only by CI. A publish with no signing identity delivers
+// bytes and because release custody belongs to the platform's Vault Transit. A publish with no signing identity delivers
 // unsigned documents to a local qualification environment only, and says so;
 // everywhere else it refuses, naming the documents, because an unsigned
 // document reaching a real host fails at the host, far from the cause.
@@ -61,7 +60,7 @@ type deliveryPublishOptions struct {
 	Coordinate, Component, TrustDomain, Audience string
 	// ReuseCheck verifies a carrier signed BEFORE this publish — by the base
 	// branch's release, or by the plan this publish executes — under the
-	// release policy: the same workflow under any release tag. A carrier it
+	// release policy: the declared key and ownership domain. A carrier it
 	// refuses is re-signed, never reused. nil skips the policy.
 	ReuseCheck signing.SelfCheck
 	// Reuse holds the carriers an inspected plan signed, keyed by
@@ -101,10 +100,10 @@ type deliveryPublishOptions struct {
 	// Module is the module being published.
 	Module string
 	// SelfCheck verifies each carrier right after it is signed, as a host
-	// would — offline, against the trusted root, under the workflow's own
-	// identity — so a carrier the host would refuse never leaves the
+	// would — offline, against the custody key and the declared ownership
+	// domain — so a carrier the host would refuse never leaves the
 	// publisher. nil runs no check: a local publish signs nothing, and a test
-	// signer produces no bundle a root could verify.
+	// signer supplies the key used by the check.
 	SelfCheck signing.SelfCheck
 	// Signs names who signs this publish's documents, for the refusal a
 	// publish that may not deliver unsigned gives when its signer had no
@@ -120,7 +119,7 @@ type deliveryPublishOptions struct {
 func unsignedRefusal(what string, unsigned []string, environment string, cause error, opts *deliveryPublishOptions) error {
 	signs := opts.Signs
 	if signs == "" {
-		signs = "publish from the release workflow, whose OIDC identity signs them"
+		signs = "configure VAULT_ADDR, VAULT_TOKEN and CODEFLY_RELEASE_TRANSIT_KEY to sign with the platform release key"
 	}
 	return fmt.Errorf("%w: the %s documents %s cannot be delivered unsigned to %s (%v); %s",
 		signing.ErrNoIdentity, what, strings.Join(unsigned, ", "), environment, cause, signs)
@@ -204,7 +203,7 @@ func carrierKey(kind, id string, generation uint64) string {
 // document's canonical bytes; either failing refuses the publish, since the
 // record and its carrier disagree. Whether it still passes the release policy
 // decides reuse only: a carrier the policy no longer admits (signed by a
-// workflow identity that rotated, or by a run the policy never admitted) is
+// key that rotated, or by a key the policy never admitted) is
 // re-signed by this release rather than delivered. It answers the signer
 // identity the carrier names, when it names one.
 func verifyReusedCarrier(ctx context.Context, what string, carrier, payload []byte, opts *deliveryPublishOptions) (identity string, verified bool, err error) {
@@ -216,15 +215,15 @@ func verifyReusedCarrier(ctx context.Context, what string, carrier, payload []by
 		return "", false, fmt.Errorf("the carrier delivered before for %s signs other bytes than the document being delivered now; the delivered tree and its carrier disagree, so neither is trusted", what)
 	}
 	if opts.ReuseCheck != nil {
-		if err = opts.ReuseCheck(ctx, signed.Bundle, payload); err != nil {
+		if err = opts.ReuseCheck(ctx, signed.Envelope, payload); err != nil {
 			return "", false, nil
 		}
 	}
-	named, err := signing.ReadIdentity(signed.Bundle)
+	named, err := signing.ReadIdentity(signed.Envelope)
 	if err != nil {
 		return "", true, nil
 	}
-	return named.Subject + " (" + named.Issuer + ")", true, nil
+	return named.KeyID, true, nil
 }
 
 // reuseCarrier decides what carries a settled document before any signature
@@ -521,15 +520,15 @@ func signPresenceSet(ctx context.Context, settled map[string]deliveredPresenceDo
 			settled[binding] = entry
 			continue
 		}
-		bundle, signErr := signer.Sign(ctx, payload)
+		envelope, signErr := signing.SignEnvelope(payload, signer)
 		switch {
 		case signErr == nil:
 			if opts.SelfCheck != nil {
-				if checkErr := opts.SelfCheck(ctx, bundle, payload); checkErr != nil {
+				if checkErr := opts.SelfCheck(ctx, envelope, payload); checkErr != nil {
 					return nil, fmt.Errorf("binding %s: %w", binding, checkErr)
 				}
 			}
-			signed, carrierErr := solutionhost.Carrier(payload, bundle)
+			signed, carrierErr := solutionhost.Carrier(payload, envelope)
 			if carrierErr != nil {
 				return nil, fmt.Errorf("assemble the signed carrier of binding %s: %w", binding, carrierErr)
 			}
@@ -540,8 +539,8 @@ func signPresenceSet(ctx context.Context, settled map[string]deliveredPresenceDo
 			entry.carrier = carrier
 			opts.Carriers[key] = carrier
 			if delivery.Identity == "" {
-				if identity, readErr := signing.ReadIdentity(bundle); readErr == nil {
-					delivery.Identity = identity.Subject + " (" + identity.Issuer + ")"
+				if identity, readErr := signing.ReadIdentity(envelope); readErr == nil {
+					delivery.Identity = identity.KeyID
 				}
 			}
 		case errors.Is(signErr, signing.ErrNoIdentity):
@@ -1225,15 +1224,15 @@ func signAuthoritySet(ctx context.Context, settled map[string]deliveredAuthority
 			settled[authority] = entry
 			continue
 		}
-		bundle, signErr := signer.Sign(ctx, payload)
+		envelope, signErr := signing.SignEnvelope(payload, signer)
 		switch {
 		case signErr == nil:
 			if opts.SelfCheck != nil {
-				if checkErr := opts.SelfCheck(ctx, bundle, payload); checkErr != nil {
+				if checkErr := opts.SelfCheck(ctx, envelope, payload); checkErr != nil {
 					return nil, fmt.Errorf("authority %s: %w", authority, checkErr)
 				}
 			}
-			signed, carrierErr := solutionhost.Carrier(payload, bundle)
+			signed, carrierErr := solutionhost.Carrier(payload, envelope)
 			if carrierErr != nil {
 				return nil, fmt.Errorf("assemble the signed carrier of authority %s: %w", authority, carrierErr)
 			}
@@ -1244,8 +1243,8 @@ func signAuthoritySet(ctx context.Context, settled map[string]deliveredAuthority
 			entry.carrier = carrier
 			opts.Carriers[key] = carrier
 			if delivery.Identity == "" {
-				if identity, readErr := signing.ReadIdentity(bundle); readErr == nil {
-					delivery.Identity = identity.Subject + " (" + identity.Issuer + ")"
+				if identity, readErr := signing.ReadIdentity(envelope); readErr == nil {
+					delivery.Identity = identity.KeyID
 				}
 			}
 		case errors.Is(signErr, signing.ErrNoIdentity):

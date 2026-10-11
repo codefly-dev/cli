@@ -198,7 +198,7 @@ func TestAnExistingTokenIsReusedOnlyWhereTheSDKReadsIt(t *testing.T) {
 // TestALocalHostMountsItsTrustAnchorWhereItReadsIt: on a k3d environment that
 // states the host's trust-anchor path, the host's verifier — the service
 // host.delivery names — mounts the local trust anchor there: one projected
-// volume whose only sources are the local trust ConfigMap and Secret, keys not
+// volume whose only sources are the local trust ConfigMap, keys not
 // remapped, read-only, in the authenticating container alone. Any other
 // environment mounts nothing: a deployed host's anchor is its platform's.
 func TestALocalHostMountsItsTrustAnchorWhereItReadsIt(t *testing.T) {
@@ -219,10 +219,9 @@ func TestALocalHostMountsItsTrustAnchorWhereItReadsIt(t *testing.T) {
 		t.Fatal("the local host's verifier mounts no trust anchor")
 	}
 	sources := sliceField(mapField(volume, "projected"), "sources")
-	if len(sources) != 2 ||
-		mapField(sources[0].(map[string]any), "configMap")["name"] != LocalTrustAnchorObjects ||
-		mapField(sources[1].(map[string]any), "secret")["name"] != LocalTrustAnchorObjects {
-		t.Fatalf("the trust anchor's sources are %v, want the local trust ConfigMap and Secret alone", sources)
+	if len(sources) != 1 ||
+		mapField(sources[0].(map[string]any), "configMap")["name"] != LocalTrustAnchorObjects {
+		t.Fatalf("the trust anchor's sources are %v, want the local trust ConfigMap alone", sources)
 	}
 	for _, source := range sources {
 		for _, object := range source.(map[string]any) {

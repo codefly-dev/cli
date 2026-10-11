@@ -488,6 +488,18 @@ codefly run job db-migration --module=backend
 codefly run job db-migration --module=backend --with-services  # Start service dependencies first
 ```
 
+### `codefly delivery key`
+
+Create or load this machine's developer delivery key and print its key ID and
+public key PEM. Add the ID under `host.developers` on a declared local k3d
+environment before running it. Private custody stays in the OS keychain, or a
+0600 file in `~/.codefly/delivery-keys` when no keychain is available. The same
+machine key is returned on later calls.
+
+```bash
+codefly delivery key
+```
+
 ### `codefly run cluster [module...]`
 
 Run the composition on the environment's local **k3d** cluster through the same
@@ -506,10 +518,10 @@ codefly run cluster documents --env local --app-project platform --yes
 It installs Argo CD if the cluster has none (the release the k3d qualification
 pins), provisions the `platform-authority` namespace and its `delivery`
 ServiceAccount and the modules' namespaces, writes the local host's trust
-anchor — the public-good trusted root and a verification policy admitting the
-listed developers, bound to this cluster's CA fingerprint, re-written (and the
+anchor — one public-key verification policy admitting the
+listed developer key held on this machine, bound to this cluster's CA fingerprint, re-written (and the
 host restarted) when the cluster is recreated — then for each module renders it (images built and pushed),
-publishes it signed as you (the browser opens, or `SIGSTORE_ID_TOKEN`) and
+publishes it signed with your local developer key and
 promotes it locally — the developer's signed publish is the approval on a local
 cluster, so it fast-forwards the local base branch and generations rise with
 each rebuild — serves the latest promotion to Argo CD, applies each module's

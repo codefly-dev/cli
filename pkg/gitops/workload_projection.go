@@ -26,9 +26,8 @@ import (
 //   - on a k3d environment that declares the host's trust-anchor path, the
 //     host's verifier (the service host.delivery names) gets the local trust
 //     anchor mounted there: one projected volume, the local trust ConfigMap
-//     (verification_policy.json) and Secret (trusted_root.json) as its only
-//     sources, keys not remapped, read-only — the shape a cell's admission
-//     pins the verifier to. A local cluster run provisions the two objects.
+//     (verification_policy.json) as its only source, keys not remapped,
+//     read-only. A local cluster run provisions that ConfigMap.
 //
 // Both land as patches in the unit's environment overlay, so the base the
 // agent rendered is untouched and the overlay's bytes — which the presence
@@ -49,8 +48,8 @@ const (
 	identityTokenSeconds = 600
 
 	// LocalTrustAnchorObjects names the ConfigMap (verification_policy.json)
-	// and the Secret (trusted_root.json) a local cluster run provisions in the
-	// verifier's namespace, and the render mounts into the verifier.
+	// a local cluster run provisions in the verifier's namespace, and the
+	// render mounts into the verifier.
 	LocalTrustAnchorObjects = "codefly-delivery-trust"
 
 	// TrustAnchorAnnotation is the pod-template annotation a local cluster
@@ -181,8 +180,7 @@ func projectTrustAnchor(owned string, opts *RenderOptions) error {
 				return fmt.Errorf("the host's verifier %s workload %s: %w", service, workload.Name, err)
 			}
 			volume := projectedVolume(LocalTrustAnchorVolume,
-				map[string]any{"configMap": map[string]any{keyName: LocalTrustAnchorObjects}},
-				map[string]any{"secret": map[string]any{keyName: LocalTrustAnchorObjects}})
+				map[string]any{"configMap": map[string]any{keyName: LocalTrustAnchorObjects}})
 			mount := readOnlyMount(LocalTrustAnchorVolume, opts.Host.TrustAnchor)
 			if workload.hasVolume(LocalTrustAnchorVolume) {
 				return fmt.Errorf("the host's verifier workload %s already declares a volume named %s, which the render projects; rename it", workload.Name, LocalTrustAnchorVolume)

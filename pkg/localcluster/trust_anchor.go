@@ -6,17 +6,20 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
-	"sort"
+	"os"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
+	"github.com/codefly-dev/core/solutionhost"
 )
 
 // The local host's trust anchor (module-saas-starter#1066, SOLUTION_REGISTRATION
-// §8 "The local profile's trust anchor"): the public-good trusted root, and a
-// verification policy that admits the developers the environment lists as
+// §8 "The local profile's trust anchor"): a verification policy that admits
+// the locally held developer key the environment lists as a
 // person signers, bound to ONE cluster by the SHA-256 of the certificate
 // authority its API server serves under. The host proves the binding at boot —
 // the CA in the projected bundle, and a TLS handshake to the API server with
@@ -25,7 +28,6 @@ import (
 
 // Trust-anchor file names, as the host reads them from its anchor.
 const (
-	TrustedRootFile        = "trusted_root.json"
 	VerificationPolicyFile = "verification_policy.json"
 
 	// keyMetadata is a manifest's metadata key.
@@ -80,33 +82,46 @@ type localBinding struct {
 }
 
 type personSigner struct {
-	Name                   string   `json:"name"`
-	Kind                   string   `json:"kind"`
-	Issuer                 string   `json:"issuer"`
-	SubjectAlternativeName string   `json:"subjectAlternativeName"`
-	Domains                []string `json:"domains"`
+	Name      string   `json:"name"`
+	Kind      string   `json:"kind"`
+	KeyID     string   `json:"keyId"`
+	PublicKey string   `json:"publicKey"`
+	Domains   []string `json:"domains"`
 }
 
-// VerificationPolicy is the local profile's verification_policy.json: bound
-// to the cluster by its CA fingerprint, one person signer per developer the
-// environment's host lists — the issuer and the address, exactly — each
-// speaking for the environment's ownership domain (the signer → domain map).
+var localDeveloperKey = signing.LoadDeveloperKey
+
+// VerificationPolicy pins only the locally held key if the host declares it.
+// Other developers' public keys cannot be inferred from their key IDs.
 func VerificationPolicy(fingerprint string, host *environments.EnvironmentHost) ([]byte, error) {
 	if host == nil || len(host.Developers) == 0 {
 		return nil, fmt.Errorf("a local profile admits the developers the host lists, and it lists none")
 	}
-	if len(fingerprint) != sha256.Size*2 || strings.ToLower(fingerprint) != fingerprint {
+	decoded, err := hex.DecodeString(fingerprint)
+	if err != nil || len(decoded) != sha256.Size || strings.ToLower(fingerprint) != fingerprint {
 		return nil, fmt.Errorf("cluster CA fingerprint %q is not a lowercase hex SHA-256", fingerprint)
 	}
-	policy := verificationPolicy{Local: localBinding{ClusterCertificateAuthoritySha256: fingerprint}}
-	for _, developer := range host.Developers {
-		policy.Signers = append(policy.Signers, personSigner{
-			Name: developer.Subject, Kind: "person",
-			Issuer: developer.Issuer, SubjectAlternativeName: developer.Subject,
-			Domains: []string{host.Domain},
-		})
+	policy := verificationPolicy{Local: localBinding{ClusterCertificateAuthoritySha256: fingerprint}, Signers: []personSigner{}}
+	signer, err := localDeveloperKey()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
 	}
-	sort.Slice(policy.Signers, func(i, j int) bool { return policy.Signers[i].Name < policy.Signers[j].Name })
+	if err == nil {
+		for _, developer := range host.Developers {
+			if developer.KeyID != signer.KeyID() {
+				continue
+			}
+			public, err := signing.PublicKeyPEM(signer)
+			if err != nil {
+				return nil, err
+			}
+			if _, err = solutionhost.NewPinnedKeySet(solutionhost.PinnedKey{KeyID: signer.KeyID(), PublicKeyPEM: public, Kind: solutionhost.KeyKindPerson, OwnershipDomains: []string{host.Domain}}); err != nil {
+				return nil, err
+			}
+			policy.Signers = append(policy.Signers, personSigner{Name: signer.KeyID(), Kind: "person", KeyID: signer.KeyID(), PublicKey: public, Domains: []string{host.Domain}})
+			break
+		}
+	}
 	encoded, err := json.MarshalIndent(policy, "", "  ")
 	if err != nil {
 		return nil, err
@@ -114,11 +129,8 @@ func VerificationPolicy(fingerprint string, host *environments.EnvironmentHost) 
 	return append(encoded, '\n'), nil
 }
 
-// TrustAnchorManifest is the local trust anchor as the two objects the
-// render mounts into the host's verifier (gitops.LocalTrustAnchorObjects): the
-// policy in a ConfigMap and the trusted root in a Secret, each under the file
-// name the host reads, in the verifier's namespace.
-func TrustAnchorManifest(namespace string, policy, trustedRoot []byte) (string, error) {
+// TrustAnchorManifest mounts the public verification policy in one ConfigMap.
+func TrustAnchorManifest(namespace string, policy []byte) (string, error) {
 	type metadata struct {
 		Name      string            `json:"name"`
 		Namespace string            `json:"namespace"`
@@ -133,13 +145,5 @@ func TrustAnchorManifest(namespace string, policy, trustedRoot []byte) (string, 
 	if err != nil {
 		return "", err
 	}
-	secret, err := json.Marshal(map[string]any{
-		"apiVersion": "v1", "kind": "Secret", "type": "Opaque",
-		keyMetadata:  metadata{Name: gitops.LocalTrustAnchorObjects, Namespace: namespace, Labels: labels},
-		"stringData": map[string]string{TrustedRootFile: string(trustedRoot)},
-	})
-	if err != nil {
-		return "", err
-	}
-	return string(configMap) + "\n---\n" + string(secret) + "\n", nil
+	return string(configMap) + "\n", nil
 }
