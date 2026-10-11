@@ -301,6 +301,9 @@ type RenderOptions struct {
 	// UndeclaredAuthority is why this render declares no authority, when the
 	// reason is the module's own.
 	UndeclaredAuthority string
+	// workloadIdentityChecks retain the composition's expectations across later
+	// projections, so validateTree judges the final overlay before promotion.
+	workloadIdentityChecks []workloadIdentityCheck
 }
 
 func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKubernetesOutput {

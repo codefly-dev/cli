@@ -930,9 +930,12 @@ receipts:
    with the manifest hashes verified before applying anything and every image
    pinned by digest. The default `certificaterequests-approver` controller is
    disabled: only the SPIFFE approver may approve these requests. Existing
-   components are used as installed; an existing cert-manager must already
-   disable its default approver before the CLI adds the driver. The run waits
-   for cert-manager's webhook and its trust, provisions the CA and
+   components are verified on every run, including CA reuse: every controller,
+   webhook, injector, driver and approver container must match the install image
+   pins, and the SPIFFE issuer and trust-domain arguments must match the reviewed
+   manifest. A mismatch refuses the run without patching those components. The
+   default approver must remain disabled even when the driver and CA are reused.
+   The run waits for cert-manager's webhook and its trust, provisions the CA and
    ClusterIssuer, then waits for the driver DaemonSet and approver Deployment.
    And the `platform-authority` namespace with its `delivery`
    ServiceAccount (no default token mounted), which a cell's platform
@@ -1010,7 +1013,10 @@ module's namespace and Core's ServiceAccount name, verifies the rendered pod
 uses that account, and uses the same `EnvironmentHost.SPIFFEID` function as
 presence documents. A peer ConfigMap supplies `allowed-callers`, `mint-peers`
 and `gateway-peers`, mounted read-only at `/etc/codefly/workload-peers` without
-subPath so updates propagate. Each file contains the gateway's SPIFFE ID,
+subPath so updates propagate. After Kustomize builds the overlay, configuration
+validation compares the effective peer ConfigMap, volumes, mounts and path
+variables with the composition plan; a patch that changes them refuses the
+render and names the resource. Each file contains the gateway's SPIFFE ID,
 one per line with a final newline. For the gateway itself, each file lists
 every explicit consumer's ID, including the gateway when it opts in.
 
@@ -1049,9 +1055,10 @@ in `secret-<service>`. The existing ExternalSecret projection delivers that
 key from the environment's service secret store; no token value is copied into
 the render. A missing workload identity, host audience or service secret store
 refuses the render. Both `workload-identity` and `module-authority` bypass the
-configuration manager during build and deployment: their values are projected
-per workload after the agent renders. An authored file for either group anywhere
-in the selected composition is refused, even when no service declares the group.
+configuration manager, including composition-root inheritance in native runs:
+their values are projected per workload after the agent renders. An authored
+file for either group anywhere in the selected composition is refused, even
+when no service declares the group.
 
 The local ECDSA P-256 CA lives in the TLS Secret
 `cert-manager/csi-driver-spiffe-ca`; its certificate is also published as

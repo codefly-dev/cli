@@ -148,9 +148,9 @@ them in one place, `pkg/orchestration/workspace_configurations.go`, by one rule:
 The render-owned `workload-identity` and `module-authority` groups are supplied
 per workload by the render's projections. Every resolution path, including
 runtime-init, local runs and CI compile/lint/test, omits these groups from manager
-dependencies; the render refuses authored files for them. Outside a render,
-absent groups supply no values and each service decides whether it can run
-without them. `doctor workspace` reports them as supplied on local k3d and warns
+dependencies and composition-root inheritance; the render refuses authored
+files for them. Outside a render, these groups supply no values and each service
+decides whether it can run without them. `doctor workspace` reports them as supplied on local k3d and warns
 elsewhere: "supplied only by a local k3d or cell render; absent here". See
 [workload identities](solution-host-bindings.md#local-runs) for their values and
 environment requirements.

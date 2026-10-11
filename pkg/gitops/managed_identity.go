@@ -42,6 +42,9 @@ func projectServiceConfiguration(ctx context.Context, root string, service *reso
 	if err := projectWorkloadSVID(root, service, env, scope); err != nil {
 		return fmt.Errorf("project service %s workload identity: %w", service.Name, err)
 	}
+	if err := validateProjectedWorkloadSVID(root, service, env, scope); err != nil {
+		return err
+	}
 	if err := validateProjectedConfiguration(root, service, env, scope); err != nil {
 		return err
 	}

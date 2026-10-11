@@ -355,6 +355,9 @@ func (r *moduleRender) inventoryUnits(
 			); projectErr != nil {
 				return projectErr
 			}
+			r.options.workloadIdentityChecks = append(r.options.workloadIdentityChecks, workloadIdentityCheck{
+				path: entry.Path, service: service, environment: r.env, scope: *r.scope,
+			})
 			if portsErr := verifyDeclaredEndpointPorts(
 				filepath.Join(stage, unitDir, service.Name),
 				r.env.Name,

@@ -95,6 +95,10 @@ func renderedWorkloads(unitDir, environment string) ([]renderedWorkload, error) 
 	if err != nil {
 		return nil, err
 	}
+	return workloadsFromManifests(manifests)
+}
+
+func workloadsFromManifests(manifests []manifest) ([]renderedWorkload, error) {
 	var workloads []renderedWorkload
 	for _, item := range manifests {
 		switch item.kind {

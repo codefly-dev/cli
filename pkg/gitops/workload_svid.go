@@ -209,6 +209,10 @@ func verifyGatewayWorkloads(root, unique string, peer workloadPeer, env *environ
 	if err != nil {
 		return err
 	}
+	return verifyGatewayWorkloadPlan(workloads, unique, peer, env, namespace)
+}
+
+func verifyGatewayWorkloadPlan(workloads []renderedWorkload, unique string, peer workloadPeer, env *environments.Environment, namespace string) error {
 	count := 0
 	for i := range workloads {
 		if !servingKind(workloads[i].Kind) {
@@ -256,8 +260,8 @@ func workloadSVIDPatches(root, module, service string, peer workloadPeer, env *e
 			}
 		}
 		patches = append(patches,
-			podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: map[string]any{keyName: svidVolume, "csi": map[string]any{"driver": "spiffe.csi.cert-manager.io", "readOnly": true}}, mount: readOnlyMount(svidVolume, svidMount), env: values},
-			podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: map[string]any{keyName: peersVolume, keyConfigMap: map[string]any{keyName: service + "-workload-peers"}}, mount: readOnlyMount(peersVolume, peersMount)},
+			podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: workloadSVIDVolume(), mount: readOnlyMount(svidVolume, svidMount), env: values},
+			podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: workloadPeersVolume(service), mount: readOnlyMount(peersVolume, peersMount)},
 		)
 	}
 	if count == 0 {
@@ -315,4 +319,12 @@ func verifyWorkloadPeer(workload *renderedWorkload, peer workloadPeer, host *env
 func mountOverlaps(a, b string) bool {
 	a, b = path.Clean(a), path.Clean(b)
 	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/") || a == "/" || b == "/"
+}
+
+func workloadSVIDVolume() map[string]any {
+	return map[string]any{keyName: svidVolume, "csi": map[string]any{"driver": "spiffe.csi.cert-manager.io", "readOnly": true}}
+}
+
+func workloadPeersVolume(service string) map[string]any {
+	return map[string]any{keyName: peersVolume, keyConfigMap: map[string]any{keyName: service + "-workload-peers"}}
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func workloadIdentityComposition(t *testing.T) (*resources.Workspace, *environments.Environment) {
@@ -297,4 +298,133 @@ func TestWorkloadIdentityPathsPassManifestGuardWithoutAdmittingCredentials(t *te
 		require.ErrorContains(t, inspectValue(map[string]any{"env": []any{map[string]any{"name": key, "value": value}}}, nil, true), "credential value")
 	}
 	require.Error(t, inspectValue(map[string]any{"env": []any{map[string]any{"name": "ACCESS_TOKEN_FILE", "value": "/var/run/secrets/codefly/token"}}}, nil, true))
+}
+
+func TestWorkloadSVIDRefusesAuthoredPeerPatches(t *testing.T) {
+	workspace, env := workloadIdentityComposition(t)
+	peers, err := resolveWorkloadPeers(t.Context(), workspace, env)
+	require.NoError(t, err)
+	for module, name := range map[string]string{"app": "api", "edge": "gateway"} {
+		for _, key := range []string{"allowed-callers", "mint-peers", "gateway-peers"} {
+			t.Run(module+"/"+key, func(t *testing.T) {
+				service, err := workspace.LoadService(t.Context(), &resources.ServiceWithModule{Module: module, Name: name})
+				require.NoError(t, err)
+				root := t.TempDir()
+				body := strings.ReplaceAll(sidecarDeployment, "name: api", "name: "+name)
+				body = strings.ReplaceAll(body, "serviceAccountName: api", "serviceAccountName: "+name)
+				scope := moduleScope(env, workspace, module)
+				scope.WorkloadPeers = peers
+				body = strings.Replace(body, "metadata:\n", "metadata:\n  namespace: "+scope.Namespace+"\n", 1)
+				require.NoError(t, kustomizedWorkload(body)(t.Context(), root))
+				unit := filepath.Join(root, "services", "api")
+				appendIdentityPatch(t, unit, env.Name, kindConfigMap, name+"-workload-peers", "- op: add\n  path: /data/"+key+"\n  value: spiffe://local.example/ns/example-app/sa/non-declaring\n")
+				err = projectServiceConfiguration(t.Context(), unit, service, env, scope, serviceInjection{})
+				require.ErrorContains(t, err, "ConfigMap "+scope.Namespace+"/"+name+"-workload-peers")
+				require.ErrorContains(t, err, "composition workload peer plan")
+			})
+		}
+	}
+}
+
+func appendIdentityPatch(t *testing.T, unit, environment, kind, name, patch string) {
+	t.Helper()
+	file := filepath.Join(unit, "overlays", environment, kustomizationFile)
+	data, err := os.ReadFile(file)
+	require.NoError(t, err)
+	var customization map[string]any
+	require.NoError(t, yaml.Unmarshal(data, &customization))
+	patches, _ := customization["patches"].([]any)
+	customization["patches"] = append(patches, map[string]any{"target": map[string]any{"kind": kind, "name": name}, "patch": patch})
+	data, err = yaml.Marshal(customization)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(file, data, 0o600))
+}
+
+func TestWorkloadSVIDValidatesEffectiveBindings(t *testing.T) {
+	workspace, env := workloadIdentityComposition(t)
+	peers, err := resolveWorkloadPeers(t.Context(), workspace, env)
+	require.NoError(t, err)
+	for _, tc := range []struct{ name, path, value, want string }{
+		{"peer source", "/spec/template/spec/volumes/0/configMap", "{name: other}", "volumes"},
+		{"peer items", "/spec/template/spec/volumes/0/configMap/items", "[{key: allowed-callers, path: gateway-peers}]", "volumes"},
+		{"CSI driver", "/spec/template/spec/volumes/1/csi/driver", "other.csi", "volumes"},
+		{"subPath", "/spec/template/spec/containers/0/volumeMounts/0/subPath", "other", "mount"},
+		{"mount source", "/spec/template/spec/containers/0/volumeMounts/0/name", "other", "mount"},
+		{"mount path", "/spec/template/spec/containers/0/volumeMounts/0/mountPath", "/other", "mount"},
+		{"writable", "/spec/template/spec/containers/0/volumeMounts/0/readOnly", "false", "mount"},
+		{"env path", "/spec/template/spec/containers/0/env/0/value", "/other", "env"},
+		{"env source", "/spec/template/spec/containers/0/env/0/valueFrom", "{configMapKeyRef: {name: other, key: path}}", "env"},
+		{"sidecar mount", "/spec/template/spec/containers/1/volumeMounts", "[{name: codefly-workload-svid, mountPath: /stolen}]", "mount"},
+		{"shadow", "/spec/template/spec/containers/0/volumeMounts/-", "{name: other, mountPath: /etc/codefly}", "mount"},
+		{"account", "/spec/template/spec/serviceAccountName", "other", "ServiceAccount"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			scope := moduleScope(env, workspace, "app")
+			scope.WorkloadPeers = peers
+			body := strings.Replace(sidecarDeployment, "metadata:\n", "metadata:\n  namespace: "+scope.Namespace+"\n", 1)
+			require.NoError(t, kustomizedWorkload(body)(t.Context(), root))
+			unit := filepath.Join(root, "services", "api")
+			service := &resources.Service{Name: "api", WorkspaceConfigurationDependencies: []string{"workload-identity"}}
+			require.NoError(t, projectServiceConfiguration(t.Context(), unit, service, env, scope, serviceInjection{}))
+			// Determine indexes from effective output; Kustomize can reorder lists.
+			docs, err := overlayManifests(filepath.Join(unit, "overlays", env.Name))
+			require.NoError(t, err)
+			patchPath := tc.path
+			for _, doc := range docs {
+				if doc.kind != kindDeployment {
+					continue
+				}
+				spec, _ := podSpec(doc)
+				if strings.Contains(patchPath, "/volumes/") {
+					wanted := peersVolume
+					if tc.name == "CSI driver" {
+						wanted = svidVolume
+					}
+					for i, raw := range sliceField(spec, "volumes") {
+						if raw.(map[string]any)["name"] == wanted {
+							parts := strings.Split(patchPath, "/")
+							parts[5] = fmt.Sprint(i)
+							patchPath = strings.Join(parts, "/")
+						}
+					}
+				}
+			}
+			appendIdentityPatch(t, unit, env.Name, kindDeployment, "api", "- op: add\n  path: "+patchPath+"\n  value: "+tc.value+"\n")
+			err = validateProjectedWorkloadSVID(unit, service, env, scope)
+			require.ErrorContains(t, err, "api")
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
+}
+
+func TestWorkloadSVIDRechecksPeersBeforeTreePromotion(t *testing.T) {
+	workspace, env := workloadIdentityComposition(t)
+	peers, err := resolveWorkloadPeers(t.Context(), workspace, env)
+	require.NoError(t, err)
+	for module, name := range map[string]string{"app": "api", "edge": "gateway"} {
+		for _, key := range []string{"allowed-callers", "mint-peers", "gateway-peers"} {
+			t.Run(module+"/"+key, func(t *testing.T) {
+				scope := moduleScope(env, workspace, module)
+				scope.WorkloadPeers = peers
+				service := &resources.Service{Name: name, WorkspaceConfigurationDependencies: []string{"workload-identity"}}
+				root := t.TempDir()
+				body := strings.ReplaceAll(sidecarDeployment, "name: api", "name: "+name)
+				body = strings.ReplaceAll(body, "serviceAccountName: api", "serviceAccountName: "+name)
+				body = strings.Replace(body, "metadata:\n", "metadata:\n  namespace: "+scope.Namespace+"\n", 1)
+				require.NoError(t, kustomizedWorkload(body)(t.Context(), root))
+				unit := filepath.Join(root, "services", "api")
+				require.NoError(t, projectServiceConfiguration(t.Context(), unit, service, env, scope, serviceInjection{}))
+				options := &RenderOptions{
+					Module: module, Environment: env.Name, Namespace: scope.Namespace, Promotable: true,
+					workloadIdentityChecks: []workloadIdentityCheck{{path: "services/api", service: service, environment: env, scope: scope}},
+				}
+				_, err := validateTree(root, options)
+				require.NoError(t, err)
+				appendIdentityPatch(t, unit, env.Name, kindConfigMap, name+"-workload-peers", "- op: add\n  path: /data/"+key+"\n  value: spiffe://local.example/ns/example-app/sa/non-declaring\n")
+				_, err = validateTree(root, options)
+				require.ErrorContains(t, err, "ConfigMap "+scope.Namespace+"/"+name+"-workload-peers")
+			})
+		}
+	}
 }

@@ -67,6 +67,7 @@ const (
 	keyAPIVersion          = "apiVersion"
 	keyMetadata            = "metadata"
 	keyConfigMap           = "configMap"
+	keyContainers          = "containers"
 	keyNamespace           = "namespace"
 	LocalTrustAnchorVolume = "codefly-delivery-trust"
 )
@@ -311,8 +312,8 @@ func (projection *podProjection) patch() (map[string]any, error) {
 		keyKind:       projection.kind,
 		"metadata":    map[string]any{keyName: projection.name},
 		keySpec: map[string]any{"template": map[string]any{keySpec: map[string]any{
-			"volumes":    []any{projection.volume},
-			"containers": []any{container},
+			"volumes":     []any{projection.volume},
+			keyContainers: []any{container},
 		}}},
 	}
 	encoded, err := yaml.Marshal(body)

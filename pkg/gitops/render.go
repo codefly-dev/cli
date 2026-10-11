@@ -548,7 +548,14 @@ func validateTree(root string, opts *RenderOptions) ([]manifest, error) {
 	if !opts.Promotable {
 		return manifests, nil
 	}
-	return promotableEffectiveManifests(root, manifests, kustomizations, contract)
+	effective, err := promotableEffectiveManifests(root, manifests, kustomizations, contract)
+	if err != nil {
+		return nil, err
+	}
+	if err = validateWorkloadIdentityChecks(effective, opts.workloadIdentityChecks); err != nil {
+		return nil, err
+	}
+	return effective, nil
 }
 
 // promotableEffectiveManifests builds the kustomize output, validates the

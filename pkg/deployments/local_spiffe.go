@@ -89,8 +89,8 @@ func pinnedCertManagerManifest(raw []byte, digest string, images map[string]stri
 }
 
 // EnsureWorkloadIssuer provisions local workload identities. Existing components
-// are used as installed. A pre-existing cert-manager must already disable its
-// default approver before we may add the SPIFFE issuer. Read failures never mean
+// must pass the same image pins and issuer policy as a fresh installation,
+// including disabling cert-manager's default approver. Read failures never mean
 // absence. Both new manifests are verified before the first mutation.
 func EnsureWorkloadIssuer(ctx context.Context, kubectl Kubectl, fetch Fetch, trustDomain string) (bool, error) {
 	return ensureWorkloadIssuer(ctx, kubectl, fetch, trustDomain, certManagerSHA256, certManagerImages, spiffeManifest, spiffeManifestSHA256)
@@ -106,6 +106,12 @@ func ensureWorkloadIssuer(ctx context.Context, kubectl Kubectl, fetch Fetch, tru
 		return false, fmt.Errorf("inspect SPIFFE driver: %w", err)
 	}
 	if strings.TrimSpace(existing) != "" {
+		if err = validateExistingCertManager(ctx, kubectl, cmImages); err != nil {
+			return false, err
+		}
+		if err = validateExistingSPIFFE(ctx, kubectl, csi); err != nil {
+			return false, err
+		}
 		// Only our managed CA is rotated; an externally provisioned issuer stays
 		// entirely under its owner's control.
 		cert, readErr := readLocalSPIFFECA(ctx, kubectl)
@@ -138,22 +144,8 @@ func ensureWorkloadIssuer(ctx context.Context, kubectl Kubectl, fetch Fetch, tru
 			return false, err
 		}
 	} else {
-		args, argsErr := kubectl(ctx, "", "get", "deployment", "cert-manager", "-n", certManagerNamespace, "-o", "jsonpath={.spec.template.spec.containers[*].args}")
-		if argsErr != nil {
-			return false, fmt.Errorf("inspect cert-manager controller: %w", argsErr)
-		}
-		var declared []string
-		if decodeErr := json.Unmarshal([]byte(args), &declared); decodeErr != nil {
-			return false, fmt.Errorf("read cert-manager controller arguments: %w", decodeErr)
-		}
-		disabled := false
-		for _, arg := range declared {
-			if arg == disableDefaultApprover {
-				disabled = true
-			}
-		}
-		if !disabled {
-			return false, fmt.Errorf("existing cert-manager must declare %s before installing the SPIFFE issuer", disableDefaultApprover)
+		if err = validateExistingCertManager(ctx, kubectl, cmImages); err != nil {
+			return false, err
 		}
 	}
 	if len(cm) > 0 {
