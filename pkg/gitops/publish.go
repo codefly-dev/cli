@@ -196,7 +196,8 @@ func preparePublish(
 	if promotionBranch == "" {
 		promotionBranch = "codefly/promote-" + sanitizeRef(request.Module) + "-" + sanitizeRef(request.Environment)
 	}
-	repo, cleanup, baseRevision, branchRevision, err := clonePromotionRepository(ctx, config.RepoURL, baseBranch, promotionBranch)
+	selfPromotes := publication.selfPromotes(env)
+	repo, cleanup, baseRevision, branchRevision, err := clonePromotionRepository(ctx, config.RepoURL, baseBranch, promotionBranch, selfPromotes)
 	if err != nil {
 		return nil, err
 	}
@@ -268,6 +269,7 @@ func preparePublish(
 		Delivery:       inventory.Delivery,
 		StaleConsumers: staleConsumers,
 		Carriers:       publication.options.Carriers,
+		SelfPromotes:   selfPromotes,
 	}
 	plan.ID, err = publishPlanID(&plan, restoreRevision)
 	if err != nil {
@@ -386,6 +388,20 @@ func (p *deliveryPublication) signAsDeveloper(env *environments.Environment) err
 	}
 	p.options.Signer, p.options.SelfCheck, p.options.ReuseCheck = signer, check, check
 	return nil
+}
+
+// selfPromotes reports whether this publish is a LOCAL PROMOTION: a --local
+// publish to a k3d environment whose host lists developers. There is no
+// reviewer on a developer's own cluster — the developer is author and
+// approver, and the Sigstore signature the publish makes and checks against
+// host.developers is the approval — so the publish advances the base branch
+// of the local delivery repository itself. Generations are settled against
+// that branch, so without the promotion every rebuild would settle at the
+// generation of the last one with other content, which a host refuses as a
+// rewrite. A non-local publish, or a local one to a host listing no
+// developer, keeps the review: its base branch moves only by a merge.
+func (p *deliveryPublication) selfPromotes(env *environments.Environment) bool {
+	return p.local && env.IsK3d() && env.Host != nil && len(env.Host.Developers) > 0
 }
 
 // addressHost points the publication at the environment's host: the delivery
@@ -1675,6 +1691,39 @@ func requireReviewedRevision(root, module, environment, revision string) error {
 	return fmt.Errorf("rollback target %s has no reviewed Healthy promotion evidence", revision)
 }
 
+// gitIsAncestor reports whether ancestor is reachable from descendant.
+func gitIsAncestor(ctx context.Context, repo, ancestor, descendant string) bool {
+	_, err := gitCommand(ctx, repo, "merge-base", "--is-ancestor", ancestor, descendant)
+	return err == nil
+}
+
+// promoteLocally is the local promotion a self-promoting plan makes once its
+// signed commit is pushed: it fast-forwards the local delivery repository's
+// base branch to that commit — never forced, never a hosted repository, and
+// only for a delivery that is signed (or declares no document at all), since
+// the developer's checked signature is the approval.
+func promoteLocally(ctx context.Context, prepared *preparedRepository, commit string) error {
+	plan := &prepared.plan
+	if plan.RepositorySlug != "" {
+		return fmt.Errorf("a local promotion fast-forwards the CLI's local delivery repository only, and %s is a hosted one; its base branch moves by review", plan.Repository)
+	}
+	if plan.Delivery != nil && len(plan.Delivery.Documents) > 0 && !plan.Delivery.Signed {
+		return fmt.Errorf("a local promotion is the developer's signed publish, and this delivery is unsigned; nothing is promoted")
+	}
+	refspec := commit + ":refs/heads/" + plan.BaseBranch
+	if _, err := gitCommand(ctx, prepared.dir, "push", "--porcelain", "--", "origin", refspec); err != nil {
+		return fmt.Errorf("fast-forward the local base branch %s to %s (never forced): %w", plan.BaseBranch, commit, err)
+	}
+	remote, err := gitCommand(ctx, prepared.dir, "ls-remote", "--exit-code", "--refs", "origin", "refs/heads/"+plan.BaseBranch)
+	if err != nil {
+		return fmt.Errorf("verify the local base branch: %w", err)
+	}
+	if fields := strings.Fields(remote); len(fields) < 2 || fields[0] != commit {
+		return fmt.Errorf("local base branch %s resolved to %q after promotion, expected %s", plan.BaseBranch, remote, commit)
+	}
+	return nil
+}
+
 func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepared *preparedRepository, request *PublishRequest) (PublishResult, error) {
 	message := strings.TrimSpace(request.CommitMessage)
 	if message == "" {
@@ -1702,7 +1751,10 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 	if !strings.Contains(rawCommit, "\ngpgsig ") {
 		return PublishResult{}, fmt.Errorf("promotion commit %s is not signed", commit)
 	}
-	if len(prepared.plan.Changed) > 0 {
+	// A local promotion also pushes an unchanged branch: one the base had
+	// moved past restarts from the base, and the remote branch must follow
+	// it (a fast-forward) before it is verified below.
+	if len(prepared.plan.Changed) > 0 || prepared.plan.SelfPromotes {
 		refspec := "refs/heads/" + prepared.plan.PromotionBranch + ":refs/heads/" + prepared.plan.PromotionBranch
 		if _, err = gitCommand(ctx, prepared.dir, "push", "--porcelain", "--set-upstream", "--", "origin", refspec); err != nil {
 			return PublishResult{}, fmt.Errorf("push promotion branch without force: %w", err)
@@ -1720,6 +1772,11 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 	if err != nil {
 		return PublishResult{}, err
 	}
+	if prepared.plan.SelfPromotes {
+		if err = promoteLocally(ctx, prepared, commit); err != nil {
+			return PublishResult{}, err
+		}
+	}
 	result := PublishResult{
 		PlanID: prepared.plan.ID, Repository: prepared.plan.Repository, Path: prepared.plan.Path,
 		BaseBranch: prepared.plan.BaseBranch, PromotionBranch: prepared.plan.PromotionBranch,
@@ -1728,6 +1785,7 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 		PullRequest: prURL, PullRequestID: prID,
 		ContractChecks: prepared.plan.ContractChecks,
 		Delivery:       prepared.plan.Delivery,
+		Promoted:       prepared.plan.SelfPromotes,
 	}
 	if err := writeReceipt(workspace.Dir(), "publications", request.Module+"-"+request.Environment+jsonExtension, result); err != nil {
 		return PublishResult{}, err
@@ -1735,7 +1793,7 @@ func commitAndPublish(ctx context.Context, workspace *resources.Workspace, prepa
 	return result, nil
 }
 
-func clonePromotionRepository(ctx context.Context, repository, baseBranch, promotionBranch string) (string, func(), string, string, error) {
+func clonePromotionRepository(ctx context.Context, repository, baseBranch, promotionBranch string, selfPromotes bool) (string, func(), string, string, error) {
 	temp, err := os.MkdirTemp("", "codefly-gitops-publish-")
 	if err != nil {
 		return "", nil, "", "", fmt.Errorf("create publication checkout: %w", err)
@@ -1762,6 +1820,21 @@ func clonePromotionRepository(ctx context.Context, repository, baseBranch, promo
 	}
 	remoteRef := "refs/remotes/origin/" + promotionBranch
 	branchRevision, branchErr := gitCommand(ctx, repo, "rev-parse", "--verify", remoteRef+"^{commit}")
+	if branchErr == nil && selfPromotes {
+		// A local promotion continues from the last one: a promotion branch
+		// the base already contains (this module's, or one another module's
+		// promotion since moved past) starts again from the base, so the
+		// commit made here fast-forwards both. One the base does not contain
+		// is a promotion that never landed; it is continued when it descends
+		// from the base and refused when the two diverged, since a
+		// fast-forward can then never land it and nothing local is forced.
+		if contained := gitIsAncestor(ctx, repo, branchRevision, baseRevision); contained {
+			remoteRef, branchRevision = baseRef, baseRevision
+		} else if !gitIsAncestor(ctx, repo, baseRevision, branchRevision) {
+			cleanup()
+			return "", nil, "", "", fmt.Errorf("local promotion branch %s carries commits the base branch %s does not, and %s has moved past it; a local promotion fast-forwards %s and never forces, so delete the stale branch in the local delivery repository and publish again", promotionBranch, baseBranch, baseBranch, baseBranch)
+		}
+	}
 	if branchErr == nil {
 		if _, err = gitCommand(ctx, repo, "checkout", "--quiet", "-b", promotionBranch, remoteRef); err != nil {
 			cleanup()
@@ -1772,6 +1845,12 @@ func clonePromotionRepository(ctx context.Context, repository, baseBranch, promo
 		if _, err = gitCommand(ctx, repo, "checkout", "--quiet", "-b", promotionBranch, baseRef); err != nil {
 			cleanup()
 			return "", nil, "", "", err
+		}
+		// A local promotion with no branch yet starts from the last
+		// promotion, which is the base: nothing new is then "already
+		// promoted", not "no changes".
+		if selfPromotes {
+			branchRevision = baseRevision
 		}
 	}
 	status, err := gitCommand(ctx, repo, "status", "--porcelain=v1")

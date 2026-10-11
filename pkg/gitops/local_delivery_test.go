@@ -190,3 +190,170 @@ func TestADeveloperIdentityNeverSignsARelease(t *testing.T) {
 		t.Fatal("a release publish built the developer signer")
 	}
 }
+
+// TestALocalPromotionSettlesARebuildAtTheNextGeneration is the local
+// promotion rule: on a k3d environment whose host lists developers, the
+// developer's signed publish advances the local base branch itself, so the
+// next publish settles against it — a rebuilt module lands at generation 2
+// with its new digest, never at a second generation 1 the host would refuse
+// as a rewrite — and both commits fast-forward the base, the second
+// descending from the first.
+func TestALocalPromotionSettlesARebuildAtTheNextGeneration(t *testing.T) {
+	ctx, workspace, remote := developerPublishWorkspace(t)
+	installDeveloperSigning(t, &developerSigning{signer: &fakeSigner{nonce: true}})
+	request := PublishRequest{Module: "payments", Environment: "production", Local: true, PromotionBranch: "codefly/promote-payments-production"}
+	publish := func() (PublishPlan, PublishResult) {
+		t.Helper()
+		plan, err := PlanPublish(ctx, workspace, &request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers}, preparedPermit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return plan, result
+	}
+	first, firstResult := publish()
+	if !first.SelfPromotes || !firstResult.Promoted {
+		t.Fatalf("a developer-signed local publish did not promote itself: plan %v result %v", first.SelfPromotes, firstResult.Promoted)
+	}
+	if base := gitOutput(t, "", "--git-dir", remote, "rev-parse", "refs/heads/main"); base != firstResult.Commit {
+		t.Fatalf("the local base branch is %s, want the promoted commit %s", base, firstResult.Commit)
+	}
+
+	env := selectedEnvironment(t, workspace, "production")
+	renderHostedPayments(t, workspace, env, strings.ReplaceAll(pinnedDeployment, "aaaa", "bbbb"), hostedPaymentsInstances())
+	second, secondResult := publish()
+	if g1, g2 := first.Delivery.Documents[0].Generation, second.Delivery.Documents[0].Generation; g1 != 1 || g2 != 2 {
+		t.Fatalf("a rebuilt module settled at generations %d then %d, want 1 then 2", g1, g2)
+	}
+	if first.Delivery.Documents[0].Digest == second.Delivery.Documents[0].Digest {
+		t.Fatal("the rebuilt module's document did not change, so this test proves nothing")
+	}
+	if base := gitOutput(t, "", "--git-dir", remote, "rev-parse", "refs/heads/main"); base != secondResult.Commit {
+		t.Fatalf("the second promotion left the base at %s, want %s", base, secondResult.Commit)
+	}
+	gitRun(t, "", "--git-dir", remote, "merge-base", "--is-ancestor", firstResult.Commit, secondResult.Commit)
+
+	// What a cluster run reads back: the latest promotion is the second
+	// commit, and the tree it promoted renders the presence Job that POSTs
+	// the generation-2 carrier.
+	latest, err := LatestLocalPromotion(ctx, workspace, "production")
+	if err != nil || latest != secondResult.Commit {
+		t.Fatalf("latest local promotion %s (%v), want %s", latest, err, secondResult.Commit)
+	}
+	tree := filepath.Join(t.TempDir(), "tree")
+	if err = ExportPromotion(ctx, workspace, "production", latest, tree); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := DeliveryJobsOf(tree, secondResult.Path, "production")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].Kind != deliveryPresence || jobs[0].Namespace != "payments" || !strings.HasPrefix(jobs[0].Name, "deliver-presence-payments-production-") {
+		t.Fatalf("the promoted tree's delivery Jobs are %+v", jobs)
+	}
+
+	// Running it again with nothing rebuilt re-delivers what is promoted: the
+	// same generation, the same commit, no refusal for having no changes.
+	again, againResult := publish()
+	if again.Delivery.Documents[0].Generation != 2 || againResult.Commit != secondResult.Commit {
+		t.Fatalf("an unchanged re-run settled at generation %d on %s, want 2 on %s", again.Delivery.Documents[0].Generation, againResult.Commit, secondResult.Commit)
+	}
+
+	// Another promotion branch (another module's, in a composition) moves the
+	// base past this one: this branch is then contained in the base, starts
+	// again from it, and its promotion fast-forwards — never forced, never a
+	// divergence.
+	request.PromotionBranch = "codefly/promote-other-production"
+	renderHostedPayments(t, workspace, env, strings.ReplaceAll(pinnedDeployment, "aaaa", "dddd"), hostedPaymentsInstances())
+	third, thirdResult := publish()
+	if third.Delivery.Documents[0].Generation != 3 {
+		t.Fatalf("a promotion on another branch settled at generation %d, want 3", third.Delivery.Documents[0].Generation)
+	}
+	request.PromotionBranch = "codefly/promote-payments-production"
+	fourth, fourthResult := publish()
+	if fourth.Delivery.Documents[0].Generation != 3 || fourthResult.Commit != thirdResult.Commit {
+		t.Fatalf("a branch the base moved past settled at generation %d on %s, want 3 on %s", fourth.Delivery.Documents[0].Generation, fourthResult.Commit, thirdResult.Commit)
+	}
+	if branch := gitOutput(t, "", "--git-dir", remote, "rev-parse", "refs/heads/codefly/promote-payments-production"); branch != thirdResult.Commit {
+		t.Fatalf("the promotion branch the base moved past was left at %s, want %s", branch, thirdResult.Commit)
+	}
+}
+
+// TestAFailedVerificationPromotesNothing: the promotion is the last step of a
+// publish whose every carrier passed the developer check. A carrier the check
+// refuses at publish — the plan's, held again — stops the publish before any
+// commit lands, and the base branch stays where it was.
+func TestAFailedVerificationPromotesNothing(t *testing.T) {
+	ctx, workspace, remote := developerPublishWorkspace(t)
+	fake := &developerSigning{signer: &fakeSigner{nonce: true}}
+	installDeveloperSigning(t, fake)
+	before := gitOutput(t, "", "--git-dir", remote, "rev-parse", "refs/heads/main")
+	request := PublishRequest{Module: "payments", Environment: "production", Local: true, PromotionBranch: "codefly/promote-payments-production"}
+	plan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.refuse = errors.New("the certificate names someone@example.test")
+	if _, err = Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers}, preparedPermit); err == nil {
+		t.Fatal("a publish whose carrier fails the developer check succeeded")
+	}
+	if after := gitOutput(t, "", "--git-dir", remote, "rev-parse", "refs/heads/main"); after != before {
+		t.Fatalf("a failed verification moved the local base branch from %s to %s", before, after)
+	}
+}
+
+// TestOnlyADeveloperSignedLocalPublishSelfPromotes: a local publish to a host
+// listing no developer keeps the review — its base branch moves only by a
+// merge — and so does every publish that is not --local, whatever the
+// environment lists.
+func TestOnlyADeveloperSignedLocalPublishSelfPromotes(t *testing.T) {
+	ctx, workspace, _, remote := hostedPublishWorkspace(t)
+	before := gitOutput(t, "", "--git-dir", remote, "rev-parse", "refs/heads/main")
+	request := PublishRequest{
+		Module: "payments", Environment: "production", Local: true, Signer: &fakeSigner{},
+		PromotionBranch: "codefly/promote-payments-production",
+	}
+	plan, err := PlanPublish(ctx, workspace, &request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers}, preparedPermit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.SelfPromotes || result.Promoted {
+		t.Fatal("a local publish to a host listing no developer promoted itself")
+	}
+	if after := gitOutput(t, "", "--git-dir", remote, "rev-parse", "refs/heads/main"); after != before {
+		t.Fatalf("the base branch moved from %s to %s without a merge", before, after)
+	}
+
+	_, developerWorkspace, _ := developerPublishWorkspace(t)
+	env := selectedEnvironment(t, developerWorkspace, "production")
+	if (&deliveryPublication{local: false}).selfPromotes(env) {
+		t.Fatal("a publish that is not --local would promote itself")
+	}
+	if !(&deliveryPublication{local: true}).selfPromotes(env) {
+		t.Fatal("a developer-signed local publish would not promote itself")
+	}
+}
+
+// TestDeliveryReceiptsAreTheJobsAnswers: a run reports what the host answered
+// for each document — delivered with its receipt, refused with its verdict,
+// given up on — and leaves the retry chatter out.
+func TestDeliveryReceiptsAreTheJobsAnswers(t *testing.T) {
+	log := strings.Join([]string{
+		"delivery API answered 503 for a.json in round 1; it is tried again next round",
+		`delivered a.json: {"status":"accepted","generation":2}`,
+		"refused b.json with 409: rewritten generation",
+		"giving up on c.json after 9 rounds within 1500 seconds",
+		"delivered 1 document(s) to http://host:8080/platform/_delivery/presence in 9 round(s), 2 refused",
+	}, "\n")
+	got := DeliveryReceipts(log)
+	if len(got) != 4 || !strings.HasPrefix(got[0], "delivered a.json") || !strings.HasPrefix(got[1], "refused b.json") || !strings.HasPrefix(got[2], "giving up on c.json") || !strings.HasPrefix(got[3], "delivered 1 document(s)") {
+		t.Fatalf("receipts %q", got)
+	}
+}
