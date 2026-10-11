@@ -167,8 +167,8 @@ func TestNginxConfigDoesNotWriteToReadonlyPaths(t *testing.T) {
 
 func TestLoopbackHostPort(t *testing.T) {
 	loopback := ContainerState{
-		Name:         "remote",
-		PortBindings: []PortBinding{{ContainerPort: "443/tcp", HostIP: "127.0.0.1", HostPort: "49221"}},
+		Name:           "remote",
+		PublishedPorts: []PortBinding{{ContainerPort: "443/tcp", HostIP: "127.0.0.1", HostPort: "49221"}},
 	}
 	port, err := loopbackHostPort(&loopback, 443)
 	if err != nil || port != "49221" {
@@ -176,8 +176,8 @@ func TestLoopbackHostPort(t *testing.T) {
 	}
 
 	wildcard := ContainerState{
-		Name:         "remote",
-		PortBindings: []PortBinding{{ContainerPort: "443/tcp", HostIP: "0.0.0.0", HostPort: "49221"}},
+		Name:           "remote",
+		PublishedPorts: []PortBinding{{ContainerPort: "443/tcp", HostIP: "0.0.0.0", HostPort: "49221"}},
 	}
 	if _, err := loopbackHostPort(&wildcard, 443); err == nil {
 		t.Fatalf("expected wildcard binding to be rejected")
@@ -186,6 +186,48 @@ func TestLoopbackHostPort(t *testing.T) {
 	missing := ContainerState{Name: "remote"}
 	if _, err := loopbackHostPort(&missing, 443); err == nil {
 		t.Fatalf("expected missing binding to be rejected")
+	}
+}
+
+// A remote asked to let Docker choose its port reads back an empty requested
+// HostPort; the port to probe is the one Docker published. This is the
+// inspect output Docker gives for 127.0.0.1::443.
+func TestLoopbackHostPortIsTheBoundPortWhenDockerChoseIt(t *testing.T) {
+	state, err := parseContainerState([]byte(`[{
+		"Name": "/codefly-gitops-remote-local-abcd1234",
+		"State": {"Running": true},
+		"Config": {"Image": "nginx@sha256:aa", "Labels": {}},
+		"NetworkSettings": {"Networks": {"k3d-lane": {}}, "Ports": {"443/tcp": [{"HostIp": "127.0.0.1", "HostPort": "32788"}], "80/tcp": null}},
+		"HostConfig": {"PortBindings": {"443/tcp": [{"HostIp": "127.0.0.1", "HostPort": ""}]}}
+	}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := loopbackHostPort(&state, 443)
+	if err != nil || port != "32788" {
+		t.Fatalf("loopbackHostPort = %q, %v; want the bound port 32788", port, err)
+	}
+}
+
+// A requested loopback binding that Docker published on a wildcard host is
+// drift, found by the audit.
+func TestAuditStateFindsAWildcardPublishedBinding(t *testing.T) {
+	state := ContainerState{
+		Name:           "remote",
+		Labels:         map[string]string{labelRole: remoteRole},
+		Image:          "nginx@sha256:aa",
+		Running:        true,
+		PortBindings:   []PortBinding{{ContainerPort: "443/tcp", HostIP: "127.0.0.1", HostPort: ""}},
+		PublishedPorts: []PortBinding{{ContainerPort: "443/tcp", HostIP: "0.0.0.0", HostPort: "32788"}},
+	}
+	found := 0
+	for _, finding := range AuditState(&state, time.Now()) {
+		if finding.Code == "wildcard-binding" {
+			found++
+		}
+	}
+	if found != 1 {
+		t.Fatalf("wildcard findings = %d, want 1", found)
 	}
 }
 

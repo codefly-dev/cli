@@ -567,7 +567,11 @@ type ContainerState struct {
 	Labels       map[string]string
 	Networks     []string
 	PortBindings []PortBinding
-	Exists       bool
+	// PublishedPorts are the bindings Docker made. PortBindings is what was
+	// requested, and a requested host port of 0 reads back as "" there: only
+	// this list says which loopback port a probe can reach.
+	PublishedPorts []PortBinding
+	Exists         bool
 }
 
 func parseContainerState(data []byte) (ContainerState, error) {
@@ -583,6 +587,10 @@ func parseContainerState(data []byte) (ContainerState, error) {
 		Image           string `json:"Image"`
 		NetworkSettings struct {
 			Networks map[string]json.RawMessage `json:"Networks"`
+			Ports    map[string][]struct {
+				HostIP   string `json:"HostIp"`
+				HostPort string `json:"HostPort"`
+			} `json:"Ports"`
 		} `json:"NetworkSettings"`
 		HostConfig struct {
 			PortBindings map[string][]struct {
@@ -621,9 +629,20 @@ func parseContainerState(data []byte) (ContainerState, error) {
 			})
 		}
 	}
-	sort.Slice(state.PortBindings, func(i, j int) bool {
-		return state.PortBindings[i].ContainerPort < state.PortBindings[j].ContainerPort
-	})
+	for port, bindings := range entry.NetworkSettings.Ports {
+		for _, binding := range bindings {
+			state.PublishedPorts = append(state.PublishedPorts, PortBinding{
+				ContainerPort: port,
+				HostIP:        binding.HostIP,
+				HostPort:      binding.HostPort,
+			})
+		}
+	}
+	for _, bindings := range [][]PortBinding{state.PortBindings, state.PublishedPorts} {
+		sort.Slice(bindings, func(i, j int) bool {
+			return bindings[i].ContainerPort < bindings[j].ContainerPort
+		})
+	}
 	return state, nil
 }
 
@@ -665,7 +684,14 @@ func AuditState(state *ContainerState, now time.Time) []RemoteFinding {
 	if state.Labels[labelRole] != remoteRole {
 		return findings
 	}
-	for _, binding := range state.PortBindings {
+	// A requested loopback binding Docker bound elsewhere is drift too, so
+	// both the request and the result are audited, each wildcard once.
+	audited := map[PortBinding]bool{}
+	for _, binding := range append(append([]PortBinding{}, state.PortBindings...), state.PublishedPorts...) {
+		if audited[binding] {
+			continue
+		}
+		audited[binding] = true
 		if isWildcardHost(binding.HostIP) {
 			findings = append(findings, RemoteFinding{
 				Code:     "wildcard-binding",
@@ -965,18 +991,24 @@ func (r *FetchRemote) removeExisting(ctx context.Context) error {
 
 // loopbackHostPort returns the host port bound to containerPort/tcp, refusing a
 // wildcard binding — the endpoint must be reachable on loopback only.
+// loopbackHostPort is the loopback port Docker bound for containerPort — read
+// from what Docker published, never from the request, whose port is empty when
+// Docker was asked to choose.
 func loopbackHostPort(state *ContainerState, containerPort int) (string, error) {
 	want := fmt.Sprintf("%d/tcp", containerPort)
-	for _, binding := range state.PortBindings {
+	for _, binding := range state.PublishedPorts {
 		if binding.ContainerPort != want {
 			continue
 		}
 		if isWildcardHost(binding.HostIP) {
 			return "", fmt.Errorf("fetch remote %s publishes %s on wildcard host %q; expected IPv4 loopback", state.Name, want, binding.HostIP)
 		}
+		if binding.HostPort == "" {
+			continue
+		}
 		return binding.HostPort, nil
 	}
-	return "", fmt.Errorf("fetch remote %s has no host binding for %s", state.Name, want)
+	return "", fmt.Errorf("fetch remote %s has no published host port for %s", state.Name, want)
 }
 
 // refsAdvertisesRevision reports whether a dumb-HTTP info/refs advertisement
