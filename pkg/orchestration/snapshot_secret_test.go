@@ -146,7 +146,7 @@ func TestSnapshotSecretResolverMakesReferenceOnlyRenderValueFree(t *testing.T) {
 	resolved := loader.Configurations()[0]
 	require.Equal(t, snapshotSecretPlaceholder, resolved.GetInfos()[0].GetConfigurationValues()[0].GetValue())
 
-	sanitized, _, references, err := promotableDeploymentConfigurations(resolved, nil, "secret-accounts")
+	sanitized, _, references, _, err := promotableDeploymentConfigurations(resolved, nil, "secret-accounts")
 	require.NoError(t, err)
 	require.Empty(t, sanitized.GetInfos())
 	require.Len(t, references, 1)

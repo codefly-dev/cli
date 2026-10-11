@@ -135,6 +135,13 @@ func (manager *Manager) BuilderDeployedSecretKeys() []string {
 	return manager.Builder.DeployedSecretKeys()
 }
 
+func (manager *Manager) BuilderDeployedSecretValues() map[string]string {
+	if manager.Builder == nil {
+		return nil
+	}
+	return manager.Builder.DeployedSecretValues()
+}
+
 func (manager *Manager) BuilderImageDigest() string {
 	if manager.Builder == nil {
 		return ""

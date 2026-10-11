@@ -41,7 +41,7 @@ func TestPromotableDeploymentInputsReplaceSecretValuesWithReferences(t *testing.
 	originalConfiguration := proto.Clone(configuration)
 	originalDependency := proto.Clone(dependency)
 
-	sanitized, dependencies, references, err := promotableDeploymentConfigurations(
+	sanitized, dependencies, references, _, err := promotableDeploymentConfigurations(
 		configuration,
 		[]*basev0.Configuration{dependency},
 		"accounts-secrets",
@@ -80,7 +80,7 @@ func TestPromotableDeploymentInputsRejectMisplacedSecretEndpointKeys(t *testing.
 		}},
 	}
 
-	_, _, _, err := promotableDeploymentConfigurations(configuration, nil, "accounts-secrets")
+	_, _, _, _, err := promotableDeploymentConfigurations(configuration, nil, "accounts-secrets")
 	require.Error(t, err)
 	// Every misplaced key is named in one error, each with the *.secret.env that
 	// resolves it — the reported case is a local identity.env file.
@@ -115,7 +115,7 @@ func TestPromotableDeploymentInputsAggregateMisplacedKeysAcrossConfigurations(t 
 		}},
 	}
 
-	_, _, _, err := promotableDeploymentConfigurations(own, []*basev0.Configuration{dependency}, "accounts-secrets")
+	_, _, _, _, err := promotableDeploymentConfigurations(own, []*basev0.Configuration{dependency}, "accounts-secrets")
 	require.Error(t, err)
 	// A misplaced key in the service config AND one exposed by a dependency both
 	// surface in a single error, each traceable to its own configuration scope —
@@ -137,7 +137,7 @@ func TestPromotableDeploymentInputsPromoteDeclaredSecretEndpointKeys(t *testing.
 		}},
 	}
 
-	sanitized, _, references, err := promotableDeploymentConfigurations(configuration, nil, "accounts-secrets")
+	sanitized, _, references, _, err := promotableDeploymentConfigurations(configuration, nil, "accounts-secrets")
 	require.NoError(t, err)
 
 	values := sanitized.GetInfos()[0].GetConfigurationValues()
@@ -167,7 +167,7 @@ func TestPromotableDeploymentInputsPromoteCredentialURLsAsReferences(t *testing.
 		}},
 	}
 
-	sanitized, _, references, err := promotableDeploymentConfigurations(configuration, nil, "accounts-secrets")
+	sanitized, _, references, _, err := promotableDeploymentConfigurations(configuration, nil, "accounts-secrets")
 	require.NoError(t, err)
 	require.Empty(t, sanitized.GetInfos())
 
@@ -193,7 +193,7 @@ func TestPromotableDeploymentInputsRejectSecretStructuredData(t *testing.T) {
 		}},
 	}
 
-	_, _, _, err := promotableDeploymentConfigurations(configuration, nil, "accounts-secrets")
+	_, _, _, _, err := promotableDeploymentConfigurations(configuration, nil, "accounts-secrets")
 	require.EqualError(t, err, `structured secret configuration "certificate" requires typed Kubernetes key references`)
 }
 
@@ -209,7 +209,7 @@ func TestPromotableDeploymentInputsPreserveWorkspaceConfigurationAndExtractSecre
 		}},
 	}
 
-	_, dependencies, references, err := promotableDeploymentConfigurations(
+	_, dependencies, references, _, err := promotableDeploymentConfigurations(
 		nil,
 		[]*basev0.Configuration{workspaceConfiguration},
 		"accounts-secrets",

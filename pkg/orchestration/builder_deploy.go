@@ -61,7 +61,8 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 	var secretReferences map[string]*builderv0.KubernetesSecretKeyReference
 	if profile == builderv0.KubernetesOutputProfile_KUBERNETES_OUTPUT_PROFILE_RESTRICTED_PORTABLE_V1 {
 		secretName := "secret-" + b.instance.Service.Name
-		conf, dependenciesConfigurations, secretReferences, err = promotableDeploymentConfigurations(
+		var secretValues map[string]string
+		conf, dependenciesConfigurations, secretReferences, secretValues, err = promotableDeploymentConfigurations(
 			conf,
 			dependenciesConfigurations,
 			secretName,
@@ -76,6 +77,7 @@ func (b *Builder) Deploy(ctx context.Context) (*OutputProperty, error) {
 			b.deployedSecretKeys = append(b.deployedSecretKeys, key)
 		}
 		sort.Strings(b.deployedSecretKeys)
+		b.deployedSecretValues = secretValues
 	}
 
 	networkMappings, err := b.world.RemoteNetworkManager.GenerateNetworkMappings(ctx, b.world.Env, b.world.Workspace, b.instance.Identity, b.endpoints)
@@ -403,27 +405,28 @@ func promotableDeploymentConfigurations(
 	configuration *basev0.Configuration,
 	dependencies []*basev0.Configuration,
 	secretName string,
-) (*basev0.Configuration, []*basev0.Configuration, map[string]*builderv0.KubernetesSecretKeyReference, error) {
+) (*basev0.Configuration, []*basev0.Configuration, map[string]*builderv0.KubernetesSecretKeyReference, map[string]string, error) {
 	if misplaced := misplacedSecretKeys(append([]*basev0.Configuration{configuration}, dependencies...)); len(misplaced) > 0 {
-		return nil, nil, nil, fmt.Errorf(
+		return nil, nil, nil, nil, fmt.Errorf(
 			"restricted rendering rejects credential-named keys carrying a plaintext value; declare each as a secret (secretKeyRef) instead of inline config: %s",
 			strings.Join(misplaced, ", "),
 		)
 	}
 	references := map[string]*builderv0.KubernetesSecretKeyReference{}
-	own, err := promotableConfiguration(configuration, secretName, references)
+	values := map[string]string{}
+	own, err := promotableConfiguration(configuration, secretName, references, values)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	safeDependencies := make([]*basev0.Configuration, 0, len(dependencies))
 	for _, dependency := range dependencies {
-		safe, err := promotableConfiguration(dependency, secretName, references)
+		safe, err := promotableConfiguration(dependency, secretName, references, values)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		safeDependencies = append(safeDependencies, safe)
 	}
-	return own, safeDependencies, references, nil
+	return own, safeDependencies, references, values, nil
 }
 
 // restrictedRenderRejects reports whether restricted render will refuse a value
@@ -534,6 +537,7 @@ func promotableConfiguration(
 	configuration *basev0.Configuration,
 	secretName string,
 	references map[string]*builderv0.KubernetesSecretKeyReference,
+	values map[string]string,
 ) (*basev0.Configuration, error) {
 	if configuration == nil {
 		return nil, nil
@@ -571,6 +575,11 @@ func promotableConfiguration(
 			}
 			key := environmentVariables[0].Key
 			references[key] = &builderv0.KubernetesSecretKeyReference{Name: secretName, Key: key}
+			// The value the reference stands for, in memory: only a local
+			// cluster, which has no store, is ever handed it (DeployedSecretValues).
+			if values != nil && sourceValue.GetTemplate() == nil {
+				values[key] = sourceValue.GetValue()
+			}
 		}
 		if len(info.GetConfigurationValues()) > 0 || info.GetData() != nil {
 			safe.Infos = append(safe.Infos, info)

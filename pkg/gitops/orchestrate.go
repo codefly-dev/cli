@@ -157,6 +157,11 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 	if err = collectRenderTemplates(r.scope.Templates, rendered.deployed, rendered.secretKeys); err != nil {
 		return err
 	}
+	if r.env.IsK3d() {
+		if err = writeLocalSecrets(r.workspace.Dir(), r.env.Name, r.module.Name, r.scope.Namespace, rendered.secretKeys, rendered.secretValues); err != nil {
+			return err
+		}
+	}
 	injections, err := deriveRenderInjections(ctx, r.workspace, rendered.selfEndpoints, r.sink)
 	if err != nil {
 		return err
@@ -237,6 +242,7 @@ type renderedRoots struct {
 	selfEndpoints  map[string]map[string]string
 	deployed       map[string]*basev0.Configuration
 	secretKeys     map[string][]string
+	secretValues   map[string]map[string]string
 	inClusterPorts map[string]map[string]uint32
 }
 
@@ -247,6 +253,7 @@ func (r *moduleRender) renderRoots(ctx context.Context, roots []*resources.Servi
 		selfEndpoints:  make(map[string]map[string]string),
 		deployed:       make(map[string]*basev0.Configuration),
 		secretKeys:     make(map[string][]string),
+		secretValues:   make(map[string]map[string]string),
 		inClusterPorts: make(map[string]map[string]uint32),
 	}
 	destinations := moduleStageDestinations(r.workspace, r.module, stage)
@@ -271,12 +278,15 @@ func (r *moduleRender) renderRoots(ctx context.Context, roots []*resources.Servi
 					rendered.selfEndpoints[unique] = variables
 				}
 			},
-			func(configurations map[string]*basev0.Configuration, keys map[string][]string) {
+			func(configurations map[string]*basev0.Configuration, keys map[string][]string, values map[string]map[string]string) {
 				for unique, configuration := range configurations {
 					rendered.deployed[unique] = configuration
 				}
 				for unique, declared := range keys {
 					rendered.secretKeys[unique] = declared
+				}
+				for unique, held := range values {
+					rendered.secretValues[unique] = held
 				}
 			},
 			func(ports map[string]map[string]uint32) {
@@ -520,7 +530,9 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 			nil,
 			func(services map[string]*resources.Service) { graph = services },
 			func(rendered map[string]map[string]string) { selfEndpoints = rendered },
-			func(rendered map[string]*basev0.Configuration, keys map[string][]string) {
+			// A single service's render never writes local secrets: the
+			// module's set is replaced whole, by the module render a local run uses.
+			func(rendered map[string]*basev0.Configuration, keys map[string][]string, _ map[string]map[string]string) {
 				deployed, secretKeys = rendered, keys
 			},
 			func(rendered map[string]map[string]uint32) { inClusterPorts = rendered },
@@ -616,7 +628,7 @@ func renderServiceFlow(
 	record func(map[string]*builderv0.DeploymentOutput),
 	recordServices func(map[string]*resources.Service),
 	recordSelfEndpoints func(map[string]map[string]string),
-	recordConfigurations func(map[string]*basev0.Configuration, map[string][]string),
+	recordConfigurations func(map[string]*basev0.Configuration, map[string][]string, map[string]map[string]string),
 	recordInClusterPorts func(map[string]map[string]uint32),
 ) (result error) {
 	if err := selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
@@ -656,7 +668,7 @@ func renderServiceFlow(
 		recordSelfEndpoints(flow.SelfEndpoints(ctx))
 	}
 	if recordConfigurations != nil {
-		recordConfigurations(flow.DeployedConfigurations(), flow.DeployedSecretKeys())
+		recordConfigurations(flow.DeployedConfigurations(), flow.DeployedSecretKeys(), flow.DeployedSecretValues())
 	}
 	if recordInClusterPorts != nil {
 		recordInClusterPorts(flow.InClusterPorts(ctx))

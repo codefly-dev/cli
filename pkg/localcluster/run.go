@@ -44,6 +44,9 @@ type Driver interface {
 	// Serve brings the fetch remote up on the revision and makes the
 	// cluster's Argo CD trust it.
 	Serve(ctx context.Context, revision string) error
+	// ApplySecrets writes each published module's local Secrets — the ones a
+	// cell's store would hold — to the cluster before anything reads them.
+	ApplySecrets(ctx context.Context, published []gitops.PublishResult) error
 	// Bootstrap applies the published modules' Argo bootstrap at the
 	// revision and returns the delivery Jobs that revision renders.
 	Bootstrap(ctx context.Context, revision string, published []gitops.PublishResult) ([]gitops.DeliveryJob, error)
@@ -152,6 +155,9 @@ func Run(ctx context.Context, env *environments.Environment, modules []string, d
 	}
 	say("Serving the promoted revision %s to the cluster", report.Revision)
 	if err = driver.Serve(ctx, report.Revision); err != nil {
+		return report, err
+	}
+	if err = driver.ApplySecrets(ctx, report.Published); err != nil {
 		return report, err
 	}
 	jobs, err := driver.Bootstrap(ctx, report.Revision, report.Published)

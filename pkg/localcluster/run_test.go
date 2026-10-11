@@ -58,6 +58,10 @@ func (d *fakeDriver) LatestPromotion(context.Context) (string, error) {
 func (d *fakeDriver) Serve(_ context.Context, revision string) error {
 	return d.step("serve " + revision)
 }
+func (d *fakeDriver) ApplySecrets(_ context.Context, published []gitops.PublishResult) error {
+	return d.step("secrets")
+}
+
 func (d *fakeDriver) Bootstrap(_ context.Context, revision string, published []gitops.PublishResult) ([]gitops.DeliveryJob, error) {
 	var jobs []gitops.DeliveryJob
 	for _, result := range published {
@@ -87,7 +91,7 @@ func TestARunTakesEveryModuleThroughTheCellsSteps(t *testing.T) {
 	want := []string{
 		"argocd", "delivery-account", "namespaces host,documents", "trust-anchor",
 		"render host", "publish host", "render documents", "publish documents",
-		"latest", "serve abc", "bootstrap abc",
+		"latest", "serve abc", "secrets", "bootstrap abc",
 		"await deliver-modules/host", "await deliver-modules/documents",
 	}
 	if strings.Join(driver.steps, "|") != strings.Join(want, "|") {

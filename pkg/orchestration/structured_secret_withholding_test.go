@@ -98,7 +98,7 @@ func TestARenderWithAnUndeclaredRootStructuredSecretSucceeds(t *testing.T) {
 	confs, err := world.workspaceConfigurationsFor(ctx, worker, nil, resources.NewContainerNetworkAccess())
 	require.NoError(t, err)
 
-	_, safe, references, err := promotableDeploymentConfigurations(&basev0.Configuration{}, confs, "secret-worker")
+	_, safe, references, _, err := promotableDeploymentConfigurations(&basev0.Configuration{}, confs, "secret-worker")
 	require.NoError(t, err,
 		"a root structured secret this service never asked for must not stop it rendering")
 	require.Empty(t, references, "and no secret reference is rendered for it")

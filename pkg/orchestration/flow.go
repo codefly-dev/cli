@@ -1087,6 +1087,28 @@ func (flow *Flow) DeployedSecretKeys() map[string][]string {
 	return keys
 }
 
+// DeployedSecretValues returns, per deployed service unique, the values behind
+// DeployedSecretKeys. They never leave memory except to a local cluster, which
+// has no store for an ExternalSecret to read them from.
+func (flow *Flow) DeployedSecretValues() map[string]map[string]string {
+	values := make(map[string]map[string]string)
+	if flow == nil || flow.hub == nil {
+		return values
+	}
+	for _, manager := range flow.hub.managers {
+		source, ok := manager.(interface {
+			BuilderDeployedSecretValues() map[string]string
+		})
+		if !ok {
+			continue
+		}
+		if held := source.BuilderDeployedSecretValues(); len(held) > 0 {
+			values[manager.Unique()] = held
+		}
+	}
+	return values
+}
+
 // SelfEndpoints returns, per deployed service unique, the self-endpoint
 // carriers derived from the network mappings its deploy recorded — the
 // in-cluster address (container access) a render resolves, never the listen

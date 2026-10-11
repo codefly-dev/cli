@@ -589,7 +589,7 @@ func TestACompositionRootGroupRendersItsCredentialsByReference(t *testing.T) {
 			require.Equal(t, []string{"work-context"}, groupSet(render),
 				"the root group must reach the render at all")
 
-			_, safe, references, err := promotableDeploymentConfigurations(&basev0.Configuration{}, render, "secret-api")
+			_, safe, references, _, err := promotableDeploymentConfigurations(&basev0.Configuration{}, render, "secret-api")
 			require.NoError(t, err)
 
 			// The exact reference, keyed by the environment variable the workload
@@ -645,7 +645,7 @@ func TestACompositionRootGroupRendersItsCredentialsByReference(t *testing.T) {
 			_, hasCredential := groupValue(undeclared, "work-context", test.secret.GetKey())
 			require.False(t, hasCredential,
 				"a composition root's credential must not reach a service that does not declare its group")
-			_, _, undeclaredReferences, err := promotableDeploymentConfigurations(&basev0.Configuration{}, undeclared, "secret-worker")
+			_, _, undeclaredReferences, _, err := promotableDeploymentConfigurations(&basev0.Configuration{}, undeclared, "secret-worker")
 			require.NoError(t, err)
 			require.Empty(t, undeclaredReferences,
 				"no secretKeyRef may be rendered for a credential this service does not receive")
