@@ -196,3 +196,23 @@ func TestDeveloperIDTokenPrefersTheDevelopersOwnToken(t *testing.T) {
 		t.Fatalf("connector %q preselected for a provider the public-good login does not federate", got)
 	}
 }
+
+// TestADeveloperSignerReadsSIGSTORE_ID_TOKEN: with no token source given, a
+// developer signer takes the token the developer exported — no browser — and
+// that token, held to the policy, is the one Fulcio is asked to certify.
+func TestADeveloperSignerReadsSIGSTORE_ID_TOKEN(t *testing.T) {
+	recorder := &fulcioRecorder{}
+	server := recorder.server(t)
+	token := fakeToken(t, map[string]any{"email": developerSubject, "email_verified": true, "exp": time.Now().Add(time.Hour).Unix()})
+	t.Setenv(envSigstoreIDToken, token)
+	signer, err := NewDeveloper(developerPolicy(), nil, KeylessOptions{FulcioURL: server.URL, RekorURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = signer.Sign(context.Background(), []byte("authority document")); err == nil {
+		t.Fatal("the stand-in Fulcio refuses every request, so signing must fail")
+	}
+	if len(recorder.requests) == 0 || !strings.Contains(recorder.requests[0], token) {
+		t.Fatalf("SIGSTORE_ID_TOKEN is not the token Fulcio was asked to certify: %v", recorder.requests)
+	}
+}
