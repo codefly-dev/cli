@@ -1,6 +1,7 @@
 package environments
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -40,7 +41,7 @@ func TestWorkspaceHostDeclarationSurvivesLoad(t *testing.T) {
 		Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example-platform",
 		Audience: "accounts", TrustDomain: "cluster.example", EnvelopeRevision: 3, Delivery: "platform/accounts/rest",
 	}
-	if *env.Host != want {
+	if !reflect.DeepEqual(*env.Host, want) {
 		t.Fatalf("host %+v, want %+v", *env.Host, want)
 	}
 	if got := env.Host.SPIFFEID("crm", "crm-backend"); got != "spiffe://cluster.example/ns/crm/sa/crm-backend" {
@@ -103,6 +104,13 @@ func TestHostDeclarationRefusesAPartialOrMalformedIdentity(t *testing.T) {
 		// a document through.
 		"no delivery":           {yaml: without("delivery"), want: "host delivery"},
 		"bare delivery address": {yaml: strings.Replace(hostBlock, "delivery: platform/accounts/rest", "delivery: delivery.example.test:443", 1), want: "host delivery"},
+		// A developer identity a local host admits is an https issuer and
+		// the subject its certificate names, each required, neither
+		// misspelled, none twice.
+		"developer without subject":  {yaml: hostBlock + "      developers:\n        - issuer: https://github.com/login/oauth\n", want: "host developer subject"},
+		"developer with http issuer": {yaml: hostBlock + "      developers:\n        - issuer: http://github.com/login/oauth\n          subject: dev@example.test\n", want: "host developer issuer"},
+		"developer with unknown key": {yaml: hostBlock + "      developers:\n        - issuer: https://github.com/login/oauth\n          email: dev@example.test\n", want: "unknown host.developers field"},
+		"developer declared twice":   {yaml: hostBlock + "      developers:\n        - issuer: https://github.com/login/oauth\n          subject: dev@example.test\n        - issuer: https://github.com/login/oauth\n          subject: dev@example.test\n", want: "declared twice"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			workspace, err := resources.LoadFromBytes[resources.Workspace]([]byte(
@@ -114,5 +122,33 @@ func TestHostDeclarationRefusesAPartialOrMalformedIdentity(t *testing.T) {
 				t.Fatalf("declaration was accepted or refused wrongly: %v (want %q)", err, table.want)
 			}
 		})
+	}
+}
+
+// TestHostDevelopersAreALocalClustersAllowlist: a developer identity is what a
+// local host's allowlist names, so it loads on a k3d environment and is refused
+// on any other, where a deployed host would refuse it anyway and the
+// declaration would only carry a person's identity into a hosted render.
+func TestHostDevelopersAreALocalClustersAllowlist(t *testing.T) {
+	developers := "      developers:\n        - issuer: https://github.com/login/oauth\n          subject: dev@example.test\n"
+	local, err := resources.LoadFromBytes[resources.Workspace]([]byte(
+		"name: example\nenvironments:\n  - name: local\n    namespace: example\n    cluster:\n      kind: k3d\n    host:\n" + hostBlock + developers))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := Select(local, "local")
+	if err != nil {
+		t.Fatalf("a k3d environment's developers were refused: %v", err)
+	}
+	if want := []HostDeveloper{{Issuer: "https://github.com/login/oauth", Subject: "dev@example.test"}}; !reflect.DeepEqual(env.Host.Developers, want) {
+		t.Fatalf("developers %+v, want %+v", env.Host.Developers, want)
+	}
+	hosted, err := resources.LoadFromBytes[resources.Workspace]([]byte(
+		"name: example\nenvironments:\n  - name: prod\n    namespace: example\n    cluster:\n      kind: gke\n    host:\n" + hostBlock + developers))
+	if err == nil {
+		_, err = Select(hosted, "prod")
+	}
+	if err == nil || !strings.Contains(err.Error(), "only a local cluster's host admits") {
+		t.Fatalf("a hosted environment declaring developers was not refused: %v", err)
 	}
 }

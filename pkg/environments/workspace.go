@@ -115,6 +115,12 @@ func (env *Environment) Validate() error {
 	if err := env.Host.Validate(); err != nil {
 		return err
 	}
+	// A developer identity is a local host's allowlist entry. A deployed host
+	// refuses it anyway, by its own allowlist; refusing it here keeps a
+	// developer's identity out of every manifest a hosted environment renders.
+	if env.Host != nil && len(env.Host.Developers) > 0 && !env.IsK3d() {
+		return fmt.Errorf("environment %s declares host.developers, which only a local cluster's host admits; a deployed host accepts carriers from its release workflow (host.release) and nothing else", env.Name)
+	}
 	if err := env.validateServiceKeyCollisions(); err != nil {
 		return err
 	}

@@ -85,10 +85,10 @@ func (k *Keyless) Sign(ctx context.Context, payload []byte) ([]byte, error) {
 	}
 	token, err := k.options.IDToken(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("obtaining the workflow's OIDC token: %w", err)
+		return nil, fmt.Errorf("obtaining the OIDC token to sign under: %w", err)
 	}
 	if token == "" {
-		return nil, fmt.Errorf("obtaining the workflow's OIDC token: the token endpoint returned an empty token: %w", ErrNoIdentity)
+		return nil, fmt.Errorf("obtaining the OIDC token to sign under: the token source returned an empty token: %w", ErrNoIdentity)
 	}
 
 	keypair, err := sign.NewEphemeralKeypair(nil) // ECDSA P-256 with SHA-256, for this call only

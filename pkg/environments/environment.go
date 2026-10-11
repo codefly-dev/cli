@@ -3,6 +3,7 @@ package environments
 import (
 	"fmt"
 	"maps"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -245,6 +246,53 @@ type EnvironmentHost struct {
 	// earlier only when the identity that signed it is within it. The host
 	// publishes the same literal and enforces it independently.
 	Release *HostReleasePolicy `yaml:"release,omitempty"`
+	// Developers are the identities a LOCAL host's allowlist names: the
+	// developers whose own OIDC identity signs what a local run delivers to a
+	// host on a local cluster (cli#918). A local qualification publish signs
+	// under one of them — through the same Sigstore keyless flow a release
+	// signs with, with an interactive token instead of the workflow's — and
+	// holds the certificate it gets to this list before anything is written;
+	// with none declared it delivers unsigned, as before. The host publishes
+	// the same identities in its local profile and enforces them
+	// independently, and a deployed host refuses them by the ordinary
+	// allowlist check, so only a k3d environment may declare them: a
+	// deployment manifest naming a developer is the leak this refuses.
+	Developers []HostDeveloper `yaml:"developers,omitempty"`
+}
+
+// HostDeveloper is one developer identity a local host admits: the OIDC
+// issuer the signing certificate names (for a GitHub login through the
+// Sigstore public-good instance, https://github.com/login/oauth) and the
+// certificate's subject — the address the identity provider verified.
+type HostDeveloper struct {
+	Issuer  string `yaml:"issuer"`
+	Subject string `yaml:"subject"`
+}
+
+var developerFields = []string{"issuer", "subject"}
+
+// UnmarshalYAML refuses a key a developer identity does not have: a
+// misspelled `subject` would otherwise read as an identity admitting nobody.
+func (developer *HostDeveloper) UnmarshalYAML(node *yaml.Node) error {
+	if err := rejectUnknownKeys(node, "host.developers", developerFields...); err != nil {
+		return err
+	}
+	type plain HostDeveloper
+	return node.Decode((*plain)(developer))
+}
+
+// Validate holds a developer identity to its shape: an https issuer and a
+// single-line subject. Nothing here decides who may sign — the local host's
+// allowlist does; this refuses a declaration that could admit nobody.
+func (developer *HostDeveloper) Validate() error {
+	issuer, err := url.Parse(developer.Issuer)
+	if err != nil || issuer.Scheme != "https" || issuer.Host == "" {
+		return fmt.Errorf("host developer issuer %q is not an https OIDC issuer (such as https://github.com/login/oauth)", developer.Issuer)
+	}
+	if strings.TrimSpace(developer.Subject) == "" || strings.ContainsFunc(developer.Subject, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+		return fmt.Errorf("host developer subject %q must be the single-line identity the signing certificate names (the verified address)", developer.Subject)
+	}
+	return nil
 }
 
 // HostReleasePolicy is one repository, one workflow path, and the refs that
@@ -297,7 +345,7 @@ func (policy *HostReleasePolicy) Validate() error {
 }
 
 // hostFields are the keys a host block may carry, in declaration order.
-var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "envelope_revision", "delivery", "release"}
+var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "envelope_revision", "delivery", "release", "developers"}
 
 // deliveryPattern is a composition identity: <module>/<service>/<endpoint>,
 // each a lowercase name.
@@ -354,6 +402,16 @@ func (host *EnvironmentHost) Validate() error {
 	}
 	if !deliveryPattern.MatchString(host.Delivery) {
 		return fmt.Errorf("host delivery %q is not the composition identity <module>/<service>/<endpoint> of the host's delivery API", host.Delivery)
+	}
+	seen := map[HostDeveloper]bool{}
+	for i := range host.Developers {
+		if err := host.Developers[i].Validate(); err != nil {
+			return err
+		}
+		if seen[host.Developers[i]] {
+			return fmt.Errorf("host developer %s (%s) is declared twice", host.Developers[i].Subject, host.Developers[i].Issuer)
+		}
+		seen[host.Developers[i]] = true
 	}
 	return host.Release.Validate()
 }
