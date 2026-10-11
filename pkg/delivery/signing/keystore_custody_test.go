@@ -2,6 +2,7 @@ package signing
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -90,4 +91,65 @@ func TestCleartextVaultTransportStaysOnLoopback(t *testing.T) {
 	if secure := vaultTransport(false).(*http.Transport); secure.DialContext == nil {
 		t.Fatal("the HTTPS transport lost its dialer")
 	}
+}
+
+// A keychain that cannot be queried is not an empty one: with the index lost,
+// generation is refused rather than minting a second identity.
+func TestUnqueryableKeychainRefusesGeneration(t *testing.T) {
+	bin := t.TempDir()
+	// Every query fails with a status other than "no such item".
+	if err := os.WriteFile(filepath.Join(bin, "security"), []byte("#!/bin/sh\nexit 36\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	store := &DeveloperKeyStore{Directory: filepath.Join(t.TempDir(), "index"), Keychain: commandKeychain{command: "security"}}
+	if _, err := store.LoadOrCreate(); err == nil || !strings.Contains(err.Error(), "could not be queried") {
+		t.Fatalf("an unqueryable keychain read as empty: %v", err)
+	}
+}
+
+// A custody directory that cannot be listed refuses generation.
+func TestUnlistableFileCustodyRefusesGeneration(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root lists every directory")
+	}
+	backend := FileKeychain{Directory: filepath.Join(t.TempDir(), "custody[1]")}
+	if err := os.Mkdir(backend.Directory, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(backend.Directory, 0o700) })
+	if held, err := backend.Holds(); err == nil {
+		t.Fatalf("an unlistable custody directory answered held=%v without error", held)
+	}
+}
+
+// A literal directory name with pattern characters is listed, not matched.
+func TestFileCustodyListsALiteralDirectory(t *testing.T) {
+	backend := FileKeychain{Directory: filepath.Join(t.TempDir(), "custody[1]")}
+	if err := os.Mkdir(backend.Directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backend.Directory, "dev-0123456789abcdef.pem"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if held, err := backend.Holds(); err != nil || !held {
+		t.Fatalf("held=%v err=%v, want a held key", held, err)
+	}
+}
+
+// When the first loopback address refuses, the next one is tried.
+func TestCleartextVaultTransportFallsBackAcrossLoopback(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("no IPv4 loopback listener")
+	}
+	defer listener.Close()
+	_, port, _ := net.SplitHostPort(listener.Addr().String())
+	transport := vaultTransport(true).(*http.Transport)
+	// localhost resolves to ::1 and 127.0.0.1 here; nothing listens on ::1.
+	conn, err := transport.DialContext(context.Background(), "tcp", net.JoinHostPort("localhost", port))
+	if err != nil {
+		t.Fatalf("no fallback to the IPv4 loopback listener: %v", err)
+	}
+	conn.Close()
 }

@@ -222,12 +222,20 @@ func vaultTransport(cleartext bool) http.RoundTripper {
 		if err != nil {
 			return nil, err
 		}
+		// Try every loopback address in order, as the default dialer would,
+		// and never a non-loopback one.
+		dialErr := errors.New("a cleartext Vault address must resolve to loopback")
 		for _, candidate := range addresses {
-			if candidate.IP.IsLoopback() {
-				return dialer.DialContext(ctx, network, net.JoinHostPort(candidate.IP.String(), port))
+			if !candidate.IP.IsLoopback() {
+				continue
 			}
+			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(candidate.IP.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			dialErr = err
 		}
-		return nil, errors.New("a cleartext Vault address must resolve to loopback")
+		return nil, dialErr
 	}
 	return transport
 }

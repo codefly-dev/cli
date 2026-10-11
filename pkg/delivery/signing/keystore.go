@@ -24,6 +24,10 @@ import (
 
 const keychainService = "codefly-delivery-signing"
 
+// securityItemNotFound is the exit status of macOS security when no item
+// matches (errSecItemNotFound).
+const securityItemNotFound = 44
+
 var developerKeyID = regexp.MustCompile(`^dev-[0-9a-f]{16}$`)
 
 // Keychain is private-key custody. Tests supply a temporary FileKeychain;
@@ -61,8 +65,17 @@ func (k FileKeychain) Holds() (bool, error) {
 		}
 		return false, err
 	}
-	held, err := filepath.Glob(filepath.Join(k.Directory, "dev-*.pem"))
-	return len(held) > 0, err
+	// A directory that cannot be listed is not an empty one.
+	entries, err := os.ReadDir(k.Directory)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if name := entry.Name(); strings.HasPrefix(name, "dev-") && strings.HasSuffix(name, ".pem") {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (k FileKeychain) Store(id string, data []byte) error {
@@ -274,23 +287,38 @@ func (k commandKeychain) Load(id string) ([]byte, error) {
 	return out, nil
 }
 
+// Holds answers false only when custody positively reports no entry: a query
+// that fails — a locked keychain, an unavailable secret service — refuses
+// generation rather than reading as empty.
 func (k commandKeychain) Holds() (bool, error) {
+	var stdout, stderr bytes.Buffer
 	var cmd *exec.Cmd
 	if k.macOS() {
 		cmd = exec.Command(k.command, "find-generic-password", "-s", keychainService)
 	} else {
-		cmd = exec.Command(k.command, "lookup", "service", keychainService)
+		// search prints each match (secret included) into a buffer that is only
+		// measured here, never kept or shown.
+		cmd = exec.Command(k.command, "search", "--all", "service", keychainService)
 	}
-	// Only the exit status matters; nothing read here is kept.
-	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
-	if err := cmd.Run(); err != nil {
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	if k.macOS() {
 		var exit *exec.ExitError
-		if errors.As(err, &exit) {
+		switch {
+		case err == nil:
+			return true, nil
+		case errors.As(err, &exit) && exit.ExitCode() == securityItemNotFound:
 			return false, nil
 		}
-		return false, errors.New("OS keychain could not be queried")
+		return false, errors.New("OS keychain could not be queried for an existing developer key")
 	}
-	return true, nil
+	if stdout.Len() > 0 {
+		return true, nil
+	}
+	if err != nil || stderr.Len() > 0 {
+		return false, errors.New("OS keychain could not be queried for an existing developer key")
+	}
+	return false, nil
 }
 
 func (k commandKeychain) Store(id string, secret []byte) error {
