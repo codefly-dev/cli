@@ -865,27 +865,80 @@ intersection of binding, envelope and installation, and collapsing two of the
 three locally would have a developer test a different authorisation shape than
 production computes.
 
-**What a laptop runs today (cli#918).** The local half is the gitops path
-pointed at a k3d environment whose host lists the developer:
+**One command (cli#918).** A developer runs the composition on their k3d
+cluster with:
 
 ```bash
-codefly deploy gitops render <module> --env local          # builds the images, renders presence + authority
-codefly deploy gitops publish <module> --env local --local # signs as you (browser, or SIGSTORE_ID_TOKEN), renders the Jobs
-codefly deploy gitops remote up <module> --env local       # serves the reviewed revision to the cluster's Argo CD
+codefly run cluster --env local --app-project <project>           # every composed module
+codefly run cluster documents robin --env local --app-project <p>  # or the ones named
 ```
 
-The render derives presence and authority with the one derivation a cell's
-render uses (`presenceInstanceOf`, `authorityInstancesOf`, `authorityDocument`)
-from the real bytes the local build produced: manifest digests, image manifest
-digests, the account-derived SPIFFE ID. The publish settles them against the
-local delivery repository, signs them as the developer, checks each carrier as
-the local host will, and writes the same `{document, bundle}` carriers and the
-same delivery Jobs a cell receives: the presence Job in the module's namespace
-and the authority Job in `platform-authority`, each as the `delivery`
-ServiceAccount, each POSTing to `/platform/_delivery/{presence,authority}` with
-a projected token for the host's audience — so the host's TokenReview, signer
-policy and idempotency run locally exactly as in the cell. With no developer
-listed the publish delivers unsigned and renders no Job, as before.
+It takes each step a cell takes, in order, and reports each delivery Job's
+receipts:
+
+1. **The platform's prerequisites, locally.** Argo CD, installed into the
+   cluster when it does not serve the ApplicationSet API yet — the one
+   installer (`deployments.InstallArgoCD`, the release the k3d qualification
+   pins) the qualification tests use too; an Argo CD already there is used as
+   it is. And the `platform-authority` namespace with its `delivery`
+   ServiceAccount (no default token mounted), which a cell's platform
+   provides and the rendered tree cannot: the authority AppProject admits
+   ConfigMaps and Jobs there and nothing else.
+2. **Each module rendered**, exactly as `deploy gitops render` renders it: its
+   images built and pushed to the environment's `registry.url` (a registry the
+   cluster pulls from, such as the one `k3d cluster create --registry-create`
+   makes — the tree pins images by registry digest, so an image imported into
+   the cluster by tag would not be the one the documents name), and presence
+   and authority derived with the one derivation a cell's render uses
+   (`presenceInstanceOf`, `authorityInstancesOf`, `authorityDocument`) from the
+   real bytes the build produced: manifest digests, image manifest digests, the
+   account-derived SPIFFE ID.
+3. **Each module published and promoted**: settled against the local delivery
+   repository, signed as the developer, every carrier checked as the local
+   host will check it, the same `{document, bundle}` carriers and delivery
+   Jobs a cell receives written — then promoted (below). The plan is shown and
+   confirmed unless `--yes`.
+4. **The latest promotion served**: the fetch remote brought up on the base
+   branch tip, the cluster's Argo CD made to trust the remote's CA
+   (`argocd-tls-certs-cm`, keyed by its name), and each published module's
+   Argo bootstrap (its AppProjects and ApplicationSet) applied from the
+   promoted revision.
+5. **The deliveries awaited**: Argo CD syncs each module's delivery
+   Applications and runs their Jobs as Sync hooks — the presence Job in the
+   module's namespace and the authority Job in `platform-authority`, each as
+   the `delivery` ServiceAccount, each POSTing to
+   `/platform/_delivery/{presence,authority}` with a projected token for the
+   host's audience, so the host's TokenReview, signer policy and idempotency
+   run locally exactly as in a cell. The run prints each document's answer
+   (delivered with the host's receipt, refused with its verdict, given up on)
+   and fails when any was refused.
+
+The environment declares `cluster.kind: k3d` and `cluster.context` (the legacy
+reading that an undeclared local environment is k3d never selects a cluster to
+install into), a `host` block, `host.developers`, and the gitops
+`fetch-repo-url` naming the fetch remote. The same steps stay available one by
+one: `deploy gitops render`, `deploy gitops publish --local`, and
+`deploy gitops remote up` with no module (the latest local promotion).
+
+**Local promotion is the developer's signed publish.** On a k3d environment
+whose host lists developers there is no reviewer: the developer is the author
+and the approver, and the Sigstore signature the publish makes — checked
+against `host.developers` before it is written — is the approval. So
+`publish --local` there **advances the environment's local base branch
+itself**, a fast-forward of the local delivery repository the CLI owns, as the
+last step of a publish whose every carrier passed its check (a failed check
+stops the publish before any commit lands, and nothing is promoted). The
+reason is the generation: a publish settles generations against the base
+branch, the one record of what was delivered, and a base branch that never
+moves would settle every rebuild at generation 1 with other content — a
+rewrite the host refuses. Promoted, a rebuilt module lands at generation 2
+with its new digest, the next at 3. The promotion is never forced and never
+reaches a hosted repository: a promotion branch the base has moved past
+(another module's promotion since) starts again from the base, one that
+diverged from it is refused by name, and the base branch of a non-k3d
+environment — or of a local one whose host lists no developer — moves only by
+a merge after review, as before. `remote up` with no module serves the latest
+promotion, and re-running it after a new one moves Argo CD to it.
 
 **How a local pod's identity reaches the host.** Not through anything the run
 projects: there is no `MODULE_IDENTITY_PREFIX`, no secret and no
@@ -900,23 +953,33 @@ wires into every module credential. A module that still requires a projected
 `MODULE_IDENTITY_PREFIX` at boot (annotations 0.2.14) fails on this path by
 design: its SDK must read the projected token instead.
 
-**What the local run needs from the host** (none of it is the CLI's): Argo CD
-in the local cluster, with the module's ApplicationSet applied, to sync the
-tree and run the Jobs as Sync hooks; the `platform-authority` namespace and its
-`delivery` ServiceAccount, which the platform provisions in a cell; the local
-host's delivery trust — the public-good `trusted_root.json` and a verification
-policy naming the listed developers (issuer and subject), with the signer →
-ownership-domain map letting each speak for the environment's `host.domain`;
-and the local envelope record at the declared revision.
+**What the host's local profile must contain** (the host's to provide; the
+CLI provides the cluster pieces above). Stated against the host as it reads
+delivery today (module-saas-starter `accounts`, at core v0.17):
 
-**Not built yet.** One command for the whole composition (`codefly run`
-driving the three verbs above for every composed module): the local gitops
-path serves ONE reviewed revision per environment (`remote up`), and a local
-publish never advances the base branch it settles generations against — the
-review ref is the promotion, and nothing merges it locally — so a rebuild of
-a module whose previous local promotion was not merged settles at the same
-generation with different content, which the host refuses as a rewrite. Both
-are decisions about the local review loop, not about delivery.
+- **Delivery turned on for the local coordinate**: the host's solution-host
+  coordinate equal to the environment's `host.coordinate`, its accepted
+  ownership domains including `host.domain`, and its delivery API being the
+  service the environment's `host.delivery` names.
+- **The trust root**: the Sigstore public-good `trusted_root.json`, the root
+  the publish checks every carrier against.
+- **The verification policy**: one signer per `host.developers` entry — the
+  certificate's issuer and subject alternative name exactly as listed, and
+  `domains: [<host.domain>]`, which is the signer → ownership-domain map that
+  lets that developer speak for the environment's domain. **The host refuses
+  such an entry today**: its policy validation requires every signer to name a
+  source repository or a build configuration, which a person's certificate
+  does not carry. Admitting a person signer — issuer and subject, exact, in
+  the local profile only — is a host change, and until it lands a
+  developer-signed carrier is refused at the host by the ordinary allowlist
+  check.
+- **The envelope**: the record a platform administrator writes (saas#1055), at
+  the revision the environment's `host.envelope_revision` declares, holding
+  the authority binding IDs the local modules' contracts ask for (core's
+  exact-inclusion check), whatever ceiling the developer wants to test under.
+- **Cluster access for the host itself**: permission to create TokenReviews
+  and to read the pods of the module namespaces, which the delivery check and
+  the module mint (saas#1056) both use.
 
 **The cost, and the alternative the host would accept.** Requiring a local
 cluster changes the laptop story from a container runtime to a container

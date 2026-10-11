@@ -488,6 +488,33 @@ codefly run job db-migration --module=backend
 codefly run job db-migration --module=backend --with-services  # Start service dependencies first
 ```
 
+### `codefly run cluster [module...]`
+
+Run the composition on the environment's local **k3d** cluster through the same
+signed delivery a cell receives — the local half of solution and module
+delivery (cli#918). The environment declares `cluster.kind: k3d`,
+`cluster.context`, a `host` block listing `host.developers`, a `registry.url`
+the cluster pulls from, and the gitops `fetch-repo-url` of the local fetch
+remote.
+
+```bash
+codefly run cluster --env local --app-project platform           # every composed module
+codefly run cluster documents --env local --app-project platform --yes
+```
+
+It installs Argo CD if the cluster has none (the release the k3d qualification
+pins), provisions the `platform-authority` namespace and its `delivery`
+ServiceAccount, then for each module renders it (images built and pushed),
+publishes it signed as you (the browser opens, or `SIGSTORE_ID_TOKEN`) and
+promotes it locally — the developer's signed publish is the approval on a local
+cluster, so it fast-forwards the local base branch and generations rise with
+each rebuild — serves the latest promotion to Argo CD, applies each module's
+Argo bootstrap, and waits for every delivery Job, printing the host's answer
+for each document. A refused delivery fails the run. `--delivery-timeout`
+bounds each wait. Stopping a run is not removal: a binding is withdrawn by a
+published tombstone. See [delivery documents, "Local runs"](solution-host-bindings.md#local-runs),
+which also lists what the local host's profile must contain.
+
 ### `codefly build runnable <name>`
 
 Build and verify a native Runnable through its pinned Builder agent. `name` may

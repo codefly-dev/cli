@@ -91,3 +91,36 @@ func (p *planeImpl) rollbackGitOps(ctx context.Context, mutation *gitops.Rollbac
 	}
 	return gitops.NewCoordinator().Rollback(ctx, workspace, mutation, permit)
 }
+
+// PublishGitOps is the one inspected-then-executed publish every caller runs:
+// it plans, hands the plan to approve (which may refuse it), and executes
+// exactly that plan — with the carriers it signed — through prepared
+// mutation authority. `deploy gitops publish` and a local cluster run share it.
+func PublishGitOps(ctx context.Context, plane Plane, request *gitops.PublishRequest, approve func(*gitops.PublishPlan) error) (gitops.PublishResult, error) {
+	plan, err := plane.PlanGitOpsPublish(ctx, request)
+	if err != nil {
+		return gitops.PublishResult{}, err
+	}
+	if err = approve(&plan); err != nil {
+		return gitops.PublishResult{}, err
+	}
+	if err = plane.ConfigureMutationAuthority(ctx, AuthorityConfig{Mode: AuthorityPrepared}); err != nil {
+		return gitops.PublishResult{}, err
+	}
+	prepared, err := plane.PrepareMutation(ctx, Mutation{
+		Kind:    MutationGitOpsPublish,
+		Summary: "Publish reviewed GitOps promotion",
+		Payload: gitops.PublishMutation{Request: *request, PlanID: plan.ID, Carriers: plan.Carriers},
+	})
+	if err != nil {
+		return gitops.PublishResult{}, err
+	}
+	result, err := plane.ApplyPreparedMutation(ctx, prepared)
+	if err != nil {
+		return gitops.PublishResult{}, err
+	}
+	if result.GitOpsPublish == nil {
+		return gitops.PublishResult{}, fmt.Errorf("publication returned no result")
+	}
+	return *result.GitOpsPublish, nil
+}
