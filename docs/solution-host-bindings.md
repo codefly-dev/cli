@@ -1020,6 +1020,21 @@ render and names the resource. Each file contains the gateway's SPIFFE ID,
 one per line with a final newline. For the gateway itself, each file lists
 every explicit consumer's ID, including the gateway when it opts in.
 
+Promotion builds every applied overlay and requires each `(apiGroup, kind,
+namespace, name)` to occur exactly once across the whole tree. Missing or empty
+namespaces take the overlay namespace, then the environment's target namespace,
+before comparison. Each identity service's workloads, ServiceAccounts, RBAC and
+peer ConfigMap must also match its retained render byte for byte after canonical
+object encoding. A conflicting occurrence reports both source paths, even when
+the two objects are identical or a Kustomize prefix/suffix created the collision.
+The peer data and bindings remain checked against the composition plan.
+
+Filesystem access retains the staged render root, resolved once with
+`filepath.EvalSymlinks`. Every path component below it is checked with `Lstat`;
+symlinks in service directories, their parents, overlays or files refuse access.
+Kustomize uses the same confined filesystem for every read. Manifest updates replace the
+file atomically, so hard links cannot cause writes into another tree.
+
 The render supplies these derived values only to services declaring the group.
 It requires a declared local k3d cluster (`cluster.kind: k3d` and
 `cluster.context: k3d-<name>`), where the local run installs SVID issuance;

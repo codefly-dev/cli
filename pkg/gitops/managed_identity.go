@@ -14,8 +14,11 @@ import (
 	"github.com/codefly-dev/core/resources"
 )
 
-func projectServiceConfiguration(ctx context.Context, root string, service *resources.Service, env *environments.Environment, scope unitScope, injection serviceInjection) error {
-	if _, err := serviceRenderOverlay(root, scope.Module, service.Name, env.Name); err != nil {
+func projectServiceConfiguration(ctx context.Context, tree *renderRoot, root string, service *resources.Service, env *environments.Environment, scope unitScope, injection serviceInjection) error {
+	if _, err := serviceRenderOverlay(tree, root, scope.Module, service.Name, env.Name); err != nil {
+		return err
+	}
+	if err := tree.inspect(root); err != nil {
 		return err
 	}
 	injection, err := moduleAuthorityInjection(service, env, scope, injection)
@@ -39,10 +42,10 @@ func projectServiceConfiguration(ctx context.Context, root string, service *reso
 	if err := projectManagedIdentity(ctx, root, service, env, scope); err != nil {
 		return fmt.Errorf("project service %s managed identity: %w", service.Name, err)
 	}
-	if err := projectWorkloadSVID(root, service, env, scope); err != nil {
+	if err := projectWorkloadSVID(tree, root, service, env, scope); err != nil {
 		return fmt.Errorf("project service %s workload identity: %w", service.Name, err)
 	}
-	if err := validateProjectedWorkloadSVID(root, service, env, scope); err != nil {
+	if err := validateProjectedWorkloadSVID(tree, root, service, env, scope); err != nil {
 		return err
 	}
 	if err := validateProjectedConfiguration(root, service, env, scope); err != nil {
@@ -160,6 +163,7 @@ func projectRenderedServiceConfiguration(
 	graph map[string]*resources.Service,
 	injections renderInjections,
 	templates renderTemplates,
+	options *RenderOptions,
 ) error {
 	var peers workloadPeers
 	for unique, service := range graph {
@@ -172,6 +176,10 @@ func projectRenderedServiceConfiguration(
 			return err
 		}
 		break
+	}
+	tree := options.renderRoot
+	if err := tree.inspect(stage); err != nil {
+		return err
 	}
 	modulesRoot := filepath.Join(stage, "modules")
 	moduleEntries, err := os.ReadDir(modulesRoot)
@@ -205,7 +213,7 @@ func projectRenderedServiceConfiguration(
 			scope.WorkloadPeers = peers
 			scope.Templates = templates
 			if err := projectServiceConfiguration(
-				ctx,
+				ctx, tree,
 				filepath.Join(servicesRoot, serviceEntry.Name()),
 				service,
 				env,
@@ -215,6 +223,11 @@ func projectRenderedServiceConfiguration(
 
 				return fmt.Errorf("project service %s configuration: %w", serviceEntry.Name(), err)
 			}
+			check := workloadIdentityCheck{path: filepath.ToSlash(filepath.Join("modules", moduleEntry.Name(), serviceUnitDir, serviceEntry.Name())), service: service, environment: env, scope: scope}
+			if err := check.capture(tree, stage); err != nil {
+				return err
+			}
+			options.workloadIdentityChecks = append(options.workloadIdentityChecks, check)
 		}
 	}
 	return nil

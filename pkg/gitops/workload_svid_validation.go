@@ -1,7 +1,9 @@
 package gitops
 
 import (
+	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"strings"
 
@@ -14,58 +16,133 @@ type workloadIdentityCheck struct {
 	service     *resources.Service
 	environment *environments.Environment
 	scope       unitScope
+	objects     []manifest
+}
+
+// Retain the service's own effective render before the tree is composed. These
+// objects are independent decoded values, so later filesystem changes cannot
+// revise what the service produced.
+func (check *workloadIdentityCheck) capture(tree *renderRoot, root string) error {
+	objects, err := check.currentObjects(tree, root)
+	if err != nil {
+		return err
+	}
+	check.objects = objects
+	return nil
+}
+
+func (check *workloadIdentityCheck) currentObjects(tree *renderRoot, root string) ([]manifest, error) {
+	overlay, err := serviceRenderOverlay(tree, filepath.Join(root, check.path), check.scope.Module, check.service.Name, check.environment.Name)
+	if err != nil {
+		return nil, err
+	}
+	documents, err := overlayManifestsInTree(tree, overlay)
+	if err != nil {
+		return nil, err
+	}
+	var owned []manifest
+	for _, doc := range documents {
+		if requestsWorkloadIdentity(check.service) && !identityOwnedObject(doc, check.service.Name) {
+			continue
+		}
+		doc.path = strings.TrimPrefix(strings.TrimPrefix(doc.path, "kustomize:"), tree.path+string(filepath.Separator))
+		if doc.namespace == "" {
+			doc.namespace = check.scope.Namespace
+		}
+		owned = append(owned, doc)
+	}
+	return owned, nil
+}
+
+func identityOwnedObject(doc manifest, service string) bool {
+	_, workload := podSpec(doc)
+	return workload || doc.group == rbacAPIGroup ||
+		(doc.group == "" && (doc.kind == kindServiceAccount ||
+			(doc.kind == kindConfigMap && metadataString(doc.value, keyName) == service+"-workload-peers")))
 }
 
 // Judge the final overlay, including authored patches targeting resources added
 // by the projection. The expected data comes from the composition, never from a
 // generated file that Kustomize can transform. This is part of the service
 // configuration validation that must succeed before the tree can be promoted.
-func validateProjectedWorkloadSVID(root string, service *resources.Service, env *environments.Environment, scope unitScope) error {
+func validateProjectedWorkloadSVID(tree *renderRoot, root string, service *resources.Service, env *environments.Environment, scope unitScope) error {
 	unique := resources.ServiceUnique(scope.Module, service.Name)
 	if _, exists := scope.WorkloadPeers[unique]; !exists && !requestsWorkloadIdentity(service) {
 		return nil
 	}
-	overlay, err := serviceRenderOverlay(root, scope.Module, service.Name, env.Name)
+	overlay, err := serviceRenderOverlay(tree, root, scope.Module, service.Name, env.Name)
 	if err != nil {
 		return err
 	}
-	documents, err := overlayManifests(overlay)
+	documents, err := overlayManifestsInTree(tree, overlay)
 	if err != nil {
 		return err
 	}
 	return validateWorkloadSVIDManifests(documents, service, env, scope)
 }
 
-// Use validateTree's effective set, not another build of a nested overlay that
-// could miss a transformation made by an enclosing Kustomization.
+// Compare the complete output of each identity service's own overlay with the
+// whole applied tree. Global identity uniqueness is checked before ownership;
+// a sibling cannot replace any object even when its bytes happen to be equal.
 func validateWorkloadIdentityChecks(documents []manifest, checks []workloadIdentityCheck) error {
-	// Every overlay is applied to the same cluster. Judge peer object identity
-	// across the whole tree before narrowing workload bindings to their owner.
-	for _, check := range checks {
+	for i := range checks {
+		check := &checks[i]
+		own := check.objects
+		if len(own) == 0 {
+			return fmt.Errorf("service %s has no recorded render at %s", check.service.Name, check.path)
+		}
 		if !requestsWorkloadIdentity(check.service) {
+			var unit []manifest
+			for _, doc := range documents {
+				if manifestFromService(doc, check.path) {
+					unit = append(unit, doc)
+				}
+			}
+			if err := validateWorkloadSVIDManifests(unit, check.service, check.environment, check.scope); err != nil {
+				return err
+			}
 			continue
 		}
-		unique := resources.ServiceUnique(check.scope.Module, check.service.Name)
-		files, err := check.scope.WorkloadPeers.files(check.environment.Host, unique)
-		if err != nil {
+		if err := validateWorkloadSVIDManifests(own, check.service, check.environment, check.scope); err != nil {
 			return err
 		}
-		if err = validateWorkloadPeerFiles(documents, check.service.Name, check.scope.Namespace, files, check.path); err != nil {
-			return err
-		}
-	}
-	for _, check := range checks {
-		var unit []manifest
-		for _, doc := range documents {
-			if manifestFromService(doc, check.path) {
-				unit = append(unit, doc)
-			}
-		}
-		if err := validateWorkloadSVIDManifests(unit, check.service, check.environment, check.scope); err != nil {
+		if err := validateOwnedObjects(documents, check); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func validateOwnedObjects(documents []manifest, check *workloadIdentityCheck) error {
+	var conflicts []error
+	expectedIdentities := make(map[objectIdentity]bool, len(check.objects))
+	for _, expected := range check.objects {
+		id := expected.identity(check.scope.Namespace)
+		expectedIdentities[id] = true
+		found := false
+		for _, actual := range documents {
+			if actual.identity("") != id {
+				continue
+			}
+			found = true
+			equal, err := sameObjectBytes(expected, actual)
+			if err != nil {
+				return err
+			}
+			if !equal || !manifestFromService(actual, check.path) {
+				conflicts = append(conflicts, fmt.Errorf("%s at %s differs from its owning service render at %s", id, actual.path, expected.path))
+			}
+		}
+		if !found {
+			conflicts = append(conflicts, fmt.Errorf("%s from %s is missing from the promoted tree for %s/", id, expected.path, check.path))
+		}
+	}
+	for _, actual := range documents {
+		if manifestFromService(actual, check.path) && identityOwnedObject(actual, check.service.Name) && !expectedIdentities[actual.identity("")] {
+			conflicts = append(conflicts, fmt.Errorf("%s at %s was not produced by its owning service render at %s/", actual.identity(""), actual.path, check.path))
+		}
+	}
+	return errors.Join(conflicts...)
 }
 
 func manifestFromService(doc manifest, servicePath string) bool {
@@ -92,7 +169,7 @@ func validateWorkloadSVIDManifests(documents []manifest, service *resources.Serv
 	if err != nil {
 		return err
 	}
-	if err = validateWorkloadPeerFiles(documents, service.Name, scope.Namespace, files, ""); err != nil {
+	if err = validateWorkloadPeerFiles(documents, service.Name, scope.Namespace, files); err != nil {
 		return err
 	}
 	workloads, err := workloadsFromManifests(documents)
@@ -135,12 +212,12 @@ func validateWorkloadSVIDManifests(documents []manifest, service *resources.Serv
 	return nil
 }
 
-func validateWorkloadPeerFiles(documents []manifest, service, namespace string, files map[string]string, ownerPath string) error {
+func validateWorkloadPeerFiles(documents []manifest, service, namespace string, files map[string]string) error {
 	name := service + "-workload-peers"
 	var found *manifest
 	for i := range documents {
 		doc := &documents[i]
-		if doc.kind != kindConfigMap || metadataString(doc.value, keyName) != name || metadataString(doc.value, keyNamespace) != namespace {
+		if doc.kind != kindConfigMap || metadataString(doc.value, keyName) != name {
 			continue
 		}
 		if found != nil {
@@ -151,9 +228,7 @@ func validateWorkloadPeerFiles(documents []manifest, service, namespace string, 
 	if found == nil {
 		return fmt.Errorf("ConfigMap %s/%s must occur exactly once in the effective workload peer plan", namespace, name)
 	}
-	if ownerPath != "" && !manifestFromService(*found, ownerPath) {
-		return fmt.Errorf("ConfigMap %s/%s is produced by %s, but its workload peer plan belongs to %s/", namespace, name, found.path, ownerPath)
-	}
+
 	expected := make(map[string]any, len(files))
 	for key, value := range files {
 		expected[key] = value

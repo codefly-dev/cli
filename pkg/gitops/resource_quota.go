@@ -3,7 +3,6 @@ package gitops
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -131,26 +130,32 @@ func putQuantity(target map[string]string, key, value string) {
 // that declares the namespace. It is a no-op — reporting false — when the
 // environment declares no resource-quota. Because the caps are namespace-scoped
 // they must resolve to a namespace, so an environment without one is an error.
-func projectResourceQuota(bootstrapRoot, environment, namespace string, quota *environments.EnvironmentResourceQuota) (bool, error) {
+func projectResourceQuota(tree *renderRoot, bootstrapRoot, environment, namespace string, quota *environments.EnvironmentResourceQuota) (bool, error) {
 	if quota == nil {
 		return false, nil
 	}
 	if namespace == "" {
 		return false, fmt.Errorf("environment %q declares a resource-quota but has no namespace", environment)
 	}
-	overlay := filepath.Join(bootstrapRoot, "overlays", environment)
+	overlay, err := renderOverlay(tree, bootstrapRoot, environment)
+	if err != nil {
+		return false, err
+	}
+	if err = tree.inspect(bootstrapRoot); err != nil {
+		return false, err
+	}
 	if info, err := os.Stat(overlay); err != nil || !info.IsDir() {
 		return false, fmt.Errorf("environment %q declares a resource-quota but its bootstrap has no %q overlay to render it into", environment, environment)
 	}
 	projected := false
 	if manifest := resourceQuotaManifest(namespace, quota); manifest != nil {
-		if err := writeOverlayResource(overlay, resourceQuotaFile, manifest); err != nil {
+		if err := writeOverlayResourceInTree(tree, overlay, resourceQuotaFile, manifest); err != nil {
 			return false, err
 		}
 		projected = true
 	}
 	if manifest := limitRangeManifest(namespace, quota); manifest != nil {
-		if err := writeOverlayResource(overlay, limitRangeFile, manifest); err != nil {
+		if err := writeOverlayResourceInTree(tree, overlay, limitRangeFile, manifest); err != nil {
 			return false, err
 		}
 		projected = true
@@ -159,13 +164,21 @@ func projectResourceQuota(bootstrapRoot, environment, namespace string, quota *e
 }
 
 func writeOverlayResource(overlay, name string, manifest any) error {
+	tree, err := newRenderRoot(overlay)
+	if err != nil {
+		return err
+	}
+	return writeOverlayResourceInTree(tree, tree.path, name, manifest)
+}
+
+func writeOverlayResourceInTree(tree *renderRoot, overlay, name string, manifest any) error {
 	encoded, err := yaml.Marshal(manifest)
 	if err != nil {
 		return err
 	}
 	// A quota/limit manifest is a plain resource cap, world-readable like its siblings.
-	if err := os.WriteFile(filepath.Join(overlay, name), encoded, 0o600); err != nil {
+	if err := tree.write(overlay, name, encoded); err != nil {
 		return err
 	}
-	return addKustomizationResource(overlay, name)
+	return addKustomizationResourceInTree(tree, overlay, name)
 }

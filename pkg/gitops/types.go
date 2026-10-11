@@ -304,6 +304,7 @@ type RenderOptions struct {
 	// workloadIdentityChecks retain the composition's expectations across later
 	// projections, so validateTree judges the final overlay before promotion.
 	workloadIdentityChecks []workloadIdentityCheck
+	renderRoot             *renderRoot
 }
 
 func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKubernetesOutput {

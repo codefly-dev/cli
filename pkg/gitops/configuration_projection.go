@@ -197,7 +197,7 @@ func validateProjectedConfiguration(root string, service *resources.Service, env
 	}
 	accounts := map[namespacedName]map[string]any{}
 	for _, doc := range documents {
-		if doc.group == "" && doc.kind == "ServiceAccount" {
+		if doc.group == "" && doc.kind == kindServiceAccount {
 			key := namespacedName{namespace: metadataString(doc.value, "namespace"), name: metadataString(doc.value, "name")}
 			accounts[key] = doc.value
 		}

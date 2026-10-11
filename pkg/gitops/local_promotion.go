@@ -117,7 +117,7 @@ func DeliveryJobsOf(tree, publishedPath, environment string) ([]DeliveryJob, err
 		if entry.IsDir() || (entry.Name() != "deliver-"+deliveryPresence+".yaml" && entry.Name() != "deliver-"+deliveryAuthority+".yaml") {
 			return nil
 		}
-		if path.Base(path.Dir(file)) != environment || path.Base(path.Dir(path.Dir(file))) != "overlays" {
+		if path.Base(path.Dir(file)) != environment || path.Base(path.Dir(path.Dir(file))) != overlaysDirectory {
 			return nil
 		}
 		data, readErr := fs.ReadFile(files, file)

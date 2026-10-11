@@ -23,7 +23,6 @@ import (
 	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
 	"sigs.k8s.io/kustomize/api/krusty"
-	"sigs.k8s.io/kustomize/kyaml/filesys"
 )
 
 var (
@@ -33,6 +32,8 @@ var (
 )
 
 const argoAPIGroup = "argoproj.io"
+const overlaysDirectory = "overlays"
+const rbacAPIGroup = "rbac.authorization.k8s.io"
 
 var clusterScopedKinds = map[string]struct{}{
 	"APIService": {}, "CSIDriver": {}, "CSINode": {}, "ClusterIssuer": {},
@@ -47,12 +48,15 @@ type manifest struct {
 	group string
 	kind  string
 	value map[string]any
+	// Namespace supplied by the applying overlay when the object omits it.
+	namespace string
 }
 
 type kustomization struct {
 	path       string
 	directory  string
 	references []string
+	namespace  string
 }
 
 type projectContract struct {
@@ -85,8 +89,18 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err = os.Mkdir(owned, 0o755); err != nil {
 		return RenderResult{}, fmt.Errorf("create staged owned tree: %w", err)
 	}
+	tree, err := newRenderRoot(owned)
+	if err != nil {
+		return RenderResult{}, err
+	}
+	opts.renderRoot = tree
+	defer func() { opts.renderRoot = nil }()
+	owned = tree.path
 	if err = generate(ctx, owned); err != nil {
 		return RenderResult{}, fmt.Errorf("generate staged manifests: %w", err)
+	}
+	if err = tree.inspect(owned); err != nil {
+		return RenderResult{}, err
 	}
 	// Before anything measures or validates the staged tree: a promotable render
 	// deploys into a namespace provisioned outside it, so no service unit may
@@ -103,7 +117,7 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	// render digest like any other delivered file.
 	// Before presence digests the units: the projections are part of what
 	// runs, so they are part of the bytes the document pins.
-	if err = projectWorkloadIdentity(owned, opts); err != nil {
+	if err = projectWorkloadIdentity(tree, owned, opts); err != nil {
 		return RenderResult{}, err
 	}
 	bindings, err := renderSolutionHostBindings(owned, destination, opts)
@@ -141,7 +155,7 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	}
 	canonical = append(canonical, '\n')
 	// The inventory contains public manifest identities and must remain inspectable beside the rendered files.
-	if err := os.WriteFile(filepath.Join(owned, InventoryFilename), canonical, 0o600); err != nil {
+	if err := tree.write(owned, InventoryFilename, canonical); err != nil {
 		return RenderResult{}, fmt.Errorf("write render inventory: %w", err)
 	}
 	// A dev deployment is only ever cleared by a render; read what the tree
@@ -479,21 +493,24 @@ func validateInventory(inventory, actual *Inventory, label string) error {
 // truth callers reuse (e.g. sizing) instead of walking and building the tree a
 // second time.
 func validateTree(root string, opts *RenderOptions) ([]manifest, error) {
-	if opts.Unit == "" && opts.CheckUnitDirectories {
-		if err := validateUnitDirectories(root, renderedUnits(&Inventory{Units: opts.Units}), opts.Environment); err != nil {
-			return nil, err
-		}
+	tree, err := inspectRenderRoot(root, opts)
+	if err != nil {
+		return nil, err
+	}
+	root = tree.path
+	if err = validateRenderDirectories(root, opts); err != nil {
+		return nil, err
 	}
 	var manifests []manifest
 	var kustomizations []kustomization
-	err := walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
+	err = walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
 		// The render record at the tree root is not a manifest.
 		if relative == InventoryFilename {
 			return nil
 		}
-		data, err := readWithin(root, relative)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", relative, err)
+		data, readErr := tree.read(root, relative)
+		if readErr != nil {
+			return fmt.Errorf("read %s: %w", relative, readErr)
 		}
 		if !utf8.Valid(data) {
 			return fmt.Errorf("%s is not UTF-8", relative)
@@ -548,8 +565,11 @@ func validateTree(root string, opts *RenderOptions) ([]manifest, error) {
 	if !opts.Promotable {
 		return manifests, nil
 	}
-	effective, err := promotableEffectiveManifests(root, manifests, kustomizations, contract)
+	effective, err := promotableEffectiveManifests(tree, root, manifests, kustomizations, contract, opts)
 	if err != nil {
+		return nil, err
+	}
+	if err = validateObjectIdentities(effective, opts.Namespace); err != nil {
 		return nil, err
 	}
 	if err = validateWorkloadIdentityChecks(effective, opts.workloadIdentityChecks); err != nil {
@@ -560,9 +580,9 @@ func validateTree(root string, opts *RenderOptions) ([]manifest, error) {
 
 // promotableEffectiveManifests builds the kustomize output, validates the
 // promotable ruleset against both the built output and any manifests no
-// kustomization covers, and returns the deduplicated effective set.
-func promotableEffectiveManifests(root string, manifests []manifest, kustomizations []kustomization, contract *projectContract) ([]manifest, error) {
-	covered, effective, err := renderKustomizations(root, kustomizations)
+// kustomization covers, without counting covered source files a second time.
+func promotableEffectiveManifests(tree *renderRoot, root string, manifests []manifest, kustomizations []kustomization, contract *projectContract, opts *RenderOptions) ([]manifest, error) {
+	covered, effective, err := renderKustomizations(tree, root, kustomizations, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -583,6 +603,13 @@ func promotableEffectiveManifests(root string, manifests []manifest, kustomizati
 		result = append(result, item)
 	}
 	return result, nil
+}
+
+func validateRenderDirectories(root string, opts *RenderOptions) error {
+	if opts.Unit == "" && opts.CheckUnitDirectories {
+		return validateUnitDirectories(root, renderedUnits(&Inventory{Units: opts.Units}), opts.Environment)
+	}
+	return nil
 }
 
 func validateUnitDirectories(root string, units []InventoryUnit, environment string) error {
@@ -678,6 +705,7 @@ func decodeYAML(path string, data []byte) ([]manifest, *kustomization, error) {
 				path: path, directory: filepath.ToSlash(filepath.Dir(filepath.FromSlash(path))),
 				references: found,
 			}
+			customization.namespace, _ = root[keyNamespace].(string)
 			continue
 		}
 		decoded, err := decodeManifest(path, fmt.Sprintf("%d", document), root)
@@ -768,7 +796,7 @@ func validateKustomization(path string, root map[string]any) ([]string, error) {
 	return references, nil
 }
 
-func renderKustomizations(root string, kustomizations []kustomization) (map[string]bool, []manifest, error) {
+func renderKustomizations(tree *renderRoot, root string, kustomizations []kustomization, opts *RenderOptions) (map[string]bool, []manifest, error) {
 	covered := map[string]bool{}
 	if len(kustomizations) == 0 {
 		return covered, nil, nil
@@ -785,16 +813,24 @@ func renderKustomizations(root string, kustomizations []kustomization) (map[stri
 	}
 	var roots []kustomization
 	for _, customization := range kustomizations {
-		if !referencedDirectories[customization.directory] {
+		if !referencedDirectories[customization.directory] || appliedOverlay(customization.directory, opts) {
 			roots = append(roots, customization)
 		}
 	}
 	sort.Slice(roots, func(i, j int) bool { return roots[i].path < roots[j].path })
+	filesystem, err := tree.fileSystem()
+	if err != nil {
+		return nil, nil, err
+	}
 	var effective []manifest
 	for _, customization := range roots {
 		markKustomizationCoverage(root, customization, byDirectory, covered, map[string]bool{})
 		kustomizer := krusty.MakeKustomizer(krusty.MakeDefaultOptions())
-		resources, err := kustomizer.Run(filesys.MakeFsOnDisk(), filepath.Join(root, filepath.FromSlash(customization.directory)))
+		directory, err := tree.checkedPath(filepath.Join(root, filepath.FromSlash(customization.directory)))
+		if err != nil {
+			return nil, nil, err
+		}
+		resources, err := kustomizer.Run(filesystem, directory)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: build Kustomize output: %w", customization.path, err)
 		}
@@ -809,6 +845,9 @@ func renderKustomizations(root string, kustomizations []kustomization) (map[stri
 		}
 		if nested != nil {
 			return nil, nil, fmt.Errorf("%s: Kustomize output contains a Kustomization", customization.path)
+		}
+		for i := range decoded {
+			decoded[i].namespace = customization.namespace
 		}
 		effective = append(effective, decoded...)
 	}
@@ -1163,7 +1202,7 @@ func isBuiltInAPIGroup(group string) bool {
 	switch group {
 	case "apps", "autoscaling", "batch", "coordination.k8s.io", "discovery.k8s.io",
 		"events.k8s.io", "extensions", "networking.k8s.io", "policy",
-		"rbac.authorization.k8s.io", "scheduling.k8s.io", "storage.k8s.io":
+		rbacAPIGroup, "scheduling.k8s.io", "storage.k8s.io":
 		return true
 	default:
 		return false
@@ -1537,7 +1576,7 @@ func copyTreeEntry(destination, path, relative string, info os.FileInfo) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
-	input, err := os.Open(path)
+	input, err := openWithin(filepath.Dir(path), filepath.Base(path))
 	if err != nil {
 		return err
 	}

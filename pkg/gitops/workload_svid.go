@@ -162,8 +162,8 @@ func (peers workloadPeers) files(host *environments.EnvironmentHost, unique stri
 
 // projectWorkloadSVID uses the token projection seam, before presence hashes
 // the unit. Only the authenticating container receives private credentials.
-func projectWorkloadSVID(root string, service *resources.Service, env *environments.Environment, scope unitScope) error {
-	overlay, err := serviceRenderOverlay(root, scope.Module, service.Name, env.Name)
+func projectWorkloadSVID(tree *renderRoot, root string, service *resources.Service, env *environments.Environment, scope unitScope) error {
+	overlay, err := serviceRenderOverlay(tree, root, scope.Module, service.Name, env.Name)
 	if err != nil {
 		return err
 	}
@@ -173,7 +173,7 @@ func projectWorkloadSVID(root string, service *resources.Service, env *environme
 		// A gateway can obtain credentials from the platform independently of
 		// this group. Its account must still match the ID its consumers trust.
 		if exists {
-			return verifyGatewayWorkloads(root, unique, peer, env, scope.Namespace)
+			return verifyGatewayWorkloads(tree, root, unique, peer, env, scope.Namespace)
 		}
 		return nil
 	}
@@ -188,24 +188,24 @@ func projectWorkloadSVID(root string, service *resources.Service, env *environme
 	if err != nil {
 		return err
 	}
-	patches, err := workloadSVIDPatches(root, scope.Module, service.Name, peer, env, scope.Namespace, values)
+	patches, err := workloadSVIDPatches(tree, root, scope.Module, service.Name, peer, env, scope.Namespace, values)
 	if err != nil {
 		return err
 	}
 	// This also supports services declaring no presence document, including the
 	// gateway: opting in always projects a token for the same host audience.
 	opts := &RenderOptions{Environment: env.Name, Host: env.Host}
-	if err := projectIdentityToken(root, opts, SolutionArtifactUnit{Name: service.Name, Path: "."}); err != nil {
+	if err := projectIdentityToken(tree, root, opts, SolutionArtifactUnit{Name: service.Name, Path: "."}); err != nil {
 		return err
 	}
-	if err := addOverlayPatches(root, env.Name, patches); err != nil {
+	if err := addOverlayPatches(tree, root, env.Name, patches); err != nil {
 		return err
 	}
-	return writeWorkloadSVIDResources(overlay, service.Name, scope.Namespace, peer.Account, files)
+	return writeWorkloadSVIDResources(tree, overlay, service.Name, scope.Namespace, peer.Account, files)
 }
 
-func verifyGatewayWorkloads(root, unique string, peer workloadPeer, env *environments.Environment, namespace string) error {
-	workloads, err := renderedWorkloads(root, env.Name)
+func verifyGatewayWorkloads(tree *renderRoot, root, unique string, peer workloadPeer, env *environments.Environment, namespace string) error {
+	workloads, err := renderedWorkloadsInTree(tree, root, env.Name)
 	if err != nil {
 		return err
 	}
@@ -229,8 +229,8 @@ func verifyGatewayWorkloadPlan(workloads []renderedWorkload, unique string, peer
 	return nil
 }
 
-func workloadSVIDPatches(root, module, service string, peer workloadPeer, env *environments.Environment, namespace string, values map[string]string) ([]podProjection, error) {
-	workloads, err := renderedWorkloads(root, env.Name)
+func workloadSVIDPatches(tree *renderRoot, root, module, service string, peer workloadPeer, env *environments.Environment, namespace string, values map[string]string) ([]podProjection, error) {
+	workloads, err := renderedWorkloadsInTree(tree, root, env.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -270,12 +270,12 @@ func workloadSVIDPatches(root, module, service string, peer workloadPeer, env *e
 	return patches, nil
 }
 
-func writeWorkloadSVIDResources(overlay, service, namespace, account string, files map[string]string) error {
+func writeWorkloadSVIDResources(tree *renderRoot, overlay, service, namespace, account string, files map[string]string) error {
 	name := service + "-workload-identity"
 	metadata := func(name string) map[string]any { return map[string]any{keyName: name, keyNamespace: namespace} }
 	docs := []map[string]any{
 		{keyAPIVersion: "rbac.authorization.k8s.io/v1", keyKind: "Role", keyMetadata: metadata(name), "rules": []any{map[string]any{"apiGroups": []string{"cert-manager.io"}, "resources": []string{"certificaterequests"}, "verbs": []string{"create"}}}},
-		{keyAPIVersion: "rbac.authorization.k8s.io/v1", keyKind: "RoleBinding", keyMetadata: metadata(name), "roleRef": map[string]any{"apiGroup": "rbac.authorization.k8s.io", keyKind: "Role", keyName: name}, "subjects": []any{map[string]any{keyKind: "ServiceAccount", keyName: account, keyNamespace: namespace}}},
+		{keyAPIVersion: "rbac.authorization.k8s.io/v1", keyKind: "RoleBinding", keyMetadata: metadata(name), "roleRef": map[string]any{"apiGroup": rbacAPIGroup, keyKind: "Role", keyName: name}, "subjects": []any{map[string]any{keyKind: kindServiceAccount, keyName: account, keyNamespace: namespace}}},
 		{keyAPIVersion: "v1", keyKind: kindConfigMap, keyMetadata: metadata(service + "-workload-peers"), "data": files},
 	}
 	var output bytes.Buffer
@@ -289,19 +289,19 @@ func writeWorkloadSVIDResources(overlay, service, namespace, account string, fil
 		return err
 	}
 	const file = "workload-identity.yaml"
-	if _, err := statWithin(overlay, file); err == nil {
+	if _, err := tree.stat(overlay, file); err == nil {
 		return fmt.Errorf("reserved workload-identity resource file already exists")
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if err := writeWithin(overlay, file, output.Bytes()); err != nil {
+	if err := tree.write(overlay, file, output.Bytes()); err != nil {
 		return err
 	}
 	// Both plain manifests and kustomize overlays are supported by the token
 	// seam. Add the resource to the index when the overlay has one.
 	for _, name := range []string{kustomizationFile, kustomizationFileAlt, kindKustomization} {
-		if _, err := statWithin(overlay, name); err == nil {
-			return addKustomizationResource(overlay, file)
+		if _, err := tree.stat(overlay, name); err == nil {
+			return addKustomizationResourceInTree(tree, overlay, file)
 		} else if !os.IsNotExist(err) {
 			return err
 		}

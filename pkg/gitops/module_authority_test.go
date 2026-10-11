@@ -47,7 +47,7 @@ func TestModuleAuthorityMatchesDeliveredPresenceAndReusesInternalSecret(t *testi
 				unit := filepath.Join(stage, "services", name)
 				writeConsumerTree(t, unit, env.Name, scope.Namespace, name, "database.example:5432")
 				// The existing internal-auth consumer uses exactly the same key.
-				return projectServiceConfiguration(ctx, unit, service, env, scope, serviceInjection{Secrets: map[string]string{storedSecretKey: storedSecretKey}})
+				return projectServiceConfiguration(ctx, testRenderRoot(t, unit), unit, service, env, scope, serviceInjection{Secrets: map[string]string{storedSecretKey: storedSecretKey}})
 			})
 			require.NoError(t, err)
 			presence := deliveredBinding(t, result.Path, "example.prod."+module)
@@ -106,7 +106,7 @@ func TestModuleAuthorityRefusesMissingIdentityAudienceAndStore(t *testing.T) {
 			}
 			root := t.TempDir()
 			writeConsumerTree(t, root, env.Name, scope.Namespace, service.Name, "database.example:5432")
-			err = projectServiceConfiguration(t.Context(), root, service, env, scope, serviceInjection{})
+			err = projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, service, env, scope, serviceInjection{})
 			require.ErrorContains(t, err, want)
 		})
 	}
@@ -132,7 +132,7 @@ func TestModuleAuthorityRequiresAnExplicitConsumerAndRefusesOverlayOverrides(t *
 					addProjectionPatch(t, root, env.Name, kindDeployment, "- op: replace\n  path: /spec/template/spec/containers/0/env/0/valueFrom/secretKeyRef/key\n  value: WRONG\n")
 				}
 			}
-			err := projectServiceConfiguration(t.Context(), root, service, env, scope, serviceInjection{})
+			err := projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, service, env, scope, serviceInjection{})
 			if mode != "not requested" {
 				require.Error(t, err)
 				return

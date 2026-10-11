@@ -2,7 +2,6 @@ package gitops
 
 import (
 	"fmt"
-	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -206,15 +205,45 @@ func renderedContainers(workload string, raw []any, tokens map[string][]tokenSou
 	return containers, nil
 }
 
+// Keep the staged root while selecting a unit. Libraries see a checked tree,
+// never a root opened on an unchecked service path.
+func renderedWorkloadsInTree(tree *renderRoot, unitDir, environment string) ([]renderedWorkload, error) {
+	overlay, err := renderOverlay(tree, unitDir, environment)
+	if err != nil {
+		return nil, err
+	}
+	manifests, err := overlayManifestsInTree(tree, overlay)
+	if err != nil {
+		return nil, err
+	}
+	return workloadsFromManifests(manifests)
+}
+
+func overlayManifestsInTree(tree *renderRoot, overlay string) ([]manifest, error) {
+	checked, err := tree.checkedPath(overlay)
+	if err != nil {
+		return nil, err
+	}
+	filesystem, err := tree.fileSystem()
+	if err != nil {
+		return nil, err
+	}
+	return overlayManifestsOnFS(checked, filesystem)
+}
+
 // overlayManifests reads the manifests of a unit's overlay: the kustomize build
 // when the overlay has a kustomization, the YAML files themselves otherwise. A
 // unit an agent rendered always has one; a tree assembled directly in a test
 // may not, and what it says about its workloads is the same either way.
 func overlayManifests(overlay string) ([]manifest, error) {
-	for _, name := range []string{kustomizationFile, kustomizationFileAlt} {
-		if _, err := statWithin(overlay, name); err == nil {
+	return overlayManifestsOnFS(overlay, filesys.MakeFsOnDisk())
+}
+
+func overlayManifestsOnFS(overlay string, filesystem filesys.FileSystem) ([]manifest, error) {
+	for _, name := range []string{kustomizationFile, kustomizationFileAlt, kindKustomization} {
+		if filesystem.Exists(filepath.Join(overlay, name)) {
 			kustomizer := krusty.MakeKustomizer(krusty.MakeDefaultOptions())
-			built, buildErr := kustomizer.Run(filesys.MakeFsOnDisk(), overlay)
+			built, buildErr := kustomizer.Run(filesystem, overlay)
 			if buildErr != nil {
 				return nil, fmt.Errorf("build %s: %w", overlay, buildErr)
 			}
@@ -224,24 +253,22 @@ func overlayManifests(overlay string) ([]manifest, error) {
 			}
 			manifests, _, decodeErr := decodeYAML("kustomize:"+filepath.ToSlash(overlay), output)
 			return manifests, decodeErr
-		} else if !os.IsNotExist(err) {
-			return nil, err
 		}
 	}
-	entries, err := os.ReadDir(overlay)
+	entries, err := filesystem.ReadDir(overlay)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", overlay, err)
 	}
 	var manifests []manifest
 	for _, entry := range entries {
-		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), yamlExtension) && !strings.HasSuffix(entry.Name(), ymlExtension)) {
+		if filesystem.IsDir(filepath.Join(overlay, entry)) || (!strings.HasSuffix(entry, yamlExtension) && !strings.HasSuffix(entry, ymlExtension)) {
 			continue
 		}
-		data, readErr := readWithin(overlay, entry.Name())
+		data, readErr := filesystem.ReadFile(filepath.Join(overlay, entry))
 		if readErr != nil {
 			return nil, readErr
 		}
-		decoded, _, decodeErr := decodeYAML(filepath.ToSlash(filepath.Join(overlay, entry.Name())), data)
+		decoded, _, decodeErr := decodeYAML(filepath.ToSlash(filepath.Join(overlay, entry)), data)
 		if decodeErr != nil {
 			return nil, decodeErr
 		}

@@ -41,6 +41,7 @@ func renderModuleBundle(
 	module *resources.Module,
 	environment *environments.Environment,
 	destination string,
+	tree *renderRoot,
 	graph []InventoryUnit,
 ) error {
 	binary, err := module.Agent.Path(ctx)
@@ -86,10 +87,13 @@ func renderModuleBundle(
 			filepath.ToSlash(filepath.Join("overlays", environment.Name)),
 		)
 	}
-	if err := copyEnvironmentBootstrap(root, environment.Name, destination); err != nil {
+	if err = tree.inspect(destination); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err = copyEnvironmentBootstrap(root, environment.Name, destination); err != nil {
 		return fmt.Errorf("copy selected module bundle: %w", err)
 	}
-	if _, err := projectResourceQuota(destination, environment.Name, namespace, environment.ResourceQuota); err != nil {
+	if _, err := projectResourceQuota(tree, destination, environment.Name, namespace, environment.ResourceQuota); err != nil {
 		return fmt.Errorf("project module namespace resource quota: %w", err)
 	}
 	if err := validateTransportNeutralModuleBundle(destination); err != nil {

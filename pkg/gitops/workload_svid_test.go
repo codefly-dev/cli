@@ -73,7 +73,7 @@ func TestWorkloadSVIDProjectsCompositionPeersAndCredentials(t *testing.T) {
 			unit := filepath.Join(root, "services", "api")
 			scope := moduleScope(env, workspace, module)
 			scope.WorkloadPeers = peers
-			require.NoError(t, projectServiceConfiguration(t.Context(), unit, service, env, scope, serviceInjection{}))
+			require.NoError(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, unit), unit, service, env, scope, serviceInjection{}))
 			_, err = validateTree(root, &RenderOptions{Module: module, Environment: env.Name, Namespace: scope.Namespace, Promotable: true, AppProject: "example"})
 			require.NoError(t, err)
 			docs, err := overlayManifests(filepath.Join(unit, "overlays", env.Name))
@@ -168,7 +168,7 @@ func TestWorkloadSVIDRefusesConflictsAndDoesNotProjectNonConsumers(t *testing.T)
 	scope := moduleScope(env, workspace, "app")
 	scope.WorkloadPeers = peers
 	root := t.TempDir()
-	require.NoError(t, projectWorkloadSVID(root, &resources.Service{Name: "plain"}, env, scope))
+	require.NoError(t, projectWorkloadSVID(testRenderRoot(t, root), root, &resources.Service{Name: "plain"}, env, scope))
 	service := &resources.Service{Name: "api", WorkspaceConfigurationDependencies: []string{"workload-identity"}}
 	for _, tc := range []struct{ name, body, want string }{
 		{"account", strings.ReplaceAll(pinnedDeployment, "serviceAccountName: api", "serviceAccountName: other"), "not the resolved"},
@@ -178,7 +178,7 @@ func TestWorkloadSVIDRefusesConflictsAndDoesNotProjectNonConsumers(t *testing.T)
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			require.NoError(t, kustomizedWorkload(tc.body)(t.Context(), root))
-			err := projectWorkloadSVID(filepath.Join(root, "services", "api"), service, env, scope)
+			err := projectWorkloadSVID(testRenderRoot(t, root), filepath.Join(root, "services", "api"), service, env, scope)
 			require.ErrorContains(t, err, tc.want)
 		})
 	}
@@ -211,11 +211,11 @@ func TestWorkloadSVIDRefusesHostileRenderNamesBeforeWriting(t *testing.T) {
 				case "environment":
 					target.Name = name
 				}
-				require.ErrorContains(t, projectWorkloadSVID(unit, service, &target, scope), fmt.Sprintf("%s %q", field, name))
-				require.ErrorContains(t, validateProjectedWorkloadSVID(unit, service, &target, scope), fmt.Sprintf("%s %q", field, name))
+				require.ErrorContains(t, projectWorkloadSVID(testRenderRoot(t, root), unit, service, &target, scope), fmt.Sprintf("%s %q", field, name))
+				require.ErrorContains(t, validateProjectedWorkloadSVID(testRenderRoot(t, root), unit, service, &target, scope), fmt.Sprintf("%s %q", field, name))
 				// The outer projection must refuse the name before earlier steps
 				// can use it to write a ServiceAccount or configuration resource.
-				require.ErrorContains(t, projectServiceConfiguration(t.Context(), unit, service, &target, scope, serviceInjection{}), fmt.Sprintf("%s %q", field, name))
+				require.ErrorContains(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, unit), unit, service, &target, scope, serviceInjection{}), fmt.Sprintf("%s %q", field, name))
 				require.Equal(t, before, snapshotTree(t, root))
 			})
 		}
@@ -237,8 +237,8 @@ func TestWorkloadSVIDRefusesOverlayOutsideRenderRoot(t *testing.T) {
 	require.NoError(t, os.Rename(overlay, filepath.Join(external, env.Name)))
 	require.NoError(t, os.Symlink(filepath.Join(external, env.Name), overlay))
 	before := snapshotTree(t, external)
-	require.ErrorContains(t, projectWorkloadSVID(unit, service, env, scope), "symbolic link")
-	require.ErrorContains(t, validateProjectedWorkloadSVID(unit, service, env, scope), "symbolic link")
+	require.ErrorContains(t, projectWorkloadSVID(testRenderRoot(t, root), unit, service, env, scope), "symbolic link")
+	require.ErrorContains(t, validateProjectedWorkloadSVID(testRenderRoot(t, root), unit, service, env, scope), "symbolic link")
 	require.Equal(t, before, snapshotTree(t, external))
 }
 
@@ -261,7 +261,7 @@ func TestWorkloadSVIDPlainOverlayReplacesAuthoredPathSources(t *testing.T) {
 	scope.WorkloadPeers = peers
 	service := &resources.Service{Name: "api", WorkspaceConfigurationDependencies: []string{"workload-identity"}}
 	unit := filepath.Join(root, "services", "api")
-	require.NoError(t, projectWorkloadSVID(unit, service, env, scope))
+	require.NoError(t, projectWorkloadSVID(testRenderRoot(t, root), unit, service, env, scope))
 	docs, err := overlayManifests(filepath.Join(unit, "overlays", env.Name))
 	require.NoError(t, err)
 	for _, doc := range docs {
@@ -320,7 +320,7 @@ func TestWorkloadSVIDRefusesAuthoredPeerPatches(t *testing.T) {
 				require.NoError(t, kustomizedWorkload(body)(t.Context(), root))
 				unit := filepath.Join(root, "services", "api")
 				appendIdentityPatch(t, unit, env.Name, kindConfigMap, name+"-workload-peers", "- op: add\n  path: /data/"+key+"\n  value: spiffe://local.example/ns/example-app/sa/non-declaring\n")
-				err = projectServiceConfiguration(t.Context(), unit, service, env, scope, serviceInjection{})
+				err = projectServiceConfiguration(t.Context(), testRenderRoot(t, unit), unit, service, env, scope, serviceInjection{})
 				require.ErrorContains(t, err, "ConfigMap "+scope.Namespace+"/"+name+"-workload-peers")
 				require.ErrorContains(t, err, "composition workload peer plan")
 			})
@@ -368,7 +368,7 @@ func TestWorkloadSVIDValidatesEffectiveBindings(t *testing.T) {
 			require.NoError(t, kustomizedWorkload(body)(t.Context(), root))
 			unit := filepath.Join(root, "services", "api")
 			service := &resources.Service{Name: "api", WorkspaceConfigurationDependencies: []string{"workload-identity"}}
-			require.NoError(t, projectServiceConfiguration(t.Context(), unit, service, env, scope, serviceInjection{}))
+			require.NoError(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, unit), unit, service, env, scope, serviceInjection{}))
 			// Determine indexes from effective output; Kustomize can reorder lists.
 			docs, err := overlayManifests(filepath.Join(unit, "overlays", env.Name))
 			require.NoError(t, err)
@@ -393,7 +393,7 @@ func TestWorkloadSVIDValidatesEffectiveBindings(t *testing.T) {
 				}
 			}
 			appendIdentityPatch(t, unit, env.Name, kindDeployment, "api", "- op: add\n  path: "+patchPath+"\n  value: "+tc.value+"\n")
-			err = validateProjectedWorkloadSVID(unit, service, env, scope)
+			err = validateProjectedWorkloadSVID(testRenderRoot(t, root), unit, service, env, scope)
 			require.ErrorContains(t, err, "api")
 			require.ErrorContains(t, err, tc.want)
 		})
@@ -416,11 +416,12 @@ func TestWorkloadSVIDRechecksPeersBeforeTreePromotion(t *testing.T) {
 				body = strings.Replace(body, "metadata:\n", "metadata:\n  namespace: "+scope.Namespace+"\n", 1)
 				require.NoError(t, kustomizedWorkload(body)(t.Context(), root))
 				unit := filepath.Join(root, "services", "api")
-				require.NoError(t, projectServiceConfiguration(t.Context(), unit, service, env, scope, serviceInjection{}))
+				require.NoError(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, unit), unit, service, env, scope, serviceInjection{}))
 				options := &RenderOptions{
 					Module: module, Environment: env.Name, Namespace: scope.Namespace, Promotable: true,
 					workloadIdentityChecks: []workloadIdentityCheck{{path: "services/api", service: service, environment: env, scope: scope}},
 				}
+				captureIdentityChecks(t, root, options)
 				_, err := validateTree(root, options)
 				require.NoError(t, err)
 				appendIdentityPatch(t, unit, env.Name, kindConfigMap, name+"-workload-peers", "- op: add\n  path: /data/"+key+"\n  value: spiffe://local.example/ns/example-app/sa/non-declaring\n")
@@ -452,7 +453,7 @@ func TestWorkloadSVIDRefusesSiblingPeerConfigMaps(t *testing.T) {
 					require.NoError(t, os.MkdirAll(filepath.Join(root, "services"), 0o755))
 					unit := filepath.Join(root, "services", svc.Name)
 					require.NoError(t, os.Rename(filepath.Join(staging, "services", "api"), unit))
-					require.NoError(t, projectServiceConfiguration(t.Context(), unit, svc, env, scope, serviceInjection{}))
+					require.NoError(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, unit), unit, svc, env, scope, serviceInjection{}))
 				}
 				options := &RenderOptions{
 					Module: module, Environment: env.Name, Namespace: scope.Namespace, Promotable: true,
@@ -466,6 +467,7 @@ func TestWorkloadSVIDRefusesSiblingPeerConfigMaps(t *testing.T) {
 						{path: "services/" + sibling.Name, service: sibling, environment: env, scope: scope},
 					},
 				}
+				captureIdentityChecks(t, root, options)
 				_, err := validateTree(root, options)
 				require.NoError(t, err)
 				files, err := peers.files(env.Host, resources.ServiceUnique(module, name))
@@ -502,5 +504,13 @@ func TestWorkloadSVIDRefusesSiblingPeerConfigMaps(t *testing.T) {
 				require.ErrorContains(t, err, "services/sibling/overlays/"+env.Name+"/rendered.yaml")
 			})
 		}
+	}
+}
+
+func captureIdentityChecks(t *testing.T, root string, options *RenderOptions) {
+	t.Helper()
+	tree := testRenderRoot(t, root)
+	for i := range options.workloadIdentityChecks {
+		require.NoError(t, options.workloadIdentityChecks[i].capture(tree, root))
 	}
 }

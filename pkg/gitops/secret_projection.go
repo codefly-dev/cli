@@ -392,11 +392,19 @@ func collectSecretKeyRefs(value any, secretName string, seen map[string]struct{}
 // addKustomizationResource appends a resource to an existing overlay
 // kustomization, preserving its other fields.
 func addKustomizationResource(directory, resource string) error {
-	path, err := kustomizationPath(directory)
+	tree, err := newRenderRoot(directory)
 	if err != nil {
 		return err
 	}
-	data, err := os.ReadFile(path)
+	return addKustomizationResourceInTree(tree, tree.path, resource)
+}
+
+func addKustomizationResourceInTree(tree *renderRoot, directory, resource string) error {
+	path, err := kustomizationPathInTree(tree, directory)
+	if err != nil {
+		return err
+	}
+	data, err := tree.read(directory, filepath.Base(path))
 	if err != nil {
 		return err
 	}
@@ -410,15 +418,30 @@ func addKustomizationResource(directory, resource string) error {
 	if err != nil {
 		return err
 	}
-	// A kustomization is a plain manifest index, world-readable like its siblings.
-	return os.WriteFile(path, updated, 0o600)
+	return tree.write(directory, filepath.Base(path), updated)
 }
 
 func kustomizationPath(directory string) (string, error) {
+	tree, err := newRenderRoot(directory)
+	if err != nil {
+		return "", err
+	}
+	path, err := kustomizationPathInTree(tree, tree.path)
+	if err != nil {
+		return "", err
+	}
+	// Callers use this path relative to their declared directory; preserve
+	// that spelling even when the trusted root resolves an alias such as /var.
+	return filepath.Join(directory, filepath.Base(path)), nil
+}
+
+func kustomizationPathInTree(tree *renderRoot, directory string) (string, error) {
 	for _, name := range []string{"kustomization.yaml", "kustomization.yml", kindKustomization} {
 		path := filepath.Join(directory, name)
-		if info, err := statWithin(directory, name); err == nil && !info.IsDir() {
+		if info, err := tree.stat(directory, name); err == nil && !info.IsDir() {
 			return path, nil
+		} else if err != nil && !os.IsNotExist(err) {
+			return "", err
 		}
 	}
 	return "", fmt.Errorf("no kustomization in %s", directory)

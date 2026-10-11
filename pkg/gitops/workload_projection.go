@@ -73,37 +73,39 @@ const (
 )
 
 // projectWorkloadIdentity writes both projections into the staged tree.
-func projectWorkloadIdentity(owned string, opts *RenderOptions) error {
+func projectWorkloadIdentity(tree *renderRoot, owned string, opts *RenderOptions) error {
 	if opts.Host == nil {
 		return nil
 	}
-	if err := refuseReservedAnnotation(owned, opts); err != nil {
+	if err := refuseReservedAnnotation(tree, owned, opts); err != nil {
 		return err
 	}
 	for index := range opts.SolutionInstances {
 		for _, unit := range opts.SolutionInstances[index].Units {
-			if err := projectIdentityToken(owned, opts, unit); err != nil {
+			if err := projectIdentityToken(tree, owned, opts, unit); err != nil {
 				return fmt.Errorf("%s %s artifact %s: %w", opts.SolutionInstances[index].Kind, opts.SolutionInstances[index].Name, unit.Name, err)
 			}
 		}
 	}
-	return projectTrustAnchor(owned, opts)
+	return projectTrustAnchor(tree, owned, opts)
 }
 
 // refuseReservedAnnotation refuses a workload whose pod template carries the
 // trust-anchor annotation in desired state: a local cluster run stamps it,
 // and a value Argo CD owned would revert the stamp a revocation depends on.
-func refuseReservedAnnotation(owned string, opts *RenderOptions) error {
+func refuseReservedAnnotation(tree *renderRoot, owned string, opts *RenderOptions) error {
 	for index := range opts.Units {
 		unit := &opts.Units[index]
 		if unit.Path == "" {
 			continue
 		}
 		unitDir := filepath.Join(owned, filepath.FromSlash(unit.Path))
-		if _, err := os.Stat(filepath.Join(unitDir, "overlays", opts.Environment)); err != nil {
+		if _, err := tree.stat(unitDir, filepath.Join("overlays", opts.Environment)); os.IsNotExist(err) {
 			continue
+		} else if err != nil {
+			return err
 		}
-		workloads, err := renderedWorkloads(unitDir, opts.Environment)
+		workloads, err := renderedWorkloadsInTree(tree, unitDir, opts.Environment)
 		if err != nil {
 			return err
 		}
@@ -120,9 +122,9 @@ func refuseReservedAnnotation(owned string, opts *RenderOptions) error {
 // projectIdentityToken projects the host-audience token into the
 // authenticating container of each serving workload of the unit, unless that
 // container already mounts one for the audience.
-func projectIdentityToken(owned string, opts *RenderOptions, unit SolutionArtifactUnit) error {
+func projectIdentityToken(tree *renderRoot, owned string, opts *RenderOptions, unit SolutionArtifactUnit) error {
 	unitDir := filepath.Join(owned, filepath.FromSlash(unit.Path))
-	workloads, err := renderedWorkloads(unitDir, opts.Environment)
+	workloads, err := renderedWorkloadsInTree(tree, unitDir, opts.Environment)
 	if err != nil {
 		return err
 	}
@@ -152,12 +154,12 @@ func projectIdentityToken(owned string, opts *RenderOptions, unit SolutionArtifa
 		}
 		patches = append(patches, podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: volume, mount: mount})
 	}
-	return addOverlayPatches(unitDir, opts.Environment, patches)
+	return addOverlayPatches(tree, unitDir, opts.Environment, patches)
 }
 
 // projectTrustAnchor mounts the local trust anchor into the verifier, on a
 // k3d environment that declares the host's trust-anchor path.
-func projectTrustAnchor(owned string, opts *RenderOptions) error {
+func projectTrustAnchor(tree *renderRoot, owned string, opts *RenderOptions) error {
 	if !opts.Target.DeclaresLocalK3d() || opts.Host.TrustAnchor == "" {
 		return nil
 	}
@@ -171,7 +173,7 @@ func projectTrustAnchor(owned string, opts *RenderOptions) error {
 			continue
 		}
 		unitDir := filepath.Join(owned, filepath.FromSlash(unit.Path))
-		workloads, err := renderedWorkloads(unitDir, opts.Environment)
+		workloads, err := renderedWorkloadsInTree(tree, unitDir, opts.Environment)
 		if err != nil {
 			return err
 		}
@@ -197,7 +199,32 @@ func projectTrustAnchor(owned string, opts *RenderOptions) error {
 		if len(patches) == 0 {
 			return fmt.Errorf("the host's verifier %s/%s renders no serving workload to mount the local trust anchor into", module, service)
 		}
-		return addOverlayPatches(unitDir, opts.Environment, patches)
+		for i := range opts.workloadIdentityChecks {
+			check := &opts.workloadIdentityChecks[i]
+			if check.path == unit.Path && requestsWorkloadIdentity(check.service) {
+				current, err := check.currentObjects(tree, owned)
+				if err != nil {
+					return err
+				}
+				if err = validateOwnedObjects(current, check); err != nil {
+					return err
+				}
+			}
+		}
+		if err := addOverlayPatches(tree, unitDir, opts.Environment, patches); err != nil {
+			return err
+		}
+		// This is the final CLI-owned projection into this service. Retain
+		// its completed output before any enclosing overlay is built.
+		for i := range opts.workloadIdentityChecks {
+			check := &opts.workloadIdentityChecks[i]
+			if check.path == unit.Path {
+				if err := check.capture(tree, owned); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	}
 	return fmt.Errorf("the host's delivery API %s names service %s, which module %s does not render, so the local trust anchor has nowhere to be mounted", opts.Host.Delivery, service, module)
 }
@@ -355,17 +382,20 @@ func (projection *podProjection) applyTo(document map[string]any) bool {
 // addOverlayPatches writes the projections into the unit's environment
 // overlay: as inline patches in its kustomization, or — an overlay of plain
 // manifests, as a tree assembled without an agent is — into the manifests.
-func addOverlayPatches(unitDir, environment string, projections []podProjection) error {
+func addOverlayPatches(tree *renderRoot, unitDir, environment string, projections []podProjection) error {
 	if len(projections) == 0 {
 		return nil
 	}
-	overlay, err := renderOverlay(unitDir, environment)
+	overlay, err := renderOverlay(tree, unitDir, environment)
 	if err != nil {
 		return err
 	}
+	if err = tree.inspect(unitDir); err != nil {
+		return err
+	}
 	var path string
-	for _, name := range []string{kustomizationFile, kustomizationFileAlt} {
-		if _, statErr := statWithin(overlay, name); statErr == nil {
+	for _, name := range []string{kustomizationFile, kustomizationFileAlt, kindKustomization} {
+		if _, statErr := tree.stat(overlay, name); statErr == nil {
 			path = name
 			break
 		} else if !os.IsNotExist(statErr) {
@@ -373,9 +403,9 @@ func addOverlayPatches(unitDir, environment string, projections []podProjection)
 		}
 	}
 	if path == "" {
-		return projectIntoManifests(overlay, projections)
+		return projectIntoManifests(tree, overlay, projections)
 	}
-	data, err := readWithin(overlay, path)
+	data, err := tree.read(overlay, path)
 	if err != nil {
 		return err
 	}
@@ -399,11 +429,11 @@ func addOverlayPatches(unitDir, environment string, projections []podProjection)
 	if err != nil {
 		return err
 	}
-	return writeWithin(overlay, path, encoded)
+	return tree.write(overlay, path, encoded)
 }
 
 // projectIntoManifests applies the projections to the overlay's manifests.
-func projectIntoManifests(overlay string, projections []podProjection) error {
+func projectIntoManifests(tree *renderRoot, overlay string, projections []podProjection) error {
 	entries, err := os.ReadDir(overlay)
 	if err != nil {
 		return err
@@ -414,7 +444,7 @@ func projectIntoManifests(overlay string, projections []podProjection) error {
 			continue
 		}
 		path := filepath.Join(overlay, entry.Name())
-		data, readErr := readWithin(overlay, entry.Name())
+		data, readErr := tree.read(overlay, entry.Name())
 		if readErr != nil {
 			return readErr
 		}
@@ -450,7 +480,7 @@ func projectIntoManifests(overlay string, projections []podProjection) error {
 		if err = encoder.Close(); err != nil {
 			return err
 		}
-		if err = writeWithin(overlay, entry.Name(), out.Bytes()); err != nil {
+		if err = tree.write(overlay, entry.Name(), out.Bytes()); err != nil {
 			return err
 		}
 	}
