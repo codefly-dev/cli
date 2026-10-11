@@ -3943,8 +3943,11 @@ Run the composition on the local k3d cluster through the signed delivery a cell 
 Run the composition on the environment's local k3d cluster, through the same
 delivery a cell receives (docs/solution-host-bindings.md, "Local runs"):
 
-  1. Argo CD in the cluster (installed if absent) and the platform-authority
-     namespace with its delivery ServiceAccount;
+  1. Argo CD in the cluster (installed if absent), the platform-authority
+     namespace with its delivery ServiceAccount, the modules' namespaces, and
+     the local host's trust anchor (the public-good trusted root and a
+     verification policy admitting host.developers, bound to this cluster's
+     CA; re-written, and the host restarted, when the cluster is recreated);
   2. for each module (every composed module when none is named): build and
      push its images, render its tree with its presence and authority
      documents, sign them as you (a developer the environment's
@@ -3953,8 +3956,9 @@ delivery a cell receives (docs/solution-host-bindings.md, "Local runs"):
   3. the latest promotion served to the cluster's Argo CD, each module's Argo
      bootstrap applied, and every delivery Job awaited, with its receipts.
 
-The environment must declare a k3d cluster (kind and context), a host, and
-host.developers. Stopping a run is not removal: withdrawing a binding is a
+The environment must declare a k3d cluster (kind and context), a host,
+host.developers, and host.trust_anchor (the path the host reads its trust
+anchor from). Stopping a run is not removal: withdrawing a binding is a
 published tombstone.
 ```
 
@@ -3967,7 +3971,7 @@ Flags:
 ```
       --app-project string          AppProject contract each module's Argo bootstrap is stamped with
       --delivery-timeout duration   Maximum time to wait for each delivery Job (the Job itself gives up after 25 minutes) (default 30m0s)
-      --env string                  k3d environment to run on (declares cluster.kind k3d, cluster.context, host and host.developers) (default "local")
+      --env string                  k3d environment to run on (declares cluster.kind k3d, cluster.context, host, host.developers and host.trust_anchor) (default "local")
       --rebuild                     Build every image even when no input of it changed
   -y, --yes                         Sign and promote every module without an interactive confirmation
 ```

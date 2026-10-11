@@ -40,6 +40,26 @@ func PublicGoodTrustedRoot(ctx context.Context) (*root.TrustedRoot, error) {
 	return trusted, nil
 }
 
+// PublicGoodTrustedRootJSON fetches the Sigstore public-good trusted root
+// through TUF and returns it as the TUF repository serves it
+// (trusted_root.json), verified against the embedded TUF root — the file a
+// host's trust anchor holds, byte for byte, with the CT log keys an SCT is
+// checked against.
+func PublicGoodTrustedRootJSON(ctx context.Context) ([]byte, error) {
+	client, err := tuf.New(tuf.DefaultOptions().WithContext(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("opening the Sigstore public-good TUF repository (%s): %w", tuf.DefaultMirror, err)
+	}
+	raw, err := client.GetTarget("trusted_root.json")
+	if err != nil {
+		return nil, fmt.Errorf("fetching trusted_root.json from the Sigstore public-good TUF repository: %w", err)
+	}
+	if _, err = root.NewTrustedRootFromJSON(raw); err != nil {
+		return nil, fmt.Errorf("the public-good trusted_root.json does not parse: %w", err)
+	}
+	return raw, nil
+}
+
 // Verify verifies that bundle is a valid Sigstore bundle whose signature covers exactly payload,
 // signed under an identity the policy admits, with a transparency-log entry establishing that
 // the signature was logged and when (or a signed timestamp for the when), against the trusted

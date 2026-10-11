@@ -15,7 +15,8 @@ func localEnvironment() *environments.Environment {
 		Name:    "local",
 		Cluster: &environments.EnvironmentCluster{Kind: environments.ClusterKindK3d, Context: "k3d-dev"},
 		Host: &environments.EnvironmentHost{
-			Developers: []environments.HostDeveloper{{Issuer: "https://github.com/login/oauth", Subject: "dev@example.test"}},
+			Developers:  []environments.HostDeveloper{{Issuer: "https://github.com/login/oauth", Subject: "dev@example.test"}},
+			TrustAnchor: "/etc/host/delivery-trust",
 		},
 	}
 }
@@ -38,6 +39,12 @@ func (d *fakeDriver) step(name string) error {
 func (d *fakeDriver) EnsureArgoCD(context.Context) (bool, error) { return true, d.step("argocd") }
 func (d *fakeDriver) EnsureDeliveryAccount(context.Context) error {
 	return d.step("delivery-account")
+}
+func (d *fakeDriver) EnsureNamespaces(_ context.Context, modules []string) error {
+	return d.step("namespaces " + strings.Join(modules, ","))
+}
+func (d *fakeDriver) ProvisionTrustAnchor(context.Context) (string, error) {
+	return "f00d", d.step("trust-anchor")
 }
 func (d *fakeDriver) Render(_ context.Context, module string) error {
 	return d.step("render " + module)
@@ -78,7 +85,7 @@ func TestARunTakesEveryModuleThroughTheCellsSteps(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"argocd", "delivery-account",
+		"argocd", "delivery-account", "namespaces host,documents", "trust-anchor",
 		"render host", "publish host", "render documents", "publish documents",
 		"latest", "serve abc", "bootstrap abc",
 		"await deliver-modules/host", "await deliver-modules/documents",
@@ -86,7 +93,7 @@ func TestARunTakesEveryModuleThroughTheCellsSteps(t *testing.T) {
 	if strings.Join(driver.steps, "|") != strings.Join(want, "|") {
 		t.Fatalf("steps:\n%v\nwant:\n%v", driver.steps, want)
 	}
-	if !report.ArgoCDInstalled || report.Revision != "abc" || len(report.Deliveries) != 2 {
+	if !report.ArgoCDInstalled || report.ClusterAuthority != "f00d" || report.Revision != "abc" || len(report.Deliveries) != 2 {
 		t.Fatalf("report %+v", report)
 	}
 }
@@ -134,11 +141,12 @@ func TestCheckRefusesWhatALocalClusterRunCannotDeliverTo(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, mutate := range map[string]func(*environments.Environment){
-		"no cluster":    func(env *environments.Environment) { env.Cluster = nil },
-		"not k3d":       func(env *environments.Environment) { env.Cluster.Kind = "gke" },
-		"no context":    func(env *environments.Environment) { env.Cluster.Context = "" },
-		"no host":       func(env *environments.Environment) { env.Host = nil },
-		"no developers": func(env *environments.Environment) { env.Host.Developers = nil },
+		"no cluster":      func(env *environments.Environment) { env.Cluster = nil },
+		"not k3d":         func(env *environments.Environment) { env.Cluster.Kind = "gke" },
+		"no context":      func(env *environments.Environment) { env.Cluster.Context = "" },
+		"no host":         func(env *environments.Environment) { env.Host = nil },
+		"no developers":   func(env *environments.Environment) { env.Host.Developers = nil },
+		"no trust anchor": func(env *environments.Environment) { env.Host.TrustAnchor = "" },
 	} {
 		env := localEnvironment()
 		mutate(env)

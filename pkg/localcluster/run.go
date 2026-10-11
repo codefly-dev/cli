@@ -29,6 +29,12 @@ type Driver interface {
 	// EnsureDeliveryAccount provisions the authority namespace and its
 	// delivery account, which a cell's platform provides.
 	EnsureDeliveryAccount(ctx context.Context) error
+	// EnsureNamespaces provisions the modules' namespaces, which a cell's
+	// platform provides (every Application syncs with CreateNamespace=false).
+	EnsureNamespaces(ctx context.Context, modules []string) error
+	// ProvisionTrustAnchor writes the local host's trust anchor for this
+	// cluster and returns the cluster CA fingerprint it is bound to.
+	ProvisionTrustAnchor(ctx context.Context) (string, error)
 	// Render builds the module's images and renders its tree.
 	Render(ctx context.Context, module string) error
 	// Publish plans, signs as the developer, and promotes the module.
@@ -54,10 +60,11 @@ type Delivery struct {
 
 // Report is what a run did.
 type Report struct {
-	ArgoCDInstalled bool                   `json:"argoCDInstalled"`
-	Published       []gitops.PublishResult `json:"published"`
-	Revision        string                 `json:"revision"`
-	Deliveries      []Delivery             `json:"deliveries"`
+	ArgoCDInstalled  bool                   `json:"argoCDInstalled"`
+	ClusterAuthority string                 `json:"clusterAuthority"`
+	Published        []gitops.PublishResult `json:"published"`
+	Revision         string                 `json:"revision"`
+	Deliveries       []Delivery             `json:"deliveries"`
 }
 
 // Check holds an environment to what a local cluster run needs before
@@ -77,6 +84,9 @@ func Check(env *environments.Environment) error {
 	}
 	if len(env.Host.Developers) == 0 {
 		return fmt.Errorf("environment %s lists no developer in host.developers; a local run signs as the developer the local host admits, and an unsigned delivery is refused by every host", env.Name)
+	}
+	if env.Host.TrustAnchor == "" {
+		return fmt.Errorf("environment %s states no host.trust_anchor; a local run mounts the local host's trust anchor where the host reads it, which is the host's own constant path", env.Name)
 	}
 	return nil
 }
@@ -105,6 +115,16 @@ func Run(ctx context.Context, env *environments.Environment, modules []string, d
 	if err = driver.EnsureDeliveryAccount(ctx); err != nil {
 		return report, err
 	}
+	if err = driver.EnsureNamespaces(ctx, modules); err != nil {
+		return report, err
+	}
+	// Before any module syncs: the host reads its anchor at boot, so it
+	// must exist when the host's pod first starts.
+	report.ClusterAuthority, err = driver.ProvisionTrustAnchor(ctx)
+	if err != nil {
+		return report, fmt.Errorf("provision the local host's trust anchor: %w", err)
+	}
+	say("Local host trust anchor bound to the cluster CA %s, admitting %d developer(s)", report.ClusterAuthority, len(env.Host.Developers))
 	for _, module := range modules {
 		say("Rendering %s for %s", module, env.Name)
 		if err = driver.Render(ctx, module); err != nil {

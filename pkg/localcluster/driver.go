@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/control"
+	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/deployments"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
@@ -37,6 +38,9 @@ type ClusterDriver struct {
 	AwaitTimeout time.Duration
 	// Poll is the interval between Job status reads (zero: two seconds).
 	Poll time.Duration
+	// TrustedRoot fetches the trusted root the local host's anchor holds
+	// (nil: the public-good root, through TUF).
+	TrustedRoot func(ctx context.Context) ([]byte, error)
 }
 
 var _ Driver = (*ClusterDriver)(nil)
@@ -47,6 +51,100 @@ func (d *ClusterDriver) EnsureArgoCD(ctx context.Context) (bool, error) {
 
 func (d *ClusterDriver) EnsureDeliveryAccount(ctx context.Context) error {
 	return deployments.EnsureDeliveryAccount(ctx, d.Kubectl)
+}
+
+func (d *ClusterDriver) EnsureNamespaces(ctx context.Context, modules []string) error {
+	var manifest strings.Builder
+	seen := map[string]bool{}
+	for _, module := range modules {
+		namespace := d.Environment.ModuleNamespace(d.Workspace, module)
+		if namespace == "" || seen[namespace] {
+			continue
+		}
+		seen[namespace] = true
+		manifest.WriteString("---\napiVersion: v1\nkind: Namespace\nmetadata:\n  name: " + namespace + "\n  labels:\n    app.kubernetes.io/managed-by: codefly-local-cluster-run\n")
+	}
+	if manifest.Len() == 0 {
+		return fmt.Errorf("environment %s names no namespace for the modules", d.Environment.Name)
+	}
+	if _, err := d.Kubectl(ctx, manifest.String(), "apply", "-f", "-"); err != nil {
+		return fmt.Errorf("provision the modules' namespaces: %w", err)
+	}
+	return nil
+}
+
+// ProvisionTrustAnchor binds the local profile to this cluster's CA, writes
+// it with the public-good trusted root into the verifier's namespace, and —
+// when it changed, as on a recreated cluster or a changed developer list —
+// restarts the verifier's workloads that mount it, since the host reads its
+// anchor at boot.
+func (d *ClusterDriver) ProvisionTrustAnchor(ctx context.Context) (string, error) {
+	bundle, err := d.Kubectl(ctx, "", "-n", "default", "get", "configmap", "kube-root-ca.crt", "-o", `jsonpath={.data.ca\.crt}`)
+	if err != nil {
+		return "", fmt.Errorf("read the cluster CA (kube-root-ca.crt): %w", err)
+	}
+	fingerprint, err := ClusterCAFingerprint([]byte(bundle))
+	if err != nil {
+		return "", err
+	}
+	policy, err := VerificationPolicy(fingerprint, d.Environment.Host)
+	if err != nil {
+		return "", err
+	}
+	fetch := d.TrustedRoot
+	if fetch == nil {
+		fetch = signing.PublicGoodTrustedRootJSON
+	}
+	trustedRoot, err := fetch(ctx)
+	if err != nil {
+		return "", err
+	}
+	hostModule, verifier, _ := d.Environment.Host.DeliveryEndpoint()
+	namespace := d.Environment.ModuleNamespace(d.Workspace, hostModule)
+	if namespace == "" {
+		return "", fmt.Errorf("environment %s names no namespace for the host's module %s", d.Environment.Name, hostModule)
+	}
+	manifest, err := TrustAnchorManifest(namespace, policy, trustedRoot)
+	if err != nil {
+		return "", err
+	}
+	applied, err := d.Kubectl(ctx, manifest, "apply", "-f", "-")
+	if err != nil {
+		return "", fmt.Errorf("write the local trust anchor into %s: %w", namespace, err)
+	}
+	if !strings.Contains(applied, " configured") {
+		return fingerprint, nil
+	}
+	return fingerprint, d.restartVerifier(ctx, namespace, verifier)
+}
+
+// restartVerifier rolls the verifier's workloads that mount the local trust
+// anchor, so a changed anchor is read: the host reads it at boot only.
+func (d *ClusterDriver) restartVerifier(ctx context.Context, namespace, verifier string) error {
+	listed, err := d.Kubectl(ctx, "", "-n", namespace, "get", "deployments,statefulsets",
+		"-o", `jsonpath={range .items[*]}{.kind}/{.metadata.name}{" "}{.spec.template.spec.volumes[*].name}{"\n"}{end}`)
+	if err != nil {
+		return fmt.Errorf("find the host's verifier %s to restart on its changed trust anchor: %w", verifier, err)
+	}
+	for _, line := range strings.Split(listed, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !containsString(fields[1:], gitops.LocalTrustAnchorVolume) {
+			continue
+		}
+		if _, err = d.Kubectl(ctx, "", "-n", namespace, "rollout", "restart", strings.ToLower(fields[0])); err != nil {
+			return fmt.Errorf("restart %s on its changed trust anchor: %w", fields[0], err)
+		}
+	}
+	return nil
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *ClusterDriver) Render(ctx context.Context, name string) error {
