@@ -162,15 +162,16 @@ func authorityInstancesOf(
 		sort.Strings(names)
 		return nil, "", fmt.Errorf("module %s declares module-identity on the services %s; a module presents its authority from one service, because its one authority document approves one build and the host keeps one authority record per binding, so keep module-identity on the service that authenticates as the module", module.Name, strings.Join(names, ", "))
 	}
-	resolved := request.consumption
-	if request.contract != nil {
-		provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime())
-		if err != nil {
-			return nil, "", fmt.Errorf("read the workspace configurations the contract of %s resolves against: %w", module.Name, err)
-		}
-		if resolved, err = request.contract.Resolve(workspaceValues{provided: provided}); err != nil {
-			return nil, "", fmt.Errorf("module %s: %w", module.Name, err)
-		}
+	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime())
+	if err != nil {
+		return nil, "", fmt.Errorf("read the workspace configurations the contract of %s resolves against: %w", module.Name, err)
+	}
+	resolved, err := request.contract.Resolve(workspaceValues{provided: provided})
+	if err != nil {
+		return nil, "", fmt.Errorf("module %s: %w", module.Name, err)
+	}
+	if err := refuseUnaddressableConsumption(workspace, module, request, resolved); err != nil {
+		return nil, "", err
 	}
 	// The principal is the module's own name — the contract says so of
 	// itself — and it is held to that here, because the contract is written in
@@ -206,21 +207,33 @@ func authorityInstancesOf(
 // api.consumes entries ask for. undeclared carries the reason when it asks for
 // none; source says which file asked, for a refusal.
 type authorityRequest struct {
-	contract    *modulecontract.Contract
-	consumption *modulecontract.Resolved
-	source      string
-	undeclared  string
+	contract *modulecontract.Contract
+	// consumed is the scoped api.consumes entries the contract was built
+	// from, when the request is a solution's consumption; nil for a module's
+	// own contract.
+	consumed   []solutionmanifest.APIDeclaration
+	source     string
+	undeclared string
 }
 
-// authorityRequestOf reads a module's request for authority.
+// authorityRequestOf reads a module's request for authority, as a module
+// contract either way: the one it publishes, or the one a composed solution's
+// scoped api.consumes amounts to (core's ConsumptionContract). The caller
+// resolves both through the same Resolve, so a solution's audience comes from
+// the composition exactly as a module's does.
 //
-// A solution's consumption is read STRICTLY, through the manifest's own Load:
-// the run path decodes the manifest leniently because it needs only the
-// upstream map, but this is what an authority document is derived from, so a
-// field this core does not know, or an invalid scope, is refused here rather
-// than ignored. Both sources at once is refused: a module that asked twice
-// would have two declarations of one request to keep in agreement, and the
-// render would have to pick one.
+// The solution manifest is read through core's LoadConsumption: the schema
+// version and api.consumes, strictly, and nothing else. An invalid or unknown
+// field in a consumption fails the render; a section with nothing to do with
+// consumption — an agent block, a section this core does not model — never
+// does, because a render of a solution that asks for no authority must not fail
+// on what an authority read does not read. The run path's lenient read is
+// unchanged.
+//
+// Both sources at once is refused, by name. A solution that is also consumed
+// may publish a contract for its destinations; merging its bindings with a
+// derived consumption is a decision about two declarations of one request that
+// nothing has made yet, so for now it declares its consumption in one place.
 func authorityRequestOf(module *resources.Module) (authorityRequest, error) {
 	contract, err := modulecontract.Load(module.Dir())
 	switch {
@@ -229,7 +242,8 @@ func authorityRequestOf(module *resources.Module) (authorityRequest, error) {
 	case err != nil:
 		return authorityRequest{}, err
 	}
-	var consumption *modulecontract.Resolved
+	var consumption *modulecontract.Contract
+	var consumed []solutionmanifest.APIDeclaration
 	data, err := os.ReadFile(filepath.Join(module.Dir(), solutionmanifest.FileName))
 	switch {
 	case module.Dir() == "":
@@ -239,13 +253,20 @@ func authorityRequestOf(module *resources.Module) (authorityRequest, error) {
 	case err != nil:
 		return authorityRequest{}, fmt.Errorf("read the solution manifest of module %s: %w", module.Name, err)
 	default:
-		declared, loadErr := solutionmanifest.Load(data)
+		declared, loadErr := solutionmanifest.LoadConsumption(data)
 		if loadErr != nil {
-			return authorityRequest{}, fmt.Errorf("module %s: the solution manifest an authority document is derived from: %w", module.Name, loadErr)
+			return authorityRequest{}, fmt.Errorf("module %s: the api.consumes an authority document is derived from: %w", module.Name, loadErr)
 		}
 		// A composed solution is a module, and its principal is the name it is
 		// composed under, exactly as a module contract's principal must be.
-		consumption = declared.ConsumptionAuthority(module.Name)
+		if consumption, err = declared.ConsumptionContract(module.Name); err != nil {
+			return authorityRequest{}, fmt.Errorf("module %s: %w", module.Name, err)
+		}
+		for _, declaration := range declared.API.Consumes {
+			if len(declaration.Scopes) > 0 {
+				consumed = append(consumed, declaration)
+			}
+		}
 	}
 	switch {
 	case contract != nil && consumption != nil:
@@ -253,9 +274,40 @@ func authorityRequestOf(module *resources.Module) (authorityRequest, error) {
 	case contract != nil:
 		return authorityRequest{contract: contract, source: "publishes " + modulecontract.FileName}, nil
 	case consumption != nil:
-		return authorityRequest{consumption: consumption, source: "asks for scopes on api.consumes in its " + solutionmanifest.FileName}, nil
+		return authorityRequest{contract: consumption, consumed: consumed, source: "asks for scopes on api.consumes in its " + solutionmanifest.FileName}, nil
 	}
 	return authorityRequest{undeclared: fmt.Sprintf("module %s publishes no %s and asks for no scopes on api.consumes, so it asks for no authority", module.Name, modulecontract.FileName)}, nil
+}
+
+// refuseUnaddressableConsumption refuses a solution's request the host could
+// never install, here, where its author reads the reason: a scoped entry for a
+// module the composition does not compose, and one addressed to the solution
+// itself — by name, or by a resolved audience that is its own principal — which
+// the host omits from its registry with only a logged reason.
+func refuseUnaddressableConsumption(workspace *resources.Workspace, module *resources.Module, request authorityRequest, resolved *modulecontract.Resolved) error {
+	if request.consumed == nil {
+		return nil
+	}
+	composed := map[string]bool{}
+	for _, reference := range workspace.Modules {
+		if reference != nil {
+			composed[reference.Name] = true
+		}
+	}
+	for _, declaration := range request.consumed {
+		if declaration.Module == module.Name {
+			return fmt.Errorf("module %s asks for scopes at itself on api.consumes entry %s; a credential is never addressed to its own principal, and the host would never install the binding", module.Name, declaration.ID)
+		}
+		if !composed[declaration.Module] {
+			return fmt.Errorf("module %s asks for scopes at module %s on api.consumes entry %s, which this workspace does not compose; a binding for a module nothing composes can never be installed", module.Name, declaration.Module, declaration.ID)
+		}
+	}
+	for _, binding := range resolved.Bindings {
+		if binding.Audience == resolved.Principal {
+			return fmt.Errorf("module %s asks for scopes on api.consumes entry %s at audience %q, which is its own principal; a credential is never addressed to its own principal, and the host would never install the binding", module.Name, binding.ID, binding.Audience)
+		}
+	}
+	return nil
 }
 
 // renderAuthorityDocuments renders the module's authority document into the
