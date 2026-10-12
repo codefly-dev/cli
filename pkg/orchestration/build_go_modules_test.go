@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+
+	"github.com/codefly-dev/cli/pkg/redact"
 	"github.com/stretchr/testify/require"
 )
 
@@ -248,7 +250,7 @@ func TestProxiesForResolvesRootsAgainstTheContext(t *testing.T) {
 // which is logged verbatim: a git remote rewritten with a CI token must not
 // reach it.
 func TestGoCommandOutputHasNoURLCredentials(t *testing.T) {
-	redacted := redactURLCredentials("fatal: could not read from https://x-access-token:not-a-real-token@github.com/example-org/lib.git/")
+	redacted := redact.URLCredentials("fatal: could not read from https://x-access-token:not-a-real-token@github.com/example-org/lib.git/")
 	require.NotContains(t, redacted, "not-a-real-token")
 	require.Contains(t, redacted, "https://***@github.com/example-org/lib.git/")
 }

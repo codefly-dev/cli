@@ -9,12 +9,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+
+	"github.com/codefly-dev/cli/pkg/redact"
 )
 
 // goModulePrefetch downloads the Go module graphs a flow's recipes declare
@@ -332,18 +333,9 @@ func runGoCommand(ctx context.Context, dir string, env []string, args ...string)
 	command.Stdout = &output
 	command.Stderr = &output
 	if err := command.Run(); err != nil {
-		return fmt.Errorf("go %s: %w\n%s", strings.Join(args, " "), err, redactURLCredentials(lastLines(output.String(), 40)))
+		return fmt.Errorf("go %s: %w\n%s", strings.Join(args, " "), err, redact.URLCredentials(lastLines(output.String(), 40)))
 	}
 	return nil
-}
-
-// urlCredentials matches the userinfo of a URL. A git remote rewritten with a
-// token (a CI job's insteadOf) can surface in the go tool's error output, and a
-// wool field is logged verbatim.
-var urlCredentials = regexp.MustCompile(`://[^/\s@]+@`)
-
-func redactURLCredentials(text string) string {
-	return urlCredentials.ReplaceAllString(text, "://***@")
 }
 
 func lastLines(text string, n int) string {

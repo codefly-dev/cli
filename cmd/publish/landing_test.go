@@ -461,7 +461,13 @@ func TestOriginRepository(t *testing.T) {
 		{remote: "git@github.com:codefly-dev/cli.git", owner: "codefly-dev", repo: "cli"},
 		{remote: "https://github.com/codefly-dev/cli", owner: "codefly-dev", repo: "cli"},
 		{remote: "ssh://git@github.com/codefly-dev/cli.git", owner: "codefly-dev", repo: "cli"},
+		{remote: "https://x-access-token:gho_notarealtoken@github.com/codefly-dev/cli.git", owner: "codefly-dev", repo: "cli"},
+		{remote: "https://gho_notarealtoken:x-oauth-basic@github.com/codefly-dev/cli", owner: "codefly-dev", repo: "cli"},
+		{remote: "https://user:pass@github.com/codefly-dev/core.git/", owner: "codefly-dev", repo: "core"},
 		{remote: "https://gitlab.com/codefly-dev/cli.git", wantErr: true},
+		{remote: "https://x-access-token:gho_notarealtoken@gitlab.com/codefly-dev/cli.git", wantErr: true},
+		{remote: "https://github.com.example.com/codefly-dev/cli.git", wantErr: true},
+		{remote: "https://github.com/codefly-dev/cli/extra.git", wantErr: true},
 	} {
 		t.Run(tc.remote, func(t *testing.T) {
 			dir := t.TempDir()
@@ -477,6 +483,69 @@ func TestOriginRepository(t *testing.T) {
 			require.Equal(t, tc.repo, repo)
 		})
 	}
+}
+
+// TestOriginRepositoryResolvesARewrittenRemote covers a checkout whose git
+// config rewrites github.com to a credential-bearing URL. `git remote get-url`
+// expands insteadOf, so pre-flight only ever sees the rewritten form — and
+// refusing it made publish unrunnable in such a checkout.
+func TestOriginRepositoryResolvesARewrittenRemote(t *testing.T) {
+	dir := t.TempDir()
+	gitIn(t, dir, "init", "-b", "main")
+	gitIn(t, dir, "remote", "add", "origin", "https://github.test.invalid/codefly-dev/cli.git")
+	gitIn(t, dir, "config", "url.https://x-access-token:gho_notarealtoken@github.com/.insteadOf", "https://github.test.invalid/")
+
+	require.Equal(t, "https://x-access-token:gho_notarealtoken@github.com/codefly-dev/cli.git",
+		gitIn(t, dir, "remote", "get-url", "origin"), "the rewrite this test relies on must be in effect")
+
+	owner, repo, err := originRepository(context.Background(), dir)
+	require.NoError(t, err)
+	require.Equal(t, "codefly-dev", owner)
+	require.Equal(t, "cli", repo)
+}
+
+// TestOriginRepositoryNeverPrintsTheRewrittenCredential pins the leak #926
+// reported: a rewrite that resolves origin to a credential-bearing URL publish
+// cannot use must be refused without printing the token it carries.
+func TestOriginRepositoryNeverPrintsTheRewrittenCredential(t *testing.T) {
+	const token = "gho_notarealtoken"
+	for _, rewrite := range []string{
+		"https://x-access-token:" + token + "@gitlab.com/",
+		"https://" + token + ":x-oauth-basic@gitlab.com/",
+		"https://" + token + "@github.com/nested/",
+	} {
+		t.Run(rewrite, func(t *testing.T) {
+			dir := t.TempDir()
+			gitIn(t, dir, "init", "-b", "main")
+			gitIn(t, dir, "remote", "add", "origin", "https://git.test.invalid/codefly-dev/cli.git")
+			gitIn(t, dir, "config", "url."+rewrite+".insteadOf", "https://git.test.invalid/")
+			require.Contains(t, gitIn(t, dir, "remote", "get-url", "origin"), token,
+				"the rewrite this test relies on must be in effect")
+
+			_, _, err := originRepository(context.Background(), dir)
+			require.ErrorContains(t, err, "unrecognized GitHub remote")
+			require.NotContains(t, err.Error(), token)
+		})
+	}
+}
+
+// TestGitErrorNeverPrintsACredential covers every other git failure publish
+// reports: the command and its stderr are both redacted before they reach the
+// terminal, whatever version of git produced them.
+func TestGitErrorNeverPrintsACredential(t *testing.T) {
+	const token = "gho_notarealtoken"
+	dir := t.TempDir()
+	gitIn(t, dir, "init", "-b", "main")
+	gitIn(t, dir, "commit", "--allow-empty", "-m", "root")
+
+	// `git checkout` echoes an unknown pathspec back on stderr verbatim, so the
+	// URL reaches the message twice: once as the command, once from git.
+	engine := &Engine{WorkDir: dir}
+	_, err := engine.git(context.Background(), "checkout", "https://x-access-token:"+token+"@github.com/codefly-dev/cli.git")
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), token)
+	require.Equal(t, 2, strings.Count(err.Error(), "https://***@github.com/codefly-dev/cli.git"), err.Error())
+	require.Contains(t, err.Error(), "did not match any file(s) known to git")
 }
 
 func TestIsReleaseCommitFor(t *testing.T) {
