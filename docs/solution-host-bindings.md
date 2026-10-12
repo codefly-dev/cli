@@ -22,7 +22,7 @@ nothing straddles them. The render produces the static half:
 | record | writer | what it carries |
 |---|---|---|
 | presence document | the render; settled and signed at publish | kind, binding ID, generation, ownership domain, envelope revision, host, release digest, rendered artifacts and their digests, the workloads with the build each runs and the identity each presents |
-| authority document | derived from the module's published contract; signed at publish | the principal and the units of authority it holds, approved for one build, effective from one presence generation |
+| authority document | derived from the module's published contract, or from a composed solution's scoped `api.consumes`; signed at publish | the principal and the units of authority it holds, approved for one build, effective from one presence generation |
 
 The dynamic half is the host's: the **envelope** (the ceiling a platform
 administrator writes), an organisation's installation, team exposure. The
@@ -268,6 +268,32 @@ isolation does not cover is the Job's pod itself: the CLI's project admits a
 may run with is the platform's admission (the authority Job runs as the
 platform's `delivery` account, whose only reach is the delivery API, which
 admits nothing unsigned) — the one boundary this render cannot enforce.
+
+**A composed solution asks from its manifest, not from a contract.** A solution
+declares what it consumes once, in `solution.codefly.yaml`'s `api.consumes`, which
+also drives its generated client and its runtime's upstream map. Under schema
+`codefly.solution-manifest/v1` an entry that carries `scopes` (`{resource_kind,
+actions}` in the consumed module's permission vocabulary) and an `audience` slot
+(`{from: <group>/<key>}`) asks for authority there. Core's `ConsumptionContract`
+turns those entries into a **module contract** — one invoke binding per entry —
+and the render resolves it through the same `Resolve` a published contract goes
+through, so the audience is whatever the composition says that module verifies,
+and the unit is `<presence binding>:<entry id>:invoke` with the document's own
+`queues`, `namespaces` and `scope_ceilings` written `[]`. The principal is the name
+the solution is composed under.
+
+The manifest is read through core's `LoadConsumption`: the schema version and
+`api.consumes`, strictly — an invalid or unknown field in a consumption fails the
+render — and nothing else, so a section the strict loader refuses for reasons
+unrelated to consumption never fails the render of a solution that asks for no
+authority. On top of the module rules below (one `module-identity` service, a
+presence, the envelope at the host), the render refuses a scoped entry for a
+module the workspace does not compose, and one addressed to the solution itself
+(by module, or by a resolved audience equal to its principal), because the host
+could never install either. A module asks from **one** declaration: a contract and
+scoped `api.consumes` together are refused by name — including a contract that
+declares only destinations — until merging two declarations of one request is
+decided. Entries without scopes ask for nothing.
 
 The contract's **principal is the module's own name** — the contract says so
 of itself, and it is held to that at render: the contract is written in the

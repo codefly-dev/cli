@@ -1,0 +1,38 @@
+schema_version: codefly.solution-manifest/v1
+protocol_version: codefly.solution/v0
+agent:
+    publisher: codefly.dev
+    kind: codefly:solution
+    name: solution-generic
+    version: 0.0.1
+api:
+    exposes:
+        - id: http
+          protocol: http
+    consumes:
+        - id: identity
+          protocol: connect
+          module: platform
+          service: identity
+          endpoint: connect
+          services: [DirectoryService]
+          as: identity
+        - id: assistant
+          protocol: http
+          module: assistant
+          service: chat
+          endpoint: http
+          as: assistant
+        - id: documents
+          protocol: rest
+          module: documents
+          service: documents
+          endpoint: rest
+          as: documents
+          audience: {from: documents/documents-prefix}
+          scopes:
+            - resource_kind: documents
+              actions: [read]
+lifecycle:
+    package: true
+    render: true

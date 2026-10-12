@@ -2,14 +2,11 @@ package gitops
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-
-	modulecontract "github.com/codefly-dev/core/contracts/module"
 
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -378,13 +375,16 @@ func (r *moduleRender) declareInstances(ctx context.Context, services []*resourc
 	}
 	r.options.UndeclaredPresence = undeclared
 	if instance == nil {
-		// A module that publishes a contract asks for authority, and
-		// authority is effective from a presence generation: with no
-		// presence to declare, the request would be dropped silently.
-		if _, loadErr := modulecontract.Load(r.module.Dir()); loadErr == nil {
-			return fmt.Errorf("module %s publishes %s but declares no presence (%s); authority is effective from a presence generation, so a module with a contract must declare presence", r.module.Name, modulecontract.FileName, undeclared)
-		} else if !errors.Is(loadErr, os.ErrNotExist) {
-			return loadErr
+		// A module that asks for authority — a published contract, or a
+		// solution's scoped consumption — needs a presence, because authority
+		// is effective from a presence generation: with no presence to
+		// declare, the request would be dropped silently.
+		request, requestErr := authorityRequestOf(r.module)
+		if requestErr != nil {
+			return requestErr
+		}
+		if request.undeclared == "" {
+			return fmt.Errorf("module %s %s but declares no presence (%s); authority is effective from a presence generation, so a module that asks for authority must declare presence", r.module.Name, request.source, undeclared)
 		}
 		r.options.UndeclaredAuthority = "the module declares no presence, so no authority can be effective from it"
 		return nil
