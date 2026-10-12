@@ -10,11 +10,19 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+	"sigs.k8s.io/kustomize/api/konfig"
 )
 
-// kustomizationFileNames are the file names kustomize accepts for a
-// kustomization, lowercased.
-var kustomizationFileNames = []string{kustomizationFile, kustomizationFileAlt, "kustomization"}
+// kustomizationFileNames are the names kustomize recognises, in the order it
+// prefers them, taken FROM kustomize rather than restated here. The third is
+// `Kustomization` with a capital K, and the lowercase copy this list used to
+// carry named a file kustomize ignores: it was written for isKustomizationFile,
+// which lowercases what it compares, but it is also used to build real paths —
+// to read an overlay's kustomization and to rewrite one. A case-insensitive
+// filesystem answers a lookup for `Kustomization` with a lowercase file, so the
+// mismatch worked on macOS and could not on Linux. Callers that want a
+// case-insensitive comparison lowercase both sides instead.
+var kustomizationFileNames = konfig.RecognizedKustomizationFileNames()
 
 // A module's namespace is shared by every service in it, and the CLI's own Argo
 // contract already says the render does not create it: writeArgoApplicationSet
@@ -181,7 +189,7 @@ func isManifestFile(relative string) bool {
 func isKustomizationFile(relative string) bool {
 	name := strings.ToLower(filepath.Base(relative))
 	for _, candidate := range kustomizationFileNames {
-		if name == candidate {
+		if name == strings.ToLower(candidate) {
 			return true
 		}
 	}

@@ -90,6 +90,9 @@ type Inventory struct {
 	AppProject    string `json:"appProject"`
 	OwnedPath     string `json:"ownedPath"`
 	ModulePath    string `json:"modulePath,omitempty"`
+	// ModuleIncludesUnits binds schema preparation, deploy jobs and consumers
+	// to one Argo Application. Unit paths remain the authoritative source trees.
+	ModuleIncludesUnits bool `json:"moduleIncludesUnits,omitempty"`
 	// SolutionHostBindingPath is the render subdirectory holding the declared
 	// SolutionHostBinding documents, when this render declared any. Publish
 	// points an Argo Application at its environment overlay and derives the
@@ -253,6 +256,7 @@ type RenderOptions struct {
 	CheckUnitDirectories bool
 	OwnedPath            string
 	ModulePath           string
+	ModuleIncludesUnits  bool
 	Units                []InventoryUnit
 	Package              *InventoryPackage
 	// Workspace is the composing workspace's name. A solution host binding ID

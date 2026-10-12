@@ -93,11 +93,10 @@ type argoBootstrapComponent struct {
 	Namespace string
 }
 
-// Sync waves order reconciliation inside a module: namespace-level resources
-// first, then the units that prepare schema for the rest, then their consumers.
-// Argo CD only starts a wave once the previous one is healthy, so a consumer
-// never rolls out against schema preparation that has not completed. The
-// position of a unit in the inventory carries no ordering meaning.
+// These Application annotations order components only when a parent explicitly
+// synchronizes them by wave. Deploy-job modules instead place their units in
+// one Application and establish the resource barriers in module_deploy_jobs.go.
+// The position of a unit in the inventory carries no ordering meaning.
 const (
 	moduleResourcesWave = "-1"
 	bootstrapUnitWave   = "0"
@@ -311,7 +310,7 @@ func generateArgoBootstrap(
 	}
 	for index := range inventory.Units {
 		unit := &inventory.Units[index]
-		if unit.Path == "" {
+		if unit.Path == "" || inventory.ModuleIncludesUnits {
 			continue
 		}
 		components = append(components, argoBootstrapComponent{

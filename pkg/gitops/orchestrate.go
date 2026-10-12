@@ -170,6 +170,7 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 			return err
 		}
 		r.options.ModulePath = moduleBundleDir
+		r.options.ModuleIncludesUnits = moduleIncludesUnits(modulePath, r.env.Name)
 		return nil
 	}
 	if !r.includeBootstrap {
