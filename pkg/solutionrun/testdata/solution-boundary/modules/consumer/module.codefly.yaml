@@ -1,0 +1,6 @@
+kind: module
+name: consumer
+service-entry: backend
+services:
+    - name: backend
+    - name: worker

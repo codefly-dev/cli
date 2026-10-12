@@ -299,7 +299,10 @@ func treeDigest(t *testing.T, root string) string {
 // presence; delivery documents settled and signed at publish) and now main's
 // restricted property beside them. The manifests are unchanged by either, and
 // the two cases below still agree, which is the property this digest pins.
-const undeclaredFixtureDigest = "fe83664635e75df2d8d13f24c9bed8a0b28dd14c74370e591258251f39b81b70"
+// Re-captured when a deployed render began binding every workload to a service
+// account of its own: the tree now also carries each service's serviceaccount
+// .yaml and its serviceAccountName. Nothing else about it moved.
+const undeclaredFixtureDigest = "1c5d2d183849513e9a0fb6b6bbee800172a78f347861fb5463d88611a8fe7cea"
 
 func TestRenderModuleWithoutDeclarationsIsByteIdentical(t *testing.T) {
 	installFakeAgents(t)

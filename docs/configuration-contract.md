@@ -138,6 +138,13 @@ Neither secrets nor configuration are implicitly copied to sidecars. Rendering
 refuses a declaration that cannot bind to a service container, and a literal
 configuration value cannot replace a rendered secret reference.
 
+`ingress` and `dns.app-host-suffix` are also what fixes the public origin of an
+endpoint declaring `exposure: public`, which a deployed render carries to the
+workload under `CODEFLY__PUBLIC_ORIGIN__…` and refuses to render without — see
+[what a deployed render decides](deployed-render-boundaries.md). An endpoint
+reachable from outside the workspace but allocated no address (`exposure: none`)
+has no origin of its own and is never asked for one.
+
 A per-service secret mapping may specify `refresh-interval` and a `template`
 with `engine-version: v2`, `merge-policy: Merge` and `data` expressions for its
 explicit remote keys. These are External Secrets declarations, evaluated only by

@@ -1,0 +1,4 @@
+kind: module
+name: bridge
+services:
+    - name: relay

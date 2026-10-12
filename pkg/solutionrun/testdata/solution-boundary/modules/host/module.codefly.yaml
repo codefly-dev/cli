@@ -1,0 +1,7 @@
+kind: module
+name: host
+service-entry: frontend
+services:
+    - name: frontend
+    - name: gateway
+    - name: accounts

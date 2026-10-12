@@ -151,11 +151,11 @@ func TestIngressHostsHonorsEndpointBindingAndUniqueForm(t *testing.T) {
 		},
 	}
 
-	grpc := ingressHosts(env, "platform", "accounts", "grpc")
+	grpc := environments.IngressHosts(env, "platform", "accounts", "grpc")
 	if len(grpc) != 2 || grpc[0] != "grpc.acme.dev" || grpc[1] != "all.acme.dev" {
 		t.Fatalf("grpc hosts = %v, want [grpc.acme.dev all.acme.dev]", grpc)
 	}
-	rest := ingressHosts(env, "platform", "accounts", "rest")
+	rest := environments.IngressHosts(env, "platform", "accounts", "rest")
 	if len(rest) != 2 || rest[0] != "rest.acme.dev" || rest[1] != "all.acme.dev" {
 		t.Fatalf("rest hosts = %v, want [rest.acme.dev all.acme.dev] (unique-form route + service-wide)", rest)
 	}
