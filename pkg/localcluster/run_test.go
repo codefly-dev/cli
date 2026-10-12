@@ -89,9 +89,9 @@ func TestARunTakesEveryModuleThroughTheCellsSteps(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"argocd", "delivery-account", "namespaces host,documents", "trust-anchor",
+		"argocd", "delivery-account", "namespaces host,documents",
 		"render host", "publish host", "render documents", "publish documents",
-		"latest", "serve abc", "secrets", "bootstrap abc",
+		"latest", "serve abc", "secrets", "trust-anchor", "bootstrap abc",
 		"await deliver-modules/host", "await deliver-modules/documents",
 	}
 	if strings.Join(driver.steps, "|") != strings.Join(want, "|") {

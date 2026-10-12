@@ -124,13 +124,6 @@ func Run(ctx context.Context, env *environments.Environment, modules []string, d
 	if err = driver.EnsureNamespaces(ctx, modules); err != nil {
 		return report, err
 	}
-	// Before any module syncs: the host reads its anchor at boot, so it
-	// must exist when the host's pod first starts.
-	report.ClusterAuthority, err = driver.ProvisionTrustAnchor(ctx)
-	if err != nil {
-		return report, fmt.Errorf("provision the local host's trust anchor: %w", err)
-	}
-	say("Local host trust anchor bound to the cluster CA %s, admitting %d developer(s)", report.ClusterAuthority, len(env.Host.Developers))
 	for _, module := range modules {
 		say("Rendering %s for %s", module, env.Name)
 		if err = driver.Render(ctx, module); err != nil {
@@ -160,6 +153,15 @@ func Run(ctx context.Context, env *environments.Environment, modules []string, d
 	if err = driver.ApplySecrets(ctx, report.Published); err != nil {
 		return report, err
 	}
+	// Before any module syncs: the host reads its anchor at boot, so it must
+	// exist when the host's pod first starts. And after the secrets: a host
+	// left by an earlier run is restarted onto this anchor and awaited, which
+	// it can only pass once the Secrets it reads are on the cluster.
+	report.ClusterAuthority, err = driver.ProvisionTrustAnchor(ctx)
+	if err != nil {
+		return report, fmt.Errorf("provision the local host's trust anchor: %w", err)
+	}
+	say("Local host trust anchor bound to the cluster CA %s, admitting %d developer(s)", report.ClusterAuthority, len(env.Host.Developers))
 	jobs, err := driver.Bootstrap(ctx, report.Revision, report.Published)
 	if err != nil {
 		return report, err
