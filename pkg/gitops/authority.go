@@ -13,6 +13,7 @@ import (
 	"github.com/codefly-dev/core/configurations"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
+	solutionmanifest "github.com/codefly-dev/core/solution/manifest"
 	"github.com/codefly-dev/core/solutionhost"
 	"gopkg.in/yaml.v3"
 )
@@ -133,12 +134,12 @@ func authorityInstancesOf(
 	units []SolutionArtifactUnit,
 	endpoints []SolutionEndpoint,
 ) ([]AuthorityInstance, string, error) {
-	contract, err := modulecontract.Load(module.Dir())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Sprintf("module %s publishes no %s, so it asks for no authority", module.Name, modulecontract.FileName), nil
-	}
+	request, err := authorityRequestOf(module)
 	if err != nil {
 		return nil, "", err
+	}
+	if request.undeclared != "" {
+		return nil, request.undeclared, nil
 	}
 	var identities []*resources.Service
 	for _, service := range services {
@@ -147,11 +148,11 @@ func authorityInstancesOf(
 		}
 	}
 	if len(identities) == 0 {
-		// The contract is the module's request for authority. With no service
+		// The request is the module's ask for authority. With no service
 		// declaring module-identity nothing would present it, and the request
 		// would be dropped rather than refused: the composition is inconsistent
 		// and is told so here, before slot resolution or any document.
-		return nil, "", fmt.Errorf("module %s publishes %s, which asks for authority, but no service declares module-identity, so nothing would present it; declare module-identity on the service that presents the module's identity, or withdraw the contract", module.Name, modulecontract.FileName)
+		return nil, "", fmt.Errorf("module %s %s, which asks for authority, but no service declares module-identity, so nothing would present it; declare module-identity on the service that presents the module's identity, or withdraw the request", module.Name, request.source)
 	}
 	if len(identities) > 1 {
 		names := make([]string, 0, len(identities))
@@ -161,13 +162,15 @@ func authorityInstancesOf(
 		sort.Strings(names)
 		return nil, "", fmt.Errorf("module %s declares module-identity on the services %s; a module presents its authority from one service, because its one authority document approves one build and the host keeps one authority record per binding, so keep module-identity on the service that authenticates as the module", module.Name, strings.Join(names, ", "))
 	}
-	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime())
-	if err != nil {
-		return nil, "", fmt.Errorf("read the workspace configurations the contract of %s resolves against: %w", module.Name, err)
-	}
-	resolved, err := contract.Resolve(workspaceValues{provided: provided})
-	if err != nil {
-		return nil, "", fmt.Errorf("module %s: %w", module.Name, err)
+	resolved := request.consumption
+	if request.contract != nil {
+		provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime())
+		if err != nil {
+			return nil, "", fmt.Errorf("read the workspace configurations the contract of %s resolves against: %w", module.Name, err)
+		}
+		if resolved, err = request.contract.Resolve(workspaceValues{provided: provided}); err != nil {
+			return nil, "", fmt.Errorf("module %s: %w", module.Name, err)
+		}
 	}
 	// The principal is the module's own name — the contract says so of
 	// itself — and it is held to that here, because the contract is written in
@@ -195,6 +198,64 @@ func authorityInstancesOf(
 		instances = append(instances, AuthorityInstance{Module: module.Name, Service: service.Name, Unit: units[index], Contract: resolved})
 	}
 	return instances, "", nil
+}
+
+// authorityRequest is what a module asks for authority with, from exactly one
+// source: its published module contract, or — for a composed solution, which
+// declares what it consumes in its solution manifest — the scopes its
+// api.consumes entries ask for. undeclared carries the reason when it asks for
+// none; source says which file asked, for a refusal.
+type authorityRequest struct {
+	contract    *modulecontract.Contract
+	consumption *modulecontract.Resolved
+	source      string
+	undeclared  string
+}
+
+// authorityRequestOf reads a module's request for authority.
+//
+// A solution's consumption is read STRICTLY, through the manifest's own Load:
+// the run path decodes the manifest leniently because it needs only the
+// upstream map, but this is what an authority document is derived from, so a
+// field this core does not know, or an invalid scope, is refused here rather
+// than ignored. Both sources at once is refused: a module that asked twice
+// would have two declarations of one request to keep in agreement, and the
+// render would have to pick one.
+func authorityRequestOf(module *resources.Module) (authorityRequest, error) {
+	contract, err := modulecontract.Load(module.Dir())
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		contract = nil
+	case err != nil:
+		return authorityRequest{}, err
+	}
+	var consumption *modulecontract.Resolved
+	data, err := os.ReadFile(filepath.Join(module.Dir(), solutionmanifest.FileName))
+	switch {
+	case module.Dir() == "":
+		// A module constructed rather than loaded has nowhere to ship a
+		// manifest; reading the working directory instead would be a guess.
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		return authorityRequest{}, fmt.Errorf("read the solution manifest of module %s: %w", module.Name, err)
+	default:
+		declared, loadErr := solutionmanifest.Load(data)
+		if loadErr != nil {
+			return authorityRequest{}, fmt.Errorf("module %s: the solution manifest an authority document is derived from: %w", module.Name, loadErr)
+		}
+		// A composed solution is a module, and its principal is the name it is
+		// composed under, exactly as a module contract's principal must be.
+		consumption = declared.ConsumptionAuthority(module.Name)
+	}
+	switch {
+	case contract != nil && consumption != nil:
+		return authorityRequest{}, fmt.Errorf("module %s publishes %s and its %s asks for scopes on api.consumes; a module asks for authority from one declaration, so declare the consumption in one of them", module.Name, modulecontract.FileName, solutionmanifest.FileName)
+	case contract != nil:
+		return authorityRequest{contract: contract, source: "publishes " + modulecontract.FileName}, nil
+	case consumption != nil:
+		return authorityRequest{consumption: consumption, source: "asks for scopes on api.consumes in its " + solutionmanifest.FileName}, nil
+	}
+	return authorityRequest{undeclared: fmt.Sprintf("module %s publishes no %s and asks for no scopes on api.consumes, so it asks for no authority", module.Name, modulecontract.FileName)}, nil
 }
 
 // renderAuthorityDocuments renders the module's authority document into the

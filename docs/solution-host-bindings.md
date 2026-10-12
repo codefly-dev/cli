@@ -22,7 +22,7 @@ nothing straddles them. The render produces the static half:
 | record | writer | what it carries |
 |---|---|---|
 | presence document | the render; settled and signed at publish | kind, binding ID, generation, ownership domain, envelope revision, host, release digest, rendered artifacts and their digests, the workloads with the build each runs and the identity each presents |
-| authority document | derived from the module's published contract; signed at publish | the principal and the units of authority it holds, approved for one build, effective from one presence generation |
+| authority document | derived from the module's published contract, or from a composed solution's scoped `api.consumes`; signed at publish | the principal and the units of authority it holds, approved for one build, effective from one presence generation |
 
 The dynamic half is the host's: the **envelope** (the ceiling a platform
 administrator writes), an organisation's installation, team exposure. The
@@ -268,6 +268,24 @@ isolation does not cover is the Job's pod itself: the CLI's project admits a
 may run with is the platform's admission (the authority Job runs as the
 platform's `delivery` account, whose only reach is the delivery API, which
 admits nothing unsigned) — the one boundary this render cannot enforce.
+
+**A composed solution asks from its manifest, not from a contract.** A solution
+declares what it consumes once, in `solution.codefly.yaml`'s `api.consumes`, which
+also drives its generated client and its runtime's upstream map. An entry that
+carries `scopes` — `{resource_kind, actions}` in the consumed module's permission
+vocabulary — asks for authority there, and the render derives the solution's
+authority document from those entries through core's
+`manifest.ConsumptionAuthority`: one **invoke** unit per scoped entry,
+`<presence binding>:<entry id>:invoke`, addressed to the consumed module's name
+(its principal) and bounded by exactly the declared scopes, with the document's
+own `queues`, `namespaces` and `scope_ceilings` written `[]`. The principal is
+the name the solution is composed under. The manifest is read **strictly** here —
+the run path's lenient read stops at the upstream map, and this is what an
+authority document is derived from — so an invalid scope fails the render. The
+rest is the module rules above, unchanged: one `module-identity` service presents
+it, a presence is required, and the host holds it against the envelope. A module
+asks from **one** declaration: a contract and scoped `api.consumes` together are
+refused, and entries without scopes ask for nothing.
 
 The contract's **principal is the module's own name** — the contract says so
 of itself, and it is held to that at render: the contract is written in the
