@@ -34,9 +34,23 @@ func TestParseRemote(t *testing.T) {
 		{remote: "https://gho_notarealtoken@github.com/codefly-dev/cli.git", owner: "codefly-dev", repo: "cli"},
 		// `git remote get-url` output arrives newline-terminated.
 		{remote: "https://x-access-token:gho_notarealtoken@github.com/codefly-dev/cli.git\n", owner: "codefly-dev", repo: "cli"},
+		{remote: "https://gho_notarealtoken:x-oauth-basic@github.com/codefly-dev/cli", owner: "codefly-dev", repo: "cli"},
+		{remote: "https://user:pass@github.com:443/codefly-dev/cli.git", owner: "codefly-dev", repo: "cli"},
+		{remote: "ssh://git@github.com:22/codefly-dev/cli.git", owner: "codefly-dev", repo: "cli"},
+		// git accepts a trailing slash and any case in the host.
+		{remote: "https://github.com/codefly-dev/cli.git/", owner: "codefly-dev", repo: "cli"},
+		{remote: "https://GitHub.com/codefly-dev/cli", owner: "codefly-dev", repo: "cli"},
+		// scp-style with another user (GitHub Enterprise Managed Users) or none.
+		{remote: "org-123@github.com:codefly-dev/cli.git", owner: "codefly-dev", repo: "cli"},
+		{remote: "github.com:codefly-dev/cli", owner: "codefly-dev", repo: "cli"},
 		{remote: "https://gitlab.com/codefly-dev/cli.git"},
 		{remote: "https://x-access-token:gho_notarealtoken@gitlab.com/codefly-dev/cli.git"},
 		{remote: "https://github.com.example.com/codefly-dev/cli.git"},
+		{remote: "git@github.com.example.com:codefly-dev/cli.git"},
+		{remote: "https://github.com@example.com/codefly-dev/cli.git"},
+		{remote: "http://github.com/codefly-dev/cli.git"},
+		{remote: "git://github.com/codefly-dev/cli.git"},
+		{remote: "https://github.com/codefly-dev/.git"},
 		{remote: "https://github.com/codefly-dev"},
 		{remote: "https://github.com/codefly-dev/cli/extra"},
 		{remote: "/srv/git/cli.git"},
@@ -59,20 +73,47 @@ func TestParseRemote(t *testing.T) {
 	}
 }
 
-// TestParseRemoteErrorMasksACredential keeps a live access token out of the
-// message: an unparseable rewritten remote is printed to the terminal and
-// pasted into bug reports.
-func TestParseRemoteErrorMasksACredential(t *testing.T) {
-	_, _, err := ParseRemote("https://x-access-token:gho_notarealtoken@gitlab.com/codefly-dev/cli.git\n")
-	if err == nil {
-		t.Fatal("ParseRemote accepted a non-GitHub remote")
-	}
-	if strings.Contains(err.Error(), "gho_notarealtoken") {
-		t.Fatalf("error leaks the credential: %v", err)
-	}
-	const want = `unrecognized GitHub remote "https://x-access-token:***@gitlab.com/codefly-dev/cli.git"`
-	if err.Error() != want {
-		t.Fatalf("error = %q, want %q", err.Error(), want)
+// TestParseRemoteErrorNeverCarriesACredential keeps a live access token out of
+// the message for every shape a credential takes in a remote: an unparseable
+// rewritten remote is printed to the terminal and pasted into bug reports.
+func TestParseRemoteErrorNeverCarriesACredential(t *testing.T) {
+	const token = "gho_notarealtoken"
+	for _, tc := range []struct{ remote, want string }{
+		{
+			remote: "https://x-access-token:" + token + "@gitlab.com/codefly-dev/cli.git\n",
+			want:   `unrecognized GitHub remote "https://***@gitlab.com/codefly-dev/cli.git"`,
+		},
+		{
+			// GitHub's legacy form puts the token in the user name.
+			remote: "https://" + token + ":x-oauth-basic@gitlab.com/codefly-dev/cli",
+			want:   `unrecognized GitHub remote "https://***@gitlab.com/codefly-dev/cli"`,
+		},
+		{
+			remote: "https://" + token + "@github.com/codefly-dev",
+			want:   `unrecognized GitHub remote "https://***@github.com/codefly-dev"`,
+		},
+		{
+			// An unencoded '/' in the secret makes the URL unparseable.
+			remote: "https://user:a/" + token + "@github.com/codefly-dev/cli",
+			want:   `unrecognized GitHub remote "https://***@github.com/codefly-dev/cli"`,
+		},
+		{
+			remote: token + "@gitlab.com:codefly-dev/cli.git",
+			want:   `unrecognized GitHub remote "***@gitlab.com:codefly-dev/cli.git"`,
+		},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			_, _, err := ParseRemote(tc.remote)
+			if err == nil {
+				t.Fatalf("ParseRemote accepted %q", tc.remote)
+			}
+			if strings.Contains(err.Error(), token) {
+				t.Fatalf("error leaks the credential: %v", err)
+			}
+			if err.Error() != tc.want {
+				t.Fatalf("error = %q, want %q", err.Error(), tc.want)
+			}
+		})
 	}
 }
 

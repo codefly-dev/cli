@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/redact"
 	"github.com/google/go-github/v89/github"
 )
 
@@ -60,18 +61,21 @@ func Token() string {
 
 // ParseRemote resolves a git remote URL to its GitHub owner and repository.
 // Accepts the forms git itself writes for github.com — scp-style
-// (git@github.com:owner/repo), https, and ssh:// — with or without the .git
-// suffix, and whether or not the URL carries userinfo: a url.insteadOf rewrite
-// (and a GitHub Actions checkout) resolves origin to a credential-bearing URL,
-// which addresses the same repository. Raw captured command output is fine;
-// surrounding whitespace is trimmed here. Anything else is an error rather than
-// a guess: the callers use the result to address the API, and a mis-parsed
-// remote would address the wrong repository.
+// ([user@]github.com:owner/repo), https, and ssh:// — with or without the .git
+// suffix or a trailing slash, and whether or not the URL carries userinfo: a
+// url.insteadOf rewrite (and a GitHub Actions checkout) resolves origin to a
+// credential-bearing URL, which addresses the same repository. Raw captured
+// command output is fine; surrounding whitespace is trimmed here. Anything else
+// is an error rather than a guess: the callers use the result to address the
+// API, and a mis-parsed remote would address the wrong repository.
+//
+// The error never carries a credential: the remote it names is redacted.
 func ParseRemote(remote string) (string, string, error) {
-	path, ok := githubRepositoryPath(strings.TrimSuffix(strings.TrimSpace(remote), ".git"))
+	path, ok := githubRepositoryPath(strings.TrimSpace(remote))
 	if !ok {
 		return "", "", unrecognizedRemote(remote)
 	}
+	path = strings.TrimSuffix(strings.Trim(path, "/"), ".git")
 	owner, repo, ok := strings.Cut(path, "/")
 	if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
 		return "", "", unrecognizedRemote(remote)
@@ -79,46 +83,35 @@ func ParseRemote(remote string) (string, string, error) {
 	return owner, repo, nil
 }
 
-// githubRepositoryPath reduces a github.com remote to its owner/repo path.
+// githubRepositoryPath reduces a github.com remote to its path. Host matching is
+// exact (case-insensitive, as DNS is): a look-alike such as
+// github.com.example.com, or a userinfo that merely names github.com, is not
+// GitHub.
 func githubRepositoryPath(remote string) (string, bool) {
-	if path, ok := strings.CutPrefix(remote, "git@github.com:"); ok {
-		return path, true
+	if !strings.Contains(remote, "://") {
+		// scp-style: [user@]host:path, where the host part holds no '/'.
+		authority, path, ok := strings.Cut(remote, ":")
+		if !ok || strings.Contains(authority, "/") {
+			return "", false
+		}
+		if at := strings.LastIndexByte(authority, '@'); at >= 0 {
+			authority = authority[at+1:]
+		}
+		return path, strings.EqualFold(authority, "github.com")
 	}
 	parsed, err := url.Parse(remote)
-	if err != nil || parsed.Hostname() != "github.com" {
+	if err != nil || !strings.EqualFold(parsed.Hostname(), "github.com") {
 		return "", false
 	}
 	if parsed.Scheme != "https" && parsed.Scheme != "ssh" {
 		return "", false
 	}
-	return strings.TrimPrefix(parsed.Path, "/"), true
+	return parsed.Path, true
 }
 
-// unrecognizedRemote names a remote the parser cannot read, with the secret
-// half of any userinfo masked. A url.insteadOf rewrite puts a live access token
-// in the resolved URL, and this message is printed to a terminal and pasted
-// into bug reports.
+// unrecognizedRemote names a remote the parser cannot read with its userinfo
+// redacted: a url.insteadOf rewrite puts a live access token in the resolved
+// URL, and this message is printed to a terminal and pasted into bug reports.
 func unrecognizedRemote(remote string) error {
-	return fmt.Errorf("unrecognized GitHub remote %q", maskUserinfo(strings.TrimSpace(remote)))
-}
-
-func maskUserinfo(remote string) string {
-	scheme := strings.Index(remote, "://")
-	if scheme < 0 {
-		return remote
-	}
-	authority := remote[scheme+3:]
-	host := strings.IndexByte(authority, '/')
-	if host < 0 {
-		host = len(authority)
-	}
-	at := strings.LastIndexByte(authority[:host], '@')
-	if at < 0 {
-		return remote
-	}
-	masked := "***"
-	if name, _, hasSecret := strings.Cut(authority[:at], ":"); hasSecret {
-		masked = name + ":***"
-	}
-	return remote[:scheme+3] + masked + authority[at:]
+	return fmt.Errorf("unrecognized GitHub remote %q", redact.Remote(remote))
 }
