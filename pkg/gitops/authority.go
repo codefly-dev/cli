@@ -262,9 +262,9 @@ func authorityRequestOf(module *resources.Module) (authorityRequest, error) {
 		if consumption, err = declared.ConsumptionContract(module.Name); err != nil {
 			return authorityRequest{}, fmt.Errorf("module %s: %w", module.Name, err)
 		}
-		for _, declaration := range declared.API.Consumes {
-			if len(declaration.Scopes) > 0 {
-				consumed = append(consumed, declaration)
+		for index := range declared.API.Consumes {
+			if len(declared.API.Consumes[index].Scopes) > 0 {
+				consumed = append(consumed, declared.API.Consumes[index])
 			}
 		}
 	}
@@ -294,7 +294,8 @@ func refuseUnaddressableConsumption(workspace *resources.Workspace, module *reso
 			composed[reference.Name] = true
 		}
 	}
-	for _, declaration := range request.consumed {
+	for index := range request.consumed {
+		declaration := &request.consumed[index]
 		if declaration.Module == module.Name {
 			return fmt.Errorf("module %s asks for scopes at itself on api.consumes entry %s; a credential is never addressed to its own principal, and the host would never install the binding", module.Name, declaration.ID)
 		}
