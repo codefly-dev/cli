@@ -53,7 +53,7 @@ func TestPromotableDeploymentConfigurationsReplaceSecretBytesWithTypedReferences
 		}},
 	}
 
-	safe, dependencies, references, err := promotableDeploymentConfigurations(
+	safe, dependencies, references, _, err := promotableDeploymentConfigurations(
 		configuration,
 		nil,
 		"secret-accounts",
@@ -87,7 +87,7 @@ func TestPromotableDeploymentConfigurationsReplaceSecretBytesWithTypedReferences
 }
 
 func TestPromotableDeploymentConfigurationsRejectStructuredSecretBytes(t *testing.T) {
-	_, _, _, err := promotableDeploymentConfigurations(&basev0.Configuration{
+	_, _, _, _, err := promotableDeploymentConfigurations(&basev0.Configuration{
 		Origin: "users/accounts",
 		Infos: []*basev0.ConfigurationInformation{{
 			Name: "certificate",

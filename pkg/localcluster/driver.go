@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -162,6 +163,25 @@ func (d *ClusterDriver) Serve(ctx context.Context, revision string) error {
 	}
 	if _, err = d.Kubectl(ctx, "", "-n", "argocd", "patch", "configmap", "argocd-tls-certs-cm", "--type", "merge", "-p", string(patch)); err != nil {
 		return fmt.Errorf("make Argo CD trust the fetch remote %s: %w", remote.Spec.DNSName, err)
+	}
+	return nil
+}
+
+// ApplySecrets applies each published module's local Secrets (gitops
+// LocalSecretManifests) through kubectl's stdin. kubectl's own message is
+// never returned: a refused Secret can be reported with its value in it.
+func (d *ClusterDriver) ApplySecrets(ctx context.Context, published []gitops.PublishResult) error {
+	for index := range published {
+		module := path.Base(published[index].Path)
+		manifests, err := gitops.LocalSecretManifests(d.Workspace.Dir(), d.Environment.Name, module)
+		if err != nil {
+			return err
+		}
+		for _, manifest := range manifests {
+			if _, err = d.Kubectl(ctx, string(manifest), "apply", "-f", "-"); err != nil {
+				return fmt.Errorf("the cluster refused a local Secret of module %s; its message is withheld because it can carry the value", module)
+			}
+		}
 	}
 	return nil
 }

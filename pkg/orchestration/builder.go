@@ -60,6 +60,11 @@ type Builder struct {
 	// deployment reads from secret-<service> — the exact key set its own
 	// ExternalSecret fetches from the store under its own scope.
 	deployedSecretKeys []string
+	// deployedSecretValues are the values behind those keys, held in memory
+	// only. A cell's store holds them and its ExternalSecret materializes
+	// secret-<service>; a local cluster has no store, so the render hands
+	// them to the local run, which writes them to the cluster and nowhere else.
+	deployedSecretValues map[string]string
 }
 
 func NewBuilder(ctx context.Context, instance *services.Instance, world *World) (*Builder, error) {
@@ -95,6 +100,16 @@ func (b *Builder) DeployedConfiguration() *basev0.Configuration {
 // values must be able to read.
 func (b *Builder) DeployedSecretKeys() []string {
 	return b.deployedSecretKeys
+}
+
+// DeployedSecretValues returns a copy of the values behind DeployedSecretKeys,
+// keyed the same way; a templated value is the assembly its producer declared.
+func (b *Builder) DeployedSecretValues() map[string]string {
+	values := make(map[string]string, len(b.deployedSecretValues))
+	for key, value := range b.deployedSecretValues {
+		values[key] = value
+	}
+	return values
 }
 
 // ImageDigest returns the immutable registry manifest digest of the image this
