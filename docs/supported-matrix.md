@@ -27,11 +27,9 @@ When `go.mod` moves to a new core release line, update the `core` field in
 `go test ./pkg/conformance/...` before the full coverage and race gates.
 `TestMatrixCoreMatchesGoMod` refuses a stale declared version.
 
-The current pin is core `main` at codefly-dev/core#784's merge commit
-(`v0.19.2-0.20261012184621-7ab1214c1f03`), on the **unreleased** `v0.19.2` line:
-no core `v0.19.2` tag exists yet, so this matrix declares a line ahead of its
-release until one is cut. On top of released core `v0.19.1`, it adds a solution
-manifest's scoped `api.consumes` and its consumption contract (#784). `v0.19.1`
+The current pin is the released core `v0.19.2`. On top of `v0.19.1`, it adds a
+solution manifest's scoped `api.consumes` and its consumption contract (#784)
+and an issuer-assigned Work Context session (#783). `v0.19.1`
 verifies delivered carriers
 against pinned platform keys (#773), projects a service account entirely on a
 caller-supplied filesystem (#774, #777), and carries ToolProjection and slot-only authority (#755), ciguard (#750), caller tokens,
