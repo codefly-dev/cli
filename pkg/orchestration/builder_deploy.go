@@ -577,8 +577,13 @@ func promotableConfiguration(
 			references[key] = &builderv0.KubernetesSecretKeyReference{Name: secretName, Key: key}
 			// The value the reference stands for, in memory: only a local
 			// cluster, which has no store, is ever handed it (DeployedSecretValues).
-			if values != nil && sourceValue.GetTemplate() == nil {
-				values[key] = sourceValue.GetValue()
+			// A templated value is assembled from its producer's primitives, as
+			// the service would see it; one that cannot be is left out, and the
+			// local render refuses it by name.
+			if values != nil {
+				if assembled, assembleErr := resources.ConfigurationValueAsString(configuration, sourceValue); assembleErr == nil {
+					values[key] = assembled
+				}
 			}
 		}
 		if len(info.GetConfigurationValues()) > 0 || info.GetData() != nil {

@@ -103,7 +103,7 @@ func (b *Builder) DeployedSecretKeys() []string {
 }
 
 // DeployedSecretValues returns a copy of the values behind DeployedSecretKeys,
-// keyed the same way. A templated value has no single value here and is absent.
+// keyed the same way; a templated value is the assembly its producer declared.
 func (b *Builder) DeployedSecretValues() map[string]string {
 	values := make(map[string]string, len(b.deployedSecretValues))
 	for key, value := range b.deployedSecretValues {

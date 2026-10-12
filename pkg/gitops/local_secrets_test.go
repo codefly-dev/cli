@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	"github.com/codefly-dev/core/resources"
 )
 
 const localSecretValue = "s3cr3t-value-for-test"
@@ -17,7 +20,7 @@ func TestWriteLocalSecretsWritesAPrivateSecretPerService(t *testing.T) {
 	workspace := t.TempDir()
 	keys := map[string][]string{"saas/accounts": {"CODEFLY__WORKSPACE_SECRET_CONFIGURATION__INTERNAL_AUTH__TOKEN"}}
 	values := map[string]map[string]string{"saas/accounts": {"CODEFLY__WORKSPACE_SECRET_CONFIGURATION__INTERNAL_AUTH__TOKEN": localSecretValue}}
-	if err := writeLocalSecrets(workspace, "local", "saas", "platform-saas", keys, values); err != nil {
+	if err := writeLocalSecrets(workspace, "local", "saas", "platform-saas", keys, values, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	dir := LocalSecretsDir(workspace, "local", "saas")
@@ -55,7 +58,7 @@ func TestWriteLocalSecretsWritesAPrivateSecretPerService(t *testing.T) {
 func TestWriteLocalSecretsRefusesAReferenceWithNoValue(t *testing.T) {
 	keys := map[string][]string{"saas/accounts": {"PRESENT", "ABSENT"}}
 	values := map[string]map[string]string{"saas/accounts": {"PRESENT": localSecretValue}}
-	err := writeLocalSecrets(t.TempDir(), "local", "saas", "ns", keys, values)
+	err := writeLocalSecrets(t.TempDir(), "local", "saas", "ns", keys, values, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "saas/accounts ABSENT") || strings.Contains(err.Error(), localSecretValue) {
 		t.Fatalf("a missing value must refuse by key and print no value: %v", err)
 	}
@@ -69,13 +72,13 @@ func TestWriteLocalSecretsRefusesAWorkspaceThatWouldCommitThem(t *testing.T) {
 	}
 	keys := map[string][]string{"saas/accounts": {"K"}}
 	values := map[string]map[string]string{"saas/accounts": {"K": localSecretValue}}
-	if err := writeLocalSecrets(workspace, "local", "saas", "ns", keys, values); err == nil || !strings.Contains(err.Error(), ".gitignore") {
+	if err := writeLocalSecrets(workspace, "local", "saas", "ns", keys, values, nil, nil); err == nil || !strings.Contains(err.Error(), ".gitignore") {
 		t.Fatalf("an unignored .codefly must refuse: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(workspace, ".gitignore"), []byte(".codefly/\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeLocalSecrets(workspace, "local", "saas", "ns", keys, values); err != nil {
+	if err := writeLocalSecrets(workspace, "local", "saas", "ns", keys, values, nil, nil); err != nil {
 		t.Fatalf("an ignored .codefly must be written: %v", err)
 	}
 }
@@ -92,5 +95,49 @@ func TestLocalSecretManifestsRefusesAnOpenDirectory(t *testing.T) {
 	}
 	if _, err := LocalSecretManifests(workspace, "local", "saas"); err == nil {
 		t.Fatal("an open local secrets directory was read")
+	}
+}
+
+// A consumer's templated secret (a connection string) is assembled locally
+// from its producer's own primitives, as a cell's ExternalSecret assembles it
+// from the store.
+func TestWriteLocalSecretsAssemblesAProducersTemplate(t *testing.T) {
+	const password = "p@ss word"
+	producer := "saas/store"
+	primitive := resources.ServiceSecretConfigurationKeyFromUnique(producer, "postgres", "POSTGRES_PASSWORD")
+	consumerKey := resources.ServiceSecretConfigurationKeyFromUnique(producer, "postgres", "CONNECTION")
+	template := &basev0.ConfigurationValueTemplate{Segments: []*basev0.ConfigurationValueTemplateSegment{
+		{Content: &basev0.ConfigurationValueTemplateSegment_Literal{Literal: "postgresql://user:"}},
+		{Content: &basev0.ConfigurationValueTemplateSegment_Reference{Reference: &basev0.ConfigurationValueReference{
+			Configuration: "postgres", Key: "POSTGRES_PASSWORD", Escape: basev0.ConfigurationValueEscape_CONFIGURATION_VALUE_ESCAPE_URL_USERINFO,
+		}}},
+		{Content: &basev0.ConfigurationValueTemplateSegment_Literal{Literal: "@store:5432/users"}},
+	}}
+	templates := renderTemplates{consumerKey: {producer: producer, template: template}}
+	keys := map[string][]string{"saas/accounts": {consumerKey}, producer: {primitive}}
+	values := map[string]map[string]string{producer: {primitive: password}}
+	workspace := t.TempDir()
+	if err := writeLocalSecrets(workspace, "local", "saas", "ns", keys, values, templates, nil); err != nil {
+		t.Fatal(err)
+	}
+	manifests, err := LocalSecretManifests(workspace, "local", "saas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, manifest := range manifests {
+		var secret localSecretManifest
+		if err = json.Unmarshal(manifest, &secret); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := secret.StringData[consumerKey]; ok {
+			found = true
+			if !strings.HasPrefix(got, "postgresql://user:p%40ss") || !strings.HasSuffix(got, "@store:5432/users") {
+				t.Fatalf("assembled connection = %q", got)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("the consumer's templated secret was not assembled")
 	}
 }

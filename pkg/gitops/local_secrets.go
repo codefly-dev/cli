@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	"github.com/codefly-dev/core/resources"
 )
 
 // Local secrets.
@@ -45,7 +48,13 @@ func LocalSecretsDir(workspaceDir, environment, module string) string {
 
 // writeLocalSecrets writes one Secret per service that references secret
 // values, and refuses a referenced key with no value — naming it, never a value.
-func writeLocalSecrets(workspaceDir, environment, module, namespace string, keys map[string][]string, values map[string]map[string]string) error {
+func writeLocalSecrets(
+	workspaceDir, environment, module, namespace string,
+	keys map[string][]string,
+	values map[string]map[string]string,
+	templates renderTemplates,
+	deployed map[string]*basev0.Configuration,
+) error {
 	if err := refuseCommittableLocalState(workspaceDir); err != nil {
 		return err
 	}
@@ -60,6 +69,9 @@ func writeLocalSecrets(workspaceDir, environment, module, namespace string, keys
 		data := make(map[string]string, len(declared))
 		for _, key := range declared {
 			value, ok := held[key]
+			if !ok {
+				value, ok = assembleLocalTemplate(templates[key], values, deployed)
+			}
 			if !ok {
 				missing = append(missing, unique+" "+key)
 				continue
@@ -112,6 +124,27 @@ func writeLocalSecrets(workspaceDir, environment, module, namespace string, keys
 		}
 	}
 	return nil
+}
+
+// assembleLocalTemplate evaluates a producer's template for a consumer, as a
+// cell's ExternalSecret does from the store: each reference resolves to the
+// producer's own value — its secret primitives from the producer's local
+// values, its public ones from the configuration it deployed — never another
+// service's.
+func assembleLocalTemplate(template deliveredTemplate, values map[string]map[string]string, deployed map[string]*basev0.Configuration) (string, bool) {
+	if template.template == nil {
+		return "", false
+	}
+	producer := template.producer
+	public := resources.ProducerConfigurationValueLookup(deployed[producer])
+	lookup := func(configuration, key string) (string, bool) {
+		if value, ok := values[producer][resources.ServiceSecretConfigurationKeyFromUnique(producer, configuration, key)]; ok && value != "" {
+			return value, true
+		}
+		return public(configuration, key)
+	}
+	assembled, err := resources.EvaluateConfigurationValueTemplate(template.template, lookup)
+	return assembled, err == nil
 }
 
 // LocalSecretManifests returns the module's Secret manifests for a local run

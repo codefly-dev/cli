@@ -158,7 +158,8 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 		return err
 	}
 	if r.env.IsK3d() {
-		if err = writeLocalSecrets(r.workspace.Dir(), r.env.Name, r.module.Name, r.scope.Namespace, rendered.secretKeys, rendered.secretValues); err != nil {
+		if err = writeLocalSecrets(r.workspace.Dir(), r.env.Name, r.module.Name, r.scope.Namespace,
+			rendered.secretKeys, rendered.secretValues, r.scope.Templates, rendered.deployed); err != nil {
 			return err
 		}
 	}
