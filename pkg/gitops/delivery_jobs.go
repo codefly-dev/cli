@@ -84,7 +84,7 @@ const (
 
 	// presenceCarrierKey and authorityCarrierKey are the ConfigMap data keys
 	// holding the signed carrier of each document type: the canonical bytes that
-	// were signed, verbatim, beside the Sigstore bundle over them. The carrier is
+	// were signed, verbatim, beside the DSSE envelope over them. The carrier is
 	// JSON under a YAML extension because a JSON object is valid YAML and a YAML
 	// emitter would fold the long scalar the signature covers.
 	presenceCarrierKey  = "solution-host-binding.signed.codefly.yaml"

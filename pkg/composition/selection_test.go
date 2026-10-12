@@ -153,7 +153,7 @@ func (r *selectionRegistry) session(t *testing.T, descriptor *core.Descriptor) *
 		signers[id] = map[string]string{"owner": base64.StdEncoding.EncodeToString(r.key.Public().(ed25519.PublicKey))}
 	}
 	r.mu.Unlock()
-	workspace, err := yaml.Marshal(map[string]any{"name": "product", "module-trust": map[string]any{"repositories": repositories, "signers": signers}})
+	workspace, err := yaml.Marshal(map[string]any{"name": "product", "layout": "modules", "module-trust": map[string]any{"repositories": repositories, "signers": signers}})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(r.workspace, "workspace.codefly.yaml"), workspace, 0o600))
 	dir := t.TempDir()

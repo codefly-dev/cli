@@ -8,11 +8,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
 	corerunnable "github.com/codefly-dev/core/runnable"
 	"github.com/codefly-dev/core/standards"
+	"github.com/stretchr/testify/require"
 )
 
 func resetRunnableBindingsFlags(t *testing.T) {
@@ -28,13 +30,14 @@ func resetRunnableBindingsFlags(t *testing.T) {
 func TestGenerateRunnableBindingsBindsEveryDerivedOperation(t *testing.T) {
 	ctx := context.Background()
 	second := markedMethod("ApplyTextAgain", ".documents.ingest.v1.ApplyTextRequest", ".documents.ingest.v1.ApplyTextResponse", conformingOperation())
-	root, _ := saveRunnableFixture(t, ctx, descriptorSet(t, ingestionFile(conformingOperation(), second)), "0.1.0", connectEndpoint())
+	root, moduleDir := saveRunnableFixture(t, ctx, descriptorSet(t, ingestionFile(conformingOperation(), second)), "0.1.0", connectEndpoint())
 	t.Chdir(root)
 	resetRunnablesFlags(t)
 	resetRunnableBindingsFlags(t)
 	if err := RunnablesCmd.RunE(RunnablesCmd, []string{"documents"}); err != nil {
 		t.Fatal(err)
 	}
+	publishFixtureConnectEndpoint(t, moduleDir, "connect", nil)
 	if err := RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -162,6 +165,7 @@ func TestGenerateRunnableBindingsRefusesAStaleContractCatalog(t *testing.T) {
 	if err := RunnablesCmd.RunE(RunnablesCmd, []string{"documents"}); err != nil {
 		t.Fatal(err)
 	}
+	publishFixtureConnectEndpoint(t, moduleDir, "connect", nil)
 	catalog, err := composition.LoadAPIContractCatalog(moduleDir)
 	if err != nil {
 		t.Fatal(err)
@@ -194,13 +198,14 @@ func TestRunnableBindingKeyIsAnEnvironmentKey(t *testing.T) {
 // from the file that has to change.
 func TestGenerateRunnableBindingsRefusesADerivedOperationNamingNoCompletionMode(t *testing.T) {
 	ctx := context.Background()
-	root, _ := saveRunnableFixture(t, ctx, descriptorSet(t, ingestionFile(conformingOperation())), "0.1.0", connectEndpoint())
+	root, moduleDir := saveRunnableFixture(t, ctx, descriptorSet(t, ingestionFile(conformingOperation())), "0.1.0", connectEndpoint())
 	t.Chdir(root)
 	resetRunnablesFlags(t)
 	resetRunnableBindingsFlags(t)
 	if err := RunnablesCmd.RunE(RunnablesCmd, []string{"documents"}); err != nil {
 		t.Fatal(err)
 	}
+	publishFixtureConnectEndpoint(t, moduleDir, "connect", nil)
 
 	// Rewrite the derived document the way a tree derived by an older CLI holds
 	// it: every other field intact, the mode absent.
@@ -233,4 +238,91 @@ func TestGenerateRunnableBindingsRefusesADerivedOperationNamingNoCompletionMode(
 	if !strings.Contains(err.Error(), "is not a completion mode") {
 		t.Fatalf("the refusal does not name the missing mode: %v", err)
 	}
+}
+
+func TestRunnableBindingsRequireCalledEndpointServedSurface(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		connect, second []string
+		want            string
+	}{
+		{name: "missing catalog", want: "no connect endpoint"},
+		{name: "review probe excludes ApplyText", connect: []string{conformingOperation().LookupMethod}, want: "no connect endpoint"},
+		{name: "missing lookup", connect: []string{applyTextMethod}, want: "no connect endpoint"},
+		{name: "ambiguous", connect: []string{applyTextMethod, conformingOperation().LookupMethod}, second: []string{applyTextMethod, conformingOperation().LookupMethod}, want: "ambiguous connect endpoints [connect other]"},
+		{name: "second endpoint serves the pair", connect: []string{conformingOperation().LookupMethod}, second: []string{applyTextMethod, conformingOperation().LookupMethod}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, moduleDir := saveRunnableFixture(t, context.Background(), descriptorSet(t, ingestionFile(conformingOperation())), "0.1.0", connectEndpoint(), &resources.Endpoint{Name: "other", API: "connect"})
+			t.Chdir(root)
+			resetRunnablesFlags(t)
+			resetRunnableBindingsFlags(t)
+			require.NoError(t, RunnablesCmd.RunE(RunnablesCmd, []string{"documents"}))
+			require.Len(t, readIndex(t, moduleDir).Operations, 1)
+			if tc.connect != nil {
+				publishFixtureConnectEndpoint(t, moduleDir, "connect", tc.connect)
+			}
+			if tc.second != nil {
+				publishFixtureConnectEndpoint(t, moduleDir, "other", tc.second)
+			}
+			err := RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil)
+			target := filepath.Join(root, "configurations/local/runnable-bindings.env")
+			if tc.want != "" {
+				require.ErrorContains(t, err, tc.want)
+				require.ErrorContains(t, err, applyTextMethod)
+				require.ErrorContains(t, err, "documents/runtime-worker/grpc")
+				require.NoFileExists(t, target)
+				return
+			}
+			require.NoError(t, err)
+			values := readPreparedValues(t, target)
+			require.Len(t, values, 1)
+			ctx := context.Background()
+			workspace, err := resources.LoadWorkspaceFromDir(ctx, root)
+			require.NoError(t, err)
+			module, err := workspace.LoadModuleFromName(ctx, "documents")
+			require.NoError(t, err)
+			env, err := environments.Select(workspace, "local")
+			require.NoError(t, err)
+			resolver, err := newEndpointResolver(ctx, workspace, env)
+			require.NoError(t, err)
+			identity, endpoints, err := resolver.load(ctx, module, "runtime-worker")
+			require.NoError(t, err)
+			expectedAddress, err := resolver.address(ctx, identity, endpoints, endpointNamed(endpoints, "other"))
+			require.NoError(t, err)
+			for _, value := range values {
+				prepared := verifyResolvedBinding(t, value, nil)
+				require.Equal(t, expectedAddress, prepared.Call.Address, "call the listener that serves the pair, even when it is not first")
+			}
+		})
+	}
+}
+
+// Fixtures publish the actual called endpoint explicitly. Do this after
+// deriving when a test is specifically exercising a gRPC-owned operation.
+func publishFixtureConnectEndpoint(t *testing.T, moduleDir, name string, procedures []string) {
+	t.Helper()
+	catalog, err := composition.LoadAPIContractCatalog(moduleDir)
+	require.NoError(t, err)
+	entry := catalog.Endpoints[0]
+	entry.Endpoint, entry.API = name, "connect"
+	if procedures != nil {
+		entry.Services = []composition.APIContractService{{Name: "IngestionService", FullName: ingestPackage + ".IngestionService", Procedures: procedures}}
+	}
+	catalog.Endpoints = append(catalog.Endpoints, entry)
+	data, err := catalog.CanonicalBytes()
+	require.NoError(t, err)
+	writeFixtureFile(t, filepath.Join(moduleDir, composition.APIContractCatalogFileName), data)
+}
+
+func saveConnectRunnableFixture(t *testing.T, ctx context.Context, contract []byte, version string) (string, string) {
+	t.Helper()
+	root, moduleDir := saveRunnableFixture(t, ctx, contract, version, connectEndpoint())
+	catalog, err := composition.LoadAPIContractCatalog(moduleDir)
+	require.NoError(t, err)
+	catalog.Endpoints[0].Endpoint, catalog.Endpoints[0].API = "connect", "connect"
+	data, err := catalog.CanonicalBytes()
+	require.NoError(t, err)
+	writeFixtureFile(t, filepath.Join(moduleDir, composition.APIContractCatalogFileName), data)
+	return root, moduleDir
 }

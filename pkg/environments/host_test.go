@@ -1,6 +1,7 @@
 package environments
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -40,7 +41,7 @@ func TestWorkspaceHostDeclarationSurvivesLoad(t *testing.T) {
 		Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example-platform",
 		Audience: "accounts", TrustDomain: "cluster.example", EnvelopeRevision: 3, Delivery: "platform/accounts/rest",
 	}
-	if *env.Host != want {
+	if !reflect.DeepEqual(*env.Host, want) {
 		t.Fatalf("host %+v, want %+v", *env.Host, want)
 	}
 	if got := env.Host.SPIFFEID("crm", "crm-backend"); got != "spiffe://cluster.example/ns/crm/sa/crm-backend" {
@@ -101,8 +102,18 @@ func TestHostDeclarationRefusesAPartialOrMalformedIdentity(t *testing.T) {
 		// The delivery API is named by composition identity, never by address:
 		// absent, or a bare address, is a host block the publish cannot route
 		// a document through.
-		"no delivery":           {yaml: without("delivery"), want: "host delivery"},
-		"bare delivery address": {yaml: strings.Replace(hostBlock, "delivery: platform/accounts/rest", "delivery: delivery.example.test:443", 1), want: "host delivery"},
+		"no delivery":                {yaml: without("delivery"), want: "host delivery"},
+		"bare delivery address":      {yaml: strings.Replace(hostBlock, "delivery: platform/accounts/rest", "delivery: delivery.example.test:443", 1), want: "host delivery"},
+		"developer missing key":      {yaml: hostBlock + "      developers:\n        - key_id: ''\n", want: "host developer key_id"},
+		"developer malformed key":    {yaml: hostBlock + "      developers:\n        - key_id: dev-ABCDEF0123456789\n", want: "host developer key_id"},
+		"developer with unknown key": {yaml: hostBlock + "      developers:\n        - issuer: removed\n", want: "unknown host.developers field"},
+		"release missing key":        {yaml: hostBlock + "      release:\n        key_id: ''\n", want: "host release key_id"},
+		"release with space":         {yaml: hostBlock + "      release:\n        key_id: a b\n", want: "host release key_id"},
+		"release with newline":       {yaml: hostBlock + "      release:\n        key_id: |\n          a\n          b\n", want: "host release key_id"},
+		"release with unknown key":   {yaml: hostBlock + "      release:\n        repository: removed\n", want: "unknown host.release field"},
+		"relative trust anchor":      {yaml: hostBlock + "      trust_anchor: etc/trust\n", want: "trust_anchor"},
+		"unclean trust anchor":       {yaml: hostBlock + "      trust_anchor: /etc//trust\n", want: "trust_anchor"},
+		"developer declared twice":   {yaml: hostBlock + "      developers:\n        - key_id: dev-0123456789abcdef\n        - key_id: dev-0123456789abcdef\n", want: "declared twice"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			workspace, err := resources.LoadFromBytes[resources.Workspace]([]byte(
@@ -114,5 +125,59 @@ func TestHostDeclarationRefusesAPartialOrMalformedIdentity(t *testing.T) {
 				t.Fatalf("declaration was accepted or refused wrongly: %v (want %q)", err, table.want)
 			}
 		})
+	}
+}
+
+// TestHostDevelopersAreALocalClustersAllowlist: a developer identity is what a
+// local host's allowlist names, so it loads on a k3d environment and is refused
+// on any other, where a deployed host would refuse it anyway and the
+// declaration would only carry a person's identity into a hosted render.
+func TestHostDevelopersAreALocalClustersAllowlist(t *testing.T) {
+	developers := "      developers:\n        - key_id: dev-0123456789abcdef\n"
+	local, err := resources.LoadFromBytes[resources.Workspace]([]byte(
+		"name: example\nenvironments:\n  - name: local\n    namespace: example\n    cluster:\n      kind: k3d\n      context: k3d-dev\n    host:\n" + hostBlock + developers))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := Select(local, "local")
+	if err != nil {
+		t.Fatalf("a k3d environment's developers were refused: %v", err)
+	}
+	if want := []HostDeveloper{{KeyID: "dev-0123456789abcdef"}}; !reflect.DeepEqual(env.Host.Developers, want) {
+		t.Fatalf("developers %+v, want %+v", env.Host.Developers, want)
+	}
+	hosted, err := resources.LoadFromBytes[resources.Workspace]([]byte(
+		"name: example\nenvironments:\n  - name: prod\n    namespace: example\n    cluster:\n      kind: gke\n    host:\n" + hostBlock + developers))
+	if err == nil {
+		_, err = Select(hosted, "prod")
+	}
+	if err == nil || !strings.Contains(err.Error(), "only a local cluster's host admits") {
+		t.Fatalf("a hosted environment declaring developers was not refused: %v", err)
+	}
+	// The legacy reading takes an environment NAMED local with no cluster
+	// kind for k3d; a developer identity is never admitted on that reading —
+	// not with no cluster at all, not with a context that is not k3d's, not
+	// with the kind and no context.
+	for name, cluster := range map[string]string{
+		"no cluster":            "",
+		"a non-k3d context":     "    cluster:\n      context: gke-production\n",
+		"a kind and no context": "    cluster:\n      kind: k3d\n",
+	} {
+		legacy, loadErr := resources.LoadFromBytes[resources.Workspace]([]byte(
+			"name: example\nenvironments:\n  - name: local\n    namespace: example\n" + cluster + "    host:\n" + hostBlock + developers))
+		if loadErr == nil {
+			_, loadErr = Select(legacy, "local")
+		}
+		if loadErr == nil || !strings.Contains(loadErr.Error(), "only a local cluster's host admits") {
+			t.Errorf("%s: an environment named local that declares no k3d cluster admitted a developer: %v", name, loadErr)
+		}
+	}
+	anchored, err := resources.LoadFromBytes[resources.Workspace]([]byte(
+		"name: example\nenvironments:\n  - name: prod\n    namespace: example\n    cluster:\n      kind: gke\n    host:\n" + hostBlock + "      trust_anchor: /etc/host/delivery-trust\n"))
+	if err == nil {
+		_, err = Select(anchored, "prod")
+	}
+	if err == nil || !strings.Contains(err.Error(), "only a local cluster run mounts") {
+		t.Fatalf("a hosted environment stating a trust anchor was not refused: %v", err)
 	}
 }

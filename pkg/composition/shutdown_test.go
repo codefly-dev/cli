@@ -137,6 +137,7 @@ func TestInvokeRenderPropagatesShutdownFailureAndDiscardsReceipt(t *testing.T) {
 					}
 				}
 				require.NotNil(t, input.request)
+				require.NoError(t, session.bindRenderProvenance(t.Context(), []renderInput{input}))
 				directory, pathErr := filepath.EvalSymlinks(t.TempDir())
 				require.NoError(t, pathErr)
 				control := t.TempDir()

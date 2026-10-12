@@ -326,3 +326,46 @@ func TestValidateManagedServicesSkipsWorkspacesWithoutManagedServices(t *testing
 		t.Fatalf("ValidateManagedServices = %v, want nil", err)
 	}
 }
+
+// Two modules each declare a `redis`; a bare service-identity key would attach
+// one principal to both, so it is refused the way a bare managed-services key is.
+func TestValidateEnvironmentsRejectsAmbiguousBareServiceIdentity(t *testing.T) {
+	ctx := context.Background()
+	ws, err := loadDeploymentWorkspace(ctx, writeTwoModuleWorkspace(t, serviceIdentityDeclaration("redis")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ws.ValidateEnvironments(ctx)
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("ValidateEnvironments = %v, want the ambiguous bare key refused", err)
+	}
+}
+
+// Qualifying the key is the resolution the refusal asks for, and the identity
+// then resolves for that module's service and no other.
+func TestValidateEnvironmentsAllowsQualifiedServiceIdentity(t *testing.T) {
+	ctx := context.Background()
+	ws, err := loadDeploymentWorkspace(ctx, writeTwoModuleWorkspace(t, serviceIdentityDeclaration("sessions/redis")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.ValidateEnvironments(ctx); err != nil {
+		t.Fatalf("ValidateEnvironments = %v, want nil", err)
+	}
+}
+
+func TestValidateEnvironmentsRejectsUnknownQualifiedServiceIdentity(t *testing.T) {
+	for name, key := range map[string]string{"unknown module": "sesions/redis", "unknown service": "sessions/redys"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			ws, err := loadDeploymentWorkspace(ctx, writeTwoModuleWorkspace(t, serviceIdentityDeclaration(key)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = ws.ValidateEnvironments(ctx)
+			if err == nil || !strings.Contains(err.Error(), "unknown service") {
+				t.Fatalf("ValidateEnvironments = %v, want the unknown qualified key refused", err)
+			}
+		})
+	}
+}

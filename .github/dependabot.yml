@@ -30,6 +30,19 @@ updates:
       gomod:
         patterns:
           - '*'
+    # Held-back versions. Each entry names ONE exact version known to break a
+    # required gate, never a `x` range: a range would also hide the patched
+    # release that supersedes it, which is the thing we are waiting for.
+    ignore:
+      # grpc v1.84.0 is affected by GO-2026-6443 and the advisory's only fix
+      # for the 1.84 line is an unreleased v1.85.0-dev pseudo-version, so the
+      # `bootstrap-audit` govulncheck gate fails on it with nothing to bump
+      # to. Pinning the exact version keeps a future v1.84.1 or v1.85.0 -- the
+      # releases that would actually carry the fix -- flowing normally. See the
+      # note on the require line in go.mod.
+      - dependency-name: google.golang.org/grpc
+        versions:
+          - 1.84.0
   - package-ecosystem: npm
     directory: /web/dashboard
     schedule:

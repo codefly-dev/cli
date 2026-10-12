@@ -3,10 +3,12 @@ package environments
 import (
 	"fmt"
 	"maps"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
@@ -237,67 +239,60 @@ type EnvironmentHost struct {
 	// composition names which endpoint is the delivery API and never where it
 	// lives.
 	Delivery string `yaml:"delivery"`
-	// Release is the identity the host accepts delivered carriers from — the
-	// release workflow, reviewed with this composition: the repository, the
-	// workflow path, and the refs it may run at, each an anchored regular
-	// expression. A hosted release publish holds its own workflow identity to
-	// this policy before it signs anything, and reuses a carrier delivered
-	// earlier only when the identity that signed it is within it. The host
-	// publishes the same literal and enforces it independently.
+	// Release names the platform-owned key accepted for release delivery.
 	Release *HostReleasePolicy `yaml:"release,omitempty"`
+	// Developers lists machine keys admitted only by a local k3d host.
+	Developers []HostDeveloper `yaml:"developers,omitempty"`
+	// TrustAnchor is the local host's mounted verification-policy directory.
+	TrustAnchor string `yaml:"trust_anchor,omitempty"`
 }
 
-// HostReleasePolicy is one repository, one workflow path, and the refs that
-// workflow may run at.
+// HostDeveloper names a developer key admitted by a local host.
+type HostDeveloper struct {
+	KeyID string `yaml:"key_id"`
+}
+
+func (developer *HostDeveloper) UnmarshalYAML(node *yaml.Node) error {
+	if err := rejectUnknownKeys(node, "host.developers", "key_id"); err != nil {
+		return err
+	}
+	type plain HostDeveloper
+	return node.Decode((*plain)(developer))
+}
+
+var developerKeyPattern = regexp.MustCompile(`^dev-[0-9a-f]{16}$`)
+
+func (developer *HostDeveloper) Validate() error {
+	if !developerKeyPattern.MatchString(developer.KeyID) {
+		return fmt.Errorf("host developer key_id %q must match dev- followed by 16 lowercase hexadecimal characters", developer.KeyID)
+	}
+	return nil
+}
+
+// HostReleasePolicy names the platform's current release key.
 type HostReleasePolicy struct {
-	Repository string   `yaml:"repository"`
-	Workflow   string   `yaml:"workflow"`
-	Refs       []string `yaml:"refs"`
+	KeyID string `yaml:"key_id"`
 }
 
-var releasePolicyFields = []string{"repository", "workflow", "refs"}
-
-// UnmarshalYAML refuses a key the policy does not have: a misspelled `refs`
-// would otherwise read as a policy admitting no ref.
 func (policy *HostReleasePolicy) UnmarshalYAML(node *yaml.Node) error {
-	if err := rejectUnknownKeys(node, "host.release", releasePolicyFields...); err != nil {
+	if err := rejectUnknownKeys(node, "host.release", "key_id"); err != nil {
 		return err
 	}
 	type plain HostReleasePolicy
 	return node.Decode((*plain)(policy))
 }
-
-var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?/[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$`)
-
-// Validate holds the policy to its shape: an owner/repository, a workflow
-// path inside it, and at least one ref pattern that compiles and names a ref
-// (it starts with `refs/`).
 func (policy *HostReleasePolicy) Validate() error {
 	if policy == nil {
 		return nil
 	}
-	if !repositoryPattern.MatchString(policy.Repository) {
-		return fmt.Errorf("host release repository %q is not <owner>/<repository>", policy.Repository)
-	}
-	if policy.Workflow == "" || strings.HasPrefix(policy.Workflow, "/") || strings.ContainsAny(policy.Workflow, " \t\n@") {
-		return fmt.Errorf("host release workflow %q is not a workflow path inside the repository (such as .github/workflows/release.yml)", policy.Workflow)
-	}
-	if len(policy.Refs) == 0 {
-		return fmt.Errorf("host release refs must name at least one ref the release workflow may run at (an anchored regular expression such as refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+)")
-	}
-	for _, ref := range policy.Refs {
-		if !strings.HasPrefix(ref, "refs/") {
-			return fmt.Errorf("host release ref %q does not name a ref (it starts with refs/)", ref)
-		}
-		if _, err := regexp.Compile("^(?:" + ref + ")$"); err != nil {
-			return fmt.Errorf("host release ref %q is not a regular expression: %v", ref, err)
-		}
+	if policy.KeyID == "" || strings.ContainsFunc(policy.KeyID, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
+		return fmt.Errorf("host release key_id %q must be a single-line identity without spaces", policy.KeyID)
 	}
 	return nil
 }
 
 // hostFields are the keys a host block may carry, in declaration order.
-var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "envelope_revision", "delivery", "release"}
+var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "envelope_revision", "delivery", "release", "developers", "trust_anchor"}
 
 // deliveryPattern is a composition identity: <module>/<service>/<endpoint>,
 // each a lowercase name.
@@ -355,6 +350,19 @@ func (host *EnvironmentHost) Validate() error {
 	if !deliveryPattern.MatchString(host.Delivery) {
 		return fmt.Errorf("host delivery %q is not the composition identity <module>/<service>/<endpoint> of the host's delivery API", host.Delivery)
 	}
+	if host.TrustAnchor != "" && (!filepath.IsAbs(host.TrustAnchor) || filepath.Clean(host.TrustAnchor) != host.TrustAnchor || host.TrustAnchor == "/") {
+		return fmt.Errorf("host trust_anchor %q is not a clean absolute path (the directory the host reads its trust anchor from)", host.TrustAnchor)
+	}
+	seen := map[HostDeveloper]bool{}
+	for i := range host.Developers {
+		if err := host.Developers[i].Validate(); err != nil {
+			return err
+		}
+		if seen[host.Developers[i]] {
+			return fmt.Errorf("host developer %s is declared twice", host.Developers[i].KeyID)
+		}
+		seen[host.Developers[i]] = true
+	}
 	return host.Release.Validate()
 }
 
@@ -388,8 +396,8 @@ type EnvironmentWorkloadIdentity struct {
 
 // validate reports whether a declared identity names the principal a
 // ServiceAccount authenticates as and keys every attachment it stamps. label
-// names the offending block so an identity that would reach the cluster as a
-// keyless annotation, or as a ServiceAccount bound to no principal, fails at
+// names the offending block so an identity that would reach the cluster as an
+// empty annotation, or as a ServiceAccount bound to no principal, fails at
 // load instead. A nil receiver is a valid "not declared" state.
 func (identity *EnvironmentWorkloadIdentity) validate(label string) error {
 	if identity == nil {
@@ -507,7 +515,17 @@ func (i *EnvironmentServiceIdentity) Validate() error {
 		return err
 	}
 	for name, identity := range i.Services {
-		if err := validateResourcePathComponent("service-identity service", name); err != nil {
+		// `<module>/<service>` names one module's service; a bare name applies
+		// when the composition has one service by that name.
+		module, service, qualified := strings.Cut(name, "/")
+		if qualified {
+			if err := validateResourcePathComponent("service-identity module", module); err != nil {
+				return err
+			}
+		} else {
+			service = name
+		}
+		if err := validateResourcePathComponent("service-identity service", service); err != nil {
 			return err
 		}
 		if err := identity.validate(fmt.Sprintf("service-identity service %q", name)); err != nil {
@@ -517,18 +535,35 @@ func (i *EnvironmentServiceIdentity) Validate() error {
 	return nil
 }
 
-// WorkloadIdentity returns what a service authenticates as in this environment,
-// or nil when nothing is declared for it. A per-service entry wins over the
-// environment-wide default. The result is independent of the declaration, so
-// both paths behave the same way under mutation by a caller.
+// WorkloadIdentity returns what a service authenticates as in this environment
+// when the service is named bare, or nil when nothing is declared for it. It is
+// WorkloadIdentityFor with no module: a module-qualified entry is never
+// considered, so a caller that knows the module uses WorkloadIdentityFor.
+func (env *Environment) WorkloadIdentity(service string) *EnvironmentWorkloadIdentity {
+	return env.WorkloadIdentityFor("", service)
+}
+
+// WorkloadIdentityFor returns what a module's service authenticates as in this
+// environment, or nil when nothing is declared for it. A module-qualified entry
+// (`<module>/<service>`) wins, then a bare entry for the service name, then the
+// environment-wide default. The qualified form is what lets a composition whose
+// modules share a service name — two modules each with a `cache` — declare one
+// of them; ValidateEnvironments refuses a bare entry that would match several.
+// The result is independent of the declaration, so both paths behave the same
+// way under mutation by a caller.
 //
 // It resolves service-identity alone. A managed service's own identity is keyed
 // by that managed service, and which services consume it is not something an
 // Environment can see, so composing the two belongs to the consumer that knows
 // the service graph.
-func (env *Environment) WorkloadIdentity(service string) *EnvironmentWorkloadIdentity {
+func (env *Environment) WorkloadIdentityFor(module, service string) *EnvironmentWorkloadIdentity {
 	if env == nil || env.ServiceIdentity == nil {
 		return nil
+	}
+	if module != "" {
+		if identity, declared := env.ServiceIdentity.Services[module+"/"+service]; declared {
+			return identity.clone()
+		}
 	}
 	if identity, declared := env.ServiceIdentity.Services[service]; declared {
 		return identity.clone()
@@ -1088,6 +1123,11 @@ type Environment struct {
 	// profile it holds (resources.Environment.ConfigurationProfiles).
 	ConfigurationProfiles []string `yaml:"configuration-profiles,omitempty"`
 
+	// RunnableScopeSelections answers owner-declared slots per binding key
+	// (the same MODULE__OPERATION key generate runnable-bindings emits).
+	// Installation input only: Runtime deliberately does not send it to agents.
+	RunnableScopeSelections map[string]ScopeSelections `yaml:"runnable-scope-selections,omitempty"`
+
 	// Deploy-target overrides (CLI-side; not serialized to proto).
 	// Empty values fall back to legacy defaults (local k3d, ~/.kube/config,
 	// the default namespace, the --org flag's hardcoded registry) so
@@ -1206,6 +1246,18 @@ func LocalEnvironment() *Environment {
 			Kind: ClusterKindK3d,
 		},
 	}
+}
+
+// DeclaresLocalK3d reports whether the environment DECLARES a local k3d
+// cluster: cluster.kind k3d and a k3d context, both written. It is the gate
+// for everything a developer's own cluster may do that a deployed one may
+// not — admitting a developer identity, mounting a local trust anchor,
+// self-promoting a signed publish — and so, unlike IsK3d, it never reads an
+// undeclared environment named "local" as k3d: omitting a field must narrow
+// what an environment may do, never widen it.
+func (env *Environment) DeclaresLocalK3d() bool {
+	return env != nil && env.Cluster != nil && env.Cluster.Kind == ClusterKindK3d &&
+		strings.HasPrefix(env.Cluster.Context, "k3d-") && len(env.Cluster.Context) > len("k3d-")
 }
 
 // IsK3d reports whether the environment targets a k3d cluster. Used to

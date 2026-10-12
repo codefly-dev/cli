@@ -283,6 +283,7 @@ func init() {
 
 	// Begin
 	RootCmd.AddCommand(RunCmd)
+	RootCmd.AddCommand(DeliveryCmd)
 
 	// Build
 	RootCmd.AddCommand(BuildCmd)

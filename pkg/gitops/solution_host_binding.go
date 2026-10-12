@@ -678,7 +678,7 @@ func presenceInstanceOf(
 			continue
 		}
 		entry := SolutionArtifactUnit{Name: unit.Name, Path: unit.Path}
-		if identity := env.WorkloadIdentity(unit.Name); identity != nil {
+		if identity := env.WorkloadIdentityFor(module.Name, unit.Name); identity != nil {
 			entry.Subject = identity.Principal
 		}
 		instance.Units = append(instance.Units, entry)

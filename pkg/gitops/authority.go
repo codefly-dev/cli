@@ -13,6 +13,7 @@ import (
 	"github.com/codefly-dev/core/configurations"
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/resources"
+	solutionmanifest "github.com/codefly-dev/core/solution/manifest"
 	"github.com/codefly-dev/core/solutionhost"
 	"gopkg.in/yaml.v3"
 )
@@ -131,13 +132,14 @@ func authorityInstancesOf(
 	services []*resources.Service,
 	env *environments.Environment,
 	units []SolutionArtifactUnit,
+	endpoints []SolutionEndpoint,
 ) ([]AuthorityInstance, string, error) {
-	contract, err := modulecontract.Load(module.Dir())
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Sprintf("module %s publishes no %s, so it asks for no authority", module.Name, modulecontract.FileName), nil
-	}
+	request, err := authorityRequestOf(module)
 	if err != nil {
 		return nil, "", err
+	}
+	if request.undeclared != "" {
+		return nil, request.undeclared, nil
 	}
 	var identities []*resources.Service
 	for _, service := range services {
@@ -146,11 +148,11 @@ func authorityInstancesOf(
 		}
 	}
 	if len(identities) == 0 {
-		// The contract is the module's request for authority. With no service
+		// The request is the module's ask for authority. With no service
 		// declaring module-identity nothing would present it, and the request
 		// would be dropped rather than refused: the composition is inconsistent
 		// and is told so here, before slot resolution or any document.
-		return nil, "", fmt.Errorf("module %s publishes %s, which asks for authority, but no service declares module-identity, so nothing would present it; declare module-identity on the service that presents the module's identity, or withdraw the contract", module.Name, modulecontract.FileName)
+		return nil, "", fmt.Errorf("module %s %s, which asks for authority, but no service declares module-identity, so nothing would present it; declare module-identity on the service that presents the module's identity, or withdraw the request", module.Name, request.source)
 	}
 	if len(identities) > 1 {
 		names := make([]string, 0, len(identities))
@@ -164,9 +166,12 @@ func authorityInstancesOf(
 	if err != nil {
 		return nil, "", fmt.Errorf("read the workspace configurations the contract of %s resolves against: %w", module.Name, err)
 	}
-	resolved, err := contract.Resolve(workspaceValues{provided: provided})
+	resolved, err := request.contract.Resolve(workspaceValues{provided: provided})
 	if err != nil {
 		return nil, "", fmt.Errorf("module %s: %w", module.Name, err)
+	}
+	if err := refuseUnaddressableConsumption(workspace, module, request, resolved); err != nil {
+		return nil, "", err
 	}
 	// The principal is the module's own name — the contract says so of
 	// itself — and it is held to that here, because the contract is written in
@@ -176,7 +181,7 @@ func authorityInstancesOf(
 	if resolved.Principal != module.Name {
 		return nil, "", fmt.Errorf("module %s publishes a contract whose principal is %q; the principal every credential of a module is issued to is the module's own name, so the contract declares principal: %s", module.Name, resolved.Principal, module.Name)
 	}
-	if err := refuseUncarriedAuthority(module.Name, resolved); err != nil {
+	if err := refuseUnrenderedDestinations(module.Name, resolved, endpoints); err != nil {
 		return nil, "", err
 	}
 	instances := make([]AuthorityInstance, 0, len(identities))
@@ -194,6 +199,116 @@ func authorityInstancesOf(
 		instances = append(instances, AuthorityInstance{Module: module.Name, Service: service.Name, Unit: units[index], Contract: resolved})
 	}
 	return instances, "", nil
+}
+
+// authorityRequest is what a module asks for authority with, from exactly one
+// source: its published module contract, or — for a composed solution, which
+// declares what it consumes in its solution manifest — the scopes its
+// api.consumes entries ask for. undeclared carries the reason when it asks for
+// none; source says which file asked, for a refusal.
+type authorityRequest struct {
+	contract *modulecontract.Contract
+	// consumed is the scoped api.consumes entries the contract was built
+	// from, when the request is a solution's consumption; nil for a module's
+	// own contract.
+	consumed   []solutionmanifest.APIDeclaration
+	source     string
+	undeclared string
+}
+
+// authorityRequestOf reads a module's request for authority, as a module
+// contract either way: the one it publishes, or the one a composed solution's
+// scoped api.consumes amounts to (core's ConsumptionContract). The caller
+// resolves both through the same Resolve, so a solution's audience comes from
+// the composition exactly as a module's does.
+//
+// The solution manifest is read through core's LoadConsumption: the schema
+// version and api.consumes, strictly, and nothing else. An invalid or unknown
+// field in a consumption fails the render; a section with nothing to do with
+// consumption — an agent block, a section this core does not model — never
+// does, because a render of a solution that asks for no authority must not fail
+// on what an authority read does not read. The run path's lenient read is
+// unchanged.
+//
+// Both sources at once is refused, by name. A solution that is also consumed
+// may publish a contract for its destinations; merging its bindings with a
+// derived consumption is a decision about two declarations of one request that
+// nothing has made yet, so for now it declares its consumption in one place.
+func authorityRequestOf(module *resources.Module) (authorityRequest, error) {
+	contract, err := modulecontract.Load(module.Dir())
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		contract = nil
+	case err != nil:
+		return authorityRequest{}, err
+	}
+	var consumption *modulecontract.Contract
+	var consumed []solutionmanifest.APIDeclaration
+	data, err := os.ReadFile(filepath.Join(module.Dir(), solutionmanifest.FileName))
+	switch {
+	case module.Dir() == "":
+		// A module constructed rather than loaded has nowhere to ship a
+		// manifest; reading the working directory instead would be a guess.
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		return authorityRequest{}, fmt.Errorf("read the solution manifest of module %s: %w", module.Name, err)
+	default:
+		declared, loadErr := solutionmanifest.LoadConsumption(data)
+		if loadErr != nil {
+			return authorityRequest{}, fmt.Errorf("module %s: the api.consumes an authority document is derived from: %w", module.Name, loadErr)
+		}
+		// A composed solution is a module, and its principal is the name it is
+		// composed under, exactly as a module contract's principal must be.
+		if consumption, err = declared.ConsumptionContract(module.Name); err != nil {
+			return authorityRequest{}, fmt.Errorf("module %s: %w", module.Name, err)
+		}
+		for index := range declared.API.Consumes {
+			if len(declared.API.Consumes[index].Scopes) > 0 {
+				consumed = append(consumed, declared.API.Consumes[index])
+			}
+		}
+	}
+	switch {
+	case contract != nil && consumption != nil:
+		return authorityRequest{}, fmt.Errorf("module %s publishes %s and its %s asks for scopes on api.consumes; a module asks for authority from one declaration, so declare the consumption in one of them", module.Name, modulecontract.FileName, solutionmanifest.FileName)
+	case contract != nil:
+		return authorityRequest{contract: contract, source: "publishes " + modulecontract.FileName}, nil
+	case consumption != nil:
+		return authorityRequest{contract: consumption, consumed: consumed, source: "asks for scopes on api.consumes in its " + solutionmanifest.FileName}, nil
+	}
+	return authorityRequest{undeclared: fmt.Sprintf("module %s publishes no %s and asks for no scopes on api.consumes, so it asks for no authority", module.Name, modulecontract.FileName)}, nil
+}
+
+// refuseUnaddressableConsumption refuses a solution's request the host could
+// never install, here, where its author reads the reason: a scoped entry for a
+// module the composition does not compose, and one addressed to the solution
+// itself — by name, or by a resolved audience that is its own principal — which
+// the host omits from its registry with only a logged reason.
+func refuseUnaddressableConsumption(workspace *resources.Workspace, module *resources.Module, request authorityRequest, resolved *modulecontract.Resolved) error {
+	if request.consumed == nil {
+		return nil
+	}
+	composed := map[string]bool{}
+	for _, reference := range workspace.Modules {
+		if reference != nil {
+			composed[reference.Name] = true
+		}
+	}
+	for index := range request.consumed {
+		declaration := &request.consumed[index]
+		if declaration.Module == module.Name {
+			return fmt.Errorf("module %s asks for scopes at itself on api.consumes entry %s; a credential is never addressed to its own principal, and the host would never install the binding", module.Name, declaration.ID)
+		}
+		if !composed[declaration.Module] {
+			return fmt.Errorf("module %s asks for scopes at module %s on api.consumes entry %s, which this workspace does not compose; a binding for a module nothing composes can never be installed", module.Name, declaration.Module, declaration.ID)
+		}
+	}
+	for _, binding := range resolved.Bindings {
+		if binding.Audience == resolved.Principal {
+			return fmt.Errorf("module %s asks for scopes on api.consumes entry %s at audience %q, which is its own principal; a credential is never addressed to its own principal, and the host would never install the binding", module.Name, binding.ID, binding.Audience)
+		}
+	}
+	return nil
 }
 
 // renderAuthorityDocuments renders the module's authority document into the
@@ -314,11 +429,15 @@ func declaredScopeCeilings(declared []modulecontract.ScopeCeiling) []solutionhos
 // inclusion — <presence binding>:<binding>:<operation>, scoped by the presence
 // binding so two instances of one module on one host hold distinct units and
 // withdrawing one instance's leaves the other's alone — with the operation's
-// scope ceiling as one sorted, comma-joined value, and the module's queue and
-// namespace when it declares one of each. A module declaring none grants no
-// queue- or namespace-scoped authority, which is a narrower grant and never
-// every queue; a module declaring several is refused before this, by
-// refuseUncarriedAuthority, rather than granted none.
+// scope ceiling as one sorted, comma-joined value, the key the host installs
+// the binding under and its lookup method when the contract declares them, and
+// the module's queue and namespace when it declares exactly one of each.
+//
+// A unit's queue and namespace are the UNIT's and stay single-valued: a module
+// declaring none, or several, grants no queue- or namespace-scoped authority on
+// any unit, which is a narrower grant and never every queue. What the module
+// itself owns is on the document (Queues, Namespaces, ScopeCeilings), written
+// out whole, so several are carried rather than refused.
 func authorityBindings(presenceBinding string, contract *modulecontract.Resolved) []solutionhost.AuthorityBinding {
 	var queue, namespace string
 	if len(contract.Queues) == 1 {
@@ -329,14 +448,20 @@ func authorityBindings(presenceBinding string, contract *modulecontract.Resolved
 	}
 	var bindings []solutionhost.AuthorityBinding
 	for _, binding := range contract.Bindings {
+		var lookupMethod string
+		if binding.Lookup != nil {
+			lookupMethod = binding.Lookup.Method
+		}
 		for _, operation := range binding.Operations {
 			bindings = append(bindings, solutionhost.AuthorityBinding{
-				ID:        presenceBinding + ":" + binding.ID + ":" + operation,
-				Revision:  binding.Revision,
-				Audience:  binding.Audience,
-				Scope:     strings.Join(binding.Scopes[operation], ","),
-				Queue:     queue,
-				Namespace: namespace,
+				ID:           presenceBinding + ":" + binding.ID + ":" + operation,
+				Revision:     binding.Revision,
+				Audience:     binding.Audience,
+				Scope:        strings.Join(binding.Scopes[operation], ","),
+				Queue:        queue,
+				Namespace:    namespace,
+				BindingKey:   binding.BindingKey,
+				LookupMethod: lookupMethod,
 			})
 		}
 	}
@@ -344,44 +469,37 @@ func authorityBindings(presenceBinding string, contract *modulecontract.Resolved
 	return bindings
 }
 
-// refuseUncarriedAuthority refuses a contract declaring what core's authority
-// document cannot carry today, so nothing a module publishes is dropped between
-// the contract and the signed document: a host cannot enforce a declaration it
-// never receives, and a declaration that changed without the document
-// changing would be enforced as before. Each is named, with the field the
-// document would need. A module declaring none of them renders as it does;
-// one declaring any waits on core growing the document.
-// errUncarriedAuthority is the refusal of a contract the reader accepted and
-// the signed authority document cannot carry whole: the renderer's verdict
-// past the reader, named so a conformance run can tell it from any other.
-var errUncarriedAuthority = errors.New("the contract declares what the signed authority document cannot carry")
+// errUnrenderedDestination is the refusal of a contract the reader accepted
+// whose destination this render does not deliver: the renderer's verdict past
+// the reader, named so a conformance run can tell it from any other.
+var errUnrenderedDestination = errors.New("the contract declares a destination this render does not deliver")
 
-func refuseUncarriedAuthority(module string, contract *modulecontract.Resolved) error {
-	var uncarried []string
-	if len(contract.Queues) > 1 {
-		uncarried = append(uncarried, fmt.Sprintf("%d queues (an AuthorityBinding carries one queue)", len(contract.Queues)))
-	}
-	if len(contract.Namespaces) > 1 {
-		uncarried = append(uncarried, fmt.Sprintf("%d namespaces (an AuthorityBinding carries one namespace)", len(contract.Namespaces)))
-	}
-	if len(contract.ScopeCeilings) > 0 {
-		uncarried = append(uncarried, "scope_ceilings (the document has no field for the module's own ceilings)")
-	}
-	if len(contract.Destinations) > 0 {
-		uncarried = append(uncarried, "destinations (the document has no field for the endpoints a module exposes, nor their kinds)")
-	}
-	for _, binding := range contract.Bindings {
-		if binding.BindingKey != "" {
-			uncarried = append(uncarried, fmt.Sprintf("binding %s binding_key (an AuthorityBinding carries no key)", binding.ID))
-		}
-		if binding.Lookup != nil && binding.Lookup.Method != "" {
-			uncarried = append(uncarried, fmt.Sprintf("binding %s lookup.method (an AuthorityBinding carries no lookup method)", binding.ID))
+// refuseUnrenderedDestinations holds each destination the contract declares
+// against the endpoints the presence document lists for this instance. A
+// destination is NOT restated in the authority document (core#735): the
+// service and endpoint are already the presence document's, signed once so
+// two readers cannot disagree, and the destination's kind is the vocabulary of
+// the host's envelope, which a document never carries. What the render owes
+// is that every destination it is asked to expose is one it actually renders;
+// a destination naming an endpoint the presence does not list would be a
+// declaration the host can never route, so it is refused by name.
+func refuseUnrenderedDestinations(module string, contract *modulecontract.Resolved, endpoints []SolutionEndpoint) error {
+	rendered := make(map[string]struct{}, len(endpoints))
+	for _, endpoint := range endpoints {
+		if endpoint.Module == module {
+			rendered[endpoint.Service+"/"+endpoint.Name] = struct{}{}
 		}
 	}
-	if len(uncarried) == 0 {
+	var missing []string
+	for _, destination := range contract.Destinations {
+		if _, ok := rendered[destination.Service+"/"+destination.Endpoint]; !ok {
+			missing = append(missing, fmt.Sprintf("%s (%s/%s)", destination.ID, destination.Service, destination.Endpoint))
+		}
+	}
+	if len(missing) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%w: module %s declares %s, and nothing it declares is dropped on the way to the host; this needs core's solutionhost.AuthorityBinding to grow those fields before the module can render authority", errUncarriedAuthority, module, strings.Join(uncarried, "; "))
+	return fmt.Errorf("%w: module %s declares the destinations %s, and its presence document lists no such endpoint; a destination is held to the endpoints the module renders, so declare the endpoint on the service or withdraw the destination", errUnrenderedDestination, module, strings.Join(missing, ", "))
 }
 
 // solutionAuthorityConfigMap carries one authority document, written through a
