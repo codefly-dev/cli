@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 
-
 	"github.com/codefly-dev/cli/pkg/builder"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
