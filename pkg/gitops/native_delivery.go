@@ -33,9 +33,60 @@ import (
 // which the run's API server reports as the pod's image, so the host's
 // approved-build check compares what it compares on a cell.
 
+// NativeIdentity is one workload a native run projects a token for and
+// delivers presence and authority for: a service that declares
+// module-identity, the account it would run as in a cell, and its mesh
+// principal — the SPIFFE ID the cell's mesh issues to that account, which the
+// presence names and nothing on a laptop presents.
+type NativeIdentity struct {
+	Module   string
+	Service  string
+	Account  string
+	SPIFFEID string
+}
+
+// WorkloadAccount is the ServiceAccount name a service runs as: Core's
+// default for its name, the same one a cell's render projects.
+func WorkloadAccount(service string) string {
+	return workloadAccount(service)
+}
+
+// ResolveNativeIdentities plans the identities a native run projects, by the
+// rule a cell's render names them: every module-identity service of the
+// composition, each in its module's namespace. A native run has no cluster
+// to require.
+func ResolveNativeIdentities(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (map[string]NativeIdentity, error) {
+	if env.Host == nil {
+		return nil, fmt.Errorf("environment %s declares no host", env.Name)
+	}
+	refs, err := workspace.LoadServiceWithModules(ctx)
+	if err != nil {
+		return nil, err
+	}
+	identities := map[string]NativeIdentity{}
+	for _, ref := range refs {
+		service, loadErr := workspace.LoadService(ctx, ref)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		if !service.ModuleIdentity {
+			continue
+		}
+		namespace := env.ModuleNamespace(workspace, ref.Module)
+		if namespace == "" {
+			return nil, fmt.Errorf("module-identity service %s/%s has no resolved namespace: the environment declares none", ref.Module, ref.Name)
+		}
+		identities[resources.ServiceUnique(ref.Module, ref.Name)] = NativeIdentity{
+			Module: ref.Module, Service: ref.Name, Account: workloadAccount(ref.Name),
+			SPIFFEID: meshPrincipal(env.Host, namespace, ref.Name),
+		}
+	}
+	return identities, nil
+}
+
 // NativeWorkload is one native process the run delivers presence for: the
 // module it belongs to, the service that is its serving workload, and the
-// identity the run issued it.
+// identity it runs under.
 type NativeWorkload struct {
 	Module    *resources.Module
 	Service   *resources.Service
@@ -128,6 +179,9 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	instance := &SolutionInstance{Kind: solutionhost.KindModule, Name: workload.Module.Name, Alias: workload.Module.Name, Package: manifest.ID, Version: manifest.Version}
 	if declared != nil {
 		instance.Kind = solutionhost.KindSolution
+		if instance.Frontend, err = solutionrun.DeclaredFrontend(ctx, workload.Module); err != nil {
+			return nil, err
+		}
 	}
 	instance.Modules = []SolutionModulePin{{Module: workload.Module.Name, Package: manifest.ID, Version: manifest.Version}}
 	if instance.ReleaseDigest, err = releaseDigest(workload.Module.Dir()); err != nil {
@@ -168,6 +222,7 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 		return nil, fmt.Errorf("%s %s claims the route alias %q, which is not one URL path segment", instance.Kind, instance.Name, instance.Alias)
 	}
 	presence.Routes = []solutionhost.Route{{Alias: instance.Alias, Surface: solutionhost.SurfaceBackend}}
+	presence.Frontend = instance.Frontend
 	// The artifact's rendered digest names what the run rendered for the unit
 	// — the workload's image reference — and the workload's image digest names
 	// the build; core refuses a document that uses one digest for both.

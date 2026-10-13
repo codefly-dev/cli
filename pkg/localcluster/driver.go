@@ -58,10 +58,6 @@ func (d *ClusterDriver) EnsureArgoCD(ctx context.Context) (bool, error) {
 	return deployments.EnsureArgoCD(ctx, d.Kubectl, nil)
 }
 
-func (d *ClusterDriver) EnsureWorkloadIssuer(ctx context.Context) (bool, error) {
-	return deployments.EnsureWorkloadIssuer(ctx, d.Kubectl, nil, d.Environment.Host.TrustDomain)
-}
-
 func (d *ClusterDriver) EnsureDeliveryAccount(ctx context.Context) error {
 	return deployments.EnsureDeliveryAccount(ctx, d.Kubectl)
 }

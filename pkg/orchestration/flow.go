@@ -217,10 +217,10 @@ func MapValues[K comparable, V any](m map[K]V) []V {
 
 type World struct {
 	// RenderOwnedGroups supplies the render-owned workspace configuration
-	// groups (workload-identity, module-authority) to one service of a NATIVE
-	// run. A render projects them per workload; a laptop run has no render,
-	// so the CLI issues the identities itself and hands the groups out here,
-	// to a service that declares them and to nobody else. Nil outside such a run.
+	// group (module-authority) to one service of a NATIVE run. A render
+	// projects it per workload; a laptop run has no render, so the CLI hands
+	// the group out here, to a service that declares it and to nobody else.
+	// Nil outside such a run.
 	RenderOwnedGroups func(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error)
 
 	// RuntimeOverrides supplies per-service process environment a NATIVE run
@@ -1343,6 +1343,9 @@ func (flow *Flow) emitState(service string, state tui.ServiceState, port int) {
 	}
 	if flow.runningHook != nil && state == tui.StateRunning {
 		flow.runningHook(service, port)
+	}
+	if state == tui.StateRunning {
+		flow.checkLoopback(service)
 	}
 }
 

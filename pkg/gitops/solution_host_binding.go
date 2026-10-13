@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -125,6 +126,10 @@ type SolutionInstance struct {
 	// solution's executor reports. It is a release digest and never an image
 	// or a rendered-bytes digest.
 	ReleaseDigest solutionhost.ReleaseDigest
+	// Frontend is the block a solution declares beside its entry service
+	// (solutionrun.FrontendFileName): what the host lists the solution under.
+	// A solution carries one; a module never does, and core refuses one on it.
+	Frontend *solutionhost.Frontend
 	// Units are the rendered units this generation pins, by tree-relative path,
 	// each with the principal its workloads present.
 	Units []SolutionArtifactUnit
@@ -315,6 +320,7 @@ func solutionHostBinding(owned string, opts *RenderOptions, instance *SolutionIn
 		// and nothing else, so backend is the only honest surface today.
 		document.Routes = []solutionhost.Route{{Alias: instance.Alias, Surface: solutionhost.SurfaceBackend}}
 	}
+	document.Frontend = instance.Frontend
 	for _, unit := range instance.Units {
 		digest, digestErr := unitDigestInTree(tree, owned, unit.Path)
 		if digestErr != nil {
@@ -694,6 +700,12 @@ func presenceInstanceOf(
 	instance := &SolutionInstance{Kind: solutionhost.KindModule, Name: module.Name, Alias: module.Name}
 	if declared != nil {
 		instance.Kind = solutionhost.KindSolution
+		// The solution's page, from the one file its runtime serves it from:
+		// a solution with none is refused here, where the file can be named,
+		// rather than listed by the host under nothing.
+		if instance.Frontend, err = solutionrun.DeclaredFrontend(context.Background(), module); err != nil {
+			return nil, "", err
+		}
 	}
 	instance.Package, instance.Version = opts.Package.ID, opts.Package.Version
 	instance.Modules = []SolutionModulePin{{Module: module.Name, Package: opts.Package.ID, Version: opts.Package.Version}}

@@ -595,9 +595,6 @@ func validateTree(root string, opts *RenderOptions) ([]manifest, error) {
 	if err = validateObjectIdentities(effective, opts.Namespace); err != nil {
 		return nil, err
 	}
-	if err = validateWorkloadIdentityChecks(effective, opts.workloadIdentityChecks); err != nil {
-		return nil, err
-	}
 	return effective, nil
 }
 
@@ -1227,7 +1224,7 @@ func inspectTemplatedValue(value any, path []string) error {
 	case map[string]any:
 		for key, child := range typed {
 			next := extendPath(path, key)
-			if isCredentialKey(key, isConfigurationDataPath(path)) && scalarHasValue(child) && !workloadIdentityPath(key, child) {
+			if isCredentialKey(key, isConfigurationDataPath(path)) && scalarHasValue(child) {
 				return fmt.Errorf("%s contains credential value", strings.Join(next, "."))
 			}
 			if err := inspectTemplatedValue(child, next); err != nil {
@@ -1297,12 +1294,12 @@ func inspectValueAllowingExpressions(
 	}
 	switch typed := value.(type) {
 	case map[string]any:
-		if name, ok := typed["name"].(string); ok && isCredentialKey(name, true) && scalarHasValue(typed["value"]) && !workloadIdentityPath(name, typed["value"]) {
+		if name, ok := typed["name"].(string); ok && isCredentialKey(name, true) && scalarHasValue(typed["value"]) {
 			return fmt.Errorf("%s.value contains credential value", strings.Join(path, "."))
 		}
 		for key, child := range typed {
 			next := extendPath(path, key)
-			if isCredentialKey(key, isConfigurationDataPath(path)) && scalarHasValue(child) && !workloadIdentityPath(key, child) &&
+			if isCredentialKey(key, isConfigurationDataPath(path)) && scalarHasValue(child) &&
 				(allowCredentialReference == nil || !allowCredentialReference(next)) && !expressionAt(next, child) {
 				return fmt.Errorf("%s contains credential value", strings.Join(next, "."))
 			}
@@ -1502,6 +1499,7 @@ func inventoryHead(opts *RenderOptions) Inventory {
 		Units:                   append([]InventoryUnit(nil), opts.Units...),
 	}
 	inventory.Delivery = opts.Delivered
+	inventory.MeshEdges = opts.MeshEdges
 	if len(opts.WorkspaceConfigurationDigests) > 0 {
 		inventory.WorkspaceConfigurationDigests = make(map[string]string, len(opts.WorkspaceConfigurationDigests))
 		for group, digest := range opts.WorkspaceConfigurationDigests {

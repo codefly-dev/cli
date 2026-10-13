@@ -197,32 +197,7 @@ func projectTrustAnchor(tree *renderRoot, owned string, opts *RenderOptions) err
 		if len(patches) == 0 {
 			return fmt.Errorf("the host's verifier %s/%s renders no serving workload to mount the local trust anchor into", module, service)
 		}
-		for i := range opts.workloadIdentityChecks {
-			check := &opts.workloadIdentityChecks[i]
-			if check.path == unit.Path && requestsWorkloadIdentity(check.service) {
-				current, err := check.currentObjects(tree, owned)
-				if err != nil {
-					return err
-				}
-				if err = validateOwnedObjects(current, check); err != nil {
-					return err
-				}
-			}
-		}
-		if err := addOverlayPatches(tree, unitDir, opts.Environment, patches); err != nil {
-			return err
-		}
-		// This is the final CLI-owned projection into this service. Retain
-		// its completed output before any enclosing overlay is built.
-		for i := range opts.workloadIdentityChecks {
-			check := &opts.workloadIdentityChecks[i]
-			if check.path == unit.Path {
-				if err := check.capture(tree, owned); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
+		return addOverlayPatches(tree, unitDir, opts.Environment, patches)
 	}
 	return fmt.Errorf("the host's delivery API %s names service %s, which module %s does not render, so the local trust anchor has nowhere to be mounted", opts.Host.Delivery, service, module)
 }

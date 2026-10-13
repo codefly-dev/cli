@@ -16,11 +16,12 @@ import (
 // --- What a presence document says the host runs ---
 //
 // A presence document names, per workload, the one container that
-// authenticates, the exact build it must be running and the identity it must
-// present. All three are read off the rendered unit rather than declared: the
-// render pins every image by digest already, the pod template names the account
-// the workload runs as, and the environment names the trust domain the host's
-// issuer puts in that account's SVID.
+// authenticates, the exact build it must be running and the identity it holds.
+// All three are read off the rendered unit rather than declared: the render
+// pins every image by digest already, the pod template names the account the
+// workload runs as, and the environment names the trust domain the cell's mesh
+// names that account's principal under — the SPIFFE ID the mesh presents for
+// the workload, which the workload itself never serves.
 
 // presenceWorkloads derives the workloads one rendered unit declares: every
 // Deployment, StatefulSet or DaemonSet in its overlay, with the container named

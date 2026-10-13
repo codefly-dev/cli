@@ -145,15 +145,28 @@ them in one place, `pkg/orchestration/workspace_configurations.go`, by one rule:
       ∪ the groups the composition root provides run-wide
       − the groups the selected run profile excludes
 
-The render-owned `workload-identity` and `module-authority` groups are supplied
-per workload by the render's projections. Every resolution path, including
-runtime-init, local runs and CI compile/lint/test, omits these groups from manager
-dependencies and composition-root inheritance; the render refuses authored
-files for them. Outside a render, these groups supply no values and each service
-decides whether it can run without them. `doctor workspace` reports them as supplied on local k3d and warns
+The render-owned `module-authority` group is supplied per workload by the
+render's projection: the workload's mesh principal (the SPIFFE ID of the
+ServiceAccount its pod runs as), the host's two audiences and the internal
+token. Every resolution path, including runtime-init, local runs and CI
+compile/lint/test, omits the group from manager dependencies and
+composition-root inheritance; the render refuses an authored file for it. A
+native run that declares a host supplies it the way the render does; elsewhere
+it supplies no values and each service decides whether it can run without
+them. `doctor workspace` reports it as supplied on local k3d and warns
 elsewhere: "supplied only by a local k3d or cell render; absent here". See
-[workload identities](solution-host-bindings.md#local-runs) for their values and
-environment requirements.
+[mesh principals and module authority](solution-host-bindings.md#mesh-principals-and-module-authority)
+for its values and environment requirements. No group carries a certificate:
+a workload's transport identity is the mesh's, never a file it reads.
+
+**A native run listens on loopback.** The native address core allocates a
+service (`network.Native`) is a loopback address, and it is the address the
+service's own `CODEFLY__ENDPOINT__…` carrier hands it to listen on; a service
+listens on exactly that host, and only the environment's `host.gateway` may
+be reachable off loopback — the laptop's stand-in for the mesh's reachability
+rule. The flow checks it once a service is Running (`pkg/orchestration/loopback.go`):
+one connect attempt per port on each of the machine's non-loopback addresses,
+and a warning naming the service, its agent and the address that answered.
 
 The composition root's own `configurations/<profile>/*` (and any
 invocation-scoped override) reach **every** service of the composition, so a

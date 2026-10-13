@@ -33,7 +33,10 @@ func TestHostGatewayShapeAndRoundTrip(t *testing.T) {
 	}
 }
 
-func identityWorkspace(t *testing.T, gateway string, declares bool) *resources.Workspace {
+// hostWorkspace composes one module with one service, under a host block that
+// names gateway when it is not empty; the service declares module-authority
+// when declares is true.
+func hostWorkspace(t *testing.T, gateway string, declares bool) *resources.Workspace {
 	t.Helper()
 	root := t.TempDir()
 	block := hostBlock
@@ -43,7 +46,7 @@ func identityWorkspace(t *testing.T, gateway string, declares bool) *resources.W
 	block += "      module_audience: module-capabilities\n"
 	service := "name: api\nagent:\n  name: go\n  publisher: codefly.dev\n  version: 0.0.0\n"
 	if declares {
-		service += "workspace-configuration-dependencies:\n  - workload-identity\n"
+		service += "workspace-configuration-dependencies:\n  - module-authority\n"
 	}
 	files := map[string]string{
 		resources.WorkspaceConfigurationName:                             "name: example\nlayout: modules\nmodules:\n  - name: app\nenvironments:\n  - name: prod\n    namespace: example\n    host:\n" + block,
@@ -60,19 +63,20 @@ func identityWorkspace(t *testing.T, gateway string, declares bool) *resources.W
 	return workspace
 }
 
-func TestHostGatewayRequiredByExplicitConsumersAndMustExist(t *testing.T) {
+// A host.gateway names a composed service with a workload of its own; no
+// service opts into anything for it to be named, and a composition without one
+// is valid.
+func TestHostGatewayMustNameAComposedService(t *testing.T) {
 	for _, tc := range []struct {
 		name, gateway, want string
-		declares            bool
 	}{
-		{"required", "", "requires host.gateway", true},
-		{"unknown", "app/missing", "no composed service", true},
-		{"foreign module", "missing/api", "no composed service", true},
-		{"valid", "app/api", "", true},
-		{"not needed", "", "", false},
+		{"unknown", "app/missing", "no composed service"},
+		{"foreign module", "missing/api", "no composed service"},
+		{"valid", "app/api", ""},
+		{"absent", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			workspace := identityWorkspace(t, tc.gateway, tc.declares)
+			workspace := hostWorkspace(t, tc.gateway, false)
 			err := ValidateWorkspace(t.Context(), workspace)
 			if tc.want != "" {
 				require.ErrorContains(t, err, tc.want)
@@ -83,33 +87,23 @@ func TestHostGatewayRequiredByExplicitConsumersAndMustExist(t *testing.T) {
 	}
 }
 
-func TestModuleAuthorityRequiresWorkloadIdentityAndHostAudience(t *testing.T) {
+// A service declaring module-authority needs the two audiences the render
+// projects into the group, and nothing else: the principal it is handed is
+// the mesh identity of its own ServiceAccount, which it never opts into.
+func TestModuleAuthorityRequiresTheHostAudiences(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		identity bool
-		audience string
-		want     string
+		name, audience, moduleAudience, want string
 	}{
-		{"missing identity", false, "mint", "must also declare workload-identity"},
-		{"missing audience", true, "", "requires host.audience"},
-		{"valid", true, "mint", ""},
+		{"missing audience", "", "module-capabilities", "requires host.audience"},
+		{"missing module audience", "mint", "", "requires host.module_audience"},
+		{"valid", "mint", "module-capabilities", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			workspace := identityWorkspace(t, "app/api", tc.identity)
-			path := filepath.Join(workspace.Dir(), "modules/app/services/api", resources.ServiceConfigurationName)
-			body, err := os.ReadFile(path)
-			require.NoError(t, err)
-			if !tc.identity {
-				body = append(body, []byte("workspace-configuration-dependencies:\n")...)
-			}
-			body = append(body, []byte("  - module-authority\n")...)
-			require.NoError(t, os.WriteFile(path, body, 0o600))
-			workspace, err = resources.LoadWorkspaceFromDir(t.Context(), workspace.Dir())
-			require.NoError(t, err)
+			workspace := hostWorkspace(t, "app/api", true)
 			env, err := Select(workspace, "prod")
 			require.NoError(t, err)
-			env.Host.Audience = tc.audience
-			_, err = WorkloadIdentityServices(t.Context(), workspace, env)
+			env.Host.Audience, env.Host.ModuleAudience = tc.audience, tc.moduleAudience
+			err = ValidateHostComposition(t.Context(), workspace, env)
 			if tc.want == "" {
 				require.NoError(t, err)
 			} else {

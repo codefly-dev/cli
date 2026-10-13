@@ -48,7 +48,7 @@ environments:
       domain: example                           # the ownership domain this composition delivers under
       audience: accounts                        # the bare token audience the host verifies
       module_audience: module-capabilities      # the audience the host stamps on a module's own capability
-      trust_domain: cluster.example             # the SPIFFE trust domain of the host's identity issuer
+      trust_domain: cluster.example             # the SPIFFE trust domain of the cell's mesh, which every workload's principal is under
       envelope_revision: 3                      # the envelope revision this composition was reviewed against
       delivery: platform/accounts/rest          # the host's delivery API, by composition identity
       release:
@@ -165,8 +165,8 @@ as a label value.
 the document names the one container that authenticates — the container named
 after the service, or the only container when there is one — its image
 repository and digest, the identity it must present (the host's audience, the
-principal the environment declares for the service (`service-identity.services`, keyed `<service>`, or `<module>/<service>` when two composed modules share the name — a bare key matching several is refused), and the SPIFFE ID
-`spiffe://<trust_domain>/ns/<namespace>/sa/<service account>`), and every
+principal the environment declares for the service (`service-identity.services`, keyed `<service>`, or `<module>/<service>` when two composed modules share the name — a bare key matching several is refused), and its **mesh principal**, the SPIFFE ID
+`spiffe://<trust_domain>/ns/<namespace>/sa/<service account>` the cell's mesh issues to that account and presents on the workload's behalf — never a certificate the workload serves), and every
 other container, init containers included, as one that must never be accepted
 as the workload. A unit with several containers and none named after the
 service is refused: "whichever one presented the token" is how a sidecar ends
@@ -217,12 +217,27 @@ keyed on "a projected token volume" would refuse every multi-container pod. A
 render check is not the boundary — a hand-built manifest skips the renderer —
 it is the same rule one step earlier.
 
-Two approved builds of one ServiceAccount share one SVID: a mesh derives the
-identity from the account, not the image. Binding identity to the build is
-therefore not something the SVID does; the host does it by comparing the pod's
-resolved image to the approved build, and the platform by refusing a pod whose
-image is not approved at admission. The identity a document names is the
-account's.
+Two approved builds of one ServiceAccount share one mesh principal: the mesh
+derives the identity from the account, not the image. Binding identity to the
+build is therefore not something the principal does; the host does it by
+comparing the pod's resolved image to the approved build, and the platform by
+refusing a pod whose image is not approved at admission. The identity a
+document names is the account's. No workload serves or presents an
+application-level certificate: inside the cell every hop is plain HTTP, and
+the mesh (ztunnel mTLS) carries transport security and destination identity.
+
+**A solution's `frontend` block.** A module that ships a solution manifest
+declares, beside its entry service's `service.codefly.yaml`, the one file
+`solution.frontend.codefly.yaml` — the title, order, exposed module, host
+contract, dashboard and surfaces the host lists the solution under. The
+solution's runtime embeds the same file and serves its manifest route from it;
+the render reads it, strictly (an unknown key is refused by name, as the
+runtime refuses it at boot), straight into core's `frontend` block of the
+presence, inside the signed bytes, with the runtime's `./Page` default for an
+omitted `exposed_module`. A solution that declares no file is refused by name
+at render: the host activates a solution on a presence that carries the
+block, so a solution without one would be listed under nothing. A module
+never carries the block, and core refuses one on it.
 
 The `delivery` ServiceAccount is the delivery Job's and nothing else's: a
 serving workload naming it is refused at render, since a deployment caller
@@ -811,7 +826,7 @@ refuses every carrier whose key ID is absent from its pins.
 ## Local runs
 
 `codefly run` on a laptop has no Kubernetes today: no TokenReview, no pod to
-read an image from, no SVID, no delivery repository and no signing identity.
+read an image from, no mesh, no delivery repository and no signing identity.
 The host owns the verification policy; the CLI owns what a local run emits.
 What follows is the shape agreed with the host session on 2026-10-02, and it is
 not what the first proposal asked for: there is **no `local` trust policy**, no
@@ -822,7 +837,7 @@ never in a code path.
 **A process run cannot be described honestly, so a local run runs pods.** A
 present generation of the presence schema declares at least one rendered
 artifact and, for a backend artifact, workloads pinned to an OCI image manifest
-digest with a SPIFFE ID. A laptop run that executes processes renders nothing
+digest with a mesh principal. A laptop run that executes processes renders nothing
 and runs no image; a presence document for it could only be produced by
 inventing digests, and neither the CLI nor the host accepts an invented one.
 The host's decision is that `codefly run` provisions or attaches a **local
@@ -830,10 +845,10 @@ cluster** and runs each service as a Pod from a locally built image. Then
 nothing is invented: the manifests rendered into the local tree are real bytes
 with a real digest (no artifact URI is claimed, so the document never says
 they live in a delivery repository); the locally built image's manifest digest
-is real and moves on every rebuild, which moves the generation; and the SPIFFE
-ID is the account-derived identity the pod runs as — core checks that field
-for well-formedness only, and whether anything verifies it on the wire stays
-conditional on a projected trust bundle, so no local issuer is required.
+is real and moves on every rebuild, which moves the generation; and the mesh
+principal is the account-derived identity the pod runs as — core checks that
+field for well-formedness only, and a local cluster with no mesh verifies
+nothing on the wire, so no local issuer exists or is required.
 
 **One trust model.** Local and deployed documents use the same envelope and
 pinned-key verification. The local host admits a machine's developer key as
@@ -882,19 +897,10 @@ receipts:
    v3.4.1 pinned by what cannot move: the manifest at the commit the tag names,
    its SHA-256 verified before anything is applied, and every image it runs
    rewritten to its digest (an image no digest pins refuses the install). An
-   Argo CD already there is used as it is. The **SPIFFE workload issuer** is
-   installed when absent: cert-manager v1.21.2 and csi-driver-spiffe v0.15.0,
-   with the manifest hashes verified before applying anything and every image
-   pinned by digest. The default `certificaterequests-approver` controller is
-   disabled: only the SPIFFE approver may approve these requests. Existing
-   components are verified on every run, including CA reuse: every controller,
-   webhook, injector, driver and approver container must match the install image
-   pins, and the SPIFFE issuer and trust-domain arguments must match the reviewed
-   manifest. A mismatch refuses the run without patching those components. The
-   default approver must remain disabled even when the driver and CA are reused.
-   The run waits for cert-manager's webhook and its trust, provisions the CA and
-   ClusterIssuer, then waits for the driver DaemonSet and approver Deployment.
-   And the `platform-authority` namespace with its `delivery`
+   Argo CD already there is used as it is. No workload identity issuer: a
+   workload's transport identity is the cell's mesh's, and a local cluster
+   with no mesh issues nothing in its place. And the `platform-authority`
+   namespace with its `delivery`
    ServiceAccount (no default token mounted), which a cell's platform
    provides and the rendered tree cannot: the authority AppProject admits
    ConfigMaps and Jobs there and nothing else. The modules' namespaces, which
@@ -909,7 +915,7 @@ receipts:
    and authority derived with the one derivation a cell's render uses
    (`presenceInstanceOf`, `authorityInstancesOf`, `authorityDocument`) from the
    real bytes the build produced: manifest digests, image manifest digests, the
-   account-derived SPIFFE ID.
+   account-derived mesh principal.
 3. **Each module published and promoted**: settled against the local delivery
    repository, signed as the developer, every carrier checked as the local
    host will check it, the same `{document, envelope}` carriers and delivery
@@ -955,65 +961,22 @@ install into), a `host` block, `host.developers`, and the gitops
 one: `deploy gitops render`, `deploy gitops publish --local`, and
 `deploy gitops remote up` with no module (the latest local promotion).
 
-**Workload identities (cli#958).** Every composed service declaring
-`workspace-configuration-dependencies: [workload-identity]` receives the CSI
-volume from `spiffe.csi.cert-manager.io`, mounted read-only at
-`/var/run/secrets/spiffe.io` into its authenticating container. The driver
-requests a certificate as the pod's ServiceAccount; the render emits a
-namespace Role and RoleBinding granting that account only `create` on
-`cert-manager.io/certificaterequests`. The gateway receives the same volume
-and RBAC when it declares the group.
-
-The environment must name `host.gateway: <module>/<service>`, the composed
-service that fronts solutions and serves the mint. The render resolves each
-module's namespace and Core's ServiceAccount name, verifies the rendered pod
-uses that account, and uses the same `EnvironmentHost.SPIFFEID` function as
-presence documents. A peer ConfigMap supplies `allowed-callers`, `mint-peers`
-and `gateway-peers`, mounted read-only at `/etc/codefly/workload-peers` without
-subPath so updates propagate. After Kustomize builds the overlay, configuration
-validation compares the effective peer ConfigMap, volumes, mounts and path
-variables with the composition plan; a patch that changes them refuses the
-render and names the resource. Each file contains the gateway's SPIFFE ID,
-one per line with a final newline. For the gateway itself, each file lists
-every explicit consumer's ID, including the gateway when it opts in.
-
-Promotion builds every applied overlay and requires each `(apiGroup, kind,
-namespace, name)` to occur exactly once across the whole tree. Missing or empty
-namespaces take the overlay namespace, then the environment's target namespace,
-before comparison. Each identity service's workloads, ServiceAccounts, RBAC and
-peer ConfigMap must also match its retained render byte for byte after canonical
-object encoding. A conflicting occurrence reports both source paths, even when
-the two objects are identical or a Kustomize prefix/suffix created the collision.
-The peer data and bindings remain checked against the composition plan.
-
-Filesystem access retains the staged render root, resolved once with
-`filepath.EvalSymlinks`. Every path component below it is checked with `Lstat`;
-symlinks in service directories, their parents, overlays or files refuse access.
-Kustomize uses the same confined filesystem for every read. Manifest updates replace the
-file atomically, so hard links cannot cause writes into another tree.
-
-The render supplies these derived values only to services declaring the group.
-It requires a declared local k3d cluster (`cluster.kind: k3d` and
-`cluster.context: k3d-<name>`), where the local run installs SVID issuance;
-other environments are refused before builds begin.
-
-| Key in `workload-identity` | Path |
-|---|---|
-| `TOKEN_FILE` | `/var/run/secrets/codefly/token` (the existing host-audience projection) |
-| `CERT_FILE` | `/var/run/secrets/spiffe.io/tls.crt` |
-| `KEY_FILE` | `/var/run/secrets/spiffe.io/tls.key` |
-| `TRUST_BUNDLE_FILE` | `/var/run/secrets/spiffe.io/ca.crt` |
-| `ALLOWED_CALLERS_FILE` | `/etc/codefly/workload-peers/allowed-callers` |
-| `MINT_PEERS_FILE` | `/etc/codefly/workload-peers/mint-peers` |
-| `GATEWAY_PEERS_FILE` | `/etc/codefly/workload-peers/gateway-peers` |
-
-Services declaring `module-authority` must also declare `workload-identity`.
-The render supplies this group per service, using the same resolved identity
-and composed module name as the presence document:
+**Mesh principals and module authority.** Nothing is issued or mounted for a
+workload's transport identity: inside the cell every hop is plain HTTP, and
+the mesh carries mTLS and destination identity under the workload's
+**mesh principal**, the SPIFFE ID of its ServiceAccount
+(`EnvironmentHost.SPIFFEID`, the one function presence, module authority and
+the mesh edges all name it with). The environment names `host.gateway:
+<module>/<service>`, the composed service that fronts solutions and serves the
+mint on its `workload` endpoint; the render gives it Core's resolved
+ServiceAccount, so the principal every edge admits is the account its pod
+really runs as. A service declaring `workspace-configuration-dependencies:
+[module-authority]` is given the same account and this group per service,
+with the same resolved identity and composed module name as its presence:
 
 | Key in `module-authority` | Rendered source |
 |---|---|
-| `PRINCIPAL` | The workload's SPIFFE ID |
+| `PRINCIPAL` | The workload's mesh principal |
 | `AUDIENCE` | The environment's `host.module_audience`: the audience the host stamps on a module's own capability, as the host names it. A module refuses a credential addressed to anything else |
 | `PROJECTION_AUDIENCE` | The environment's `host.audience` |
 | Secret `INTERNAL_TOKEN` | A reference to the existing `internal-auth` workspace secret `CODEFLY_INTERNAL_TOKEN` |
@@ -1025,26 +988,82 @@ with a `secretKeyRef` to
 `CODEFLY__WORKSPACE_SECRET_CONFIGURATION__INTERNAL_AUTH__CODEFLY_INTERNAL_TOKEN`
 in `secret-<service>`. The existing ExternalSecret projection delivers that
 key from the environment's service secret store; no token value is copied into
-the render. A missing workload identity, host audience or service secret store
-refuses the render. Both `workload-identity` and `module-authority` bypass the
-configuration manager, including composition-root inheritance in native runs:
-their values are projected per workload after the agent renders. An authored
-file for either group anywhere in the selected composition is refused, even
+the render. A missing host audience, module audience, namespace or service
+secret store refuses the render. The group bypasses the configuration
+manager, including composition-root inheritance in native runs: its values
+are projected per workload after the agent renders, on any cluster kind. An
+authored file for it anywhere in the selected composition is refused, even
 when no service declares the group.
 
-The local ECDSA P-256 CA lives in the TLS Secret
-`cert-manager/csi-driver-spiffe-ca`; its certificate is also published as
-`ca.pem` in `cert-manager/spiffe-trust-bundle`. The ClusterIssuer
-`csi-driver-spiffe-ca` uses that Secret. The CA lasts 30 days and is reused
-until it has at most 24 hours left, when a run rotates it. Reuse reads only
-the public certificate; the private key is generated in memory, passed to
-Kubernetes through stdin, and never saved to a local file or logged. An
-externally provisioned issuer without this CA Secret is left to its owner.
-The driver's two trust-domain arguments use the validated `host.trust_domain`.
-The vendored CSI manifest and image pins live in
-`pkg/deployments/manifests`; `bash scripts/regenerate-spiffe-manifest.sh`
-reproduces it from the verified chart with Helm and reports the new digest
-for review in `pkg/deployments/local_spiffe.go`.
+Promotion builds every applied overlay and requires each `(apiGroup, kind,
+namespace, name)` to occur exactly once across the whole tree. Missing or empty
+namespaces take the overlay namespace, then the environment's target namespace,
+before comparison. A conflicting occurrence reports both source paths, even when
+the two objects are identical or a Kustomize prefix/suffix created the collision.
+
+Filesystem access retains the staged render root, resolved once with
+`filepath.EvalSymlinks`. Every path component below it is checked with `Lstat`;
+symlinks in service directories, their parents, overlays or files refuse access.
+Kustomize uses the same confined filesystem for every read. Manifest updates replace the
+file atomically, so hard links cannot cause writes into another tree.
+
+## Mesh edges
+
+The cell's mesh decides who reaches a workload's port, and its protected
+applier compiles that into default-deny `AuthorizationPolicy` objects. **The
+CLI never writes an AuthorizationPolicy.** What it writes is the data the
+applier compiles: every edge the composition declares, delivered with the
+rendered tree in the render record at the tree root, `.codefly-render.json`,
+under `meshEdges`, versioned by its own `schemaVersion` (1). Each module's
+tree carries the edges INTO that module's workloads; the applier reads every
+tree it applies.
+
+```json
+"meshEdges": {
+  "schemaVersion": 1,
+  "trustDomain": "cluster.example",
+  "edges": [
+    {
+      "module": "documents", "service": "api", "namespace": "cell-documents",
+      "account": "api", "principal": "spiffe://cluster.example/ns/cell-documents/sa/api",
+      "endpoint": "grpc", "port": 9090,
+      "principals": ["spiffe://cluster.example/ns/cell-saas/sa/auth-gateway", "spiffe://cluster.example/ns/cell-wiki/sa/backend"]
+    },
+    {
+      "module": "saas", "service": "auth-gateway", "namespace": "cell-saas",
+      "account": "auth-gateway", "principal": "spiffe://cluster.example/ns/cell-saas/sa/auth-gateway",
+      "endpoint": "rest", "port": 8080, "ingress": true
+    }
+  ]
+}
+```
+
+One edge per declared endpoint of each workload of the module, at the
+endpoint's in-cluster port (the one the render hands the service's agent to
+publish as its Kubernetes Service port), naming the destination's namespace,
+ServiceAccount and mesh principal, and the principals admitted, sorted and
+each once. The sources are the composition's own declarations, each derived
+once and nowhere else:
+
+- a module endpoint admits the modules whose declarers ask for it — core's
+  derived allow-list (`Workspace.DeriveAllowModules`), at module granularity:
+  every workload of a consumer module — and, when composed solutions consume
+  it through the host, the gateway's principal (`orchestration.HostRouteTargets`,
+  the same derivation that hands the gateway its route carriers);
+- a solution's backend endpoint admits the gateway's principal: the gateway
+  fronts the solution (the same targets);
+- the gateway's `workload` endpoint admits every composed workload's
+  principal: every module mints on it;
+- a public endpoint — the gateway's `rest` — is marked `ingress`: the cell's
+  ingress gateway reaches it, under a principal the cell names, not the
+  composition.
+
+An endpoint nobody is declared to reach has no edge (default deny is what the
+applier compiles, and the absence is the declaration); an endpoint with no
+in-cluster port (an external one) is not in the cell; a managed service has
+no workload, so it holds no principal and no edge; an environment that
+declares no host has no mesh and records no edges. A reader refuses a
+`schemaVersion` it does not know rather than compile edges it misreads.
 
 **Local promotion is the developer's signed publish.** On a k3d environment
 whose host lists developers there is no reviewer: the developer is the author
@@ -1162,12 +1181,25 @@ path. The host's code is the same in both.
 For the lifetime of one run, the CLI is:
 
 - **the API server** — TokenReview and pod reads over TLS on a loopback port,
-  under a CA created for that run. It issues each workload's projected token
-  for the host's audience and reports each workload's pod.
-- **the workload identity issuer** — an X.509-SVID per service that declares
-  `workload-identity`, named as a cell names it, with the same peer files a
-  render mounts. The `workload-identity` and `module-authority` groups are
-  supplied to the process the way the render supplies them to a pod.
+  under a CA created for that run. It issues each module-identity workload's
+  projected token for the host's audience, living **600 s** and reissued at
+  80 % of that (480 s) as the kubelet rotates a projected token, and reports
+  each workload's pod. Each token carries a JTI of its own, and its review
+  reports it as `authentication.kubernetes.io/credential-id` (`JTI=<jti>`),
+  the value the host records to refuse a second mint with the same token: a
+  mint client that re-reads the projection before every mint always presents
+  a token the host has not seen, and a replayed one is refused. The
+  `module-authority` group is supplied to the process the way the render
+  supplies it to a pod, with the workload's mesh principal.
+- **not the mesh** — nothing issues or serves a certificate: every hop is
+  plain HTTP, and the laptop's stand-in for the mesh's reachability rule is
+  loopback. The address the run hands every service to listen on is a
+  loopback address, and only the host's gateway may be reachable off it; a
+  service that answers on one of the machine's other addresses is warned
+  about, naming it (`pkg/orchestration/loopback.go`). Where a workload
+  reaches the gateway is the workspace value the composition points at the
+  gateway's `workload` endpoint, resolved like every other `${endpoint:…}`
+  reference at the address the run allocated.
 - **the delivery pipeline** — once a workload is running it signs that
   workload's presence and authority with the developer key and POSTs them to
   the host's own delivery endpoints, and writes the module envelope through

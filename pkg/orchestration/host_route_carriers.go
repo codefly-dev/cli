@@ -5,26 +5,39 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/standards"
 )
 
 // THE HOST GATEWAY'S ROUTES.
 //
-// A composed solution calls a consumed module through the host's gateway
-// (/v1/<as>/…, the solution's api.consumes): the gateway forwards the call on
-// the solution's behalf, so it must reach exactly what each solution declares
-// it consumes. The Codefly SDK in the gateway answers where an endpoint lives
-// from the CODEFLY__ENDPOINT__ carriers the composition wrote into its process,
-// so this is where those carriers come from — the same way every carrier
-// does: the producer's own network mappings (producerNetworkMappings — its
-// deployed in-cluster mappings in a render, its run's mappings locally),
-// judged by the producer's manifest for the gateway's module (exportableTo),
-// rendered by core's environment-variable manager at the gateway's network
-// access. No dependency edge is added: the gateway neither waits on, builds,
-// nor deploys a module; it is only told where each consumed one lives.
+// The host's gateway forwards two kinds of call, and resolves both from the
+// CODEFLY__ENDPOINT__ carriers the composition wrote into its process, through
+// the Codefly SDK:
+//
+//   - a composed solution calls a consumed module through it (/v1/<as>/…, the
+//     solution's api.consumes), so it must reach exactly what each solution
+//     declares it consumes;
+//   - a browser reaches a composed solution's page and backend through it
+//     (/<alias>/…), so it must reach each solution's backend endpoint — the
+//     one HTTP endpoint the solution's entry service declares — in plain
+//     HTTP, the way it already reaches a module. Nothing a solution reports
+//     at run time is an address: the gateway routes a solution from its
+//     applied presence's endpoints and from these carriers, as it routes a
+//     module, and a solution's transport identity is the mesh's, not a
+//     certificate it serves.
+//
+// Both come from here the same way every carrier does: the producer's own
+// network mappings (producerNetworkMappings — its deployed in-cluster mappings
+// in a render, its run's mappings locally), judged by the producer's manifest
+// for the gateway's module (exportableTo), rendered by core's
+// environment-variable manager at the gateway's network access. No dependency
+// edge is added: the gateway neither waits on, builds, nor deploys a module or
+// a solution; it is only told where each lives.
 
 // hostRouteCarriers returns the gateway's route carriers when service is the
 // environment's host gateway, nil otherwise. Each route is derived on its own:
@@ -48,7 +61,7 @@ func (world *World) hostRouteCarriers(ctx context.Context, service *resources.Se
 	for _, route := range routes {
 		key, value, err := world.hostRouteCarrier(ctx, service, identity.Module, route, access)
 		if err != nil {
-			problems = append(problems, fmt.Errorf("%s consumes %s through the host: %w", route.solution, route.reference(), err))
+			problems = append(problems, fmt.Errorf("%s: %w", route.describe(), err))
 			continue
 		}
 		carriers[key] = value
@@ -106,10 +119,13 @@ func (world *World) hostRouteCarrier(
 	return variable.Key, fmt.Sprint(variable.Value), nil
 }
 
-// hostRoute is one module endpoint composed solutions consume through the host.
+// hostRoute is one endpoint the host's gateway forwards to: a module endpoint
+// composed solutions consume through the host, or a composed solution's own
+// backend endpoint (backend is true).
 type hostRoute struct {
 	solution                  string
 	module, service, endpoint string
+	backend                   bool
 }
 
 func (route hostRoute) producer() string { return route.module + "/" + route.service }
@@ -118,22 +134,63 @@ func (route hostRoute) reference() string {
 	return route.module + "/" + route.service + "/" + route.endpoint
 }
 
-// hostRoutes is the set of module endpoints the composed solutions consume
-// through the host, one per module. The gateway routes /v1/<alias> on the
-// module's name, so a consume that names it under another alias, or two
-// solutions reaching one module through different endpoints, has no single
-// route and is refused rather than chosen between.
+// describe names the route the way a reader of a refusal looks for it.
+func (route hostRoute) describe() string {
+	if route.backend {
+		return fmt.Sprintf("the host fronts solution %s at its backend endpoint %s", route.solution, route.reference())
+	}
+	return fmt.Sprintf("%s consumes %s through the host", route.solution, route.reference())
+}
+
+// hostRoutes is the set of endpoints the host's gateway forwards to: the
+// module endpoints the composed solutions consume through it, one per module,
+// then each composed solution's backend endpoint. The gateway routes
+// /v1/<alias> on the module's name, so a consume that names it under another
+// alias, or two solutions reaching one module through different endpoints,
+// has no single route and is refused rather than chosen between; and it
+// routes /<alias>/ to one HTTP endpoint of the solution's entry service, so an
+// entry declaring none or several is refused the same way.
 func (world *World) hostRoutes(ctx context.Context, hostModule string) ([]hostRoute, error) {
-	consumptions, err := solutionrun.ConsumedEndpoints(ctx, world.Workspace)
+	return hostRoutes(ctx, world.Workspace, hostModule)
+}
+
+// HostRouteTarget is one endpoint the host's gateway forwards to, as the
+// composition declares it: a module endpoint a solution consumes through the
+// host, or (Backend) a composed solution's own backend endpoint.
+type HostRouteTarget struct {
+	Solution string
+	Module   string
+	Service  string
+	Endpoint string
+	Backend  bool
+}
+
+// HostRouteTargets is the set of endpoints the host's gateway forwards to,
+// derived from the composition alone (hostRoutes) — for whoever needs the
+// edges without an address, such as the mesh edges a render delivers.
+func HostRouteTargets(ctx context.Context, workspace *resources.Workspace, hostModule string) ([]HostRouteTarget, error) {
+	routes, err := hostRoutes(ctx, workspace, hostModule)
+	if err != nil {
+		return nil, err
+	}
+	targets := make([]HostRouteTarget, 0, len(routes))
+	for _, route := range routes {
+		targets = append(targets, HostRouteTarget{Solution: route.solution, Module: route.module, Service: route.service, Endpoint: route.endpoint, Backend: route.backend})
+	}
+	return targets, nil
+}
+
+func hostRoutes(ctx context.Context, workspace *resources.Workspace, hostModule string) ([]hostRoute, error) {
+	consumptions, err := solutionrun.ConsumedEndpoints(ctx, workspace)
 	if err != nil {
 		return nil, err
 	}
 	byModule := map[string]hostRoute{}
 	for index := range consumptions {
 		consumed := &consumptions[index]
-		module, err := world.Workspace.LoadModuleFromName(ctx, consumed.Module)
-		if err != nil {
-			return nil, fmt.Errorf("solution %s consumes module %s, which this workspace does not compose: %w", consumed.Solution, consumed.Module, err)
+		module, loadErr := workspace.LoadModuleFromName(ctx, consumed.Module)
+		if loadErr != nil {
+			return nil, fmt.Errorf("solution %s consumes module %s, which this workspace does not compose: %w", consumed.Solution, consumed.Module, loadErr)
 		}
 		if module.Name == hostModule || module.Name == consumed.Solution {
 			// The host's own endpoints and a solution's own are not routed
@@ -158,6 +215,45 @@ func (world *World) hostRoutes(ctx context.Context, hostModule string) ([]hostRo
 		routes = append(routes, route)
 	}
 	sort.Slice(routes, func(i, j int) bool { return routes[i].module < routes[j].module })
+	backends, err := solutionBackendRoutes(ctx, workspace, hostModule)
+	if err != nil {
+		return nil, err
+	}
+	return append(routes, backends...), nil
+}
+
+// solutionBackendRoutes is each composed solution's backend endpoint: the one
+// HTTP endpoint (api http or rest, what the gateway forwards a page's calls
+// to) its entry service declares. The host is not fronted through itself.
+func solutionBackendRoutes(ctx context.Context, workspace *resources.Workspace, hostModule string) ([]hostRoute, error) {
+	solutions, err := solutionrun.ComposedSolutions(ctx, workspace)
+	if err != nil {
+		return nil, err
+	}
+	var routes []hostRoute
+	for _, solution := range solutions {
+		if solution.Name == hostModule {
+			continue
+		}
+		entry, err := solution.LoadServiceFromName(ctx, solution.ServiceEntry)
+		if err != nil {
+			return nil, fmt.Errorf("solution %s names %s as its service-entry: %w", solution.Name, solution.ServiceEntry, err)
+		}
+		var candidates []string
+		for _, endpoint := range entry.Endpoints {
+			if endpoint != nil && (endpoint.API == standards.HTTP || endpoint.API == standards.REST) {
+				candidates = append(candidates, endpoint.Name)
+			}
+		}
+		switch len(candidates) {
+		case 1:
+			routes = append(routes, hostRoute{solution: solution.Name, module: solution.Name, service: entry.Name, endpoint: candidates[0], backend: true})
+		case 0:
+			return nil, fmt.Errorf("solution %s's entry service %s declares no http or rest endpoint; the host forwards /%s/ to one", solution.Name, entry.Name, solution.Name)
+		default:
+			return nil, fmt.Errorf("solution %s's entry service %s declares several http or rest endpoints (%s); the host forwards /%s/ to one, and which has no single answer", solution.Name, entry.Name, strings.Join(candidates, ", "), solution.Name)
+		}
+	}
 	return routes, nil
 }
 

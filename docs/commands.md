@@ -311,24 +311,40 @@ rendered into the entry service's ConfigMap with the value a run injects. The
 projection names routes, not credentials, so it is a plain value; a render never
 writes a secret value into the tree.
 
-**The host gateway is handed the routes solutions consume through it.** A
-solution calls a consumed module through the host's gateway (`/v1/<as>/…`), so
-the environment's `host.gateway` service receives a `CODEFLY__ENDPOINT__…`
-carrier for every module endpoint a composed solution's `api.consumes` names —
-in a run at the address the run allocated, at the gateway's own network access;
-in a render at the producer's in-cluster address — and the gateway resolves the
-module through the Codefly SDK from it. No dependency edge is added: the gateway
-neither waits on nor builds a module. The derivation is the one every carrier
-uses (the producer's own mappings, judged by its declared visibility for the
-gateway's module). A composition with no single answer — a consume that names a
-module under another `as` (the host routes `/v1/<module>`), a module the
-workspace does not compose, or two solutions reaching one module through
-different endpoints — is refused naming it. One route that cannot be derived —
-an endpoint the gateway's module may not reach, a producer outside the run or
-not addressed yet, no address at the gateway's network access — is **refused in
-a render** (a committed tree never ships a gateway that answers that module
-503) and **warned in a run**, once, naming it: the gateway starts with every
-other route.
+**The host gateway is handed the routes solutions consume through it, and
+each solution's own backend.** A solution calls a consumed module through the
+host's gateway (`/v1/<as>/…`), and a browser reaches a solution's page and
+backend through it (`/<alias>/…`), so the environment's `host.gateway` service
+receives a `CODEFLY__ENDPOINT__…` carrier for every module endpoint a composed
+solution's `api.consumes` names and one for every composed solution's backend
+endpoint — the one `http` or `rest` endpoint its `service-entry` declares — in
+a run at the address the run allocated, at the gateway's own network access;
+in a render at the producer's in-cluster address. The gateway resolves both
+through the Codefly SDK from the carrier and forwards plain HTTP: a solution
+reports no address and serves no certificate, the mesh carries its identity.
+No dependency edge is added: the gateway neither waits on nor builds a module
+or a solution. The derivation is the one every carrier uses (the producer's
+own mappings, judged by its declared visibility for the gateway's module, so a
+solution's backend endpoint is `visibility: internal`). A composition with no
+single answer — a consume that names a module under another `as` (the host
+routes `/v1/<module>`), a module the workspace does not compose, two solutions
+reaching one module through different endpoints, or a solution entry with no
+or several HTTP endpoints — is refused naming it. One route that cannot be
+derived — an endpoint the gateway's module may not reach, a producer outside
+the run or not addressed yet, no address at the gateway's network access — is
+**refused in a render** (a committed tree never ships a gateway that answers
+that module 503) and **warned in a run**, once, naming it: the gateway starts
+with every other route.
+
+**A native run is loopback, except the host gateway.** The address a native
+run hands every service to listen on (its own `CODEFLY__ENDPOINT__…` carrier)
+is a loopback address, the laptop's stand-in for the mesh's reachability rule:
+nothing off the machine reaches a service, and only the host's gateway may be
+reachable off loopback. A service must listen on exactly the host its carrier
+names. Once a service is Running the run dials each of its ports once on each
+of the machine's non-loopback addresses and **warns** when one answers, naming
+the service, its agent and the address; it is a warning until every agent
+listens on its carrier's host, when it becomes a refusal.
 
 A render delivers a service the **same workspace configuration groups** `codefly
 run` delivers it: the groups it declares under
@@ -561,13 +577,7 @@ codefly run cluster documents --env local --app-project platform --yes
 ```
 
 It installs Argo CD if the cluster has none (the release the k3d qualification
-pins), and the local SPIFFE issuer: cert-manager v1.21.2 with its default
-CertificateRequest approver disabled, csi-driver-spiffe v0.15.0, and a cluster
-CA kept in Kubernetes. Both manifests are verified before applying and every
-image is pinned by digest. Existing components are used as installed; an
-existing cert-manager must already disable its default approver before the
-CLI can add the SPIFFE driver. It waits for the webhook, issuer, driver and
-approver before rendering modules. It provisions the `platform-authority` namespace and its `delivery`
+pins). It provisions the `platform-authority` namespace and its `delivery`
 ServiceAccount and the modules' namespaces, writes the local host's trust
 anchor — one public-key verification policy admitting the
 listed developer key held on this machine, bound to this cluster's CA fingerprint, re-written (and the
@@ -582,14 +592,15 @@ bounds each wait. Stopping a run is not removal: a binding is withdrawn by a
 published tombstone. See [delivery documents, "Local runs"](solution-host-bindings.md#local-runs),
 which also lists what the local host's profile must contain.
 
-A service requesting `workspace-configuration-dependencies: [workload-identity]`
-requires `host.gateway: <module>/<service>` in the environment. The render
-mounts its SVID at `/var/run/secrets/spiffe.io`, grants its ServiceAccount
-permission to create CertificateRequests, and mounts three peer allowlists at
-`/etc/codefly/workload-peers`. It supplies the configuration group's seven
-file paths, including the existing projected token. Peer identities come
-from the composition: each consumer trusts the gateway; the gateway trusts
-every explicit consumer, including itself when it requests the group.
+No workload is issued a certificate: a workload's transport identity is the
+cell's mesh principal, the SPIFFE ID of its ServiceAccount, which the mesh
+presents on every hop and the workload never does. A service requesting
+`workspace-configuration-dependencies: [module-authority]` is handed that
+principal (with the host's two audiences and the internal token) by the
+render, and runs as the account it names. The edges the mesh admits are
+delivered as data in the render record (`meshEdges` in
+`.codefly-render.json`), for the cell's applier to compile; see
+[delivery documents, "Mesh edges"](solution-host-bindings.md#mesh-edges).
 
 ### `codefly build runnable <name>`
 

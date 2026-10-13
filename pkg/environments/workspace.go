@@ -180,8 +180,8 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 		if env == nil {
 			continue
 		}
-		if _, wiErr := WorkloadIdentityServices(ctx, workspace, env); wiErr != nil {
-			return w.Wrap(wiErr)
+		if hostErr := ValidateHostComposition(ctx, workspace, env); hostErr != nil {
+			return w.Wrap(hostErr)
 		}
 	}
 	needsGraph := false

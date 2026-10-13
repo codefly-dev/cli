@@ -118,9 +118,14 @@ type Inventory struct {
 	// and recording another digest was rendered against another value, and the
 	// render refuses to deliver two values of one group.
 	WorkspaceConfigurationDigests map[string]string `json:"workspaceConfigurationDigests,omitempty"`
-	Units                         []InventoryUnit   `json:"units"`
-	Files                         []InventoryFile   `json:"files"`
-	Digest                        string            `json:"digest"`
+	// MeshEdges are the L4 edges into this module's workloads, as the
+	// composition declares them: the data the cell's applier compiles into
+	// its mesh policy (mesh_edges.go). Absent when the environment declares
+	// no host.
+	MeshEdges *MeshEdges      `json:"meshEdges,omitempty"`
+	Units     []InventoryUnit `json:"units"`
+	Files     []InventoryFile `json:"files"`
+	Digest    string          `json:"digest"`
 	// Dev lists the dev deployments (`codefly deploy dev`) applied on top of
 	// this render: services whose image was re-pinned to code no release
 	// describes. A full render re-derives the tree and never carries it over.
@@ -220,8 +225,6 @@ type unitScope struct {
 	// nowhere else, so resolving one of its primitives has to consult this
 	// rather than EnvironmentServiceSecrets.
 	Managed map[string]environments.EnvironmentManagedService
-	// WorkloadPeers is the complete composition's resolved identity set.
-	WorkloadPeers workloadPeers
 }
 
 // moduleScope is the scope of every unit a module renders in an environment.
@@ -301,10 +304,10 @@ type RenderOptions struct {
 	// UndeclaredAuthority is why this render declares no authority, when the
 	// reason is the module's own.
 	UndeclaredAuthority string
-	// workloadIdentityChecks retain the composition's expectations across later
-	// projections, so validateTree judges the final overlay before promotion.
-	workloadIdentityChecks []workloadIdentityCheck
-	renderRoot             *renderRoot
+	// MeshEdges are the edges into this module's workloads, recorded in the
+	// inventory for the cell's applier.
+	MeshEdges  *MeshEdges
+	renderRoot *renderRoot
 }
 
 func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKubernetesOutput {

@@ -58,11 +58,6 @@ func renderModuleTree(
 	// destinations derived from it, the quota and the secret projections all
 	// take it from here.
 	scope := moduleScope(env, workspace, module.Name)
-	peers, err := resolveWorkloadPeers(ctx, workspace, env)
-	if err != nil {
-		return RenderResult{}, err
-	}
-	scope.WorkloadPeers = peers
 	// The host's delivery API is resolved before anything renders: a host block
 	// naming an endpoint the composition does not have is refused here, not
 	// after images are built.
@@ -167,6 +162,11 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 		return err
 	}
 	if err = r.inventoryUnits(ctx, services, catalog, stage, rendered, injections); err != nil {
+		return err
+	}
+	// The edges into this module's workloads, from the ports the render
+	// learned: delivered in the record, for the cell's applier.
+	if r.options.MeshEdges, err = deriveMeshEdges(ctx, r.workspace, r.env, r.module, services, rendered.inClusterPorts); err != nil {
 		return err
 	}
 	if err = r.declareInstances(ctx, services); err != nil {
@@ -360,11 +360,6 @@ func (r *moduleRender) inventoryUnits(
 			); projectErr != nil {
 				return projectErr
 			}
-			check := workloadIdentityCheck{path: entry.Path, service: service, environment: r.env, scope: *r.scope}
-			if err := check.capture(r.options.renderRoot, stage); err != nil {
-				return err
-			}
-			r.options.workloadIdentityChecks = append(r.options.workloadIdentityChecks, check)
 			if portsErr := verifyDeclaredEndpointPortsInTree(
 				r.options.renderRoot, filepath.Join(stage, unitDir, service.Name),
 				r.env.Name,
@@ -522,9 +517,6 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		return RenderResult{}, err
 	}
 	if err := refuseAuthoredRenderConfigurations(ctx, workspace, env.Runtime()); err != nil {
-		return RenderResult{}, err
-	}
-	if _, err := resolveWorkloadPeers(ctx, workspace, env); err != nil {
 		return RenderResult{}, err
 	}
 	serviceDir, _ := unitDirectory(UnitKindService)
