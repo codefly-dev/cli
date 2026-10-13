@@ -44,6 +44,8 @@ func TestSnapshotSelectionUsesPinnedImportsAndNoLocalReceipt(t *testing.T) {
 	require.Equal(t, baseCommit, report.Workspaces[1].Revision)
 	require.Equal(t, "snapshot", report.Workspaces[1].SourceMode)
 	require.Equal(t, product, report.Directory)
+	require.Equal(t, "workspace.codefly.yaml", report.Workspaces[0].ManifestPath)
+	require.Equal(t, "../base/workspace.codefly.yaml", report.Workspaces[1].ManifestPath)
 	_, err = snapshotSelection(context.Background(), product, productCommit, nil)
 	require.ErrorContains(t, err, "explicit snapshot commit")
 	_, err = snapshotSelection(context.Background(), product, "HEAD", nil)

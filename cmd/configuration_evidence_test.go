@@ -56,9 +56,9 @@ func TestConfigurationEvidenceCoversFailedCollectionsWithoutClaimingInputs(t *te
 func TestConfigurationEvidenceJSONRetainsFalseMarkersFromGeneratedMessages(t *testing.T) {
 	report := workspaceReadinessReport{
 		SchemaVersion:         1,
-		ConfigurationProfiles: []*basev0.ConfigurationProfileSelection{{Location: "/missing", Candidates: []string{"staging"}, Found: false}},
-		ConfigurationDecisions: []*basev0.ConfigurationDecision{{Group: "app", Final: false,
-			Selected: []*basev0.ConfigurationOrigin{{Group: "app", Key: "URL", File: "/base/app.env", Document: false}}}},
+		ConfigurationProfiles: []*basev0.ConfigurationProfileSelection{{Location: "../base/configurations", Candidates: []string{"staging"}, Found: false}},
+		ConfigurationDecisions: []*basev0.ConfigurationDecision{{Group: "app", Final: false, Rule: basev0.ConfigurationRule_CONFIGURATION_RULE_WORKSPACE_KEY_REPLACES_MODULE_DEFAULT,
+			Selected: []*basev0.ConfigurationOrigin{{Group: "app", Key: "URL", File: "../base/app.env", Document: false}}}},
 	}
 	encoded, err := json.Marshal(&report)
 	if err != nil {
@@ -71,6 +71,9 @@ func TestConfigurationEvidenceJSONRetainsFalseMarkersFromGeneratedMessages(t *te
 	decision := wire["configuration_decisions"].([]any)[0].(map[string]any)
 	if v, ok := decision["final"]; !ok || v != false {
 		t.Fatalf("intermediate decision marker lost: %s", encoded)
+	}
+	if decision["rule"] != "CONFIGURATION_RULE_WORKSPACE_KEY_REPLACES_MODULE_DEFAULT" {
+		t.Fatalf("canonical enum lost: %s", encoded)
 	}
 	origin := decision["selected"].([]any)[0].(map[string]any)
 	if v, ok := origin["document"]; !ok || v != false {

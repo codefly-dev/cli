@@ -82,6 +82,7 @@ const (
 )
 
 type workspaceDiagnostic struct {
+	Module      string `json:"module,omitempty"` // structured subject when the check concerns one module
 	Code        string `json:"code"`
 	Name        string `json:"name"`
 	Status      string `json:"status"` // ok | warn | fail
@@ -656,7 +657,7 @@ func checkModulesMaterialized(ctx context.Context, ws *resources.Workspace, repo
 		}
 		report.add(codeModuleNotMaterialized, "materialization of "+module.Name, "fail",
 			message,
-			fmt.Sprintf("run `codefly install modules`: it materializes the selected modules without starting services or rendering deployments and records it in %s, which doctor never writes; the service-scoped checks are skipped until then", resources.LocalOverlayConfigurationName))
+			fmt.Sprintf("run `codefly run service <service>` or `codefly deploy gitops render <module> --env <env>` once: either materializes every declared module and records it in %s, which doctor never writes; the service-scoped checks are skipped until then", resources.LocalOverlayConfigurationName))
 	}
 	return len(missing) == 0
 }
@@ -700,6 +701,7 @@ func checkModuleMaterialization(ref *resources.ModuleReference, directive *resou
 	report.add(codeModuleResolutionStale, "materialization of "+ref.Name, "warn",
 		fmt.Sprintf("module %q is materialized at %s for %s, but the workspace now requests %s: the next run re-resolves it and refuses that checkout if the request cannot be resolved", ref.Name, directive.Path, receiptRequestLabel(receipt), moduleRequestLabel(ref, mode)),
 		fmt.Sprintf("run `codefly run solution` to re-resolve %q, or set resolve.%s.path in %s to a local checkout", ref.Name, ref.Name, resources.LocalOverlayConfigurationName))
+	report.Checks[len(report.Checks)-1].Module = ref.Name
 }
 
 // receiptRequestLabel describes the request a receipt answered. A receipt

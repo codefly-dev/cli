@@ -64,7 +64,10 @@ func snapshotSelection(ctx context.Context, root, revision string, imports []str
 	if err != nil {
 		return empty, err
 	}
-	report := selectionProjection(ws)
+	report, err := selectionProjection(ws)
+	if err != nil {
+		return empty, err
+	}
 	original := func(directory string) string {
 		relative, _ := filepath.Rel(stage, directory)
 		return filepath.Join(string(filepath.Separator), relative)
@@ -76,7 +79,6 @@ func snapshotSelection(ctx context.Context, root, revision string, imports []str
 		if item.ParentDirectory != "" {
 			item.ParentDirectory = original(item.ParentDirectory)
 		}
-		item.ManifestPath = filepath.Join(item.Directory, "workspace.codefly.yaml")
 		item.Revision = pins[item.Directory]
 		item.SourceMode = "snapshot"
 	}

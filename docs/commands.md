@@ -3620,28 +3620,18 @@ pre-invocation group/key/document file origins, with coverage
 `composed-group-key-origins`. These are collected historical results, not a
 complete input binding, superseded-candidate trace or runtime configuration.
 These evidence messages use Core's generated `codefly.base.v0` schema and
-protobuf JSON with explicit false markers. The companion change is
-[Core #746](https://github.com/codefly-dev/core/pull/746).
-This review branch pins that public fork commit in `go.mod`; no local `go.work`
-is needed. Replace the review dependency with an upstream immutable Core version
-after that PR merges, before releasing this CLI.
+protobuf JSON with explicit false markers and `CONFIGURATION_RULE_*` enum names.
+Configuration file, profile location and layer paths are slash-separated and relative
+to the consuming workspace; external sources can begin with `../`. They identify
+sources, not permission to read arbitrary files. The linked released Core version
+owns these semantics. Older experimental reports must be recollected.
+For `module_resolution_stale` checks, `module` carries the structured module name;
+`name`, `message` and `remediation` are presentation text, not parsing contracts.
 A source-only
 `ready` result cannot establish credentials, provider access or runtime health.
 Unmaterialized modules remain diagnostic failures; this command does not pull
 packages, create local overlays, start agents, or render deployments.
 
-
-### Prepare selected modules without starting them
-
-`codefly install modules` uses the existing workspace materializer to fetch selected
-packages under the configured trust policy, preserve local checkout overrides, and
-record machine-local resolution paths. It can add ignore entries for those local
-files. It fails if any selected module is still unloadable; it does not build, run,
-render, apply, or resolve secret values. Follow with
-`codefly doctor workspace --env staging --sources-only --json` for source diagnostics.
-
-This command is intentionally CLI-only for now: the dashboard reads evidence and
-must not implicitly fetch dependencies or mutate workspace overlays.
 
 ### Inspect composed workspace selections
 
@@ -3689,3 +3679,7 @@ profile order, `found`, and actual `layers` in base-first derivation order.
 An absent location has `found: false` and no layers. Directory selection does
 not imply that individual missing files fall back to later candidates. This
 metadata does not supply complete input binding or observed runtime values.
+
+Selection `manifest_path` is slash-separated and relative to the report root, including
+external `../` imports. Directory fields bind this local report to its checkout;
+its manifest digest covers the parsed declaration, not the full composition input set.

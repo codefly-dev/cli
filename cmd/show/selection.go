@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -53,7 +54,10 @@ or complete input-identity evidence. Standard workspace loading rules apply.`,
 		if err != nil {
 			return fmt.Errorf("cannot resolve workspace selection: %w", err)
 		}
-		report := selectionProjection(ws)
+		report, err := selectionProjection(ws)
+		if err != nil {
+			return err
+		}
 		attachSelectionReceipts(ctx, ws, &report)
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(report)
 	},
@@ -158,22 +162,34 @@ type selectionReport struct {
 	Environments  []string            `json:"environments"`
 }
 
-func selectionProjection(ws *resources.Workspace) selectionReport {
+func selectionProjection(ws *resources.Workspace) (selectionReport, error) {
 	report := selectionReport{SchemaVersion: 1, Workspace: ws.Name, Directory: ws.Dir(), Modules: []selectedModule{}, Workspaces: []selectedWorkspace{}, Environments: []string{}}
 	for _, ref := range ws.Modules {
 		report.Modules = append(report.Modules, selectedModule{Name: ref.Name, Source: ref.Source, Module: ref.Module, Version: ref.Version, DeclarationDirectory: ws.ModuleDeclarationDir(ref.Name)})
 	}
-	var visit func(*resources.Workspace, string)
-	visit = func(current *resources.Workspace, parent string) {
+	var visit func(*resources.Workspace, string) error
+	visit = func(current *resources.Workspace, parent string) error {
 		file, digest := current.DeclarationSource()
+		if file != "" {
+			relative, err := filepath.Rel(ws.Dir(), file)
+			if err != nil {
+				return fmt.Errorf("cannot relativize workspace declaration: %w", err)
+			}
+			file = filepath.ToSlash(relative)
+		}
 		report.Workspaces = append(report.Workspaces, selectedWorkspace{Name: current.Name, Directory: current.Dir(), ParentDirectory: parent, ManifestPath: file, ManifestSHA256: digest})
 		for _, child := range current.ComposedWorkspaces() {
-			visit(child, current.Dir())
+			if err := visit(child, current.Dir()); err != nil {
+				return err
+			}
 		}
+		return nil
 	}
-	visit(ws, "")
+	if err := visit(ws, ""); err != nil {
+		return report, err
+	}
 	for _, env := range ws.Environments {
 		report.Environments = append(report.Environments, env.Name)
 	}
-	return report
+	return report, nil
 }

@@ -243,4 +243,3 @@ require (
 	k8s.io/kube-openapi v0.0.0-20260721132016-d427ff9ee9ad // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
-
