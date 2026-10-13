@@ -157,6 +157,7 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	}
 
 	checkProviderBindings(ctx, ws, env, report)
+	checkRunnableBindingDeclines(env, report)
 
 	resolvers, unavailable := checkSecretProviders(env, report)
 
@@ -1591,7 +1592,7 @@ module_trust_missing, module_checkout_version_drift,
 service_override_active, service_override_unresolved,
 service_override_contract_drift, agent_override_active,
 agent_override_invalid, gitops_dev_deployment_active,
-agent_dev_build,
+agent_dev_build, runnable_binding_declined,
 configuration_directory_missing, configuration_missing,
 configuration_invalid, configuration_duplicate, provider_not_configured,
 provider_executable_missing, provider_authentication_required,

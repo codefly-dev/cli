@@ -2867,6 +2867,25 @@ unknown binding keys fail before output is written. An operation with fixed
 scopes and no slots needs no selection. Owner-declared `tool` exposure is
 preserved; absence still means the operation is not exposed as a tool.
 
+An environment that installs an operation for no resource answers its key with
+an explicitly empty list, and that operation is **declined**: no binding is
+prepared for it, its key is absent from the output, it receives no authority,
+and every other operation still prepares. A base composition uses it for a slot
+whose resources are created at runtime:
+
+```yaml
+environments:
+  - name: local
+    runnable-scope-selections:
+      SAAS__ACCOUNTS_CONNECT_INVOKE_SOURCE_OPERATION: []
+```
+
+The output records each decline as a comment line, the command names it, and
+`codefly doctor workspace` reports it as `runnable_binding_declined`. An absent
+key is still refused, a null value is refused, and `[]` on an operation with no
+required scope slot or on a key naming no derived operation is refused. See
+[declining a binding](runnable.md#declining-a-binding-in-an-environment).
+
 Each binding becomes one key in the workspace configuration group
 `runnable-bindings`, at `configurations/<profile>/runnable-bindings.env`. The
 key is `<MODULE>__<OPERATION>`, upper-cased with non-alphanumeric characters
@@ -2896,7 +2915,7 @@ first configuration profile; selections are specific to the named environment.
 | Flag | Description |
 |------|-------------|
 | `--env` | Environment supplying resolved addresses and `runnable-scope-selections` (default: `local`) |
-| `--check` | Regenerate in memory; exit non-zero if the output is stale, including after a selection changes; write nothing |
+| `--check` | Regenerate in memory; exit non-zero if the output is stale, including after a selection or a decline changes; write nothing |
 
 ## Infrastructure
 
@@ -3191,7 +3210,11 @@ What it checks, in order:
 3. The requested environment resolves through the workspace declaration
    (`local` is implicit when undeclared).
 4. Declared secret backends are supported and their executables are on PATH
-   (`op` for 1Password).
+   (`op` for 1Password). Each runnable binding the environment declines with
+   `runnable-scope-selections: { KEY: [] }` is named as a
+   `runnable_binding_declined` warning: no binding is prepared for it, so a
+   service that installs it is refused where it reads `runnable-bindings/KEY`
+   (see [generate runnable-bindings](#generate-runnable-bindings)).
 5. Every workspace configuration group services declare under
    `workspace-configuration-dependencies` is provided and defines values.
    The doctor reads exactly what a run provisions: the workspace's own
@@ -3246,7 +3269,8 @@ message, remediation?}]}`. Output never contains configuration values, raw
 `provider_executable_missing`, `provider_authentication_required`,
 `provider_resolution_failed`, `plaintext_not_allowed`,
 `reference_scheme_unknown`, `module_not_materialized`,
-`agent_override_active`, `agent_override_invalid`, `timeout`. Automation
+`agent_override_active`, `agent_override_invalid`,
+`runnable_binding_declined`, `timeout`. Automation
 should match on codes, never
 on message prose; renaming or removing a code bumps `schema_version`.
 

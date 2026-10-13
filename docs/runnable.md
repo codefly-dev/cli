@@ -155,7 +155,51 @@ selections and consumers and regenerate. Old selection keys are refused as
 unused; they do not silently grant authority to the new identity. Publishing a
 method on two endpoints gives two identities with separate selections.
 
-Changing a selection requires regeneration, and `--check` detects that change.
+#### Declining a binding in an environment
+
+A composition that cannot name the resources a slot needs answers the key with
+an explicitly empty list. The typical case is a base composition: the host's
+`InvokeSourceOperation` needs exact source IDs, but sources are tenant data
+created at runtime, so a composition of modules alone holds none. Composed as
+`saas`, it writes:
+
+```yaml
+environments:
+  - name: local
+    runnable-scope-selections:
+      SAAS__ACCOUNTS_CONNECT_INVOKE_SOURCE_OPERATION: []
+```
+
+`[]` means "this environment installs this operation for no resource":
+
+- that operation gets no prepared binding: its key is absent from
+  `runnable-bindings.env`, and it receives no authority;
+- every other derived operation still prepares, so one operation the
+  composition cannot answer no longer fails every binding with it;
+- the file records the decline as a comment line naming the key, generation
+  output names it, and `codefly doctor workspace --env <env>` reports it as a
+  `runnable_binding_declined` warning.
+
+Only `[]` declines. An absent key is still refused exactly as before, so
+nothing is ever skipped by omission; a null value (`KEY:` or `KEY: ~`) is
+refused when the environment is read, because it would look like either.
+`[]` on an operation that declares no required scope slot is refused, since
+there is nothing to decline and it would hide a typo, and `[]` on a key that
+names no derived operation is refused as an unknown key.
+
+A service that installs a declined operation is refused at its own point: the
+`runnable-bindings` key it names is not configured, and it reports that key.
+The decline is the environment's own answer, so the same operation can be
+selected in another environment that does hold resource IDs. To install it,
+replace `[]` with selections and regenerate.
+
+This is not a new vocabulary: the value is still a list of Core
+`ScopeSelection` messages, and the empty list is the one answer that selects
+nothing. Core's resolution is unchanged; a declined operation is simply never
+handed to it.
+
+Changing a selection requires regeneration, and `--check` detects that change,
+including a decline added or removed.
 The configuration profile chooses the output directory; selections belong to
 the named environment even when environments share a profile. These declarations
 are installation input and are not sent to agents as runtime configuration.

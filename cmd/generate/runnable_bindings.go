@@ -87,9 +87,17 @@ and lookup. Every required slot needs exact resource kinds, actions and ids;
 missing selections, wildcards and overlapping kinds are refused. Tool exposure
 is carried from the owner. See docs/runnable.md for the selection YAML.
 
+An environment that installs an operation for no resource answers its key with
+an explicitly empty list, KEY: []. That operation is declined: its key is absent
+from the output and it receives no authority, while every other operation still
+prepares; the file records the decline as a comment and ` + "`codefly doctor workspace`" + `
+names it. Only an operation with a required scope slot can be declined, and an
+absent key is still refused, so nothing is skipped by omission.
+
 The output is configurations/<profile>/` + RunnableBindingsGroup + `.env in the workspace, for the
 environment's first configuration profile. --check regenerates in memory and
-exits non-zero when the file differs, including after a scope selection changes.
+exits non-zero when the file differs, including after a scope selection or a
+decline changes.
 
 Examples:
   codefly generate runnable-bindings
@@ -110,7 +118,7 @@ Examples:
 		if err != nil {
 			return err
 		}
-		content, count, err := prepareRunnableBindings(ctx, workspace, env)
+		prepared, err := prepareRunnableBindings(ctx, workspace, env)
 		if err != nil {
 			return err
 		}
@@ -119,18 +127,25 @@ Examples:
 			return err
 		}
 		target := filepath.Join(workspace.Dir(), "configurations", profile, RunnableBindingsGroup+".env")
+		// Nothing derived and nothing declined writes no file, so the expected
+		// state --check compares against is its absence.
+		empty := prepared.count == 0 && len(prepared.declined) == 0
 		if runnableBindingsCheck {
 			existing, err := os.ReadFile(target)
 			if err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
-			if !bytes.Equal(existing, content) {
+			current := bytes.Equal(existing, prepared.content)
+			if empty {
+				current = errors.Is(err, os.ErrNotExist)
+			}
+			if !current {
 				return fmt.Errorf("%s is out of date: run `codefly generate runnable-bindings --env %s`", target, env.Name)
 			}
-			cli.Info("runnable-bindings: %s is current (%d operation(s))", target, count)
+			cli.Info("runnable-bindings: %s is current (%d operation(s), %d declined)", target, prepared.count, len(prepared.declined))
 			return nil
 		}
-		if count == 0 {
+		if empty {
 			if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
@@ -140,10 +155,13 @@ Examples:
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(target, content, 0o600); err != nil {
+		if err := os.WriteFile(target, prepared.content, 0o600); err != nil {
 			return err
 		}
-		cli.Header(1, "Bound %d runnable operation(s) for %s in %s", count, env.Name, target)
+		cli.Header(1, "Bound %d runnable operation(s) for %s in %s", prepared.count, env.Name, target)
+		for _, key := range prepared.declined {
+			cli.Info("runnable-bindings: %s declined by environment %s (runnable-scope-selections: []): no binding is prepared and no authority granted; a service that installs it is refused where it reads %s/%s", key, env.Name, RunnableBindingsGroup, key)
+		}
 		return nil
 	},
 }
@@ -153,49 +171,78 @@ func init() {
 	RunnableBindingsCmd.Flags().BoolVar(&runnableBindingsCheck, "check", false, "do not write; exit 1 if the on-disk file differs from what would be generated")
 }
 
+// preparedRunnableBindings is what one environment's preparation produced:
+// the configuration file, how many operations it binds, and the keys the
+// environment declined.
+type preparedRunnableBindings struct {
+	content  []byte
+	count    int
+	declined []string
+}
+
 // prepareRunnableBindings walks every module of the workspace and prepares a
 // binding for each operation it derived, returning the configuration file.
-func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) ([]byte, int, error) {
+//
+// An operation whose key the environment answers with an explicitly empty
+// list is declined: it is not prepared, its key is absent from the file and it
+// receives no authority, while every other operation still prepares. Only an
+// operation that declares a required scope slot can be declined — one with
+// none has nothing to decline, and an empty list there would hide a typo. The
+// file records each decline as a comment, so a consumer refused for the
+// missing key finds why next to the keys that are there, and `--check` sees a
+// decline added or removed.
+func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (*preparedRunnableBindings, error) {
 	modules, err := workspace.LoadModules(ctx)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	resolver, err := newEndpointResolver(ctx, workspace, env)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	lines := map[string]string{}
+	derivedKeys := map[string]bool{}
+	var declined []string
 	for _, module := range modules {
 		derived, err := runnablespkg.LoadDerivedOperations(module.Dir())
 		if err != nil {
-			return nil, 0, fmt.Errorf("module %s: %w", module.Name, err)
+			return nil, fmt.Errorf("module %s: %w", module.Name, err)
 		}
 		for i := range derived {
 			operation := &derived[i]
+			key := RunnableBindingKey(module.Name, operation.Entry.Name)
+			if derivedKeys[key] {
+				return nil, fmt.Errorf("two operations bind under key %s", key)
+			}
+			derivedKeys[key] = true
+			if env.DeclinesRunnableBinding(key) {
+				if operation.Operation == nil || len(operation.Operation.RequiredScopeSlots) == 0 {
+					return nil, fmt.Errorf("environment %s runnable-scope-selections[%s] in workspace.codefly.yaml is [], which declines the binding, but module %s operation %s declares no required scope slot: there is nothing to decline; remove the entry",
+						env.Name, key, module.Name, operation.Entry.Name)
+				}
+				declined = append(declined, key)
+				continue
+			}
 			prepared, err := prepareRunnable(ctx, module, operation, resolver)
 			if err != nil {
-				return nil, 0, fmt.Errorf("module %s operation %s: %w", module.Name, operation.Entry.Name, err)
+				return nil, fmt.Errorf("module %s operation %s: %w", module.Name, operation.Entry.Name, err)
 			}
 			// EncodePrepared fills the schema and the contract digest and holds
 			// the value to the rules its reader applies, so what is written is
 			// what installs.
 			value, err := corerunnable.EncodePrepared(prepared)
 			if err != nil {
-				return nil, 0, fmt.Errorf("module %s operation %s: %w", module.Name, operation.Entry.Name, err)
-			}
-			key := RunnableBindingKey(module.Name, operation.Entry.Name)
-			if _, taken := lines[key]; taken {
-				return nil, 0, fmt.Errorf("two operations bind under key %s", key)
+				return nil, fmt.Errorf("module %s operation %s: %w", module.Name, operation.Entry.Name, err)
 			}
 			lines[key] = string(value)
 		}
 	}
 	for _, key := range sortedKeys(env.RunnableScopeSelections) {
-		if _, bound := lines[key]; !bound {
-			return nil, 0, fmt.Errorf("environment %s runnable-scope-selections[%s] names no derived operation", env.Name, key)
+		if !derivedKeys[key] {
+			return nil, fmt.Errorf("environment %s runnable-scope-selections[%s] names no derived operation", env.Name, key)
 		}
 	}
-	count := len(lines)
+	sort.Strings(declined)
 	keys := make([]string, 0, len(lines))
 	for key := range lines {
 		keys = append(keys, key)
@@ -203,10 +250,18 @@ func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace
 	sort.Strings(keys)
 	var out strings.Builder
 	out.WriteString(runnableBindingsFileHeader)
+	for _, key := range declined {
+		out.WriteString(declinedBindingComment(env.Name, key))
+	}
 	for _, key := range keys {
 		out.WriteString(key + "=" + lines[key] + "\n")
 	}
-	return []byte(out.String()), count, nil
+	return &preparedRunnableBindings{content: []byte(out.String()), count: len(lines), declined: declined}, nil
+}
+
+// declinedBindingComment is the line the file carries for a declined key.
+func declinedBindingComment(env, key string) string {
+	return fmt.Sprintf("# %s: declined by environment %s (runnable-scope-selections: []); no binding, no authority\n", key, env)
 }
 
 // RunnableBindingKey is the configuration key an operation is bound under:

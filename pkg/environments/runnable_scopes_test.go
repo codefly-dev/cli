@@ -60,3 +60,60 @@ func TestScopeSelectionYAMLRefusesUnknownCoreFields(t *testing.T) {
 		})
 	}
 }
+
+const declinedSelectionWorkspace = `name: product
+environments:
+  - name: base
+    runnable-scope-selections:
+      SAAS__INVOKE_SOURCE: []
+      SAAS__SECOND_BINDING:
+        - slot: source
+          invoke:
+            - resource_kind: datasource.sources
+              actions: [invoke, read]
+              resource_ids: ["00123"]
+`
+
+// An explicitly empty list is a decline, distinct from an absent key, and it
+// must survive every way the environment is read and written: YAML through
+// Core's workspace load (which keeps the CLI block as an extension), back out
+// through Resource, and in again through FromRuntime. A decoder that collapsed
+// [] to nil would turn a decline into an omission, which generation refuses.
+func TestEmptyScopeSelectionListDeclinesAndSurvivesTheRoundTrip(t *testing.T) {
+	var workspace resources.Workspace
+	require.NoError(t, yaml.Unmarshal([]byte(declinedSelectionWorkspace), &workspace))
+	env, err := environments.Select(&workspace, "base")
+	require.NoError(t, err)
+	declined, present := env.RunnableScopeSelections["SAAS__INVOKE_SOURCE"]
+	require.True(t, present)
+	require.NotNil(t, declined, "[] decodes to an empty list, never to nil")
+	require.Empty(t, declined)
+	require.True(t, env.DeclinesRunnableBinding("SAAS__INVOKE_SOURCE"))
+	require.False(t, env.DeclinesRunnableBinding("SAAS__SECOND_BINDING"), "a list of selections is not a decline")
+	require.False(t, env.DeclinesRunnableBinding("SAAS__ABSENT"), "an absent key is not a decline")
+	require.Equal(t, []string{"SAAS__INVOKE_SOURCE"}, env.DeclinedRunnableBindings())
+
+	resource, err := env.Resource()
+	require.NoError(t, err)
+	reloaded, err := environments.FromRuntime(resource)
+	require.NoError(t, err)
+	require.Equal(t, []string{"SAAS__INVOKE_SOURCE"}, reloaded.DeclinedRunnableBindings())
+	written, err := yaml.Marshal(reloaded)
+	require.NoError(t, err)
+	require.Contains(t, string(written), "SAAS__INVOKE_SOURCE: []")
+}
+
+// A null value reads as neither: it is refused when the environment is
+// selected, and naming both spellings tells the author which one they meant.
+func TestNullScopeSelectionIsRefused(t *testing.T) {
+	for _, spelled := range []string{"SAAS__INVOKE_SOURCE:\n", "SAAS__INVOKE_SOURCE: ~\n", "SAAS__INVOKE_SOURCE: null\n"} {
+		t.Run(strings.TrimSpace(spelled), func(t *testing.T) {
+			var workspace resources.Workspace
+			document := strings.Replace(declinedSelectionWorkspace, "SAAS__INVOKE_SOURCE: []\n", spelled, 1)
+			require.NoError(t, yaml.Unmarshal([]byte(document), &workspace))
+			_, err := environments.Select(&workspace, "base")
+			require.ErrorContains(t, err, "runnable-scope-selections[SAAS__INVOKE_SOURCE] is null")
+			require.ErrorContains(t, err, "write [] to decline")
+		})
+	}
+}
