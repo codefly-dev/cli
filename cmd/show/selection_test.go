@@ -97,3 +97,25 @@ func TestSelectionCommandDoesNotAcquireMissingWorkspace(t *testing.T) {
 	_, err = os.Stat(cache)
 	require.True(t, os.IsNotExist(err))
 }
+
+func TestSelectionPolicyRereadKeepsInspectionContext(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	t.Setenv(composition.ModuleCacheEnv, cache)
+	// A regressed acquisition path fails locally instead of accessing the network.
+	require.NoError(t, os.WriteFile(filepath.Join(root, "git"), []byte("#!/bin/sh\nexit 1\n"), 0700))
+	t.Setenv("PATH", root)
+	manifest := filepath.Join(root, "workspace.codefly.yaml")
+	initial := "name: product\nlayout: modules\nmodules:\n  - name: local\n"
+	require.NoError(t, os.WriteFile(manifest, []byte(initial), 0600))
+	ctx := composition.WithWorkspaceInspection(context.Background())
+	ws, err := resources.LoadWorkspaceFromDir(ctx, root)
+	require.NoError(t, err)
+	report, err := selectionProjection(ws)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(manifest, []byte(initial+"workspaces:\n  - name: later\n    source: example/missing-inspection-fixture\n    version: '1.2.3'\n"), 0600))
+	attachSelectionReceipts(ctx, ws, &report)
+	require.Equal(t, "unavailable", report.Modules[0].Resolution.State)
+	_, err = os.Stat(cache)
+	require.True(t, os.IsNotExist(err), "policy re-read must not acquire a newly declared import")
+}

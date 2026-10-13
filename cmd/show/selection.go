@@ -96,7 +96,7 @@ type previousSelectionReceipt struct {
 }
 
 func attachSelectionReceipts(ctx context.Context, ws *resources.Workspace, report *selectionReport) {
-	declared, declaredErr := composition.LoadModuleResolutions(ws.Dir())
+	declared, declaredErr := composition.LoadModuleResolutionsContext(ctx, ws.Dir())
 	overlay, overlayErr := resources.LoadLocalOverlay(ctx, ws.Dir())
 	dir := composition.NearestOverlayDir(ws.Dir())
 	if dir == "" {

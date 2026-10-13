@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"github.com/codefly-dev/cli/pkg/composition"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	"github.com/codefly-dev/core/resources"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,5 +129,33 @@ func TestSourceEvidenceResolvedEmptyArraysRemainExplicit(t *testing.T) {
 	}
 	if len(data["configuration_origins"].([]any)) != 0 {
 		t.Fatalf("unexpected origins: %s", raw)
+	}
+}
+
+func TestDoctorPolicyRereadKeepsInspectionContext(t *testing.T) {
+	initial := "name: product\nlayout: modules\nmodules:\n  - name: local\n"
+	root := writeTestWorkspace(t, map[string]string{"workspace.codefly.yaml": initial})
+	cache := filepath.Join(t.TempDir(), "cache")
+	t.Setenv(composition.ModuleCacheEnv, cache)
+	if err := os.WriteFile(filepath.Join(root, "git"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", root)
+	ctx := composition.WithWorkspaceInspection(context.Background())
+	ws, err := resources.LoadWorkspaceFromDir(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "workspace.codefly.yaml"), []byte(initial+"workspaces:\n  - name: later\n    source: example/missing-inspection-fixture\n    version: '1.2.3'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	report := &workspaceReadinessReport{}
+	checkModuleTrust(ctx, ws, report)
+	checks := findDiagnostics(report, codeWorkspaceInvalid)
+	if len(checks) != 1 || !strings.Contains(checks[0].Message, "not cached") {
+		t.Fatalf("unexpected checks: %+v", report.Checks)
+	}
+	if _, err := os.Stat(cache); !os.IsNotExist(err) {
+		t.Fatalf("policy re-read acquired a new import: %v", err)
 	}
 }

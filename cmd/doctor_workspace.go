@@ -583,7 +583,7 @@ func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *work
 			fmt.Sprintf("fix %s in %s", resources.WorkspaceConfigurationName, ws.Dir()))
 		return
 	}
-	declared, err := composition.LoadModuleResolutions(ws.Dir())
+	declared, err := composition.LoadModuleResolutionsContext(ctx, ws.Dir())
 	if err != nil {
 		report.add(codeWorkspaceInvalid, "module resolution", "fail",
 			fmt.Sprintf("cannot read module resolution from %s: %v", resources.WorkspaceConfigurationName, err),
