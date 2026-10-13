@@ -220,6 +220,8 @@ type unitScope struct {
 	// nowhere else, so resolving one of its primitives has to consult this
 	// rather than EnvironmentServiceSecrets.
 	Managed map[string]environments.EnvironmentManagedService
+	// WorkloadPeers is the complete composition's resolved identity set.
+	WorkloadPeers workloadPeers
 }
 
 // moduleScope is the scope of every unit a module renders in an environment.
@@ -299,6 +301,10 @@ type RenderOptions struct {
 	// UndeclaredAuthority is why this render declares no authority, when the
 	// reason is the module's own.
 	UndeclaredAuthority string
+	// workloadIdentityChecks retain the composition's expectations across later
+	// projections, so validateTree judges the final overlay before promotion.
+	workloadIdentityChecks []workloadIdentityCheck
+	renderRoot             *renderRoot
 }
 
 func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKubernetesOutput {
@@ -364,9 +370,8 @@ type InventoryDelivery struct {
 	// documents are delivered only to a local qualification environment, and a
 	// host refuses them.
 	Signed bool `json:"signed"`
-	// Identity is who signed — the certificate subject and its issuer — when
-	// Signed. It is reporting, read from the bundle's certificate, and not a
-	// verification: the host verifies.
+	// Identity is the envelope's claimed key ID when Signed. This field is
+	// reporting only; the publisher and host verify the envelope separately.
 	Identity string `json:"identity,omitempty"`
 	// Documents are the documents delivered, presence and authority alike.
 	Documents []InventoryDeliveredDocument `json:"documents,omitempty"`
@@ -415,7 +420,7 @@ type PublishRequest struct {
 	// violation to a skipped check, for bootstrap ordering.
 	AllowUnresolvedContracts bool
 	// Signer signs the delivery documents this publish settles. nil means the
-	// process environment decides: the publishing workflow's OIDC identity, or
+	// process environment decides: the platform's Vault Transit key, or
 	// none — in which case only a Local publish may deliver unsigned.
 	Signer signing.Signer `json:"-"`
 	// Carriers are the carriers an inspected plan signed, for the publish
@@ -457,6 +462,14 @@ type PublishPlan struct {
 	// generation. The publish that executes the plan delivers exactly these
 	// bytes — signing is once, here — after holding each to its document.
 	Carriers map[string][]byte `json:"carriers,omitempty"`
+	// SelfPromotes marks a local publish to a k3d environment whose host
+	// lists developers: there is no reviewer, the developer's signed publish
+	// is the approval, and the publish fast-forwards the local delivery
+	// repository's base branch to its commit itself (see promoteLocally).
+	SelfPromotes bool `json:"selfPromotes,omitempty"`
+	// LocalRepository is the repository on disk a self-promoting plan is
+	// bound to; part of the plan's identity.
+	LocalRepository *LocalRepositoryIdentity `json:"localRepository,omitempty"`
 }
 
 // ContractCheck reports the admission result of one consumed API contract
@@ -497,6 +510,9 @@ type PublishResult struct {
 	// authority document at its settled generation, and the identity that
 	// signed them.
 	Delivery *InventoryDelivery `json:"delivery,omitempty"`
+	// Promoted reports that this publish advanced the base branch itself: a
+	// developer-signed local promotion (PublishPlan.SelfPromotes).
+	Promoted bool `json:"promoted,omitempty"`
 }
 
 type RollbackRequest struct {

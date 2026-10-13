@@ -14,35 +14,67 @@ import (
 	"github.com/codefly-dev/core/resources"
 )
 
-func projectServiceConfiguration(ctx context.Context, root string, service *resources.Service, env *environments.Environment, scope unitScope, injection serviceInjection) error {
-	if err := projectConfigurationValues(ctx, root, service.Name, env); err != nil {
+func projectServiceConfiguration(ctx context.Context, tree *renderRoot, root string, service *resources.Service, env *environments.Environment, scope unitScope, injection serviceInjection) error {
+	if _, err := serviceRenderOverlay(tree, root, scope.Module, service.Name, env.Name); err != nil {
+		return err
+	}
+	if err := tree.inspect(root); err != nil {
+		return err
+	}
+	injection, err := moduleAuthorityInjection(service, env, scope, injection)
+	if err != nil {
+		return err
+	}
+	if err := projectConfigurationValuesInTree(ctx, tree, root, service.Name, env); err != nil {
 		return fmt.Errorf("project service %s configuration: %w", service.Name, err)
 	}
 	// Before the secret projection: the derived secretKeyRefs are part of what
 	// the ExternalSecret must materialize.
-	if err := projectServiceInjection(ctx, root, service.Name, env, injection); err != nil {
+	if err := projectServiceInjectionInTree(ctx, tree, root, service.Name, env, injection); err != nil {
 		return fmt.Errorf("project service %s derived configuration: %w", service.Name, err)
 	}
-	if _, err := projectServiceSecrets(root, scope, service.Name, env.Name, env.ServiceSecrets); err != nil {
+	if _, err := projectServiceSecretsInTree(tree, root, scope, service.Name, env.Name, env.ServiceSecrets); err != nil {
 		return fmt.Errorf("project service %s secrets: %w", service.Name, err)
 	}
-	if _, err := projectServiceAutoscale(root, service.Name, env.Name, scope.Namespace, service.Autoscale); err != nil {
+	if _, err := projectServiceAutoscaleInTree(tree, root, service.Name, env.Name, scope.Namespace, service.Autoscale); err != nil {
 		return fmt.Errorf("project service %s autoscale: %w", service.Name, err)
 	}
-	if err := projectManagedIdentity(ctx, root, service, env, scope); err != nil {
+	if err := projectManagedIdentityInTree(ctx, tree, root, service, env, scope); err != nil {
 		return fmt.Errorf("project service %s managed identity: %w", service.Name, err)
 	}
-	if err := validateProjectedConfiguration(root, service, env, scope); err != nil {
+	if err := projectWorkloadSVID(tree, root, service, env, scope); err != nil {
+		return fmt.Errorf("project service %s workload identity: %w", service.Name, err)
+	}
+	if err := validateProjectedWorkloadSVID(tree, root, service, env, scope); err != nil {
 		return err
 	}
-	return validateProjectedInjection(root, service.Name, env, injection)
+	if err := validateProjectedConfigurationInTree(tree, root, service, env, scope); err != nil {
+		return err
+	}
+	return validateProjectedInjectionInTree(tree, root, service.Name, env, injection)
 }
 
-// projectManagedIdentity applies only the declared runtime identity, into the
-// namespace the service's manifests bind to. Endpoint addresses and container
-// choices remain owned by their existing renderers.
+// projectManagedIdentity attaches the declared runtime identity and gives
+// workload-identity consumers and the gateway Core's resolved ServiceAccount.
+// Endpoint addresses and container choices remain owned by their renderers.
 func projectManagedIdentity(
 	ctx context.Context,
+	serviceRoot string,
+	service *resources.Service,
+	env *environments.Environment,
+	scope unitScope,
+) error {
+	tree, err := newRenderRoot(serviceRoot)
+	if err != nil {
+		return err
+	}
+	defer tree.Close()
+	return projectManagedIdentityInTree(ctx, tree, serviceRoot, service, env, scope)
+}
+
+func projectManagedIdentityInTree(
+	ctx context.Context,
+	tree *renderRoot,
 	serviceRoot string,
 	service *resources.Service,
 	env *environments.Environment,
@@ -51,18 +83,25 @@ func projectManagedIdentity(
 	if err := env.Validate(); err != nil {
 		return err
 	}
-	identity, err := soleWorkloadIdentity(service.Name, consumedManagedServices(service, scope.Module, env), env)
+	identity, err := soleWorkloadIdentity(scope.Module, service.Name, consumedManagedServices(service, scope.Module, env), env)
 	if err != nil {
 		return err
 	}
 	if identity == nil {
-		return nil
+		if !requestsWorkloadIdentity(service) && (env.Host == nil || env.Host.Gateway != resources.ServiceUnique(scope.Module, service.Name)) {
+			return nil
+		}
+		identity = &environments.EnvironmentWorkloadIdentity{}
 	}
 	overlay := &coreservices.PodTemplateOverlay{}
-	if err := overlay.AttachServiceAccount(&coreservices.WorkloadServiceAccount{Annotations: identity.Annotations}, identity.Labels); err != nil {
+	if err = overlay.AttachServiceAccount(&coreservices.WorkloadServiceAccount{Annotations: identity.Annotations}, identity.Labels); err != nil {
 		return err
 	}
-	return coreservices.ProjectServiceAccount(ctx, filepath.Join(serviceRoot, "base"), scope.Namespace, service.Name, overlay)
+	filesystem, err := tree.fileSystem()
+	if err != nil {
+		return err
+	}
+	return coreservices.ProjectServiceAccountOnFS(ctx, &projectionFileSystem{FileSystem: filesystem, tree: tree}, filepath.Join(serviceRoot, "base"), scope.Namespace, service.Name, overlay)
 }
 
 // managedConsumption is one managed service a workload dials, named by the
@@ -114,8 +153,8 @@ func consumedManagedServices(service *resources.Service, module string, env *env
 // last would win and the other endpoint would refuse the workload at runtime
 // with nothing in the deploy to show for it. Several endpoints reached as the
 // same principal are one identity and render as one.
-func soleWorkloadIdentity(service string, consumed []managedConsumption, env *environments.Environment) (*environments.EnvironmentWorkloadIdentity, error) {
-	identity := env.WorkloadIdentity(service)
+func soleWorkloadIdentity(module, service string, consumed []managedConsumption, env *environments.Environment) (*environments.EnvironmentWorkloadIdentity, error) {
+	identity := env.WorkloadIdentityFor(module, service)
 	var declaring []string
 	for _, consumption := range consumed {
 		declared := consumption.managed.Identity
@@ -144,9 +183,26 @@ func projectRenderedServiceConfiguration(
 	graph map[string]*resources.Service,
 	injections renderInjections,
 	templates renderTemplates,
+	options *RenderOptions,
 ) error {
+	var peers workloadPeers
+	for unique, service := range graph {
+		if !requestsWorkloadIdentity(service) && (env.Host == nil || env.Host.Gateway != unique) {
+			continue
+		}
+		var err error
+		peers, err = resolveWorkloadPeers(ctx, workspace, env)
+		if err != nil {
+			return err
+		}
+		break
+	}
+	tree := options.renderRoot
+	if err := tree.inspect(stage); err != nil {
+		return err
+	}
 	modulesRoot := filepath.Join(stage, "modules")
-	moduleEntries, err := os.ReadDir(modulesRoot)
+	moduleEntries, err := tree.readDir(modulesRoot)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -158,7 +214,7 @@ func projectRenderedServiceConfiguration(
 			continue
 		}
 		servicesRoot := filepath.Join(modulesRoot, moduleEntry.Name(), serviceUnitDir)
-		serviceEntries, err := os.ReadDir(servicesRoot)
+		serviceEntries, err := tree.readDir(servicesRoot)
 		if os.IsNotExist(err) {
 			continue
 		}
@@ -174,9 +230,10 @@ func projectRenderedServiceConfiguration(
 				continue
 			}
 			scope := moduleScope(env, workspace, moduleEntry.Name())
+			scope.WorkloadPeers = peers
 			scope.Templates = templates
 			if err := projectServiceConfiguration(
-				ctx,
+				ctx, tree,
 				filepath.Join(servicesRoot, serviceEntry.Name()),
 				service,
 				env,
@@ -186,6 +243,11 @@ func projectRenderedServiceConfiguration(
 
 				return fmt.Errorf("project service %s configuration: %w", serviceEntry.Name(), err)
 			}
+			check := workloadIdentityCheck{path: filepath.ToSlash(filepath.Join("modules", moduleEntry.Name(), serviceUnitDir, serviceEntry.Name())), service: service, environment: env, scope: scope}
+			if err := check.capture(tree, stage); err != nil {
+				return err
+			}
+			options.workloadIdentityChecks = append(options.workloadIdentityChecks, check)
 		}
 	}
 	return nil

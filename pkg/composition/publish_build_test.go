@@ -34,7 +34,7 @@ func publicationFixture(t *testing.T) (*SelectionSession, *StageOptions, *Staged
 	var workspace rawWorkspaceModuleTrustProbe
 	require.NoError(t, yaml.Unmarshal(data, &workspace))
 	workspace.ModuleTrust.BuildSigners = map[string]map[string]string{"team/module": {"packager": base64.StdEncoding.EncodeToString(registry.key.Public().(ed25519.PublicKey))}}
-	data, err = yaml.Marshal(map[string]any{"name": "product", "module-trust": workspace.ModuleTrust})
+	data, err = yaml.Marshal(map[string]any{"name": "product", "layout": "modules", "module-trust": workspace.ModuleTrust})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(workspacePath, data, 0o600))
 	session, err = NewSelectionSession(registry.workspace, session.Root, session.ConfigurationIdentity)

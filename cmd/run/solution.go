@@ -138,6 +138,7 @@ func init() {
 	SolutionCmd.Flags().DurationVar(&readinessTimeout, "readiness-timeout", 5*time.Minute, "Maximum time to wait for the flow to become ready")
 	SolutionCmd.Flags().StringVar(&profile, "profile", "", "Named workspace run profile")
 	SolutionCmd.Flags().StringSliceVar(&excludeDependencies, "exclude-dependency", nil, "Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)")
+	SolutionCmd.Flags().StringSliceVar(&excludeWorkspaceConfigurations, "exclude-workspace-configuration", nil, "Exclude a workspace configuration group from the run, with the producers its values name (repeatable)")
 	SolutionCmd.Flags().StringSliceVar(&setOverrides, "set", nil, "Per-service runtime env override (repeatable), e.g. --set warden:CODEFLY__FIXTURE=dogfood")
 	SolutionCmd.Flags().StringSliceVar(&silent, "silent", nil, "Silence services in CLI output")
 	// Port-isolation flags: fold a scope into every port hash so the whole

@@ -64,6 +64,9 @@ in the build invocation before hashing, avoiding a circular hash; the original
 agent plan digest, including its metadata, remains an input. Temporary paths
 and builder names are normalized by the existing cache.
 There is no timestamp, checkout path or `latest` in the result.
+The tag identifies inputs for reuse; `Runtime.Init` receives the loaded
+Docker image's immutable `sha256:…` ID, so retagging cannot change the image
+the agent starts.
 
 The next run emits and verifies the recipe again, then reuses the cached image
 only if its inputs match and Docker still holds the recorded image ID. A source,
@@ -209,6 +212,14 @@ every image from the workspace, drops the `dev` entries, and says which dev
 deployments it cleared.
 
 ---
+
+## Running a whole composition
+
+`codefly run workspace` starts the host and every solution of a composition as
+one graph, with the same build reuse as a single service. A rebuilt solution
+is a new build to the host: the run approves it beside the builds it already
+approved and delivers the solution's presence again. See
+[commands.md](commands.md#codefly-run-workspace).
 
 ## Related
 

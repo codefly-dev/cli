@@ -67,6 +67,7 @@ func installFakeAgents(t *testing.T) {
 		record func(map[string]*builderv0.DeploymentOutput),
 		recordServices func(map[string]*resources.Service),
 		recordSelfEndpoints func(map[string]map[string]string),
+		_ func(map[string]map[string]string),
 		recordConfigurations func(map[string]*basev0.Configuration, map[string][]string),
 		recordInClusterPorts func(map[string]map[string]uint32),
 	) error {

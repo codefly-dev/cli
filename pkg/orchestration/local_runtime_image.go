@@ -22,8 +22,10 @@ func (runner *Runner) localRuntimeImage(ctx context.Context) (string, error) {
 	}
 	// An explicit manifest choice wins under the handoff contract. Leave its
 	// validation to the agent, including refusal of malformed/latest values.
-	if image, ok := runner.instance.Service.Spec["runtime-image"].(string); ok && image != "" {
-		return "", nil
+	if image, exists := runner.instance.Service.Spec["runtime-image"]; exists {
+		if value, ok := image.(string); !ok || value != "" {
+			return "", nil
+		}
 	}
 	if err := runner.instance.CheckCapabilities(agentv0.Capability_BUILDER); err != nil {
 		return "", nil
@@ -49,7 +51,13 @@ func (runner *Runner) localRuntimeImage(ctx context.Context) (string, error) {
 	if _, err = b.Init(ctx); err != nil {
 		return "", err
 	}
-	return b.buildLocalRuntimeImage(ctx)
+	image, err := b.buildLocalRuntimeImage(ctx)
+	if err != nil || image == "" {
+		return "", err
+	}
+	// The input-derived tag is for discovery and reuse. Init receives Docker's
+	// immutable image ID, so a later retag cannot change what the agent starts.
+	return inspectLocalImageID(ctx, image)
 }
 
 // buildLocalRuntimeImage executes an agent's recipe through the same verified

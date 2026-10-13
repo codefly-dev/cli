@@ -123,3 +123,33 @@ response naming any other profile is refused, and the local-apply profile is
 the one documented exemption from restricted-rendering evidence, because it
 produces no promotable artifact and nothing persists it.
 
+**A native run's workload states what it started.** A `codefly run` of a
+composition whose environment declares a `host` signs a presence document
+naming the build each workload is at. There is no registry, so the build is
+the SHA-256 of what ran — and only the agent that ran it knows where that is:
+a Go agent starts a binary it built, a `python-fastapi` agent starts an
+interpreter over its own sources. The agent reports both on
+`StartStatus.started_artifact` (`runtime-started-artifact/v1`): the program it
+exec'd, and the files it handed that program.
+
+An agent that reports none is refused by name, and that workload is not
+delivered. The run reads the report rather than the advertised capability:
+an agent may advertise `runtime-started-artifact/v1` and still answer with
+nothing for a particular start, so there is one check, at the point of use,
+and it is the answer that decides. The CLI used to read
+`<service>/.cache/native/main` whatever the agent, which is one agent
+family's layout, so every other agent's service failed on a missing file
+([#989](https://github.com/codefly-dev/cli/issues/989)). Adopting the
+contract in the agent is the only thing that lifts the refusal; no CLI-side
+table of per-agent layouts replaces it.
+
+What a refused workload does next depends on what it is. A **solution** waits:
+the run withholds its projected token until delivery, so it cannot mint
+against a build nobody vouched for. A **module** that is not a solution was
+never withheld — it boots with its token, mints, and is refused by the host
+instead, while the run logs one `delivery to the host failed` line and
+carries on. That is a service that boots, serves and never registers, so read
+the run's log rather than its exit status when a module is not reaching the
+host. See
+[delivery documents](solution-host-bindings.md#the-executable-the-run-started).
+

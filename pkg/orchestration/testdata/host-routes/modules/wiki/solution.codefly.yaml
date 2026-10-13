@@ -1,0 +1,26 @@
+schema_version: codefly.solution-manifest/v0
+protocol_version: codefly.solution/v0
+agent:
+  kind: codefly:solution
+  publisher: codefly.dev
+  name: wiki
+  version: 0.1.0
+api:
+  exposes:
+    - id: http
+      protocol: http
+  consumes:
+    - id: gateway
+      protocol: rest
+      module: host
+      service: gateway
+      endpoint: rest
+      as: gateway
+    - id: docs
+      protocol: http
+      module: docs
+      service: documents
+      endpoint: web
+      as: docs
+lifecycle:
+  render: true

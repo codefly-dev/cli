@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,7 +44,8 @@ func localRuntimeBuilder(t *testing.T, harness *imageCacheHarness) *Builder {
 
 type runtimeImageBuilderPeer struct {
 	imageCachePeer
-	stock bool
+	stock     bool
+	malformed bool
 }
 
 func (*runtimeImageBuilderPeer) Load(context.Context, *builderv0.LoadRequest) (*builderv0.LoadResponse, error) {
@@ -61,7 +63,11 @@ func (peer *runtimeImageBuilderPeer) Build(ctx context.Context, req *builderv0.B
 			BuildxBuilder: req.GetBuildContext().GetDockerBuildContext().GetBuildxBuilder(),
 		}, nil
 	}
-	return peer.imageCachePeer.Build(ctx, req)
+	resp, err := peer.imageCachePeer.Build(ctx, req)
+	if err == nil && peer.malformed {
+		err = os.WriteFile(filepath.Join(req.GetOutputDirectory(), "Dockerfile"), []byte("FROM tampered\n"), 0o644)
+	}
+	return resp, err
 }
 
 func runtimeImageRunner(t *testing.T, peer *runtimeImageBuilderPeer) (*Runner, *dockerStub) {
@@ -103,7 +109,7 @@ func TestRunnerBuildsAndHandsOffLocalRuntimeImage(t *testing.T) {
 	_, err := runner.Init(t.Context())
 	require.NoError(t, err)
 	first := exposedValues(t.Context(), t, runner.world)["runtime-image"]
-	require.Regexp(t, `^codefly-local/runtime:sha256-[0-9a-f]{64}$`, first)
+	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, first)
 	require.Equal(t, 1, stub.calls(t, "build"))
 	_, err = runner.Init(t.Context())
 	require.NoError(t, err)
@@ -119,6 +125,13 @@ func TestRunnerRefusesImageHandoffWithoutLiveCapability(t *testing.T) {
 	require.Zero(t, stub.calls(t, "build"))
 }
 
+func TestRunnerRefusesMalformedRuntimeRecipe(t *testing.T) {
+	runner, stub := runtimeImageRunner(t, &runtimeImageBuilderPeer{malformed: true})
+	_, err := runner.Init(t.Context())
+	require.ErrorContains(t, err, "cannot verify build recipe")
+	require.Zero(t, stub.calls(t, "build"))
+}
+
 func TestRunnerStockImageNeedsNoHandoffCapability(t *testing.T) {
 	runner, stub := runtimeImageRunner(t, &runtimeImageBuilderPeer{stock: true})
 	runner.instance.Info.Contract = contract.Current()
@@ -129,8 +142,23 @@ func TestRunnerStockImageNeedsNoHandoffCapability(t *testing.T) {
 }
 
 func TestRunnerNativeRuntimeDoesNotBuildImage(t *testing.T) {
+	for _, backend := range []string{resources.RuntimeContextNative, resources.RuntimeContextNix} {
+		t.Run(backend, func(t *testing.T) {
+			runner, stub := runtimeImageRunner(t, &runtimeImageBuilderPeer{})
+			runner.runtimeContext = backend
+			_, err := runner.Init(t.Context())
+			require.NoError(t, err)
+			require.NotContains(t, exposedValues(t.Context(), t, runner.world), "runtime-image")
+			require.Zero(t, stub.calls(t, "build"))
+		})
+	}
+}
+
+func TestRunnerUnsupportedArtifactBuildDoesNotBuildImage(t *testing.T) {
 	runner, stub := runtimeImageRunner(t, &runtimeImageBuilderPeer{})
-	runner.runtimeContext = resources.RuntimeContextNative
+	runner.instance.Info.Validation = &agentv0.ValidationCapabilities{
+		ArtifactBuild: &agentv0.ValidationOperationCapability{Supported: false},
+	}
 	_, err := runner.Init(t.Context())
 	require.NoError(t, err)
 	require.NotContains(t, exposedValues(t.Context(), t, runner.world), "runtime-image")
@@ -138,8 +166,8 @@ func TestRunnerNativeRuntimeDoesNotBuildImage(t *testing.T) {
 }
 
 func TestRunnerLeavesExplicitImageValidationToAgent(t *testing.T) {
-	for _, image := range []string{"example.test/runtime:v1", "example.test/runtime:latest", "malformed image"} {
-		t.Run(image, func(t *testing.T) {
+	for _, image := range []any{"example.test/runtime:v1", "example.test/runtime:latest", "malformed image", 42} {
+		t.Run(fmt.Sprint(image), func(t *testing.T) {
 			runner, stub := runtimeImageRunner(t, &runtimeImageBuilderPeer{})
 			runner.instance.Service.Spec = map[string]any{"runtime-image": image}
 			runner.instance.Info.Contract = contract.Current()
@@ -188,11 +216,18 @@ exec "$CODEFLY_TEST_REAL_DOCKER" "$@"
 	imageID, err := inspectLocalImageID(ctx, image)
 	require.NoError(t, err)
 	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, imageID)
+	require.Equal(t, imageID, image, "Init must receive the immutable loaded image ID")
 	require.Equal(t, 1, stub.calls(t, "build"))
 	_, err = runner.Init(ctx)
 	require.NoError(t, err)
 	require.Equal(t, image, exposedValues(ctx, t, runner.world)["runtime-image"])
 	require.Equal(t, 1, stub.calls(t, "build"), "a second Init must reuse the loaded real image")
+	output, err := exec.CommandContext(ctx, docker, "image", "rm", image).CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	_, err = runner.Init(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 2, stub.calls(t, "build"), "a lost image must be rebuilt")
+	require.Equal(t, image, exposedValues(ctx, t, runner.world)["runtime-image"])
 }
 
 func TestLocalRuntimeImageReusesRecipeAndInvalidatesSourceChanges(t *testing.T) {

@@ -145,16 +145,27 @@ them in one place, `pkg/orchestration/workspace_configurations.go`, by one rule:
       ∪ the groups the composition root provides run-wide
       − the groups the selected run profile excludes
 
+The render-owned `workload-identity` and `module-authority` groups are supplied
+per workload by the render's projections. Every resolution path, including
+runtime-init, local runs and CI compile/lint/test, omits these groups from manager
+dependencies and composition-root inheritance; the render refuses authored
+files for them. Outside a render, these groups supply no values and each service
+decides whether it can run without them. `doctor workspace` reports them as supplied on local k3d and warns
+elsewhere: "supplied only by a local k3d or cell render; absent here". See
+[workload identities](solution-host-bindings.md#local-runs) for their values and
+environment requirements.
+
 The composition root's own `configurations/<profile>/*` (and any
 invocation-scoped override) reach **every** service of the composition, so a
 composed module's service reads a root-provided value without redeclaring it. A
 group a composed module ships reaches only the services that declare it.
 
-**The rendered deployment is the source of truth for that set, and the local run
-resolves the identical one.** For a run of the whole composition, `codefly run`
-and `codefly deploy gitops render` hand a given service the same group names, and
-the same keys inside them *except where a rule below removes a key from both* —
-a credential the service does not declare is withheld in each path, not in one.
+**The rendered deployment is the source of truth for manager-resolved groups,
+and the local run resolves the identical set.** For a run of the whole
+composition, `codefly run` and `codefly deploy gitops render` hand a given service
+the same group names and keys inside them *except where a rule below removes a
+key from both* — a credential the service does not declare is withheld in each
+path, not in one.
 Where a key reaches both, only the address family differs: a value naming
 `${endpoint:<module>/<service>/<endpoint>}` resolves to the producer's loopback
 address for a local run and to its in-cluster address in a render.
@@ -798,6 +809,25 @@ Used for `codefly deploy service`:
 ```
 BuilderBegin → BuilderLoad → BuilderInit → BuilderBuild → BuilderDeploy → done
 ```
+
+Every builder deployment request carries `composition_provenance`, a snapshot of
+`World.Workspace.Members()`: every composed name, its declared module/solution
+role, and its declaring workspace, preserved through imports. The final handoff
+sets `services.BuilderInstance.Workspace` to that same loaded workspace before
+the CLI judges dependency addresses. This applies to checkouts and pinned modules,
+including requests without dependency mappings. The agent judges with the request;
+the development workspace above a module cache is not a second authority. For
+example, a package locally called `saas-starter` but composed as `saas` is sent as
+`saas`. A solution's direct route to a module endpoint still refuses with
+`ErrSolutionReachesThroughHost`.
+
+Deployment requires the running builder's `AgentContract` to advertise
+`deployment-composition-provenance/v1`. A missing capability refuses before the
+Deploy RPC; the CLI's linked Core version cannot establish agent adoption.
+The wire field and request-backed judge are supplied by
+[core#752](https://github.com/codefly-dev/core/pull/752), following
+[handbook#266](https://github.com/obin-ai/handbook/pull/266). This CLI change alone
+does not qualify released agents or an end-to-end staging render.
 
 For a full module GitOps render (`codefly deploy gitops render`), the render
 inventory's contract provenance — a service's exposed API contracts (from the

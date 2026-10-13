@@ -19,7 +19,7 @@ type configurationMaps map[namespacedName]map[string]any
 func indexConfigurationMaps(documents []manifest) (configurationMaps, error) {
 	index := configurationMaps{}
 	for _, doc := range documents {
-		if doc.group != "" || doc.kind != "ConfigMap" {
+		if doc.group != "" || doc.kind != kindConfigMap {
 			continue
 		}
 		key := namespacedName{namespace: metadataString(doc.value, "namespace"), name: metadataString(doc.value, "name")}
@@ -83,15 +83,12 @@ func (index configurationMaps) service(container map[string]any, namespace strin
 
 // Follow the selected resource graph only. Another environment's ConfigMap must
 // never supply the identity used to bind this environment's workload.
-func configurationSources(root, environment string) (map[string][]manifest, error) {
-	if err := walkRegularFiles(root, func(_, _ string, _ os.FileInfo) error { return nil }); err != nil {
+
+func configurationSourcesInTree(tree *renderRoot, root, environment string) (map[string][]manifest, error) {
+	if err := tree.walkRegularFiles(root, func(_, _ string, _ os.FileInfo) error { return nil }); err != nil {
 		return nil, err
 	}
-	owned, err := os.OpenRoot(root)
-	if err != nil {
-		return nil, err
-	}
-	defer owned.Close()
+
 	files := map[string][]manifest{}
 	visited := map[string]bool{}
 	var visit func(string) error
@@ -100,12 +97,12 @@ func configurationSources(root, environment string) (map[string][]manifest, erro
 			return fmt.Errorf("configuration resource %q escapes the owned tree", relative)
 		}
 		path := filepath.Join(root, relative)
-		info, err := owned.Stat(relative)
+		info, err := tree.stat(root, relative)
 		if err != nil {
 			return err
 		}
 		if info.IsDir() {
-			path, err = kustomizationPath(path)
+			path, err = kustomizationPathInTree(tree, path)
 			if err != nil {
 				return err
 			}
@@ -118,7 +115,7 @@ func configurationSources(root, environment string) (map[string][]manifest, erro
 			return nil
 		}
 		visited[relative] = true
-		data, err := owned.ReadFile(relative)
+		data, err := tree.read(root, relative)
 		if err != nil {
 			return err
 		}

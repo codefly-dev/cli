@@ -2,8 +2,11 @@
 
 package gitops
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
 
-func exchangeDirectories(_, _ string) error {
+func exchangeDirectoriesAt(_ *os.File, _ string, _ *os.File, _ string) error {
 	return fmt.Errorf("atomic directory exchange is not supported on this platform")
 }

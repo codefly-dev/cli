@@ -157,7 +157,9 @@ func renderFiles(t *testing.T, session *SelectionSession, files *DeploymentFiles
 		require.NoError(t, protojson.Unmarshal(data, &request))
 		directory, err := filepath.EvalSymlinks(t.TempDir())
 		require.NoError(t, err)
-		response, err := client.Deploy(t.Context(), &builderv0.DeploymentRequest{Execution: &request, OutputDirectory: directory})
+		payload := &builderv0.DeploymentRequest{Execution: &request, OutputDirectory: directory}
+		require.NoError(t, session.bindRenderProvenance(t.Context(), []renderInput{{request: payload}}))
+		response, err := client.Deploy(t.Context(), payload)
 		require.NoError(t, err)
 		receipt, err := protojson.Marshal(response.Execution)
 		require.NoError(t, err)

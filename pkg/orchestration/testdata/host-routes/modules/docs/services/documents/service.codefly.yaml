@@ -1,0 +1,20 @@
+kind: service
+name: documents
+version: 0.0.0
+module: docs
+agent:
+    kind: runtime::service
+    name: go
+    version: 0.0.1
+    publisher: codefly.dev
+# Two HTTP-family endpoints on one service: REST takes the conventional port,
+# so the http endpoint's port is only right when derived from the whole set.
+endpoints:
+    - name: rest
+      api: rest
+      visibility: internal
+    - name: web
+      api: http
+      visibility: internal
+    - name: admin
+      api: http

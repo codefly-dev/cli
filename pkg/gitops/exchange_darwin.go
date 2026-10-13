@@ -2,8 +2,12 @@
 
 package gitops
 
-import "golang.org/x/sys/unix"
+import (
+	"os"
 
-func exchangeDirectories(left, right string) error {
-	return unix.RenameatxNp(unix.AT_FDCWD, left, unix.AT_FDCWD, right, unix.RENAME_SWAP)
+	"golang.org/x/sys/unix"
+)
+
+func exchangeDirectoriesAt(leftParent *os.File, left string, rightParent *os.File, right string) error {
+	return unix.RenameatxNp(int(leftParent.Fd()), left, int(rightParent.Fd()), right, unix.RENAME_SWAP)
 }

@@ -27,6 +27,25 @@ When `go.mod` moves to a new core release line, update the `core` field in
 `go test ./pkg/conformance/...` before the full coverage and race gates.
 `TestMatrixCoreMatchesGoMod` refuses a stale declared version.
 
+The current pin is a `v0.19.5` pseudo-version of core, ahead of any tag: it
+carries the `runtime-started-artifact/v1` contract a native run reads a
+workload's build from (codefly-dev/core#796, codefly-dev/cli#989), which has no
+released core yet. Releasing a CLI on it requires core `v0.19.5` to be tagged
+first. On top of `v0.19.2`, `v0.19.4` adds
+the issuer's non-consuming `Authority.ReadBack` and moves kustomize back to
+`v0.21.1`, whose kube-openapi does not pull `structured-merge-diff/v7` (the
+`v0.21.3` that `v0.19.2` and `v0.19.3` carried broke every build compiling
+client-go). `v0.19.2` added a
+solution manifest's scoped `api.consumes` and its consumption contract (#784)
+and an issuer-assigned Work Context session (#783). `v0.19.1`
+verifies delivered carriers
+against pinned platform keys (#773), projects a service account entirely on a
+caller-supplied filesystem (#774, #777), and carries ToolProjection and slot-only authority (#755), ciguard (#750), caller tokens,
+image-lock/publish evidence (#759), and configuration-origin evidence (#746),
+in addition to #752's composition-provenance contract. This source matrix does
+not qualify released agents for the new
+`deployment-composition-provenance/v1` capability.
+
 A missing receipt can be a consequence of an earlier failure: coverage and race
 run `go test -failfast`, so a failed package can stop the npm tests in
 `pkg/librarystore` before they emit `linux-amd64-native-npm` receipts. Each job

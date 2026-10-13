@@ -34,6 +34,11 @@ Runner is a wrapper around a runtime service instance to fit the outputProperty 
 - collects events from the service instance observability
 */
 type Runner struct {
+	// hostRoutesOnce derives the host gateway's route carriers once per runner
+	// (hostRoutes); hostRouteCarriersDerived holds them.
+	hostRoutesOnce           sync.Once
+	hostRouteCarriersDerived map[string]string
+
 	instance *services.Instance
 
 	// API
@@ -61,6 +66,13 @@ type Runner struct {
 	// isStarted cannot answer "has this service ever run", because Stop clears
 	// it before a hot reload re-enters Init.
 	everStarted atomic.Bool
+
+	// startedArtifact is what the agent reported it started on its last
+	// successful Start: the program it ran and the files that program was
+	// handed. Nil when the agent reports none, which is a refusal for a
+	// consumer that pins the build a process runs — never a cue to guess a
+	// path. A restart replaces it, so it always describes the process now.
+	startedArtifact atomic.Pointer[runtimev0.StartedArtifact]
 
 	restartMu       sync.Mutex
 	pendingRestart  ActionType
@@ -1013,6 +1025,8 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.NewError("cannot start %s: %s", runner.instance.Unique(), message)
 	}
 
+	runner.startedArtifact.Store(resp.Status.GetStartedArtifact())
+
 	err = runner.outputPropertyForStart.Set(ctx, &RunnerStartOutput{})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for start")
@@ -1025,6 +1039,15 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 
 	runner.markStarted()
 	return outputProperty, nil
+}
+
+// StartedArtifact is what the agent reported it started, as of this runner's
+// last successful Start; nil when the agent reported none.
+func (runner *Runner) StartedArtifact() *runtimev0.StartedArtifact {
+	if runner == nil {
+		return nil
+	}
+	return runner.startedArtifact.Load()
 }
 
 func (runner *Runner) markStarted() {
@@ -1657,13 +1680,49 @@ func (runner *Runner) runtimeOverridesFor(own []*basev0.NetworkMapping) map[stri
 	for key, value := range self {
 		overrides[key] = value
 	}
+	// The host gateway's routes: the carriers of what composed solutions
+	// consume through it (hostRouteCarriers), derived like the self carrier
+	// and layered beneath the operator's --set for the same reason.
+	for key, value := range runner.hostRoutes() {
+		overrides[key] = value
+	}
 	for key, value := range runner.overrides {
 		overrides[key] = value
+	}
+	if runner.world != nil && runner.world.RuntimeOverrides != nil {
+		for key, value := range runner.world.RuntimeOverrides(runner.instance.Service) {
+			overrides[key] = value
+		}
 	}
 	if runner.world != nil && runner.world.Env != nil && runner.world.Env.NamingScope != "" {
 		overrides[resources.NamingScopePrefix] = runner.world.Env.NamingScope
 	}
 	return overrides
+}
+
+// hostRoutes is the host gateway's route carriers for this run, derived once
+// per runner however many times its overrides are asked for. A run warns
+// rather than refuses: a route it cannot derive — a producer outside this run,
+// not addressed yet, or not reachable from the gateway's module — is named, and
+// the gateway starts with every other route; that module answers 503.
+func (runner *Runner) hostRoutes() map[string]string {
+	if runner == nil || runner.instance == nil || runner.world == nil {
+		return nil
+	}
+	runner.hostRoutesOnce.Do(func() {
+		ctx := context.Background()
+		w := wool.Get(ctx).In("Runner.hostRoutes")
+		carriers, problems, err := runner.world.hostRouteCarriers(ctx, runner.instance.Service, runner.selfNetworkAccess())
+		if err != nil {
+			w.Warn("the host gateway's routes are refused by the composition; every consumed module answers 503", wool.ErrField(err))
+			return
+		}
+		for _, problem := range problems {
+			w.Warn("the host gateway will not route this consumed endpoint; that module answers 503", wool.ErrField(problem))
+		}
+		runner.hostRouteCarriersDerived = carriers
+	})
+	return runner.hostRouteCarriersDerived
 }
 
 func (runner *Runner) WithOutputEnv(path string) {

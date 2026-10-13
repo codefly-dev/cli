@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -25,7 +26,6 @@ import (
 	corerunnable "github.com/codefly-dev/core/runnable"
 	"github.com/codefly-dev/core/standards"
 	"github.com/spf13/cobra"
-	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 // RunnableBindingsGroup is the workspace configuration group the prepared
@@ -67,21 +67,37 @@ For each derived operation the value is one JSON document
                    changed contract is refused rather than called with a payload
                    shaped for the one it used to publish
   policy           the execution policy and Work Context authority the owner
-                   declared on its method option or x-codefly-operation marker
+                   declared, with required scope slots resolved from this
+                   environment's runnable-scope-selections
 
 An owner is called with JSON, so no protobuf descriptor is delivered to anyone.
 A gRPC owner is therefore called on its **Connect** endpoint: a service that
 publishes a runnable-marked method and declares no connect endpoint is refused
 here, by name, rather than at a call.
+An operation published directly on a Connect endpoint uses that endpoint.
 
 The address is resolved, never configured: it is the one a run or a render of
 the same environment gives the owner. A service that installs derived
 operations declares ` + RunnableBindingsGroup + ` as a workspace configuration dependency and
 receives them like any other group, so the installer names no owner module.
 
+In workspace.codefly.yaml, environments[].runnable-scope-selections maps each
+binding key (MODULE__OPERATION) to Core ScopeSelection messages: slot, invoke,
+and lookup. Every required slot needs exact resource kinds, actions and ids;
+missing selections, wildcards and overlapping kinds are refused. Tool exposure
+is carried from the owner. See docs/runnable.md for the selection YAML.
+
+An environment that installs an operation for no resource answers its key with
+an explicitly empty list, KEY: []. That operation is declined: its key is absent
+from the output and it receives no authority, while every other operation still
+prepares; the file records the decline as a comment and ` + "`codefly doctor workspace`" + `
+names it. Only an operation with a required scope slot can be declined, and an
+absent key is still refused, so nothing is skipped by omission.
+
 The output is configurations/<profile>/` + RunnableBindingsGroup + `.env in the workspace, for the
 environment's first configuration profile. --check regenerates in memory and
-exits non-zero when the file differs.
+exits non-zero when the file differs, including after a scope selection or a
+decline changes.
 
 Examples:
   codefly generate runnable-bindings
@@ -102,7 +118,7 @@ Examples:
 		if err != nil {
 			return err
 		}
-		content, count, err := prepareRunnableBindings(ctx, workspace, env)
+		prepared, err := prepareRunnableBindings(ctx, workspace, env)
 		if err != nil {
 			return err
 		}
@@ -111,18 +127,25 @@ Examples:
 			return err
 		}
 		target := filepath.Join(workspace.Dir(), "configurations", profile, RunnableBindingsGroup+".env")
+		// Nothing derived and nothing declined writes no file, so the expected
+		// state --check compares against is its absence.
+		empty := prepared.count == 0 && len(prepared.declined) == 0
 		if runnableBindingsCheck {
 			existing, err := os.ReadFile(target)
 			if err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
-			if !bytes.Equal(existing, content) {
+			current := bytes.Equal(existing, prepared.content)
+			if empty {
+				current = errors.Is(err, os.ErrNotExist)
+			}
+			if !current {
 				return fmt.Errorf("%s is out of date: run `codefly generate runnable-bindings --env %s`", target, env.Name)
 			}
-			cli.Info("runnable-bindings: %s is current (%d operation(s))", target, count)
+			cli.Info("runnable-bindings: %s is current (%d operation(s), %d declined)", target, prepared.count, len(prepared.declined))
 			return nil
 		}
-		if count == 0 {
+		if empty {
 			if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
@@ -132,57 +155,94 @@ Examples:
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(target, content, 0o600); err != nil {
+		if err := os.WriteFile(target, prepared.content, 0o600); err != nil {
 			return err
 		}
-		cli.Header(1, "Bound %d runnable operation(s) for %s in %s", count, env.Name, target)
+		cli.Header(1, "Bound %d runnable operation(s) for %s in %s", prepared.count, env.Name, target)
+		for _, key := range prepared.declined {
+			cli.Info("runnable-bindings: %s declined by environment %s (runnable-scope-selections: []): no binding is prepared and no authority granted; a service that installs it is refused where it reads %s/%s", key, env.Name, RunnableBindingsGroup, key)
+		}
 		return nil
 	},
 }
 
 func init() {
-	RunnableBindingsCmd.Flags().StringVar(&runnableBindingsEnv, "env", "local", "environment whose resolved addresses the bindings target")
+	RunnableBindingsCmd.Flags().StringVar(&runnableBindingsEnv, "env", "local", "environment supplying resolved addresses and runnable-scope-selections")
 	RunnableBindingsCmd.Flags().BoolVar(&runnableBindingsCheck, "check", false, "do not write; exit 1 if the on-disk file differs from what would be generated")
+}
+
+// preparedRunnableBindings is what one environment's preparation produced:
+// the configuration file, how many operations it binds, and the keys the
+// environment declined.
+type preparedRunnableBindings struct {
+	content  []byte
+	count    int
+	declined []string
 }
 
 // prepareRunnableBindings walks every module of the workspace and prepares a
 // binding for each operation it derived, returning the configuration file.
-func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) ([]byte, int, error) {
+//
+// An operation whose key the environment answers with an explicitly empty
+// list is declined: it is not prepared, its key is absent from the file and it
+// receives no authority, while every other operation still prepares. Only an
+// operation that declares a required scope slot can be declined — one with
+// none has nothing to decline, and an empty list there would hide a typo. The
+// file records each decline as a comment, so a consumer refused for the
+// missing key finds why next to the keys that are there, and `--check` sees a
+// decline added or removed.
+func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (*preparedRunnableBindings, error) {
 	modules, err := workspace.LoadModules(ctx)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	resolver, err := newEndpointResolver(ctx, workspace, env)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	lines := map[string]string{}
+	derivedKeys := map[string]bool{}
+	var declined []string
 	for _, module := range modules {
 		derived, err := runnablespkg.LoadDerivedOperations(module.Dir())
 		if err != nil {
-			return nil, 0, fmt.Errorf("module %s: %w", module.Name, err)
+			return nil, fmt.Errorf("module %s: %w", module.Name, err)
 		}
 		for i := range derived {
 			operation := &derived[i]
+			key := RunnableBindingKey(module.Name, operation.Entry.Name)
+			if derivedKeys[key] {
+				return nil, fmt.Errorf("two operations bind under key %s", key)
+			}
+			derivedKeys[key] = true
+			if env.DeclinesRunnableBinding(key) {
+				if operation.Operation == nil || len(operation.Operation.RequiredScopeSlots) == 0 {
+					return nil, fmt.Errorf("environment %s runnable-scope-selections[%s] in workspace.codefly.yaml is [], which declines the binding, but module %s operation %s declares no required scope slot: there is nothing to decline; remove the entry",
+						env.Name, key, module.Name, operation.Entry.Name)
+				}
+				declined = append(declined, key)
+				continue
+			}
 			prepared, err := prepareRunnable(ctx, module, operation, resolver)
 			if err != nil {
-				return nil, 0, fmt.Errorf("module %s operation %s: %w", module.Name, operation.Entry.Name, err)
+				return nil, fmt.Errorf("module %s operation %s: %w", module.Name, operation.Entry.Name, err)
 			}
 			// EncodePrepared fills the schema and the contract digest and holds
 			// the value to the rules its reader applies, so what is written is
 			// what installs.
 			value, err := corerunnable.EncodePrepared(prepared)
 			if err != nil {
-				return nil, 0, fmt.Errorf("module %s operation %s: %w", module.Name, operation.Entry.Name, err)
-			}
-			key := RunnableBindingKey(module.Name, operation.Entry.Name)
-			if _, taken := lines[key]; taken {
-				return nil, 0, fmt.Errorf("two operations bind under key %s", key)
+				return nil, fmt.Errorf("module %s operation %s: %w", module.Name, operation.Entry.Name, err)
 			}
 			lines[key] = string(value)
 		}
 	}
-	count := len(lines)
+	for _, key := range sortedKeys(env.RunnableScopeSelections) {
+		if !derivedKeys[key] {
+			return nil, fmt.Errorf("environment %s runnable-scope-selections[%s] names no derived operation", env.Name, key)
+		}
+	}
+	sort.Strings(declined)
 	keys := make([]string, 0, len(lines))
 	for key := range lines {
 		keys = append(keys, key)
@@ -190,10 +250,18 @@ func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace
 	sort.Strings(keys)
 	var out strings.Builder
 	out.WriteString(runnableBindingsFileHeader)
+	for _, key := range declined {
+		out.WriteString(declinedBindingComment(env.Name, key))
+	}
 	for _, key := range keys {
 		out.WriteString(key + "=" + lines[key] + "\n")
 	}
-	return []byte(out.String()), count, nil
+	return &preparedRunnableBindings{content: []byte(out.String()), count: len(lines), declined: declined}, nil
+}
+
+// declinedBindingComment is the line the file carries for a declined key.
+func declinedBindingComment(env, key string) string {
+	return fmt.Sprintf("# %s: declined by environment %s (runnable-scope-selections: []); no binding, no authority\n", key, env)
 }
 
 // RunnableBindingKey is the configuration key an operation is bound under:
@@ -219,16 +287,25 @@ func prepareRunnable(ctx context.Context, module *resources.Module, operation *r
 		return nil, fmt.Errorf("a derived package carries exactly one service operation, found %d", len(pkg.GetServiceOperations()))
 	}
 	descriptor := pkg.GetServiceOperations()[0]
-	call, kind, err := resolver.callTarget(ctx, module, operation.Entry.Service, operation.Entry.Endpoint, descriptor.GetOperation())
+	call, kind, err := resolver.callTarget(ctx, module, operation.Entry.Service, operation.Entry.Endpoint, descriptor.GetOperation(), operation.Operation.LookupMethod)
 	if err != nil {
 		return nil, err
 	}
 	if err = verifyPublishedContract(module, operation.Entry.Service, operation.Entry.Endpoint, kind); err != nil {
 		return nil, err
 	}
-	policy, err := preparedPolicy(operation.Operation)
+	codes := corerunnable.GRPCStatusNames
+	if kind == composition.APIContractKindOpenAPI {
+		codes = corerunnable.HTTPStatusCodes
+	}
+	spec, err := operationSpec(operation.Operation, descriptor.GetOperation(), codes)
 	if err != nil {
 		return nil, err
+	}
+	key := RunnableBindingKey(module.Name, operation.Entry.Name)
+	resolved, err := spec.ResolveScopeSlots(resolver.env.RunnableScopeSelections[key])
+	if err != nil {
+		return nil, fmt.Errorf("environment %s runnable-scope-selections[%s] in workspace.codefly.yaml: %w", resolver.env.Name, key, err)
 	}
 	return &runnablev0.PreparedBinding{
 		Operation: &runnablev0.PreparedOperation{
@@ -239,16 +316,14 @@ func prepareRunnable(ctx context.Context, module *resources.Module, operation *r
 		},
 		Call:     call,
 		Contract: pkg.GetContract(),
-		Policy:   policy,
+		Policy:   resolved.Policy(),
 	}, nil
 }
 
-// preparedPolicy is the declared policy as the message core validates. The
-// derived operation's own document is a second spelling of
-// codefly.runnable.v0.Operation, so this reads it back into that message rather
-// than into a third: core then holds the result to the installation bounds, and
-// a field this drops is a field an installer never sees.
-func preparedPolicy(declared *runnablespkg.Operation) (*runnablev0.Operation, error) {
+// operationSpec reads the derived document back into Core's spec so Core can
+// resolve its slots once and write the resulting policy with Policy(). The
+// document round-trip test holds both conversions to every Operation field.
+func operationSpec(declared *runnablespkg.Operation, spelling string, codes corerunnable.CodeVocabulary) (*corerunnable.OperationSpec, error) {
 	if declared == nil {
 		return nil, errors.New("the operation declares no execution policy")
 	}
@@ -269,19 +344,23 @@ func preparedPolicy(declared *runnablespkg.Operation) (*runnablev0.Operation, er
 		return nil, fmt.Errorf("completion %q is not a completion mode; %s and %s are the two",
 			declared.Completion, basev0.RunnableExecution_COMPLETION_CALL, basev0.RunnableExecution_COMPLETION_SUBMIT)
 	}
-	return &runnablev0.Operation{
-		AttemptTimeout: durationpb.New(durations["attempt_timeout"]),
-		TotalTimeout:   durationpb.New(durations["total_timeout"]),
-		MaxAttempts:    declared.MaxAttempts,
-		Backoff:        durationpb.New(durations["backoff"]),
-		RetryableCodes: declared.RetryableCodes,
-		Audience:       declared.Audience,
-		InvokeScopes:   preparedScopes(declared.InvokeScopes),
-		LookupScopes:   preparedScopes(declared.LookupScopes),
-		LookupMethod:   declared.LookupMethod,
-		MaxInputBytes:  declared.MaxInputBytes,
-		MaxOutputBytes: declared.MaxOutputBytes,
-		Completion:     basev0.RunnableExecution_Completion(completion),
+	return &corerunnable.OperationSpec{
+		Method:             spelling,
+		Codes:              codes,
+		AttemptTimeout:     durations["attempt_timeout"],
+		TotalTimeout:       durations["total_timeout"],
+		MaxAttempts:        declared.MaxAttempts,
+		Backoff:            durations["backoff"],
+		RetryableCodes:     declared.RetryableCodes,
+		Audience:           declared.Audience,
+		InvokeScopes:       preparedScopes(declared.InvokeScopes),
+		LookupScopes:       preparedScopes(declared.LookupScopes),
+		LookupMethod:       declared.LookupMethod,
+		MaxInputBytes:      declared.MaxInputBytes,
+		MaxOutputBytes:     declared.MaxOutputBytes,
+		Completion:         basev0.RunnableExecution_Completion(completion),
+		Tool:               declared.Tool,
+		RequiredScopeSlots: declared.RequiredScopeSlots,
 	}, nil
 }
 
@@ -360,7 +439,7 @@ func newEndpointResolver(ctx context.Context, workspace *resources.Workspace, en
 // service that publishes a runnable-marked method and declares no connect
 // endpoint is refused here rather than at a call — the address a caller would
 // otherwise be handed is one that answers nothing it can send.
-func (r *endpointResolver) callTarget(ctx context.Context, module *resources.Module, serviceName, publishedName, spelling string) (*runnablev0.PreparedCall, string, error) {
+func (r *endpointResolver) callTarget(ctx context.Context, module *resources.Module, serviceName, publishedName, spelling, lookup string) (*runnablev0.PreparedCall, string, error) {
 	identity, endpoints, err := r.load(ctx, module, serviceName)
 	if err != nil {
 		return nil, "", err
@@ -370,11 +449,10 @@ func (r *endpointResolver) callTarget(ctx context.Context, module *resources.Mod
 		return nil, "", fmt.Errorf("service %s/%s declares no endpoint %s", module.Name, serviceName, publishedName)
 	}
 	switch published.GetApi() {
-	case standards.GRPC:
-		connect := endpointWithAPI(endpoints, standards.CONNECT)
-		if connect == nil {
-			return nil, "", fmt.Errorf("%s/%s publishes %s on its %s endpoint but declares no %s endpoint: a Runnable owner is called with JSON, so mark the method only on a service that serves Connect",
-				module.Name, serviceName, spelling, publishedName, standards.CONNECT)
+	case standards.GRPC, standards.CONNECT:
+		connect, err := servedConnectEndpoint(module, serviceName, published, endpoints, spelling, lookup)
+		if err != nil {
+			return nil, "", err
 		}
 		address, err := r.address(ctx, identity, endpoints, connect)
 		if err != nil {
@@ -398,8 +476,8 @@ func (r *endpointResolver) callTarget(ctx context.Context, module *resources.Mod
 			Route:   &runnablev0.PreparedCall_Rest{Rest: &runnablev0.HTTPRoute{Verb: verb, Path: path}},
 		}, composition.APIContractKindOpenAPI, nil
 	default:
-		return nil, "", fmt.Errorf("%s/%s/%s is a %s endpoint, and a derived operation is called over %s or %s",
-			module.Name, serviceName, publishedName, published.GetApi(), standards.GRPC, standards.REST)
+		return nil, "", fmt.Errorf("%s/%s/%s is a %s endpoint, and a derived operation is called over %s, %s or %s",
+			module.Name, serviceName, publishedName, published.GetApi(), standards.GRPC, standards.CONNECT, standards.REST)
 	}
 }
 
@@ -412,13 +490,49 @@ func endpointNamed(endpoints []*basev0.Endpoint, name string) *basev0.Endpoint {
 	return nil
 }
 
-func endpointWithAPI(endpoints []*basev0.Endpoint, api string) *basev0.Endpoint {
-	for _, candidate := range endpoints {
-		if candidate.GetApi() == api {
-			return candidate
-		}
+// Select from the published served surface, including the paired lookup.
+// The first declared Connect listener is not evidence that it serves a method.
+func servedConnectEndpoint(module *resources.Module, service string, published *basev0.Endpoint, endpoints []*basev0.Endpoint, spelling, lookup string) (*basev0.Endpoint, error) {
+	catalog, err := composition.LoadAPIContractCatalog(module.Dir())
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	var candidates, eligible []string
+	var selected *basev0.Endpoint
+	for _, endpoint := range endpoints {
+		if endpoint.GetApi() != standards.CONNECT || (published.GetApi() == standards.CONNECT && endpoint.Name != published.Name) {
+			continue
+		}
+		candidates = append(candidates, endpoint.Name)
+		var serves, servesLookup bool
+		for i := range catalog.Endpoints {
+			entry := &catalog.Endpoints[i]
+			if entry.Service != service || entry.Endpoint != endpoint.Name || entry.API != standards.CONNECT || entry.Kind != composition.APIContractKindProtobuf {
+				continue
+			}
+			for _, svc := range entry.Services {
+				serves = serves || slices.Contains(svc.Procedures, spelling)
+				servesLookup = servesLookup || slices.Contains(svc.Procedures, lookup)
+			}
+		}
+		if !serves || (lookup != "" && !servesLookup) {
+			continue
+		}
+		if err := verifyPublishedContract(module, service, endpoint.Name, composition.APIContractKindProtobuf); err != nil {
+			return nil, err
+		}
+		eligible = append(eligible, endpoint.Name)
+		selected = endpoint
+	}
+	sort.Strings(candidates)
+	sort.Strings(eligible)
+	if len(eligible) == 0 {
+		return nil, fmt.Errorf("%s/%s/%s: no connect endpoint among %v publishes served procedure %s and lookup %q in contracts/api/catalog.codefly.json; export the called endpoint in module.codefly.yaml and run `codefly generate contracts %s`; see docs/commands.md#generate-contracts", module.Name, service, published.Name, candidates, spelling, lookup, module.Name)
+	}
+	if len(eligible) > 1 {
+		return nil, fmt.Errorf("%s/%s/%s: ambiguous connect endpoints %v serving %s and lookup %q; derive the operation under the intended Connect endpoint", module.Name, service, published.Name, eligible, spelling, lookup)
+	}
+	return selected, nil
 }
 
 func (r *endpointResolver) load(ctx context.Context, module *resources.Module, serviceName string) (*resources.ServiceIdentity, []*basev0.Endpoint, error) {
