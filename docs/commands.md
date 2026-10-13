@@ -311,6 +311,21 @@ rendered into the entry service's ConfigMap with the value a run injects. The
 projection names routes, not credentials, so it is a plain value; a render never
 writes a secret value into the tree.
 
+**The host gateway is handed the routes solutions consume through it.** A
+solution calls a consumed module through the host's gateway (`/v1/<as>/…`), so
+the environment's `host.gateway` service receives a `CODEFLY__ENDPOINT__…`
+carrier for every module endpoint a composed solution's `api.consumes` names —
+in a run at the address the run allocated, at the gateway's own network access;
+in a render at the producer's in-cluster address — and the gateway resolves the
+module through the Codefly SDK from it. No dependency edge is added: the gateway
+neither waits on nor builds a module. The derivation is the one every carrier
+uses (the producer's own mappings, judged by its declared visibility for the
+gateway's module), and a route with no single answer is refused naming it: a
+consume that names a module under another `as` (the host routes `/v1/<module>`),
+an endpoint the gateway's module may not reach, or two solutions reaching one
+module through different endpoints. A run whose producer has not been addressed
+yet warns and starts the gateway without that route.
+
 A render delivers a service the **same workspace configuration groups** `codefly
 run` delivers it: the groups it declares under
 `workspace-configuration-dependencies` unioned with the ones the composition root

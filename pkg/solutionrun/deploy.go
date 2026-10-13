@@ -90,3 +90,41 @@ func (inputs *DeployInputs) public(unique, key, value string) {
 	injection.Public[key] = value
 	inputs.Services[unique] = injection
 }
+
+// Consumption is one endpoint a composed solution consumes, as its manifest's
+// api.consumes names it.
+type Consumption struct {
+	// Solution is the consuming solution's module.
+	Solution string
+	manifest.ConsumedAPI
+}
+
+// ConsumedEndpoints lists, for every solution the workspace composes, the
+// endpoints its api.consumes names — the same manifests, read the same way,
+// that DerivedDeployInputs projects. A manifest the run would refuse fails the
+// same way, naming the solution.
+func ConsumedEndpoints(ctx context.Context, workspace *resources.Workspace) ([]Consumption, error) {
+	var out []Consumption
+	for _, ref := range workspace.Modules {
+		mod, err := workspace.LoadModuleFromReference(ctx, ref)
+		if err != nil {
+			// Every route the host forwards is derived from here, so a module
+			// that cannot be read is a refusal, not a module with no consumes.
+			return nil, fmt.Errorf("read composed module %s: %w", ref.Name, err)
+		}
+		if mod.ServiceEntry == "" {
+			continue
+		}
+		solutionManifest, err := moduleManifest(mod)
+		if err != nil {
+			return nil, fmt.Errorf("solution %s: %w", mod.Name, err)
+		}
+		if solutionManifest == nil {
+			continue
+		}
+		for _, consumed := range solutionManifest.ConsumedAPIs() {
+			out = append(out, Consumption{Solution: mod.Name, ConsumedAPI: consumed})
+		}
+	}
+	return out, nil
+}

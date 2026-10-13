@@ -162,7 +162,7 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 	if err = collectRenderTemplates(r.scope.Templates, rendered.deployed, rendered.secretKeys); err != nil {
 		return err
 	}
-	injections, err := deriveRenderInjections(ctx, r.workspace, rendered.selfEndpoints, r.sink)
+	injections, err := deriveRenderInjections(ctx, r.workspace, rendered.selfEndpoints, rendered.hostRoutes, r.sink)
 	if err != nil {
 		return err
 	}
@@ -240,6 +240,7 @@ func (r *moduleRender) resolveInputs(ctx context.Context, services []*resources.
 type renderedRoots struct {
 	outputs        map[string]*builderv0.DeploymentOutput
 	selfEndpoints  map[string]map[string]string
+	hostRoutes     map[string]map[string]string
 	deployed       map[string]*basev0.Configuration
 	secretKeys     map[string][]string
 	inClusterPorts map[string]map[string]uint32
@@ -250,6 +251,7 @@ func (r *moduleRender) renderRoots(ctx context.Context, roots []*resources.Servi
 	rendered := &renderedRoots{
 		outputs:        make(map[string]*builderv0.DeploymentOutput),
 		selfEndpoints:  make(map[string]map[string]string),
+		hostRoutes:     make(map[string]map[string]string),
 		deployed:       make(map[string]*basev0.Configuration),
 		secretKeys:     make(map[string][]string),
 		inClusterPorts: make(map[string]map[string]uint32),
@@ -274,6 +276,11 @@ func (r *moduleRender) renderRoots(ctx context.Context, roots []*resources.Servi
 			func(endpoints map[string]map[string]string) {
 				for unique, variables := range endpoints {
 					rendered.selfEndpoints[unique] = variables
+				}
+			},
+			func(routes map[string]map[string]string) {
+				for unique, variables := range routes {
+					rendered.hostRoutes[unique] = variables
 				}
 			},
 			func(configurations map[string]*basev0.Configuration, keys map[string][]string) {
@@ -547,6 +554,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		}
 		var graph map[string]*resources.Service
 		var selfEndpoints map[string]map[string]string
+		var hostRoutes map[string]map[string]string
 		var deployed map[string]*basev0.Configuration
 		var secretKeys map[string][]string
 		var inClusterPorts map[string]map[string]uint32
@@ -562,6 +570,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 			nil,
 			func(services map[string]*resources.Service) { graph = services },
 			func(rendered map[string]map[string]string) { selfEndpoints = rendered },
+			func(rendered map[string]map[string]string) { hostRoutes = rendered },
 			func(rendered map[string]*basev0.Configuration, keys map[string][]string) {
 				deployed, secretKeys = rendered, keys
 			},
@@ -569,7 +578,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		); err != nil {
 			return err
 		}
-		injections, err := deriveRenderInjections(ctx, workspace, selfEndpoints, sink)
+		injections, err := deriveRenderInjections(ctx, workspace, selfEndpoints, hostRoutes, sink)
 		if err != nil {
 			return err
 		}
@@ -662,6 +671,7 @@ func renderServiceFlow(
 	record func(map[string]*builderv0.DeploymentOutput),
 	recordServices func(map[string]*resources.Service),
 	recordSelfEndpoints func(map[string]map[string]string),
+	recordHostRoutes func(map[string]map[string]string),
 	recordConfigurations func(map[string]*basev0.Configuration, map[string][]string),
 	recordInClusterPorts func(map[string]map[string]uint32),
 ) (result error) {
@@ -700,6 +710,13 @@ func renderServiceFlow(
 	}
 	if recordSelfEndpoints != nil {
 		recordSelfEndpoints(flow.SelfEndpoints(ctx))
+	}
+	if recordHostRoutes != nil {
+		routes, err := flow.HostRouteCarriers(ctx)
+		if err != nil {
+			return err
+		}
+		recordHostRoutes(routes)
 	}
 	if recordConfigurations != nil {
 		recordConfigurations(flow.DeployedConfigurations(), flow.DeployedSecretKeys())

@@ -1,0 +1,199 @@
+package orchestration
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/codefly-dev/core/configurations"
+	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/remotenetwork"
+	"github.com/codefly-dev/core/architecture"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	"github.com/codefly-dev/core/network"
+	"github.com/codefly-dev/core/resources"
+	"github.com/stretchr/testify/require"
+)
+
+// The host gateway forwards a composed solution's call to a module it consumes
+// (/v1/<as>/…), and the Codefly SDK in the gateway resolves that module from
+// the carriers the composition writes. These pin what the composition writes.
+
+// hostRoutesWorld is a world over a copy of testdata/host-routes whose
+// environment names host/gateway as the host's gateway. edit, when set, may
+// change the copy before it is loaded.
+func hostRoutesWorld(t *testing.T, mode Mode, edit func(dir string)) (*World, *resources.Workspace) {
+	t.Helper()
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "host-routes")
+	require.NoError(t, os.CopyFS(dir, os.DirFS("testdata/host-routes")))
+	if edit != nil {
+		edit(dir)
+	}
+	workspace, err := resources.LoadWorkspaceFromDir(ctx, dir)
+	require.NoError(t, err)
+	env, err := SelectEnvironment(workspace, LocalEnvironmentName)
+	require.NoError(t, err)
+	env.Host = &environments.EnvironmentHost{Gateway: "host/gateway"}
+	manager, err := configurations.NewManager(ctx, workspace)
+	require.NoError(t, err)
+	require.NoError(t, manager.Load(ctx, env.Runtime()))
+	dependencies, err := architecture.NewServiceDependencies(ctx, workspace)
+	require.NoError(t, err)
+	sharedState, err := NewStateManager(ctx, manager, dependencies, workspace)
+	require.NoError(t, err)
+	localNetwork, err := network.NewRuntimeManager(ctx, manager)
+	require.NoError(t, err)
+	remoteNetwork, err := remotenetwork.NewRemoteManager(ctx, manager)
+	require.NoError(t, err)
+	return &World{
+		Mode: mode, Env: env, Workspace: workspace,
+		ConfigurationManager: manager, SharedState: sharedState, Dependencies: dependencies,
+		LocalNetworkManager: localNetwork, RemoteNetworkManager: remoteNetwork,
+		runtimeContextFor: func(*resources.Service) string { return resources.RuntimeContextNative },
+	}, workspace
+}
+
+func writeWikiConsumes(t *testing.T, dir, consumes string) {
+	t.Helper()
+	path := filepath.Join(dir, "modules", "wiki", "solution.codefly.yaml")
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	head, _, found := strings.Cut(string(raw), "  consumes:\n")
+	require.True(t, found)
+	_, tail, found := strings.Cut(string(raw), "lifecycle:")
+	require.True(t, found)
+	require.NoError(t, os.WriteFile(path, []byte(head+"  consumes:\n"+consumes+"lifecycle:"+tail), 0o600))
+}
+
+// In a render the gateway gets the in-cluster carrier of what the wiki consumes
+// through the host — and nothing for the host's own endpoint. The address is
+// the producer's as its own deploy records it, derived from ALL its endpoints:
+// web (http) shares no port with rest, which a derivation over the consumed
+// endpoint alone would get wrong.
+func TestTheHostGatewayIsHandedTheAddressOfWhatSolutionsConsume(t *testing.T) {
+	ctx := context.Background()
+	world, workspace := hostRoutesWorld(t, SnapshotMode, nil)
+	gateway := parityService(t, workspace, "host", "gateway")
+
+	carriers, err := world.hostRouteCarriers(ctx, gateway, resources.NewContainerNetworkAccess())
+	require.NoError(t, err)
+	key := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "docs", Service: "documents", Name: "web", API: "http"})
+	require.Len(t, carriers, 1, "the host's own endpoint is not a route: %v", carriers)
+	require.Contains(t, carriers, key)
+
+	producer, err := world.producerNetworkMappings(ctx, "docs/documents")
+	require.NoError(t, err)
+	var web, rest string
+	for _, mapping := range producer {
+		for _, instance := range mapping.GetInstances() {
+			if instance.GetAccess().GetKind() != resources.NewContainerNetworkAccess().GetKind() {
+				continue
+			}
+			switch mapping.GetEndpoint().GetName() {
+			case "web":
+				web = instance.GetAddress()
+			case "rest":
+				rest = instance.GetAddress()
+			}
+		}
+	}
+	require.NotEmpty(t, web)
+	require.Equal(t, web, carriers[key], "the carrier is the address the producer's own deploy records")
+	require.NotEqual(t, rest, web, "web is not rest's port")
+	require.Contains(t, web, ".svc.cluster.local", "an in-cluster address")
+
+	other := parityService(t, workspace, "wiki", "backend")
+	none, err := world.hostRouteCarriers(ctx, other, resources.NewContainerNetworkAccess())
+	require.NoError(t, err)
+	require.Nil(t, none, "only the host gateway forwards consumed calls")
+}
+
+func TestTheHostGatewaysRoutesAreRefusedWhenTheyHaveNoSingleAnswer(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		consumes string
+		extra    func(dir string)
+		want     string
+	}{
+		{
+			name:     "consumed under another alias",
+			consumes: "    - id: docs\n      protocol: http\n      module: docs\n      service: documents\n      endpoint: web\n      as: documents\n",
+			want:     `must be consumed as "docs"`,
+		},
+		{
+			name:     "an endpoint the gateway's module may not reach",
+			consumes: "    - id: docs\n      protocol: http\n      module: docs\n      service: documents\n      endpoint: admin\n      as: docs\n",
+			want:     "visibility does not admit",
+		},
+		{
+			name:     "a module the workspace does not compose",
+			consumes: "    - id: absent\n      protocol: rest\n      module: absent\n      service: api\n      endpoint: rest\n      as: absent\n",
+			want:     "does not compose",
+		},
+		{
+			name:     "two solutions reaching one module through different endpoints",
+			consumes: "    - id: docs\n      protocol: http\n      module: docs\n      service: documents\n      endpoint: web\n      as: docs\n",
+			extra: func(dir string) {
+				second := filepath.Join(dir, "modules", "notes")
+				require.NoError(t, os.CopyFS(second, os.DirFS(filepath.Join(dir, "modules", "wiki"))))
+				for _, file := range []string{"module.codefly.yaml", "services/backend/service.codefly.yaml", "solution.codefly.yaml"} {
+					path := filepath.Join(second, file)
+					raw, err := os.ReadFile(path)
+					require.NoError(t, err)
+					text := strings.ReplaceAll(string(raw), "wiki", "notes")
+					text = strings.ReplaceAll(text, "endpoint: web", "endpoint: rest")
+					text = strings.ReplaceAll(text, "protocol: http\n      module: docs", "protocol: rest\n      module: docs")
+					require.NoError(t, os.WriteFile(path, []byte(text), 0o600))
+				}
+				workspace := filepath.Join(dir, "workspace.codefly.yaml")
+				raw, err := os.ReadFile(workspace)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(workspace, append(raw, []byte("    - name: notes\n")...), 0o600))
+			},
+			want: "through different endpoints",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			world, workspace := hostRoutesWorld(t, SnapshotMode, func(dir string) {
+				writeWikiConsumes(t, dir, tc.consumes)
+				if tc.extra != nil {
+					tc.extra(dir)
+				}
+			})
+			gateway := parityService(t, workspace, "host", "gateway")
+			_, err := world.hostRouteCarriers(context.Background(), gateway, resources.NewContainerNetworkAccess())
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+// A local run hands the gateway the address this run allocated for the
+// consumed endpoint, at the gateway's own network access; a producer the run
+// has not addressed yet is a warning, never a failed start.
+func TestALocalRunHandsTheGatewayTheRunsAddress(t *testing.T) {
+	ctx := context.Background()
+	world, workspace := hostRoutesWorld(t, RunMode, nil)
+	gateway := parityService(t, workspace, "host", "gateway")
+	access := resources.NetworkAccessFromRuntimeContext(&basev0.RuntimeContext{Kind: resources.RuntimeContextNative})
+
+	none, err := world.hostRouteCarriers(ctx, gateway, access)
+	require.NoError(t, err, "a producer this run has not addressed is not a fault")
+	require.Nil(t, none)
+
+	documents := parityService(t, workspace, "docs", "documents")
+	identity, err := documents.Identity()
+	require.NoError(t, err)
+	endpoints, err := documents.LoadEndpoints(ctx)
+	require.NoError(t, err)
+	require.NoError(t, world.SharedState.RecordEndpoints(ctx, identity, endpoints))
+
+	carriers, err := world.hostRouteCarriers(ctx, gateway, access)
+	require.NoError(t, err)
+	key := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "docs", Service: "documents", Name: "web", API: "http"})
+	require.Contains(t, carriers, key)
+	require.Contains(t, carriers[key], "localhost", "a local address, at the gateway's own access")
+}

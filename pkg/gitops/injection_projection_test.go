@@ -189,7 +189,7 @@ func TestDerivedInjectionLeavesUntouchedFilesByteForByte(t *testing.T) {
 func TestRenderInjectionsJoinSelfEndpoints(t *testing.T) {
 	injections, err := deriveRenderInjections(t.Context(), singleModuleWorkspace(), map[string]map[string]string{
 		"wiki/backend": {selfEndpointKey: "http://backend.example-wiki.svc.cluster.local:8080"},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, "http://backend.example-wiki.svc.cluster.local:8080", injections.forService("wiki", "backend").Public[selfEndpointKey])
 	require.Empty(t, injections.forService("wiki", "other").Public)
