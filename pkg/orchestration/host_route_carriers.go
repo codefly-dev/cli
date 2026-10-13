@@ -2,13 +2,13 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/wool"
 )
 
 // THE HOST GATEWAY'S ROUTES.
@@ -27,65 +27,83 @@ import (
 // nor deploys a module; it is only told where each consumed one lives.
 
 // hostRouteCarriers returns the gateway's route carriers when service is the
-// environment's host gateway, nil otherwise.
-func (world *World) hostRouteCarriers(ctx context.Context, service *resources.Service, access *basev0.NetworkAccess) (map[string]string, error) {
+// environment's host gateway, nil otherwise. Each route is derived on its own:
+// a route with no answer is reported in problems and never takes another
+// route's carrier with it. err is a refusal of the composition itself (see
+// hostRoutes), which no route can be derived past.
+func (world *World) hostRouteCarriers(ctx context.Context, service *resources.Service, access *basev0.NetworkAccess) (map[string]string, []error, error) {
 	if world == nil || world.Env == nil || world.Env.Host == nil || world.Env.Host.Gateway == "" || service == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	identity, err := service.Identity()
 	if err != nil || identity.Unique() != world.Env.Host.Gateway {
-		return nil, nil
+		return nil, nil, nil
 	}
 	routes, err := world.hostRoutes(ctx, identity.Module)
 	if err != nil {
-		return nil, err
-	}
-	manager := resources.NewEnvironmentVariableManager()
-	for _, route := range routes {
-		mappings, err := world.producerNetworkMappings(ctx, route.producer())
-		if err != nil {
-			return nil, fmt.Errorf("derive the address of %s, which %s consumes through the host: %w", route.reference(), route.solution, err)
-		}
-		var consumed []*basev0.NetworkMapping
-		for _, mapping := range mappings {
-			if mapping.GetEndpoint().GetName() == route.endpoint {
-				consumed = append(consumed, mapping)
-			}
-		}
-		if len(consumed) == 0 {
-			if !world.deploys() {
-				// A local producer has an address only once this run allocated
-				// it (--temporary-ports allocates at initialization), and a
-				// route the run cannot address yet is the run being early, not
-				// a fault: the gateway answers that module 503 until restarted.
-				world.warnRoute(ctx, route, "this run has not allocated its address")
-				continue
-			}
-			return nil, fmt.Errorf("%s consumes %s through the host, and that producer declares no such endpoint", route.solution, route.reference())
-		}
-		visible, err := world.exportableTo(ctx, service, consumed)
-		if err != nil {
-			return nil, err
-		}
-		if len(visible) == 0 {
-			return nil, fmt.Errorf("%s consumes %s through the host, whose gateway (module %s) that endpoint's visibility does not admit", route.solution, route.reference(), identity.Module)
-		}
-		if err := manager.AddEndpoints(ctx, visible, access); err != nil {
-			return nil, err
-		}
+		return nil, nil, err
 	}
 	carriers := map[string]string{}
-	for _, endpoint := range manager.Endpoints() {
-		variable := resources.EndpointAsEnvironmentVariable(endpoint)
-		if endpoint.NetworkInstance.GetAddress() == "" {
-			return nil, fmt.Errorf("the host gateway's route %s has no address at its network access", variable.Key)
+	var problems []error
+	for _, route := range routes {
+		key, value, err := world.hostRouteCarrier(ctx, service, identity.Module, route, access)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s consumes %s through the host: %w", route.solution, route.reference(), err))
+			continue
 		}
-		carriers[variable.Key] = fmt.Sprint(variable.Value)
+		carriers[key] = value
 	}
 	if len(carriers) == 0 {
-		return nil, nil
+		carriers = nil
 	}
-	return carriers, nil
+	return carriers, problems, nil
+}
+
+// hostRouteCarrier is one route's carrier, or why it has none.
+func (world *World) hostRouteCarrier(
+	ctx context.Context, gateway *resources.Service, hostModule string, route hostRoute, access *basev0.NetworkAccess,
+) (string, string, error) {
+	if _, err := world.Dependencies.ServiceFromUnique(route.producer()); err != nil {
+		if world.deploys() {
+			return "", "", fmt.Errorf("%s is not a service of this workspace", route.producer())
+		}
+		return "", "", fmt.Errorf("%s is not part of this run", route.producer())
+	}
+	mappings, err := world.producerNetworkMappings(ctx, route.producer())
+	if err != nil {
+		return "", "", fmt.Errorf("derive its address: %w", err)
+	}
+	var consumed []*basev0.NetworkMapping
+	for _, mapping := range mappings {
+		if mapping.GetEndpoint().GetName() == route.endpoint {
+			consumed = append(consumed, mapping)
+		}
+	}
+	if len(consumed) == 0 {
+		if !world.deploys() {
+			// A local producer has an address only once this run allocated it
+			// (--temporary-ports allocates at initialization).
+			return "", "", fmt.Errorf("this run has not allocated %s's address yet", route.producer())
+		}
+		return "", "", fmt.Errorf("%s declares no endpoint named %q", route.producer(), route.endpoint)
+	}
+	visible, err := world.exportableTo(ctx, gateway, consumed)
+	if err != nil {
+		return "", "", err
+	}
+	if len(visible) == 0 {
+		return "", "", fmt.Errorf("its visibility does not admit the host gateway's module %s", hostModule)
+	}
+	manager := resources.NewEnvironmentVariableManager()
+	if err := manager.AddEndpoints(ctx, visible, access); err != nil {
+		return "", "", err
+	}
+	endpoints := manager.Endpoints()
+	if len(endpoints) != 1 || endpoints[0].NetworkInstance.GetAddress() == "" {
+		return "", "", fmt.Errorf("it has no address at the host gateway's network access")
+	}
+	variable := resources.EndpointAsEnvironmentVariable(endpoints[0])
+	return variable.Key, fmt.Sprint(variable.Value), nil
 }
 
 // hostRoute is one module endpoint composed solutions consume through the host.
@@ -143,11 +161,6 @@ func (world *World) hostRoutes(ctx context.Context, hostModule string) ([]hostRo
 	return routes, nil
 }
 
-func (world *World) warnRoute(ctx context.Context, route hostRoute, reason string) {
-	wool.Get(ctx).In("World.hostRouteCarriers").Warn("the host gateway will not route this consumed endpoint: "+reason,
-		wool.Field("endpoint", route.reference()), wool.Field("solution", route.solution))
-}
-
 // HostRouteCarriers is hostRouteCarriers for a render: the gateway's route
 // carriers at container access, keyed by the gateway's unique, when this flow
 // deploys it.
@@ -164,9 +177,17 @@ func (flow *Flow) HostRouteCarriers(ctx context.Context) (map[string]map[string]
 		if err != nil {
 			return nil, err
 		}
-		carriers, err := flow.world.hostRouteCarriers(ctx, service, resources.NewContainerNetworkAccess())
-		if err != nil || carriers == nil {
+		carriers, problems, err := flow.world.hostRouteCarriers(ctx, service, resources.NewContainerNetworkAccess())
+		if err != nil {
 			return nil, err
+		}
+		// A render is committed: a route it cannot derive is refused, never
+		// shipped as a gateway that answers that module 503.
+		if len(problems) > 0 {
+			return nil, errors.Join(problems...)
+		}
+		if carriers == nil {
+			return nil, nil
 		}
 		return map[string]map[string]string{gateway: carriers}, nil
 	}

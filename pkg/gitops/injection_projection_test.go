@@ -110,6 +110,9 @@ func TestDerivedInjectionRefusesACredentialAsAPublicValue(t *testing.T) {
 		"self endpoint with userinfo": {Public: map[string]string{
 			"CODEFLY__SELF_ENDPOINT__HOST__AUTH_GATEWAY__REST__REST": "http://user:pass@auth-gateway.example.svc.cluster.local:8080",
 		}},
+		"host route with userinfo": {Public: map[string]string{
+			"CODEFLY__ENDPOINT__DOCUMENTS__DOCUMENTS__REST__REST": "http://user:pass@documents.example.svc.cluster.local:8080",
+		}},
 		"value and secret at once": {
 			Public:  map[string]string{apiConsumesKey: "[]"},
 			Secrets: map[string]string{apiConsumesKey: apiConsumesKey},
