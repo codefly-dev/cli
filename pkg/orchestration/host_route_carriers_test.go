@@ -3,6 +3,7 @@ package orchestration
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -195,7 +196,7 @@ func TestALocalRunHandsTheGatewayTheRunsAddress(t *testing.T) {
 	require.Nil(t, none)
 	require.Len(t, problems, 2, "neither the consumed module nor the solution's backend is addressed yet")
 	require.Contains(t, problems[0].Error(), "has not allocated")
-	require.Contains(t, problems[1].Error(), "the host fronts solution wiki at its backend endpoint wiki/backend/http")
+	require.Contains(t, problems[1].Error(), "the host fronts component wiki at its backend endpoint wiki/backend/http")
 
 	for _, unique := range []string{"docs/documents", "wiki/backend"} {
 		producer := parityService(t, workspace, strings.Split(unique, "/")[0], strings.Split(unique, "/")[1])
@@ -282,6 +283,48 @@ func TestASolutionBackendIsOneHTTPEndpointOfItsEntry(t *testing.T) {
 			_, _, err := world.hostRouteCarriers(context.Background(), gateway, resources.NewContainerNetworkAccess())
 			require.ErrorContains(t, err, tc.want)
 			require.ErrorContains(t, err, "wiki")
+		})
+	}
+}
+
+// A shared module's page is a route independently of any solution's API needs.
+func TestModulePageGetsACarrierWithoutASolutionConsumer(t *testing.T) {
+	for _, mode := range []Mode{SnapshotMode, RunMode} {
+		t.Run(fmt.Sprint(mode), func(t *testing.T) {
+			world, workspace := hostRoutesWorld(t, mode, func(dir string) {
+				writeWikiConsumes(t, dir, "")
+				module := filepath.Join(dir, "modules", "docs")
+				path := filepath.Join(module, "module.codefly.yaml")
+				raw, err := os.ReadFile(path)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(path, append(raw, []byte("service-entry: documents\n")...), 0o600))
+				entry := filepath.Join(module, "services", "documents")
+				require.NoError(t, os.WriteFile(filepath.Join(entry, "solution.frontend.codefly.yaml"), []byte("title: Documents\norder: 0\nexposed_module: ./Page\nhost_contract: 1\n"), 0o600))
+				path = filepath.Join(entry, "service.codefly.yaml")
+				raw, err = os.ReadFile(path)
+				require.NoError(t, err)
+				head, _, found := strings.Cut(string(raw), "endpoints:\n")
+				require.True(t, found)
+				require.NoError(t, os.WriteFile(path, []byte(head+"endpoints:\n    - name: web\n      api: http\n      visibility: internal\n"), 0o600))
+			})
+			gateway := parityService(t, workspace, "host", "gateway")
+			access := resources.NewContainerNetworkAccess()
+			if mode == RunMode {
+				access = resources.NetworkAccessFromRuntimeContext(&basev0.RuntimeContext{Kind: resources.RuntimeContextNative})
+				for _, pair := range [][2]string{{"docs", "documents"}, {"wiki", "backend"}} {
+					service := parityService(t, workspace, pair[0], pair[1])
+					identity, err := service.Identity()
+					require.NoError(t, err)
+					endpoints, err := service.LoadEndpoints(t.Context())
+					require.NoError(t, err)
+					require.NoError(t, world.SharedState.RecordEndpoints(t.Context(), identity, endpoints))
+				}
+			}
+			carriers, problems, err := world.hostRouteCarriers(t.Context(), gateway, access)
+			require.NoError(t, err)
+			require.Empty(t, problems)
+			key := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "docs", Service: "documents", Name: "web", API: "http"})
+			require.NotEmpty(t, carriers[key], "the module page needs its own route without a solution consumer")
 		})
 	}
 }

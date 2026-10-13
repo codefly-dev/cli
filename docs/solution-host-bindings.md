@@ -230,12 +230,14 @@ the mesh (ztunnel mTLS) carries transport security and destination identity.
 `solution.frontend.codefly.yaml` beside their entry service. Core's
 `solutionhost.ParseFrontend` validates exactly the same fields and size bounds
 as the signed presence document. A missing file (or no entry service) means a
-headless component for a module; a solution with none is refused by name, in
-the render and in the native delivery, since the host activates a solution
-only on a presence that carries the block and its runtime refuses to boot
-without the file. An empty or malformed file refuses delivery for both kinds.
+headless component for either kind. An empty or malformed file refuses delivery
+for both kinds.
 Native and rendered delivery carry the same block for both kinds. A module page does not
-change its shared tenancy or its per-organisation installation grants.
+change its shared tenancy or its per-organisation installation grants. The gateway
+receives a route for a module page even when no solution consumes its API. The
+page's entry service must declare exactly one HTTP-family endpoint; if that
+module also has a consumed API, both must name the same upstream. Conflicting
+page/API routes are refused at composition rather than delivered ambiguously.
 
 The `delivery` ServiceAccount is the delivery Job's and nothing else's: a
 serving workload naming it is refused at render, since a deployment caller

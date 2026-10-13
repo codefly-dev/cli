@@ -22,8 +22,8 @@ import (
 //   - a composed solution calls a consumed module through it (/v1/<as>/…, the
 //     solution's api.consumes), so it must reach exactly what each solution
 //     declares it consumes;
-//   - a browser reaches a composed solution's page and backend through it
-//     (/<alias>/…), so it must reach each solution's backend endpoint — the
+//   - a browser reaches a solution backend or a module's declared page through it
+//     (/<alias>/…), so it must reach each component's entry endpoint — the
 //     one HTTP endpoint the solution's entry service declares — in plain
 //     HTTP, the way it already reaches a module. Nothing a solution reports
 //     at run time is an address: the gateway routes a solution from its
@@ -137,7 +137,7 @@ func (route hostRoute) reference() string {
 // describe names the route the way a reader of a refusal looks for it.
 func (route hostRoute) describe() string {
 	if route.backend {
-		return fmt.Sprintf("the host fronts solution %s at its backend endpoint %s", route.solution, route.reference())
+		return fmt.Sprintf("the host fronts component %s at its backend endpoint %s", route.solution, route.reference())
 	}
 	return fmt.Sprintf("%s consumes %s through the host", route.solution, route.reference())
 }
@@ -215,29 +215,51 @@ func hostRoutes(ctx context.Context, workspace *resources.Workspace, hostModule 
 		routes = append(routes, route)
 	}
 	sort.Slice(routes, func(i, j int) bool { return routes[i].module < routes[j].module })
-	backends, err := solutionBackendRoutes(ctx, workspace, hostModule)
+	backends, err := componentBackendRoutes(ctx, workspace, hostModule)
 	if err != nil {
 		return nil, err
+	}
+	for _, backend := range backends {
+		if consumed, exists := byModule[backend.module]; exists && consumed.reference() != backend.reference() {
+			return nil, fmt.Errorf("component %s's page uses %s but its consumed API uses %s; the host requires one shared upstream", backend.module, backend.reference(), consumed.reference())
+		}
 	}
 	return append(routes, backends...), nil
 }
 
-// solutionBackendRoutes is each composed solution's backend endpoint: the one
-// HTTP endpoint (api http or rest, what the gateway forwards a page's calls
-// to) its entry service declares. The host is not fronted through itself.
-func solutionBackendRoutes(ctx context.Context, workspace *resources.Workspace, hostModule string) ([]hostRoute, error) {
+// componentBackendRoutes selects each solution backend and each module page's
+// entry endpoint. A page must be reachable even if no solution consumes its API.
+// The host is not fronted through itself.
+func componentBackendRoutes(ctx context.Context, workspace *resources.Workspace, hostModule string) ([]hostRoute, error) {
 	solutions, err := solutionrun.ComposedSolutions(ctx, workspace)
 	if err != nil {
 		return nil, err
 	}
-	var routes []hostRoute
+	isSolution := make(map[string]bool, len(solutions))
 	for _, solution := range solutions {
-		if solution.Name == hostModule {
+		isSolution[solution.Name] = true
+	}
+	var routes []hostRoute
+	for _, ref := range workspace.Modules {
+		component, err := workspace.LoadModuleFromReference(ctx, ref)
+		if err != nil {
+			return nil, err
+		}
+		if component.Name == hostModule {
 			continue
 		}
-		entry, err := solution.LoadServiceFromName(ctx, solution.ServiceEntry)
+		if !isSolution[component.Name] {
+			frontend, err := solutionrun.DeclaredFrontend(ctx, component)
+			if err != nil {
+				return nil, err
+			}
+			if frontend == nil {
+				continue
+			}
+		}
+		entry, err := component.LoadServiceFromName(ctx, component.ServiceEntry)
 		if err != nil {
-			return nil, fmt.Errorf("solution %s names %s as its service-entry: %w", solution.Name, solution.ServiceEntry, err)
+			return nil, fmt.Errorf("component %s names %s as its service-entry: %w", component.Name, component.ServiceEntry, err)
 		}
 		var candidates []string
 		for _, endpoint := range entry.Endpoints {
@@ -247,11 +269,11 @@ func solutionBackendRoutes(ctx context.Context, workspace *resources.Workspace, 
 		}
 		switch len(candidates) {
 		case 1:
-			routes = append(routes, hostRoute{solution: solution.Name, module: solution.Name, service: entry.Name, endpoint: candidates[0], backend: true})
+			routes = append(routes, hostRoute{solution: component.Name, module: component.Name, service: entry.Name, endpoint: candidates[0], backend: true})
 		case 0:
-			return nil, fmt.Errorf("solution %s's entry service %s declares no http or rest endpoint; the host forwards /%s/ to one", solution.Name, entry.Name, solution.Name)
+			return nil, fmt.Errorf("component %s's entry service %s declares no http or rest endpoint; the host forwards /%s/ to one", component.Name, entry.Name, component.Name)
 		default:
-			return nil, fmt.Errorf("solution %s's entry service %s declares several http or rest endpoints (%s); the host forwards /%s/ to one, and which has no single answer", solution.Name, entry.Name, strings.Join(candidates, ", "), solution.Name)
+			return nil, fmt.Errorf("component %s's entry service %s declares several http or rest endpoints (%s); the host forwards /%s/ to one, and which has no single answer", component.Name, entry.Name, strings.Join(candidates, ", "), component.Name)
 		}
 	}
 	return routes, nil

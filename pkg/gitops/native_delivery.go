@@ -377,11 +377,6 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	if instance.Frontend, err = solutionrun.DeclaredFrontend(ctx, workload.Module); err != nil {
 		return nil, err
 	}
-	if declared != nil {
-		if err = solutionrun.RequireSolutionFrontend(workload.Module, instance.Frontend); err != nil {
-			return nil, err
-		}
-	}
 	instance.Modules = []SolutionModulePin{{Module: workload.Module.Name, Package: manifest.ID, Version: manifest.Version}}
 	if instance.ReleaseDigest, err = releaseDigest(workload.Module.Dir()); err != nil {
 		return nil, fmt.Errorf("module %s: %w", workload.Module.Name, err)
