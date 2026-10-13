@@ -106,6 +106,9 @@ func (env *Environment) Validate() error {
 	if err := env.ServiceSecrets.Validate(); err != nil {
 		return err
 	}
+	if err := env.validateRunnableScopeSelections(); err != nil {
+		return err
+	}
 	if err := env.ServiceConfig.Validate(); err != nil {
 		return err
 	}
@@ -114,6 +117,20 @@ func (env *Environment) Validate() error {
 	}
 	if err := env.Host.Validate(); err != nil {
 		return err
+	}
+	// A developer identity is a local host's allowlist entry. A deployed host
+	// refuses it anyway, by its own allowlist; refusing it here keeps a
+	// developer's identity out of every manifest a hosted environment renders.
+	// Both are a DECLARED local k3d cluster's alone (cluster.kind: k3d and a
+	// k3d-… context, written): the name "local" with no cluster declared is
+	// not one, whatever IsK3d's legacy reading says.
+	if env.Host != nil && len(env.Host.Developers) > 0 && !env.DeclaresLocalK3d() {
+		return fmt.Errorf("environment %s declares host.developers, which only a local cluster's host admits; declare the cluster it runs on (cluster.kind: k3d, cluster.context: k3d-<name>) — a deployed host accepts carriers from its release workflow (host.release) and nothing else", env.Name)
+	}
+	// The trust anchor a deployed host reads is mounted by its cell's
+	// platform; only a local cluster run mounts one it provisioned.
+	if env.Host != nil && env.Host.TrustAnchor != "" && !env.DeclaresLocalK3d() {
+		return fmt.Errorf("environment %s declares host.trust_anchor, which only a local cluster run mounts; declare the cluster it runs on (cluster.kind: k3d, cluster.context: k3d-<name>) — a deployed host's trust anchor is its platform's", env.Name)
 	}
 	if err := env.validateServiceKeyCollisions(); err != nil {
 		return err
@@ -159,6 +176,14 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 	if nsErr := validateModuleNamespaces(workspace, environments); nsErr != nil {
 		return w.Wrap(nsErr)
 	}
+	for _, env := range environments {
+		if env == nil {
+			continue
+		}
+		if _, wiErr := WorkloadIdentityServices(ctx, workspace, env); wiErr != nil {
+			return w.Wrap(wiErr)
+		}
+	}
 	needsGraph := false
 
 	for _, env := range environments {
@@ -180,6 +205,15 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 		}
 		for block, names := range env.serviceScopedNames() {
 			for _, name := range names {
+				// A module-qualified service-identity key names exactly one
+				// service of that module, or nothing (a typo that would leave
+				// the workload on the default identity with no report).
+				if _, service, qualified := strings.Cut(name, "/"); qualified && block == "service-identity" {
+					if !slices.Contains(byName[service], name) {
+						return w.Wrap(fmt.Errorf("environment %q %s references unknown service %q", env.Name, block, name))
+					}
+					continue
+				}
 				switch len(byName[name]) {
 				case 0:
 					return w.Wrap(fmt.Errorf("environment %q %s references unknown service %q", env.Name, block, name))

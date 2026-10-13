@@ -107,6 +107,32 @@ list at 50 entries, and never sends source files or unrelated configuration.
 
 ## Execution
 
+### `codefly run workspace`
+
+Run the whole composition locally: the host's ingress services, and every
+service of every other composed module. Every service, not only what the
+dependency graph reaches: a solution's `api.consumes` and a module's
+configuration references (`${endpoint:model/model/rest}`) name producers the
+graph never sees. It takes the flags of `codefly run service` and no service
+names; `--exclude-dependency` and `--exclude-workspace-configuration` leave a
+service or a configuration group out.
+
+```bash
+codefly run workspace --fixture dev-admin          # the host and every module
+codefly run workspace --runtime-context native \
+  --exclude-dependency documents/libreoffice,documents/docx \
+  --exclude-workspace-configuration document-formats   # container-only services out
+```
+
+`--exclude-workspace-configuration` is also accepted by `codefly run service`
+and `codefly run solution`.
+
+In a composition whose environment declares a `host`, a native run stands in
+for the cell the composition would be delivered to: each solution gets a
+workload identity, its presence and authority are delivered to the host, and
+it is offered for installation in the host's own registry. See
+[solution-host-bindings.md](solution-host-bindings.md#a-native-run-the-run-answers-as-the-cluster).
+
 ### `codefly run service [name...]`
 
 Run one or more services locally with their dependency graph.
@@ -284,6 +310,25 @@ same projection reaches the deployed solution: `CODEFLY__API_CONSUMES` is
 rendered into the entry service's ConfigMap with the value a run injects. The
 projection names routes, not credentials, so it is a plain value; a render never
 writes a secret value into the tree.
+
+**The host gateway is handed the routes solutions consume through it.** A
+solution calls a consumed module through the host's gateway (`/v1/<as>/…`), so
+the environment's `host.gateway` service receives a `CODEFLY__ENDPOINT__…`
+carrier for every module endpoint a composed solution's `api.consumes` names —
+in a run at the address the run allocated, at the gateway's own network access;
+in a render at the producer's in-cluster address — and the gateway resolves the
+module through the Codefly SDK from it. No dependency edge is added: the gateway
+neither waits on nor builds a module. The derivation is the one every carrier
+uses (the producer's own mappings, judged by its declared visibility for the
+gateway's module). A composition with no single answer — a consume that names a
+module under another `as` (the host routes `/v1/<module>`), a module the
+workspace does not compose, or two solutions reaching one module through
+different endpoints — is refused naming it. One route that cannot be derived —
+an endpoint the gateway's module may not reach, a producer outside the run or
+not addressed yet, no address at the gateway's network access — is **refused in
+a render** (a committed tree never ships a gateway that answers that module
+503) and **warned in a run**, once, naming it: the gateway starts with every
+other route.
 
 A render delivers a service the **same workspace configuration groups** `codefly
 run` delivers it: the groups it declares under
@@ -487,6 +532,64 @@ Run a job (scheduled or one-shot task).
 codefly run job db-migration --module=backend
 codefly run job db-migration --module=backend --with-services  # Start service dependencies first
 ```
+
+### `codefly delivery key`
+
+Create or load this machine's developer delivery key and print its key ID and
+public key PEM. Add the ID under `host.developers` on a declared local k3d
+environment before running it. Private custody stays in the OS keychain, or a
+0600 file in `~/.codefly/delivery-keys` when no keychain is available. The same
+machine key is returned on later calls.
+
+```bash
+codefly delivery key
+```
+
+### `codefly run cluster [module...]`
+
+Run the composition on the environment's local **k3d** cluster through the same
+signed delivery a cell receives — the local half of solution and module
+delivery (cli#918). The environment declares `cluster.kind: k3d`,
+`cluster.context`, a `host` block listing `host.developers` and stating
+`host.trust_anchor` (the path the host reads its trust anchor from), a `registry.url`
+the cluster pulls from, and the gitops `fetch-repo-url` of the local fetch
+remote.
+
+```bash
+codefly run cluster --env local --app-project platform           # every composed module
+codefly run cluster documents --env local --app-project platform --yes
+```
+
+It installs Argo CD if the cluster has none (the release the k3d qualification
+pins), and the local SPIFFE issuer: cert-manager v1.21.2 with its default
+CertificateRequest approver disabled, csi-driver-spiffe v0.15.0, and a cluster
+CA kept in Kubernetes. Both manifests are verified before applying and every
+image is pinned by digest. Existing components are used as installed; an
+existing cert-manager must already disable its default approver before the
+CLI can add the SPIFFE driver. It waits for the webhook, issuer, driver and
+approver before rendering modules. It provisions the `platform-authority` namespace and its `delivery`
+ServiceAccount and the modules' namespaces, writes the local host's trust
+anchor — one public-key verification policy admitting the
+listed developer key held on this machine, bound to this cluster's CA fingerprint, re-written (and the
+host restarted) when the cluster is recreated — then for each module renders it (images built and pushed),
+publishes it signed with your local developer key and
+promotes it locally — the developer's signed publish is the approval on a local
+cluster, so it fast-forwards the local base branch and generations rise with
+each rebuild — serves the latest promotion to Argo CD, applies each module's
+Argo bootstrap, and waits for every delivery Job, printing the host's answer
+for each document. A refused delivery fails the run. `--delivery-timeout`
+bounds each wait. Stopping a run is not removal: a binding is withdrawn by a
+published tombstone. See [delivery documents, "Local runs"](solution-host-bindings.md#local-runs),
+which also lists what the local host's profile must contain.
+
+A service requesting `workspace-configuration-dependencies: [workload-identity]`
+requires `host.gateway: <module>/<service>` in the environment. The render
+mounts its SVID at `/var/run/secrets/spiffe.io`, grants its ServiceAccount
+permission to create CertificateRequests, and mounts three peer allowlists at
+`/etc/codefly/workload-peers`. It supplies the configuration group's seven
+file paths, including the existing projected token. Peer identities come
+from the composition: each consumer trusts the gateway; the gateway trusts
+every explicit consumer, including itself when it requests the group.
 
 ### `codefly build runnable <name>`
 
@@ -1971,7 +2074,11 @@ codefly publish --dry-run    # show the plan, change nothing
 
 Pre-flight is strict and aborts with no side effects: clean tree, on `main`, in
 sync with `origin/main`, target tag free locally and remotely. Nothing is ever
-pushed with `--force`. A service-agent repository additionally runs release-grade
+pushed with `--force`. The repository it addresses on GitHub comes from `origin`
+as git itself resolves it, so a `url.insteadOf` rewrite or a CI checkout, whose
+remote carries a credential, is read as the repository it points at rather than
+refused; any remote or git error publish prints has that credential masked
+(`https://***@github.com/...`). A service-agent repository additionally runs release-grade
 agent CI against the bumped version, then creates the GitHub release, uploads the
 loader archives and SBOMs, and verifies each resolves through the install URL.
 That final read uses the publisher's authenticated GitHub client through Core's
@@ -2624,6 +2731,61 @@ service with no proto, and a `rest` endpoint with no OpenAPI document. An
 interface may export such an endpoint so composed modules can reach it (a
 gateway's REST surface, say); that export is reachability, not a contract.
 
+For a restricted protobuf listener, publish a procedure inventory projected from
+its runtime registration/routing tables. Configure it in the module's
+CLI-owned `contracts.codefly.yaml`, alongside `module.codefly.yaml`:
+
+```yaml
+schema: codefly/module-contracts-config/v1
+surfaces:
+  accounts: generated/api-contract-surfaces.json
+```
+
+`surfaces` maps declared service names to JSON files relative to that service's
+directory. This is publication configuration; the CLI does not read it from the
+agent's `service.codefly.yaml` `spec:` map. Codefly consumes this inventory; it
+does not generate it. The owner's routing generator must emit and check it.
+
+The document maps endpoint names to Core's existing API catalog service records:
+
+```json
+{
+  "connect": [{
+    "name": "Worker", "fullName": "example.v1.Worker",
+    "procedures": ["/example.v1.Worker/Apply", "/example.v1.Worker/Lookup"]
+  }],
+  "receipts": [{
+    "name": "Worker", "fullName": "example.v1.Worker",
+    "procedures": ["/example.v1.Worker/Lookup"]
+  }]
+}
+```
+
+This inventory describes all served methods, not just Runnable operations.
+Produce it with the owner's routing artifacts; do not hand-maintain a second
+list. Every exported protobuf endpoint needs an entry when the setting is used.
+Unknown endpoints, fields, services, methods and duplicate procedures are
+refused. The file must stay within the service directory. Descriptor bytes remain
+complete and unchanged; the inventory supplies each catalog row's served
+`services[].procedures`. A service exporting multiple protobuf endpoints must
+supply the inventory, since copying a full descriptor to each cannot prove which
+listener serves a method. A single endpoint keeps the full-descriptor default;
+restricted single listeners must also supply their inventory.
+
+This input is a stopgap for the released Core/agent endpoint report. In Core
+v0.18.0, `GrpcAPI.rpcs` is loaded from the service's shared proto, without
+listener filtering, while Connect is reported as `HttpAPI` with no RPC list.
+Neither can establish distinct restricted served sets today. An agent/Core
+contract that reports each listener's complete set, including Connect and
+explicit empty-versus-absent semantics, can replace this input.
+
+After adopting this setting, regenerate contracts and runnables together. Older
+catalogs may list the full surface on every endpoint; derivation cannot infer
+runtime restrictions missing from the published catalog. For saas-starter,
+authority's source is `ModuleAuthorityProcedures`; Connect's source is its full
+service registration catalog. The gateway route catalog alone omits internal
+procedures and is not a complete listener inventory.
+
 Run it before `module-package build`; the package carries the result. `--check`
 is the CI drift gate.
 
@@ -2643,8 +2805,11 @@ authoring: the option says which methods are operations and under what
 execution policy, and the message descriptors say what the contract is.
 
 The input is what `generate contracts` already wrote — each gRPC/connect
-endpoint's `contract.binpb` — so run that first. No flag names a method; the
-option is the only selector.
+endpoint's served `services[].procedures` in the API catalog and its
+`contract.binpb` — so run that first. A method is derived only when that endpoint
+serves it and its descriptor carries the option. Its paired Lookup must also be
+served there; descriptor availability alone is insufficient. Catalog procedures
+absent from the endpoint's descriptor package are refused. No flag names a method.
 
 ```
 contracts/runnables/
@@ -2657,12 +2822,15 @@ contracts/runnables/
 digest over, so what a composition reads and what was hashed are the same
 bytes. `operation.json` is kept beside it rather than inside it: policy and
 authority are installed with a binding, and two installations of one contract
-may differ in both. `index.json` is what a composition reads to prepare
-bindings — identity, digest, full method, input and output message names and
+may differ in both. Required scope slots and optional tool exposure are preserved
+in `operation.json`; generation does not select resource IDs. `index.json` is
+what a composition reads to prepare bindings — identity, digest, full method,
+input and output message names and
 endpoint coordinates per row.
 
-The tree is fully owned: a method that no longer carries the option loses its
-directory. Only the three file names a generation produces are removed, and
+The tree is fully owned: a method that no longer carries the option or is no
+longer served on an endpoint loses that endpoint's directory. Only the three
+file names a generation produces are removed, and
 only the directories that empties, so pointing `--output` at a directory this
 command shares — `--output=contracts`, one word short of `contracts/runnables`
 — never destroys what is beside it. A module with no marked method, and a
@@ -2704,32 +2872,69 @@ and the MCP `list_runnables` tool, with facility `service` and a `source` of
 
 #### generate runnable-bindings
 
-`codefly generate runnable-bindings [--env <env>] [--check]` prepares, for one
-environment, the binding of every operation the workspace's modules derived
-(`contracts/runnables/index.json`). Each becomes one key of the workspace
-configuration group `runnable-bindings`, in
-`configurations/<profile>/runnable-bindings.env`, whose value is a JSON document:
-the canonical `package`, the `binding` core prepared and verified against it
-(SERVICE facility, targeting the owner endpoint at the address the environment
-resolves: the native address locally, the in-cluster Service in a Kubernetes
-environment), the method's `operation` policy and authority, and a
-`descriptor_set` reference: the digest of the owner endpoint's descriptor set.
-The key is `<MODULE>__<OPERATION>`, upper-cased. Each referenced set is written
-once beside the values, under `DESCRIPTOR_SET__<digest>`: the endpoint's
-published `contract.binpb` without source info, base64. Every operation on one
-endpoint shares it, the installer refuses a set whose digest is not the one
-referenced, and a contract whose bytes the catalog did not record is refused
-here (run `generate contracts`). The value schema is
-`codefly.runnable-prepared/v2`; an installer refuses the older embedded form, so
-regenerate the group after upgrading. A set is larger than a process
-environment should carry, so Codefly delivers it by file (core
-`docs/runnable-binding-delivery.md`).
+`codefly generate runnable-bindings [--env <env>] [--check]` prepares every
+operation the workspace's modules derived (`contracts/runnables/index.json`).
+The existing environment declaration in `workspace.codefly.yaml` supplies both
+endpoint facts and `runnable-scope-selections`: a map from output binding key to
+a list of Core `ScopeSelection` messages. See [the selection YAML and refusal
+rules](runnable.md#required-scope-slots-and-tool-exposure).
+
+Core's `OperationSpec.ResolveScopeSlots` resolves each selection once, preserving
+fixed scopes and adding the selected exact scopes. Missing selections name the
+slot and configuration key; wildcards, overlapping kinds, undeclared slots and
+unknown binding keys fail before output is written. An operation with fixed
+scopes and no slots needs no selection. Owner-declared `tool` exposure is
+preserved; absence still means the operation is not exposed as a tool.
+
+An environment that installs an operation for no resource answers its key with
+an explicitly empty list, and that operation is **declined**: no binding is
+prepared for it, its key is absent from the output, it receives no authority,
+and every other operation still prepares. A base composition uses it for a slot
+whose resources are created at runtime:
+
+```yaml
+environments:
+  - name: local
+    runnable-scope-selections:
+      SAAS__ACCOUNTS_CONNECT_INVOKE_SOURCE_OPERATION: []
+```
+
+The output records each decline as a comment line, the command names it, and
+`codefly doctor workspace` reports it as `runnable_binding_declined`. An absent
+key is still refused, a null value is refused, and `[]` on an operation with no
+required scope slot or on a key naming no derived operation is refused. See
+[declining a binding](runnable.md#declining-a-binding-in-an-environment).
+
+Each binding becomes one key in the workspace configuration group
+`runnable-bindings`, at `configurations/<profile>/runnable-bindings.env`. The
+key is `<MODULE>__<OPERATION>`, upper-cased with non-alphanumeric characters
+replaced by underscores. Its value is Core's `codefly.runnable-prepared/v3`
+JSON: owner operation coordinates, resolved call address and Connect/REST
+route, bounded contract with its digest, and the concrete policy. No descriptor
+set is delivered. A gRPC owner is called only over a Connect endpoint whose
+published catalog row serves both the operation and its paired Lookup. Missing
+membership and multiple matching Connect listeners are refused by name. A
+directly published Connect operation uses its own endpoint with the same checks.
+A legacy catalog exporting only gRPC must first export the called Connect
+listener and regenerate contracts; a declared HTTP address alone is insufficient. Addresses are resolved as for a run or
+render: native locally, in-cluster in a Kubernetes environment.
+
+The derived name includes the service and endpoint. Moving an operation to a
+different endpoint changes its binding/selection key: update the environment's
+`runnable-scope-selections` and consumers, then regenerate. Old keys fail as
+unused selections; authority is never transferred by guessing. An operation
+published on two endpoints has two derived identities and separate selections.
 
 A service that installs derived operations declares `runnable-bindings` as a
-workspace configuration dependency and receives them like any other group, so an
-installer never names an owner module. `--check` exits non-zero when the file is
-stale. Run it after `generate runnables` in every module it binds, and again
-whenever an owner endpoint moves.
+workspace configuration dependency and receives it like any other group. Run
+the command after `generate runnables` in every module it binds, and after an
+owner endpoint or scope selection changes. The output uses the environment's
+first configuration profile; selections are specific to the named environment.
+
+| Flag | Description |
+|------|-------------|
+| `--env` | Environment supplying resolved addresses and `runnable-scope-selections` (default: `local`) |
+| `--check` | Regenerate in memory; exit non-zero if the output is stale, including after a selection or a decline changes; write nothing |
 
 ## Infrastructure
 
@@ -3024,7 +3229,11 @@ What it checks, in order:
 3. The requested environment resolves through the workspace declaration
    (`local` is implicit when undeclared).
 4. Declared secret backends are supported and their executables are on PATH
-   (`op` for 1Password).
+   (`op` for 1Password). Each runnable binding the environment declines with
+   `runnable-scope-selections: { KEY: [] }` is named as a
+   `runnable_binding_declined` warning: no binding is prepared for it, so a
+   service that installs it is refused where it reads `runnable-bindings/KEY`
+   (see [generate runnable-bindings](#generate-runnable-bindings)).
 5. Every workspace configuration group services declare under
    `workspace-configuration-dependencies` is provided and defines values.
    The doctor reads exactly what a run provisions: the workspace's own
@@ -3079,7 +3288,8 @@ message, remediation?}]}`. Output never contains configuration values, raw
 `provider_executable_missing`, `provider_authentication_required`,
 `provider_resolution_failed`, `plaintext_not_allowed`,
 `reference_scheme_unknown`, `module_not_materialized`,
-`agent_override_active`, `agent_override_invalid`, `timeout`. Automation
+`agent_override_active`, `agent_override_invalid`,
+`runnable_binding_declined`, `timeout`. Automation
 should match on codes, never
 on message prose; renaming or removing a code bumps `schema_version`.
 

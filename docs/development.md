@@ -7,9 +7,16 @@
 
 ## Prerequisites
 
-- **Go 1.26+** (check with `go version`; `go.mod` is the source of truth — see [runbooks/bump-go-version.md](runbooks/bump-go-version.md))
+- **Go 1.27.2+** (check with `go version`; `go.mod` is the source of truth — see [runbooks/bump-go-version.md](runbooks/bump-go-version.md))
 - **Docker** (for container builds, agent processes, and infrastructure)
 - **codefly binary** (the CLI itself, for bootstrapping)
+
+CI selects its exact Go toolchain with `go-version-file: go.mod`, including the
+bootstrap install action used by audit and control integration. Raising the root
+`go` directive therefore raises those CI compiler pins together; `GOTOOLCHAIN=local`
+then uses the compiler already installed by setup-go. The deployment-contract
+workflow reads `contracts/deployment/go.mod` separately, so update that directive
+with the root when adopting a security patch.
 
 ## Repository Structure
 

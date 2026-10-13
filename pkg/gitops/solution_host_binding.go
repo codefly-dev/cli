@@ -172,6 +172,12 @@ type SolutionModulePin struct {
 // ruleset as everything else in the tree, and before buildInventory so they are
 // hashed into the render digest like any other delivered file.
 func renderSolutionHostBindings(owned, destination string, opts *RenderOptions) ([]DeclaredSolutionHostBinding, error) {
+	tree, rootErr := inspectRenderRoot(owned, opts)
+	if rootErr != nil {
+		return nil, rootErr
+	}
+	defer releaseRenderRoot(tree, opts)
+
 	if len(opts.SolutionInstances) == 0 {
 		return nil, nil
 	}
@@ -252,12 +258,12 @@ func renderSolutionHostBindings(owned, destination string, opts *RenderOptions) 
 	// documents; the Job itself is written at publish, once the documents are
 	// settled and signed, because a Job that mounts a carrier no render has
 	// produced would fail to start.
-	account, err := renderDeliveryServiceAccount(filepath.Join(owned, filepath.FromSlash(solutionHostBindingOverlay(opts.Environment))), opts.Namespace)
+	account, err := renderDeliveryServiceAccountInTree(tree, filepath.Join(owned, filepath.FromSlash(solutionHostBindingOverlay(opts.Environment))), opts.Namespace)
 	if err != nil {
 		return nil, err
 	}
 	names = append(names, account)
-	if err := writeSolutionHostBindingKustomization(owned, opts.Environment, names); err != nil {
+	if err := writeSolutionHostBindingKustomizationInTree(tree, owned, opts.Environment, names); err != nil {
 		return nil, err
 	}
 	return written, nil
@@ -266,6 +272,12 @@ func renderSolutionHostBindings(owned, destination string, opts *RenderOptions) 
 // solutionHostBinding builds one instance's document at generation 1. The
 // generation is settled separately, against what was delivered before.
 func solutionHostBinding(owned string, opts *RenderOptions, instance *SolutionInstance) (*solutionhost.SolutionHostBinding, error) {
+	tree, err := inspectRenderRoot(owned, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseRenderRoot(tree, opts)
+
 	id, err := bindingID(opts.Workspace, opts.Environment, instance.Name)
 	if err != nil {
 		return nil, err
@@ -291,7 +303,7 @@ func solutionHostBinding(owned string, opts *RenderOptions, instance *SolutionIn
 		Host:             solutionhost.HostTarget{Coordinate: opts.Host.Coordinate, Component: opts.Host.Component},
 		Release:          release,
 	}
-	if instance.Kind == solutionhost.KindSolution {
+	if instance.Alias != "" {
 		if !rfc1123Label.MatchString(instance.Alias) {
 			return nil, fmt.Errorf(
 				"solution %s claims the route alias %q; a host keys its registry on the alias as one URL path segment, so it must be lowercase letters, digits and dashes, starting and ending alphanumeric",
@@ -304,7 +316,7 @@ func solutionHostBinding(owned string, opts *RenderOptions, instance *SolutionIn
 		document.Routes = []solutionhost.Route{{Alias: instance.Alias, Surface: solutionhost.SurfaceBackend}}
 	}
 	for _, unit := range instance.Units {
-		digest, digestErr := unitDigest(owned, unit.Path)
+		digest, digestErr := unitDigestInTree(tree, owned, unit.Path)
 		if digestErr != nil {
 			return nil, fmt.Errorf("%s %s artifact %s: %w", instance.Kind, instance.Name, unit.Name, digestErr)
 		}
@@ -399,9 +411,10 @@ func releaseIdentity(instance *SolutionInstance) (string, string, error) {
 // under it, hashed in path order, in the same encoding buildInventory uses for
 // the render digest. Two renders of the same desired state produce the same
 // digest, and any change to any delivered byte of the unit changes it.
-func unitDigest(root, relative string) (string, error) {
+
+func unitDigestInTree(tree *renderRoot, root, relative string) (string, error) {
 	unitRoot := filepath.Join(root, filepath.FromSlash(relative))
-	info, err := os.Stat(unitRoot)
+	info, err := tree.stat(unitRoot, ".")
 	if err != nil {
 		return "", fmt.Errorf("inspect rendered artifact %s: %w", relative, err)
 	}
@@ -414,8 +427,8 @@ func unitDigest(root, relative string) (string, error) {
 		size   int64
 	}
 	var entries []entry
-	err = walkRegularFiles(unitRoot, func(path, name string, info os.FileInfo) error {
-		file, openErr := openWithin(unitRoot, name)
+	err = tree.walkRegularFiles(unitRoot, func(path, name string, info os.FileInfo) error {
+		file, openErr := tree.open(unitRoot, name)
 		if openErr != nil {
 			return fmt.Errorf("open %s: %w", name, openErr)
 		}
@@ -552,6 +565,12 @@ type solutionHostBindingConfigMapMeta struct {
 // writeSolutionHostBinding marshals a validated document into its ConfigMap and
 // writes it into the staged tree, returning the tree-relative path.
 func writeSolutionHostBinding(owned string, opts *RenderOptions, document *solutionhost.SolutionHostBinding, alias string) (string, error) {
+	tree, err := inspectRenderRoot(owned, opts)
+	if err != nil {
+		return "", err
+	}
+	defer releaseRenderRoot(tree, opts)
+
 	// Marshal through core so an invalid document is never written; Admit has
 	// already validated it, and this keeps that guarantee at the write itself.
 	encoded, err := solutionhost.Marshal(document)
@@ -583,11 +602,11 @@ func writeSolutionHostBinding(owned string, opts *RenderOptions, document *solut
 	}
 	overlay := solutionHostBindingOverlay(opts.Environment)
 	directory := filepath.Join(owned, filepath.FromSlash(overlay))
-	if err = os.MkdirAll(directory, 0o755); err != nil {
+	if err = tree.mkdirAll(directory); err != nil {
 		return "", fmt.Errorf("create solution host binding directory: %w", err)
 	}
 	relative := filepath.ToSlash(filepath.Join(overlay, document.Binding+".yaml"))
-	if err = os.WriteFile(filepath.Join(directory, document.Binding+".yaml"), body, 0o600); err != nil {
+	if err = tree.write(directory, document.Binding+".yaml", body); err != nil {
 		return "", fmt.Errorf("write solution host binding %q: %w", document.Binding, err)
 	}
 	return relative, nil
@@ -598,6 +617,15 @@ func writeSolutionHostBinding(owned string, opts *RenderOptions, document *solut
 // promotion's derived AppProject authority reads the same build, so a document
 // missing from here is delivered to the repository and to nothing else.
 func writeSolutionHostBindingKustomization(owned, environment string, names []string) error {
+	tree, err := newRenderRoot(owned)
+	if err != nil {
+		return err
+	}
+	defer tree.Close()
+	return writeSolutionHostBindingKustomizationInTree(tree, owned, environment, names)
+}
+
+func writeSolutionHostBindingKustomizationInTree(tree *renderRoot, owned, environment string, names []string) error {
 	sort.Strings(names)
 	body, err := yaml.Marshal(kustomizationManifest{
 		APIVersion: kustomizeAPIVersion,
@@ -608,7 +636,7 @@ func writeSolutionHostBindingKustomization(owned, environment string, names []st
 		return fmt.Errorf("encode solution host binding kustomization: %w", err)
 	}
 	path := filepath.Join(owned, filepath.FromSlash(solutionHostBindingOverlay(environment)), "kustomization.yaml")
-	if err = os.WriteFile(path, body, 0o600); err != nil {
+	if err = tree.write(filepath.Dir(path), filepath.Base(path), body); err != nil {
 		return fmt.Errorf("write solution host binding kustomization: %w", err)
 	}
 	return nil
@@ -660,9 +688,12 @@ func presenceInstanceOf(
 	if opts.Package == nil {
 		return nil, fmt.Sprintf("module %s has no package manifest, so it names no release and declares no presence", module.Name), nil
 	}
-	instance := &SolutionInstance{Kind: solutionhost.KindModule, Name: module.Name}
+	// Every kind declares its route alias: a solution is reached at
+	// /<alias>/, a module at /v1/<alias>/*, and the host keys its registry on
+	// the alias for both, refusing a document that declares none.
+	instance := &SolutionInstance{Kind: solutionhost.KindModule, Name: module.Name, Alias: module.Name}
 	if declared != nil {
-		instance.Kind, instance.Alias = solutionhost.KindSolution, module.Name
+		instance.Kind = solutionhost.KindSolution
 	}
 	instance.Package, instance.Version = opts.Package.ID, opts.Package.Version
 	instance.Modules = []SolutionModulePin{{Module: module.Name, Package: opts.Package.ID, Version: opts.Package.Version}}
@@ -678,7 +709,7 @@ func presenceInstanceOf(
 			continue
 		}
 		entry := SolutionArtifactUnit{Name: unit.Name, Path: unit.Path}
-		if identity := env.WorkloadIdentity(unit.Name); identity != nil {
+		if identity := env.WorkloadIdentityFor(module.Name, unit.Name); identity != nil {
 			entry.Subject = identity.Principal
 		}
 		instance.Units = append(instance.Units, entry)

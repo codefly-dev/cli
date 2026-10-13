@@ -118,7 +118,9 @@ func TestAModuleShippingNoSolutionManifestIsAModuleInstance(t *testing.T) {
 	if instance == nil || undeclared != "" {
 		t.Fatalf("a packaged module declares its presence: %+v %q", instance, undeclared)
 	}
-	if instance.Kind != solutionhost.KindModule || instance.Alias != "" || instance.Name != "payments" {
+	// A module declares its route alias too: the host keys its registry on
+	// the alias for both kinds and refuses a document that declares none.
+	if instance.Kind != solutionhost.KindModule || instance.Alias != "payments" || instance.Name != "payments" {
 		t.Fatalf("module instance %+v", instance)
 	}
 }

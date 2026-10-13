@@ -195,6 +195,7 @@ func workspaceReadiness(ctx context.Context, opts *workspaceReadinessOptions) *w
 	if !opts.sourceOnly {
 		checkProviderBindings(ctx, ws, env, report)
 	}
+	checkRunnableBindingDeclines(env, report)
 	var resolvers map[string]configurations.SecretResolver
 	var unavailable map[string]bool
 	if !opts.sourceOnly {
@@ -1099,10 +1100,26 @@ type scopedConfiguration struct {
 // reference resolution.
 func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env *environments.Environment, serviceScoped bool, scope []*resources.Service, requiredBy map[string][]string, report *workspaceReadinessReport) ([]scopedConfiguration, *configurations.WorkspaceConfigurations) {
 	required := make([]string, 0, len(requiredBy))
+	var renderOwned []string
 	for name := range requiredBy {
+		// These groups belong to the render, which refuses authored files for
+		// them. Outside a render their absence is left to the service to judge.
+		if environments.RenderOwnedWorkspaceConfiguration(name) {
+			renderOwned = append(renderOwned, name)
+			continue
+		}
 		required = append(required, name)
 	}
 	sort.Strings(required)
+	sort.Strings(renderOwned)
+	for _, name := range renderOwned {
+		status, message := "warn", "supplied only by a local k3d or cell render; absent here"
+		if env.DeclaresLocalK3d() {
+			status, message = "ok", "supplied per workload by the render"
+		}
+		report.add("", "workspace configurations", status,
+			fmt.Sprintf("%q is %s (required by %s)", name, message, strings.Join(requiredBy[name], ", ")), "")
+	}
 
 	var toResolve []scopedConfiguration
 
@@ -1655,7 +1672,7 @@ module_trust_missing, module_checkout_version_drift,
 service_override_active, service_override_unresolved,
 service_override_contract_drift, agent_override_active,
 agent_override_invalid, gitops_dev_deployment_active,
-agent_dev_build,
+agent_dev_build, runnable_binding_declined,
 configuration_directory_missing, configuration_missing,
 configuration_invalid, configuration_duplicate, provider_not_configured,
 provider_executable_missing, provider_authentication_required,

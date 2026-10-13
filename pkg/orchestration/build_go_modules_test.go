@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+
+	"github.com/codefly-dev/cli/pkg/redact"
 	"github.com/stretchr/testify/require"
 )
 
@@ -248,7 +250,7 @@ func TestProxiesForResolvesRootsAgainstTheContext(t *testing.T) {
 // which is logged verbatim: a git remote rewritten with a CI token must not
 // reach it.
 func TestGoCommandOutputHasNoURLCredentials(t *testing.T) {
-	redacted := redactURLCredentials("fatal: could not read from https://x-access-token:not-a-real-token@github.com/example-org/lib.git/")
+	redacted := redact.URLCredentials("fatal: could not read from https://x-access-token:not-a-real-token@github.com/example-org/lib.git/")
 	require.NotContains(t, redacted, "not-a-real-token")
 	require.Contains(t, redacted, "https://***@github.com/example-org/lib.git/")
 }
@@ -261,4 +263,37 @@ func TestAGoModuleRecipeIsNotBuiltWithoutItsProxies(t *testing.T) {
 	require.True(t, recipeMissesGoModuleProxies(recipe, map[string]string{"other": "/p"}))
 	require.False(t, recipeMissesGoModuleProxies(recipe, map[string]string{"gomodproxy": "/p"}))
 	require.False(t, recipeMissesGoModuleProxies(&builderv0.DockerBuildRecipe{Name: "plain"}, nil))
+}
+
+// TestPruneRemovesAToolchainTheGoToolWroteReadOnly pins the one tree
+// -modcacherw does not make writable: a toolchain downloaded into the module
+// cache (a go directive newer than the host's go) lands 0555, and the prune
+// used to stop on it with "permission denied" — failing every build of a
+// module the host's go is older than, and leaking the prefetch on Close.
+func TestPruneRemovesAToolchainTheGoToolWroteReadOnly(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	modCache := filepath.Join(t.TempDir(), "modcache")
+	download := filepath.Join(modCache, "cache", "download", "example.com", "lib", "@v")
+	require.NoError(t, os.MkdirAll(download, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(download, "list"), []byte("v1.0.0\n"), 0o644))
+	toolchain := filepath.Join(modCache, "golang.org", "toolchain@v0.0.1-go1.27.2.darwin-arm64")
+	require.NoError(t, os.MkdirAll(filepath.Join(toolchain, "bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(toolchain, "LICENSE"), []byte("x"), 0o444))
+	require.NoError(t, os.WriteFile(filepath.Join(toolchain, "bin", "go"), []byte("x"), 0o555))
+	for _, dir := range []string{filepath.Join(toolchain, "bin"), toolchain, filepath.Join(modCache, "golang.org")} {
+		require.NoError(t, os.Chmod(dir, 0o555))
+	}
+	t.Cleanup(func() { _ = removeTree(modCache) })
+
+	require.Error(t, os.RemoveAll(filepath.Join(modCache, "golang.org")), "the tree is read-only as the go tool writes it")
+	require.NoError(t, pruneToProxy(modCache))
+	require.NoDirExists(t, filepath.Join(modCache, "golang.org"), "the toolchain is pruned")
+	require.FileExists(t, filepath.Join(download, "list"), "the proxy tree is kept")
+
+	prefetch := newGoModulePrefetch()
+	prefetch.root = filepath.Dir(modCache)
+	require.NoError(t, prefetch.Close(), "Close removes a cache holding a read-only toolchain")
+	require.NoDirExists(t, modCache)
 }

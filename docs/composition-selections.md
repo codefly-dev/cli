@@ -311,8 +311,15 @@ Use Core instance targets, for example `modules/left`, and the protocol from the
 signed operation declaration. `request` is strict protobuf JSON of the existing
 Builder `DeploymentRequest` or Solution `RenderRequest`, not an alternative
 artifact-selection model. Every participating service needs exactly one request.
-The CLI owns `execution`, staging destinations and verified Solution identity;
-supplying those fields is rejected. Solution `artifactReference` is also rejected.
+The CLI owns `execution`, staging destinations, builder `compositionProvenance`
+and verified Solution identity; supplying those fields is rejected. Solution
+`artifactReference` is also rejected. For builder renders, the session loads its
+owning `workspace.codefly.yaml` once with the CLI's workspace import resolver and
+fills every request from that composition's complete `Members()` snapshot.
+Signed artifact selections do not define workspace member roles; the owning
+workspace must declare the modules and solutions whose edges will be judged.
+The renderer's cache is never searched for a substitute composition. The live
+builder must advertise `deployment-composition-provenance/v1` before dispatch.
 Core's HMAC configuration identity covers deterministic protobuf encodings of all
 these payloads, keyed by instance/service/protocol. Use the same request file and
 identity key for selection, staging and subsequent qualification inspection.

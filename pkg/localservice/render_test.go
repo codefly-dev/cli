@@ -68,6 +68,10 @@ func TestRenderSystemdUnitUsesForegroundAndCrashOnlyRestart(t *testing.T) {
 		Name: "PUBLIC_SETTING", Value: `a\b"c`, Classification: ValuePublic,
 	}}
 	request.Logs = LogRouting{Mode: LogNative}
+	request.WorkingDirectory = filepath.Join(t.TempDir(), "work dir")
+	if err := os.MkdirAll(request.WorkingDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	definition, err := renderDefinition("linux", &request)
 	if err != nil {
@@ -76,6 +80,9 @@ func TestRenderSystemdUnitUsesForegroundAndCrashOnlyRestart(t *testing.T) {
 	text := string(definition)
 	for _, expected := range []string{
 		"Type=simple",
+		// A path directive is never quoted: systemd reads quotes as path
+		// characters and rejects the unit ("path is not absolute").
+		"WorkingDirectory=" + request.WorkingDirectory + "\n",
 		`ExecStart="` + request.Executable + `" "serve" "value with \"quotes\""`,
 		`"$$RUNTIME %%n"`,
 		`Environment="PUBLIC_SETTING=a\\b\"c"`,
@@ -109,8 +116,8 @@ func TestRenderSystemdNeverPolicyAndFileLogs(t *testing.T) {
 	text := string(definition)
 	for _, expected := range []string{
 		"Restart=no",
-		`StandardOutput="append:` + strings.ReplaceAll(request.Logs.StdoutPath, "%", "%%") + `"`,
-		`StandardError="append:` + strings.ReplaceAll(request.Logs.StderrPath, "%", "%%") + `"`,
+		"StandardOutput=append:" + strings.ReplaceAll(request.Logs.StdoutPath, "%", "%%") + "\n",
+		"StandardError=append:" + strings.ReplaceAll(request.Logs.StderrPath, "%", "%%") + "\n",
 	} {
 		if !strings.Contains(text, expected) {
 			t.Errorf("systemd unit does not contain %q:\n%s", expected, text)

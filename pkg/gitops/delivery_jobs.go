@@ -84,7 +84,7 @@ const (
 
 	// presenceCarrierKey and authorityCarrierKey are the ConfigMap data keys
 	// holding the signed carrier of each document type: the canonical bytes that
-	// were signed, verbatim, beside the Sigstore bundle over them. The carrier is
+	// were signed, verbatim, beside the DSSE envelope over them. The carrier is
 	// JSON under a YAML extension because a JSON object is valid YAML and a YAML
 	// emitter would fold the long scalar the signature covers.
 	presenceCarrierKey  = "solution-host-binding.signed.codefly.yaml"
@@ -446,6 +446,15 @@ func renderDeliveryJob(directory, name, namespace, serviceAccount, kind, path st
 // renderDeliveryServiceAccount writes the ServiceAccount the module's delivery
 // Job runs as, into its namespace, and returns the manifest's file name.
 func renderDeliveryServiceAccount(directory, namespace string) (string, error) {
+	tree, err := newRenderRoot(directory)
+	if err != nil {
+		return "", err
+	}
+	defer tree.Close()
+	return renderDeliveryServiceAccountInTree(tree, directory, namespace)
+}
+
+func renderDeliveryServiceAccountInTree(tree *renderRoot, directory, namespace string) (string, error) {
 	account := deliveryServiceAccountManifest{
 		APIVersion: "v1",
 		Kind:       kindServiceAccount,
@@ -460,7 +469,7 @@ func renderDeliveryServiceAccount(directory, namespace string) (string, error) {
 		return "", fmt.Errorf("encode delivery service account: %w", err)
 	}
 	const file = "delivery-service-account.yaml"
-	if err := os.WriteFile(filepath.Join(directory, file), body, 0o600); err != nil {
+	if err := tree.write(directory, file, body); err != nil {
 		return "", fmt.Errorf("write delivery service account: %w", err)
 	}
 	return file, nil

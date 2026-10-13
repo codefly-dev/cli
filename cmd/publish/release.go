@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/Masterminds/semver"
+
+	"github.com/codefly-dev/cli/pkg/redact"
 )
 
 // Engine runs the actual release flow. Holds the Manifest plus the
@@ -571,11 +573,15 @@ func (e *Engine) git(ctx context.Context, args ...string) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		stderrTail := strings.TrimSpace(stderr.String())
+		// Redacted because origin can resolve, through url.insteadOf, to a URL
+		// carrying an access token, and this error reaches the terminal. Current
+		// git anonymizes the URLs it prints itself; older git does not.
+		command := redact.URLCredentials(strings.Join(args, " "))
+		stderrTail := redact.URLCredentials(strings.TrimSpace(stderr.String()))
 		if stderrTail != "" {
-			return "", fmt.Errorf("git %s: %w (%s)", strings.Join(args, " "), err, stderrTail)
+			return "", fmt.Errorf("git %s: %w (%s)", command, err, stderrTail)
 		}
-		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		return "", fmt.Errorf("git %s: %w", command, err)
 	}
 	return stdout.String(), nil
 }

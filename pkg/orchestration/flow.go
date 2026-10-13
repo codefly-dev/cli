@@ -179,6 +179,9 @@ type Flow struct {
 	// of every managed service (not just the origin) so a UI can render live
 	// per-service status.
 	stateListener StateListener
+	// runningHook is told each service that reached Running, after the state
+	// listener: a native run delivers that service's presence then.
+	runningHook func(service string, port int)
 
 	// beganMu guards states. states records the last runtime lifecycle state
 	// THIS run has emitted (via emitState) per service. ServiceReachable
@@ -213,6 +216,20 @@ func MapValues[K comparable, V any](m map[K]V) []V {
 }
 
 type World struct {
+	// RenderOwnedGroups supplies the render-owned workspace configuration
+	// groups (workload-identity, module-authority) to one service of a NATIVE
+	// run. A render projects them per workload; a laptop run has no render,
+	// so the CLI issues the identities itself and hands the groups out here,
+	// to a service that declares them and to nobody else. Nil outside such a run.
+	RenderOwnedGroups func(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error)
+
+	// RuntimeOverrides supplies per-service process environment a NATIVE run
+	// derives for the composition it stands in for (a cluster's in-cluster
+	// address, the host's mint address). Read when a runner initializes, so
+	// a value that depends on another service's address is resolved after
+	// every service has been loaded. Nil outside such a run.
+	RuntimeOverrides func(service *resources.Service) map[string]string
+
 	Env  *environments.Environment
 	Mode Mode
 
@@ -1324,6 +1341,23 @@ func (flow *Flow) emitState(service string, state tui.ServiceState, port int) {
 	if flow.stateListener != nil {
 		flow.stateListener(service, state, port)
 	}
+	if flow.runningHook != nil && state == tui.StateRunning {
+		flow.runningHook(service, port)
+	}
+}
+
+// WithRunningHook registers a function told each service that reaches
+// Running, with its port. Chainable with the state listener: both are told.
+func (flow *Flow) WithRunningHook(hook func(service string, port int)) {
+	flow.runningHook = hook
+}
+
+// World is the run's world: its environment, workspace and shared state.
+func (flow *Flow) World() *World {
+	if flow == nil {
+		return nil
+	}
+	return flow.world
 }
 
 // beganRun reports whether this run has emitted any runtime transition for the

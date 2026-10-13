@@ -1,0 +1,18 @@
+app:
+  trustDomain: cluster.local
+  approver:
+    signerName: clusterissuers.cert-manager.io/csi-driver-spiffe-ca
+  issuer:
+    name: csi-driver-spiffe-ca
+    kind: ClusterIssuer
+    group: cert-manager.io
+  driver:
+    sourceCABundle: /var/run/secrets/spiffe.io/trust/ca.pem
+    volumes:
+      - name: trust-bundle
+        secret:
+          secretName: spiffe-trust-bundle
+    volumeMounts:
+      - name: trust-bundle
+        mountPath: /var/run/secrets/spiffe.io/trust
+        readOnly: true
