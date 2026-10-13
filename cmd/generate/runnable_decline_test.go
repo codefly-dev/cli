@@ -11,6 +11,7 @@ import (
 	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
+	"gopkg.in/yaml.v3"
 )
 
 // declineFixture derives three operations of one module: a slot-only one, one
@@ -71,7 +72,7 @@ func TestDeclinedBindingIsAbsentAndEveryOtherOperationPrepares(t *testing.T) {
 	require.True(t, proto.Equal(conformingOperation().InvokeScopes[0], fixed.Policy.InvokeScopes[0]))
 	raw, err := os.ReadFile(target)
 	require.NoError(t, err)
-	require.Contains(t, string(raw), "# "+declined+": declined by environment local (runnable-scope-selections: [])",
+	require.Contains(t, string(raw), "# "+declined+": declined (runnable-scope-selections: [])",
 		"the file names the decline, so a consumer refused for the missing key finds why")
 	require.NotContains(t, string(raw), declined+"=")
 
@@ -174,4 +175,39 @@ func mapKeys(values map[string]string) []string {
 		keys = append(keys, key)
 	}
 	return keys
+}
+
+// The file belongs to a configuration profile, which several environments may
+// share, so the decline comment names no environment: two environments that
+// resolve the same addresses and decline the same key write the same bytes,
+// and --check for one passes right after generating for the other.
+func TestDeclineCommentIsTheSameForEveryEnvironmentOfAProfile(t *testing.T) {
+	root, keys := declineFixture(t)
+	declined := slotOnlyKey(keys)
+	selections := map[string]environments.ScopeSelections{declined: {}, keys["SlotAndFixed"]: {sourceSelection()}}
+	file := filepath.Join(root, "workspace.codefly.yaml")
+	data, err := os.ReadFile(file)
+	require.NoError(t, err)
+	var workspace map[string]any
+	require.NoError(t, yaml.Unmarshal(data, &workspace))
+	workspace["environments"] = []*environments.Environment{
+		{Name: "local", ConfigurationProfile: "selected", RunnableScopeSelections: selections},
+		// Both names are local, so both resolve the same addresses: only the
+		// decline comment could tell their files apart.
+		{Name: "local-fixture", ConfigurationProfile: "selected", RunnableScopeSelections: selections},
+	}
+	data, err = yaml.Marshal(workspace)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(file, data, 0o600))
+
+	runnableBindingsEnv = "local"
+	require.NoError(t, RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil))
+	raw, err := os.ReadFile(filepath.Join(root, "configurations", "selected", RunnableBindingsGroup+".env"))
+	require.NoError(t, err)
+	require.Contains(t, string(raw), "# "+declined+": declined (runnable-scope-selections: []); no binding, no authority\n")
+	require.NotContains(t, string(raw), "environment local", "the decline comment names no environment")
+
+	runnableBindingsEnv, runnableBindingsCheck = "local-fixture", true
+	require.NoError(t, RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil),
+		"an environment sharing the profile finds the file current")
 }

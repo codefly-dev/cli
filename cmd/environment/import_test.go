@@ -806,3 +806,34 @@ func TestImportDryRunSkipsPostValidation(t *testing.T) {
 		t.Fatalf("dry-run ran post-import validation %d time(s)", *calls)
 	}
 }
+
+// A coordinate contract that answers a runnable binding key with null is
+// refused and writes nothing, whether it creates the environment or merges
+// into an existing one. The null is not a decline: only an explicit [] is,
+// and the two must not collapse into each other on the way through the
+// import's encode. Without ScopeSelections encoding a nil list as null, the
+// new-environment path would write `KEY: []` and import a decline nobody
+// declared.
+func TestImportRefusesANullRunnableScopeSelectionWithoutWriting(t *testing.T) {
+	contract := strings.Replace(fixtureContract, `"name": "azure",`,
+		`"name": "azure","runnable-scope-selections":{"SAAS__INVOKE_SOURCE":null},`, 1)
+	for name, workspace := range map[string]string{
+		"new environment":      "name: acme\nlayout: modules\n",
+		"existing environment": existingAzureWorkspace,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeWorkspace(t, workspace)
+			path := filepath.Join(dir, resources.WorkspaceConfigurationName)
+			before := readFile(t, path)
+			err := runImport(t.Context(), &importOptions{
+				dir: dir, envName: "azure", contractData: []byte(contract), stdout: io.Discard,
+			})
+			if err == nil || !strings.Contains(err.Error(), "runnable-scope-selections[SAAS__INVOKE_SOURCE] is null") {
+				t.Fatalf("err = %v, want the null selection refused", err)
+			}
+			if after := readFile(t, path); after != before {
+				t.Fatal("a refused import modified the workspace")
+			}
+		})
+	}
+}

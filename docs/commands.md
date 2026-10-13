@@ -2090,6 +2090,40 @@ A module-agent repository publishes only the immutable Git tag. If the release
 pull request merged but the tag push failed, re-run: the untagged release commit
 is recognised and finished rather than bumped again.
 
+A module agent's release carries its version everywhere the module states one.
+In a module repository (`agent.codefly.yaml` with `kind: codefly:module`) the
+release commit also:
+
+- sets the top-level `version:` of every `service.codefly.yaml` the
+  repository's workspace composes — the value Codefly hands each service as
+  `CODEFLY__SERVICE_VERSION`, so a released module's services report the
+  module's version on `/version`, in a run plan and in producer ids, instead of
+  `0.0.0`;
+- sets the `version:` of each composed module's `module.package.codefly.yaml`,
+  the version core resolves a verified package from (GitHub release
+  `v<package version>`);
+- regenerates that module's API catalog (`contracts/api/catalog.codefly.json`)
+  and its derived runnables (`contracts/runnables/`) at the released version,
+  through the generators that wrote them: the catalog is re-emitted by `generate
+  contracts`' writer over the endpoints it records, after the committed
+  contract files are verified against it, and the runnables are derived again
+  in full. A catalog that no longer matches its contract files is refused —
+  run `codefly generate contracts` and commit it first.
+
+The services and modules are found through `workspace.codefly.yaml` and each
+`module.codefly.yaml` — never by searching the tree, so a fixture workspace
+elsewhere in the repository is not touched, and never through the machine-local
+`codefly.local.yaml`, so a developer's local `path:` override does not change
+what is released. A pinned module reference (one with a `source`, `module` or
+`version`) is released from its own repository and is skipped.
+`agent.codefly.yaml` stays the one place the version is decided: nobody edits a
+service's or a package's `version:` by hand, and the release refuses a merged
+`main` where any manifest disagrees with the tag. A manifest already carrying a
+version past the release is refused rather than moved backwards (release with
+`minor` or `major` to reach it), a composed service or package with no
+`version:` is refused at pre-flight, and `--dry-run` lists every manifest it
+would set and every path it would regenerate.
+
 Releasing does not update what the repository *pins*. Move a dependency first —
 `codefly agent deps --dir <agent> --pin vX.Y.Z` for an agent's Core pin,
 `go get github.com/codefly-dev/core@vX.Y.Z && go mod tidy` in the CLI — commit
@@ -2911,10 +2945,13 @@ environments:
       SAAS__ACCOUNTS_CONNECT_INVOKE_SOURCE_OPERATION: []
 ```
 
-The output records each decline as a comment line, the command names it, and
-`codefly doctor workspace` reports it as `runnable_binding_declined`. An absent
-key is still refused, a null value is refused, and `[]` on an operation with no
-required scope slot or on a key naming no derived operation is refused. See
+The output records each decline as a comment line naming the key and no
+environment (the file is the configuration profile's, which several
+environments may share), the command names it, and `codefly doctor workspace`
+reports it as `runnable_binding_declined`. An absent key is still refused, a
+null value is refused, and `[]` on an operation with no required scope slot or
+on a key naming no derived operation is refused — by generation, and by the
+doctor as `runnable_binding_decline_invalid`. See
 [declining a binding](runnable.md#declining-a-binding-in-an-environment).
 
 Each binding becomes one key in the workspace configuration group
@@ -3241,12 +3278,20 @@ What it checks, in order:
 3. The requested environment resolves through the workspace declaration
    (`local` is implicit when undeclared).
 4. Declared secret backends are supported and their executables are on PATH
-   (`op` for 1Password). Each runnable binding the environment declines with
-   `runnable-scope-selections: { KEY: [] }` is named as a
+   (`op` for 1Password).
+5. Each runnable binding the environment declines with
+   `runnable-scope-selections: { KEY: [] }` is judged against the operations
+   the workspace's modules derive, with the rule `generate runnable-bindings`
+   applies. A decline generation honours is named as a
    `runnable_binding_declined` warning: no binding is prepared for it, so a
-   service that installs it is refused where it reads `runnable-bindings/KEY`
-   (see [generate runnable-bindings](#generate-runnable-bindings)).
-5. Every workspace configuration group services declare under
+   service that installs it is refused where it reads `runnable-bindings/KEY`.
+   A decline generation refuses — the key names no derived operation, or one
+   with no required scope slot — fails as `runnable_binding_decline_invalid`
+   (see [generate runnable-bindings](#generate-runnable-bindings)). Derived
+   operations that cannot be read at all fail as
+   `runnable_operations_unreadable`. Like the checks below, it needs every
+   composed module materialized.
+6. Every workspace configuration group services declare under
    `workspace-configuration-dependencies` is provided and defines values.
    The doctor reads exactly what a run provisions: the workspace's own
    `configurations/<profile>/*` composed with the groups each composed module
@@ -3256,8 +3301,8 @@ What it checks, in order:
    (`configuration_duplicate`, naming both providers) until the workspace
    declares it. A missing `configurations/<profile>` directory fails only for
    the groups no composed module provides. The directory is never created.
-6. Per-service `configurations/<env>` files parse; duplicates are flagged.
-7. Every `${endpoint:<module>/<service>/<endpoint>}` reference in a workspace
+7. Per-service `configurations/<env>` files parse; duplicates are flagged.
+8. Every `${endpoint:<module>/<service>/<endpoint>}` reference in a workspace
    configuration a service in scope declares names a service of the workspace
    and an endpoint that service declares and the consumer's module may receive
    (`configuration_reference_unresolved`, one per reference, naming the
@@ -3272,7 +3317,7 @@ What it checks, in order:
    profile's `exclude-dependencies` — is not refused here: the producer is
    still a service of the workspace, and core's resolution drops that value
    for the consumer, saying so, when the producer is not part of the run.
-8. Secret provider references (`op://…`) resolve in memory through the
+9. Secret provider references (`op://…`) resolve in memory through the
    configured backend; resolved values are discarded immediately. Plaintext
    values shaped like unsupported reference schemes are flagged.
 
@@ -3301,7 +3346,9 @@ message, remediation?}]}`. Output never contains configuration values, raw
 `provider_resolution_failed`, `plaintext_not_allowed`,
 `reference_scheme_unknown`, `module_not_materialized`,
 `agent_override_active`, `agent_override_invalid`,
-`runnable_binding_declined`, `timeout`. Automation
+`runnable_binding_declined`, `runnable_binding_decline_invalid`,
+`runnable_operations_unreadable`, `timeout`.
+Automation
 should match on codes, never
 on message prose; renaming or removing a code bumps `schema_version`.
 

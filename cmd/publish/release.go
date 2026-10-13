@@ -45,6 +45,14 @@ type Engine struct {
 	// built from the exact version being tagged.
 	BeforeCommit func(ctx context.Context, newTag string) error
 
+	// generated are paths (files or directories) the release regenerates
+	// after it writes the manifests, and regenerate writes them. A module
+	// agent's release sets both (includeModuleRelease): its API catalogs and
+	// derived runnables carry the package version. They are committed,
+	// restored and cleaned with the manifests.
+	generated  []string
+	regenerate func(context.Context) error
+
 	// AfterPush, when set, runs after the tag is pushed to origin. Agent
 	// mode uses it to create the GitHub release, upload the loader
 	// assets, and verify them. An error is returned with the tag already
@@ -72,6 +80,10 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 		}
 	}
 
+	if err := e.includeModuleRelease(ctx); err != nil {
+		return "", err
+	}
+
 	// Reconcile the bump base against what's ACTUALLY been released. The
 	// manifest's version drifts behind the git tags (tags get cut by CI /
 	// older tooling without bumping info.codefly.yaml), so bumping the
@@ -84,14 +96,21 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 	}
 
 	manifests := e.manifests()
-	for _, manifest := range manifests[1:] {
-		manifest.Version = e.Manifest.Version
-	}
 	newVer, err := e.Manifest.Bump(e.BumpType)
 	if err != nil {
 		return "", fmt.Errorf("bump version: %w", err)
 	}
 	newTag := "v" + newVer.String()
+	// Every manifest the release writes ends at the released version, and none
+	// may move backwards to reach it: a version some other manifest already
+	// carries past this release is a decision nobody made here.
+	for _, manifest := range manifests[1:] {
+		if manifest.Version != nil && manifest.Version.GreaterThan(newVer) {
+			return "", fmt.Errorf("%s carries version %s, past the release %s; a release never moves a version backwards — release at %s or later (codefly publish minor|major)",
+				manifest.Path, manifest.Version, newVer, manifest.Version)
+		}
+		manifest.Version = e.Manifest.Version
+	}
 
 	// Pre-flight tag-existence check uses the bumped version (not the
 	// current). Done after bump so we can name the actual tag we'd
@@ -103,28 +122,17 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 	if e.DryRun {
 		fmt.Printf("[dry-run] would bump %s → %s and tag %s\n",
 			e.Manifest.Version, newVer, newTag)
+		for _, manifest := range manifests[1:] {
+			fmt.Printf("[dry-run] would set %s to %s in the same release commit\n", manifest.Path, newVer)
+		}
+		for _, path := range e.generated {
+			fmt.Printf("[dry-run] would regenerate %s at %s in the same release commit\n", path, newVer)
+		}
 		return newTag, nil
 	}
 
-	for _, manifest := range manifests {
-		if err = manifest.WriteVersion(newVer); err != nil {
-			if restoreErr := e.restoreManifest(ctx); restoreErr != nil {
-				return "", errors.Join(fmt.Errorf("write version: %w", err), restoreErr)
-			}
-			return "", fmt.Errorf("write version: %w", err)
-		}
-	}
-
-	// Gate on BeforeCommit while the tree is still pristine except for the
-	// version bump. A failure here (e.g. release CI failed, or a required
-	// platform is missing) must leave the repo exactly as it was found.
-	if e.BeforeCommit != nil {
-		if err = e.BeforeCommit(ctx, newTag); err != nil {
-			if restoreErr := e.restoreManifest(ctx); restoreErr != nil {
-				return "", errors.Join(err, restoreErr)
-			}
-			return "", err
-		}
+	if err = e.prepareReleaseTree(ctx, manifests, newVer, newTag); err != nil {
+		return "", err
 	}
 
 	if err = e.gitCommit(ctx, newTag); err != nil {
@@ -148,6 +156,40 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 		}
 	}
 	return newTag, nil
+}
+
+// prepareReleaseTree writes the release's working tree — every manifest at the
+// new version, then whatever is regenerated from them — and runs BeforeCommit
+// against it. Any failure restores the tree exactly as pre-flight found it:
+// nothing is committed, tagged or pushed.
+func (e *Engine) prepareReleaseTree(ctx context.Context, manifests []*Manifest, newVer *semver.Version, newTag string) error {
+	abort := func(cause error) error {
+		if restoreErr := e.restoreManifest(ctx); restoreErr != nil {
+			return errors.Join(cause, restoreErr)
+		}
+		return cause
+	}
+	for _, manifest := range manifests {
+		if err := manifest.WriteVersion(newVer); err != nil {
+			return abort(fmt.Errorf("write version: %w", err))
+		}
+	}
+	// Generated files that carry the version are regenerated from the
+	// manifests just written, through the generators that own them.
+	if e.regenerate != nil {
+		if err := e.regenerate(ctx); err != nil {
+			return abort(fmt.Errorf("regenerate what carries the version at %s: %w", newTag, err))
+		}
+	}
+	// Gate on BeforeCommit while the tree carries nothing but the release. A
+	// failure here (e.g. release CI failed, or a required platform is
+	// missing) must leave the repo exactly as it was found.
+	if e.BeforeCommit != nil {
+		if err := e.BeforeCommit(ctx, newTag); err != nil {
+			return abort(err)
+		}
+	}
+	return nil
 }
 
 // cleanupContext detaches an unwind from the caller's deadline. The failure
@@ -190,13 +232,22 @@ func (e *Engine) restoreManifest(ctx context.Context) error {
 	ctx, cancel := cleanupContext(ctx)
 	defer cancel()
 	manifests := e.manifests()
-	args := make([]string, 0, 5+len(manifests))
+	args := make([]string, 0, 5+len(manifests)+len(e.generated))
 	args = append(args, "restore", "--source=HEAD", "--staged", "--worktree", "--")
 	for _, manifest := range manifests {
 		args = append(args, manifest.Path)
 	}
+	args = append(args, e.generated...)
 	if _, err := e.git(ctx, args...); err != nil {
 		return fmt.Errorf("restore manifest after aborted release: %w", err)
+	}
+	// A regeneration may have added files HEAD does not have; pre-flight
+	// required a clean tree, so anything untracked under these paths is ours.
+	if len(e.generated) > 0 {
+		clean := append([]string{"clean", "-fdq", "--"}, e.generated...)
+		if _, err := e.git(ctx, clean...); err != nil {
+			return fmt.Errorf("remove regenerated files after aborted release: %w", err)
+		}
 	}
 	return nil
 }
@@ -345,6 +396,12 @@ func (e *Engine) gitCommit(ctx context.Context, tag string) error {
 	}
 	if _, err := e.git(ctx, args...); err != nil {
 		return err
+	}
+	if len(e.generated) > 0 {
+		// -A stages a regenerated tree whole, deletions included.
+		if _, err := e.git(ctx, append([]string{"add", "-A", "--"}, e.generated...)...); err != nil {
+			return err
+		}
 	}
 	if _, err := e.git(ctx, "commit", "-m", releaseCommitSubject(tag)); err != nil {
 		return err
