@@ -30,11 +30,6 @@ import (
 // the solution never declared.
 const FrontendFileName = "solution.frontend.codefly.yaml"
 
-// defaultExposedModule is the Module Federation module a solution exposes as
-// its page when its declaration names none — the runtime's default, applied
-// here too so the delivered block is what the solution serves.
-const defaultExposedModule = "./Page"
-
 // DeclaredFrontend reads the frontend block a composed solution declares,
 // from the file beside its entry service — in the directory the module
 // resolves that service to (Module.ServicePath), the one its
@@ -85,8 +80,7 @@ func parseFrontend(raw []byte, solution string) (*solutionhost.Frontend, error) 
 	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("solution %s: %s carries more than one YAML document; it declares one frontend", solution, FrontendFileName)
 	}
-	if declared.ExposedModule == "" {
-		declared.ExposedModule = defaultExposedModule
-	}
+	// No default for any scalar: the runtime refuses an omitted one at boot
+	// and core refuses it on the presence, so the file spells every field.
 	return &declared, nil
 }

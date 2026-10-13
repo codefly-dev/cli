@@ -18,8 +18,8 @@ func frontendFixture(t *testing.T, body string) (*resources.Module, []*resources
 	t.Helper()
 	root := t.TempDir()
 	files := map[string]string{
-		resources.WorkspaceConfigurationName:                                 "name: example\nlayout: modules\nmodules:\n  - name: wiki\n",
-		"modules/wiki/" + resources.ModuleConfigurationName:                  "kind: module\nname: wiki\nservice-entry: backend\nservices:\n  - name: backend\n  - name: worker\n",
+		resources.WorkspaceConfigurationName:                                  "name: example\nlayout: modules\nmodules:\n  - name: wiki\n",
+		"modules/wiki/" + resources.ModuleConfigurationName:                   "kind: module\nname: wiki\nservice-entry: backend\nservices:\n  - name: backend\n  - name: worker\n",
 		"modules/wiki/services/backend/" + resources.ServiceConfigurationName: "kind: service\nname: backend\nversion: 0.0.0\nmodule: wiki\nagent:\n  kind: runtime::service\n  name: go\n  version: 0.0.1\n  publisher: codefly.dev\n",
 		"modules/wiki/services/worker/" + resources.ServiceConfigurationName:  "kind: service\nname: worker\nversion: 0.0.0\nmodule: wiki\nagent:\n  kind: runtime::service\n  name: go\n  version: 0.0.1\n  publisher: codefly.dev\n",
 	}
@@ -45,12 +45,12 @@ func frontendFixture(t *testing.T, body string) (*resources.Module, []*resources
 }
 
 // The declared file is read beside the entry service, field for field into
-// core's block, with the runtime's default for an omitted exposed module and
-// a dashboard whose whole numbers stay whole, as core's canonical encoding
-// requires of them.
+// core's block, nothing defaulted, with a dashboard whose whole numbers stay
+// whole, as core's canonical encoding requires of them.
 func TestDeclaredFrontendIsReadBesideTheEntryService(t *testing.T) {
 	module, _ := frontendFixture(t, `title: Wiki
 order: 10
+exposed_module: ./Page
 host_contract: 1
 dashboard:
   rows: 3

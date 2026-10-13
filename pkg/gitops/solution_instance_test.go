@@ -46,7 +46,7 @@ func solutionModule(t *testing.T, name, entry string) *resources.Module {
 	if err := os.MkdirAll(entryDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(entryDir, solutionrun.FrontendFileName), []byte("title: CRM\norder: 1\nhost_contract: 1\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(entryDir, solutionrun.FrontendFileName), []byte("title: CRM\norder: 1\nexposed_module: ./Page\nhost_contract: 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return module

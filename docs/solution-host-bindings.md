@@ -233,8 +233,9 @@ contract, dashboard and surfaces the host lists the solution under. The
 solution's runtime embeds the same file and serves its manifest route from it;
 the render reads it, strictly (an unknown key is refused by name, as the
 runtime refuses it at boot), straight into core's `frontend` block of the
-presence, inside the signed bytes, with the runtime's `./Page` default for an
-omitted `exposed_module`. A solution that declares no file is refused by name
+presence, inside the signed bytes, with no default for any field: a scalar
+the file omits is one the runtime refuses at boot and core refuses on the
+presence. A solution that declares no file is refused by name
 at render: the host activates a solution on a presence that carries the
 block, so a solution without one would be listed under nothing. A module
 never carries the block, and core refuses one on it.

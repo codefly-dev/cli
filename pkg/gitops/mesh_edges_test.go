@@ -52,7 +52,7 @@ environments:
 		"modules/wiki/" + resources.ModuleConfigurationName: "kind: module\nname: wiki\nservice-entry: backend\nservices:\n  - name: backend\n",
 		"modules/wiki/services/backend/" + resources.ServiceConfigurationName: service("backend",
 			"endpoints:\n  - name: http\n    api: http\n    visibility: internal\n"),
-		"modules/wiki/services/backend/" + solutionrun.FrontendFileName: "title: Wiki\norder: 1\nhost_contract: 1\n",
+		"modules/wiki/services/backend/" + solutionrun.FrontendFileName: "title: Wiki\norder: 1\nexposed_module: ./Page\nhost_contract: 1\n",
 		"modules/wiki/solution.codefly.yaml": `schema_version: codefly.solution-manifest/v0
 protocol_version: codefly.solution/v0
 agent:
