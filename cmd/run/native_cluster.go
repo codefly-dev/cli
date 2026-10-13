@@ -21,6 +21,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/localcluster"
 	"github.com/codefly-dev/cli/pkg/nativecluster"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/solutionrun"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
@@ -80,9 +81,11 @@ type nativeCluster struct {
 	// withheld are the workloads whose projected token is not written yet:
 	// the ones this run delivers, until it has. See release.
 	withheld map[string]bool
-	running  map[string]bool
-	envelope *gitops.EnvelopeWriter
-	stop     chan struct{}
+	// solutions caches which composed modules ship a solution manifest.
+	solutions map[string]bool
+	running   map[string]bool
+	envelope  *gitops.EnvelopeWriter
+	stop      chan struct{}
 }
 
 var (
@@ -128,6 +131,7 @@ func attachNativeCluster(ctx context.Context, flow *orchestration.Flow, workspac
 		documents:   map[string]*gitops.NativeDocuments{},
 		builds:      map[solutionhost.ImageDigest]bool{},
 		withheld:    map[string]bool{},
+		solutions:   map[string]bool{},
 		running:     map[string]bool{},
 		stop:        make(chan struct{}),
 	}
@@ -143,6 +147,10 @@ func attachNativeCluster(ctx context.Context, flow *orchestration.Flow, workspac
 		return fmt.Errorf("the host module %s resolves to no namespace: the environment declares none", cluster.hostModule)
 	}
 	if err := cluster.projectHost(); err != nil {
+		authority.Close()
+		return err
+	}
+	if err := cluster.loadDelivered(); err != nil {
 		authority.Close()
 		return err
 	}
@@ -241,6 +249,17 @@ func (cluster *nativeCluster) peerOf(service *resources.Service) (string, gitops
 func (cluster *nativeCluster) runtimeOverrides(service *resources.Service) map[string]string {
 	unique, peer, ok := cluster.peerOf(service)
 	out := map[string]string{}
+	if ok && peer.TokenOnly {
+		// A module-identity service reads its token from the path a cell's
+		// render mounts unless told otherwise; this is the otherwise.
+		projection, err := cluster.project(unique, peer)
+		if err != nil {
+			wool.Get(context.Background()).In("nativeCluster").Warn("cannot project the module's token", wool.Field("service", unique), wool.ErrField(err))
+			return out
+		}
+		out[workloadTokenFileVariable] = projection.Files["TOKEN_FILE"]
+		return out
+	}
 	if unique == resources.ServiceUnique(cluster.hostModule, cluster.hostService) {
 		out["SOLUTION_HOST_LOCAL_CLUSTER"] = cluster.hostServiceAccountDir
 		out["SOLUTION_HOST_LOCAL_TRUST_ANCHOR"] = cluster.hostAnchorDir
@@ -342,9 +361,14 @@ func (cluster *nativeCluster) project(unique string, peer gitops.NativePeer) (na
 	}
 	cluster.workloads[unique] = workload
 	cluster.projections[unique] = projection
-	if cluster.delivers(peer) {
+	if cluster.delivers(peer) && cluster.isSolution(peer.Module) {
 		// Not projected yet: see the note on this type. A stale token from an
 		// earlier run is removed too, since that run's authority is gone.
+		//
+		// A solution only. A solution mints at boot and waits for a token that
+		// is not there yet; a module checks at boot that its token can be
+		// opened and mints when it first needs to, so withholding it ends the
+		// module rather than delaying it.
 		if err := os.Remove(projection.Files["TOKEN_FILE"]); err != nil && !os.IsNotExist(err) {
 			return nativecluster.Projection{}, err
 		}
@@ -400,6 +424,101 @@ func (cluster *nativeCluster) onRunning(ctx context.Context, unique string) {
 		w.Error("delivery to the host failed", wool.ErrField(err))
 		return
 	}
+}
+
+// deliveredDocuments is what the run remembers of one workload's last
+// delivery, across runs.
+type deliveredDocuments struct {
+	Unique    string                  `json:"unique"`
+	Documents *gitops.NativeDocuments `json:"documents"`
+}
+
+func (cluster *nativeCluster) deliveredDir() string {
+	return filepath.Join(cluster.stateDir, "delivered")
+}
+
+func deliveredFileName(unique string) string {
+	return strings.NewReplacer("/", "__", string(filepath.Separator), "__").Replace(unique) + ".json"
+}
+
+// persistDelivered records a workload's documents as the host now holds them.
+//
+// Every document names the envelope revision it was rendered against, and
+// the host refuses a reconcile pass on a document that names any other. So
+// when this run writes a new revision — a rebuilt workload's build approved —
+// it must re-deliver every document the host holds from it, including those
+// of workloads it has not started yet in this run. Those are only known from
+// what an earlier run delivered.
+func (cluster *nativeCluster) persistDelivered(unique string, documents *gitops.NativeDocuments) error {
+	if err := os.MkdirAll(cluster.deliveredDir(), 0o700); err != nil {
+		return err
+	}
+	body, err := json.Marshal(deliveredDocuments{Unique: unique, Documents: documents})
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(cluster.deliveredDir(), deliveredFileName(unique))
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, body, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// loadDelivered reads what earlier runs delivered for the workloads this run
+// still composes, so a new envelope revision re-delivers them too. A record
+// for a workload the composition no longer declares is left alone.
+func (cluster *nativeCluster) loadDelivered() error {
+	entries, err := os.ReadDir(cluster.deliveredDir())
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(cluster.deliveredDir(), entry.Name()))
+		if err != nil {
+			return err
+		}
+		var record deliveredDocuments
+		if err := json.Unmarshal(body, &record); err != nil || record.Documents == nil || record.Documents.Presence == nil {
+			// Not a record this run wrote: ignore it rather than deliver it.
+			continue
+		}
+		peer, composed := cluster.peers[record.Unique]
+		if !composed || !cluster.delivers(peer) {
+			continue
+		}
+		cluster.documents[record.Unique] = record.Documents
+		if record.Documents.Digest != "" {
+			cluster.builds[record.Documents.Digest] = true
+		}
+	}
+	return nil
+}
+
+// workloadTokenFileVariable names the projected token's path to a process
+// that cannot read it from the path a pod mounts it at.
+const workloadTokenFileVariable = "CODEFLY__WORKLOAD_TOKEN_FILE" //nolint:gosec // G101: the name of a path variable, not a credential
+
+// isSolution reports whether a composed module ships a solution manifest.
+// Called with the lock held.
+func (cluster *nativeCluster) isSolution(module string) bool {
+	if known, ok := cluster.solutions[module]; ok {
+		return known
+	}
+	loaded, err := cluster.workspace.LoadModuleFromName(context.Background(), module)
+	solution := false
+	if err == nil {
+		manifest, manifestErr := solutionrun.ModuleSolution(loaded)
+		solution = manifestErr == nil && manifest != nil
+	}
+	cluster.solutions[module] = solution
+	return solution
 }
 
 // delivers reports whether this run delivers presence and authority for a
@@ -490,8 +609,23 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, peer g
 	if err != nil {
 		return err
 	}
+	previous, hadPrevious := cluster.documents[unique]
 	cluster.documents[unique] = rendered
 	cluster.builds[rendered.Digest] = true
+	// A workload whose documents the host refuses must not take every other
+	// workload's next delivery down with it: every envelope write carries
+	// every principal, so its documents are put back as they were.
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		if hadPrevious {
+			cluster.documents[unique] = previous
+		} else {
+			delete(cluster.documents, unique)
+		}
+	}()
 	grants, err := cluster.grants()
 	if err != nil {
 		return err
@@ -535,6 +669,7 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, peer g
 	if err := commit(ctx); err != nil {
 		return fmt.Errorf("write the module envelope: %w", err)
 	}
+	committed = true
 	deliverer.EnvelopeRevision = revision
 	w := wool.Get(ctx).In("nativeCluster.deliver")
 	// Every delivered document names the envelope revision, so a new revision
@@ -553,6 +688,9 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, peer g
 		receipts, err := deliverer.Deliver(ctx, documents)
 		if err != nil {
 			return fmt.Errorf("%s: %w", key, err)
+		}
+		if err := cluster.persistDelivered(key, documents); err != nil {
+			return fmt.Errorf("%s: remember what was delivered: %w", key, err)
 		}
 		for _, receipt := range receipts {
 			w.Info("delivered", wool.Field("service", key), wool.Field("kind", receipt.Kind), wool.Field("disposition", receipt.Disposition), wool.Field("generation", receipt.Generation), wool.Field("envelope", revision))

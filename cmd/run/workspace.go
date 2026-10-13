@@ -51,28 +51,65 @@ var WorkspaceCmd = &cobra.Command{
 
 // CompositionRoots is the root set of a composition run: the host's ingress
 // services of the selected environment first (a person reaches the platform
-// through them), then every module that declares a service-entry — each
-// solution. Every other service is reached through what these consume.
+// through them), then every service of every other composed module — each
+// solution, and each module a solution or another module reaches.
+//
+// Every service, not every service-entry. What one module needs of another is
+// not only its declared service dependencies: a solution's api.consumes and a
+// module's configuration references (`${endpoint:model/model/rest}`) name
+// producers the dependency graph never sees, and a run that starts only what
+// the graph reaches comes up beside nothing those name. The composition is
+// what declares the platform, so the platform is what it composes. A run
+// profile's exclusions still apply.
+//
+// The host module is the one exception: its ingress services are the roots,
+// and the rest of it is reached through their dependencies, as a person would
+// reach it.
 func CompositionRoots(ctx context.Context, workspace *resources.Workspace) ([]string, error) {
 	env, err := orchestration.SelectEnvironment(workspace, environmentName)
 	if err != nil {
 		return nil, err
 	}
+	// The exclusions only, read as declared. The run validates the profile
+	// against the composition when it starts; here a name that matches
+	// nothing simply excludes nothing.
+	excluded := map[string]bool{}
+	for _, unique := range excludeDependencies {
+		excluded[strings.TrimSpace(unique)] = true
+	}
+	if name := strings.TrimSpace(profile); name != "" {
+		declared, ok := workspace.RunProfiles[name]
+		if !ok {
+			return nil, fmt.Errorf("run profile %q is not declared", name)
+		}
+		for _, unique := range declared.ExcludeDependencies {
+			excluded[strings.TrimSpace(unique)] = true
+		}
+	}
 	var roots []string
 	seen := map[string]bool{}
 	add := func(unique string) {
+		// An exclusion names a service the run must not start, whichever way
+		// the run would have reached it.
+		if excluded[unique] {
+			return
+		}
 		if !seen[unique] {
 			seen[unique] = true
 			roots = append(roots, unique)
 		}
 	}
+	host := ""
 	if env.Host != nil {
-		host := strings.SplitN(env.Host.Delivery, "/", 2)[0]
+		host = strings.SplitN(env.Host.Delivery, "/", 2)[0]
 		for _, route := range env.Ingress {
 			add(resources.ServiceUnique(host, route.Service))
 		}
 	}
 	for _, ref := range workspace.Modules {
+		if ref.Name == host {
+			continue
+		}
 		mod, err := workspace.LoadModuleFromReference(ctx, ref)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", ref.Name, err)
@@ -80,9 +117,12 @@ func CompositionRoots(ctx context.Context, workspace *resources.Workspace) ([]st
 		if mod.ServiceEntry != "" {
 			add(resources.ServiceUnique(mod.Name, mod.ServiceEntry))
 		}
+		for _, service := range mod.ServiceReferences {
+			add(resources.ServiceUnique(mod.Name, service.Name))
+		}
 	}
 	if len(roots) == 0 {
-		return nil, fmt.Errorf("workspace <%s> composes nothing to run: its environment %q declares no host ingress and no module declares a service-entry", workspace.Name, environmentName)
+		return nil, fmt.Errorf("workspace <%s> composes nothing to run: its environment %q declares no host ingress and it composes no other module", workspace.Name, environmentName)
 	}
 	return roots, nil
 }
@@ -94,6 +134,7 @@ func init() {
 	WorkspaceCmd.Flags().DurationVar(&readinessTimeout, "readiness-timeout", 10*time.Minute, "Maximum time to wait for the flow to become ready")
 	WorkspaceCmd.Flags().StringVar(&profile, "profile", "", "Named workspace run profile")
 	WorkspaceCmd.Flags().StringSliceVar(&excludeDependencies, "exclude-dependency", nil, "Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)")
+	WorkspaceCmd.Flags().StringSliceVar(&excludeWorkspaceConfigurations, "exclude-workspace-configuration", nil, "Exclude a workspace configuration group from the run, with the producers its values name (repeatable)")
 	WorkspaceCmd.Flags().StringSliceVar(&setOverrides, "set", nil, "Per-service runtime env override (repeatable)")
 	WorkspaceCmd.Flags().StringSliceVar(&silent, "silent", nil, "Silence services in CLI output")
 	WorkspaceCmd.Flags().StringVar(&runtimeContext, "runtime-context", defaultRuntimeContext(), "Runtime context for the flow (native/container/nix/free)")

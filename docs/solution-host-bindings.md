@@ -1188,7 +1188,15 @@ Three things it does, and why:
   is a narrowing, which the host witnesses and a development loop does not
   perform. A principal whose own section changes — a solution whose contract
   moved — is refused by a host with no witness: reset the local store.
-- **A workload's token is withheld until its documents are delivered.** A
+- **A module-identity service is told where its token is.** Its contract
+  fixes the path a pod mounts (`/var/run/secrets/codefly/token`), which a
+  process cannot have; the run projects the token under its own state and sets
+  `CODEFLY__WORKLOAD_TOKEN_FILE`. A pod never sets it.
+- **What the run delivered is remembered across runs**, under
+  `.codefly/native-cluster/<environment>/delivered/`, so a new envelope
+  revision re-delivers the documents of workloads this run has not started yet;
+  a document naming an old revision would otherwise stop the host's reconcile.
+- **A solution's token is withheld until its documents are delivered.** A
   workload starts before the host has been told about it, because its build is
   known only once it runs. A cell answers that with a restart; the run answers
   it by projecting the token only after delivery. The workload waits for the

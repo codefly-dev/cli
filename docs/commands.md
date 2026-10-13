@@ -109,15 +109,23 @@ list at 50 entries, and never sends source files or unrelated configuration.
 
 ### `codefly run workspace`
 
-Run the whole composition locally: the host's ingress services and every
-module that declares a `service-entry` are the roots, and the dependency
-closure of those roots is every module they reach. It takes the flags of
-`codefly run service` and no service names.
+Run the whole composition locally: the host's ingress services, and every
+service of every other composed module. Every service, not only what the
+dependency graph reaches: a solution's `api.consumes` and a module's
+configuration references (`${endpoint:model/model/rest}`) name producers the
+graph never sees. It takes the flags of `codefly run service` and no service
+names; `--exclude-dependency` and `--exclude-workspace-configuration` leave a
+service or a configuration group out.
 
 ```bash
-codefly run workspace --fixture dev-admin          # the host and every solution
-codefly run workspace --runtime-context native     # as processes, no cluster
+codefly run workspace --fixture dev-admin          # the host and every module
+codefly run workspace --runtime-context native \
+  --exclude-dependency documents/libreoffice,documents/docx \
+  --exclude-workspace-configuration document-formats   # container-only services out
 ```
+
+`--exclude-workspace-configuration` is also accepted by `codefly run service`
+and `codefly run solution`.
 
 In a composition whose environment declares a `host`, a native run stands in
 for the cell the composition would be delivered to: each solution gets a

@@ -953,7 +953,7 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 		return nil, w.Wrap(attachErr)
 	}
 	flow.WithRemotes(remoteServices)
-	resolvedProfile, err := workspace.ResolveRunProfile(ctx, profile, resources.RunProfile{ExcludeDependencies: excludeDependencies})
+	resolvedProfile, err := workspace.ResolveRunProfile(ctx, profile, resources.RunProfile{ExcludeDependencies: excludeDependencies, ExcludeWorkspaceConfigurations: excludeWorkspaceConfigurations})
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -1122,6 +1122,7 @@ func init() {
 	ServiceCmd.Flags().StringSliceVar(&silent, "silent", nil, "Silence services in CLI output")
 	ServiceCmd.Flags().StringVar(&profile, "profile", "", "Named workspace run profile")
 	ServiceCmd.Flags().StringSliceVar(&excludeDependencies, "exclude-dependency", nil, "Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)")
+	ServiceCmd.Flags().StringSliceVar(&excludeWorkspaceConfigurations, "exclude-workspace-configuration", nil, "Exclude a workspace configuration group from the run, with the producers its values name (repeatable)")
 	ServiceCmd.Flags().StringVar(&fixture, "fixture", "", "Fixture override (defaults to the selected Codefly environment)")
 	ServiceCmd.Flags().StringSliceVar(&setOverrides, "set", nil, "Per-service runtime env override (repeatable), e.g. --set warden:CODEFLY__FIXTURE=dogfood")
 	ServiceCmd.Flags().StringSliceVar(&remotes, "remote", nil, "Remote services")

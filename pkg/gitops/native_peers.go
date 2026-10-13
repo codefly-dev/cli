@@ -18,6 +18,11 @@ type NativePeer struct {
 	Account  string
 	SPIFFEID string
 	Consumer bool
+	// TokenOnly marks a service that declares module-identity and no
+	// workload-identity: in a cell its render mounts only a projected token,
+	// so a native run issues it a token and no SVID, and it is in nobody's
+	// peer list.
+	TokenOnly bool
 }
 
 // NativeWorkloadAccount is the ServiceAccount name a service runs as: Core's
@@ -51,13 +56,39 @@ func ResolveNativePeers(ctx context.Context, workspace *resources.Workspace, env
 		return nil
 	}
 	module, service, _ := strings.Cut(env.Host.Gateway, "/")
-	if err := add(module, service, false); err != nil {
+	if err = add(module, service, false); err != nil {
 		return nil, err
 	}
 	for _, consumer := range consumers {
-		if err := add(consumer.Module, consumer.Name, true); err != nil {
+		if err = add(consumer.Module, consumer.Name, true); err != nil {
 			return nil, err
 		}
+	}
+	// And every module-identity service the composition runs: it presents a
+	// projected token at its mint, so the run projects one and delivers its
+	// presence and authority, as a cell's render does.
+	refs, err := workspace.LoadServiceWithModules(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, ref := range refs {
+		unique := resources.ServiceUnique(ref.Module, ref.Name)
+		if _, planned := peers[unique]; planned {
+			continue
+		}
+		service, loadErr := workspace.LoadService(ctx, ref)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		if !service.ModuleIdentity {
+			continue
+		}
+		if addErr := add(ref.Module, ref.Name, true); addErr != nil {
+			return nil, addErr
+		}
+		peer := peers[unique]
+		peer.TokenOnly = true
+		peers[unique] = peer
 	}
 	return peers, nil
 }
@@ -67,6 +98,9 @@ func ResolveNativePeers(ctx context.Context, workspace *resources.Workspace, env
 func NativePeerFiles(host *environments.EnvironmentHost, peers map[string]NativePeer, unique string) ([]string, error) {
 	plan := workloadPeers{}
 	for key, peer := range peers {
+		if peer.TokenOnly && key != unique {
+			continue
+		}
 		plan[key] = workloadPeer{Account: peer.Account, SPIFFEID: peer.SPIFFEID, Consumer: peer.Consumer}
 	}
 	files, err := plan.files(host, unique)
