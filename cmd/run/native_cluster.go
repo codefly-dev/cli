@@ -71,7 +71,13 @@ type nativeCluster struct {
 
 	hostModule, hostService, hostNamespace string
 	hostWorkload                           nativecluster.Workload
-	hostServiceAccountDir, hostAnchorDir   string
+
+	// composition guards workspace and identities: the components this run
+	// composes, which admit extends with the ones a reloaded workspace adds
+	// while the flow keeps reading them. Its own lock, because deliver
+	// holds mu while it reads both.
+	composition                          sync.RWMutex
+	hostServiceAccountDir, hostAnchorDir string
 
 	mu          sync.Mutex
 	workloads   map[string]nativecluster.Workload // unique -> projected identity
@@ -207,7 +213,7 @@ func (cluster *nativeCluster) projectHost() error {
 	}
 	cluster.authority.RegisterPod(&nativecluster.Pod{
 		Namespace: cluster.hostNamespace, ServiceAccount: account, Name: cluster.hostWorkload.PodName, UID: cluster.hostWorkload.PodUID,
-		Container: cluster.hostService, Repository: "native/" + strings.ToLower(cluster.workspace.Name) + "/" + cluster.hostModule + "/" + cluster.hostService,
+		Container: cluster.hostService, Repository: "native/" + strings.ToLower(cluster.composed().Name) + "/" + cluster.hostModule + "/" + cluster.hostService,
 	})
 	token, err := cluster.authority.Token(cluster.hostNamespace, account, cluster.hostWorkload.PodName, cluster.hostWorkload.PodUID, cluster.hostWorkload.Audience)
 	if err != nil {
@@ -242,10 +248,66 @@ func (cluster *nativeCluster) projectHost() error {
 	return nil
 }
 
+// composed is the workspace this run composes, as admitted so far.
+func (cluster *nativeCluster) composed() *resources.Workspace {
+	cluster.composition.RLock()
+	defer cluster.composition.RUnlock()
+	return cluster.workspace
+}
+
+// identity is the identity this run projects for a workload, by unique.
+func (cluster *nativeCluster) identity(unique string) (gitops.NativeIdentity, bool) {
+	cluster.composition.RLock()
+	defer cluster.composition.RUnlock()
+	identity, ok := cluster.identities[unique]
+	return identity, ok
+}
+
 func (cluster *nativeCluster) identityOf(service *resources.Service) (string, gitops.NativeIdentity, bool) {
 	unique := resources.WithUnique(service).Unique()
-	identity, ok := cluster.identities[unique]
+	identity, ok := cluster.identity(unique)
 	return unique, identity, ok
+}
+
+// admit introduces into the running composition the components a reloaded
+// workspace composes that this run did not know at start. Their identities
+// are planned by the rule attach used (ResolveNativeIdentities) and added;
+// the components already known may neither change nor disappear: a running
+// principal whose identity changed would be a replacement, and one dropped
+// would be a withdrawal, a narrowing the host rightly refuses from a
+// development loop, so both refuse by name and leave the run as it was. The
+// run's authority — its CA, its API server, the host's token and trust
+// anchor — is untouched: the host keeps its process, and an admitted
+// component is projected, delivered and enveloped through the same path as
+// any workload reaching Running. It returns the uniques admitted, sorted.
+func (cluster *nativeCluster) admit(ctx context.Context, workspace *resources.Workspace) ([]string, error) {
+	identities, err := gitops.ResolveNativeIdentities(ctx, workspace, cluster.env)
+	if err != nil {
+		return nil, err
+	}
+	cluster.composition.Lock()
+	defer cluster.composition.Unlock()
+	for unique, known := range cluster.identities {
+		reloaded, still := identities[unique]
+		switch {
+		case !still:
+			return nil, fmt.Errorf("the reloaded composition no longer composes %s, which this run delivers as %s; a run never withdraws a component, stop the run to remove it", unique, known.SPIFFEID)
+		case reloaded != known:
+			return nil, fmt.Errorf("%s runs as %s and the reloaded composition names it %s; a running principal is never replaced, stop the run to change it", unique, known.SPIFFEID, reloaded.SPIFFEID)
+		}
+	}
+	var added []string
+	for unique := range identities {
+		if _, known := cluster.identities[unique]; !known {
+			added = append(added, unique)
+		}
+	}
+	sort.Strings(added)
+	for _, unique := range added {
+		cluster.identities[unique] = identities[unique]
+	}
+	cluster.workspace = workspace
+	return added, nil
 }
 
 // runtimeOverrides is the process environment a cell gives a workload and a
@@ -334,7 +396,7 @@ func (cluster *nativeCluster) project(unique string, identity gitops.NativeIdent
 	if projection, done := cluster.projections[unique]; done {
 		return projection, nil
 	}
-	namespace := cluster.env.ModuleNamespace(cluster.workspace, identity.Module)
+	namespace := cluster.env.ModuleNamespace(cluster.composed(), identity.Module)
 	workload := nativecluster.Workload{
 		Namespace: namespace, Account: identity.Account,
 		PodName: identity.Service + "-native", PodUID: randomUID(), Audience: cluster.env.Host.Audience,
@@ -361,7 +423,7 @@ func (cluster *nativeCluster) project(unique string, identity gitops.NativeIdent
 	// The pod exists from projection on; its build is known once it runs.
 	cluster.authority.RegisterPod(&nativecluster.Pod{
 		Namespace: namespace, ServiceAccount: identity.Account, Name: workload.PodName, UID: workload.PodUID,
-		Container: identity.Service, Repository: "native/" + strings.ToLower(cluster.workspace.Name) + "/" + strings.ToLower(identity.Module) + "/" + strings.ToLower(identity.Service),
+		Container: identity.Service, Repository: "native/" + strings.ToLower(cluster.composed().Name) + "/" + strings.ToLower(identity.Module) + "/" + strings.ToLower(identity.Service),
 	})
 	return projection, nil
 }
@@ -397,7 +459,7 @@ func (cluster *nativeCluster) refreshTokens() {
 // its presence and authority.
 func (cluster *nativeCluster) onRunning(ctx context.Context, unique string) {
 	w := wool.Get(ctx).In("nativeCluster.deliver", wool.Field("service", unique))
-	identity, ok := cluster.identities[unique]
+	identity, ok := cluster.identity(unique)
 	if !ok || !cluster.delivers(identity) {
 		return
 	}
@@ -475,7 +537,7 @@ func (cluster *nativeCluster) loadDelivered() error {
 			// Not a record this run wrote: ignore it rather than deliver it.
 			continue
 		}
-		identity, composed := cluster.identities[record.Unique]
+		identity, composed := cluster.identity(record.Unique)
 		if !composed || !cluster.delivers(identity) {
 			continue
 		}
@@ -497,7 +559,7 @@ func (cluster *nativeCluster) isSolution(module string) bool {
 	if known, ok := cluster.solutions[module]; ok {
 		return known
 	}
-	loaded, err := cluster.workspace.LoadModuleFromName(context.Background(), module)
+	loaded, err := cluster.composed().LoadModuleFromName(context.Background(), module)
 	solution := false
 	if err == nil {
 		manifest, manifestErr := solutionrun.ModuleSolution(loaded)
@@ -536,13 +598,13 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, identi
 	if !projected {
 		return fmt.Errorf("%s is running with no projected identity", unique)
 	}
-	module, err := cluster.workspace.LoadModuleFromName(ctx, identity.Module)
+	module, err := cluster.composed().LoadModuleFromName(ctx, identity.Module)
 	if err != nil {
 		return err
 	}
 	var services []*resources.Service
 	for _, reference := range module.ServiceReferences {
-		loaded, loadErr := cluster.workspace.LoadService(ctx, &resources.ServiceWithModule{Name: reference.Name, Module: identity.Module})
+		loaded, loadErr := cluster.composed().LoadService(ctx, &resources.ServiceWithModule{Name: reference.Name, Module: identity.Module})
 		if loadErr != nil {
 			return loadErr
 		}
@@ -556,7 +618,7 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, identi
 	if err != nil {
 		return err
 	}
-	namespace := cluster.env.ModuleNamespace(cluster.workspace, identity.Module)
+	namespace := cluster.env.ModuleNamespace(cluster.composed(), identity.Module)
 	gatewayURL, err := cluster.flow.GetAddressForEndpoint(ctx, strings.Split(cluster.env.Host.Gateway, "/")[0], strings.Split(cluster.env.Host.Gateway, "/")[1], "rest")
 	if err != nil {
 		return fmt.Errorf("the host gateway's rest endpoint is unresolved: %w", err)
@@ -573,7 +635,7 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, identi
 		cluster.envelope = &gitops.EnvelopeWriter{GatewayURL: gatewayURL, FixtureProvider: administrator.Provider, FixtureToken: administrator.Token}
 	}
 	deliverer := &gitops.NativeDeliverer{
-		Workspace: cluster.workspace, Env: cluster.env, Signer: cluster.signer,
+		Workspace: cluster.composed(), Env: cluster.env, Signer: cluster.signer,
 		StateDir: filepath.Join(cluster.stateDir, "delivery"), DeliveryURL: deliveryURL,
 		Token: func(namespace string) (string, error) {
 			pod := nativecluster.Pod{Namespace: namespace, ServiceAccount: "delivery", Name: "delivery-native", UID: randomUID()}
@@ -600,7 +662,7 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, identi
 	// standing in for an edit nobody made.
 	cluster.authority.RegisterPod(&nativecluster.Pod{
 		Namespace: namespace, ServiceAccount: identity.Account, Name: workload.PodName, UID: workload.PodUID,
-		Container: identity.Service, Repository: "native/" + strings.ToLower(cluster.workspace.Name) + "/" + strings.ToLower(identity.Module) + "/" + strings.ToLower(identity.Service),
+		Container: identity.Service, Repository: "native/" + strings.ToLower(cluster.composed().Name) + "/" + strings.ToLower(identity.Module) + "/" + strings.ToLower(identity.Service),
 		Digest: string(rendered.Digest),
 	})
 	previous, hadPrevious := cluster.documents[unique]
@@ -641,9 +703,10 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, identi
 			if documents.Authority == nil {
 				continue
 			}
+			started, _ := cluster.identity(key)
 			principals = append(principals, gitops.EnvelopePrincipal{
 				Prefix: documents.Principal, Bindings: documents.Bindings, Ceilings: documents.Ceilings,
-				SPIFFEID: cluster.identities[key].SPIFFEID, Container: cluster.identities[key].Service, Grant: grants[documents.Principal],
+				SPIFFEID: started.SPIFFEID, Container: started.Service, Grant: grants[documents.Principal],
 			})
 		}
 		sort.Slice(principals, func(i, j int) bool { return principals[i].Prefix < principals[j].Prefix })
@@ -708,7 +771,7 @@ type fixtureAdministrator struct {
 }
 
 func (cluster *nativeCluster) fixtureAdministrator(ctx context.Context) (fixtureAdministrator, error) {
-	module, err := cluster.workspace.LoadModuleFromName(ctx, cluster.hostModule)
+	module, err := cluster.composed().LoadModuleFromName(ctx, cluster.hostModule)
 	if err != nil {
 		return fixtureAdministrator{}, err
 	}
@@ -747,14 +810,14 @@ func (cluster *nativeCluster) subject(identity gitops.NativeIdentity) string {
 	if declared := cluster.env.WorkloadIdentityFor(identity.Module, identity.Service); declared != nil && declared.Principal != "" {
 		return declared.Principal
 	}
-	return "system:serviceaccount:" + cluster.env.ModuleNamespace(cluster.workspace, identity.Module) + ":" + identity.Account
+	return "system:serviceaccount:" + cluster.env.ModuleNamespace(cluster.composed(), identity.Module) + ":" + identity.Account
 }
 
 // grants reads the composition's envelope policy: configurations/<env>/module-envelope.json,
 // {"principals": {"<prefix>": <grant>}} — what the platform administrator
 // grants each module principal, in the host's own grant shape.
 func (cluster *nativeCluster) grants() (map[string]gitops.EnvelopeGrant, error) {
-	path := filepath.Join(cluster.workspace.Dir(), "configurations", cluster.env.Name, "module-envelope.json")
+	path := filepath.Join(cluster.composed().Dir(), "configurations", cluster.env.Name, "module-envelope.json")
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return map[string]gitops.EnvelopeGrant{}, nil
