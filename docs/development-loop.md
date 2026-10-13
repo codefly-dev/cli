@@ -65,8 +65,11 @@ agent plan digest, including its metadata, remains an input. Temporary paths
 and builder names are normalized by the existing cache.
 There is no timestamp, checkout path or `latest` in the result.
 The tag identifies inputs for reuse; `Runtime.Init` receives the loaded
-Docker image's immutable `sha256:…` ID, so retagging cannot change the image
-the agent starts.
+image's canonical `repository@sha256:…` reference, verified against its Docker
+image ID, so retagging cannot change the image the agent starts. The engine
+must expose and resolve a repository digest for locally loaded images (as
+Docker's containerd image store does); an unavailable or mismatched reference
+refuses Init without falling back to a tag or pushing to a registry.
 
 The next run emits and verifies the recipe again, then reuses the cached image
 only if its inputs match and Docker still holds the recorded image ID. A source,

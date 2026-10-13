@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,12 +110,39 @@ func TestRunnerBuildsAndHandsOffLocalRuntimeImage(t *testing.T) {
 	_, err := runner.Init(t.Context())
 	require.NoError(t, err)
 	first := exposedValues(t.Context(), t, runner.world)["runtime-image"]
-	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, first)
+	require.Regexp(t, `^docker.io/codefly-local/runtime@sha256:[0-9a-f]{64}$`, first)
 	require.Equal(t, 1, stub.calls(t, "build"))
 	_, err = runner.Init(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, first, exposedValues(t.Context(), t, runner.world)["runtime-image"])
 	require.Equal(t, 1, stub.calls(t, "build"))
+}
+
+func TestLocalRuntimeImageReferenceRefusesUnavailableOrDifferentImage(t *testing.T) {
+	for _, test := range []struct{ name, digests, resolved, message string }{
+		{"missing digest", "[]", "7", "exposing a loaded repository digest"},
+		{"different image", fmt.Sprintf(`["codefly-local/runtime@sha256:%064d"]`, 7), "8", "does not identify the built image"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			script := `#!/bin/sh
+case "$4" in
+  '{{json .RepoDigests}}') printf '%s\n' '` + test.digests + `' ;;
+  '{{.Id}}')
+    case "$5" in
+      *@*) printf 'sha256:%064d\n' ` + test.resolved + ` ;;
+      *) printf 'sha256:%064d\n' 7 ;;
+    esac ;;
+  *) exit 1 ;;
+esac
+`
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0o755))
+			t.Setenv("PATH", strings.Join([]string{dir, os.Getenv("PATH")}, string(os.PathListSeparator)))
+			image, err := localRuntimeImageReference(t.Context(), "codefly-local/runtime:test")
+			require.ErrorContains(t, err, test.message)
+			require.Empty(t, image)
+		})
+	}
 }
 
 func TestRunnerRefusesImageHandoffWithoutLiveCapability(t *testing.T) {
@@ -207,27 +235,33 @@ exec "$CODEFLY_TEST_REAL_DOCKER" "$@"
 	require.NoError(t, err)
 	image := exposedValues(ctx, t, runner.world)["runtime-image"]
 	require.NotEmpty(t, image)
+	require.Regexp(t, `^docker.io/codefly-local/runtime@sha256:[0-9a-f]{64}$`, image)
+	imageID, err := inspectLocalImageID(ctx, image)
+	require.NoError(t, err)
 	t.Cleanup(func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 30*time.Second)
 		defer stop()
-		output, removeErr := exec.CommandContext(cleanup, docker, "image", "rm", image).CombinedOutput()
+		output, removeErr := exec.CommandContext(cleanup, docker, "image", "rm", imageID).CombinedOutput()
 		require.NoError(t, removeErr, "%s", output)
 	})
-	imageID, err := inspectLocalImageID(ctx, image)
-	require.NoError(t, err)
 	require.Regexp(t, `^sha256:[0-9a-f]{64}$`, imageID)
-	require.Equal(t, imageID, image, "Init must receive the immutable loaded image ID")
 	require.Equal(t, 1, stub.calls(t, "build"))
 	_, err = runner.Init(ctx)
 	require.NoError(t, err)
 	require.Equal(t, image, exposedValues(ctx, t, runner.world)["runtime-image"])
 	require.Equal(t, 1, stub.calls(t, "build"), "a second Init must reuse the loaded real image")
-	output, err := exec.CommandContext(ctx, docker, "image", "rm", image).CombinedOutput()
+	output, err := exec.CommandContext(ctx, docker, "image", "rm", imageID).CombinedOutput()
 	require.NoError(t, err, "%s", output)
 	_, err = runner.Init(ctx)
 	require.NoError(t, err)
+	image = exposedValues(ctx, t, runner.world)["runtime-image"]
+	imageID, err = inspectLocalImageID(ctx, image)
+	require.NoError(t, err)
 	require.Equal(t, 2, stub.calls(t, "build"), "a lost image must be rebuilt")
+	_, err = runner.Init(ctx)
+	require.NoError(t, err)
 	require.Equal(t, image, exposedValues(ctx, t, runner.world)["runtime-image"])
+	require.Equal(t, 2, stub.calls(t, "build"), "the replacement image must also be reusable")
 }
 
 func TestLocalRuntimeImageReusesRecipeAndInvalidatesSourceChanges(t *testing.T) {

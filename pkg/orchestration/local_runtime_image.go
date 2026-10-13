@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/distribution/reference"
+
 	"github.com/codefly-dev/core/agents/contract"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
@@ -55,9 +57,34 @@ func (runner *Runner) localRuntimeImage(ctx context.Context) (string, error) {
 	if err != nil || image == "" {
 		return "", err
 	}
-	// The input-derived tag is for discovery and reuse. Init receives Docker's
-	// immutable image ID, so a later retag cannot change what the agent starts.
-	return inspectLocalImageID(ctx, image)
+	return localRuntimeImageReference(ctx, image)
+}
+
+// Init's image contract uses a canonical repository reference, not a bare
+// Docker image ID. Bind the daemon's manifest reference to the loaded image;
+// neither retagging nor an unavailable digest may turn this into a pull.
+func localRuntimeImageReference(ctx context.Context, image string) (string, error) {
+	id, err := inspectLocalImageID(ctx, image)
+	if err != nil {
+		return "", err
+	}
+	digest, err := inspectImageDigest(ctx, image)
+	if err != nil {
+		return "", fmt.Errorf("local runtime requires a container engine exposing a loaded repository digest: %w", err)
+	}
+	named, err := reference.ParseNormalizedNamed(image)
+	if err != nil {
+		return "", err
+	}
+	immutable := reference.TrimNamed(named).String() + "@" + digest
+	loaded, err := inspectLocalImageID(ctx, immutable)
+	if err != nil {
+		return "", err
+	}
+	if loaded != id {
+		return "", fmt.Errorf("local runtime reference %s does not identify the built image %s", immutable, id)
+	}
+	return immutable, nil
 }
 
 // buildLocalRuntimeImage executes an agent's recipe through the same verified
