@@ -53,6 +53,7 @@ func moduleAgentRepo(t *testing.T, agentVersion string) (dir, origin string, fil
 		"modules/payments/module.codefly.yaml":                             "kind: module\nname: payments\nservices:\n    - name: api\n    - name: worker\n",
 		"modules/payments/services/api/service.codefly.yaml":               agentFirstServiceManifest,
 		"modules/payments/services/worker/service.codefly.yaml":            plainServiceManifest,
+		"modules/payments/module.package.codefly.yaml":                     "schema: codefly/module-package/v2\nkind: module-package\nid: acme/payments\nversion: 0.0.0\nminimum-codefly-version: \">=0.1.0\"\nartifact-roots:\n  - contracts\nservices:\n  - name: api\n  - name: worker\ncontracts:\n  composition: \">=2.0.0 <3.0.0\"\n",
 		"qualification/modules/owners/services/owner/service.codefly.yaml": "name: owner\nversion: 0.0.0\n",
 	}
 	for rel, content := range files {
@@ -99,6 +100,8 @@ func TestModuleReleaseSetsEveryComposedServiceVersion(t *testing.T) {
 	require.Equal(t,
 		strings.Replace(plainServiceManifest, "version: 0.0.0 #", "version: 0.2.1 #", 1),
 		readRel(t, dir, "modules/payments/services/worker/service.codefly.yaml"))
+	require.Contains(t, readRel(t, dir, "modules/payments/module.package.codefly.yaml"), "\nversion: 0.2.1\n",
+		"the package is released at the module's version: core resolves it from the release v<package version>")
 	require.Equal(t, files["qualification/modules/owners/services/owner/service.codefly.yaml"],
 		readRel(t, dir, "qualification/modules/owners/services/owner/service.codefly.yaml"),
 		"a service the module's workspace does not compose is not released")
@@ -109,6 +112,7 @@ func TestModuleReleaseSetsEveryComposedServiceVersion(t *testing.T) {
 	require.Equal(t, []string{
 		"release:", "v0.2.1",
 		"agent.codefly.yaml",
+		"modules/payments/module.package.codefly.yaml",
 		"modules/payments/services/api/service.codefly.yaml",
 		"modules/payments/services/worker/service.codefly.yaml",
 	}, strings.Fields(string(out)))
@@ -219,4 +223,61 @@ func TestServiceAgentReleaseTouchesNoServiceManifest(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, files["modules/payments/services/worker/service.codefly.yaml"],
 		readRel(t, dir, "modules/payments/services/worker/service.codefly.yaml"))
+}
+
+// A package manifest already past the release — a module whose package was
+// bumped by hand ahead of its agent — is refused rather than moved backwards,
+// naming the bump that reaches it.
+func TestModuleReleaseRefusesToMoveThePackageVersionBackwards(t *testing.T) {
+	dir, _, _ := moduleAgentRepo(t, "0.0.36")
+	pkg := filepath.Join(dir, "modules/payments/module.package.codefly.yaml")
+	data, err := os.ReadFile(pkg)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(pkg, []byte(strings.Replace(string(data), "version: 0.0.0", "version: 0.1.0", 1)), 0o600))
+	require.NoError(t, runGit(dir, "commit", "-am", "package at 0.1.0"))
+	require.NoError(t, runGit(dir, "push", "origin", "main"))
+
+	engine := moduleEngine(t, dir, "patch")
+	engine.DryRun = true
+	_, err = engine.Release(context.Background())
+	require.ErrorContains(t, err, "module.package.codefly.yaml carries version 0.1.0, past the release 0.0.37")
+	require.ErrorContains(t, err, "codefly publish minor|major")
+}
+
+// The machine-local overlay is not a release input: a developer whose
+// codefly.local.yaml points a service at a checkout outside the repository
+// still releases the repository's own services.
+func TestModuleReleaseIgnoresTheLocalOverlay(t *testing.T) {
+	dir, _, _ := moduleAgentRepo(t, "0.2.0")
+	elsewhere := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(elsewhere, "worker"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(elsewhere, "worker", "service.codefly.yaml"), []byte(plainServiceManifest), 0o600))
+	overlay := "resolve:\n  payments:\n    services:\n      worker:\n        path: " + filepath.Join(elsewhere, "worker") + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "codefly.local.yaml"), []byte(overlay), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("codefly.local.yaml\n"), 0o600))
+	require.NoError(t, runGit(dir, "add", ".gitignore"))
+	require.NoError(t, runGit(dir, "commit", "-m", "ignore the overlay"))
+	require.NoError(t, runGit(dir, "push", "origin", "main"))
+
+	_, err := moduleEngine(t, dir, "patch").Release(context.Background())
+	require.NoError(t, err)
+	require.Contains(t, readRel(t, dir, "modules/payments/services/worker/service.codefly.yaml"), "version: 0.2.1 #")
+	outside, err := os.ReadFile(filepath.Join(elsewhere, "worker", "service.codefly.yaml"))
+	require.NoError(t, err)
+	require.Equal(t, plainServiceManifest, string(outside))
+}
+
+// A pinned module reference is another repository's release: its services
+// are skipped, and the release of this repository's own module goes ahead.
+func TestModuleReleaseSkipsAPinnedModule(t *testing.T) {
+	dir, _, _ := moduleAgentRepo(t, "0.2.0")
+	ws := filepath.Join(dir, "workspace.codefly.yaml")
+	require.NoError(t, os.WriteFile(ws, []byte("name: payments\nlayout: modules\nmodules:\n    - name: payments\n    - name: ledger\n      source: github.com/acme/module-ledger\n      version: 1.4.0\n"), 0o600))
+	require.NoError(t, runGit(dir, "commit", "-am", "compose a pinned module"))
+	require.NoError(t, runGit(dir, "push", "origin", "main"))
+
+	engine := moduleEngine(t, dir, "patch")
+	engine.DryRun = true
+	_, err := engine.Release(context.Background())
+	require.NoError(t, err)
 }

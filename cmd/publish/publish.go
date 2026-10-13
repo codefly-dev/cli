@@ -21,6 +21,7 @@
 package publish
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -46,7 +47,8 @@ type Mode string
 const (
 	// ModeAgent — service-agent or module-agent repo. Bumps
 	// agent.codefly.yaml; a module agent's release also sets every service
-	// its workspace composes to that version (includeModuleServices). Service
+	// its workspace composes and its package manifest to that version, and
+	// regenerates its contracts at it (includeModuleRelease). Service
 	// agents run release-grade CI and upload
 	// loader-compatible release assets. Module agents run source/build/audit
 	// CI and publish the immutable source tag their module package is built
@@ -132,6 +134,10 @@ func Detect(dir string) (*Manifest, error) {
 	}
 }
 
+// errNoVersion is readVersion's answer for a manifest with no `version`, as
+// distinct from one whose version is not semver.
+var errNoVersion = errors.New("manifest has no `version` field (or it is empty)")
+
 // readVersion parses the YAML's `version` field. We expect every
 // manifest shape to share the same top-level field name regardless
 // of whatever else they carry.
@@ -147,7 +153,7 @@ func readVersion(path string) (*semver.Version, error) {
 		return nil, fmt.Errorf("parse YAML: %w", err)
 	}
 	if probe.Version == "" {
-		return nil, fmt.Errorf("manifest has no `version` field (or it is empty)")
+		return nil, errNoVersion
 	}
 	v, err := semver.NewVersion(probe.Version)
 	if err != nil {
