@@ -226,19 +226,13 @@ document names is the account's. No workload serves or presents an
 application-level certificate: inside the cell every hop is plain HTTP, and
 the mesh (ztunnel mTLS) carries transport security and destination identity.
 
-**A solution's `frontend` block.** A module that ships a solution manifest
-declares, beside its entry service's `service.codefly.yaml`, the one file
-`solution.frontend.codefly.yaml` — the title, order, exposed module, host
-contract, dashboard and surfaces the host lists the solution under. The
-solution's runtime embeds the same file and serves its manifest route from it;
-the render reads it, strictly (an unknown key is refused by name, as the
-runtime refuses it at boot), straight into core's `frontend` block of the
-presence, inside the signed bytes, with no default for any field: a scalar
-the file omits is one the runtime refuses at boot and core refuses on the
-presence. A solution that declares no file is refused by name
-at render: the host activates a solution on a presence that carries the
-block, so a solution without one would be listed under nothing. A module
-never carries the block, and core refuses one on it.
+**A component's optional `frontend` block.** Modules and solutions both read
+`solution.frontend.codefly.yaml` beside their entry service. Core's
+`solutionhost.ParseFrontend` validates exactly the same fields and size bounds
+as the signed presence document. A missing file (or no entry service) means a
+headless component; an empty or malformed file refuses delivery. Native and
+rendered delivery carry the same block for both kinds. A module page does not
+change its shared tenancy or its per-organisation installation grants.
 
 The `delivery` ServiceAccount is the delivery Job's and nothing else's: a
 serving workload naming it is refused at render, since a deployment caller

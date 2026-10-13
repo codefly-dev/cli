@@ -700,12 +700,10 @@ func presenceInstanceOf(
 	instance := &SolutionInstance{Kind: solutionhost.KindModule, Name: module.Name, Alias: module.Name}
 	if declared != nil {
 		instance.Kind = solutionhost.KindSolution
-		// The solution's page, from the one file its runtime serves it from:
-		// a solution with none is refused here, where the file can be named,
-		// rather than listed by the host under nothing.
-		if instance.Frontend, err = solutionrun.DeclaredFrontend(context.Background(), module); err != nil {
-			return nil, "", err
-		}
+	}
+	// Both component kinds carry the same optional frontend declaration.
+	if instance.Frontend, err = solutionrun.DeclaredFrontend(context.Background(), module); err != nil {
+		return nil, "", err
 	}
 	instance.Package, instance.Version = opts.Package.ID, opts.Package.Version
 	instance.Modules = []SolutionModulePin{{Module: module.Name, Package: opts.Package.ID, Version: opts.Package.Version}}

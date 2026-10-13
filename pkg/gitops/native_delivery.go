@@ -179,9 +179,9 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	instance := &SolutionInstance{Kind: solutionhost.KindModule, Name: workload.Module.Name, Alias: workload.Module.Name, Package: manifest.ID, Version: manifest.Version}
 	if declared != nil {
 		instance.Kind = solutionhost.KindSolution
-		if instance.Frontend, err = solutionrun.DeclaredFrontend(ctx, workload.Module); err != nil {
-			return nil, err
-		}
+	}
+	if instance.Frontend, err = solutionrun.DeclaredFrontend(ctx, workload.Module); err != nil {
+		return nil, err
 	}
 	instance.Modules = []SolutionModulePin{{Module: workload.Module.Name, Package: manifest.ID, Version: manifest.Version}}
 	if instance.ReleaseDigest, err = releaseDigest(workload.Module.Dir()); err != nil {
