@@ -2772,6 +2772,18 @@ supply the inventory, since copying a full descriptor to each cannot prove which
 listener serves a method. A single endpoint keeps the full-descriptor default;
 restricted single listeners must also supply their inventory.
 
+A declared inventory also settles which proto **package** each endpoint's
+contract covers, which matters for a service that generates client stubs from
+another service's API. Those protos declare services in a foreign package and
+must sit in the owned tree for codegen to reach them, yet the endpoint does not
+serve them. Without an inventory such a tree is refused — `proto declares
+services in multiple packages …; a contract endpoint must be single-package` —
+for a contract that is in fact single-package. With one, candidate packages are
+scoped to those the inventory names. A service that declares no inventory is
+unaffected, and so is one whose inventory names no package the descriptor set
+declares a service in: the single-package rule and its diagnostics stand
+unchanged, rather than yielding an empty contract.
+
 This input is a stopgap for the released Core/agent endpoint report. In Core
 v0.18.0, `GrpcAPI.rpcs` is loaded from the service's shared proto, without
 listener filtering, while Connect is reported as `HttpAPI` with no RPC list.
