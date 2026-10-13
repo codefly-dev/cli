@@ -156,8 +156,7 @@ func (a NativeArtifact) Digest(root string) (solutionhost.ImageDigest, error) {
 		if err != nil {
 			return "", err
 		}
-		name := artifactName(root, path)
-		entries = append(entries, fmt.Sprintf("%d %s %s\n", len(name), name, digest))
+		entries = append(entries, manifestEntry(artifactName(root, path), digest))
 	}
 	// Sorted, so the agent's enumeration order is not part of the build, and
 	// de-duplicated, so naming a file twice is not a different build either.
@@ -173,6 +172,19 @@ func (a NativeArtifact) Digest(root string) (solutionhost.ImageDigest, error) {
 		hash.Write([]byte(entry))
 	}
 	return solutionhost.ImageDigest("sha256:" + hex.EncodeToString(hash.Sum(nil))), nil
+}
+
+// manifestEntry is one file in a closure manifest: the byte length of its
+// name, the name, and the sha256 of its content.
+//
+// The length comes first so the name is read by count rather than by looking
+// for a delimiter, and a file name may contain any byte but NUL — a newline
+// included. Written as plain delimited text, one file could spell out entries
+// of its own and two different closures would digest alike. Keep the encoding
+// self-delimiting: the length, one space, exactly that many bytes of name,
+// one space, then the fixed-width digest.
+func manifestEntry(name string, digest solutionhost.ImageDigest) string {
+	return fmt.Sprintf("%d %s %s\n", len(name), name, digest)
 }
 
 // startedBeside is the sources the agent named other than the executable
@@ -192,10 +204,18 @@ func (a NativeArtifact) startedBeside() []string {
 }
 
 // artifactName is a file's name in the digest manifest. root is already
-// resolved; the path is resolved here so a tree reached by two spellings of
-// the same directory is one build.
+// resolved, and the path's DIRECTORY is resolved here, so a tree reached by
+// two spellings of the same directory is one build.
+//
+// The file's own link is deliberately not followed. A virtualenv's
+// .venv/bin/python is a symlink to an interpreter outside the workspace, and
+// following it would name the build after wherever that interpreter happens
+// to live — so a homebrew revision, a pyenv rehash or a second developer's
+// machine would each produce a fresh build for a tree nobody changed. What
+// the workspace holds is the link, at a stable name, and fileDigest reads
+// through it for the content.
 func artifactName(root, path string) string {
-	path = resolved(path)
+	path = filepath.Join(resolved(filepath.Dir(path)), filepath.Base(path))
 	if root == "" {
 		return filepath.ToSlash(path)
 	}
@@ -207,8 +227,10 @@ func artifactName(root, path string) string {
 }
 
 // resolved is a path with its symlinks followed, or the cleaned path when it
-// cannot be followed — a name is still needed for a file that has just been
-// removed, and fileDigest is what reports that it cannot be read.
+// cannot be followed. The fallback is unreachable from Digest, which digests
+// a file's content before naming it and so has already refused a path that
+// cannot be read; it is here so a name exists rather than a panic if that
+// order ever changes.
 func resolved(path string) string {
 	if path == "" {
 		return ""

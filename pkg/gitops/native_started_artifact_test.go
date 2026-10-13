@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -160,6 +161,47 @@ func TestAClosureDigestDoesNotMoveWithTheCheckout(t *testing.T) {
 	require.Equal(t, there, other, "the run's spelling of the workspace changed the build")
 }
 
+// A virtualenv's interpreter is a symlink to a file outside the workspace,
+// and that is the normal python layout — `.venv/bin/python` points at
+// whatever interpreter uv or pyenv installed. The workspace holds the link at
+// a stable name, so the build must be named after the link. Following it
+// would make a homebrew revision bump, a pyenv rehash or simply another
+// developer's machine a new build for a tree nobody changed, which is the
+// spurious approval the workspace-relative naming exists to avoid.
+func TestAVirtualenvInterpreterIsNamedWhereTheWorkspaceHoldsIt(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "main.py")
+	require.NoError(t, os.WriteFile(source, []byte("app = None\n"), 0o600))
+	venv := filepath.Join(root, ".venv", "bin")
+	require.NoError(t, os.MkdirAll(venv, 0o755))
+	link := filepath.Join(venv, "python")
+	artifact := NativeArtifact{Executable: link, Sources: []string{source}}
+
+	// Two byte-identical interpreters, installed at different absolute paths.
+	digests := make([]solutionhost.ImageDigest, 0, 2)
+	for range 2 {
+		interpreter := filepath.Join(t.TempDir(), "python3.13")
+		require.NoError(t, os.WriteFile(interpreter, []byte("cpython 3.13"), 0o700))
+		require.NoError(t, os.RemoveAll(link))
+		require.NoError(t, os.Symlink(interpreter, link))
+		digest, err := artifact.Digest(root)
+		require.NoError(t, err)
+		digests = append(digests, digest)
+	}
+	require.Equal(t, digests[0], digests[1],
+		"the interpreter moved and its bytes did not, so the build must not have moved either")
+
+	// The content is still read through the link: a different interpreter is
+	// a different build.
+	other := filepath.Join(t.TempDir(), "python3.14")
+	require.NoError(t, os.WriteFile(other, []byte("cpython 3.14"), 0o700))
+	require.NoError(t, os.RemoveAll(link))
+	require.NoError(t, os.Symlink(other, link))
+	upgraded, err := artifact.Digest(root)
+	require.NoError(t, err)
+	require.NotEqual(t, digests[0], upgraded, "the interpreter changed and the build did not")
+}
+
 // A file the closure needs but the workspace does not hold — the interpreter
 // in /usr, a shared virtualenv — has only its absolute path for a name, and
 // that path is part of the build. Nothing may silently name it relative to
@@ -293,8 +335,7 @@ func closureManifestEntries(t *testing.T, root string, artifact NativeArtifact) 
 	for _, path := range append([]string{artifact.Executable}, artifact.Sources...) {
 		digest, err := fileDigest(path)
 		require.NoError(t, err)
-		name := artifactName(root, path)
-		entries = append(entries, fmt.Sprintf("%d %s %s\n", len(name), name, digest))
+		entries = append(entries, manifestEntry(artifactName(root, path), digest))
 	}
 	sort.Strings(entries)
 	return strings.Join(entries, "")
@@ -404,4 +445,47 @@ func TestANativeRunDeliversAServiceOnANonGoAgent(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotEqual(t, documents.Digest, rebuilt.Digest)
+}
+
+// The forgery case above pins one historical attack. This pins the property
+// behind it: whatever a file is called, one entry decodes back to exactly the
+// name and digest it was written from, so no name can be read as a name and a
+// digest belonging to some other file. A format change that keeps the earlier
+// case green but loses this — dropping the space after the length, say — is a
+// format two closures can again share a build under.
+func TestAManifestEntryDecodesBackToTheFileItNamed(t *testing.T) {
+	digest := solutionhost.ImageDigest("sha256:" + strings.Repeat("ab", 32))
+	names := []string{
+		"main.py",
+		"src/a b.py",                         // a space, where a delimiter would be
+		"a\n" + string(digest) + "  g",       // the forgery: a whole entry in a name
+		"12 main.py",                         // leads with digits and a space, like a length prefix
+		"",                                   // empty, which a count still states
+		"módulo/\t.py",                       // multi-byte and a tab: a length is bytes, not runes
+		strings.Repeat("deep/", 40) + "x.py", // long enough that the count is multi-digit
+	}
+	for _, name := range names {
+		entry := manifestEntry(name, digest)
+
+		// Decode exactly as the encoding promises: a decimal count, one
+		// space, that many BYTES of name, one space, the digest, a newline.
+		head, rest, found := strings.Cut(entry, " ")
+		require.True(t, found, "entry for %q has no length prefix", name)
+		length, err := strconv.Atoi(head)
+		require.NoError(t, err, "entry for %q does not open with a byte count", name)
+		require.LessOrEqual(t, length, len(rest))
+		decodedName, tail := rest[:length], rest[length:]
+		require.Equal(t, name, decodedName)
+		require.Equal(t, " "+string(digest)+"\n", tail, "entry for %q does not end in exactly its digest", name)
+	}
+
+	// And two different names never write the same entry, which is what
+	// "one closure, one digest" rests on.
+	seen := map[string]string{}
+	for _, name := range names {
+		entry := manifestEntry(name, digest)
+		previous, collided := seen[entry]
+		require.False(t, collided, "%q and %q write the same manifest entry", previous, name)
+		seen[entry] = name
+	}
 }

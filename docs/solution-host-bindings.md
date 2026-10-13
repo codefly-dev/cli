@@ -1230,13 +1230,21 @@ agent exec'd, and the files it handed that program.
   a newline cannot spell out entries of its own and let two different closures
   share one build. The manifest is opened with a **domain tag**, so an
   executable whose bytes happen to be a manifest is not read as that closure —
-  the two digest shapes never meet. And a name is taken **relative to the
-  workspace**, with the workspace and the reported path both resolved through
-  their symlinks first, so a tree known as `/var/...` and reported as
-  `/private/var/...` is one build and the same checkout digests the same
-  wherever it sits. A file outside the workspace, such as an interpreter in
-  `/usr`, is named by its absolute path — the only name it has, and part of
-  the build. The list is sorted and de-duplicated, so the agent's enumeration
+  the two shapes never meet by accident. (A deliberately crafted executable
+  still can: closing that would mean tagging the single-file digest too, and
+  then a compiled runtime's build would stop being the SHA-256 of its own
+  file. On a developer's own machine that is authority they already have.) And
+  a name is taken **relative to the workspace**, with the workspace and the
+  reported path's *directory* resolved through their symlinks, so a tree known
+  as `/var/...` and reported as `/private/var/...` is one build and the same
+  checkout digests the same wherever it sits. A file's own link is not
+  followed: `.venv/bin/python` points at whatever interpreter uv or pyenv
+  installed, and naming the build after that target would make a pyenv rehash
+  or another developer's machine a new build for an unchanged tree — the link
+  is what the workspace holds at a stable name, and its content is still read
+  through it. A file outside the workspace, such as an interpreter in `/usr`,
+  is named by its absolute path — the only name it has, and part of the
+  build. The list is sorted and de-duplicated, so the agent's enumeration
   order is not part of the build, and an agent that names the executable among
   its own sources describes the same process as one that leaves the list
   empty.
