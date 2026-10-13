@@ -1,0 +1,6 @@
+name: host-routes
+layout: modules
+modules:
+    - name: host
+    - name: docs
+    - name: wiki

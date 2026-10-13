@@ -1652,6 +1652,19 @@ func (runner *Runner) runtimeOverridesFor(own []*basev0.NetworkMapping) map[stri
 	for key, value := range self {
 		overrides[key] = value
 	}
+	// The host gateway's routes: the carriers of what composed solutions
+	// consume through it (hostRouteCarriers), derived like the self carrier
+	// and layered beneath the operator's --set for the same reason.
+	if runner.instance != nil {
+		routes, err := runner.world.hostRouteCarriers(context.Background(), runner.instance.Service, runner.selfNetworkAccess())
+		if err != nil {
+			wool.Get(context.Background()).In("Runner.runtimeOverridesFor").Warn(
+				"the host gateway's routes could not be derived; consumed modules answer 503 until this is fixed", wool.ErrField(err))
+		}
+		for key, value := range routes {
+			overrides[key] = value
+		}
+	}
 	for key, value := range runner.overrides {
 		overrides[key] = value
 	}

@@ -25,6 +25,7 @@ func installConfigurationResolvingAgents(t *testing.T) {
 		destination func(*resources.Module, *resources.Service) string,
 		record func(map[string]*builderv0.DeploymentOutput), recordServices func(map[string]*resources.Service),
 		recordEndpoints func(map[string]map[string]string),
+		_ func(map[string]map[string]string),
 		recordConfigurations func(map[string]*basev0.Configuration, map[string][]string),
 		recordPorts func(map[string]map[string]uint32),
 	) error {
