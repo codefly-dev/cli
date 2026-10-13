@@ -701,9 +701,15 @@ func presenceInstanceOf(
 	if declared != nil {
 		instance.Kind = solutionhost.KindSolution
 	}
-	// Both component kinds carry the same optional frontend declaration.
+	// Both component kinds carry the same frontend declaration; a module may
+	// be headless, a solution may not.
 	if instance.Frontend, err = solutionrun.DeclaredFrontend(context.Background(), module); err != nil {
 		return nil, "", err
+	}
+	if declared != nil {
+		if err = solutionrun.RequireSolutionFrontend(module, instance.Frontend); err != nil {
+			return nil, "", err
+		}
 	}
 	instance.Package, instance.Version = opts.Package.ID, opts.Package.Version
 	instance.Modules = []SolutionModulePin{{Module: module.Name, Package: opts.Package.ID, Version: opts.Package.Version}}

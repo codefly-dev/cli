@@ -49,11 +49,25 @@ func DeclaredFrontend(ctx context.Context, module *resources.Module) (*solutionh
 // parseFrontend hands the declared file to core's own reader: the same strict
 // decoder and frontend rules that admit the block on a presence, so accepting
 // the file here cannot disagree with signing it. An empty file is invalid to
-// core; an absent one is refused above, for a solution has no page without it.
-func parseFrontend(raw []byte, solution string) (*solutionhost.Frontend, error) {
+// core; an absent one is a headless component (DeclaredFrontend returns none),
+// and whether a kind may be headless is the producer's rule: a module may, a
+// solution may not (RequireSolutionFrontend).
+func parseFrontend(raw []byte, component string) (*solutionhost.Frontend, error) {
 	frontend, err := solutionhost.ParseFrontend(raw)
 	if err != nil {
-		return nil, fmt.Errorf("solution %s: %s: %w", solution, FrontendFileName, err)
+		return nil, fmt.Errorf("%s: %s: %w", component, FrontendFileName, err)
 	}
 	return frontend, nil
+}
+
+// RequireSolutionFrontend is the solution's rule over an absent declaration:
+// the host activates a solution only on a presence that carries the block,
+// and its runtime refuses to boot without the file, so a solution with none
+// is refused here by name rather than delivered as a page the host never
+// lists. A module needs no page and is left headless.
+func RequireSolutionFrontend(module *resources.Module, frontend *solutionhost.Frontend) error {
+	if frontend != nil {
+		return nil
+	}
+	return fmt.Errorf("solution %s declares no frontend: write %s beside %s/%s — the one source of the title, order, exposed module, host contract, dashboard and surfaces the host lists the solution under, which its runtime embeds and this render delivers in its presence", module.Name, FrontendFileName, module.ServiceEntry, resources.ServiceConfigurationName)
 }
