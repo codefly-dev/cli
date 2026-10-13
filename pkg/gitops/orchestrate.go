@@ -46,6 +46,9 @@ func renderModuleTree(
 	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
 		return RenderResult{}, err
 	}
+	if err := refuseAuthoredRenderConfigurations(ctx, workspace, env.Runtime()); err != nil {
+		return RenderResult{}, err
+	}
 	ownedPath, err := moduleOwnedPath(workspace, env, module.Name)
 	if err != nil {
 		return RenderResult{}, err
@@ -55,6 +58,11 @@ func renderModuleTree(
 	// destinations derived from it, the quota and the secret projections all
 	// take it from here.
 	scope := moduleScope(env, workspace, module.Name)
+	peers, err := resolveWorkloadPeers(ctx, workspace, env)
+	if err != nil {
+		return RenderResult{}, err
+	}
+	scope.WorkloadPeers = peers
 	// The host's delivery API is resolved before anything renders: a host block
 	// naming an endpoint the composition does not have is refused here, not
 	// after images are built.
@@ -166,7 +174,7 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 	}
 	if r.module.Agent != nil {
 		modulePath := filepath.Join(stage, moduleBundleDir)
-		if err = renderModuleBundle(ctx, r.workspace, r.module, r.env, modulePath, r.options.Units); err != nil {
+		if err = renderModuleBundle(ctx, r.workspace, r.module, r.env, modulePath, r.options.renderRoot, r.options.Units); err != nil {
 			return err
 		}
 		r.options.ModulePath = moduleBundleDir
@@ -313,7 +321,8 @@ func (r *moduleRender) inventoryUnits(
 		}
 		unique := resources.ServiceUnique(r.module.Name, service.Name)
 		if managed {
-			bootstrap, bundleErr := retainManagedBundle(
+			bootstrap, bundleErr := retainManagedBundleInTree(
+				r.options.renderRoot,
 				filepath.Join(stage, unitDir, service.Name),
 				service.Name,
 				r.env.Name,
@@ -335,7 +344,7 @@ func (r *moduleRender) inventoryUnits(
 				return fmt.Errorf("service %s returned no Kubernetes deployment evidence", service.Name)
 			}
 			if projectErr := projectServiceConfiguration(
-				ctx,
+				ctx, r.options.renderRoot,
 				filepath.Join(stage, unitDir, service.Name),
 				service,
 				r.env,
@@ -344,8 +353,13 @@ func (r *moduleRender) inventoryUnits(
 			); projectErr != nil {
 				return projectErr
 			}
-			if portsErr := verifyDeclaredEndpointPorts(
-				filepath.Join(stage, unitDir, service.Name),
+			check := workloadIdentityCheck{path: entry.Path, service: service, environment: r.env, scope: *r.scope}
+			if err := check.capture(r.options.renderRoot, stage); err != nil {
+				return err
+			}
+			r.options.workloadIdentityChecks = append(r.options.workloadIdentityChecks, check)
+			if portsErr := verifyDeclaredEndpointPortsInTree(
+				r.options.renderRoot, filepath.Join(stage, unitDir, service.Name),
 				r.env.Name,
 				r.module.Name,
 				service,
@@ -410,10 +424,13 @@ func (r *moduleRender) stageBootstrap(stage string) error {
 		return fmt.Errorf("module kustomize path is not a directory")
 	}
 	bootstrap := filepath.Join(stage, "bootstrap")
-	if err = copyEnvironmentBootstrap(static, r.env.Name, bootstrap); err != nil {
+	if err = r.options.renderRoot.inspect(bootstrap); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err = copyEnvironmentBootstrapInTree(r.options.renderRoot, static, r.env.Name, bootstrap); err != nil {
 		return fmt.Errorf("copy module environment bootstrap: %w", err)
 	}
-	if _, err = projectResourceQuota(bootstrap, r.env.Name, r.scope.Namespace, r.env.ResourceQuota); err != nil {
+	if _, err = projectResourceQuota(r.options.renderRoot, bootstrap, r.env.Name, r.scope.Namespace, r.env.ResourceQuota); err != nil {
 		return fmt.Errorf("project module namespace resource quota: %w", err)
 	}
 	return nil
@@ -445,26 +462,44 @@ func moduleRenderRoots(module string, services []*resources.Service) ([]*resourc
 }
 
 func copyEnvironmentBootstrap(source, environment, destination string) error {
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		return err
+	}
+	tree, err := newRenderRoot(destination)
+	if err != nil {
+		return err
+	}
+	defer tree.Close()
+	return copyEnvironmentBootstrapInTree(tree, source, environment, destination)
+}
+
+func copyEnvironmentBootstrapInTree(tree *renderRoot, source, environment, destination string) error {
+	inputs, err := newRenderRoot(source)
+	if err != nil {
+		return err
+	}
+	defer inputs.Close()
+	source = inputs.path
 	selected := filepath.Join(source, "overlays", environment)
-	info, err := os.Stat(selected)
+	info, err := inputs.stat(source, filepath.Join("overlays", environment))
 	if err != nil {
 		return fmt.Errorf("select environment overlay %q: %w", environment, err)
 	}
 	if !info.IsDir() {
 		return fmt.Errorf("environment overlay %q is not a directory", environment)
 	}
-	entries, err := os.ReadDir(source)
+	entries, err := inputs.readDir(source)
 	if err != nil {
 		return err
 	}
 	for _, entry := range entries {
 		sourcePath := filepath.Join(source, entry.Name())
 		destinationPath := filepath.Join(destination, entry.Name())
-		if entry.Name() == "overlays" {
+		if entry.Name() == overlaysDirectory {
 			sourcePath = selected
 			destinationPath = filepath.Join(destinationPath, environment)
 		}
-		if err := copyTree(sourcePath, destinationPath); err != nil {
+		if err := tree.copyFrom(inputs, sourcePath, destinationPath); err != nil {
 			return err
 		}
 	}
@@ -479,13 +514,19 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
 		return RenderResult{}, err
 	}
+	if err := refuseAuthoredRenderConfigurations(ctx, workspace, env.Runtime()); err != nil {
+		return RenderResult{}, err
+	}
+	if _, err := resolveWorkloadPeers(ctx, workspace, env); err != nil {
+		return RenderResult{}, err
+	}
 	serviceDir, _ := unitDirectory(UnitKindService)
 	destination := filepath.Join(workspace.Dir(), "deployments", "environments", env.Name, serviceDir, module.Name, service.Name)
 	pkg, err := modulePackage(module.Dir())
 	if err != nil {
 		return RenderResult{}, err
 	}
-	return RenderOwnedTree(ctx, &RenderOptions{
+	options := &RenderOptions{
 		Destination: destination,
 		Module:      module.Name,
 		Unit:        service.Name,
@@ -494,7 +535,8 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		AppProject:  project,
 		Promotable:  true,
 		Package:     pkg,
-	}, func(ctx context.Context, stage string) error {
+	}
+	return RenderOwnedTree(ctx, options, func(ctx context.Context, stage string) error {
 		// A configuration error refuses the render before any image is built or
 		// pushed.
 		if err := orchestration.PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{service}, build.standAlone); err != nil {
@@ -535,10 +577,10 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		if err := collectRenderTemplates(templates, deployed, secretKeys); err != nil {
 			return err
 		}
-		if err := projectRenderedServiceConfiguration(ctx, stage, workspace, env, graph, injections, templates); err != nil {
+		if err := projectRenderedServiceConfiguration(ctx, stage, workspace, env, graph, injections, templates, options); err != nil {
 			return err
 		}
-		return verifyGraphDeclaredEndpointPorts(stage, env, graph, inClusterPorts)
+		return verifyGraphDeclaredEndpointPorts(options.renderRoot, stage, env, graph, inClusterPorts)
 
 	})
 }
@@ -576,10 +618,14 @@ func moduleStageDestinations(workspace *resources.Workspace, module *resources.M
 }
 
 func serviceRenderDestinations(root string) func(*resources.Module, *resources.Service) string {
-	serviceDir, _ := unitDirectory(UnitKindService)
 	return func(module *resources.Module, service *resources.Service) string {
-		return filepath.Join(root, "modules", module.Name, serviceDir, service.Name)
+		return filepath.Join(root, serviceRenderPath(module.Name, service.Name))
 	}
+}
+
+func serviceRenderPath(module, service string) string {
+	serviceDir, _ := unitDirectory(UnitKindService)
+	return filepath.Join("modules", module, serviceDir, service)
 }
 
 // prepareSnapshotRegistry validates the environment's registry and, when it

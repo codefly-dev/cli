@@ -564,6 +564,7 @@ images:
 				Destination: filepath.Join(t.TempDir(), "owned"),
 				Module:      "payments", Environment: "production", Promotable: true,
 			}, func(ctx context.Context, root string) error {
+				writeTestApplication(t, root, "service-a", "service-a", "")
 				service := filepath.Join(root, "service-a")
 				if err := os.MkdirAll(service, 0o755); err != nil {
 					return err

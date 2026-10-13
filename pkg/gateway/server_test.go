@@ -12,7 +12,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	coreworkcontext "github.com/codefly-dev/core/workcontext"
 	"math"
 	"math/big"
 	"net"
@@ -23,6 +22,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	coreworkcontext "github.com/codefly-dev/core/workcontext"
 
 	"github.com/codefly-dev/cli/pkg/control"
 	"github.com/codefly-dev/cli/pkg/executionattestor"

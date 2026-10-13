@@ -961,12 +961,14 @@ EOF
 	if err != nil {
 		t.Fatal(err)
 	}
+	bundleDestination := t.TempDir()
 	err = renderModuleBundle(
 		ctx,
 		workspace,
 		module,
 		environment,
-		t.TempDir(),
+		bundleDestination,
+		testRenderRoot(t, bundleDestination),
 		promotableServiceGraph("payments", []string{"api"}),
 	)
 	if err == nil || !strings.Contains(err.Error(), "services [api auth-sidecar] differ from rendered in-cluster graph [api]") {
@@ -974,12 +976,14 @@ EOF
 	}
 
 	environment.Namespace = ""
+	bundleDestination = t.TempDir()
 	err = renderModuleBundle(
 		ctx,
 		workspace,
 		module,
 		environment,
-		t.TempDir(),
+		bundleDestination,
+		testRenderRoot(t, bundleDestination),
 		promotableServiceGraph("payments", []string{"api"}),
 	)
 	if err == nil || !strings.Contains(err.Error(), "requires an explicit namespace") {
@@ -988,12 +992,14 @@ EOF
 
 	environment.Namespace = "payments"
 	environment.Cluster = nil
+	bundleDestination = t.TempDir()
 	err = renderModuleBundle(
 		ctx,
 		workspace,
 		module,
 		environment,
-		t.TempDir(),
+		bundleDestination,
+		testRenderRoot(t, bundleDestination),
 		promotableServiceGraph("payments", []string{"api"}),
 	)
 	if err == nil || !strings.Contains(err.Error(), "requires an explicit cluster kind") {
@@ -1674,7 +1680,7 @@ func renderPublishFixtureWithModuleAgent(t *testing.T, workspace *resources.Work
 		if err := writePublishServiceFixture(stage, environmentName, name); err != nil {
 			return err
 		}
-		return renderModuleBundle(ctx, workspace, module, environment, filepath.Join(stage, "module"), graph)
+		return renderModuleBundle(ctx, workspace, module, environment, filepath.Join(stage, "module"), testRenderRoot(t, stage), graph)
 	})
 	if err != nil {
 		t.Fatal(err)

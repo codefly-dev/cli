@@ -139,3 +139,50 @@ func TestReadinessScopedToAnUnknownModule(t *testing.T) {
 	}
 	requireCode(t, report, codeModuleNotFound, "fail")
 }
+
+// On a local k3d environment the render supplies workload-identity and
+// module-authority per workload, so no configuration directory has to hold
+// them. Elsewhere their absence warns and leaves the service to decide whether
+// it can run without those values.
+func TestReadinessCountsRenderOwnedGroupsAsSuppliedOnlyOnLocalK3d(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		cluster string
+		status  string
+		message string
+	}{
+		{"local k3d", "    cluster:\n      kind: k3d\n      context: k3d-demo\n", "ok", "supplied per workload by the render"},
+		{"not k3d", "    cluster:\n      kind: eks\n      context: other\n", "warn", "supplied only by a local k3d or cell render; absent here"},
+		{"no cluster", "", "warn", "supplied only by a local k3d or cell render; absent here"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeTestWorkspace(t, map[string]string{
+				"workspace.codefly.yaml":                            "name: demo\nlayout: modules\nmodules:\n    - name: backend\nenvironments:\n  - name: local\n" + tc.cluster,
+				"modules/backend/module.codefly.yaml":               testModuleYAML("api"),
+				"modules/backend/services/api/service.codefly.yaml": testServiceYAML("api", "workload-identity", "module-authority"),
+			})
+			report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+			if report.Status != readinessStatusReady {
+				t.Fatalf("status = %q, want ready\n%s", report.Status, reportJSON(t, report))
+			}
+			requireNoCode(t, report, codeConfigurationMissing)
+			requireNoCode(t, report, codeConfigurationDirMissing)
+			for _, group := range []string{"workload-identity", "module-authority"} {
+				found := false
+				for _, check := range report.Checks {
+					if check.Name == "workspace configurations" && check.Status == tc.status &&
+						strings.Contains(check.Message, `"`+group+`"`) && strings.Contains(check.Message, tc.message) &&
+						strings.Contains(check.Message, "backend/api") {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("missing %s report for %s: %s", tc.status, group, reportJSON(t, report))
+				}
+			}
+			if dirExists(dir + "/configurations/local") {
+				t.Fatal("doctor created the missing configurations directory")
+			}
+		})
+	}
+}

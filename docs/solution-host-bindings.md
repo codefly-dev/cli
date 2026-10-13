@@ -881,7 +881,19 @@ receipts:
    v3.4.1 pinned by what cannot move: the manifest at the commit the tag names,
    its SHA-256 verified before anything is applied, and every image it runs
    rewritten to its digest (an image no digest pins refuses the install). An
-   Argo CD already there is used as it is. And the `platform-authority` namespace with its `delivery`
+   Argo CD already there is used as it is. The **SPIFFE workload issuer** is
+   installed when absent: cert-manager v1.21.2 and csi-driver-spiffe v0.15.0,
+   with the manifest hashes verified before applying anything and every image
+   pinned by digest. The default `certificaterequests-approver` controller is
+   disabled: only the SPIFFE approver may approve these requests. Existing
+   components are verified on every run, including CA reuse: every controller,
+   webhook, injector, driver and approver container must match the install image
+   pins, and the SPIFFE issuer and trust-domain arguments must match the reviewed
+   manifest. A mismatch refuses the run without patching those components. The
+   default approver must remain disabled even when the driver and CA are reused.
+   The run waits for cert-manager's webhook and its trust, provisions the CA and
+   ClusterIssuer, then waits for the driver DaemonSet and approver Deployment.
+   And the `platform-authority` namespace with its `delivery`
    ServiceAccount (no default token mounted), which a cell's platform
    provides and the rendered tree cannot: the authority AppProject admits
    ConfigMaps and Jobs there and nothing else. The modules' namespaces, which
@@ -941,6 +953,97 @@ install into), a `host` block, `host.developers`, and the gitops
 `fetch-repo-url` naming the fetch remote. The same steps stay available one by
 one: `deploy gitops render`, `deploy gitops publish --local`, and
 `deploy gitops remote up` with no module (the latest local promotion).
+
+**Workload identities (cli#958).** Every composed service declaring
+`workspace-configuration-dependencies: [workload-identity]` receives the CSI
+volume from `spiffe.csi.cert-manager.io`, mounted read-only at
+`/var/run/secrets/spiffe.io` into its authenticating container. The driver
+requests a certificate as the pod's ServiceAccount; the render emits a
+namespace Role and RoleBinding granting that account only `create` on
+`cert-manager.io/certificaterequests`. The gateway receives the same volume
+and RBAC when it declares the group.
+
+The environment must name `host.gateway: <module>/<service>`, the composed
+service that fronts solutions and serves the mint. The render resolves each
+module's namespace and Core's ServiceAccount name, verifies the rendered pod
+uses that account, and uses the same `EnvironmentHost.SPIFFEID` function as
+presence documents. A peer ConfigMap supplies `allowed-callers`, `mint-peers`
+and `gateway-peers`, mounted read-only at `/etc/codefly/workload-peers` without
+subPath so updates propagate. After Kustomize builds the overlay, configuration
+validation compares the effective peer ConfigMap, volumes, mounts and path
+variables with the composition plan; a patch that changes them refuses the
+render and names the resource. Each file contains the gateway's SPIFFE ID,
+one per line with a final newline. For the gateway itself, each file lists
+every explicit consumer's ID, including the gateway when it opts in.
+
+Promotion builds every applied overlay and requires each `(apiGroup, kind,
+namespace, name)` to occur exactly once across the whole tree. Missing or empty
+namespaces take the overlay namespace, then the environment's target namespace,
+before comparison. Each identity service's workloads, ServiceAccounts, RBAC and
+peer ConfigMap must also match its retained render byte for byte after canonical
+object encoding. A conflicting occurrence reports both source paths, even when
+the two objects are identical or a Kustomize prefix/suffix created the collision.
+The peer data and bindings remain checked against the composition plan.
+
+Filesystem access retains the staged render root, resolved once with
+`filepath.EvalSymlinks`. Every path component below it is checked with `Lstat`;
+symlinks in service directories, their parents, overlays or files refuse access.
+Kustomize uses the same confined filesystem for every read. Manifest updates replace the
+file atomically, so hard links cannot cause writes into another tree.
+
+The render supplies these derived values only to services declaring the group.
+It requires a declared local k3d cluster (`cluster.kind: k3d` and
+`cluster.context: k3d-<name>`), where the local run installs SVID issuance;
+other environments are refused before builds begin.
+
+| Key in `workload-identity` | Path |
+|---|---|
+| `TOKEN_FILE` | `/var/run/secrets/codefly/token` (the existing host-audience projection) |
+| `CERT_FILE` | `/var/run/secrets/spiffe.io/tls.crt` |
+| `KEY_FILE` | `/var/run/secrets/spiffe.io/tls.key` |
+| `TRUST_BUNDLE_FILE` | `/var/run/secrets/spiffe.io/ca.crt` |
+| `ALLOWED_CALLERS_FILE` | `/etc/codefly/workload-peers/allowed-callers` |
+| `MINT_PEERS_FILE` | `/etc/codefly/workload-peers/mint-peers` |
+| `GATEWAY_PEERS_FILE` | `/etc/codefly/workload-peers/gateway-peers` |
+
+Services declaring `module-authority` must also declare `workload-identity`.
+The render supplies this group per service, using the same resolved identity
+and composed module name as the presence document:
+
+| Key in `module-authority` | Rendered source |
+|---|---|
+| `PRINCIPAL` | The workload's SPIFFE ID |
+| `AUDIENCE` | The composed module's declared name |
+| `PROJECTION_AUDIENCE` | The environment's `host.audience` |
+| Secret `INTERNAL_TOKEN` | A reference to the existing `internal-auth` workspace secret `CODEFLY_INTERNAL_TOKEN` |
+
+Public values use `CODEFLY__WORKSPACE_CONFIGURATION__MODULE_AUTHORITY__<KEY>`
+in the service's bound ConfigMap. The secret uses
+`CODEFLY__WORKSPACE_SECRET_CONFIGURATION__MODULE_AUTHORITY__INTERNAL_TOKEN`
+with a `secretKeyRef` to
+`CODEFLY__WORKSPACE_SECRET_CONFIGURATION__INTERNAL_AUTH__CODEFLY_INTERNAL_TOKEN`
+in `secret-<service>`. The existing ExternalSecret projection delivers that
+key from the environment's service secret store; no token value is copied into
+the render. A missing workload identity, host audience or service secret store
+refuses the render. Both `workload-identity` and `module-authority` bypass the
+configuration manager, including composition-root inheritance in native runs:
+their values are projected per workload after the agent renders. An authored
+file for either group anywhere in the selected composition is refused, even
+when no service declares the group.
+
+The local ECDSA P-256 CA lives in the TLS Secret
+`cert-manager/csi-driver-spiffe-ca`; its certificate is also published as
+`ca.pem` in `cert-manager/spiffe-trust-bundle`. The ClusterIssuer
+`csi-driver-spiffe-ca` uses that Secret. The CA lasts 30 days and is reused
+until it has at most 24 hours left, when a run rotates it. Reuse reads only
+the public certificate; the private key is generated in memory, passed to
+Kubernetes through stdin, and never saved to a local file or logged. An
+externally provisioned issuer without this CA Secret is left to its owner.
+The driver's two trust-domain arguments use the validated `host.trust_domain`.
+The vendored CSI manifest and image pins live in
+`pkg/deployments/manifests`; `bash scripts/regenerate-spiffe-manifest.sh`
+reproduces it from the verified chart with Helm and reports the new digest
+for review in `pkg/deployments/local_spiffe.go`.
 
 **Local promotion is the developer's signed publish.** On a k3d environment
 whose host lists developers there is no reviewer: the developer is the author

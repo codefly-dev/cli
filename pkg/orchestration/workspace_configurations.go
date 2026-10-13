@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
@@ -20,6 +21,10 @@ import (
 //	  ∪ the groups the composition root provides run-wide
 //	    (core's GetCompositionRootWorkspaceConfigurations)
 //	  − the groups the selected run profile excludes
+//
+// Every path leaves render-owned groups to the per-workload projections, so
+// those declarations never become manager dependencies here. Outside a render
+// they supply no values; the service decides whether it can run without them.
 //
 // The rendered deployment is the source of truth for that set, and the local run
 // resolves the identical one. The two must not differ in either direction. A
@@ -65,6 +70,12 @@ func (world *World) workspaceConfigurationsFor(
 ) ([]*basev0.Configuration, error) {
 	declared := make([]string, 0, len(service.WorkspaceConfigurationDependencies))
 	for _, dependency := range service.WorkspaceConfigurationDependencies {
+		// Run, CI and deployment peers share this resolver. Only the render
+		// projects these groups per workload; asking Core for them here requires
+		// a file the render refuses, even when no render is involved.
+		if environments.RenderOwnedWorkspaceConfiguration(dependency) {
+			continue
+		}
 		if !world.excludedWorkspaceConfigurations[dependency] {
 			declared = append(declared, dependency)
 		}
@@ -628,7 +639,7 @@ func (world *World) workspaceProducers(ctx context.Context) (configurations.Prod
 
 // effectiveWorkspaceConfigurationGroups is the group set one service receives,
 // by name: the groups it declares unioned with the composition root's own,
-// minus the profile exclusions, each name once and in a stable order (declared
+// minus render-owned groups and profile exclusions, each name once (declared
 // first, then the root's, sorted). It is what a resolution must be planned
 // against — producer discovery above, and every check that follows.
 //
@@ -638,10 +649,14 @@ func (world *World) workspaceProducers(ctx context.Context) (configurations.Prod
 // A World built without that source names no root group; requireKnownRootGroup
 // is what keeps that from passing silently.
 func (world *World) effectiveWorkspaceConfigurationGroups(declared []string) []string {
-	effective := slices.Clone(declared)
+	effective := make([]string, 0, len(declared))
 	seen := make(map[string]bool, len(declared))
 	for _, group := range declared {
+		if environments.RenderOwnedWorkspaceConfiguration(group) || world.excludedWorkspaceConfigurations[group] || seen[group] {
+			continue
+		}
 		seen[group] = true
+		effective = append(effective, group)
 	}
 	// Cloned before sorting: the slice is the loader's own, shared by every
 	// resolution of the run, and sorting in place would reorder the loader's
@@ -651,7 +666,7 @@ func (world *World) effectiveWorkspaceConfigurationGroups(declared []string) []s
 	root := slices.Clone(world.compositionRootWorkspaceConfigurationGroups())
 	slices.Sort(root)
 	for _, group := range root {
-		if seen[group] || world.excludedWorkspaceConfigurations[group] {
+		if seen[group] || world.excludedWorkspaceConfigurations[group] || environments.RenderOwnedWorkspaceConfiguration(group) {
 			continue
 		}
 		seen[group] = true
@@ -697,7 +712,7 @@ func (world *World) requireRootGroupSource(declared []string) error {
 		own[group] = true
 	}
 	for _, info := range world.providedWorkspaceConfigurationInfos() {
-		if own[info.GetName()] {
+		if own[info.GetName()] || environments.RenderOwnedWorkspaceConfiguration(info.GetName()) {
 			continue
 		}
 		return fmt.Errorf("cannot resolve workspace configurations: this world was loaded with the group %q, which this service does not declare, but it has no composition-root group source, so it cannot tell whether that group is provided run-wide — and a root group it cannot name is one producer discovery never plans for, whose values go missing in silence. Bind World.compositionRootGroups as NewFlow does (configurations.Loader.CompositionRootWorkspaceConfigurationNames)",
@@ -1021,12 +1036,12 @@ func (world *World) workspaceConfigurationSeen(conf *basev0.Configuration, seen 
 }
 
 // workspaceConfigurationExcluded reports whether a resolved workspace
-// configuration is profile-excluded. Workspace configurations carry their name
-// on each Info (the Configuration.Origin is always "workspace"), and every Info
+// configuration is profile-excluded or render-owned. Workspace configurations
+// carry their name on each Info (the Configuration.Origin is always "workspace"), and every Info
 // in a given configuration shares that name.
 func (world *World) workspaceConfigurationExcluded(conf *basev0.Configuration) bool {
 	for _, info := range conf.Infos {
-		if world.excludedWorkspaceConfigurations[info.Name] {
+		if world.excludedWorkspaceConfigurations[info.Name] || environments.RenderOwnedWorkspaceConfiguration(info.Name) {
 			return true
 		}
 	}

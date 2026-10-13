@@ -1025,10 +1025,26 @@ type scopedConfiguration struct {
 // reference resolution.
 func checkConfigurationSources(ctx context.Context, ws *resources.Workspace, env *environments.Environment, serviceScoped bool, scope []*resources.Service, requiredBy map[string][]string, report *workspaceReadinessReport) ([]scopedConfiguration, *configurations.WorkspaceConfigurations) {
 	required := make([]string, 0, len(requiredBy))
+	var renderOwned []string
 	for name := range requiredBy {
+		// These groups belong to the render, which refuses authored files for
+		// them. Outside a render their absence is left to the service to judge.
+		if environments.RenderOwnedWorkspaceConfiguration(name) {
+			renderOwned = append(renderOwned, name)
+			continue
+		}
 		required = append(required, name)
 	}
 	sort.Strings(required)
+	sort.Strings(renderOwned)
+	for _, name := range renderOwned {
+		status, message := "warn", "supplied only by a local k3d or cell render; absent here"
+		if env.DeclaresLocalK3d() {
+			status, message = "ok", "supplied per workload by the render"
+		}
+		report.add("", "workspace configurations", status,
+			fmt.Sprintf("%q is %s (required by %s)", name, message, strings.Join(requiredBy[name], ", ")), "")
+	}
 
 	var toResolve []scopedConfiguration
 

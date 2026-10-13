@@ -26,6 +26,8 @@ import (
 type Driver interface {
 	// EnsureArgoCD installs Argo CD unless the cluster serves it already.
 	EnsureArgoCD(ctx context.Context) (installed bool, err error)
+	// EnsureWorkloadIssuer installs the local SPIFFE issuer when absent.
+	EnsureWorkloadIssuer(ctx context.Context) (installed bool, err error)
 	// EnsureDeliveryAccount provisions the authority namespace and its
 	// delivery account, which a cell's platform provides.
 	EnsureDeliveryAccount(ctx context.Context) error
@@ -63,11 +65,12 @@ type Delivery struct {
 
 // Report is what a run did.
 type Report struct {
-	ArgoCDInstalled  bool                   `json:"argoCDInstalled"`
-	ClusterAuthority string                 `json:"clusterAuthority"`
-	Published        []gitops.PublishResult `json:"published"`
-	Revision         string                 `json:"revision"`
-	Deliveries       []Delivery             `json:"deliveries"`
+	ArgoCDInstalled         bool                   `json:"argoCDInstalled"`
+	WorkloadIssuerInstalled bool                   `json:"workloadIssuerInstalled"`
+	ClusterAuthority        string                 `json:"clusterAuthority"`
+	Published               []gitops.PublishResult `json:"published"`
+	Revision                string                 `json:"revision"`
+	Deliveries              []Delivery             `json:"deliveries"`
 }
 
 // Check holds an environment to what a local cluster run needs before
@@ -114,6 +117,13 @@ func Run(ctx context.Context, env *environments.Environment, modules []string, d
 	report.ArgoCDInstalled = installed
 	if installed {
 		say("Installed Argo CD (%s) into the cluster", "argocd")
+	}
+	report.WorkloadIssuerInstalled, err = driver.EnsureWorkloadIssuer(ctx)
+	if err != nil {
+		return report, err
+	}
+	if report.WorkloadIssuerInstalled {
+		say("Installed the local SPIFFE workload issuer into the cluster")
 	}
 	if err = driver.EnsureDeliveryAccount(ctx); err != nil {
 		return report, err

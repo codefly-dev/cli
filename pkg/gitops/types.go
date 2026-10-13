@@ -220,6 +220,8 @@ type unitScope struct {
 	// nowhere else, so resolving one of its primitives has to consult this
 	// rather than EnvironmentServiceSecrets.
 	Managed map[string]environments.EnvironmentManagedService
+	// WorkloadPeers is the complete composition's resolved identity set.
+	WorkloadPeers workloadPeers
 }
 
 // moduleScope is the scope of every unit a module renders in an environment.
@@ -299,6 +301,10 @@ type RenderOptions struct {
 	// UndeclaredAuthority is why this render declares no authority, when the
 	// reason is the module's own.
 	UndeclaredAuthority string
+	// workloadIdentityChecks retain the composition's expectations across later
+	// projections, so validateTree judges the final overlay before promotion.
+	workloadIdentityChecks []workloadIdentityCheck
+	renderRoot             *renderRoot
 }
 
 func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKubernetesOutput {
