@@ -1202,13 +1202,78 @@ Three things it does, and why:
   it by projecting the token only after delivery. The workload waits for the
   token, and from then on the host answers "not established yet" until its
   registry has read the documents.
+- **The build is what the agent says it started.** The run asks no question of
+  the filesystem about where a workload's build lives, because the answer
+  differs per agent family and only the agent that started the process knows
+  it. See below.
+
+### The executable the run started
+
+A cell pins an OCI image manifest. A native run has no registry, so it pins
+what actually ran — and gets that from the agent, over
+`StartStatus.started_artifact` (`runtime-started-artifact/v1`): the program the
+agent exec'd, and the files it handed that program.
+
+- **A compiled runtime starts its own build.** The Go agents build a binary and
+  run it; that one file is the whole of what the process is. The build is its
+  SHA-256, which is what this has always been.
+- **An interpreted runtime starts an interpreter.** A `python-fastapi` service
+  runs `uv`/`python` over its own sources; hashing the interpreter would give
+  every python service on the machine the same build, and tell you nothing when
+  one of them changes. So the agent names the closure beside the interpreter —
+  the entrypoint, the modules it loads, the lock file pinning its dependencies
+  — and the build is the SHA-256 of a manifest listing each of those files with
+  its own SHA-256. Editing any of them is a different build.
+
+  Three things make that manifest say one thing only. Each entry is
+  **length-prefixed** (`<len> <name> <sha256>`), so a file whose name contains
+  a newline cannot spell out entries of its own and let two different closures
+  share one build. The manifest is opened with a **domain tag**, so an
+  executable whose bytes happen to be a manifest is not read as that closure —
+  the two shapes never meet by accident. (A deliberately crafted executable
+  still can: closing that would mean tagging the single-file digest too, and
+  then a compiled runtime's build would stop being the SHA-256 of its own
+  file. On a developer's own machine that is authority they already have.) And
+  a name is taken **relative to the workspace**, with the workspace and the
+  reported path's *directory* resolved through their symlinks, so a tree known
+  as `/var/...` and reported as `/private/var/...` is one build and the same
+  checkout digests the same wherever it sits. A file's own link is not
+  followed: `.venv/bin/python` points at whatever interpreter uv or pyenv
+  installed, and naming the build after that target would make a pyenv rehash
+  or another developer's machine a new build for an unchanged tree — the link
+  is what the workspace holds at a stable name, and its content is still read
+  through it. A file outside the workspace, such as an interpreter in `/usr`,
+  is named by its absolute path — the only name it has, and part of the
+  build. The list is sorted and de-duplicated, so the agent's enumeration
+  order is not part of the build, and an agent that names the executable among
+  its own sources describes the same process as one that leaves the list
+  empty.
+- **An agent that reports nothing is a refusal, not a guess.** The run names
+  the agent and the contract it must implement, and that workload is not
+  delivered — so a solution keeps waiting for its token rather than minting
+  against a build nobody vouched for. A reported path that is not absolute is
+  refused the same way: resolving it would open whatever file sat in the
+  terminal's working directory. The run used to read
+  `<service>/.cache/native/main` for every agent, which is the Go agents'
+  layout; a service on any other agent failed with a missing file and was never
+  delivered at all ([#989](https://github.com/codefly-dev/cli/issues/989)).
+  Until an agent adopts the contract, its workloads are refused by name.
+- **A workload with no host file has no shape here yet.** A service the run
+  starts in a container is still a peer the run would deliver, and its build is
+  an image digest rather than files on the developer's disk. The contract has
+  no form for that, so such a workload is refused like any other that reports
+  no artifact. It was never delivered before either — it has no
+  `.cache/native/main` — so nothing regresses, but the refusal names a
+  contract its agent cannot honestly satisfy.
 
 What is weaker than a cluster, stated rather than implied: the build a pod is
-said to run is the SHA-256 of the executable the run started, and the run is
+said to run is the SHA-256 of what the agent reported starting, and the run is
 both the party that says so and the party that signs the presence naming it.
-No kubelet is a second witness. That is the authority a developer already has
-over their own machine. The profile the host reads admits the developer's key
-only for the one CA it names, and that CA does not outlive the run.
+No kubelet is a second witness — and the agent is not one either: it is the
+same developer's machine reporting on itself. That is the authority a developer
+already has over their own machine. The profile the host reads admits the
+developer's key only for the one CA it names, and that CA does not outlive the
+run.
 
 ## Dev deployments
 

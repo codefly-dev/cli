@@ -27,7 +27,11 @@ When `go.mod` moves to a new core release line, update the `core` field in
 `go test ./pkg/conformance/...` before the full coverage and race gates.
 `TestMatrixCoreMatchesGoMod` refuses a stale declared version.
 
-The current pin is the released core `v0.19.4`. On top of `v0.19.2`, it adds
+The current pin is a `v0.19.5` pseudo-version of core, ahead of any tag: it
+carries the `runtime-started-artifact/v1` contract a native run reads a
+workload's build from (codefly-dev/core#796, codefly-dev/cli#989), which has no
+released core yet. Releasing a CLI on it requires core `v0.19.5` to be tagged
+first. On top of `v0.19.2`, `v0.19.4` adds
 the issuer's non-consuming `Authority.ReadBack` and moves kustomize back to
 `v0.21.1`, whose kube-openapi does not pull `structured-merge-diff/v7` (the
 `v0.21.3` that `v0.19.2` and `v0.19.3` carried broke every build compiling

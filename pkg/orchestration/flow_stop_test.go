@@ -45,6 +45,7 @@ func (m *recordingManager) RunnerDoBuild(context.Context) (*OutputProperty, erro
 func (m *recordingManager) RunnerDoLint(context.Context) (*OutputProperty, error)        { return nil, nil }
 func (m *recordingManager) RunnerDoTest(context.Context) (*OutputProperty, error)        { return nil, nil }
 func (m *recordingManager) RunnerTestResponse() *runtimev0.TestResponse                  { return nil }
+func (m *recordingManager) RunnerStartedArtifact() *runtimev0.StartedArtifact            { return nil }
 func (m *recordingManager) DoSetCallback(func(ctx context.Context, action Action) error) {}
 func (m *recordingManager) DoSetFailureSink(func(unique, msg string))                    {}
 
