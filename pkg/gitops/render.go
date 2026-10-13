@@ -1680,5 +1680,22 @@ func hostsDeliveryAPI(opts *RenderOptions) bool {
 // uniqueness never depends on this partial scope knowledge.
 func (item manifest) knownClusterScoped() bool {
 	apiVersion, _ := item.value[keyAPIVersion].(string)
-	return openapi.IsCertainlyClusterScoped(kyaml.TypeMeta{APIVersion: apiVersion, Kind: item.kind})
+	typeMeta := kyaml.TypeMeta{APIVersion: apiVersion, Kind: item.kind}
+	if _, known := openapi.IsNamespaceScoped(typeMeta); !known {
+		return clusterScopedKyamlForgets[typeMeta]
+	}
+	return openapi.IsCertainlyClusterScoped(typeMeta)
+}
+
+// clusterScopedKyamlForgets holds the cluster-scoped kinds kyaml v0.21.3 knows
+// and the pinned v0.21.1 does not. kustomize v0.21.3's kube-openapi requires
+// structured-merge-diff/v7, which breaks every client-go build, so core v0.19.4
+// holds kustomize at v0.21.1; without this table an admission policy would
+// read as namespaced and escape the AppProject's cluster-resource check.
+// It is consulted only when kyaml has no answer, and
+// TestKyamlStillForgetsTheAdmissionPolicyScopes fails once it has one, at which
+// point this table is deleted.
+var clusterScopedKyamlForgets = map[kyaml.TypeMeta]bool{
+	{APIVersion: "admissionregistration.k8s.io/v1", Kind: "ValidatingAdmissionPolicy"}:        true,
+	{APIVersion: "admissionregistration.k8s.io/v1", Kind: "ValidatingAdmissionPolicyBinding"}: true,
 }

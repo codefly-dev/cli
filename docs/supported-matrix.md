@@ -27,7 +27,11 @@ When `go.mod` moves to a new core release line, update the `core` field in
 `go test ./pkg/conformance/...` before the full coverage and race gates.
 `TestMatrixCoreMatchesGoMod` refuses a stale declared version.
 
-The current pin is the released core `v0.19.2`. On top of `v0.19.1`, it adds a
+The current pin is the released core `v0.19.4`. On top of `v0.19.2`, it adds
+the issuer's non-consuming `Authority.ReadBack` and moves kustomize back to
+`v0.21.1`, whose kube-openapi does not pull `structured-merge-diff/v7` (the
+`v0.21.3` that `v0.19.2` and `v0.19.3` carried broke every build compiling
+client-go). `v0.19.2` added a
 solution manifest's scoped `api.consumes` and its consumption contract (#784)
 and an issuer-assigned Work Context session (#783). `v0.19.1`
 verifies delivered carriers

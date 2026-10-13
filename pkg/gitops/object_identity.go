@@ -38,7 +38,9 @@ func validateObjectIdentities(documents []manifest, namespace string) error {
 		identities := []objectIdentity{id}
 		// Namespace-free output may be cluster-scoped. Index it globally as
 		// well as at its applying destination, without a brittle kind roster.
-		if metadataString(doc.value, keyNamespace) == "" && id.namespace != "" {
+		// A known cluster-scoped object is global even when a namespace
+		// transformer that did not know its scope stamped one on it.
+		if (metadataString(doc.value, keyNamespace) == "" || doc.knownClusterScoped()) && id.namespace != "" {
 			global := id
 			global.namespace = ""
 			identities = append(identities, global)
