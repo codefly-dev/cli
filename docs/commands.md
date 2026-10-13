@@ -3638,8 +3638,9 @@ packages, create local overlays, start agents, or render deployments.
 `codefly show selection` emits JSON containing the modules selected by Core's
 workspace loader, each module's declaration-owner directory, the resolved workspace
 import tree and the product's own environment names. It does not load module
-services or resolve configuration values. Local path imports work; release imports
-without host resolution fail explicitly. The output describes current declarations,
+services or resolve configuration values. Local path imports and already-cached
+exact release imports work. Missing releases and floating versions fail explicitly;
+inspection does not download imports or update the module cache. The output describes current declarations,
 not rendered artifacts, runtime or a complete input snapshot. Consumers must not
 apply a working-tree report to an immutable product commit.
 
@@ -3663,13 +3664,12 @@ Service overrides are flagged separately; cache paths and configuration values a
 not exported. Missing or unreadable receipts remain explicit.
 
 Source-only configuration reports also expose `configuration_decisions` for
-Core's executed `workspace-key-replaces-module-default`,
-`workspace-document-replaces-module-default`, `workspace-group-replaces-module-default`
-and `workspace-group-replaces-imported-group` rules. Records name the module or
+Core's generated `CONFIGURATION_RULE_*` values for workspace key, document and
+group replacements, including imported groups. Records name the module or
 workspaces and both sides' value-free file/key origins. `final` distinguishes a
 choice contributing to the collected result from an intermediate choice that was
-subsequently replaced. Derived profiles emit `profile-key-replaces-base-key`
-or `profile-document-replaces-base-document`, naming the selected profile and
+subsequently replaced. Derived profiles emit the corresponding profile key/document
+replacement enum values, naming the selected profile and
 one selected/shadowed key or document. Key replacement retains other inherited
 keys; document replacement is whole-document. Ambiguity decisions remain outside
 this partial precedence coverage. The report remains historical without full input binding.
@@ -3683,3 +3683,9 @@ metadata does not supply complete input binding or observed runtime values.
 Selection `manifest_path` is slash-separated and relative to the report root, including
 external `../` imports. Directory fields bind this local report to its checkout;
 its manifest digest covers the parsed declaration, not the full composition input set.
+
+Resolved source reports serialize groups, origins, decisions and profiles as arrays,
+including empty arrays. An empty inventory is meaningful only with
+`configuration_resolved: true` and accepted collection evidence; it is distinct
+from failed or unavailable collection. Workspace inspection uses cached exact
+release imports only, in normal doctor as well as source-only mode.

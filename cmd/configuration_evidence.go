@@ -84,10 +84,11 @@ func (r *workspaceReadinessReport) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(struct {
 		*envelope
-		Profiles  []json.RawMessage `json:"configuration_profiles,omitempty"`
-		Decisions []json.RawMessage `json:"configuration_decisions,omitempty"`
-		Origins   []json.RawMessage `json:"configuration_origins,omitempty"`
-	}{envelope: (*envelope)(r), Profiles: profiles, Decisions: decisions, Origins: origins})
+		Profiles  []json.RawMessage          `json:"configuration_profiles"`
+		Decisions []json.RawMessage          `json:"configuration_decisions"`
+		Origins   []json.RawMessage          `json:"configuration_origins"`
+		Groups    []configurationSourceGroup `json:"configuration_groups"`
+	}{envelope: (*envelope)(r), Profiles: profiles, Decisions: decisions, Origins: origins, Groups: append([]configurationSourceGroup{}, r.ConfigurationGroups...)})
 }
 
 func evidenceJSON[T proto.Message](messages []T) ([]json.RawMessage, error) {

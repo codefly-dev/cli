@@ -84,3 +84,16 @@ func TestSelectionUsesCanonicalInheritanceAndProductEnvironments(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(encoded), "configuration")
 }
+
+func TestSelectionCommandDoesNotAcquireMissingWorkspace(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	t.Setenv(composition.ModuleCacheEnv, cache)
+	t.Setenv("CODEFLY_HOME", filepath.Join(root, "home"))
+	t.Chdir(root)
+	require.NoError(t, os.WriteFile("workspace.codefly.yaml", []byte("name: product\nlayout: modules\nworkspaces:\n  - name: base\n    source: example/missing-inspection-fixture\n    version: '1.2.3'\n"), 0600))
+	err := SelectionCmd.RunE(SelectionCmd, nil)
+	require.ErrorContains(t, err, "not cached")
+	_, err = os.Stat(cache)
+	require.True(t, os.IsNotExist(err))
+}

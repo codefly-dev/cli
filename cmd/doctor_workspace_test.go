@@ -1114,6 +1114,9 @@ func TestDoctorWorkspaceFlagsMaterializationForADifferentRequest(t *testing.T) {
 	})
 	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
 	diag := requireCode(t, report, codeModuleResolutionStale, "warn")
+	if diag.Module != "saas" {
+		t.Fatalf("structured module identity lost: %+v", diag)
+	}
 	for _, want := range []string{"saas", "0.1.0", "9.9.9"} {
 		if !strings.Contains(diag.Message, want) {
 			t.Fatalf("diagnostic should name the module and both requests: %+v", diag)

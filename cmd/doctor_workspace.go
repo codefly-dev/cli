@@ -151,6 +151,7 @@ type workspaceReadinessOptions struct {
 // containers, or services. Secret references are resolved in memory through
 // the environment's configured backend and the values discarded immediately.
 func workspaceReadiness(ctx context.Context, opts *workspaceReadinessOptions) *workspaceReadinessReport {
+	ctx = composition.WithWorkspaceInspection(ctx)
 	if opts.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, opts.timeout)

@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
+	"github.com/codefly-dev/cli/pkg/composition"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -85,5 +88,45 @@ func TestConfigurationEvidenceJSONRetainsFalseMarkersFromGeneratedMessages(t *te
 	}
 	if _, ok := profile["layers"].([]any); !ok {
 		t.Fatalf("empty layers must remain an array: %s", encoded)
+	}
+}
+
+func TestReadinessDoesNotAcquireWorkspaceEvenWithExecutionResolver(t *testing.T) {
+	root := writeTestWorkspace(t, map[string]string{"workspace.codefly.yaml": "name: product\nlayout: modules\nworkspaces:\n  - name: base\n    source: example/missing-inspection-fixture\n    version: '1.2.3'\nenvironments:\n  - name: local\n"})
+	cache := filepath.Join(t.TempDir(), "cache")
+	t.Setenv(composition.ModuleCacheEnv, cache)
+	for _, sourceOnly := range []bool{false, true} {
+		report := workspaceReadiness(composition.WithWorkspaceResolver(context.Background()), &workspaceReadinessOptions{dir: root, env: "local", sourceOnly: sourceOnly})
+		checks := findDiagnostics(report, codeWorkspaceInvalid)
+		if len(checks) != 1 || !strings.Contains(checks[0].Message, "not cached") {
+			t.Fatalf("unexpected report: %+v", report)
+		}
+		if _, err := os.Stat(cache); !os.IsNotExist(err) {
+			t.Fatalf("inspection created cache: %v", err)
+		}
+	}
+}
+
+func TestSourceEvidenceResolvedEmptyArraysRemainExplicit(t *testing.T) {
+	dir := singleServiceWorkspace(t, testWorkspaceYAMLLocalDeclared, nil, map[string]string{"configurations/local/app.env": ""})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir, sourceOnly: true})
+	if !report.ConfigurationResolved {
+		t.Fatalf("not resolved: %+v", report)
+	}
+	raw, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data map[string]any
+	if err := json.Unmarshal(raw, &data); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"configuration_origins", "configuration_decisions", "configuration_groups", "configuration_profiles"} {
+		if _, ok := data[key].([]any); !ok {
+			t.Fatalf("%s is not an explicit array: %s", key, raw)
+		}
+	}
+	if len(data["configuration_origins"].([]any)) != 0 {
+		t.Fatalf("unexpected origins: %s", raw)
 	}
 }

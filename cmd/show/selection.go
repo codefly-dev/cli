@@ -23,8 +23,9 @@ var SelectionCmd = &cobra.Command{
 	Short: "Export composed module selections and their declaration owners as JSON",
 	Long: `Resolve the current workspace through Core and export module references,
 declaration-owner directories and product-owned environment names as JSON.
-Local workspace imports are supported. Release imports without an installed host
-resolver fail explicitly. No module services, configuration values or runtime
+Local workspace imports and already-cached exact release imports are supported.
+Missing releases and floating versions fail explicitly; inspection never downloads
+imports or updates the module cache. No module services, configuration values or runtime
 observations are collected. This is a point-in-time source report, not deployment
 or complete input-identity evidence. Standard workspace loading rules apply.`,
 	Args: cobra.NoArgs,
@@ -33,6 +34,7 @@ or complete input-identity evidence. Standard workspace loading rules apply.`,
 		defer restore()
 		ctx, done := common.NewContext()
 		defer done()
+		ctx = composition.WithWorkspaceInspection(ctx)
 		wool.Get(ctx).WithLogger(cli.GetLogger())
 		revision, _ := cmd.Flags().GetString("revision")
 		if revision != "" {

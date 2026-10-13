@@ -771,14 +771,28 @@ func pinnedManaged(ref *resources.ModuleReference, directive *resources.ModuleRe
 // — no network — when the checkout is already present, so a cached solution
 // boots offline.
 func ensurePinnedArtifact(ctx context.Context, ref *resources.ModuleReference, cacheRoot string) (string, string, error) {
+	return pinnedArtifact(ctx, ref, cacheRoot, true)
+}
+
+func pinnedArtifact(ctx context.Context, ref *resources.ModuleReference, cacheRoot string, acquire bool) (string, string, error) {
 	url := PinnedSourceURL(ref.Source)
 	sourceCache := filepath.Join(cacheRoot, filepath.FromSlash(ref.Source))
-	tag, err := resolvePinnedTag(ctx, url, ref.Version, sourceCache)
-	if err != nil {
-		return "", "", err
+	tag, exact := concretePinnedTag(ref.Version)
+	if !exact {
+		if !acquire {
+			return "", "", fmt.Errorf("inspection requires an exact workspace release, not %q; select an exact tag before inspecting", ref.Version)
+		}
+		var err error
+		tag, err = resolvePinnedTag(ctx, url, ref.Version, sourceCache)
+		if err != nil {
+			return "", "", err
+		}
 	}
 	checkout := filepath.Join(sourceCache, tag)
 	if !dirPopulated(checkout) {
+		if !acquire {
+			return "", "", fmt.Errorf("workspace release %s@%s is not cached; prepare it explicitly before inspecting", ref.Source, tag)
+		}
 		if err := clonePinnedArtifact(ctx, url, tag, cacheRoot, checkout, ref); err != nil {
 			return "", "", err
 		}
@@ -845,17 +859,34 @@ func resolvePinnedTag(ctx context.Context, url, version, sourceCache string) (st
 	if version == "" || version == latestVersion {
 		return highestTag(ctx, url, sourceCache, nil, version)
 	}
-	if _, err := semver.NewVersion(strings.TrimPrefix(version, "v")); err == nil {
-		if strings.HasPrefix(version, "v") {
-			return version, nil
-		}
-		return "v" + version, nil
+	if tag, exact := concretePinnedTag(version); exact {
+		return tag, nil
 	}
 	constraint, err := semver.NewConstraint(version)
 	if err != nil {
-		return version, nil
+		return "", err
 	}
+
 	return highestTag(ctx, url, sourceCache, constraint, version)
+}
+
+// concretePinnedTag shares exact-tag semantics between preparation and inspection.
+// A floating request must never silently become the highest locally cached tag.
+func concretePinnedTag(version string) (string, bool) {
+	version = strings.TrimSpace(version)
+	if version == "" || version == latestVersion {
+		return "", false
+	}
+	if _, err := semver.NewVersion(strings.TrimPrefix(version, "v")); err == nil {
+		if strings.HasPrefix(version, "v") {
+			return version, true
+		}
+		return "v" + version, true
+	}
+	if _, err := semver.NewConstraint(version); err == nil {
+		return "", false
+	}
+	return version, true
 }
 
 // highestTag returns the highest published tag on url satisfying constraint (any
