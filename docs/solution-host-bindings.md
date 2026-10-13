@@ -1007,6 +1007,34 @@ symlinks in service directories, their parents, overlays or files refuse access.
 Kustomize uses the same confined filesystem for every read. Manifest updates replace the
 file atomically, so hard links cannot cause writes into another tree.
 
+## Live endpoint delivery
+
+Presence names endpoints; it never supplies their addresses. Core's
+`codefly/endpoint-delivery/v1` projection carries the existing resolved carriers
+and the digest of the complete applied presence document. The gateway's SDK
+reader requires that digest to match before answering a route, including host,
+binding, generation, release and endpoint declarations. Missing, withdrawn,
+malformed or mismatched projections refuse routing without a startup-carrier
+fallback.
+
+A native run supplies the gateway one stable directory under its cluster state,
+`host/endpoint-delivery`. After signed delivery settles each generation, the run
+atomically replaces its projection through `Flow.EndpointDelivery`, reusing
+`hostRoutes`, visibility selection and `hostRouteCarrier`. Resolving one presence
+never waits for unrelated producers to allocate their endpoints. A tombstone
+removes that binding's projection. The directory is supplied once at gateway
+startup; later file replacements need no process restart.
+
+This is the reader and native writer contract. It does not yet establish adding
+an unseen component to a running workspace: native authority lifetime and graph
+extension still require integration. Production needs a protected publisher and
+stable whole-directory mount without `subPath`, an items allowlist or a checksum
+rollout. The initial host upgrade provisions that mount; subsequent component
+deliveries must leave the host pod unchanged. A presence/projection mismatch
+fails closed while publication retries. Addresses must select the admitted
+release. This projection does not prove frontend byte integrity; the rendered
+artifact digest remains distinct from the remote's runtime bytes.
+
 ## Mesh edges
 
 The cell's mesh decides who reaches a workload's port, and its protected
@@ -1022,21 +1050,43 @@ tree it applies.
 "meshEdges": {
   "schemaVersion": 1,
   "trustDomain": "cluster.example",
+  "gateway": "saas/auth-gateway",
   "edges": [
     {
       "module": "documents", "service": "api", "namespace": "cell-documents",
       "account": "api", "principal": "spiffe://cluster.example/ns/cell-documents/sa/api",
-      "endpoint": "grpc", "port": 9090,
+      "endpoint": "grpc", "port": 9090, "targetPort": 9090,
       "principals": ["spiffe://cluster.example/ns/cell-saas/sa/auth-gateway", "spiffe://cluster.example/ns/cell-wiki/sa/backend"]
     },
     {
       "module": "saas", "service": "auth-gateway", "namespace": "cell-saas",
       "account": "auth-gateway", "principal": "spiffe://cluster.example/ns/cell-saas/sa/auth-gateway",
-      "endpoint": "rest", "port": 8080, "ingress": true
+      "endpoint": "rest", "port": 8080, "targetPort": 3000, "ingress": true,
+      "renderedService": {
+        "name": "auth-gateway", "selector": {"app": "auth-gateway"},
+        "portName": "rest", "protocol": "TCP", "appProtocol": "http"
+      }
     }
   ]
 }
 ```
+
+The `gateway` reference is the composition's explicit host gateway. Each edge
+carries both `port` (the Service port) and `targetPort` (the resolved container
+port). Target ports come from the effective rendered Service, including its
+environment overlay and named-port resolution. Missing or ambiguous targets
+refuse the render. L4 policy uses the container port; Service-attached policy
+uses the Service port.
+
+Gateway edges additionally carry `renderedService`: actual Kubernetes name,
+selector, port name, protocol and `appProtocol`. Both `rest` and `workload`
+require a named TCP port with `appProtocol: http`, a non-empty selector and
+distinct container ports. An alternate Service publishing the same endpoint
+refuses the render. The CLI reads these facts from the effective Service;
+it does not derive a Kubernetes name from a logical reference. The protected
+cell reader compares them against its inventory and owns enrollment,
+HTTP presenter sanitization and bypass prevention. HTTP metadata alone is
+not authenticated presenter evidence.
 
 One edge per declared endpoint of each workload of the module, at the
 endpoint's in-cluster port (the one the render hands the service's agent to

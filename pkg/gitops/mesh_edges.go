@@ -62,6 +62,8 @@ type MeshEdges struct {
 	// TrustDomain is the mesh's SPIFFE trust domain every principal below is
 	// under: the environment's host.trust_domain.
 	TrustDomain string `json:"trustDomain"`
+	// Gateway is the composition's explicit logical gateway reference.
+	Gateway string `json:"gateway"`
 	// Edges are the endpoints reached, with who reaches them. Sorted by
 	// service then endpoint; each once.
 	Edges []MeshEdge `json:"edges"`
@@ -82,6 +84,12 @@ type MeshEdge struct {
 	// publish as its Kubernetes Service port.
 	Endpoint string `json:"endpoint"`
 	Port     uint32 `json:"port"`
+	// TargetPort is the container port resolved from the effective Service.
+	// L4 policy matches this port; Service-attached policy matches Port.
+	TargetPort uint32 `json:"targetPort"`
+	// RenderedService pins the actual HTTP Service traversed by the gateway's
+	// presenter waypoint. It is populated from the effective render, not names.
+	RenderedService *MeshRenderedService `json:"renderedService,omitempty"`
 	// Principals are the mesh principals admitted to the port, sorted, each
 	// once. Empty only when Ingress is set.
 	Principals []string `json:"principals,omitempty"`
@@ -89,6 +97,16 @@ type MeshEdge struct {
 	// public endpoint, reached by the cell's own edge whose principal the
 	// cell names.
 	Ingress bool `json:"ingress,omitempty"`
+}
+
+// MeshRenderedService is the Service evidence the protected mesh owner checks
+// against its inventory before admitting a presenter path.
+type MeshRenderedService struct {
+	Name        string            `json:"name"`
+	Selector    map[string]string `json:"selector"`
+	PortName    string            `json:"portName"`
+	Protocol    string            `json:"protocol"`
+	AppProtocol string            `json:"appProtocol"`
 }
 
 // meshComposition is what the composition says about every workload: the
@@ -175,7 +193,7 @@ func deriveMeshEdges(
 	env *environments.Environment,
 	module *resources.Module,
 	services []*resources.Service,
-	ports map[string]map[string]uint32,
+	ports, containerPorts map[string]map[string]uint32,
 ) (*MeshEdges, error) {
 	if env == nil || env.Host == nil {
 		return nil, nil
@@ -185,7 +203,7 @@ func deriveMeshEdges(
 		return nil, fmt.Errorf("derive the mesh edges of %s: %w", module.Name, err)
 	}
 	namespace := env.ModuleNamespace(workspace, module.Name)
-	record := &MeshEdges{SchemaVersion: MeshEdgesSchemaVersion, TrustDomain: env.Host.TrustDomain}
+	record := &MeshEdges{SchemaVersion: MeshEdgesSchemaVersion, TrustDomain: env.Host.TrustDomain, Gateway: env.Host.Gateway}
 	for _, service := range services {
 		if service == nil {
 			continue
@@ -213,10 +231,17 @@ func deriveMeshEdges(
 			if len(principals) == 0 && !ingress {
 				continue
 			}
+			targetPort := containerPorts[unique][endpoint.Name]
+			if targetPort == 0 {
+				return nil, fmt.Errorf("mesh endpoint %s/%s has no resolved container target port", unique, endpoint.Name)
+			}
+			if ingress && (unique != index.gateway || endpoint.Name != "rest") {
+				return nil, fmt.Errorf("mesh ingress may reach only the host gateway's rest endpoint, not %s/%s", unique, endpoint.Name)
+			}
 			record.Edges = append(record.Edges, MeshEdge{
 				Module: module.Name, Service: service.Name, Namespace: namespace,
 				Account: workloadAccount(service.Name), Principal: meshPrincipal(env.Host, namespace, service.Name),
-				Endpoint: endpoint.Name, Port: port, Principals: principals, Ingress: ingress,
+				Endpoint: endpoint.Name, Port: port, TargetPort: targetPort, Principals: principals, Ingress: ingress,
 			})
 		}
 	}

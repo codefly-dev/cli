@@ -166,7 +166,24 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 	}
 	// The edges into this module's workloads, from the ports the render
 	// learned: delivered in the record, for the cell's applier.
-	if r.options.MeshEdges, err = deriveMeshEdges(ctx, r.workspace, r.env, r.module, services, rendered.inClusterPorts); err != nil {
+	containerPorts := map[string]map[string]uint32{}
+	if r.env.Host != nil {
+		for _, unit := range r.options.Units {
+			if unit.Managed || unit.Path == "" {
+				continue
+			}
+			unique := resources.ServiceUnique(r.module.Name, unit.Name)
+			containerPorts[unique], err = renderedContainerPortsInTree(r.options.renderRoot,
+				filepath.Join(stage, unit.Path), r.env.Name, rendered.inClusterPorts[unique])
+			if err != nil {
+				return fmt.Errorf("derive mesh container ports for %s: %w", unique, err)
+			}
+		}
+	}
+	if r.options.MeshEdges, err = deriveMeshEdges(ctx, r.workspace, r.env, r.module, services, rendered.inClusterPorts, containerPorts); err != nil {
+		return err
+	}
+	if err = bindGatewayServiceEvidence(r.options.MeshEdges, r.options.renderRoot, stage, r.env.Name, r.options.Units); err != nil {
 		return err
 	}
 	if err = r.declareInstances(ctx, services); err != nil {

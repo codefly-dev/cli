@@ -271,6 +271,9 @@ func (cluster *nativeCluster) runtimeOverrides(service *resources.Service) map[s
 		out["SOLUTION_HOST_LOCAL_CLUSTER"] = cluster.hostServiceAccountDir
 		out["SOLUTION_HOST_LOCAL_TRUST_ANCHOR"] = cluster.hostAnchorDir
 	}
+	if unique == cluster.env.Host.Gateway {
+		out[resources.EndpointDeliveryDirectoryKey] = cluster.endpointDeliveryDirectory()
+	}
 	return out
 }
 
@@ -682,6 +685,9 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, identi
 		}
 		if err := cluster.persistDelivered(key, documents); err != nil {
 			return fmt.Errorf("%s: remember what was delivered: %w", key, err)
+		}
+		if err := cluster.projectEndpoints(ctx, documents.Presence); err != nil {
+			return fmt.Errorf("%s: project delivered endpoints: %w", key, err)
 		}
 		for _, receipt := range receipts {
 			w.Info("delivered", wool.Field("service", key), wool.Field("kind", receipt.Kind), wool.Field("disposition", receipt.Disposition), wool.Field("generation", receipt.Generation), wool.Field("envelope", revision))

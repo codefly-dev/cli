@@ -114,13 +114,13 @@ func TestMeshEdgesAreTheCompositionsDeclaredReach(t *testing.T) {
 
 	t.Run("a module endpoint admits its consumers and the gateway", func(t *testing.T) {
 		module, services := moduleServices(t, workspace, "app")
-		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports)
+		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports, ports)
 		require.NoError(t, err)
 		require.Equal(t, MeshEdgesSchemaVersion, edges.SchemaVersion)
 		require.Equal(t, "local.example", edges.TrustDomain)
 		require.Equal(t, []MeshEdge{{
 			Module: "app", Service: "api", Namespace: "example-app", Account: "api", Principal: api,
-			Endpoint: "grpc", Port: 9090,
+			Endpoint: "grpc", Port: 9090, TargetPort: 9090,
 			// Every workload of the consumer module, and the gateway the
 			// solution consumes through; the private admin endpoint has no
 			// edge at all.
@@ -129,33 +129,45 @@ func TestMeshEdgesAreTheCompositionsDeclaredReach(t *testing.T) {
 	})
 	t.Run("a solution's backend admits the gateway", func(t *testing.T) {
 		module, services := moduleServices(t, workspace, "wiki")
-		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports)
+		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports, ports)
 		require.NoError(t, err)
 		require.Equal(t, []MeshEdge{{
 			Module: "wiki", Service: "backend", Namespace: "example-wiki", Account: "backend", Principal: backend,
-			Endpoint: "http", Port: 8080, Principals: []string{gateway},
+			Endpoint: "http", Port: 8080, TargetPort: 8080, Principals: []string{gateway},
 		}}, edges.Edges)
 	})
 	t.Run("the gateway admits every workload on its workload port and the ingress on its public one", func(t *testing.T) {
 		module, services := moduleServices(t, workspace, "edge")
-		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports)
+		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports, ports)
 		require.NoError(t, err)
+		require.Equal(t, "edge/gateway", edges.Gateway)
 		require.Equal(t, []MeshEdge{
-			{Module: "edge", Service: "gateway", Namespace: "example-edge", Account: "gateway", Principal: gateway, Endpoint: "rest", Port: 8080, Ingress: true},
-			{Module: "edge", Service: "gateway", Namespace: "example-edge", Account: "gateway", Principal: gateway, Endpoint: "workload", Port: 8081, Principals: []string{api, worker, gateway, backend}},
+			{Module: "edge", Service: "gateway", Namespace: "example-edge", Account: "gateway", Principal: gateway, Endpoint: "rest", Port: 8080, TargetPort: 8080, Ingress: true},
+			{Module: "edge", Service: "gateway", Namespace: "example-edge", Account: "gateway", Principal: gateway, Endpoint: "workload", Port: 8081, TargetPort: 8081, Principals: []string{api, worker, gateway, backend}},
 		}, edges.Edges)
+	})
+	t.Run("service and container ports are independently carried", func(t *testing.T) {
+		module, services := moduleServices(t, workspace, "edge")
+		targets := map[string]map[string]uint32{"edge/gateway": {"rest": 3000, "workload": 3001}}
+		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports, targets)
+		require.NoError(t, err)
+		require.EqualValues(t, 8080, edges.Edges[0].Port)
+		require.EqualValues(t, 3000, edges.Edges[0].TargetPort)
+		delete(targets["edge/gateway"], "workload")
+		_, err = deriveMeshEdges(t.Context(), workspace, env, module, services, ports, targets)
+		require.ErrorContains(t, err, "no resolved container target port")
 	})
 	t.Run("no host, no mesh, no edges", func(t *testing.T) {
 		module, services := moduleServices(t, workspace, "app")
 		hostless := *env
 		hostless.Host = nil
-		edges, err := deriveMeshEdges(t.Context(), workspace, &hostless, module, services, ports)
+		edges, err := deriveMeshEdges(t.Context(), workspace, &hostless, module, services, ports, ports)
 		require.NoError(t, err)
 		require.Nil(t, edges)
 	})
 	t.Run("an endpoint with no in-cluster port is not in the cell", func(t *testing.T) {
 		module, services := moduleServices(t, workspace, "wiki")
-		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, map[string]map[string]uint32{})
+		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, map[string]map[string]uint32{}, nil)
 		require.NoError(t, err)
 		require.Empty(t, edges.Edges)
 	})
