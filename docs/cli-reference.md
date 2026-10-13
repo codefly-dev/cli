@@ -3037,6 +3037,7 @@ codefly install <subcommand>
 Subcommands:
 
 - [`codefly install library`](#codefly-install-library)
+- [`codefly install modules`](#codefly-install-modules)
 
 ## `codefly install library`
 
@@ -3060,6 +3061,25 @@ Flags:
 ```
       --destination string   Directory to run the native install command in (default: only print the resolved coordinates)
       --language string      Language export to install (go, python, typescript)
+```
+
+## `codefly install modules`
+
+Materialize the current workspace's selected modules without running services
+
+```
+Prepare all modules selected by workspace.codefly.yaml using the same package
+materializer, trust policy, local overrides and resolution receipts as codefly run.
+Writes the module cache and machine-local overlay/receipts; adds ignore entries
+when needed. User-managed path and worktree overrides remain selected.
+
+Does not start agents or services, resolve secret values, build images, or render
+or apply deployments. Returns an error if any selected module remains unloadable.
+A successful installation is not runtime readiness or configuration validation.
+```
+
+```
+codefly install modules [flags]
 ```
 
 ## `codefly lint`

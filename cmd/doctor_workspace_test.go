@@ -309,7 +309,7 @@ func TestDoctorWorkspaceReportsAModuleNotYetMaterialized(t *testing.T) {
 	if !strings.Contains(diag.Message, `module "saas" is declared but not materialized yet`) {
 		t.Fatalf("diagnostic should say precisely what is missing: %+v", diag)
 	}
-	for _, want := range []string{"codefly run", "codefly deploy gitops render"} {
+	for _, want := range []string{"codefly install modules", "without starting services or rendering deployments"} {
 		if !strings.Contains(diag.Remediation, want) {
 			t.Fatalf("remediation should name %s: %+v", want, diag)
 		}
