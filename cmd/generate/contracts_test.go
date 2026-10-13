@@ -543,7 +543,14 @@ func TestServiceContractPackage(t *testing.T) {
 	// protoDir holds the service's own files; imports buf pulls in live
 	// elsewhere and must be ignored even when they declare services.
 	protoDir := t.TempDir()
-	for _, rel := range []string{"saas/acct/v1/api.proto", "saas/shared/v1/types.proto"} {
+	// witness.proto stands for a client facade the service generates stubs from
+	// but does not serve. A subtest only sees it when its own descriptor set
+	// names it, so its presence here changes nothing for the others.
+	for _, rel := range []string{
+		"saas/acct/v1/api.proto",
+		"saas/shared/v1/types.proto",
+		"saas/policylog/v1/witness.proto",
+	} {
 		full := filepath.Join(protoDir, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			t.Fatal(err)
@@ -568,7 +575,7 @@ func TestServiceContractPackage(t *testing.T) {
 			// an import: has a service but is not one of the service's own files.
 			file("google/protobuf/descriptor.proto", "google.protobuf", true),
 		}}
-		pkg, err := serviceContractPackage(set, protoDir)
+		pkg, err := serviceContractPackage(set, protoDir, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -582,7 +589,7 @@ func TestServiceContractPackage(t *testing.T) {
 			file("saas/acct/v1/api.proto", "saas.acct.v1", false),
 			file("saas/shared/v1/types.proto", "saas.shared.v1", false),
 		}}
-		if _, err := serviceContractPackage(set, protoDir); err == nil {
+		if _, err := serviceContractPackage(set, protoDir, nil); err == nil {
 			t.Fatal("expected an error when no own file declares a service")
 		}
 	})
@@ -592,8 +599,64 @@ func TestServiceContractPackage(t *testing.T) {
 			file("saas/acct/v1/api.proto", "saas.acct.v1", true),
 			file("saas/shared/v1/types.proto", "saas.shared.v1", true),
 		}}
-		if _, err := serviceContractPackage(set, protoDir); err == nil {
+		if _, err := serviceContractPackage(set, protoDir, nil); err == nil {
 			t.Fatal("expected an error when services span multiple packages")
+		}
+	})
+
+	t.Run("a declared surface scopes the package, so a client facade in a foreign package is not a second contract package", func(t *testing.T) {
+		// The shape that sent this to a CLI issue: a service whose own tree
+		// carries BOTH its served API and a client facade for another
+		// service's API. The facade has to sit in the owned tree for codegen to
+		// reach it, and it declares a service in its own package, so the
+		// unscoped rule reports a multi-package endpoint for a contract that is
+		// in fact single-package. The declared surface already says which
+		// services the endpoint serves.
+		set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+			file("saas/acct/v1/api.proto", "saas.acct.v1", true),
+			file("saas/policylog/v1/witness.proto", "saas.policylog.v1", true),
+		}}
+		surface := []composition.APIContractService{
+			{Name: "AcctService", FullName: "saas.acct.v1.AcctService"},
+		}
+		pkg, err := serviceContractPackage(set, protoDir, surface)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if pkg != "saas.acct.v1" {
+			t.Fatalf("pkg = %q, want saas.acct.v1", pkg)
+		}
+		// Without the surface the same set is still refused, so the rule is
+		// scoped by a declaration rather than removed.
+		if _, err = serviceContractPackage(set, protoDir, nil); err == nil {
+			t.Fatal("expected the unscoped call to still refuse two service packages")
+		}
+	})
+
+	t.Run("a surface naming no declared package falls back to the unscoped diagnostics", func(t *testing.T) {
+		set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+			file("saas/acct/v1/api.proto", "saas.acct.v1", true),
+			file("saas/shared/v1/types.proto", "saas.shared.v1", true),
+		}}
+		surface := []composition.APIContractService{
+			{Name: "Absent", FullName: "saas.absent.v1.Absent"},
+		}
+		if _, err := serviceContractPackage(set, protoDir, surface); err == nil {
+			t.Fatal("expected the multi-package refusal rather than a silent empty contract")
+		}
+	})
+
+	t.Run("a surface whose service name carries no package qualifier narrows nothing", func(t *testing.T) {
+		set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+			file("saas/acct/v1/api.proto", "saas.acct.v1", true),
+		}}
+		surface := []composition.APIContractService{{Name: "Acct", FullName: "Acct"}}
+		pkg, err := serviceContractPackage(set, protoDir, surface)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if pkg != "saas.acct.v1" {
+			t.Fatalf("pkg = %q, want saas.acct.v1", pkg)
 		}
 	})
 
@@ -605,7 +668,7 @@ func TestServiceContractPackage(t *testing.T) {
 			file("acct/v1/api.proto", "saas.acct.v1", true),
 			file("shared/v1/types.proto", "saas.shared.v1", false),
 		}}
-		_, err := serviceContractPackage(set, protoDir)
+		_, err := serviceContractPackage(set, protoDir, nil)
 		if err == nil {
 			t.Fatal("expected an error when no descriptor file matches an own path")
 		}
