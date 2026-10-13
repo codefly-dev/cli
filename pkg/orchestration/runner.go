@@ -34,6 +34,11 @@ Runner is a wrapper around a runtime service instance to fit the outputProperty 
 - collects events from the service instance observability
 */
 type Runner struct {
+	// hostRoutesOnce derives the host gateway's route carriers once per runner
+	// (hostRoutes); hostRouteCarriersDerived holds them.
+	hostRoutesOnce           sync.Once
+	hostRouteCarriersDerived map[string]string
+
 	instance *services.Instance
 
 	// API
@@ -1655,15 +1660,8 @@ func (runner *Runner) runtimeOverridesFor(own []*basev0.NetworkMapping) map[stri
 	// The host gateway's routes: the carriers of what composed solutions
 	// consume through it (hostRouteCarriers), derived like the self carrier
 	// and layered beneath the operator's --set for the same reason.
-	if runner.instance != nil {
-		routes, err := runner.world.hostRouteCarriers(context.Background(), runner.instance.Service, runner.selfNetworkAccess())
-		if err != nil {
-			wool.Get(context.Background()).In("Runner.runtimeOverridesFor").Warn(
-				"the host gateway's routes could not be derived; consumed modules answer 503 until this is fixed", wool.ErrField(err))
-		}
-		for key, value := range routes {
-			overrides[key] = value
-		}
+	for key, value := range runner.hostRoutes() {
+		overrides[key] = value
 	}
 	for key, value := range runner.overrides {
 		overrides[key] = value
@@ -1677,6 +1675,31 @@ func (runner *Runner) runtimeOverridesFor(own []*basev0.NetworkMapping) map[stri
 		overrides[resources.NamingScopePrefix] = runner.world.Env.NamingScope
 	}
 	return overrides
+}
+
+// hostRoutes is the host gateway's route carriers for this run, derived once
+// per runner however many times its overrides are asked for. A run warns
+// rather than refuses: a route it cannot derive — a producer outside this run,
+// not addressed yet, or not reachable from the gateway's module — is named, and
+// the gateway starts with every other route; that module answers 503.
+func (runner *Runner) hostRoutes() map[string]string {
+	if runner == nil || runner.instance == nil || runner.world == nil {
+		return nil
+	}
+	runner.hostRoutesOnce.Do(func() {
+		ctx := context.Background()
+		w := wool.Get(ctx).In("Runner.hostRoutes")
+		carriers, problems, err := runner.world.hostRouteCarriers(ctx, runner.instance.Service, runner.selfNetworkAccess())
+		if err != nil {
+			w.Warn("the host gateway's routes are refused by the composition; every consumed module answers 503", wool.ErrField(err))
+			return
+		}
+		for _, problem := range problems {
+			w.Warn("the host gateway will not route this consumed endpoint; that module answers 503", wool.ErrField(problem))
+		}
+		runner.hostRouteCarriersDerived = carriers
+	})
+	return runner.hostRouteCarriersDerived
 }
 
 func (runner *Runner) WithOutputEnv(path string) {

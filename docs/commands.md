@@ -320,11 +320,15 @@ in a render at the producer's in-cluster address — and the gateway resolves th
 module through the Codefly SDK from it. No dependency edge is added: the gateway
 neither waits on nor builds a module. The derivation is the one every carrier
 uses (the producer's own mappings, judged by its declared visibility for the
-gateway's module), and a route with no single answer is refused naming it: a
-consume that names a module under another `as` (the host routes `/v1/<module>`),
-an endpoint the gateway's module may not reach, or two solutions reaching one
-module through different endpoints. A run whose producer has not been addressed
-yet warns and starts the gateway without that route.
+gateway's module). A composition with no single answer — a consume that names a
+module under another `as` (the host routes `/v1/<module>`), a module the
+workspace does not compose, or two solutions reaching one module through
+different endpoints — is refused naming it. One route that cannot be derived —
+an endpoint the gateway's module may not reach, a producer outside the run or
+not addressed yet, no address at the gateway's network access — is **refused in
+a render** (a committed tree never ships a gateway that answers that module
+503) and **warned in a run**, once, naming it: the gateway starts with every
+other route.
 
 A render delivers a service the **same workspace configuration groups** `codefly
 run` delivers it: the groups it declares under
