@@ -562,8 +562,15 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, peer g
 		}
 		services = append(services, loaded)
 	}
-	executable := filepath.Join(service.Dir(), ".cache", "native", "main")
-	digest, err := gitops.ExecutableDigest(executable)
+	// The build this run approves is what the agent says it started, never a
+	// path derived from one agent family's layout: a Go agent's binary and a
+	// python agent's interpreter-and-sources are not the same shape, and only
+	// the agent that started the process knows which it ran.
+	artifact, err := gitops.StartedArtifactOf(service, cluster.flow.StartedArtifact(unique))
+	if err != nil {
+		return err
+	}
+	digest, err := artifact.Digest(cluster.workspace.Dir())
 	if err != nil {
 		return err
 	}
@@ -603,7 +610,7 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, peer g
 	}
 	native := gitops.NativeWorkload{
 		Module: module, Service: service, Services: services, Namespace: namespace, Account: peer.Account,
-		SPIFFEID: peer.SPIFFEID, Subject: cluster.subject(peer), Executable: executable,
+		SPIFFEID: peer.SPIFFEID, Subject: cluster.subject(peer), Artifact: artifact,
 	}
 	rendered, err := deliverer.Render(ctx, &native)
 	if err != nil {

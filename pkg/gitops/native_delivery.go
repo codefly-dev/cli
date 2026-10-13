@@ -19,7 +19,10 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
+	"github.com/codefly-dev/core/agents/contract"
+	agentservices "github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/composition"
+	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
 )
@@ -29,9 +32,51 @@ import (
 // developer key, POSTed to the same route with a projected token the run's
 // own API server reviews — so the host's registry, mint and installation run
 // their one code path. What differs is the approved build: a cell pins an OCI
-// image manifest; a native run pins the sha256 of the executable it started,
-// which the run's API server reports as the pod's image, so the host's
-// approved-build check compares what it compares on a cell.
+// image manifest; a native run pins the sha256 of what the agent reports it
+// started, which the run's API server reports as the pod's image, so the
+// host's approved-build check compares what it compares on a cell.
+
+// NativeArtifact is what one agent reported it started, as the run digests it.
+// It is the agent's answer (runtime-started-artifact/v1), never a path the run
+// derived: the build a native run approves is what actually ran, and only the
+// agent that ran it knows where that is.
+type NativeArtifact struct {
+	// Executable is the program the agent started: the service's own binary
+	// for a compiled runtime, the interpreter or launcher for an interpreted
+	// one.
+	Executable string
+	// Sources are the files that, with the executable, identify what is
+	// running — an interpreted runtime's entrypoint, the modules it loads and
+	// its dependency lock. Empty for a compiled runtime.
+	Sources []string
+}
+
+// StartedArtifactOf reads what the agent reported it started for a service.
+//
+// An agent that reported nothing does not implement
+// runtime-started-artifact/v1, and that is where a native run stops: the build
+// it approves and signs is the one the process is at, so a path guessed from
+// some agent family's layout would be a claim about a file the run never saw
+// started. The refusal names the agent, because adopting the contract there is
+// the only thing that lifts it.
+func StartedArtifactOf(service *resources.Service, reported *runtimev0.StartedArtifact) (NativeArtifact, error) {
+	artifact, ok := agentservices.StartedArtifact(&runtimev0.StartStatus{StartedArtifact: reported})
+	if !ok {
+		return NativeArtifact{}, fmt.Errorf(
+			"agent %s reports no started artifact for %s: a native run approves the build the agent says it started, so the agent must implement %s",
+			agentOf(service), resources.WithUnique(service).Unique(), contract.RuntimeStartedArtifact)
+	}
+	return NativeArtifact{Executable: artifact.GetExecutable(), Sources: artifact.GetSources()}, nil
+}
+
+// agentOf names the agent a service runs on for a refusal; a service with no
+// agent declaration is named as such rather than as an empty string.
+func agentOf(service *resources.Service) string {
+	if service == nil || service.Agent == nil {
+		return "<none declared>"
+	}
+	return service.Agent.Identifier()
+}
 
 // NativeWorkload is one native process the run delivers presence for: the
 // module it belongs to, the service that is its serving workload, and the
@@ -46,8 +91,8 @@ type NativeWorkload struct {
 	// Subject is the principal the environment declares for the workload
 	// (service-identity), the identity the host expects.
 	Subject string
-	// Executable is the binary the agent started; its digest is the build.
-	Executable string
+	// Artifact is what the agent reported it started; its digest is the build.
+	Artifact NativeArtifact
 }
 
 // Repository names a native build's image repository: there is no registry,
@@ -56,13 +101,78 @@ func (w *NativeWorkload) Repository(workspace string) string {
 	return "native/" + strings.ToLower(workspace) + "/" + strings.ToLower(w.Module.Name) + "/" + strings.ToLower(w.Service.Name)
 }
 
-// ExecutableDigest is the sha256 of the started binary, in digest form.
-func ExecutableDigest(path string) (solutionhost.ImageDigest, error) {
+// Digest is the build a native run approves for what the agent started.
+//
+// A compiled runtime starts its own build, so the digest is the sha256 of that
+// one executable — what this has always been, and what keeps a Go workload's
+// build unchanged across this contract. An interpreted runtime starts an
+// interpreter that says nothing about the service, so the build is the closure
+// the agent named: the digest is taken over a manifest listing every file in
+// it with its own sha256, so editing a source is a different build and no
+// file's content can quietly take another's place.
+//
+// root makes the manifest's names stable: a file inside the workspace is named
+// relative to it, so the same tree digests the same wherever it is checked
+// out. A file outside — an interpreter in /usr, a cached virtualenv — is named
+// by its absolute path, which is the only name it has.
+func (a NativeArtifact) Digest(root string) (solutionhost.ImageDigest, error) {
+	if a.Executable == "" {
+		return "", errors.New("the agent reported no started executable")
+	}
+	if len(a.Sources) == 0 {
+		return fileDigest(a.Executable)
+	}
+	lines := make([]string, 0, len(a.Sources)+1)
+	for _, path := range append([]string{a.Executable}, a.Sources...) {
+		digest, err := fileDigest(path)
+		if err != nil {
+			return "", err
+		}
+		lines = append(lines, string(digest)+"  "+artifactName(root, path)+"\n")
+	}
+	// Sorted, so the agent's enumeration order is not part of the build, and
+	// de-duplicated, so naming a file twice is not a different build either.
+	sort.Strings(lines)
+	hash := sha256.New()
+	var previous string
+	for _, line := range lines {
+		if line == previous {
+			continue
+		}
+		previous = line
+		hash.Write([]byte(line))
+	}
+	return solutionhost.ImageDigest("sha256:" + hex.EncodeToString(hash.Sum(nil))), nil
+}
+
+// artifactName is a file's name in the digest manifest.
+func artifactName(root, path string) string {
+	if root == "" {
+		return filepath.ToSlash(path)
+	}
+	relative, err := filepath.Rel(root, path)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return filepath.ToSlash(path)
+	}
+	return filepath.ToSlash(relative)
+}
+
+// fileDigest is the sha256 of one started file, in digest form. It reads a
+// regular file only: a directory is the agent declining to say what its
+// closure contains, which is not for the run to decide.
+func fileDigest(path string) (solutionhost.ImageDigest, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return "", fmt.Errorf("read the started executable: %w", err)
+		return "", fmt.Errorf("read %s, which the agent reported starting: %w", path, err)
 	}
 	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("the agent reported %s as started, and it is not a regular file: an agent names the files it ran, never a directory for the run to walk", path)
+	}
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
 		return "", err
@@ -113,7 +223,7 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	if revision == 0 {
 		revision = 1
 	}
-	digest, err := ExecutableDigest(workload.Executable)
+	digest, err := workload.Artifact.Digest(d.Workspace.Dir())
 	if err != nil {
 		return nil, err
 	}

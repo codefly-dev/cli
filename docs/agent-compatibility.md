@@ -123,3 +123,22 @@ response naming any other profile is refused, and the local-apply profile is
 the one documented exemption from restricted-rendering evidence, because it
 produces no promotable artifact and nothing persists it.
 
+**A native run's workload states what it started.** A `codefly run` of a
+composition whose environment declares a `host` signs a presence document
+naming the build each workload is at. There is no registry, so the build is
+the SHA-256 of what ran — and only the agent that ran it knows where that is:
+a Go agent starts a binary it built, a `python-fastapi` agent starts an
+interpreter over its own sources. The agent reports both on
+`StartStatus.started_artifact` (`runtime-started-artifact/v1`): the program it
+exec'd, and the files it handed that program.
+
+An agent that reports none is refused by name, and that workload is not
+delivered — a solution then keeps waiting for the token the run withholds
+until delivery, rather than minting against a build nobody vouched for. The
+CLI used to read `<service>/.cache/native/main` whatever the agent, which is
+one agent family's layout, so every other agent's service failed on a missing
+file ([#989](https://github.com/codefly-dev/cli/issues/989)). Adopting the
+contract in the agent is the only thing that lifts the refusal; no CLI-side
+table of per-agent layouts replaces it. See
+[delivery documents](solution-host-bindings.md#the-executable-the-run-started).
+

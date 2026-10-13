@@ -74,17 +74,38 @@ destinations:
     kind: module
 `
 
+// shopPackageManifest is the release module "shop" names, in the one shape a
+// reader accepts: a presence document quotes its id and version.
+const shopPackageManifest = `kind: module-package
+schema: codefly/module-package/v2
+id: acme/shop
+version: 1.2.0
+minimum-codefly-version: ">=0.0.0"
+artifact-roots:
+  - services
+contracts:
+  composition: ">=1.0"
+`
+
 // writeAuthorityWorkspace lays down a workspace composing module "shop" whose
 // service "api" declares module-identity, publishing a contract, with the
 // configuration the contract's slots resolve from.
 func writeAuthorityWorkspace(t *testing.T) (*resources.Workspace, *resources.Module) {
 	t.Helper()
+	return writeAuthorityWorkspaceRunning(t, exposedHostedServiceYAML("api", "shop")+"module-identity: true\n")
+}
+
+// writeAuthorityWorkspaceRunning is writeAuthorityWorkspace with the service
+// declaration supplied, so a case about which agent runs "api" states that
+// rather than re-laying the whole composition beside it.
+func writeAuthorityWorkspaceRunning(t *testing.T, service string) (*resources.Workspace, *resources.Module) {
+	t.Helper()
 	workspace := writeHostedWorkspace(t)
 	files := map[string]string{
 		filepath.Join("modules", "shop", resources.ModuleConfigurationName):                     "kind: module\nname: shop\nservices:\n  - name: api\n",
-		filepath.Join("modules", "shop", "services", "api", resources.ServiceConfigurationName): exposedHostedServiceYAML("api", "shop") + "module-identity: true\n",
+		filepath.Join("modules", "shop", "services", "api", resources.ServiceConfigurationName): service,
 		filepath.Join("modules", "shop", modulecontract.FileName):                               authorityContract,
-		filepath.Join("modules", "shop", "module.package.codefly.yaml"):                         "schema: codefly/module-package/v1\nid: acme/shop\nversion: 1.2.0\n",
+		filepath.Join("modules", "shop", "module.package.codefly.yaml"):                         shopPackageManifest,
 		filepath.Join("configurations", "staging", "assistant.env"):                             "MODEL_AUDIENCE=model-gateway\nMODEL_RESOURCE_KIND=modelservice.profiles\nANNOTATIONS_PREFIX=annotations\n",
 	}
 	for rel, content := range files {
