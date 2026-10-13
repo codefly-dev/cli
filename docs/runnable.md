@@ -176,9 +176,14 @@ environments:
   `runnable-bindings.env`, and it receives no authority;
 - every other derived operation still prepares, so one operation the
   composition cannot answer no longer fails every binding with it;
-- the file records the decline as a comment line naming the key, generation
-  output names it, and `codefly doctor workspace --env <env>` reports it as a
-  `runnable_binding_declined` warning.
+- the file records the decline as a comment line naming the key — and no
+  environment, since the file belongs to a configuration profile several
+  environments may share, so two of them that resolve the same addresses and
+  decline the same key write the same bytes and `--check` agrees for both —
+  generation output names it, and `codefly doctor workspace --env <env>`
+  reports it as a `runnable_binding_declined` warning. The doctor judges each
+  decline with the rule generation applies: a decline generation refuses (see
+  below) is a `runnable_binding_decline_invalid` failure, never a warning.
 
 Only `[]` declines. An absent key is still refused exactly as before, so
 nothing is ever skipped by omission; a null value (`KEY:` or `KEY: ~`) is

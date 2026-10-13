@@ -157,7 +157,6 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	}
 
 	checkProviderBindings(ctx, ws, env, report)
-	checkRunnableBindingDeclines(env, report)
 
 	resolvers, unavailable := checkSecretProviders(env, report)
 
@@ -169,6 +168,10 @@ func workspaceReadiness(ctx context.Context, opts workspaceReadinessOptions) *wo
 	if !materialized {
 		return report
 	}
+
+	// Judging a decline reads the operations each module derives, so it sits
+	// behind the materialization gate like every other check that loads them.
+	checkRunnableBindingDeclines(ctx, ws, env, report)
 
 	scope, requiredBy := checkScope(ctx, ws, opts.module, opts.service, report)
 	if scope == nil {
@@ -1593,6 +1596,7 @@ service_override_active, service_override_unresolved,
 service_override_contract_drift, agent_override_active,
 agent_override_invalid, gitops_dev_deployment_active,
 agent_dev_build, runnable_binding_declined,
+runnable_binding_decline_invalid,
 configuration_directory_missing, configuration_missing,
 configuration_invalid, configuration_duplicate, provider_not_configured,
 provider_executable_missing, provider_authentication_required,

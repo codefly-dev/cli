@@ -216,9 +216,8 @@ func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace
 			}
 			derivedKeys[key] = true
 			if env.DeclinesRunnableBinding(key) {
-				if operation.Operation == nil || len(operation.Operation.RequiredScopeSlots) == 0 {
-					return nil, fmt.Errorf("environment %s runnable-scope-selections[%s] in workspace.codefly.yaml is [], which declines the binding, but module %s operation %s declares no required scope slot: there is nothing to decline; remove the entry",
-						env.Name, key, module.Name, operation.Entry.Name)
+				if err := declinableOperation(env, key, module.Name, operation); err != nil {
+					return nil, err
 				}
 				declined = append(declined, key)
 				continue
@@ -239,7 +238,7 @@ func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace
 	}
 	for _, key := range sortedKeys(env.RunnableScopeSelections) {
 		if !derivedKeys[key] {
-			return nil, fmt.Errorf("environment %s runnable-scope-selections[%s] names no derived operation", env.Name, key)
+			return nil, unknownSelectionKey(env, key)
 		}
 	}
 	sort.Strings(declined)
@@ -251,7 +250,7 @@ func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace
 	var out strings.Builder
 	out.WriteString(runnableBindingsFileHeader)
 	for _, key := range declined {
-		out.WriteString(declinedBindingComment(env.Name, key))
+		out.WriteString(declinedBindingComment(key))
 	}
 	for _, key := range keys {
 		out.WriteString(key + "=" + lines[key] + "\n")
@@ -259,9 +258,83 @@ func prepareRunnableBindings(ctx context.Context, workspace *resources.Workspace
 	return &preparedRunnableBindings{content: []byte(out.String()), count: len(lines), declined: declined}, nil
 }
 
-// declinedBindingComment is the line the file carries for a declined key.
-func declinedBindingComment(env, key string) string {
-	return fmt.Sprintf("# %s: declined by environment %s (runnable-scope-selections: []); no binding, no authority\n", key, env)
+// declinedBindingComment is the line the file carries for a declined key. It
+// names no environment: the file belongs to a configuration profile, which
+// several environments may share, and a decline is a fact about the key. Two
+// environments that bind the same addresses and decline the same keys must
+// write the same bytes, or `--check --env B` reports drift right after
+// generating for A.
+func declinedBindingComment(key string) string {
+	return fmt.Sprintf("# %s: declined (runnable-scope-selections: []); no binding, no authority\n", key)
+}
+
+// declinableOperation is the one rule a decline is held to, by generation and
+// by `codefly doctor workspace` alike: only an operation that declares a
+// required scope slot can be declined. One with none has nothing to decline,
+// and an empty list there would hide a typo.
+func declinableOperation(env *environments.Environment, key, module string, operation *runnablespkg.Derived) error {
+	if operation.Operation == nil || len(operation.Operation.RequiredScopeSlots) == 0 {
+		return fmt.Errorf("environment %s runnable-scope-selections[%s] in workspace.codefly.yaml is [], which declines the binding, but module %s operation %s declares no required scope slot: there is nothing to decline; remove the entry",
+			env.Name, key, module, operation.Entry.Name)
+	}
+	return nil
+}
+
+// unknownSelectionKey refuses a selection key no module of the workspace
+// derives an operation for.
+func unknownSelectionKey(env *environments.Environment, key string) error {
+	return fmt.Errorf("environment %s runnable-scope-selections[%s] names no derived operation", env.Name, key)
+}
+
+// RunnableBindingDecline is one key an environment declines, judged against
+// the operations the workspace's modules derive.
+type RunnableBindingDecline struct {
+	Key string
+	// Refusal is why generation would refuse the decline — it names no derived
+	// operation, or one with no required scope slot — or nil when the decline
+	// is one generation honours.
+	Refusal error
+}
+
+// CheckRunnableBindingDeclines judges every key env declines exactly as
+// `generate runnable-bindings` does, without resolving an address or
+// preparing a binding: it reads only each module's derived operations. The
+// error is for a module whose derived operations cannot be read at all, which
+// generation refuses too.
+func CheckRunnableBindingDeclines(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) ([]RunnableBindingDecline, error) {
+	keys := env.DeclinedRunnableBindings()
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	modules, err := workspace.LoadModules(ctx)
+	if err != nil {
+		return nil, err
+	}
+	refusals := map[string]error{}
+	derivedKeys := map[string]bool{}
+	for _, module := range modules {
+		derived, err := runnablespkg.LoadDerivedOperations(module.Dir())
+		if err != nil {
+			return nil, fmt.Errorf("module %s: %w", module.Name, err)
+		}
+		for i := range derived {
+			operation := &derived[i]
+			key := RunnableBindingKey(module.Name, operation.Entry.Name)
+			derivedKeys[key] = true
+			if env.DeclinesRunnableBinding(key) {
+				refusals[key] = declinableOperation(env, key, module.Name, operation)
+			}
+		}
+	}
+	declines := make([]RunnableBindingDecline, 0, len(keys))
+	for _, key := range keys {
+		decline := RunnableBindingDecline{Key: key, Refusal: refusals[key]}
+		if !derivedKeys[key] {
+			decline.Refusal = unknownSelectionKey(env, key)
+		}
+		declines = append(declines, decline)
+	}
+	return declines, nil
 }
 
 // RunnableBindingKey is the configuration key an operation is bound under:

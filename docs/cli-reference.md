@@ -2412,6 +2412,7 @@ service_override_active, service_override_unresolved,
 service_override_contract_drift, agent_override_active,
 agent_override_invalid, gitops_dev_deployment_active,
 agent_dev_build, runnable_binding_declined,
+runnable_binding_decline_invalid,
 configuration_directory_missing, configuration_missing,
 configuration_invalid, configuration_duplicate, provider_not_configured,
 provider_executable_missing, provider_authentication_required,
@@ -3690,7 +3691,6 @@ Requires the gh CLI to be authenticated.
 
 Module-agent repos run source/build/audit CI and publish the immutable Git tag
 their module package is built from; they do not publish service-loader assets.
-
 The module's version is its services' version: the release commit also sets the
 top-level version: of every service.codefly.yaml the module's workspace composes
 (the value Codefly hands each service as CODEFLY__SERVICE_VERSION), so a released
@@ -3699,6 +3699,7 @@ release version is refused — a release never moves a version backwards. The
 module package manifest (module.package.codefly.yaml) keeps its own version: it
 is the contract package's version, which contracts, derived runnables and
 published clients are keyed on.
+
 Running from CI (--ci, on by default when CI=true): the runner has no git
 identity and no signing key, so the release commit and tag are made as the
 GitHub Actions bot with signing off (main still receives GitHub's signed squash
