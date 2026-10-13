@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
@@ -13,7 +14,6 @@ import (
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/shared"
 	"gopkg.in/yaml.v3"
 )
 
@@ -108,7 +108,8 @@ func validateInjectionClassification(service string, injection serviceInjection)
 // A secret with no store to deliver it is refused rather than rendered: a
 // dangling secretKeyRef keeps the pod in CreateContainerConfigError, and the
 // only other way to carry the value would be plaintext in the tree.
-func projectServiceInjection(ctx context.Context, root, service string, env *environments.Environment, injection serviceInjection) error {
+
+func projectServiceInjectionInTree(ctx context.Context, tree *renderRoot, root, service string, env *environments.Environment, injection serviceInjection) error {
 	if len(injection.Public) == 0 && len(injection.Secrets) == 0 {
 		return nil
 	}
@@ -120,7 +121,7 @@ func projectServiceInjection(ctx context.Context, root, service string, env *env
 			"service %q needs %s, which a render carries only as references into the environment's secret store, and environment %q declares no service secret store",
 			service, strings.Join(sortedKeys(injection.Secrets), ", "), env.Name)
 	}
-	files, err := configurationSources(root, env.Name)
+	files, err := configurationSourcesInTree(tree, root, env.Name)
 	if err != nil {
 		return err
 	}
@@ -206,7 +207,7 @@ func projectServiceInjection(ctx context.Context, root, service string, env *env
 		return fmt.Errorf("service %q derives %s but no rendered container declares %s=%s",
 			service, strings.Join(append(sortedKeys(injection.Public), sortedKeys(injection.Secrets)...), ", "), resources.ServicePrefix, service)
 	}
-	return writeChangedConfigurationFiles(ctx, paths, files, changed)
+	return writeChangedConfigurationFiles(ctx, tree, paths, files, changed)
 }
 
 // offeredOnly reports whether every carrier a service derives is one offered to
@@ -233,7 +234,7 @@ func offeredOnly(injection serviceInjection) bool {
 
 // writeChangedConfigurationFiles re-encodes only the files holding a document a
 // binding changed; every other file keeps its bytes, comments included.
-func writeChangedConfigurationFiles(ctx context.Context, paths []string, files map[string][]manifest, changed map[uintptr]bool) error {
+func writeChangedConfigurationFiles(ctx context.Context, tree *renderRoot, paths []string, files map[string][]manifest, changed map[uintptr]bool) error {
 	for _, path := range paths {
 		if !slices.ContainsFunc(files[path], func(document manifest) bool {
 			return changed[reflect.ValueOf(document.value).Pointer()]
@@ -251,7 +252,10 @@ func writeChangedConfigurationFiles(ctx context.Context, paths []string, files m
 		if err := encoder.Close(); err != nil {
 			return err
 		}
-		if err := shared.WriteFileAtomic(ctx, path, []byte(out.String()), 0o644); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := tree.write(filepath.Dir(path), filepath.Base(path), []byte(out.String())); err != nil {
 			return err
 		}
 	}
@@ -339,11 +343,12 @@ func bindSecretInjection(container map[string]any, service string, secrets map[s
 // validateProjectedInjection checks the selected overlay, not only the files the
 // projection wrote: a patch can drop a derived value, repoint a reference or
 // shadow the ConfigMap after projection.
-func validateProjectedInjection(root, service string, env *environments.Environment, injection serviceInjection) error {
+
+func validateProjectedInjectionInTree(tree *renderRoot, root, service string, env *environments.Environment, injection serviceInjection) error {
 	if len(injection.Public) == 0 && len(injection.Secrets) == 0 {
 		return nil
 	}
-	documents, err := effectiveConfiguration(root, env.Name)
+	documents, err := effectiveConfigurationInTree(tree, root, env.Name)
 	if err != nil {
 		return fmt.Errorf("build configuration overlay for %q: %w", service, err)
 	}

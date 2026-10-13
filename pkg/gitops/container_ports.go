@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,7 +12,6 @@ import (
 	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
 	"sigs.k8s.io/kustomize/api/krusty"
-	"sigs.k8s.io/kustomize/kyaml/filesys"
 )
 
 // A service agent writes the Kubernetes manifests of its service, and decides
@@ -74,9 +72,22 @@ func declaredEndpointPorts(service *resources.Service) (map[string]uint32, error
 // name in the pods the Service selects when named). An endpoint no Service
 // publishes is absent; entries that disagree are an error.
 func RenderedContainerPorts(unitDir, environment string, inCluster map[string]uint32) (map[string]uint32, error) {
+	tree, err := newRenderRoot(unitDir)
+	if err != nil {
+		return nil, err
+	}
+	defer tree.Close()
+	return renderedContainerPortsInTree(tree, unitDir, environment, inCluster)
+}
+
+func renderedContainerPortsInTree(tree *renderRoot, unitDir, environment string, inCluster map[string]uint32) (map[string]uint32, error) {
 	overlay := filepath.Join(unitDir, "overlays", environment)
 	kustomizer := krusty.MakeKustomizer(krusty.MakeDefaultOptions())
-	built, err := kustomizer.Run(filesys.MakeFsOnDisk(), overlay)
+	filesystem, err := tree.fileSystem()
+	if err != nil {
+		return nil, err
+	}
+	built, err := kustomizer.Run(filesystem, overlay)
 	if err != nil {
 		return nil, fmt.Errorf("build %s: %w", overlay, err)
 	}
@@ -147,12 +158,21 @@ func RenderedContainerPorts(unitDir, environment string, inCluster map[string]ui
 // from the container port that Service targets. A service with no declaration
 // passes without its tree being read. Every violation is reported at once.
 func verifyDeclaredEndpointPorts(unitDir, environment, module string, service *resources.Service, inCluster map[string]uint32) error {
+	tree, err := newRenderRoot(unitDir)
+	if err != nil {
+		return err
+	}
+	defer tree.Close()
+	return verifyDeclaredEndpointPortsInTree(tree, unitDir, environment, module, service, inCluster)
+}
+
+func verifyDeclaredEndpointPortsInTree(tree *renderRoot, unitDir, environment, module string, service *resources.Service, inCluster map[string]uint32) error {
 	declared, err := declaredEndpointPorts(service)
 	if err != nil || len(declared) == 0 {
 		return err
 	}
 	unique := resources.ServiceUnique(module, service.Name)
-	container, err := RenderedContainerPorts(unitDir, environment, inCluster)
+	container, err := renderedContainerPortsInTree(tree, unitDir, environment, inCluster)
 	if err != nil {
 		return fmt.Errorf("service %s: read the container ports its agent rendered: %w", unique, err)
 	}
@@ -195,7 +215,7 @@ func verifyDeclaredEndpointPorts(unitDir, environment, module string, service *r
 // service a single-service render staged under modules/<module>/services/<name>.
 // A managed service renders no workload, so it has no container port to agree
 // with and is skipped, as is a service the flow staged no unit for.
-func verifyGraphDeclaredEndpointPorts(stage string, env *environments.Environment, graph map[string]*resources.Service, inClusterPorts map[string]map[string]uint32) error {
+func verifyGraphDeclaredEndpointPorts(tree *renderRoot, stage string, env *environments.Environment, graph map[string]*resources.Service, inClusterPorts map[string]map[string]uint32) error {
 	uniques := make([]string, 0, len(graph))
 	for unique := range graph {
 		uniques = append(uniques, unique)
@@ -211,10 +231,10 @@ func verifyGraphDeclaredEndpointPorts(stage string, env *environments.Environmen
 			continue
 		}
 		unitDir := filepath.Join(stage, "modules", identity.Module, serviceUnitDir, identity.Name)
-		if _, statErr := os.Stat(unitDir); errors.Is(statErr, fs.ErrNotExist) {
+		if _, statErr := tree.stat(unitDir, "."); errors.Is(statErr, fs.ErrNotExist) {
 			continue
 		}
-		if err := verifyDeclaredEndpointPorts(unitDir, env.Name, identity.Module, service, inClusterPorts[unique]); err != nil {
+		if err := verifyDeclaredEndpointPortsInTree(tree, unitDir, env.Name, identity.Module, service, inClusterPorts[unique]); err != nil {
 			return err
 		}
 	}

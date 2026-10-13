@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/stretchr/testify/require"
 )
 
 const sidecarDeployment = `apiVersion: apps/v1
@@ -50,6 +51,34 @@ func kustomizedWorkload(body string) func(context.Context, string) error {
 		}
 		return os.WriteFile(filepath.Join(overlay, "kustomization.yaml"), []byte("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - ../../base\n"), 0o644)
 	}
+}
+
+func TestOverlayPatchesRefuseHostileEnvironmentBeforeWriting(t *testing.T) {
+	for _, environment := range []string{"", ".", "..", "../../escape", "nested/prod", `nested\prod`, "/absolute", "prod..escape", "prod\x00"} {
+		t.Run(environment, func(t *testing.T) {
+			root := t.TempDir()
+			require.NoError(t, kustomizedWorkload(pinnedDeployment)(t.Context(), root))
+			before := snapshotTree(t, root)
+			projection := podProjection{kind: kindDeployment, name: "api", container: "api", volume: projectedVolume("test"), mount: readOnlyMount("test", "/test")}
+			err := addOverlayPatches(testRenderRoot(t, root), filepath.Join(root, "services", "api"), environment, []podProjection{projection})
+			require.ErrorContains(t, err, "environment")
+			require.Equal(t, before, snapshotTree(t, root))
+		})
+	}
+}
+
+func TestOverlayPatchesRefuseSymlinkOutsideRenderRoot(t *testing.T) {
+	root := t.TempDir()
+	external := t.TempDir()
+	require.NoError(t, kustomizedWorkload(pinnedDeployment)(t.Context(), root))
+	unit := filepath.Join(root, "services", "api")
+	overlay := filepath.Join(unit, "overlays", "prod")
+	require.NoError(t, os.Rename(overlay, filepath.Join(external, "prod")))
+	require.NoError(t, os.Symlink(filepath.Join(external, "prod"), overlay))
+	before := snapshotTree(t, external)
+	projection := podProjection{kind: kindDeployment, name: "api", container: "api", volume: projectedVolume("test"), mount: readOnlyMount("test", "/test")}
+	require.ErrorContains(t, addOverlayPatches(testRenderRoot(t, root), unit, "prod", []podProjection{projection}), "symbolic link")
+	require.Equal(t, before, snapshotTree(t, external))
 }
 
 // renderedVolume reads the rendered unit back as Kubernetes would run it

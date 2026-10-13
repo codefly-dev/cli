@@ -94,13 +94,22 @@ func autoscaleManifest(service, namespace, deployment string, autoscale *resourc
 // scaleTargetRef points at the single Deployment the service's rendered tree
 // contains; a tree with zero or several Deployments is ambiguous and fails.
 func projectServiceAutoscale(serviceRoot, service, environment, namespace string, autoscale *resources.ServiceAutoscale) (bool, error) {
+	tree, err := newRenderRoot(serviceRoot)
+	if err != nil {
+		return false, err
+	}
+	defer tree.Close()
+	return projectServiceAutoscaleInTree(tree, serviceRoot, service, environment, namespace, autoscale)
+}
+
+func projectServiceAutoscaleInTree(tree *renderRoot, serviceRoot, service, environment, namespace string, autoscale *resources.ServiceAutoscale) (bool, error) {
 	if autoscale == nil {
 		return false, nil
 	}
 	if namespace == "" {
 		return false, fmt.Errorf("service %q declares autoscale but its environment has no namespace", service)
 	}
-	deployment, err := serviceDeploymentName(serviceRoot, service)
+	deployment, err := serviceDeploymentNameInTree(tree, serviceRoot, service)
 	if err != nil {
 		return false, err
 	}
@@ -109,7 +118,7 @@ func projectServiceAutoscale(serviceRoot, service, environment, namespace string
 		return false, err
 	}
 	overlay := filepath.Join(serviceRoot, "overlays", overlayName)
-	if info, statErr := statWithin(serviceRoot, filepath.Join("overlays", overlayName)); statErr != nil || !info.IsDir() {
+	if info, statErr := tree.stat(serviceRoot, filepath.Join("overlays", overlayName)); statErr != nil || !info.IsDir() {
 		return false, fmt.Errorf("service %q declares autoscale but has no %q environment overlay to render it into", service, environment)
 	}
 	encoded, err := yaml.Marshal(autoscaleManifest(service, namespace, deployment, autoscale))
@@ -117,22 +126,31 @@ func projectServiceAutoscale(serviceRoot, service, environment, namespace string
 		return false, err
 	}
 	// The HPA is a plain scaling policy, world-readable like its siblings.
-	if err = writeWithin(overlay, hpaFile, encoded); err != nil {
+	if err = tree.write(overlay, hpaFile, encoded); err != nil {
 		return false, err
 	}
-	return true, addKustomizationResource(overlay, hpaFile)
+	return true, addKustomizationResourceInTree(tree, overlay, hpaFile)
 }
 
 // serviceDeploymentName returns the metadata.name of the sole Deployment in a
 // service's rendered tree, which the HPA scales.
 func serviceDeploymentName(root, service string) (string, error) {
+	tree, err := newRenderRoot(root)
+	if err != nil {
+		return "", err
+	}
+	defer tree.Close()
+	return serviceDeploymentNameInTree(tree, root, service)
+}
+
+func serviceDeploymentNameInTree(tree *renderRoot, root, service string) (string, error) {
 	var names []string
-	err := walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
+	err := tree.walkRegularFiles(root, func(_, relative string, _ os.FileInfo) error {
 		extension := strings.ToLower(filepath.Ext(relative))
 		if extension != yamlExtension && extension != ymlExtension && extension != jsonExtension {
 			return nil
 		}
-		data, err := readWithin(root, relative)
+		data, err := tree.read(root, relative)
 		if err != nil {
 			return err
 		}

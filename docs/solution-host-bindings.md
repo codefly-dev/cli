@@ -47,6 +47,7 @@ environments:
       component: platform-host                  # the host component instance
       domain: example                           # the ownership domain this composition delivers under
       audience: accounts                        # the bare token audience the host verifies
+      module_audience: module-capabilities      # the audience the host stamps on a module's own capability
       trust_domain: cluster.example             # the SPIFFE trust domain of the host's identity issuer
       envelope_revision: 3                      # the envelope revision this composition was reviewed against
       delivery: platform/accounts/rest          # the host's delivery API, by composition identity
@@ -881,7 +882,19 @@ receipts:
    v3.4.1 pinned by what cannot move: the manifest at the commit the tag names,
    its SHA-256 verified before anything is applied, and every image it runs
    rewritten to its digest (an image no digest pins refuses the install). An
-   Argo CD already there is used as it is. And the `platform-authority` namespace with its `delivery`
+   Argo CD already there is used as it is. The **SPIFFE workload issuer** is
+   installed when absent: cert-manager v1.21.2 and csi-driver-spiffe v0.15.0,
+   with the manifest hashes verified before applying anything and every image
+   pinned by digest. The default `certificaterequests-approver` controller is
+   disabled: only the SPIFFE approver may approve these requests. Existing
+   components are verified on every run, including CA reuse: every controller,
+   webhook, injector, driver and approver container must match the install image
+   pins, and the SPIFFE issuer and trust-domain arguments must match the reviewed
+   manifest. A mismatch refuses the run without patching those components. The
+   default approver must remain disabled even when the driver and CA are reused.
+   The run waits for cert-manager's webhook and its trust, provisions the CA and
+   ClusterIssuer, then waits for the driver DaemonSet and approver Deployment.
+   And the `platform-authority` namespace with its `delivery`
    ServiceAccount (no default token mounted), which a cell's platform
    provides and the rendered tree cannot: the authority AppProject admits
    ConfigMaps and Jobs there and nothing else. The modules' namespaces, which
@@ -941,6 +954,97 @@ install into), a `host` block, `host.developers`, and the gitops
 `fetch-repo-url` naming the fetch remote. The same steps stay available one by
 one: `deploy gitops render`, `deploy gitops publish --local`, and
 `deploy gitops remote up` with no module (the latest local promotion).
+
+**Workload identities (cli#958).** Every composed service declaring
+`workspace-configuration-dependencies: [workload-identity]` receives the CSI
+volume from `spiffe.csi.cert-manager.io`, mounted read-only at
+`/var/run/secrets/spiffe.io` into its authenticating container. The driver
+requests a certificate as the pod's ServiceAccount; the render emits a
+namespace Role and RoleBinding granting that account only `create` on
+`cert-manager.io/certificaterequests`. The gateway receives the same volume
+and RBAC when it declares the group.
+
+The environment must name `host.gateway: <module>/<service>`, the composed
+service that fronts solutions and serves the mint. The render resolves each
+module's namespace and Core's ServiceAccount name, verifies the rendered pod
+uses that account, and uses the same `EnvironmentHost.SPIFFEID` function as
+presence documents. A peer ConfigMap supplies `allowed-callers`, `mint-peers`
+and `gateway-peers`, mounted read-only at `/etc/codefly/workload-peers` without
+subPath so updates propagate. After Kustomize builds the overlay, configuration
+validation compares the effective peer ConfigMap, volumes, mounts and path
+variables with the composition plan; a patch that changes them refuses the
+render and names the resource. Each file contains the gateway's SPIFFE ID,
+one per line with a final newline. For the gateway itself, each file lists
+every explicit consumer's ID, including the gateway when it opts in.
+
+Promotion builds every applied overlay and requires each `(apiGroup, kind,
+namespace, name)` to occur exactly once across the whole tree. Missing or empty
+namespaces take the overlay namespace, then the environment's target namespace,
+before comparison. Each identity service's workloads, ServiceAccounts, RBAC and
+peer ConfigMap must also match its retained render byte for byte after canonical
+object encoding. A conflicting occurrence reports both source paths, even when
+the two objects are identical or a Kustomize prefix/suffix created the collision.
+The peer data and bindings remain checked against the composition plan.
+
+Filesystem access retains the staged render root, resolved once with
+`filepath.EvalSymlinks`. Every path component below it is checked with `Lstat`;
+symlinks in service directories, their parents, overlays or files refuse access.
+Kustomize uses the same confined filesystem for every read. Manifest updates replace the
+file atomically, so hard links cannot cause writes into another tree.
+
+The render supplies these derived values only to services declaring the group.
+It requires a declared local k3d cluster (`cluster.kind: k3d` and
+`cluster.context: k3d-<name>`), where the local run installs SVID issuance;
+other environments are refused before builds begin.
+
+| Key in `workload-identity` | Path |
+|---|---|
+| `TOKEN_FILE` | `/var/run/secrets/codefly/token` (the existing host-audience projection) |
+| `CERT_FILE` | `/var/run/secrets/spiffe.io/tls.crt` |
+| `KEY_FILE` | `/var/run/secrets/spiffe.io/tls.key` |
+| `TRUST_BUNDLE_FILE` | `/var/run/secrets/spiffe.io/ca.crt` |
+| `ALLOWED_CALLERS_FILE` | `/etc/codefly/workload-peers/allowed-callers` |
+| `MINT_PEERS_FILE` | `/etc/codefly/workload-peers/mint-peers` |
+| `GATEWAY_PEERS_FILE` | `/etc/codefly/workload-peers/gateway-peers` |
+
+Services declaring `module-authority` must also declare `workload-identity`.
+The render supplies this group per service, using the same resolved identity
+and composed module name as the presence document:
+
+| Key in `module-authority` | Rendered source |
+|---|---|
+| `PRINCIPAL` | The workload's SPIFFE ID |
+| `AUDIENCE` | The environment's `host.module_audience`: the audience the host stamps on a module's own capability, as the host names it. A module refuses a credential addressed to anything else |
+| `PROJECTION_AUDIENCE` | The environment's `host.audience` |
+| Secret `INTERNAL_TOKEN` | A reference to the existing `internal-auth` workspace secret `CODEFLY_INTERNAL_TOKEN` |
+
+Public values use `CODEFLY__WORKSPACE_CONFIGURATION__MODULE_AUTHORITY__<KEY>`
+in the service's bound ConfigMap. The secret uses
+`CODEFLY__WORKSPACE_SECRET_CONFIGURATION__MODULE_AUTHORITY__INTERNAL_TOKEN`
+with a `secretKeyRef` to
+`CODEFLY__WORKSPACE_SECRET_CONFIGURATION__INTERNAL_AUTH__CODEFLY_INTERNAL_TOKEN`
+in `secret-<service>`. The existing ExternalSecret projection delivers that
+key from the environment's service secret store; no token value is copied into
+the render. A missing workload identity, host audience or service secret store
+refuses the render. Both `workload-identity` and `module-authority` bypass the
+configuration manager, including composition-root inheritance in native runs:
+their values are projected per workload after the agent renders. An authored
+file for either group anywhere in the selected composition is refused, even
+when no service declares the group.
+
+The local ECDSA P-256 CA lives in the TLS Secret
+`cert-manager/csi-driver-spiffe-ca`; its certificate is also published as
+`ca.pem` in `cert-manager/spiffe-trust-bundle`. The ClusterIssuer
+`csi-driver-spiffe-ca` uses that Secret. The CA lasts 30 days and is reused
+until it has at most 24 hours left, when a run rotates it. Reuse reads only
+the public certificate; the private key is generated in memory, passed to
+Kubernetes through stdin, and never saved to a local file or logged. An
+externally provisioned issuer without this CA Secret is left to its owner.
+The driver's two trust-domain arguments use the validated `host.trust_domain`.
+The vendored CSI manifest and image pins live in
+`pkg/deployments/manifests`; `bash scripts/regenerate-spiffe-manifest.sh`
+reproduces it from the verified chart with Helm and reports the new digest
+for review in `pkg/deployments/local_spiffe.go`.
 
 **Local promotion is the developer's signed publish.** On a k3d environment
 whose host lists developers there is no reviewer: the developer is the author
@@ -1046,6 +1150,65 @@ capability surface locally**: presence and routing so a developer sees their
 UI, and no module credential minted at all. Which of the two holds is the
 owner's call; this document records the first, as agreed, until the owner
 decides otherwise.
+
+### A native run: the run answers as the cluster
+
+The section above ends at "a local run runs pods", and `codefly run cluster`
+is that run. A run of processes is still the first loop a developer has, so a
+**native** `codefly run` of a composition that declares a host stands in for
+what the host reads from Kubernetes, instead of the host learning a second
+path. The host's code is the same in both.
+
+For the lifetime of one run, the CLI is:
+
+- **the API server** — TokenReview and pod reads over TLS on a loopback port,
+  under a CA created for that run. It issues each workload's projected token
+  for the host's audience and reports each workload's pod.
+- **the workload identity issuer** — an X.509-SVID per service that declares
+  `workload-identity`, named as a cell names it, with the same peer files a
+  render mounts. The `workload-identity` and `module-authority` groups are
+  supplied to the process the way the render supplies them to a pod.
+- **the delivery pipeline** — once a workload is running it signs that
+  workload's presence and authority with the developer key and POSTs them to
+  the host's own delivery endpoints, and writes the module envelope through
+  the fixture's platform administrator.
+
+The host is pointed at the stand-in by two settings the run supplies,
+`SOLUTION_HOST_LOCAL_CLUSTER` and `SOLUTION_HOST_LOCAL_TRUST_ANCHOR`, both
+under `.codefly/native-cluster/<environment>/` in the workspace. The host
+refuses both in a pod, and the run never makes the host believe it is in one.
+
+Three things it does, and why:
+
+- **The envelope is written before the documents that name it.** A document
+  naming a revision the host does not hold is outside its ceiling, and the
+  host refuses the whole reconcile pass on it.
+- **A run only ever adds to the envelope.** It carries every principal the
+  host already grants and every build it already approves. Withdrawing either
+  is a narrowing, which the host witnesses and a development loop does not
+  perform. A principal whose own section changes — a solution whose contract
+  moved — is refused by a host with no witness: reset the local store.
+- **A module-identity service is told where its token is.** Its contract
+  fixes the path a pod mounts (`/var/run/secrets/codefly/token`), which a
+  process cannot have; the run projects the token under its own state and sets
+  `CODEFLY__WORKLOAD_TOKEN_FILE`. A pod never sets it.
+- **What the run delivered is remembered across runs**, under
+  `.codefly/native-cluster/<environment>/delivered/`, so a new envelope
+  revision re-delivers the documents of workloads this run has not started yet;
+  a document naming an old revision would otherwise stop the host's reconcile.
+- **A solution's token is withheld until its documents are delivered.** A
+  workload starts before the host has been told about it, because its build is
+  known only once it runs. A cell answers that with a restart; the run answers
+  it by projecting the token only after delivery. The workload waits for the
+  token, and from then on the host answers "not established yet" until its
+  registry has read the documents.
+
+What is weaker than a cluster, stated rather than implied: the build a pod is
+said to run is the SHA-256 of the executable the run started, and the run is
+both the party that says so and the party that signs the presence naming it.
+No kubelet is a second witness. That is the authority a developer already has
+over their own machine. The profile the host reads admits the developer's key
+only for the one CA it names, and that CA does not outlive the run.
 
 ## Dev deployments
 

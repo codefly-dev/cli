@@ -1655,6 +1655,11 @@ func (runner *Runner) runtimeOverridesFor(own []*basev0.NetworkMapping) map[stri
 	for key, value := range runner.overrides {
 		overrides[key] = value
 	}
+	if runner.world != nil && runner.world.RuntimeOverrides != nil {
+		for key, value := range runner.world.RuntimeOverrides(runner.instance.Service) {
+			overrides[key] = value
+		}
+	}
 	if runner.world != nil && runner.world.Env != nil && runner.world.Env.NamingScope != "" {
 		overrides[resources.NamingScopePrefix] = runner.world.Env.NamingScope
 	}

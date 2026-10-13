@@ -53,7 +53,7 @@ func TestDerivedInjectionRendersPublicValuesAndSecretReferencesOnly(t *testing.T
 		Secrets: map[string]string{storedSecretKey: storedSecretKey},
 	}
 
-	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "backend"}, env, scopeOf(env), injection))
+	require.NoError(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, &resources.Service{Name: "backend"}, env, scopeOf(env), injection))
 
 	rendered := buildOverlay(t, root, env.Name)
 	data := configMapData(t, rendered)
@@ -91,7 +91,7 @@ func TestDerivedInjectionRefusesASecretWithoutAStore(t *testing.T) {
 	before, err := os.ReadFile(filepath.Join(root, "base", "deployment.yaml"))
 	require.NoError(t, err)
 
-	err = projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "backend"}, env, scopeOf(env),
+	err = projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, &resources.Service{Name: "backend"}, env, scopeOf(env),
 		serviceInjection{Secrets: map[string]string{storedSecretKey: storedSecretKey}})
 	require.ErrorContains(t, err, "declares no service secret store")
 
@@ -119,14 +119,14 @@ func TestDerivedInjectionRefusesACredentialAsAPublicValue(t *testing.T) {
 			env := storeEnvironment()
 			root := t.TempDir()
 			writeConsumerTree(t, root, env.Name, env.Namespace, "backend", "documents.example:8080")
-			require.Error(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "backend"}, env, scopeOf(env), injection))
+			require.Error(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, &resources.Service{Name: "backend"}, env, scopeOf(env), injection))
 		})
 	}
 
 	env := storeEnvironment()
 	root := t.TempDir()
 	writeConsumerTree(t, root, env.Name, env.Namespace, "auth-gateway", "documents.example:8080")
-	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "auth-gateway"}, env, scopeOf(env), serviceInjection{
+	require.NoError(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, &resources.Service{Name: "auth-gateway"}, env, scopeOf(env), serviceInjection{
 		Public: map[string]string{"CODEFLY__SELF_ENDPOINT__HOST__AUTH_GATEWAY__REST__REST": "http://auth-gateway.example.svc.cluster.local:8080"},
 	}))
 }
@@ -139,7 +139,7 @@ func TestDerivedInjectionRejectsDisagreementAndOverlayOverrides(t *testing.T) {
 		env := storeEnvironment()
 		root := t.TempDir()
 		writeConsumerTree(t, root, env.Name, env.Namespace, "backend", "documents.example:8080")
-		err := projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "backend"}, env, scopeOf(env), serviceInjection{
+		err := projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, &resources.Service{Name: "backend"}, env, scopeOf(env), serviceInjection{
 			Public: map[string]string{"CODEFLY__ENDPOINT__PAYMENTS__STORE__TCP__TCP": "elsewhere.example:5432"},
 		})
 		require.ErrorContains(t, err, "disagrees")
@@ -153,7 +153,7 @@ func TestDerivedInjectionRejectsDisagreementAndOverlayOverrides(t *testing.T) {
 			root := t.TempDir()
 			writeConsumerTree(t, root, env.Name, env.Namespace, "backend", "documents.example:8080")
 			addProjectionPatch(t, root, env.Name, patch.kind, patch.patch)
-			err := projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "backend"}, env, scopeOf(env), serviceInjection{
+			err := projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, &resources.Service{Name: "backend"}, env, scopeOf(env), serviceInjection{
 				Public:  map[string]string{apiConsumesKey: `[{"id":"documents"}]`},
 				Secrets: map[string]string{storedSecretKey: storedSecretKey},
 			})
@@ -175,7 +175,7 @@ func TestDerivedInjectionLeavesUntouchedFilesByteForByte(t *testing.T) {
 	commented := append([]byte("# rendered by the builder\n"), original...)
 	require.NoError(t, os.WriteFile(path, commented, 0o600))
 
-	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "backend"}, env, scopeOf(env), serviceInjection{
+	require.NoError(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, &resources.Service{Name: "backend"}, env, scopeOf(env), serviceInjection{
 		Public: map[string]string{apiConsumesKey: "[]"},
 	}))
 
@@ -209,12 +209,12 @@ func TestDerivedInjectionSkipsOfferedCarriersNoContainerClaims(t *testing.T) {
 	selfOnly := serviceInjection{Public: map[string]string{
 		"CODEFLY__SELF_ENDPOINT__SAAS__CACHE__READ__TCP": "tcp://cache.example-saas.svc.cluster.local:6379",
 	}}
-	require.NoError(t, projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "cache"}, env, scopeOf(env), selfOnly))
+	require.NoError(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, &resources.Service{Name: "cache"}, env, scopeOf(env), selfOnly))
 	after, err := os.ReadFile(filepath.Join(root, "base", "deployment.yaml"))
 	require.NoError(t, err)
 	require.Equal(t, string(before), string(after))
 
 	required := serviceInjection{Public: map[string]string{apiConsumesKey: `[{"id":"documents"}]`}}
-	err = projectServiceConfiguration(t.Context(), root, &resources.Service{Name: "cache"}, env, scopeOf(env), required)
+	err = projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, &resources.Service{Name: "cache"}, env, scopeOf(env), required)
 	require.ErrorContains(t, err, "no rendered container declares")
 }

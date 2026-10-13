@@ -2,11 +2,12 @@ package cmd
 
 import (
 	"context"
-	"github.com/codefly-dev/cli/pkg/processgroup"
 	"os/exec"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/codefly-dev/cli/pkg/processgroup"
 )
 
 func TestClearAndStopCommandsReturnErrors(t *testing.T) {

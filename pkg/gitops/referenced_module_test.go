@@ -67,7 +67,7 @@ func TestRenderModuleBundleStagesReferencedOutOfRepoModule(t *testing.T) {
 	installModuleBundleGenerator(t)
 
 	destination := t.TempDir()
-	if err := renderModuleBundle(ctx, workspace, module, environment, destination, promotableServiceGraph("payments", []string{"api"})); err != nil {
+	if err := renderModuleBundle(ctx, workspace, module, environment, destination, testRenderRoot(t, destination), promotableServiceGraph("payments", []string{"api"})); err != nil {
 		t.Fatalf("render referenced module bundle: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(destination, "overlays", "production", "kustomization.yaml")); err != nil {
@@ -196,7 +196,7 @@ environments:
 	installModuleBundleGeneratorEchoingName(t)
 
 	destination := t.TempDir()
-	if err := renderModuleBundle(ctx, workspace, module, environment, destination, promotableServiceGraph("billing", []string{"api"})); err != nil {
+	if err := renderModuleBundle(ctx, workspace, module, environment, destination, testRenderRoot(t, destination), promotableServiceGraph("billing", []string{"api"})); err != nil {
 		t.Fatalf("render aliased module bundle: %v", err)
 	}
 	received, err := os.ReadFile(filepath.Join(destination, "overlays", "production", "module-name"))

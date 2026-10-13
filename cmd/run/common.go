@@ -32,6 +32,10 @@ var silent []string
 // Services to omit from the dependency graph for this run.
 var excludeDependencies []string
 
+// excludeWorkspaceConfigurations are workspace configuration groups the run
+// leaves out, as a run profile's exclude-workspace-configurations does.
+var excludeWorkspaceConfigurations []string
+
 // Named workspace run profile.
 var profile string
 

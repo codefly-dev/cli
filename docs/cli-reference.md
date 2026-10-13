@@ -3978,6 +3978,7 @@ Subcommands:
 - [`codefly run job`](#codefly-run-job)
 - [`codefly run service`](#codefly-run-service)
 - [`codefly run solution`](#codefly-run-solution)
+- [`codefly run workspace`](#codefly-run-workspace)
 
 ## `codefly run cluster`
 
@@ -3987,7 +3988,7 @@ Run the composition on the local k3d cluster through the signed delivery a cell 
 Run the composition on the environment's local k3d cluster, through the same
 delivery a cell receives (docs/solution-host-bindings.md, "Local runs"):
 
-  1. Argo CD in the cluster (installed if absent), the platform-authority
+  1. Argo CD and the SPIFFE workload issuer (installed if absent), the platform-authority
      namespace with its delivery ServiceAccount, the modules' namespaces, and
      the local host's trust anchor (one public-key verification policy admitting
      this machine's key when host.developers lists it, bound to this cluster's
@@ -4002,7 +4003,9 @@ delivery a cell receives (docs/solution-host-bindings.md, "Local runs"):
 
 The environment must declare a k3d cluster (kind and context), a host,
 host.developers, and host.trust_anchor (the path the host reads its trust
-anchor from). Stopping a run is not removal: withdrawing a binding is a
+anchor from). Services declaring workload-identity also require host.gateway
+(<module>/<service>); their SVIDs and peer files are projected by the render.
+Stopping a run is not removal: withdrawing a binding is a
 published tombstone.
 ```
 
@@ -4107,28 +4110,29 @@ codefly run service [service...]
 Flags:
 
 ```
-      --cli-server                     Start CLI server
-      --env string                     Workspace environment to run (default "local")
-      --exclude-dependency strings     Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)
-      --exclude-root                   Exclude root service
-      --fixture string                 Fixture override (defaults to the selected Codefly environment)
-      --headless                       Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)
-      --init-only                      Initialize service only, i.e. without running it
-      --load-only                      LoadRequired service only, i.e. without running it
-      --naming-scope string            Runtime naming scope: fold a scope into port derivation for a disjoint port set (parallel runs / test encapsulation)
-      --open                           Open the dashboard in the default browser (requires --cli-server)
-      --output-env string              Write one service's full SDK/runtime environment to an owner-only file
-      --output-env-service string      Service whose runtime environment to export (module/service; defaults to the root service)
-      --profile string                 Named workspace run profile
-      --readiness-timeout duration     Maximum time to wait for the flow to become ready (default 5m0s)
-      --remote strings                 Remote services
-      --runtime-context string         Runtime context for the flow (native/container/nix/free; free picks the first advertised backend) (default "free")
-      --service-path string            Path to the service
-      --set strings                    Per-service runtime env override (repeatable), e.g. --set warden:CODEFLY__FIXTURE=dogfood
-      --silent strings                 Silence services in CLI output
-      --stand-alone                    Begin service as standalone, i.e. without its dependencies
-      --start-docker                   Auto-start a local Docker engine (OrbStack/Docker Desktop/colima/…) if a service needs Docker and it isn't running; --start-docker=false to disable (default true)
-      --temporary-ports show network   Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all
+      --cli-server                                Start CLI server
+      --env string                                Workspace environment to run (default "local")
+      --exclude-dependency strings                Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)
+      --exclude-root                              Exclude root service
+      --exclude-workspace-configuration strings   Exclude a workspace configuration group from the run, with the producers its values name (repeatable)
+      --fixture string                            Fixture override (defaults to the selected Codefly environment)
+      --headless                                  Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)
+      --init-only                                 Initialize service only, i.e. without running it
+      --load-only                                 LoadRequired service only, i.e. without running it
+      --naming-scope string                       Runtime naming scope: fold a scope into port derivation for a disjoint port set (parallel runs / test encapsulation)
+      --open                                      Open the dashboard in the default browser (requires --cli-server)
+      --output-env string                         Write one service's full SDK/runtime environment to an owner-only file
+      --output-env-service string                 Service whose runtime environment to export (module/service; defaults to the root service)
+      --profile string                            Named workspace run profile
+      --readiness-timeout duration                Maximum time to wait for the flow to become ready (default 5m0s)
+      --remote strings                            Remote services
+      --runtime-context string                    Runtime context for the flow (native/container/nix/free; free picks the first advertised backend) (default "free")
+      --service-path string                       Path to the service
+      --set strings                               Per-service runtime env override (repeatable), e.g. --set warden:CODEFLY__FIXTURE=dogfood
+      --silent strings                            Silence services in CLI output
+      --stand-alone                               Begin service as standalone, i.e. without its dependencies
+      --start-docker                              Auto-start a local Docker engine (OrbStack/Docker Desktop/colima/…) if a service needs Docker and it isn't running; --start-docker=false to disable (default true)
+      --temporary-ports show network              Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all
 ```
 
 ## `codefly run solution`
@@ -4142,16 +4146,43 @@ codefly run solution [flags]
 Flags:
 
 ```
-      --env string                     Workspace environment to run (default "local")
-      --exclude-dependency strings     Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)
-      --fixture string                 Fixture override (defaults to the selected Codefly environment)
-      --headless                       Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)
-      --naming-scope string            Runtime naming scope: fold a scope into port derivation for a disjoint port set (parallel runs / test encapsulation)
-      --profile string                 Named workspace run profile
-      --readiness-timeout duration     Maximum time to wait for the flow to become ready (default 5m0s)
-      --set strings                    Per-service runtime env override (repeatable), e.g. --set warden:CODEFLY__FIXTURE=dogfood
-      --silent strings                 Silence services in CLI output
-      --temporary-ports show network   Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all
+      --env string                                Workspace environment to run (default "local")
+      --exclude-dependency strings                Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)
+      --exclude-workspace-configuration strings   Exclude a workspace configuration group from the run, with the producers its values name (repeatable)
+      --fixture string                            Fixture override (defaults to the selected Codefly environment)
+      --headless                                  Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)
+      --naming-scope string                       Runtime naming scope: fold a scope into port derivation for a disjoint port set (parallel runs / test encapsulation)
+      --profile string                            Named workspace run profile
+      --readiness-timeout duration                Maximum time to wait for the flow to become ready (default 5m0s)
+      --set strings                               Per-service runtime env override (repeatable), e.g. --set warden:CODEFLY__FIXTURE=dogfood
+      --silent strings                            Silence services in CLI output
+      --temporary-ports show network              Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all
+```
+
+## `codefly run workspace`
+
+Start the whole composition locally: the host's ingress services and every solution, with every module they reach
+
+```
+codefly run workspace [flags]
+```
+
+Flags:
+
+```
+      --cli-server                                Start CLI server
+      --env string                                Workspace environment to run (default "local")
+      --exclude-dependency strings                Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)
+      --exclude-workspace-configuration strings   Exclude a workspace configuration group from the run, with the producers its values name (repeatable)
+      --fixture string                            Fixture override (defaults to the selected Codefly environment)
+      --headless                                  Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)
+      --naming-scope string                       Runtime naming scope: fold a scope into port derivation for a disjoint port set (parallel runs / test encapsulation)
+      --profile string                            Named workspace run profile
+      --readiness-timeout duration                Maximum time to wait for the flow to become ready (default 10m0s)
+      --runtime-context string                    Runtime context for the flow (native/container/nix/free) (default "free")
+      --set strings                               Per-service runtime env override (repeatable)
+      --silent strings                            Silence services in CLI output
+      --start-docker                              Auto-start a local Docker engine if a service needs Docker and it isn't running (default true)
 ```
 
 ## `codefly sbom`

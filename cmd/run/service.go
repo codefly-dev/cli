@@ -224,6 +224,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		err := stopService(shutdownCtx, run.flow)
 		shutdownCancel()
+		stopNativeCluster()
 		return err
 	}
 	defer func() { returnErr = errors.Join(returnErr, stopFresh()) }()
@@ -948,8 +949,11 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	// authoritative by construction, rather than by parseSetOverrides happening
 	// to let the final duplicate entry win.
 	flow.WithOverrides(mergeOverrides(derivedOverrides, overrides))
+	if attachErr := attachNativeCluster(ctx, flow, workspace, env, selectedFixture); attachErr != nil {
+		return nil, w.Wrap(attachErr)
+	}
 	flow.WithRemotes(remoteServices)
-	resolvedProfile, err := workspace.ResolveRunProfile(ctx, profile, resources.RunProfile{ExcludeDependencies: excludeDependencies})
+	resolvedProfile, err := workspace.ResolveRunProfile(ctx, profile, resources.RunProfile{ExcludeDependencies: excludeDependencies, ExcludeWorkspaceConfigurations: excludeWorkspaceConfigurations})
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
@@ -1118,6 +1122,7 @@ func init() {
 	ServiceCmd.Flags().StringSliceVar(&silent, "silent", nil, "Silence services in CLI output")
 	ServiceCmd.Flags().StringVar(&profile, "profile", "", "Named workspace run profile")
 	ServiceCmd.Flags().StringSliceVar(&excludeDependencies, "exclude-dependency", nil, "Exclude optional dependency services from the run (repeatable, e.g. infra/temporal)")
+	ServiceCmd.Flags().StringSliceVar(&excludeWorkspaceConfigurations, "exclude-workspace-configuration", nil, "Exclude a workspace configuration group from the run, with the producers its values name (repeatable)")
 	ServiceCmd.Flags().StringVar(&fixture, "fixture", "", "Fixture override (defaults to the selected Codefly environment)")
 	ServiceCmd.Flags().StringSliceVar(&setOverrides, "set", nil, "Per-service runtime env override (repeatable), e.g. --set warden:CODEFLY__FIXTURE=dogfood")
 	ServiceCmd.Flags().StringSliceVar(&remotes, "remote", nil, "Remote services")

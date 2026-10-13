@@ -33,7 +33,12 @@ import (
 // none named like the service is refused rather than guessed: "whichever one
 // presented the token" is how a sidecar ends up holding a workload's authority.
 func presenceWorkloads(owned string, opts *RenderOptions, unit SolutionArtifactUnit) ([]solutionhost.Workload, error) {
-	all, err := renderedWorkloads(filepath.Join(owned, filepath.FromSlash(unit.Path)), opts.Environment)
+	tree, err := inspectRenderRoot(owned, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseRenderRoot(tree, opts)
+	all, err := renderedWorkloadsInTree(tree, filepath.Join(owned, filepath.FromSlash(unit.Path)), opts.Environment)
 	if err != nil {
 		return nil, fmt.Errorf("artifact %s: %w", unit.Name, err)
 	}

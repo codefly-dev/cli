@@ -296,6 +296,7 @@ func TestRenderSizingReportDeduplicatesKustomizeOverlays(t *testing.T) {
 	result, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: filepath.Join(t.TempDir(), "owned"),
 		Module:      "payments", Environment: "production", Promotable: true,
+		Units: promotableServiceGraph("payments", []string{"api"}),
 	}, func(_ context.Context, root string) error {
 		service := filepath.Join(root, "services", "api")
 		if err := os.MkdirAll(service, 0o755); err != nil {

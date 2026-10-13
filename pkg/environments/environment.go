@@ -239,6 +239,16 @@ type EnvironmentHost struct {
 	// composition names which endpoint is the delivery API and never where it
 	// lives.
 	Delivery string `yaml:"delivery"`
+	// Gateway names the service that fronts solutions and serves the mint.
+	// It is required when a composed service requests workload-identity.
+	Gateway string `yaml:"gateway,omitempty"`
+	// ModuleAudience is the audience the host stamps on a composed module's
+	// own capability — the host's name for it, not the module's. A module
+	// refuses a credential addressed to anything else, so the render projects
+	// exactly this value as module-authority/AUDIENCE. Stated by the
+	// composition because the host owns the name; required when a composed
+	// service declares module-authority.
+	ModuleAudience string `yaml:"module_audience,omitempty"`
 	// Release names the platform-owned key accepted for release delivery.
 	Release *HostReleasePolicy `yaml:"release,omitempty"`
 	// Developers lists machine keys admitted only by a local k3d host.
@@ -292,11 +302,13 @@ func (policy *HostReleasePolicy) Validate() error {
 }
 
 // hostFields are the keys a host block may carry, in declaration order.
-var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "envelope_revision", "delivery", "release", "developers", "trust_anchor"}
+var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "envelope_revision", "delivery", "gateway", "module_audience", "release", "developers", "trust_anchor"}
 
 // deliveryPattern is a composition identity: <module>/<service>/<endpoint>,
 // each a lowercase name.
 var deliveryPattern = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*/[a-z0-9]+(?:[._-][a-z0-9]+)*/[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
+
+var gatewayPattern = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*/[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
 
 // UnmarshalYAML refuses an unknown key rather than dropping it: workspace YAML
 // is lenient, and a mistyped `component` would otherwise leave a host block
@@ -321,6 +333,14 @@ var hostNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0
 // scheme, a slash or an upper-case letter.
 var trustDomainPattern = regexp.MustCompile(`^[a-z0-9._-]+$`)
 
+// ValidateTrustDomain rejects anything outside the SPIFFE trust-domain grammar.
+func ValidateTrustDomain(domain string) error {
+	if len(domain) > 255 || !trustDomainPattern.MatchString(domain) {
+		return fmt.Errorf("host trust_domain %q is not a SPIFFE trust domain (1-255 lowercase letters, digits, dots, underscores or hyphens)", domain)
+	}
+	return nil
+}
+
 // Validate checks a declared host names every part of its identity. A nil
 // receiver is a valid "not declared" state.
 func (host *EnvironmentHost) Validate() error {
@@ -341,14 +361,20 @@ func (host *EnvironmentHost) Validate() error {
 	if host.Audience == "" || strings.ContainsFunc(host.Audience, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
 		return fmt.Errorf("host audience must be a single-line identity, got %q", host.Audience)
 	}
-	if !trustDomainPattern.MatchString(host.TrustDomain) {
-		return fmt.Errorf("host trust_domain %q is not a SPIFFE trust domain (lowercase DNS name, no scheme, no path)", host.TrustDomain)
+	if strings.ContainsFunc(host.ModuleAudience, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+		return fmt.Errorf("host module_audience must be a single-line identity, got %q", host.ModuleAudience)
+	}
+	if err := ValidateTrustDomain(host.TrustDomain); err != nil {
+		return err
 	}
 	if host.EnvelopeRevision == 0 {
 		return fmt.Errorf("host envelope_revision must be the revision (at least 1) of the host envelope this composition was reviewed against")
 	}
 	if !deliveryPattern.MatchString(host.Delivery) {
 		return fmt.Errorf("host delivery %q is not the composition identity <module>/<service>/<endpoint> of the host's delivery API", host.Delivery)
+	}
+	if host.Gateway != "" && !gatewayPattern.MatchString(host.Gateway) {
+		return fmt.Errorf("host gateway %q is not the composition identity <module>/<service> of the host's gateway and mint", host.Gateway)
 	}
 	if host.TrustAnchor != "" && (!filepath.IsAbs(host.TrustAnchor) || filepath.Clean(host.TrustAnchor) != host.TrustAnchor || host.TrustAnchor == "/") {
 		return fmt.Errorf("host trust_anchor %q is not a clean absolute path (the directory the host reads its trust anchor from)", host.TrustAnchor)

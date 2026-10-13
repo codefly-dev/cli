@@ -14,11 +14,10 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 )
 
-// A local cluster run (cli#918) needs two things a cell's platform provides
-// and a developer's k3d cluster does not: Argo CD, which syncs the promoted
-// tree and runs the delivery Jobs as its Sync hooks, and the authority
-// namespace with the delivery account the authority Job runs as. Both are
-// provisioned here for a verified local k3d target only.
+// A local cluster run needs the platform's prerequisites: Argo CD, which
+// syncs the promoted tree and runs delivery Jobs, the authority namespace
+// with its delivery account, and the SPIFFE issuer in local_spiffe.go.
+// They are provisioned for a verified local k3d target only.
 
 // The Argo CD release a local cluster run (and the k3d qualification, through
 // the same installer) installs: v3.4.1, pinned by what cannot move — the
@@ -54,21 +53,22 @@ type Fetch func(ctx context.Context, url string) ([]byte, error)
 func pinnedManifest(raw []byte, wantSHA256 string, images map[string]string) ([]byte, error) {
 	digest := sha256.Sum256(raw)
 	if got := hex.EncodeToString(digest[:]); got != wantSHA256 {
-		return nil, fmt.Errorf("the Argo CD install manifest has SHA-256 %s, not the reviewed %s; nothing was applied", got, wantSHA256)
+		return nil, fmt.Errorf("the install manifest has SHA-256 %s, not the reviewed %s; nothing was applied", got, wantSHA256)
 	}
 	var unpinned []string
 	pinned := imageLine.ReplaceAllFunc(raw, func(line []byte) []byte {
 		match := imageLine.FindSubmatch(line)
 		reference := string(match[2])
-		pin, known := images[reference]
-		if !known {
+		tagged, digest, hasDigest := strings.Cut(reference, "@")
+		pin, known := images[tagged]
+		if !known || (hasDigest && digest != pin) {
 			unpinned = append(unpinned, reference)
 			return line
 		}
-		return []byte(string(match[1]) + reference + "@" + pin)
+		return []byte(string(match[1]) + tagged + "@" + pin)
 	})
 	if len(unpinned) > 0 {
-		return nil, fmt.Errorf("the Argo CD install manifest runs images no digest pins (%s); nothing was applied", strings.Join(unpinned, ", "))
+		return nil, fmt.Errorf("the install manifest runs images no digest pins (%s); nothing was applied", strings.Join(unpinned, ", "))
 	}
 	return pinned, nil
 }
