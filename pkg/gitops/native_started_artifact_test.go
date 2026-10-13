@@ -2,8 +2,12 @@ package gitops
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -131,6 +135,195 @@ func TestAClosureDigestDoesNotMoveWithTheCheckout(t *testing.T) {
 	there, err := startedPythonService(t, second).Digest(second)
 	require.NoError(t, err)
 	require.Equal(t, here, there)
+
+	// One tree reached by two spellings of the same directory is one build.
+	// This is the macOS case: the workspace is known as /var/folders/... and
+	// the agent reports /private/var/folders/..., and relating those two
+	// lexically names every file absolutely instead of relative to the
+	// workspace — the same checkout, two builds. The root and the reported
+	// paths are deliberately given in DIFFERENT spellings here.
+	link := filepath.Join(t.TempDir(), "workspace")
+	require.NoError(t, os.Symlink(second, link))
+	artifact := startedPythonService(t, second)
+	through := NativeArtifact{Executable: strings.Replace(artifact.Executable, second, link, 1)}
+	for _, source := range artifact.Sources {
+		through.Sources = append(through.Sources, strings.Replace(source, second, link, 1))
+	}
+	linked, err := through.Digest(second)
+	require.NoError(t, err)
+	require.Equal(t, there, linked, "the agent's spelling of the workspace changed the build")
+
+	// And the other way round: the root spelled through the link, the files
+	// reported by their real paths.
+	other, err := startedPythonService(t, second).Digest(link)
+	require.NoError(t, err)
+	require.Equal(t, there, other, "the run's spelling of the workspace changed the build")
+}
+
+// A file the closure needs but the workspace does not hold — the interpreter
+// in /usr, a shared virtualenv — has only its absolute path for a name, and
+// that path is part of the build. Nothing may silently name it relative to
+// the workspace, which would make the build depend on how deep the checkout
+// sits on disk.
+func TestAFileOutsideTheWorkspaceIsNamedByItsAbsolutePath(t *testing.T) {
+	outside := t.TempDir()
+	interpreter := filepath.Join(outside, "python")
+	require.NoError(t, os.WriteFile(interpreter, []byte("cpython"), 0o700))
+
+	shallow := t.TempDir()
+	deep := filepath.Join(t.TempDir(), "a", "b", "c")
+	require.NoError(t, os.MkdirAll(deep, 0o755))
+
+	digests := map[string]solutionhost.ImageDigest{}
+	for _, root := range []string{shallow, deep} {
+		source := filepath.Join(root, "main.py")
+		require.NoError(t, os.WriteFile(source, []byte("app = None\n"), 0o600))
+		digest, err := NativeArtifact{Executable: interpreter, Sources: []string{source}}.Digest(root)
+		require.NoError(t, err)
+		digests[root] = digest
+	}
+	require.Equal(t, digests[shallow], digests[deep],
+		"the interpreter is named absolutely in both, so only the workspace-relative source decides the build")
+
+	// And the absolute name is really in the digest: a different interpreter
+	// at a different path is a different build even with identical bytes.
+	twin := filepath.Join(t.TempDir(), "python")
+	require.NoError(t, os.WriteFile(twin, []byte("cpython"), 0o700))
+	source := filepath.Join(shallow, "main.py")
+	moved, err := NativeArtifact{Executable: twin, Sources: []string{source}}.Digest(shallow)
+	require.NoError(t, err)
+	require.NotEqual(t, digests[shallow], moved)
+}
+
+// textManifestDigest is the manifest encoding this file used before it was
+// length-prefixed: one "<sha256>  <name>" line per entry, sorted. It lives
+// here so the case below can show what the prefix is for — a name is free to
+// contain a newline, and under this encoding one file could spell out two
+// entries.
+func textManifestDigest(t *testing.T, root string, artifact NativeArtifact) solutionhost.ImageDigest {
+	t.Helper()
+	root = resolved(root)
+	var lines []string
+	for _, path := range append([]string{artifact.Executable}, artifact.Sources...) {
+		digest, err := fileDigest(path)
+		require.NoError(t, err)
+		lines = append(lines, string(digest)+"  "+artifactName(root, path)+"\n")
+	}
+	sort.Strings(lines)
+	hash := sha256.New()
+	for _, line := range lines {
+		hash.Write([]byte(line))
+	}
+	return solutionhost.ImageDigest("sha256:" + hex.EncodeToString(hash.Sum(nil)))
+}
+
+// A source's name cannot encode entries of its own. One file named
+// "a\n<sha256>  g" renders, in a plain text manifest, as exactly the two lines
+// an honest two-file closure renders — so two different started closures
+// would share one approved build, and the host would admit either of them for
+// the other. The manifest is length-prefixed, which is what makes the name
+// unambiguous.
+func TestASourceNameCannotForgeAManifestEntry(t *testing.T) {
+	root := t.TempDir()
+	write := func(name, content string) string {
+		path := filepath.Join(root, name)
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+		return path
+	}
+	digestOf := func(content string) string {
+		sum := sha256.Sum256([]byte(content))
+		return "sha256:" + hex.EncodeToString(sum[:])
+	}
+
+	// Entries sort by the whole string, which starts with a fixed-width
+	// digest, so the forgery only merges two adjacent lines when the two
+	// honest digests are neighbours in that order. Search content for a
+	// layout where they are.
+	const executableContent = "cpython"
+	executableDigest := digestOf(executableContent)
+	var aContent, gContent string
+	for i := 0; aContent == "" && i < 512; i++ {
+		for j := 0; j < 512; j++ {
+			a, g := fmt.Sprintf("a%d\n", i), fmt.Sprintf("g%d\n", j)
+			da, dg := digestOf(a), digestOf(g)
+			if (executableDigest < da && da < dg) || (da < dg && dg < executableDigest) {
+				aContent, gContent = a, g
+				break
+			}
+		}
+	}
+	require.NotEmpty(t, aContent, "no content layout puts the two honest entries side by side")
+
+	executable := write("python", executableContent)
+	honest := NativeArtifact{Executable: executable, Sources: []string{
+		write("a", aContent), write("g", gContent),
+	}}
+	// One file, named so that a text manifest renders it as those two lines.
+	forged := NativeArtifact{Executable: executable, Sources: []string{
+		write("a\n"+digestOf(gContent)+"  g", aContent),
+	}}
+
+	require.Equal(t, textManifestDigest(t, root, honest), textManifestDigest(t, root, forged),
+		"the text manifest this replaced gave two different closures one build")
+
+	honestBuild, err := honest.Digest(root)
+	require.NoError(t, err)
+	forgedBuild, err := forged.Digest(root)
+	require.NoError(t, err)
+	require.NotEqual(t, honestBuild, forgedBuild, "a name forged a manifest entry")
+
+	// The two digest shapes must stay apart. A compiled runtime's build is
+	// the sha256 of its executable's own bytes and a closure's is the sha256
+	// of a manifest, so an executable whose bytes ARE that manifest would
+	// otherwise carry the closure's approved build. The manifest is opened
+	// with a domain tag, which the preimage written here deliberately omits.
+	preimage := write("preimage", closureManifestEntries(t, root, honest))
+	impostor, err := NativeArtifact{Executable: preimage}.Digest(root)
+	require.NoError(t, err)
+	require.NotEqual(t, honestBuild, impostor, "an executable whose bytes are a manifest took that closure's build")
+}
+
+// closureManifestEntries is the entry stream Digest hashes for a closure,
+// without the domain tag that opens it — the preimage an executable's bytes
+// would have to be to be read as that closure.
+func closureManifestEntries(t *testing.T, root string, artifact NativeArtifact) string {
+	t.Helper()
+	root = resolved(root)
+	var entries []string
+	for _, path := range append([]string{artifact.Executable}, artifact.Sources...) {
+		digest, err := fileDigest(path)
+		require.NoError(t, err)
+		name := artifactName(root, path)
+		entries = append(entries, fmt.Sprintf("%d %s %s\n", len(name), name, digest))
+	}
+	sort.Strings(entries)
+	return strings.Join(entries, "")
+}
+
+// An agent that names the binary it ran among its sources has described the
+// same process as one that leaves the list empty. Both must be one build, or
+// a compiled runtime's build depends on how its agent spells the report.
+func TestNamingTheExecutableAmongTheSourcesIsTheSameBuild(t *testing.T) {
+	root := t.TempDir()
+	binary := filepath.Join(root, "main")
+	require.NoError(t, os.WriteFile(binary, []byte("one build"), 0o700))
+
+	alone, err := NativeArtifact{Executable: binary}.Digest(root)
+	require.NoError(t, err)
+	listed, err := NativeArtifact{Executable: binary, Sources: []string{binary}}.Digest(root)
+	require.NoError(t, err)
+	require.Equal(t, alone, listed)
+
+	// It is dropped, not ignored: a real closure beside it still digests as a
+	// closure.
+	source := filepath.Join(root, "main.py")
+	require.NoError(t, os.WriteFile(source, []byte("app = None\n"), 0o600))
+	closure, err := NativeArtifact{Executable: binary, Sources: []string{binary, source}}.Digest(root)
+	require.NoError(t, err)
+	require.NotEqual(t, alone, closure)
+	withoutSelf, err := NativeArtifact{Executable: binary, Sources: []string{source}}.Digest(root)
+	require.NoError(t, err)
+	require.Equal(t, closure, withoutSelf)
 }
 
 // An agent that reports nothing is where a native run stops. It must say which
@@ -150,6 +343,18 @@ func TestAnUnreportedArtifactIsRefusedByNamingTheAgent(t *testing.T) {
 	// lists: the same refusal, not an empty digest.
 	_, err = StartedArtifactOf(service, &runtimev0.StartedArtifact{Sources: []string{"/workspace/src/main.py"}})
 	require.ErrorContains(t, err, "codefly.dev/python-fastapi:0.0.112")
+
+	// A relative path would be opened against this process's working
+	// directory — the user's terminal — and would digest whatever file
+	// happened to sit there. The contract says absolute; a report that is not
+	// is refused rather than resolved.
+	_, err = StartedArtifactOf(service, &runtimev0.StartedArtifact{Executable: "go.mod"})
+	require.ErrorContains(t, err, "not an absolute path")
+	require.ErrorContains(t, err, "codefly.dev/python-fastapi:0.0.112")
+	_, err = StartedArtifactOf(service, &runtimev0.StartedArtifact{
+		Executable: "/opt/venv/bin/python", Sources: []string{"src/main.py"},
+	})
+	require.ErrorContains(t, err, "not an absolute path")
 
 	reported, err := StartedArtifactOf(service, &runtimev0.StartedArtifact{
 		Executable: "/opt/venv/bin/python", Sources: []string{"/workspace/src/main.py"},

@@ -66,6 +66,17 @@ func StartedArtifactOf(service *resources.Service, reported *runtimev0.StartedAr
 			"agent %s reports no started artifact for %s: a native run approves the build the agent says it started, so the agent must implement %s",
 			agentOf(service), resources.WithUnique(service).Unique(), contract.RuntimeStartedArtifact)
 	}
+	// The contract says every path is absolute. A relative one would be
+	// opened against this process's working directory, which is the user's
+	// terminal and has nothing to do with what the agent ran — so it is
+	// refused rather than resolved into a file that happens to be there.
+	for _, path := range append([]string{artifact.GetExecutable()}, artifact.GetSources()...) {
+		if !filepath.IsAbs(path) {
+			return NativeArtifact{}, fmt.Errorf(
+				"agent %s reports %q as started for %s, which is not an absolute path: %s names the files it ran, and this run resolves none of them",
+				agentOf(service), path, resources.WithUnique(service).Unique(), contract.RuntimeStartedArtifact)
+		}
+	}
 	return NativeArtifact{Executable: artifact.GetExecutable(), Sources: artifact.GetSources()}, nil
 }
 
@@ -101,52 +112,90 @@ func (w *NativeWorkload) Repository(workspace string) string {
 	return "native/" + strings.ToLower(workspace) + "/" + strings.ToLower(w.Module.Name) + "/" + strings.ToLower(w.Service.Name)
 }
 
+// closureManifestDomain opens the manifest an interpreted runtime's build is
+// digested from. It separates the two shapes a build digest is taken over: a
+// compiled runtime's build is the sha256 of its executable's own bytes, so
+// without a domain an executable whose content happened to be a manifest
+// would carry a closure's build digest.
+const closureManifestDomain = "codefly/native-closure/v1\n"
+
 // Digest is the build a native run approves for what the agent started.
 //
 // A compiled runtime starts its own build, so the digest is the sha256 of that
-// one executable — what this has always been, and what keeps a Go workload's
-// build unchanged across this contract. An interpreted runtime starts an
-// interpreter that says nothing about the service, so the build is the closure
-// the agent named: the digest is taken over a manifest listing every file in
-// it with its own sha256, so editing a source is a different build and no
-// file's content can quietly take another's place.
+// one executable — the value `shasum -a 256` prints for the file, what this
+// has always been, and what keeps a Go workload's build unchanged across this
+// contract. An interpreted runtime starts an interpreter that says nothing
+// about the service, so the build is the closure the agent named: the digest
+// is taken over a manifest listing every file in it with its own sha256, so
+// editing a source is a different build.
+//
+// The manifest is length-prefixed rather than written as text lines, so no
+// file's name can encode entries of its own: a source called
+// "a\n<digest>  b" would otherwise forge a second entry and let two different
+// closures share one approved build.
 //
 // root makes the manifest's names stable: a file inside the workspace is named
 // relative to it, so the same tree digests the same wherever it is checked
-// out. A file outside — an interpreter in /usr, a cached virtualenv — is named
-// by its absolute path, which is the only name it has.
+// out. Both sides are resolved through their symlinks first, because a
+// workspace reached as /var and reported as /private/var is one tree and must
+// be one build. A file outside — an interpreter in /usr, a shared virtualenv —
+// is named by its absolute path, which is the only name it has, and that path
+// is part of the build.
 func (a NativeArtifact) Digest(root string) (solutionhost.ImageDigest, error) {
 	if a.Executable == "" {
 		return "", errors.New("the agent reported no started executable")
 	}
-	if len(a.Sources) == 0 {
+	sources := a.startedBeside()
+	if len(sources) == 0 {
 		return fileDigest(a.Executable)
 	}
-	lines := make([]string, 0, len(a.Sources)+1)
-	for _, path := range append([]string{a.Executable}, a.Sources...) {
+	root = resolved(root)
+	entries := make([]string, 0, len(sources)+1)
+	for _, path := range append([]string{a.Executable}, sources...) {
 		digest, err := fileDigest(path)
 		if err != nil {
 			return "", err
 		}
-		lines = append(lines, string(digest)+"  "+artifactName(root, path)+"\n")
+		name := artifactName(root, path)
+		entries = append(entries, fmt.Sprintf("%d %s %s\n", len(name), name, digest))
 	}
 	// Sorted, so the agent's enumeration order is not part of the build, and
 	// de-duplicated, so naming a file twice is not a different build either.
-	sort.Strings(lines)
+	sort.Strings(entries)
 	hash := sha256.New()
+	hash.Write([]byte(closureManifestDomain))
 	var previous string
-	for _, line := range lines {
-		if line == previous {
+	for _, entry := range entries {
+		if entry == previous {
 			continue
 		}
-		previous = line
-		hash.Write([]byte(line))
+		previous = entry
+		hash.Write([]byte(entry))
 	}
 	return solutionhost.ImageDigest("sha256:" + hex.EncodeToString(hash.Sum(nil))), nil
 }
 
-// artifactName is a file's name in the digest manifest.
+// startedBeside is the sources the agent named other than the executable
+// itself. An agent that helpfully lists the binary it ran among its sources
+// has described the same process as one that leaves the list empty, and the
+// two must be one build.
+func (a NativeArtifact) startedBeside() []string {
+	executable := resolved(a.Executable)
+	out := make([]string, 0, len(a.Sources))
+	for _, source := range a.Sources {
+		if resolved(source) == executable {
+			continue
+		}
+		out = append(out, source)
+	}
+	return out
+}
+
+// artifactName is a file's name in the digest manifest. root is already
+// resolved; the path is resolved here so a tree reached by two spellings of
+// the same directory is one build.
 func artifactName(root, path string) string {
+	path = resolved(path)
 	if root == "" {
 		return filepath.ToSlash(path)
 	}
@@ -155,6 +204,19 @@ func artifactName(root, path string) string {
 		return filepath.ToSlash(path)
 	}
 	return filepath.ToSlash(relative)
+}
+
+// resolved is a path with its symlinks followed, or the cleaned path when it
+// cannot be followed — a name is still needed for a file that has just been
+// removed, and fileDigest is what reports that it cannot be read.
+func resolved(path string) string {
+	if path == "" {
+		return ""
+	}
+	if evaluated, err := filepath.EvalSymlinks(path); err == nil {
+		return evaluated
+	}
+	return filepath.Clean(path)
 }
 
 // fileDigest is the sha256 of one started file, in digest form. It reads a

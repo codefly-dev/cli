@@ -1223,19 +1223,40 @@ agent exec'd, and the files it handed that program.
   one of them changes. So the agent names the closure beside the interpreter —
   the entrypoint, the modules it loads, the lock file pinning its dependencies
   — and the build is the SHA-256 of a manifest listing each of those files with
-  its own SHA-256. Editing any of them is a different build. The manifest names
-  a file inside the workspace relative to it, so the same checkout digests the
-  same wherever it sits; a file outside it, such as an interpreter in `/usr`,
-  is named by its absolute path. The list is sorted and de-duplicated, so the
-  agent's enumeration order is not part of the build.
+  its own SHA-256. Editing any of them is a different build.
+
+  Three things make that manifest say one thing only. Each entry is
+  **length-prefixed** (`<len> <name> <sha256>`), so a file whose name contains
+  a newline cannot spell out entries of its own and let two different closures
+  share one build. The manifest is opened with a **domain tag**, so an
+  executable whose bytes happen to be a manifest is not read as that closure —
+  the two digest shapes never meet. And a name is taken **relative to the
+  workspace**, with the workspace and the reported path both resolved through
+  their symlinks first, so a tree known as `/var/...` and reported as
+  `/private/var/...` is one build and the same checkout digests the same
+  wherever it sits. A file outside the workspace, such as an interpreter in
+  `/usr`, is named by its absolute path — the only name it has, and part of
+  the build. The list is sorted and de-duplicated, so the agent's enumeration
+  order is not part of the build, and an agent that names the executable among
+  its own sources describes the same process as one that leaves the list
+  empty.
 - **An agent that reports nothing is a refusal, not a guess.** The run names
   the agent and the contract it must implement, and that workload is not
   delivered — so a solution keeps waiting for its token rather than minting
-  against a build nobody vouched for. The run used to read
+  against a build nobody vouched for. A reported path that is not absolute is
+  refused the same way: resolving it would open whatever file sat in the
+  terminal's working directory. The run used to read
   `<service>/.cache/native/main` for every agent, which is the Go agents'
   layout; a service on any other agent failed with a missing file and was never
   delivered at all ([#989](https://github.com/codefly-dev/cli/issues/989)).
   Until an agent adopts the contract, its workloads are refused by name.
+- **A workload with no host file has no shape here yet.** A service the run
+  starts in a container is still a peer the run would deliver, and its build is
+  an image digest rather than files on the developer's disk. The contract has
+  no form for that, so such a workload is refused like any other that reports
+  no artifact. It was never delivered before either — it has no
+  `.cache/native/main` — so nothing regresses, but the refusal names a
+  contract its agent cannot honestly satisfy.
 
 What is weaker than a cluster, stated rather than implied: the build a pod is
 said to run is the SHA-256 of what the agent reported starting, and the run is

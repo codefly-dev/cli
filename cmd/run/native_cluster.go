@@ -570,16 +570,7 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, peer g
 	if err != nil {
 		return err
 	}
-	digest, err := artifact.Digest(cluster.workspace.Dir())
-	if err != nil {
-		return err
-	}
 	namespace := cluster.env.ModuleNamespace(cluster.workspace, peer.Module)
-	cluster.authority.RegisterPod(&nativecluster.Pod{
-		Namespace: namespace, ServiceAccount: peer.Account, Name: workload.PodName, UID: workload.PodUID,
-		Container: peer.Service, Repository: "native/" + strings.ToLower(cluster.workspace.Name) + "/" + strings.ToLower(peer.Module) + "/" + strings.ToLower(peer.Service),
-		Digest: string(digest),
-	})
 	gatewayURL, err := cluster.flow.GetAddressForEndpoint(ctx, strings.Split(cluster.env.Host.Gateway, "/")[0], strings.Split(cluster.env.Host.Gateway, "/")[1], "rest")
 	if err != nil {
 		return fmt.Errorf("the host gateway's rest endpoint is unresolved: %w", err)
@@ -616,6 +607,16 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, peer g
 	if err != nil {
 		return err
 	}
+	// The pod reports the build the documents name, read once. Digesting the
+	// started files a second time here would let a source saved between the
+	// two reads give the pod one build and the presence another, and the host
+	// refuses a pod whose image is not an approved build — a digest mismatch
+	// standing in for an edit nobody made.
+	cluster.authority.RegisterPod(&nativecluster.Pod{
+		Namespace: namespace, ServiceAccount: peer.Account, Name: workload.PodName, UID: workload.PodUID,
+		Container: peer.Service, Repository: "native/" + strings.ToLower(cluster.workspace.Name) + "/" + strings.ToLower(peer.Module) + "/" + strings.ToLower(peer.Service),
+		Digest: string(rendered.Digest),
+	})
 	previous, hadPrevious := cluster.documents[unique]
 	cluster.documents[unique] = rendered
 	cluster.builds[rendered.Digest] = true
