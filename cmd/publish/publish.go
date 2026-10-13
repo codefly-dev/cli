@@ -45,7 +45,9 @@ type Mode string
 
 const (
 	// ModeAgent — service-agent or module-agent repo. Bumps
-	// agent.codefly.yaml. Service agents run release-grade CI and upload
+	// agent.codefly.yaml; a module agent's release also sets every service
+	// its workspace composes to that version (includeModuleServices). Service
+	// agents run release-grade CI and upload
 	// loader-compatible release assets. Module agents run source/build/audit
 	// CI and publish the immutable source tag their module package is built
 	// from.

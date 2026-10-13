@@ -2090,6 +2090,27 @@ A module-agent repository publishes only the immutable Git tag. If the release
 pull request merged but the tag push failed, re-run: the untagged release commit
 is recognised and finished rather than bumped again.
 
+A module's version is its services' version. The release commit of a module
+agent (`kind: codefly:module`) also sets the top-level `version:` of every
+`service.codefly.yaml` its workspace composes — found through
+`workspace.codefly.yaml` and each `module.codefly.yaml`, so a fixture workspace
+elsewhere in the repository is not touched — to the released version. That is
+the value Codefly hands each service as `CODEFLY__SERVICE_VERSION`, so a
+released module's services report the module's version on `/version`, in a run
+plan and in producer ids, instead of `0.0.0`. `agent.codefly.yaml` stays the one
+place the version is decided; nobody edits a service's `version:` by hand, and
+the release refuses a merged `main` where any of them disagrees with the tag. A
+service already carrying a version past the release is refused rather than
+moved backwards (release with `minor` or `major` to reach it), a composed
+service with no top-level `version:` is refused at pre-flight, and
+`--dry-run` lists every manifest it would set.
+
+The module package manifest (`module.package.codefly.yaml`) is not rewritten: its
+`version:` is the contract package's version, which `generate contracts` writes
+into the API catalog, `generate runnables` into every derived package's identity
+and digest, and `publish clients` publishes client libraries at. It moves when
+the contract does, and is bumped by hand.
+
 Releasing does not update what the repository *pins*. Move a dependency first —
 `codefly agent deps --dir <agent> --pin vX.Y.Z` for an agent's Core pin,
 `go get github.com/codefly-dev/core@vX.Y.Z && go mod tidy` in the CLI — commit

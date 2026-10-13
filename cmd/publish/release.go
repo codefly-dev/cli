@@ -72,6 +72,10 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 		}
 	}
 
+	if err := e.includeModuleServices(ctx); err != nil {
+		return "", err
+	}
+
 	// Reconcile the bump base against what's ACTUALLY been released. The
 	// manifest's version drifts behind the git tags (tags get cut by CI /
 	// older tooling without bumping info.codefly.yaml), so bumping the
@@ -84,14 +88,21 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 	}
 
 	manifests := e.manifests()
-	for _, manifest := range manifests[1:] {
-		manifest.Version = e.Manifest.Version
-	}
 	newVer, err := e.Manifest.Bump(e.BumpType)
 	if err != nil {
 		return "", fmt.Errorf("bump version: %w", err)
 	}
 	newTag := "v" + newVer.String()
+	// Every manifest the release writes ends at the released version, and none
+	// may move backwards to reach it: a version some other manifest already
+	// carries past this release is a decision nobody made here.
+	for _, manifest := range manifests[1:] {
+		if manifest.Version != nil && manifest.Version.GreaterThan(newVer) {
+			return "", fmt.Errorf("%s carries version %s, past the release %s; a release never moves a version backwards — release at %s or later (codefly publish minor|major)",
+				manifest.Path, manifest.Version, newVer, manifest.Version)
+		}
+		manifest.Version = e.Manifest.Version
+	}
 
 	// Pre-flight tag-existence check uses the bumped version (not the
 	// current). Done after bump so we can name the actual tag we'd
@@ -103,6 +114,9 @@ func (e *Engine) Release(ctx context.Context) (string, error) {
 	if e.DryRun {
 		fmt.Printf("[dry-run] would bump %s → %s and tag %s\n",
 			e.Manifest.Version, newVer, newTag)
+		for _, manifest := range manifests[1:] {
+			fmt.Printf("[dry-run] would set %s to %s in the same release commit\n", manifest.Path, newVer)
+		}
 		return newTag, nil
 	}
 

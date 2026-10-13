@@ -86,6 +86,20 @@ Failure handling:
 - **After the tag** — the release commit and tag are immutable and remain even if the release
   workflow later fails.
 
+**A module agent's release sets its services' versions.** In a module repository
+(`agent.codefly.yaml` with `kind: codefly:module`) the release commit also sets the
+top-level `version:` of every `service.codefly.yaml` the repository's workspace
+composes to the released version, so each service reports the module's version
+(`CODEFLY__SERVICE_VERSION`, `/version`, producer ids) instead of `0.0.0`. The
+agent manifest is the one source: never bump a service's `version:` by hand —
+publish refuses a merged `main` where one disagrees with the tag, refuses a
+service already past the release version (release `minor`/`major` to reach it),
+and refuses a composed service with no top-level `version:`. `--dry-run` lists
+each manifest it would set. `module.package.codefly.yaml` keeps its own version:
+it is the contract package's version (the API catalog, derived runnable
+identities and published clients are keyed on it) and moves only when the
+contract does.
+
 It also reconciles the manifest against the tags actually on origin: if the manifest has
 drifted behind (as it had at `0.1.145` while tags ran to `v0.1.150`), it bumps from the
 latest tag rather than colliding with an existing one.
@@ -136,7 +150,7 @@ codefly self check-update                                     # sees the new sta
 ## Checklist
 
 - [ ] `main` green, at the exact commit to ship
-- [ ] `codefly publish --dry-run` shows the version you expect
+- [ ] `codefly publish --dry-run` shows the version you expect (for a module agent, and every composed service manifest it will set)
 - [ ] `codefly publish` ran clean (release PR merged green, `release:` commit on `main`, tag pushed)
 - [ ] `release.yaml` green end to end
 - [ ] `codefly version --json` reports the tag
