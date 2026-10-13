@@ -89,3 +89,18 @@ func TestDoctorWorkspaceRefusesADeclineGenerationRefuses(t *testing.T) {
 		})
 	}
 }
+
+// A derived-operation tree that cannot be read is not a bad decline: no
+// decline can be judged at all, and the doctor says that, under its own code.
+func TestDoctorWorkspaceReportsUnreadableOperationsAsSuch(t *testing.T) {
+	fixture := derivedOperationsFixture()
+	fixture[derivedRunnablesDir+"index.json"] = `{"schema":"not-the-index"}`
+	dir := singleServiceWorkspace(t, decliningWorkspace(slottedBindingKey), nil, fixture)
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
+	unreadable := requireCode(t, report, codeRunnableOperationsUnreadable, checkStatusFail)
+	if !strings.Contains(unreadable.Message, "cannot be read") {
+		t.Fatalf("message %q does not say the operations cannot be read", unreadable.Message)
+	}
+	requireNoCode(t, report, codeRunnableBindingDeclineInvalid)
+	requireNoCode(t, report, codeRunnableBindingDeclined)
+}

@@ -3262,8 +3262,10 @@ What it checks, in order:
    service that installs it is refused where it reads `runnable-bindings/KEY`.
    A decline generation refuses — the key names no derived operation, or one
    with no required scope slot — fails as `runnable_binding_decline_invalid`
-   (see [generate runnable-bindings](#generate-runnable-bindings)). Like the
-   checks below, it needs every composed module materialized.
+   (see [generate runnable-bindings](#generate-runnable-bindings)). Derived
+   operations that cannot be read at all fail as
+   `runnable_operations_unreadable`. Like the checks below, it needs every
+   composed module materialized.
 6. Every workspace configuration group services declare under
    `workspace-configuration-dependencies` is provided and defines values.
    The doctor reads exactly what a run provisions: the workspace's own
@@ -3319,7 +3321,8 @@ message, remediation?}]}`. Output never contains configuration values, raw
 `provider_resolution_failed`, `plaintext_not_allowed`,
 `reference_scheme_unknown`, `module_not_materialized`,
 `agent_override_active`, `agent_override_invalid`,
-`runnable_binding_declined`, `runnable_binding_decline_invalid`, `timeout`.
+`runnable_binding_declined`, `runnable_binding_decline_invalid`,
+`runnable_operations_unreadable`, `timeout`.
 Automation
 should match on codes, never
 on message prose; renaming or removing a code bumps `schema_version`.

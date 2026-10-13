@@ -20,6 +20,12 @@ const codeRunnableBindingDeclined = "runnable_binding_declined"
 // one that declares no required scope slot and so has nothing to decline.
 const codeRunnableBindingDeclineInvalid = "runnable_binding_decline_invalid"
 
+// codeRunnableOperationsUnreadable reports that the operations a declined
+// binding would decline cannot be read — a module that does not load, or a
+// derived-operation tree that does not parse — so no decline can be judged.
+// `codefly generate runnable-bindings` fails on the same read.
+const codeRunnableOperationsUnreadable = "runnable_operations_unreadable"
+
 // checkRunnableBindingDeclines judges every binding the environment declines
 // with the rule generation applies (generate.CheckRunnableBindingDeclines),
 // so the doctor never calls a decline deliberate that generation refuses.
@@ -31,7 +37,7 @@ const codeRunnableBindingDeclineInvalid = "runnable_binding_decline_invalid"
 func checkRunnableBindingDeclines(ctx context.Context, ws *resources.Workspace, env *environments.Environment, report *workspaceReadinessReport) {
 	declines, err := generate.CheckRunnableBindingDeclines(ctx, ws, env)
 	if err != nil {
-		report.add(codeRunnableBindingDeclineInvalid, "runnable binding declines", checkStatusFail,
+		report.add(codeRunnableOperationsUnreadable, "runnable binding declines", checkStatusFail,
 			fmt.Sprintf("environment %s declines runnable bindings, but the operations they would decline cannot be read: %v", env.Name, err),
 			"run `codefly generate contracts` and `codefly generate runnables` for the module named above")
 		return
