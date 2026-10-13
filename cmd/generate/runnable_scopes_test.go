@@ -286,7 +286,12 @@ func TestRunnableScopeSelectionRefusals(t *testing.T) {
 			resetRunnableBindingsFlags(t)
 			require.NoError(t, RunnablesCmd.RunE(RunnablesCmd, []string{"documents"}))
 			key := RunnableBindingKey("documents", readIndex(t, moduleDir).Operations[0].Name)
-			writeSelectionEnvironment(t, root, map[string]environments.ScopeSelections{key: selections})
+			// A nil answer is the absent key, never a null value or an empty list.
+			answered := map[string]environments.ScopeSelections{}
+			if selections != nil {
+				answered[key] = selections
+			}
+			writeSelectionEnvironment(t, root, answered)
 			err := RunnableBindingsCmd.RunE(RunnableBindingsCmd, nil)
 			require.ErrorContains(t, err, tt.want)
 			require.ErrorContains(t, err, "runnable-scope-selections["+key+"]")

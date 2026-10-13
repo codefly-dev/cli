@@ -2411,7 +2411,7 @@ module_trust_missing, module_checkout_version_drift,
 service_override_active, service_override_unresolved,
 service_override_contract_drift, agent_override_active,
 agent_override_invalid, gitops_dev_deployment_active,
-agent_dev_build,
+agent_dev_build, runnable_binding_declined,
 configuration_directory_missing, configuration_missing,
 configuration_invalid, configuration_duplicate, provider_not_configured,
 provider_executable_missing, provider_authentication_required,
@@ -2825,9 +2825,17 @@ and lookup. Every required slot needs exact resource kinds, actions and ids;
 missing selections, wildcards and overlapping kinds are refused. Tool exposure
 is carried from the owner. See docs/runnable.md for the selection YAML.
 
+An environment that installs an operation for no resource answers its key with
+an explicitly empty list, KEY: []. That operation is declined: its key is absent
+from the output and it receives no authority, while every other operation still
+prepares; the file records the decline as a comment and `codefly doctor workspace`
+names it. Only an operation with a required scope slot can be declined, and an
+absent key is still refused, so nothing is skipped by omission.
+
 The output is configurations/<profile>/runnable-bindings.env in the workspace, for the
 environment's first configuration profile. --check regenerates in memory and
-exits non-zero when the file differs, including after a scope selection changes.
+exits non-zero when the file differs, including after a scope selection or a
+decline changes.
 
 Examples:
   codefly generate runnable-bindings
