@@ -56,7 +56,7 @@ func TestModuleFrontendReachesBothDeliveryPaths(t *testing.T) {
 		documents, err := deliverer.Render(context.Background(), &NativeWorkload{
 			Module: module, Service: service, Services: services,
 			Subject: "system:serviceaccount:example:shared-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/shared-api",
-			Executable: filepath.Join(entryDir, "binary"),
+			Artifact: NativeArtifact{Executable: filepath.Join(entryDir, "binary")},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -93,7 +93,7 @@ func TestASolutionWithoutItsFrontendIsRefusedByBothDeliveryPaths(t *testing.T) {
 	_, err := deliverer.Render(context.Background(), &NativeWorkload{
 		Module: module, Service: service, Services: []*resources.Service{service},
 		Subject: "system:serviceaccount:example:crm-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/crm-api",
-		Executable: filepath.Join(module.Dir(), "services", "api", "binary"),
+		Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")},
 	})
 	if err == nil || !strings.Contains(err.Error(), "declares no frontend") {
 		t.Fatalf("native delivery accepted a solution with no frontend: %v", err)

@@ -6,8 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 
@@ -198,22 +196,4 @@ func TestApprovedBuildsReadsWhatAnEnvelopeApproves(t *testing.T) {
 		ApprovedBuilds([]byte(`{"approved_builds":["sha256:aa","sha256:bb"]}`)))
 	require.Empty(t, ApprovedBuilds(nil))
 	require.Empty(t, ApprovedBuilds([]byte(`nope`)))
-}
-
-// The build a native workload runs is the digest of the executable the run
-// started: what its pod reports and what its presence names.
-func TestAnExecutableDigestIsTheHashOfTheStartedBinary(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "main")
-	require.NoError(t, os.WriteFile(path, []byte("one build"), 0o700))
-	first, err := ExecutableDigest(path)
-	require.NoError(t, err)
-	require.Equal(t, solutionhost.ImageDigest("sha256:35b5c9836731bd31e75d30f3186350b17b62adf380da9d852d822b741f05922a"), first)
-
-	require.NoError(t, os.WriteFile(path, []byte("another build"), 0o700))
-	second, err := ExecutableDigest(path)
-	require.NoError(t, err)
-	require.NotEqual(t, first, second, "a rebuild is a different build")
-
-	_, err = ExecutableDigest(filepath.Join(t.TempDir(), "absent"))
-	require.Error(t, err)
 }

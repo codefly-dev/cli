@@ -53,6 +53,10 @@ type IManager interface {
 	// RPC dispatched by this manager's runner, or nil if untested.
 	RunnerTestResponse() *runtimev0.TestResponse
 
+	// RunnerStartedArtifact returns what the agent reported it started on the
+	// last successful Start, or nil when the agent reported none.
+	RunnerStartedArtifact() *runtimev0.StartedArtifact
+
 	DoSetCallback(seed func(ctx context.Context, action Action) error)
 	// DoSetFailureSink registers a callback that the Runner.Follow loop
 	// invokes when a started service is observed dead. Used by Flow to
@@ -186,6 +190,13 @@ func (manager *Manager) RunnerTestResponse() *runtimev0.TestResponse {
 		return nil
 	}
 	return manager.Runner.TestResponse()
+}
+
+func (manager *Manager) RunnerStartedArtifact() *runtimev0.StartedArtifact {
+	if manager.Runner == nil {
+		return nil
+	}
+	return manager.Runner.StartedArtifact()
 }
 
 func (manager *Manager) RunnerTestSkipped() bool {
@@ -348,6 +359,12 @@ func (n NoOpManager) RunnerDoDestroy(_ context.Context) (*OutputProperty, error)
 }
 
 func (n NoOpManager) RunnerTestResponse() *runtimev0.TestResponse {
+	return nil
+}
+
+// RunnerStartedArtifact: a manager with no runner started no process, so it
+// reports no artifact — the same answer as an agent that reports none.
+func (n NoOpManager) RunnerStartedArtifact() *runtimev0.StartedArtifact {
 	return nil
 }
 

@@ -545,17 +545,15 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, identi
 		}
 		services = append(services, loaded)
 	}
-	executable := filepath.Join(service.Dir(), ".cache", "native", "main")
-	digest, err := gitops.ExecutableDigest(executable)
+	// The build this run approves is what the agent says it started, never a
+	// path derived from one agent family's layout: a Go agent's binary and a
+	// python agent's interpreter-and-sources are not the same shape, and only
+	// the agent that started the process knows which it ran.
+	artifact, err := gitops.StartedArtifactOf(service, cluster.flow.StartedArtifact(unique))
 	if err != nil {
 		return err
 	}
 	namespace := cluster.env.ModuleNamespace(cluster.workspace, identity.Module)
-	cluster.authority.RegisterPod(&nativecluster.Pod{
-		Namespace: namespace, ServiceAccount: identity.Account, Name: workload.PodName, UID: workload.PodUID,
-		Container: identity.Service, Repository: "native/" + strings.ToLower(cluster.workspace.Name) + "/" + strings.ToLower(identity.Module) + "/" + strings.ToLower(identity.Service),
-		Digest: string(digest),
-	})
 	gatewayURL, err := cluster.flow.GetAddressForEndpoint(ctx, strings.Split(cluster.env.Host.Gateway, "/")[0], strings.Split(cluster.env.Host.Gateway, "/")[1], "rest")
 	if err != nil {
 		return fmt.Errorf("the host gateway's rest endpoint is unresolved: %w", err)
@@ -586,12 +584,22 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, identi
 	}
 	native := gitops.NativeWorkload{
 		Module: module, Service: service, Services: services, Namespace: namespace, Account: identity.Account,
-		SPIFFEID: identity.SPIFFEID, Subject: cluster.subject(identity), Executable: executable,
+		SPIFFEID: identity.SPIFFEID, Subject: cluster.subject(identity), Artifact: artifact,
 	}
 	rendered, err := deliverer.Render(ctx, &native)
 	if err != nil {
 		return err
 	}
+	// The pod reports the build the documents name, read once. Digesting the
+	// started files a second time here would let a source saved between the
+	// two reads give the pod one build and the presence another, and the host
+	// refuses a pod whose image is not an approved build — a digest mismatch
+	// standing in for an edit nobody made.
+	cluster.authority.RegisterPod(&nativecluster.Pod{
+		Namespace: namespace, ServiceAccount: identity.Account, Name: workload.PodName, UID: workload.PodUID,
+		Container: identity.Service, Repository: "native/" + strings.ToLower(cluster.workspace.Name) + "/" + strings.ToLower(identity.Module) + "/" + strings.ToLower(identity.Service),
+		Digest: string(rendered.Digest),
+	})
 	previous, hadPrevious := cluster.documents[unique]
 	cluster.documents[unique] = rendered
 	cluster.builds[rendered.Digest] = true

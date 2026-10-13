@@ -1355,6 +1355,22 @@ func (flow *Flow) WithRunningHook(hook func(service string, port int)) {
 	flow.runningHook = hook
 }
 
+// StartedArtifact is what the agent running a service reported it started on
+// its last successful Start — the program it ran and the files that program
+// was handed — or nil when the agent reported none. A consumer that pins the
+// build a process is at reads it here instead of deriving a path from one
+// agent family's layout; nil is a refusal to make, not a path to guess.
+func (flow *Flow) StartedArtifact(unique string) *runtimev0.StartedArtifact {
+	if flow == nil || flow.hub == nil {
+		return nil
+	}
+	manager, err := flow.hub.NewManager(unique)
+	if err != nil {
+		return nil
+	}
+	return manager.RunnerStartedArtifact()
+}
+
 // World is the run's world: its environment, workspace and shared state.
 func (flow *Flow) World() *World {
 	if flow == nil {
