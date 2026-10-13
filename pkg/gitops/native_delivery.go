@@ -377,6 +377,7 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	if instance.Frontend, err = solutionrun.DeclaredFrontend(ctx, workload.Module); err != nil {
 		return nil, err
 	}
+	instance.Group = solutionGroupOf(d.Workspace, instance)
 	instance.Modules = []SolutionModulePin{{Module: workload.Module.Name, Package: manifest.ID, Version: manifest.Version}}
 	if instance.ReleaseDigest, err = releaseDigest(workload.Module.Dir()); err != nil {
 		return nil, fmt.Errorf("module %s: %w", workload.Module.Name, err)
@@ -417,6 +418,7 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	}
 	presence.Routes = []solutionhost.Route{{Alias: instance.Alias, Surface: solutionhost.SurfaceBackend}}
 	presence.Frontend = instance.Frontend
+	presence.Group = instance.Group
 	// The artifact's rendered digest names what the run rendered for the unit
 	// — the workload's image reference — and the workload's image digest names
 	// the build; core refuses a document that uses one digest for both.

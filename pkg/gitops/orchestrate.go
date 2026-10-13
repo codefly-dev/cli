@@ -422,6 +422,8 @@ func (r *moduleRender) declareInstances(ctx context.Context, services []*resourc
 		r.options.UndeclaredAuthority = "the module declares no presence, so no authority can be effective from it"
 		return nil
 	}
+	// The group is the composition's, read where the composition is.
+	instance.Group = solutionGroupOf(r.workspace, instance)
 	r.options.SolutionInstances = []SolutionInstance{*instance}
 	r.options.AuthorityInstances, r.options.UndeclaredAuthority, err = authorityInstancesOf(ctx, r.workspace, r.module, services, r.env, instance.Units, instance.Endpoints)
 	return err

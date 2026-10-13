@@ -648,6 +648,11 @@ func tombstoneOf(prior *solutionhost.SolutionHostBinding) (*solutionhost.Solutio
 	tombstone.Generation = prior.Generation + 1
 	tombstone.Removed = true
 	tombstone.Routes, tombstone.Artifacts, tombstone.Workloads, tombstone.Modules, tombstone.Endpoints = nil, nil, nil, nil, nil
+	// A removed generation declares no frontend and no group: a frontend is
+	// what a host serves for a build and a group is where it shows the
+	// solution, and this generation says there is nothing to serve or show.
+	// Core refuses either on a tombstone.
+	tombstone.Frontend, tombstone.Group = nil, nil
 	if err := tombstone.Validate(); err != nil {
 		return nil, err
 	}

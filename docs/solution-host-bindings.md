@@ -226,6 +226,21 @@ document names is the account's. No workload serves or presents an
 application-level certificate: inside the cell every hop is plain HTTP, and
 the mesh (ztunnel mTLS) carries transport security and destination identity.
 
+**A solution's generated `group` block.** The composing workspace organises
+its solutions for presentation under `solution-groups` (core's
+`resources.SolutionGroup`: `id`, `title`, `order`, `solutions`), and the render
+and the native delivery project the group a solution instance is listed in, by
+the name the composition carries it under (core's `Workspace.SolutionGroupOf`),
+into the presence's top-level `group` block (`id`, `title`, `order`). It is
+generated and authored nowhere else. A host groups its navigation and its
+catalogue with it after each solution's own entitlements are judged; it grants
+and installs nothing, and a solution's identity is unchanged by it. A headless
+solution is grouped like any other, which is why the block is not part of
+`frontend`; a module is grouped by nothing, whatever a workspace lists, and
+core refuses the block on a module and on a tombstone. A change to the group's
+title, order or membership alone changes the signed bytes, so it is a new
+generation under the same binding; a withdrawal declares no group.
+
 **A component's optional `frontend` block.** Modules and solutions both read
 `solution.frontend.codefly.yaml` beside their entry service. Core's
 `solutionhost.ParseFrontend` validates exactly the same fields and size bounds
