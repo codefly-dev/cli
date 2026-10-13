@@ -249,9 +249,9 @@ func componentBackendRoutes(ctx context.Context, workspace *resources.Workspace,
 			continue
 		}
 		if !isSolution[component.Name] {
-			frontend, err := solutionrun.DeclaredFrontend(ctx, component)
-			if err != nil {
-				return nil, err
+			frontend, frontendErr := solutionrun.DeclaredFrontend(ctx, component)
+			if frontendErr != nil {
+				return nil, frontendErr
 			}
 			if frontend == nil {
 				continue

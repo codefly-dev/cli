@@ -24,18 +24,17 @@ func (cluster *nativeCluster) projectEndpoints(ctx context.Context, document *so
 	}
 	path := filepath.Join(cluster.endpointDeliveryDirectory(), name)
 	if document.Removed {
-		err := os.Remove(path)
-		if os.IsNotExist(err) {
-			return nil
+		if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+			return removeErr
 		}
-		return err
+		return nil
 	}
 	raw, err := cluster.flow.EndpointDelivery(ctx, document, resources.NewNativeNetworkAccess())
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
+	if mkdirErr := os.MkdirAll(filepath.Dir(path), 0o700); mkdirErr != nil {
+		return mkdirErr
 	}
 	temporary, err := os.CreateTemp(filepath.Dir(path), ".endpoint-*")
 	if err != nil {
