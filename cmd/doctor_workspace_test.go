@@ -100,7 +100,7 @@ func runReadiness(t *testing.T, opts workspaceReadinessOptions) *workspaceReadin
 	if opts.timeout == 0 {
 		opts.timeout = 30 * time.Second
 	}
-	return workspaceReadiness(context.Background(), opts)
+	return workspaceReadiness(context.Background(), &opts)
 }
 
 func findDiagnostics(report *workspaceReadinessReport, code string) []workspaceDiagnostic {
@@ -992,7 +992,7 @@ func TestDoctorWorkspaceConcurrentChecksAreIndependent(t *testing.T) {
 			dir, baseline = failingDir, failingBaseline
 		}
 		wg.Go(func() {
-			report := workspaceReadiness(context.Background(), workspaceReadinessOptions{dir: dir, env: "local", timeout: 30 * time.Second})
+			report := workspaceReadiness(context.Background(), &workspaceReadinessOptions{dir: dir, env: "local", timeout: 30 * time.Second})
 			data, err := json.Marshal(report)
 			if err != nil {
 				errs <- err
@@ -1114,6 +1114,9 @@ func TestDoctorWorkspaceFlagsMaterializationForADifferentRequest(t *testing.T) {
 	})
 	report := runReadiness(t, workspaceReadinessOptions{dir: dir})
 	diag := requireCode(t, report, codeModuleResolutionStale, "warn")
+	if diag.Module != "saas" {
+		t.Fatalf("structured module identity lost: %+v", diag)
+	}
 	for _, want := range []string{"saas", "0.1.0", "9.9.9"} {
 		if !strings.Contains(diag.Message, want) {
 			t.Fatalf("diagnostic should name the module and both requests: %+v", diag)
@@ -1714,4 +1717,43 @@ func TestDoctorWorkspaceWarnsOnAgentDevBuild(t *testing.T) {
 		dir := singleServiceWorkspace(t, testWorkspaceYAML, nil, nil)
 		requireNoCode(t, runReadiness(t, workspaceReadinessOptions{dir: dir}), codeAgentDevBuild)
 	})
+}
+
+func TestDoctorWorkspaceSourcesOnlyUsesResolverWithoutProvider(t *testing.T) {
+	dir := singleServiceWorkspace(t, testWorkspaceYAMLOnePassword, []string{"api"}, map[string]string{
+		"configurations/local/api.env":            "URL=private-value-not-exported\n",
+		"configurations/local/api.secret.ref.env": "TOKEN=op://private-vault/item/token\n",
+	})
+	report := runReadiness(t, workspaceReadinessOptions{dir: dir, sourceOnly: true})
+	if !report.SourceOnly || !report.ConfigurationResolved || len(report.ConfigurationGroups) != 1 {
+		t.Fatalf("missing resolved inventory: %s", reportJSON(t, report))
+	}
+	if len(report.ConfigurationProfiles) == 0 {
+		t.Fatal("source-only report omitted profile-directory evidence")
+	}
+	group := report.ConfigurationGroups[0]
+	if len(group.Consumers) != 1 || group.Consumers[0] != "backend/api" {
+		t.Fatalf("wrong declared group consumers: %+v", group.Consumers)
+	}
+	if len(report.ConfigurationOrigins) != 2 || report.ConfigurationEvidence.Coverage != "composed-group-key-origins" {
+		t.Fatalf("missing resolver origins")
+	}
+	for _, origin := range report.ConfigurationOrigins {
+		if origin.Group != "api" || filepath.IsAbs(origin.File) || !strings.HasPrefix(origin.File, "configurations/local/") || origin.Document {
+			t.Fatalf("unexpected origin: %+v", origin)
+		}
+	}
+	if group.Name != "api" || group.Owner != "workspace" || len(group.Keys) != 2 || len(group.SecretKeys) != 1 {
+		t.Fatalf("wrong projected group: %+v", group)
+	}
+
+	encoded := reportJSON(t, report)
+	if strings.Contains(encoded, "private-value-not-exported") || strings.Contains(encoded, "private-vault") {
+		t.Fatalf("configuration value or secret URI escaped source projection")
+	}
+	for _, check := range report.Checks {
+		if strings.HasPrefix(check.Code, "provider_") || strings.HasPrefix(check.Code, "external_provider.") {
+			t.Fatalf("source-only diagnostic attempted provider checks: %+v", check)
+		}
+	}
 }
