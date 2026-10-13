@@ -47,6 +47,7 @@ environments:
       component: platform-host                  # the host component instance
       domain: example                           # the ownership domain this composition delivers under
       audience: accounts                        # the bare token audience the host verifies
+      module_audience: module-capabilities      # the audience the host stamps on a module's own capability
       trust_domain: cluster.example             # the SPIFFE trust domain of the host's identity issuer
       envelope_revision: 3                      # the envelope revision this composition was reviewed against
       delivery: platform/accounts/rest          # the host's delivery API, by composition identity
@@ -1013,7 +1014,7 @@ and composed module name as the presence document:
 | Key in `module-authority` | Rendered source |
 |---|---|
 | `PRINCIPAL` | The workload's SPIFFE ID |
-| `AUDIENCE` | The composed module's declared name |
+| `AUDIENCE` | The environment's `host.module_audience`: the audience the host stamps on a module's own capability, as the host names it. A module refuses a credential addressed to anything else |
 | `PROJECTION_AUDIENCE` | The environment's `host.audience` |
 | Secret `INTERNAL_TOKEN` | A reference to the existing `internal-auth` workspace secret `CODEFLY_INTERNAL_TOKEN` |
 
@@ -1149,6 +1150,57 @@ capability surface locally**: presence and routing so a developer sees their
 UI, and no module credential minted at all. Which of the two holds is the
 owner's call; this document records the first, as agreed, until the owner
 decides otherwise.
+
+### A native run: the run answers as the cluster
+
+The section above ends at "a local run runs pods", and `codefly run cluster`
+is that run. A run of processes is still the first loop a developer has, so a
+**native** `codefly run` of a composition that declares a host stands in for
+what the host reads from Kubernetes, instead of the host learning a second
+path. The host's code is the same in both.
+
+For the lifetime of one run, the CLI is:
+
+- **the API server** — TokenReview and pod reads over TLS on a loopback port,
+  under a CA created for that run. It issues each workload's projected token
+  for the host's audience and reports each workload's pod.
+- **the workload identity issuer** — an X.509-SVID per service that declares
+  `workload-identity`, named as a cell names it, with the same peer files a
+  render mounts. The `workload-identity` and `module-authority` groups are
+  supplied to the process the way the render supplies them to a pod.
+- **the delivery pipeline** — once a workload is running it signs that
+  workload's presence and authority with the developer key and POSTs them to
+  the host's own delivery endpoints, and writes the module envelope through
+  the fixture's platform administrator.
+
+The host is pointed at the stand-in by two settings the run supplies,
+`SOLUTION_HOST_LOCAL_CLUSTER` and `SOLUTION_HOST_LOCAL_TRUST_ANCHOR`, both
+under `.codefly/native-cluster/<environment>/` in the workspace. The host
+refuses both in a pod, and the run never makes the host believe it is in one.
+
+Three things it does, and why:
+
+- **The envelope is written before the documents that name it.** A document
+  naming a revision the host does not hold is outside its ceiling, and the
+  host refuses the whole reconcile pass on it.
+- **A run only ever adds to the envelope.** It carries every principal the
+  host already grants and every build it already approves. Withdrawing either
+  is a narrowing, which the host witnesses and a development loop does not
+  perform. A principal whose own section changes — a solution whose contract
+  moved — is refused by a host with no witness: reset the local store.
+- **A workload's token is withheld until its documents are delivered.** A
+  workload starts before the host has been told about it, because its build is
+  known only once it runs. A cell answers that with a restart; the run answers
+  it by projecting the token only after delivery. The workload waits for the
+  token, and from then on the host answers "not established yet" until its
+  registry has read the documents.
+
+What is weaker than a cluster, stated rather than implied: the build a pod is
+said to run is the SHA-256 of the executable the run started, and the run is
+both the party that says so and the party that signs the presence naming it.
+No kubelet is a second witness. That is the authority a developer already has
+over their own machine. The profile the host reads admits the developer's key
+only for the one CA it names, and that CA does not outlive the run.
 
 ## Dev deployments
 

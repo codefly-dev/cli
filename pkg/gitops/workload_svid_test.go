@@ -33,6 +33,7 @@ environments:
       component: host
       domain: example
       audience: mint
+      module_audience: module-capabilities
       trust_domain: local.example
       envelope_revision: 1
       delivery: edge/gateway/rest

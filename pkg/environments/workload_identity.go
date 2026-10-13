@@ -49,6 +49,9 @@ func WorkloadIdentityServices(ctx context.Context, workspace *resources.Workspac
 			if env.Host == nil || env.Host.Audience == "" {
 				return nil, fmt.Errorf("service %s/%s declares module-authority, which requires host.audience", ref.Module, ref.Name)
 			}
+			if env.Host.ModuleAudience == "" {
+				return nil, fmt.Errorf("service %s/%s declares module-authority, which requires host.module_audience: the audience the host stamps on a module's own capability, as the host names it", ref.Module, ref.Name)
+			}
 		}
 		if slices.Contains(service.WorkspaceConfigurationDependencies, WorkloadIdentityConfiguration) {
 			if _, managed := env.ManagedService(ref.Module, ref.Name); managed {

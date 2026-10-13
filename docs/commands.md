@@ -107,6 +107,24 @@ list at 50 entries, and never sends source files or unrelated configuration.
 
 ## Execution
 
+### `codefly run workspace`
+
+Run the whole composition locally: the host's ingress services and every
+module that declares a `service-entry` are the roots, and the dependency
+closure of those roots is every module they reach. It takes the flags of
+`codefly run service` and no service names.
+
+```bash
+codefly run workspace --fixture dev-admin          # the host and every solution
+codefly run workspace --runtime-context native     # as processes, no cluster
+```
+
+In a composition whose environment declares a `host`, a native run stands in
+for the cell the composition would be delivered to: each solution gets a
+workload identity, its presence and authority are delivered to the host, and
+it is offered for installation in the host's own registry. See
+[solution-host-bindings.md](solution-host-bindings.md#a-native-run-the-run-answers-as-the-cluster).
+
 ### `codefly run service [name...]`
 
 Run one or more services locally with their dependency graph.

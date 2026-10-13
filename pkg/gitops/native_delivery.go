@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,7 +52,7 @@ type NativeWorkload struct {
 
 // Repository names a native build's image repository: there is no registry,
 // so the name states where the build came from.
-func (w NativeWorkload) Repository(workspace string) string {
+func (w *NativeWorkload) Repository(workspace string) string {
 	return "native/" + strings.ToLower(workspace) + "/" + strings.ToLower(w.Module.Name) + "/" + strings.ToLower(w.Service.Name)
 }
 
@@ -100,7 +101,7 @@ type NativeDeliverer struct {
 }
 
 // Render builds a native workload's presence and authority documents.
-func (d *NativeDeliverer) Render(ctx context.Context, workload NativeWorkload) (*NativeDocuments, error) {
+func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) (*NativeDocuments, error) {
 	host := d.Env.Host
 	if host == nil {
 		return nil, errors.New("the environment declares no host")
@@ -274,9 +275,8 @@ func (d *NativeDeliverer) saveGenerations(record *nativeGenerations) error {
 // is unchanged, the next one otherwise. content is the canonical payload with
 // the generation zeroed.
 func settle(record *nativeGenerations, key string, content []byte) uint64 {
-	digest := hex.EncodeToString(sha256.New().Sum(content)[:8])
 	hash := sha256.Sum256(content)
-	digest = hex.EncodeToString(hash[:])
+	digest := hex.EncodeToString(hash[:])
 	entry, known := record.Entries[key]
 	if known && entry.Content == digest {
 		return entry.Generation
@@ -369,9 +369,9 @@ func (d *NativeDeliverer) post(ctx context.Context, kind, spiffeID string, paylo
 	}
 	namespace := authorityDeliveryNamespace
 	if kind == "presence" {
-		identity, err := parseSPIFFENamespace(spiffeID)
-		if err != nil {
-			return Receipt{}, err
+		identity, parseErr := parseSPIFFENamespace(spiffeID)
+		if parseErr != nil {
+			return Receipt{}, parseErr
 		}
 		namespace = identity
 	}
@@ -450,8 +450,8 @@ func ApprovedBuilds(document []byte) []solutionhost.ImageDigest {
 func BuildEnvelope(revision uint64, builds []solutionhost.ImageDigest, principals []EnvelopePrincipal) ([]byte, error) {
 	sorted := append([]solutionhost.ImageDigest(nil), builds...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-	document := map[string]any{"revision": revision, "approved_builds": sorted, "principals": map[string]any{}}
-	entries := document["principals"].(map[string]any)
+	entries := map[string]any{}
+	document := map[string]any{envelopeRevisionField: revision, "approved_builds": sorted, "principals": entries}
 	for _, principal := range principals {
 		bindings := make([]map[string]any, 0, len(principal.Bindings))
 		for _, binding := range principal.Bindings {
@@ -488,6 +488,55 @@ func BuildEnvelope(revision uint64, builds []solutionhost.ImageDigest, principal
 	return json.Marshal(document)
 }
 
+// KeepGrantedPrincipals returns next with every principal of current that next
+// does not name, carried over exactly as the host holds it.
+//
+// A run writes the envelope for the workloads it has started so far, and a
+// host that kept its store holds principals from earlier runs and from
+// workloads this run has not reached yet. Leaving them out would withdraw
+// them, and withdrawing is a narrowing: a witnessed act the host refuses from
+// a development loop, rightly. So what the host already grants stays, and a
+// run only ever adds.
+func KeepGrantedPrincipals(next, current []byte) ([]byte, error) {
+	if len(current) == 0 {
+		return next, nil
+	}
+	var held struct {
+		Principals map[string]json.RawMessage `json:"principals"`
+	}
+	if err := json.Unmarshal(current, &held); err != nil {
+		return nil, fmt.Errorf("read the principals the host's envelope holds: %w", err)
+	}
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(next, &document); err != nil {
+		return nil, err
+	}
+	principals := map[string]json.RawMessage{}
+	if raw, ok := document["principals"]; ok {
+		if err := json.Unmarshal(raw, &principals); err != nil {
+			return nil, err
+		}
+	}
+	for prefix, section := range held.Principals {
+		if _, named := principals[prefix]; !named {
+			principals[prefix] = section
+		}
+	}
+	encoded, err := json.Marshal(principals)
+	if err != nil {
+		return nil, err
+	}
+	document["principals"] = encoded
+	return json.Marshal(document)
+}
+
+const (
+	// envelopeRevisionField is the envelope document's revision key.
+	envelopeRevisionField = "revision"
+	// fixtureTokenField names the fixture user in the host's sign-in body.
+	fixtureTokenField = "token"
+)
+
 // EnvelopeWriter writes the envelope through the host's administrator API,
 // signed in as the fixture administrator a local run selects.
 type EnvelopeWriter struct {
@@ -515,7 +564,7 @@ func (w *EnvelopeWriter) signIn(ctx context.Context) error {
 	body, _ := json.Marshal(map[string]any{
 		"provider":    w.FixtureProvider,
 		"device_info": "codefly run",
-		"fixture":     map[string]string{"token": w.FixtureToken},
+		"fixture":     map[string]string{fixtureTokenField: w.FixtureToken},
 	})
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(w.GatewayURL, "/")+"/v1/auth/authenticate", bytes.NewReader(body))
 	if err != nil {
@@ -588,46 +637,69 @@ func (w *EnvelopeWriter) Current(ctx context.Context) (uint64, []byte, error) {
 		return 0, nil, fmt.Errorf("read the module envelope: HTTP %d: %s", status, strings.TrimSpace(string(answer)))
 	}
 	var parsed envelopeAnswer
-	if err := json.Unmarshal(answer, &parsed); err != nil {
+	if err = json.Unmarshal(answer, &parsed); err != nil {
 		return 0, nil, err
 	}
 	if parsed.Envelope.Document == "" {
 		return 0, nil, nil
 	}
-	revision, _ := parsed.Envelope.Revision.Int64()
-	return uint64(revision), []byte(parsed.Envelope.Document), nil
+	revision, err := strconv.ParseUint(parsed.Envelope.Revision.String(), 10, 64)
+	if err != nil {
+		return 0, nil, fmt.Errorf("the module envelope's revision %q is not a revision: %w", parsed.Envelope.Revision, err)
+	}
+	return revision, []byte(parsed.Envelope.Document), nil
+}
+
+// Plan reads the envelope in force and reports the revision the documents
+// about to be delivered must name, and how to commit it.
+//
+// When the current revision already carries what `build` produces, that
+// revision is the answer and commit writes nothing. Otherwise the answer is
+// the next revision and commit writes it, expecting the one that was read.
+func (w *EnvelopeWriter) Plan(ctx context.Context, build func(revision uint64, current []byte) ([]byte, error)) (uint64, func(context.Context) error, error) {
+	current, document, err := w.Current(ctx)
+	if err != nil {
+		return 0, nil, err
+	}
+	if document != nil {
+		same, buildErr := build(current, document)
+		if buildErr != nil {
+			return 0, nil, buildErr
+		}
+		if equivalentJSON(same, document) {
+			return current, func(context.Context) error { return nil }, nil
+		}
+	}
+	next, err := build(current+1, document)
+	if err != nil {
+		return 0, nil, err
+	}
+	commit := func(ctx context.Context) error {
+		body, _ := json.Marshal(map[string]any{"expectedRevision": current, "document": string(next)})
+		status, answer, err := w.do(ctx, http.MethodPut, "/v1/platform/module-envelope", body)
+		if err != nil {
+			return err
+		}
+		if status != http.StatusOK {
+			return fmt.Errorf("write module envelope revision %d: HTTP %d: %s", current+1, status, strings.TrimSpace(string(answer)))
+		}
+		return nil
+	}
+	return current + 1, commit, nil
 }
 
 // Ensure writes the envelope `build` produces for the next revision unless
 // the current one already carries the same content, and returns the
 // revision in force.
 func (w *EnvelopeWriter) Ensure(ctx context.Context, build func(revision uint64, current []byte) ([]byte, error)) (uint64, error) {
-	current, document, err := w.Current(ctx)
+	revision, commit, err := w.Plan(ctx, build)
 	if err != nil {
 		return 0, err
 	}
-	if document != nil {
-		same, err := build(current, document)
-		if err != nil {
-			return 0, err
-		}
-		if equivalentJSON(same, document) {
-			return current, nil
-		}
-	}
-	next, err := build(current+1, document)
-	if err != nil {
+	if err := commit(ctx); err != nil {
 		return 0, err
 	}
-	body, _ := json.Marshal(map[string]any{"expectedRevision": current, "document": string(next)})
-	status, answer, err := w.do(ctx, http.MethodPut, "/v1/platform/module-envelope", body)
-	if err != nil {
-		return 0, err
-	}
-	if status != http.StatusOK {
-		return 0, fmt.Errorf("write module envelope revision %d: HTTP %d: %s", current+1, status, strings.TrimSpace(string(answer)))
-	}
-	return current + 1, nil
+	return revision, nil
 }
 
 func equivalentJSON(a, b []byte) bool {

@@ -199,9 +199,9 @@ func (world *World) workspaceConfigurationsFor(
 	// declares them: the resolver above skipped those names on purpose, since a
 	// render projects them, and this is the run standing in for that render.
 	if world.RenderOwnedGroups != nil {
-		owned, err := world.RenderOwnedGroups(ctx, service)
-		if err != nil {
-			return nil, err
+		owned, ownedErr := world.RenderOwnedGroups(ctx, service)
+		if ownedErr != nil {
+			return nil, ownedErr
 		}
 		out = append(out, owned...)
 	}

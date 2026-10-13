@@ -86,7 +86,7 @@ func TestRenderSuppliesDeclaredIdentityGroupsWithoutConfigurationFiles(t *testin
 			}
 			data := configMapData(t, rendered)
 			require.Equal(t, "spiffe://local.example/ns/example-app/sa/api", data[authorityPrefix+"PRINCIPAL"])
-			require.Equal(t, "app", data[authorityPrefix+"AUDIENCE"])
+			require.Equal(t, env.Host.ModuleAudience, data[authorityPrefix+"AUDIENCE"])
 			require.Equal(t, env.Host.Audience, data[authorityPrefix+"PROJECTION_AUDIENCE"])
 			require.Equal(t, map[string]any{"secretKeyRef": map[string]any{"name": "secret-api", "key": storedSecretKey, "optional": false}}, variables[authorityToken]["valueFrom"])
 			require.NotContains(t, variables[authorityToken], "value")

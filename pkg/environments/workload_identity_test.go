@@ -40,6 +40,7 @@ func identityWorkspace(t *testing.T, gateway string, declares bool) *resources.W
 	if gateway != "" {
 		block += "      gateway: " + gateway + "\n"
 	}
+	block += "      module_audience: module-capabilities\n"
 	service := "name: api\nagent:\n  name: go\n  publisher: codefly.dev\n  version: 0.0.0\n"
 	if declares {
 		service += "workspace-configuration-dependencies:\n  - workload-identity\n"

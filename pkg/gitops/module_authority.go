@@ -50,6 +50,9 @@ func moduleAuthorityInjection(service *resources.Service, env *environments.Envi
 	if env.Host == nil || env.Host.Audience == "" {
 		return serviceInjection{}, fmt.Errorf("module-authority service %s requires host.audience", unique)
 	}
+	if env.Host.ModuleAudience == "" {
+		return serviceInjection{}, fmt.Errorf("module-authority service %s requires host.module_audience", unique)
+	}
 	peer, exists := scope.WorkloadPeers[unique]
 	if scope.Module == "" || !exists || !peer.Consumer || peer.SPIFFEID == "" {
 		return serviceInjection{}, fmt.Errorf("module-authority service %s has no composition identity plan", unique)
@@ -60,7 +63,12 @@ func moduleAuthorityInjection(service *resources.Service, env *environments.Envi
 	}
 	public := map[string]string{}
 	for key, value := range map[string]string{
-		"PRINCIPAL": peer.SPIFFEID, "AUDIENCE": scope.Module, "PROJECTION_AUDIENCE": env.Host.Audience,
+		"PRINCIPAL": peer.SPIFFEID,
+		// The host's name for a module capability's audience, never the
+		// module's own: the module holds its credential to this value, and
+		// the host stamps one audience on every module's.
+		"AUDIENCE":            env.Host.ModuleAudience,
+		"PROJECTION_AUDIENCE": env.Host.Audience,
 	} {
 		public[carrier(environments.ModuleAuthorityConfiguration, key, false)] = value
 	}

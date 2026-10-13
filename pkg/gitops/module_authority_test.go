@@ -55,8 +55,11 @@ func TestModuleAuthorityMatchesDeliveredPresenceAndReusesInternalSecret(t *testi
 			rendered := buildOverlay(t, filepath.Join(result.Path, "services", name), env.Name)
 			data := configMapData(t, rendered)
 			require.Equal(t, presence.Workloads[0].Identity.SPIFFEID, data[authorityPrefix+"PRINCIPAL"])
-			require.Equal(t, module, data[authorityPrefix+"AUDIENCE"])
-			require.Equal(t, presence.Modules[0].Module, data[authorityPrefix+"AUDIENCE"])
+			// The host's name for a module capability's audience, the same for
+			// every module, and never the module's own name.
+			require.Equal(t, env.Host.ModuleAudience, data[authorityPrefix+"AUDIENCE"])
+			require.Equal(t, "module-capabilities", data[authorityPrefix+"AUDIENCE"])
+			require.Equal(t, module, presence.Modules[0].Module)
 			require.Equal(t, presence.Workloads[0].Identity.Audience, data[authorityPrefix+"PROJECTION_AUDIENCE"])
 			require.Equal(t, env.Host.Audience, data[authorityPrefix+"PROJECTION_AUDIENCE"])
 			principals[module] = data[authorityPrefix+"PRINCIPAL"].(string)
@@ -81,7 +84,7 @@ func TestModuleAuthorityMatchesDeliveredPresenceAndReusesInternalSecret(t *testi
 }
 
 func TestModuleAuthorityRefusesMissingIdentityAudienceAndStore(t *testing.T) {
-	for _, missing := range []string{"workload-identity", "host", "host.audience", "identity plan", "secret store"} {
+	for _, missing := range []string{"workload-identity", "host", "host.audience", "host.module_audience", "identity plan", "secret store"} {
 		t.Run(missing, func(t *testing.T) {
 			workspace, env := workloadIdentityComposition(t)
 			env.ServiceSecrets = storeEnvironment().ServiceSecrets
@@ -99,6 +102,8 @@ func TestModuleAuthorityRefusesMissingIdentityAudienceAndStore(t *testing.T) {
 				want = "host.audience"
 			case "host.audience":
 				env.Host.Audience = ""
+			case "host.module_audience":
+				env.Host.ModuleAudience = ""
 			case "identity plan":
 				scope.WorkloadPeers = nil
 			case "secret store":

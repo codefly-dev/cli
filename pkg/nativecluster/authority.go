@@ -38,6 +38,12 @@ import (
 	"time"
 )
 
+// The object fields the stand-in's answers share with the API it stands in for.
+const (
+	fieldName = "name"
+	fieldKind = "kind"
+)
+
 // TokenLifetime is a projected token's validity. The host refuses a token
 // valid for longer than ten minutes (a kubelet projects short tokens and
 // rotates them), so each is reissued well before it lapses.
@@ -73,7 +79,7 @@ type Authority struct {
 // Start brings the API server up on a loopback port with a fresh CA. The CA
 // is per run: the host's local profile is bound to its fingerprint, and the
 // run rewrites that profile, as a cluster run does when its cluster is new.
-func Start(ctx context.Context) (*Authority, error) {
+func Start(_ context.Context) (*Authority, error) {
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
@@ -141,8 +147,8 @@ func (a *Authority) Close() error {
 	return a.server.Shutdown(ctx)
 }
 
-// APIServer is the address the host reaches the API server at, as the
-// kubelet states it: KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT.
+// APIServer is the loopback address the host reaches the API server at. The
+// run writes it beside the CA as the stand-in's own https origin.
 func (a *Authority) APIServer() (host, port string) {
 	host, port, _ = net.SplitHostPort(a.listener.Addr().String())
 	return host, port
@@ -161,10 +167,10 @@ func (a *Authority) CAFingerprint() string {
 // RegisterPod records a process as a pod, keyed by namespace and account: a
 // later registration of the same identity replaces the earlier one, as a
 // rebuilt pod replaces its predecessor.
-func (a *Authority) RegisterPod(pod Pod) {
+func (a *Authority) RegisterPod(pod *Pod) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	copied := pod
+	copied := *pod
 	a.pods[pod.Namespace+"/"+pod.ServiceAccount] = &copied
 }
 
@@ -192,8 +198,8 @@ func (a *Authority) Token(namespace, account, podName, podUID, audience string) 
 		"exp": now.Add(TokenLifetime).Unix(),
 		"kubernetes.io": map[string]any{
 			"namespace":      namespace,
-			"serviceaccount": map[string]any{"name": account},
-			"pod":            map[string]any{"name": podName, "uid": podUID},
+			"serviceaccount": map[string]any{fieldName: account},
+			"pod":            map[string]any{fieldName: podName, "uid": podUID},
 		},
 	}
 	header, _ := json.Marshal(map[string]string{"alg": "EdDSA", "typ": "JWT"})
@@ -229,7 +235,8 @@ func (a *Authority) review(token string, audiences []string) (tokenClaims, error
 		return tokenClaims{}, errors.New("not a JWT")
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil || !ed25519.Verify(a.tokenKey.Public().(ed25519.PublicKey), []byte(parts[0]+"."+parts[1]), signature) {
+	public, isKey := a.tokenKey.Public().(ed25519.PublicKey)
+	if err != nil || !isKey || !ed25519.Verify(public, []byte(parts[0]+"."+parts[1]), signature) {
 		return tokenClaims{}, errors.New("signature does not verify")
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
@@ -271,7 +278,7 @@ func (a *Authority) handleTokenReview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unreadable TokenReview", http.StatusBadRequest)
 		return
 	}
-	response := map[string]any{"apiVersion": "authentication.k8s.io/v1", "kind": "TokenReview"}
+	response := map[string]any{"apiVersion": "authentication.k8s.io/v1", fieldKind: "TokenReview"}
 	claims, err := a.review(request.Spec.Token, request.Spec.Audiences)
 	if err != nil {
 		response["status"] = map[string]any{"authenticated": false, "error": err.Error()}
@@ -306,16 +313,16 @@ func (a *Authority) handleGetPod(w http.ResponseWriter, r *http.Request) {
 	if found == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(w).Encode(map[string]any{"kind": "Status", "status": "Failure", "code": 404, "reason": "NotFound"})
+		_ = json.NewEncoder(w).Encode(map[string]any{fieldKind: "Status", "status": "Failure", "code": 404, "reason": "NotFound"})
 		return
 	}
 	image := found.Repository + "@" + found.Digest
-	container := map[string]any{"name": found.Container, "image": image}
-	status := map[string]any{"name": found.Container, "imageID": image, "state": map[string]any{"running": map[string]any{}}}
+	container := map[string]any{fieldName: found.Container, "image": image}
+	status := map[string]any{fieldName: found.Container, "imageID": image, "state": map[string]any{"running": map[string]any{}}}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"apiVersion": "v1", "kind": "Pod",
-		"metadata": map[string]any{"name": found.Name, "namespace": found.Namespace, "uid": found.UID},
+		"apiVersion": "v1", fieldKind: "Pod",
+		"metadata": map[string]any{fieldName: found.Name, "namespace": found.Namespace, "uid": found.UID},
 		"spec":     map[string]any{"containers": []any{container}, "serviceAccountName": found.ServiceAccount},
 		"status":   map[string]any{"phase": "Running", "containerStatuses": []any{status}},
 	})
@@ -392,7 +399,7 @@ type Workload struct {
 
 // Project writes a workload's identity under dir: its token, its SVID, the
 // trust bundle and its peer lists. The token is rewritten by Refresh.
-func (a *Authority) Project(dir string, workload Workload) (Projection, error) {
+func (a *Authority) Project(dir string, workload *Workload) (Projection, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return Projection{}, err
 	}
@@ -434,7 +441,7 @@ func (a *Authority) Project(dir string, workload Workload) (Projection, error) {
 
 // RefreshToken rewrites a workload's token, as the kubelet rotates a projected
 // token before it lapses.
-func (a *Authority) RefreshToken(path string, workload Workload) error {
+func (a *Authority) RefreshToken(path string, workload *Workload) error {
 	token, err := a.Token(workload.Namespace, workload.Account, workload.PodName, workload.PodUID, workload.Audience)
 	if err != nil {
 		return err

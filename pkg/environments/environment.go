@@ -242,6 +242,13 @@ type EnvironmentHost struct {
 	// Gateway names the service that fronts solutions and serves the mint.
 	// It is required when a composed service requests workload-identity.
 	Gateway string `yaml:"gateway,omitempty"`
+	// ModuleAudience is the audience the host stamps on a composed module's
+	// own capability — the host's name for it, not the module's. A module
+	// refuses a credential addressed to anything else, so the render projects
+	// exactly this value as module-authority/AUDIENCE. Stated by the
+	// composition because the host owns the name; required when a composed
+	// service declares module-authority.
+	ModuleAudience string `yaml:"module_audience,omitempty"`
 	// Release names the platform-owned key accepted for release delivery.
 	Release *HostReleasePolicy `yaml:"release,omitempty"`
 	// Developers lists machine keys admitted only by a local k3d host.
@@ -295,7 +302,7 @@ func (policy *HostReleasePolicy) Validate() error {
 }
 
 // hostFields are the keys a host block may carry, in declaration order.
-var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "envelope_revision", "delivery", "gateway", "release", "developers", "trust_anchor"}
+var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "envelope_revision", "delivery", "gateway", "module_audience", "release", "developers", "trust_anchor"}
 
 // deliveryPattern is a composition identity: <module>/<service>/<endpoint>,
 // each a lowercase name.
@@ -353,6 +360,9 @@ func (host *EnvironmentHost) Validate() error {
 	// credential.
 	if host.Audience == "" || strings.ContainsFunc(host.Audience, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
 		return fmt.Errorf("host audience must be a single-line identity, got %q", host.Audience)
+	}
+	if strings.ContainsFunc(host.ModuleAudience, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+		return fmt.Errorf("host module_audience must be a single-line identity, got %q", host.ModuleAudience)
 	}
 	if err := ValidateTrustDomain(host.TrustDomain); err != nil {
 		return err

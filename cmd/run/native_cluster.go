@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -36,11 +37,22 @@ import (
 // registry code path and a developer debugs on a laptop what a cell runs.
 //
 // It is deliberately only as strong as a laptop needs: the authority lives for
-// the run and its keys are never written. The host reads what the kubelet
-// would project — its token, the cluster CA, its namespace — and the trust
-// anchor from the directories the run names (KUBERNETES_SERVICE_ACCOUNT_DIR,
-// SOLUTION_HOST_TRUST_ANCHOR), under the run's own state, so nothing is
-// written outside the workspace.
+// the run and its keys are never written. The host reads its stand-in for the
+// cluster — the API server's address, its CA, the host's own token and
+// namespace — and its trust anchor from the two directories the run names
+// (SOLUTION_HOST_LOCAL_CLUSTER, SOLUTION_HOST_LOCAL_TRUST_ANCHOR), under the
+// run's own state, so nothing is written outside the workspace. The host
+// refuses both settings in a pod, and nothing here makes the host believe it
+// is in one.
+//
+// A workload starts before the host has been told about it, because its build
+// is only known once it runs. A cell answers that with a restart; this run
+// answers it by withholding the workload's projected token until the envelope
+// admitting it is committed and its presence and authority are delivered.
+// Without a token the workload waits, as it would for a kubelet that had not
+// projected one yet. Once it has one, the host has the documents: until its
+// registry has read them it answers "not established yet", which the workload
+// retries, and never "refused".
 
 type nativeCluster struct {
 	authority *nativecluster.Authority
@@ -65,9 +77,12 @@ type nativeCluster struct {
 	// run writes only ever widens — a narrowing is a witnessed act, not a dev
 	// loop's side effect.
 	builds map[solutionhost.ImageDigest]bool
-	running     map[string]bool
-	envelope    *gitops.EnvelopeWriter
-	stop        chan struct{}
+	// withheld are the workloads whose projected token is not written yet:
+	// the ones this run delivers, until it has. See release.
+	withheld map[string]bool
+	running  map[string]bool
+	envelope *gitops.EnvelopeWriter
+	stop     chan struct{}
 }
 
 var (
@@ -112,6 +127,7 @@ func attachNativeCluster(ctx context.Context, flow *orchestration.Flow, workspac
 		projections: map[string]nativecluster.Projection{},
 		documents:   map[string]*gitops.NativeDocuments{},
 		builds:      map[solutionhost.ImageDigest]bool{},
+		withheld:    map[string]bool{},
 		running:     map[string]bool{},
 		stop:        make(chan struct{}),
 	}
@@ -177,7 +193,7 @@ func (cluster *nativeCluster) projectHost() error {
 		PodName: cluster.hostService + "-native", PodUID: randomUID(),
 		Audience: "https://kubernetes.default.svc.cluster.local",
 	}
-	cluster.authority.RegisterPod(nativecluster.Pod{
+	cluster.authority.RegisterPod(&nativecluster.Pod{
 		Namespace: cluster.hostNamespace, ServiceAccount: account, Name: cluster.hostWorkload.PodName, UID: cluster.hostWorkload.PodUID,
 		Container: cluster.hostService, Repository: "native/" + strings.ToLower(cluster.workspace.Name) + "/" + cluster.hostModule + "/" + cluster.hostService,
 	})
@@ -189,14 +205,18 @@ func (cluster *nativeCluster) projectHost() error {
 	if err != nil {
 		return err
 	}
-	cluster.hostServiceAccountDir = filepath.Join(cluster.stateDir, "host", "serviceaccount")
+	cluster.hostServiceAccountDir = filepath.Join(cluster.stateDir, "host", "cluster")
 	cluster.hostAnchorDir = filepath.Join(cluster.stateDir, "host", "delivery-trust")
 	for _, dir := range []string{cluster.hostServiceAccountDir, cluster.hostAnchorDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
 	}
+	apiHost, apiPort := cluster.authority.APIServer()
 	files := map[string][]byte{
+		// The stand-in's own address, beside the material that authenticates
+		// it: the host reads an https origin and nothing more.
+		filepath.Join(cluster.hostServiceAccountDir, "server"):           []byte("https://" + net.JoinHostPort(apiHost, apiPort) + "\n"),
 		filepath.Join(cluster.hostServiceAccountDir, "token"):            []byte(token),
 		filepath.Join(cluster.hostServiceAccountDir, "ca.crt"):           cluster.authority.CAPEM(),
 		filepath.Join(cluster.hostServiceAccountDir, "namespace"):        []byte(cluster.hostNamespace + "\n"),
@@ -222,11 +242,8 @@ func (cluster *nativeCluster) runtimeOverrides(service *resources.Service) map[s
 	unique, peer, ok := cluster.peerOf(service)
 	out := map[string]string{}
 	if unique == resources.ServiceUnique(cluster.hostModule, cluster.hostService) {
-		host, port := cluster.authority.APIServer()
-		out["KUBERNETES_SERVICE_HOST"] = host
-		out["KUBERNETES_SERVICE_PORT"] = port
-		out["KUBERNETES_SERVICE_ACCOUNT_DIR"] = cluster.hostServiceAccountDir
-		out["SOLUTION_HOST_TRUST_ANCHOR"] = cluster.hostAnchorDir
+		out["SOLUTION_HOST_LOCAL_CLUSTER"] = cluster.hostServiceAccountDir
+		out["SOLUTION_HOST_LOCAL_TRUST_ANCHOR"] = cluster.hostAnchorDir
 	}
 	if ok && peer.Consumer && unique != cluster.env.Host.Gateway {
 		port, err := cluster.flow.ProposedEndpointPort(context.Background(), cluster.env.Host.Gateway, "workload", "http")
@@ -274,7 +291,7 @@ func (cluster *nativeCluster) renderOwnedGroups(ctx context.Context, service *re
 		}
 		authority := &basev0.ConfigurationInformation{Name: environments.ModuleAuthorityConfiguration, ConfigurationValues: []*basev0.ConfigurationValue{
 			{Key: "PRINCIPAL", Value: peer.SPIFFEID},
-			{Key: "AUDIENCE", Value: peer.Module},
+			{Key: "AUDIENCE", Value: cluster.env.Host.ModuleAudience},
 			{Key: "PROJECTION_AUDIENCE", Value: cluster.env.Host.Audience},
 			{Key: "INTERNAL_TOKEN", Value: token, Secret: true},
 		}}
@@ -319,14 +336,22 @@ func (cluster *nativeCluster) project(unique string, peer gitops.NativePeer) (na
 		PodName: peer.Service + "-native", PodUID: randomUID(), Audience: cluster.env.Host.Audience,
 		AllowedCallers: callers, MintPeers: callers, GatewayPeers: callers,
 	}
-	projection, err := cluster.authority.Project(filepath.Join(cluster.stateDir, "identities", peer.Module, peer.Service), workload)
+	projection, err := cluster.authority.Project(filepath.Join(cluster.stateDir, "identities", peer.Module, peer.Service), &workload)
 	if err != nil {
 		return nativecluster.Projection{}, err
 	}
 	cluster.workloads[unique] = workload
 	cluster.projections[unique] = projection
+	if cluster.delivers(peer) {
+		// Not projected yet: see the note on this type. A stale token from an
+		// earlier run is removed too, since that run's authority is gone.
+		if err := os.Remove(projection.Files["TOKEN_FILE"]); err != nil && !os.IsNotExist(err) {
+			return nativecluster.Projection{}, err
+		}
+		cluster.withheld[unique] = true
+	}
 	// The pod exists from projection on; its build is known once it runs.
-	cluster.authority.RegisterPod(nativecluster.Pod{
+	cluster.authority.RegisterPod(&nativecluster.Pod{
 		Namespace: namespace, ServiceAccount: peer.Account, Name: workload.PodName, UID: workload.PodUID,
 		Container: peer.Service, Repository: "native/" + strings.ToLower(cluster.workspace.Name) + "/" + strings.ToLower(peer.Module) + "/" + strings.ToLower(peer.Service),
 	})
@@ -344,11 +369,15 @@ func (cluster *nativeCluster) refreshTokens() {
 			return
 		case <-ticker.C:
 			cluster.mu.Lock()
-			for unique, workload := range cluster.workloads {
-				_ = cluster.authority.RefreshToken(cluster.projections[unique].Files["TOKEN_FILE"], workload)
+			for unique := range cluster.workloads {
+				if cluster.withheld[unique] {
+					continue
+				}
+				workload := cluster.workloads[unique]
+				_ = cluster.authority.RefreshToken(cluster.projections[unique].Files["TOKEN_FILE"], &workload)
 			}
 			cluster.mu.Unlock()
-			_ = cluster.authority.RefreshToken(filepath.Join(cluster.hostServiceAccountDir, "token"), cluster.hostWorkload)
+			_ = cluster.authority.RefreshToken(filepath.Join(cluster.hostServiceAccountDir, "token"), &cluster.hostWorkload)
 		}
 	}
 }
@@ -359,7 +388,7 @@ func (cluster *nativeCluster) refreshTokens() {
 func (cluster *nativeCluster) onRunning(ctx context.Context, unique string) {
 	w := wool.Get(ctx).In("nativeCluster.deliver", wool.Field("service", unique))
 	peer, ok := cluster.peers[unique]
-	if !ok || !peer.Consumer || peer.Module == cluster.hostModule {
+	if !ok || !cluster.delivers(peer) {
 		return
 	}
 	service, err := cluster.flow.ServiceFromUnique(unique)
@@ -371,6 +400,28 @@ func (cluster *nativeCluster) onRunning(ctx context.Context, unique string) {
 		w.Error("delivery to the host failed", wool.ErrField(err))
 		return
 	}
+}
+
+// delivers reports whether this run delivers presence and authority for a
+// peer: a workload that asked for an identity and is not the host's own.
+func (cluster *nativeCluster) delivers(peer gitops.NativePeer) bool {
+	return peer.Consumer && peer.Module != cluster.hostModule
+}
+
+// release projects the token of every workload whose documents the host now
+// holds. Called with the lock held, after they are delivered.
+func (cluster *nativeCluster) release(uniques []string) error {
+	for _, unique := range uniques {
+		if !cluster.withheld[unique] {
+			continue
+		}
+		workload := cluster.workloads[unique]
+		if err := cluster.authority.RefreshToken(cluster.projections[unique].Files["TOKEN_FILE"], &workload); err != nil {
+			return fmt.Errorf("%s: project the workload's token: %w", unique, err)
+		}
+		delete(cluster.withheld, unique)
+	}
+	return nil
 }
 
 func (cluster *nativeCluster) deliver(ctx context.Context, unique string, peer gitops.NativePeer, service *resources.Service) error {
@@ -386,9 +437,9 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, peer g
 	}
 	var services []*resources.Service
 	for _, reference := range module.ServiceReferences {
-		loaded, err := cluster.workspace.LoadService(ctx, &resources.ServiceWithModule{Name: reference.Name, Module: peer.Module})
-		if err != nil {
-			return err
+		loaded, loadErr := cluster.workspace.LoadService(ctx, &resources.ServiceWithModule{Name: reference.Name, Module: peer.Module})
+		if loadErr != nil {
+			return loadErr
 		}
 		services = append(services, loaded)
 	}
@@ -398,7 +449,7 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, peer g
 		return err
 	}
 	namespace := cluster.env.ModuleNamespace(cluster.workspace, peer.Module)
-	cluster.authority.RegisterPod(nativecluster.Pod{
+	cluster.authority.RegisterPod(&nativecluster.Pod{
 		Namespace: namespace, ServiceAccount: peer.Account, Name: workload.PodName, UID: workload.PodUID,
 		Container: peer.Service, Repository: "native/" + strings.ToLower(cluster.workspace.Name) + "/" + strings.ToLower(peer.Module) + "/" + strings.ToLower(peer.Service),
 		Digest: string(digest),
@@ -412,9 +463,9 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, peer g
 		return fmt.Errorf("the host's delivery endpoint is unresolved: %w", err)
 	}
 	if cluster.envelope == nil {
-		administrator, err := cluster.fixtureAdministrator(ctx)
-		if err != nil {
-			return err
+		administrator, adminErr := cluster.fixtureAdministrator(ctx)
+		if adminErr != nil {
+			return adminErr
 		}
 		cluster.envelope = &gitops.EnvelopeWriter{GatewayURL: gatewayURL, FixtureProvider: administrator.Provider, FixtureToken: administrator.Token}
 	}
@@ -426,7 +477,7 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, peer g
 			if existing, ok := cluster.authority.Pod(namespace, "delivery"); ok {
 				pod = existing
 			} else {
-				cluster.authority.RegisterPod(pod)
+				cluster.authority.RegisterPod(&pod)
 			}
 			return cluster.authority.Token(namespace, "delivery", pod.Name, pod.UID, cluster.env.Host.Audience)
 		},
@@ -435,7 +486,7 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, peer g
 		Module: module, Service: service, Services: services, Namespace: namespace, Account: peer.Account,
 		SPIFFEID: peer.SPIFFEID, Subject: cluster.subject(peer), Executable: executable,
 	}
-	rendered, err := deliverer.Render(ctx, native)
+	rendered, err := deliverer.Render(ctx, &native)
 	if err != nil {
 		return err
 	}
@@ -445,7 +496,7 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, peer g
 	if err != nil {
 		return err
 	}
-	revision, err := cluster.envelope.Ensure(ctx, func(revision uint64, current []byte) ([]byte, error) {
+	revision, commit, err := cluster.envelope.Plan(ctx, func(revision uint64, current []byte) ([]byte, error) {
 		// The host keeps every build it already approved: a developer's next
 		// build adds to the envelope and withdraws nothing, so writing it is
 		// a grant the host applies without a witness. Withdrawing a build is
@@ -468,9 +519,20 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, peer g
 			})
 		}
 		sort.Slice(principals, func(i, j int) bool { return principals[i].Prefix < principals[j].Prefix })
-		return gitops.BuildEnvelope(revision, builds, principals)
+		next, buildErr := gitops.BuildEnvelope(revision, builds, principals)
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		// And every principal the host already grants that this run has not
+		// (yet) started: leaving one out would withdraw it.
+		return gitops.KeepGrantedPrincipals(next, current)
 	})
 	if err != nil {
+		return fmt.Errorf("plan the module envelope: %w", err)
+	}
+	// The envelope first: a document naming a revision the host does not hold
+	// yet is outside its ceiling, and the host refuses the whole pass on it.
+	if err := commit(ctx); err != nil {
 		return fmt.Errorf("write the module envelope: %w", err)
 	}
 	deliverer.EnvelopeRevision = revision
@@ -496,7 +558,10 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, peer g
 			w.Info("delivered", wool.Field("service", key), wool.Field("kind", receipt.Kind), wool.Field("disposition", receipt.Disposition), wool.Field("generation", receipt.Generation), wool.Field("envelope", revision))
 		}
 	}
-	return nil
+	// Only now does a workload get its token: the host holds its documents,
+	// so the first ask it can make is one the host answers "not established
+	// yet" until its registry has read them, never "refused".
+	return cluster.release(keys)
 }
 
 // fixtureAdministrator is the platform administrator the selected fixture
