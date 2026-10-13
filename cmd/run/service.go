@@ -224,6 +224,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		err := stopService(shutdownCtx, run.flow)
 		shutdownCancel()
+		stopNativeCluster()
 		return err
 	}
 	defer func() { returnErr = errors.Join(returnErr, stopFresh()) }()
@@ -948,6 +949,9 @@ func newRunFlow(ctx context.Context, workspace *resources.Workspace, module *res
 	// authoritative by construction, rather than by parseSetOverrides happening
 	// to let the final duplicate entry win.
 	flow.WithOverrides(mergeOverrides(derivedOverrides, overrides))
+	if err := attachNativeCluster(ctx, flow, workspace, env, selectedFixture); err != nil {
+		return nil, w.Wrap(err)
+	}
 	flow.WithRemotes(remoteServices)
 	resolvedProfile, err := workspace.ResolveRunProfile(ctx, profile, resources.RunProfile{ExcludeDependencies: excludeDependencies})
 	if err != nil {

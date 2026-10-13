@@ -303,7 +303,7 @@ func solutionHostBinding(owned string, opts *RenderOptions, instance *SolutionIn
 		Host:             solutionhost.HostTarget{Coordinate: opts.Host.Coordinate, Component: opts.Host.Component},
 		Release:          release,
 	}
-	if instance.Kind == solutionhost.KindSolution {
+	if instance.Alias != "" {
 		if !rfc1123Label.MatchString(instance.Alias) {
 			return nil, fmt.Errorf(
 				"solution %s claims the route alias %q; a host keys its registry on the alias as one URL path segment, so it must be lowercase letters, digits and dashes, starting and ending alphanumeric",
@@ -688,9 +688,12 @@ func presenceInstanceOf(
 	if opts.Package == nil {
 		return nil, fmt.Sprintf("module %s has no package manifest, so it names no release and declares no presence", module.Name), nil
 	}
-	instance := &SolutionInstance{Kind: solutionhost.KindModule, Name: module.Name}
+	// Every kind declares its route alias: a solution is reached at
+	// /<alias>/, a module at /v1/<alias>/*, and the host keys its registry on
+	// the alias for both, refusing a document that declares none.
+	instance := &SolutionInstance{Kind: solutionhost.KindModule, Name: module.Name, Alias: module.Name}
 	if declared != nil {
-		instance.Kind, instance.Alias = solutionhost.KindSolution, module.Name
+		instance.Kind = solutionhost.KindSolution
 	}
 	instance.Package, instance.Version = opts.Package.ID, opts.Package.Version
 	instance.Modules = []SolutionModulePin{{Module: module.Name, Package: opts.Package.ID, Version: opts.Package.Version}}

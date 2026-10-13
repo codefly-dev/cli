@@ -195,6 +195,16 @@ func (world *World) workspaceConfigurationsFor(
 		out = append(out, kept)
 	}
 	out = world.applyWorkspaceConfigurationValues(out, declared)
+	// A native run's render-owned groups, last and only to a service that
+	// declares them: the resolver above skipped those names on purpose, since a
+	// render projects them, and this is the run standing in for that render.
+	if world.RenderOwnedGroups != nil {
+		owned, err := world.RenderOwnedGroups(ctx, service)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, owned...)
+	}
 	// Last, because it reads the OUTCOME: every value that carried a reference
 	// must still be here. Core resolves the root's groups leniently and drops
 	// what a consumer cannot satisfy, so this is the only place a drop is
