@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
@@ -14,6 +15,7 @@ type phaseRecorder struct {
 	recordingManager
 	phases   []ActionType
 	callback func(context.Context, Action) error
+	stopErr  error
 }
 
 func (m *phaseRecorder) RunnerDoLoad(context.Context) (*OutputProperty, error) {
@@ -33,7 +35,7 @@ func (m *phaseRecorder) RunnerDoStart(context.Context) (*OutputProperty, error) 
 
 func (m *phaseRecorder) RunnerDoStop(context.Context) (*OutputProperty, error) {
 	m.phases = append(m.phases, RuntimeStop)
-	return nil, nil
+	return nil, m.stopErr
 }
 
 func (m *phaseRecorder) DoSetCallback(callback func(context.Context, Action) error) {
@@ -174,4 +176,44 @@ func TestExtendRefusesARunThatHasNotStarted(t *testing.T) {
 	require.NoError(t, err)
 	_, err = flow.Extend(ctx, reloaded, []string{"wiki/backend"})
 	require.ErrorContains(t, err, "has not started")
+}
+
+// A failed stop must leave the dropped root admitted so the next reload can
+// retry the RPC. Dependents that stopped before the failure stay stopped, but
+// the flow must not forget the root and report a false completed withdrawal.
+func TestWithdrawRetainsRootsWhenAStopRPCFails(t *testing.T) {
+	flow, ctx := multiRootFlow(t, "lastlogin-go/backend")
+	required, err := flow.runClosure(ctx)
+	require.NoError(t, err)
+	flow.hub = &Hub{}
+	for _, unique := range append(uniques(required), "lastlogin-go/backend") {
+		flow.hub.add(&phaseRecorder{recordingManager: recordingManager{unique: unique}})
+	}
+	flow.playbook = &Playbook{}
+	flow.policy = &RuntimeStartPolicy{dependencies: flow.world.Dependencies, ExecutorManager: flow}
+	failed := errors.New("stop unavailable")
+	var failedManager *phaseRecorder
+	flow.spawn = func(_ context.Context, _ *resources.Module, service *resources.Service) (IManager, error) {
+		manager := &phaseRecorder{recordingManager: recordingManager{unique: resources.WithUnique(service).Unique()}}
+		if manager.unique == "wiki/backend" {
+			manager.stopErr = failed
+			failedManager = manager
+		}
+		return manager, nil
+	}
+	flow.WithRunningHook(func(string, int) {})
+	reloaded, err := resources.LoadWorkspaceFromDir(ctx, "testdata/multi-root")
+	require.NoError(t, err)
+	_, err = flow.Extend(ctx, reloaded, []string{"wiki/backend"})
+	require.NoError(t, err)
+	_, err = flow.Withdraw(ctx, reloaded, []string{"wiki/backend"})
+	require.ErrorIs(t, err, failed)
+	require.Contains(t, flow.Roots(), "wiki/backend")
+	// A subsequent call still sees the root as pending and reaches the stop
+	// path instead of returning "nothing to withdraw".
+	require.NotNil(t, failedManager)
+	failedManager.stopErr = nil
+	_, err = flow.Withdraw(ctx, reloaded, []string{"wiki/backend"})
+	require.NoError(t, err)
+	require.NotContains(t, flow.Roots(), "wiki/backend")
 }

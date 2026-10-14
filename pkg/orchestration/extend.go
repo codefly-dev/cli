@@ -97,6 +97,16 @@ func (flow *Flow) Withdraw(ctx context.Context, workspace *resources.Workspace, 
 	}
 	flow.extendMu.Lock()
 	defer flow.extendMu.Unlock()
+	// Keep the admission visible until every requested stop succeeds. A stop
+	// RPC can fail after other dependents were already stopped; retaining the
+	// original composition lets the next SIGUSR1 rediscover the failed root
+	// instead of treating the partially stopped tree as complete.
+	originalWorkspace := *flow.workspace
+	originalGraphWorkspace := flow.graphWorkspace
+	originalModuleSeeds := slices.Clone(flow.moduleSeeds)
+	originalRoots := slices.Clone(flow.coRoots)
+	originalServices := slices.Clone(flow.services)
+	originalDependencies := flow.world.Dependencies
 	dropped := map[string]bool{}
 	for _, root := range roots {
 		dropped[root] = true
@@ -162,6 +172,18 @@ func (flow *Flow) Withdraw(ctx context.Context, workspace *resources.Workspace, 
 			continue
 		}
 		if _, stopErr := manager.RunnerDoStop(ctx); stopErr != nil {
+			*flow.workspace = originalWorkspace
+			flow.graphWorkspace = originalGraphWorkspace
+			flow.moduleSeeds = originalModuleSeeds
+			flow.coRoots = originalRoots
+			flow.services = originalServices
+			flow.world.Dependencies = originalDependencies
+			if flow.SharedState != nil {
+				flow.SharedState.SetDependencies(originalDependencies)
+			}
+			if policy, ok := flow.policy.(*RuntimeStartPolicy); ok {
+				policy.SetDependencies(originalDependencies)
+			}
 			return stopped, fmt.Errorf("%s stop: %w", unique, stopErr)
 		}
 		flow.hub.remove(unique)
