@@ -1133,6 +1133,12 @@ next Running hook delivers the updated declaration through the same signed
 generation path; the signal alone does not restart or re-deliver existing
 components. A no-root refresh still refuses any changed workload identity.
 
+If the native run's fixture administrator session expires, the next envelope
+read or conditional write signs in again after HTTP 401 and retries once with
+the same request and expected revision. A forbidden response or transport
+failure is not retried. This is demand-driven administrative delivery, with no
+idle sign-in or workload-credential mint loop.
+
 A root the reloaded composition no longer names is withdrawn by the same
 signal: the flow stops what only it needed, and the run delivers, for each
 stopped workload it had delivered, the generation that withdraws it

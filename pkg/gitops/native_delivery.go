@@ -947,6 +947,18 @@ func (w *EnvelopeWriter) signIn(ctx context.Context) error {
 }
 
 func (w *EnvelopeWriter) do(ctx context.Context, method, path string, body []byte) (int, []byte, error) {
+	status, answer, err := w.doAuthenticated(ctx, method, path, body)
+	if err != nil || status != http.StatusUnauthorized {
+		return status, answer, err
+	}
+	// A long-running development session can outlive the fixture access
+	// token. Reauthenticate on demand and replay once, with the same body
+	// and expected revision. A forbidden or ambiguous write is not retried.
+	w.accessToken = ""
+	return w.doAuthenticated(ctx, method, path, body)
+}
+
+func (w *EnvelopeWriter) doAuthenticated(ctx context.Context, method, path string, body []byte) (int, []byte, error) {
 	if err := w.signIn(ctx); err != nil {
 		return 0, nil, err
 	}
