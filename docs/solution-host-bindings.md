@@ -1359,6 +1359,16 @@ The host is pointed at the stand-in by two settings the run supplies,
 `SOLUTION_HOST_LOCAL_CLUSTER` and `SOLUTION_HOST_LOCAL_TRUST_ANCHOR`, both
 under `.codefly/native-cluster/<environment>/` in the workspace. The host
 refuses both in a pod, and the run never makes the host believe it is in one.
+The host turns its delivery surface on from three keys of its `federation`
+workspace configuration, which a cell's composition declares for the
+environment: `SOLUTION_HOST_COORDINATE`, `SOLUTION_HOST_OWNERSHIP_DOMAINS` and
+`SOLUTION_HOST_TRUST_POLICY`. A native run derives them for the delivery host
+alone (the service `host.delivery` names, when it declares `federation`) from
+the environment's host block: the coordinate is `host.coordinate`, the
+ownership domain is `host.domain` (the one the run's own policy admits the
+run's signer for) and the trust policy is `keys`, handed after the host's
+authored group so they settle over what it leaves empty; the host's
+registration secrets stay in that authored group, untouched.
 
 Three things it does, and why:
 

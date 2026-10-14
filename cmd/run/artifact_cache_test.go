@@ -90,3 +90,45 @@ func TestForgetDropsOnlyTheWithdrawnWorkload(t *testing.T) {
 	require.Contains(t, cluster.documents, "crm/api")
 	require.FileExists(t, filepath.Join(cluster.deliveredDir(), deliveredFileName("crm/api")))
 }
+
+// The delivery host that declares the federation group receives, from the
+// host block, the three keys that turn its delivery surface on: the
+// coordinate, the ownership domain the run's policy admits the signer for,
+// and the pinned-keys trust policy. Another service, or a host block without
+// a coordinate and a domain, receives nothing of it.
+func TestTheDeliveryHostReceivesItsFederationSurfaceFromTheHostBlock(t *testing.T) {
+	ctx := context.Background()
+	host := &environments.EnvironmentHost{Coordinate: "obin/local/dev", Component: "saas", Domain: "obin", Audience: "accounts", TrustDomain: "cluster.local", Delivery: "saas/accounts/rest"}
+	cluster := &nativeCluster{env: &environments.Environment{Name: "local", Host: host}, hostModule: "saas", hostService: "accounts", identities: map[string]gitops.NativeIdentity{}}
+	accounts := &resources.Service{Name: "accounts", WorkspaceConfigurationDependencies: []string{"abuse-protection", environments.FederationConfiguration}}
+	accounts.WithModule("saas")
+	groups, err := cluster.renderOwnedGroups(ctx, accounts)
+	require.NoError(t, err)
+	require.Len(t, groups, 1)
+	require.Equal(t, environments.FederationConfiguration, groups[0].Infos[0].Name)
+	values := map[string]string{}
+	for _, value := range groups[0].Infos[0].ConfigurationValues {
+		values[value.Key] = value.Value
+		require.False(t, value.Secret)
+	}
+	require.Equal(t, map[string]string{
+		environments.FederationHostCoordinateKey:       "obin/local/dev",
+		environments.FederationHostOwnershipDomainsKey: "obin",
+		environments.FederationHostTrustPolicyKey:      environments.FederationHostTrustPolicyKeys,
+	}, values)
+
+	gateway := &resources.Service{Name: "auth-gateway", WorkspaceConfigurationDependencies: []string{environments.FederationConfiguration}}
+	gateway.WithModule("saas")
+	groups, err = cluster.renderOwnedGroups(ctx, gateway)
+	require.NoError(t, err)
+	require.Empty(t, groups, "only the delivery host answers for the coordinate")
+
+	silent := &resources.Service{Name: "accounts", WorkspaceConfigurationDependencies: []string{"abuse-protection"}}
+	silent.WithModule("saas")
+	groups, err = cluster.renderOwnedGroups(ctx, silent)
+	require.NoError(t, err)
+	require.Empty(t, groups, "a host that does not declare federation is handed none of it")
+
+	_, err = federationGroup(&environments.EnvironmentHost{Coordinate: "obin/local/dev"})
+	require.ErrorContains(t, err, "host.domain")
+}

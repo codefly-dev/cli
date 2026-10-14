@@ -24,6 +24,25 @@ const ArtifactCacheConfiguration = "artifact-cache"
 // absolute path of the cache directory.
 const ArtifactCacheRootKey = "ROOT"
 
+// FederationConfiguration is the host's authored workspace configuration
+// group (its registration secrets live there, declared by the composition).
+// Three of its keys turn the host's delivery surface on and say what it
+// answers for; a cell's composition declares them for its environment, and a
+// NATIVE run derives them from the environment's host block for the delivery
+// host alone, since the run is the one that knows the host it stands up.
+// The group stays authored: it is never render-owned.
+const FederationConfiguration = "federation"
+
+// The federation keys a host reads to answer for a coordinate: the coordinate
+// itself, the ownership domains it accepts a binding under, and how it checks
+// a delivered carrier, for which the only value is pinned keys.
+const (
+	FederationHostCoordinateKey       = "SOLUTION_HOST_COORDINATE"
+	FederationHostOwnershipDomainsKey = "SOLUTION_HOST_OWNERSHIP_DOMAINS"
+	FederationHostTrustPolicyKey      = "SOLUTION_HOST_TRUST_POLICY"
+	FederationHostTrustPolicyKeys     = "keys"
+)
+
 // RenderOwnedWorkspaceConfiguration names the groups supplied per workload by
 // the render (or by the native run standing in for it). They are never
 // dependencies of the configuration manager and cannot be provided by

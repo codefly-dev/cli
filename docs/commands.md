@@ -128,6 +128,14 @@ writer follows the gateway's current address. The `--output-env` file is a map
 of the run's current environment, rewritten whole: a key written again
 replaces its line, so a reader never meets two values for one key.
 
+**The delivery host's federation surface.** In a host environment the native
+run hands the service `host.delivery` names, when it declares the `federation`
+workspace configuration, the three keys that turn its delivery surface on,
+derived from the host block: `SOLUTION_HOST_COORDINATE` (`host.coordinate`),
+`SOLUTION_HOST_OWNERSHIP_DOMAINS` (`host.domain`) and
+`SOLUTION_HOST_TRUST_POLICY` (`keys`); a cell's composition declares the same
+three for its environment.
+
 **The artifact cache as a native bundle source.** A service that declares the
 workspace configuration `artifact-cache` receives `ROOT`, the absolute path of
 `.codefly/selection-artifacts`, from a native run and from nothing else; the
