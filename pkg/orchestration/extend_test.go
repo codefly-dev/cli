@@ -76,8 +76,13 @@ func TestExtendStartsOnlyTheAdmittedClosureAndLeavesTheRunAlone(t *testing.T) {
 		require.NotNil(t, manager.callback, "an admitted manager seeds the live playbook on a hot reload")
 	}
 	require.Equal(t, []string{"documents/documents", "wiki/backend"}, started, "the admitted root's closure, dependencies first, and nothing the run already managed")
+	kept := map[IManager]bool{}
+	for _, manager := range flow.hub.all() {
+		kept[manager] = true
+	}
 	for unique, manager := range running {
 		require.Empty(t, manager.phases, unique+" was running and is left alone")
+		require.True(t, kept[manager], unique+" keeps the manager, and so the process, it was running under: the host is not restarted")
 	}
 	require.Equal(t, started, hooked, "each admitted service reaches Running through the hook every workload reaches it through")
 	require.Equal(t, []string{"lastlogin-go/backend", "wiki/backend"}, flow.Roots())

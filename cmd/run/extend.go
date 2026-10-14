@@ -14,17 +14,19 @@ import (
 	"github.com/codefly-dev/core/resources"
 )
 
-// extendOnSignal is set by `codefly run workspace`: a running workspace
-// admits the components composed after it started when it receives SIGUSR1,
-// the one signal the run leaves free (SIGHUP is ignored so the stack survives
-// a closed shell; SIGINT and SIGTERM stop it). The composition is read again
-// from disk, its roots compared with the run's, and each root the run did
-// not know is admitted into the native cluster, if one answers, and started
-// by the flow. Nothing already running is restarted, and the run's authority
-// is untouched: the host keeps its process.
-var extendOnSignal bool
-
-func watchForExtensions(ctx context.Context, flow *orchestration.Flow) {
+// Every run — a service, a solution or the whole workspace — admits the
+// components composed after it started when it receives SIGUSR1, the one
+// signal the run leaves free (SIGHUP is ignored so the stack survives a
+// closed shell; SIGINT and SIGTERM stop it). The composition is read again
+// from disk, its roots compared with the ones the run starts and the ones it
+// composed when the run began, and each root neither knew is admitted into
+// the native cluster, if one answers, and started by the flow. Nothing
+// already running is restarted, and the run's authority is untouched: the
+// host keeps its process. A root the composition already named when a
+// service or solution run started, outside that run's closure, stays outside
+// it: the run's scope is the entry's, and only what is composed after the
+// start joins.
+func watchForExtensions(ctx context.Context, flow *orchestration.Flow, baseline map[string]bool) {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGUSR1)
 	defer signal.Stop(signals)
@@ -33,18 +35,46 @@ func watchForExtensions(ctx context.Context, flow *orchestration.Flow) {
 		case <-ctx.Done():
 			return
 		case <-signals:
-			if err := extendRunningWorkspace(ctx, flow); err != nil {
+			if err := extendRunningWorkspace(ctx, flow, baseline); err != nil {
 				cli.Warning("the running composition was not extended: %v", err)
 			}
 		}
 	}
 }
 
+// extensionBaseline is what a run knows when it starts: the roots the
+// composition names then. A workspace that composes nothing beyond the one
+// service being run has no composition roots to name, and the run's own
+// roots are the baseline.
+func extensionBaseline(ctx context.Context, workspace *resources.Workspace) map[string]bool {
+	baseline := map[string]bool{}
+	roots, err := CompositionRoots(ctx, workspace)
+	if err != nil {
+		return baseline
+	}
+	for _, root := range roots {
+		baseline[root] = true
+	}
+	return baseline
+}
+
+// freshRoots is the roots a reloaded composition names that neither the
+// baseline nor the run knows, in the composition's order.
+func freshRoots(known map[string]bool, roots []string) []string {
+	var fresh []string
+	for _, root := range roots {
+		if !known[root] {
+			fresh = append(fresh, root)
+		}
+	}
+	return fresh
+}
+
 // extendRunningWorkspace reloads the workspace and admits into the run every
-// root the composition now names that the run does not start: its derived run
-// inputs join the run's, the native cluster projects its identity, and the
-// flow starts its closure.
-func extendRunningWorkspace(ctx context.Context, flow *orchestration.Flow) error {
+// root the composition now names that neither the run nor its baseline knows:
+// its derived run inputs join the run's, the native cluster projects its
+// identity, and the flow starts its closure.
+func extendRunningWorkspace(ctx context.Context, flow *orchestration.Flow, baseline map[string]bool) error {
 	workspace, err := common.LoadWorkspace(ctx)
 	if err != nil {
 		return fmt.Errorf("reload the workspace: %w", err)
@@ -53,18 +83,16 @@ func extendRunningWorkspace(ctx context.Context, flow *orchestration.Flow) error
 	if err != nil {
 		return err
 	}
-	known := map[string]bool{}
+	known := make(map[string]bool, len(baseline)+len(roots))
+	for root := range baseline {
+		known[root] = true
+	}
 	for _, root := range flow.Roots() {
 		known[root] = true
 	}
-	var fresh []string
-	for _, root := range roots {
-		if !known[root] {
-			fresh = append(fresh, root)
-		}
-	}
+	fresh := freshRoots(known, roots)
 	if len(fresh) == 0 {
-		cli.Info("the composition names no component this run does not already start")
+		cli.Info("the composition names no component this run does not already start or know")
 		return nil
 	}
 	merged := solutionrun.RunInputs{Overrides: derivedOverrides}

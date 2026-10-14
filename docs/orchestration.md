@@ -179,9 +179,10 @@ the playbook reads it while the run extends), the configuration manager admits
 them, and each new service is driven through Load, Init and Start in
 dependency order, reaching Running through the same hook as every other
 workload. Nothing already running is restarted: an admitted service's actions
-fan out to nothing, and the playbook is never re-seeded. `codefly run
-workspace` calls it on `SIGUSR1`, after the native cluster admitted the new
-identities.
+fan out to nothing, and the playbook is never re-seeded. Every `codefly run`
+(service, solution, workspace) calls it on `SIGUSR1`, after the native cluster
+admitted the new identities, for the roots the composition names that neither
+the run nor the composition it started from knew.
 
 **A native run listens on loopback.** The native address core allocates a
 service (`network.Native`) is a loopback address, and it is the address the

@@ -1082,10 +1082,11 @@ presence carrier is. A local cluster run awaits the `deliver-endpoints` Job
 as it awaits the others.
 
 This is the delivery contract, and it is how a component
-composed after the run started reaches the gateway: `codefly run workspace`
-admits the components a reloaded composition adds when it receives `SIGUSR1`
-(`kill -USR1 <pid>`). The run reads the workspace again, compares its roots
-with the ones it starts, admits each new module-identity service into the
+composed after the run started reaches the gateway: every `codefly run` (a
+service, a solution or the workspace) admits the components a reloaded
+composition adds when it receives `SIGUSR1` (`kill -USR1 <pid>`). The run
+reads the workspace again, compares its roots with the ones it starts and the
+ones the composition named when it began, admits each new module-identity service into the
 native cluster (its identity is planned by the rule attach used; a known
 component may neither change nor disappear, since a replaced or withdrawn
 principal is a narrowing the host refuses from a development loop, and the

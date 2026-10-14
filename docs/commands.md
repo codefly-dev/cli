@@ -129,10 +129,12 @@ of the run's current environment, rewritten whole: a key written again
 replaces its line, so a reader never meets two values for one key.
 
 **Adding a component while the run is up.** Compose the module or solution
-into the workspace and send the running `codefly run workspace` process
-`SIGUSR1` (`kill -USR1 <pid>`). The run reloads the composition, admits every
-root it did not start, and starts that root's closure in the running flow in
-dependency order; in a host environment the native cluster projects the
+into the workspace and send the running `codefly run` process — a service, a
+solution or the workspace — `SIGUSR1` (`kill -USR1 <pid>`). The run reloads
+the composition, admits every root composed after it started (a root the
+composition already named when a service or solution run began, outside that
+run's closure, stays outside it), and starts that root's closure in the
+running flow in dependency order; in a host environment the native cluster projects the
 newcomer's identity and delivers its presence, authority and routes once it
 is Running, and the host keeps its process. A component already running is
 never restarted, replaced or withdrawn by this: a changed identity or a

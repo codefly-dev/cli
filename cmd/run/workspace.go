@@ -44,8 +44,7 @@ var WorkspaceCmd = &cobra.Command{
 			return err
 		}
 		pinsAlreadyResolved = true
-		extendOnSignal = true
-		defer func() { pinsAlreadyResolved, extendOnSignal = false, false }()
+		defer func() { pinsAlreadyResolved = false }()
 		return runServiceCommand(cmd, roots)
 	},
 }
