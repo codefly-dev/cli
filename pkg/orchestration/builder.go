@@ -42,6 +42,10 @@ type Builder struct {
 
 	imageDigest string
 
+	// localRuntime builds a recipe for this machine's container engine, keeping
+	// generated files out of authored services and naming the image by its inputs.
+	localRuntime bool
+
 	imageEvidence  []*builderv0.ImageSBOM
 	resolvedImages []coresbom.ResolvedImage
 
@@ -274,6 +278,9 @@ func (b *Builder) buildRecipeRoot() (string, error) {
 	module, service := "", ""
 	if b.instance.Identity != nil {
 		module, service = b.instance.Identity.Module, b.instance.Identity.Name
+	}
+	if b.localRuntime {
+		return localRuntimeRecipeRoot(workspaceDir, module, service)
 	}
 	return buildRecipeRoot(workspaceDir, module, service, b.instance.Service.Dir())
 }

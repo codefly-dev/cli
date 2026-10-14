@@ -153,6 +153,9 @@ func (b *Builder) buildRecipe(
 	shouldPush bool,
 	goModuleProxies map[string]string,
 ) error {
+	if err := b.prepareLocalRuntimeRecipe(recipe); err != nil {
+		return err
+	}
 	if shouldPush {
 		targeted, err := b.targetEnvironmentPlatforms(recipe)
 		if err != nil {
@@ -206,6 +209,9 @@ func (b *Builder) buildRecipe(
 		return err
 	}
 	identity, identityErr := imageBuildIdentity(ctx, recipe, plan, scope, dockerfile, probeBuilder, identityArgs, private.Proxies)
+	if err = b.nameLocalRuntimeImage(recipe, identity, identityErr); err != nil {
+		return err
+	}
 	if identityErr != nil {
 		// Not a build failure: an input this cannot account for means the image
 		// is rebuilt, which is the behaviour without a cache at all. It is said
@@ -215,22 +221,8 @@ func (b *Builder) buildRecipe(
 			wool.Field("recipe", recipe.GetName()), wool.ErrField(identityErr))
 	}
 	imageCache := b.imageBuildCache()
-	if identity.Key != "" && !b.world.RebuildImages {
-		entry, found := imageCache.lookup(identity.Key, b.instance.Unique(), shouldPush)
-		switch {
-		case found && imageStillExists(ctx, entry, probeBuilder):
-			w.Info("no image input changed; keeping the built image",
-				wool.Field("image", entry.Image), wool.Field("digest", entry.Digest),
-				wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
-			b.adoptCachedImage(recipe, entry, captureDigest, resolveEvidence)
-			return nil
-		case found:
-			w.Debug("an image was built from these inputs but no longer exists; building",
-				wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
-		default:
-			w.Debug("no image has been built from these inputs; building",
-				wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
-		}
+	if b.reuseBuiltImage(ctx, w, recipe, identity, imageCache, captureDigest, resolveEvidence) {
+		return nil
 	}
 
 	// A caller-provided builder (e.g. a native amd64 buildkit) is authoritative:
@@ -282,8 +274,35 @@ func (b *Builder) buildRecipe(
 	if err != nil {
 		return err
 	}
+	if err = b.verifyLocalRuntimeBuild(ctx, w, recipe, scope, identity); err != nil {
+		return err
+	}
 	b.recordImageForReuse(ctx, w, recipe, scope, identity, imageCache, shouldPush, pushedDigest, loadedImageID, recordable)
 	return nil
+}
+
+func (b *Builder) reuseBuiltImage(ctx context.Context, w *wool.Wool, recipe *builderv0.DockerBuildRecipe,
+	identity imageIdentity, cache *imageBuildCache, captureDigest, resolveEvidence bool,
+) bool {
+	if identity.Key == "" || b.world.RebuildImages {
+		return false
+	}
+	entry, found := cache.lookup(identity.Key, b.instance.Unique(), b.world.Push)
+	if !found {
+		w.Debug("no image has been built from these inputs; building",
+			wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
+		return false
+	}
+	if (b.localRuntime && entry.Image != recipe.GetImage()) || !imageStillExists(ctx, entry, b.world.BuildxBuilder) {
+		w.Debug("the recorded image cannot be reused; building",
+			wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
+		return false
+	}
+	w.Info("no image input changed; keeping the built image",
+		wool.Field("image", entry.Image), wool.Field("digest", entry.Digest),
+		wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
+	b.adoptCachedImage(recipe, entry, captureDigest, resolveEvidence)
+	return true
 }
 
 // resolvePushedDigest reads the immutable manifest digest of a pushed build from

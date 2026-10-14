@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/distribution/reference"
+
 	agentservices "github.com/codefly-dev/core/agents/services"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
@@ -129,6 +131,15 @@ func proposedPorts(proposed []*basev0.NetworkMapping) map[uint16]bool {
 }
 
 func (agent *realAgent) Init(_ context.Context, req *runtimev0.InitRequest) (*runtimev0.InitResponse, error) {
+	if image := req.GetRuntimeImage(); image != "" {
+		parsed, err := reference.ParseNamed(image)
+		if err != nil {
+			return nil, fmt.Errorf("invalid runtime image reference: %w", err)
+		}
+		if _, ok := parsed.(reference.Canonical); !ok {
+			return nil, fmt.Errorf("runtime image reference must carry an immutable digest")
+		}
+	}
 	mappings := req.GetProposedNetworkMappings()
 	if agent.mode == realAgentLegacy {
 		// A pre-contract agent answers READY without naming any mapping.
@@ -169,6 +180,9 @@ func exportedConfigurations(mode string, req *runtimev0.InitRequest) []*basev0.C
 	values := []*basev0.ConfigurationValue{{Key: "session", Value: "exposed"}}
 	if mode == realAgentInputs {
 		values = []*basev0.ConfigurationValue{{Key: "fixture", Value: req.GetFixture()}}
+		if req.GetRuntimeImage() != "" {
+			values = append(values, &basev0.ConfigurationValue{Key: "runtime-image", Value: req.GetRuntimeImage()})
+		}
 		for key, value := range req.GetOverrides() {
 			values = append(values, &basev0.ConfigurationValue{Key: key, Value: value})
 		}
