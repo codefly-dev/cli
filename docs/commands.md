@@ -596,7 +596,11 @@ codefly run job db-migration --module=backend --with-services  # Start service d
 ### `codefly delivery key`
 
 Create or load this machine's developer delivery key and print its key ID and
-public key PEM. Add the ID under `host.developers` on a declared local k3d
+public key PEM. A native run (`codefly run service`, `solution` or
+`workspace` in a host environment) needs no workspace entry for it: the run
+owns a temporary CA and writes the host's local profile itself, admitting this
+key for the host's domain, so nothing per machine is committed to a shared
+composition. Add the ID under `host.developers` on a declared local k3d
 environment before running it. Private custody stays in the OS keychain, or a
 0600 file in `~/.codefly/delivery-keys` when no keychain is available. The same
 machine key is returned on later calls.

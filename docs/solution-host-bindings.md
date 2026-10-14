@@ -695,7 +695,12 @@ PEM file lives in the 0700 `~/.codefly/delivery-keys` directory. The 0600
 `current` index selects that one key; broader permissions and symlinks are
 refused. A failed keychain lookup never silently replaces an indexed key.
 
-A local publish uses that key only when `host.developers` lists its ID.
+A local publish uses that key only when `host.developers` lists its ID. A
+native run needs no such entry: it writes the host's local profile itself,
+bound to the run's temporary CA and admitting this machine's key for the
+host's domain (`NativeVerificationPolicy`), so a shared composition never
+carries a per-machine key, and `host.developers` stays a declared local k3d
+cluster's allowlist.
 An unlisted key is reported with the exact declaration to add, before any
 signature. A release publish never loads developer custody. A local host with
 no developers retains unsigned qualification delivery; one listing developers

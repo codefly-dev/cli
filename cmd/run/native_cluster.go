@@ -221,7 +221,9 @@ func (cluster *nativeCluster) projectHost() error {
 	if err != nil {
 		return err
 	}
-	policy, err := localcluster.VerificationPolicy(cluster.authority.CAFingerprint(), cluster.env.Host)
+	// The native run owns the CA it binds the policy to and the signer it
+	// admits: its own delivery key, which no workspace lists.
+	policy, err := localcluster.NativeVerificationPolicy(cluster.authority.CAFingerprint(), cluster.signer, cluster.env.Host)
 	if err != nil {
 		return err
 	}
