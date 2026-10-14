@@ -287,7 +287,13 @@ func (cluster *nativeCluster) admit(ctx context.Context, workspace *resources.Wo
 	}
 	cluster.composition.Lock()
 	defer cluster.composition.Unlock()
-	for unique, known := range cluster.identities {
+	knownUniques := make([]string, 0, len(cluster.identities))
+	for unique := range cluster.identities {
+		knownUniques = append(knownUniques, unique)
+	}
+	sort.Strings(knownUniques)
+	for _, unique := range knownUniques {
+		known := cluster.identities[unique]
 		reloaded, still := identities[unique]
 		switch {
 		case !still:
