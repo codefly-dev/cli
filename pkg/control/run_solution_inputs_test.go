@@ -19,8 +19,8 @@ import (
 // A solution root: the workspace's own `path: .` module declares the
 // service-entry the whole composition hangs off, and the manifest beside it
 // declares the API it consumes from a composed module. The entry service
-// declares no dependency, so an --exclude-root run starts nothing and needs no
-// agent — the environment the root would have received is composed all the same.
+// declares no direct dependency. These environment-export tests explicitly
+// exclude its consumed producer as well, so they need no runtime agent.
 const (
 	solutionInputsWorkspaceYAML = `name: wiki
 layout: modules
@@ -59,6 +59,10 @@ agent:
     name: go-grpc
     version: 0.0.16
     publisher: codefly.ai
+endpoints:
+    - name: connect
+      api: connect
+      visibility: internal
 `
 	solutionInputsManifestYAML = `schema_version: codefly.solution-manifest/v0
 protocol_version: codefly.solution/v0
@@ -132,6 +136,7 @@ func startExcludedRootRun(t *testing.T, root string) string {
 		Service:        "wiki/backend",
 		RuntimeContext: resources.RuntimeContextNative,
 		ExcludeRoot:    true,
+		Exclude:        []string{"documents/api"},
 		Wait:           true,
 		OutputEnv:      outputEnvironment,
 	}); runErr != nil {
@@ -268,6 +273,7 @@ func TestStopJoinsTheRunGoroutine(t *testing.T) {
 		Service:        "wiki/backend",
 		RuntimeContext: resources.RuntimeContextNative,
 		ExcludeRoot:    true,
+		Exclude:        []string{"documents/api"},
 		Wait:           true,
 		OutputEnv:      filepath.Join(t.TempDir(), "runtime.env"),
 	}); runErr != nil {

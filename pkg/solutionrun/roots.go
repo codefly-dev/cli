@@ -2,9 +2,43 @@ package solutionrun
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/codefly-dev/core/resources"
 )
+
+// SelectedConsumedEndpoints projects selected solution entries' API declarations
+// into run inputs. They are membership, never service-dependency or mesh edges.
+// The caller supplies its existing dependency closure; this does not walk a
+// second dependency graph or inspect solutions outside that selection.
+func SelectedConsumedEndpoints(ctx context.Context, workspace *resources.Workspace, selected []string) ([]Consumption, error) {
+	var consumedEndpoints []Consumption
+	solutions, err := composedSolutions(ctx, workspace, selected)
+	if err != nil {
+		return nil, err
+	}
+	for _, solution := range solutions {
+		module, declaration := solution.module, solution.manifest
+		for _, consumed := range declaration.ConsumedAPIs() {
+			producer, err := workspace.LoadService(ctx, &resources.ServiceWithModule{Module: consumed.Module, Name: consumed.Service})
+			if err != nil {
+				return nil, fmt.Errorf("solution %s consumes %s/%s/%s: %w", module.Name, consumed.Module, consumed.Service, consumed.Endpoint, err)
+			}
+			found := false
+			for _, endpoint := range producer.Endpoints {
+				if endpoint != nil && endpoint.Name == consumed.Endpoint {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("solution %s consumes undeclared endpoint %s/%s/%s", module.Name, consumed.Module, consumed.Service, consumed.Endpoint)
+			}
+			consumedEndpoints = append(consumedEndpoints, Consumption{Solution: module.Name, ConsumedAPI: consumed})
+		}
+	}
+	return consumedEndpoints, nil
+}
 
 // SolutionRoots returns, among the modules declaring a service-entry, the ones
 // no other such module depends on. A host composed beside a solution declares an
