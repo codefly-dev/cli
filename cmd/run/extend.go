@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -72,7 +73,8 @@ func watchForExtensions(ctx context.Context, flow *orchestration.Flow, baseline 
 			return
 		case <-signals:
 			if err := withdrawDroppedRoots(ctx, flow, pinned); err != nil {
-				cli.Warning("the running composition was not narrowed: %v", err)
+				cli.Warning("composition withdrawal is incomplete; the next SIGUSR1 retries it: %v", err)
+				continue
 			}
 			if err := extendRunningWorkspace(ctx, flow, baseline); err != nil {
 				cli.Warning("the running composition was not extended: %v", err)
@@ -125,12 +127,9 @@ func withdrawDroppedRoots(ctx context.Context, flow *orchestration.Flow, pinned 
 		return err
 	}
 	gone := goneRoots(pinned, flow.Roots(), roots)
-	if len(gone) == 0 {
-		return nil
-	}
-	stopped, err := flow.Withdraw(ctx, workspace, gone)
-	if err != nil {
-		return err
+	var stopped []string
+	if len(gone) > 0 {
+		stopped, err = flow.Withdraw(ctx, workspace, gone)
 	}
 	for _, unique := range stopped {
 		cli.Info("stopped %s", unique)
@@ -141,10 +140,10 @@ func withdrawDroppedRoots(ctx context.Context, flow *orchestration.Flow, pinned 
 			cli.Info("withdrew %s from the host: its presence is a tombstone now, terminal for that binding", unique)
 		}
 		if withdrawErr != nil {
-			return withdrawErr
+			return errors.Join(err, withdrawErr)
 		}
 	}
-	return nil
+	return err
 }
 
 // extendRunningWorkspace reloads the workspace and admits into the run every

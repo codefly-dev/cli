@@ -1148,6 +1148,22 @@ withdraws its endpoints with the presence, keeps its process and its
 authority, and the envelope is not narrowed. The withdrawal is terminal for
 the binding at the host.
 
+The tombstone retains the original delivery namespace as transport context;
+its signed presence has no workloads, and its removed authority has no effective
+generation. If delivery fails, the stopped workload remains pending in this
+run. The next `SIGUSR1` retries that same withdrawal even though the root has
+already left the flow. Additions wait until pending withdrawals succeed. A successful POST is only
+an inbox receipt: completion requires the exact removed generation, digest,
+release and host from the existing APPLIED observer. The run uses its separate
+read-only endpoint-publisher identity, waits for up to one minute, and retains
+pending state if the host cannot apply. Ordinary hot-reload delivery is refused
+while removal is pending, keeping the envelope and tombstone generation stable;
+reload that workload again after a successful composition refresh.
+Accepted tombstones are observed again
+without reposting on the next signal. The host must accept the narrowing through
+its policy witness; a pending or refused apply is not successful removal. Pending retries survive within this process,
+not across a CLI restart.
+
 ## Mesh edges
 
 The cell's mesh decides who reaches a workload's port, and its protected

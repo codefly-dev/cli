@@ -326,6 +326,9 @@ type NativeDocuments struct {
 	Presence  *solutionhost.SolutionHostBinding
 	Authority *solutionhost.AuthorityDocument
 	Digest    solutionhost.ImageDigest
+	// DeliverySPIFFEID retains the presence delivery namespace when a
+	// tombstone clears the workloads. It is transport context, not authority.
+	DeliverySPIFFEID string
 	// Principal, Bindings and Ceilings are what the envelope admits for the
 	// module, derived from the same contract the authority was rendered from.
 	Principal string
@@ -345,6 +348,8 @@ type NativeDeliverer struct {
 	DeliveryURL string
 	// Token mints the delivery account's projected token for a namespace.
 	Token func(namespace string) (string, error)
+	// ObserverToken belongs to the separate read-only applied-state publisher.
+	ObserverToken func() (string, error)
 	// EnvelopeRevision is the host's current envelope revision, which every
 	// document names.
 	EnvelopeRevision uint64
@@ -518,7 +523,11 @@ func WithdrawnDocuments(delivered *NativeDocuments) (*NativeDocuments, error) {
 	if err != nil {
 		return nil, fmt.Errorf("withdraw binding %s: %w", delivered.Presence.Binding, err)
 	}
-	withdrawn := &NativeDocuments{Presence: presence, Digest: delivered.Digest, Principal: delivered.Principal}
+	identity, err := delivered.deliveryIdentity()
+	if err != nil {
+		return nil, err
+	}
+	withdrawn := &NativeDocuments{Presence: presence, Digest: delivered.Digest, Principal: delivered.Principal, DeliverySPIFFEID: identity}
 	if delivered.Authority != nil {
 		if withdrawn.Authority, err = authorityTombstoneOf(delivered.Authority); err != nil {
 			return nil, fmt.Errorf("withdraw authority %s: %w", delivered.Authority.Authority, err)
@@ -602,6 +611,10 @@ type Receipt struct {
 
 // Deliver signs the documents and POSTs them to the host.
 func (d *NativeDeliverer) Deliver(ctx context.Context, documents *NativeDocuments) ([]Receipt, error) {
+	identity, err := documents.deliveryIdentity()
+	if err != nil {
+		return nil, err
+	}
 	record, err := d.loadGenerations()
 	if err != nil {
 		return nil, err
@@ -621,14 +634,16 @@ func (d *NativeDeliverer) Deliver(ctx context.Context, documents *NativeDocument
 	if err != nil {
 		return nil, err
 	}
-	receipt, err := d.post(ctx, "presence", presence.Workloads[0].Identity.SPIFFEID, payload)
+	receipt, err := d.post(ctx, "presence", identity, payload)
 	if err != nil {
 		return nil, err
 	}
 	receipts = append(receipts, receipt)
 	if documents.Authority != nil {
 		authority := documents.Authority
-		authority.EffectiveFrom = presence.Generation
+		if !authority.Removed {
+			authority.EffectiveFrom = presence.Generation
+		}
 		authority.Generation = 1
 		content, err = solutionhost.SignedPayloadFor(authority)
 		if err != nil {
@@ -649,6 +664,19 @@ func (d *NativeDeliverer) Deliver(ctx context.Context, documents *NativeDocument
 		return nil, err
 	}
 	return receipts, nil
+}
+
+func (documents *NativeDocuments) deliveryIdentity() (string, error) {
+	if documents == nil || documents.Presence == nil {
+		return "", fmt.Errorf("native delivery requires a presence")
+	}
+	if !documents.Presence.Removed && len(documents.Presence.Workloads) > 0 {
+		return documents.Presence.Workloads[0].Identity.SPIFFEID, nil
+	}
+	if documents.Presence.Removed && documents.DeliverySPIFFEID != "" {
+		return documents.DeliverySPIFFEID, nil
+	}
+	return "", fmt.Errorf("binding %s has no original workload identity for delivery", documents.Presence.Binding)
 }
 
 // authorityDeliveryNamespace is the fixed namespace a host accepts authority

@@ -85,6 +85,11 @@ type nativeCluster struct {
 	workloads   map[string]nativecluster.Workload // unique -> projected identity
 	projections map[string]nativecluster.Projection
 	documents   map[string]*gitops.NativeDocuments // unique -> last rendered
+	// pendingWithdrawals outlive removal from the flow: a refused delivery
+	// must be retried on the next composition refresh, even with no gone roots.
+	pendingWithdrawals map[string]bool
+	// Received tombstones await APPLIED without posting a new generation.
+	receivedWithdrawals map[string]*gitops.NativeDocuments
 	// builds are every build this run approved: a rebuilt workload adds its
 	// new build and keeps the old one approved for the run, so an envelope the
 	// run writes only ever widens — a narrowing is a witnessed act, not a dev
@@ -608,6 +613,17 @@ func (cluster *nativeCluster) newDeliverer(ctx context.Context) (*gitops.NativeD
 			}
 			return cluster.authority.Token(namespace, "delivery", pod.Name, pod.UID, cluster.env.Host.Audience)
 		},
+		ObserverToken: func() (string, error) {
+			// The host's existing APPLIED read authenticates this distinct
+			// publisher identity; document writer credentials cannot read it.
+			pod := nativecluster.Pod{Namespace: "istio-presenter", ServiceAccount: "endpoint-publisher", Name: "endpoint-publisher-native", UID: randomUID()}
+			if existing, ok := cluster.authority.Pod(pod.Namespace, pod.ServiceAccount); ok {
+				pod = existing
+			} else {
+				cluster.authority.RegisterPod(&pod)
+			}
+			return cluster.authority.Token(pod.Namespace, pod.ServiceAccount, pod.Name, pod.UID, cluster.env.Host.Audience)
+		},
 	}, gatewayURL, nil
 }
 
@@ -618,30 +634,61 @@ func (cluster *nativeCluster) newDeliverer(ctx context.Context) (*gitops.NativeD
 // CA, API server and host token) is untouched, the envelope is not narrowed,
 // and the host keeps its process. Returned are the uniques withdrawn.
 func (cluster *nativeCluster) withdraw(ctx context.Context, uniques []string) ([]string, error) {
-	var withdrawn []string
+	cluster.mu.Lock()
+	if cluster.pendingWithdrawals == nil {
+		cluster.pendingWithdrawals = map[string]bool{}
+	}
 	for _, unique := range uniques {
+		cluster.pendingWithdrawals[unique] = true
+	}
+	pending := make([]string, 0, len(cluster.pendingWithdrawals))
+	for unique := range cluster.pendingWithdrawals {
+		pending = append(pending, unique)
+	}
+	cluster.mu.Unlock()
+	sort.Strings(pending)
+	var withdrawn []string
+	for _, unique := range pending {
 		cluster.mu.Lock()
 		delivered, had := cluster.documents[unique]
+		tombstones := cluster.receivedWithdrawals[unique]
 		cluster.mu.Unlock()
 		if !had {
 			cluster.forget(unique)
 			continue
 		}
-		tombstones, err := gitops.WithdrawnDocuments(delivered)
-		if err != nil {
-			return withdrawn, err
+		var err error
+		if tombstones == nil {
+			tombstones, err = gitops.WithdrawnDocuments(delivered)
+			if err != nil {
+				return withdrawn, err
+			}
 		}
 		deliverer, _, err := cluster.newDeliverer(ctx)
 		if err != nil {
 			return withdrawn, err
 		}
-		receipts, err := deliverer.Deliver(ctx, tombstones)
-		if err != nil {
-			return withdrawn, fmt.Errorf("%s: withdraw: %w", unique, err)
-		}
 		w := wool.Get(ctx).In("nativeCluster.withdraw")
-		for _, receipt := range receipts {
-			w.Info("withdrawn", wool.Field("service", unique), wool.Field("kind", receipt.Kind), wool.Field("disposition", receipt.Disposition), wool.Field("generation", receipt.Generation))
+		cluster.mu.Lock()
+		received := cluster.receivedWithdrawals[unique] != nil
+		cluster.mu.Unlock()
+		if !received {
+			receipts, deliverErr := deliverer.Deliver(ctx, tombstones)
+			if deliverErr != nil {
+				return withdrawn, fmt.Errorf("%s: withdraw: %w", unique, deliverErr)
+			}
+			cluster.mu.Lock()
+			if cluster.receivedWithdrawals == nil {
+				cluster.receivedWithdrawals = map[string]*gitops.NativeDocuments{}
+			}
+			cluster.receivedWithdrawals[unique] = tombstones
+			cluster.mu.Unlock()
+			for _, receipt := range receipts {
+				w.Info("withdrawal received", wool.Field("service", unique), wool.Field("kind", receipt.Kind), wool.Field("disposition", receipt.Disposition), wool.Field("generation", receipt.Generation))
+			}
+		}
+		if err := deliverer.WaitForWithdrawal(ctx, tombstones.Presence); err != nil {
+			return withdrawn, fmt.Errorf("%s: %w", unique, err)
 		}
 		cluster.forget(unique)
 		withdrawn = append(withdrawn, unique)
@@ -661,6 +708,8 @@ func (cluster *nativeCluster) forget(unique string) {
 	delete(cluster.projections, unique)
 	delete(cluster.documents, unique)
 	delete(cluster.withheld, unique)
+	delete(cluster.pendingWithdrawals, unique)
+	delete(cluster.receivedWithdrawals, unique)
 	cluster.mu.Unlock()
 	_ = os.Remove(filepath.Join(cluster.deliveredDir(), deliveredFileName(unique)))
 }
@@ -783,6 +832,12 @@ func (cluster *nativeCluster) release(uniques []string) error {
 func (cluster *nativeCluster) deliver(ctx context.Context, unique string, identity gitops.NativeIdentity, service *resources.Service) error {
 	cluster.mu.Lock()
 	defer cluster.mu.Unlock()
+	// An envelope advance re-delivers every live document. Until removal
+	// applies, that would race or supersede the pending tombstone. Keep the
+	// whole delivery snapshot stable; an agent may retry after withdrawal.
+	if len(cluster.pendingWithdrawals) > 0 {
+		return fmt.Errorf("%s: delivery waits for pending withdrawals; refresh the composition before reloading this workload", unique)
+	}
 	workload, projected := cluster.workloads[unique]
 	if !projected {
 		return fmt.Errorf("%s is running with no projected identity", unique)

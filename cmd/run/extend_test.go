@@ -75,3 +75,43 @@ func TestGoneRootsAreTheDroppedOnesTheRunDidNotPin(t *testing.T) {
 	require.Equal(t, []string{"wiki/backend"}, goneRoots(map[string]bool{"docs/documents": true}, running, []string{"crm/api"}), "a pinned root stays")
 	require.Nil(t, goneRoots(map[string]bool{}, running, running), "nothing dropped withdraws nothing")
 }
+
+// A stopped root has already left Flow.Roots when host delivery fails. A
+// subsequent refresh must still attempt that withdrawal, before any add.
+func TestWithdrawalRetriesAfterTheRootHasLeftTheFlow(t *testing.T) {
+	ctx := t.Context()
+	workspace, env := writeHostedNativeWorkspace(t)
+	module, err := workspace.LoadModuleFromName(ctx, "model")
+	require.NoError(t, err)
+	service, err := module.LoadServiceFromName(ctx, "model")
+	require.NoError(t, err)
+	flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.RunMode)
+	require.NoError(t, err)
+	cluster := &nativeCluster{stateDir: t.TempDir(), documents: map[string]*gitops.NativeDocuments{"gone/backend": {}}, identities: map[string]gitops.NativeIdentity{"gone/backend": {Module: "gone"}}}
+	nativeClusterMu.Lock()
+	previous := nativeClusterActive
+	nativeClusterActive = cluster
+	nativeClusterMu.Unlock()
+	t.Cleanup(func() { nativeClusterMu.Lock(); nativeClusterActive = previous; nativeClusterMu.Unlock() })
+	t.Chdir(workspace.Dir())
+	_, err = cluster.withdraw(ctx, []string{"gone/backend"})
+	require.ErrorContains(t, err, "nothing was delivered")
+	require.NotContains(t, flow.Roots(), "gone/backend")
+	require.ErrorContains(t, withdrawDroppedRoots(ctx, flow, pinnedRoots(flow)), "nothing was delivered")
+	require.Contains(t, cluster.identities, "gone/backend", "failed withdrawal retains delivery context")
+	// An undelivered workload needs no host tombstone and is forgotten. That
+	// successful outcome also clears the pending retry.
+	delete(cluster.documents, "gone/backend")
+	require.NoError(t, withdrawDroppedRoots(ctx, flow, pinnedRoots(flow)))
+	require.NotContains(t, cluster.identities, "gone/backend")
+	require.Empty(t, cluster.pendingWithdrawals)
+}
+
+func TestPendingWithdrawalBlocksHotReloadBeforeChangingTheEnvelope(t *testing.T) {
+	cluster := &nativeCluster{pendingWithdrawals: map[string]bool{"removed/backend": true}}
+	err := cluster.deliver(t.Context(), "other/backend", gitops.NativeIdentity{}, nil)
+	require.ErrorContains(t, err, "delivery waits for pending withdrawals")
+	require.Empty(t, cluster.documents)
+	require.Empty(t, cluster.builds)
+	require.Nil(t, cluster.envelope)
+}
