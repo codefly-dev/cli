@@ -221,14 +221,6 @@ func (runner *Runner) Load(ctx context.Context) (*OutputProperty, error) {
 		wool.Field("endpoints", resources.MakeManyEndpointSummary(resp.Endpoints)))
 
 	runner.endpoints = resp.Endpoints
-	// An endpoint the manifest declares and the agent's Load did not return
-	// gets no address: the run allocates for what the agent loaded, never for
-	// what it dropped. It is named here, at the boundary, because the only
-	// later sign is the process failing to resolve its own port.
-	if dropped := droppedDeclaredEndpoints(runner.instance.Service, resp.Endpoints); len(dropped) > 0 {
-		w.Warn(fmt.Sprintf("agent %s returned no endpoint for %s of %s, which its manifest declares; the run allocates no address for an endpoint the agent's Load dropped (a Load error the agent did not report), so the process cannot resolve it — fix the agent's Load, never set PORT",
-			loadedAgentName(runner.instance), strings.Join(dropped, ", "), runner.instance.Unique()))
-	}
 
 	err = runner.world.SharedState.RecordEndpoints(ctx, runner.instance.Identity, resp.Endpoints)
 	if err != nil {
