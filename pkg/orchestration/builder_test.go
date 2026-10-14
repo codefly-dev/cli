@@ -64,13 +64,16 @@ func TestPromotableDeploymentConfigurationsReplaceSecretBytesWithTypedReferences
 	if len(dependencies) != 0 {
 		t.Fatalf("dependencies = %+v", dependencies)
 	}
-	if got := safe.GetInfos()[0].GetConfigurationValues(); len(got) != 1 || got[0].GetKey() != "issuer" {
+	// The authentication group makes even issuer sensitive under its delivered
+	// carrier, so no value from this group may remain in a rendered ConfigMap.
+	if len(safe.GetInfos()) != 0 {
 		t.Fatalf("safe configuration = %+v", safe)
 	}
 	if !strings.Contains(configuration.String(), "must-not-pass") {
 		t.Fatal("source configuration was mutated")
 	}
 	for _, key := range []string{
+		"CODEFLY__SERVICE_SECRET_CONFIGURATION__USERS__ACCOUNTS__AUTHENTICATION__ISSUER",
 		"CODEFLY__SERVICE_SECRET_CONFIGURATION__USERS__ACCOUNTS__AUTHENTICATION__CLIENT_SECRET",
 		"CODEFLY__SERVICE_SECRET_CONFIGURATION__USERS__ACCOUNTS__AUTHENTICATION__API_TOKEN",
 	} {

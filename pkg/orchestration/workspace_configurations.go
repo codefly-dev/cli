@@ -247,12 +247,12 @@ func (world *World) workspaceConfigurationsFor(
 // render alike.
 //
 // "Credential" is the render's own classifier, not a new one: an explicit
-// `Secret` flag or a credential-named key (resources.IsSensitiveKey), which is
-// exactly what promotes a value to a secretKeyRef (restrictedRenderRejects,
-// promotableConfiguration) and what `deploy secrets` plans a store entry for. A
-// narrower test — the flag alone — would leave a credential-named value, which
-// is the shape an operator most often writes, reaching every workload as a
-// secret reference.
+// `Secret` flag or a sensitive environment carrier name, judged by core with
+// the configuration group included. Promotion and the render guard judge that
+// same carrier, so a plain key in a sensitive group must be withheld too;
+// testing only the flag or key would let it reach every workload as a secret
+// reference. Identity endpoint keys remain credentials even when promotion
+// refuses them until they are explicitly declared secret.
 //
 // A STRUCTURED secret — `<name>.secret.yaml`, which core loads as an
 // information block carrying Data{Secret: true} and typically no values at all —
@@ -295,8 +295,8 @@ func (world *World) withheldRootCredentials(declared, effective []string) withhe
 	return credentialsOf(world.providedWorkspaceConfigurationInfos(), rootOnly)
 }
 
-// credentialsOf is the one reading of "which values of these groups are
-// credentials", shared by the resolution and by the plan gate. Two readings
+// credentialsOf is the one reading of "which values of these workspace groups
+// are credentials", shared by the resolution and by the plan gate. Two readings
 // would be two answers to "what does this service receive", and the gate's
 // answer decides whether a plan is refused.
 func credentialsOf(infos []*basev0.ConfigurationInformation, groups map[string]bool) withheldCredentials {
@@ -304,6 +304,7 @@ func credentialsOf(infos []*basev0.ConfigurationInformation, groups map[string]b
 	if len(groups) == 0 {
 		return out
 	}
+	configuration := &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: infos}
 	for _, info := range infos {
 		if !groups[info.GetName()] {
 			continue
@@ -313,7 +314,7 @@ func credentialsOf(infos []*basev0.ConfigurationInformation, groups map[string]b
 			out.groups[info.GetName()] = true
 		}
 		for _, value := range info.GetConfigurationValues() {
-			if structured || isCredentialValue(value) {
+			if structured || isCredentialValue(configuration, info.GetName(), value) {
 				out.values[info.GetName()+"/"+value.GetKey()] = true
 			}
 		}
@@ -436,12 +437,12 @@ func (w withheldCredentials) skips(referencing map[string][]string) map[string]b
 	return out
 }
 
-// isCredentialValue reports whether a value is one the render would promote to a
-// secretKeyRef and `deploy secrets` would plan a store entry for: an explicit
-// Secret flag, or a credential-named key. See restrictedRenderRejects, which
-// mirrors core's own guard and keys off the same marker list.
-func isCredentialValue(value *basev0.ConfigurationValue) bool {
-	return value.GetSecret() || resources.IsSensitiveKey(value.GetKey())
+// isCredentialValue reports whether the render requires a value to travel as a
+// secret. Judging its delivered carrier, like promotion and the render guard,
+// keeps a sensitive configuration group from distributing credentials under
+// otherwise plain keys to services that never declared it.
+func isCredentialValue(configuration *basev0.Configuration, informationName string, value *basev0.ConfigurationValue) bool {
+	return value.GetSecret() || resources.IsSensitiveEnvironmentVariable(resources.ConfigurationValueEnvironmentKey(configuration, informationName, value))
 }
 
 // workspaceConfigurationInfos flattens a loader's configurations into the

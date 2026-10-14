@@ -427,16 +427,15 @@ func promotableDeploymentConfigurations(
 }
 
 // restrictedRenderRejects reports whether restricted render will refuse a value
-// that reaches it inline. It mirrors the per-value half of core's
-// validateRestrictedDeploymentRequest guard (core agents/services/base_builder.go):
-// a non-empty value carrying an explicit Secret flag or a credential-named key.
-// Both sides key off resources.IsSensitiveKey, so core stays the single source of
-// truth for the marker list and this is the one place that tracks the guard's
-// shape. The Secret clause never decides a misplacement (Secret values promote to
+// that reaches it inline. The GitOps guard judges the delivered carrier name:
+// a configuration group can make a plain key sensitive, while a module or
+// service name cannot. Classifying that same carrier through core keeps the
+// preflight from admitting values the rendered ConfigMap would be refused for.
+// The Secret clause never decides a misplacement (Secret values promote to
 // references first, below) but is kept so the predicate is a faithful standalone
 // mirror rather than one narrowed to its current caller.
-func restrictedRenderRejects(value *basev0.ConfigurationValue) bool {
-	return value.GetValue() != "" && (value.GetSecret() || resources.IsSensitiveKey(value.GetKey()))
+func restrictedRenderRejects(configuration *basev0.Configuration, informationName string, value *basev0.ConfigurationValue) bool {
+	return value.GetValue() != "" && (value.GetSecret() || resources.IsSensitiveEnvironmentVariable(resources.ConfigurationValueEnvironmentKey(configuration, informationName, value)))
 }
 
 // misplacedSecretKeys lists the credential-named plaintext values that would be
@@ -455,7 +454,7 @@ func misplacedSecretKeys(configurations []*basev0.Configuration) []string {
 		}
 		for _, info := range configuration.GetInfos() {
 			for _, value := range info.GetConfigurationValues() {
-				if promotesToDeploymentSecret(value) || !restrictedRenderRejects(value) {
+				if promotesToDeploymentSecret(configuration, info.GetName(), value) || !restrictedRenderRejects(configuration, info.GetName(), value) {
 					continue
 				}
 				misplaced = append(misplaced, fmt.Sprintf(
@@ -491,15 +490,16 @@ var keyCanonicalizer = strings.NewReplacer(" ", "_", "-", "_", ".", "_", "/", "_
 
 // promotesToDeploymentSecret reports whether a config value must be pulled into
 // a Kubernetes secret reference. An explicit Secret flag is authoritative; the
-// name heuristic is a safety net for un-flagged credentials, minus the identity
-// endpoint keys, which restricted render handles as a misplacement error rather
-// than silently promoting a plaintext value into a secretKeyRef whose backing
-// secret was never seeded.
-func promotesToDeploymentSecret(value *basev0.ConfigurationValue) bool {
+// carrier's classification is a safety net for un-flagged credentials, so a
+// sensitive group cannot leave a plain key in a ConfigMap the render guard
+// refuses. The exception is identity endpoint keys, which restricted render
+// handles as a misplacement error rather than silently promoting a plaintext
+// value into a secretKeyRef whose backing secret was never seeded.
+func promotesToDeploymentSecret(configuration *basev0.Configuration, informationName string, value *basev0.ConfigurationValue) bool {
 	if value.GetSecret() {
 		return true
 	}
-	if !resources.IsSensitiveKey(value.GetKey()) {
+	if !resources.IsSensitiveEnvironmentVariable(resources.ConfigurationValueEnvironmentKey(configuration, informationName, value)) {
 		return false
 	}
 	return !isSecretEndpointKey(value.GetKey())
@@ -547,7 +547,7 @@ func promotableConfiguration(
 		info := proto.CloneOf(sourceInfo)
 		info.ConfigurationValues = info.ConfigurationValues[:0]
 		for _, sourceValue := range sourceInfo.GetConfigurationValues() {
-			if !promotesToDeploymentSecret(sourceValue) {
+			if !promotesToDeploymentSecret(configuration, sourceInfo.GetName(), sourceValue) {
 				info.ConfigurationValues = append(info.ConfigurationValues, proto.CloneOf(sourceValue))
 				continue
 			}
