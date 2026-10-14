@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -34,11 +36,6 @@ Runner is a wrapper around a runtime service instance to fit the outputProperty 
 - collects events from the service instance observability
 */
 type Runner struct {
-	// hostRoutesOnce derives the host gateway's route carriers once per runner
-	// (hostRoutes); hostRouteCarriersDerived holds them.
-	hostRoutesOnce           sync.Once
-	hostRouteCarriersDerived map[string]string
-
 	instance *services.Instance
 
 	// API
@@ -66,6 +63,12 @@ type Runner struct {
 	// isStarted cannot answer "has this service ever run", because Stop clears
 	// it before a hot reload re-enters Init.
 	everStarted atomic.Bool
+
+	// startedMappings is the hash of the addresses the running process was
+	// started with: a hot-reload agent keeps its process across a reload,
+	// which is right only while that process still serves where the shared
+	// state says it does (addressesMoved).
+	startedMappings string
 
 	// startedArtifact is what the agent reported it started on its last
 	// successful Start: the program it ran and the files that program was
@@ -354,6 +357,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.Wrapf(err, "cannot accept network mappings from %s", runner.instance.Unique())
 	}
 	runner.networkMappings = accepted
+	runner.pinAcceptedPorts(accepted)
 
 	err = runner.world.SharedState.RecordNetworkMappings(ctx, runner.instance.Service, accepted)
 	if err != nil {
@@ -1048,6 +1052,7 @@ func (runner *Runner) StartedArtifact() *runtimev0.StartedArtifact {
 func (runner *Runner) markStarted() {
 	runner.isStarted.Store(true)
 	runner.everStarted.Store(true)
+	runner.startedMappings = resources.NetworkMappingHash(runner.networkMappings...)
 	runner.restartMu.Lock()
 	runner.restartInFlight = false
 	runner.restartMu.Unlock()
@@ -1379,7 +1384,7 @@ func (runner *Runner) StopIfNeeded(ctx context.Context) error {
 	if !runner.isStarted.Load() {
 		return nil
 	}
-	if runner.instance.Runtime.IsHotReloading {
+	if runner.instance.Runtime.IsHotReloading && !runner.addressesMoved() {
 		return nil
 	}
 
@@ -1704,20 +1709,21 @@ func (runner *Runner) hostRoutes() map[string]string {
 	if runner == nil || runner.instance == nil || runner.world == nil {
 		return nil
 	}
-	runner.hostRoutesOnce.Do(func() {
-		ctx := context.Background()
-		w := wool.Get(ctx).In("Runner.hostRoutes")
-		carriers, problems, err := runner.world.hostRouteCarriers(ctx, runner.instance.Service, runner.selfNetworkAccess())
-		if err != nil {
-			w.Warn("the host gateway's routes are refused by the composition; every consumed module answers 503", wool.ErrField(err))
-			return
-		}
-		for _, problem := range problems {
-			w.Warn("the host gateway will not route this consumed endpoint; that module answers 503", wool.ErrField(problem))
-		}
-		runner.hostRouteCarriersDerived = carriers
-	})
-	return runner.hostRouteCarriersDerived
+	// Derived on every ask, never memoised: the carriers name the producers'
+	// addresses as the shared state holds them NOW, and a producer that was
+	// restarted on another port would otherwise be handed to the gateway at
+	// the address of its first start for the rest of the run.
+	ctx := context.Background()
+	w := wool.Get(ctx).In("Runner.hostRoutes")
+	carriers, problems, err := runner.world.hostRouteCarriers(ctx, runner.instance.Service, runner.selfNetworkAccess())
+	if err != nil {
+		w.Warn("the host gateway's routes are refused by the composition; every consumed module answers 503", wool.ErrField(err))
+		return nil
+	}
+	for _, problem := range problems {
+		w.Warn("the host gateway will not route this consumed endpoint; that module answers 503", wool.ErrField(problem))
+	}
+	return carriers
 }
 
 func (runner *Runner) WithOutputEnv(path string) {
@@ -1795,6 +1801,49 @@ func AppendServiceProcessConfigurationsToFile(
 // services.RuntimeInstance.Start makes on the request (with Instance.Workspace
 // as its provenance) — otherwise the narrower of the two carriers decides what
 // enforcement is worth.
+// pinAcceptedPorts anchors the host ports this service was accepted at, so
+// every later proposal for it offers the same ones. Under --temporary-ports
+// a proposal would otherwise ask the kernel for a fresh port, and a hot
+// reload re-enters Init, so the service would move on every reload and its
+// dependents would keep an address nothing serves; with named ports the
+// accepted set is the hashed one, or the one the agent chose instead, which
+// is the truth either way. Core's override seam is the one place a port is
+// pinned.
+func (runner *Runner) pinAcceptedPorts(accepted []*basev0.NetworkMapping) {
+	if runner.world == nil || runner.world.LocalNetworkManager == nil {
+		return
+	}
+	if overrides := acceptedPortOverrides(accepted); len(overrides) > 0 {
+		runner.world.LocalNetworkManager.WithPortOverrides(overrides)
+	}
+}
+
+// acceptedPortOverrides is the host port each accepted mapping serves on, by
+// the endpoint destination core keys a port override on.
+func acceptedPortOverrides(accepted []*basev0.NetworkMapping) map[string]uint16 {
+	overrides := map[string]uint16{}
+	for _, mapping := range accepted {
+		if mapping.GetEndpoint() == nil {
+			continue
+		}
+		for _, instance := range mapping.GetInstances() {
+			if port := instance.GetPort(); port > 0 && port <= math.MaxUint16 {
+				overrides[resources.EndpointDestination(mapping.GetEndpoint())] = uint16(port)
+				break
+			}
+		}
+	}
+	return overrides
+}
+
+// addressesMoved reports whether the addresses accepted at the last Init
+// differ from the ones the running process was started with. A hot-reload
+// agent is spared a restart only while they agree: a process kept on its old
+// port after the shared state moved would be reachable by nobody.
+func (runner *Runner) addressesMoved() bool {
+	return runner.startedMappings != "" && runner.startedMappings != resources.NetworkMappingHash(runner.networkMappings...)
+}
+
 func outputEnvNetworkMappings(
 	provenance resources.Provenance,
 	consumerModule string,
@@ -1859,7 +1908,7 @@ func appendEnvironmentVariablesToFile(
 		return w.NewError("output environment file path is required")
 	}
 	// The output may contain secret service configuration. Refuse symlinks and
-	// force owner-only permissions even when appending to a pre-existing file.
+	// force owner-only permissions.
 	if info, statErr := os.Lstat(filePath); statErr == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return w.NewError("output environment file must not be a symbolic link")
@@ -1867,21 +1916,55 @@ func appendEnvironmentVariablesToFile(
 	} else if !os.IsNotExist(statErr) {
 		return w.Wrapf(statErr, "cannot inspect environment variables file")
 	}
-	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return w.Wrapf(err, "cannot open file")
+	// The file is a map of the run's current environment, rewritten whole: a
+	// key written again (a reload moved an address, a dependency re-exposed a
+	// value) replaces its line in place, so a reader never meets two values
+	// for one key and the latest is the true one.
+	existing, err := os.ReadFile(filePath)
+	if err != nil && !os.IsNotExist(err) {
+		return w.Wrapf(err, "cannot read environment variables file")
 	}
-	defer file.Close()
-	if err := file.Chmod(0600); err != nil {
+	var order []string
+	values := map[string]string{}
+	for _, line := range strings.Split(string(existing), "\n") {
+		if line == "" {
+			continue
+		}
+		key, _, _ := strings.Cut(line, "=")
+		if _, seen := values[key]; !seen {
+			order = append(order, key)
+		}
+		values[key] = line
+	}
+	for _, env := range environments {
+		if _, seen := values[env.Key]; !seen {
+			order = append(order, env.Key)
+		}
+		values[env.Key] = fmt.Sprintf("%s=%v", env.Key, env.Value)
+	}
+	var content strings.Builder
+	for _, key := range order {
+		content.WriteString(values[key])
+		content.WriteString("\n")
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(filePath), "."+filepath.Base(filePath)+".*")
+	if err != nil {
+		return w.Wrapf(err, "cannot create environment variables file")
+	}
+	defer os.Remove(temporary.Name())
+	if _, err = temporary.WriteString(content.String()); err != nil {
+		temporary.Close()
+		return w.Wrapf(err, "cannot write to file")
+	}
+	if err = temporary.Chmod(0600); err != nil {
+		temporary.Close()
 		return w.Wrapf(err, "cannot secure environment variables file")
 	}
-
-	// Write each environment variable to the file
-	for _, env := range environments {
-		_, err := fmt.Fprintf(file, "%s=%v\n", env.Key, env.Value)
-		if err != nil {
-			return w.Wrapf(err, "cannot write to file")
-		}
+	if err = temporary.Close(); err != nil {
+		return w.Wrapf(err, "cannot close environment variables file")
+	}
+	if err = os.Rename(temporary.Name(), filePath); err != nil {
+		return w.Wrapf(err, "cannot replace environment variables file")
 	}
 	return nil
 }

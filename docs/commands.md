@@ -117,6 +117,58 @@ graph never sees. It takes the flags of `codefly run service` and no service
 names; `--exclude-dependency` and `--exclude-workspace-configuration` leave a
 service or a configuration group out.
 
+**Addresses across a reload.** A service keeps the addresses it was accepted
+at for the whole run: under `--temporary-ports` the kernel-assigned ports of
+its first initialization are pinned, so a watch-driven reload re-initializes
+it on the same ports and its dependents keep a true address, and a
+hot-reloading agent whose addresses did move is restarted rather than left
+serving where nothing resolves it. The host gateway's route carriers are
+derived afresh on each of its initializations, and a native run's envelope
+writer follows the gateway's current address. The `--output-env` file is a map
+of the run's current environment, rewritten whole: a key written again
+replaces its line, so a reader never meets two values for one key.
+
+**The delivery host's federation surface.** In a host environment the native
+run hands the service `host.delivery` names, when it declares the `federation`
+workspace configuration, the three keys that turn its delivery surface on,
+derived from the host block: `SOLUTION_HOST_COORDINATE` (`host.coordinate`),
+`SOLUTION_HOST_OWNERSHIP_DOMAINS` (`host.domain`) and
+`SOLUTION_HOST_TRUST_POLICY` (`keys`); a cell's composition declares the same
+three for its environment.
+
+**The artifact cache as a native bundle source.** A service that declares the
+workspace configuration `artifact-cache` receives `ROOT`, the absolute path of
+`.codefly/selection-artifacts`, from a native run and from nothing else; the
+host's native adapter reads a component's frontend bundle there, read-only, by
+the digest the presence names, and the run retains that bundle (the canonical
+archive of `services/fe-remote/dist`) before it delivers the presence.
+
+**Adding a component while the run is up.** Compose the module or solution
+into the workspace and send the running `codefly run` process — a service, a
+solution or the workspace — `SIGUSR1` (`kill -USR1 <pid>`). The run reloads
+the composition, admits every root composed after it started (a root the
+composition already named when a service or solution run began, outside that
+run's closure, stays outside it), and starts that root's closure in the
+running flow in dependency order; in a host environment the native cluster projects the
+newcomer's identity and delivers its presence, authority and routes once it
+is Running, and the host keeps its process. A component already running is
+never restarted or replaced by this: a changed identity is refused by name,
+and the run continues as it was.
+
+**Removing a component while the run is up.** Take the module or solution out
+of the composition and send the same `SIGUSR1`. A root the run started and the
+composition no longer names is withdrawn: the flow stops what only that root
+needed, dependents first (what the remaining roots reach keeps its process),
+and in a host environment the native cluster delivers the generation that
+withdraws each stopped workload, the presence's tombstone and its authority's,
+then forgets it. The host keeps its process and its authority, and the run's
+envelope is never narrowed, since a run only ever adds to it. A withdrawal is
+terminal for the binding at the host, as it is for a published one: the
+component comes back under a new instance name. The roots a `run service` or
+`run solution` names on its command line are never withdrawn; a workspace run
+pins none. An update of a running component is its own restart: the agent's
+reload re-delivers its presence at the next generation with the new build.
+
 ```bash
 codefly run workspace --fixture dev-admin          # the host and every module
 codefly run workspace --runtime-context native \
@@ -311,24 +363,40 @@ rendered into the entry service's ConfigMap with the value a run injects. The
 projection names routes, not credentials, so it is a plain value; a render never
 writes a secret value into the tree.
 
-**The host gateway is handed the routes solutions consume through it.** A
-solution calls a consumed module through the host's gateway (`/v1/<as>/…`), so
-the environment's `host.gateway` service receives a `CODEFLY__ENDPOINT__…`
-carrier for every module endpoint a composed solution's `api.consumes` names —
-in a run at the address the run allocated, at the gateway's own network access;
-in a render at the producer's in-cluster address — and the gateway resolves the
-module through the Codefly SDK from it. No dependency edge is added: the gateway
-neither waits on nor builds a module. The derivation is the one every carrier
-uses (the producer's own mappings, judged by its declared visibility for the
-gateway's module). A composition with no single answer — a consume that names a
-module under another `as` (the host routes `/v1/<module>`), a module the
-workspace does not compose, or two solutions reaching one module through
-different endpoints — is refused naming it. One route that cannot be derived —
-an endpoint the gateway's module may not reach, a producer outside the run or
-not addressed yet, no address at the gateway's network access — is **refused in
-a render** (a committed tree never ships a gateway that answers that module
-503) and **warned in a run**, once, naming it: the gateway starts with every
-other route.
+**The host gateway is handed the routes solutions consume through it, and
+each solution's own backend.** A solution calls a consumed module through the
+host's gateway (`/v1/<as>/…`), and a browser reaches a solution's page and
+backend through it (`/<alias>/…`), so the environment's `host.gateway` service
+receives a `CODEFLY__ENDPOINT__…` carrier for every module endpoint a composed
+solution's `api.consumes` names and one for every composed solution's backend
+endpoint — the one `http` or `rest` endpoint its `service-entry` declares — in
+a run at the address the run allocated, at the gateway's own network access;
+in a render at the producer's in-cluster address. The gateway resolves both
+through the Codefly SDK from the carrier and forwards plain HTTP: a solution
+reports no address and serves no certificate, the mesh carries its identity.
+No dependency edge is added: the gateway neither waits on nor builds a module
+or a solution. The derivation is the one every carrier uses (the producer's
+own mappings, judged by its declared visibility for the gateway's module, so a
+solution's backend endpoint is `visibility: internal`). A composition with no
+single answer — a consume that names a module under another `as` (the host
+routes `/v1/<module>`), a module the workspace does not compose, two solutions
+reaching one module through different endpoints, or a solution entry with no
+or several HTTP endpoints — is refused naming it. One route that cannot be
+derived — an endpoint the gateway's module may not reach, a producer outside
+the run or not addressed yet, no address at the gateway's network access — is
+**refused in a render** (a committed tree never ships a gateway that answers
+that module 503) and **warned in a run**, once, naming it: the gateway starts
+with every other route.
+
+**A native run is loopback, except the host gateway.** The address a native
+run hands every service to listen on (its own `CODEFLY__ENDPOINT__…` carrier)
+is a loopback address, the laptop's stand-in for the mesh's reachability rule:
+nothing off the machine reaches a service, and only the host's gateway may be
+reachable off loopback. A service must listen on exactly the host its carrier
+names. Once a service is Running the run dials each of its ports once on each
+of the machine's non-loopback addresses and **warns** when one answers, naming
+the service, its agent and the address; it is a warning until every agent
+listens on its carrier's host, when it becomes a refusal.
 
 A render delivers a service the **same workspace configuration groups** `codefly
 run` delivers it: the groups it declares under
@@ -536,7 +604,11 @@ codefly run job db-migration --module=backend --with-services  # Start service d
 ### `codefly delivery key`
 
 Create or load this machine's developer delivery key and print its key ID and
-public key PEM. Add the ID under `host.developers` on a declared local k3d
+public key PEM. A native run (`codefly run service`, `solution` or
+`workspace` in a host environment) needs no workspace entry for it: the run
+owns a temporary CA and writes the host's local profile itself, admitting this
+key for the host's domain, so nothing per machine is committed to a shared
+composition. Add the ID under `host.developers` on a declared local k3d
 environment before running it. Private custody stays in the OS keychain, or a
 0600 file in `~/.codefly/delivery-keys` when no keychain is available. The same
 machine key is returned on later calls.
@@ -561,13 +633,7 @@ codefly run cluster documents --env local --app-project platform --yes
 ```
 
 It installs Argo CD if the cluster has none (the release the k3d qualification
-pins), and the local SPIFFE issuer: cert-manager v1.21.2 with its default
-CertificateRequest approver disabled, csi-driver-spiffe v0.15.0, and a cluster
-CA kept in Kubernetes. Both manifests are verified before applying and every
-image is pinned by digest. Existing components are used as installed; an
-existing cert-manager must already disable its default approver before the
-CLI can add the SPIFFE driver. It waits for the webhook, issuer, driver and
-approver before rendering modules. It provisions the `platform-authority` namespace and its `delivery`
+pins). It provisions the `platform-authority` namespace and its `delivery`
 ServiceAccount and the modules' namespaces, writes the local host's trust
 anchor — one public-key verification policy admitting the
 listed developer key held on this machine, bound to this cluster's CA fingerprint, re-written (and the
@@ -582,14 +648,15 @@ bounds each wait. Stopping a run is not removal: a binding is withdrawn by a
 published tombstone. See [delivery documents, "Local runs"](solution-host-bindings.md#local-runs),
 which also lists what the local host's profile must contain.
 
-A service requesting `workspace-configuration-dependencies: [workload-identity]`
-requires `host.gateway: <module>/<service>` in the environment. The render
-mounts its SVID at `/var/run/secrets/spiffe.io`, grants its ServiceAccount
-permission to create CertificateRequests, and mounts three peer allowlists at
-`/etc/codefly/workload-peers`. It supplies the configuration group's seven
-file paths, including the existing projected token. Peer identities come
-from the composition: each consumer trusts the gateway; the gateway trusts
-every explicit consumer, including itself when it requests the group.
+No workload is issued a certificate: a workload's transport identity is the
+cell's mesh principal, the SPIFFE ID of its ServiceAccount, which the mesh
+presents on every hop and the workload never does. A service requesting
+`workspace-configuration-dependencies: [module-authority]` is handed that
+principal (with the host's two audiences and the internal token) by the
+render, and runs as the account it names. The edges the mesh admits are
+delivered as data in the render record (`meshEdges` in
+`.codefly-render.json`), for the cell's applier to compile; see
+[delivery documents, "Mesh edges"](solution-host-bindings.md#mesh-edges).
 
 ### `codefly build runnable <name>`
 

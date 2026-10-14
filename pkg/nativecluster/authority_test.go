@@ -5,8 +5,8 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"io"
 	"net"
 	"net/http"
@@ -48,6 +48,15 @@ func review(t *testing.T, client *http.Client, origin, token string, audiences .
 	return answer.Status
 }
 
+func claimsOf(t *testing.T, token string) map[string]any {
+	t.Helper()
+	payload, err := base64.RawURLEncoding.DecodeString(strings.Split(token, ".")[1])
+	require.NoError(t, err)
+	var claims map[string]any
+	require.NoError(t, json.Unmarshal(payload, &claims))
+	return claims
+}
+
 // The run's API server binds loopback and nothing else: it stands in for a
 // cluster on a developer's machine, and nothing off that machine reaches it.
 func TestTheAPIServerListensOnLoopbackOnly(t *testing.T) {
@@ -58,7 +67,8 @@ func TestTheAPIServerListensOnLoopbackOnly(t *testing.T) {
 
 // A token is good for the identity, the pod and the audience it was projected
 // for, and for nothing else: the host's TokenReview is what ties a mint to the
-// workload that asked.
+// workload that asked. Its review reports the token's credential id, the
+// value the host records so a second mint with the same token is refused.
 func TestATokenReviewsAsTheIdentityAndAudienceItWasProjectedFor(t *testing.T) {
 	authority, client, origin := started(t)
 	token, err := authority.Token("cell-wiki", "backend", "backend-native", "uid-1", "accounts")
@@ -71,7 +81,18 @@ func TestATokenReviewsAsTheIdentityAndAudienceItWasProjectedFor(t *testing.T) {
 	extra := user["extra"].(map[string]any)
 	require.Equal(t, []any{"backend-native"}, extra["authentication.kubernetes.io/pod-name"])
 	require.Equal(t, []any{"uid-1"}, extra["authentication.kubernetes.io/pod-uid"])
+	credential := extra[credentialIDExtra].([]any)
+	require.Len(t, credential, 1)
+	require.Equal(t, "JTI="+claimsOf(t, token)["jti"].(string), credential[0], "the credential id is the token's JTI, as the API server reports it")
 
+	t.Run("every token has a credential id of its own", func(t *testing.T) {
+		other, err := authority.Token("cell-wiki", "backend", "backend-native", "uid-1", "accounts")
+		require.NoError(t, err)
+		otherStatus := review(t, client, origin, other, "accounts")
+		require.Equal(t, true, otherStatus["authenticated"])
+		otherExtra := otherStatus["user"].(map[string]any)["extra"].(map[string]any)
+		require.NotEqual(t, credential, otherExtra[credentialIDExtra], "a rotated token is a new credential, never the spent one again")
+	})
 	t.Run("another audience", func(t *testing.T) {
 		require.Equal(t, false, review(t, client, origin, token, "another-host")["authenticated"])
 	})
@@ -93,6 +114,29 @@ func TestATokenReviewsAsTheIdentityAndAudienceItWasProjectedFor(t *testing.T) {
 	t.Run("not a token", func(t *testing.T) {
 		require.Equal(t, false, review(t, client, origin, "nonsense", "accounts")["authenticated"])
 	})
+}
+
+// A projected token lives 600 s, the longest mint token a host admits and
+// what a cell's render asks the kubelet for, and is reissued at 80% of that,
+// as the kubelet rotates it: a rotated token is a new credential.
+func TestATokenLivesAndRotatesLikeTheKubelets(t *testing.T) {
+	authority, _, _ := started(t)
+	token, err := authority.Token("cell-wiki", "backend", "backend-native", "uid-1", "accounts")
+	require.NoError(t, err)
+	claims := claimsOf(t, token)
+	require.Equal(t, float64(600), claims["exp"].(float64)-claims["iat"].(float64))
+	require.Equal(t, 600*time.Second, TokenLifetime)
+	require.Equal(t, 480*time.Second, TokenRefreshInterval)
+
+	workload := &Workload{Namespace: "cell-wiki", Account: "backend", PodName: "backend-native", PodUID: "uid-1", Audience: "accounts"}
+	projection, err := authority.Project(filepath.Join(t.TempDir(), "identity"), workload)
+	require.NoError(t, err)
+	first, err := os.ReadFile(projection.TokenFile)
+	require.NoError(t, err)
+	require.NoError(t, authority.RefreshToken(projection.TokenFile, workload))
+	second, err := os.ReadFile(projection.TokenFile)
+	require.NoError(t, err)
+	require.NotEqual(t, claimsOf(t, string(first))["jti"], claimsOf(t, string(second))["jti"], "a refreshed token carries a new JTI")
 }
 
 // The pod the API server reports is what binds a credential to a build: the
@@ -129,46 +173,31 @@ func TestAPodReportsTheBuildItWasRegisteredWith(t *testing.T) {
 	require.Contains(t, statuses[0].(map[string]any)["imageID"], strings.Repeat("cd", 32))
 }
 
-// A projection is everything a cell's render mounts for a workload: its token,
-// an SVID naming exactly its SPIFFE ID under the run's CA, the trust bundle and
-// its peer lists, all owner-only.
-func TestAProjectionCarriesAnSVIDForExactlyTheWorkloadsIdentity(t *testing.T) {
-	authority, _, _ := started(t)
-	const id = "spiffe://cluster.local/ns/cell-wiki/sa/backend"
-	projection, err := authority.Project(filepath.Join(t.TempDir(), "identity"), &Workload{
-		Namespace: "cell-wiki", Account: "backend", SPIFFEID: id, PodName: "backend-native", PodUID: "uid-1", Audience: "accounts",
-		AllowedCallers: []string{"spiffe://cluster.local/ns/cell-saas/sa/auth-gateway"},
-	})
+// A projection is the one file a cell's projected volume mounts for a
+// workload: its token, owner-only. No certificate, no trust bundle and no
+// peer list: transport identity is the mesh's, which a laptop does not have
+// and nothing stands in for.
+func TestAProjectionIsTheWorkloadsTokenAndNothingElse(t *testing.T) {
+	authority, client, origin := started(t)
+	dir := filepath.Join(t.TempDir(), "identity")
+	projection, err := authority.Project(dir, &Workload{Namespace: "cell-wiki", Account: "backend", PodName: "backend-native", PodUID: "uid-1", Audience: "accounts"})
 	require.NoError(t, err)
-	for key, path := range projection.Files {
-		info, err := os.Stat(path)
-		require.NoError(t, err, key)
-		require.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "%s is readable beyond its owner", key)
-	}
-	raw, err := os.ReadFile(projection.Files["CERT_FILE"])
+	info, err := os.Stat(projection.TokenFile)
 	require.NoError(t, err)
-	block, _ := pem.Decode(raw)
-	require.NotNil(t, block)
-	leaf, err := x509.ParseCertificate(block.Bytes)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "the token is readable beyond its owner")
+	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
-	require.Len(t, leaf.URIs, 1)
-	require.Equal(t, id, leaf.URIs[0].String())
-	require.False(t, leaf.IsCA)
-	roots := x509.NewCertPool()
-	require.True(t, roots.AppendCertsFromPEM(authority.CAPEM()))
-	_, err = leaf.Verify(x509.VerifyOptions{Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
-	require.NoError(t, err, "the SVID chains to the run's CA")
-
-	callers, err := os.ReadFile(projection.Files["ALLOWED_CALLERS_FILE"])
+	require.Len(t, entries, 1)
+	require.Equal(t, "token", entries[0].Name())
+	token, err := os.ReadFile(projection.TokenFile)
 	require.NoError(t, err)
-	require.Equal(t, "spiffe://cluster.local/ns/cell-saas/sa/auth-gateway\n", string(callers))
-
-	_, _, err = authority.IssueSVID("https://not-a-spiffe-id")
-	require.Error(t, err)
+	status := review(t, client, origin, string(token), "accounts")
+	require.Equal(t, true, status["authenticated"])
+	require.Equal(t, "system:serviceaccount:cell-wiki:backend", status["user"].(map[string]any)["username"])
 }
 
 // Two runs never share a CA: the host's local profile is bound to one run's
-// fingerprint, so a token or an SVID from another run is a stranger's.
+// fingerprint, so a token from another run is a stranger's.
 func TestEachRunHasItsOwnCA(t *testing.T) {
 	first, _, _ := started(t)
 	second, _, _ := started(t)

@@ -595,9 +595,6 @@ func validateTree(root string, opts *RenderOptions) ([]manifest, error) {
 	if err = validateObjectIdentities(effective, opts.Namespace); err != nil {
 		return nil, err
 	}
-	if err = validateWorkloadIdentityChecks(effective, opts.workloadIdentityChecks); err != nil {
-		return nil, err
-	}
 	return effective, nil
 }
 
@@ -1227,7 +1224,7 @@ func inspectTemplatedValue(value any, path []string) error {
 	case map[string]any:
 		for key, child := range typed {
 			next := extendPath(path, key)
-			if isCredentialKey(key, isConfigurationDataPath(path)) && scalarHasValue(child) && !workloadIdentityPath(key, child) {
+			if isCredentialKey(key, isConfigurationDataPath(path)) && scalarHasValue(child) {
 				return fmt.Errorf("%s contains credential value", strings.Join(next, "."))
 			}
 			if err := inspectTemplatedValue(child, next); err != nil {
@@ -1297,12 +1294,12 @@ func inspectValueAllowingExpressions(
 	}
 	switch typed := value.(type) {
 	case map[string]any:
-		if name, ok := typed["name"].(string); ok && isCredentialKey(name, true) && scalarHasValue(typed["value"]) && !workloadIdentityPath(name, typed["value"]) {
+		if name, ok := typed["name"].(string); ok && isCredentialKey(name, true) && scalarHasValue(typed["value"]) {
 			return fmt.Errorf("%s.value contains credential value", strings.Join(path, "."))
 		}
 		for key, child := range typed {
 			next := extendPath(path, key)
-			if isCredentialKey(key, isConfigurationDataPath(path)) && scalarHasValue(child) && !workloadIdentityPath(key, child) &&
+			if isCredentialKey(key, isConfigurationDataPath(path)) && scalarHasValue(child) &&
 				(allowCredentialReference == nil || !allowCredentialReference(next)) && !expressionAt(next, child) {
 				return fmt.Errorf("%s contains credential value", strings.Join(next, "."))
 			}
@@ -1429,15 +1426,26 @@ var manifestFieldNormalizer = strings.NewReplacer("-", "", "_", "", ".", "")
 // Every key, configuration name or schema field, is also checked against the
 // camelCase field fragments above, and any key mentioning a token defers to
 // core, which keeps every TOKEN sensitive except a whole-word TOKENS count.
+//
+// A codefly configuration carrier is scanned on its configuration KEY alone,
+// read by core's one parser of a carrier (resources.ConfigurationCarrierKey):
+// the module, service and configuration-name segments in front of it are
+// structure, so a group called credential-policy or client-secret-policy
+// does not make its CLIENT_ID a credential, exactly as core classifies it.
+// Anything that is not a carrier is scanned whole, as before.
 func isCredentialKey(key string, configurationName bool) bool {
 	classify := resources.IsSensitiveKey
+	scanned := key
 	if configurationName {
 		classify = resources.IsSensitiveEnvironmentVariable
 		if classify(key) {
 			return true
 		}
+		if configurationKey, ok := resources.ConfigurationCarrierKey(key); ok {
+			scanned = configurationKey
+		}
 	}
-	normalized := strings.ToLower(manifestFieldNormalizer.Replace(key))
+	normalized := strings.ToLower(manifestFieldNormalizer.Replace(scanned))
 	for _, fragment := range manifestFieldCredentialFragments {
 		if strings.Contains(normalized, fragment) {
 			return true
@@ -1502,6 +1510,8 @@ func inventoryHead(opts *RenderOptions) Inventory {
 		Units:                   append([]InventoryUnit(nil), opts.Units...),
 	}
 	inventory.Delivery = opts.Delivered
+	inventory.MeshEdges = opts.MeshEdges
+	inventory.EndpointCarriers = opts.EndpointCarriers
 	if len(opts.WorkspaceConfigurationDigests) > 0 {
 		inventory.WorkspaceConfigurationDigests = make(map[string]string, len(opts.WorkspaceConfigurationDigests))
 		for group, digest := range opts.WorkspaceConfigurationDigests {

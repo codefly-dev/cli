@@ -248,8 +248,8 @@ relative paths.
   credential; a value a service does not receive is decided **before** anything
   is checked or resolved, so it imposes no obligation on that service. See
   [docs/orchestration.md](docs/orchestration.md#workspace-configuration-groups).
-- **Configs flow as environment variables, not files.** Connection strings derived from network
-  mappings are injected as `CODEFLY__SERVICE_...` env vars.
+- **Configuration uses runtime carriers.** Live host routes additionally use Core's applied-presence-bound endpoint projection through the SDK; the native run replaces
+  files in one stable directory. See `docs/solution-host-bindings.md` for delivery ownership.
 - **Daemon state lives in `~/.codefly/`** (override with `CODEFLY_HOME`). PID file, logs, agent
   binaries all live there.
 - **MCP exposes codefly capabilities to AI agents.** When adding a CLI feature, consider whether

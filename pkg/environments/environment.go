@@ -202,8 +202,8 @@ func validateManagedServiceKey(key string) error {
 // them at once: Coordinate is matched by the host, Component names the
 // component instance within it, Domain is the ownership domain this
 // composition delivers under, Audience is what the host expects a workload's
-// token to be bound to, TrustDomain is the SPIFFE trust domain the host's
-// issuer puts in a workload's SVID, and EnvelopeRevision is the revision of
+// token to be bound to, TrustDomain is the SPIFFE trust domain the cell's
+// mesh names a workload's principal under, and EnvelopeRevision is the revision of
 // the host's envelope this composition was reviewed against. A partial
 // declaration would render a document the host cannot use, so UnmarshalYAML
 // refuses an unknown key and Validate refuses a missing one.
@@ -220,9 +220,11 @@ type EnvironmentHost struct {
 	// Audience is the token audience the host verifies a workload's projected
 	// token against. It is the host's bare audience string, not an address.
 	Audience string `yaml:"audience"`
-	// TrustDomain is the SPIFFE trust domain of the host's workload identity
-	// issuer. A presence document names, per workload, the SPIFFE ID the host
-	// must verify on the connection: spiffe://<trust domain>/ns/<namespace>/sa/<account>.
+	// TrustDomain is the SPIFFE trust domain of the cell's mesh. A presence
+	// document names, per workload, its mesh principal — the SPIFFE ID the
+	// mesh issues to the workload's ServiceAccount and presents on its behalf,
+	// never a certificate the workload serves:
+	// spiffe://<trust domain>/ns/<namespace>/sa/<account>.
 	TrustDomain string `yaml:"trust_domain"`
 	// EnvelopeRevision is the revision of the host's envelope — the ceiling a
 	// platform administrator writes at runtime — that this composition was
@@ -239,8 +241,11 @@ type EnvironmentHost struct {
 	// composition names which endpoint is the delivery API and never where it
 	// lives.
 	Delivery string `yaml:"delivery"`
-	// Gateway names the service that fronts solutions and serves the mint.
-	// It is required when a composed service requests workload-identity.
+	// Gateway names the service that fronts solutions and serves the mint on
+	// its `workload` endpoint: the one principal every solution backend and
+	// consumed module endpoint admits, and the one native listener that may
+	// be reached off loopback. It is required when the composition routes
+	// anything through the host.
 	Gateway string `yaml:"gateway,omitempty"`
 	// ModuleAudience is the audience the host stamps on a composed module's
 	// own capability — the host's name for it, not the module's. A module
@@ -402,8 +407,9 @@ func (host *EnvironmentHost) DeliveryEndpoint() (module, service, endpoint strin
 	return parts[0], parts[1], parts[2]
 }
 
-// SPIFFEID is the SPIFFE ID of the workload running as account in namespace on
-// this host, as the host's issuer names it: spiffe://<trust domain>/ns/<namespace>/sa/<account>.
+// SPIFFEID is the mesh principal of the workload running as account in
+// namespace on this host, as the cell's mesh names it:
+// spiffe://<trust domain>/ns/<namespace>/sa/<account>.
 func (host *EnvironmentHost) SPIFFEID(namespace, account string) string {
 	return "spiffe://" + host.TrustDomain + "/ns/" + namespace + "/sa/" + account
 }

@@ -145,15 +145,57 @@ them in one place, `pkg/orchestration/workspace_configurations.go`, by one rule:
       ∪ the groups the composition root provides run-wide
       − the groups the selected run profile excludes
 
-The render-owned `workload-identity` and `module-authority` groups are supplied
-per workload by the render's projections. Every resolution path, including
-runtime-init, local runs and CI compile/lint/test, omits these groups from manager
-dependencies and composition-root inheritance; the render refuses authored
-files for them. Outside a render, these groups supply no values and each service
-decides whether it can run without them. `doctor workspace` reports them as supplied on local k3d and warns
+The render-owned `module-authority` group is supplied per workload by the
+render's projection: the workload's mesh principal (the SPIFFE ID of the
+ServiceAccount its pod runs as), the host's two audiences and the internal
+token. Every resolution path, including runtime-init, local runs and CI
+compile/lint/test, omits the group from manager dependencies and
+composition-root inheritance; the render refuses an authored file for it. A
+native run that declares a host supplies it the way the render does; elsewhere
+it supplies no values and each service decides whether it can run without
+them. `doctor workspace` reports it as supplied on local k3d and warns
 elsewhere: "supplied only by a local k3d or cell render; absent here". See
-[workload identities](solution-host-bindings.md#local-runs) for their values and
-environment requirements.
+[mesh principals and module authority](solution-host-bindings.md#mesh-principals-and-module-authority)
+for its values and environment requirements. No group carries a certificate:
+a workload's transport identity is the mesh's, never a file it reads.
+
+**Addresses are kept across a reload.** `Runner.Init` pins the host ports a
+service was accepted at through core's port-override seam
+(`RuntimeManager.WithPortOverrides`), so every later proposal for it, a hot
+reload or a propagated re-initialization, offers the same ones; under
+`--temporary-ports` nothing else would. `StopIfNeeded` spares a hot-reloading
+agent's process only while the addresses it was started with are still the
+accepted ones (`addressesMoved`). `Runner.hostRoutes` derives the gateway's
+route carriers on every ask, never from a first-ask memo, and the output
+environment file is a map rewritten whole on every write.
+
+**Extending a running flow.** `Flow.Extend(ctx, reloadedWorkspace, roots)`
+admits the roots a reloaded workspace composes that the run did not start:
+the composition is replaced in place (the configuration manager and its local
+reader read the pointer the run started with), the dependency graph is rebuilt
+and scoped to the run, the live start policy follows it, the managers of the
+services not yet managed are spawned and registered in the hub (locked, since
+the playbook reads it while the run extends), the configuration manager admits
+them, and each new service is driven through Load, Init and Start in
+dependency order, reaching Running through the same hook as every other
+workload. Nothing already running is restarted: an admitted service's actions
+fan out to nothing, and the playbook is never re-seeded. Every `codefly run`
+(service, solution, workspace) calls it on `SIGUSR1`, after the native cluster
+admitted the new identities, for the roots the composition names that neither
+the run nor the composition it started from knew. `Flow.Withdraw` is the
+narrowing: the co-roots a reloaded composition dropped leave the run, the
+graph, module seeds and live start policy are rebuilt from the roots that
+remain, and the services only the dropped roots needed are stopped,
+dependents first, and leave the hub; the origin service is never withdrawn.
+
+**A native run listens on loopback.** The native address core allocates a
+service (`network.Native`) is a loopback address, and it is the address the
+service's own `CODEFLY__ENDPOINT__…` carrier hands it to listen on; a service
+listens on exactly that host, and only the environment's `host.gateway` may
+be reachable off loopback — the laptop's stand-in for the mesh's reachability
+rule. The flow checks it once a service is Running (`pkg/orchestration/loopback.go`):
+one connect attempt per port on each of the machine's non-loopback addresses,
+and a warning naming the service, its agent and the address that answered.
 
 The composition root's own `configurations/<profile>/*` (and any
 invocation-scoped override) reach **every** service of the composition, so a

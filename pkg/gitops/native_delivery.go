@@ -89,9 +89,60 @@ func agentOf(service *resources.Service) string {
 	return service.Agent.Identifier()
 }
 
+// NativeIdentity is one workload a native run projects a token for and
+// delivers presence and authority for: a service that declares
+// module-identity, the account it would run as in a cell, and its mesh
+// principal — the SPIFFE ID the cell's mesh issues to that account, which the
+// presence names and nothing on a laptop presents.
+type NativeIdentity struct {
+	Module   string
+	Service  string
+	Account  string
+	SPIFFEID string
+}
+
+// WorkloadAccount is the ServiceAccount name a service runs as: Core's
+// default for its name, the same one a cell's render projects.
+func WorkloadAccount(service string) string {
+	return workloadAccount(service)
+}
+
+// ResolveNativeIdentities plans the identities a native run projects, by the
+// rule a cell's render names them: every module-identity service of the
+// composition, each in its module's namespace. A native run has no cluster
+// to require.
+func ResolveNativeIdentities(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (map[string]NativeIdentity, error) {
+	if env.Host == nil {
+		return nil, fmt.Errorf("environment %s declares no host", env.Name)
+	}
+	refs, err := workspace.LoadServiceWithModules(ctx)
+	if err != nil {
+		return nil, err
+	}
+	identities := map[string]NativeIdentity{}
+	for _, ref := range refs {
+		service, loadErr := workspace.LoadService(ctx, ref)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		if !service.ModuleIdentity {
+			continue
+		}
+		namespace := env.ModuleNamespace(workspace, ref.Module)
+		if namespace == "" {
+			return nil, fmt.Errorf("module-identity service %s/%s has no resolved namespace: the environment declares none", ref.Module, ref.Name)
+		}
+		identities[resources.ServiceUnique(ref.Module, ref.Name)] = NativeIdentity{
+			Module: ref.Module, Service: ref.Name, Account: workloadAccount(ref.Name),
+			SPIFFEID: meshPrincipal(env.Host, namespace, ref.Name),
+		}
+	}
+	return identities, nil
+}
+
 // NativeWorkload is one native process the run delivers presence for: the
 // module it belongs to, the service that is its serving workload, and the
-// identity the run issued it.
+// identity it runs under.
 type NativeWorkload struct {
 	Module    *resources.Module
 	Service   *resources.Service
@@ -104,6 +155,12 @@ type NativeWorkload struct {
 	Subject string
 	// Artifact is what the agent reported it started; its digest is the build.
 	Artifact NativeArtifact
+	// FrontendBundle is the identity of the complete frontend bundle this run
+	// built and retained in the workspace's artifact cache (its digest, the
+	// canonical archive's media type, the artifact name a release would use):
+	// what the presence's frontend payload names, since what runs is what is
+	// delivered. Nil when the component declares no page or built no bundle.
+	FrontendBundle *solutionhost.FrontendPayload
 }
 
 // Repository names a native build's image repository: there is no registry,
@@ -269,6 +326,9 @@ type NativeDocuments struct {
 	Presence  *solutionhost.SolutionHostBinding
 	Authority *solutionhost.AuthorityDocument
 	Digest    solutionhost.ImageDigest
+	// DeliverySPIFFEID retains the presence delivery namespace when a
+	// tombstone clears the workloads. It is transport context, not authority.
+	DeliverySPIFFEID string
 	// Principal, Bindings and Ceilings are what the envelope admits for the
 	// module, derived from the same contract the authority was rendered from.
 	Principal string
@@ -288,6 +348,8 @@ type NativeDeliverer struct {
 	DeliveryURL string
 	// Token mints the delivery account's projected token for a namespace.
 	Token func(namespace string) (string, error)
+	// ObserverToken belongs to the separate read-only applied-state publisher.
+	ObserverToken func() (string, error)
 	// EnvelopeRevision is the host's current envelope revision, which every
 	// document names.
 	EnvelopeRevision uint64
@@ -323,8 +385,29 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	if declared != nil {
 		instance.Kind = solutionhost.KindSolution
 	}
+	if instance.Frontend, err = solutionrun.DeclaredFrontend(ctx, workload.Module); err != nil {
+		return nil, err
+	}
+	if err = stampFrontendPayload(instance, manifest.ReleaseArtifacts); err != nil {
+		return nil, err
+	}
+	// The bundle this run built outranks the release's artifact metadata: a
+	// native run delivers what runs, and the host reads the bytes from the
+	// cache by the digest named here. A declared page without the bundle this
+	// run built is refused: a host admits no new frontend without its signed
+	// payload, and a release's digest is not what runs here.
+	switch {
+	case workload.FrontendBundle != nil && instance.Frontend == nil:
+		return nil, fmt.Errorf("module %s built a frontend bundle and declares no frontend; a bundle is the output of a declared page", workload.Module.Name)
+	case workload.FrontendBundle != nil:
+		payload := *workload.FrontendBundle
+		instance.Frontend.Payload = &payload
+	case instance.Frontend != nil:
+		return nil, fmt.Errorf("module %s declares a frontend and this run built no bundle for it; a native delivery names the bundle it built, and a host admits no frontend without its signed payload", workload.Module.Name)
+	}
+	instance.Group = solutionGroupOf(d.Workspace, instance)
 	instance.Modules = []SolutionModulePin{{Module: workload.Module.Name, Package: manifest.ID, Version: manifest.Version}}
-	if instance.ReleaseDigest, err = releaseDigest(workload.Module.Dir()); err != nil {
+	if instance.ReleaseDigest, err = releaseDigest(ctx, workload.Module.Dir()); err != nil {
 		return nil, fmt.Errorf("module %s: %w", workload.Module.Name, err)
 	}
 	unit := SolutionArtifactUnit{Name: workload.Service.Name, Path: workload.Service.Name, Subject: workload.Subject}
@@ -362,6 +445,8 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 		return nil, fmt.Errorf("%s %s claims the route alias %q, which is not one URL path segment", instance.Kind, instance.Name, instance.Alias)
 	}
 	presence.Routes = []solutionhost.Route{{Alias: instance.Alias, Surface: solutionhost.SurfaceBackend}}
+	presence.Frontend = instance.Frontend
+	presence.Group = instance.Group
 	// The artifact's rendered digest names what the run rendered for the unit
 	// — the workload's image reference — and the workload's image digest names
 	// the build; core refuses a document that uses one digest for both.
@@ -419,6 +504,36 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 		documents.Ceilings = declaredScopeCeilings(contract.ScopeCeilings)
 	}
 	return documents, nil
+}
+
+// WithdrawnDocuments is the generation that withdraws what a native run
+// delivered for a workload: the presence's tombstone and, when an authority
+// was delivered, its tombstone, each the same withdrawal a publication
+// settles (removed, the next generation, nothing that describes the module
+// left on it). The host withdraws the endpoints with the presence, so none
+// travel with it; the envelope is not narrowed, since a run only ever adds to
+// it. A withdrawal is terminal for the binding at the host: core refuses the
+// binding presented again, so a component withdrawn from a run comes back
+// under a new instance name.
+func WithdrawnDocuments(delivered *NativeDocuments) (*NativeDocuments, error) {
+	if delivered == nil || delivered.Presence == nil {
+		return nil, fmt.Errorf("nothing was delivered, so there is nothing to withdraw")
+	}
+	presence, err := tombstoneOf(delivered.Presence)
+	if err != nil {
+		return nil, fmt.Errorf("withdraw binding %s: %w", delivered.Presence.Binding, err)
+	}
+	identity, err := delivered.deliveryIdentity()
+	if err != nil {
+		return nil, err
+	}
+	withdrawn := &NativeDocuments{Presence: presence, Digest: delivered.Digest, Principal: delivered.Principal, DeliverySPIFFEID: identity}
+	if delivered.Authority != nil {
+		if withdrawn.Authority, err = authorityTombstoneOf(delivered.Authority); err != nil {
+			return nil, fmt.Errorf("withdraw authority %s: %w", delivered.Authority.Authority, err)
+		}
+	}
+	return withdrawn, nil
 }
 
 // nativeGenerations is the run's record of what it delivered: per binding or
@@ -486,6 +601,7 @@ func settle(record *nativeGenerations, key string, content []byte) uint64 {
 // Receipt is the host's answer to one delivered document.
 type Receipt struct {
 	Kind        string
+	Status      int    `json:"-"`
 	Disposition string `json:"disposition"`
 	DocumentID  string `json:"documentId"`
 	Generation  uint64 `json:"generation"`
@@ -495,6 +611,10 @@ type Receipt struct {
 
 // Deliver signs the documents and POSTs them to the host.
 func (d *NativeDeliverer) Deliver(ctx context.Context, documents *NativeDocuments) ([]Receipt, error) {
+	identity, err := documents.deliveryIdentity()
+	if err != nil {
+		return nil, err
+	}
 	record, err := d.loadGenerations()
 	if err != nil {
 		return nil, err
@@ -514,14 +634,16 @@ func (d *NativeDeliverer) Deliver(ctx context.Context, documents *NativeDocument
 	if err != nil {
 		return nil, err
 	}
-	receipt, err := d.post(ctx, "presence", presence.Workloads[0].Identity.SPIFFEID, payload)
+	receipt, err := d.post(ctx, "presence", identity, payload)
 	if err != nil {
 		return nil, err
 	}
 	receipts = append(receipts, receipt)
 	if documents.Authority != nil {
 		authority := documents.Authority
-		authority.EffectiveFrom = presence.Generation
+		if !authority.Removed {
+			authority.EffectiveFrom = presence.Generation
+		}
 		authority.Generation = 1
 		content, err = solutionhost.SignedPayloadFor(authority)
 		if err != nil {
@@ -544,6 +666,19 @@ func (d *NativeDeliverer) Deliver(ctx context.Context, documents *NativeDocument
 	return receipts, nil
 }
 
+func (documents *NativeDocuments) deliveryIdentity() (string, error) {
+	if documents == nil || documents.Presence == nil {
+		return "", fmt.Errorf("native delivery requires a presence")
+	}
+	if !documents.Presence.Removed && len(documents.Presence.Workloads) > 0 {
+		return documents.Presence.Workloads[0].Identity.SPIFFEID, nil
+	}
+	if documents.Presence.Removed && documents.DeliverySPIFFEID != "" {
+		return documents.DeliverySPIFFEID, nil
+	}
+	return "", fmt.Errorf("binding %s has no original workload identity for delivery", documents.Presence.Binding)
+}
+
 // authorityDeliveryNamespace is the fixed namespace a host accepts authority
 // from, the same name the host holds.
 const authorityDeliveryNamespace = "platform-authority"
@@ -562,7 +697,7 @@ func (d *NativeDeliverer) post(ctx context.Context, kind, spiffeID string, paylo
 		return Receipt{}, err
 	}
 	namespace := authorityDeliveryNamespace
-	if kind == "presence" {
+	if kind == "presence" || kind == endpointDeliveryKind {
 		identity, parseErr := parseSPIFFENamespace(spiffeID)
 		if parseErr != nil {
 			return Receipt{}, parseErr
@@ -589,7 +724,7 @@ func (d *NativeDeliverer) post(ctx context.Context, kind, spiffeID string, paylo
 	}
 	defer response.Body.Close()
 	answer, _ := io.ReadAll(io.LimitReader(response.Body, 1<<16))
-	receipt := Receipt{Kind: kind}
+	receipt := Receipt{Kind: kind, Status: response.StatusCode}
 	_ = json.Unmarshal(answer, &receipt)
 	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusAccepted {
 		message := receipt.Error
@@ -599,6 +734,50 @@ func (d *NativeDeliverer) post(ctx context.Context, kind, spiffeID string, paylo
 		return receipt, fmt.Errorf("the host refused the %s delivery (%s): %s", kind, response.Status, message)
 	}
 	return receipt, nil
+}
+
+// endpointDeliveryKind is the host inbox a signed endpoint delivery is posted
+// to: the same inbox, credentials and signing path as the presence it joins.
+const endpointDeliveryKind = "endpoints"
+
+// endpointDeliveryAttempts and endpointDeliveryInterval bound the wait for
+// the presence a delivery joins to be APPLIED: the host answers 503 until its
+// reconciler has applied the generation the endpoints name, and nothing else
+// is retried.
+const (
+	endpointDeliveryAttempts = 40
+	endpointDeliveryInterval = 1500 * time.Millisecond
+)
+
+// DeliverEndpoints posts the canonical endpoint delivery of a presence the
+// host now holds: the CLI-resolved carriers of the endpoints the presence
+// names, bound to its applied generation and digest, signed exactly as the
+// presence was and through the same inbox with the same credentials. The
+// host joins it to the APPLIED presence: a 503 says that generation is not
+// applied yet and is retried within a bound; a stale, mismatched or
+// tombstoned delivery (422) and a different document for an applied
+// generation (409) are refused for good. A changed address is a new presence
+// generation, never a rewrite. No directory, mount or file carries an
+// endpoint anywhere.
+func (d *NativeDeliverer) DeliverEndpoints(ctx context.Context, presence *solutionhost.SolutionHostBinding, raw []byte) (Receipt, error) {
+	if presence == nil || len(presence.Workloads) == 0 {
+		return Receipt{}, fmt.Errorf("an endpoint delivery joins a presence with a workload")
+	}
+	spiffeID := presence.Workloads[0].Identity.SPIFFEID
+	for attempt := 1; ; attempt++ {
+		receipt, err := d.post(ctx, endpointDeliveryKind, spiffeID, raw)
+		if err == nil || receipt.Status != http.StatusServiceUnavailable {
+			return receipt, err
+		}
+		if attempt >= endpointDeliveryAttempts {
+			return receipt, fmt.Errorf("the host has not applied presence %s generation %d after %s: %w", presence.Binding, presence.Generation, time.Duration(endpointDeliveryAttempts)*endpointDeliveryInterval, err)
+		}
+		select {
+		case <-ctx.Done():
+			return receipt, ctx.Err()
+		case <-time.After(endpointDeliveryInterval):
+		}
+	}
 }
 
 // parseSPIFFENamespace reads the namespace out of spiffe://<domain>/ns/<ns>/sa/<sa>.
@@ -620,12 +799,13 @@ type EnvelopeGrant = json.RawMessage
 // contract asks (bindings, ceilings), the workload that presents it, and the
 // composition's grant.
 type EnvelopePrincipal struct {
-	Prefix    string
-	Bindings  []solutionhost.AuthorityBinding
-	Ceilings  []solutionhost.ScopeCeiling
-	SPIFFEID  string
-	Container string
-	Grant     EnvelopeGrant
+	PresenceBinding string
+	Prefix          string
+	Bindings        []solutionhost.AuthorityBinding
+	Ceilings        []solutionhost.ScopeCeiling
+	SPIFFEID        string
+	Container       string
+	Grant           EnvelopeGrant
 }
 
 // ApprovedBuilds reads the builds an envelope document approves.
@@ -646,7 +826,8 @@ func BuildEnvelope(revision uint64, builds []solutionhost.ImageDigest, principal
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
 	entries := map[string]any{}
 	document := map[string]any{envelopeRevisionField: revision, "approved_builds": sorted, "principals": entries}
-	for _, principal := range principals {
+	for i := range principals {
+		principal := &principals[i]
 		bindings := make([]map[string]any, 0, len(principal.Bindings))
 		for _, binding := range principal.Bindings {
 			entry := map[string]any{"id": binding.ID, "revision": binding.Revision, "scope": binding.Scope}
@@ -672,12 +853,20 @@ func BuildEnvelope(revision uint64, builds []solutionhost.ImageDigest, principal
 		if len(principal.Grant) > 0 {
 			grant = principal.Grant
 		}
-		entries[principal.Prefix] = map[string]any{
+		entry := map[string]any{
 			"bindings":            bindings,
 			"workload_identities": []map[string]any{{"spiffe_id": principal.SPIFFEID, "container": principal.Container}},
 			"scope_ceilings":      ceilings,
 			"grant":               grant,
 		}
+		if len(bindings) == 0 {
+			admission := solutionhost.EnvelopeAdmission{Principal: principal.Prefix, PresenceBinding: principal.PresenceBinding}
+			if err := admission.Validate(); err != nil {
+				return nil, err
+			}
+			entry["admitted_bindings"] = []string{principal.PresenceBinding}
+		}
+		entries[principal.Prefix] = entry
 	}
 	return json.Marshal(document)
 }
@@ -786,6 +975,18 @@ func (w *EnvelopeWriter) signIn(ctx context.Context) error {
 }
 
 func (w *EnvelopeWriter) do(ctx context.Context, method, path string, body []byte) (int, []byte, error) {
+	status, answer, err := w.doAuthenticated(ctx, method, path, body)
+	if err != nil || status != http.StatusUnauthorized {
+		return status, answer, err
+	}
+	// A long-running development session can outlive the fixture access
+	// token. Reauthenticate on demand and replay once, with the same body
+	// and expected revision. A forbidden or ambiguous write is not retried.
+	w.accessToken = ""
+	return w.doAuthenticated(ctx, method, path, body)
+}
+
+func (w *EnvelopeWriter) doAuthenticated(ctx context.Context, method, path string, body []byte) (int, []byte, error) {
 	if err := w.signIn(ctx); err != nil {
 		return 0, nil, err
 	}

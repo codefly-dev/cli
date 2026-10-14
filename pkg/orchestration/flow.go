@@ -81,6 +81,15 @@ type Flow struct {
 	// collide on ports and on container-recovery scope. The origin stays the
 	// service the run is named and reported by.
 	coRoots []string
+	// moduleSeeds are the modules the run's closure was resolved from, kept
+	// so an extension resolves it again with the modules it adds.
+	moduleSeeds []string
+	// extendMu serialises Extend, which rewrites the composition every
+	// runner reads.
+	extendMu sync.Mutex
+	// spawn creates a run manager for a service; a test replaces it to
+	// start no agent. Nil spawns through New.
+	spawn func(ctx context.Context, module *resources.Module, service *resources.Service) (IManager, error)
 
 	// The world
 	world *World
@@ -217,10 +226,10 @@ func MapValues[K comparable, V any](m map[K]V) []V {
 
 type World struct {
 	// RenderOwnedGroups supplies the render-owned workspace configuration
-	// groups (workload-identity, module-authority) to one service of a NATIVE
-	// run. A render projects them per workload; a laptop run has no render,
-	// so the CLI issues the identities itself and hands the groups out here,
-	// to a service that declares them and to nobody else. Nil outside such a run.
+	// group (module-authority) to one service of a NATIVE run. A render
+	// projects it per workload; a laptop run has no render, so the CLI hands
+	// the group out here, to a service that declares it and to nobody else.
+	// Nil outside such a run.
 	RenderOwnedGroups func(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error)
 
 	// RuntimeOverrides supplies per-service process environment a NATIVE run
@@ -546,6 +555,7 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	flow := &Flow{
 		workspace:      workspace,
 		graphWorkspace: graphWorkspace,
+		moduleSeeds:    options.moduleClosureSeeds,
 		originService:  service,
 		originModule:   module,
 
@@ -706,7 +716,7 @@ func (flow *Flow) resolveDockerFallback(ctx context.Context) error {
 func (flow *Flow) classifyFreeBackends() ([]runtimeResolution, bool) {
 	var resolutions []runtimeResolution
 	needsDocker := false
-	for _, m := range flow.hub.managers {
+	for _, m := range flow.hub.all() {
 		manager, ok := m.(*Manager)
 		if !ok || manager.Runner == nil {
 			continue
@@ -860,7 +870,7 @@ func (flow *Flow) Load(ctx context.Context) error {
 	flow.playbook = playbook
 
 	// Fix the callback
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		manager.DoSetCallback(flow.playbook.Seed)
 		// Wire post-start crashes into the flow so Start cancels the playbook.
 		manager.DoSetFailureSink(flow.reportFailure)
@@ -939,7 +949,7 @@ func (flow *Flow) OriginTestResponse() *runtimev0.TestResponse {
 		return nil
 	}
 	origin := resources.WithUnique(flow.originService).Unique()
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		if manager == nil {
 			continue
 		}
@@ -961,7 +971,7 @@ func (flow *Flow) OriginTestSkipped() bool {
 		return false
 	}
 	origin := resources.WithUnique(flow.originService).Unique()
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		if manager == nil || manager.Unique() != origin {
 			continue
 		}
@@ -1002,7 +1012,7 @@ func (flow *Flow) OriginSyncResponse() *builderv0.SyncResponse {
 		return nil
 	}
 	origin := resources.WithUnique(flow.originService).Unique()
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		if manager == nil || manager.Unique() != origin {
 			continue
 		}
@@ -1025,7 +1035,7 @@ func (flow *Flow) OriginSyncSkipped() bool {
 		return false
 	}
 	origin := resources.WithUnique(flow.originService).Unique()
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		if manager == nil || manager.Unique() != origin {
 			continue
 		}
@@ -1044,7 +1054,7 @@ func (flow *Flow) DeploymentOutputs() map[string]*builderv0.DeploymentOutput {
 	if flow == nil || flow.hub == nil {
 		return outputs
 	}
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		source, ok := manager.(interface {
 			BuilderDeploymentOutput() *builderv0.DeploymentOutput
 		})
@@ -1066,7 +1076,7 @@ func (flow *Flow) DeployedConfigurations() map[string]*basev0.Configuration {
 	if flow == nil || flow.hub == nil {
 		return configurations
 	}
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		source, ok := manager.(interface {
 			BuilderDeployedConfiguration() *basev0.Configuration
 		})
@@ -1090,7 +1100,7 @@ func (flow *Flow) DeployedSecretKeys() map[string][]string {
 	if flow == nil || flow.hub == nil {
 		return keys
 	}
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		source, ok := manager.(interface {
 			BuilderDeployedSecretKeys() []string
 		})
@@ -1135,7 +1145,7 @@ func (flow *Flow) OriginImageDigest() string {
 		return ""
 	}
 	origin := resources.WithUnique(flow.originService).Unique()
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		if manager.Unique() != origin {
 			continue
 		}
@@ -1156,7 +1166,7 @@ func (flow *Flow) OriginImageEvidence() []*builderv0.ImageSBOM {
 		return nil
 	}
 	origin := resources.WithUnique(flow.originService).Unique()
-	for _, manager := range flow.hub.managers {
+	for _, manager := range flow.hub.all() {
 		if manager.Unique() != origin {
 			continue
 		}
@@ -1344,6 +1354,9 @@ func (flow *Flow) emitState(service string, state tui.ServiceState, port int) {
 	if flow.runningHook != nil && state == tui.StateRunning {
 		flow.runningHook(service, port)
 	}
+	if state == tui.StateRunning {
+		flow.checkLoopback(service)
+	}
 }
 
 // WithRunningHook registers a function told each service that reaches
@@ -1509,8 +1522,8 @@ func (flow *Flow) AgentCacheKeys() []string {
 		return nil
 	}
 	seen := map[string]bool{}
-	keys := make([]string, 0, len(flow.hub.managers))
-	for _, manager := range flow.hub.managers {
+	keys := make([]string, 0, len(flow.hub.all()))
+	for _, manager := range flow.hub.all() {
 		if manager == nil {
 			continue
 		}
@@ -1913,38 +1926,8 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	// already-spawned runner reachable by flow.Stop() — otherwise a partial
 	// init orphans those agents (and any process group they hold) until the
 	// next run's reaper sweeps them.
-	for _, unique := range required {
-		flow.output().RegisterLoggingResource(unique)
-		// Register source to handle "pretty" logging
-
-		info, err := resources.ParseServiceWithOptionalModule(unique)
-		w.Debug("creating run manager", wool.Field("for", unique))
-		if err != nil {
-			return w.Wrap(err)
-		}
-
-		mod, err := flow.workspace.LoadModuleFromName(ctx, info.Module)
-		if err != nil {
-			return w.Wrap(err)
-		}
-
-		svc, err := mod.LoadServiceFromName(ctx, info.Name)
-		if err != nil {
-			return w.Wrap(err)
-		}
-
-		flow.services = append(flow.services, svc)
-
-		manager, err := New(ctx, mod, svc, flow.world)
-		if err != nil {
-			return w.Wrap(err)
-		}
-
-		flow.configureRunner(manager.Runner, svc)
-		if remote, ok := remotes[unique]; ok {
-			manager.Runner.WithRemote(remote.Environment)
-		}
-		flow.hub.managers = append(flow.hub.managers, manager)
+	if _, _, err := flow.createManagers(ctx, required, remotes); err != nil {
+		return w.Wrap(err)
 	}
 
 	// Now add the current one

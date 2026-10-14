@@ -3,9 +3,12 @@ package gitops
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
 	"gopkg.in/yaml.v3"
 )
@@ -46,6 +50,7 @@ import (
 const (
 	deliveredPresence  = "presence"
 	deliveredAuthority = "authority"
+	deliveredEndpoints = "endpoints"
 )
 
 // deliveryPublishOptions is what settling needs beyond the tree.
@@ -130,6 +135,11 @@ type deliveredPresenceDocument struct {
 	document *solutionhost.SolutionHostBinding
 	alias    string
 	carrier  []byte
+	// carriers are the addresses of the endpoints the document names, as the
+	// render recorded them or as the delivered endpoint carrier signed them;
+	// endpoints is the signed endpoint delivery bound to this generation.
+	carriers  map[string]string
+	endpoints []byte
 }
 
 // settlePresenceDelivery settles the presence documents of the tree staged at
@@ -319,6 +329,12 @@ func settlePresenceDelivery(
 		if err != nil {
 			return nil, err
 		}
+		// Each document is settled with the addresses of the endpoints it
+		// names, from the carriers the render recorded for the module.
+		for binding, entry := range rendered {
+			entry.carriers = endpointCarriersOf(entry.document, inventory.EndpointCarriers)
+			rendered[binding] = entry
+		}
 	}
 	if len(rendered) == 0 && len(prior) == 0 {
 		return nil, nil
@@ -405,6 +421,9 @@ func settlePresenceDelivery(
 	if err != nil {
 		return nil, err
 	}
+	if err = signEndpointSet(ctx, settled, names, opts, delivery); err != nil {
+		return nil, err
+	}
 	files, err := writePresenceSet(target, overlay, inventory, settled, names, opts)
 	if err != nil {
 		return nil, err
@@ -449,13 +468,21 @@ func settledPresenceSet(rendered map[string]deliveredPresenceDocument, prior map
 			if err != nil {
 				return nil, err
 			}
+			// The addresses of the endpoints the document names are bound to
+			// its generation too: the host keeps one endpoint delivery per
+			// applied generation and refuses other bytes at the same one, so
+			// an address that moved under an unchanged presence is the next
+			// generation of both, never a rewrite.
+			if generation == previous.document.Generation && !maps.Equal(entry.carriers, previous.carriers) {
+				generation = previous.document.Generation + 1
+			}
 			entry.document.Generation = generation
-			// Unchanged, the document keeps the carrier it was delivered as:
-			// the same bytes, the same signature, no new log entry, and a
+			// Unchanged, the document keeps the carriers it was delivered as:
+			// the same bytes, the same signatures, no new log entry, and a
 			// re-sync that finds nothing to do. Re-signing changed the carrier
 			// on every publish and made a no-op promotion impossible.
 			if generation == previous.document.Generation {
-				entry.carrier = previous.carrier
+				entry.carrier, entry.endpoints = previous.carrier, previous.endpoints
 			}
 		} else {
 			entry.document.Generation = 1
@@ -575,11 +602,11 @@ func writePresenceSet(target, overlay string, inventory *Inventory, settled map[
 		return nil, fmt.Errorf("create delivery overlay: %w", err)
 	}
 	var files []string
-	var jobDocuments []deliveryDocument
-	var carriers [][]byte
+	var jobDocuments, endpointDocuments []deliveryDocument
+	var carriers, endpointCarriers [][]byte
 	for _, binding := range names {
 		entry := settled[binding]
-		file, err := writeSettledBinding(directory, inventory.Namespace, entry)
+		file, err := writeSettledBinding(directory, inventory.Namespace, &entry)
 		if err != nil {
 			return nil, err
 		}
@@ -589,6 +616,12 @@ func writePresenceSet(target, overlay string, inventory *Inventory, settled map[
 				ConfigMap: solutionHostBindingKind + "-" + binding, Key: presenceCarrierKey, Name: binding + ".json",
 			})
 			carriers = append(carriers, entry.carrier)
+		}
+		if len(entry.endpoints) > 0 {
+			endpointDocuments = append(endpointDocuments, deliveryDocument{
+				ConfigMap: solutionHostBindingKind + "-" + binding, Key: endpointCarrierKey, Name: binding + ".json",
+			})
+			endpointCarriers = append(endpointCarriers, entry.endpoints)
 		}
 	}
 	if opts.Target == nil {
@@ -607,7 +640,135 @@ func writePresenceSet(target, overlay string, inventory *Inventory, settled map[
 		}
 		files = append(files, job)
 	}
+	// The endpoints of each presence are delivered by their own Job through
+	// the same inbox and retry loop: the host answers 503 until the presence
+	// generation they name is applied, which that loop tries again.
+	if len(endpointDocuments) > 0 {
+		job, err := renderDeliveryJob(directory, deliveryJobName(deliveryEndpoints, inventory.Module, inventory.Environment, endpointCarriers), inventory.Namespace,
+			deliveryServiceAccount, deliveryEndpoints, endpointsDeliveryPath, opts.Target, endpointDocuments)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, job)
+	}
 	return files, nil
+}
+
+// endpointCarrierFromConfigMap reads the signed endpoint delivery a presence
+// carrier holds beside the presence, when it holds one.
+func endpointCarrierFromConfigMap(data []byte) []byte {
+	var carrier solutionHostBindingConfigMap
+	if err := yaml.Unmarshal(data, &carrier); err != nil {
+		return nil
+	}
+	if signed := carrier.Data[endpointCarrierKey]; signed != "" {
+		return []byte(signed)
+	}
+	return nil
+}
+
+// deliveredEndpointCarriers reads the addresses a delivered endpoint carrier
+// signed, so an unchanged presence is settled against them: core's strict
+// decoding of the signed document, and no signature verified here — reuse
+// holds the carrier to its bytes and to the release policy before it is
+// delivered again. No carrier is no addresses.
+func deliveredEndpointCarriers(carrier []byte) (map[string]string, error) {
+	if len(carrier) == 0 {
+		return nil, nil
+	}
+	signed, err := solutionhost.ParseSigned(carrier)
+	if err != nil {
+		return nil, err
+	}
+	delivery, err := solutionhost.EndpointDeliveryFromVerified(signed.Document)
+	if err != nil {
+		return nil, err
+	}
+	return delivery.Carriers, nil
+}
+
+// endpointCarriersOf selects, from the carriers a render recorded for the
+// module, the ones of the endpoints a presence names: core refuses a delivery
+// naming an endpoint the presence does not.
+func endpointCarriersOf(document *solutionhost.SolutionHostBinding, recorded map[string]string) map[string]string {
+	carriers := map[string]string{}
+	for _, endpoint := range document.Endpoints {
+		key := resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: endpoint.Module, Service: endpoint.Service, Name: endpoint.Name, API: endpoint.API})
+		if value, ok := recorded[key]; ok {
+			carriers[key] = value
+		}
+	}
+	return carriers
+}
+
+// signEndpointSet signs, for each settled presence that names endpoints and
+// is not a withdrawal, the endpoint delivery bound to its settled generation:
+// core's canonical document over the carriers the render recorded for the
+// endpoints the presence names, carried under the same reuse and self-check
+// rules as the presence itself (the base branch's carrier, then the inspected
+// plan's, then one signature). A publish that cannot sign delivers no
+// endpoints, as it delivers no presence.
+func signEndpointSet(ctx context.Context, settled map[string]deliveredPresenceDocument, names []string, opts *deliveryPublishOptions, delivery *InventoryDelivery) error {
+	if delivery == nil || !delivery.Signed {
+		return nil
+	}
+	signer := opts.Signer
+	if signer == nil {
+		signer = signing.FromEnvironment(nil)
+	}
+	if opts.Carriers == nil {
+		opts.Carriers = map[string][]byte{}
+	}
+	for _, binding := range names {
+		entry := settled[binding]
+		// A withdrawal carries no endpoints, and a presence naming none has
+		// none to deliver.
+		if entry.document.Removed || len(entry.document.Endpoints) == 0 {
+			entry.endpoints = nil
+			settled[binding] = entry
+			continue
+		}
+		payload, err := solutionhost.MarshalEndpointDelivery(entry.document, entry.carriers)
+		if err != nil {
+			return fmt.Errorf("endpoints of binding %s: %w", binding, err)
+		}
+		key := carrierKey(deliveredEndpoints, binding, entry.document.Generation)
+		identity, reused, err := reuseCarrier(ctx, "endpoints of binding "+binding, &entry.endpoints, opts.Reuse[key], payload, opts)
+		if err != nil {
+			return err
+		}
+		if !reused {
+			envelope, signErr := signing.SignEnvelope(payload, signer)
+			if signErr != nil {
+				return fmt.Errorf("sign the endpoints of binding %s: %w", binding, signErr)
+			}
+			if opts.SelfCheck != nil {
+				if checkErr := opts.SelfCheck(ctx, envelope, payload); checkErr != nil {
+					return fmt.Errorf("endpoints of binding %s: %w", binding, checkErr)
+				}
+			}
+			signed, carrierErr := solutionhost.Carrier(payload, envelope)
+			if carrierErr != nil {
+				return fmt.Errorf("assemble the signed endpoints of binding %s: %w", binding, carrierErr)
+			}
+			if entry.endpoints, err = solutionhost.MarshalSigned(signed); err != nil {
+				return fmt.Errorf("encode the signed endpoints of binding %s: %w", binding, err)
+			}
+			if read, readErr := signing.ReadIdentity(envelope); readErr == nil {
+				identity = read.KeyID
+			}
+		}
+		if delivery.Identity == "" {
+			delivery.Identity = identity
+		}
+		opts.Carriers[key] = entry.endpoints
+		settled[binding] = entry
+		sum := sha256.Sum256(payload)
+		delivery.Documents = append(delivery.Documents, InventoryDeliveredDocument{
+			Kind: deliveredEndpoints, ID: binding, Generation: entry.document.Generation, Digest: "sha256:" + hex.EncodeToString(sum[:]),
+		})
+	}
+	return nil
 }
 
 // settledGeneration is the generation of a candidate against the document the
@@ -648,6 +809,36 @@ func tombstoneOf(prior *solutionhost.SolutionHostBinding) (*solutionhost.Solutio
 	tombstone.Generation = prior.Generation + 1
 	tombstone.Removed = true
 	tombstone.Routes, tombstone.Artifacts, tombstone.Workloads, tombstone.Modules, tombstone.Endpoints = nil, nil, nil, nil, nil
+	// A removed generation declares no frontend and no group: a frontend is
+	// what a host serves for a build and a group is where it shows the
+	// solution, and this generation says there is nothing to serve or show.
+	// Core refuses either on a tombstone.
+	tombstone.Frontend, tombstone.Group = nil, nil
+	if err := tombstone.Validate(); err != nil {
+		return nil, err
+	}
+	return &tombstone, nil
+}
+
+// authorityTombstoneOf is the generation that withdraws a delivered
+// authority. A withdrawal clears everything that DESCRIBES the module, the
+// subject declarations included: core requires queues, namespaces and
+// scope_ceilings on a live generation and forbids them on a removed one,
+// because a withdrawal that still describes what it withdraws leaves a host
+// deciding which half meant it. So a tombstone is not the live document with
+// a flag set.
+func authorityTombstoneOf(prior *solutionhost.AuthorityDocument) (*solutionhost.AuthorityDocument, error) {
+	tombstone := *prior
+	tombstone.Generation = prior.Generation + 1
+	tombstone.Removed = true
+	tombstone.ApprovedBuild, tombstone.EffectiveFrom, tombstone.Principals = "", 0, nil
+	// EMPTY, not absent. The two rules only look contradictory: core requires
+	// the three keys on every generation, so nil is "the renderer dropped the
+	// field", and forbids them NON-EMPTY on a removed one, so a value is "the
+	// withdrawal still describes what it withdraws". Only an empty, present
+	// list satisfies both.
+	tombstone.Queues, tombstone.Namespaces = []string{}, []string{}
+	tombstone.ScopeCeilings = []solutionhost.ScopeCeiling{}
 	if err := tombstone.Validate(); err != nil {
 		return nil, err
 	}
@@ -764,14 +955,18 @@ func priorDeliveredBindings(ctx context.Context, repo, baseBranch, overlayPath s
 		if !ok {
 			continue
 		}
-		prior[document.Binding] = deliveredPresenceDocument{document: document, alias: alias, carrier: carrier}
+		entry := deliveredPresenceDocument{document: document, alias: alias, carrier: carrier, endpoints: endpointCarrierFromConfigMap(data)}
+		if entry.carriers, err = deliveredEndpointCarriers(entry.endpoints); err != nil {
+			return nil, fmt.Errorf("the delivered endpoints of %s on %s cannot be read, so no generation can be settled against them: %w", name, baseBranch, err)
+		}
+		prior[document.Binding] = entry
 	}
 	return prior, nil
 }
 
 // writeSettledBinding writes one settled document's ConfigMap: the readable
 // document, and the signed carrier when there is one.
-func writeSettledBinding(directory, namespace string, entry deliveredPresenceDocument) (string, error) {
+func writeSettledBinding(directory, namespace string, entry *deliveredPresenceDocument) (string, error) {
 	encoded, err := solutionhost.Marshal(entry.document)
 	if err != nil {
 		return "", fmt.Errorf("marshal binding %q: %w", entry.document.Binding, err)
@@ -794,6 +989,9 @@ func writeSettledBinding(directory, namespace string, entry deliveredPresenceDoc
 	}
 	if len(entry.carrier) > 0 {
 		carrier.Data[presenceCarrierKey] = string(entry.carrier)
+	}
+	if len(entry.endpoints) > 0 {
+		carrier.Data[endpointCarrierKey] = string(entry.endpoints)
 	}
 	body, err := yaml.Marshal(carrier)
 	if err != nil {
@@ -1113,25 +1311,11 @@ func settledAuthoritySet(
 		if previous.document.Removed {
 			entry.carrier = previous.carrier
 		} else {
-			tombstone.Generation = previous.document.Generation + 1
-			tombstone.Removed = true
-			// A withdrawal clears everything that DESCRIBES the module, the
-			// subject declarations included: core requires queues, namespaces
-			// and scope_ceilings on a live generation and forbids them on a
-			// removed one, because a withdrawal that still describes what it
-			// withdraws leaves a host deciding which half meant it. So a
-			// tombstone is not the live document with a flag set.
-			tombstone.ApprovedBuild, tombstone.EffectiveFrom, tombstone.Principals = "", 0, nil
-			// EMPTY, not absent. The two rules only look contradictory: core
-			// requires the three keys on every generation, so nil is "the
-			// renderer dropped the field", and forbids them NON-EMPTY on a
-			// removed one, so a value is "the withdrawal still describes what
-			// it withdraws". Only an empty, present list satisfies both.
-			tombstone.Queues, tombstone.Namespaces = []string{}, []string{}
-			tombstone.ScopeCeilings = []solutionhost.ScopeCeiling{}
-			if err := tombstone.Validate(); err != nil {
+			withdrawn, err := authorityTombstoneOf(previous.document)
+			if err != nil {
 				return nil, fmt.Errorf("withdraw authority %s: %w", authority, err)
 			}
+			entry.document = withdrawn
 		}
 		settled[authority] = entry
 	}

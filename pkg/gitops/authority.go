@@ -269,12 +269,16 @@ func authorityRequestOf(module *resources.Module) (authorityRequest, error) {
 		}
 	}
 	switch {
-	case contract != nil && consumption != nil:
+	case contract != nil && consumption != nil && len(consumption.Bindings) > 0:
 		return authorityRequest{}, fmt.Errorf("module %s publishes %s and its %s asks for scopes on api.consumes; a module asks for authority from one declaration, so declare the consumption in one of them", module.Name, modulecontract.FileName, solutionmanifest.FileName)
 	case contract != nil:
 		return authorityRequest{contract: contract, source: "publishes " + modulecontract.FileName}, nil
 	case consumption != nil:
-		return authorityRequest{contract: consumption, consumed: consumed, source: "asks for scopes on api.consumes in its " + solutionmanifest.FileName}, nil
+		source := "declares admission in its " + solutionmanifest.FileName
+		if len(consumption.Bindings) > 0 {
+			source = "asks for scopes on api.consumes in its " + solutionmanifest.FileName
+		}
+		return authorityRequest{contract: consumption, consumed: consumed, source: source}, nil
 	}
 	return authorityRequest{undeclared: fmt.Sprintf("module %s publishes no %s and asks for no scopes on api.consumes, so it asks for no authority", module.Name, modulecontract.FileName)}, nil
 }
@@ -452,7 +456,7 @@ func authorityBindings(presenceBinding string, contract *modulecontract.Resolved
 	if len(contract.Namespaces) == 1 {
 		namespace = contract.Namespaces[0]
 	}
-	var bindings []solutionhost.AuthorityBinding
+	bindings := make([]solutionhost.AuthorityBinding, 0)
 	for _, binding := range contract.Bindings {
 		var lookupMethod string
 		if binding.Lookup != nil {

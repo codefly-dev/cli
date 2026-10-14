@@ -312,7 +312,7 @@ contracts:
 func TestRenderRecordsExposedContractsAndPackageFromModuleCatalog(t *testing.T) {
 	moduleDir := moduleWithPackageAndCatalog(t, testContractDigestA)
 
-	pkg, err := modulePackage(moduleDir)
+	pkg, _, err := modulePackage(moduleDir)
 	if err != nil {
 		t.Fatal(err)
 	}

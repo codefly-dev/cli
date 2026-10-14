@@ -9,6 +9,7 @@ import (
 	"github.com/codefly-dev/core/solutionhost"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/resources"
 	solutionmanifest "github.com/codefly-dev/core/solution/manifest"
 )
@@ -39,6 +40,15 @@ func solutionModule(t *testing.T, name, entry string) *resources.Module {
 	}
 	module := &resources.Module{Name: name, ServiceEntry: entry}
 	module.WithDir(dir)
+	// The frontend the solution declares beside its entry service, which its
+	// presence carries.
+	entryDir := filepath.Join(dir, "services", entry)
+	if err := os.MkdirAll(entryDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(entryDir, solutionrun.FrontendFileName), []byte("title: CRM\norder: 1\nexposed_module: ./Page\nhost_contract: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	return module
 }
 

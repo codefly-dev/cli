@@ -26,11 +26,9 @@ func TestRenderRootRefusesSymlinkedServiceAncestors(t *testing.T) {
 	for _, relative := range []string{"services", "services/api", "services/api/base", "services/api/overlays", "services/api/overlays/prod", "services/api/overlays/prod/kustomization.yaml"} {
 		for _, operation := range []string{"patch", "configuration", "full render"} {
 			t.Run(relative+"/"+operation, func(t *testing.T) {
-				workspace, env := workloadIdentityComposition(t)
+				workspace, env := hostComposition(t)
 				scope := moduleScope(env, workspace, "app")
 				var err error
-				scope.WorkloadPeers, err = resolveWorkloadPeers(t.Context(), workspace, env)
-				require.NoError(t, err)
 				root := t.TempDir()
 				tree := testRenderRoot(t, root)
 				body := strings.Replace(sidecarDeployment, "metadata:\n", "metadata:\n  namespace: "+scope.Namespace+"\n", 1)
@@ -40,7 +38,7 @@ func TestRenderRootRefusesSymlinkedServiceAncestors(t *testing.T) {
 				require.NoError(t, os.Rename(filepath.Join(root, relative), target))
 				require.NoError(t, os.Symlink(target, filepath.Join(root, relative)))
 				before := snapshotTree(t, outside)
-				service := &resources.Service{Name: "api", WorkspaceConfigurationDependencies: []string{"workload-identity"}}
+				service := &resources.Service{Name: "api"}
 				projection := podProjection{kind: kindDeployment, name: "api", container: "api", volume: projectedVolume("test"), mount: readOnlyMount("test", "/test")}
 				switch operation {
 				case "patch":
@@ -219,7 +217,7 @@ func TestRenderAccessRetainsOriginalHandle(t *testing.T) {
 }
 
 func TestServiceAccountProjectionRefusesRootReplacementDuringWrite(t *testing.T) {
-	workspace, env := workloadIdentityComposition(t)
+	workspace, env := hostComposition(t)
 	scope := moduleScope(env, workspace, "app")
 	parent := filepath.Join(t.TempDir(), "stage")
 	directory := filepath.Join(parent, "tree")

@@ -58,7 +58,9 @@ func PublicKeyPEM(signer Signer) (string, error) {
 // SelfCheck holds fresh and reused carriers to the same key and domain.
 type SelfCheck func(ctx context.Context, envelope, payload []byte) error
 
-// KeyCheck refuses a custody key outside the environment's declaration before signing.
+// KeyCheck refuses a custody key outside the environment's declaration before
+// signing, and holds what was signed to the host's own verifier by schema: a
+// presence, an authority or an endpoint delivery.
 func KeyCheck(signer Signer, kind solutionhost.KeyKind, domain string, admitted ...string) (SelfCheck, error) {
 	if signer == nil {
 		return nil, ErrNoIdentity
@@ -94,9 +96,14 @@ func KeyCheck(signer Signer, kind solutionhost.KeyKind, domain string, admitted 
 			Schema string `json:"schema"`
 		}
 		if err = json.Unmarshal(payload, &schema); err == nil {
-			if schema.Schema == solutionhost.SchemaAuthorityV1 {
+			switch schema.Schema {
+			case solutionhost.SchemaAuthorityV1:
 				_, err = solutionhost.VerifyDeliveredAuthority(ctx, carrier, verifier)
-			} else {
+			case solutionhost.EndpointDeliverySchema:
+				// The endpoints bound to a presence: the same pinned-key
+				// verification, canonical content and ownership domain.
+				_, err = solutionhost.VerifyDeliveredEndpoints(ctx, carrier, verifier)
+			default:
 				_, err = solutionhost.VerifyDelivered(ctx, carrier, verifier)
 			}
 		}

@@ -2,13 +2,17 @@
 //
 // A host accepts a delivery and mints a workload credential only on what a
 // cluster attests: an API server that reviews a kubelet-projected token and
-// reports the pod's running image, and an issuer that hands each workload its
-// X.509-SVID. A native `codefly run` has no cluster, so the CLI is one: it
-// starts each process, so it is the kubelet that projects the token, the API
-// server that reviews it and the issuer that signs the certificate. The host,
-// the gateway and every module run the code they run on a cell, against the
-// same files and the same calls; only who vouches differs, and on a laptop that
-// is the developer in every case.
+// reports the pod's running image. A native `codefly run` has no cluster, so
+// the CLI is one: it starts each process, so it is the kubelet that projects
+// the token and the API server that reviews it. The host, the gateway and
+// every module run the code they run on a cell, against the same files and
+// the same calls; only who vouches differs, and on a laptop that is the
+// developer in every case.
+//
+// Transport identity is not here. In a cell the mesh carries it — a workload's
+// principal is its ServiceAccount's SPIFFE ID, presented by the mesh and never
+// by the workload — and a laptop has no mesh to stand in for: every hop is
+// plain HTTP on loopback, and nothing issues or serves a certificate.
 package nativecluster
 
 import (
@@ -30,7 +34,6 @@ import (
 	"math/big"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,10 +47,23 @@ const (
 	fieldKind = "kind"
 )
 
-// TokenLifetime is a projected token's validity. The host refuses a token
-// valid for longer than ten minutes (a kubelet projects short tokens and
-// rotates them), so each is reissued well before it lapses.
-const TokenLifetime = 9 * time.Minute
+// TokenLifetime is a projected token's validity: the 600 s a cell's render
+// asks the kubelet for (the longest mint token a host admits), so a token
+// copied off a laptop is replayable for exactly as long as one copied off a
+// pod — and, since the host records each token's credential id and refuses
+// a second mint with it, not even that.
+const TokenLifetime = 600 * time.Second
+
+// TokenRefreshInterval is how often a projected token is reissued: at 80% of
+// its lifetime, as the kubelet rotates a projected token. A mint client that
+// re-reads the projection before every mint therefore always presents a
+// token the host has not seen.
+const TokenRefreshInterval = TokenLifetime * 4 / 5
+
+// credentialIDExtra is the TokenReview extra a kubelet-projected token's
+// review carries: the token's JTI, which the host records to make each
+// projected token single-use.
+const credentialIDExtra = "authentication.kubernetes.io/credential-id"
 
 // Pod is one native process as the API server reports it: the identity its
 // token names and the build it runs.
@@ -112,7 +128,7 @@ func Start(_ context.Context) (*Authority, error) {
 		issuer:   "https://kubernetes.default.svc.cluster.local",
 		pods:     map[string]*Pod{},
 	}
-	serverCert, serverKey, err := authority.issue("codefly native run API server", nil, []string{"kubernetes.default.svc", "localhost"}, []net.IP{net.IPv4(127, 0, 0, 1)}, x509.ExtKeyUsageServerAuth)
+	serverCert, serverKey, err := authority.serverCertificate()
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +202,8 @@ func (a *Authority) Pod(namespace, account string) (Pod, bool) {
 }
 
 // Token projects a token for an identity, as the kubelet does: a JWT whose
-// claims name the namespace, the account and the pod, for one audience.
+// claims name the namespace, the account and the pod, for one audience, with
+// a JTI of its own so that its review can report a credential id.
 func (a *Authority) Token(namespace, account, podName, podUID, audience string) (string, error) {
 	now := time.Now()
 	claims := map[string]any{
@@ -196,6 +213,7 @@ func (a *Authority) Token(namespace, account, podName, podUID, audience string) 
 		"iat": now.Unix(),
 		"nbf": now.Unix(),
 		"exp": now.Add(TokenLifetime).Unix(),
+		"jti": randomID(),
 		"kubernetes.io": map[string]any{
 			"namespace":      namespace,
 			"serviceaccount": map[string]any{fieldName: account},
@@ -216,6 +234,7 @@ type tokenClaims struct {
 	Audience   []string `json:"aud"`
 	IssuedAt   int64    `json:"iat"`
 	Expires    int64    `json:"exp"`
+	ID         string   `json:"jti"`
 	Kubernetes struct {
 		Namespace      string `json:"namespace"`
 		ServiceAccount struct {
@@ -250,6 +269,9 @@ func (a *Authority) review(token string, audiences []string) (tokenClaims, error
 	now := time.Now().Unix()
 	if claims.Expires <= now {
 		return tokenClaims{}, errors.New("token expired")
+	}
+	if claims.ID == "" {
+		return tokenClaims{}, errors.New("token carries no JTI, so its review would report no credential id")
 	}
 	if len(audiences) > 0 {
 		matched := false
@@ -291,6 +313,9 @@ func (a *Authority) handleTokenReview(w http.ResponseWriter, r *http.Request) {
 				"extra": map[string][]string{
 					"authentication.kubernetes.io/pod-name": {claims.Kubernetes.Pod.Name},
 					"authentication.kubernetes.io/pod-uid":  {claims.Kubernetes.Pod.UID},
+					// As the API server reports it from a token's JTI: the
+					// value the host records to refuse a replayed token.
+					credentialIDExtra: {"JTI=" + claims.ID},
 				},
 			},
 		}
@@ -328,31 +353,23 @@ func (a *Authority) handleGetPod(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// IssueSVID signs a leaf for a workload: its SPIFFE ID as the URI SAN, and the
-// loopback names a native peer dials it by.
-func (a *Authority) IssueSVID(spiffeID string) (certPEM, keyPEM []byte, err error) {
-	id, err := url.Parse(spiffeID)
-	if err != nil || id.Scheme != "spiffe" {
-		return nil, nil, fmt.Errorf("invalid SPIFFE ID %q", spiffeID)
-	}
-	return a.issue(spiffeID, []*url.URL{id}, []string{"localhost"}, []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback}, x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth)
-}
-
-func (a *Authority) issue(commonName string, uris []*url.URL, dns []string, ips []net.IP, usages ...x509.ExtKeyUsage) (certPEM, keyPEM []byte, err error) {
+// serverCertificate signs the API server's own leaf under the run's CA: the
+// one certificate the run issues, for the one TLS listener it has, which the
+// host dials by the loopback names below.
+func (a *Authority) serverCertificate() (certPEM, keyPEM []byte, err error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, err
 	}
 	template := &x509.Certificate{
 		SerialNumber: serial(),
-		Subject:      pkix.Name{CommonName: commonName},
+		Subject:      pkix.Name{CommonName: "codefly native run API server"},
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  usages,
-		URIs:         uris,
-		DNSNames:     dns,
-		IPAddresses:  ips,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"kubernetes.default.svc", "localhost"},
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, a.caCert, &key.PublicKey, a.caKey)
 	if err != nil {
@@ -375,68 +392,38 @@ func serial() *big.Int {
 	return n
 }
 
-// Projection is what one workload is handed: the files a cell's volumes would
-// carry, under the keys the workload-identity group names.
-type Projection struct {
-	// Files maps the group key (TOKEN_FILE, CERT_FILE, ...) to the path written.
-	Files map[string]string
+// randomID is a token's JTI: 128 random bits, hex.
+func randomID() string {
+	raw := make([]byte, 16)
+	_, _ = rand.Read(raw)
+	return hex.EncodeToString(raw)
 }
 
-// Workload is one native process to project an identity for.
+// Projection is what one workload is handed: the file a cell's projected
+// volume would carry.
+type Projection struct {
+	// TokenFile is the path of the workload's projected token.
+	TokenFile string
+}
+
+// Workload is one native process to project a token for.
 type Workload struct {
 	Namespace string
 	Account   string
-	SPIFFEID  string
 	PodName   string
 	PodUID    string
 	// Audience is the audience its projected token is minted for: the host's.
 	Audience string
-	// Peers are the SPIFFE IDs written to the three peer files.
-	AllowedCallers []string
-	MintPeers      []string
-	GatewayPeers   []string
 }
 
-// Project writes a workload's identity under dir: its token, its SVID, the
-// trust bundle and its peer lists. The token is rewritten by Refresh.
+// Project writes a workload's projected token under dir, owner-only. The
+// token is rewritten by RefreshToken.
 func (a *Authority) Project(dir string, workload *Workload) (Projection, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return Projection{}, err
 	}
-	token, err := a.Token(workload.Namespace, workload.Account, workload.PodName, workload.PodUID, workload.Audience)
-	if err != nil {
-		return Projection{}, err
-	}
-	certPEM, keyPEM, err := a.IssueSVID(workload.SPIFFEID)
-	if err != nil {
-		return Projection{}, err
-	}
-	list := func(ids []string) string {
-		if len(ids) == 0 {
-			return ""
-		}
-		return strings.Join(ids, "\n") + "\n"
-	}
-	files := map[string][]byte{
-		"token": []byte(token), "tls.crt": certPEM, "tls.key": keyPEM, "ca.crt": a.caPEM,
-		"allowed-callers": []byte(list(workload.AllowedCallers)),
-		"mint-peers":      []byte(list(workload.MintPeers)),
-		"gateway-peers":   []byte(list(workload.GatewayPeers)),
-	}
-	for name, content := range files {
-		if err := writePrivate(filepath.Join(dir, name), content); err != nil {
-			return Projection{}, err
-		}
-	}
-	return Projection{Files: map[string]string{
-		"TOKEN_FILE":           filepath.Join(dir, "token"),
-		"CERT_FILE":            filepath.Join(dir, "tls.crt"),
-		"KEY_FILE":             filepath.Join(dir, "tls.key"),
-		"TRUST_BUNDLE_FILE":    filepath.Join(dir, "ca.crt"),
-		"ALLOWED_CALLERS_FILE": filepath.Join(dir, "allowed-callers"),
-		"MINT_PEERS_FILE":      filepath.Join(dir, "mint-peers"),
-		"GATEWAY_PEERS_FILE":   filepath.Join(dir, "gateway-peers"),
-	}}, nil
+	projection := Projection{TokenFile: filepath.Join(dir, "token")}
+	return projection, a.RefreshToken(projection.TokenFile, workload)
 }
 
 // RefreshToken rewrites a workload's token, as the kubelet rotates a projected
@@ -450,7 +437,7 @@ func (a *Authority) RefreshToken(path string, workload *Workload) error {
 }
 
 // writePrivate writes a file atomically with owner-only permissions, so a
-// reader never sees a half-written token or key.
+// reader never sees a half-written token.
 func writePrivate(path string, content []byte) error {
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, content, 0o600); err != nil {

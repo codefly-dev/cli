@@ -5,6 +5,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/core/composition"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 )
@@ -118,9 +119,18 @@ type Inventory struct {
 	// and recording another digest was rendered against another value, and the
 	// render refuses to deliver two values of one group.
 	WorkspaceConfigurationDigests map[string]string `json:"workspaceConfigurationDigests,omitempty"`
-	Units                         []InventoryUnit   `json:"units"`
-	Files                         []InventoryFile   `json:"files"`
-	Digest                        string            `json:"digest"`
+	// MeshEdges are the L4 edges into this module's workloads, as the
+	// composition declares them: the data the cell's applier compiles into
+	// its mesh policy (mesh_edges.go). Absent when the environment declares
+	// no host.
+	MeshEdges *MeshEdges `json:"meshEdges,omitempty"`
+	// EndpointCarriers are the in-cluster carriers of this module's endpoints
+	// the host routes, keyed as the gateway reads them: address-only, bound
+	// to a presence generation and signed only at publish.
+	EndpointCarriers map[string]string `json:"endpointCarriers,omitempty"`
+	Units            []InventoryUnit   `json:"units"`
+	Files            []InventoryFile   `json:"files"`
+	Digest           string            `json:"digest"`
 	// Dev lists the dev deployments (`codefly deploy dev`) applied on top of
 	// this render: services whose image was re-pinned to code no release
 	// describes. A full render re-derives the tree and never carries it over.
@@ -220,8 +230,6 @@ type unitScope struct {
 	// nowhere else, so resolving one of its primitives has to consult this
 	// rather than EnvironmentServiceSecrets.
 	Managed map[string]environments.EnvironmentManagedService
-	// WorkloadPeers is the complete composition's resolved identity set.
-	WorkloadPeers workloadPeers
 }
 
 // moduleScope is the scope of every unit a module renders in an environment.
@@ -257,6 +265,10 @@ type RenderOptions struct {
 	ModulePath           string
 	Units                []InventoryUnit
 	Package              *InventoryPackage
+	// ReleaseArtifacts is what the module's package manifest declares the
+	// release publishes; the runtime artifact named frontend among them is
+	// the bundle a presence's generated frontend.payload names.
+	ReleaseArtifacts []composition.ReleaseArtifact
 	// Workspace is the composing workspace's name. A solution host binding ID
 	// is scoped by it, so two workspaces delivering to one host never claim the
 	// same binding.
@@ -301,10 +313,13 @@ type RenderOptions struct {
 	// UndeclaredAuthority is why this render declares no authority, when the
 	// reason is the module's own.
 	UndeclaredAuthority string
-	// workloadIdentityChecks retain the composition's expectations across later
-	// projections, so validateTree judges the final overlay before promotion.
-	workloadIdentityChecks []workloadIdentityCheck
-	renderRoot             *renderRoot
+	// MeshEdges are the edges into this module's workloads, recorded in the
+	// inventory for the cell's applier.
+	MeshEdges *MeshEdges
+	// EndpointCarriers are the render's in-cluster carriers of the module's
+	// routed endpoints (see Inventory.EndpointCarriers).
+	EndpointCarriers map[string]string
+	renderRoot       *renderRoot
 }
 
 func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKubernetesOutput {

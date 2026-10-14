@@ -514,6 +514,9 @@ func TestInitLegacyAgentAdoptsTheProposalAndStaysReloadable(t *testing.T) {
 
 	_, err = runner.Init(ctx)
 	require.NoError(t, err, "hot reload rejected the service's own port as stale")
+	// The reload keeps the temporary port it was accepted at: a dependent
+	// that resolved this address keeps a true one, and nothing propagates.
+	require.Equal(t, adoptedREST, nativeAddressFor(t, runner.networkMappings, "rest"), "a reload under --temporary-ports moved the service")
 }
 
 // The guard still has to catch a real ghost: a process squatting the port

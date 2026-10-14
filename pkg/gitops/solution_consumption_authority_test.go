@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -181,16 +182,16 @@ func TestAnUnscopedSolutionStillRenders(t *testing.T) {
 	for _, name := range []string{"agentless.yaml", "undeclared-section.yaml"} {
 		t.Run(name, func(t *testing.T) {
 			instances, undeclared, err := deriveShopAuthority(t, consumptionFixture(t, name))
-			require.NoError(t, err, "a solution that asks for no scopes asks for no authority and renders as before")
-			require.Nil(t, instances)
-			require.Contains(t, undeclared, "asks for no scopes on api.consumes")
+			require.NoError(t, err)
+			require.Empty(t, undeclared)
+			require.Len(t, instances, 1)
+			require.Empty(t, instances[0].Contract.Bindings)
 		})
 	}
 }
 
-// A solution that consumes modules and asks for no scopes asks for no
-// authority, and the render says why.
-func TestASolutionAskingForNoScopesAsksForNoAuthority(t *testing.T) {
+// An unscoped solution declares admission without consumed permission units.
+func TestASolutionAskingForNoScopesDeclaresAdmission(t *testing.T) {
 	unscoped := strings.Replace(consumingSolution,
 		"      audience: {from: documents/documents-prefix}\n      scopes:\n        - resource_kind: documents.passages\n          actions: [read]\n        - resource_kind: documents.collections\n          actions: [read]\n", "", 1)
 	require.NotEqual(t, consumingSolution, unscoped)
@@ -198,8 +199,10 @@ func TestASolutionAskingForNoScopesAsksForNoAuthority(t *testing.T) {
 	instances, undeclared, err := deriveShopAuthority(t, unscoped)
 
 	require.NoError(t, err)
-	require.Nil(t, instances)
-	require.Contains(t, undeclared, "asks for no scopes on api.consumes")
+	require.Len(t, instances, 1)
+	require.Empty(t, undeclared)
+	require.Empty(t, instances[0].Contract.Bindings)
+	require.NotNil(t, authorityBindings("shop-main", instances[0].Contract))
 }
 
 // A scoped entry for a module the composition does not compose is refused at
@@ -300,4 +303,62 @@ func TestTwoSolutionsInOneComposition(t *testing.T) {
 	require.Len(t, b, 1)
 	require.NotEqual(t, a[0].ID, b[0].ID)
 	require.Equal(t, a[0].Audience, b[0].Audience)
+}
+
+func TestUnscopedSolutionPreservesModuleContractAndRequiresOneIdentity(t *testing.T) {
+	workspace, module := writeConsumingSolutionWorkspace(t, consumptionFixture(t, "agentless.yaml"))
+	require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), modulecontract.FileName), []byte(authorityContract), 0o644))
+	request, err := authorityRequestOf(module)
+	require.NoError(t, err)
+	require.NotEmpty(t, request.contract.Bindings)
+	require.Contains(t, request.source, modulecontract.FileName)
+	require.NoError(t, os.Remove(filepath.Join(module.Dir(), modulecontract.FileName)))
+	env := selectedEnvironment(t, workspace, "staging")
+	services := loadServices(t, workspace, "shop", "api")
+	services[0].ModuleIdentity = false
+	_, _, err = authorityInstancesOf(t.Context(), workspace, module, services, env, nil, nil)
+	require.ErrorContains(t, err, "no service declares module-identity")
+	services[0].ModuleIdentity = true
+	_, _, err = authorityInstancesOf(t.Context(), workspace, module, append(services, services[0]), env, nil, nil)
+	require.ErrorContains(t, err, "one service")
+}
+
+func TestEmptyAdmissionRendersExplicitEmptyBindings(t *testing.T) {
+	instances, _, err := deriveShopAuthority(t, consumptionFixture(t, "agentless.yaml"))
+	require.NoError(t, err)
+	bindings := authorityBindings("shop-main", instances[0].Contract)
+	require.NotNil(t, bindings)
+	raw, err := BuildEnvelope(1, nil, []EnvelopePrincipal{{Prefix: "shop", PresenceBinding: "shop-main", Bindings: bindings}})
+	require.NoError(t, err)
+	var envelope map[string]any
+	require.NoError(t, json.Unmarshal(raw, &envelope))
+	principal := envelope["principals"].(map[string]any)["shop"].(map[string]any)
+	require.Equal(t, []any{}, principal["bindings"])
+	require.Equal(t, []any{"shop-main"}, principal["admitted_bindings"])
+	_, err = BuildEnvelope(1, nil, []EnvelopePrincipal{{Prefix: "shop", Bindings: bindings}})
+	require.Error(t, err, "empty permissions must not make admission vacuous")
+}
+
+func TestEmptyPermissionNativeAndDeploymentUseTheSameAdmission(t *testing.T) {
+	workspace, module := writeConsumingSolutionWorkspace(t, consumptionFixture(t, "agentless.yaml"))
+	env := selectedEnvironment(t, workspace, "staging")
+	services := loadServices(t, workspace, "shop", "api")
+	units := []SolutionArtifactUnit{{Name: "api", Path: "services/api", Subject: "shop-api@example.iam.test"}}
+	instances, _, err := authorityInstancesOf(t.Context(), workspace, module, services, env, units, nil)
+	require.NoError(t, err)
+	destination, _ := renderShopAuthority(t, workspace, env, units, instances)
+	deployed, _ := readDeliveredAuthority(t, destination, "staging", "acme.staging.shop-authority.yaml")
+	require.NotNil(t, deployed.Principals[0].Bindings)
+	require.Empty(t, deployed.Principals[0].Bindings)
+	artifact := startedPythonService(t, services[0].Dir())
+	native, err := (&NativeDeliverer{Workspace: workspace, Env: env, StateDir: t.TempDir()}).Render(t.Context(), &NativeWorkload{
+		Module: module, Service: services[0], Services: services,
+		Namespace: "acme-shop", Account: "api", SPIFFEID: "spiffe://cluster.example/ns/acme-shop/sa/api",
+		Subject: "shop-api@example.iam.test", Artifact: artifact,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, native.Authority)
+	require.Equal(t, deployed.Principals, native.Authority.Principals)
+	require.Equal(t, deployed.PresenceBinding, native.Authority.PresenceBinding)
+	require.Equal(t, native.Digest, native.Authority.ApprovedBuild)
 }

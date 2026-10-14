@@ -394,7 +394,7 @@ func argoRepository(config *repositoryConfig, localFetchHost string) (string, er
 		if err != nil || parsed.Host == "" || parsed.Path == "" {
 			return "", fmt.Errorf("environment gitops.fetch-repo-url must be an absolute HTTP(S) URL")
 		}
-		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		if parsed.Scheme != httpScheme && parsed.Scheme != httpsScheme {
 			return "", fmt.Errorf("environment gitops.fetch-repo-url must use HTTP(S)")
 		}
 		if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || strings.Contains(parsed.Host, "*") {

@@ -378,3 +378,35 @@ func TestAnchorReconciliationFollowsOnlyThePolicyConfigMap(t *testing.T) {
 		t.Fatal("an unrelated Secret is treated as the policy")
 	}
 }
+
+// A native run's host reads a local profile the run writes itself: bound to
+// the run's CA and admitting the run's own delivery key for the host's domain,
+// with no developer listed in the workspace. No key, or no host, is refused.
+func TestANativeHostPolicyAdmitsTheRunsOwnSignerWithoutDevelopers(t *testing.T) {
+	signer := installLocalKey(t)
+	fingerprint := strings.Repeat("cd", 32)
+	host := &environments.EnvironmentHost{Domain: "obin"}
+	raw, err := NativeVerificationPolicy(fingerprint, signer, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var policy verificationPolicy
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(&policy); err != nil {
+		t.Fatal(err)
+	}
+	public, _ := signing.PublicKeyPEM(signer)
+	if policy.Local.ClusterCertificateAuthoritySha256 != fingerprint || len(policy.Signers) != 1 || policy.Signers[0].KeyID != signer.KeyID() || policy.Signers[0].PublicKey != public || policy.Signers[0].Kind != "person" || len(policy.Signers[0].Domains) != 1 || policy.Signers[0].Domains[0] != "obin" {
+		t.Fatalf("wrong native policy: %s", raw)
+	}
+	if _, err = NativeVerificationPolicy(fingerprint, nil, host); err == nil {
+		t.Fatal("no delivery key was admitted")
+	}
+	if _, err = NativeVerificationPolicy(fingerprint, signer, nil); err == nil {
+		t.Fatal("no host was accepted")
+	}
+	if _, err = NativeVerificationPolicy("abcd", signer, host); err == nil {
+		t.Fatal("a malformed fingerprint was accepted")
+	}
+}

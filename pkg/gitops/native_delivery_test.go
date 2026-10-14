@@ -22,6 +22,7 @@ type envelopeHost struct {
 	document string
 	writes   []map[string]any
 	signIns  int
+	refusal  int
 }
 
 func newEnvelopeHost(t *testing.T) *envelopeHost {
@@ -44,6 +45,13 @@ func newEnvelopeHost(t *testing.T) *envelopeHost {
 		_ = json.NewEncoder(w).Encode(map[string]any{"accessToken": "session"})
 	})
 	authorised := func(w http.ResponseWriter, r *http.Request) bool {
+		host.mu.Lock()
+		refusal := host.refusal
+		host.mu.Unlock()
+		if refusal != 0 {
+			http.Error(w, "refused", refusal)
+			return false
+		}
 		if r.Header.Get("Authorization") != "Bearer session" {
 			http.Error(w, "unauthenticated", http.StatusUnauthorized)
 			return false
@@ -93,7 +101,7 @@ func envelopeOf(t *testing.T, revision uint64, builds []solutionhost.ImageDigest
 	t.Helper()
 	var principals []EnvelopePrincipal
 	for _, prefix := range prefixes {
-		principals = append(principals, EnvelopePrincipal{Prefix: prefix, SPIFFEID: "spiffe://cluster.local/ns/cell-" + prefix + "/sa/backend", Container: "backend"})
+		principals = append(principals, EnvelopePrincipal{PresenceBinding: prefix + "-main", Prefix: prefix, SPIFFEID: "spiffe://cluster.local/ns/cell-" + prefix + "/sa/backend", Container: "backend"})
 	}
 	document, err := BuildEnvelope(revision, builds, principals)
 	require.NoError(t, err)
@@ -147,6 +155,39 @@ func TestAnEnvelopeCommitRefusesARevisionThatMoved(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.ErrorContains(t, commit(context.Background()), "409")
+}
+
+func TestEnvelopeWriterReauthenticatesOnlyAnUnauthorizedRequest(t *testing.T) {
+	t.Run("expired before reading or committing", func(t *testing.T) {
+		host := newEnvelopeHost(t)
+		writer := host.writer()
+		writer.accessToken = "expired"
+		_, commit, err := writer.Plan(t.Context(), func(revision uint64, _ []byte) ([]byte, error) {
+			return envelopeOf(t, revision, nil, "example"), nil
+		})
+		require.NoError(t, err)
+		require.Equal(t, 1, host.signIns)
+		writer.accessToken = "expired-between-plan-and-commit"
+		require.NoError(t, commit(t.Context()))
+		require.Equal(t, 2, host.signIns)
+		require.Len(t, host.writes, 1)
+		require.Equal(t, float64(0), host.writes[0]["expectedRevision"], "retry preserves the optimistic concurrency precondition")
+	})
+	for _, refusal := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(http.StatusText(refusal), func(t *testing.T) {
+			host := newEnvelopeHost(t)
+			host.refusal = refusal
+			writer := host.writer()
+			_, _, err := writer.Current(t.Context())
+			require.Error(t, err)
+			wantSignIns := 1
+			if refusal == http.StatusUnauthorized {
+				wantSignIns = 2
+			}
+			require.Equal(t, wantSignIns, host.signIns, "retry once only for an unauthenticated request")
+			require.Empty(t, host.writes)
+		})
+	}
 }
 
 // A run writes the envelope for what it has started so far. Whatever else the

@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -125,6 +126,15 @@ type SolutionInstance struct {
 	// solution's executor reports. It is a release digest and never an image
 	// or a rendered-bytes digest.
 	ReleaseDigest solutionhost.ReleaseDigest
+	// Frontend is the block a solution declares beside its entry service
+	// (solutionrun.FrontendFileName): what the host lists the solution under.
+	// A solution carries one; a module never does, and core refuses one on it.
+	Frontend *solutionhost.Frontend
+	// Group is the presentation group the composing workspace organises this
+	// solution under (solutionGroupOf): generated from the workspace's
+	// solution-groups, never authored on the solution, and nil for a module
+	// and for a solution in no group.
+	Group *solutionhost.SolutionGroup
 	// Units are the rendered units this generation pins, by tree-relative path,
 	// each with the principal its workloads present.
 	Units []SolutionArtifactUnit
@@ -315,6 +325,8 @@ func solutionHostBinding(owned string, opts *RenderOptions, instance *SolutionIn
 		// and nothing else, so backend is the only honest surface today.
 		document.Routes = []solutionhost.Route{{Alias: instance.Alias, Surface: solutionhost.SurfaceBackend}}
 	}
+	document.Frontend = instance.Frontend
+	document.Group = instance.Group
 	for _, unit := range instance.Units {
 		digest, digestErr := unitDigestInTree(tree, owned, unit.Path)
 		if digestErr != nil {
@@ -675,6 +687,27 @@ func deliveredBindingPath(bindings []DeclaredSolutionHostBinding) string {
 // is composed under. That is what makes a second instance of one solution
 // distinct: two instances are two composed modules with two names, delivering
 // two trees.
+// solutionGroupOf is the top-level group block a solution's presence
+// carries: the composing workspace's solution group the instance is listed
+// in, by the name the composition carries it under (core's
+// Workspace.SolutionGroupOf), GENERATED here and authored nowhere else. A
+// module is grouped by nothing, whatever a workspace lists: core refuses a
+// group on a module document, and the rule is applied before the document
+// exists. A headless solution is grouped like any other, since the catalogue
+// lists it too, which is why the block is not part of frontend. A group
+// grants and installs nothing; it is a heading, where it sorts, and the id
+// the solutions under it share.
+func solutionGroupOf(workspace *resources.Workspace, instance *SolutionInstance) *solutionhost.SolutionGroup {
+	if workspace == nil || instance == nil || instance.Kind != solutionhost.KindSolution {
+		return nil
+	}
+	group, ok := workspace.SolutionGroupOf(instance.Name)
+	if !ok {
+		return nil
+	}
+	return &solutionhost.SolutionGroup{ID: group.ID, Title: group.Title, Order: group.Order}
+}
+
 func presenceInstanceOf(
 	module *resources.Module,
 	services []*resources.Service,
@@ -695,9 +728,16 @@ func presenceInstanceOf(
 	if declared != nil {
 		instance.Kind = solutionhost.KindSolution
 	}
+	// Both component kinds carry the same optional frontend declaration.
+	if instance.Frontend, err = solutionrun.DeclaredFrontend(context.Background(), module); err != nil {
+		return nil, "", err
+	}
+	if err = stampFrontendPayload(instance, opts.ReleaseArtifacts); err != nil {
+		return nil, "", err
+	}
 	instance.Package, instance.Version = opts.Package.ID, opts.Package.Version
 	instance.Modules = []SolutionModulePin{{Module: module.Name, Package: opts.Package.ID, Version: opts.Package.Version}}
-	if instance.ReleaseDigest, err = releaseDigest(module.Dir()); err != nil {
+	if instance.ReleaseDigest, err = releaseDigest(context.Background(), module.Dir()); err != nil {
 		return nil, "", fmt.Errorf("module %s: %w", module.Name, err)
 	}
 	for _, unit := range opts.Units {

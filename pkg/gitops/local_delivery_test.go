@@ -92,7 +92,7 @@ func TestLocalPublishSignsAsTheDeveloperAndDeliversThroughTheJobs(t *testing.T) 
 	}
 	signer := fake.signer.(*fakeSigner)
 	if signer.signed != 1 {
-		t.Fatalf("the plan signed %d documents", signer.signed)
+		t.Fatalf("the plan signed %d documents, want the one presence document: this fixture's presence names no endpoint", signer.signed)
 	}
 	for _, raw := range plan.Carriers {
 		carrier, err := solutionhost.ParseSigned(raw)
@@ -233,7 +233,8 @@ func TestALocalPromotionSettlesARebuildAtTheNextGeneration(t *testing.T) {
 
 	// What a cluster run reads back: the latest promotion is the second
 	// commit, and the tree it promoted renders the presence Job that POSTs
-	// the generation-2 carrier.
+	// the generation-2 carrier (this presence names no endpoint, so no
+	// endpoints Job travels with it).
 	latest, err := LatestLocalPromotion(ctx, workspace, "production")
 	if err != nil || latest != secondResult.Commit {
 		t.Fatalf("latest local promotion %s (%v), want %s", latest, err, secondResult.Commit)
@@ -459,9 +460,13 @@ func TestADeliveryJobNamesTheApplicationTheCLIRendered(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(tree, filepath.FromSlash(overlay)), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	job := "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: deliver-presence-payments-local-abc\n  namespace: payments\n  labels:\n    codefly.dev/delivery: presence\n"
-	if err := os.WriteFile(filepath.Join(tree, filepath.FromSlash(overlay), "deliver-presence.yaml"), []byte(job), 0o644); err != nil {
-		t.Fatal(err)
+	// The presence Job and the endpoints Job that follows it through the
+	// same inbox are both the run's to await.
+	for _, kind := range []string{deliveryPresence, deliveryEndpoints} {
+		job := "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: deliver-" + kind + "-payments-local-abc\n  namespace: payments\n  labels:\n    codefly.dev/delivery: " + kind + "\n"
+		if err := os.WriteFile(filepath.Join(tree, filepath.FromSlash(overlay), "deliver-"+kind+".yaml"), []byte(job), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	component := argoBoundedName(componentNameBudget, "payments", "solution-host-bindings")
 	if err := os.MkdirAll(filepath.Join(tree, filepath.FromSlash(module), "bootstrap"), 0o755); err != nil {
@@ -482,8 +487,8 @@ func TestADeliveryJobNamesTheApplicationTheCLIRendered(t *testing.T) {
 		Server: "https://kubernetes.default.svc", Namespace: "payments",
 		Owner: ApplicationSetIdentity{APIVersion: argoAPIVersion, Kind: kindApplicationSet, Name: "payments-local", Namespace: "argocd"},
 	}
-	if len(jobs) != 1 || jobs[0].Application != want {
-		t.Fatalf("jobs %+v, want the Application %+v", jobs, want)
+	if len(jobs) != 2 || jobs[0].Kind != deliveryEndpoints || jobs[1].Kind != deliveryPresence || jobs[0].Application != want || jobs[1].Application != want {
+		t.Fatalf("jobs %+v, want the endpoints and presence Jobs, each naming the Application %+v", jobs, want)
 	}
 }
 

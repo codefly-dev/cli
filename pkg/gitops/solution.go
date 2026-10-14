@@ -153,7 +153,7 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 		// the unit it wrote is the artifact the binding pins. An executor
 		// reports manifest paths and nothing about endpoints or module pins, so
 		// the binding declares none rather than inventing them.
-		options.SolutionInstances = []SolutionInstance{{
+		instance := SolutionInstance{
 			Kind:          solutionhost.KindSolution,
 			Name:          req.Name,
 			Alias:         req.Name,
@@ -164,7 +164,10 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 				Name: req.Name, Path: filepath.ToSlash(filepath.Join(solutionUnitDir, req.Name)),
 				Subject: solutionWorkloadSubject(env, req.Name),
 			}},
-		}}
+		}
+		// The group is the composition's, read where the composition is.
+		instance.Group = solutionGroupOf(req.Workspace, &instance)
+		options.SolutionInstances = []SolutionInstance{instance}
 		return nil
 	})
 }

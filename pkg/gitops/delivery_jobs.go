@@ -81,6 +81,7 @@ const (
 	// routes, relative to the delivery endpoint the environment names.
 	presenceDeliveryPath  = "/platform/_delivery/presence"
 	authorityDeliveryPath = "/platform/_delivery/authority"
+	endpointsDeliveryPath = "/platform/_delivery/endpoints"
 
 	// presenceCarrierKey and authorityCarrierKey are the ConfigMap data keys
 	// holding the signed carrier of each document type: the canonical bytes that
@@ -89,11 +90,16 @@ const (
 	// emitter would fold the long scalar the signature covers.
 	presenceCarrierKey  = "solution-host-binding.signed.codefly.yaml"
 	authorityCarrierKey = "solution-authority.signed.codefly.yaml"
+	// endpointCarrierKey holds, beside a presence's signed carrier, the
+	// signed endpoint delivery bound to that presence generation: the
+	// in-cluster carriers of the endpoints it names, delivered after it.
+	endpointCarrierKey = "endpoint-delivery.signed.codefly.yaml"
 
 	// deliveryLabel marks the objects that deliver documents, by document type.
 	deliveryLabel     = "codefly.dev/delivery"
 	deliveryPresence  = "presence"
 	deliveryAuthority = "authority"
+	deliveryEndpoints = "endpoints"
 
 	deliveryDocumentsMount = "/delivery/documents"
 	deliveryIdentityMount  = "/var/run/secrets/codefly/delivery"

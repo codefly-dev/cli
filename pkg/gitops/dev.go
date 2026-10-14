@@ -143,7 +143,7 @@ func buildRenderedServiceImages(
 	}
 	defer os.RemoveAll(scratch)
 	destinations := serviceRenderDestinations(scratch)
-	if err := renderServiceFlow(ctx, workspace, module, service, env, renderBuild{standAlone: true, rebuild: rebuild}, sink, destinations, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := renderServiceFlow(ctx, workspace, module, service, env, renderBuild{standAlone: true, rebuild: rebuild}, sink, destinations, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		return nil, fmt.Errorf("build service %s: %w", service.Name, err)
 	}
 	return digestImages(destinations(module, service))

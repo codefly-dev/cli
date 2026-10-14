@@ -35,8 +35,8 @@ var ClusterCmd = &cobra.Command{
 	Long: `Run the composition on the environment's local k3d cluster, through the same
 delivery a cell receives (docs/solution-host-bindings.md, "Local runs"):
 
-  1. Argo CD and the SPIFFE workload issuer (installed if absent), the platform-authority
-     namespace with its delivery ServiceAccount, the modules' namespaces, and
+  1. Argo CD (installed if absent), the platform-authority namespace with its
+     delivery ServiceAccount, the modules' namespaces, and
      the local host's trust anchor (one public-key verification policy admitting
      this machine's key when host.developers lists it, bound to this cluster's
      CA; re-written, and the host restarted, when the cluster is recreated);
@@ -50,8 +50,8 @@ delivery a cell receives (docs/solution-host-bindings.md, "Local runs"):
 
 The environment must declare a k3d cluster (kind and context), a host,
 host.developers, and host.trust_anchor (the path the host reads its trust
-anchor from). Services declaring workload-identity also require host.gateway
-(<module>/<service>); their SVIDs and peer files are projected by the render.
+anchor from). Transport identity is the cell's mesh (a workload's ServiceAccount
+is its principal): no SVID or peer file is issued or projected.
 Stopping a run is not removal: withdrawing a binding is a
 published tombstone.`,
 	RunE: func(_ *cobra.Command, args []string) error {
@@ -79,7 +79,7 @@ func runCluster(modules []string) error {
 	if err = localcluster.Check(env); err != nil {
 		return err
 	}
-	if _, err = environments.WorkloadIdentityServices(ctx, workspace, env); err != nil {
+	if err = environments.ValidateHostComposition(ctx, workspace, env); err != nil {
 		return err
 	}
 	target, err := deployments.VerifyLocalK3dTarget(ctx, env)

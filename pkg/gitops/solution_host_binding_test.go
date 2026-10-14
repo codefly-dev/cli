@@ -492,6 +492,9 @@ environments:
 func TestRenderSolutionDeclaresItsOwnPresence(t *testing.T) {
 	installFakeSolutionExecutor(t, &fakeSolutionExecutor{})
 	workspace := loadHostedSolutionWorkspace(t)
+	// The composition organises the solution under a group: the packaged
+	// render projects it into the presence like the module render does.
+	workspace.SolutionGroups = []*resources.SolutionGroup{{ID: "operations", Title: "Operations", Order: 2, Solutions: []string{"lastlogin-go"}}}
 	env := selectedEnvironment(t, workspace, "local")
 	if env == nil {
 		t.Fatal("environment local not found")
@@ -529,6 +532,9 @@ func TestRenderSolutionDeclaresItsOwnPresence(t *testing.T) {
 	}
 	if document.Release.Digest != "sha256:"+digestPlaceholder {
 		t.Fatalf("release digest %q is not the artifact digest the executor reported", document.Release.Digest)
+	}
+	if document.Group == nil || document.Group.ID != "operations" || document.Group.Title != "Operations" || document.Group.Order != 2 {
+		t.Fatalf("group %+v is not the composition's", document.Group)
 	}
 }
 

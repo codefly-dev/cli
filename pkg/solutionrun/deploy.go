@@ -105,11 +105,45 @@ type Consumption struct {
 // same way, naming the solution.
 func ConsumedEndpoints(ctx context.Context, workspace *resources.Workspace) ([]Consumption, error) {
 	var out []Consumption
+	solutions, err := composedSolutions(ctx, workspace)
+	if err != nil {
+		return nil, err
+	}
+	for _, solution := range solutions {
+		for _, consumed := range solution.manifest.ConsumedAPIs() {
+			out = append(out, Consumption{Solution: solution.module.Name, ConsumedAPI: consumed})
+		}
+	}
+	return out, nil
+}
+
+// ComposedSolutions lists the solutions the workspace composes, in the
+// workspace's order: every composed module that names a service-entry and
+// ships a solution manifest. A module that cannot be read is a refusal, not
+// a module with no solution: every route the host forwards is derived from
+// this set.
+func ComposedSolutions(ctx context.Context, workspace *resources.Workspace) ([]*resources.Module, error) {
+	solutions, err := composedSolutions(ctx, workspace)
+	if err != nil {
+		return nil, err
+	}
+	modules := make([]*resources.Module, 0, len(solutions))
+	for _, solution := range solutions {
+		modules = append(modules, solution.module)
+	}
+	return modules, nil
+}
+
+type composedSolution struct {
+	module   *resources.Module
+	manifest *manifest.Manifest
+}
+
+func composedSolutions(ctx context.Context, workspace *resources.Workspace) ([]composedSolution, error) {
+	var out []composedSolution
 	for _, ref := range workspace.Modules {
 		mod, err := workspace.LoadModuleFromReference(ctx, ref)
 		if err != nil {
-			// Every route the host forwards is derived from here, so a module
-			// that cannot be read is a refusal, not a module with no consumes.
 			return nil, fmt.Errorf("read composed module %s: %w", ref.Name, err)
 		}
 		if mod.ServiceEntry == "" {
@@ -122,9 +156,7 @@ func ConsumedEndpoints(ctx context.Context, workspace *resources.Workspace) ([]C
 		if solutionManifest == nil {
 			continue
 		}
-		for _, consumed := range solutionManifest.ConsumedAPIs() {
-			out = append(out, Consumption{Solution: mod.Name, ConsumedAPI: consumed})
-		}
+		out = append(out, composedSolution{module: mod, manifest: solutionManifest})
 	}
 	return out, nil
 }

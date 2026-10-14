@@ -125,7 +125,7 @@ func (env *Environment) Validate() error {
 	// k3d-… context, written): the name "local" with no cluster declared is
 	// not one, whatever IsK3d's legacy reading says.
 	if env.Host != nil && len(env.Host.Developers) > 0 && !env.DeclaresLocalK3d() {
-		return fmt.Errorf("environment %s declares host.developers, which only a local cluster's host admits; declare the cluster it runs on (cluster.kind: k3d, cluster.context: k3d-<name>) — a deployed host accepts carriers from its release workflow (host.release) and nothing else", env.Name)
+		return fmt.Errorf("environment %s declares host.developers, which only a local cluster's host admits; declare the cluster it runs on (cluster.kind: k3d, cluster.context: k3d-<name>) — a native run (codefly run service, solution or workspace) needs no entry, since its host reads a policy the run writes admitting the run's own delivery key — a deployed host accepts carriers from its release workflow (host.release) and nothing else", env.Name)
 	}
 	// The trust anchor a deployed host reads is mounted by its cell's
 	// platform; only a local cluster run mounts one it provisioned.
@@ -180,8 +180,8 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 		if env == nil {
 			continue
 		}
-		if _, wiErr := WorkloadIdentityServices(ctx, workspace, env); wiErr != nil {
-			return w.Wrap(wiErr)
+		if hostErr := ValidateHostComposition(ctx, workspace, env); hostErr != nil {
+			return w.Wrap(hostErr)
 		}
 	}
 	needsGraph := false

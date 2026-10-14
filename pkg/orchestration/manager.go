@@ -3,6 +3,8 @@ package orchestration
 import (
 	"context"
 	"fmt"
+	"slices"
+	"sync"
 
 	"github.com/codefly-dev/core/services"
 
@@ -296,10 +298,36 @@ func (manager *Manager) DoSetFailureSink(sink func(unique, msg string)) {
 }
 
 type Hub struct {
+	// mu guards managers: a run extends the hub after Start (Flow.Extend)
+	// while the playbook's goroutine reads it for every action.
+	mu       sync.RWMutex
 	managers []IManager
 }
 
+// add registers managers in the hub, in order, the moment they are spawned.
+func (hub *Hub) add(managers ...IManager) {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	hub.managers = append(hub.managers, managers...)
+}
+
+// remove forgets the manager of one service, once the run withdrew it.
+func (hub *Hub) remove(unique string) {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	hub.managers = slices.DeleteFunc(hub.managers, func(manager IManager) bool { return manager.Unique() == unique })
+}
+
+// all is a snapshot of the hub's managers, in registration order.
+func (hub *Hub) all() []IManager {
+	hub.mu.RLock()
+	defer hub.mu.RUnlock()
+	return slices.Clone(hub.managers)
+}
+
 func (hub *Hub) NewManager(unique string) (IManager, error) {
+	hub.mu.RLock()
+	defer hub.mu.RUnlock()
 	for _, manager := range hub.managers {
 		if manager.Unique() == unique {
 			return manager, nil
