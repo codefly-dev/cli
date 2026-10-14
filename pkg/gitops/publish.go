@@ -1063,6 +1063,10 @@ func prepareServicePublication(
 		SolutionAuthorityPath:         renderedInventory.SolutionAuthorityPath,
 		Delivered:                     delivery,
 		WorkspaceConfigurationDigests: renderedInventory.WorkspaceConfigurationDigests,
+		// The mesh edges are the render's record of the composition's reach;
+		// a publication carries them unchanged, or the cell's applier reads
+		// an inventory that admits nothing.
+		MeshEdges: renderedInventory.MeshEdges,
 	}
 	if _, err = validateTree(target, options); err != nil {
 		return "", Inventory{}, fmt.Errorf("validate generated publication: %w", err)
@@ -1162,6 +1166,7 @@ func prepareServiceSnapshot(
 		HostsDelivery:           renderedInventory.HostsDelivery,
 		SolutionAuthorityPath:   renderedInventory.SolutionAuthorityPath,
 		Delivered:               delivery,
+		MeshEdges:               renderedInventory.MeshEdges,
 	}
 	snapshotInventory, err := buildInventory(target, snapshotOptions)
 	if err != nil {
