@@ -737,7 +737,7 @@ func presenceInstanceOf(
 	}
 	instance.Package, instance.Version = opts.Package.ID, opts.Package.Version
 	instance.Modules = []SolutionModulePin{{Module: module.Name, Package: opts.Package.ID, Version: opts.Package.Version}}
-	if instance.ReleaseDigest, err = releaseDigest(module.Dir()); err != nil {
+	if instance.ReleaseDigest, err = releaseDigest(context.Background(), module.Dir()); err != nil {
 		return nil, "", fmt.Errorf("module %s: %w", module.Name, err)
 	}
 	for _, unit := range opts.Units {

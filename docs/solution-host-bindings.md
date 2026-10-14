@@ -1482,8 +1482,13 @@ presence and authority stay applied on the host until a publish of that
 module's path with no instances writes their tombstones; pruning gated on the
 host acknowledging them needs the host's acknowledgement, which the delivery
 API does not yet answer. The **release digest** is the content digest of the
-module package as the composition materialized it, computed over its files;
-it ties the declaration to those bytes and to nothing a registry attested, and
+module package as the composition materialized it, computed over its files:
+for a module that is a checkout, the files its repository tracks or does not
+ignore (so dependency caches, built bundles and local secrets the repository
+ignores are not the release), and for a materialized package outside a
+checkout, its whole tree; version control metadata, render output and the
+CLI's own state root (`.codefly`) are never part of it. It ties the
+declaration to those bytes and to nothing a registry attested, and
 nothing attests that the pinned image was built from them. The **module
 contract** (`codefly/module-contract/v1`) has ONE implementation, in core,
 beside the presence and authority documents: `contracts/module` (the model,

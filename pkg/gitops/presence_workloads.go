@@ -1,11 +1,13 @@
 package gitops
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -172,14 +174,23 @@ func refuseSharedTokens(authenticating string, workload *renderedWorkload) error
 
 // releaseDigest pins the release a module instance deploys: the content digest
 // of the module package as the composition materialized it, every regular file
-// in path order. Two renders of one version agree on it, and a changed source
-// is a changed release.
+// of the package in path order. Two renders of one version agree on it, and a
+// changed source is a changed release.
 //
-// Version control metadata and render output are left out: neither is part of
-// the package, and both change without the release changing. It is a release
-// digest and never an image or a rendered-bytes digest, which core keeps as
-// distinct types so the three cannot be confused.
-func releaseDigest(moduleDir string) (solutionhost.ReleaseDigest, error) {
+// What the package is follows the rules that already own it. A module that is
+// a checkout is digested by its repository's own selection — the files it
+// tracks or does not ignore (`git ls-files --cached --others
+// --exclude-standard`) — so dependency caches, built bundles and local secrets
+// the repository ignores are not the release, and a path module's identity is
+// the identity its committed tree would have as a published package. A
+// materialized package outside a checkout (a pinned module's cache tree) is
+// digested whole. Version control metadata, render output and the CLI's own
+// state (`.codefly`, where a run keeps its cluster state and artifact cache)
+// are left out either way: none is part of the package, and all change
+// without the release changing. It is a release digest and never an image or
+// a rendered-bytes digest, which core keeps as distinct types so the three
+// cannot be confused.
+func releaseDigest(ctx context.Context, moduleDir string) (solutionhost.ReleaseDigest, error) {
 	if moduleDir == "" {
 		return "", fmt.Errorf("the module has no directory, so its release cannot be digested")
 	}
@@ -189,26 +200,7 @@ func releaseDigest(moduleDir string) (solutionhost.ReleaseDigest, error) {
 		size   int64
 	}
 	var entries []entry
-	err := filepath.WalkDir(moduleDir, func(path string, item os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		relative, relErr := filepath.Rel(moduleDir, path)
-		if relErr != nil {
-			return relErr
-		}
-		if item.IsDir() {
-			switch {
-			case relative == ".":
-				return nil
-			case item.Name() == ".git", relative == "deployments", strings.HasPrefix(item.Name(), ".codefly-render-"):
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !item.Type().IsRegular() {
-			return nil
-		}
+	digestFile := func(relative string) error {
 		file, openErr := openWithin(moduleDir, relative)
 		if openErr != nil {
 			return openErr
@@ -221,9 +213,52 @@ func releaseDigest(moduleDir string) (solutionhost.ReleaseDigest, error) {
 		}
 		entries = append(entries, entry{path: filepath.ToSlash(relative), digest: hex.EncodeToString(hash.Sum(nil)), size: size})
 		return nil
-	})
+	}
+	selected, checkout, err := repositoryPackageFiles(ctx, moduleDir)
 	if err != nil {
 		return "", fmt.Errorf("digest the release at %s: %w", moduleDir, err)
+	}
+	if checkout {
+		for _, relative := range selected {
+			if packageFileExcluded(relative) {
+				continue
+			}
+			info, statErr := os.Lstat(filepath.Join(moduleDir, filepath.FromSlash(relative)))
+			if statErr != nil || !info.Mode().IsRegular() {
+				// Listed by the index and gone from the tree (a deletion not
+				// yet staged), or not a file: not part of the release.
+				continue
+			}
+			if err = digestFile(filepath.FromSlash(relative)); err != nil {
+				return "", fmt.Errorf("digest the release at %s: %w", moduleDir, err)
+			}
+		}
+	} else {
+		err = filepath.WalkDir(moduleDir, func(path string, item os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			relative, relErr := filepath.Rel(moduleDir, path)
+			if relErr != nil {
+				return relErr
+			}
+			if relative == "." {
+				return nil
+			}
+			if packageFileExcluded(filepath.ToSlash(relative)) {
+				if item.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if item.IsDir() || !item.Type().IsRegular() {
+				return nil
+			}
+			return digestFile(relative)
+		})
+		if err != nil {
+			return "", fmt.Errorf("digest the release at %s: %w", moduleDir, err)
+		}
 	}
 	if len(entries) == 0 {
 		return "", fmt.Errorf("the module at %s holds no files, so its release cannot be digested", moduleDir)
@@ -234,4 +269,47 @@ func releaseDigest(moduleDir string) (solutionhost.ReleaseDigest, error) {
 		fmt.Fprintf(hash, "%s\x00%s\x00%d\n", item.path, item.digest, item.size)
 	}
 	return solutionhost.ReleaseDigest("sha256:" + hex.EncodeToString(hash.Sum(nil))), nil
+}
+
+// packageFileExcluded is what no package holds, whatever the tree: version
+// control metadata, render output (`deployments`, the render's scratch
+// directories) and the CLI's own state root (`.codefly`), judged on the path
+// relative to the module.
+func packageFileExcluded(relative string) bool {
+	const versionControl = ".git"
+	first, _, _ := strings.Cut(relative, "/")
+	if first == versionControl || first == "deployments" || first == ".codefly" {
+		return true
+	}
+	for _, component := range strings.Split(relative, "/") {
+		if component == versionControl || strings.HasPrefix(component, ".codefly-render-") {
+			return true
+		}
+	}
+	return false
+}
+
+// repositoryPackageFiles is the repository's own selection of a module's
+// files when the module is a checkout: what it tracks or does not ignore,
+// relative to the module, recursing. A module outside a work tree (or without
+// git at hand) reports no selection, and is digested whole.
+func repositoryPackageFiles(ctx context.Context, moduleDir string) ([]string, bool, error) {
+	if _, err := exec.LookPath("git"); err != nil {
+		return nil, false, nil
+	}
+	inside, err := gitCommand(ctx, moduleDir, "rev-parse", "--is-inside-work-tree")
+	if err != nil || inside != "true" {
+		return nil, false, nil
+	}
+	listed, err := gitCommandBytes(ctx, moduleDir, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ".")
+	if err != nil {
+		return nil, false, err
+	}
+	var files []string
+	for _, name := range strings.Split(string(listed), "\x00") {
+		if name != "" {
+			files = append(files, name)
+		}
+	}
+	return files, true, nil
 }

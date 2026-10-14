@@ -402,7 +402,7 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	}
 	instance.Group = solutionGroupOf(d.Workspace, instance)
 	instance.Modules = []SolutionModulePin{{Module: workload.Module.Name, Package: manifest.ID, Version: manifest.Version}}
-	if instance.ReleaseDigest, err = releaseDigest(workload.Module.Dir()); err != nil {
+	if instance.ReleaseDigest, err = releaseDigest(ctx, workload.Module.Dir()); err != nil {
 		return nil, fmt.Errorf("module %s: %w", workload.Module.Name, err)
 	}
 	unit := SolutionArtifactUnit{Name: workload.Service.Name, Path: workload.Service.Name, Subject: workload.Subject}
