@@ -10,11 +10,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
@@ -363,12 +365,16 @@ func (cluster *nativeCluster) runtimeOverrides(service *resources.Service) map[s
 // a service that declares module-authority: its mesh principal, the host's
 // audiences and the internal token the gateway verifies.
 func (cluster *nativeCluster) renderOwnedGroups(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error) {
-	declares := false
-	for _, dependency := range service.WorkspaceConfigurationDependencies {
-		declares = declares || dependency == environments.ModuleAuthorityConfiguration
+	var out []*basev0.Configuration
+	if slices.Contains(service.WorkspaceConfigurationDependencies, environments.ArtifactCacheConfiguration) {
+		group, err := artifactCacheGroup(cluster.composed().Dir())
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, group)
 	}
-	if !declares {
-		return nil, nil
+	if !slices.Contains(service.WorkspaceConfigurationDependencies, environments.ModuleAuthorityConfiguration) {
+		return out, nil
 	}
 	unique, identity, ok := cluster.identityOf(service)
 	if !ok {
@@ -384,7 +390,39 @@ func (cluster *nativeCluster) renderOwnedGroups(ctx context.Context, service *re
 		{Key: "PROJECTION_AUDIENCE", Value: cluster.env.Host.Audience},
 		{Key: "INTERNAL_TOKEN", Value: token, Secret: true},
 	}}
-	return []*basev0.Configuration{{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{authority}}}, nil
+	return append(out, &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{authority}}), nil
+}
+
+// artifactCacheGroup is the artifact-cache group a native run hands a service
+// that declares it: ROOT, the absolute path of the workspace's artifact cache,
+// the read-only source a host's native bundle adapter reads a frontend bundle
+// from by the digest the presence names. A cell's render projects nothing for
+// the group, so the value exists in a local run alone.
+func artifactCacheGroup(workspaceDir string) (*basev0.Configuration, error) {
+	root, err := filepath.Abs(composition.ArtifactCacheDir(workspaceDir))
+	if err != nil {
+		return nil, fmt.Errorf("resolve the artifact cache of %s: %w", workspaceDir, err)
+	}
+	return &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
+		Name: environments.ArtifactCacheConfiguration, ConfigurationValues: []*basev0.ConfigurationValue{{Key: environments.ArtifactCacheRootKey, Value: root}},
+	}}}, nil
+}
+
+// frontendBundle archives the bundle a component's frontend build wrote
+// beside its entry service, in core's canonical form, and retains it in the
+// workspace's artifact cache under its digest — the read-only source the
+// host's native adapter reads bundles from — so the presence names the bytes
+// the host verifies. No built bundle is no payload.
+func (cluster *nativeCluster) frontendBundle(ctx context.Context, module *resources.Module) (*solutionhost.FrontendPayload, error) {
+	root, built, err := solutionrun.FrontendBundle(module)
+	if err != nil || !built {
+		return nil, err
+	}
+	digest, _, err := composition.RetainCanonicalArchive(ctx, cluster.composed().Dir(), root)
+	if err != nil {
+		return nil, fmt.Errorf("retain the frontend bundle of %s: %w", module.Name, err)
+	}
+	return &solutionhost.FrontendPayload{Artifact: gitops.FrontendArtifactName, Digest: solutionhost.PayloadDigest(digest), MediaType: composition.CanonicalArchiveMediaType}, nil
 }
 
 // internalToken is the value module-authority/INTERNAL_TOKEN aliases in a
@@ -663,9 +701,13 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, identi
 			return cluster.authority.Token(namespace, "delivery", pod.Name, pod.UID, cluster.env.Host.Audience)
 		},
 	}
+	bundle, err := cluster.frontendBundle(ctx, module)
+	if err != nil {
+		return err
+	}
 	native := gitops.NativeWorkload{
 		Module: module, Service: service, Services: services, Namespace: namespace, Account: identity.Account,
-		SPIFFEID: identity.SPIFFEID, Subject: cluster.subject(identity), Artifact: artifact,
+		SPIFFEID: identity.SPIFFEID, Subject: cluster.subject(identity), Artifact: artifact, FrontendBundle: bundle,
 	}
 	rendered, err := deliverer.Render(ctx, &native)
 	if err != nil {

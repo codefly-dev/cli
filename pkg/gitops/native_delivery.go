@@ -155,6 +155,12 @@ type NativeWorkload struct {
 	Subject string
 	// Artifact is what the agent reported it started; its digest is the build.
 	Artifact NativeArtifact
+	// FrontendBundle is the identity of the complete frontend bundle this run
+	// built and retained in the workspace's artifact cache (its digest, the
+	// canonical archive's media type, the artifact name a release would use):
+	// what the presence's frontend payload names, since what runs is what is
+	// delivered. Nil when the component declares no page or built no bundle.
+	FrontendBundle *solutionhost.FrontendPayload
 }
 
 // Repository names a native build's image repository: there is no registry,
@@ -379,6 +385,16 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	}
 	if err = stampFrontendPayload(instance, manifest.ReleaseArtifacts); err != nil {
 		return nil, err
+	}
+	// The bundle this run built outranks the release's artifact metadata: a
+	// native run delivers what runs, and the host reads the bytes from the
+	// cache by the digest named here.
+	if workload.FrontendBundle != nil {
+		if instance.Frontend == nil {
+			return nil, fmt.Errorf("module %s built a frontend bundle and declares no frontend; a bundle is the output of a declared page", workload.Module.Name)
+		}
+		payload := *workload.FrontendBundle
+		instance.Frontend.Payload = &payload
 	}
 	instance.Group = solutionGroupOf(d.Workspace, instance)
 	instance.Modules = []SolutionModulePin{{Module: workload.Module.Name, Package: manifest.ID, Version: manifest.Version}}

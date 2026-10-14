@@ -128,6 +128,13 @@ writer follows the gateway's current address. The `--output-env` file is a map
 of the run's current environment, rewritten whole: a key written again
 replaces its line, so a reader never meets two values for one key.
 
+**The artifact cache as a native bundle source.** A service that declares the
+workspace configuration `artifact-cache` receives `ROOT`, the absolute path of
+`.codefly/selection-artifacts`, from a native run and from nothing else; the
+host's native adapter reads a component's frontend bundle there, read-only, by
+the digest the presence names, and the run retains that bundle (the canonical
+archive of `services/fe-remote/dist`) before it delivers the presence.
+
 **Adding a component while the run is up.** Compose the module or solution
 into the workspace and send the running `codefly run` process — a service, a
 solution or the workspace — `SIGUSR1` (`kill -USR1 <pid>`). The run reloads

@@ -258,10 +258,27 @@ canonical media type the artifact declares), verbatim. A release declaring no
 such artifact gives the frontend no payload: a generation whose bundle is not
 published, which the host decides whether to serve. A bundle declared under
 another purpose, without a media type, or by a headless component is refused
-by name (a name declared twice is refused by the manifest loader). The bundle bytes are the build owner's: the agent's build
-operation publishes the artifact the manifest names, and nothing here builds,
-stores or transports them; a host admits the bundle it serves by this identity
-and by nothing a running process reports.
+by name (a name declared twice is refused by the manifest loader). In a cell,
+the bundle bytes are the build owner's: the agent's build operation publishes
+the artifact the manifest names through the build publisher (a digest-addressed
+ORAS blob), and nothing here transports them; a host admits the bundle it
+serves by this identity and by nothing a running process reports.
+
+A native run delivers what runs. When a component's frontend build wrote its
+bundle beside the entry service (`services/fe-remote/dist`, with
+`mf-manifest.json` at its root; a dist without it is refused as no bundle), the
+run archives that directory in core's canonical form (`CanonicalArchive`,
+`application/x-tar`), retains the bytes in the workspace's artifact cache
+(`.codefly/selection-artifacts/<digest>`, the same digest-named files an
+acquisition retains and consults before any fetch) and stamps the presence's
+payload with that digest, which outranks a release artifact the manifest names.
+The host's native bundle source reads the cache read-only and verifies the
+complete archive against the digest before serving it, so a mutable or corrupt
+file fails there. A service that declares the render-owned workspace
+configuration `artifact-cache` receives its one value, `ROOT`, the absolute
+path of that cache, from the native run alone: a cell's render projects nothing
+for it, so in Kubernetes the value is absent and a directory source stays
+refused. No built bundle is no payload.
 Native and rendered delivery carry the same block for both kinds. A module page does not
 change its shared tenancy or its per-organisation installation grants. The gateway
 receives a route for a module page even when no solution consumes its API. The

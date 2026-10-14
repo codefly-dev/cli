@@ -86,3 +86,37 @@ func TestAReleasedFrontendBundleIsTheGeneratedPayload(t *testing.T) {
 		})
 	}
 }
+
+// A native run delivers what runs: the bundle it built and retained outranks
+// the release's artifact metadata on the presence it delivers, and a bundle
+// built by a headless component is refused.
+func TestANativeRunStampsTheBundleItBuilt(t *testing.T) {
+	bundle := "release-artifacts:\n  - name: frontend\n    purpose: runtime\n    uri: oci://registry.example/shared/frontend\n    digest: " + releasedBundleDigest + "\n    media-type: application/x-tar\n"
+	built := &solutionhost.FrontendPayload{Artifact: FrontendArtifactName, Digest: solutionhost.PayloadDigest("sha256:" + strings.Repeat("e", 64)), MediaType: "application/x-tar"}
+	for _, tc := range []struct {
+		name, artifacts string
+		headless        bool
+	}{
+		{name: "beside a released artifact", artifacts: bundle},
+		{name: "with no released artifact", artifacts: ""},
+		{name: "by a headless component", artifacts: "", headless: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			module, services := bundleModule(t, tc.artifacts, tc.headless)
+			env := identityEnvironment()
+			env.Namespace = "example"
+			deliverer := &NativeDeliverer{Workspace: &resources.Workspace{Name: "example"}, Env: env}
+			documents, err := deliverer.Render(context.Background(), &NativeWorkload{
+				Module: module, Service: services[0], Services: services,
+				Subject: "system:serviceaccount:example:shared-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/shared-api",
+				Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")}, FrontendBundle: built,
+			})
+			if tc.headless {
+				require.ErrorContains(t, err, "declares no frontend")
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, built, documents.Presence.Frontend.Payload)
+		})
+	}
+}

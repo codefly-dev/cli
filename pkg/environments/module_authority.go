@@ -12,11 +12,24 @@ import (
 // ModuleAuthorityConfiguration requests per-workload authority from the render.
 const ModuleAuthorityConfiguration = "module-authority"
 
+// ArtifactCacheConfiguration requests, from a NATIVE run only, the root of the
+// workspace's artifact cache (ArtifactCacheRootKey): the digest-named files
+// the CLI retains and acquires, which a host's read-only native bundle source
+// reads a frontend bundle from by the digest the presence names. A cell's
+// render projects nothing for it, so in Kubernetes the value is absent and
+// the host's directory source stays refused there.
+const ArtifactCacheConfiguration = "artifact-cache"
+
+// ArtifactCacheRootKey is the one value of ArtifactCacheConfiguration: the
+// absolute path of the cache directory.
+const ArtifactCacheRootKey = "ROOT"
+
 // RenderOwnedWorkspaceConfiguration names the groups supplied per workload by
-// the render. They are never dependencies of the configuration manager and
-// cannot be provided by authored workspace configuration files.
+// the render (or by the native run standing in for it). They are never
+// dependencies of the configuration manager and cannot be provided by
+// authored workspace configuration files.
 func RenderOwnedWorkspaceConfiguration(group string) bool {
-	return group == ModuleAuthorityConfiguration
+	return group == ModuleAuthorityConfiguration || group == ArtifactCacheConfiguration
 }
 
 // ValidateHostComposition checks what a host block asks of the composition: a
