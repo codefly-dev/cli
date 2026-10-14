@@ -1426,15 +1426,26 @@ var manifestFieldNormalizer = strings.NewReplacer("-", "", "_", "", ".", "")
 // Every key, configuration name or schema field, is also checked against the
 // camelCase field fragments above, and any key mentioning a token defers to
 // core, which keeps every TOKEN sensitive except a whole-word TOKENS count.
+//
+// A codefly configuration carrier is scanned on its configuration KEY alone,
+// read by core's one parser of a carrier (resources.ConfigurationCarrierKey):
+// the module, service and configuration-name segments in front of it are
+// structure, so a group called credential-policy or client-secret-policy
+// does not make its CLIENT_ID a credential, exactly as core classifies it.
+// Anything that is not a carrier is scanned whole, as before.
 func isCredentialKey(key string, configurationName bool) bool {
 	classify := resources.IsSensitiveKey
+	scanned := key
 	if configurationName {
 		classify = resources.IsSensitiveEnvironmentVariable
 		if classify(key) {
 			return true
 		}
+		if configurationKey, ok := resources.ConfigurationCarrierKey(key); ok {
+			scanned = configurationKey
+		}
 	}
-	normalized := strings.ToLower(manifestFieldNormalizer.Replace(key))
+	normalized := strings.ToLower(manifestFieldNormalizer.Replace(scanned))
 	for _, fragment := range manifestFieldCredentialFragments {
 		if strings.Contains(normalized, fragment) {
 			return true
