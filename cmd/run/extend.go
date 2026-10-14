@@ -168,10 +168,6 @@ func extendRunningWorkspace(ctx context.Context, flow *orchestration.Flow, basel
 		known[root] = true
 	}
 	fresh := freshRoots(known, roots)
-	if len(fresh) == 0 {
-		cli.Info("the composition names no component this run does not already start or know")
-		return nil
-	}
 	merged := solutionrun.RunInputs{Overrides: derivedOverrides}
 	for _, root := range fresh {
 		info, parseErr := resources.ParseServiceWithOptionalModule(root)
@@ -199,8 +195,6 @@ func extendRunningWorkspace(ctx context.Context, flow *orchestration.Flow, basel
 		}
 		cli.Info("%s", note.Message)
 	}
-	derivedOverrides = merged.Overrides
-	flow.WithOverrides(derivedOverrides)
 	if cluster := activeNativeCluster(); cluster != nil {
 		admitted, admitErr := cluster.admit(ctx, workspace)
 		if admitErr != nil {
@@ -210,6 +204,15 @@ func extendRunningWorkspace(ctx context.Context, flow *orchestration.Flow, basel
 			cli.Info("admitted %s: its identity is projected, and it is delivered to the host once running", unique)
 		}
 	}
+	// Even without new roots, admit refreshes the declaration snapshot used
+	// by the next agent Running hook. Otherwise edits such as regrouping
+	// remain stuck at the composition that started the run.
+	if len(fresh) == 0 {
+		cli.Info("refreshed the composition; no new root to start")
+		return nil
+	}
+	derivedOverrides = merged.Overrides
+	flow.WithOverrides(derivedOverrides)
 	added, err := flow.Extend(ctx, workspace, fresh)
 	if err != nil {
 		return err

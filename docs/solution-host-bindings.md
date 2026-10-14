@@ -1126,6 +1126,13 @@ composing a second moves it to its own namespace and mesh principal, so that
 addition is refused as a replacement; a composition that must grow live starts
 with more than one module.
 
+The signal also refreshes the native delivery's composition snapshot when no
+root was added. After changing a solution group's title, order or membership,
+signal the CLI before reloading the affected component through its agent. The
+next Running hook delivers the updated declaration through the same signed
+generation path; the signal alone does not restart or re-deliver existing
+components. A no-root refresh still refuses any changed workload identity.
+
 A root the reloaded composition no longer names is withdrawn by the same
 signal: the flow stops what only it needed, and the run delivers, for each
 stopped workload it had delivered, the generation that withdraws it
