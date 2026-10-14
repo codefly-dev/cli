@@ -1025,22 +1025,29 @@ file atomically, so hard links cannot cause writes into another tree.
 ## Live endpoint delivery
 
 Presence names endpoints; it never supplies their addresses. Core's
-`codefly/endpoint-delivery/v1` projection carries the existing resolved carriers
-and the digest of the complete applied presence document. The gateway's SDK
-reader requires that digest to match before answering a route, including host,
-binding, generation, release and endpoint declarations. Missing, withdrawn,
-malformed or mismatched projections refuse routing without a startup-carrier
-fallback.
+`codefly/endpoint-delivery/v1` document carries the CLI-resolved carriers of
+the endpoints a presence names, bound to the applied presence it joins: host,
+binding, generation, ownership domain and the canonical presence digest. It is
+signed exactly as the presence is (`SignEnvelope`, `Carrier`, `MarshalSigned`)
+and delivered through the same inbox, `POST /platform/_delivery/endpoints`,
+with the same credentials. The host verifies it, joins it to the APPLIED
+presence generation and keeps the canonical bytes append-only by identity and
+generation; its read projection hands them to the gateway's SDK, which refuses
+a digest or generation mismatch without a startup-carrier fallback. No
+directory, mount or file carries an endpoint anywhere: a configuration or
+credential mount is outside the security posture.
 
-A native run supplies the gateway one stable directory under its cluster state,
-`host/endpoint-delivery`. After signed delivery settles each generation, the run
-atomically replaces its projection through `Flow.EndpointDelivery`, reusing
-`hostRoutes`, visibility selection and `hostRouteCarrier`. Resolving one presence
-never waits for unrelated producers to allocate their endpoints. A tombstone
-removes that binding's projection. The directory is supplied once at gateway
-startup; later file replacements need no process restart.
+A native run delivers the endpoints right after each presence generation
+settles, from the same resolution (`Flow.EndpointDelivery`, reusing
+`hostRoutes`, visibility selection and `hostRouteCarrier`). The host answers
+503 while the generation is not applied yet and the run retries within a
+bound; a stale, mismatched or tombstoned delivery (422) and a different
+document for an applied generation (409) are refused for good. A changed
+address is a new presence generation, never a rewrite, and a tombstone
+delivers no endpoints: the host withdraws them with the presence. Resolving one
+presence never waits for unrelated producers to allocate their endpoints.
 
-This is the reader and native writer contract, and it is how a component
+This is the delivery contract, and it is how a component
 composed after the run started reaches the gateway: `codefly run workspace`
 admits the components a reloaded composition adds when it receives `SIGUSR1`
 (`kill -USR1 <pid>`). The run reads the workspace again, compares its roots
@@ -1052,7 +1059,7 @@ run's authority, its CA, API server, host token and trust anchor, is
 untouched), and starts the new root's closure in the running flow, in
 dependency order, through the same Running hook that delivers every other
 workload: presence, authority, the envelope (which only ever widens) and the
-endpoint-delivery file. Nothing already running is restarted, and the host
+signed endpoint delivery. Nothing already running is restarted, and the host
 keeps its process. One rule of core's namespacing is pinned by test: a
 workspace composing one module gives it the environment's namespace, and
 composing a second moves it to its own namespace and mesh principal, so that

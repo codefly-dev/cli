@@ -543,6 +543,7 @@ func settle(record *nativeGenerations, key string, content []byte) uint64 {
 // Receipt is the host's answer to one delivered document.
 type Receipt struct {
 	Kind        string
+	Status      int    `json:"-"`
 	Disposition string `json:"disposition"`
 	DocumentID  string `json:"documentId"`
 	Generation  uint64 `json:"generation"`
@@ -619,7 +620,7 @@ func (d *NativeDeliverer) post(ctx context.Context, kind, spiffeID string, paylo
 		return Receipt{}, err
 	}
 	namespace := authorityDeliveryNamespace
-	if kind == "presence" {
+	if kind == "presence" || kind == endpointDeliveryKind {
 		identity, parseErr := parseSPIFFENamespace(spiffeID)
 		if parseErr != nil {
 			return Receipt{}, parseErr
@@ -646,7 +647,7 @@ func (d *NativeDeliverer) post(ctx context.Context, kind, spiffeID string, paylo
 	}
 	defer response.Body.Close()
 	answer, _ := io.ReadAll(io.LimitReader(response.Body, 1<<16))
-	receipt := Receipt{Kind: kind}
+	receipt := Receipt{Kind: kind, Status: response.StatusCode}
 	_ = json.Unmarshal(answer, &receipt)
 	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusAccepted {
 		message := receipt.Error
@@ -656,6 +657,50 @@ func (d *NativeDeliverer) post(ctx context.Context, kind, spiffeID string, paylo
 		return receipt, fmt.Errorf("the host refused the %s delivery (%s): %s", kind, response.Status, message)
 	}
 	return receipt, nil
+}
+
+// endpointDeliveryKind is the host inbox a signed endpoint delivery is posted
+// to: the same inbox, credentials and signing path as the presence it joins.
+const endpointDeliveryKind = "endpoints"
+
+// endpointDeliveryAttempts and endpointDeliveryInterval bound the wait for
+// the presence a delivery joins to be APPLIED: the host answers 503 until its
+// reconciler has applied the generation the endpoints name, and nothing else
+// is retried.
+const (
+	endpointDeliveryAttempts = 40
+	endpointDeliveryInterval = 1500 * time.Millisecond
+)
+
+// DeliverEndpoints posts the canonical endpoint delivery of a presence the
+// host now holds: the CLI-resolved carriers of the endpoints the presence
+// names, bound to its applied generation and digest, signed exactly as the
+// presence was and through the same inbox with the same credentials. The
+// host joins it to the APPLIED presence: a 503 says that generation is not
+// applied yet and is retried within a bound; a stale, mismatched or
+// tombstoned delivery (422) and a different document for an applied
+// generation (409) are refused for good. A changed address is a new presence
+// generation, never a rewrite. No directory, mount or file carries an
+// endpoint anywhere.
+func (d *NativeDeliverer) DeliverEndpoints(ctx context.Context, presence *solutionhost.SolutionHostBinding, raw []byte) (Receipt, error) {
+	if presence == nil || len(presence.Workloads) == 0 {
+		return Receipt{}, fmt.Errorf("an endpoint delivery joins a presence with a workload")
+	}
+	spiffeID := presence.Workloads[0].Identity.SPIFFEID
+	for attempt := 1; ; attempt++ {
+		receipt, err := d.post(ctx, endpointDeliveryKind, spiffeID, raw)
+		if err == nil || receipt.Status != http.StatusServiceUnavailable {
+			return receipt, err
+		}
+		if attempt >= endpointDeliveryAttempts {
+			return receipt, fmt.Errorf("the host has not applied presence %s generation %d after %s: %w", presence.Binding, presence.Generation, time.Duration(endpointDeliveryAttempts)*endpointDeliveryInterval, err)
+		}
+		select {
+		case <-ctx.Done():
+			return receipt, ctx.Err()
+		case <-time.After(endpointDeliveryInterval):
+		}
+	}
 }
 
 // parseSPIFFENamespace reads the namespace out of spiffe://<domain>/ns/<ns>/sa/<sa>.
