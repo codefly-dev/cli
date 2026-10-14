@@ -186,8 +186,10 @@ func (flow *Flow) Withdraw(ctx context.Context, workspace *resources.Workspace, 
 			}
 			return stopped, fmt.Errorf("%s stop: %w", unique, stopErr)
 		}
-		flow.hub.remove(unique)
 		stopped = append(stopped, unique)
+	}
+	for _, unique := range stopped {
+		flow.hub.remove(unique)
 	}
 	flow.services = slices.DeleteFunc(flow.services, func(service *resources.Service) bool {
 		return service != nil && !kept[resources.WithUnique(service).Unique()]
