@@ -771,12 +771,13 @@ type EnvelopeGrant = json.RawMessage
 // contract asks (bindings, ceilings), the workload that presents it, and the
 // composition's grant.
 type EnvelopePrincipal struct {
-	Prefix    string
-	Bindings  []solutionhost.AuthorityBinding
-	Ceilings  []solutionhost.ScopeCeiling
-	SPIFFEID  string
-	Container string
-	Grant     EnvelopeGrant
+	PresenceBinding string
+	Prefix          string
+	Bindings        []solutionhost.AuthorityBinding
+	Ceilings        []solutionhost.ScopeCeiling
+	SPIFFEID        string
+	Container       string
+	Grant           EnvelopeGrant
 }
 
 // ApprovedBuilds reads the builds an envelope document approves.
@@ -823,12 +824,20 @@ func BuildEnvelope(revision uint64, builds []solutionhost.ImageDigest, principal
 		if len(principal.Grant) > 0 {
 			grant = principal.Grant
 		}
-		entries[principal.Prefix] = map[string]any{
+		entry := map[string]any{
 			"bindings":            bindings,
 			"workload_identities": []map[string]any{{"spiffe_id": principal.SPIFFEID, "container": principal.Container}},
 			"scope_ceilings":      ceilings,
 			"grant":               grant,
 		}
+		if len(bindings) == 0 {
+			admission := solutionhost.EnvelopeAdmission{Principal: principal.Prefix, PresenceBinding: principal.PresenceBinding}
+			if err := admission.Validate(); err != nil {
+				return nil, err
+			}
+			entry["admitted_bindings"] = []string{principal.PresenceBinding}
+		}
+		entries[principal.Prefix] = entry
 	}
 	return json.Marshal(document)
 }

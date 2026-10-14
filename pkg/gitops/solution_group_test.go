@@ -30,7 +30,7 @@ func nativeSolution(t *testing.T, name string) (*resources.Module, *resources.Se
 	} {
 		require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), file), []byte(contents), 0o600))
 	}
-	return module, &resources.Service{Name: "api", Endpoints: []*resources.Endpoint{{Name: "http", API: "http", Visibility: "internal"}}}
+	return module, &resources.Service{Name: "api", ModuleIdentity: true, Endpoints: []*resources.Endpoint{{Name: "http", API: "http", Visibility: "internal"}}}
 }
 
 // The group a solution is shown under is the composition's: generated into

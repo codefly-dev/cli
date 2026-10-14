@@ -1515,3 +1515,16 @@ here**: core's owner ruled an environment-wide Kubernetes model out of core,
 and the Lane 3 registry specification replaces it with an inventory of the
 keys the cluster's admission policy compares, written by the CLI once that
 specification is an implementation contract — a PR of its own.
+
+### Solutions with no consumed permissions
+
+A declared solution with no scoped consumption still emits a signed authority
+document with an explicit empty binding list. Its principal, presence binding,
+workload and approved build remain admitted through the ordinary delivery path.
+The native envelope carries that exact presence binding in `admitted_bindings`;
+this admits installation without inventing a consumed permission. A deployed
+operator envelope must provide the same explicit admission.
+
+A module contract takes precedence over an empty consumption declaration. Two
+nonempty authority sources remain refused. Exactly one service must declare
+`module-identity`, including for an empty permission set.

@@ -877,7 +877,7 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, identi
 			}
 			started, _ := cluster.identity(key)
 			principals = append(principals, gitops.EnvelopePrincipal{
-				Prefix: documents.Principal, Bindings: documents.Bindings, Ceilings: documents.Ceilings,
+				PresenceBinding: documents.Presence.Binding, Prefix: documents.Principal, Bindings: documents.Bindings, Ceilings: documents.Ceilings,
 				SPIFFEID: started.SPIFFEID, Container: started.Service, Grant: grants[documents.Principal],
 			})
 		}

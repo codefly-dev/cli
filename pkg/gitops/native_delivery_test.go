@@ -93,7 +93,7 @@ func envelopeOf(t *testing.T, revision uint64, builds []solutionhost.ImageDigest
 	t.Helper()
 	var principals []EnvelopePrincipal
 	for _, prefix := range prefixes {
-		principals = append(principals, EnvelopePrincipal{Prefix: prefix, SPIFFEID: "spiffe://cluster.local/ns/cell-" + prefix + "/sa/backend", Container: "backend"})
+		principals = append(principals, EnvelopePrincipal{PresenceBinding: prefix + "-main", Prefix: prefix, SPIFFEID: "spiffe://cluster.local/ns/cell-" + prefix + "/sa/backend", Container: "backend"})
 	}
 	document, err := BuildEnvelope(revision, builds, principals)
 	require.NoError(t, err)

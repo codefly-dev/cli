@@ -80,7 +80,7 @@ func TestAHeadlessSolutionReachesBothDeliveryPaths(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	service := &resources.Service{Name: "api", Endpoints: []*resources.Endpoint{{Name: "http", API: "http", Visibility: "internal"}}}
+	service := &resources.Service{Name: "api", ModuleIdentity: true, Endpoints: []*resources.Endpoint{{Name: "http", API: "http", Visibility: "internal"}}}
 	env := identityEnvironment()
 	options := &RenderOptions{Module: "crm", Package: &InventoryPackage{ID: "example/crm", Version: "1.0.0"}}
 	instance, undeclared, err := presenceInstanceOf(module, []*resources.Service{service}, env, options)
