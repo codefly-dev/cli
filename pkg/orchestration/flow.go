@@ -20,6 +20,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	"github.com/codefly-dev/cli/pkg/remotenetwork"
+	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -35,6 +36,8 @@ import (
 )
 
 type Flow struct {
+	consumedRoots []string
+	consumedAPIs  []solutionrun.Consumption
 	// configurationReferences orders a consumer after the producers its
 	// workspace configurations reference (configurationReferenceOption); every
 	// rebuild of the graph carries it.
@@ -441,11 +444,6 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	if err := environments.ValidateManagedServices(ctx, workspace); err != nil {
 		return nil, w.Wrap(err)
 	}
-	graphWorkspace, err := runModuleClosure(ctx, workspace, options.moduleClosureSeeds)
-	if err != nil {
-		return nil, w.Wrap(err)
-	}
-
 	// Get dependency graph. A service reaching a producer only through a
 	// workspace configuration group the composition root writes is ordered
 	// after it, as for a declared dependency.
@@ -472,6 +470,10 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	if providedErr != nil {
 		w.Debug("ordering the run with no workspace configuration reference edges: the configurations this invocation resolves could not be read",
 			wool.ErrField(providedErr))
+	}
+	graphWorkspace, err := runModuleClosure(ctx, workspace, options.moduleClosureSeeds, providedWorkspaceConfigurations)
+	if err != nil {
+		return nil, w.Wrap(err)
 	}
 	configurationReferences := configurationReferenceOptionFrom(providedWorkspaceConfigurations)
 	var graphOptions []architecture.DependencyOption
@@ -1753,7 +1755,13 @@ func (flow *Flow) rootBeginActions() []Action {
 func (flow *Flow) rootUniques() []string {
 	roots := make([]string, 0, len(flow.coRoots)+1)
 	roots = append(roots, resources.WithUnique(flow.originService).Unique())
-	return append(roots, flow.coRoots...)
+	roots = append(roots, flow.coRoots...)
+	for _, root := range flow.consumedRoots {
+		if !slices.Contains(roots, root) {
+			roots = append(roots, root)
+		}
+	}
+	return roots
 }
 
 // runClosure returns every service this run manages except the origin: the
@@ -1853,6 +1861,9 @@ func (flow *Flow) managerDependencies(ctx context.Context) ([]architecture.Servi
 
 func (flow *Flow) InitManagers(ctx context.Context) error {
 	w := wool.Get(ctx).In("flow.InitManagers")
+	if err := flow.includeConsumedRoots(ctx); err != nil {
+		return w.Wrap(err)
+	}
 	// Project ownership before anything is spawned, and hold it for every spawn
 	// below: New() starts the agent process, which inherits the marker at exec
 	// and can create containers from its Init onwards.
@@ -1897,7 +1908,7 @@ func (flow *Flow) InitManagers(ctx context.Context) error {
 	}
 	// We run in the proper order
 	slices.Reverse(required)
-	if len(flow.coRoots) > 0 {
+	if len(flow.rootUniques()) > 1 {
 		if err := flow.scopeDependenciesToRun(ctx, required, dependencyOptions); err != nil {
 			return w.Wrap(err)
 		}

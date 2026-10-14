@@ -151,6 +151,14 @@ func (route hostRoute) describe() string {
 // routes /<alias>/ to one HTTP endpoint of the solution's entry service, so an
 // entry declaring none or several is refused the same way.
 func (world *World) hostRoutes(ctx context.Context, hostModule string) ([]hostRoute, error) {
+	if world.Mode == RunMode && world.runProducers != nil {
+		selected := make([]string, 0, len(world.runProducers))
+		for unique := range world.runProducers {
+			selected = append(selected, unique)
+		}
+		sort.Strings(selected)
+		return hostRoutes(ctx, world.Workspace, hostModule, selected)
+	}
 	return hostRoutes(ctx, world.Workspace, hostModule)
 }
 
@@ -180,8 +188,14 @@ func HostRouteTargets(ctx context.Context, workspace *resources.Workspace, hostM
 	return targets, nil
 }
 
-func hostRoutes(ctx context.Context, workspace *resources.Workspace, hostModule string) ([]hostRoute, error) {
-	consumptions, err := solutionrun.ConsumedEndpoints(ctx, workspace)
+func hostRoutes(ctx context.Context, workspace *resources.Workspace, hostModule string, selection ...[]string) ([]hostRoute, error) {
+	var consumptions []solutionrun.Consumption
+	var err error
+	if len(selection) > 0 {
+		consumptions, err = solutionrun.SelectedConsumedEndpoints(ctx, workspace, selection[0])
+	} else {
+		consumptions, err = solutionrun.ConsumedEndpoints(ctx, workspace)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +229,7 @@ func hostRoutes(ctx context.Context, workspace *resources.Workspace, hostModule 
 		routes = append(routes, route)
 	}
 	sort.Slice(routes, func(i, j int) bool { return routes[i].module < routes[j].module })
-	backends, err := componentBackendRoutes(ctx, workspace, hostModule)
+	backends, err := componentBackendRoutes(ctx, workspace, hostModule, selection...)
 	if err != nil {
 		return nil, err
 	}
@@ -230,8 +244,25 @@ func hostRoutes(ctx context.Context, workspace *resources.Workspace, hostModule 
 // componentBackendRoutes selects each solution backend and each module page's
 // entry endpoint. A page must be reachable even if no solution consumes its API.
 // The host is not fronted through itself.
-func componentBackendRoutes(ctx context.Context, workspace *resources.Workspace, hostModule string) ([]hostRoute, error) {
-	solutions, err := solutionrun.ComposedSolutions(ctx, workspace)
+func componentBackendRoutes(ctx context.Context, workspace *resources.Workspace, hostModule string, selection ...[]string) ([]hostRoute, error) {
+	var solutions []*resources.Module
+	var err error
+	var selected, selectedModules map[string]bool
+	if len(selection) > 0 {
+		selected = map[string]bool{}
+		selectedModules = map[string]bool{}
+		for _, unique := range selection[0] {
+			selected[unique] = true
+			identity, parseErr := resources.ParseServiceWithOptionalModule(unique)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			selectedModules[identity.Module] = true
+		}
+		solutions, err = solutionrun.SelectedSolutions(ctx, workspace, selection[0])
+	} else {
+		solutions, err = solutionrun.ComposedSolutions(ctx, workspace)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -241,11 +272,14 @@ func componentBackendRoutes(ctx context.Context, workspace *resources.Workspace,
 	}
 	var routes []hostRoute
 	for _, ref := range workspace.Modules {
+		if selectedModules != nil && !selectedModules[ref.Name] {
+			continue
+		}
 		component, err := workspace.LoadModuleFromReference(ctx, ref)
 		if err != nil {
 			return nil, err
 		}
-		if component.Name == hostModule {
+		if component.Name == hostModule || (selected != nil && !selected[resources.ServiceUnique(component.Name, component.ServiceEntry)]) {
 			continue
 		}
 		if !isSolution[component.Name] {

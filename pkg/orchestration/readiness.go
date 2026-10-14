@@ -213,6 +213,15 @@ func (flow *Flow) dependencyConsumers(order []architecture.Service) (map[string]
 			consumers[dependency.Unique()] = append(consumers[dependency.Unique()], dependency)
 		}
 	}
+	// API consumption reaches its producer through the host. Reuse endpoint
+	// readiness selection without inserting any dependency or mesh edge.
+	for _, consumed := range flow.consumedAPIs {
+		unique := resources.ServiceUnique(consumed.Module, consumed.Service)
+		consumers[unique] = append(consumers[unique], &resources.ServiceDependency{
+			Module: consumed.Module, Name: consumed.Service,
+			Endpoints: []*resources.EndpointReference{{Name: consumed.Endpoint}},
+		})
+	}
 	return consumers, nil
 }
 
@@ -231,7 +240,7 @@ func (flow *Flow) serviceEndpointRequirements(ctx context.Context, service strin
 		}
 		return requirements, nil
 	}
-	order, err := flow.world.Dependencies.OrderTo(ctx, resources.WithUnique(flow.originService).Unique())
+	order, err := flow.runClosure(ctx)
 	if err != nil {
 		return nil, err
 	}

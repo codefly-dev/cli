@@ -335,6 +335,17 @@ may run with is the platform's admission (the authority Job runs as the
 platform's `delivery` account, whose only reach is the delivery API, which
 admits nothing unsigned) — the one boundary this render cannot enforce.
 
+For a local run, selected solution entries' `api.consumes` declarations add the
+named producing services to the existing run roots. Their own dependencies and
+declared configuration references participate normally. This adds no direct
+solution-to-producer network edge: calls still use the host gateway, and the
+producer's endpoint visibility still governs that gateway's access. Unselected
+solutions do not add services or routes. Readiness requires the consumed endpoint,
+not an arbitrary sibling endpoint on the same service. Root admission and
+withdrawal recompute the set, so withdrawing a solution also withdraws the
+producers no remaining root needs. Editing only an existing entry's consumption
+manifest requires restarting the run.
+
 **A composed solution asks from its manifest, not from a contract.** A solution
 declares what it consumes once, in `solution.codefly.yaml`'s `api.consumes`, which
 also drives its generated client and its runtime's upstream map. Under schema

@@ -3,6 +3,7 @@ package solutionrun
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/codefly-dev/core/resources"
@@ -139,14 +140,44 @@ type composedSolution struct {
 	manifest *manifest.Manifest
 }
 
-func composedSolutions(ctx context.Context, workspace *resources.Workspace) ([]composedSolution, error) {
+// SelectedSolutions lists only solution entries in the supplied service selection.
+// Producer lookup still uses the complete workspace; selection grants no access.
+func SelectedSolutions(ctx context.Context, workspace *resources.Workspace, selected []string) ([]*resources.Module, error) {
+	solutions, err := composedSolutions(ctx, workspace, selected)
+	if err != nil {
+		return nil, err
+	}
+	var modules []*resources.Module
+	for _, solution := range solutions {
+		modules = append(modules, solution.module)
+	}
+	return modules, nil
+}
+
+func composedSolutions(ctx context.Context, workspace *resources.Workspace, selection ...[]string) ([]composedSolution, error) {
+	var selected []string
+	var modules map[string]bool
+	if len(selection) > 0 {
+		selected = selection[0]
+		modules = map[string]bool{}
+		for _, unique := range selected {
+			identity, err := resources.ParseServiceWithOptionalModule(unique)
+			if err != nil {
+				return nil, err
+			}
+			modules[identity.Module] = true
+		}
+	}
 	var out []composedSolution
 	for _, ref := range workspace.Modules {
+		if modules != nil && !modules[ref.Name] {
+			continue
+		}
 		mod, err := workspace.LoadModuleFromReference(ctx, ref)
 		if err != nil {
 			return nil, fmt.Errorf("read composed module %s: %w", ref.Name, err)
 		}
-		if mod.ServiceEntry == "" {
+		if mod.ServiceEntry == "" || (modules != nil && !slices.Contains(selected, resources.ServiceUnique(mod.Name, mod.ServiceEntry))) {
 			continue
 		}
 		solutionManifest, err := moduleManifest(mod)

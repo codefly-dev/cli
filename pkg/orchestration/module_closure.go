@@ -3,6 +3,7 @@ package orchestration
 import (
 	"context"
 
+	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
 )
@@ -50,12 +51,16 @@ func WithRunModuleClosure(seeds ...string) FlowOption {
 // The narrowed workspace serves the dependency graph alone. Workspace
 // configurations and run profiles are declared by the composition and stay
 // resolved against all of it.
-func runModuleClosure(ctx context.Context, workspace *resources.Workspace, seeds []string) (*resources.Workspace, error) {
+func runModuleClosure(ctx context.Context, workspace *resources.Workspace, seeds []string, provided ...*configurations.WorkspaceConfigurations) (*resources.Workspace, error) {
 	w := wool.Get(ctx).In("orchestration.runModuleClosure", wool.NameField(workspace.Name))
 	if len(seeds) == 0 {
 		return workspace, nil
 	}
-	closure, err := workspace.ResolveModuleClosure(ctx, resources.StageRun, seeds)
+	var options []resources.ModuleClosureOption
+	if len(provided) > 0 && provided[0] != nil {
+		options = append(options, resources.WithModuleConfigurationReferences(configurations.EndpointProducers(provided[0].Infos)))
+	}
+	closure, err := workspace.ResolveModuleClosure(ctx, resources.StageRun, seeds, options...)
 	if err != nil {
 		return nil, w.Wrap(err)
 	}

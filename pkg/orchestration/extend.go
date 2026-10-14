@@ -105,8 +105,11 @@ func (flow *Flow) Withdraw(ctx context.Context, workspace *resources.Workspace, 
 	originalGraphWorkspace := flow.graphWorkspace
 	originalModuleSeeds := slices.Clone(flow.moduleSeeds)
 	originalRoots := slices.Clone(flow.coRoots)
+	originalConsumedRoots := slices.Clone(flow.consumedRoots)
+	originalConsumedAPIs := slices.Clone(flow.consumedAPIs)
 	originalServices := slices.Clone(flow.services)
 	originalDependencies := flow.world.Dependencies
+	originalRunProducers := flow.world.runProducers
 	dropped := map[string]bool{}
 	for _, root := range roots {
 		dropped[root] = true
@@ -137,9 +140,31 @@ func (flow *Flow) Withdraw(ctx context.Context, workspace *resources.Workspace, 
 			seeds = append(seeds, info.Module)
 		}
 	}
+	accepted := false
+	defer func() {
+		if accepted {
+			return
+		}
+		*flow.workspace = originalWorkspace
+		flow.graphWorkspace = originalGraphWorkspace
+		flow.moduleSeeds = originalModuleSeeds
+		flow.coRoots = originalRoots
+		flow.consumedRoots = originalConsumedRoots
+		flow.consumedAPIs = originalConsumedAPIs
+		flow.services = originalServices
+		flow.world.Dependencies = originalDependencies
+		flow.world.runProducers = originalRunProducers
+		flow.world.workspaceProducerLookupOnce = sync.Once{}
+		if flow.SharedState != nil {
+			flow.SharedState.SetDependencies(originalDependencies)
+		}
+		if policy, ok := flow.policy.(*RuntimeStartPolicy); ok {
+			policy.SetDependencies(originalDependencies)
+		}
+	}()
 	*flow.workspace = *workspace
 	if flow.graphWorkspace != nil {
-		closure, closureErr := runModuleClosure(ctx, flow.workspace, seeds)
+		closure, closureErr := runModuleClosure(ctx, flow.workspace, seeds, flow.providedWorkspaceConfigurations)
 		if closureErr != nil {
 			return nil, closureErr
 		}
@@ -172,18 +197,7 @@ func (flow *Flow) Withdraw(ctx context.Context, workspace *resources.Workspace, 
 			continue
 		}
 		if _, stopErr := manager.RunnerDoStop(ctx); stopErr != nil {
-			*flow.workspace = originalWorkspace
-			flow.graphWorkspace = originalGraphWorkspace
-			flow.moduleSeeds = originalModuleSeeds
-			flow.coRoots = originalRoots
-			flow.services = originalServices
-			flow.world.Dependencies = originalDependencies
-			if flow.SharedState != nil {
-				flow.SharedState.SetDependencies(originalDependencies)
-			}
-			if policy, ok := flow.policy.(*RuntimeStartPolicy); ok {
-				policy.SetDependencies(originalDependencies)
-			}
+
 			return stopped, fmt.Errorf("%s stop: %w", unique, stopErr)
 		}
 		stopped = append(stopped, unique)
@@ -194,6 +208,7 @@ func (flow *Flow) Withdraw(ctx context.Context, workspace *resources.Workspace, 
 	flow.services = slices.DeleteFunc(flow.services, func(service *resources.Service) bool {
 		return service != nil && !kept[resources.WithUnique(service).Unique()]
 	})
+	accepted = true
 	w.Info("narrowed the running composition", wool.Field("roots", withdrawn), wool.Field("stopped", stopped))
 	return stopped, nil
 }
@@ -230,8 +245,24 @@ func (flow *Flow) admitRoots(ctx context.Context, workspace *resources.Workspace
 	// A rejected reload must be retryable: recording roots first used to make
 	// the same corrected workspace look already admitted on the next signal.
 	candidate := *workspace
+	// Consumed endpoints are part of admission too. Validate them before
+	// recording roots; otherwise a rejected addition looks already admitted
+	// when the operator retries a corrected manifest.
+	candidateWorld := World{Mode: flow.world.Mode}
+	candidateFlow := &Flow{
+		workspace: &candidate, world: &candidateWorld,
+		originModule: flow.originModule, originService: flow.originService,
+		coRoots: append(slices.Clone(flow.coRoots), added...), moduleSeeds: seeds,
+		providedWorkspaceConfigurations: flow.providedWorkspaceConfigurations,
+		configurationReferences:         flow.configurationReferences,
+		remoteServices:                  flow.remoteServices, excludedDependencyServices: flow.excludedDependencyServices,
+		standAlone: flow.standAlone,
+	}
+	if err := candidateFlow.includeConsumedRoots(ctx); err != nil {
+		return nil, err
+	}
 	if flow.graphWorkspace != nil {
-		closure, err := runModuleClosure(ctx, &candidate, seeds)
+		closure, err := runModuleClosure(ctx, &candidate, seeds, flow.providedWorkspaceConfigurations)
 		if err != nil {
 			return nil, err
 		}
@@ -248,6 +279,9 @@ func (flow *Flow) admitRoots(ctx context.Context, workspace *resources.Workspace
 // returns the remotes and the services the run does not manage yet, in
 // dependency order.
 func (flow *Flow) rebuildExtendedGraph(ctx context.Context) (map[string]*Remote, []string, error) {
+	if err := flow.includeConsumedRoots(ctx); err != nil {
+		return nil, nil, err
+	}
 	remotes, options := flow.dependencyGraphOptions()
 	dependencies, err := architecture.NewServiceDependencies(ctx, flow.dependencyWorkspace(), options...)
 	if err != nil {
