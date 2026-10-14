@@ -1,0 +1,106 @@
+package orchestration
+
+import (
+	"context"
+	"testing"
+
+	"github.com/codefly-dev/core/resources"
+	"github.com/stretchr/testify/require"
+)
+
+// phaseRecorder is a manager that records the runtime phases it is driven
+// through and answers each as a service that needs nothing more would.
+type phaseRecorder struct {
+	recordingManager
+	phases   []ActionType
+	callback func(context.Context, Action) error
+}
+
+func (m *phaseRecorder) RunnerDoLoad(context.Context) (*OutputProperty, error) {
+	m.phases = append(m.phases, RuntimeLoad)
+	return &OutputProperty{IndependentUpdate: true}, nil
+}
+
+func (m *phaseRecorder) RunnerDoInit(context.Context) (*OutputProperty, error) {
+	m.phases = append(m.phases, RuntimeInit)
+	return &OutputProperty{IndependentUpdate: true}, nil
+}
+
+func (m *phaseRecorder) RunnerDoStart(context.Context) (*OutputProperty, error) {
+	m.phases = append(m.phases, RuntimeStart)
+	return &OutputProperty{IndependentUpdate: true}, nil
+}
+
+func (m *phaseRecorder) DoSetCallback(callback func(context.Context, Action) error) {
+	m.callback = callback
+}
+
+// A running composition is extended by the roots a reloaded workspace adds:
+// the admitted root's closure is spawned and driven through Load, Init and
+// Start in dependency order, reaching Running through the same hook as every
+// other workload, while nothing the run already managed is touched; the
+// graph, the roots and the live policy know the newcomers afterwards, and
+// extending with the same composition again does nothing.
+func TestExtendStartsOnlyTheAdmittedClosureAndLeavesTheRunAlone(t *testing.T) {
+	flow, ctx := multiRootFlow(t, "lastlogin-go/backend")
+	required, err := flow.runClosure(ctx)
+	require.NoError(t, err)
+	flow.hub = &Hub{}
+	running := map[string]*phaseRecorder{}
+	for _, unique := range append(uniques(required), "lastlogin-go/backend") {
+		manager := &phaseRecorder{recordingManager: recordingManager{unique: unique}}
+		running[unique] = manager
+		flow.hub.add(manager)
+	}
+	flow.playbook = &Playbook{}
+	flow.policy = &RuntimeStartPolicy{dependencies: flow.world.Dependencies, ExecutorManager: flow}
+	var spawned []*phaseRecorder
+	flow.spawn = func(_ context.Context, _ *resources.Module, service *resources.Service) (IManager, error) {
+		manager := &phaseRecorder{recordingManager: recordingManager{unique: resources.WithUnique(service).Unique()}}
+		spawned = append(spawned, manager)
+		return manager, nil
+	}
+	var hooked []string
+	flow.WithRunningHook(func(service string, _ int) { hooked = append(hooked, service) })
+
+	reloaded, err := resources.LoadWorkspaceFromDir(ctx, "testdata/multi-root")
+	require.NoError(t, err)
+	added, err := flow.Extend(ctx, reloaded, []string{"wiki/backend", "lastlogin-go/backend"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"wiki/backend"}, added, "a root the run already starts is not admitted twice")
+
+	var started []string
+	for _, manager := range spawned {
+		started = append(started, manager.unique)
+		require.Equal(t, []ActionType{RuntimeLoad, RuntimeInit, RuntimeStart}, manager.phases, manager.unique)
+		require.NotNil(t, manager.callback, "an admitted manager seeds the live playbook on a hot reload")
+	}
+	require.Equal(t, []string{"documents/documents", "wiki/backend"}, started, "the admitted root's closure, dependencies first, and nothing the run already managed")
+	for unique, manager := range running {
+		require.Empty(t, manager.phases, unique+" was running and is left alone")
+	}
+	require.Equal(t, started, hooked, "each admitted service reaches Running through the hook every workload reaches it through")
+	require.Equal(t, []string{"lastlogin-go/backend", "wiki/backend"}, flow.Roots())
+	_, err = flow.ServiceFromUnique("wiki/backend")
+	require.NoError(t, err, "the graph knows the admitted root")
+	require.Contains(t, flow.OrderedServiceUniques(), "wiki/backend")
+	policy, ok := flow.policy.(*RuntimeStartPolicy)
+	require.True(t, ok)
+	require.Same(t, flow.world.Dependencies, policy.graph(), "the live policy computes next actions from the extended graph")
+
+	again, err := flow.Extend(ctx, reloaded, []string{"wiki/backend"})
+	require.NoError(t, err)
+	require.Empty(t, again)
+	require.Len(t, spawned, 2, "nothing is spawned twice")
+}
+
+// A run that has not started cannot be extended: there is no playbook for an
+// admitted manager to seed, so the refusal is by name rather than a later
+// panic in the loop.
+func TestExtendRefusesARunThatHasNotStarted(t *testing.T) {
+	flow, ctx := multiRootFlow(t, "lastlogin-go/backend")
+	reloaded, err := resources.LoadWorkspaceFromDir(ctx, "testdata/multi-root")
+	require.NoError(t, err)
+	_, err = flow.Extend(ctx, reloaded, []string{"wiki/backend"})
+	require.ErrorContains(t, err, "has not started")
+}

@@ -159,6 +159,20 @@ elsewhere: "supplied only by a local k3d or cell render; absent here". See
 for its values and environment requirements. No group carries a certificate:
 a workload's transport identity is the mesh's, never a file it reads.
 
+**Extending a running flow.** `Flow.Extend(ctx, reloadedWorkspace, roots)`
+admits the roots a reloaded workspace composes that the run did not start:
+the composition is replaced in place (the configuration manager and its local
+reader read the pointer the run started with), the dependency graph is rebuilt
+and scoped to the run, the live start policy follows it, the managers of the
+services not yet managed are spawned and registered in the hub (locked, since
+the playbook reads it while the run extends), the configuration manager admits
+them, and each new service is driven through Load, Init and Start in
+dependency order, reaching Running through the same hook as every other
+workload. Nothing already running is restarted: an admitted service's actions
+fan out to nothing, and the playbook is never re-seeded. `codefly run
+workspace` calls it on `SIGUSR1`, after the native cluster admitted the new
+identities.
+
 **A native run listens on loopback.** The native address core allocates a
 service (`network.Native`) is a loopback address, and it is the address the
 service's own `CODEFLY__ENDPOINT__…` carrier hands it to listen on; a service

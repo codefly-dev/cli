@@ -144,7 +144,7 @@ func (flow *Flow) teardownLayers() [][]teardownUnit {
 	if flow.world != nil && flow.world.Dependencies != nil {
 		edges = flow.world.Dependencies.Dependencies()
 	}
-	return teardownLayers(flow.hub.managers, edges)
+	return teardownLayers(flow.hub.all(), edges)
 }
 
 func (flow *Flow) phaseBudget(fallback time.Duration) time.Duration {

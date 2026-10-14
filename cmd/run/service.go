@@ -329,6 +329,9 @@ func (run *serviceRun) headless(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("cannot initialize service %s: %w", serviceName, err)
 	}
+	if extendOnSignal {
+		go watchForExtensions(ctx, run.flow)
+	}
 	// Print each dependency's lifecycle (Loading→Init→Starting→Running,
 	// or Failed) using the same ">>" milestone form as the origin, so a
 	// stalled dependency (e.g. vault waiting on its health probe) is
@@ -522,6 +525,9 @@ func (run *serviceRun) interactive(ctx context.Context) (runErr error) {
 			t.SendError(runErr)
 			t.SendDone(runErr) // quit the TUI instead of hanging on the error
 			return
+		}
+		if extendOnSignal {
+			go watchForExtensions(runCtx, run.flow)
 		}
 
 		// Drive per-dependency live status from the orchestrator so each

@@ -117,6 +117,16 @@ graph never sees. It takes the flags of `codefly run service` and no service
 names; `--exclude-dependency` and `--exclude-workspace-configuration` leave a
 service or a configuration group out.
 
+**Adding a component while the run is up.** Compose the module or solution
+into the workspace and send the running `codefly run workspace` process
+`SIGUSR1` (`kill -USR1 <pid>`). The run reloads the composition, admits every
+root it did not start, and starts that root's closure in the running flow in
+dependency order; in a host environment the native cluster projects the
+newcomer's identity and delivers its presence, authority and routes once it
+is Running, and the host keeps its process. A component already running is
+never restarted, replaced or withdrawn by this: a changed identity or a
+dropped component is refused by name, and the run continues as it was.
+
 ```bash
 codefly run workspace --fixture dev-admin          # the host and every module
 codefly run workspace --runtime-context native \

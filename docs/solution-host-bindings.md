@@ -1040,15 +1040,24 @@ never waits for unrelated producers to allocate their endpoints. A tombstone
 removes that binding's projection. The directory is supplied once at gateway
 startup; later file replacements need no process restart.
 
-This is the reader and native writer contract. It does not yet establish adding
-an unseen component to a running workspace: native authority lifetime and graph
-extension still require integration. Production needs a protected publisher and
-stable whole-directory mount without `subPath`, an items allowlist or a checksum
-rollout. The initial host upgrade provisions that mount; subsequent component
-deliveries must leave the host pod unchanged. A presence/projection mismatch
-fails closed while publication retries. Addresses must select the admitted
-release. This projection does not prove frontend byte integrity; the rendered
-artifact digest remains distinct from the remote's runtime bytes.
+This is the reader and native writer contract, and it is how a component
+composed after the run started reaches the gateway: `codefly run workspace`
+admits the components a reloaded composition adds when it receives `SIGUSR1`
+(`kill -USR1 <pid>`). The run reads the workspace again, compares its roots
+with the ones it starts, admits each new module-identity service into the
+native cluster (its identity is planned by the rule attach used; a known
+component may neither change nor disappear, since a replaced or withdrawn
+principal is a narrowing the host refuses from a development loop, and the
+run's authority, its CA, API server, host token and trust anchor, is
+untouched), and starts the new root's closure in the running flow, in
+dependency order, through the same Running hook that delivers every other
+workload: presence, authority, the envelope (which only ever widens) and the
+endpoint-delivery file. Nothing already running is restarted, and the host
+keeps its process. One rule of core's namespacing is pinned by test: a
+workspace composing one module gives it the environment's namespace, and
+composing a second moves it to its own namespace and mesh principal, so that
+addition is refused as a replacement; a composition that must grow live starts
+with more than one module.
 
 ## Mesh edges
 
