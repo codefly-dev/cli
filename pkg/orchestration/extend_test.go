@@ -31,6 +31,11 @@ func (m *phaseRecorder) RunnerDoStart(context.Context) (*OutputProperty, error) 
 	return &OutputProperty{IndependentUpdate: true}, nil
 }
 
+func (m *phaseRecorder) RunnerDoStop(context.Context) (*OutputProperty, error) {
+	m.phases = append(m.phases, RuntimeStop)
+	return nil, nil
+}
+
 func (m *phaseRecorder) DoSetCallback(callback func(context.Context, Action) error) {
 	m.callback = callback
 }
@@ -97,6 +102,67 @@ func TestExtendStartsOnlyTheAdmittedClosureAndLeavesTheRunAlone(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, again)
 	require.Len(t, spawned, 2, "nothing is spawned twice")
+}
+
+// Withdrawing a root a reloaded composition dropped stops only what that
+// root alone needed, dependents first, and removes it from the hub and the
+// graph; what the remaining roots need keeps its manager, and so its process,
+// untouched. The origin root is never withdrawn, nor is a root the run does
+// not start.
+func TestWithdrawStopsOnlyWhatTheDroppedRootNeededAndLeavesTheRunAlone(t *testing.T) {
+	flow, ctx := multiRootFlow(t, "lastlogin-go/backend")
+	required, err := flow.runClosure(ctx)
+	require.NoError(t, err)
+	flow.hub = &Hub{}
+	running := map[string]*phaseRecorder{}
+	for _, unique := range append(uniques(required), "lastlogin-go/backend") {
+		manager := &phaseRecorder{recordingManager: recordingManager{unique: unique}}
+		running[unique] = manager
+		flow.hub.add(manager)
+	}
+	flow.playbook = &Playbook{}
+	flow.policy = &RuntimeStartPolicy{dependencies: flow.world.Dependencies, ExecutorManager: flow}
+	spawned := map[string]*phaseRecorder{}
+	flow.spawn = func(_ context.Context, _ *resources.Module, service *resources.Service) (IManager, error) {
+		manager := &phaseRecorder{recordingManager: recordingManager{unique: resources.WithUnique(service).Unique()}}
+		spawned[manager.unique] = manager
+		return manager, nil
+	}
+	flow.WithRunningHook(func(string, int) {})
+	reloaded, err := resources.LoadWorkspaceFromDir(ctx, "testdata/multi-root")
+	require.NoError(t, err)
+	_, err = flow.Extend(ctx, reloaded, []string{"wiki/backend"})
+	require.NoError(t, err)
+	require.Len(t, spawned, 2)
+
+	stopped, err := flow.Withdraw(ctx, reloaded, []string{"wiki/backend", "lastlogin-go/backend", "nobody/runs-this"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"wiki/backend", "documents/documents"}, stopped, "the dropped root's closure, dependents first; the origin and an unknown root are nothing to withdraw")
+	for _, unique := range stopped {
+		require.Equal(t, []ActionType{RuntimeLoad, RuntimeInit, RuntimeStart, RuntimeStop}, spawned[unique].phases, unique)
+	}
+	kept := map[IManager]bool{}
+	for _, manager := range flow.hub.all() {
+		kept[manager] = true
+	}
+	for unique, manager := range running {
+		require.Empty(t, manager.phases, unique+" was running and is left alone")
+		require.True(t, kept[manager], unique+" keeps the manager it was running under")
+	}
+	for _, unique := range stopped {
+		require.False(t, kept[spawned[unique]], unique+" left the hub")
+	}
+	require.Equal(t, []string{"lastlogin-go/backend"}, flow.Roots())
+	_, err = flow.ServiceFromUnique("wiki/backend")
+	require.Error(t, err, "the graph no longer knows the withdrawn root")
+	require.NotContains(t, flow.OrderedServiceUniques(), "documents/documents")
+	policy, ok := flow.policy.(*RuntimeStartPolicy)
+	require.True(t, ok)
+	require.Same(t, flow.world.Dependencies, policy.graph(), "the live policy follows the narrowed graph")
+
+	again, err := flow.Withdraw(ctx, reloaded, []string{"wiki/backend"})
+	require.NoError(t, err)
+	require.Empty(t, again, "withdrawing what is already gone is nothing")
 }
 
 // A run that has not started cannot be extended: there is no playbook for an

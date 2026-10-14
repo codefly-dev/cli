@@ -548,6 +548,88 @@ func (cluster *nativeCluster) onRunning(ctx context.Context, unique string) {
 
 // deliveredDocuments is what the run remembers of one workload's last
 // delivery, across runs.
+// newDeliverer is the deliverer of this run's documents to the host: the
+// host's delivery endpoint as the flow resolves it now, this run's signer and
+// state, and the delivery account's token. It also answers the gateway's
+// current address, which the envelope follows.
+func (cluster *nativeCluster) newDeliverer(ctx context.Context) (*gitops.NativeDeliverer, string, error) {
+	gatewayURL, err := cluster.flow.GetAddressForEndpoint(ctx, strings.Split(cluster.env.Host.Gateway, "/")[0], strings.Split(cluster.env.Host.Gateway, "/")[1], "rest")
+	if err != nil {
+		return nil, "", fmt.Errorf("the host gateway's rest endpoint is unresolved: %w", err)
+	}
+	deliveryURL, err := cluster.flow.GetAddressForEndpoint(ctx, cluster.hostModule, cluster.hostService, strings.Split(cluster.env.Host.Delivery, "/")[2])
+	if err != nil {
+		return nil, "", fmt.Errorf("the host's delivery endpoint is unresolved: %w", err)
+	}
+	return &gitops.NativeDeliverer{
+		Workspace: cluster.composed(), Env: cluster.env, Signer: cluster.signer,
+		StateDir: filepath.Join(cluster.stateDir, "delivery"), DeliveryURL: deliveryURL,
+		Token: func(namespace string) (string, error) {
+			pod := nativecluster.Pod{Namespace: namespace, ServiceAccount: "delivery", Name: "delivery-native", UID: randomUID()}
+			if existing, ok := cluster.authority.Pod(namespace, "delivery"); ok {
+				pod = existing
+			} else {
+				cluster.authority.RegisterPod(&pod)
+			}
+			return cluster.authority.Token(namespace, "delivery", pod.Name, pod.UID, cluster.env.Host.Audience)
+		},
+	}, gatewayURL, nil
+}
+
+// withdraw delivers, for each stopped workload this run delivered a presence
+// for, the generation that withdraws it (the presence's tombstone and its
+// authority's), and forgets the workload: its identity, its projection, its
+// documents and the record a restart would replay. The run's authority (its
+// CA, API server and host token) is untouched, the envelope is not narrowed,
+// and the host keeps its process. Returned are the uniques withdrawn.
+func (cluster *nativeCluster) withdraw(ctx context.Context, uniques []string) ([]string, error) {
+	var withdrawn []string
+	for _, unique := range uniques {
+		cluster.mu.Lock()
+		delivered, had := cluster.documents[unique]
+		cluster.mu.Unlock()
+		if !had {
+			cluster.forget(unique)
+			continue
+		}
+		tombstones, err := gitops.WithdrawnDocuments(delivered)
+		if err != nil {
+			return withdrawn, err
+		}
+		deliverer, _, err := cluster.newDeliverer(ctx)
+		if err != nil {
+			return withdrawn, err
+		}
+		receipts, err := deliverer.Deliver(ctx, tombstones)
+		if err != nil {
+			return withdrawn, fmt.Errorf("%s: withdraw: %w", unique, err)
+		}
+		w := wool.Get(ctx).In("nativeCluster.withdraw")
+		for _, receipt := range receipts {
+			w.Info("withdrawn", wool.Field("service", unique), wool.Field("kind", receipt.Kind), wool.Field("disposition", receipt.Disposition), wool.Field("generation", receipt.Generation))
+		}
+		cluster.forget(unique)
+		withdrawn = append(withdrawn, unique)
+	}
+	return withdrawn, nil
+}
+
+// forget drops everything this run keeps for one workload: the identity the
+// composition gave it, its projection, its last documents, whether it was
+// withheld, and the delivered record a restart would replay. Nothing of the
+// run's authority is touched.
+func (cluster *nativeCluster) forget(unique string) {
+	cluster.composition.Lock()
+	delete(cluster.identities, unique)
+	cluster.composition.Unlock()
+	cluster.mu.Lock()
+	delete(cluster.projections, unique)
+	delete(cluster.documents, unique)
+	delete(cluster.withheld, unique)
+	cluster.mu.Unlock()
+	_ = os.Remove(filepath.Join(cluster.deliveredDir(), deliveredFileName(unique)))
+}
+
 type deliveredDocuments struct {
 	Unique    string                  `json:"unique"`
 	Documents *gitops.NativeDocuments `json:"documents"`
@@ -691,29 +773,12 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, identi
 		return err
 	}
 	namespace := cluster.env.ModuleNamespace(cluster.composed(), identity.Module)
-	gatewayURL, err := cluster.flow.GetAddressForEndpoint(ctx, strings.Split(cluster.env.Host.Gateway, "/")[0], strings.Split(cluster.env.Host.Gateway, "/")[1], "rest")
+	deliverer, gatewayURL, err := cluster.newDeliverer(ctx)
 	if err != nil {
-		return fmt.Errorf("the host gateway's rest endpoint is unresolved: %w", err)
-	}
-	deliveryURL, err := cluster.flow.GetAddressForEndpoint(ctx, cluster.hostModule, cluster.hostService, strings.Split(cluster.env.Host.Delivery, "/")[2])
-	if err != nil {
-		return fmt.Errorf("the host's delivery endpoint is unresolved: %w", err)
+		return err
 	}
 	if _, err = cluster.envelopeFor(ctx, gatewayURL); err != nil {
 		return err
-	}
-	deliverer := &gitops.NativeDeliverer{
-		Workspace: cluster.composed(), Env: cluster.env, Signer: cluster.signer,
-		StateDir: filepath.Join(cluster.stateDir, "delivery"), DeliveryURL: deliveryURL,
-		Token: func(namespace string) (string, error) {
-			pod := nativecluster.Pod{Namespace: namespace, ServiceAccount: "delivery", Name: "delivery-native", UID: randomUID()}
-			if existing, ok := cluster.authority.Pod(namespace, "delivery"); ok {
-				pod = existing
-			} else {
-				cluster.authority.RegisterPod(&pod)
-			}
-			return cluster.authority.Token(namespace, "delivery", pod.Name, pod.UID, cluster.env.Host.Audience)
-		},
 	}
 	bundle, err := cluster.frontendBundle(ctx, module)
 	if err != nil {

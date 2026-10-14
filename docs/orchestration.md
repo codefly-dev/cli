@@ -182,7 +182,11 @@ workload. Nothing already running is restarted: an admitted service's actions
 fan out to nothing, and the playbook is never re-seeded. Every `codefly run`
 (service, solution, workspace) calls it on `SIGUSR1`, after the native cluster
 admitted the new identities, for the roots the composition names that neither
-the run nor the composition it started from knew.
+the run nor the composition it started from knew. `Flow.Withdraw` is the
+narrowing: the co-roots a reloaded composition dropped leave the run, the
+graph, module seeds and live start policy are rebuilt from the roots that
+remain, and the services only the dropped roots needed are stopped,
+dependents first, and leave the hub; the origin service is never withdrawn.
 
 **A native run listens on loopback.** The native address core allocates a
 service (`network.Native`) is a loopback address, and it is the address the

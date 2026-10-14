@@ -17,3 +17,14 @@ func TestFreshRootsAreTheOnesComposedAfterTheRunStarted(t *testing.T) {
 	require.Nil(t, freshRoots(known, []string{"crm/api", "saas/host"}), "nothing composed after the start admits nothing")
 	require.Nil(t, freshRoots(known, nil))
 }
+
+// The roots a reload withdraws are the ones the run starts that the
+// composition no longer names, the pinned ones excepted: a service or
+// solution run's command-line roots are never withdrawn, a workspace run pins
+// none.
+func TestGoneRootsAreTheDroppedOnesTheRunDidNotPin(t *testing.T) {
+	running := []string{"crm/api", "wiki/backend", "docs/documents"}
+	require.Equal(t, []string{"wiki/backend", "docs/documents"}, goneRoots(map[string]bool{}, running, []string{"crm/api"}))
+	require.Equal(t, []string{"wiki/backend"}, goneRoots(map[string]bool{"docs/documents": true}, running, []string{"crm/api"}), "a pinned root stays")
+	require.Nil(t, goneRoots(map[string]bool{}, running, running), "nothing dropped withdraws nothing")
+}

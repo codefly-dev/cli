@@ -501,6 +501,32 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	return documents, nil
 }
 
+// WithdrawnDocuments is the generation that withdraws what a native run
+// delivered for a workload: the presence's tombstone and, when an authority
+// was delivered, its tombstone, each the same withdrawal a publication
+// settles (removed, the next generation, nothing that describes the module
+// left on it). The host withdraws the endpoints with the presence, so none
+// travel with it; the envelope is not narrowed, since a run only ever adds to
+// it. A withdrawal is terminal for the binding at the host: core refuses the
+// binding presented again, so a component withdrawn from a run comes back
+// under a new instance name.
+func WithdrawnDocuments(delivered *NativeDocuments) (*NativeDocuments, error) {
+	if delivered == nil || delivered.Presence == nil {
+		return nil, fmt.Errorf("nothing was delivered, so there is nothing to withdraw")
+	}
+	presence, err := tombstoneOf(delivered.Presence)
+	if err != nil {
+		return nil, fmt.Errorf("withdraw binding %s: %w", delivered.Presence.Binding, err)
+	}
+	withdrawn := &NativeDocuments{Presence: presence, Digest: delivered.Digest, Principal: delivered.Principal}
+	if delivered.Authority != nil {
+		if withdrawn.Authority, err = authorityTombstoneOf(delivered.Authority); err != nil {
+			return nil, fmt.Errorf("withdraw authority %s: %w", delivered.Authority.Authority, err)
+		}
+	}
+	return withdrawn, nil
+}
+
 // nativeGenerations is the run's record of what it delivered: per binding or
 // authority, the generation and the content it carried.
 type nativeGenerations struct {

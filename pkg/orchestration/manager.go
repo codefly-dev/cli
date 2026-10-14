@@ -311,6 +311,13 @@ func (hub *Hub) add(managers ...IManager) {
 	hub.managers = append(hub.managers, managers...)
 }
 
+// remove forgets the manager of one service, once the run withdrew it.
+func (hub *Hub) remove(unique string) {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	hub.managers = slices.DeleteFunc(hub.managers, func(manager IManager) bool { return manager.Unique() == unique })
+}
+
 // all is a snapshot of the hub's managers, in registration order.
 func (hub *Hub) all() []IManager {
 	hub.mu.RLock()

@@ -1121,6 +1121,15 @@ composing a second moves it to its own namespace and mesh principal, so that
 addition is refused as a replacement; a composition that must grow live starts
 with more than one module.
 
+A root the reloaded composition no longer names is withdrawn by the same
+signal: the flow stops what only it needed, and the run delivers, for each
+stopped workload it had delivered, the generation that withdraws it
+(`WithdrawnDocuments`: the presence's tombstone and its authority's, the same
+withdrawal a publication settles), then forgets the workload. The host
+withdraws its endpoints with the presence, keeps its process and its
+authority, and the envelope is not narrowed. The withdrawal is terminal for
+the binding at the host.
+
 ## Mesh edges
 
 The cell's mesh decides who reaches a workload's port, and its protected

@@ -820,6 +820,31 @@ func tombstoneOf(prior *solutionhost.SolutionHostBinding) (*solutionhost.Solutio
 	return &tombstone, nil
 }
 
+// authorityTombstoneOf is the generation that withdraws a delivered
+// authority. A withdrawal clears everything that DESCRIBES the module, the
+// subject declarations included: core requires queues, namespaces and
+// scope_ceilings on a live generation and forbids them on a removed one,
+// because a withdrawal that still describes what it withdraws leaves a host
+// deciding which half meant it. So a tombstone is not the live document with
+// a flag set.
+func authorityTombstoneOf(prior *solutionhost.AuthorityDocument) (*solutionhost.AuthorityDocument, error) {
+	tombstone := *prior
+	tombstone.Generation = prior.Generation + 1
+	tombstone.Removed = true
+	tombstone.ApprovedBuild, tombstone.EffectiveFrom, tombstone.Principals = "", 0, nil
+	// EMPTY, not absent. The two rules only look contradictory: core requires
+	// the three keys on every generation, so nil is "the renderer dropped the
+	// field", and forbids them NON-EMPTY on a removed one, so a value is "the
+	// withdrawal still describes what it withdraws". Only an empty, present
+	// list satisfies both.
+	tombstone.Queues, tombstone.Namespaces = []string{}, []string{}
+	tombstone.ScopeCeilings = []solutionhost.ScopeCeiling{}
+	if err := tombstone.Validate(); err != nil {
+		return nil, err
+	}
+	return &tombstone, nil
+}
+
 // renderedBindings reads the presence ConfigMaps a render wrote into its
 // overlay, keyed by binding ID.
 func renderedBindings(directory string) (map[string]deliveredPresenceDocument, error) {
@@ -1286,25 +1311,11 @@ func settledAuthoritySet(
 		if previous.document.Removed {
 			entry.carrier = previous.carrier
 		} else {
-			tombstone.Generation = previous.document.Generation + 1
-			tombstone.Removed = true
-			// A withdrawal clears everything that DESCRIBES the module, the
-			// subject declarations included: core requires queues, namespaces
-			// and scope_ceilings on a live generation and forbids them on a
-			// removed one, because a withdrawal that still describes what it
-			// withdraws leaves a host deciding which half meant it. So a
-			// tombstone is not the live document with a flag set.
-			tombstone.ApprovedBuild, tombstone.EffectiveFrom, tombstone.Principals = "", 0, nil
-			// EMPTY, not absent. The two rules only look contradictory: core
-			// requires the three keys on every generation, so nil is "the
-			// renderer dropped the field", and forbids them NON-EMPTY on a
-			// removed one, so a value is "the withdrawal still describes what
-			// it withdraws". Only an empty, present list satisfies both.
-			tombstone.Queues, tombstone.Namespaces = []string{}, []string{}
-			tombstone.ScopeCeilings = []solutionhost.ScopeCeiling{}
-			if err := tombstone.Validate(); err != nil {
+			withdrawn, err := authorityTombstoneOf(previous.document)
+			if err != nil {
 				return nil, fmt.Errorf("withdraw authority %s: %w", authority, err)
 			}
+			entry.document = withdrawn
 		}
 		settled[authority] = entry
 	}

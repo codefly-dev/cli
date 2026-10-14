@@ -43,8 +43,8 @@ var WorkspaceCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		pinsAlreadyResolved = true
-		defer func() { pinsAlreadyResolved = false }()
+		pinsAlreadyResolved, workspaceRun = true, true
+		defer func() { pinsAlreadyResolved, workspaceRun = false, false }()
 		return runServiceCommand(cmd, roots)
 	},
 }

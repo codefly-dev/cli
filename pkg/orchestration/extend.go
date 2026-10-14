@@ -76,6 +76,104 @@ func (flow *Flow) Extend(ctx context.Context, workspace *resources.Workspace, ro
 	return added, nil
 }
 
+// Withdraw removes from a running flow the co-roots a reloaded workspace no
+// longer composes and stops what only they needed: the services of their
+// closure that no remaining root's closure reaches are stopped, dependents
+// first, and leave the hub, while the graph, the module seeds and the live
+// start policy are rebuilt from the roots that remain. It returns the
+// services it stopped, dependents first. The origin service is the run's own
+// and is never withdrawn; a root the run does not start is nothing to
+// withdraw. Nothing that remains is restarted.
+func (flow *Flow) Withdraw(ctx context.Context, workspace *resources.Workspace, roots []string) ([]string, error) {
+	w := wool.Get(ctx).In("flow.Withdraw")
+	if flow.world == nil || flow.world.Mode != RunMode {
+		return nil, fmt.Errorf("a run is narrowed in run mode only")
+	}
+	if flow.playbook == nil {
+		return nil, fmt.Errorf("the run has not started; a composition is narrowed once it runs")
+	}
+	if workspace == nil || flow.workspace == nil {
+		return nil, fmt.Errorf("a run is narrowed with the reloaded workspace")
+	}
+	flow.extendMu.Lock()
+	defer flow.extendMu.Unlock()
+	dropped := map[string]bool{}
+	for _, root := range roots {
+		dropped[root] = true
+	}
+	var remaining, withdrawn []string
+	for _, root := range flow.coRoots {
+		if dropped[root] {
+			withdrawn = append(withdrawn, root)
+			continue
+		}
+		remaining = append(remaining, root)
+	}
+	if len(withdrawn) == 0 {
+		return nil, nil
+	}
+	before := flow.OrderedServiceUniques()
+	origin, err := resources.ParseServiceWithOptionalModule(resources.WithUnique(flow.originService).Unique())
+	if err != nil {
+		return nil, err
+	}
+	seeds := []string{origin.Module}
+	for _, root := range remaining {
+		info, parseErr := resources.ParseServiceWithOptionalModule(root)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		if info.Module != "" && !slices.Contains(seeds, info.Module) {
+			seeds = append(seeds, info.Module)
+		}
+	}
+	*flow.workspace = *workspace
+	if flow.graphWorkspace != nil {
+		closure, closureErr := runModuleClosure(ctx, flow.workspace, seeds)
+		if closureErr != nil {
+			return nil, closureErr
+		}
+		flow.graphWorkspace = closure
+	}
+	flow.moduleSeeds = seeds
+	flow.coRoots = remaining
+	if _, _, err = flow.rebuildExtendedGraph(ctx); err != nil {
+		return nil, err
+	}
+	// What the remaining roots still reach is the rebuilt closure, not the
+	// flow's service list, which only ever grew.
+	required, err := flow.runClosure(ctx)
+	if err != nil {
+		return nil, err
+	}
+	kept := map[string]bool{resources.WithUnique(flow.originService).Unique(): true}
+	for _, service := range required {
+		kept[service.Unique] = true
+	}
+	managers := map[string]IManager{}
+	for _, manager := range flow.hub.all() {
+		managers[manager.Unique()] = manager
+	}
+	var stopped []string
+	for i := len(before) - 1; i >= 0; i-- {
+		unique := before[i]
+		manager, managed := managers[unique]
+		if kept[unique] || !managed {
+			continue
+		}
+		if _, stopErr := manager.RunnerDoStop(ctx); stopErr != nil {
+			return stopped, fmt.Errorf("%s stop: %w", unique, stopErr)
+		}
+		flow.hub.remove(unique)
+		stopped = append(stopped, unique)
+	}
+	flow.services = slices.DeleteFunc(flow.services, func(service *resources.Service) bool {
+		return service != nil && !kept[resources.WithUnique(service).Unique()]
+	})
+	w.Info("narrowed the running composition", wool.Field("roots", withdrawn), wool.Field("stopped", stopped))
+	return stopped, nil
+}
+
 // admitRoots takes the reloaded composition in and records the roots it adds:
 // the workspace is replaced in place, the module closure resolved again with
 // the modules the new roots bring, and the roots joined to the run's.

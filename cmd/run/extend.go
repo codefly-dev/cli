@@ -26,7 +26,43 @@ import (
 // service or solution run started, outside that run's closure, stays outside
 // it: the run's scope is the entry's, and only what is composed after the
 // start joins.
+// workspaceRun is set by `codefly run workspace`: its roots are the
+// composition's, so a root the composition drops is withdrawn from the run.
+// A service or solution run pins the roots named on its command line, which
+// no reload withdraws.
+var workspaceRun bool
+
+// pinnedRoots is what a reload never withdraws: the roots a service or
+// solution run was started with. A workspace run pins none.
+func pinnedRoots(flow *orchestration.Flow) map[string]bool {
+	pinned := map[string]bool{}
+	if workspaceRun {
+		return pinned
+	}
+	for _, root := range flow.Roots() {
+		pinned[root] = true
+	}
+	return pinned
+}
+
+// goneRoots is the roots the run starts that a reloaded composition no longer
+// names, the pinned ones excepted, in the run's order.
+func goneRoots(pinned map[string]bool, running, roots []string) []string {
+	named := make(map[string]bool, len(roots))
+	for _, root := range roots {
+		named[root] = true
+	}
+	var gone []string
+	for _, root := range running {
+		if !named[root] && !pinned[root] {
+			gone = append(gone, root)
+		}
+	}
+	return gone
+}
+
 func watchForExtensions(ctx context.Context, flow *orchestration.Flow, baseline map[string]bool) {
+	pinned := pinnedRoots(flow)
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGUSR1)
 	defer signal.Stop(signals)
@@ -35,6 +71,9 @@ func watchForExtensions(ctx context.Context, flow *orchestration.Flow, baseline 
 		case <-ctx.Done():
 			return
 		case <-signals:
+			if err := withdrawDroppedRoots(ctx, flow, pinned); err != nil {
+				cli.Warning("the running composition was not narrowed: %v", err)
+			}
 			if err := extendRunningWorkspace(ctx, flow, baseline); err != nil {
 				cli.Warning("the running composition was not extended: %v", err)
 			}
@@ -68,6 +107,44 @@ func freshRoots(known map[string]bool, roots []string) []string {
 		}
 	}
 	return fresh
+}
+
+// withdrawDroppedRoots reloads the workspace and withdraws from the run every
+// root it starts that the composition no longer names, the pinned ones
+// excepted: the flow stops what only those roots needed, dependents first,
+// and the native cluster, if one answers, withdraws each stopped workload's
+// presence with a tombstone and forgets it. The host keeps its process and
+// its authority; the envelope is never narrowed by a run.
+func withdrawDroppedRoots(ctx context.Context, flow *orchestration.Flow, pinned map[string]bool) error {
+	workspace, err := common.LoadWorkspace(ctx)
+	if err != nil {
+		return fmt.Errorf("reload the workspace: %w", err)
+	}
+	roots, err := CompositionRoots(ctx, workspace)
+	if err != nil {
+		return err
+	}
+	gone := goneRoots(pinned, flow.Roots(), roots)
+	if len(gone) == 0 {
+		return nil
+	}
+	stopped, err := flow.Withdraw(ctx, workspace, gone)
+	if err != nil {
+		return err
+	}
+	for _, unique := range stopped {
+		cli.Info("stopped %s", unique)
+	}
+	if cluster := activeNativeCluster(); cluster != nil {
+		withdrawn, withdrawErr := cluster.withdraw(ctx, stopped)
+		for _, unique := range withdrawn {
+			cli.Info("withdrew %s from the host: its presence is a tombstone now, terminal for that binding", unique)
+		}
+		if withdrawErr != nil {
+			return withdrawErr
+		}
+	}
+	return nil
 }
 
 // extendRunningWorkspace reloads the workspace and admits into the run every

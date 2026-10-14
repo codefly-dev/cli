@@ -144,8 +144,22 @@ run's closure, stays outside it), and starts that root's closure in the
 running flow in dependency order; in a host environment the native cluster projects the
 newcomer's identity and delivers its presence, authority and routes once it
 is Running, and the host keeps its process. A component already running is
-never restarted, replaced or withdrawn by this: a changed identity or a
-dropped component is refused by name, and the run continues as it was.
+never restarted or replaced by this: a changed identity is refused by name,
+and the run continues as it was.
+
+**Removing a component while the run is up.** Take the module or solution out
+of the composition and send the same `SIGUSR1`. A root the run started and the
+composition no longer names is withdrawn: the flow stops what only that root
+needed, dependents first (what the remaining roots reach keeps its process),
+and in a host environment the native cluster delivers the generation that
+withdraws each stopped workload, the presence's tombstone and its authority's,
+then forgets it. The host keeps its process and its authority, and the run's
+envelope is never narrowed, since a run only ever adds to it. A withdrawal is
+terminal for the binding at the host, as it is for a published one: the
+component comes back under a new instance name. The roots a `run service` or
+`run solution` names on its command line are never withdrawn; a workspace run
+pins none. An update of a running component is its own restart: the agent's
+reload re-delivers its presence at the next generation with the new build.
 
 ```bash
 codefly run workspace --fixture dev-admin          # the host and every module
