@@ -633,12 +633,8 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, identi
 	if err != nil {
 		return fmt.Errorf("the host's delivery endpoint is unresolved: %w", err)
 	}
-	if cluster.envelope == nil {
-		administrator, adminErr := cluster.fixtureAdministrator(ctx)
-		if adminErr != nil {
-			return adminErr
-		}
-		cluster.envelope = &gitops.EnvelopeWriter{GatewayURL: gatewayURL, FixtureProvider: administrator.Provider, FixtureToken: administrator.Token}
+	if _, err = cluster.envelopeFor(ctx, gatewayURL); err != nil {
+		return err
 	}
 	deliverer := &gitops.NativeDeliverer{
 		Workspace: cluster.composed(), Env: cluster.env, Signer: cluster.signer,
