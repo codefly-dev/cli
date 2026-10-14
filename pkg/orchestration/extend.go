@@ -205,8 +205,7 @@ func (flow *Flow) admitRoots(ctx context.Context, workspace *resources.Workspace
 	// Validate the candidate closure before mutating the running composition.
 	// A rejected reload must be retryable: recording roots first used to make
 	// the same corrected workspace look already admitted on the next signal.
-	candidate := *flow.workspace
-	candidate = *workspace
+	candidate := *workspace
 	if flow.graphWorkspace != nil {
 		closure, err := runModuleClosure(ctx, &candidate, seeds)
 		if err != nil {
