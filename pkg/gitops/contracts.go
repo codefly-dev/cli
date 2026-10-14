@@ -74,18 +74,19 @@ func (catalog *contractCatalogDocument) exposedContracts(moduleName, serviceName
 }
 
 // modulePackage loads a module's package manifest (module.package.codefly.yaml)
-// and returns its identity, or nil when the module has no directory (a bare
-// in-memory resources.Module in a test) or carries no package manifest.
-func modulePackage(moduleDir string) (*InventoryPackage, error) {
+// and returns its identity and the release artifacts it declares, or nil when
+// the module has no directory (a bare in-memory resources.Module in a test)
+// or carries no package manifest.
+func modulePackage(moduleDir string) (*InventoryPackage, []composition.ReleaseArtifact, error) {
 	if moduleDir == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	manifest, err := composition.LoadPackageManifest(moduleDir)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("load module package manifest: %w", err)
+		return nil, nil, fmt.Errorf("load module package manifest: %w", err)
 	}
-	return &InventoryPackage{ID: manifest.ID, Version: manifest.Version}, nil
+	return &InventoryPackage{ID: manifest.ID, Version: manifest.Version}, manifest.ReleaseArtifacts, nil
 }

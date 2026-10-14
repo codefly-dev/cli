@@ -247,6 +247,21 @@ generation under the same binding; a withdrawal declares no group.
 as the signed presence document. A missing file (or no entry service) means a
 headless component for either kind. An empty or malformed file refuses delivery
 for both kinds.
+
+A frontend's `payload` block is never authored (`ParseFrontend` refuses it in
+the file). Both producers generate it from the release's own artifact
+metadata, as core asks of a renderer: the runtime artifact named `frontend`
+in the module's package manifest (`release-artifacts`) gives
+`payload.artifact`, `payload.digest` (the SHA-256 of the complete bundle
+bytes, as the release declares it) and `payload.media_type` (the explicit
+canonical media type the artifact declares), verbatim. A release declaring no
+such artifact gives the frontend no payload: a generation whose bundle is not
+published, which the host decides whether to serve. A bundle declared under
+another purpose, without a media type, or by a headless component is refused
+by name (a name declared twice is refused by the manifest loader). The bundle bytes are the build owner's: the agent's build
+operation publishes the artifact the manifest names, and nothing here builds,
+stores or transports them; a host admits the bundle it serves by this identity
+and by nothing a running process reports.
 Native and rendered delivery carry the same block for both kinds. A module page does not
 change its shared tenancy or its per-organisation installation grants. The gateway
 receives a route for a module page even when no solution consumes its API. The

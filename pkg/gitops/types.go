@@ -5,6 +5,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/core/composition"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
 	"github.com/codefly-dev/core/resources"
 )
@@ -264,6 +265,10 @@ type RenderOptions struct {
 	ModulePath           string
 	Units                []InventoryUnit
 	Package              *InventoryPackage
+	// ReleaseArtifacts is what the module's package manifest declares the
+	// release publishes; the runtime artifact named frontend among them is
+	// the bundle a presence's generated frontend.payload names.
+	ReleaseArtifacts []composition.ReleaseArtifact
 	// Workspace is the composing workspace's name. A solution host binding ID
 	// is scoped by it, so two workspaces delivering to one host never claim the
 	// same binding.

@@ -225,11 +225,11 @@ func loadModuleServices(ctx context.Context, module *resources.Module) ([]*resou
 // configuration reference of every root's graph checked, and the snapshot
 // registry prepared when there is a service to build.
 func (r *moduleRender) resolveInputs(ctx context.Context, services []*resources.Service) (*contractCatalogDocument, []*resources.Service, error) {
-	pkg, err := modulePackage(r.module.Dir())
+	pkg, artifacts, err := modulePackage(r.module.Dir())
 	if err != nil {
 		return nil, nil, err
 	}
-	r.options.Package = pkg
+	r.options.Package, r.options.ReleaseArtifacts = pkg, artifacts
 	catalog, err := loadContractCatalog(r.module.Dir())
 	if err != nil {
 		return nil, nil, err
@@ -552,19 +552,20 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 	}
 	serviceDir, _ := unitDirectory(UnitKindService)
 	destination := filepath.Join(workspace.Dir(), "deployments", "environments", env.Name, serviceDir, module.Name, service.Name)
-	pkg, err := modulePackage(module.Dir())
+	pkg, artifacts, err := modulePackage(module.Dir())
 	if err != nil {
 		return RenderResult{}, err
 	}
 	options := &RenderOptions{
-		Destination: destination,
-		Module:      module.Name,
-		Unit:        service.Name,
-		Environment: env.Name,
-		Namespace:   env.ModuleNamespace(workspace, module.Name),
-		AppProject:  project,
-		Promotable:  true,
-		Package:     pkg,
+		ReleaseArtifacts: artifacts,
+		Destination:      destination,
+		Module:           module.Name,
+		Unit:             service.Name,
+		Environment:      env.Name,
+		Namespace:        env.ModuleNamespace(workspace, module.Name),
+		AppProject:       project,
+		Promotable:       true,
+		Package:          pkg,
 	}
 	return RenderOwnedTree(ctx, options, func(ctx context.Context, stage string) error {
 		// A configuration error refuses the render before any image is built or

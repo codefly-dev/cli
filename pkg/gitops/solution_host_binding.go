@@ -732,6 +732,9 @@ func presenceInstanceOf(
 	if instance.Frontend, err = solutionrun.DeclaredFrontend(context.Background(), module); err != nil {
 		return nil, "", err
 	}
+	if err = stampFrontendPayload(instance, opts.ReleaseArtifacts); err != nil {
+		return nil, "", err
+	}
 	instance.Package, instance.Version = opts.Package.ID, opts.Package.Version
 	instance.Modules = []SolutionModulePin{{Module: module.Name, Package: opts.Package.ID, Version: opts.Package.Version}}
 	if instance.ReleaseDigest, err = releaseDigest(module.Dir()); err != nil {
