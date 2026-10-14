@@ -3714,3 +3714,15 @@ untouched and require explicit recovery by container ID; startup never relabels 
 In the same scope, stopped orphans and running ephemeral orphans remain eligible,
 while live owners, running stateful containers and session-ledger-owned containers are preserved. Startup
 removal does not request deletion of volumes.
+
+### Prepare selected modules without starting them
+
+`codefly install modules` uses the existing workspace materializer to fetch selected
+packages under the configured trust policy, preserve local checkout overrides, and
+record machine-local resolution paths. It can add ignore entries for those local
+files. It fails if any selected module is still unloadable; it does not build, run,
+render, apply, or resolve secret values. Follow with
+`codefly doctor workspace --env staging --json` for readiness diagnostics.
+
+This command is intentionally CLI-only for now: the dashboard reads evidence and
+must not implicitly fetch dependencies or mutate workspace overlays.

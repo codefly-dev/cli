@@ -585,7 +585,7 @@ func checkModulesMaterialized(ctx context.Context, ws *resources.Workspace, repo
 		}
 		report.add(codeModuleNotMaterialized, "materialization of "+module.Name, "fail",
 			message,
-			fmt.Sprintf("run `codefly run service <service>` or `codefly deploy gitops render <module> --env <env>` once: either materializes every declared module and records it in %s, which doctor never writes; the service-scoped checks are skipped until then", resources.LocalOverlayConfigurationName))
+			fmt.Sprintf("run `codefly install modules`: it materializes the selected modules without starting services or rendering deployments and records it in %s, which doctor never writes; the service-scoped checks are skipped until then", resources.LocalOverlayConfigurationName))
 	}
 	return len(missing) == 0
 }
