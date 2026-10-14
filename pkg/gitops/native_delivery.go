@@ -798,7 +798,8 @@ func BuildEnvelope(revision uint64, builds []solutionhost.ImageDigest, principal
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
 	entries := map[string]any{}
 	document := map[string]any{envelopeRevisionField: revision, "approved_builds": sorted, "principals": entries}
-	for _, principal := range principals {
+	for i := range principals {
+		principal := &principals[i]
 		bindings := make([]map[string]any, 0, len(principal.Bindings))
 		for _, binding := range principal.Bindings {
 			entry := map[string]any{"id": binding.ID, "revision": binding.Revision, "scope": binding.Scope}
