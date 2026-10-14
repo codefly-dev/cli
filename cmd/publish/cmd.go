@@ -64,6 +64,14 @@ Requires the gh CLI to be authenticated.
 
 Module-agent repos run source/build/audit CI and publish the immutable Git tag
 their module package is built from; they do not publish service-loader assets.
+A module agent's release carries its version everywhere the module states one:
+the release commit also sets the top-level version: of every service.codefly.yaml
+the repository's workspace composes (the value Codefly hands each service as
+CODEFLY__SERVICE_VERSION) and of each module.package.codefly.yaml, and
+regenerates each packageable module's API catalog and derived runnables at that
+version through the generators. The workspace is read without the machine-local
+codefly.local.yaml, and a pinned module reference is skipped. A manifest already
+past the release version is refused: a release never moves a version backwards.
 
 Running from CI (--ci, on by default when CI=true): the runner has no git
 identity and no signing key, so the release commit and tag are made as the
