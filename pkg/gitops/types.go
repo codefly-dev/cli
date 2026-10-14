@@ -122,10 +122,14 @@ type Inventory struct {
 	// composition declares them: the data the cell's applier compiles into
 	// its mesh policy (mesh_edges.go). Absent when the environment declares
 	// no host.
-	MeshEdges *MeshEdges      `json:"meshEdges,omitempty"`
-	Units     []InventoryUnit `json:"units"`
-	Files     []InventoryFile `json:"files"`
-	Digest    string          `json:"digest"`
+	MeshEdges *MeshEdges `json:"meshEdges,omitempty"`
+	// EndpointCarriers are the in-cluster carriers of this module's endpoints
+	// the host routes, keyed as the gateway reads them: address-only, bound
+	// to a presence generation and signed only at publish.
+	EndpointCarriers map[string]string `json:"endpointCarriers,omitempty"`
+	Units            []InventoryUnit   `json:"units"`
+	Files            []InventoryFile   `json:"files"`
+	Digest           string            `json:"digest"`
 	// Dev lists the dev deployments (`codefly deploy dev`) applied on top of
 	// this render: services whose image was re-pinned to code no release
 	// describes. A full render re-derives the tree and never carries it over.
@@ -306,8 +310,11 @@ type RenderOptions struct {
 	UndeclaredAuthority string
 	// MeshEdges are the edges into this module's workloads, recorded in the
 	// inventory for the cell's applier.
-	MeshEdges  *MeshEdges
-	renderRoot *renderRoot
+	MeshEdges *MeshEdges
+	// EndpointCarriers are the render's in-cluster carriers of the module's
+	// routed endpoints (see Inventory.EndpointCarriers).
+	EndpointCarriers map[string]string
+	renderRoot       *renderRoot
 }
 
 func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKubernetesOutput {

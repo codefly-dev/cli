@@ -28,6 +28,7 @@ func installConfigurationResolvingAgents(t *testing.T) {
 		_ func(map[string]map[string]string),
 		recordConfigurations func(map[string]*basev0.Configuration, map[string][]string),
 		recordPorts func(map[string]map[string]uint32),
+		_ func(map[string]string),
 	) error {
 		flow, err := orchestration.NewFlow(ctx, workspace, module, service, env, orchestration.SnapshotMode)
 		if err != nil {

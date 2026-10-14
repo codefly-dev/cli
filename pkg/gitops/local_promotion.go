@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -114,7 +115,7 @@ func DeliveryJobsOf(tree, publishedPath, environment string) ([]DeliveryJob, err
 		if walkErr != nil {
 			return walkErr
 		}
-		if entry.IsDir() || (entry.Name() != "deliver-"+deliveryPresence+".yaml" && entry.Name() != "deliver-"+deliveryAuthority+".yaml") {
+		if entry.IsDir() || !slices.Contains([]string{"deliver-" + deliveryPresence + ".yaml", "deliver-" + deliveryAuthority + ".yaml", "deliver-" + deliveryEndpoints + ".yaml"}, entry.Name()) {
 			return nil
 		}
 		if path.Base(path.Dir(file)) != environment || path.Base(path.Dir(path.Dir(file))) != overlaysDirectory {

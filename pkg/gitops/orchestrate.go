@@ -3,6 +3,7 @@ package gitops
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -180,6 +181,9 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 			}
 		}
 	}
+	if len(rendered.endpointCarriers) > 0 {
+		r.options.EndpointCarriers = rendered.endpointCarriers
+	}
 	if r.options.MeshEdges, err = deriveMeshEdges(ctx, r.workspace, r.env, r.module, services, rendered.inClusterPorts, containerPorts); err != nil {
 		return err
 	}
@@ -255,23 +259,28 @@ func (r *moduleRender) resolveInputs(ctx context.Context, services []*resources.
 // learned: each one's deployment output, self endpoints, deployed
 // configuration with its declared secret keys, and in-cluster ports.
 type renderedRoots struct {
-	outputs        map[string]*builderv0.DeploymentOutput
-	selfEndpoints  map[string]map[string]string
-	hostRoutes     map[string]map[string]string
-	deployed       map[string]*basev0.Configuration
-	secretKeys     map[string][]string
-	inClusterPorts map[string]map[string]uint32
+	outputs       map[string]*builderv0.DeploymentOutput
+	selfEndpoints map[string]map[string]string
+	hostRoutes    map[string]map[string]string
+	// endpointCarriers are the in-cluster carriers of this module's endpoints
+	// the host routes, as the gateway reads them: what a publication binds
+	// to each settled presence generation and delivers.
+	endpointCarriers map[string]string
+	deployed         map[string]*basev0.Configuration
+	secretKeys       map[string][]string
+	inClusterPorts   map[string]map[string]uint32
 }
 
 // renderRoots renders every root service through its agent into the stage.
 func (r *moduleRender) renderRoots(ctx context.Context, roots []*resources.Service, stage string) (*renderedRoots, error) {
 	rendered := &renderedRoots{
-		outputs:        make(map[string]*builderv0.DeploymentOutput),
-		selfEndpoints:  make(map[string]map[string]string),
-		hostRoutes:     make(map[string]map[string]string),
-		deployed:       make(map[string]*basev0.Configuration),
-		secretKeys:     make(map[string][]string),
-		inClusterPorts: make(map[string]map[string]uint32),
+		outputs:          make(map[string]*builderv0.DeploymentOutput),
+		selfEndpoints:    make(map[string]map[string]string),
+		hostRoutes:       make(map[string]map[string]string),
+		endpointCarriers: map[string]string{},
+		deployed:         make(map[string]*basev0.Configuration),
+		secretKeys:       make(map[string][]string),
+		inClusterPorts:   make(map[string]map[string]uint32),
 	}
 	destinations := moduleStageDestinations(r.workspace, r.module, stage)
 	for _, service := range roots {
@@ -312,6 +321,9 @@ func (r *moduleRender) renderRoots(ctx context.Context, roots []*resources.Servi
 				for unique, declared := range ports {
 					rendered.inClusterPorts[unique] = declared
 				}
+			},
+			func(carriers map[string]string) {
+				maps.Copy(rendered.endpointCarriers, carriers)
 			},
 		); flowErr != nil {
 			return nil, fmt.Errorf("render service %s: %w", service.Name, flowErr)
@@ -586,6 +598,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 				deployed, secretKeys = rendered, keys
 			},
 			func(rendered map[string]map[string]uint32) { inClusterPorts = rendered },
+			nil,
 		); err != nil {
 			return err
 		}
@@ -685,6 +698,7 @@ func renderServiceFlow(
 	recordHostRoutes func(map[string]map[string]string),
 	recordConfigurations func(map[string]*basev0.Configuration, map[string][]string),
 	recordInClusterPorts func(map[string]map[string]uint32),
+	recordEndpointCarriers func(map[string]string),
 ) (result error) {
 	if err := selectionguard.RejectUnboundExecution(workspace.Dir(), module.Dir()); err != nil {
 		return err
@@ -734,6 +748,13 @@ func renderServiceFlow(
 	}
 	if recordInClusterPorts != nil {
 		recordInClusterPorts(flow.InClusterPorts(ctx))
+	}
+	if recordEndpointCarriers != nil {
+		carriers, err := flow.EndpointCarriers(ctx, module.Name, resources.NewContainerNetworkAccess())
+		if err != nil {
+			return err
+		}
+		recordEndpointCarriers(carriers)
 	}
 	if recordServices != nil {
 		services := map[string]*resources.Service{}

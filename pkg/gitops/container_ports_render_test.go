@@ -70,6 +70,7 @@ func installFakeAgents(t *testing.T) {
 		_ func(map[string]map[string]string),
 		recordConfigurations func(map[string]*basev0.Configuration, map[string][]string),
 		recordInClusterPorts func(map[string]map[string]uint32),
+		_ func(map[string]string),
 	) error {
 		remote, err := orchestration.NewEnvironmentRemoteManager(ctx, workspace)
 		if err != nil {

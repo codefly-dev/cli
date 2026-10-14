@@ -1511,6 +1511,7 @@ func inventoryHead(opts *RenderOptions) Inventory {
 	}
 	inventory.Delivery = opts.Delivered
 	inventory.MeshEdges = opts.MeshEdges
+	inventory.EndpointCarriers = opts.EndpointCarriers
 	if len(opts.WorkspaceConfigurationDigests) > 0 {
 		inventory.WorkspaceConfigurationDigests = make(map[string]string, len(opts.WorkspaceConfigurationDigests))
 		for group, digest := range opts.WorkspaceConfigurationDigests {

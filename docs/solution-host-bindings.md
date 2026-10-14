@@ -1047,6 +1047,25 @@ address is a new presence generation, never a rewrite, and a tombstone
 delivers no endpoints: the host withdraws them with the presence. Resolving one
 presence never waits for unrelated producers to allocate their endpoints.
 
+A publication delivers the same document. The render records, per module, the
+in-cluster carriers of its endpoints the host routes (`Flow.EndpointCarriers`,
+the same routes, visibility and address derivation; `endpointCarriers` in
+`.codefly-render.json`, address-only and unsigned), and publish, once the
+presence generation is settled, marshals the delivery over the carriers of the
+endpoints that presence names, signs it under the same reuse and self-check
+rules as the presence, writes it beside the presence's carrier in its ConfigMap
+(`endpoint-delivery.signed.codefly.yaml`) and renders a `deliver-endpoints`
+Job that posts it to the same inbox through the same retry loop, which tries a
+503 again until the presence is applied. A withdrawal carries none, and a
+presence naming no endpoint delivers none. The addresses are settled with the
+generation: an unchanged publish reuses the delivered endpoint carrier byte for
+byte, as it reuses the presence's, and an address that moved under an
+unchanged presence settles both at the next generation, since the host keeps
+one endpoint delivery per applied generation. A delivered endpoint carrier
+that signs other bytes than the delivery being reused is refused, as a
+presence carrier is. A local cluster run awaits the `deliver-endpoints` Job
+as it awaits the others.
+
 This is the delivery contract, and it is how a component
 composed after the run started reaches the gateway: `codefly run workspace`
 admits the components a reloaded composition adds when it receives `SIGUSR1`
