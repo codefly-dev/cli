@@ -159,6 +159,16 @@ elsewhere: "supplied only by a local k3d or cell render; absent here". See
 for its values and environment requirements. No group carries a certificate:
 a workload's transport identity is the mesh's, never a file it reads.
 
+**Addresses are kept across a reload.** `Runner.Init` pins the host ports a
+service was accepted at through core's port-override seam
+(`RuntimeManager.WithPortOverrides`), so every later proposal for it, a hot
+reload or a propagated re-initialization, offers the same ones; under
+`--temporary-ports` nothing else would. `StopIfNeeded` spares a hot-reloading
+agent's process only while the addresses it was started with are still the
+accepted ones (`addressesMoved`). `Runner.hostRoutes` derives the gateway's
+route carriers on every ask, never from a first-ask memo, and the output
+environment file is a map rewritten whole on every write.
+
 **Extending a running flow.** `Flow.Extend(ctx, reloadedWorkspace, roots)`
 admits the roots a reloaded workspace composes that the run did not start:
 the composition is replaced in place (the configuration manager and its local

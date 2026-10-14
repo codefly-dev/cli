@@ -117,6 +117,17 @@ graph never sees. It takes the flags of `codefly run service` and no service
 names; `--exclude-dependency` and `--exclude-workspace-configuration` leave a
 service or a configuration group out.
 
+**Addresses across a reload.** A service keeps the addresses it was accepted
+at for the whole run: under `--temporary-ports` the kernel-assigned ports of
+its first initialization are pinned, so a watch-driven reload re-initializes
+it on the same ports and its dependents keep a true address, and a
+hot-reloading agent whose addresses did move is restarted rather than left
+serving where nothing resolves it. The host gateway's route carriers are
+derived afresh on each of its initializations, and a native run's envelope
+writer follows the gateway's current address. The `--output-env` file is a map
+of the run's current environment, rewritten whole: a key written again
+replaces its line, so a reader never meets two values for one key.
+
 **Adding a component while the run is up.** Compose the module or solution
 into the workspace and send the running `codefly run workspace` process
 `SIGUSR1` (`kill -USR1 <pid>`). The run reloads the composition, admits every

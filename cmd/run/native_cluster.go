@@ -263,6 +263,23 @@ func (cluster *nativeCluster) identity(unique string) (gitops.NativeIdentity, bo
 	return identity, ok
 }
 
+// envelopeFor is the run's envelope writer, pointed at the gateway as it
+// answers now: the gateway can be restarted on another port during the run,
+// and a writer kept on its first address would fail every envelope write
+// after that, before the endpoint projection the delivery ends with.
+func (cluster *nativeCluster) envelopeFor(ctx context.Context, gatewayURL string) (*gitops.EnvelopeWriter, error) {
+	if cluster.envelope != nil {
+		cluster.envelope.GatewayURL = gatewayURL
+		return cluster.envelope, nil
+	}
+	administrator, err := cluster.fixtureAdministrator(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cluster.envelope = &gitops.EnvelopeWriter{GatewayURL: gatewayURL, FixtureProvider: administrator.Provider, FixtureToken: administrator.Token}
+	return cluster.envelope, nil
+}
+
 func (cluster *nativeCluster) identityOf(service *resources.Service) (string, gitops.NativeIdentity, bool) {
 	unique := resources.WithUnique(service).Unique()
 	identity, ok := cluster.identity(unique)
