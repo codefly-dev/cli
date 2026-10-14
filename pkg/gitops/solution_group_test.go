@@ -73,7 +73,7 @@ func TestAComposedSolutionCarriesItsGroupInThePresence(t *testing.T) {
 		workload := &NativeWorkload{
 			Module: module, Service: service, Services: []*resources.Service{service},
 			Subject: "system:serviceaccount:example:crm-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/crm-api",
-			Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")},
+			Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")}, FrontendBundle: builtBundle(),
 		}
 		deliver := func(workspace *resources.Workspace) *solutionhost.SolutionHostBinding {
 			documents, err := (&NativeDeliverer{Workspace: workspace, Env: env}).Render(ctx, workload)

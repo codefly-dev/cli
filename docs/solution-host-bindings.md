@@ -278,7 +278,10 @@ file fails there. A service that declares the render-owned workspace
 configuration `artifact-cache` receives its one value, `ROOT`, the absolute
 path of that cache, from the native run alone: a cell's render projects nothing
 for it, so in Kubernetes the value is absent and a directory source stays
-refused. No built bundle is no payload.
+refused. A component that declares a page and built no bundle is refused by
+name, with what to build (`services/fe-remote`, its own build workflow): a
+host admits no new frontend without its signed payload, and no mutable
+fallback is delivered in its place. A headless component needs no bundle.
 Native and rendered delivery carry the same block for both kinds. A module page does not
 change its shared tenancy or its per-organisation installation grants. The gateway
 receives a route for a module page even when no solution consumes its API. The

@@ -25,7 +25,7 @@ func TestEndpointsAreDeliveredOnceThePresenceApplies(t *testing.T) {
 	documents, err := (&NativeDeliverer{Workspace: &resources.Workspace{Name: "example"}, Env: env}).Render(ctx, &NativeWorkload{
 		Module: module, Service: service, Services: []*resources.Service{service},
 		Subject: "system:serviceaccount:example:crm-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/crm-api",
-		Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")},
+		Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")}, FrontendBundle: builtBundle(),
 	})
 	require.NoError(t, err)
 	presence := documents.Presence

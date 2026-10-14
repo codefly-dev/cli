@@ -399,9 +399,11 @@ func (cluster *nativeCluster) renderOwnedGroups(ctx context.Context, service *re
 // from by the digest the presence names. A cell's render projects nothing for
 // the group, so the value exists in a local run alone.
 func artifactCacheGroup(workspaceDir string) (*basev0.Configuration, error) {
-	root, err := filepath.Abs(composition.ArtifactCacheDir(workspaceDir))
+	// Created here, since the host opens the root read-only when it starts,
+	// before the first bundle is retained in it.
+	root, err := composition.EnsureArtifactCacheDir(workspaceDir)
 	if err != nil {
-		return nil, fmt.Errorf("resolve the artifact cache of %s: %w", workspaceDir, err)
+		return nil, fmt.Errorf("prepare the artifact cache of %s: %w", workspaceDir, err)
 	}
 	return &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{{
 		Name: environments.ArtifactCacheConfiguration, ConfigurationValues: []*basev0.ConfigurationValue{{Key: environments.ArtifactCacheRootKey, Value: root}},
@@ -412,11 +414,23 @@ func artifactCacheGroup(workspaceDir string) (*basev0.Configuration, error) {
 // beside its entry service, in core's canonical form, and retains it in the
 // workspace's artifact cache under its digest — the read-only source the
 // host's native adapter reads bundles from — so the presence names the bytes
-// the host verifies. No built bundle is no payload.
+// the host verifies. A component that declares a page and built no bundle is
+// refused by name, with what to build: a host admits no new frontend without
+// its signed payload, and a mutable fallback is never delivered in its place.
+// A headless component needs no bundle, and a leftover one is not its page.
 func (cluster *nativeCluster) frontendBundle(ctx context.Context, module *resources.Module) (*solutionhost.FrontendPayload, error) {
-	root, built, err := solutionrun.FrontendBundle(module)
-	if err != nil || !built {
+	frontend, err := solutionrun.DeclaredFrontend(ctx, module)
+	if err != nil || frontend == nil {
 		return nil, err
+	}
+	root, built, err := solutionrun.FrontendBundle(module)
+	if err != nil {
+		return nil, err
+	}
+	if !built {
+		source := filepath.Join(module.ServicesDir(), "fe-remote")
+		return nil, fmt.Errorf("module %s declares a frontend (%s beside its service-entry) and its bundle is not built: %s holds no %s; a host admits no frontend without its signed bundle, so build the frontend from %s with its own build workflow and start the run again",
+			module.Name, solutionrun.FrontendFileName, filepath.Join(module.ServicesDir(), filepath.FromSlash(solutionrun.FrontendBundleDir)), solutionrun.FrontendBundleManifest, source)
 	}
 	digest, _, err := composition.RetainCanonicalArchive(ctx, cluster.composed().Dir(), root)
 	if err != nil {

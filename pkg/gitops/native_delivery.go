@@ -388,13 +388,17 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	}
 	// The bundle this run built outranks the release's artifact metadata: a
 	// native run delivers what runs, and the host reads the bytes from the
-	// cache by the digest named here.
-	if workload.FrontendBundle != nil {
-		if instance.Frontend == nil {
-			return nil, fmt.Errorf("module %s built a frontend bundle and declares no frontend; a bundle is the output of a declared page", workload.Module.Name)
-		}
+	// cache by the digest named here. A declared page without the bundle this
+	// run built is refused: a host admits no new frontend without its signed
+	// payload, and a release's digest is not what runs here.
+	switch {
+	case workload.FrontendBundle != nil && instance.Frontend == nil:
+		return nil, fmt.Errorf("module %s built a frontend bundle and declares no frontend; a bundle is the output of a declared page", workload.Module.Name)
+	case workload.FrontendBundle != nil:
 		payload := *workload.FrontendBundle
 		instance.Frontend.Payload = &payload
+	case instance.Frontend != nil:
+		return nil, fmt.Errorf("module %s declares a frontend and this run built no bundle for it; a native delivery names the bundle it built, and a host admits no frontend without its signed payload", workload.Module.Name)
 	}
 	instance.Group = solutionGroupOf(d.Workspace, instance)
 	instance.Modules = []SolutionModulePin{{Module: workload.Module.Name, Package: manifest.ID, Version: manifest.Version}}

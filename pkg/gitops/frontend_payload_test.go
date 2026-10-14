@@ -15,6 +15,12 @@ import (
 
 var releasedBundleDigest = "sha256:" + strings.Repeat("d", 64)
 
+// builtBundle is the identity a native run gives the bundle it built and
+// retained: what a native workload of a component with a page carries.
+func builtBundle() *solutionhost.FrontendPayload {
+	return &solutionhost.FrontendPayload{Artifact: FrontendArtifactName, Digest: solutionhost.PayloadDigest("sha256:" + strings.Repeat("e", 64)), MediaType: "application/x-tar"}
+}
+
 // bundleModule writes a module whose package manifest declares the given
 // release artifacts, with a page beside its entry service unless headless.
 func bundleModule(t *testing.T, artifacts string, headless bool) (*resources.Module, []*resources.Service) {
@@ -64,10 +70,14 @@ func TestAReleasedFrontendBundleIsTheGeneratedPayload(t *testing.T) {
 			require.NoError(t, err)
 			instance, undeclared, err := presenceInstanceOf(module, services, env, &RenderOptions{Module: "shared", Package: pkg, ReleaseArtifacts: artifacts})
 			deliverer := &NativeDeliverer{Workspace: &resources.Workspace{Name: "example"}, Env: env}
+			var bundle *solutionhost.FrontendPayload
+			if !tc.headless {
+				bundle = builtBundle()
+			}
 			documents, nativeErr := deliverer.Render(context.Background(), &NativeWorkload{
 				Module: module, Service: services[0], Services: services,
 				Subject: "system:serviceaccount:example:shared-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/shared-api",
-				Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")},
+				Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")}, FrontendBundle: bundle,
 			})
 			if tc.refused != "" {
 				require.ErrorContains(t, err, tc.refused, "the render")
@@ -81,8 +91,8 @@ func TestAReleasedFrontendBundleIsTheGeneratedPayload(t *testing.T) {
 			if tc.artifacts != "" {
 				want = &solutionhost.FrontendPayload{Artifact: FrontendArtifactName, Digest: solutionhost.PayloadDigest(releasedBundleDigest), MediaType: "application/x-tar"}
 			}
-			require.Equal(t, want, instance.Frontend.Payload, "the render")
-			require.Equal(t, want, documents.Presence.Frontend.Payload, "the native delivery")
+			require.Equal(t, want, instance.Frontend.Payload, "the render names the release's artifact")
+			require.Equal(t, builtBundle(), documents.Presence.Frontend.Payload, "the native delivery names the bundle it built, whatever the release names")
 		})
 	}
 }
@@ -92,27 +102,33 @@ func TestAReleasedFrontendBundleIsTheGeneratedPayload(t *testing.T) {
 // built by a headless component is refused.
 func TestANativeRunStampsTheBundleItBuilt(t *testing.T) {
 	bundle := "release-artifacts:\n  - name: frontend\n    purpose: runtime\n    uri: oci://registry.example/shared/frontend\n    digest: " + releasedBundleDigest + "\n    media-type: application/x-tar\n"
-	built := &solutionhost.FrontendPayload{Artifact: FrontendArtifactName, Digest: solutionhost.PayloadDigest("sha256:" + strings.Repeat("e", 64)), MediaType: "application/x-tar"}
+	built := builtBundle()
 	for _, tc := range []struct {
-		name, artifacts string
-		headless        bool
+		name, artifacts   string
+		headless, unbuilt bool
+		refused           string
 	}{
 		{name: "beside a released artifact", artifacts: bundle},
 		{name: "with no released artifact", artifacts: ""},
-		{name: "by a headless component", artifacts: "", headless: true},
+		{name: "by a headless component", artifacts: "", headless: true, refused: "declares no frontend"},
+		{name: "a declared page without a built bundle is refused", artifacts: bundle, unbuilt: true, refused: "built no bundle"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			module, services := bundleModule(t, tc.artifacts, tc.headless)
 			env := identityEnvironment()
 			env.Namespace = "example"
 			deliverer := &NativeDeliverer{Workspace: &resources.Workspace{Name: "example"}, Env: env}
+			carried := built
+			if tc.unbuilt {
+				carried = nil
+			}
 			documents, err := deliverer.Render(context.Background(), &NativeWorkload{
 				Module: module, Service: services[0], Services: services,
 				Subject: "system:serviceaccount:example:shared-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/shared-api",
-				Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")}, FrontendBundle: built,
+				Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")}, FrontendBundle: carried,
 			})
-			if tc.headless {
-				require.ErrorContains(t, err, "declares no frontend")
+			if tc.refused != "" {
+				require.ErrorContains(t, err, tc.refused)
 				return
 			}
 			require.NoError(t, err)

@@ -21,6 +21,19 @@ func ArtifactCacheDir(workspaceDir string) string {
 	return filepath.Join(workspaceDir, ".codefly", "selection-artifacts")
 }
 
+// EnsureArtifactCacheDir creates the workspace's artifact cache when it does
+// not exist yet and returns its absolute path: a host opens it read-only when
+// it starts, before any bundle is retained there.
+func EnsureArtifactCacheDir(workspaceDir string) (string, error) {
+	session := &SelectionSession{Root: workspaceDir}
+	cache, err := session.openArtifactCache()
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = cache.Close() }()
+	return filepath.Abs(cache.Name())
+}
+
 // RetainCanonicalArchive archives a directory in core's canonical form and
 // retains the bytes in the workspace's artifact cache under their digest,
 // through the writer every acquisition uses (written beside, digest-verified,

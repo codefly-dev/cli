@@ -55,7 +55,7 @@ func TestModuleFrontendReachesBothDeliveryPaths(t *testing.T) {
 		documents, err := deliverer.Render(context.Background(), &NativeWorkload{
 			Module: module, Service: service, Services: services,
 			Subject: "system:serviceaccount:example:shared-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/shared-api",
-			Artifact: NativeArtifact{Executable: filepath.Join(entryDir, "binary")},
+			Artifact: NativeArtifact{Executable: filepath.Join(entryDir, "binary")}, FrontendBundle: builtBundle(),
 		})
 		if err != nil {
 			t.Fatal(err)
