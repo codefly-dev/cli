@@ -58,10 +58,6 @@ func (d *ClusterDriver) EnsureArgoCD(ctx context.Context) (bool, error) {
 	return deployments.EnsureArgoCD(ctx, d.Kubectl, nil)
 }
 
-func (d *ClusterDriver) EnsureDeliveryAccount(ctx context.Context) error {
-	return deployments.EnsureDeliveryAccount(ctx, d.Kubectl)
-}
-
 func (d *ClusterDriver) EnsureNamespaces(ctx context.Context, modules []string) error {
 	var manifest strings.Builder
 	seen := map[string]bool{}

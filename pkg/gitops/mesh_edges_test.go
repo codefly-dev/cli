@@ -37,7 +37,6 @@ environments:
       domain: example
       audience: mint
       trust_domain: local.example
-      envelope_revision: 1
       delivery: edge/gateway/rest
       gateway: edge/gateway
 `,

@@ -264,14 +264,14 @@ func TestLoadInventoryRefusesAnOlderSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	downgraded := strings.Replace(string(data), `"schemaVersion": 7`, `"schemaVersion": 6`, 1)
+	downgraded := strings.Replace(string(data), `"schemaVersion": 8`, `"schemaVersion": 7`, 1)
 	if downgraded == string(data) {
 		t.Fatal("rendered inventory did not carry the current schema version")
 	}
 	if err := os.WriteFile(path, []byte(downgraded), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadInventory(destination); err == nil || !strings.Contains(err.Error(), "unsupported") || !strings.Contains(err.Error(), "schema 6") {
+	if _, err := LoadInventory(destination); err == nil || !strings.Contains(err.Error(), "unsupported") || !strings.Contains(err.Error(), "schema 7") {
 		t.Fatalf("an older schema must be refused by number, got %v", err)
 	}
 }

@@ -24,7 +24,7 @@ import (
 // endpoint each service declares, on which port, and who the composition
 // declares reaches it. So with the rendered tree it delivers those edges as
 // data, in the render record at the tree root (.codefly-render.json,
-// `meshEdges`), documented in docs/solution-host-bindings.md and versioned by
+// `meshEdges`), documented in docs/module-manifests.md and versioned by
 // MeshEdgesSchemaVersion. Each module's tree carries the edges INTO that
 // module's workloads; the applier reads every tree it applies.
 //
@@ -73,7 +73,7 @@ type MeshEdges struct {
 type MeshEdge struct {
 	// Module, Service and Namespace name the destination workload; Account is
 	// the ServiceAccount it runs as and Principal that account's mesh
-	// principal, the one its presence names.
+	// principal, the one its module manifest names.
 	Module    string `json:"module"`
 	Service   string `json:"service"`
 	Namespace string `json:"namespace"`

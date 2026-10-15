@@ -10,14 +10,13 @@ import (
 	"sigs.k8s.io/kustomize/kyaml/filesys"
 )
 
-// What the presence document reads off a rendered unit: every pod-producing
-// workload of its overlay, the account each runs as, and every container's
-// pinned image — read, never declared, so the document names the build the
-// render pinned and the account the pod template names.
+// What a module manifest reads off a rendered unit: every pod-producing
+// workload of its overlay, the account each runs as and its containers — read,
+// never declared, so the manifest names the account the pod template names.
 
 const (
 	// defaultServiceAccount is the account a pod template naming none runs as:
-	// shared by every such pod of the namespace, so never one presence names.
+	// shared by every such pod of the namespace, so never one a manifest names.
 	defaultServiceAccount = "default"
 )
 
@@ -39,17 +38,11 @@ type renderedWorkload struct {
 	templateAnnotations map[string]any
 }
 
-// renderedContainer is one container of a pod template and its pinned image.
+// renderedContainer is one container of a pod template. Its image is pinned
+// by digest — the render refuses one that is not — and nothing else of it is
+// read: no build is approved from it.
 type renderedContainer struct {
-	Name  string
-	Image renderedImage
-}
-
-// renderedImage is an image reference pinned by digest: the repository as
-// written, without tag, and the digest.
-type renderedImage struct {
-	Repository string
-	Digest     string
+	Name string
 }
 
 // tokenMount is one projected ServiceAccount token volume carrying an
@@ -142,7 +135,7 @@ func workloadsFromManifests(manifests []manifest) ([]renderedWorkload, error) {
 // token the ServiceAccount admission plugin injects (kube-api-access-…) is a
 // projected token volume too, mounted into every container, and names no
 // audience — keying on the audience is what tells the two apart, and it is
-// what the presence document's refusal keys on (refuseSharedTokens).
+// what the render's refusal keys on (refuseSharedTokens).
 func audienceTokenVolumes(raw []any) map[string][]tokenSource {
 	audiences := map[string][]tokenSource{}
 	for _, entry := range raw {
@@ -161,24 +154,18 @@ func audienceTokenVolumes(raw []any) map[string][]tokenSource {
 	return audiences
 }
 
-// renderedContainers reads a pod template's containers, their pinned images
-// and the audience-bearing token volumes each mounts.
+// renderedContainers reads a pod template's containers, refusing an image not
+// pinned by digest, and the audience-bearing token volumes each mounts.
 func renderedContainers(workload string, raw []any, tokens map[string][]tokenSource, mounts map[string][]tokenMount, paths map[string][]containerMount) ([]renderedContainer, error) {
 	var containers []renderedContainer
 	for _, entry := range raw {
 		container, _ := entry.(map[string]any)
 		name, _ := container["name"].(string)
 		image, _ := container["image"].(string)
-		repository, digest, pinned := strings.Cut(image, "@")
-		if !pinned {
+		if !strings.Contains(image, "@") {
 			return nil, fmt.Errorf("workload %s container %s image %q is not pinned by digest", workload, name, image)
 		}
-		// The repository is the name only: a tag beside a digest would give one
-		// container two answers about what it runs.
-		if at := strings.LastIndex(repository, ":"); at > strings.LastIndex(repository, "/") {
-			repository = repository[:at]
-		}
-		rendered := renderedContainer{Name: name, Image: renderedImage{Repository: repository, Digest: digest}}
+		rendered := renderedContainer{Name: name}
 		for _, raw := range sliceField(container, "volumeMounts") {
 			mount, _ := raw.(map[string]any)
 			volume, _ := mount["name"].(string)

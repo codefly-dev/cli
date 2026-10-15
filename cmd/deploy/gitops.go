@@ -61,7 +61,7 @@ var gitOpsRenderCmd = &cobra.Command{
 		cli.Info("Digest %s", result.Inventory.Digest)
 		printSizingReport(result.Sizing)
 		printElidedNamespaces(result.ElidedNamespaces)
-		printSolutionHostBindings(&result)
+		printModuleManifest(&result)
 		printClearedDev(result.ClearedDev)
 		return nil
 	},
@@ -97,7 +97,7 @@ var gitOpsSnapshotCmd = &cobra.Command{
 		cli.Info("Digest %s", result.Inventory.Digest)
 		printSizingReport(result.Sizing)
 		printElidedNamespaces(result.ElidedNamespaces)
-		printSolutionHostBindings(&result)
+		printModuleManifest(&result)
 		printClearedDev(result.ClearedDev)
 		return nil
 	},
@@ -457,14 +457,13 @@ func printElidedNamespaces(elided []string) {
 	}
 }
 
-// printSolutionHostBindings reports what this render DECLARED should be
-// present on the host, and what it could not declare. The second half matters
-// as much as the first: a composition with no solution and one whose
-// environment names no host both render zero bindings, and only this tells
-// them apart.
-func printSolutionHostBindings(result *gitops.RenderResult) {
-	for _, declared := range result.SolutionHostBindings {
-		cli.Info("Declared solution host binding %s at provisional generation %d (%s); publish settles the generation against the delivery repository and signs the document", declared.Binding, declared.Generation, declared.Path)
+// printModuleManifest reports what this render DECLARED should be present on
+// the host, and why it declared nothing when the reason is the module's own.
+func printModuleManifest(result *gitops.RenderResult) {
+	if declared := result.ModuleManifest; declared != nil {
+		cli.Info("Declared module manifest %s at provisional generation %d (%s); publish settles the generation against the delivery repository and signs the manifest", declared.Binding, declared.Generation, declared.Path)
+	} else if result.UndeclaredManifest != "" {
+		cli.Info("No module manifest: %s", result.UndeclaredManifest)
 	}
 	groups := make([]string, 0, len(result.StaleGroupConsumers))
 	for group := range result.StaleGroupConsumers {

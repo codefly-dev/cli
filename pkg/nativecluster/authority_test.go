@@ -12,8 +12,6 @@ import (
 	"github.com/codefly-dev/core/workloadidentity/native"
 )
 
-const digest = "sha256:abababababababababababababababababababababababababababababababab"
-
 func started(t *testing.T) (*Authority, *native.Attester) {
 	t.Helper()
 	authority, err := Start(context.Background())
@@ -40,36 +38,22 @@ func TestACredentialAttestsTheIdentityAndAudienceItWasIssuedFor(t *testing.T) {
 	require.ErrorIs(t, err, workloadidentity.ErrRejected, "a credential is for the audience it was issued for")
 }
 
-func TestACredentialNamesTheBuildOnlyOnceTheRunKnowsIt(t *testing.T) {
+func TestACredentialNamesTheContainerItsInstanceRegistered(t *testing.T) {
 	authority, attester := started(t)
-	pod := &Pod{Namespace: "acme-model", ServiceAccount: "model", Name: "model-native", UID: "uid-1", Container: "model", Repository: "native/acme/model/model"}
-	authority.RegisterPod(pod)
+	authority.RegisterPod(&Pod{Namespace: "acme-model", ServiceAccount: "model", Name: "model-native", UID: "uid-1", Container: "model"})
 
-	early, err := authority.Token("acme-model", "model", "model-native", "uid-1", "accounts")
-	require.NoError(t, err)
-	attested, err := attester.Attest(context.Background(), early, "accounts")
-	require.NoError(t, err)
-	require.Len(t, attested.Containers, 1)
-	require.Empty(t, attested.Containers[0].ImageID, "before delivery the build is not known, and the credential says so")
-
-	pod.Digest = digest
-	authority.RegisterPod(pod)
-	late, err := authority.Token("acme-model", "model", "model-native", "uid-1", "accounts")
-	require.NoError(t, err)
-	attested, err = attester.Attest(context.Background(), late, "accounts")
-	require.NoError(t, err)
-	require.Equal(t, digest, attested.Containers[0].ImageID)
-	require.Equal(t, "native/acme/model/model@"+digest, attested.Containers[0].DeclaredImage)
-}
-
-func TestAnotherInstanceAtTheSameIdentityIsNotVouchedForWithItsBuild(t *testing.T) {
-	authority, attester := started(t)
-	authority.RegisterPod(&Pod{Namespace: "acme-model", ServiceAccount: "model", Name: "model-native", UID: "uid-1", Container: "model", Digest: digest})
-	token, err := authority.Token("acme-model", "model", "model-native", "uid-other", "accounts")
+	token, err := authority.Token("acme-model", "model", "model-native", "uid-1", "accounts")
 	require.NoError(t, err)
 	attested, err := attester.Attest(context.Background(), token, "accounts")
 	require.NoError(t, err)
-	require.Empty(t, attested.Containers, "a credential for another instance names no container or build")
+	require.Len(t, attested.Containers, 1)
+	require.Equal(t, "model", attested.Containers[0].Name, "the credential names the declared container from its first issue, with no build")
+
+	other, err := authority.Token("acme-model", "model", "model-native", "uid-other", "accounts")
+	require.NoError(t, err)
+	attested, err = attester.Attest(context.Background(), other, "accounts")
+	require.NoError(t, err)
+	require.Empty(t, attested.Containers, "a credential for another instance names no container")
 }
 
 func TestARefreshIsANewCredential(t *testing.T) {

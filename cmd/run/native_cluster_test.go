@@ -10,82 +10,61 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/nativecluster"
-	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/workloadidentity/native"
 	"github.com/stretchr/testify/require"
 )
 
-// writeNonGoWorkload lays down a workspace whose one module runs its service
-// on an agent that is not the Go family, and returns the loaded service.
-func writeNonGoWorkload(t *testing.T) (*resources.Workspace, *resources.Service) {
-	t.Helper()
-	root := t.TempDir()
-	files := map[string]string{
-		resources.WorkspaceConfigurationName:                                 "name: acme\nlayout: modules\nmodules:\n  - name: model\n",
-		filepath.Join("modules", "model", resources.ModuleConfigurationName): "kind: module\nname: model\nservices:\n  - name: model\n",
-		filepath.Join("modules", "model", "services", "model", resources.ServiceConfigurationName): `kind: service
-name: model
-version: 0.0.0
-module-identity: true
-agent:
-  kind: runtime::service
-  name: python-fastapi
-  version: 0.0.112
-  publisher: codefly.dev
-`,
-	}
-	for relative, content := range files {
-		full := filepath.Join(root, relative)
-		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
-		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
-	}
+// TestEveryIdentityWorkloadIsIssuedItsCredentialAtProjection: a module runs
+// as each of its identity services, and each is issued its credential the
+// moment it is projected — none is withheld until a delivery — naming its
+// own account and its own declared container, and nothing about a build.
+func TestEveryIdentityWorkloadIsIssuedItsCredentialAtProjection(t *testing.T) {
 	ctx := context.Background()
-	workspace, err := resources.LoadWorkspaceFromDir(ctx, root)
+	workspace, env := writeHostedNativeWorkspace(t)
+	workspace = composeService(t, workspace, "model", "worker")
+	identities, err := gitops.ResolveNativeIdentities(ctx, workspace, env)
 	require.NoError(t, err)
-	service, err := workspace.LoadService(ctx, &resources.ServiceWithModule{Name: "model", Module: "model"})
+	authority, err := nativecluster.Start(ctx)
 	require.NoError(t, err)
-	return workspace, service
-}
-
-// A delivery reads the build from the agent's report, so a workload whose
-// agent has not adopted the contract is refused by name — and the refusal
-// arrives before the run touches its authority, its gateway or the host's
-// envelope. This is the shape of #989: the old path joined
-// <service>/.cache/native/main for every agent and failed on a missing file
-// that a python service was never going to have.
-func TestANativeDeliveryRefusesAWorkloadWhoseAgentReportsNoArtifact(t *testing.T) {
-	workspace, service := writeNonGoWorkload(t)
-	unique := resources.WithUnique(service).Unique()
+	attester, err := native.NewAttester(authority.Anchor())
+	require.NoError(t, err)
 	cluster := &nativeCluster{
-		workspace: workspace,
-		workloads: map[string]nativecluster.Workload{unique: {Namespace: "acme-model", Account: "model"}},
-		// A flow holding no manager for the service answers as an agent that
-		// reported nothing: there is no started artifact to be had.
-		flow: &orchestration.Flow{},
+		authority: authority, workspace: workspace, env: env, identities: identities, stateDir: t.TempDir(),
+		workloads: map[string]nativecluster.Workload{}, projections: map[string]nativecluster.Projection{},
 	}
-	identity := gitops.NativeIdentity{Module: "model", Service: "model", Account: "model"}
-
-	err := cluster.deliver(context.Background(), unique, identity, service)
-	require.ErrorContains(t, err, "codefly.dev/python-fastapi:0.0.112", "the refusal must name the agent that has to adopt the contract")
-	require.ErrorContains(t, err, "runtime-started-artifact/v1")
-	require.ErrorContains(t, err, "model/model")
-	require.NotContains(t, err.Error(), ".cache", "the refusal must not name a path from one agent family's layout")
-	require.NotContains(t, err.Error(), "no such file", "a missing file is not the diagnosis: the agent reported nothing")
-
-	// Refused before anything is claimed on the workload's behalf: no
-	// documents, no approved build, nothing for the host to reconcile.
-	require.Empty(t, cluster.documents)
-	require.Empty(t, cluster.builds)
+	namespace := env.ModuleNamespace(workspace, "model")
+	for _, unique := range []string{"model/model", "model/worker"} {
+		identity, ok := cluster.identity(unique)
+		require.True(t, ok, unique)
+		projection, err := cluster.project(unique, identity)
+		require.NoError(t, err)
+		token, err := os.ReadFile(projection.TokenFile)
+		require.NoError(t, err, "%s holds its credential from projection", unique)
+		attested, err := attester.Attest(ctx, string(token), env.Host.Audience)
+		require.NoError(t, err)
+		require.Equal(t, namespace, attested.Namespace)
+		require.Equal(t, identity.Service, attested.Account)
+		require.Len(t, attested.Containers, 1)
+		require.Equal(t, identity.Service, attested.Containers[0].Name, "the credential names the workload's own declared container")
+		again, err := cluster.project(unique, identity)
+		require.NoError(t, err)
+		require.Equal(t, projection, again, "a workload is projected once")
+	}
 }
 
-// A workload the run never projected an identity for is a different failure
-// from one whose agent reported nothing, and must read as one.
-func TestANativeDeliveryNamesAnUnprojectedWorkloadAsSuch(t *testing.T) {
-	workspace, service := writeNonGoWorkload(t)
-	cluster := &nativeCluster{workspace: workspace, workloads: map[string]nativecluster.Workload{}}
-	err := cluster.deliver(context.Background(), resources.WithUnique(service).Unique(),
-		gitops.NativeIdentity{Module: "model", Service: "model"}, service)
-	require.ErrorContains(t, err, "no projected identity")
+// The identity workloads a module's manifest lists are the ones that reached
+// Running, of that module, by service.
+func TestStartedIdentitiesAreTheRunningWorkloadsOfTheModule(t *testing.T) {
+	cluster := &nativeCluster{
+		identities: map[string]gitops.NativeIdentity{
+			"model/worker": {Module: "model", Service: "worker"}, "model/model": {Module: "model", Service: "model"},
+			"model/idle": {Module: "model", Service: "idle"}, "ledger/store": {Module: "ledger", Service: "store"},
+		},
+		running: map[string]bool{"model/worker": true, "model/model": true, "ledger/store": true, "gone/api": true},
+	}
+	require.Equal(t, []gitops.NativeIdentity{{Module: "model", Service: "model"}, {Module: "model", Service: "worker"}}, cluster.startedIdentities("model"))
+	require.Empty(t, cluster.startedIdentities("other"))
 }
 
 // writeHostedNativeWorkspace lays down a workspace composing module "model"
@@ -110,7 +89,6 @@ environments:
       domain: acme
       audience: accounts
       trust_domain: cluster.local
-      envelope_revision: 1
       delivery: model/model/rest
 `,
 		filepath.Join("modules", "model", resources.ModuleConfigurationName):                        "kind: module\nname: model\nservices:\n  - name: model\n",
@@ -160,6 +138,22 @@ func composeModule(t *testing.T, workspace *resources.Workspace, name string) *r
 		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
 		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
 	}
+	reloaded, err := resources.LoadWorkspaceFromDir(context.Background(), workspace.Dir())
+	require.NoError(t, err)
+	return reloaded
+}
+
+// composeService adds a module-identity service to a composed module on disk
+// and returns the workspace reloaded.
+func composeService(t *testing.T, workspace *resources.Workspace, module, service string) *resources.Workspace {
+	t.Helper()
+	configuration := filepath.Join(workspace.Dir(), "modules", module, resources.ModuleConfigurationName)
+	config, err := os.ReadFile(configuration)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configuration, []byte(string(config)+"  - name: "+service+"\n"), 0o644))
+	full := filepath.Join(workspace.Dir(), "modules", module, "services", service, resources.ServiceConfigurationName)
+	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+	require.NoError(t, os.WriteFile(full, []byte("kind: service\nname: "+service+"\nversion: 0.0.0\nmodule-identity: true\nagent:\n  kind: runtime::service\n  name: go\n  version: 0.0.1\n  publisher: codefly.dev\n"), 0o644))
 	reloaded, err := resources.LoadWorkspaceFromDir(context.Background(), workspace.Dir())
 	require.NoError(t, err)
 	return reloaded
@@ -234,13 +228,14 @@ func TestANativeRunAdmitsAnUnseenComponentWithoutReplacingItsAuthority(t *testin
 	})
 }
 
-// writeNonGoWorkloadDir is writeNonGoWorkload's layout under a module of the
-// given name, in a hosted environment, returning the directory.
+// writeNonGoWorkloadDir lays down a workspace composing one module of the
+// given name with one module-identity service, in a hosted environment,
+// returning the directory.
 func writeNonGoWorkloadDir(t *testing.T, name string) string {
 	t.Helper()
 	root := t.TempDir()
 	files := map[string]string{
-		resources.WorkspaceConfigurationName:                                                  "name: acme\nlayout: modules\nmodules:\n  - name: " + name + "\nenvironments:\n  - name: local\n    namespace: acme\n    host:\n      coordinate: example/local/dev\n      component: host\n      domain: acme\n      audience: accounts\n      trust_domain: cluster.local\n      envelope_revision: 1\n      delivery: " + name + "/api/rest\n",
+		resources.WorkspaceConfigurationName:                                                  "name: acme\nlayout: modules\nmodules:\n  - name: " + name + "\nenvironments:\n  - name: local\n    namespace: acme\n    host:\n      coordinate: example/local/dev\n      component: host\n      domain: acme\n      audience: accounts\n      trust_domain: cluster.local\n      delivery: " + name + "/api/rest\n",
 		filepath.Join("modules", name, resources.ModuleConfigurationName):                     "kind: module\nname: " + name + "\nservices:\n  - name: api\n",
 		filepath.Join("modules", name, "services", "api", resources.ServiceConfigurationName): "kind: service\nname: api\nversion: 0.0.0\nmodule-identity: true\nagent:\n  kind: runtime::service\n  name: go\n  version: 0.0.1\n  publisher: codefly.dev\nendpoints:\n  - name: rest\n    api: rest\n    visibility: internal\n",
 	}

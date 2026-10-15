@@ -19,11 +19,13 @@ import (
 // Two projections, each into the one container that authenticates and no
 // other (the rule refuseSharedTokens holds the tree to):
 //
-//   - every serving workload a presence document declares gets a projected
-//     ServiceAccount token minted for the host's audience. It is how the pod
-//     proves who it is when it mints (the host reviews the token and reads
-//     the pod's running image — module-saas-starter#1056): nothing else
-//     carries a module's identity, and no secret or prefix is projected.
+//   - every identity workload of the module — each service declaring
+//     module-identity, the workloads its manifest lists — gets a projected
+//     ServiceAccount token minted for the host's audience, mounted ONLY into
+//     the container the manifest declares for it. It is how the pod proves
+//     who it is when it mints: the host reviews the token and nothing else,
+//     so which container holds it is decided here, at deploy time, and a
+//     sidecar never does. No secret or prefix is projected.
 //   - on a k3d environment that declares the host's trust-anchor path, the
 //     host's verifier (the service host.delivery names) gets the local trust
 //     anchor mounted there: one projected volume, the local trust ConfigMap
@@ -31,8 +33,7 @@ import (
 //     read-only. A local cluster run provisions that ConfigMap.
 //
 // Both land as patches in the unit's environment overlay, so the base the
-// agent rendered is untouched and the overlay's bytes — which the presence
-// document digests — are what runs.
+// agent rendered is untouched and the overlay's bytes are what runs.
 
 const (
 	// identityTokenVolume, identityTokenMount and identityTokenFile are where
@@ -79,10 +80,10 @@ func projectWorkloadIdentity(tree *renderRoot, owned string, opts *RenderOptions
 	if err := refuseReservedAnnotation(tree, owned, opts); err != nil {
 		return err
 	}
-	for index := range opts.SolutionInstances {
-		for _, unit := range opts.SolutionInstances[index].Units {
-			if err := projectIdentityToken(tree, owned, opts, unit); err != nil {
-				return fmt.Errorf("%s %s artifact %s: %w", opts.SolutionInstances[index].Kind, opts.SolutionInstances[index].Name, unit.Name, err)
+	if instance := opts.Instance; instance != nil {
+		for _, identity := range instance.Identities {
+			if err := projectIdentityToken(tree, owned, opts, identity); err != nil {
+				return fmt.Errorf("%s %s service %s: %w", instance.Kind, instance.Name, identity.Service, err)
 			}
 		}
 	}
@@ -119,10 +120,10 @@ func refuseReservedAnnotation(tree *renderRoot, owned string, opts *RenderOption
 }
 
 // projectIdentityToken projects the host-audience token into the
-// authenticating container of each serving workload of the unit, unless that
-// container already mounts one for the audience.
-func projectIdentityToken(tree *renderRoot, owned string, opts *RenderOptions, unit SolutionArtifactUnit) error {
-	unitDir := filepath.Join(owned, filepath.FromSlash(unit.Path))
+// authenticating container of each serving workload of an identity service's
+// unit, unless that container already mounts one for the audience.
+func projectIdentityToken(tree *renderRoot, owned string, opts *RenderOptions, identity IdentityWorkload) error {
+	unitDir := filepath.Join(owned, filepath.FromSlash(identity.Path))
 	workloads, err := renderedWorkloadsInTree(tree, unitDir, opts.Environment)
 	if err != nil {
 		return err
@@ -133,7 +134,7 @@ func projectIdentityToken(tree *renderRoot, owned string, opts *RenderOptions, u
 		if !servingKind(workload.Kind) {
 			continue
 		}
-		container, _, err := authenticatingContainer(unit.Name, workload)
+		container, err := authenticatingContainer(identity.Service, workload)
 		if err != nil {
 			return fmt.Errorf("workload %s: %w", workload.Name, err)
 		}
@@ -182,7 +183,7 @@ func projectTrustAnchor(tree *renderRoot, owned string, opts *RenderOptions) err
 			if !servingKind(workload.Kind) {
 				continue
 			}
-			container, _, err := authenticatingContainer(service, workload)
+			container, err := authenticatingContainer(service, workload)
 			if err != nil {
 				return fmt.Errorf("the host's verifier %s workload %s: %w", service, workload.Name, err)
 			}
@@ -204,6 +205,60 @@ func projectTrustAnchor(tree *renderRoot, owned string, opts *RenderOptions) err
 
 func servingKind(kind string) bool {
 	return kind == kindDeployment || kind == kindStatefulSet || kind == kindDaemonSet
+}
+
+// authenticatingContainer is the container of a workload that authenticates
+// for a service: the one named like the service, or the only one. A workload
+// with several containers and none named like the service is refused rather
+// than guessed — "whichever one presented the token" is how a sidecar ends up
+// holding a workload's authority — and so is a pod template in which any
+// other container mounts a token minted for an audience (refuseSharedTokens).
+func authenticatingContainer(service string, workload *renderedWorkload) (renderedContainer, error) {
+	var chosen *renderedContainer
+	for index := range workload.Containers {
+		if workload.Containers[index].Name == service {
+			chosen = &workload.Containers[index]
+			break
+		}
+	}
+	if chosen == nil && len(workload.Containers) == 1 {
+		chosen = &workload.Containers[0]
+	}
+	if chosen == nil {
+		names := make([]string, 0, len(workload.Containers))
+		for _, container := range workload.Containers {
+			names = append(names, container.Name)
+		}
+		return renderedContainer{}, fmt.Errorf("none of its containers (%s) is named %q, so the one that authenticates cannot be told from a sidecar", strings.Join(names, ", "), service)
+	}
+	if err := refuseSharedTokens(chosen.Name, workload); err != nil {
+		return renderedContainer{}, err
+	}
+	return *chosen, nil
+}
+
+// refuseSharedTokens refuses a pod template in which a projected token minted
+// for an explicit audience is mounted by a container other than the one that
+// authenticates — a sidecar or an init container, which would present it as
+// the workload. The rule keys on the token's audience: the token the
+// ServiceAccount plugin injects is projected too, mounted everywhere, and
+// names none.
+func refuseSharedTokens(authenticating string, workload *renderedWorkload) error {
+	var shared []string
+	for _, container := range append(append([]renderedContainer(nil), workload.Containers...), workload.InitContainers...) {
+		if container.Name == authenticating {
+			continue
+		}
+		for _, mount := range workload.tokenMounts[container.Name] {
+			shared = append(shared, fmt.Sprintf("%s mounts %s (audience %q)", container.Name, mount.volume, mount.audience))
+		}
+	}
+	if len(shared) == 0 {
+		return nil
+	}
+	sort.Strings(shared)
+	return fmt.Errorf("a projected token minted for an audience is mounted by a container other than the authenticating one, %q: %s; a token the pod shares is a token a sidecar can present as the workload, and the cell's admission refuses the pod for it, so mount it into %q alone",
+		authenticating, strings.Join(shared, ", "), authenticating)
 }
 
 // providesIdentityToken reports whether the container already has the

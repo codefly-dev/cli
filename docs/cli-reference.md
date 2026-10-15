@@ -4003,16 +4003,15 @@ Run the composition on the local k3d cluster through the signed delivery a cell 
 
 ```
 Run the composition on the environment's local k3d cluster, through the same
-delivery a cell receives (docs/solution-host-bindings.md, "Local runs"):
+delivery a cell receives (docs/module-manifests.md, "Local runs"):
 
-  1. Argo CD (installed if absent), the platform-authority namespace with its
-     delivery ServiceAccount, the modules' namespaces, and
+  1. Argo CD (installed if absent), the modules' namespaces, and
      the local host's trust anchor (one public-key verification policy admitting
      this machine's key when host.developers lists it, bound to this cluster's
      CA; re-written, and the host restarted, when the cluster is recreated);
   2. for each module (every composed module when none is named): build and
-     push its images, render its tree with its presence and authority
-     documents, sign them as you (a developer the environment's
+     push its images, render its tree with its module manifest, sign it as
+     you (a developer the environment's
      host.developers lists — using this machine's delivery key), and
      promote it locally;
   3. the latest promotion served to the cluster's Argo CD, each module's Argo
@@ -4023,7 +4022,7 @@ host.developers, and host.trust_anchor (the path the host reads its trust
 anchor from). Transport identity is the cell's mesh (a workload's ServiceAccount
 is its principal): no SVID or peer file is issued or projected.
 Stopping a run is not removal: withdrawing a binding is a
-published tombstone.
+published withdrawal (the manifest with removed: true).
 ```
 
 ```

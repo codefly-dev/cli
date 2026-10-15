@@ -202,11 +202,10 @@ func validateManagedServiceKey(key string) error {
 // them at once: Coordinate is matched by the host, Component names the
 // component instance within it, Domain is the ownership domain this
 // composition delivers under, Audience is what the host expects a workload's
-// token to be bound to, TrustDomain is the SPIFFE trust domain the cell's
-// mesh names a workload's principal under, and EnvelopeRevision is the revision of
-// the host's envelope this composition was reviewed against. A partial
-// declaration would render a document the host cannot use, so UnmarshalYAML
-// refuses an unknown key and Validate refuses a missing one.
+// token to be bound to, and TrustDomain is the SPIFFE trust domain the cell's
+// mesh names a workload's principal under. A partial declaration would render
+// a manifest the host cannot use, so UnmarshalYAML refuses an unknown key and
+// Validate refuses a missing one.
 type EnvironmentHost struct {
 	Coordinate string `yaml:"coordinate"`
 	Component  string `yaml:"component"`
@@ -220,20 +219,11 @@ type EnvironmentHost struct {
 	// Audience is the token audience the host verifies a workload's projected
 	// token against. It is the host's bare audience string, not an address.
 	Audience string `yaml:"audience"`
-	// TrustDomain is the SPIFFE trust domain of the cell's mesh. A presence
-	// document names, per workload, its mesh principal — the SPIFFE ID the
-	// mesh issues to the workload's ServiceAccount and presents on its behalf,
-	// never a certificate the workload serves:
+	// TrustDomain is the SPIFFE trust domain of the cell's mesh. A module
+	// manifest names, per workload, its SPIFFE ID — the one the mesh issues to
+	// the workload's ServiceAccount, never a certificate the workload serves:
 	// spiffe://<trust domain>/ns/<namespace>/sa/<account>.
 	TrustDomain string `yaml:"trust_domain"`
-	// EnvelopeRevision is the revision of the host's envelope — the ceiling a
-	// platform administrator writes at runtime — that this composition was
-	// reviewed against. Both delivery documents carry it inside their signed
-	// bytes and the host refuses a document naming another revision, so a
-	// composition pins the revision it was reviewed against here, and bumps it
-	// when the envelope is re-reviewed. Never derived: the render does not
-	// read the envelope.
-	EnvelopeRevision uint64 `yaml:"envelope_revision"`
 	// Delivery names the host's delivery API by composition identity —
 	// "<module>/<service>/<endpoint>" — the way api.consumes names a producing
 	// endpoint. The render resolves it to the in-cluster address the delivery
@@ -307,7 +297,7 @@ func (policy *HostReleasePolicy) Validate() error {
 }
 
 // hostFields are the keys a host block may carry, in declaration order.
-var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "envelope_revision", "delivery", "gateway", "module_audience", "release", "developers", "trust_anchor"}
+var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "delivery", "gateway", "module_audience", "release", "developers", "trust_anchor"}
 
 // deliveryPattern is a composition identity: <module>/<service>/<endpoint>,
 // each a lowercase name.
@@ -371,9 +361,6 @@ func (host *EnvironmentHost) Validate() error {
 	}
 	if err := ValidateTrustDomain(host.TrustDomain); err != nil {
 		return err
-	}
-	if host.EnvelopeRevision == 0 {
-		return fmt.Errorf("host envelope_revision must be the revision (at least 1) of the host envelope this composition was reviewed against")
 	}
 	if !deliveryPattern.MatchString(host.Delivery) {
 		return fmt.Errorf("host delivery %q is not the composition identity <module>/<service>/<endpoint> of the host's delivery API", host.Delivery)
@@ -1180,7 +1167,7 @@ type Environment struct {
 	// target, and the CLI has no other durable record of it — `codefly
 	// environment import` reads the coordinate off a codefly/coordinate/v1
 	// contract and keeps it only as a provenance comment. Absent, a render
-	// declares no presence and no authority rather than inventing a host.
+	// declares no module manifest rather than inventing a host.
 	// CLI-side; not serialized to proto.
 	Host *EnvironmentHost `yaml:"host,omitempty"`
 

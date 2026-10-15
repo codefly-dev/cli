@@ -11,36 +11,45 @@ import (
 	"github.com/codefly-dev/core/solutionhost"
 )
 
-func testPayload(t *testing.T) []byte {
+// testManifest is a valid module manifest, so the verifier exercises the
+// document as well as the envelope.
+func testManifest(t *testing.T) *solutionhost.ModuleManifest {
 	t.Helper()
-	// Use core's canonical fixture, so the verifier exercises the document too.
-	for _, fixture := range solutionhost.FixturesOf(solutionhost.DocumentTypePresence) {
-		raw, err := solutionhost.FixtureDocument(solutionhost.DocumentTypePresence, fixture.Name)
-		if err != nil {
-			continue
-		}
-		document, err := solutionhost.Parse(raw)
-		if err != nil {
-			continue
-		}
-		payload, err := solutionhost.SignedPayload(document)
-		if err == nil {
-			return payload
-		}
+	manifest := &solutionhost.ModuleManifest{
+		Schema: solutionhost.SchemaModuleManifestV1, Binding: "acme.local.wiki", Alias: "wiki", Kind: solutionhost.KindModule,
+		Generation: 1, Host: solutionhost.HostTarget{Coordinate: "acme/local", Domain: "acme"},
+		Release:   solutionhost.Release{Publisher: "acme", Name: "wiki", Version: "0.1.0"},
+		Workloads: []solutionhost.Workload{{Service: "backend", Container: "backend", SPIFFEID: "spiffe://cluster.local/ns/acme-wiki/sa/backend"}},
+		Authority: &solutionhost.Authority{Principal: "wiki"},
 	}
-	t.Fatal("no valid core presence fixture")
-	return nil
+	if err := manifest.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return manifest
 }
 
-func TestKeyCheckVerifiesEnvelopeKeyAndOwnership(t *testing.T) {
-	payload := testPayload(t)
-	document, err := solutionhost.PresenceFromVerified(payload)
+func testSigner(t *testing.T) solutionhost.Signer {
+	t.Helper()
+	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	signer := solutionhost.FixtureSigner()
+	signer, err := solutionhost.NewInMemorySigner("release", private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signer
+}
+
+func TestKeyCheckVerifiesEnvelopeKeyAndOwnership(t *testing.T) {
+	document := testManifest(t)
+	payload, err := solutionhost.SignedPayload(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := testSigner(t)
 	for _, kind := range []solutionhost.KeyKind{solutionhost.KeyKindRelease, solutionhost.KeyKindPerson} {
-		check, err := KeyCheck(signer, kind, document.OwnershipDomain, signer.KeyID())
+		check, err := KeyCheck(signer, kind, document.Host.Domain, signer.KeyID())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -85,7 +94,7 @@ func TestKeyCheckVerifiesEnvelopeKeyAndOwnership(t *testing.T) {
 			t.Fatal("claim unreadable")
 		}
 	}
-	if _, err = KeyCheck(signer, solutionhost.KeyKindRelease, document.OwnershipDomain, "unlisted"); err == nil {
+	if _, err = KeyCheck(signer, solutionhost.KeyKindRelease, document.Host.Domain, "unlisted"); err == nil {
 		t.Fatal("custody mismatch accepted")
 	}
 	for _, raw := range []string{"", `{}`, `{"signatures":[{},{}]}`, `{"signatures":[{"keyid":""}]}`} {
@@ -97,4 +106,14 @@ func TestKeyCheckVerifiesEnvelopeKeyAndOwnership(t *testing.T) {
 	if _, err = SignEnvelope(payload, unavailable); err == nil || !strings.Contains(err.Error(), "VAULT_TOKEN") {
 		t.Fatal("missing custody was not explained")
 	}
+}
+
+// testPayload is testManifest's canonical bytes: what a signer signs.
+func testPayload(t *testing.T) []byte {
+	t.Helper()
+	payload, err := solutionhost.SignedPayload(testManifest(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
 }

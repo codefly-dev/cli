@@ -12,6 +12,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/nativecluster"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 )
 
@@ -65,30 +66,29 @@ func TestANativeRunRefusesADeclaredPageWithoutItsBuiltBundle(t *testing.T) {
 	require.ErrorContains(t, err, solutionrun.FrontendBundleManifest)
 }
 
-// Forgetting a withdrawn workload drops what this run kept for it, and only
-// that: the identity, the projection, the documents, the withheld mark and the
-// delivered record a restart would replay; another workload's stays.
-func TestForgetDropsOnlyTheWithdrawnWorkload(t *testing.T) {
+// Forgetting a stopped workload drops what this run kept for it, and only
+// that: the identity, the projection, the issued workload and whether it
+// runs; another workload's stays, and so does its module's delivered
+// manifest, which a withdrawal still needs.
+func TestForgetDropsOnlyTheStoppedWorkload(t *testing.T) {
 	cluster := &nativeCluster{
-		stateDir:    t.TempDir(),
 		identities:  map[string]gitops.NativeIdentity{"wiki/api": {Module: "wiki"}, "crm/api": {Module: "crm"}},
 		projections: map[string]nativecluster.Projection{"wiki/api": {}, "crm/api": {}},
-		documents:   map[string]*gitops.NativeDocuments{"wiki/api": {}, "crm/api": {}},
-		withheld:    map[string]bool{"wiki/api": true},
+		workloads:   map[string]nativecluster.Workload{"wiki/api": {}, "crm/api": {}},
+		running:     map[string]bool{"wiki/api": true, "crm/api": true},
+		delivered:   map[string]*solutionhost.ModuleManifest{"wiki": {}, "crm": {}},
 	}
-	require.NoError(t, cluster.persistDelivered("wiki/api", &gitops.NativeDocuments{}))
-	require.NoError(t, cluster.persistDelivered("crm/api", &gitops.NativeDocuments{}))
 	cluster.forget("wiki/api")
 	_, known := cluster.identity("wiki/api")
 	require.False(t, known)
 	require.NotContains(t, cluster.projections, "wiki/api")
-	require.NotContains(t, cluster.documents, "wiki/api")
-	require.NotContains(t, cluster.withheld, "wiki/api")
-	require.NoFileExists(t, filepath.Join(cluster.deliveredDir(), deliveredFileName("wiki/api")))
+	require.NotContains(t, cluster.workloads, "wiki/api")
+	require.NotContains(t, cluster.running, "wiki/api")
+	require.Contains(t, cluster.delivered, "wiki")
 	_, kept := cluster.identity("crm/api")
 	require.True(t, kept)
-	require.Contains(t, cluster.documents, "crm/api")
-	require.FileExists(t, filepath.Join(cluster.deliveredDir(), deliveredFileName("crm/api")))
+	require.Contains(t, cluster.projections, "crm/api")
+	require.True(t, cluster.running["crm/api"])
 }
 
 // The delivery host that declares the federation group receives, from the

@@ -31,8 +31,7 @@ func inventoryAppliedRoots(opts *RenderOptions) []appliedRoot {
 		add(unit.Path, opts.Namespace)
 	}
 	add(inventory.ModulePath, opts.Namespace)
-	add(inventory.SolutionHostBindingPath, opts.Namespace)
-	add(inventory.SolutionAuthorityPath, authorityNamespace)
+	add(inventory.ModuleManifestPath, opts.Namespace)
 	return roots
 }
 

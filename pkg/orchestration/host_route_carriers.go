@@ -27,7 +27,7 @@ import (
 //     one HTTP endpoint the solution's entry service declares — in plain
 //     HTTP, the way it already reaches a module. Nothing a solution reports
 //     at run time is an address: the gateway routes a solution from its
-//     applied presence's endpoints and from these carriers, as it routes a
+//     applied module manifest's endpoints, which carry these addresses, as it routes a
 //     module, and a solution's transport identity is the mesh's, not a
 //     certificate it serves.
 //

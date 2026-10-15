@@ -5,9 +5,8 @@
 // environment attests about the caller. In a cell that is the cluster: a
 // projected ServiceAccount token and the pod it names. A native run has no
 // cluster and imitates none. The CLI starts every process, so it is the one
-// party that knows which declared workload a process is and which build it
-// launched, and it says so in its own credential: core's
-// workloadidentity/native. The host verifies that credential against the
+// party that knows which declared workload a process is, and it says so in its
+// own credential: core's workloadidentity/native. The host verifies that credential against the
 // run's anchor, which the CLI names to it in CODEFLY_NATIVE_IDENTITY_ANCHOR.
 //
 // Transport identity is not here. In a cell the mesh carries it; a laptop has
@@ -29,15 +28,14 @@ import (
 const TokenRefreshInterval = native.RefreshInterval
 
 // Pod is one native process as the run vouches for it: the identity its
-// credential names and the build it runs, once known.
+// credential names, and the declared container it is (empty for a delivery
+// carrier, which runs no declared workload).
 type Pod struct {
 	Namespace      string
 	ServiceAccount string
 	Name           string
 	UID            string
 	Container      string
-	Repository     string
-	Digest         string
 }
 
 // Authority is the run's workload-identity issuer and what it knows about
@@ -72,8 +70,7 @@ func (a *Authority) AnchorFingerprint() string { return a.issuer.Anchor().Finger
 func podKey(namespace, account string) string { return namespace + "/" + account }
 
 // RegisterPod records what the run vouches for about one identity, replacing
-// what it vouched for before: a rebuilt workload is the same identity running
-// a new build.
+// what it vouched for before.
 func (a *Authority) RegisterPod(pod *Pod) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -92,15 +89,12 @@ func (a *Authority) Pod(namespace, account string) (Pod, bool) {
 	return *pod, true
 }
 
-// Token issues a credential for an identity, naming the instance and, once
-// the run knows them, the container and build it registered for it.
+// Token issues a credential for an identity, naming the instance and the
+// container it registered for it.
 func (a *Authority) Token(namespace, account, podName, podUID, audience string) (string, error) {
 	subject := native.Subject{Namespace: namespace, Account: account, Instance: podName, InstanceUID: podUID}
 	if pod, ok := a.Pod(namespace, account); ok && pod.UID == podUID {
-		subject.Container, subject.Build = pod.Container, pod.Digest
-		if pod.Digest != "" && pod.Repository != "" {
-			subject.DeclaredImage = pod.Repository + "@" + pod.Digest
-		}
+		subject.Container = pod.Container
 	}
 	return a.issuer.Issue(subject, audience)
 }
@@ -132,7 +126,7 @@ func (a *Authority) Project(dir string, workload *Workload) (Projection, error) 
 }
 
 // RefreshToken rewrites a workload's credential, as a kubelet rotates a
-// projected token before it lapses, and as soon as the run learns its build.
+// projected token before it lapses.
 func (a *Authority) RefreshToken(path string, workload *Workload) error {
 	token, err := a.Token(workload.Namespace, workload.Account, workload.PodName, workload.PodUID, workload.Audience)
 	if err != nil {

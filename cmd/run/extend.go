@@ -114,9 +114,9 @@ func freshRoots(known map[string]bool, roots []string) []string {
 // withdrawDroppedRoots reloads the workspace and withdraws from the run every
 // root it starts that the composition no longer names, the pinned ones
 // excepted: the flow stops what only those roots needed, dependents first,
-// and the native cluster, if one answers, withdraws each stopped workload's
-// presence with a tombstone and forgets it. The host keeps its process and
-// its authority; the envelope is never narrowed by a run.
+// and the native cluster, if one answers, takes each stopped workload out of
+// its module's manifest — withdrawing the module when nothing of it runs any
+// more — and forgets it. The host keeps its process; the envelope is untouched.
 func withdrawDroppedRoots(ctx context.Context, flow *orchestration.Flow, pinned map[string]bool) error {
 	workspace, err := common.LoadWorkspace(ctx)
 	if err != nil {
@@ -136,8 +136,8 @@ func withdrawDroppedRoots(ctx context.Context, flow *orchestration.Flow, pinned 
 	}
 	if cluster := activeNativeCluster(); cluster != nil {
 		withdrawn, withdrawErr := cluster.withdraw(ctx, stopped)
-		for _, unique := range withdrawn {
-			cli.Info("withdrew %s from the host: its presence is a tombstone now, terminal for that binding", unique)
+		for _, module := range withdrawn {
+			cli.Info("withdrew %s from the host: its module manifest is a withdrawal now, terminal for that binding", module)
 		}
 		if withdrawErr != nil {
 			return errors.Join(err, withdrawErr)
