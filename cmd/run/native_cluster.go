@@ -485,6 +485,14 @@ func (cluster *nativeCluster) project(unique string, identity gitops.NativeIdent
 		Namespace: namespace, Account: identity.Account,
 		PodName: identity.Service + "-native", PodUID: randomUID(), Audience: cluster.env.Host.Audience,
 	}
+	// The process is registered before its first credential is written, so
+	// that credential already names its container: until delivery it names no
+	// build, which the host answers as not yet established (retryable) rather
+	// than as another workload's credential (a verdict).
+	cluster.authority.RegisterPod(&nativecluster.Pod{
+		Namespace: namespace, ServiceAccount: identity.Account, Name: workload.PodName, UID: workload.PodUID,
+		Container: identity.Service, Repository: "native/" + strings.ToLower(cluster.composed().Name) + "/" + strings.ToLower(identity.Module) + "/" + strings.ToLower(identity.Service),
+	})
 	projection, err := cluster.authority.Project(filepath.Join(cluster.stateDir, "identities", identity.Module, identity.Service), &workload)
 	if err != nil {
 		return nativecluster.Projection{}, err
@@ -504,11 +512,6 @@ func (cluster *nativeCluster) project(unique string, identity gitops.NativeIdent
 		}
 		cluster.withheld[unique] = true
 	}
-	// The pod exists from projection on; its build is known once it runs.
-	cluster.authority.RegisterPod(&nativecluster.Pod{
-		Namespace: namespace, ServiceAccount: identity.Account, Name: workload.PodName, UID: workload.PodUID,
-		Container: identity.Service, Repository: "native/" + strings.ToLower(cluster.composed().Name) + "/" + strings.ToLower(identity.Module) + "/" + strings.ToLower(identity.Service),
-	})
 	return projection, nil
 }
 
