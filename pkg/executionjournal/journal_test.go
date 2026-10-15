@@ -9,7 +9,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -416,14 +415,11 @@ func receiptForStage(stage executionv1.ExecutionStage) *executionv1.ExecutionRec
 			}},
 			WorkspaceId: &workspaceID, ProjectId: &projectID,
 			// Core v0.9.1 requires the seal: a capability names the
-			// installation it is held through and the execution it was minted
-			// for. The execution pair is optional but must be whole.
+			// installation it is held through.
 			Seal: &basev0.WorkSealV1{
 				PrincipalEpoch:       1,
 				InstallationId:       "installation-warden",
 				InstallationRevision: 3,
-				BuildIncarnation:     uint64Pointer(7),
-				ImageDigest:          stringPointer("sha256:" + strings.Repeat("a", 64)),
 			},
 		},
 		WorkContextSha256: hex.EncodeToString(contextDigest[:]),

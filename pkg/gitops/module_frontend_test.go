@@ -53,9 +53,10 @@ func TestModuleFrontendReachesBothDeliveryPaths(t *testing.T) {
 	t.Run("native", func(t *testing.T) {
 		deliverer := &NativeDeliverer{Workspace: &resources.Workspace{Name: "example"}, Env: env}
 		documents, err := deliverer.Render(context.Background(), &NativeWorkload{
-			Module: module, Service: service, Services: services,
-			Subject: "system:serviceaccount:example:shared-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/shared-api",
-			Artifact: NativeArtifact{Executable: filepath.Join(entryDir, "binary")}, FrontendBundle: builtBundle(),
+			Module:         module,
+			Services:       services,
+			FrontendBundle: builtBundle(),
+			Members:        []NativeMember{{Service: service, Subject: "system:serviceaccount:example:shared-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/shared-api", Artifact: NativeArtifact{Executable: filepath.Join(entryDir, "binary")}}},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -89,9 +90,9 @@ func TestAHeadlessSolutionReachesBothDeliveryPaths(t *testing.T) {
 	}
 	deliverer := &NativeDeliverer{Workspace: &resources.Workspace{Name: "example"}, Env: env}
 	documents, err := deliverer.Render(context.Background(), &NativeWorkload{
-		Module: module, Service: service, Services: []*resources.Service{service},
-		Subject: "system:serviceaccount:example:crm-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/crm-api",
-		Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")},
+		Module:   module,
+		Services: []*resources.Service{service},
+		Members:  []NativeMember{{Service: service, Subject: "system:serviceaccount:example:crm-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/crm-api", Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")}}},
 	})
 	if err != nil || documents == nil || documents.Presence.Kind != solutionhost.KindSolution || documents.Presence.Frontend != nil {
 		t.Fatalf("headless solution native delivery: documents=%+v err=%v", documents, err)

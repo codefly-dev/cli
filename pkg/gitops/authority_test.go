@@ -148,17 +148,17 @@ func TestRenderDerivesAuthorityFromTheModuleContract(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, undeclared)
 	require.Len(t, instances, 1)
-	require.Equal(t, "api", instances[0].Service)
+	require.Equal(t, []string{"api"}, instances[0].Services)
 
 	destination, result := renderShopAuthority(t, workspace, env, units, instances)
 	require.Equal(t, solutionAuthorityDir, result.Inventory.SolutionAuthorityPath)
 	require.Len(t, result.SolutionAuthorities, 1)
 	declared := result.SolutionAuthorities[0]
 	require.Equal(t, "acme.staging.shop-authority", declared.Authority)
-	require.Equal(t, "sha256:"+strings.Repeat("a", 64), declared.Build, "the approved build is the authenticating container's image, never the sidecar's")
+	require.Equal(t, []string{"sha256:" + strings.Repeat("a", 64)}, declared.Builds, "the approved build is the authenticating container's image, never the sidecar's")
 
 	document, carrier := readDeliveredAuthority(t, destination, "staging", "acme.staging.shop-authority.yaml")
-	require.Equal(t, solutionhost.SchemaAuthorityV1, document.Schema)
+	require.Equal(t, solutionhost.SchemaAuthorityV4, document.Schema)
 	require.Equal(t, "acme.staging.shop-authority", document.Authority)
 	require.Equal(t, "acme.staging.shop", document.PresenceBinding, "granted over exactly this instance's presence binding")
 	require.Equal(t, uint64(1), document.Generation)
@@ -166,7 +166,7 @@ func TestRenderDerivesAuthorityFromTheModuleContract(t *testing.T) {
 	require.Equal(t, "acme", document.OwnershipDomain)
 	require.Equal(t, uint64(1), document.EnvelopeRevision)
 	require.Equal(t, solutionhost.HostTarget{Coordinate: "example/staging/region-a", Component: "platform-host"}, document.Host)
-	require.Equal(t, solutionhost.ImageDigest("sha256:"+strings.Repeat("a", 64)), document.ApprovedBuild)
+	require.Equal(t, []solutionhost.ImageDigest{solutionhost.ImageDigest("sha256:" + strings.Repeat("a", 64))}, document.ApprovedBuilds)
 	require.Len(t, document.Principals, 1)
 	require.Equal(t, "shop", document.Principals[0].Principal, "the principal is the module's own name")
 	require.Equal(t, []solutionhost.AuthorityBinding{
@@ -264,12 +264,12 @@ func TestAModuleWithAContractMustDeclarePresence(t *testing.T) {
 	require.Empty(t, render.options.SolutionInstances)
 }
 
-// TestAuthorityIsPresentedByOneService: two services each declaring
-// module-identity would be two authority documents over one binding — two
-// builds under one principal — of which a host, holding one authority record
-// per binding, could activate at most one. The render refuses the pair and
-// names both, rather than letting the host refuse one of them at apply.
-func TestAuthorityIsPresentedByOneService(t *testing.T) {
+// TestOneAuthorityCoversEveryIdentityWorkload: two services each declaring
+// module-identity are two workloads running as one principal, and the
+// module still has one authority: one instance names both services and
+// both units, so the document approves both builds.
+
+func TestOneAuthorityCoversEveryIdentityWorkload(t *testing.T) {
 	ctx := context.Background()
 	workspace, module := writeAuthorityWorkspace(t)
 	env := selectedEnvironment(t, workspace, "staging")
@@ -284,10 +284,11 @@ func TestAuthorityIsPresentedByOneService(t *testing.T) {
 	services := loadServices(t, workspace, "shop", "api", "worker")
 	units := []SolutionArtifactUnit{{Name: "api", Path: "services/api"}, {Name: "worker", Path: "services/worker"}}
 
-	_, _, err = authorityInstancesOf(ctx, workspace, module, services, env, units, nil)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "module-identity on the services api, worker")
-	require.Contains(t, err.Error(), "one authority record per binding")
+	instances, _, err := authorityInstancesOf(ctx, workspace, module, services, env, units, nil)
+	require.NoError(t, err)
+	require.Len(t, instances, 1, "a module has one authority, however many workloads run as it")
+	require.Equal(t, []string{"api", "worker"}, instances[0].Services)
+	require.Equal(t, units, instances[0].Units, "the authority approves the build of every identity workload's unit")
 }
 
 // TestAuthorityRefusesAPrincipalThatIsNotTheModule: the contract is written

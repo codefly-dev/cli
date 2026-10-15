@@ -301,7 +301,7 @@ func solutionHostBinding(owned string, opts *RenderOptions, instance *SolutionIn
 	}
 	release := solutionhost.Release{Publisher: publisher, Name: name, Version: instance.Version, Digest: instance.ReleaseDigest}
 	document := &solutionhost.SolutionHostBinding{
-		Schema:     solutionhost.SchemaPresenceV1,
+		Schema:     solutionhost.SchemaPresenceV4,
 		Kind:       instance.Kind,
 		Binding:    id,
 		Generation: 1,

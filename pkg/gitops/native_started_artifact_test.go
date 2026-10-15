@@ -420,31 +420,33 @@ func TestANativeRunDeliversAServiceOnANonGoAgent(t *testing.T) {
 
 	deliverer := &NativeDeliverer{Workspace: workspace, Env: env, StateDir: t.TempDir()}
 	documents, err := deliverer.Render(ctx, &NativeWorkload{
-		Module: module, Service: services[0], Services: services,
-		Namespace: "acme-shop", Account: "api", SPIFFEID: "spiffe://cluster.example/ns/acme-shop/sa/api",
-		Subject: "shop-api@example.iam.test", Artifact: artifact,
+		Module:    module,
+		Services:  services,
+		Namespace: "acme-shop",
+		Members:   []NativeMember{{Service: services[0], Account: "api", SPIFFEID: "spiffe://cluster.example/ns/acme-shop/sa/api", Subject: "shop-api@example.iam.test", Artifact: artifact}},
 	})
 	require.NoError(t, err)
 
 	expected, err := artifact.Digest(workspace.Dir())
 	require.NoError(t, err)
-	require.Equal(t, expected, documents.Digest)
+	require.Equal(t, map[string]solutionhost.ImageDigest{"api": expected}, documents.Builds)
 	require.Len(t, documents.Presence.Workloads, 1)
 	require.Equal(t, expected, documents.Presence.Workloads[0].Image.Digest)
 	require.Equal(t, "native/acme/shop/api", documents.Presence.Workloads[0].Image.Repository)
 	require.NotNil(t, documents.Authority)
-	require.Equal(t, expected, documents.Authority.ApprovedBuild)
+	require.Equal(t, []solutionhost.ImageDigest{expected}, documents.Authority.ApprovedBuilds)
 
 	// A rebuilt source is a new build the host must approve afresh, the same
 	// way a recompiled Go binary is.
 	require.NoError(t, os.WriteFile(artifact.Sources[0], []byte("app = None\n"), 0o600))
 	rebuilt, err := deliverer.Render(ctx, &NativeWorkload{
-		Module: module, Service: services[0], Services: services,
-		Namespace: "acme-shop", Account: "api", SPIFFEID: "spiffe://cluster.example/ns/acme-shop/sa/api",
-		Subject: "shop-api@example.iam.test", Artifact: artifact,
+		Module:    module,
+		Services:  services,
+		Namespace: "acme-shop",
+		Members:   []NativeMember{{Service: services[0], Account: "api", SPIFFEID: "spiffe://cluster.example/ns/acme-shop/sa/api", Subject: "shop-api@example.iam.test", Artifact: artifact}},
 	})
 	require.NoError(t, err)
-	require.NotEqual(t, documents.Digest, rebuilt.Digest)
+	require.NotEqual(t, documents.Builds["api"], rebuilt.Builds["api"])
 }
 
 // The forgery case above pins one historical attack. This pins the property

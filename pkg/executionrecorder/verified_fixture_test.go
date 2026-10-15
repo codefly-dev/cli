@@ -91,10 +91,6 @@ func mintedCapability(
 		WorkspaceID:        fixtureWorkspaceID,
 		ProjectID:          fixtureProjectID,
 		InstallationID:     coreworkcontext.FixtureInstallation,
-		Execution: coreworkcontext.Execution{
-			ImageDigest:      coreworkcontext.FixtureImageDigest,
-			BuildIncarnation: coreworkcontext.FixtureBuildIncarnation,
-		},
 		TTL: time.Hour,
 	})
 	if err != nil {

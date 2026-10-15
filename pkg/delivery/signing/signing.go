@@ -97,7 +97,7 @@ func KeyCheck(signer Signer, kind solutionhost.KeyKind, domain string, admitted 
 		}
 		if err = json.Unmarshal(payload, &schema); err == nil {
 			switch schema.Schema {
-			case solutionhost.SchemaAuthorityV1:
+			case solutionhost.SchemaAuthorityV4:
 				_, err = solutionhost.VerifyDeliveredAuthority(ctx, carrier, verifier)
 			case solutionhost.EndpointDeliverySchema:
 				// The endpoints bound to a presence: the same pinned-key

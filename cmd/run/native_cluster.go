@@ -754,8 +754,8 @@ func (cluster *nativeCluster) loadDelivered() error {
 			continue
 		}
 		cluster.documents[record.Unique] = record.Documents
-		if record.Documents.Digest != "" {
-			cluster.builds[record.Documents.Digest] = true
+		for _, build := range record.Documents.Builds {
+			cluster.builds[build] = true
 		}
 	}
 	return nil
@@ -812,8 +812,7 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, identi
 	if len(cluster.pendingWithdrawals) > 0 {
 		return fmt.Errorf("%s: delivery waits for pending withdrawals; refresh the composition before reloading this workload", unique)
 	}
-	workload, projected := cluster.workloads[unique]
-	if !projected {
+	if _, projected := cluster.workloads[unique]; !projected {
 		return fmt.Errorf("%s is running with no projected identity", unique)
 	}
 	module, err := cluster.composed().LoadModuleFromName(ctx, identity.Module)
@@ -828,11 +827,12 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, identi
 		}
 		services = append(services, loaded)
 	}
-	// The build this run approves is what the agent says it started, never a
-	// path derived from one agent family's layout: a Go agent's binary and a
-	// python agent's interpreter-and-sources are not the same shape, and only
-	// the agent that started the process knows which it ran.
-	artifact, err := gitops.StartedArtifactOf(service, cluster.flow.StartedArtifact(unique))
+	// THE MODULE'S WORKLOADS, not this one alone. A module runs as every one of
+	// its identity services — a serving process and a worker, say — so its
+	// presence lists each one this run has started, with the build it runs, and
+	// its one authority approves them all. The documents are kept under the
+	// module's first identity in order, whichever member started last.
+	members, key, err := cluster.membersOf(identity, unique, service)
 	if err != nil {
 		return err
 	}
@@ -848,35 +848,39 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, identi
 	if err != nil {
 		return err
 	}
-	native := gitops.NativeWorkload{
-		Module: module, Service: service, Services: services, Namespace: namespace, Account: identity.Account,
-		SPIFFEID: identity.SPIFFEID, Subject: cluster.subject(identity), Artifact: artifact, FrontendBundle: bundle,
-	}
+	native := gitops.NativeWorkload{Module: module, Services: services, Namespace: namespace, Members: members, FrontendBundle: bundle}
 	rendered, err := deliverer.Render(ctx, &native)
 	if err != nil {
 		return err
 	}
-	// The pod reports the build the documents name, read once. Digesting the
-	// started files a second time here would let a source saved between the
-	// two reads give the pod one build and the presence another, and the host
-	// refuses a pod whose image is not an approved build — a digest mismatch
-	// standing in for an edit nobody made.
-	cluster.authority.RegisterPod(&nativecluster.Pod{
-		Namespace: namespace, ServiceAccount: identity.Account, Name: workload.PodName, UID: workload.PodUID,
-		Container: identity.Service, Repository: "native/" + strings.ToLower(cluster.composed().Name) + "/" + strings.ToLower(identity.Module) + "/" + strings.ToLower(identity.Service),
-		Digest: string(rendered.Digest),
-	})
-	// The credential names the build from now on: rewritten here rather than at
-	// the next rotation, so a workload that minted before its build was known
-	// ("not established yet") succeeds on its next attempt.
-	if !cluster.withheld[unique] {
-		if err := cluster.authority.RefreshToken(cluster.projections[unique].TokenFile, &workload); err != nil {
-			return fmt.Errorf("%s: reissue the workload's credential with its build: %w", unique, err)
+	// Each member's process reports the build the documents name, read once.
+	// Digesting the started files a second time here would let a source saved
+	// between the two reads give the process one build and the presence
+	// another, and the host refuses a process whose image is not its approved
+	// build — a digest mismatch standing in for an edit nobody made.
+	for _, member := range members {
+		memberUnique := resources.ServiceUnique(identity.Module, member.Service.Name)
+		memberWorkload := cluster.workloads[memberUnique]
+		cluster.authority.RegisterPod(&nativecluster.Pod{
+			Namespace: namespace, ServiceAccount: member.Account, Name: memberWorkload.PodName, UID: memberWorkload.PodUID,
+			Container: member.Service.Name, Repository: member.Repository(cluster.composed().Name, identity.Module),
+			Digest: string(rendered.Builds[member.Service.Name]),
+		})
+		// The credential names the build from now on: rewritten here rather
+		// than at the next rotation, so a workload that minted before its
+		// build was known ("not established yet") succeeds on its next try.
+		if !cluster.withheld[memberUnique] {
+			if err := cluster.authority.RefreshToken(cluster.projections[memberUnique].TokenFile, &memberWorkload); err != nil {
+				return fmt.Errorf("%s: reissue the workload's credential with its build: %w", memberUnique, err)
+			}
 		}
 	}
+	unique = key
 	previous, hadPrevious := cluster.documents[unique]
 	cluster.documents[unique] = rendered
-	cluster.builds[rendered.Digest] = true
+	for _, build := range rendered.Builds {
+		cluster.builds[build] = true
+	}
 	// A workload whose documents the host refuses must not take every other
 	// workload's next delivery down with it: every envelope write carries
 	// every principal, so its documents are put back as they were.
@@ -908,14 +912,17 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, identi
 		for build := range cluster.builds {
 			builds = append(builds, build)
 		}
-		for key, documents := range cluster.documents {
+		for _, documents := range cluster.documents {
 			if documents.Authority == nil {
 				continue
 			}
-			started, _ := cluster.identity(key)
+			workloads := make([]gitops.EnvelopeWorkload, 0, len(documents.Presence.Workloads))
+			for _, workload := range documents.Presence.Workloads {
+				workloads = append(workloads, gitops.EnvelopeWorkload{SPIFFEID: workload.Identity.SPIFFEID, Container: workload.Container})
+			}
 			principals = append(principals, gitops.EnvelopePrincipal{
 				PresenceBinding: documents.Presence.Binding, Prefix: documents.Principal, Bindings: documents.Bindings, Ceilings: documents.Ceilings,
-				SPIFFEID: started.SPIFFEID, Container: started.Service, Grant: grants[documents.Principal],
+				Workloads: workloads, Grant: grants[documents.Principal],
 			})
 		}
 		sort.Slice(principals, func(i, j int) bool { return principals[i].Prefix < principals[j].Prefix })
@@ -967,8 +974,75 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, identi
 	}
 	// Only now does a workload get its token: the host holds its documents,
 	// so the first ask it can make is one the host answers "not established
-	// yet" until its registry has read them, never "refused".
-	return cluster.release(keys)
+	// yet" until its registry has read them, never "refused". Every member of
+	// a delivered module is released, not only the key it is kept under.
+	released := append([]string(nil), keys...)
+	for withheld := range cluster.withheld {
+		for _, key := range keys {
+			if moduleOfUnique(withheld) == moduleOfUnique(key) {
+				released = append(released, withheld)
+			}
+		}
+	}
+	return cluster.release(released)
+}
+
+// moduleOfUnique is the module part of a service unique (<module>/<service>).
+func moduleOfUnique(unique string) string {
+	module, _, _ := strings.Cut(unique, "/")
+	return module
+}
+
+// membersOf is every identity workload of module this run has started, each
+// with what its agent reports it started, and the key the module's documents
+// are kept under: its first identity in order. Called with the lock held.
+// started is the service whose start triggered this delivery; its artifact is
+// required, every other member's only when it has started.
+func (cluster *nativeCluster) membersOf(startedIdentity gitops.NativeIdentity, started string, service *resources.Service) ([]gitops.NativeMember, string, error) {
+	module := startedIdentity.Module
+	cluster.composition.RLock()
+	var uniques []string
+	for unique, identity := range cluster.identities {
+		if identity.Module == module {
+			uniques = append(uniques, unique)
+		}
+	}
+	cluster.composition.RUnlock()
+	if !slices.Contains(uniques, started) {
+		uniques = append(uniques, started)
+	}
+	sort.Strings(uniques)
+	var members []gitops.NativeMember
+	for _, unique := range uniques {
+		identity, _ := cluster.identity(unique)
+		var memberService *resources.Service
+		if unique == started {
+			identity = startedIdentity
+			memberService = service
+		} else {
+			if cluster.flow.StartedArtifact(unique) == nil {
+				continue
+			}
+			loaded, err := cluster.flow.ServiceFromUnique(unique)
+			if err != nil {
+				return nil, "", err
+			}
+			memberService = loaded
+		}
+		// The build this run approves is what the agent says it started,
+		// never a path derived from one agent family's layout: a Go agent's
+		// binary and a python agent's interpreter-and-sources are not the same
+		// shape, and only the agent that started the process knows which it ran.
+		artifact, err := gitops.StartedArtifactOf(memberService, cluster.flow.StartedArtifact(unique))
+		if err != nil {
+			return nil, "", err
+		}
+		members = append(members, gitops.NativeMember{
+			Service: memberService, Account: identity.Account, SPIFFEID: identity.SPIFFEID,
+			Subject: cluster.subject(identity), Artifact: artifact,
+		})
+	}
+	return members, uniques[0], nil
 }
 
 // fixtureAdministrator is the platform administrator the selected fixture

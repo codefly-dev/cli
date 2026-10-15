@@ -75,9 +75,10 @@ func TestAReleasedFrontendBundleIsTheGeneratedPayload(t *testing.T) {
 				bundle = builtBundle()
 			}
 			documents, nativeErr := deliverer.Render(context.Background(), &NativeWorkload{
-				Module: module, Service: services[0], Services: services,
-				Subject: "system:serviceaccount:example:shared-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/shared-api",
-				Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")}, FrontendBundle: bundle,
+				Module:         module,
+				Services:       services,
+				FrontendBundle: bundle,
+				Members:        []NativeMember{{Service: services[0], Subject: "system:serviceaccount:example:shared-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/shared-api", Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")}}},
 			})
 			if tc.refused != "" {
 				require.ErrorContains(t, err, tc.refused, "the render")
@@ -123,9 +124,10 @@ func TestANativeRunStampsTheBundleItBuilt(t *testing.T) {
 				carried = nil
 			}
 			documents, err := deliverer.Render(context.Background(), &NativeWorkload{
-				Module: module, Service: services[0], Services: services,
-				Subject: "system:serviceaccount:example:shared-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/shared-api",
-				Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")}, FrontendBundle: carried,
+				Module:         module,
+				Services:       services,
+				FrontendBundle: carried,
+				Members:        []NativeMember{{Service: services[0], Subject: "system:serviceaccount:example:shared-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/shared-api", Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")}}},
 			})
 			if tc.refused != "" {
 				require.ErrorContains(t, err, tc.refused)

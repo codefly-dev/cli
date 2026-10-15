@@ -41,9 +41,10 @@ func deliveredNativeDocuments(t *testing.T) *NativeDocuments {
 	env := identityEnvironment()
 	module, service := nativeSolution(t, "crm")
 	documents, err := (&NativeDeliverer{Workspace: groupedWorkspace("Operations", "crm"), Env: env}).Render(t.Context(), &NativeWorkload{
-		Module: module, Service: service, Services: []*resources.Service{service},
-		Subject: "system:serviceaccount:example:crm-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/crm-api",
-		Artifact: NativeArtifact{Executable: module.Dir() + "/services/api/binary"}, FrontendBundle: builtBundle(),
+		Module:         module,
+		Services:       []*resources.Service{service},
+		FrontendBundle: builtBundle(),
+		Members:        []NativeMember{{Service: service, Subject: "system:serviceaccount:example:crm-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/crm-api", Artifact: NativeArtifact{Executable: module.Dir() + "/services/api/binary"}}},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, documents.Presence.Frontend)

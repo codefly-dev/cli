@@ -15,9 +15,10 @@ import (
 func TestNativeTombstoneDeliveryKeepsTheOriginalNamespace(t *testing.T) {
 	module, service := nativeSolution(t, "crm")
 	documents, err := (&NativeDeliverer{Workspace: &resources.Workspace{Name: "example"}, Env: identityEnvironment()}).Render(t.Context(), &NativeWorkload{
-		Module: module, Service: service, Services: []*resources.Service{service},
-		Subject: "system:serviceaccount:example:crm-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/crm-api",
-		Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")}, FrontendBundle: builtBundle(),
+		Module:         module,
+		Services:       []*resources.Service{service},
+		FrontendBundle: builtBundle(),
+		Members:        []NativeMember{{Service: service, Subject: "system:serviceaccount:example:crm-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/crm-api", Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")}}},
 	})
 	require.NoError(t, err)
 	var paths []string
@@ -57,9 +58,10 @@ func TestNativeWithdrawalRetriesPartialDeliveryWithoutChangingGeneration(t *test
 		t.Run(fail, func(t *testing.T) {
 			module, service := nativeSolution(t, "crm")
 			documents, err := (&NativeDeliverer{Workspace: &resources.Workspace{Name: "example"}, Env: identityEnvironment()}).Render(t.Context(), &NativeWorkload{
-				Module: module, Service: service, Services: []*resources.Service{service},
-				Subject: "system:serviceaccount:example:crm-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/crm-api",
-				Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")}, FrontendBundle: builtBundle(),
+				Module:         module,
+				Services:       []*resources.Service{service},
+				FrontendBundle: builtBundle(),
+				Members:        []NativeMember{{Service: service, Subject: "system:serviceaccount:example:crm-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/crm-api", Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")}}},
 			})
 			require.NoError(t, err)
 			var presenceBodies [][]byte

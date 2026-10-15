@@ -319,8 +319,8 @@ func TestUnscopedSolutionPreservesModuleContractAndRequiresOneIdentity(t *testin
 	_, _, err = authorityInstancesOf(t.Context(), workspace, module, services, env, nil, nil)
 	require.ErrorContains(t, err, "no service declares module-identity")
 	services[0].ModuleIdentity = true
-	_, _, err = authorityInstancesOf(t.Context(), workspace, module, append(services, services[0]), env, nil, nil)
-	require.ErrorContains(t, err, "one service")
+	_, _, err = authorityInstancesOf(t.Context(), workspace, module, services, env, nil, nil)
+	require.ErrorContains(t, err, "delivers no unit for it", "an identity workload with no rendered unit has no build to approve")
 }
 
 func TestEmptyAdmissionRendersExplicitEmptyBindings(t *testing.T) {
@@ -352,13 +352,18 @@ func TestEmptyPermissionNativeAndDeploymentUseTheSameAdmission(t *testing.T) {
 	require.Empty(t, deployed.Principals[0].Bindings)
 	artifact := startedPythonService(t, services[0].Dir())
 	native, err := (&NativeDeliverer{Workspace: workspace, Env: env, StateDir: t.TempDir()}).Render(t.Context(), &NativeWorkload{
-		Module: module, Service: services[0], Services: services,
-		Namespace: "acme-shop", Account: "api", SPIFFEID: "spiffe://cluster.example/ns/acme-shop/sa/api",
-		Subject: "shop-api@example.iam.test", Artifact: artifact,
+		Module:    module,
+		Services:  services,
+		Namespace: "acme-shop",
+		Members:   []NativeMember{{Service: services[0], Account: "api", SPIFFEID: "spiffe://cluster.example/ns/acme-shop/sa/api", Subject: "shop-api@example.iam.test", Artifact: artifact}},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, native.Authority)
 	require.Equal(t, deployed.Principals, native.Authority.Principals)
 	require.Equal(t, deployed.PresenceBinding, native.Authority.PresenceBinding)
-	require.Equal(t, native.Digest, native.Authority.ApprovedBuild)
+	approved := make([]solutionhost.ImageDigest, 0, len(native.Builds))
+	for _, build := range native.Builds {
+		approved = append(approved, build)
+	}
+	require.ElementsMatch(t, approved, native.Authority.ApprovedBuilds)
 }

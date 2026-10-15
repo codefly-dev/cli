@@ -16,7 +16,10 @@ import (
 func TestWithdrawalCompletionRequiresExactAppliedTombstone(t *testing.T) {
 	module, service := nativeSolution(t, "crm")
 	docs, err := (&NativeDeliverer{Workspace: &resources.Workspace{Name: "example"}, Env: identityEnvironment()}).Render(t.Context(), &NativeWorkload{
-		Module: module, Service: service, Services: []*resources.Service{service}, Subject: "system:serviceaccount:example:crm-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/crm-api", Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")}, FrontendBundle: builtBundle(),
+		Module:         module,
+		Services:       []*resources.Service{service},
+		FrontendBundle: builtBundle(),
+		Members:        []NativeMember{{Service: service, Subject: "system:serviceaccount:example:crm-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/crm-api", Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")}}},
 	})
 	require.NoError(t, err)
 	tombstones, err := WithdrawnDocuments(docs)

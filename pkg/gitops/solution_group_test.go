@@ -71,9 +71,10 @@ func TestAComposedSolutionCarriesItsGroupInThePresence(t *testing.T) {
 	t.Run("native delivery carries the same block, and only the group makes new bytes", func(t *testing.T) {
 		module, service := nativeSolution(t, "crm")
 		workload := &NativeWorkload{
-			Module: module, Service: service, Services: []*resources.Service{service},
-			Subject: "system:serviceaccount:example:crm-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/crm-api",
-			Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")}, FrontendBundle: builtBundle(),
+			Module:         module,
+			Services:       []*resources.Service{service},
+			FrontendBundle: builtBundle(),
+			Members:        []NativeMember{{Service: service, Subject: "system:serviceaccount:example:crm-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/crm-api", Artifact: NativeArtifact{Executable: filepath.Join(module.Dir(), "services", "api", "binary")}}},
 		}
 		deliver := func(workspace *resources.Workspace) *solutionhost.SolutionHostBinding {
 			documents, err := (&NativeDeliverer{Workspace: workspace, Env: env}).Render(ctx, workload)

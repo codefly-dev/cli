@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -66,22 +67,22 @@ func solutionAuthorityOverlay(environment string) string {
 	return filepath.ToSlash(filepath.Join(solutionAuthorityDir, "overlays", environment))
 }
 
-// AuthorityInstance is one authority document's input: the module and the
-// module-identity service it grants to, the unit that renders that service,
-// and the module's resolved contract.
+// AuthorityInstance is one authority document's input: the module, its
+// module-identity services — every workload that runs as the module's
+// principal — the units that render them, and the module's resolved contract.
 type AuthorityInstance struct {
 	Module   string
-	Service  string
-	Unit     SolutionArtifactUnit
+	Services []string
+	Units    []SolutionArtifactUnit
 	Contract *modulecontract.Resolved
 }
 
 // DeclaredAuthority is one rendered authority document: where it was written,
-// which authority it declares, for which build.
+// which authority it declares, for which builds.
 type DeclaredAuthority struct {
-	Path      string `json:"path"`
-	Authority string `json:"authority"`
-	Build     string `json:"build"`
+	Path      string   `json:"path"`
+	Authority string   `json:"authority"`
+	Builds    []string `json:"builds"`
 }
 
 // workspaceValues is the provider the render resolves contract slots from:
@@ -154,14 +155,6 @@ func authorityInstancesOf(
 		// and is told so here, before slot resolution or any document.
 		return nil, "", fmt.Errorf("module %s %s, which asks for authority, but no service declares module-identity, so nothing would present it; declare module-identity on the service that presents the module's identity, or withdraw the request", module.Name, request.source)
 	}
-	if len(identities) > 1 {
-		names := make([]string, 0, len(identities))
-		for _, service := range identities {
-			names = append(names, service.Name)
-		}
-		sort.Strings(names)
-		return nil, "", fmt.Errorf("module %s declares module-identity on the services %s; a module presents its authority from one service, because its one authority document approves one build and the host keeps one authority record per binding, so keep module-identity on the service that authenticates as the module", module.Name, strings.Join(names, ", "))
-	}
 	provided, err := configurations.ReadWorkspaceConfigurations(ctx, workspace, env.Runtime())
 	if err != nil {
 		return nil, "", fmt.Errorf("read the workspace configurations the contract of %s resolves against: %w", module.Name, err)
@@ -184,7 +177,10 @@ func authorityInstancesOf(
 	if err := refuseUnrenderedDestinations(module.Name, resolved, endpoints); err != nil {
 		return nil, "", err
 	}
-	instances := make([]AuthorityInstance, 0, len(identities))
+	// ONE instance for the module, however many of its services declare
+	// module-identity: each is a workload running as the module's principal,
+	// and the module's one authority approves every one's build.
+	instance := AuthorityInstance{Module: module.Name, Contract: resolved}
 	for _, service := range identities {
 		index := -1
 		for position := range units {
@@ -196,8 +192,10 @@ func authorityInstancesOf(
 		if index < 0 {
 			return nil, "", fmt.Errorf("module %s service %s declares module-identity but this render delivers no unit for it, so there is no build to approve", module.Name, service.Name)
 		}
-		instances = append(instances, AuthorityInstance{Module: module.Name, Service: service.Name, Unit: units[index], Contract: resolved})
+		instance.Services = append(instance.Services, service.Name)
+		instance.Units = append(instance.Units, units[index])
 	}
+	instances := []AuthorityInstance{instance}
 	return instances, "", nil
 }
 
@@ -332,13 +330,13 @@ func renderAuthorityDocuments(owned string, opts *RenderOptions) ([]DeclaredAuth
 		return nil, nil
 	}
 	instances := append([]AuthorityInstance(nil), opts.AuthorityInstances...)
-	sort.Slice(instances, func(i, j int) bool { return instances[i].Service < instances[j].Service })
+	sort.Slice(instances, func(i, j int) bool { return instances[i].Module < instances[j].Module })
 	if len(instances) > 1 {
-		services := make([]string, 0, len(instances))
+		modules := make([]string, 0, len(instances))
 		for _, instance := range instances {
-			services = append(services, instance.Module+"/"+instance.Service)
+			modules = append(modules, instance.Module)
 		}
-		return nil, fmt.Errorf("the render names %s as presenting an authority, and a module presents its one authority document from one service", strings.Join(services, ", "))
+		return nil, fmt.Errorf("the render names authorities for the modules %s, and a render is one module with one authority document", strings.Join(modules, ", "))
 	}
 	directory := filepath.Join(owned, filepath.FromSlash(solutionAuthorityOverlay(opts.Environment)))
 	if err := tree.mkdirAll(directory); err != nil {
@@ -355,8 +353,12 @@ func renderAuthorityDocuments(owned string, opts *RenderOptions) ([]DeclaredAuth
 		if err != nil {
 			return nil, err
 		}
+		builds := make([]string, 0, len(document.ApprovedBuilds))
+		for _, build := range document.ApprovedBuilds {
+			builds = append(builds, string(build))
+		}
 		declared = append(declared, DeclaredAuthority{
-			Path: filepath.ToSlash(filepath.Join(solutionAuthorityOverlay(opts.Environment), file)), Authority: document.Authority, Build: string(document.ApprovedBuild),
+			Path: filepath.ToSlash(filepath.Join(solutionAuthorityOverlay(opts.Environment), file)), Authority: document.Authority, Builds: builds,
 		})
 		names = append(names, file)
 	}
@@ -373,12 +375,20 @@ func authorityDocument(owned string, opts *RenderOptions, instance *AuthorityIns
 	if err != nil {
 		return nil, err
 	}
-	build, err := servingBuild(owned, opts, instance.Unit)
-	if err != nil {
-		return nil, fmt.Errorf("authority of %s/%s: %w", instance.Module, instance.Service, err)
+	// The serving build of every unit that runs as the module's principal.
+	var approved []solutionhost.ImageDigest
+	for _, unit := range instance.Units {
+		build, err := servingBuild(owned, opts, unit)
+		if err != nil {
+			return nil, fmt.Errorf("authority of %s/%s: %w", instance.Module, unit.Name, err)
+		}
+		if !slices.Contains(approved, build) {
+			approved = append(approved, build)
+		}
 	}
+	slices.Sort(approved)
 	document := &solutionhost.AuthorityDocument{
-		Schema:    solutionhost.SchemaAuthorityV1,
+		Schema:    solutionhost.SchemaAuthorityV4,
 		Authority: authorityID(binding),
 		// Granted over exactly this instance's presence binding, and over no
 		// other: without the target an authority document activated any
@@ -389,7 +399,7 @@ func authorityDocument(owned string, opts *RenderOptions, instance *AuthorityIns
 		Host:             solutionhost.HostTarget{Coordinate: opts.Host.Coordinate, Component: opts.Host.Component},
 		OwnershipDomain:  opts.Host.Domain,
 		EnvelopeRevision: opts.Host.EnvelopeRevision,
-		ApprovedBuild:    build,
+		ApprovedBuilds:   approved,
 		EffectiveFrom:    1,
 		Principals:       []solutionhost.PrincipalAuthority{{Principal: instance.Contract.Principal, Bindings: authorityBindings(binding, instance.Contract)}},
 		// The SUBJECT module's own declarations, written out rather than left
@@ -405,7 +415,7 @@ func authorityDocument(owned string, opts *RenderOptions, instance *AuthorityIns
 		ScopeCeilings: declaredScopeCeilings(instance.Contract.ScopeCeilings),
 	}
 	if err := document.Validate(); err != nil {
-		return nil, fmt.Errorf("authority of %s/%s is invalid: %w", instance.Module, instance.Service, err)
+		return nil, fmt.Errorf("authority of %s is invalid: %w", instance.Module, err)
 	}
 	return document, nil
 }
@@ -645,7 +655,7 @@ func servingBuild(owned string, opts *RenderOptions, unit SolutionArtifactUnit) 
 		builds[solutionhost.ImageDigest(authenticating.Image.Digest)] = struct{}{}
 	}
 	if len(builds) != 1 {
-		return "", fmt.Errorf("its unit runs %d distinct serving builds, and an authority document approves exactly one", len(builds))
+		return "", fmt.Errorf("its unit runs %d distinct serving builds, and a unit's workload runs exactly one", len(builds))
 	}
 	for digest := range builds {
 		return digest, nil

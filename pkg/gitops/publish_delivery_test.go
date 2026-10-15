@@ -474,7 +474,7 @@ func (repository *deliveryRepository) stageAuthorityRender(t *testing.T, binding
 		Kind: solutionhost.KindModule, Name: "crm", Package: "example/crm", Version: "1.4.0", ReleaseDigest: testReleaseDigest, Units: units,
 	}}
 	options.AuthorityInstances = []AuthorityInstance{{
-		Module: "crm", Service: "api", Unit: units[0],
+		Module: "crm", Services: []string{"api"}, Units: units[:1],
 		Contract: &modulecontract.Resolved{Principal: "crm", Namespaces: []string{"crm"}, Queues: []string{}, Bindings: bindings},
 	}}
 	result, err := RenderOwnedTree(context.Background(), options, renderWorkload(pinnedDeployment))
@@ -502,7 +502,7 @@ func (repository *deliveryRepository) stageAuthorityRenderPresentedBy(t *testing
 	for _, unit := range units {
 		if unit.Name == service {
 			options.AuthorityInstances = []AuthorityInstance{{
-				Module: "crm", Service: service, Unit: unit,
+				Module: "crm", Services: []string{service}, Units: []SolutionArtifactUnit{unit},
 				Contract: &modulecontract.Resolved{Principal: "crm", Namespaces: []string{"crm"}, Queues: []string{}, Bindings: bindings},
 			}}
 		}
@@ -782,11 +782,11 @@ func TestPublishRefusesAPairTheHostWouldNotActivate(t *testing.T) {
 	// The authority approves a build the presence does not say the binding
 	// runs: sound on its own, and activates nothing.
 	inventory := repository.stageAuthorityRender(t, bindings)
-	rewrite(authorityFile, "approved_build: sha256:aaaa", "approved_build: sha256:bbbb")
+	rewrite(authorityFile, "- sha256:aaaa", "- sha256:bbbb")
 	err = settleAuthority(inventory, &opts)
 	require.ErrorIs(t, err, solutionhost.ErrNotActivated)
 	require.Contains(t, err.Error(), "example.prod.crm-authority and binding example.prod.crm")
-	require.Contains(t, err.Error(), "runs builds")
+	require.Contains(t, err.Error(), "which no workload of binding")
 	_, statErr := os.Stat(filepath.Join(repository.target, filepath.FromSlash(solutionAuthorityOverlay("prod")), "deliver-authority.yaml"))
 	require.True(t, os.IsNotExist(statErr), "a refused pair is never written as a delivery")
 
@@ -851,9 +851,35 @@ func TestPublishRefusesABindingThatMovesBetweenDomains(t *testing.T) {
 	require.Contains(t, err.Error(), `binding "example.prod.crm" was applied under domain "example"`)
 }
 
-// TestRenderRefusesTwoAuthorityInstances: the instances are derived one per
-// module, and a caller handing the render two would get two documents under one
-// ID, the second overwriting the first — refused by name instead.
+// TestOneAuthorityApprovesEveryWorkloadOfTheModule: a module running as two
+// workloads — a serving api and a worker, each its own build — renders ONE
+// authority document, and it approves both builds: each workload runs as the
+// module's principal and the host holds each one's image against its own.
+func TestOneAuthorityApprovesEveryWorkloadOfTheModule(t *testing.T) {
+	destination := t.TempDir()
+	options := solutionRenderOptions(destination)
+	options.Units = promotableServiceGraph("crm", []string{"api", "worker"})
+	units := []SolutionArtifactUnit{
+		{Name: "api", Path: "services/api", Subject: "crm@example.iam.test"},
+		{Name: "worker", Path: "services/worker", Subject: "crm@example.iam.test"},
+	}
+	options.SolutionInstances = []SolutionInstance{{
+		Kind: solutionhost.KindModule, Name: "crm", Package: "example/crm", Version: "1.4.0", ReleaseDigest: testReleaseDigest, Units: units,
+	}}
+	contract := &modulecontract.Resolved{Principal: "crm", Namespaces: []string{"crm"}, Queues: []string{}, Bindings: []modulecontract.ResolvedBinding{modelBinding(1, "modelservice.profiles:invoke")}}
+	options.AuthorityInstances = []AuthorityInstance{
+		{Module: "crm", Services: []string{"api", "worker"}, Units: units, Contract: contract},
+	}
+	result, err := RenderOwnedTree(context.Background(), options, renderApiAndWorker)
+	require.NoError(t, err)
+	require.Len(t, result.SolutionAuthorities, 1, "one module, one authority")
+	require.Equal(t, []string{"sha256:" + strings.Repeat("a", 64), "sha256:" + strings.Repeat("b", 64)}, result.SolutionAuthorities[0].Builds,
+		"every workload's build, sorted")
+}
+
+// TestRenderRefusesTwoAuthorityInstances: a render is one module, and a caller
+// handing it authorities for two would get two documents under one ID —
+// refused by name instead.
 func TestRenderRefusesTwoAuthorityInstances(t *testing.T) {
 	destination := t.TempDir()
 	options := solutionRenderOptions(destination)
@@ -867,13 +893,13 @@ func TestRenderRefusesTwoAuthorityInstances(t *testing.T) {
 	}}
 	contract := &modulecontract.Resolved{Principal: "crm", Namespaces: []string{"crm"}, Queues: []string{}, Bindings: []modulecontract.ResolvedBinding{modelBinding(1, "modelservice.profiles:invoke")}}
 	options.AuthorityInstances = []AuthorityInstance{
-		{Module: "crm", Service: "api", Unit: units[0], Contract: contract},
-		{Module: "crm", Service: "worker", Unit: units[1], Contract: contract},
+		{Module: "crm", Services: []string{"api"}, Units: units[:1], Contract: contract},
+		{Module: "other", Services: []string{"worker"}, Units: units[1:], Contract: contract},
 	}
 	_, err := RenderOwnedTree(context.Background(), options, renderApiAndWorker)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "crm/api, crm/worker")
-	require.Contains(t, err.Error(), "one authority document from one service")
+	require.Contains(t, err.Error(), "crm, other")
+	require.Contains(t, err.Error(), "one authority document")
 }
 
 // TestPublishMovesTheAuthorityWithTheServicePresentingIt: the authority is
@@ -897,7 +923,7 @@ func TestPublishMovesTheAuthorityWithTheServicePresentingIt(t *testing.T) {
 	require.Equal(t, uint64(1), documentByID(delivery, "example.prod.crm").Generation, "the presence is unchanged")
 	require.Equal(t, uint64(1), documentByID(delivery, "example.prod.crm-authority").Generation)
 	document, _ := readDeliveredAuthority(t, repository.target, "prod", "example.prod.crm-authority.yaml")
-	require.Equal(t, solutionhost.ImageDigest("sha256:"+strings.Repeat("a", 64)), document.ApprovedBuild)
+	require.Equal(t, []solutionhost.ImageDigest{solutionhost.ImageDigest("sha256:" + strings.Repeat("a", 64))}, document.ApprovedBuilds)
 	repository.deliver(t)
 
 	delivery = settleBoth(t, repository, repository.stageAuthorityRenderPresentedBy(t, "worker", bindings), &opts)
@@ -905,7 +931,7 @@ func TestPublishMovesTheAuthorityWithTheServicePresentingIt(t *testing.T) {
 	require.False(t, documentByID(delivery, "example.prod.crm-authority").Removed)
 	require.Len(t, delivery.Documents, 2, "one presence document and one authority document, nothing withdrawn")
 	document, _ = readDeliveredAuthority(t, repository.target, "prod", "example.prod.crm-authority.yaml")
-	require.Equal(t, solutionhost.ImageDigest("sha256:"+strings.Repeat("b", 64)), document.ApprovedBuild, "the worker's build is the approved one now")
+	require.Equal(t, []solutionhost.ImageDigest{solutionhost.ImageDigest("sha256:" + strings.Repeat("b", 64))}, document.ApprovedBuilds, "the worker's build is the approved one now")
 }
 
 // TestPublishHoldsEveryDocumentToTheHostDeclaredNow: a render made under one

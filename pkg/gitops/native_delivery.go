@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -145,16 +146,13 @@ func ResolveNativeIdentities(ctx context.Context, workspace *resources.Workspace
 // identity it runs under.
 type NativeWorkload struct {
 	Module    *resources.Module
-	Service   *resources.Service
 	Services  []*resources.Service
 	Namespace string
-	Account   string
-	SPIFFEID  string
-	// Subject is the principal the environment declares for the workload
-	// (service-identity), the identity the host expects.
-	Subject string
-	// Artifact is what the agent reported it started; its digest is the build.
-	Artifact NativeArtifact
+	// Members are the module's identity workloads this run has started, each
+	// running its own build. A module runs as one or more of them — a serving
+	// process and a worker, say — and its presence lists every one, so its
+	// authority approves every build.
+	Members []NativeMember
 	// FrontendBundle is the identity of the complete frontend bundle this run
 	// built and retained in the workspace's artifact cache (its digest, the
 	// canonical archive's media type, the artifact name a release would use):
@@ -163,10 +161,22 @@ type NativeWorkload struct {
 	FrontendBundle *solutionhost.FrontendPayload
 }
 
+// NativeMember is one identity workload of a module, as this run started it.
+type NativeMember struct {
+	Service  *resources.Service
+	Account  string
+	SPIFFEID string
+	// Subject is the principal the environment declares for the workload
+	// (service-identity), the identity the host expects.
+	Subject string
+	// Artifact is what the agent reported it started; its digest is the build.
+	Artifact NativeArtifact
+}
+
 // Repository names a native build's image repository: there is no registry,
 // so the name states where the build came from.
-func (w *NativeWorkload) Repository(workspace string) string {
-	return "native/" + strings.ToLower(workspace) + "/" + strings.ToLower(w.Module.Name) + "/" + strings.ToLower(w.Service.Name)
+func (m NativeMember) Repository(workspace, module string) string {
+	return "native/" + strings.ToLower(workspace) + "/" + strings.ToLower(module) + "/" + strings.ToLower(m.Service.Name)
 }
 
 // closureManifestDomain opens the manifest an interpreted runtime's build is
@@ -325,7 +335,8 @@ func fileDigest(path string) (solutionhost.ImageDigest, error) {
 type NativeDocuments struct {
 	Presence  *solutionhost.SolutionHostBinding
 	Authority *solutionhost.AuthorityDocument
-	Digest    solutionhost.ImageDigest
+	// Builds are the build each member workload runs, by service name.
+	Builds map[string]solutionhost.ImageDigest
 	// DeliverySPIFFEID retains the presence delivery namespace when a
 	// tombstone clears the workloads. It is transport context, not authority.
 	DeliverySPIFFEID string
@@ -369,9 +380,16 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	if revision == 0 {
 		revision = 1
 	}
-	digest, err := workload.Artifact.Digest(d.Workspace.Dir())
-	if err != nil {
-		return nil, err
+	if len(workload.Members) == 0 {
+		return nil, fmt.Errorf("module %s has no started identity workload to deliver", workload.Module.Name)
+	}
+	builds := map[string]solutionhost.ImageDigest{}
+	for _, member := range workload.Members {
+		digest, err := member.Artifact.Digest(d.Workspace.Dir())
+		if err != nil {
+			return nil, err
+		}
+		builds[member.Service.Name] = digest
 	}
 	manifest, err := composition.LoadPackageManifest(workload.Module.Dir())
 	if err != nil {
@@ -410,8 +428,9 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	if instance.ReleaseDigest, err = releaseDigest(ctx, workload.Module.Dir()); err != nil {
 		return nil, fmt.Errorf("module %s: %w", workload.Module.Name, err)
 	}
-	unit := SolutionArtifactUnit{Name: workload.Service.Name, Path: workload.Service.Name, Subject: workload.Subject}
-	instance.Units = []SolutionArtifactUnit{unit}
+	for _, member := range workload.Members {
+		instance.Units = append(instance.Units, SolutionArtifactUnit{Name: member.Service.Name, Path: member.Service.Name, Subject: member.Subject})
+	}
 	for _, service := range workload.Services {
 		for _, endpoint := range service.Endpoints {
 			if endpoint == nil {
@@ -436,7 +455,7 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	}
 	release := solutionhost.Release{Publisher: publisher, Name: name, Version: instance.Version, Digest: instance.ReleaseDigest}
 	presence := &solutionhost.SolutionHostBinding{
-		Schema: solutionhost.SchemaPresenceV1, Kind: instance.Kind, Binding: id, Generation: 1,
+		Schema: solutionhost.SchemaPresenceV4, Kind: instance.Kind, Binding: id, Generation: 1,
 		OwnershipDomain: host.Domain, EnvelopeRevision: revision,
 		Host:    solutionhost.HostTarget{Coordinate: host.Coordinate, Component: host.Component},
 		Release: release,
@@ -447,21 +466,25 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	presence.Routes = []solutionhost.Route{{Alias: instance.Alias, Surface: solutionhost.SurfaceBackend}}
 	presence.Frontend = instance.Frontend
 	presence.Group = instance.Group
-	// The artifact's rendered digest names what the run rendered for the unit
+	// Each artifact's rendered digest names what the run rendered for the unit
 	// — the workload's image reference — and the workload's image digest names
 	// the build; core refuses a document that uses one digest for both.
-	rendered := sha256.Sum256([]byte("native workload\n" + workload.Repository(d.Workspace.Name) + "@" + string(digest) + "\n"))
-	presence.Artifacts = []solutionhost.Artifact{{
-		Surface: solutionhost.SurfaceBackend, Name: unit.Name, Release: release.Identity(),
-		Digest: solutionhost.RenderedDigest("sha256:" + hex.EncodeToString(rendered[:])),
-	}}
 	others := []string{}
-	presence.Workloads = []solutionhost.Workload{{
-		Name: workload.Service.Name, Artifact: unit.Name, Container: workload.Service.Name,
-		Image:             solutionhost.Image{Repository: workload.Repository(d.Workspace.Name), Digest: digest},
-		Identity:          solutionhost.WorkloadIdentity{Audience: host.Audience, Subject: workload.Subject, SPIFFEID: workload.SPIFFEID},
-		NonAuthenticating: &others,
-	}}
+	for _, member := range workload.Members {
+		repository := member.Repository(d.Workspace.Name, workload.Module.Name)
+		digest := builds[member.Service.Name]
+		rendered := sha256.Sum256([]byte("native workload\n" + repository + "@" + string(digest) + "\n"))
+		presence.Artifacts = append(presence.Artifacts, solutionhost.Artifact{
+			Surface: solutionhost.SurfaceBackend, Name: member.Service.Name, Release: release.Identity(),
+			Digest: solutionhost.RenderedDigest("sha256:" + hex.EncodeToString(rendered[:])),
+		})
+		presence.Workloads = append(presence.Workloads, solutionhost.Workload{
+			Name: member.Service.Name, Artifact: member.Service.Name, Container: member.Service.Name,
+			Image:             solutionhost.Image{Repository: repository, Digest: digest},
+			Identity:          solutionhost.WorkloadIdentity{Audience: host.Audience, Subject: member.Subject, SPIFFEID: member.SPIFFEID},
+			NonAuthenticating: &others,
+		})
+	}
 	for _, endpoint := range instance.Endpoints {
 		presence.Endpoints = append(presence.Endpoints, solutionhost.Endpoint{
 			Name: endpoint.Name, Service: endpoint.Service, Module: endpoint.Module,
@@ -474,29 +497,48 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 	if err = presence.Validate(); err != nil {
 		return nil, fmt.Errorf("%s %s declares an invalid presence document: %w", instance.Kind, instance.Name, err)
 	}
-	documents := &NativeDocuments{Presence: presence, Digest: digest}
+	documents := &NativeDocuments{Presence: presence, Builds: builds}
 
 	instances, _, err := authorityInstancesOf(ctx, d.Workspace, workload.Module, workload.Services, d.Env, instance.Units, instance.Endpoints)
 	if err != nil {
 		return nil, err
 	}
+	// The module's one authority, presented by one of its members, approves
+	// the build of EVERY member: each runs as the module's principal, and the
+	// host holds each one's running image against its own approved build.
+	approved := make([]solutionhost.ImageDigest, 0, len(builds))
+	for _, digest := range builds {
+		if !slices.Contains(approved, digest) {
+			approved = append(approved, digest)
+		}
+	}
+	slices.Sort(approved)
 	for i := range instances {
-		if instances[i].Service != workload.Service.Name {
+		presented := false
+		for _, service := range instances[i].Services {
+			if _, member := builds[service]; member {
+				presented = true
+			}
+		}
+		if !presented {
 			continue
+		}
+		if documents.Authority != nil {
+			return nil, fmt.Errorf("module %s presents more than one authority; a module presents its one authority document from one service", workload.Module.Name)
 		}
 		contract := instances[i].Contract
 		authority := &solutionhost.AuthorityDocument{
-			Schema: solutionhost.SchemaAuthorityV1, Authority: authorityID(id), PresenceBinding: id, Generation: 1,
+			Schema: solutionhost.SchemaAuthorityV4, Authority: authorityID(id), PresenceBinding: id, Generation: 1,
 			Host:            solutionhost.HostTarget{Coordinate: host.Coordinate, Component: host.Component},
 			OwnershipDomain: host.Domain, EnvelopeRevision: revision,
-			ApprovedBuild: digest, EffectiveFrom: 1,
+			ApprovedBuilds: approved, EffectiveFrom: 1,
 			Principals:    []solutionhost.PrincipalAuthority{{Principal: contract.Principal, Bindings: authorityBindings(id, contract)}},
 			Queues:        declaredStrings(contract.Queues),
 			Namespaces:    declaredStrings(contract.Namespaces),
 			ScopeCeilings: declaredScopeCeilings(contract.ScopeCeilings),
 		}
 		if err := authority.Validate(); err != nil {
-			return nil, fmt.Errorf("authority of %s/%s is invalid: %w", workload.Module.Name, workload.Service.Name, err)
+			return nil, fmt.Errorf("authority of %s is invalid: %w", workload.Module.Name, err)
 		}
 		documents.Authority = authority
 		documents.Principal = contract.Principal
@@ -527,7 +569,7 @@ func WithdrawnDocuments(delivered *NativeDocuments) (*NativeDocuments, error) {
 	if err != nil {
 		return nil, err
 	}
-	withdrawn := &NativeDocuments{Presence: presence, Digest: delivered.Digest, Principal: delivered.Principal, DeliverySPIFFEID: identity}
+	withdrawn := &NativeDocuments{Presence: presence, Builds: delivered.Builds, Principal: delivered.Principal, DeliverySPIFFEID: identity}
 	if delivered.Authority != nil {
 		if withdrawn.Authority, err = authorityTombstoneOf(delivered.Authority); err != nil {
 			return nil, fmt.Errorf("withdraw authority %s: %w", delivered.Authority.Authority, err)
@@ -803,9 +845,16 @@ type EnvelopePrincipal struct {
 	Prefix          string
 	Bindings        []solutionhost.AuthorityBinding
 	Ceilings        []solutionhost.ScopeCeiling
-	SPIFFEID        string
-	Container       string
-	Grant           EnvelopeGrant
+	// Workloads are the identities the principal runs as: every identity
+	// workload of its module, each its own SPIFFE ID and container.
+	Workloads []EnvelopeWorkload
+	Grant     EnvelopeGrant
+}
+
+// EnvelopeWorkload is one workload identity an envelope allows a principal.
+type EnvelopeWorkload struct {
+	SPIFFEID  string
+	Container string
 }
 
 // ApprovedBuilds reads the builds an envelope document approves.
@@ -821,6 +870,20 @@ func ApprovedBuilds(document []byte) []solutionhost.ImageDigest {
 
 // BuildEnvelope writes the envelope document the host's administrator writes
 // on a cell: this revision, the builds approved, and each principal's ceiling.
+// workloadIdentities writes a principal's workloads sorted, so one set of
+// workloads is one envelope.
+func workloadIdentities(workloads []EnvelopeWorkload) []map[string]any {
+	sorted := slices.Clone(workloads)
+	slices.SortFunc(sorted, func(a, b EnvelopeWorkload) int {
+		return strings.Compare(a.SPIFFEID+"\x00"+a.Container, b.SPIFFEID+"\x00"+b.Container)
+	})
+	out := make([]map[string]any, 0, len(sorted))
+	for _, workload := range sorted {
+		out = append(out, map[string]any{"spiffe_id": workload.SPIFFEID, "container": workload.Container})
+	}
+	return out
+}
+
 func BuildEnvelope(revision uint64, builds []solutionhost.ImageDigest, principals []EnvelopePrincipal) ([]byte, error) {
 	sorted := append([]solutionhost.ImageDigest(nil), builds...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
@@ -855,7 +918,7 @@ func BuildEnvelope(revision uint64, builds []solutionhost.ImageDigest, principal
 		}
 		entry := map[string]any{
 			"bindings":            bindings,
-			"workload_identities": []map[string]any{{"spiffe_id": principal.SPIFFEID, "container": principal.Container}},
+			"workload_identities": workloadIdentities(principal.Workloads),
 			"scope_ceilings":      ceilings,
 			"grant":               grant,
 		}

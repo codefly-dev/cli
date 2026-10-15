@@ -831,7 +831,7 @@ func authorityTombstoneOf(prior *solutionhost.AuthorityDocument) (*solutionhost.
 	tombstone := *prior
 	tombstone.Generation = prior.Generation + 1
 	tombstone.Removed = true
-	tombstone.ApprovedBuild, tombstone.EffectiveFrom, tombstone.Principals = "", 0, nil
+	tombstone.ApprovedBuilds, tombstone.EffectiveFrom, tombstone.Principals = []solutionhost.ImageDigest{}, 0, nil
 	// EMPTY, not absent. The two rules only look contradictory: core requires
 	// the three keys on every generation, so nil is "the renderer dropped the
 	// field", and forbids them NON-EMPTY on a removed one, so a value is "the
@@ -1181,7 +1181,6 @@ func refuseUnmatchedPairs(
 		request := solutionhost.RenderedActivationRequest{
 			Authority:        entry.document,
 			Presence:         over.document,
-			Build:            entry.document.ApprovedBuild,
 			EnvelopeRevision: envelopeRevision,
 		}
 		// The authority record is looked up by the binding the authority is
@@ -1206,8 +1205,13 @@ func refuseUnmatchedPairs(
 		} else {
 			request.FirstPresenceRecord = true
 		}
-		if _, err := solutionhost.ActivateRendered(request); err != nil {
-			return fmt.Errorf("authority %s and binding %s are not a pair the host would activate: %w", authority, binding, err)
+		// The pair must activate for EVERY build it approves: each is a
+		// workload the host will run as the module's principal.
+		for _, build := range entry.document.ApprovedBuilds {
+			request.Build = build
+			if _, err := solutionhost.ActivateRendered(request); err != nil {
+				return fmt.Errorf("authority %s and binding %s are not a pair the host would activate for build %s: %w", authority, binding, build, err)
+			}
 		}
 	}
 	return nil

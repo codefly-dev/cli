@@ -276,7 +276,7 @@ func TestALocalHostMountsItsTrustAnchorWhereItReadsIt(t *testing.T) {
 // names every container of a workload a host admits — the authenticating one
 // with its image digest, every sidecar and init container as one never
 // accepted as it — and every one of them must be pinned by digest, or the
-// render refuses. (Core's presence schema, codefly/solution-host-binding/v1
+// render refuses. (Core's presence schema, codefly/solution-host-binding/v4
 // through core v0.18.1, carries the other containers by NAME only; their
 // digests are read here and cannot be declared until the schema carries them.)
 func TestPresenceDeclaresEveryContainerOfTheWorkload(t *testing.T) {

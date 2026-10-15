@@ -117,7 +117,7 @@ func TestRenderRefusesEveryDeliveredDocumentItCannotRead(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			rewritten := strings.Replace(string(delivered), solutionhost.SchemaPresenceV1, schema, 1)
+			rewritten := strings.Replace(string(delivered), solutionhost.SchemaPresenceV4, schema, 1)
 			if rewritten == string(delivered) {
 				t.Fatal("the delivered document does not name the schema, so this test proves nothing")
 			}
