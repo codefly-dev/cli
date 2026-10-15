@@ -176,8 +176,8 @@ func TestANativeRunAdmitsAnUnseenComponentWithoutReplacingItsAuthority(t *testin
 	identities, err := gitops.ResolveNativeIdentities(ctx, workspace, env)
 	require.NoError(t, err)
 	require.Len(t, identities, 1)
-	cluster := &nativeCluster{workspace: workspace, env: env, identities: identities, hostWorkload: nativecluster.Workload{PodUID: "host-pod-uid"}}
-	before := cluster.hostWorkload
+	cluster := &nativeCluster{workspace: workspace, env: env, identities: identities, hostIdentityAnchor: "/run/host/identity-anchor.json"}
+	before := cluster.hostIdentityAnchor
 
 	reloaded := composeModule(t, workspace, "wiki")
 	added, err := cluster.admit(ctx, reloaded)
@@ -190,7 +190,7 @@ func TestANativeRunAdmitsAnUnseenComponentWithoutReplacingItsAuthority(t *testin
 	_, stillKnown := cluster.identity("model/model")
 	require.True(t, stillKnown)
 	require.Nil(t, cluster.authority, "admission starts no authority")
-	require.Equal(t, before, cluster.hostWorkload, "the host's projected identity is untouched")
+	require.Equal(t, before, cluster.hostIdentityAnchor, "the host's identity anchor is untouched")
 
 	again, err := cluster.admit(ctx, reloaded)
 	require.NoError(t, err)

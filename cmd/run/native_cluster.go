@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -28,6 +27,7 @@ import (
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
 	"github.com/codefly-dev/core/wool"
+	nativeidentity "github.com/codefly-dev/core/workloadidentity/native"
 	"gopkg.in/yaml.v3"
 )
 
@@ -43,14 +43,14 @@ import (
 // gateway is expected to listen on loopback, where the carrier the run writes
 // for it says it lives (loopback.go checks).
 //
-// It is deliberately only as strong as a laptop needs: the authority lives for
-// the run and its keys are never written. The host reads its stand-in for the
-// cluster — the API server's address, its CA, the host's own token and
-// namespace — and its trust anchor from the two directories the run names
-// (SOLUTION_HOST_LOCAL_CLUSTER, SOLUTION_HOST_LOCAL_TRUST_ANCHOR), under the
-// run's own state, so nothing is written outside the workspace. The host
-// refuses both settings in a pod, and nothing here makes the host believe it
-// is in one.
+// It is deliberately only as strong as a laptop needs: the issuer lives for
+// the run and its key is never written. The host reads the run's
+// workload-identity anchor and its delivery trust anchor from the two paths the
+// run names (CODEFLY_NATIVE_IDENTITY_ANCHOR, SOLUTION_HOST_LOCAL_TRUST_ANCHOR),
+// under the run's own state, so nothing is written outside the workspace. The
+// host refuses both settings in a pod, and nothing here imitates a cluster:
+// there is no API server, CA, pod or ServiceAccount, only credentials the run
+// signs for the processes it started (core workloadidentity/native).
 //
 // A workload starts before the host has been told about it, because its build
 // is only known once it runs. A cell answers that with a restart; this run
@@ -72,14 +72,13 @@ type nativeCluster struct {
 	signer     solutionhost.Signer
 
 	hostModule, hostService, hostNamespace string
-	hostWorkload                           nativecluster.Workload
 
 	// composition guards workspace and identities: the components this run
 	// composes, which admit extends with the ones a reloaded workspace adds
 	// while the flow keeps reading them. Its own lock, because deliver
 	// holds mu while it reads both.
-	composition                          sync.RWMutex
-	hostServiceAccountDir, hostAnchorDir string
+	composition                       sync.RWMutex
+	hostIdentityAnchor, hostAnchorDir string
 
 	mu          sync.Mutex
 	workloads   map[string]nativecluster.Workload // unique -> projected identity
@@ -178,8 +177,7 @@ func attachNativeCluster(ctx context.Context, flow *orchestration.Flow, workspac
 		go cluster.onRunning(context.WithoutCancel(ctx), service)
 	})
 	go cluster.refreshTokens()
-	host, port := authority.APIServer()
-	w.Info("native cluster: the run is the composition's cluster", wool.Field("api-server", host+":"+port), wool.Field("ca", authority.CAFingerprint()[:16]))
+	w.Info("native run: the run attests the composition's workloads", wool.Field("anchor", authority.AnchorFingerprint()[:16]))
 	nativeClusterActive = cluster
 	return nil
 }
@@ -208,53 +206,27 @@ func randomUID() string {
 	return hex.EncodeToString(raw[:4]) + "-" + hex.EncodeToString(raw[4:6]) + "-" + hex.EncodeToString(raw[6:8]) + "-" + hex.EncodeToString(raw[8:10]) + "-" + hex.EncodeToString(raw[10:])
 }
 
-// projectHost writes what the kubelet projects into the host's pod and the
-// trust anchor the host reads: its own token, the cluster CA, its namespace,
-// and the verification policy bound to this run's CA and the developer key.
+// projectHost writes what the host reads to verify this run: the anchor every
+// workload credential is checked against, and the delivery trust anchor — a
+// verification policy bound to that anchor and admitting the developer key.
 func (cluster *nativeCluster) projectHost() error {
-	account := gitops.WorkloadAccount(cluster.hostService)
-	cluster.hostWorkload = nativecluster.Workload{
-		Namespace: cluster.hostNamespace, Account: account,
-		PodName: cluster.hostService + "-native", PodUID: randomUID(),
-		Audience: "https://kubernetes.default.svc.cluster.local",
-	}
-	cluster.authority.RegisterPod(&nativecluster.Pod{
-		Namespace: cluster.hostNamespace, ServiceAccount: account, Name: cluster.hostWorkload.PodName, UID: cluster.hostWorkload.PodUID,
-		Container: cluster.hostService, Repository: "native/" + strings.ToLower(cluster.composed().Name) + "/" + cluster.hostModule + "/" + cluster.hostService,
-	})
-	token, err := cluster.authority.Token(cluster.hostNamespace, account, cluster.hostWorkload.PodName, cluster.hostWorkload.PodUID, cluster.hostWorkload.Audience)
-	if err != nil {
-		return err
-	}
-	// The native run owns the CA it binds the policy to and the signer it
+	// The native run owns the anchor it binds the policy to and the signer it
 	// admits: its own delivery key, which no workspace lists.
-	policy, err := localcluster.NativeVerificationPolicy(cluster.authority.CAFingerprint(), cluster.signer, cluster.env.Host)
+	policy, err := localcluster.NativeVerificationPolicy(cluster.authority.AnchorFingerprint(), cluster.signer, cluster.env.Host)
 	if err != nil {
 		return err
 	}
-	cluster.hostServiceAccountDir = filepath.Join(cluster.stateDir, "host", "cluster")
+	cluster.hostIdentityAnchor = filepath.Join(cluster.stateDir, "host", "identity-anchor.json")
 	cluster.hostAnchorDir = filepath.Join(cluster.stateDir, "host", "delivery-trust")
-	for _, dir := range []string{cluster.hostServiceAccountDir, cluster.hostAnchorDir} {
+	for _, dir := range []string{filepath.Dir(cluster.hostIdentityAnchor), cluster.hostAnchorDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
 	}
-	apiHost, apiPort := cluster.authority.APIServer()
-	files := map[string][]byte{
-		// The stand-in's own address, beside the material that authenticates
-		// it: the host reads an https origin and nothing more.
-		filepath.Join(cluster.hostServiceAccountDir, "server"):           []byte("https://" + net.JoinHostPort(apiHost, apiPort) + "\n"),
-		filepath.Join(cluster.hostServiceAccountDir, "token"):            []byte(token),
-		filepath.Join(cluster.hostServiceAccountDir, "ca.crt"):           cluster.authority.CAPEM(),
-		filepath.Join(cluster.hostServiceAccountDir, "namespace"):        []byte(cluster.hostNamespace + "\n"),
-		filepath.Join(cluster.hostAnchorDir, "verification_policy.json"): policy,
+	if err := cluster.authority.Anchor().WriteFile(cluster.hostIdentityAnchor); err != nil {
+		return err
 	}
-	for path, content := range files {
-		if err := os.WriteFile(path, content, 0o600); err != nil {
-			return err
-		}
-	}
-	return nil
+	return os.WriteFile(filepath.Join(cluster.hostAnchorDir, "verification_policy.json"), policy, 0o600)
 }
 
 // composed is the workspace this run composes, as admitted so far.
@@ -362,7 +334,7 @@ func (cluster *nativeCluster) runtimeOverrides(service *resources.Service) map[s
 		out[workloadTokenFileVariable] = projection.TokenFile
 	}
 	if unique == resources.ServiceUnique(cluster.hostModule, cluster.hostService) {
-		out["SOLUTION_HOST_LOCAL_CLUSTER"] = cluster.hostServiceAccountDir
+		out[nativeidentity.AnchorEnvironment] = cluster.hostIdentityAnchor
 		out["SOLUTION_HOST_LOCAL_TRUST_ANCHOR"] = cluster.hostAnchorDir
 	}
 	return out
@@ -561,7 +533,6 @@ func (cluster *nativeCluster) refreshTokens() {
 				_ = cluster.authority.RefreshToken(cluster.projections[unique].TokenFile, &workload)
 			}
 			cluster.mu.Unlock()
-			_ = cluster.authority.RefreshToken(filepath.Join(cluster.hostServiceAccountDir, "token"), &cluster.hostWorkload)
 		}
 	}
 }
@@ -892,6 +863,14 @@ func (cluster *nativeCluster) deliver(ctx context.Context, unique string, identi
 		Container: identity.Service, Repository: "native/" + strings.ToLower(cluster.composed().Name) + "/" + strings.ToLower(identity.Module) + "/" + strings.ToLower(identity.Service),
 		Digest: string(rendered.Digest),
 	})
+	// The credential names the build from now on: rewritten here rather than at
+	// the next rotation, so a workload that minted before its build was known
+	// ("not established yet") succeeds on its next attempt.
+	if !cluster.withheld[unique] {
+		if err := cluster.authority.RefreshToken(cluster.projections[unique].TokenFile, &workload); err != nil {
+			return fmt.Errorf("%s: reissue the workload's credential with its build: %w", unique, err)
+		}
+	}
 	previous, hadPrevious := cluster.documents[unique]
 	cluster.documents[unique] = rendered
 	cluster.builds[rendered.Digest] = true
