@@ -182,6 +182,12 @@ func HostRouteTargets(ctx context.Context, workspace *resources.Workspace, hostM
 
 func hostRoutes(ctx context.Context, workspace *resources.Workspace, hostModule string) ([]hostRoute, error) {
 	consumptions, err := solutionrun.ConsumedEndpoints(ctx, workspace)
+	if err == nil && hostModule == "" && len(consumptions) > 0 {
+		// Without the host's module nothing can tell a consumed host endpoint
+		// from a routed module, and the refusal below would name the host as
+		// a module consumed under the wrong alias.
+		return nil, fmt.Errorf("the environment's host declares no gateway, and %d consumed endpoint(s) route through it; declare host.gateway as <module>/<service>", len(consumptions))
+	}
 	if err != nil {
 		return nil, err
 	}
