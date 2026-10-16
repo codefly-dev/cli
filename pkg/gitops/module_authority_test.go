@@ -101,7 +101,7 @@ func TestModuleAuthorityMatchesTheDeliveredManifestAndReusesInternalSecret(t *te
 			require.Len(t, manifest.Workloads, 1)
 			rendered := buildOverlay(t, filepath.Join(result.Path, "services", name), env.Name)
 			data := configMapData(t, rendered)
-			require.Equal(t, manifest.Workloads[0].SPIFFEID, data[authorityPrefix+"PRINCIPAL"])
+			require.Equal(t, manifest.Workloads[0].Kubernetes.SPIFFEID(), data[authorityPrefix+"PRINCIPAL"], "a cell's principal is the mesh identity of the declared account")
 			require.Equal(t, "spiffe://local.example/ns/example-"+module+"/sa/"+name, data[authorityPrefix+"PRINCIPAL"])
 			// The host's name for a module capability's audience, the same for
 			// every module, and never the module's own name.

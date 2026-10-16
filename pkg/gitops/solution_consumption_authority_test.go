@@ -261,10 +261,16 @@ func TestANativeRunAndARenderRequestTheSameAuthority(t *testing.T) {
 	native, err := (&NativeDeliverer{Workspace: workspace, Env: env, StateDir: t.TempDir()}).Render(t.Context(), &NativeWorkload{
 		Module:   module,
 		Services: loadServices(t, workspace, "shop", "api"),
-		Started:  []NativeIdentity{{Module: "shop", Service: "api", Account: "api", SPIFFEID: "spiffe://cluster.example/ns/acme-shop/sa/api"}},
+		Started:  []NativeIdentity{{Module: "shop", Service: "api"}},
 	})
 	require.NoError(t, err)
 	require.Equal(t, deployed.Authority, native.Authority)
-	require.Equal(t, deployed.Workloads, native.Workloads)
+	// A cell's render adds where each workload runs; the declaration — which
+	// workloads, as which containers — is the same request.
+	declared := make([]solutionhost.Workload, 0, len(deployed.Workloads))
+	for _, workload := range deployed.Workloads {
+		declared = append(declared, solutionhost.Workload{Service: workload.Service, Container: workload.Container})
+	}
+	require.Equal(t, declared, native.Workloads)
 	require.Equal(t, deployed.Binding, native.Binding)
 }

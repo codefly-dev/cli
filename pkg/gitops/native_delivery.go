@@ -21,6 +21,7 @@ import (
 	"github.com/codefly-dev/core/composition"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
+	"github.com/codefly-dev/core/workloadidentity"
 )
 
 // Native delivery: a laptop run delivers to the host what a cell's delivery
@@ -36,16 +37,13 @@ import (
 // the account it would run as in a cell, and the SPIFFE ID the cell's mesh
 // issues to that account, which the manifest names.
 type NativeIdentity struct {
-	Module   string
-	Service  string
-	Account  string
-	SPIFFEID string
+	Module  string
+	Service string
 }
 
-// WorkloadAccount is the ServiceAccount name a service runs as: Core's
-// default for its name, the same one a cell's render projects.
-func WorkloadAccount(service string) string {
-	return workloadAccount(service)
+// Workload is the identity as the host and the run name it, under trustDomain.
+func (identity NativeIdentity) Workload(trustDomain string) workloadidentity.Workload {
+	return workloadidentity.Workload{TrustDomain: trustDomain, Module: identity.Module, Service: identity.Service}
 }
 
 // ResolveNativeIdentities plans the identities a native run projects, by the
@@ -69,14 +67,7 @@ func ResolveNativeIdentities(ctx context.Context, workspace *resources.Workspace
 		if !service.ModuleIdentity {
 			continue
 		}
-		namespace := env.ModuleNamespace(workspace, ref.Module)
-		if namespace == "" {
-			return nil, fmt.Errorf("module-identity service %s/%s has no resolved namespace: the environment declares none", ref.Module, ref.Name)
-		}
-		identities[resources.ServiceUnique(ref.Module, ref.Name)] = NativeIdentity{
-			Module: ref.Module, Service: ref.Name, Account: workloadAccount(ref.Name),
-			SPIFFEID: meshPrincipal(env.Host, namespace, ref.Name),
-		}
+		identities[resources.ServiceUnique(ref.Module, ref.Name)] = NativeIdentity{Module: ref.Module, Service: ref.Name}
 	}
 	return identities, nil
 }
@@ -111,7 +102,7 @@ type NativeDeliverer struct {
 	// DeliveryURL is the host's delivery listener (the accounts REST address).
 	DeliveryURL string
 	// Token issues the delivery account's credential in a namespace.
-	Token func(namespace string) (string, error)
+	Token func(module string) (string, error)
 	// ObserverToken belongs to the separate read-only applied-state publisher.
 	ObserverToken func() (string, error)
 	Client        *http.Client
@@ -160,7 +151,9 @@ func (d *NativeDeliverer) Render(ctx context.Context, workload *NativeWorkload) 
 			return nil, fmt.Errorf("module %s service %s was started as an identity workload and does not declare module-identity", workload.Module.Name, identity.Service)
 		}
 		started[identity.Service] = true
-		workloads = append(workloads, solutionhost.Workload{Service: identity.Service, Container: identity.Service, SPIFFEID: identity.SPIFFEID})
+		// A native workload declares no cell: the run vouches for (module,
+		// service) directly, and a manifest names only what the module is.
+		workloads = append(workloads, solutionhost.Workload{Service: identity.Service, Container: identity.Service})
 	}
 	sort.Slice(workloads, func(i, j int) bool { return workloads[i].Service < workloads[j].Service })
 	// An identity workload this run has not started yet routes nothing yet:
@@ -251,7 +244,7 @@ type Receipt struct {
 // Deliver settles the manifest's generation, signs it and POSTs it to the
 // host as the delivery account of namespace — the namespace of the manifest's
 // workloads, or for a withdrawal the one its binding was delivered in.
-func (d *NativeDeliverer) Deliver(ctx context.Context, manifest *solutionhost.ModuleManifest, namespace string) (Receipt, error) {
+func (d *NativeDeliverer) Deliver(ctx context.Context, manifest *solutionhost.ModuleManifest) (Receipt, error) {
 	record, err := d.loadGenerations()
 	if err != nil {
 		return Receipt{}, err
@@ -268,14 +261,14 @@ func (d *NativeDeliverer) Deliver(ctx context.Context, manifest *solutionhost.Mo
 	if err != nil {
 		return Receipt{}, err
 	}
-	receipt, err := d.post(ctx, namespace, payload)
+	receipt, err := d.post(ctx, manifest.Alias, payload)
 	if err != nil {
 		return receipt, err
 	}
 	return receipt, d.saveGenerations(record)
 }
 
-func (d *NativeDeliverer) post(ctx context.Context, namespace string, payload []byte) (Receipt, error) {
+func (d *NativeDeliverer) post(ctx context.Context, module string, payload []byte) (Receipt, error) {
 	envelope, err := solutionhost.SignEnvelope(payload, d.Signer)
 	if err != nil {
 		return Receipt{}, err
@@ -288,7 +281,7 @@ func (d *NativeDeliverer) post(ctx context.Context, namespace string, payload []
 	if err != nil {
 		return Receipt{}, err
 	}
-	token, err := d.Token(namespace)
+	token, err := d.Token(module)
 	if err != nil {
 		return Receipt{}, err
 	}

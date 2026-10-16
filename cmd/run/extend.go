@@ -134,7 +134,7 @@ func withdrawDroppedRoots(ctx context.Context, flow *orchestration.Flow, pinned 
 	for _, unique := range stopped {
 		cli.Info("stopped %s", unique)
 	}
-	if cluster := activeNativeCluster(); cluster != nil {
+	if cluster := activeLauncher(); cluster != nil {
 		withdrawn, withdrawErr := cluster.withdraw(ctx, stopped)
 		for _, module := range withdrawn {
 			cli.Info("withdrew %s from the host: its module manifest is a withdrawal now, terminal for that binding", module)
@@ -194,7 +194,7 @@ func extendRunningWorkspace(ctx context.Context, flow *orchestration.Flow, basel
 		}
 		cli.Info("%s", note.Message)
 	}
-	if cluster := activeNativeCluster(); cluster != nil {
+	if cluster := activeLauncher(); cluster != nil {
 		admitted, admitErr := cluster.admit(ctx, workspace)
 		if admitErr != nil {
 			return admitErr
@@ -222,10 +222,10 @@ func extendRunningWorkspace(ctx context.Context, flow *orchestration.Flow, basel
 	return nil
 }
 
-// activeNativeCluster is the native cluster of this process's run, if one
+// activeLauncher is the native cluster of this process's run, if one
 // answers as the composition's cluster.
-func activeNativeCluster() *nativeCluster {
-	nativeClusterMu.Lock()
-	defer nativeClusterMu.Unlock()
-	return nativeClusterActive
+func activeLauncher() *launcher {
+	launcherMu.Lock()
+	defer launcherMu.Unlock()
+	return launcherActive
 }

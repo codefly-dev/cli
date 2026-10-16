@@ -77,7 +77,7 @@ func TestAReleasedFrontendBundleIsTheGeneratedPayload(t *testing.T) {
 				Module:         module,
 				Services:       services,
 				FrontendBundle: bundle,
-				Started:        []NativeIdentity{{Module: "shared", Service: "api", Account: "shared-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/shared-api"}},
+				Started:        []NativeIdentity{{Module: "shared", Service: "api"}},
 			})
 			if tc.refused != "" {
 				require.ErrorContains(t, err, tc.refused, "the render")
@@ -126,7 +126,7 @@ func TestANativeRunStampsTheBundleItBuilt(t *testing.T) {
 				Module:         module,
 				Services:       services,
 				FrontendBundle: carried,
-				Started:        []NativeIdentity{{Module: "shared", Service: "api", Account: "shared-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/shared-api"}},
+				Started:        []NativeIdentity{{Module: "shared", Service: "api"}},
 			})
 			if tc.refused != "" {
 				require.ErrorContains(t, err, tc.refused)

@@ -91,7 +91,7 @@ func mintedCapability(
 		WorkspaceID:        fixtureWorkspaceID,
 		ProjectID:          fixtureProjectID,
 		InstallationID:     coreworkcontext.FixtureInstallation,
-		TTL: time.Hour,
+		TTL:                time.Hour,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("mint a test capability: %w", err)

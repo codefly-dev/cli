@@ -141,9 +141,10 @@ func ModuleManifestOf(binding string, host *environments.EnvironmentHost, instan
 	// delivery carrier in it.
 	namespace := ""
 	for _, workload := range workloads {
-		account, err := workload.Account()
-		if err != nil {
-			return nil, fmt.Errorf("%s %s workload %s: %w", instance.Kind, instance.Name, workload.Service, err)
+		account, declared := workload.Account()
+		if !declared {
+			// A native workload declares no cell, so no namespace.
+			continue
 		}
 		if namespace != "" && account.Namespace != namespace {
 			return nil, fmt.Errorf("%s %s runs workloads in namespaces %s and %s; a module's workloads share one namespace", instance.Kind, instance.Name, namespace, account.Namespace)
@@ -255,9 +256,10 @@ func renderedIdentityWorkload(tree *renderRoot, owned string, opts *RenderOption
 		if err != nil {
 			return solutionhost.Workload{}, fmt.Errorf("service %s workload %s: %w", identity.Service, workload.Name, err)
 		}
-		candidate := solutionhost.Workload{Service: identity.Service, Container: container.Name, SPIFFEID: opts.Host.SPIFFEID(opts.Namespace, workload.ServiceAccount)}
-		if found != nil && *found != candidate {
-			return solutionhost.Workload{}, fmt.Errorf("service %s renders serving workloads that authenticate as %s (%s) and %s (%s); a service runs as one account from one container", identity.Service, found.SPIFFEID, found.Container, candidate.SPIFFEID, candidate.Container)
+		candidate := solutionhost.Workload{Service: identity.Service, Container: container.Name,
+			Kubernetes: &solutionhost.WorkloadAccount{TrustDomain: opts.Host.TrustDomain, Namespace: opts.Namespace, Account: workload.ServiceAccount}}
+		if found != nil && !sameWorkload(*found, candidate) {
+			return solutionhost.Workload{}, fmt.Errorf("service %s renders serving workloads that authenticate as %s (%s) and %s (%s); a service runs as one account from one container", identity.Service, found.Kubernetes.SPIFFEID(), found.Container, candidate.Kubernetes.SPIFFEID(), candidate.Container)
 		}
 		found = &candidate
 	}
@@ -589,4 +591,12 @@ func routedEndpoints(module string, services []*resources.Service, carriers map[
 		}
 	}
 	return endpoints, nil
+}
+
+// sameWorkload compares two declared workloads, cell block included.
+func sameWorkload(a, b solutionhost.Workload) bool {
+	if a.Service != b.Service || a.Container != b.Container || (a.Kubernetes == nil) != (b.Kubernetes == nil) {
+		return false
+	}
+	return a.Kubernetes == nil || *a.Kubernetes == *b.Kubernetes
 }

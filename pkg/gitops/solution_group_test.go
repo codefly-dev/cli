@@ -73,7 +73,7 @@ func TestAComposedSolutionCarriesItsGroupInItsManifest(t *testing.T) {
 			Module:         module,
 			Services:       []*resources.Service{service},
 			FrontendBundle: builtBundle(),
-			Started:        []NativeIdentity{{Module: "crm", Service: "api", Account: "crm-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/crm-api"}},
+			Started:        []NativeIdentity{{Module: "crm", Service: "api"}},
 		}
 		deliver := func(workspace *resources.Workspace) *solutionhost.ModuleManifest {
 			manifest, err := (&NativeDeliverer{Workspace: workspace, Env: env}).Render(ctx, workload)

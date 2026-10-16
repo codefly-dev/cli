@@ -51,7 +51,7 @@ func nativeEnvironment() *environments.Environment {
 func nativeStarted(module string, services ...string) []NativeIdentity {
 	started := make([]NativeIdentity, 0, len(services))
 	for _, service := range services {
-		started = append(started, NativeIdentity{Module: module, Service: service, Account: service, SPIFFEID: testHost().SPIFFEID("example-"+module, service)})
+		started = append(started, NativeIdentity{Module: module, Service: service})
 	}
 	return started
 }
@@ -93,8 +93,8 @@ func TestANativeManifestListsEveryStartedIdentityWorkload(t *testing.T) {
 	require.Equal(t, solutionhost.KindModule, manifest.Kind)
 	require.Equal(t, solutionhost.Release{Publisher: "example", Name: "crm", Version: "1.0.0"}, manifest.Release)
 	require.Equal(t, []solutionhost.Workload{
-		{Service: "api", Container: "api", SPIFFEID: "spiffe://cluster.example/ns/example-crm/sa/api"},
-		{Service: "worker", Container: "worker", SPIFFEID: "spiffe://cluster.example/ns/example-crm/sa/worker"},
+		{Service: "api", Container: "api"},
+		{Service: "worker", Container: "worker"},
 	}, manifest.Workloads)
 	require.ElementsMatch(t, []solutionhost.Endpoint{
 		{Name: "http", Service: "api", API: "http", Address: "http://127.0.0.1:50695"},
@@ -192,15 +192,15 @@ func newDeliveryHost(t *testing.T) *deliveryHost {
 	return host
 }
 
-// deliverer is a native deliverer to the host, its credentials issued per
-// namespace and recorded.
-func (h *deliveryHost) deliverer(t *testing.T, state string, namespaces *[]string) *NativeDeliverer {
+// deliverer is a native deliverer to the host, its carrier credentials issued
+// per module and recorded.
+func (h *deliveryHost) deliverer(t *testing.T, state string, modules *[]string) *NativeDeliverer {
 	return &NativeDeliverer{
 		Workspace: &resources.Workspace{Name: "example"}, Env: nativeEnvironment(), Signer: nativeSigner(t),
 		DeliveryURL: h.URL, StateDir: state,
-		Token: func(namespace string) (string, error) {
-			*namespaces = append(*namespaces, namespace)
-			return "delivery-" + namespace, nil
+		Token: func(module string) (string, error) {
+			*modules = append(*modules, module)
+			return "delivery-" + module, nil
 		},
 	}
 }
@@ -215,26 +215,26 @@ func TestANativeGenerationMovesOnlyWhenTheContentDoes(t *testing.T) {
 	module, services := nativeModule(t, "crm", false)
 	host := newDeliveryHost(t)
 	state := t.TempDir()
-	var namespaces []string
-	deliverer := host.deliverer(t, state, &namespaces)
+	var modules []string
+	deliverer := host.deliverer(t, state, &modules)
 
-	receipt, err := deliverer.Deliver(t.Context(), renderNative(t, module, services, "api"), "example-crm")
+	receipt, err := deliverer.Deliver(t.Context(), renderNative(t, module, services, "api"))
 	require.NoError(t, err)
 	require.Equal(t, Receipt{Status: http.StatusOK, Disposition: "accepted", Generation: 1}, receipt)
-	_, err = deliverer.Deliver(t.Context(), renderNative(t, module, services, "api"), "example-crm")
+	_, err = deliverer.Deliver(t.Context(), renderNative(t, module, services, "api"))
 	require.NoError(t, err)
 	both := renderNative(t, module, services, "api", "worker")
-	_, err = deliverer.Deliver(t.Context(), both, "example-crm")
+	_, err = deliverer.Deliver(t.Context(), both)
 	require.NoError(t, err)
 	require.Equal(t, uint64(2), both.Generation, "Deliver stamps the settled generation on the manifest")
 
-	restarted := host.deliverer(t, state, &namespaces)
-	_, err = restarted.Deliver(t.Context(), renderNative(t, module, services, "api", "worker"), "example-crm")
+	restarted := host.deliverer(t, state, &modules)
+	_, err = restarted.Deliver(t.Context(), renderNative(t, module, services, "api", "worker"))
 	require.NoError(t, err)
 
 	require.Equal(t, []string{manifestDeliveryPath, manifestDeliveryPath, manifestDeliveryPath, manifestDeliveryPath}, host.paths)
-	require.Equal(t, []string{"example-crm", "example-crm", "example-crm", "example-crm"}, namespaces)
-	require.Equal(t, "Bearer delivery-example-crm", host.bearers[0])
+	require.Equal(t, []string{"crm", "crm", "crm", "crm"}, modules)
+	require.Equal(t, "Bearer delivery-crm", host.bearers[0])
 	generations := []uint64{}
 	for _, manifest := range host.manifests {
 		generations = append(generations, manifest.Generation)
@@ -251,12 +251,12 @@ func TestANativeDeliveryTheHostRefusesIsAnErrorAndRecordsNothing(t *testing.T) {
 	module, services := nativeModule(t, "crm", false)
 	host := newDeliveryHost(t)
 	host.status = []int{http.StatusConflict}
-	var namespaces []string
-	deliverer := host.deliverer(t, t.TempDir(), &namespaces)
-	receipt, err := deliverer.Deliver(t.Context(), renderNative(t, module, services, "api"), "example-crm")
+	var modules []string
+	deliverer := host.deliverer(t, t.TempDir(), &modules)
+	receipt, err := deliverer.Deliver(t.Context(), renderNative(t, module, services, "api"))
 	require.ErrorContains(t, err, "older than the applied generation")
 	require.Equal(t, http.StatusConflict, receipt.Status)
-	_, err = deliverer.Deliver(t.Context(), renderNative(t, module, services, "api"), "example-crm")
+	_, err = deliverer.Deliver(t.Context(), renderNative(t, module, services, "api"))
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), host.manifests[1].Generation, "the refused delivery recorded no generation")
 }
@@ -269,19 +269,19 @@ func TestANativeDeliveryTheHostRefusesIsAnErrorAndRecordsNothing(t *testing.T) {
 func TestANativeWithdrawalIsARemovedManifestAtTheNextGeneration(t *testing.T) {
 	module, services := nativeModule(t, "crm", false)
 	host := newDeliveryHost(t)
-	var namespaces []string
-	deliverer := host.deliverer(t, t.TempDir(), &namespaces)
+	var modules []string
+	deliverer := host.deliverer(t, t.TempDir(), &modules)
 	live := renderNative(t, module, services, "api", "worker")
-	_, err := deliverer.Deliver(t.Context(), live, "example-crm")
+	_, err := deliverer.Deliver(t.Context(), live)
 	require.NoError(t, err)
 
 	withdrawal, err := WithdrawalOf(live)
 	require.NoError(t, err)
-	_, err = deliverer.Deliver(t.Context(), withdrawal, "example-crm")
+	_, err = deliverer.Deliver(t.Context(), withdrawal)
 	require.NoError(t, err)
 	replay, err := WithdrawalOf(live)
 	require.NoError(t, err)
-	_, err = deliverer.Deliver(t.Context(), replay, "example-crm")
+	_, err = deliverer.Deliver(t.Context(), replay)
 	require.NoError(t, err)
 
 	posted := host.manifests[1]
@@ -291,7 +291,7 @@ func TestANativeWithdrawalIsARemovedManifestAtTheNextGeneration(t *testing.T) {
 	require.Empty(t, posted.Workloads)
 	require.Empty(t, posted.Endpoints)
 	require.Nil(t, posted.Authority)
-	require.Equal(t, []string{"example-crm", "example-crm", "example-crm"}, namespaces, "a withdrawal is delivered in the module's namespace")
+	require.Equal(t, []string{"crm", "crm", "crm"}, modules, "a withdrawal is delivered by the module's carrier")
 	require.Equal(t, string(host.bodies[1]), string(host.bodies[2]), "a withdrawal is replayed byte for byte")
 	require.False(t, live.Removed, "the delivered manifest is untouched")
 }

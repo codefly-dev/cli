@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -132,8 +133,8 @@ func TestRenderDeclaresOneManifestPerModuleInstance(t *testing.T) {
 	if manifest.Release != (solutionhost.Release{Publisher: "example", Name: "crm", Version: "1.4.0"}) {
 		t.Fatalf("release %+v", manifest.Release)
 	}
-	want := solutionhost.Workload{Service: "api", Container: "api", SPIFFEID: "spiffe://cluster.example/ns/crm/sa/api"}
-	if len(manifest.Workloads) != 1 || manifest.Workloads[0] != want {
+	want := solutionhost.Workload{Service: "api", Container: "api", Kubernetes: &solutionhost.WorkloadAccount{TrustDomain: "cluster.example", Namespace: "crm", Account: "api"}}
+	if len(manifest.Workloads) != 1 || !reflect.DeepEqual(manifest.Workloads[0], want) {
 		t.Fatalf("workloads %+v, want %+v", manifest.Workloads, want)
 	}
 	if len(manifest.Endpoints) != 1 || manifest.Endpoints[0] != (solutionhost.Endpoint{Name: "grpc", Service: "api", API: "grpc", Address: testEndpointAddress}) {
@@ -170,10 +171,10 @@ func TestTwoIdentityWorkloadsAreOneManifest(t *testing.T) {
 	}
 	manifest := deliveredModuleManifest(t, destination, "example.prod.crm")
 	want := []solutionhost.Workload{
-		{Service: "api", Container: "api", SPIFFEID: "spiffe://cluster.example/ns/crm/sa/api"},
-		{Service: "worker", Container: "worker", SPIFFEID: "spiffe://cluster.example/ns/crm/sa/worker"},
+		{Service: "api", Container: "api", Kubernetes: &solutionhost.WorkloadAccount{TrustDomain: "cluster.example", Namespace: "crm", Account: "api"}},
+		{Service: "worker", Container: "worker", Kubernetes: &solutionhost.WorkloadAccount{TrustDomain: "cluster.example", Namespace: "crm", Account: "worker"}},
 	}
-	if len(manifest.Workloads) != 2 || manifest.Workloads[0] != want[0] || manifest.Workloads[1] != want[1] {
+	if !reflect.DeepEqual(manifest.Workloads, want) {
 		t.Fatalf("workloads %+v, want %+v", manifest.Workloads, want)
 	}
 	for _, service := range []string{"api", "worker"} {
@@ -215,7 +216,7 @@ func TestManifestGenerationAdvancesOnlyWhenItsContentChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	if bumped := deliveredModuleManifest(t, destination, "example.prod.crm"); bumped.Generation != 2 ||
-		bumped.Workloads[0].SPIFFEID != "spiffe://cluster.example/ns/crm/sa/api-v2" {
+		bumped.Workloads[0].Kubernetes == nil || bumped.Workloads[0].Kubernetes.Account != "api-v2" {
 		t.Fatalf("a changed manifest is generation %d with %+v, want 2", bumped.Generation, bumped.Workloads)
 	}
 }
@@ -494,8 +495,8 @@ func TestARenderThatDeclaresNothingClearsTheDeliveryPath(t *testing.T) {
 func TestAManifestsWorkloadsShareOneNamespace(t *testing.T) {
 	instance := solutionRenderOptions("").Instance
 	_, err := ModuleManifestOf("example.prod.crm", testHost(), instance, []solutionhost.Workload{
-		{Service: "api", Container: "api", SPIFFEID: "spiffe://cluster.example/ns/crm/sa/api"},
-		{Service: "worker", Container: "worker", SPIFFEID: "spiffe://cluster.example/ns/other/sa/worker"},
+		{Service: "api", Container: "api", Kubernetes: &solutionhost.WorkloadAccount{TrustDomain: "cluster.example", Namespace: "crm", Account: "api"}},
+		{Service: "worker", Container: "worker", Kubernetes: &solutionhost.WorkloadAccount{TrustDomain: "cluster.example", Namespace: "other", Account: "worker"}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "share one namespace") {
 		t.Fatalf("workloads in two namespaces were declared: %v", err)

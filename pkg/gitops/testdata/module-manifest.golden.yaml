@@ -24,7 +24,10 @@ data:
         workloads:
             - service: api
               container: api
-              spiffe_id: spiffe://cluster.example/ns/crm/sa/api
+              kubernetes:
+                trust_domain: cluster.example
+                namespace: crm
+                service_account: api
         endpoints:
             - name: grpc
               service: api

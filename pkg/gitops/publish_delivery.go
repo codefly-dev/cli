@@ -228,7 +228,7 @@ func refuseMovedManifest(binding string, manifest *solutionhost.ModuleManifest, 
 	}
 	if opts.TrustDomain != "" {
 		for _, workload := range manifest.Workloads {
-			if account, err := workload.Account(); err == nil && account.TrustDomain != opts.TrustDomain {
+			if account, declared := workload.Account(); declared && account.TrustDomain != opts.TrustDomain {
 				return fmt.Errorf("module manifest %s was rendered for trust domain %q and the environment declares %q now; render again before publishing", binding, account.TrustDomain, opts.TrustDomain)
 			}
 		}

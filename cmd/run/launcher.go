@@ -2,11 +2,9 @@ package run
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,20 +13,22 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/localcluster"
-	"github.com/codefly-dev/cli/pkg/nativecluster"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	runfixture "github.com/codefly-dev/cli/pkg/run/fixture"
+	"github.com/codefly-dev/cli/pkg/run/identity"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
 	"github.com/codefly-dev/core/wool"
+	"github.com/codefly-dev/core/workloadidentity"
 	nativeidentity "github.com/codefly-dev/core/workloadidentity/native"
-	"gopkg.in/yaml.v3"
 )
 
 // A native run of a composition that declares a host stands in for the cell
@@ -59,8 +59,8 @@ import (
 // whenever that set changes. Until the host has applied it, a mint answers
 // "not established yet", which the workload retries.
 
-type nativeCluster struct {
-	authority  *nativecluster.Authority
+type launcher struct {
+	vouch      *identity.Launcher
 	workspace  *resources.Workspace
 	env        *environments.Environment
 	flow       *orchestration.Flow
@@ -69,7 +69,7 @@ type nativeCluster struct {
 	identities map[string]gitops.NativeIdentity
 	signer     solutionhost.Signer
 
-	hostModule, hostService, hostNamespace string
+	hostModule, hostService string
 
 	// composition guards workspace and identities: the components this run
 	// composes, which admit extends with the ones a reloaded workspace adds
@@ -78,9 +78,7 @@ type nativeCluster struct {
 	composition                       sync.RWMutex
 	hostIdentityAnchor, hostAnchorDir string
 
-	mu          sync.Mutex
-	workloads   map[string]nativecluster.Workload // unique -> projected identity
-	projections map[string]nativecluster.Projection
+	mu sync.Mutex
 	// running are the identity workloads that reached Running: the ones a
 	// module's manifest lists.
 	running map[string]bool
@@ -95,22 +93,22 @@ type nativeCluster struct {
 }
 
 var (
-	nativeClusterMu     sync.Mutex
-	nativeClusterActive *nativeCluster
+	launcherMu     sync.Mutex
+	launcherActive *launcher
 )
 
-// attachNativeCluster wires the run as the composition's cluster when its
+// attachLauncher wires the run as the composition's cluster when its
 // environment declares a host and the run is native. It is a no-op otherwise.
-func attachNativeCluster(ctx context.Context, flow *orchestration.Flow, workspace *resources.Workspace, env *environments.Environment, fixture string) error {
+func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *resources.Workspace, env *environments.Environment, fixture string) error {
 	if env == nil || env.Host == nil || runtimeContext == resources.RuntimeContextContainer {
 		return nil
 	}
-	w := wool.Get(ctx).In("nativeCluster")
-	nativeClusterMu.Lock()
-	defer nativeClusterMu.Unlock()
-	if nativeClusterActive != nil {
-		nativeClusterActive.close()
-		nativeClusterActive = nil
+	w := wool.Get(ctx).In("launcher")
+	launcherMu.Lock()
+	defer launcherMu.Unlock()
+	if launcherActive != nil {
+		launcherActive.close()
+		launcherActive = nil
 	}
 	if err := env.Host.Validate(); err != nil {
 		return err
@@ -123,17 +121,16 @@ func attachNativeCluster(ctx context.Context, flow *orchestration.Flow, workspac
 	if err != nil {
 		return fmt.Errorf("a native run delivers with the developer key, and none is held: %w", err)
 	}
-	authority, err := nativecluster.Start(ctx)
+	stateDir := filepath.Join(workspace.Dir(), ".codefly", "run", env.Name)
+	launcherIdentity, err := identity.Start(env.Host.TrustDomain, env.Host.Audience, stateDir)
 	if err != nil {
 		return err
 	}
-	cluster := &nativeCluster{
-		authority: authority, workspace: workspace, env: env, flow: flow, fixture: fixture,
-		stateDir:           filepath.Join(workspace.Dir(), ".codefly", "native-cluster", env.Name),
+	cluster := &launcher{
+		vouch: launcherIdentity, workspace: workspace, env: env, flow: flow, fixture: fixture,
+		stateDir:           stateDir,
 		identities:         identities,
 		signer:             signer,
-		workloads:          map[string]nativecluster.Workload{},
-		projections:        map[string]nativecluster.Projection{},
 		running:            map[string]bool{},
 		delivered:          map[string]*solutionhost.ModuleManifest{},
 		pendingWithdrawals: map[string]bool{},
@@ -141,17 +138,13 @@ func attachNativeCluster(ctx context.Context, flow *orchestration.Flow, workspac
 	}
 	parts := strings.Split(env.Host.Delivery, "/")
 	if len(parts) != 3 {
-		authority.Close()
 		return fmt.Errorf("host.delivery %q is not <module>/<service>/<endpoint>", env.Host.Delivery)
 	}
 	cluster.hostModule, cluster.hostService = parts[0], parts[1]
-	cluster.hostNamespace = env.ModuleNamespace(workspace, cluster.hostModule)
-	if cluster.hostNamespace == "" {
-		authority.Close()
-		return fmt.Errorf("the host module %s resolves to no namespace: the environment declares none", cluster.hostModule)
-	}
+	// The run vouches for exactly what it composes: each identity workload,
+	// each module's delivery carrier, and the applied observer it acts as.
+	cluster.declare(identities)
 	if err := cluster.projectHost(); err != nil {
-		authority.Close()
 		return err
 	}
 	world := flow.World()
@@ -161,42 +154,47 @@ func attachNativeCluster(ctx context.Context, flow *orchestration.Flow, workspac
 		go cluster.onRunning(context.WithoutCancel(ctx), service)
 	})
 	go cluster.refreshTokens()
-	w.Info("native run: the run attests the composition's workloads", wool.Field("anchor", authority.AnchorFingerprint()[:16]))
-	nativeClusterActive = cluster
+	w.Info("native run: the run vouches for the composition's workloads", wool.Field("anchor", launcherIdentity.AnchorFingerprint()[:16]))
+	launcherActive = cluster
 	return nil
 }
 
-func stopNativeCluster() {
-	nativeClusterMu.Lock()
-	defer nativeClusterMu.Unlock()
-	if nativeClusterActive != nil {
-		nativeClusterActive.close()
-		nativeClusterActive = nil
+func stopLauncher() {
+	launcherMu.Lock()
+	defer launcherMu.Unlock()
+	if launcherActive != nil {
+		launcherActive.close()
+		launcherActive = nil
 	}
 }
 
-func (cluster *nativeCluster) close() {
+func (cluster *launcher) close() {
 	select {
 	case <-cluster.stop:
 	default:
 		close(cluster.stop)
 	}
-	_ = cluster.authority.Close()
 }
 
-func randomUID() string {
-	raw := make([]byte, 16)
-	_, _ = rand.Read(raw)
-	return hex.EncodeToString(raw[:4]) + "-" + hex.EncodeToString(raw[4:6]) + "-" + hex.EncodeToString(raw[6:8]) + "-" + hex.EncodeToString(raw[8:10]) + "-" + hex.EncodeToString(raw[10:])
+// declare records identity workloads the run vouches for, with their delivery
+// carriers and the observer.
+func (cluster *launcher) declare(identities map[string]gitops.NativeIdentity) {
+	if cluster.vouch == nil {
+		return
+	}
+	cluster.vouch.Declare(cluster.vouch.Observer())
+	for _, identity := range identities {
+		cluster.vouch.DeclareModule(identity.Module, identity.Service)
+	}
 }
 
 // projectHost writes what the host reads to verify this run: the anchor every
 // workload credential is checked against, and the delivery trust anchor — a
 // verification policy bound to that anchor and admitting the developer key.
-func (cluster *nativeCluster) projectHost() error {
+func (cluster *launcher) projectHost() error {
 	// The native run owns the anchor it binds the policy to and the signer it
 	// admits: its own delivery key, which no workspace lists.
-	policy, err := localcluster.NativeVerificationPolicy(cluster.authority.AnchorFingerprint(), cluster.signer, cluster.env.Host)
+	policy, err := localcluster.NativeVerificationPolicy(cluster.vouch.AnchorFingerprint(), cluster.signer, cluster.env.Host)
 	if err != nil {
 		return err
 	}
@@ -207,21 +205,21 @@ func (cluster *nativeCluster) projectHost() error {
 			return err
 		}
 	}
-	if err := cluster.authority.Anchor().WriteFile(cluster.hostIdentityAnchor); err != nil {
+	if err := cluster.vouch.WriteAnchor(cluster.hostIdentityAnchor); err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(cluster.hostAnchorDir, "verification_policy.json"), policy, 0o600)
 }
 
 // composed is the workspace this run composes, as admitted so far.
-func (cluster *nativeCluster) composed() *resources.Workspace {
+func (cluster *launcher) composed() *resources.Workspace {
 	cluster.composition.RLock()
 	defer cluster.composition.RUnlock()
 	return cluster.workspace
 }
 
 // identity is the identity this run projects for a workload, by unique.
-func (cluster *nativeCluster) identity(unique string) (gitops.NativeIdentity, bool) {
+func (cluster *launcher) identity(unique string) (gitops.NativeIdentity, bool) {
 	cluster.composition.RLock()
 	defer cluster.composition.RUnlock()
 	identity, ok := cluster.identities[unique]
@@ -232,7 +230,7 @@ func (cluster *nativeCluster) identity(unique string) (gitops.NativeIdentity, bo
 // answers now: the gateway can be restarted on another port during the run,
 // and a writer kept on its first address would fail every envelope write
 // after that, before the endpoint projection the delivery ends with.
-func (cluster *nativeCluster) envelopeFor(ctx context.Context, gatewayURL string) (*gitops.EnvelopeWriter, error) {
+func (cluster *launcher) envelopeFor(ctx context.Context, gatewayURL string) (*gitops.EnvelopeWriter, error) {
 	if cluster.envelope != nil {
 		cluster.envelope.GatewayURL = gatewayURL
 		return cluster.envelope, nil
@@ -245,7 +243,7 @@ func (cluster *nativeCluster) envelopeFor(ctx context.Context, gatewayURL string
 	return cluster.envelope, nil
 }
 
-func (cluster *nativeCluster) identityOf(service *resources.Service) (string, gitops.NativeIdentity, bool) {
+func (cluster *launcher) identityOf(service *resources.Service) (string, gitops.NativeIdentity, bool) {
 	unique := resources.WithUnique(service).Unique()
 	identity, ok := cluster.identity(unique)
 	return unique, identity, ok
@@ -262,7 +260,7 @@ func (cluster *nativeCluster) identityOf(service *resources.Service) (string, gi
 // anchor — is untouched: the host keeps its process, and an admitted
 // component is projected, delivered and enveloped through the same path as
 // any workload reaching Running. It returns the uniques admitted, sorted.
-func (cluster *nativeCluster) admit(ctx context.Context, workspace *resources.Workspace) ([]string, error) {
+func (cluster *launcher) admit(ctx context.Context, workspace *resources.Workspace) ([]string, error) {
 	identities, err := gitops.ResolveNativeIdentities(ctx, workspace, cluster.env)
 	if err != nil {
 		return nil, err
@@ -279,9 +277,9 @@ func (cluster *nativeCluster) admit(ctx context.Context, workspace *resources.Wo
 		reloaded, still := identities[unique]
 		switch {
 		case !still:
-			return nil, fmt.Errorf("the reloaded composition no longer composes %s, which this run delivers as %s; a run never withdraws a component, stop the run to remove it", unique, known.SPIFFEID)
+			return nil, fmt.Errorf("the reloaded composition no longer composes %s, which this run delivers as %s/%s; a run never withdraws a component, stop the run to remove it", unique, known.Module, known.Service)
 		case reloaded != known:
-			return nil, fmt.Errorf("%s runs as %s and the reloaded composition names it %s; a running principal is never replaced, stop the run to change it", unique, known.SPIFFEID, reloaded.SPIFFEID)
+			return nil, fmt.Errorf("%s runs as %s/%s and the reloaded composition names it %s/%s; a running principal is never replaced, stop the run to change it", unique, known.Module, known.Service, reloaded.Module, reloaded.Service)
 		}
 	}
 	var added []string
@@ -291,10 +289,19 @@ func (cluster *nativeCluster) admit(ctx context.Context, workspace *resources.Wo
 		}
 	}
 	sort.Strings(added)
+	newcomers := map[string]gitops.NativeIdentity{}
 	for _, unique := range added {
 		cluster.identities[unique] = identities[unique]
+		newcomers[unique] = identities[unique]
 	}
 	cluster.workspace = workspace
+	cluster.declare(newcomers)
+	if cluster.vouch != nil && cluster.hostIdentityAnchor != "" && len(added) > 0 {
+		// The host re-reads the anchor: a newcomer is vouched for from now on.
+		if err := cluster.vouch.WriteAnchor(cluster.hostIdentityAnchor); err != nil {
+			return nil, err
+		}
+	}
 	return added, nil
 }
 
@@ -304,18 +311,18 @@ func (cluster *nativeCluster) admit(ctx context.Context, workspace *resources.Wo
 // not here: it is the workspace value the composition points at the gateway's
 // `workload` endpoint, which the run resolves like every other
 // `${endpoint:…}` reference, at the address this run allocated.
-func (cluster *nativeCluster) runtimeOverrides(service *resources.Service) map[string]string {
+func (cluster *launcher) runtimeOverrides(service *resources.Service) map[string]string {
 	unique, identity, ok := cluster.identityOf(service)
 	out := map[string]string{}
 	if ok {
 		// A module-identity service reads its token from the path a cell's
 		// render mounts unless told otherwise; this is the otherwise.
-		projection, err := cluster.project(unique, identity)
+		credential, err := cluster.project(unique, identity)
 		if err != nil {
-			wool.Get(context.Background()).In("nativeCluster").Warn("cannot project the module's token", wool.Field("service", unique), wool.ErrField(err))
+			wool.Get(context.Background()).In("launcher").Warn("cannot project the module's credential", wool.Field("service", unique), wool.ErrField(err))
 			return out
 		}
-		out[workloadTokenFileVariable] = projection.TokenFile
+		out[workloadTokenFileVariable] = credential.File
 	}
 	if unique == resources.ServiceUnique(cluster.hostModule, cluster.hostService) {
 		out[nativeidentity.AnchorEnvironment] = cluster.hostIdentityAnchor
@@ -327,7 +334,7 @@ func (cluster *nativeCluster) runtimeOverrides(service *resources.Service) map[s
 // renderOwnedGroups projects the authority a cell's render would project for
 // a service that declares module-authority: its mesh principal, the host's
 // audiences and the internal token the gateway verifies.
-func (cluster *nativeCluster) renderOwnedGroups(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error) {
+func (cluster *launcher) renderOwnedGroups(ctx context.Context, service *resources.Service) ([]*basev0.Configuration, error) {
 	var out []*basev0.Configuration
 	// The delivery host turns its surface on from its federation keys, which
 	// a cell's composition declares for the environment and this run derives
@@ -360,7 +367,7 @@ func (cluster *nativeCluster) renderOwnedGroups(ctx context.Context, service *re
 		return nil, err
 	}
 	authority := &basev0.ConfigurationInformation{Name: environments.ModuleAuthorityConfiguration, ConfigurationValues: []*basev0.ConfigurationValue{
-		{Key: "PRINCIPAL", Value: identity.SPIFFEID},
+		{Key: "PRINCIPAL", Value: identity.Workload(cluster.env.Host.TrustDomain).Unique()},
 		{Key: "AUDIENCE", Value: cluster.env.Host.ModuleAudience},
 		{Key: "PROJECTION_AUDIENCE", Value: cluster.env.Host.Audience},
 		{Key: "INTERNAL_TOKEN", Value: token, Secret: true},
@@ -414,7 +421,7 @@ func artifactCacheGroup(workspaceDir string) (*basev0.Configuration, error) {
 // refused by name, with what to build: a host admits no new frontend without
 // its signed payload, and a mutable fallback is never delivered in its place.
 // A headless component needs no bundle, and a leftover one is not its page.
-func (cluster *nativeCluster) frontendBundle(ctx context.Context, module *resources.Module) (*solutionhost.FrontendPayload, error) {
+func (cluster *launcher) frontendBundle(ctx context.Context, module *resources.Module) (*solutionhost.FrontendPayload, error) {
 	frontend, err := solutionrun.DeclaredFrontend(ctx, module)
 	if err != nil || frontend == nil {
 		return nil, err
@@ -438,7 +445,7 @@ func (cluster *nativeCluster) frontendBundle(ctx context.Context, module *resour
 // internalToken is the value module-authority/INTERNAL_TOKEN aliases in a
 // cell: internal-auth/CODEFLY_INTERNAL_TOKEN as the host's gateway resolves
 // it, the secret a module presents on the hop the gateway verifies.
-func (cluster *nativeCluster) internalToken(ctx context.Context) (string, error) {
+func (cluster *launcher) internalToken(ctx context.Context) (string, error) {
 	if cluster.env.Host.Gateway == "" {
 		return "", fmt.Errorf("module-authority aliases the gateway's internal-auth/CODEFLY_INTERNAL_TOKEN, and the environment names no host.gateway")
 	}
@@ -458,58 +465,31 @@ func (cluster *nativeCluster) internalToken(ctx context.Context) (string, error)
 	return "", fmt.Errorf("module-authority aliases internal-auth/CODEFLY_INTERNAL_TOKEN, and the gateway %s resolves no value for it", cluster.env.Host.Gateway)
 }
 
-func (cluster *nativeCluster) project(unique string, identity gitops.NativeIdentity) (nativecluster.Projection, error) {
-	cluster.mu.Lock()
-	defer cluster.mu.Unlock()
-	if projection, done := cluster.projections[unique]; done {
-		return projection, nil
-	}
-	namespace := cluster.env.ModuleNamespace(cluster.composed(), identity.Module)
-	workload := nativecluster.Workload{
-		Namespace: namespace, Account: identity.Account,
-		PodName: identity.Service + "-native", PodUID: randomUID(), Audience: cluster.env.Host.Audience,
-	}
-	// The process is registered before its first credential is written, so
-	// that credential already names its declared container: the one a cell's
-	// render projects the credential into, and nothing else.
-	cluster.authority.RegisterPod(&nativecluster.Pod{
-		Namespace: namespace, ServiceAccount: identity.Account, Name: workload.PodName, UID: workload.PodUID, Container: identity.Service,
-	})
-	projection, err := cluster.authority.Project(filepath.Join(cluster.stateDir, "identities", identity.Module, identity.Service), &workload)
-	if err != nil {
-		return nativecluster.Projection{}, err
-	}
-	cluster.workloads[unique] = workload
-	cluster.projections[unique] = projection
-	return projection, nil
+func (cluster *launcher) project(unique string, identity gitops.NativeIdentity) (identity.Credential, error) {
+	return cluster.vouch.Project(unique, identity.Workload(cluster.env.Host.TrustDomain))
 }
 
 // refreshTokens re-issues every projected token at 80% of its lifetime, as
 // the kubelet rotates a projected token: a mint client that re-reads the
 // projection before every mint always presents a token the host has not
 // recorded yet.
-func (cluster *nativeCluster) refreshTokens() {
-	ticker := time.NewTicker(nativecluster.TokenRefreshInterval)
+func (cluster *launcher) refreshTokens() {
+	ticker := time.NewTicker(identity.RefreshInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-cluster.stop:
 			return
 		case <-ticker.C:
-			cluster.mu.Lock()
-			for unique := range cluster.workloads {
-				workload := cluster.workloads[unique]
-				_ = cluster.authority.RefreshToken(cluster.projections[unique].TokenFile, &workload)
-			}
-			cluster.mu.Unlock()
+			cluster.vouch.Refresh()
 		}
 	}
 }
 
 // onRunning is the cell's delivery, for one identity workload that just
 // started: its module's manifest, listing it.
-func (cluster *nativeCluster) onRunning(ctx context.Context, unique string) {
-	w := wool.Get(ctx).In("nativeCluster.deliver", wool.Field("service", unique))
+func (cluster *launcher) onRunning(ctx context.Context, unique string) {
+	w := wool.Get(ctx).In("launcher.deliver", wool.Field("service", unique))
 	identity, ok := cluster.identity(unique)
 	if !ok || !cluster.delivers(identity) {
 		return
@@ -526,7 +506,7 @@ func (cluster *nativeCluster) onRunning(ctx context.Context, unique string) {
 // host's delivery endpoint as the flow resolves it now, this run's signer and
 // state, and the delivery account's credential. It also answers the gateway's
 // current address, which the envelope follows.
-func (cluster *nativeCluster) newDeliverer(ctx context.Context) (*gitops.NativeDeliverer, string, error) {
+func (cluster *launcher) newDeliverer(ctx context.Context) (*gitops.NativeDeliverer, string, error) {
 	gatewayModule, gatewayService, ok := strings.Cut(cluster.env.Host.Gateway, "/")
 	if !ok {
 		return nil, "", fmt.Errorf("a native run writes the envelope through the host gateway, and host.gateway %q names no <module>/<service>", cluster.env.Host.Gateway)
@@ -542,25 +522,11 @@ func (cluster *nativeCluster) newDeliverer(ctx context.Context) (*gitops.NativeD
 	return &gitops.NativeDeliverer{
 		Workspace: cluster.composed(), Env: cluster.env, Signer: cluster.signer,
 		StateDir: filepath.Join(cluster.stateDir, "delivery"), DeliveryURL: deliveryURL,
-		Token: func(namespace string) (string, error) {
-			pod := nativecluster.Pod{Namespace: namespace, ServiceAccount: "delivery", Name: "delivery-native", UID: randomUID()}
-			if existing, ok := cluster.authority.Pod(namespace, "delivery"); ok {
-				pod = existing
-			} else {
-				cluster.authority.RegisterPod(&pod)
-			}
-			return cluster.authority.Token(namespace, "delivery", pod.Name, pod.UID, cluster.env.Host.Audience)
+		Token: func(module string) (string, error) {
+			return cluster.vouch.Issue(cluster.vouch.Workload(module, workloadidentity.DeliveryService))
 		},
 		ObserverToken: func() (string, error) {
-			// The host's existing APPLIED read authenticates this distinct
-			// publisher identity; document writer credentials cannot read it.
-			pod := nativecluster.Pod{Namespace: "istio-presenter", ServiceAccount: "endpoint-publisher", Name: "endpoint-publisher-native", UID: randomUID()}
-			if existing, ok := cluster.authority.Pod(pod.Namespace, pod.ServiceAccount); ok {
-				pod = existing
-			} else {
-				cluster.authority.RegisterPod(&pod)
-			}
-			return cluster.authority.Token(pod.Namespace, pod.ServiceAccount, pod.Name, pod.UID, cluster.env.Host.Audience)
+			return cluster.vouch.Issue(cluster.vouch.Observer())
 		},
 	}, gatewayURL, nil
 }
@@ -572,7 +538,7 @@ func (cluster *nativeCluster) newDeliverer(ctx context.Context) (*gitops.NativeD
 // binding — and the run waits until the host has applied it. Each stopped
 // workload is forgotten. The run's authority, the envelope and the host's
 // process are untouched. Returned are the modules withdrawn.
-func (cluster *nativeCluster) withdraw(ctx context.Context, uniques []string) ([]string, error) {
+func (cluster *launcher) withdraw(ctx context.Context, uniques []string) ([]string, error) {
 	modules := map[string]bool{}
 	for _, unique := range uniques {
 		if identity, ok := cluster.identity(unique); ok && cluster.delivers(identity) {
@@ -613,7 +579,7 @@ func (cluster *nativeCluster) withdraw(ctx context.Context, uniques []string) ([
 // apply it. A withdrawal is redelivered as it was until then: the same content
 // settles to the same generation, which the host replays. A module this run
 // never delivered has nothing to withdraw.
-func (cluster *nativeCluster) withdrawModule(ctx context.Context, module string) (bool, error) {
+func (cluster *launcher) withdrawModule(ctx context.Context, module string) (bool, error) {
 	cluster.mu.Lock()
 	defer cluster.mu.Unlock()
 	delivered := cluster.delivered[module]
@@ -630,12 +596,12 @@ func (cluster *nativeCluster) withdrawModule(ctx context.Context, module string)
 	if err != nil {
 		return false, err
 	}
-	receipt, err := deliverer.Deliver(ctx, withdrawal, cluster.env.ModuleNamespace(cluster.composed(), module))
+	receipt, err := deliverer.Deliver(ctx, withdrawal)
 	if err != nil {
 		return false, err
 	}
 	cluster.delivered[module] = withdrawal
-	wool.Get(ctx).In("nativeCluster.withdraw").Info("withdrawal received", wool.Field("module", module),
+	wool.Get(ctx).In("launcher.withdraw").Info("withdrawal received", wool.Field("module", module),
 		wool.Field("disposition", receipt.Disposition), wool.Field("generation", receipt.Generation))
 	if err := deliverer.WaitForWithdrawal(ctx, withdrawal); err != nil {
 		return false, err
@@ -647,13 +613,14 @@ func (cluster *nativeCluster) withdrawModule(ctx context.Context, module string)
 // forget drops everything this run keeps for one workload: the identity the
 // composition gave it, its projection and whether it runs. Nothing of the
 // run's authority is touched.
-func (cluster *nativeCluster) forget(unique string) {
+func (cluster *launcher) forget(unique string) {
 	cluster.composition.Lock()
 	delete(cluster.identities, unique)
 	cluster.composition.Unlock()
+	if cluster.vouch != nil {
+		cluster.vouch.Forget(unique)
+	}
 	cluster.mu.Lock()
-	delete(cluster.projections, unique)
-	delete(cluster.workloads, unique)
 	delete(cluster.running, unique)
 	cluster.mu.Unlock()
 }
@@ -664,13 +631,13 @@ const workloadTokenFileVariable = "CODEFLY__WORKLOAD_TOKEN_FILE" //nolint:gosec 
 
 // delivers reports whether this run delivers a manifest for an identity's
 // module: every module but the host's own.
-func (cluster *nativeCluster) delivers(identity gitops.NativeIdentity) bool {
+func (cluster *launcher) delivers(identity gitops.NativeIdentity) bool {
 	return identity.Module != cluster.hostModule
 }
 
 // startedIdentities are the identity workloads of a module that run now,
 // sorted by service.
-func (cluster *nativeCluster) startedIdentities(module string) []gitops.NativeIdentity {
+func (cluster *launcher) startedIdentities(module string) []gitops.NativeIdentity {
 	cluster.mu.Lock()
 	running := make([]string, 0, len(cluster.running))
 	for unique := range cluster.running {
@@ -690,7 +657,7 @@ func (cluster *nativeCluster) startedIdentities(module string) []gitops.NativeId
 // deliver delivers a module's manifest, listing every identity workload of it
 // that runs now, with the addresses this run allocated for its routed
 // endpoints, after making sure the host holds the composition's envelope.
-func (cluster *nativeCluster) deliver(ctx context.Context, module string) error {
+func (cluster *launcher) deliver(ctx context.Context, module string) error {
 	started := cluster.startedIdentities(module)
 	cluster.mu.Lock()
 	defer cluster.mu.Unlock()
@@ -728,12 +695,12 @@ func (cluster *nativeCluster) deliver(ctx context.Context, module string) error 
 	if err != nil {
 		return err
 	}
-	receipt, err := deliverer.Deliver(ctx, manifest, cluster.env.ModuleNamespace(cluster.composed(), module))
+	receipt, err := deliverer.Deliver(ctx, manifest)
 	if err != nil {
 		return err
 	}
 	cluster.delivered[module] = manifest
-	wool.Get(ctx).In("nativeCluster.deliver").Info("delivered", wool.Field("module", module), wool.Field("workloads", len(manifest.Workloads)),
+	wool.Get(ctx).In("launcher.deliver").Info("delivered", wool.Field("module", module), wool.Field("workloads", len(manifest.Workloads)),
 		wool.Field("disposition", receipt.Disposition), wool.Field("generation", receipt.Generation))
 	return nil
 }
@@ -742,9 +709,12 @@ func (cluster *nativeCluster) deliver(ctx context.Context, module string) error 
 // grant, as configurations/<environment>/module-envelope.json states it — as
 // the fixture's platform administrator, unless the host holds it already. A
 // composition that states no grant writes none.
-func (cluster *nativeCluster) ensureEnvelope(ctx context.Context, gatewayURL string) error {
+func (cluster *launcher) ensureEnvelope(ctx context.Context, gatewayURL string) error {
 	grants, err := cluster.grants()
 	if err != nil || len(grants) == 0 {
+		return err
+	}
+	if err = cluster.awaitGateway(ctx, gatewayURL); err != nil {
 		return err
 	}
 	writer, err := cluster.envelopeFor(ctx, gatewayURL)
@@ -757,68 +727,70 @@ func (cluster *nativeCluster) ensureEnvelope(ctx context.Context, gatewayURL str
 	return nil
 }
 
+// gatewayAcceptTimeout bounds the wait for the gateway's REST listener. The
+// race it covers is a few seconds of process start; a gateway still refusing
+// after this is a fault to report, not a slow start to keep waiting on.
+const gatewayAcceptTimeout = 2 * time.Minute
+
+// awaitGateway waits for the host gateway's REST listener to ACCEPT a
+// connection, which is what the envelope's sign-in needs and what the flow's
+// readiness does not promise: a service is reported Running once its own
+// workload is up, while the gateway announces its REST address earlier still,
+// so the first module to start reaches an address nothing is listening on yet.
+// Delivery is attempted once per module, when that module starts, and a
+// failure is logged rather than retried (onRunning) — so a refused connection
+// there costs the module its delivery for the whole life of the run, which is
+// how a composition came up with every module delivered except the one that
+// started first. Waiting for the listener is the condition the hop actually
+// has; reading a refusal as a delivery verdict is the defect.
+func (cluster *launcher) awaitGateway(ctx context.Context, gatewayURL string) error {
+	parsed, err := url.Parse(gatewayURL)
+	if err != nil {
+		return fmt.Errorf("the module envelope is written through the host gateway, and %q is not a URL: %w", gatewayURL, err)
+	}
+	hostPort := parsed.Host
+	if hostPort == "" {
+		return fmt.Errorf("the module envelope is written through the host gateway, and %q names no host", gatewayURL)
+	}
+	if parsed.Port() == "" {
+		switch parsed.Scheme {
+		case "https":
+			hostPort = net.JoinHostPort(hostPort, "443")
+		default:
+			hostPort = net.JoinHostPort(hostPort, "80")
+		}
+	}
+	if common.WaitReachable(ctx, hostPort, gatewayAcceptTimeout) {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return fmt.Errorf("the host gateway %s accepts no connection after %s, and the module envelope is written through it", hostPort, gatewayAcceptTimeout)
+}
+
 // fixtureAdministrator is the platform administrator the selected fixture
 // seeds: the one who writes the envelope, as a cell's administrator would.
 // Read from the host module's fixture file, the host's own declaration of it.
-type fixtureAdministrator struct {
-	Provider string
-	Token    string
-}
 
-func (cluster *nativeCluster) fixtureAdministrator(ctx context.Context) (fixtureAdministrator, error) {
+func (cluster *launcher) fixtureAdministrator(ctx context.Context) (runfixture.Administrator, error) {
 	module, err := cluster.composed().LoadModuleFromName(ctx, cluster.hostModule)
 	if err != nil {
-		return fixtureAdministrator{}, err
+		return runfixture.Administrator{}, err
 	}
-	path := filepath.Join(module.Dir(), "fixtures", cluster.fixture+".yaml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fixtureAdministrator{}, fmt.Errorf("the envelope is written by the fixture's platform administrator, and the host declares no fixture %q: %w", cluster.fixture, err)
-	}
-	var document struct {
-		Users []struct {
-			Role         string `yaml:"role"`
-			Provider     string `yaml:"provider"`
-			ProviderID   string `yaml:"provider_id"`
-			FixtureToken string `yaml:"fixture_token"`
-		} `yaml:"users"`
-	}
-	if err := yaml.Unmarshal(data, &document); err != nil {
-		return fixtureAdministrator{}, fmt.Errorf("read %s: %w", path, err)
-	}
-	for _, user := range document.Users {
-		if user.Role != "super_admin" {
-			continue
-		}
-		token := user.FixtureToken
-		if token == "" {
-			token = user.ProviderID
-		}
-		return fixtureAdministrator{Provider: user.Provider, Token: token}, nil
-	}
-	return fixtureAdministrator{}, fmt.Errorf("fixture %q seeds no super_admin, so nobody can write the envelope", cluster.fixture)
+	return runfixture.ReadAdministrator(module.Dir(), cluster.fixture)
 }
 
 // grants reads the composition's envelope policy: configurations/<env>/module-envelope.json,
 // {"principals": {"<module>": <grant>}} — what the platform administrator
 // grants each module principal, in the host's own grant shape.
-func (cluster *nativeCluster) grants() (map[string]gitops.EnvelopeGrant, error) {
-	path := filepath.Join(cluster.composed().Dir(), "configurations", cluster.env.Name, "module-envelope.json")
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return map[string]gitops.EnvelopeGrant{}, nil
-	}
+func (cluster *launcher) grants() (map[string]gitops.EnvelopeGrant, error) {
+	principals, err := runfixture.ReadGrants(cluster.composed().Dir(), cluster.env.Name)
 	if err != nil {
 		return nil, err
 	}
-	var document struct {
-		Principals map[string]json.RawMessage `json:"principals"`
-	}
-	if err := json.Unmarshal(data, &document); err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
-	}
 	out := map[string]gitops.EnvelopeGrant{}
-	for prefix, grant := range document.Principals {
+	for prefix, grant := range principals {
 		out[prefix] = gitops.EnvelopeGrant(grant)
 	}
 	return out, nil

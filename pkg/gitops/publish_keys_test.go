@@ -40,7 +40,7 @@ func TestReleaseAdmissionChecksSuppliedCustodyAndReusedCarriers(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest, err := ModuleManifestOf("example.prod.crm", testHost(), solutionRenderOptions("").Instance,
-		[]solutionhost.Workload{{Service: "api", Container: "api", SPIFFEID: "spiffe://cluster.example/ns/crm/sa/api"}})
+		[]solutionhost.Workload{{Service: "api", Container: "api", Kubernetes: &solutionhost.WorkloadAccount{TrustDomain: "cluster.example", Namespace: "crm", Account: "api"}}})
 	if err != nil {
 		t.Fatal(err)
 	}

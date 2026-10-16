@@ -33,15 +33,15 @@ func TestExtensionRefreshesGroupsWithoutAddingRoots(t *testing.T) {
 	require.NoError(t, err)
 	identities, err := gitops.ResolveNativeIdentities(ctx, workspace, env)
 	require.NoError(t, err)
-	cluster := &nativeCluster{workspace: workspace, env: env, identities: identities}
-	nativeClusterMu.Lock()
-	previous := nativeClusterActive
-	nativeClusterActive = cluster
-	nativeClusterMu.Unlock()
+	cluster := &launcher{workspace: workspace, env: env, identities: identities}
+	launcherMu.Lock()
+	previous := launcherActive
+	launcherActive = cluster
+	launcherMu.Unlock()
 	t.Cleanup(func() {
-		nativeClusterMu.Lock()
-		nativeClusterActive = previous
-		nativeClusterMu.Unlock()
+		launcherMu.Lock()
+		launcherActive = previous
+		launcherMu.Unlock()
 	})
 	t.Chdir(workspace.Dir())
 	baseline := extensionBaseline(ctx, workspace)
@@ -51,7 +51,7 @@ func TestExtensionRefreshesGroupsWithoutAddingRoots(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "Revised", group.Title)
 	require.Equal(t, []string{"model/model"}, flow.Roots())
-	require.Nil(t, cluster.authority, "refreshing declarations starts no replacement authority")
+	require.Nil(t, cluster.vouch, "refreshing declarations starts no replacement issuer")
 }
 
 // The roots a reload admits are the ones neither the run nor the composition
@@ -97,20 +97,20 @@ func TestWithdrawalRetriesAfterTheRootHasLeftTheFlow(t *testing.T) {
 	delivered := &solutionhost.ModuleManifest{
 		Schema: solutionhost.SchemaModuleManifestV1, Binding: "acme.local.gone", Alias: "gone", Kind: solutionhost.KindModule, Generation: 1,
 		Host: solutionhost.HostTarget{Coordinate: host.Coordinate, Domain: host.Domain}, Release: solutionhost.Release{Publisher: "acme", Name: "gone", Version: "1.0.0"},
-		Workloads: []solutionhost.Workload{{Service: "backend", Container: "backend", SPIFFEID: host.SPIFFEID("acme-gone", "backend")}},
+		Workloads: []solutionhost.Workload{{Service: "backend", Container: "backend"}},
 	}
-	cluster := &nativeCluster{
+	cluster := &launcher{
 		stateDir: t.TempDir(), env: &hosted, flow: flow, workspace: workspace,
 		identities:         map[string]gitops.NativeIdentity{"gone/backend": {Module: "gone", Service: "backend"}},
 		running:            map[string]bool{"gone/backend": true},
 		delivered:          map[string]*solutionhost.ModuleManifest{"gone": delivered},
 		pendingWithdrawals: map[string]bool{},
 	}
-	nativeClusterMu.Lock()
-	previous := nativeClusterActive
-	nativeClusterActive = cluster
-	nativeClusterMu.Unlock()
-	t.Cleanup(func() { nativeClusterMu.Lock(); nativeClusterActive = previous; nativeClusterMu.Unlock() })
+	launcherMu.Lock()
+	previous := launcherActive
+	launcherActive = cluster
+	launcherMu.Unlock()
+	t.Cleanup(func() { launcherMu.Lock(); launcherActive = previous; launcherMu.Unlock() })
 	t.Chdir(workspace.Dir())
 
 	withdrawn, err := cluster.withdraw(ctx, []string{"gone/backend"})

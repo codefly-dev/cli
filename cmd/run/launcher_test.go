@@ -2,18 +2,57 @@ package run
 
 import (
 	"context"
+	"fmt"
+	"github.com/codefly-dev/core/workloadidentity"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
-	"github.com/codefly-dev/cli/pkg/nativecluster"
+	"github.com/codefly-dev/cli/pkg/run/identity"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/workloadidentity/native"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAwaitGatewayWaitsForListener(t *testing.T) {
+	cluster := &launcher{}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	address := listener.Addr().String()
+	require.NoError(t, listener.Close())
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		late, listenErr := net.Listen("tcp", address)
+		if listenErr != nil {
+			return
+		}
+		defer late.Close()
+		for {
+			conn, acceptErr := late.Accept()
+			if acceptErr != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, cluster.awaitGateway(ctx, fmt.Sprintf("http://%s", address)))
+}
+
+func TestAwaitGatewayRejectsAnUnusableURL(t *testing.T) {
+	cluster := &launcher{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorContains(t, cluster.awaitGateway(ctx, "not a URL"), "names no host")
+}
 
 // TestEveryIdentityWorkloadIsIssuedItsCredentialAtProjection: a module runs
 // as each of its identity services, and each is issued its credential the
@@ -25,38 +64,46 @@ func TestEveryIdentityWorkloadIsIssuedItsCredentialAtProjection(t *testing.T) {
 	workspace = composeService(t, workspace, "model", "worker")
 	identities, err := gitops.ResolveNativeIdentities(ctx, workspace, env)
 	require.NoError(t, err)
-	authority, err := nativecluster.Start(ctx)
+	vouch, err := identity.Start(env.Host.TrustDomain, env.Host.Audience, t.TempDir())
 	require.NoError(t, err)
-	attester, err := native.NewAttester(authority.Anchor())
+	cluster := &launcher{vouch: vouch, workspace: workspace, env: env, identities: identities}
+	cluster.declare(identities)
+	attester, err := native.NewAttester(vouch.Anchor())
 	require.NoError(t, err)
-	cluster := &nativeCluster{
-		authority: authority, workspace: workspace, env: env, identities: identities, stateDir: t.TempDir(),
-		workloads: map[string]nativecluster.Workload{}, projections: map[string]nativecluster.Projection{},
-	}
-	namespace := env.ModuleNamespace(workspace, "model")
 	for _, unique := range []string{"model/model", "model/worker"} {
 		identity, ok := cluster.identity(unique)
 		require.True(t, ok, unique)
-		projection, err := cluster.project(unique, identity)
+		credential, err := cluster.project(unique, identity)
 		require.NoError(t, err)
-		token, err := os.ReadFile(projection.TokenFile)
+		token, err := os.ReadFile(credential.File)
 		require.NoError(t, err, "%s holds its credential from projection", unique)
 		attested, err := attester.Attest(ctx, string(token), env.Host.Audience)
 		require.NoError(t, err)
-		require.Equal(t, namespace, attested.Namespace)
-		require.Equal(t, identity.Service, attested.Account)
-		require.Len(t, attested.Containers, 1)
-		require.Equal(t, identity.Service, attested.Containers[0].Name, "the credential names the workload's own declared container")
+		require.Equal(t, workloadidentity.Workload{TrustDomain: env.Host.TrustDomain, Module: "model", Service: identity.Service}, attested.Workload.Declared(),
+			"the credential names the declared workload and nothing of a cell")
+		require.NotEmpty(t, attested.Workload.Instance)
+		require.Len(t, attested.Facts.Containers, 1)
+		require.Equal(t, identity.Service, attested.Facts.Containers[0].Name, "the credential names the workload's own declared container")
 		again, err := cluster.project(unique, identity)
 		require.NoError(t, err)
-		require.Equal(t, projection, again, "a workload is projected once")
+		require.Equal(t, credential, again, "a workload is projected once")
 	}
+	t.Run("the run vouches for its carriers and the observer, and nothing else", func(t *testing.T) {
+		for _, workload := range []workloadidentity.Workload{vouch.Workload("model", workloadidentity.DeliveryService), vouch.Observer()} {
+			token, err := vouch.Issue(workload)
+			require.NoError(t, err)
+			_, err = attester.Attest(ctx, token, env.Host.Audience)
+			require.NoError(t, err)
+		}
+		_, err := vouch.Issue(vouch.Workload("elsewhere", "api"))
+		require.ErrorContains(t, err, "did not declare elsewhere/api")
+	})
 }
 
 // The identity workloads a module's manifest lists are the ones that reached
 // Running, of that module, by service.
 func TestStartedIdentitiesAreTheRunningWorkloadsOfTheModule(t *testing.T) {
-	cluster := &nativeCluster{
+	cluster := &launcher{
 		identities: map[string]gitops.NativeIdentity{
 			"model/worker": {Module: "model", Service: "worker"}, "model/model": {Module: "model", Service: "model"},
 			"model/idle": {Module: "model", Service: "idle"}, "ledger/store": {Module: "ledger", Service: "store"},
@@ -170,7 +217,7 @@ func TestANativeRunAdmitsAnUnseenComponentWithoutReplacingItsAuthority(t *testin
 	identities, err := gitops.ResolveNativeIdentities(ctx, workspace, env)
 	require.NoError(t, err)
 	require.Len(t, identities, 1)
-	cluster := &nativeCluster{workspace: workspace, env: env, identities: identities, hostIdentityAnchor: "/run/host/identity-anchor.json"}
+	cluster := &launcher{workspace: workspace, env: env, identities: identities, hostIdentityAnchor: "/run/host/identity-anchor.json"}
 	before := cluster.hostIdentityAnchor
 
 	reloaded := composeModule(t, workspace, "wiki")
@@ -179,11 +226,11 @@ func TestANativeRunAdmitsAnUnseenComponentWithoutReplacingItsAuthority(t *testin
 	require.Equal(t, []string{"wiki/api"}, added)
 	identity, ok := cluster.identity("wiki/api")
 	require.True(t, ok)
-	require.Equal(t, gitops.NativeIdentity{Module: "wiki", Service: "api", Account: "api", SPIFFEID: env.Host.SPIFFEID("acme-wiki", "api")}, identity)
+	require.Equal(t, gitops.NativeIdentity{Module: "wiki", Service: "api"}, identity)
 	require.Same(t, reloaded, cluster.composed(), "the run composes the reloaded workspace from now on")
 	_, stillKnown := cluster.identity("model/model")
 	require.True(t, stillKnown)
-	require.Nil(t, cluster.authority, "admission starts no authority")
+	require.Nil(t, cluster.vouch, "admission starts no issuer")
 	require.Equal(t, before, cluster.hostIdentityAnchor, "the host's identity anchor is untouched")
 
 	again, err := cluster.admit(ctx, reloaded)
@@ -191,32 +238,15 @@ func TestANativeRunAdmitsAnUnseenComponentWithoutReplacingItsAuthority(t *testin
 	require.Empty(t, again, "admitting the same composition twice adds nothing")
 
 	t.Run("a known principal is never replaced", func(t *testing.T) {
-		changed := &nativeCluster{workspace: workspace, env: env, identities: map[string]gitops.NativeIdentity{
-			"model/model": {Module: "model", Service: "model", Account: "model", SPIFFEID: "spiffe://cluster.local/ns/elsewhere/sa/model"},
+		changed := &launcher{workspace: workspace, env: env, identities: map[string]gitops.NativeIdentity{
+			"model/model": {Module: "elsewhere", Service: "model"},
 		}}
 		_, err := changed.admit(ctx, reloaded)
-		require.ErrorContains(t, err, "model/model runs as spiffe://cluster.local/ns/elsewhere/sa/model")
+		require.ErrorContains(t, err, "model/model runs as elsewhere/model")
 		require.ErrorContains(t, err, "never replaced")
 		_, admitted := changed.identity("wiki/api")
 		require.False(t, admitted, "a refused admission leaves the run as it was")
 		require.Same(t, workspace, changed.composed())
-	})
-	t.Run("a module whose namespace the composition rule moves is a replacement, refused", func(t *testing.T) {
-		// A workspace composing one module gives it the environment's
-		// namespace; composing a second moves the first to its own, and
-		// with it its mesh principal. That is not an addition the run can
-		// make under a running host: it is refused by name.
-		root := writeNonGoWorkloadDir(t, "solo")
-		single, err := resources.LoadWorkspaceFromDir(ctx, root)
-		require.NoError(t, err)
-		soloEnv, err := environments.Select(single, "local")
-		require.NoError(t, err)
-		soloIdentities, err := gitops.ResolveNativeIdentities(ctx, single, soloEnv)
-		require.NoError(t, err)
-		solo := &nativeCluster{workspace: single, env: soloEnv, identities: soloIdentities}
-		_, err = solo.admit(ctx, composeModule(t, single, "second"))
-		require.ErrorContains(t, err, "solo/api runs as "+soloEnv.Host.SPIFFEID("acme", "api"))
-		require.ErrorContains(t, err, "never replaced")
 	})
 	t.Run("a known component is never withdrawn", func(t *testing.T) {
 		withdrawn, err := resources.LoadWorkspaceFromDir(ctx, writeNonGoWorkloadDir(t, "other"))

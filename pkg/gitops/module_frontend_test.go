@@ -53,7 +53,7 @@ func TestModuleFrontendReachesBothDeliveryPaths(t *testing.T) {
 			Module:         module,
 			Services:       services,
 			FrontendBundle: builtBundle(),
-			Started:        []NativeIdentity{{Module: "shared", Service: "api", Account: "shared-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/shared-api"}},
+			Started:        []NativeIdentity{{Module: "shared", Service: "api"}},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -87,7 +87,7 @@ func TestAHeadlessSolutionReachesBothDeliveryPaths(t *testing.T) {
 	documents, err := deliverer.Render(context.Background(), &NativeWorkload{
 		Module:   module,
 		Services: []*resources.Service{service},
-		Started:  []NativeIdentity{{Module: "crm", Service: "api", Account: "crm-api", SPIFFEID: "spiffe://cluster.example/ns/example/sa/crm-api"}},
+		Started:  []NativeIdentity{{Module: "crm", Service: "api"}},
 	})
 	if err != nil || documents == nil || documents.Kind != solutionhost.KindSolution || documents.Frontend != nil {
 		t.Fatalf("headless solution native delivery: documents=%+v err=%v", documents, err)
