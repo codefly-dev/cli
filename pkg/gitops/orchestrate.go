@@ -24,7 +24,9 @@ import (
 type renderBuild struct {
 	standAlone      bool
 	validateCluster bool
-	rebuild         bool
+	rebuild         bool // withoutCell leaves the environment's cell file to the caller: a
+	// whole-composition render derives it once, after every module.
+	withoutCell bool
 }
 
 func RenderModule(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
@@ -94,7 +96,7 @@ func renderModuleTree(
 	// A sibling tree this CLI cannot read (an older render) stops the file,
 	// not this render: re-rendering the modules one by one converges, and the
 	// last render writes the file. The result says what is still owed.
-	if env.Host != nil {
+	if env.Host != nil && !build.withoutCell {
 		cell, cellErr := RenderCell(ctx, workspace, env)
 		if cellErr != nil {
 			result.CellError = cellErr.Error()

@@ -38,6 +38,12 @@ var gitOpsRenderCmd = &cobra.Command{
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
+		if gitOpsRenderAll {
+			if len(args) > 0 {
+				return fmt.Errorf("--all renders every composed module; name no module with it")
+			}
+			return renderComposition(ctx)
+		}
 		workspace, module, err := loadGitOpsModule(ctx, args)
 		if err != nil {
 			return err
@@ -571,6 +577,8 @@ func init() {
 		command.Flags().BoolVar(&skipWorkspaceReadiness, SkipWorkspaceReadinessFlag, false,
 			"Proceed even when `codefly doctor workspace --env <env> --module <module>` says the workspace is not ready (for an operator mid-repair; the skip is announced in the output)")
 	}
+	gitOpsRenderCmd.Flags().BoolVar(&gitOpsRenderAll, "all", false,
+		"Render every module the workspace composes, the host first, and derive the environment's cell file once at the end")
 	gitOpsRenderCmd.Flags().BoolVar(&gitOpsValidateCluster, "validate-cluster", false,
 		"Also dry-run each service's manifests server-side against the environment's declared cluster.context (off: a render needs no cluster)")
 	for _, command := range []*cobra.Command{gitOpsSnapshotCmd, gitOpsRenderCmd} {
@@ -625,4 +633,67 @@ func printCell(cell *gitops.CellResult) {
 	if !cell.Source {
 		cli.Info("Cell file names no source commit: the environment declares no gitops repository and branch, or the workspace is not a git checkout")
 	}
+}
+
+var gitOpsRenderAll bool
+
+// renderComposition renders every module the workspace composes for the
+// selected environment — the host module first, since every other module's
+// tree is read against it, then the rest in name order — and derives the
+// environment's cell file once, from all of them. One command for one
+// composition: a stale sibling is never a reason to run it again.
+func renderComposition(ctx context.Context) error {
+	if err := common.ResolvePinnedModules(ctx); err != nil {
+		return err
+	}
+	workspace, err := common.LoadWorkspace(ctx)
+	if err != nil {
+		return err
+	}
+	env, err := orchestration.SelectEnvironment(workspace, gitOpsEnv)
+	if err != nil {
+		return err
+	}
+	modules, err := workspace.LoadModules(ctx)
+	if err != nil {
+		return err
+	}
+	host := ""
+	if env.Host != nil {
+		host, _, _ = env.Host.DeliveryEndpoint()
+	}
+	sort.SliceStable(modules, func(i, j int) bool {
+		if (modules[i].Name == host) != (modules[j].Name == host) {
+			return modules[i].Name == host
+		}
+		return modules[i].Name < modules[j].Name
+	})
+	for _, module := range modules {
+		if err = requireWorkspaceReady(ctx, "render", gitOpsEnv, module.Name); err != nil {
+			return err
+		}
+		result, err := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
+			Workspace: workspace, Module: module, Environment: env,
+			AppProject: gitOpsProject, ValidateCluster: gitOpsValidateCluster,
+			Rebuild: gitOpsRebuild, WithoutCell: true, Sink: cli.NewOutputSink(),
+		})
+		if err != nil {
+			return fmt.Errorf("render %s: %w", module.Name, err)
+		}
+		cli.Info("Rendered %s", result.Path)
+		cli.Info("Digest %s", result.Inventory.Digest)
+		printSizingReport(result.Sizing)
+		printElidedNamespaces(result.ElidedNamespaces)
+		printModuleManifest(&result)
+		printClearedDev(result.ClearedDev)
+	}
+	if env.Host == nil {
+		return nil
+	}
+	cell, err := gitops.RenderCell(ctx, workspace, env)
+	if err != nil {
+		return fmt.Errorf("render the cell file of environment %s: %w", env.Name, err)
+	}
+	printCell(&cell)
+	return nil
 }
