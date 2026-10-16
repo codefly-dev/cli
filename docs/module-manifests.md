@@ -752,7 +752,12 @@ run, the CLI is:
   composition's envelope: `{"revision": N, "principals": {"<module>":
   {"grant": <grant>}}}`, each grant read from the `principals` of
   `configurations/<environment>/module-envelope.json` (already in the host's
-  grant shape), written through `PlatformAdminService/PutModuleEnvelope` as
+  grant shape) — every composed workspace's file first, then the consuming
+  workspace's own, which decides a principal it states: a platform base
+  states its modules' grants, and a solution composed on it states only its
+  own principal's. Two composed workspaces that grant one principal
+  differently, which the consuming workspace does not decide, are refused by
+  name. It is written through `PlatformAdminService/PutModuleEnvelope` as
   the fixture's `super_admin`, at the next revision and only when it changed.
   A composition stating no grant writes none.
 

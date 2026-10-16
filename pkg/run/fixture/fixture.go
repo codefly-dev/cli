@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/codefly-dev/core/resources"
 	"os"
 	"path/filepath"
+	"reflect"
 
 	"gopkg.in/yaml.v3"
 )
@@ -69,4 +71,85 @@ func ReadGrants(workspaceDir, environment string) (map[string]json.RawMessage, e
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	return document.Principals, nil
+}
+
+// GrantSource is one workspace's envelope policy: the workspace that states it
+// and the principals it grants.
+type GrantSource struct {
+	Workspace  string
+	Principals map[string]json.RawMessage
+}
+
+// ReadCompositionGrants reads the composition's envelope policy. A composed
+// workspace states the grants of the module principals it composes — a
+// platform base states its modules' — and the consuming workspace states its
+// own, a solution's principal among them; the consuming workspace wins per
+// principal, which is the precedence configuration groups already have, so a
+// solution composed on a platform adds its principal without restating the
+// platform's. Two composed workspaces must agree on a principal the consuming
+// workspace does not decide.
+func ReadCompositionGrants(workspace *resources.Workspace, environment string) (map[string]json.RawMessage, error) {
+	var composed []GrantSource
+	for _, child := range composedWorkspacesOf(workspace) {
+		principals, err := ReadGrants(child.Dir(), environment)
+		if err != nil {
+			return nil, err
+		}
+		composed = append(composed, GrantSource{Workspace: child.Name, Principals: principals})
+	}
+	own, err := ReadGrants(workspace.Dir(), environment)
+	if err != nil {
+		return nil, err
+	}
+	return MergeGrants(GrantSource{Workspace: workspace.Name, Principals: own}, composed)
+}
+
+// composedWorkspacesOf is every workspace the composition inherits from, the
+// deepest first, so a base's base is read before the base.
+func composedWorkspacesOf(workspace *resources.Workspace) []*resources.Workspace {
+	var out []*resources.Workspace
+	for _, child := range workspace.ComposedWorkspaces() {
+		out = append(out, composedWorkspacesOf(child)...)
+		out = append(out, child)
+	}
+	return out
+}
+
+// MergeGrants is the composition's envelope policy from its sources: every
+// composed workspace's principals, in order, then the consuming workspace's
+// own, which decide. A principal two composed workspaces grant differently,
+// and the consuming workspace does not decide, is refused by name — a quiet
+// pick would hand a module an authority nobody agreed on.
+func MergeGrants(own GrantSource, composed []GrantSource) (map[string]json.RawMessage, error) {
+	out := map[string]json.RawMessage{}
+	owners := map[string]string{}
+	for _, source := range composed {
+		for prefix, grant := range source.Principals {
+			if _, decided := own.Principals[prefix]; decided {
+				continue
+			}
+			if previous, ok := out[prefix]; ok {
+				if !sameGrant(previous, grant) {
+					return nil, fmt.Errorf("module principal %q is granted differently by workspaces %q and %q, and workspace %q does not decide it: state its grant in %s/configurations/%s/module-envelope.json",
+						prefix, owners[prefix], source.Workspace, own.Workspace, own.Workspace, "<environment>")
+				}
+				continue
+			}
+			out[prefix], owners[prefix] = grant, source.Workspace
+		}
+	}
+	for prefix, grant := range own.Principals {
+		out[prefix] = grant
+	}
+	return out, nil
+}
+
+// sameGrant compares two grants as documents, not as bytes: key order and
+// whitespace are a file's, not a policy's.
+func sameGrant(a, b json.RawMessage) bool {
+	var left, right any
+	if json.Unmarshal(a, &left) != nil || json.Unmarshal(b, &right) != nil {
+		return false
+	}
+	return reflect.DeepEqual(left, right)
 }

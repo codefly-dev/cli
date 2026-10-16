@@ -702,6 +702,11 @@ func (cluster *launcher) deliver(ctx context.Context, module string) error {
 	cluster.delivered[module] = manifest
 	wool.Get(ctx).In("launcher.deliver").Info("delivered", wool.Field("module", module), wool.Field("workloads", len(manifest.Workloads)),
 		wool.Field("disposition", receipt.Disposition), wool.Field("generation", receipt.Generation))
+	// Accepted into the inbox is not applied. The host says which, and why.
+	if err := deliverer.WaitForApplied(ctx, manifest); err != nil {
+		return fmt.Errorf("module %s is delivered and not served: %w", module, err)
+	}
+	wool.Get(ctx).In("launcher.deliver").Info("applied", wool.Field("module", module), wool.Field("generation", manifest.Generation))
 	return nil
 }
 
@@ -781,11 +786,15 @@ func (cluster *launcher) fixtureAdministrator(ctx context.Context) (runfixture.A
 	return runfixture.ReadAdministrator(module.Dir(), cluster.fixture)
 }
 
-// grants reads the composition's envelope policy: configurations/<env>/module-envelope.json,
-// {"principals": {"<module>": <grant>}} — what the platform administrator
-// grants each module principal, in the host's own grant shape.
+// grants reads the composition's envelope policy: every composed workspace's
+// configurations/<env>/module-envelope.json, then the consuming workspace's
+// own, {"principals": {"<module>": <grant>}} — what the platform administrator
+// grants each module principal, in the host's own grant shape. A platform base
+// states its modules' grants and a solution composed on it states its own
+// principal's; the consuming workspace decides a principal it states
+// (runfixture.ReadCompositionGrants).
 func (cluster *launcher) grants() (map[string]gitops.EnvelopeGrant, error) {
-	principals, err := runfixture.ReadGrants(cluster.composed().Dir(), cluster.env.Name)
+	principals, err := runfixture.ReadCompositionGrants(cluster.composed(), cluster.env.Name)
 	if err != nil {
 		return nil, err
 	}
