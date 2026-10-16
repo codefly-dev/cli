@@ -288,14 +288,19 @@ type plannedBuild struct {
 	// proxies maps a recipe name to its prefetched Go module proxies, keyed by
 	// the build-context name the recipe declares.
 	proxies map[string]map[string]string
+	// reuse maps a recipe name to the reuse decision Plan took for it, for the
+	// recipes it decided before fetching; Build adopts or builds from it.
+	reuse map[string]imageReuse
 }
 
 // Plan asks the agent for the service's build recipe and fetches the Go module
 // graphs the recipe declares, without building an image. A snapshot runs Plan
 // for every service before it builds any (SnapshotPolicy), so every module is
 // fetched at the start of the render, with the credentials the host has then,
-// and no image build needs one. Build executes the planned recipe; a flow
-// without a plan phase plans at the start of Build instead.
+// and no image build needs one. A recipe whose image was already built from
+// exactly its current inputs fetches nothing: the reuse decision is taken here,
+// before the fetch, and Build adopts that image. Build executes the planned
+// recipe; a flow without a plan phase plans at the start of Build instead.
 func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Builder", wool.ThisField(b.instance))
 	w.Debug("Plan")
@@ -355,6 +360,26 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 			if len(recipe.GetGoModuleDownloads()) == 0 {
 				continue
 			}
+			// Decide reuse before fetching, on the recipe as it will be built: an
+			// image already built from exactly these inputs needs no module, so a
+			// render whose images are up to date downloads nothing.
+			built, err := b.recipeAsBuilt(recipe, b.world.Push)
+			if err != nil {
+				return nil, w.Wrapf(err, "cannot build recipe %s of %s", recipe.GetName(), b.instance.Unique())
+			}
+			reuse, err := b.decideImageReuse(ctx, w, outputDir, contextRoot, plan, built, b.world.Push)
+			if err != nil {
+				return nil, err
+			}
+			if planned.reuse == nil {
+				planned.reuse = map[string]imageReuse{}
+			}
+			planned.reuse[recipe.GetName()] = reuse
+			if reuse.entry != nil {
+				w.Info("no image input changed; the Go modules this recipe declares are not fetched",
+					wool.Field("recipe", recipe.GetName()), wool.Field("image", reuse.entry.Image))
+				continue
+			}
 			contextDir, err := recipeContext(contextRoot, recipe)
 			if err != nil {
 				return nil, w.Wrapf(err, "cannot resolve build context for recipe %s of %s", recipe.GetName(), b.instance.Unique())
@@ -412,7 +437,7 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 
 	buildResult := dockerBuildResult(resp.Result)
 	if plan != nil {
-		if err = b.buildFromPlan(ctx, outputDir, plan, planned.proxies); err != nil {
+		if err = b.buildFromPlan(ctx, outputDir, plan, planned.proxies, planned.reuse); err != nil {
 			return nil, err
 		}
 	} else if buildResult != nil {

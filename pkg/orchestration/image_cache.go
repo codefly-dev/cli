@@ -290,6 +290,11 @@ func imageBuildIdentity(ctx context.Context, recipe *builderv0.DockerBuildRecipe
 	return imageIdentity{Key: "sha256:" + hex.EncodeToString(sum[:]), ContextTree: contextTree}, nil
 }
 
+// proxyPlaceholder is what every fetched Go module proxy path reads as in an
+// identity. It is also what stands in for a proxy that is not fetched yet
+// (placeholderProxies), which is why the two identities agree.
+const proxyPlaceholder = "{proxy}"
+
 // normalizedBuildxArgs rewrites the invocation into the form described on
 // imageInputs.Command: per-run paths become placeholders, and the two flags that
 // say where the build runs and where its metadata lands are dropped.
@@ -297,7 +302,10 @@ func normalizedBuildxArgs(args []string, contextDir, dockerfilePath string, prox
 	substitutions := make([][2]string, 0, 2+len(proxies))
 	substitutions = append(substitutions, [2]string{dockerfilePath, "{dockerfile}"}, [2]string{contextDir, "{context}"})
 	for _, proxy := range proxies {
-		substitutions = append(substitutions, [2]string{proxy, "{proxy}"})
+		if proxy == proxyPlaceholder {
+			continue
+		}
+		substitutions = append(substitutions, [2]string{proxy, proxyPlaceholder})
 	}
 	// Longest literal first: a staged Dockerfile or a proxy can sit inside the
 	// build context, and collapsing the shorter path first would leave the

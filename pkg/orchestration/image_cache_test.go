@@ -110,13 +110,15 @@ func (stub *dockerStub) editDuringBuild(t *testing.T, path, content string) {
 // in the workspace moved, not because the agent re-rendered differently.
 type imageCachePeer struct {
 	builderv0.UnimplementedBuilderServer
+	// goModules makes the recipe declare its Go module graph for prefetching.
+	goModules bool
 }
 
 func (*imageCachePeer) BuildCapabilities(context.Context, *builderv0.BuildCapabilitiesRequest) (*builderv0.BuildCapabilitiesResponse, error) {
 	return &builderv0.BuildCapabilitiesResponse{BuildxSelection: true}, nil
 }
 
-func (*imageCachePeer) Build(_ context.Context, request *builderv0.BuildRequest) (*builderv0.BuildResponse, error) {
+func (peer *imageCachePeer) Build(_ context.Context, request *builderv0.BuildRequest) (*builderv0.BuildResponse, error) {
 	output := request.GetOutputDirectory()
 	if err := os.MkdirAll(output, 0o755); err != nil {
 		return nil, err
@@ -129,7 +131,11 @@ func (*imageCachePeer) Build(_ context.Context, request *builderv0.BuildRequest)
 			return nil, err
 		}
 	}
-	plan, err := coreservices.SingleImageBuildPlan(output, "example.test/app:v1", coreservices.RecipeBuildPlatforms(), []string{"Dockerfile", "dockerignore"})
+	var options []coreservices.RecipeOption
+	if peer.goModules {
+		options = append(options, coreservices.WithGoModuleDownloads(&builderv0.GoModuleDownload{ModuleRoot: "code", ProxyContext: "gomodproxy"}))
+	}
+	plan, err := coreservices.SingleImageBuildPlan(output, "example.test/app:v1", coreservices.RecipeBuildPlatforms(), []string{"Dockerfile", "dockerignore"}, options...)
 	if err != nil {
 		return nil, err
 	}
@@ -143,18 +149,22 @@ func (*imageCachePeer) Build(_ context.Context, request *builderv0.BuildRequest)
 // through the real Builder against the docker stub.
 type imageCacheHarness struct {
 	docker       *dockerStub
+	peer         *imageCachePeer
 	workspaceDir string
 	serviceDir   string
 	client       *coreservices.BuilderAgent
 	push         bool
 	rebuild      bool
+	// goCalls records every go command the prefetch of each build runs.
+	goCalls []goCall
 }
 
 func newImageCacheHarness(t *testing.T, push, registryServes bool) *imageCacheHarness {
 	t.Helper()
 	stub := installDockerStub(t, registryServes)
 	server := grpc.NewServer()
-	builderv0.RegisterBuilderServer(server, &imageCachePeer{})
+	peer := &imageCachePeer{}
+	builderv0.RegisterBuilderServer(server, peer)
 	conn, err := grpc.NewClient(serveGRPC(t, server), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
@@ -163,6 +173,7 @@ func newImageCacheHarness(t *testing.T, push, registryServes bool) *imageCacheHa
 	serviceDir := filepath.Join(workspaceDir, "modules", "saas", "services", "api")
 	harness := &imageCacheHarness{
 		docker:       stub,
+		peer:         peer,
 		workspaceDir: workspaceDir,
 		serviceDir:   serviceDir,
 		client:       &coreservices.BuilderAgent{BuilderClient: builderv0.NewBuilderClient(conn)},
@@ -215,7 +226,15 @@ func (harness *imageCacheHarness) build(t *testing.T) string {
 		BuildxBuilder:      "stub",
 		RebuildImages:      harness.rebuild,
 	}
+	prefetch := newGoModulePrefetch()
+	prefetch.run = recordingGo(&harness.goCalls, nil)
+	world.goModulePrefetch = prefetch
+	t.Cleanup(func() { require.NoError(t, prefetch.Close()) })
 	build, err := NewBuilder(ctx, instance, world)
+	require.NoError(t, err)
+	// A snapshot plans every service before it builds any; the harness runs the
+	// same two phases so the decision Plan takes is the one Build consumes.
+	_, err = build.Plan(ctx)
 	require.NoError(t, err)
 	_, err = build.Build(ctx)
 	require.NoError(t, err)
@@ -345,6 +364,53 @@ func TestAVanishedImageIsRebuiltRatherThanReused(t *testing.T) {
 	second := harness.build(t)
 	require.NotEqual(t, first, second)
 	require.Equal(t, 2, harness.docker.calls(t, "build"))
+}
+
+// A render whose images are up to date used to download every Go service's
+// module graph into a fresh cache and only then find that no image input had
+// changed — minutes per service for nothing. The decision now precedes the
+// fetch: the second build fetches nothing and builds nothing, and an edit to
+// the source fetches again before it builds.
+func TestAnUpToDateImageFetchesNoGoModules(t *testing.T) {
+	harness := newImageCacheHarness(t, true, true)
+	harness.peer.goModules = true
+	first := harness.build(t)
+	require.Equal(t, 1, harness.docker.calls(t, "build"))
+	require.Len(t, harness.goCalls, 2, "the first build fetches the declared module graph")
+
+	require.Equal(t, first, harness.build(t))
+	require.Equal(t, 1, harness.docker.calls(t, "build"))
+	require.Len(t, harness.goCalls, 2, "an image built from these inputs needs no fetch")
+
+	harness.write(t, filepath.Join(harness.serviceDir, "code", "main.go"), "package main\n\nfunc main() { println() }\n")
+	require.NotEqual(t, first, harness.build(t))
+	require.Equal(t, 2, harness.docker.calls(t, "build"))
+	require.Len(t, harness.goCalls, 4, "a changed input is fetched before it is built")
+}
+
+// TestPlaceholderProxiesNormalizeLikeFetchedPaths pins what lets the reuse
+// decision precede the fetch: an identity reads a declared proxy as one
+// placeholder whether or not its path exists yet, so the key a build recorded
+// over fetched paths is the key a later plan phase computes before fetching.
+func TestPlaceholderProxiesNormalizeLikeFetchedPaths(t *testing.T) {
+	recipe := &builderv0.DockerBuildRecipe{Name: "app", GoModuleDownloads: []*builderv0.GoModuleDownload{
+		{ModuleRoot: "code", ProxyContext: "gomodproxy"},
+		{ModuleRoot: "lib", ProxyContext: "libproxy"},
+	}}
+	fetched := map[string]string{
+		"gomodproxy": "/tmp/codefly-go-modules-1/modcache/cache/download",
+		"libproxy":   "/tmp/codefly-go-modules-1/modcache/cache/download",
+	}
+	placeholders := placeholderProxies(recipe)
+	require.Equal(t, map[string]string{"gomodproxy": proxyPlaceholder, "libproxy": proxyPlaceholder}, placeholders)
+	none := resolvePrivateModuleBuild(func(string) (string, bool) { return "", false })
+	normalized := func(proxies map[string]string) []string {
+		args := append([]string{"buildx", "build", "-f", "/ws/api/Dockerfile"}, none.withProxies(proxies).buildxArgs(nil)...)
+		return normalizedBuildxArgs(append(args, "/ws/api"), "/ws/api", "/ws/api/Dockerfile", proxies)
+	}
+	require.Equal(t, normalized(fetched), normalized(placeholders))
+	require.Contains(t, normalized(placeholders), "gomodproxy="+proxyPlaceholder)
+	require.Nil(t, placeholderProxies(&builderv0.DockerBuildRecipe{Name: "plain"}))
 }
 
 func TestNormalizedBuildxArgsBindsTheBuildAndNotWhereItRan(t *testing.T) {
