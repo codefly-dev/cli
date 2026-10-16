@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -252,3 +253,27 @@ func TestCellFileRefusesAWorkloadWhoseAuthenticatingContainerCannotBeTold(t *tes
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "cannot be told from a sidecar")
 }
+
+// A sibling tree rendered by another CLI (another inventory schema) is a tree
+// to render again: the stale-consumer walk names it on every group the module
+// consumes instead of refusing, so a schema move converges module by module,
+// and the cell file says which render it is still owed.
+func TestAnOlderSiblingRenderIsReportedStaleNotFatal(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+	older := filepath.Join(moduleRenderDestination(workspace, "billing"), InventoryFilename)
+	data, err := os.ReadFile(older)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(older, []byte(strings.Replace(string(data), `"schemaVersion": `+strconvItoa(SchemaVersion), `"schemaVersion": 7`, 1)), 0o644))
+	stale, err := staleGroupConsumers(workspace.Dir(), "shop", "staging", map[string]string{"shop": "d1", "shared": "d2"})
+	require.NoError(t, err)
+	require.Equal(t, map[string][]string{"shop": {"billing"}, "shared": {"billing"}}, stale)
+	_, err = RenderCell(context.Background(), workspace, env)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "render billing again for staging")
+	require.ErrorIs(t, err, ErrUnsupportedInventorySchema)
+}
+
+func strconvItoa(value int) string { return fmt.Sprint(value) }

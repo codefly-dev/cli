@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -188,13 +189,20 @@ func loadInventory(directory, label string) (Inventory, error) {
 // refreshes the one module path it is republishing — every sibling module's
 // working-tree copy can be stale relative to the base branch — so it needs
 // the exact same canonical/schema validation without going through a path.
+// ErrUnsupportedInventorySchema is an inventory written at another schema
+// version: a tree rendered by another CLI, which this one cannot read and must
+// not vouch for. A reader that walks sibling trees reports such a tree as one
+// to render again rather than refusing to proceed, so a schema move converges
+// module by module instead of deadlocking on every sibling at once.
+var ErrUnsupportedInventorySchema = errors.New("unsupported render inventory schema")
+
 func decodeInventory(data []byte, label string) (Inventory, error) {
 	var inventory Inventory
 	if err := json.Unmarshal(data, &inventory); err != nil {
 		return Inventory{}, fmt.Errorf("decode %s inventory: %w", label, err)
 	}
 	if inventory.SchemaVersion != SchemaVersion {
-		return Inventory{}, fmt.Errorf("unsupported %s inventory schema %d", label, inventory.SchemaVersion)
+		return Inventory{}, fmt.Errorf("%w: %s inventory schema %d (this CLI reads %d)", ErrUnsupportedInventorySchema, label, inventory.SchemaVersion, SchemaVersion)
 	}
 	canonical, err := json.MarshalIndent(inventory, "", "  ")
 	if err != nil {
