@@ -137,6 +137,13 @@ func renderCellTree(t *testing.T, workspace *resources.Workspace, module, servic
 		Promotable: true, OwnedPath: "deployments/modules/" + module,
 		Units:   promotableServiceGraph(module, []string{service}),
 		Package: &InventoryPackage{ID: "acme/" + module, Version: "1.2.0"},
+		// The render's mesh edges carry the ports of the endpoints something
+		// consumes; the cell reads them back from the inventory.
+		MeshEdges: &MeshEdges{SchemaVersion: 1, TrustDomain: "cluster.example", Edges: []MeshEdge{{
+			Module: module, Service: service, Namespace: namespace, Account: service,
+			Principal: "spiffe://cluster.example/ns/" + namespace + "/sa/" + service,
+			Endpoint:  "grpc", Port: 9090, TargetPort: 9090,
+		}}},
 	}, func(_ context.Context, root string) error {
 		overlay := filepath.Join(root, "services", service, "overlays", environment)
 		if err := os.MkdirAll(overlay, 0o755); err != nil {
@@ -200,8 +207,8 @@ func TestCellFileInventoriesEveryRenderedWorkload(t *testing.T) {
 	require.Equal(t, &cellfile.Release{Publisher: "acme", Name: "shop", Version: "1.2.0"}, api.Release)
 	require.Equal(t, []cellfile.Endpoint{
 		{Name: "grpc", API: "grpc", Port: 9090, ServicePort: 9090, Consumers: []string{"billing/ledger"}},
-		{Name: "http", API: "http", Port: 3000, ServicePort: 8080},
-	}, api.Endpoints, "port is the container port the mesh authorizes, service_port the Service's; the grpc endpoint has a declared consumer, the http endpoint none, visibly")
+		{Name: "http", API: "http"},
+	}, api.Endpoints, "port is the container port the mesh authorizes, service_port the Service's, both read from the render's mesh edge; the http endpoint has no consumer, so no edge and no port, visibly")
 	require.Equal(t, []cellfile.Ingress{{Endpoint: "http", Hosts: []string{"shop.example.test"}}}, api.Ingress)
 	migrate := shop.Workloads[1]
 	require.Equal(t, "api-migrate", migrate.Name)

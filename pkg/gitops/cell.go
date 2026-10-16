@@ -210,13 +210,7 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 		if err != nil {
 			return cellfile.Namespace{}, fmt.Errorf("unit %s/%s: %w", inventory.Module, unit.Name, err)
 		}
-		servicePorts := renderedServicePorts(manifests)
-		var containerPorts map[string]uint32
-		if service != nil && len(servicePorts) > 0 {
-			if containerPorts, err = RenderedContainerPorts(unitDir, env.Name, servicePorts); err != nil {
-				return cellfile.Namespace{}, fmt.Errorf("unit %s/%s: %w", inventory.Module, unit.Name, err)
-			}
-		}
+		servicePorts, containerPorts := edgePorts(inventory.MeshEdges, inventory.Module, unit.Name)
 		grant, _ := env.CellWorkload(inventory.Module, unit.Name)
 		for index := range workloads {
 			rendered := &workloads[index]
@@ -326,27 +320,28 @@ func isDeliveryVerifier(env *environments.Environment, kind, service string) boo
 	return service == resources.ServiceUnique(module, name)
 }
 
-// renderedServicePorts reads, from a unit's rendered manifests, the Service
-// port published for each endpoint, by the port's name: the in-cluster port
-// a consumer connects to.
-func renderedServicePorts(manifests []manifest) map[string]uint32 {
-	ports := map[string]uint32{}
-	for _, item := range manifests {
-		if item.kind != "Service" {
+// edgePorts is the in-cluster Service port and the container port of each
+// endpoint a module's render recorded a mesh edge for: the ports the render
+// derived from the flow's network mappings and the unit's rendered pods
+// (deriveMeshEdges), read back from the committed inventory. An endpoint
+// nothing consumes has no edge and no port here; a policy needs none for it.
+func edgePorts(edges *MeshEdges, module, service string) (servicePorts, containerPorts map[string]uint32) {
+	servicePorts, containerPorts = map[string]uint32{}, map[string]uint32{}
+	if edges == nil {
+		return servicePorts, containerPorts
+	}
+	for _, edge := range edges.Edges {
+		if edge.Module != module || edge.Service != service || edge.Endpoint == "" {
 			continue
 		}
-		for _, raw := range sliceField(mapField(item.value, "spec"), "ports") {
-			entry, _ := raw.(map[string]any)
-			name, _ := entry["name"].(string)
-			if name == "" {
-				continue
-			}
-			if port := integerField(entry, "port"); port > 0 && port <= 65535 {
-				ports[name] = uint32(port)
-			}
+		if edge.Port > 0 {
+			servicePorts[edge.Endpoint] = edge.Port
+		}
+		if edge.TargetPort > 0 {
+			containerPorts[edge.Endpoint] = edge.TargetPort
 		}
 	}
-	return ports
+	return servicePorts, containerPorts
 }
 
 // podSelector is the exact label set a policy selects a workload's pods by:
