@@ -15,6 +15,8 @@ import (
 	"github.com/codefly-dev/cli/pkg/gitops/cellfile"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/shared"
+	"gopkg.in/yaml.v3"
 )
 
 // --- The cell file ---
@@ -517,4 +519,73 @@ func endpointConsumers(ctx context.Context, workspace *resources.Workspace) (map
 		sort.Strings(consumers[key])
 	}
 	return consumers, nil
+}
+
+const (
+	workloadLabel     = "codefly.dev/workload"
+	workloadKindLabel = "codefly.dev/workload-kind"
+)
+
+// labelPodTemplates gives every Job and CronJob pod template in a rendered
+// tree that carries no label the two labels that name it (the workload's
+// name and kind), so the cell file can carry the exact label set a policy
+// selects its pods by. A serving workload selects its pods by its own
+// matchLabels; a bootstrap Job an agent renders without labels would otherwise
+// be a workload the cell cannot name.
+func labelPodTemplates(ctx context.Context, root string) error {
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || (filepath.Ext(path) != yamlExtension && filepath.Ext(path) != ymlExtension) {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		data, err := readWithin(root, relative)
+		if err != nil {
+			return err
+		}
+		documents, _, err := decodeYAML(relative, data)
+		if err != nil {
+			return nil
+		}
+		changed := false
+		for _, document := range documents {
+			if document.kind != kindJob && document.kind != kindCronJob {
+				continue
+			}
+			template := podTemplate(document)
+			if template == nil || len(mapField(mapField(template, "metadata"), "labels")) > 0 {
+				continue
+			}
+			metadata, _ := template["metadata"].(map[string]any)
+			if metadata == nil {
+				metadata = map[string]any{}
+				template["metadata"] = metadata
+			}
+			metadata["labels"] = map[string]any{
+				workloadLabel:     metadataString(document.value, "name"),
+				workloadKindLabel: strings.ToLower(document.kind),
+			}
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
+		var out strings.Builder
+		encoder := yaml.NewEncoder(&out)
+		encoder.SetIndent(2)
+		for _, document := range documents {
+			if err := encoder.Encode(document.value); err != nil {
+				return err
+			}
+		}
+		if err := encoder.Close(); err != nil {
+			return err
+		}
+		return shared.WriteFileAtomic(ctx, path, []byte(out.String()), 0o644)
+	})
 }

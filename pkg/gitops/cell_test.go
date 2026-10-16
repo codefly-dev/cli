@@ -277,3 +277,23 @@ func TestAnOlderSiblingRenderIsReportedStaleNotFatal(t *testing.T) {
 }
 
 func strconvItoa(value int) string { return fmt.Sprint(value) }
+
+// A Job an agent renders without pod labels is labelled at render with its
+// name and kind, so the cell file carries a selector for it; a labelled Job
+// keeps its own labels.
+func TestRenderLabelsAnUnlabelledJobTemplateSoTheCellCanSelectIt(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "job.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: evidence\nspec:\n  template:\n    spec:\n      containers:\n        - name: evidence\n          image: r/e@sha256:"+strings.Repeat("a", 64)+"\n---\napiVersion: batch/v1\nkind: Job\nmetadata:\n  name: labelled\nspec:\n  template:\n    metadata:\n      labels:\n        app: labelled\n    spec:\n      containers:\n        - name: labelled\n          image: r/l@sha256:"+strings.Repeat("b", 64)+"\n"), 0o644))
+	require.NoError(t, labelPodTemplates(context.Background(), root))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	manifests, _, err := decodeYAML("job.yaml", data)
+	require.NoError(t, err)
+	evidence, err := podSelector(manifests, "evidence", kindJob)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{workloadLabel: "evidence", workloadKindLabel: "job"}, evidence)
+	labelled, err := podSelector(manifests, "labelled", kindJob)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"app": "labelled"}, labelled)
+}
