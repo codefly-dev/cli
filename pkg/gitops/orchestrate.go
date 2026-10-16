@@ -88,6 +88,16 @@ func renderModuleTree(
 		return RenderResult{}, err
 	}
 	result.StaleGroupConsumers = render.staleConsumers
+	// A hosted environment's cell file describes every module tree rendered
+	// for it; this render moved one, so the file is derived again from all
+	// of them as they stand now.
+	if env.Host != nil {
+		cell, cellErr := RenderCell(ctx, workspace, env)
+		if cellErr != nil {
+			return RenderResult{}, fmt.Errorf("render the cell file of environment %s: %w", env.Name, cellErr)
+		}
+		result.Cell = &cell
+	}
 	return result, nil
 }
 

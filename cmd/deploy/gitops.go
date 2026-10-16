@@ -59,6 +59,7 @@ var gitOpsRenderCmd = &cobra.Command{
 		}
 		cli.Info("Rendered %s", result.Path)
 		cli.Info("Digest %s", result.Inventory.Digest)
+		printCell(result.Cell)
 		printSizingReport(result.Sizing)
 		printElidedNamespaces(result.ElidedNamespaces)
 		printModuleManifest(&result)
@@ -606,4 +607,19 @@ func init() {
 		command.Flags().StringVar(&gitOpsEnv, "env", "local", "Environment whose fetch remote to manage")
 	}
 	gitOpsRemoteDownCmd.Flags().BoolVarP(&gitOpsYes, "yes", "y", false, "Tear down without an interactive confirmation")
+}
+
+// printCell reports the cell file a hosted render re-derived, what it covers
+// and what it could not name.
+func printCell(cell *gitops.CellResult) {
+	if cell == nil {
+		return
+	}
+	cli.Info("Cell file %s covers modules %s", cell.Path, strings.Join(cell.Modules, ", "))
+	if len(cell.Skipped) > 0 {
+		cli.Info("Cell file leaves out %s: rendered for another environment", strings.Join(cell.Skipped, ", "))
+	}
+	if !cell.Source {
+		cli.Info("Cell file names no source commit: the environment declares no gitops repository and branch, or the workspace is not a git checkout")
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -1180,6 +1181,15 @@ type Environment struct {
 	// a service nobody declared managed. Read it through ManagedService, never by
 	// indexing the map with a bare name.
 	ManagedServices map[string]EnvironmentManagedService `yaml:"managed-services,omitempty"`
+	// Egress names, per `<module>/<service>`, the external hosts the service
+	// reaches. The cell file carries it so the cell can allow exactly those.
+	Egress map[string]EnvironmentEgress `yaml:"egress,omitempty"`
+	// Cell names, per `<module>/<service>`, the platform bindings the service
+	// holds (vault, object_storage, model_gateway, identity, audit) and whether
+	// it authenticates to the cloud by workload identity. The cell file carries
+	// it so the cell derives the service's consumers from a declaration the
+	// composition owns.
+	Cell map[string]EnvironmentCellWorkload `yaml:"cell,omitempty"`
 
 	// DNS carries the environment's DNS contract. Its AppHostSuffix lets the network layer
 	// derive an external endpoint's public host from declared config instead of
@@ -1290,4 +1300,157 @@ func (env *Environment) IsK3d() bool {
 	// as local-k3d. Preserves the old "default to k3d image import"
 	// behavior in cli/pkg/deployments/manager.go.
 	return env.Local()
+}
+
+// EnvironmentEgress is the external reach one service declares.
+type EnvironmentEgress struct {
+	Hosts []EnvironmentEgressHost `yaml:"hosts"`
+}
+
+// EnvironmentEgressHost is one external host, a bare DNS name, and its port;
+// a bare scalar names the host on the default port.
+type EnvironmentEgressHost struct {
+	Name string `yaml:"name"`
+	Port int    `yaml:"port,omitempty"`
+}
+
+// EgressDefaultPort is the port an egress host named without one is reached on.
+const EgressDefaultPort = 443
+
+func (host *EnvironmentEgressHost) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		return node.Decode(&host.Name)
+	}
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i < len(node.Content); i += 2 {
+			if key := node.Content[i].Value; key != "name" && key != "port" {
+				return fmt.Errorf("unknown egress host field %q (a host is a bare name, or {name, port})", key)
+			}
+		}
+	}
+	type plain EnvironmentEgressHost
+	return node.Decode((*plain)(host))
+}
+
+func (host EnvironmentEgressHost) MarshalYAML() (any, error) {
+	if host.Port == 0 {
+		return host.Name, nil
+	}
+	type plain EnvironmentEgressHost
+	return plain(host), nil
+}
+
+// EffectivePort is the port, or the default when none is named.
+func (host EnvironmentEgressHost) EffectivePort() int {
+	if host.Port == 0 {
+		return EgressDefaultPort
+	}
+	return host.Port
+}
+
+var egressHostPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`)
+
+func (env *Environment) validateEgress() error {
+	for key, egress := range env.Egress {
+		if err := validateServiceIdentityKey("egress", key); err != nil {
+			return err
+		}
+		if len(egress.Hosts) == 0 {
+			return fmt.Errorf("egress %s declares no host", key)
+		}
+		seen := make(map[string]struct{}, len(egress.Hosts))
+		for _, host := range egress.Hosts {
+			if !egressHostPattern.MatchString(host.Name) {
+				return fmt.Errorf("egress %s host %q is not a bare DNS host name (no scheme, port or path)", key, host.Name)
+			}
+			if host.Port < 0 || host.Port > 65535 {
+				return fmt.Errorf("egress %s host %s port %d is not a port", key, host.Name, host.Port)
+			}
+			id := fmt.Sprintf("%s:%d", host.Name, host.EffectivePort())
+			if _, exists := seen[id]; exists {
+				return fmt.Errorf("egress %s declares %s twice", key, id)
+			}
+			seen[id] = struct{}{}
+		}
+	}
+	return nil
+}
+
+func validateServiceIdentityKey(label, key string) error {
+	module, service, qualified := strings.Cut(key, "/")
+	if !qualified {
+		return fmt.Errorf("%s key %q must be the module-qualified identity <module>/<service> of the service it declares for", label, key)
+	}
+	if err := validateResourcePathComponent(label+" module", module); err != nil {
+		return err
+	}
+	return validateResourcePathComponent(label+" service", service)
+}
+
+// EgressHosts is the declared external reach of one service, sorted, with
+// every port made explicit.
+func (env *Environment) EgressHosts(module, service string) []EnvironmentEgressHost {
+	if env == nil {
+		return nil
+	}
+	egress, declared := env.Egress[resources.ServiceUnique(module, service)]
+	if !declared {
+		return nil
+	}
+	hosts := make([]EnvironmentEgressHost, 0, len(egress.Hosts))
+	for _, host := range egress.Hosts {
+		hosts = append(hosts, EnvironmentEgressHost{Name: host.Name, Port: host.EffectivePort()})
+	}
+	sort.Slice(hosts, func(i, j int) bool {
+		if hosts[i].Name != hosts[j].Name {
+			return hosts[i].Name < hosts[j].Name
+		}
+		return hosts[i].Port < hosts[j].Port
+	})
+	return hosts
+}
+
+// EnvironmentCellWorkload is what the composition declares about one service
+// for the cell: the platform bindings it holds, and cloud identity.
+type EnvironmentCellWorkload struct {
+	Bindings      []string `yaml:"bindings,omitempty"`
+	CloudIdentity bool     `yaml:"cloud-identity,omitempty"`
+}
+
+var cellBindingPattern = regexp.MustCompile(`^[a-z0-9]+(?:[_-][a-z0-9]+)*$`)
+
+func (env *Environment) validateCell() error {
+	for key, workload := range env.Cell {
+		if err := validateServiceIdentityKey("cell", key); err != nil {
+			return err
+		}
+		if len(workload.Bindings) == 0 && !workload.CloudIdentity {
+			return fmt.Errorf("cell %s declares nothing: name the bindings the service holds, or cloud-identity, or drop the entry", key)
+		}
+		seen := make(map[string]struct{}, len(workload.Bindings))
+		for _, binding := range workload.Bindings {
+			if !cellBindingPattern.MatchString(binding) {
+				return fmt.Errorf("cell %s binding %q is not a lowercase resource name", key, binding)
+			}
+			if _, exists := seen[binding]; exists {
+				return fmt.Errorf("cell %s binding %q is declared twice", key, binding)
+			}
+			seen[binding] = struct{}{}
+		}
+	}
+	return nil
+}
+
+// CellWorkload is the cell declaration of one service, bindings sorted.
+func (env *Environment) CellWorkload(module, service string) (EnvironmentCellWorkload, bool) {
+	if env == nil {
+		return EnvironmentCellWorkload{}, false
+	}
+	workload, declared := env.Cell[resources.ServiceUnique(module, service)]
+	if !declared {
+		return EnvironmentCellWorkload{}, false
+	}
+	bindings := append([]string(nil), workload.Bindings...)
+	sort.Strings(bindings)
+	return EnvironmentCellWorkload{Bindings: bindings, CloudIdentity: workload.CloudIdentity}, true
 }

@@ -788,6 +788,27 @@ is the total observation budget for the command, shared across every service it
 observes. The same flags apply to `codefly deploy module`. See
 [deployment completion stages](deployment-completion.md).
 
+**The cell file.** A render for an environment that declares a `host:` block
+also re-derives that environment's cell file,
+`<gitops path>/cells/<environment>/cell.yaml` (`codefly/cell/v1`,
+`pkg/gitops/cellfile`): one namespace entry per module tree rendered for the
+environment, each workload as rendered — its exact pod selector, the account
+and SPIFFE identity it runs as, the container that authenticates, every image
+by digest — with the endpoints a serving workload declares (`port` is the
+container port the mesh authorizes, `service_port` the Service's), who the
+composition says calls them (service dependencies and a solution's
+`api.consumes`), the ingress routed onto them, the presence delivery Job,
+and what the environment declares per `<module>/<service>` under `cell:`
+(platform `bindings`, `cloud-identity`) and `egress:` (external hosts; a
+managed service's `egress-cidrs`). The file names the commit it was emitted
+from (`source`) when the environment declares a gitops `repo-url` and `branch`
+and the workspace is a git checkout; the render says so when it cannot. It is
+regenerated whole — a workload absent from it is not delivered — and is what
+the cell's infrastructure derives its namespaces, mesh contract, admission set
+and verifier allows from, instead of transcribing them. The consumer validates
+it as another repository's output; this side writes it deterministically and
+reads it back through its own reader.
+
 For a complete module promotion, use the GitOps lifecycle:
 
 ```bash

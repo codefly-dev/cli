@@ -43,6 +43,10 @@ type renderedWorkload struct {
 // read: no build is approved from it.
 type renderedContainer struct {
 	Name string
+	// Repository and Digest are the pinned image, split: the cell file carries
+	// the two halves so no reader parses them back out of one string.
+	Repository string
+	Digest     string
 }
 
 // tokenMount is one projected ServiceAccount token volume carrying an
@@ -165,7 +169,11 @@ func renderedContainers(workload string, raw []any, tokens map[string][]tokenSou
 		if !strings.Contains(image, "@") {
 			return nil, fmt.Errorf("workload %s container %s image %q is not pinned by digest", workload, name, image)
 		}
-		rendered := renderedContainer{Name: name}
+		repository, digest, _ := strings.Cut(image, "@")
+		if at := strings.LastIndex(repository, ":"); at > strings.LastIndex(repository, "/") {
+			repository = repository[:at]
+		}
+		rendered := renderedContainer{Name: name, Repository: repository, Digest: digest}
 		for _, raw := range sliceField(container, "volumeMounts") {
 			mount, _ := raw.(map[string]any)
 			volume, _ := mount["name"].(string)

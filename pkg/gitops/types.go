@@ -326,7 +326,10 @@ func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKub
 }
 
 type RenderResult struct {
-	Path      string       `json:"path"`
+	Path string `json:"path"`
+	// Cell is the environment's cell file as re-rendered after this module,
+	// when the environment declares a host.
+	Cell      *CellResult  `json:"cell,omitempty"`
 	Inventory Inventory    `json:"inventory"`
 	Sizing    SizingReport `json:"sizing"`
 	// ElidedNamespaces are the tree-relative manifest paths the render dropped
