@@ -144,6 +144,20 @@ type InventoryUnit struct {
 	// contracts/api catalog) and consumes (from the libraries its service
 	// declares in library-dependencies with a sources[] block).
 	Contracts []InventoryContract `json:"contracts,omitempty"`
+	// Endpoints are the ports the render resolved for each endpoint the unit
+	// serves in-cluster — the Service port a consumer connects to and the
+	// container port the mesh authorizes — from the flow's network mappings
+	// and the unit's rendered pods. Recorded for every pod-producing unit, a
+	// managed store included, so the cell file reads them back and keeps no
+	// port matcher of its own.
+	Endpoints []InventoryEndpoint `json:"endpoints,omitempty"`
+}
+
+// InventoryEndpoint is one in-cluster endpoint of a unit with its resolved ports.
+type InventoryEndpoint struct {
+	Name       string `json:"name"`
+	Port       uint32 `json:"port,omitempty"`
+	TargetPort uint32 `json:"targetPort,omitempty"`
 }
 
 // InventoryContract records one API contract a unit exposes or consumes,

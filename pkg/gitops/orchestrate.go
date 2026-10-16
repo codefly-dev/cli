@@ -185,16 +185,18 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 	// learned: delivered in the record, for the cell's applier.
 	containerPorts := map[string]map[string]uint32{}
 	if r.env.Host != nil {
-		for _, unit := range r.options.Units {
-			if unit.Managed || unit.Path == "" {
+		for index := range r.options.Units {
+			unit := &r.options.Units[index]
+			if unit.Path == "" {
 				continue
 			}
 			unique := resources.ServiceUnique(r.module.Name, unit.Name)
 			containerPorts[unique], err = renderedContainerPortsInTree(r.options.renderRoot,
 				filepath.Join(stage, unit.Path), r.env.Name, rendered.inClusterPorts[unique])
 			if err != nil {
-				return fmt.Errorf("derive mesh container ports for %s: %w", unique, err)
+				return fmt.Errorf("derive container ports for %s: %w", unique, err)
 			}
+			unit.Endpoints = inventoryEndpoints(rendered.inClusterPorts[unique], containerPorts[unique])
 		}
 	}
 	if len(rendered.endpointCarriers) > 0 {
@@ -786,4 +788,19 @@ func (gitOpsDeploymentOutputManager) Handle(
 	*builderv0.DeploymentOutput,
 ) error {
 	return nil
+}
+
+// inventoryEndpoints records, sorted by endpoint, the Service port and the
+// container port the render resolved for each in-cluster endpoint of a unit.
+func inventoryEndpoints(inCluster, container map[string]uint32) []InventoryEndpoint {
+	names := make([]string, 0, len(inCluster))
+	for name := range inCluster {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	endpoints := make([]InventoryEndpoint, 0, len(names))
+	for _, name := range names {
+		endpoints = append(endpoints, InventoryEndpoint{Name: name, Port: inCluster[name], TargetPort: container[name]})
+	}
+	return endpoints
 }

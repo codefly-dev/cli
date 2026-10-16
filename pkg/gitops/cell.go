@@ -210,7 +210,7 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 		if err != nil {
 			return cellfile.Namespace{}, fmt.Errorf("unit %s/%s: %w", inventory.Module, unit.Name, err)
 		}
-		servicePorts, containerPorts := edgePorts(inventory.MeshEdges, inventory.Module, unit.Name)
+		servicePorts, containerPorts := unitPorts(unit)
 		grant, _ := env.CellWorkload(inventory.Module, unit.Name)
 		for index := range workloads {
 			rendered := &workloads[index]
@@ -320,25 +320,19 @@ func isDeliveryVerifier(env *environments.Environment, kind, service string) boo
 	return service == resources.ServiceUnique(module, name)
 }
 
-// edgePorts is the in-cluster Service port and the container port of each
-// endpoint a module's render recorded a mesh edge for: the ports the render
-// derived from the flow's network mappings and the unit's rendered pods
-// (deriveMeshEdges), read back from the committed inventory. An endpoint
-// nothing consumes has no edge and no port here; a policy needs none for it.
-func edgePorts(edges *MeshEdges, module, service string) (servicePorts, containerPorts map[string]uint32) {
+// unitPorts is the in-cluster Service port and the container port of each
+// endpoint a unit serves, as the render resolved them from the flow's network
+// mappings and the unit's rendered pods and recorded in the inventory. An
+// endpoint the render could not place in-cluster has none here, and the cell's
+// consumer says so if a policy needs one.
+func unitPorts(unit InventoryUnit) (servicePorts, containerPorts map[string]uint32) {
 	servicePorts, containerPorts = map[string]uint32{}, map[string]uint32{}
-	if edges == nil {
-		return servicePorts, containerPorts
-	}
-	for _, edge := range edges.Edges {
-		if edge.Module != module || edge.Service != service || edge.Endpoint == "" {
-			continue
+	for _, endpoint := range unit.Endpoints {
+		if endpoint.Port > 0 {
+			servicePorts[endpoint.Name] = endpoint.Port
 		}
-		if edge.Port > 0 {
-			servicePorts[edge.Endpoint] = edge.Port
-		}
-		if edge.TargetPort > 0 {
-			containerPorts[edge.Endpoint] = edge.TargetPort
+		if endpoint.TargetPort > 0 {
+			containerPorts[endpoint.Name] = endpoint.TargetPort
 		}
 	}
 	return servicePorts, containerPorts
