@@ -113,7 +113,7 @@ func RenderCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 			continue
 		}
 		if loadErr != nil {
-			return CellResult{}, fmt.Errorf("read the render of module %s: %w", entry.Name(), loadErr)
+			return CellResult{}, fmt.Errorf("the render of module %s cannot be read, so the cell file cannot describe what it delivers; render %s again for %s: %w", entry.Name(), entry.Name(), env.Name, loadErr)
 		}
 		if inventory.Environment != env.Name {
 			result.Skipped = append(result.Skipped, inventory.Module)

@@ -60,6 +60,9 @@ var gitOpsRenderCmd = &cobra.Command{
 		cli.Info("Rendered %s", result.Path)
 		cli.Info("Digest %s", result.Inventory.Digest)
 		printCell(result.Cell)
+		if result.CellError != "" {
+			cli.Warning("Cell file not re-derived: %s", result.CellError)
+		}
 		printSizingReport(result.Sizing)
 		printElidedNamespaces(result.ElidedNamespaces)
 		printModuleManifest(&result)

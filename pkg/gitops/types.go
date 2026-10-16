@@ -329,7 +329,11 @@ type RenderResult struct {
 	Path string `json:"path"`
 	// Cell is the environment's cell file as re-rendered after this module,
 	// when the environment declares a host.
-	Cell      *CellResult  `json:"cell,omitempty"`
+	Cell *CellResult `json:"cell,omitempty"`
+	// CellError says why the cell file could not be re-derived after this
+	// render — a sibling module's tree this CLI cannot read, typically. The
+	// module render stands; the cell file is stale until the named render.
+	CellError string       `json:"cellError,omitempty"`
 	Inventory Inventory    `json:"inventory"`
 	Sizing    SizingReport `json:"sizing"`
 	// ElidedNamespaces are the tree-relative manifest paths the render dropped

@@ -91,12 +91,16 @@ func renderModuleTree(
 	// A hosted environment's cell file describes every module tree rendered
 	// for it; this render moved one, so the file is derived again from all
 	// of them as they stand now.
+	// A sibling tree this CLI cannot read (an older render) stops the file,
+	// not this render: re-rendering the modules one by one converges, and the
+	// last render writes the file. The result says what is still owed.
 	if env.Host != nil {
 		cell, cellErr := RenderCell(ctx, workspace, env)
 		if cellErr != nil {
-			return RenderResult{}, fmt.Errorf("render the cell file of environment %s: %w", env.Name, cellErr)
+			result.CellError = cellErr.Error()
+		} else {
+			result.Cell = &cell
 		}
-		result.Cell = &cell
 	}
 	return result, nil
 }
