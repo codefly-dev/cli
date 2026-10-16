@@ -39,6 +39,11 @@ environments:
       trust_domain: local.example
       delivery: edge/gateway/rest
       gateway: edge/gateway
+    ingress:
+      - name: portal
+        service: edge/gateway
+        endpoint: rest
+        hosts: [app.example.test]
 `,
 		"modules/edge/" + resources.ModuleConfigurationName: "kind: module\nname: edge\nservices:\n  - name: gateway\n",
 		"modules/edge/services/gateway/" + resources.ServiceConfigurationName: service("gateway",
@@ -170,4 +175,28 @@ func TestMeshEdgesAreTheCompositionsDeclaredReach(t *testing.T) {
 		require.NoError(t, err)
 		require.Empty(t, edges.Edges)
 	})
+}
+
+// The cell's ingress reaches exactly what the environment routes: a public
+// endpoint nobody routes has no ingress edge, a route onto an endpoint its
+// module does not declare public is refused by name, and a routed public
+// endpoint of any module — a product's portal, not only the host gateway —
+// is an ingress edge.
+func TestIngressEdgesAreTheEnvironmentsRoutes(t *testing.T) {
+	workspace, env := meshWorkspace(t)
+	ports := map[string]map[string]uint32{"edge/gateway": {"rest": 8080, "workload": 8081}, "app/api": {"grpc": 9090, "admin": 8082}}
+	module, services := moduleServices(t, workspace, "edge")
+	routed := *env
+	routed.Ingress = nil
+	edges, err := deriveMeshEdges(t.Context(), workspace, &routed, module, services, ports, ports)
+	require.NoError(t, err)
+	for _, edge := range edges.Edges {
+		require.False(t, edge.Ingress, "a public endpoint the environment does not route has no ingress edge")
+	}
+	onInternal := *env
+	onInternal.Ingress = []environments.EnvironmentIngressRoute{{Name: "admin", Service: "app/api", Endpoint: "admin", Hosts: []string{"admin.example.test"}}}
+	appModule, appServices := moduleServices(t, workspace, "app")
+	_, err = deriveMeshEdges(t.Context(), workspace, &onInternal, appModule, appServices, ports, ports)
+	require.ErrorContains(t, err, "routes app/api/admin at its edge")
+	require.ErrorContains(t, err, "not public")
 }
