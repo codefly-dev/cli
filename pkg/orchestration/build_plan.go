@@ -658,9 +658,9 @@ func readPushedImageDigest(metadataFile string) (string, error) {
 
 // buildRecipeOutputDirectory is the absolute destination the caller asks the
 // agent to emit recipes into: the builder/ directory under the service's build
-// root (see buildRecipeRoot). It does not create the directory — the emitting
-// agent owns writing there, so a legacy agent that ignores the field leaves no
-// empty directory.
+// root (see buildRecipeRoot). The caller creates it before asking (Plan): the
+// agent owns what is written there, and an agent that assembles its build
+// context stats the directory before it writes.
 func buildRecipeOutputDirectory(root string) (string, error) {
 	return filepath.Abs(filepath.Join(root, buildRecipeDir))
 }

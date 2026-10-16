@@ -1,6 +1,7 @@
 package orchestration
 
 import (
+	"os"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -317,6 +318,14 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 	outputDir, err := buildRecipeOutputDirectory(recipeRoot)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot prepare build recipe directory")
+	}
+	// The directory the CLI asks the agent to emit into exists before the
+	// agent is called: an agent that assembles a build context stats it first
+	// (a uv path-source service copies its tree while skipping the recipe
+	// directory by identity), and under the scratch root of a materialized
+	// module nothing else ever created it.
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return nil, w.Wrapf(err, "cannot create build recipe directory %s", outputDir)
 	}
 
 	resp, err := b.instance.Builder.Build(ctx, &builderv0.BuildRequest{
