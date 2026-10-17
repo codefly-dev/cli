@@ -60,10 +60,16 @@ func workloadAccount(service string) string {
 }
 
 // holdsMeshPrincipal reports whether the composition hands out a service's
-// mesh principal: the host's gateway (every edge names it) and a service that
-// declares module-authority (its PRINCIPAL is that identity).
+// mesh principal: the host's gateway (every edge names it), a service that
+// declares module-authority (its PRINCIPAL is that identity), and a service
+// that presents its module's identity to the host (module-identity: true) —
+// the module manifest lists that workload by the account it runs as, and
+// refuses one running as the namespace's default, so it must have its own.
 func holdsMeshPrincipal(service *resources.Service, env *environments.Environment, module string) bool {
 	if env.Host != nil && env.Host.Gateway == resources.ServiceUnique(module, service.Name) {
+		return true
+	}
+	if service.ModuleIdentity {
 		return true
 	}
 	return slices.Contains(service.WorkspaceConfigurationDependencies, environments.ModuleAuthorityConfiguration)

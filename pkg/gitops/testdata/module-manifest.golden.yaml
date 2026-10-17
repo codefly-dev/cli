@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: module-manifest-example.prod.crm
+    namespace: crm
+    labels:
+        app.kubernetes.io/managed-by: codefly
+        codefly.dev/binding: example.prod.crm
+        codefly.dev/document: module-manifest
+data:
+    module-manifest.codefly.yaml: |
+        schema: codefly/module-manifest/v1
+        binding: example.prod.crm
+        alias: crm
+        kind: solution
+        generation: 1
+        host:
+            coordinate: example/prod/region-a
+            domain: example
+        release:
+            publisher: example
+            name: crm
+            version: 1.4.0
+        workloads:
+            - service: api
+              container: api
+              kubernetes:
+                trust_domain: cluster.example
+                namespace: crm
+                service_account: api
+        endpoints:
+            - name: grpc
+              service: api
+              api: grpc
+              address: http://api.crm.svc.cluster.local:9090
+        authority:
+            principal: crm

@@ -16,7 +16,6 @@ const hostBlock = `      coordinate: example/prod/region-a
       domain: example-platform
       audience: accounts
       trust_domain: cluster.example
-      envelope_revision: 3
       delivery: platform/accounts/rest
 `
 
@@ -39,7 +38,7 @@ func TestWorkspaceHostDeclarationSurvivesLoad(t *testing.T) {
 	}
 	want := EnvironmentHost{
 		Coordinate: "example/prod/region-a", Component: "platform-host", Domain: "example-platform",
-		Audience: "accounts", TrustDomain: "cluster.example", EnvelopeRevision: 3, Delivery: "platform/accounts/rest",
+		Audience: "accounts", TrustDomain: "cluster.example", Delivery: "platform/accounts/rest",
 	}
 	if !reflect.DeepEqual(*env.Host, want) {
 		t.Fatalf("host %+v, want %+v", *env.Host, want)
@@ -86,19 +85,18 @@ func TestHostDeclarationRefusesAPartialOrMalformedIdentity(t *testing.T) {
 		yaml string
 		want string
 	}{
-		"no component":             {yaml: without("component"), want: "host component"},
-		"no coordinate":            {yaml: without("coordinate"), want: "host coordinate"},
-		"no domain":                {yaml: without("domain"), want: "host domain"},
-		"no audience":              {yaml: without("audience"), want: "host audience"},
-		"no trust domain":          {yaml: without("trust_domain"), want: "host trust_domain"},
-		"no envelope revision":     {yaml: without("envelope_revision"), want: "envelope_revision"},
-		"envelope revision zero":   {yaml: without("envelope_revision") + "      envelope_revision: 0\n", want: "envelope_revision"},
-		"uppercase coordinate":     {yaml: strings.Replace(hostBlock, "example/prod/region-a", "Example/Prod", 1), want: "host coordinate"},
-		"uppercase domain":         {yaml: strings.Replace(hostBlock, "example-platform", "Example", 1), want: "host domain"},
-		"trust domain with scheme": {yaml: strings.Replace(hostBlock, "cluster.example", "spiffe://cluster.example", 1), want: "host trust_domain"},
-		"trust domain with path":   {yaml: strings.Replace(hostBlock, "cluster.example", "cluster.example/ns", 1), want: "host trust_domain"},
-		"unknown key":              {yaml: hostBlock + "      cordinate: typo\n", want: "unknown host field"},
-		"whitespace audience":      {yaml: strings.Replace(hostBlock, "audience: accounts", "audience: \"a b\"", 1), want: "host audience"},
+		"no component":                {yaml: without("component"), want: "host component"},
+		"no coordinate":               {yaml: without("coordinate"), want: "host coordinate"},
+		"no domain":                   {yaml: without("domain"), want: "host domain"},
+		"no audience":                 {yaml: without("audience"), want: "host audience"},
+		"no trust domain":             {yaml: without("trust_domain"), want: "host trust_domain"},
+		"a retired envelope revision": {yaml: hostBlock + "      envelope_revision: 3\n", want: "unknown host field"},
+		"uppercase coordinate":        {yaml: strings.Replace(hostBlock, "example/prod/region-a", "Example/Prod", 1), want: "host coordinate"},
+		"uppercase domain":            {yaml: strings.Replace(hostBlock, "example-platform", "Example", 1), want: "host domain"},
+		"trust domain with scheme":    {yaml: strings.Replace(hostBlock, "cluster.example", "spiffe://cluster.example", 1), want: "host trust_domain"},
+		"trust domain with path":      {yaml: strings.Replace(hostBlock, "cluster.example", "cluster.example/ns", 1), want: "host trust_domain"},
+		"unknown key":                 {yaml: hostBlock + "      cordinate: typo\n", want: "unknown host field"},
+		"whitespace audience":         {yaml: strings.Replace(hostBlock, "audience: accounts", "audience: \"a b\"", 1), want: "host audience"},
 		// The delivery API is named by composition identity, never by address:
 		// absent, or a bare address, is a host block the publish cannot route
 		// a document through.

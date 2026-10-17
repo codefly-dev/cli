@@ -10,10 +10,10 @@ import (
 
 // FrontendArtifactName is the name a release declares its component's
 // complete frontend bundle under, as a runtime artifact of the package
-// manifest: the one artifact a presence's generated frontend.payload names.
+// manifest: the one artifact a module manifest's generated frontend.payload names.
 const FrontendArtifactName = "frontend"
 
-// stampFrontendPayload generates the presence's frontend.payload from the
+// stampFrontendPayload generates the manifest's frontend.payload from the
 // release's own artifact metadata, as core asks of a renderer: the runtime
 // artifact named frontend gives the payload its artifact name, digest and
 // media type, verbatim. A release declaring no such artifact gives a frontend
@@ -23,7 +23,7 @@ const FrontendArtifactName = "frontend"
 // payload carries, or by a headless component (a bundle is the executable
 // output of a declared page) is refused by name. That a release declares the
 // name once is the manifest loader's rule.
-func stampFrontendPayload(instance *SolutionInstance, artifacts []composition.ReleaseArtifact) error {
+func stampFrontendPayload(instance *ModuleInstance, artifacts []composition.ReleaseArtifact) error {
 	index := slices.IndexFunc(artifacts, func(artifact composition.ReleaseArtifact) bool { return artifact.Name == FrontendArtifactName })
 	if index < 0 {
 		return nil

@@ -112,19 +112,3 @@ func TestAnArgoManifestRunningAnUnpinnedImageIsRefused(t *testing.T) {
 		t.Fatalf("a refused manifest reached the cluster: %v", kubectl.calls)
 	}
 }
-
-// TestDeliveryAccountIsTheAuthorityNamespacesDeliveryAccount: the namespace
-// the authority Job runs in and the account it runs as, which a cell's
-// platform provides and the rendered tree cannot, with no default token.
-func TestDeliveryAccountIsTheAuthorityNamespacesDeliveryAccount(t *testing.T) {
-	kubectl := &recordedKubectl{}
-	if err := EnsureDeliveryAccount(context.Background(), kubectl.run); err != nil {
-		t.Fatal(err)
-	}
-	manifest := kubectl.stdins[0]
-	for _, want := range []string{"kind: Namespace\nmetadata:\n  name: platform-authority", "kind: ServiceAccount\nmetadata:\n  name: delivery\n  namespace: platform-authority", "automountServiceAccountToken: false"} {
-		if !strings.Contains(manifest, want) {
-			t.Fatalf("the delivery account manifest lacks %q:\n%s", want, manifest)
-		}
-	}
-}

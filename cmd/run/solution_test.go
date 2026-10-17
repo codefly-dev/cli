@@ -23,3 +23,20 @@ func TestSolutionCommandExposesSharedRunFlags(t *testing.T) {
 		}
 	}
 }
+
+// A solution runs on the platform it composes: the entry is the root and every
+// other root of the composition (what `run workspace` boots) is a co-root, so
+// the modules the solution consumes come up with it instead of the entry
+// starting beside nothing it names.
+func TestSolutionRunSeedsTheCompositionAsCoRoots(t *testing.T) {
+	args := solutionRunArgs("wiki/backend", []string{"saas/frontend", "wiki/backend", "robin/chat", "documents/documents", "robin/chat"})
+	want := []string{"wiki/backend", "saas/frontend", "robin/chat", "documents/documents"}
+	if len(args) != len(want) {
+		t.Fatalf("args = %v, want %v", args, want)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("args = %v, want %v", args, want)
+		}
+	}
+}

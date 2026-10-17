@@ -122,10 +122,23 @@ func meshServicePortEvidence(endpoint string, item manifest, spec, port map[stri
 		}
 		entry.Selector[key] = label
 	}
-	// The appProtocol is core's name for the HTTP API, the one the presenter
-	// waypoint forwards: nothing else is a gateway port.
-	if entry.Name == "" || len(entry.Selector) == 0 || entry.PortName == "" || entry.Protocol != "TCP" || entry.AppProtocol != standards.HTTP {
-		return nil, fmt.Errorf("gateway endpoint %s requires a named HTTP Service port with a pod selector", endpoint)
+	// The port must say it carries HTTP, the API the presenter waypoint
+	// forwards: `appProtocol: http` is the explicit spelling, and a port
+	// named `http` or `http-<suffix>` is the protocol-selection convention
+	// the mesh honours and the service agents render today. Nothing else is
+	// a gateway port.
+	if entry.Name == "" || len(entry.Selector) == 0 || entry.PortName == "" || entry.Protocol != "TCP" || !servicePortSaysHTTP(entry) {
+		return nil, fmt.Errorf("gateway endpoint %s requires a named HTTP Service port with a pod selector (appProtocol: http, or a port named http or http-<suffix>)", endpoint)
 	}
 	return entry, nil
+}
+
+// servicePortSaysHTTP reports whether a Service port declares HTTP: by
+// appProtocol, or by the mesh's port-name protocol selection (`http`,
+// `http-<suffix>`).
+func servicePortSaysHTTP(entry *MeshRenderedService) bool {
+	if entry.AppProtocol != "" {
+		return entry.AppProtocol == standards.HTTP
+	}
+	return entry.PortName == standards.HTTP || strings.HasPrefix(entry.PortName, standards.HTTP+"-")
 }

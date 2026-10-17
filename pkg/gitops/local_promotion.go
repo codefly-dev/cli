@@ -8,7 +8,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 
@@ -60,7 +59,7 @@ func ExportPromotion(ctx context.Context, workspace *resources.Workspace, enviro
 }
 
 // DeliveryJob is one delivery Job a promoted tree renders: its kind
-// (presence or authority), its name and namespace, and the file it is in.
+// (manifest), its name and namespace, and the file it is in.
 type DeliveryJob struct {
 	Kind      string `json:"kind"`
 	Name      string `json:"name"`
@@ -115,7 +114,7 @@ func DeliveryJobsOf(tree, publishedPath, environment string) ([]DeliveryJob, err
 		if walkErr != nil {
 			return walkErr
 		}
-		if entry.IsDir() || !slices.Contains([]string{"deliver-" + deliveryPresence + ".yaml", "deliver-" + deliveryAuthority + ".yaml", "deliver-" + deliveryEndpoints + ".yaml"}, entry.Name()) {
+		if entry.IsDir() || entry.Name() != "deliver-"+deliveryManifest+".yaml" {
 			return nil
 		}
 		if path.Base(path.Dir(file)) != environment || path.Base(path.Dir(path.Dir(file))) != overlaysDirectory {

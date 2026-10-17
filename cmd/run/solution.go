@@ -47,6 +47,18 @@ var SolutionCmd = &cobra.Command{
 			return fmt.Errorf("cannot reload workspace: %w", err)
 		}
 		entry, err := ResolveSolutionEntry(ctx, workspace)
+		if err != nil {
+			done()
+			return err
+		}
+		// A solution runs on the platform it composes. Its entry's declared
+		// service dependencies reach the host alone; what it consumes through
+		// its manifest's api.consumes (robin, documents, ...) and what those
+		// modules reach through configuration references the dependency graph
+		// never sees. Those are the composition's roots — the same list `run
+		// workspace` boots — seeded here as co-roots beside the entry, so the
+		// solution does not come up beside nothing it names.
+		roots, err := CompositionRoots(ctx, workspace)
 		done()
 		if err != nil {
 			return err
@@ -61,8 +73,24 @@ var SolutionCmd = &cobra.Command{
 		// request nothing has changed since.
 		pinsAlreadyResolved = true
 		defer func() { pinsAlreadyResolved = false }()
-		return runServiceCommand(cmd, []string{entry})
+		return runServiceCommand(cmd, solutionRunArgs(entry, roots))
 	},
+}
+
+// solutionRunArgs is the service run's argument list for a solution: the
+// resolved entry first, as the root, then every other root of the composition
+// as a co-root, each once and in the composition's order.
+func solutionRunArgs(entry string, roots []string) []string {
+	args := []string{entry}
+	seen := map[string]bool{entry: true}
+	for _, root := range roots {
+		if seen[root] {
+			continue
+		}
+		seen[root] = true
+		args = append(args, root)
+	}
+	return args
 }
 
 // ResolveSolutionEntry finds the solution root and returns its

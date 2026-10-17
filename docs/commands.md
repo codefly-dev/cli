@@ -140,8 +140,8 @@ three for its environment.
 workspace configuration `artifact-cache` receives `ROOT`, the absolute path of
 `.codefly/selection-artifacts`, from a native run and from nothing else; the
 host's native adapter reads a component's frontend bundle there, read-only, by
-the digest the presence names, and the run retains that bundle (the canonical
-archive of `services/fe-remote/dist`) before it delivers the presence.
+the digest the module manifest names, and the run retains that bundle (the
+canonical archive of `services/fe-remote/dist`) before it delivers the manifest.
 
 **Adding a component while the run is up.** Compose the module or solution
 into the workspace and send the running `codefly run` process — a service, a
@@ -150,8 +150,8 @@ the composition, admits every root composed after it started (a root the
 composition already named when a service or solution run began, outside that
 run's closure, stays outside it), and starts that root's closure in the
 running flow in dependency order; in a host environment the native cluster projects the
-newcomer's identity and delivers its presence, authority and routes once it
-is Running, and the host keeps its process. A component already running is
+newcomer's identity and delivers its module's manifest (its workloads, routes
+and authority request) once it is Running, and the host keeps its process. A component already running is
 never restarted or replaced by this: a changed identity is refused by name,
 and the run continues as it was.
 
@@ -159,15 +159,16 @@ and the run continues as it was.
 of the composition and send the same `SIGUSR1`. A root the run started and the
 composition no longer names is withdrawn: the flow stops what only that root
 needed, dependents first (what the remaining roots reach keeps its process),
-and in a host environment the native cluster delivers the generation that
-withdraws each stopped workload, the presence's tombstone and its authority's,
-then forgets it. The host keeps its process and its authority, and the run's
-envelope is never narrowed, since a run only ever adds to it. A withdrawal is
+and in a host environment the native cluster takes each stopped workload out
+of its module's manifest: a module still running an identity workload is
+delivered again listing what remains, and one running none is withdrawn — its
+manifest at the next generation with `removed: true` — then forgotten. The
+host keeps its process, and the envelope is untouched. A withdrawal is
 terminal for the binding at the host, as it is for a published one: the
 component comes back under a new instance name. The roots a `run service` or
 `run solution` names on its command line are never withdrawn; a workspace run
-pins none. An update of a running component is its own restart: the agent's
-reload re-delivers its presence at the next generation with the new build.
+pins none. An update of a running component is its own restart: a manifest
+names no build, so a rebuild changes nothing the host is told.
 
 ```bash
 codefly run workspace --fixture dev-admin          # the host and every module
@@ -180,10 +181,11 @@ codefly run workspace --runtime-context native \
 and `codefly run solution`.
 
 In a composition whose environment declares a `host`, a native run stands in
-for the cell the composition would be delivered to: each solution gets a
-workload identity, its presence and authority are delivered to the host, and
-it is offered for installation in the host's own registry. See
-[solution-host-bindings.md](solution-host-bindings.md#a-native-run-the-run-answers-as-the-cluster).
+for the cell the composition would be delivered to: every `module-identity`
+service is issued a workload credential when it is projected, its module's
+signed manifest is delivered to the host once it runs, and the module is
+offered for installation in the host's own registry. See
+[module-manifests.md](module-manifests.md#a-native-run-the-run-answers-as-the-cluster).
 
 ### `codefly run service [name...]`
 
@@ -633,8 +635,7 @@ codefly run cluster documents --env local --app-project platform --yes
 ```
 
 It installs Argo CD if the cluster has none (the release the k3d qualification
-pins). It provisions the `platform-authority` namespace and its `delivery`
-ServiceAccount and the modules' namespaces, writes the local host's trust
+pins). It provisions the modules' namespaces, writes the local host's trust
 anchor — one public-key verification policy admitting the
 listed developer key held on this machine, bound to this cluster's CA fingerprint, re-written (and the
 host restarted) when the cluster is recreated — then for each module renders it (images built and pushed),
@@ -643,9 +644,9 @@ promotes it locally — the developer's signed publish is the approval on a loca
 cluster, so it fast-forwards the local base branch and generations rise with
 each rebuild — serves the latest promotion to Argo CD, applies each module's
 Argo bootstrap, and waits for every delivery Job, printing the host's answer
-for each document. A refused delivery fails the run. `--delivery-timeout`
+for each module manifest. A refused delivery fails the run. `--delivery-timeout`
 bounds each wait. Stopping a run is not removal: a binding is withdrawn by a
-published tombstone. See [delivery documents, "Local runs"](solution-host-bindings.md#local-runs),
+published withdrawal. See [module manifests, "Local runs"](module-manifests.md#local-runs),
 which also lists what the local host's profile must contain.
 
 No workload is issued a certificate: a workload's transport identity is the
@@ -656,7 +657,7 @@ principal (with the host's two audiences and the internal token) by the
 render, and runs as the account it names. The edges the mesh admits are
 delivered as data in the render record (`meshEdges` in
 `.codefly-render.json`), for the cell's applier to compile; see
-[delivery documents, "Mesh edges"](solution-host-bindings.md#mesh-edges).
+[module manifests, "Mesh edges"](module-manifests.md#mesh-edges).
 
 ### `codefly build runnable <name>`
 
@@ -787,10 +788,56 @@ is the total observation budget for the command, shared across every service it
 observes. The same flags apply to `codefly deploy module`. See
 [deployment completion stages](deployment-completion.md).
 
+**The cell file.** A render for an environment that declares a `host:` block
+also re-derives that environment's cell file,
+`<gitops path>/cells/<environment>/cell.yaml` (`codefly/cell/v1`,
+`pkg/gitops/cellfile`): one namespace entry per module tree rendered for the
+environment, each workload as rendered — its exact pod selector, the account
+and SPIFFE identity it runs as, the container that authenticates, every image
+by digest — with the endpoints a serving workload declares (`port` is the
+container port the mesh authorizes, `service_port` the Service's), who the
+composition says calls them (service dependencies and a solution's
+`api.consumes`), the ingress routed onto them, the presence delivery Job,
+and what the environment declares per `<module>/<service>` under `cell:`
+and `egress:` (external hosts; a managed service's `egress-cidrs`). The
+`cell:` entry names the platform `bindings` the service holds, `cloud-identity`
+when it runs under a cloud identity, and `presenter`: the endpoints whose
+listener accepts only a protected waypoint's assertion of the caller. The cell
+fronts each presenter endpoint with a waypoint, admits the waypoint alone on
+that port, hands the service the waypoint's identity and exports the principal
+the waypoint runs as; the file carries the fact on the endpoint
+(`presenter: true`). A presenter endpoint the service does not declare is
+refused at render, by name. A service whose render includes a non-serving
+workload (an agent's bootstrap Job) is listed as a consumer of its own
+endpoints, so the Job's identity is admitted to the service it bootstraps.
+
+```yaml
+environments:
+  staging:
+    host: {coordinate: region-a, component: platform-host, trust_domain: cell.example}
+    cell:
+      edge/gateway: {bindings: [identity], presenter: [workload]}
+      shop/api: {bindings: [vault, identity], cloud-identity: true}
+    egress:
+      shop/api: {hosts: [identity.example.test, {name: api.github.com, port: 8443}]}
+```
+
+This cell file is the render's inventory of a composition; it is not the
+retired `codefly/cell/v1` *import descriptor* that `environment import`
+rejects below, which named a cluster's coordinates and never a workload. The file names the commit it was emitted
+from (`source`) when the environment declares a gitops `repo-url` and `branch`
+and the workspace is a git checkout; the render says so when it cannot. It is
+regenerated whole — a workload absent from it is not delivered — and is what
+the cell's infrastructure derives its namespaces, mesh contract, admission set
+and verifier allows from, instead of transcribing them. The consumer validates
+it as another repository's output; this side writes it deterministically and
+reads it back through its own reader.
+
 For a complete module promotion, use the GitOps lifecycle:
 
 ```bash
 codefly deploy gitops render payments --env production --app-project payments
+codefly deploy gitops render --all --env production   # Every composed module, the host first
 codefly deploy gitops plan payments --env production
 codefly deploy gitops publish payments --env production
 
@@ -803,6 +850,19 @@ codefly deploy gitops observe payments --env production \
 codefly deploy gitops rollback payments --env production \
   --to-revision <previous-reviewed-commit>
 ```
+
+`render --all` renders every module the workspace composes, the host first,
+and derives the environment's cell file once at the end from all of them, so
+one command renders one composition and a stale sibling tree is never a reason
+to run the render again. A single-module `render` re-derives the cell file
+from its own tree and the sibling trees already rendered; a sibling the cell
+file cannot read, or one left at another inventory schema, is reported as
+stale by name rather than failing the render. An image whose inputs did not
+change is kept rather than rebuilt, and that decision is taken before any Go
+module graph is fetched, so a render of an up-to-date composition fetches
+nothing; `--rebuild` builds every image regardless. A service that declares
+module identity runs as its own ServiceAccount, and a rendered Job without pod
+labels is labelled so the cell file can select it.
 
 `render`, `snapshot`, `plan` and `publish` evaluate the workspace readiness
 verdict for the target environment **before** they do any expensive work, and

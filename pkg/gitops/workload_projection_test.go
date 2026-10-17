@@ -86,7 +86,13 @@ func TestOverlayPatchesRefuseSymlinkOutsideRenderRoot(t *testing.T) {
 // volume itself.
 func renderedVolume(t *testing.T, destination, volume string) (map[string]any, map[string][]map[string]any) {
 	t.Helper()
-	manifests, err := overlayManifests(filepath.Join(destination, "services", "api", "overlays", "prod"))
+	return renderedVolumeOf(t, destination, "api", volume)
+}
+
+// renderedVolumeOf is renderedVolume for the unit of any service.
+func renderedVolumeOf(t *testing.T, destination, service, volume string) (map[string]any, map[string][]map[string]any) {
+	t.Helper()
+	manifests, err := overlayManifests(filepath.Join(destination, "services", service, "overlays", "prod"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,12 +122,12 @@ func renderedVolume(t *testing.T, destination, volume string) (map[string]any, m
 	return nil, nil
 }
 
-// TestEveryWorkloadAHostAdmitsProjectsItsIdentityToken: the pod a presence
-// document declares proves who it is with a ServiceAccount token projected
-// for the host's audience (the mint saas#1056 binds to the running build) —
-// mounted at the path the SDK reads, into the authenticating container alone,
-// in an agent's kustomized overlay and in a plain one alike, and pinned by the
-// presence document like every rendered byte.
+// TestEveryWorkloadAHostAdmitsProjectsItsIdentityToken: an identity workload
+// proves who it is with a ServiceAccount token projected for the host's
+// audience — mounted at the path the SDK reads, ONLY into the container its
+// manifest declares (never the sidecar beside it: the host checks no
+// container, so the render is where a sidecar is kept from holding it), in an
+// agent's kustomized overlay and in a plain one alike.
 func TestEveryWorkloadAHostAdmitsProjectsItsIdentityToken(t *testing.T) {
 	for name, generate := range map[string]func(context.Context, string) error{
 		"a kustomized overlay":     kustomizedWorkload(sidecarDeployment),
@@ -142,11 +148,11 @@ func TestEveryWorkloadAHostAdmitsProjectsItsIdentityToken(t *testing.T) {
 				t.Fatalf("the projected token is %v, want audience accounts at token, living 600 s", token)
 			}
 			if len(mounts) != 1 || len(mounts["api"]) != 1 || mounts["api"][0]["mountPath"] != "/var/run/secrets/codefly" || mounts["api"][0]["readOnly"] != true {
-				t.Fatalf("the token is mounted as %v, want into the authenticating container alone, read-only, at the SDK's path", mounts)
+				t.Fatalf("the token is mounted as %v, want into the declared container alone, read-only, at the SDK's path", mounts)
 			}
-			binding := deliveredBinding(t, destination, "example.prod.crm")
-			if len(binding.Workloads) != 1 || binding.Workloads[0].Identity.Audience != "accounts" {
-				t.Fatalf("the presence document does not declare the identity the pod presents: %+v", binding.Workloads)
+			manifest := deliveredModuleManifest(t, destination, "example.prod.crm")
+			if len(manifest.Workloads) != 1 || manifest.Workloads[0].Container != "api" {
+				t.Fatalf("the manifest declares %+v, want the container the credential is mounted into", manifest.Workloads)
 			}
 		})
 	}
@@ -272,22 +278,33 @@ func TestALocalHostMountsItsTrustAnchorWhereItReadsIt(t *testing.T) {
 	}
 }
 
-// TestPresenceDeclaresEveryContainerOfTheWorkload: the presence document
-// names every container of a workload a host admits — the authenticating one
-// with its image digest, every sidecar and init container as one never
-// accepted as it — and every one of them must be pinned by digest, or the
-// render refuses. (Core's presence schema, codefly/solution-host-binding/v1
-// through core v0.18.1, carries the other containers by NAME only; their
-// digests are read here and cannot be declared until the schema carries them.)
-func TestPresenceDeclaresEveryContainerOfTheWorkload(t *testing.T) {
+// TestOnlyAnIdentityWorkloadIsProjectedACredential: a service that does not
+// run as the module mints nothing, so its pods hold no workload credential.
+func TestOnlyAnIdentityWorkloadIsProjectedACredential(t *testing.T) {
+	destination := filepath.Join(t.TempDir(), "modules", "crm")
+	options := solutionRenderOptions(destination)
+	options.Units = promotableServiceGraph("crm", []string{"api", "worker"})
+	if _, err := RenderOwnedTree(context.Background(), options, renderUnits(map[string]string{"api": sidecarDeployment, "worker": workerDeployment})); err != nil {
+		t.Fatal(err)
+	}
+	if volume, mounts := renderedVolumeOf(t, destination, "worker", identityTokenVolume); volume != nil || len(mounts) != 0 {
+		t.Fatalf("a service that does not run as the module holds the credential: %v %v", volume, mounts)
+	}
+	if _, mounts := renderedVolume(t, destination, identityTokenVolume); len(mounts) != 1 || len(mounts["api"]) != 1 {
+		t.Fatalf("the identity workload's credential is mounted as %v", mounts)
+	}
+}
+
+// TestEveryContainerOfAnIdentityWorkloadIsPinned: the render refuses a
+// workload whose sidecar or init container runs an image not pinned by digest.
+func TestEveryContainerOfAnIdentityWorkloadIsPinned(t *testing.T) {
 	withInit := strings.Replace(sidecarDeployment, "      containers:\n", "      initContainers:\n        - name: migrate\n          image: ghcr.io/codefly-dev/migrate@sha256:"+strings.Repeat("c", 64)+"\n      containers:\n", 1)
 	destination := filepath.Join(t.TempDir(), "modules", "crm")
 	if _, err := RenderOwnedTree(context.Background(), solutionRenderOptions(destination), kustomizedWorkload(withInit)); err != nil {
 		t.Fatal(err)
 	}
-	workload := deliveredBinding(t, destination, "example.prod.crm").Workloads[0]
-	if workload.Container != "api" || workload.NonAuthenticating == nil || strings.Join(*workload.NonAuthenticating, ",") != "migrate,proxy" {
-		t.Fatalf("the presence document declares %s and %v, want api and every other container (migrate, proxy)", workload.Container, workload.NonAuthenticating)
+	if workload := deliveredModuleManifest(t, destination, "example.prod.crm").Workloads[0]; workload.Container != "api" {
+		t.Fatalf("the manifest declares container %s, want api", workload.Container)
 	}
 	unpinned := strings.Replace(withInit, "ghcr.io/codefly-dev/proxy@sha256:"+strings.Repeat("b", 64), "ghcr.io/codefly-dev/proxy:latest", 1)
 	if _, err := RenderOwnedTree(context.Background(), solutionRenderOptions(filepath.Join(t.TempDir(), "modules", "crm")), kustomizedWorkload(unpinned)); err == nil || !strings.Contains(err.Error(), "not pinned by digest") {

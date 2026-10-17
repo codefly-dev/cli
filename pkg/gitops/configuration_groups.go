@@ -196,6 +196,15 @@ func staleGroupConsumers(workspaceDir, module, environment string, digests map[s
 			// be read, and silence here would read as agreement.
 			return nil, fmt.Errorf("the rendered tree of module %s carries no inventory, so whether it agrees about the groups it consumes is unknown; render it again", entry.Name())
 		}
+		if errors.Is(err, ErrUnsupportedInventorySchema) {
+			// A tree rendered by another CLI: it cannot say whether it agrees,
+			// and the answer is to render it again — reported as stale on
+			// every group this module consumes, never read as agreement.
+			for group := range digests {
+				stale[group] = append(stale[group], entry.Name())
+			}
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("the rendered tree of module %s cannot be read, so whether it agrees about the groups %s consumes cannot be told: %w", entry.Name(), module, err)
 		}

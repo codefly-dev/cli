@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -298,11 +299,10 @@ func validateManagedServiceKey(key string) error {
 // them at once: Coordinate is matched by the host, Component names the
 // component instance within it, Domain is the ownership domain this
 // composition delivers under, Audience is what the host expects a workload's
-// token to be bound to, TrustDomain is the SPIFFE trust domain the cell's
-// mesh names a workload's principal under, and EnvelopeRevision is the revision of
-// the host's envelope this composition was reviewed against. A partial
-// declaration would render a document the host cannot use, so UnmarshalYAML
-// refuses an unknown key and Validate refuses a missing one.
+// token to be bound to, and TrustDomain is the SPIFFE trust domain the cell's
+// mesh names a workload's principal under. A partial declaration would render
+// a manifest the host cannot use, so UnmarshalYAML refuses an unknown key and
+// Validate refuses a missing one.
 type EnvironmentHost struct {
 	Coordinate string `yaml:"coordinate"`
 	Component  string `yaml:"component"`
@@ -316,20 +316,11 @@ type EnvironmentHost struct {
 	// Audience is the token audience the host verifies a workload's projected
 	// token against. It is the host's bare audience string, not an address.
 	Audience string `yaml:"audience"`
-	// TrustDomain is the SPIFFE trust domain of the cell's mesh. A presence
-	// document names, per workload, its mesh principal — the SPIFFE ID the
-	// mesh issues to the workload's ServiceAccount and presents on its behalf,
-	// never a certificate the workload serves:
+	// TrustDomain is the SPIFFE trust domain of the cell's mesh. A module
+	// manifest names, per workload, its SPIFFE ID — the one the mesh issues to
+	// the workload's ServiceAccount, never a certificate the workload serves:
 	// spiffe://<trust domain>/ns/<namespace>/sa/<account>.
 	TrustDomain string `yaml:"trust_domain"`
-	// EnvelopeRevision is the revision of the host's envelope — the ceiling a
-	// platform administrator writes at runtime — that this composition was
-	// reviewed against. Both delivery documents carry it inside their signed
-	// bytes and the host refuses a document naming another revision, so a
-	// composition pins the revision it was reviewed against here, and bumps it
-	// when the envelope is re-reviewed. Never derived: the render does not
-	// read the envelope.
-	EnvelopeRevision uint64 `yaml:"envelope_revision"`
 	// Delivery names the host's delivery API by composition identity —
 	// "<module>/<service>/<endpoint>" — the way api.consumes names a producing
 	// endpoint. The render resolves it to the in-cluster address the delivery
@@ -403,7 +394,7 @@ func (policy *HostReleasePolicy) Validate() error {
 }
 
 // hostFields are the keys a host block may carry, in declaration order.
-var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "envelope_revision", "delivery", "gateway", "module_audience", "release", "developers", "trust_anchor"}
+var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "delivery", "gateway", "module_audience", "release", "developers", "trust_anchor"}
 
 // deliveryPattern is a composition identity: <module>/<service>/<endpoint>,
 // each a lowercase name.
@@ -467,9 +458,6 @@ func (host *EnvironmentHost) Validate() error {
 	}
 	if err := ValidateTrustDomain(host.TrustDomain); err != nil {
 		return err
-	}
-	if host.EnvelopeRevision == 0 {
-		return fmt.Errorf("host envelope_revision must be the revision (at least 1) of the host envelope this composition was reviewed against")
 	}
 	if !deliveryPattern.MatchString(host.Delivery) {
 		return fmt.Errorf("host delivery %q is not the composition identity <module>/<service>/<endpoint> of the host's delivery API", host.Delivery)
@@ -1276,7 +1264,7 @@ type Environment struct {
 	// target, and the CLI has no other durable record of it — `codefly
 	// environment import` reads the coordinate off a codefly/coordinate/v1
 	// contract and keeps it only as a provenance comment. Absent, a render
-	// declares no presence and no authority rather than inventing a host.
+	// declares no module manifest rather than inventing a host.
 	// CLI-side; not serialized to proto.
 	Host *EnvironmentHost `yaml:"host,omitempty"`
 
@@ -1289,6 +1277,15 @@ type Environment struct {
 	// a service nobody declared managed. Read it through ManagedService, never by
 	// indexing the map with a bare name.
 	ManagedServices map[string]EnvironmentManagedService `yaml:"managed-services,omitempty"`
+	// Egress names, per `<module>/<service>`, the external hosts the service
+	// reaches. The cell file carries it so the cell can allow exactly those.
+	Egress map[string]EnvironmentEgress `yaml:"egress,omitempty"`
+	// Cell names, per `<module>/<service>`, the platform bindings the service
+	// holds (vault, object_storage, model_gateway, identity, audit) and whether
+	// it authenticates to the cloud by workload identity. The cell file carries
+	// it so the cell derives the service's consumers from a declaration the
+	// composition owns.
+	Cell map[string]EnvironmentCellWorkload `yaml:"cell,omitempty"`
 
 	// DNS carries the environment's DNS contract. Its AppHostSuffix lets the network layer
 	// derive an external endpoint's public host from declared config instead of
@@ -1399,4 +1396,168 @@ func (env *Environment) IsK3d() bool {
 	// as local-k3d. Preserves the old "default to k3d image import"
 	// behavior in cli/pkg/deployments/manager.go.
 	return env.Local()
+}
+
+// EnvironmentEgress is the external reach one service declares.
+type EnvironmentEgress struct {
+	Hosts []EnvironmentEgressHost `yaml:"hosts"`
+}
+
+// EnvironmentEgressHost is one external host, a bare DNS name, and its port;
+// a bare scalar names the host on the default port.
+type EnvironmentEgressHost struct {
+	Name string `yaml:"name"`
+	Port int    `yaml:"port,omitempty"`
+}
+
+// EgressDefaultPort is the port an egress host named without one is reached on.
+const EgressDefaultPort = 443
+
+func (host *EnvironmentEgressHost) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		return node.Decode(&host.Name)
+	}
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i < len(node.Content); i += 2 {
+			if key := node.Content[i].Value; key != "name" && key != "port" {
+				return fmt.Errorf("unknown egress host field %q (a host is a bare name, or {name, port})", key)
+			}
+		}
+	}
+	type plain EnvironmentEgressHost
+	return node.Decode((*plain)(host))
+}
+
+func (host EnvironmentEgressHost) MarshalYAML() (any, error) {
+	if host.Port == 0 {
+		return host.Name, nil
+	}
+	type plain EnvironmentEgressHost
+	return plain(host), nil
+}
+
+// EffectivePort is the port, or the default when none is named.
+func (host EnvironmentEgressHost) EffectivePort() int {
+	if host.Port == 0 {
+		return EgressDefaultPort
+	}
+	return host.Port
+}
+
+var egressHostPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`)
+
+func (env *Environment) validateEgress() error {
+	for key, egress := range env.Egress {
+		if err := validateServiceIdentityKey("egress", key); err != nil {
+			return err
+		}
+		if len(egress.Hosts) == 0 {
+			return fmt.Errorf("egress %s declares no host", key)
+		}
+		seen := make(map[string]struct{}, len(egress.Hosts))
+		for _, host := range egress.Hosts {
+			if !egressHostPattern.MatchString(host.Name) {
+				return fmt.Errorf("egress %s host %q is not a bare DNS host name (no scheme, port or path)", key, host.Name)
+			}
+			if host.Port < 0 || host.Port > 65535 {
+				return fmt.Errorf("egress %s host %s port %d is not a port", key, host.Name, host.Port)
+			}
+			id := fmt.Sprintf("%s:%d", host.Name, host.EffectivePort())
+			if _, exists := seen[id]; exists {
+				return fmt.Errorf("egress %s declares %s twice", key, id)
+			}
+			seen[id] = struct{}{}
+		}
+	}
+	return nil
+}
+
+func validateServiceIdentityKey(label, key string) error {
+	module, service, qualified := strings.Cut(key, "/")
+	if !qualified {
+		return fmt.Errorf("%s key %q must be the module-qualified identity <module>/<service> of the service it declares for", label, key)
+	}
+	if err := validateResourcePathComponent(label+" module", module); err != nil {
+		return err
+	}
+	return validateResourcePathComponent(label+" service", service)
+}
+
+// EgressHosts is the declared external reach of one service, sorted, with
+// every port made explicit.
+func (env *Environment) EgressHosts(module, service string) []EnvironmentEgressHost {
+	if env == nil {
+		return nil
+	}
+	egress, declared := env.Egress[resources.ServiceUnique(module, service)]
+	if !declared {
+		return nil
+	}
+	hosts := make([]EnvironmentEgressHost, 0, len(egress.Hosts))
+	for _, host := range egress.Hosts {
+		hosts = append(hosts, EnvironmentEgressHost{Name: host.Name, Port: host.EffectivePort()})
+	}
+	sort.Slice(hosts, func(i, j int) bool {
+		if hosts[i].Name != hosts[j].Name {
+			return hosts[i].Name < hosts[j].Name
+		}
+		return hosts[i].Port < hosts[j].Port
+	})
+	return hosts
+}
+
+// EnvironmentCellWorkload is what the composition declares about one service
+// for the cell: the platform bindings it holds, cloud identity, and the
+// endpoints whose listener accepts only a protected waypoint's assertion of
+// the caller (`presenter`): the cell fronts each with a waypoint, narrows the
+// destination to it, and hands the service the waypoint's identity.
+type EnvironmentCellWorkload struct {
+	Bindings      []string `yaml:"bindings,omitempty"`
+	CloudIdentity bool     `yaml:"cloud-identity,omitempty"`
+	Presenter     []string `yaml:"presenter,omitempty"`
+}
+
+var cellBindingPattern = regexp.MustCompile(`^[a-z0-9]+(?:[_-][a-z0-9]+)*$`)
+
+func (env *Environment) validateCell() error {
+	for key, workload := range env.Cell {
+		if err := validateServiceIdentityKey("cell", key); err != nil {
+			return err
+		}
+		if len(workload.Bindings) == 0 && !workload.CloudIdentity && len(workload.Presenter) == 0 {
+			return fmt.Errorf("cell %s declares nothing: name the bindings the service holds, cloud-identity, or the presenter endpoints, or drop the entry", key)
+		}
+		for _, endpoint := range workload.Presenter {
+			if !cellBindingPattern.MatchString(endpoint) {
+				return fmt.Errorf("cell %s: presenter endpoint %q is not an endpoint name", key, endpoint)
+			}
+		}
+		seen := make(map[string]struct{}, len(workload.Bindings))
+		for _, binding := range workload.Bindings {
+			if !cellBindingPattern.MatchString(binding) {
+				return fmt.Errorf("cell %s binding %q is not a lowercase resource name", key, binding)
+			}
+			if _, exists := seen[binding]; exists {
+				return fmt.Errorf("cell %s binding %q is declared twice", key, binding)
+			}
+			seen[binding] = struct{}{}
+		}
+	}
+	return nil
+}
+
+// CellWorkload is the cell declaration of one service, bindings sorted.
+func (env *Environment) CellWorkload(module, service string) (EnvironmentCellWorkload, bool) {
+	if env == nil {
+		return EnvironmentCellWorkload{}, false
+	}
+	workload, declared := env.Cell[resources.ServiceUnique(module, service)]
+	if !declared {
+		return EnvironmentCellWorkload{}, false
+	}
+	bindings := append([]string(nil), workload.Bindings...)
+	sort.Strings(bindings)
+	presenter := append([]string(nil), workload.Presenter...)
+	sort.Strings(presenter)
+	return EnvironmentCellWorkload{Bindings: bindings, CloudIdentity: workload.CloudIdentity, Presenter: presenter}, true
 }

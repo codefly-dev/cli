@@ -301,7 +301,12 @@ func treeDigest(t *testing.T, root string) string {
 // presence; delivery documents settled and signed at publish) and now main's
 // restricted property beside them. The manifests are unchanged by either, and
 // the two cases below still agree, which is the property this digest pins.
-const undeclaredFixtureDigest = "fe83664635e75df2d8d13f24c9bed8a0b28dd14c74370e591258251f39b81b70"
+//
+// And once more when the inventory schema moved to 8 (one module manifest in
+// place of the presence, authority and endpoint documents): the fixture
+// declares no manifest, and the digest moves with the schemaVersion alone —
+// verified by rendering it at schema 7, which reproduces the previous digest.
+const undeclaredFixtureDigest = "49cb877e08a7a2079deea3c862b33ad5e592ede4d449aebc02682ede9f60021f"
 
 func TestRenderModuleWithoutDeclarationsIsByteIdentical(t *testing.T) {
 	installFakeAgents(t)

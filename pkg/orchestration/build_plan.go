@@ -48,7 +48,7 @@ const (
 // recipe — multi-arch and pushed as a manifest list when pushing — so the build
 // recipe is a durable, first-class artifact and images are not tied to the
 // builder's host architecture.
-func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *builderv0.DockerBuildPlan, proxies map[string]map[string]string) error {
+func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *builderv0.DockerBuildPlan, proxies map[string]map[string]string, reuse map[string]imageReuse) error {
 	w := wool.Get(ctx).In("Builder.buildFromPlan", wool.ThisField(b.instance))
 	if err := coreservices.VerifyDockerBuildPlan(outputDir, plan); err != nil {
 		return w.Wrapf(err, "cannot verify build recipe for %s", b.instance.Unique())
@@ -68,17 +68,127 @@ func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *bui
 	}
 	contextRoot := recipeContextRoot(b.instance.Service.Dir(), outputDir, plan)
 	for _, recipe := range recipes {
-		// A recipe declaring Go module downloads is only built with the proxies
-		// its plan phase fetched; building it without them would fall back to
-		// fetching inside the build, which is what declaring them removes.
-		if recipeMissesGoModuleProxies(recipe, proxies[recipe.GetName()]) {
-			return w.NewError("recipe %s of %s declares Go module downloads that were not fetched before the build", recipe.GetName(), b.instance.Unique())
+		// A decision the plan phase took stands; Build does not take it again.
+		var decided *imageReuse
+		if decision, ok := reuse[recipe.GetName()]; ok {
+			decided = &decision
 		}
-		if err := b.buildRecipe(ctx, w, outputDir, contextRoot, plan, recipe, shouldPush, proxies[recipe.GetName()]); err != nil {
+		if err := b.buildRecipe(ctx, w, outputDir, contextRoot, plan, recipe, shouldPush, proxies[recipe.GetName()], decided); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// imageReuse is the reuse decision for one recipe: the identity its inputs
+// digest to and, when an image was already built from exactly those inputs and
+// still exists, that image. A nil entry means the recipe is built.
+type imageReuse struct {
+	identity imageIdentity
+	entry    *imageCacheEntry
+}
+
+// decideImageReuse takes the reuse decision for a recipe as it will be built
+// (recipeAsBuilt), without provisioning a builder or fetching anything. A Go
+// module proxy the recipe declares reaches the identity only as the
+// placeholder every fetched proxy path is normalized to, so the decision does
+// not wait for the fetch: a render whose images are all up to date fetches no
+// module graph at all, where it used to download every Go service's graph into
+// a fresh cache before finding out that no image input had changed.
+func (b *Builder) decideImageReuse(
+	ctx context.Context,
+	w *wool.Wool,
+	outputDir, contextRoot string,
+	plan *builderv0.DockerBuildPlan,
+	recipe *builderv0.DockerBuildRecipe,
+	shouldPush bool,
+) (imageReuse, error) {
+	contextDir, err := recipeContext(contextRoot, recipe)
+	if err != nil {
+		return imageReuse{}, w.Wrapf(err, "cannot resolve build context for recipe %s of %s", recipe.GetName(), b.instance.Unique())
+	}
+	prepared, err := prepareRecipeContext(ctx, contextDir, outputDir, recipe)
+	if err != nil {
+		return imageReuse{}, w.Wrapf(err, "cannot prepare recipe context")
+	}
+	defer prepared.Close()
+
+	multiArch := shouldPush && len(recipe.GetPlatforms()) > 1
+	cache := scopedBuildCache(b.world.BuildCache, b.world.Workspace.Name, b.instance.Unique(), recipe.GetName())
+	private := resolvePrivateModuleBuild(os.LookupEnv).withProxies(placeholderProxies(recipe))
+
+	// Registry reads the reuse decision makes run on the caller's builder when it
+	// provided one, because a registry reachable only from that builder is
+	// reachable nowhere else; the CLI's own builder shares the host's registry
+	// configuration, so it needs neither naming nor provisioning for a read.
+	probeBuilder := b.world.BuildxBuilder
+	// Where this environment reads a mirrored registry from. It reaches the
+	// base-image resolution through the reference each manifest is read from
+	// and is not part of the identity (see registry_mirror.go).
+	mirrors := registryMirrors(b.world.Env)
+	scope := imageBuildScope{OutputDir: outputDir, ContextDir: prepared.Root, WorkspaceDir: b.world.Workspace.Dir()}
+
+	// The identity is derived from the invocation as it would run on any builder
+	// and without a metadata file, so the decision to reuse is taken before a
+	// builder is provisioned — provisioning one is work a reused image does not
+	// need. normalizedBuildxArgs drops those same two flags from whatever argv it
+	// is handed, so the two constructions cannot disagree about anything else.
+	identityArgs, err := cachedBuildxArgs(recipe, prepared.Dockerfile, prepared.Root, shouldPush, multiArch, "", "", cache, private)
+	if err != nil {
+		return imageReuse{}, err
+	}
+	identity, identityErr := imageBuildIdentity(ctx, recipe, plan, scope, prepared.Dockerfile, probeBuilder, identityArgs, private.Proxies, mirrors)
+	if identityErr != nil {
+		// Not a build failure: an input this cannot account for means the image
+		// is rebuilt, which is the behaviour without a cache at all. It is said
+		// out loud because the alternative is a workspace that silently rebuilds
+		// everything forever and nobody knowing which input is unbindable.
+		w.Warn("an image input cannot be bound; building, and this recipe will not be reused",
+			wool.Field("recipe", recipe.GetName()), wool.ErrField(identityErr))
+	}
+	decision := imageReuse{identity: identity}
+	if identity.Key == "" || b.world.RebuildImages {
+		return decision, nil
+	}
+	entry, found := b.imageBuildCache().lookup(identity.Key, b.instance.Unique(), shouldPush)
+	switch {
+	case found && imageStillExists(ctx, entry, probeBuilder):
+		decision.entry = entry
+	case found:
+		w.Debug("an image was built from these inputs but no longer exists; building",
+			wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
+	default:
+		w.Debug("no image has been built from these inputs; building",
+			wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
+	}
+	return decision, nil
+}
+
+// placeholderProxies stands in for the Go module proxies a recipe declares
+// before they are fetched. normalizedBuildxArgs rewrites every fetched proxy
+// path to this same placeholder, so an identity computed over these equals the
+// one computed over the fetched paths — which is what lets the reuse decision
+// precede the fetch.
+func placeholderProxies(recipe *builderv0.DockerBuildRecipe) map[string]string {
+	downloads := recipe.GetGoModuleDownloads()
+	if len(downloads) == 0 {
+		return nil
+	}
+	proxies := make(map[string]string, len(downloads))
+	for _, download := range downloads {
+		proxies[download.GetProxyContext()] = proxyPlaceholder
+	}
+	return proxies
+}
+
+// recipeAsBuilt is the recipe as buildRecipe builds it: targeted to the
+// environment's platforms when the image is pushed. The reuse decision is taken
+// on this form, so it binds the platforms the build will actually run.
+func (b *Builder) recipeAsBuilt(recipe *builderv0.DockerBuildRecipe, shouldPush bool) (*builderv0.DockerBuildRecipe, error) {
+	if !shouldPush {
+		return recipe, nil
+	}
+	return b.targetEnvironmentPlatforms(recipe)
 }
 
 // recipeContextRoot is the directory a recipe's context is resolved against.
@@ -152,14 +262,45 @@ func (b *Builder) buildRecipe(
 	recipe *builderv0.DockerBuildRecipe,
 	shouldPush bool,
 	goModuleProxies map[string]string,
+	reuse *imageReuse,
 ) error {
-	if shouldPush {
-		targeted, err := b.targetEnvironmentPlatforms(recipe)
-		if err != nil {
-			return w.Wrapf(err, "cannot build recipe %s of %s", recipe.GetName(), b.instance.Unique())
-		}
-		recipe = targeted
+	recipe, err := b.recipeAsBuilt(recipe, shouldPush)
+	if err != nil {
+		return w.Wrapf(err, "cannot build recipe %s of %s", recipe.GetName(), b.instance.Unique())
 	}
+
+	// A pushed build records the immutable manifest digest a snapshot pins and a
+	// targeted single-service build returns to its caller. A non-pushed build
+	// never lands in a registry, so there is no digest to capture.
+	captureDigest := shouldPush && (b.world.Mode == SnapshotMode || b.world.CaptureImageDigest)
+	// Image evidence is owed by every recipe, not only the one a snapshot pins,
+	// so asking for it needs the digest of each pushed image too.
+	resolveEvidence := b.world.CollectImageSBOM
+
+	// The reuse decision comes before any build work, and one the plan phase
+	// already took is not taken again.
+	if reuse == nil {
+		decided, err := b.decideImageReuse(ctx, w, outputDir, contextRoot, plan, recipe, shouldPush)
+		if err != nil {
+			return err
+		}
+		reuse = &decided
+	}
+	if reuse.entry != nil {
+		w.Info("no image input changed; keeping the built image",
+			wool.Field("image", reuse.entry.Image), wool.Field("digest", reuse.entry.Digest),
+			wool.Field("recipe", recipe.GetName()), wool.Field("identity", reuse.identity.Key))
+		b.adoptCachedImage(recipe, reuse.entry, captureDigest, resolveEvidence)
+		return nil
+	}
+	identity := reuse.identity
+	// A recipe declaring Go module downloads is only built with the proxies
+	// its plan phase fetched; building it without them would fall back to
+	// fetching inside the build, which is what declaring them removes.
+	if recipeMissesGoModuleProxies(recipe, goModuleProxies) {
+		return w.NewError("recipe %s of %s declares Go module downloads that were not fetched before the build", recipe.GetName(), b.instance.Unique())
+	}
+
 	contextDir, err := recipeContext(contextRoot, recipe)
 	if err != nil {
 		return w.Wrapf(err, "cannot resolve build context for recipe %s of %s", recipe.GetName(), b.instance.Unique())
@@ -175,68 +316,19 @@ func (b *Builder) buildRecipe(
 
 	multiArch := shouldPush && len(recipe.GetPlatforms()) > 1
 
-	// A pushed build records the immutable manifest digest a snapshot pins and a
-	// targeted single-service build returns to its caller. A non-pushed build
-	// never lands in a registry, so there is no digest to capture.
-	captureDigest := shouldPush && (b.world.Mode == SnapshotMode || b.world.CaptureImageDigest)
-	// Image evidence is owed by every recipe, not only the one a snapshot pins,
-	// so asking for it needs the digest of each pushed image too.
-	resolveEvidence := b.world.CollectImageSBOM
-
 	cache := scopedBuildCache(b.world.BuildCache, b.world.Workspace.Name, b.instance.Unique(), recipe.GetName())
 	// A service that imports a private Go module reads it from the proxy the
 	// plan phase fetched; GOPRIVATE, a list of module paths and not a
 	// credential, still reaches recipes that declare it as an ARG.
 	private := resolvePrivateModuleBuild(os.LookupEnv).withProxies(goModuleProxies)
 
-	// Registry reads the reuse decision makes run on the caller's builder when it
-	// provided one, because a registry reachable only from that builder is
-	// reachable nowhere else; the CLI's own builder shares the host's registry
-	// configuration, so it needs neither naming nor provisioning for a read.
-	probeBuilder := b.world.BuildxBuilder
 	// Where this environment reads a mirrored registry from. It reaches the
 	// build through the builder's buildkitd configuration and the base-image
 	// resolution through the reference each manifest is read from; it is in
 	// neither case part of the identity (see registry_mirror.go).
 	mirrors := registryMirrors(b.world.Env)
 	scope := imageBuildScope{OutputDir: outputDir, ContextDir: contextDir, WorkspaceDir: b.world.Workspace.Dir()}
-
-	// The identity is derived from the invocation as it would run on any builder
-	// and without a metadata file, so the decision to reuse is taken before a
-	// builder is provisioned — provisioning one is work a reused image does not
-	// need. normalizedBuildxArgs drops those same two flags from whatever argv it
-	// is handed, so the two constructions cannot disagree about anything else.
-	identityArgs, err := cachedBuildxArgs(recipe, dockerfile, contextDir, shouldPush, multiArch, "", "", cache, private)
-	if err != nil {
-		return err
-	}
-	identity, identityErr := imageBuildIdentity(ctx, recipe, plan, scope, dockerfile, probeBuilder, identityArgs, private.Proxies, mirrors)
-	if identityErr != nil {
-		// Not a build failure: an input this cannot account for means the image
-		// is rebuilt, which is the behaviour without a cache at all. It is said
-		// out loud because the alternative is a workspace that silently rebuilds
-		// everything forever and nobody knowing which input is unbindable.
-		w.Warn("an image input cannot be bound; building, and this recipe will not be reused",
-			wool.Field("recipe", recipe.GetName()), wool.ErrField(identityErr))
-	}
 	imageCache := b.imageBuildCache()
-	if identity.Key != "" && !b.world.RebuildImages {
-		entry, found := imageCache.lookup(identity.Key, b.instance.Unique(), shouldPush)
-		switch {
-		case found && imageStillExists(ctx, entry, probeBuilder):
-			w.Info("no image input changed; keeping the built image",
-				wool.Field("image", entry.Image), wool.Field("digest", entry.Digest),
-				wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
-			b.adoptCachedImage(recipe, entry, captureDigest, resolveEvidence)
-			return nil
-		case found:
-			w.Debug("an image was built from these inputs but no longer exists; building",
-				wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
-		default:
-			w.Debug("no image has been built from these inputs; building",
-				wool.Field("recipe", recipe.GetName()), wool.Field("identity", identity.Key))
-		}
-	}
 
 	builderName, err := b.selectImageBuilder(ctx, multiArch, mirrors)
 	if err != nil {
@@ -722,9 +814,9 @@ func readPushedImageDigest(metadataFile string) (string, error) {
 
 // buildRecipeOutputDirectory is the absolute destination the caller asks the
 // agent to emit recipes into: the builder/ directory under the service's build
-// root (see buildRecipeRoot). It does not create the directory — the emitting
-// agent owns writing there, so a legacy agent that ignores the field leaves no
-// empty directory.
+// root (see buildRecipeRoot). The caller creates it before asking (Plan): the
+// agent owns what is written there, and an agent that assembles its build
+// context stats the directory before it writes.
 func buildRecipeOutputDirectory(root string) (string, error) {
 	return filepath.Abs(filepath.Join(root, buildRecipeDir))
 }

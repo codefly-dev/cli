@@ -73,7 +73,23 @@ type CommandError struct {
 }
 
 func (e *CommandError) Error() string {
+	if credentialsExpired(e.stderr) {
+		// The one cause an operator can only act on by name: the backend's own
+		// credentials lapsed and it could not prompt. Said in fixed words, so
+		// nothing of the backend's output reaches the terminal.
+		return fmt.Sprintf("%s failed: the backend's credentials have expired and it cannot prompt here; refresh them (gcloud auth login) and re-run", e.Command)
+	}
 	return fmt.Sprintf("%s failed (backend output withheld)", e.Command)
+}
+
+// credentialsExpired reports whether a backend command failed because its own
+// login lapsed: gcloud says "Reauthentication failed" and, when it cannot open a
+// browser, "cannot prompt during non-interactive execution"; the kubeconfig's
+// gke-gcloud-auth-plugin forwards the same text. Matched on fixed phrases, so a
+// message that merely mentions a key or a value is never classified by it.
+func credentialsExpired(stderr string) bool {
+	return strings.Contains(stderr, "Reauthentication failed") ||
+		strings.Contains(stderr, "cannot prompt during non-interactive execution")
 }
 
 // Format also protects debug formatting such as %+v and %#v.

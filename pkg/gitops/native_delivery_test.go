@@ -2,16 +2,299 @@ package gitops
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/solutionrun"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 )
+
+// nativeModule lays down what a native delivery of a module reads: its
+// package manifest, and — with a page — the frontend beside its entry
+// service. Its services are api and worker, both running as the module, and
+// docs, which does not.
+func nativeModule(t *testing.T, name string, page bool) (*resources.Module, []*resources.Service) {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "services", "api"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "module.package.codefly.yaml"), []byte("kind: module-package\nschema: codefly/module-package/v2\nid: example/"+name+"\nversion: 1.0.0\nminimum-codefly-version: '>=0.0.0'\nartifact-roots: [services]\ncontracts:\n  composition: '>=1.0'\n"), 0o600))
+	module := &resources.Module{Name: name}
+	if page {
+		module.ServiceEntry = "api"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "services", "api", solutionrun.FrontendFileName), []byte("title: Page\norder: 1\nexposed_module: ./Page\nhost_contract: 1\n"), 0o600))
+	}
+	module.WithDir(dir)
+	return module, []*resources.Service{
+		{Name: "api", ModuleIdentity: true, Endpoints: []*resources.Endpoint{{Name: "http", API: "http", Visibility: "internal"}}},
+		{Name: "worker", ModuleIdentity: true, Endpoints: []*resources.Endpoint{{Name: "grpc", API: "grpc", Visibility: "internal"}}},
+		{Name: "docs", Endpoints: []*resources.Endpoint{{Name: "http", API: "http", Visibility: "internal"}}},
+	}
+}
+
+func nativeEnvironment() *environments.Environment {
+	return &environments.Environment{Name: "prod", Namespace: "example", Host: testHost()}
+}
+
+// nativeStarted are a module's identity workloads as a native run starts
+// them, in the module's namespace.
+func nativeStarted(module string, services ...string) []NativeIdentity {
+	started := make([]NativeIdentity, 0, len(services))
+	for _, service := range services {
+		started = append(started, NativeIdentity{Module: module, Service: service})
+	}
+	return started
+}
+
+// nativeCarriers are the addresses a native run resolved for the module's
+// routed endpoints, keyed as the gateway reads them.
+func nativeCarriers(module string) map[string]string {
+	key := func(service, name, api string) string {
+		return resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: module, Service: service, Name: name, API: api})
+	}
+	return map[string]string{key("api", "http", "http"): "http://127.0.0.1:50695", key("worker", "grpc", "grpc"): "127.0.0.1:50696"}
+}
+
+func nativeSigner(t *testing.T) solutionhost.Signer {
+	t.Helper()
+	signer, err := solutionhost.NewInMemorySigner("dev-0123456789abcdef", ed25519.NewKeyFromSeed(make([]byte, 32)))
+	require.NoError(t, err)
+	return signer
+}
+
+func renderNative(t *testing.T, module *resources.Module, services []*resources.Service, started ...string) *solutionhost.ModuleManifest {
+	t.Helper()
+	manifest, err := (&NativeDeliverer{Workspace: &resources.Workspace{Name: "example"}, Env: nativeEnvironment()}).Render(t.Context(), &NativeWorkload{
+		Module: module, Services: services, Started: nativeStarted(module.Name, started...), Carriers: nativeCarriers(module.Name),
+	})
+	require.NoError(t, err)
+	return manifest
+}
+
+// TestANativeManifestListsEveryStartedIdentityWorkload: a module runs as each
+// of its identity services, so the manifest a native run delivers lists every
+// one it started — two here, one manifest — each with the account a cell
+// would give it, and the endpoints of exactly those, at the addresses the run
+// allocated. A workload not started yet routes nothing yet.
+func TestANativeManifestListsEveryStartedIdentityWorkload(t *testing.T) {
+	module, services := nativeModule(t, "crm", false)
+	manifest := renderNative(t, module, services, "worker", "api")
+	require.Equal(t, "example.prod.crm", manifest.Binding)
+	require.Equal(t, solutionhost.KindModule, manifest.Kind)
+	require.Equal(t, solutionhost.Release{Publisher: "example", Name: "crm", Version: "1.0.0"}, manifest.Release)
+	require.Equal(t, []solutionhost.Workload{
+		{Service: "api", Container: "api"},
+		{Service: "worker", Container: "worker"},
+	}, manifest.Workloads)
+	require.ElementsMatch(t, []solutionhost.Endpoint{
+		{Name: "http", Service: "api", API: "http", Address: "http://127.0.0.1:50695"},
+		{Name: "grpc", Service: "worker", API: "grpc", Address: "127.0.0.1:50696"},
+	}, manifest.Endpoints)
+	require.Equal(t, &solutionhost.Authority{Principal: "crm"}, manifest.Authority, "a module with workloads always runs as its principal")
+
+	one := renderNative(t, module, services, "api")
+	require.Len(t, one.Workloads, 1)
+	require.Equal(t, []solutionhost.Endpoint{{Name: "http", Service: "api", API: "http", Address: "http://127.0.0.1:50695"}}, one.Endpoints)
+}
+
+// A host routes only to a workload that runs as the module: an endpoint the
+// run routes for any other service is refused by name, and a started service
+// that does not declare module-identity is no workload of the module.
+func TestANativeManifestRoutesOnlyToTheModulesWorkloads(t *testing.T) {
+	module, services := nativeModule(t, "crm", false)
+	carriers := nativeCarriers("crm")
+	carriers[resources.EndpointAsEnvironmentVariableKey(&resources.EndpointInformation{Module: "crm", Service: "docs", Name: "http", API: "http"})] = "http://127.0.0.1:50697"
+	deliverer := &NativeDeliverer{Workspace: &resources.Workspace{Name: "example"}, Env: nativeEnvironment()}
+	_, err := deliverer.Render(t.Context(), &NativeWorkload{Module: module, Services: services, Started: nativeStarted("crm", "api"), Carriers: carriers})
+	require.ErrorContains(t, err, "service docs endpoint http is routed by the host")
+
+	_, err = deliverer.Render(t.Context(), &NativeWorkload{Module: module, Services: services, Started: nativeStarted("crm", "docs"), Carriers: nativeCarriers("crm")})
+	require.ErrorContains(t, err, "does not declare module-identity")
+
+	_, err = deliverer.Render(t.Context(), &NativeWorkload{Module: module, Services: services})
+	require.ErrorContains(t, err, "no started identity workload")
+}
+
+// A native run delivers the bundle it built: the payload names it, a page
+// with no built bundle is refused, and so is a bundle with no page.
+func TestANativeManifestNamesTheBundleTheRunBuilt(t *testing.T) {
+	bundle := &solutionhost.FrontendPayload{Artifact: FrontendArtifactName, Digest: solutionhost.PayloadDigest("sha256:" + strings.Repeat("e", 64)), MediaType: "application/x-tar"}
+	deliverer := &NativeDeliverer{Workspace: &resources.Workspace{Name: "example"}, Env: nativeEnvironment()}
+	page, services := nativeModule(t, "crm", true)
+	manifest, err := deliverer.Render(t.Context(), &NativeWorkload{Module: page, Services: services, Started: nativeStarted("crm", "api"), FrontendBundle: bundle})
+	require.NoError(t, err)
+	require.NotNil(t, manifest.Frontend)
+	require.Equal(t, bundle, manifest.Frontend.Payload)
+
+	_, err = deliverer.Render(t.Context(), &NativeWorkload{Module: page, Services: services, Started: nativeStarted("crm", "api")})
+	require.ErrorContains(t, err, "built no bundle")
+
+	headless, services := nativeModule(t, "wiki", false)
+	_, err = deliverer.Render(t.Context(), &NativeWorkload{Module: headless, Services: services, Started: nativeStarted("wiki", "api"), FrontendBundle: bundle})
+	require.ErrorContains(t, err, "declares no frontend")
+}
+
+// deliveryHost stands in for the host's delivery listener: it records every
+// carrier, the credential it came with, and answers with the status queued.
+type deliveryHost struct {
+	*httptest.Server
+	mu        sync.Mutex
+	paths     []string
+	bearers   []string
+	manifests []*solutionhost.ModuleManifest
+	bodies    [][]byte
+	status    []int
+}
+
+func newDeliveryHost(t *testing.T) *deliveryHost {
+	t.Helper()
+	host := &deliveryHost{}
+	host.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		signed, err := solutionhost.ParseSigned(body)
+		if err != nil {
+			http.Error(w, `{"error":"not a carrier"}`, http.StatusBadRequest)
+			return
+		}
+		manifest, err := solutionhost.ManifestFromVerified(signed.Document)
+		if err != nil {
+			http.Error(w, `{"error":"not a manifest"}`, http.StatusBadRequest)
+			return
+		}
+		host.mu.Lock()
+		defer host.mu.Unlock()
+		host.paths = append(host.paths, r.URL.Path)
+		host.bearers = append(host.bearers, r.Header.Get("Authorization"))
+		host.manifests = append(host.manifests, manifest)
+		host.bodies = append(host.bodies, body)
+		code := http.StatusOK
+		if len(host.status) > 0 {
+			code, host.status = host.status[0], host.status[1:]
+		}
+		w.WriteHeader(code)
+		if code == http.StatusOK {
+			_ = json.NewEncoder(w).Encode(map[string]any{"disposition": "accepted", "generation": manifest.Generation})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "module manifest generation is older than the applied generation"})
+	}))
+	t.Cleanup(host.Close)
+	return host
+}
+
+// deliverer is a native deliverer to the host, its carrier credentials issued
+// per module and recorded.
+func (h *deliveryHost) deliverer(t *testing.T, state string, modules *[]string) *NativeDeliverer {
+	return &NativeDeliverer{
+		Workspace: &resources.Workspace{Name: "example"}, Env: nativeEnvironment(), Signer: nativeSigner(t),
+		DeliveryURL: h.URL, StateDir: state,
+		Token: func(module string) (string, error) {
+			*modules = append(*modules, module)
+			return "delivery-" + module, nil
+		},
+	}
+}
+
+// TestANativeGenerationMovesOnlyWhenTheContentDoes: one carrier per delivery,
+// to the manifest route, with the delivery credential of the workloads'
+// namespace. The same content replays its generation, byte for byte; changed
+// content — a second workload started — is the next one; and the record
+// outlives the deliverer, so a restarted run replays rather than restarting
+// at 1.
+func TestANativeGenerationMovesOnlyWhenTheContentDoes(t *testing.T) {
+	module, services := nativeModule(t, "crm", false)
+	host := newDeliveryHost(t)
+	state := t.TempDir()
+	var modules []string
+	deliverer := host.deliverer(t, state, &modules)
+
+	receipt, err := deliverer.Deliver(t.Context(), renderNative(t, module, services, "api"))
+	require.NoError(t, err)
+	require.Equal(t, Receipt{Status: http.StatusOK, Disposition: "accepted", Generation: 1}, receipt)
+	_, err = deliverer.Deliver(t.Context(), renderNative(t, module, services, "api"))
+	require.NoError(t, err)
+	both := renderNative(t, module, services, "api", "worker")
+	_, err = deliverer.Deliver(t.Context(), both)
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), both.Generation, "Deliver stamps the settled generation on the manifest")
+
+	restarted := host.deliverer(t, state, &modules)
+	_, err = restarted.Deliver(t.Context(), renderNative(t, module, services, "api", "worker"))
+	require.NoError(t, err)
+
+	require.Equal(t, []string{manifestDeliveryPath, manifestDeliveryPath, manifestDeliveryPath, manifestDeliveryPath}, host.paths)
+	require.Equal(t, []string{"crm", "crm", "crm", "crm"}, modules)
+	require.Equal(t, "Bearer delivery-crm", host.bearers[0])
+	generations := []uint64{}
+	for _, manifest := range host.manifests {
+		generations = append(generations, manifest.Generation)
+	}
+	require.Equal(t, []uint64{1, 1, 2, 2}, generations)
+	require.Equal(t, string(host.bodies[0]), string(host.bodies[1]), "unchanged content is the same signed carrier")
+	require.FileExists(t, filepath.Join(state, "generations.json"))
+}
+
+// A host's refusal (409: a stale or rewritten generation, a withdrawn
+// binding) is an error with its reason, and records nothing: delivering the
+// same content again settles to the same generation.
+func TestANativeDeliveryTheHostRefusesIsAnErrorAndRecordsNothing(t *testing.T) {
+	module, services := nativeModule(t, "crm", false)
+	host := newDeliveryHost(t)
+	host.status = []int{http.StatusConflict}
+	var modules []string
+	deliverer := host.deliverer(t, t.TempDir(), &modules)
+	receipt, err := deliverer.Deliver(t.Context(), renderNative(t, module, services, "api"))
+	require.ErrorContains(t, err, "older than the applied generation")
+	require.Equal(t, http.StatusConflict, receipt.Status)
+	_, err = deliverer.Deliver(t.Context(), renderNative(t, module, services, "api"))
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), host.manifests[1].Generation, "the refused delivery recorded no generation")
+}
+
+// TestANativeWithdrawalIsARemovedManifestAtTheNextGeneration: what withdraws
+// a module a native run delivered is its manifest's identity alone, removed,
+// at the next generation — the same withdrawal a publication settles —
+// delivered with the credential of the module's namespace, and replayed as it
+// was until the host has applied it.
+func TestANativeWithdrawalIsARemovedManifestAtTheNextGeneration(t *testing.T) {
+	module, services := nativeModule(t, "crm", false)
+	host := newDeliveryHost(t)
+	var modules []string
+	deliverer := host.deliverer(t, t.TempDir(), &modules)
+	live := renderNative(t, module, services, "api", "worker")
+	_, err := deliverer.Deliver(t.Context(), live)
+	require.NoError(t, err)
+
+	withdrawal, err := WithdrawalOf(live)
+	require.NoError(t, err)
+	_, err = deliverer.Deliver(t.Context(), withdrawal)
+	require.NoError(t, err)
+	replay, err := WithdrawalOf(live)
+	require.NoError(t, err)
+	_, err = deliverer.Deliver(t.Context(), replay)
+	require.NoError(t, err)
+
+	posted := host.manifests[1]
+	require.True(t, posted.Removed)
+	require.Equal(t, uint64(2), posted.Generation)
+	require.Equal(t, live.Binding, posted.Binding)
+	require.Empty(t, posted.Workloads)
+	require.Empty(t, posted.Endpoints)
+	require.Nil(t, posted.Authority)
+	require.Equal(t, []string{"crm", "crm", "crm"}, modules, "a withdrawal is delivered by the module's carrier")
+	require.Equal(t, string(host.bodies[1]), string(host.bodies[2]), "a withdrawal is replayed byte for byte")
+	require.False(t, live.Removed, "the delivered manifest is untouched")
+}
 
 // envelopeHost stands in for the host's administrator API: fixture sign-in,
 // the envelope in force, and conditional writes.
@@ -97,79 +380,60 @@ func (h *envelopeHost) writer() *EnvelopeWriter {
 	return &EnvelopeWriter{GatewayURL: h.URL, FixtureProvider: "email", FixtureToken: "dev-admin"}
 }
 
-func envelopeOf(t *testing.T, revision uint64, builds []solutionhost.ImageDigest, prefixes ...string) []byte {
-	t.Helper()
-	var principals []EnvelopePrincipal
-	for _, prefix := range prefixes {
-		principals = append(principals, EnvelopePrincipal{PresenceBinding: prefix + "-main", Prefix: prefix, SPIFFEID: "spiffe://cluster.local/ns/cell-" + prefix + "/sa/backend", Container: "backend"})
+func grantsOf(principals ...string) map[string]EnvelopeGrant {
+	grants := map[string]EnvelopeGrant{}
+	for _, principal := range principals {
+		grants[principal] = EnvelopeGrant(`{"queues":["` + principal + `.jobs"],"cross_tenant":false,"tenant":""}`)
 	}
-	document, err := BuildEnvelope(revision, builds, principals)
-	require.NoError(t, err)
-	return document
+	return grants
 }
 
-// A plan names the revision the documents about to be delivered must carry.
-// When the envelope in force already says what the run would write, that
-// revision is the answer and nothing is written.
-func TestAnEnvelopePlanWritesOnlyWhenTheEnvelopeChanges(t *testing.T) {
+// The envelope a run writes is grants only: each module principal's grant, as
+// the composition states it, under the revision — no approved builds, no
+// workload identities, no bindings.
+func TestTheEnvelopeIsEachPrincipalsGrant(t *testing.T) {
+	document, err := BuildEnvelope(3, grantsOf("wiki", "proposals"))
+	require.NoError(t, err)
+	require.JSONEq(t, `{"revision":3,"principals":{
+		"wiki":{"grant":{"queues":["wiki.jobs"],"cross_tenant":false,"tenant":""}},
+		"proposals":{"grant":{"queues":["proposals.jobs"],"cross_tenant":false,"tenant":""}}}}`, string(document))
+}
+
+// Ensure writes the next revision, expecting the one it read, only when the
+// envelope in force does not already say what the run would write.
+func TestEnsureWritesTheEnvelopeOnlyWhenItChanges(t *testing.T) {
 	host := newEnvelopeHost(t)
 	writer := host.writer()
-	build := func(prefixes ...string) func(uint64, []byte) ([]byte, error) {
-		return func(revision uint64, _ []byte) ([]byte, error) {
-			return envelopeOf(t, revision, []solutionhost.ImageDigest{"sha256:aa"}, prefixes...), nil
-		}
+	build := func(principals ...string) func(uint64) ([]byte, error) {
+		return func(revision uint64) ([]byte, error) { return BuildEnvelope(revision, grantsOf(principals...)) }
 	}
-
-	revision, commit, err := writer.Plan(context.Background(), build("wiki"))
+	revision, err := writer.Ensure(context.Background(), build("wiki"))
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), revision, "a host with no envelope is written its first")
-	require.Empty(t, host.writes, "a plan writes nothing")
-	require.NoError(t, commit(context.Background()))
 	require.Len(t, host.writes, 1)
 	require.Equal(t, float64(0), host.writes[0]["expectedRevision"])
 
-	revision, commit, err = writer.Plan(context.Background(), build("wiki"))
+	revision, err = writer.Ensure(context.Background(), build("wiki"))
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), revision, "the same content is the revision in force")
-	require.NoError(t, commit(context.Background()))
 	require.Len(t, host.writes, 1, "an unchanged envelope is not rewritten")
 
 	revision, err = writer.Ensure(context.Background(), build("wiki", "proposals"))
 	require.NoError(t, err)
 	require.Equal(t, uint64(2), revision)
 	require.Len(t, host.writes, 2)
+	require.Equal(t, float64(1), host.writes[1]["expectedRevision"])
 	require.Equal(t, 1, host.signIns, "one session serves the run")
 }
 
-// A commit expects the revision the plan read. Another writer in between is a
-// conflict the run reports, never a write over somebody else's revision.
-func TestAnEnvelopeCommitRefusesARevisionThatMoved(t *testing.T) {
-	host := newEnvelopeHost(t)
-	writer := host.writer()
-	_, commit, err := writer.Plan(context.Background(), func(revision uint64, _ []byte) ([]byte, error) {
-		return envelopeOf(t, revision, nil, "wiki"), nil
-	})
-	require.NoError(t, err)
-	_, err = host.writer().Ensure(context.Background(), func(revision uint64, _ []byte) ([]byte, error) {
-		return envelopeOf(t, revision, nil, "proposals"), nil
-	})
-	require.NoError(t, err)
-	require.ErrorContains(t, commit(context.Background()), "409")
-}
-
 func TestEnvelopeWriterReauthenticatesOnlyAnUnauthorizedRequest(t *testing.T) {
-	t.Run("expired before reading or committing", func(t *testing.T) {
+	t.Run("expired session", func(t *testing.T) {
 		host := newEnvelopeHost(t)
 		writer := host.writer()
 		writer.accessToken = "expired"
-		_, commit, err := writer.Plan(t.Context(), func(revision uint64, _ []byte) ([]byte, error) {
-			return envelopeOf(t, revision, nil, "example"), nil
-		})
+		_, err := writer.Ensure(t.Context(), func(revision uint64) ([]byte, error) { return BuildEnvelope(revision, grantsOf("example")) })
 		require.NoError(t, err)
 		require.Equal(t, 1, host.signIns)
-		writer.accessToken = "expired-between-plan-and-commit"
-		require.NoError(t, commit(t.Context()))
-		require.Equal(t, 2, host.signIns)
 		require.Len(t, host.writes, 1)
 		require.Equal(t, float64(0), host.writes[0]["expectedRevision"], "retry preserves the optimistic concurrency precondition")
 	})
@@ -188,53 +452,4 @@ func TestEnvelopeWriterReauthenticatesOnlyAnUnauthorizedRequest(t *testing.T) {
 			require.Empty(t, host.writes)
 		})
 	}
-}
-
-// A run writes the envelope for what it has started so far. Whatever else the
-// host already grants stays exactly as the host holds it: leaving a principal
-// out would withdraw it, and a development loop never narrows.
-func TestARunKeepsEveryPrincipalTheHostAlreadyGrants(t *testing.T) {
-	held := []byte(`{"revision":3,"approved_builds":["sha256:aa"],"principals":{"wiki":{"grant":{"queues":["q1"]},"bindings":[{"id":"u1","revision":9007199254740993}]},"proposals":{"grant":{"tenant":"t1"}}}}`)
-	next := envelopeOf(t, 4, []solutionhost.ImageDigest{"sha256:aa", "sha256:bb"}, "wiki", "lastlogin")
-
-	merged, err := KeepGrantedPrincipals(next, held)
-	require.NoError(t, err)
-	var document struct {
-		Revision   uint64                     `json:"revision"`
-		Builds     []string                   `json:"approved_builds"`
-		Principals map[string]json.RawMessage `json:"principals"`
-	}
-	require.NoError(t, json.Unmarshal(merged, &document))
-	require.Equal(t, uint64(4), document.Revision)
-	require.Equal(t, []string{"sha256:aa", "sha256:bb"}, document.Builds)
-	require.ElementsMatch(t, []string{"wiki", "lastlogin", "proposals"}, keysOf(document.Principals))
-	require.JSONEq(t, `{"grant":{"tenant":"t1"}}`, string(document.Principals["proposals"]), "a principal the run did not start is carried as the host holds it")
-
-	var nextPrincipals struct {
-		Principals map[string]json.RawMessage `json:"principals"`
-	}
-	require.NoError(t, json.Unmarshal(next, &nextPrincipals))
-	require.JSONEq(t, string(nextPrincipals.Principals["wiki"]), string(document.Principals["wiki"]), "a principal the run started is the run's")
-
-	unchanged, err := KeepGrantedPrincipals(next, nil)
-	require.NoError(t, err)
-	require.JSONEq(t, string(next), string(unchanged))
-
-	_, err = KeepGrantedPrincipals(next, []byte(`not json`))
-	require.Error(t, err, "an envelope in force that cannot be read is not silently replaced")
-}
-
-func keysOf(m map[string]json.RawMessage) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	return keys
-}
-
-func TestApprovedBuildsReadsWhatAnEnvelopeApproves(t *testing.T) {
-	require.Equal(t, []solutionhost.ImageDigest{"sha256:aa", "sha256:bb"},
-		ApprovedBuilds([]byte(`{"approved_builds":["sha256:aa","sha256:bb"]}`)))
-	require.Empty(t, ApprovedBuilds(nil))
-	require.Empty(t, ApprovedBuilds([]byte(`nope`)))
 }

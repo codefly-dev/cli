@@ -15,7 +15,7 @@ const ModuleAuthorityConfiguration = "module-authority"
 // ArtifactCacheConfiguration requests, from a NATIVE run only, the root of the
 // workspace's artifact cache (ArtifactCacheRootKey): the digest-named files
 // the CLI retains and acquires, which a host's read-only native bundle source
-// reads a frontend bundle from by the digest the presence names. A cell's
+// reads a frontend bundle from by the digest the module manifest names. A cell's
 // render projects nothing for it, so in Kubernetes the value is absent and
 // the host's directory source stays refused there.
 const ArtifactCacheConfiguration = "artifact-cache"

@@ -24,7 +24,7 @@ import (
 // endpoint each service declares, on which port, and who the composition
 // declares reaches it. So with the rendered tree it delivers those edges as
 // data, in the render record at the tree root (.codefly-render.json,
-// `meshEdges`), documented in docs/solution-host-bindings.md and versioned by
+// `meshEdges`), documented in docs/module-manifests.md and versioned by
 // MeshEdgesSchemaVersion. Each module's tree carries the edges INTO that
 // module's workloads; the applier reads every tree it applies.
 //
@@ -83,7 +83,7 @@ type MeshEdges struct {
 type MeshEdge struct {
 	// Module, Service and Namespace name the destination workload; Account is
 	// the ServiceAccount it runs as and Principal that account's mesh
-	// principal, the one its presence names.
+	// principal, the one its module manifest names.
 	Module    string `json:"module"`
 	Service   string `json:"service"`
 	Namespace string `json:"namespace"`
@@ -264,20 +264,23 @@ func deriveMeshEdges(
 				principals = append(principals, principal)
 				slices.Sort(principals)
 			}
-			// Public exposure, judged on the manifest endpoint as core's
-			// IsExposedEndpoint judges the proto one: the one condition a
-			// public address exists on, and so the one the cell's ingress
-			// gateway reaches.
-			ingress := endpoint.Exposure == resources.ExposurePublic
+			// The cell's ingress gateway reaches exactly the endpoints the
+			// environment routes (`ingress:`): the composition decides its
+			// entrance — a product's portal, its marketing site, or the
+			// host gateway — and an endpoint routed at the edge must be one
+			// its module declares public, judged on the manifest endpoint
+			// as core's IsExposedEndpoint judges the proto one. A public
+			// endpoint nobody routes has no ingress edge.
+			ingress := routedAtTheEdge(env, unique, endpoint.Name)
+			if ingress && endpoint.Exposure != resources.ExposurePublic {
+				return nil, fmt.Errorf("the environment routes %s/%s at its edge, but %s declares it %q, not public; a route reaches only an endpoint its module exposes", unique, endpoint.Name, service.Name, endpoint.Exposure)
+			}
 			if len(principals) == 0 && !ingress {
 				continue
 			}
 			targetPort := containerPorts[unique][endpoint.Name]
 			if targetPort == 0 {
 				return nil, fmt.Errorf("mesh endpoint %s/%s has no resolved container target port", unique, endpoint.Name)
-			}
-			if ingress && (unique != index.gateway || endpoint.Name != "rest") {
-				return nil, fmt.Errorf("mesh ingress may reach only the host gateway's rest endpoint, not %s/%s", unique, endpoint.Name)
 			}
 			record.Edges = append(record.Edges, MeshEdge{
 				Module: module.Name, Service: service.Name, Namespace: namespace,
@@ -293,4 +296,15 @@ func deriveMeshEdges(
 		return record.Edges[i].Endpoint < record.Edges[j].Endpoint
 	})
 	return record, nil
+}
+
+// routedAtTheEdge reports whether the environment declares an ingress route
+// onto one endpoint of one service, named module-qualified as a route names it.
+func routedAtTheEdge(env *environments.Environment, unique, endpoint string) bool {
+	for _, route := range env.Ingress {
+		if route.Service == unique && route.Endpoint == endpoint {
+			return true
+		}
+	}
+	return false
 }

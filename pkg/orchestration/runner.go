@@ -70,13 +70,6 @@ type Runner struct {
 	// state says it does (addressesMoved).
 	startedMappings string
 
-	// startedArtifact is what the agent reported it started on its last
-	// successful Start: the program it ran and the files that program was
-	// handed. Nil when the agent reports none, which is a refusal for a
-	// consumer that pins the build a process runs — never a cue to guess a
-	// path. A restart replaces it, so it always describes the process now.
-	startedArtifact atomic.Pointer[runtimev0.StartedArtifact]
-
 	restartMu       sync.Mutex
 	pendingRestart  ActionType
 	restartInFlight bool
@@ -1024,8 +1017,6 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 		return nil, w.NewError("cannot start %s: %s", runner.instance.Unique(), message)
 	}
 
-	runner.startedArtifact.Store(resp.Status.GetStartedArtifact())
-
 	err = runner.outputPropertyForStart.Set(ctx, &RunnerStartOutput{})
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot set outputProperty for start")
@@ -1038,15 +1029,6 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 
 	runner.markStarted()
 	return outputProperty, nil
-}
-
-// StartedArtifact is what the agent reported it started, as of this runner's
-// last successful Start; nil when the agent reported none.
-func (runner *Runner) StartedArtifact() *runtimev0.StartedArtifact {
-	if runner == nil {
-		return nil
-	}
-	return runner.startedArtifact.Load()
 }
 
 func (runner *Runner) markStarted() {

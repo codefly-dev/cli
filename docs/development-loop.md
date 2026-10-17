@@ -171,8 +171,8 @@ deployments it cleared.
 
 `codefly run workspace` starts the host and every solution of a composition as
 one graph, with the same build reuse as a single service. A rebuilt solution
-is a new build to the host: the run approves it beside the builds it already
-approved and delivers the solution's presence again. See
+is nothing new to the host: its module manifest names its workloads, never
+their build, so a rebuild changes no generation. See
 [commands.md](commands.md#codefly-run-workspace).
 
 ## Related

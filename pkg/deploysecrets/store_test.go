@@ -193,3 +193,21 @@ func TestStoreRefusesEmptyNullAndNonObjectDocuments(t *testing.T) {
 		}
 	}
 }
+
+// An expired gcloud login is the one backend failure an operator can only act
+// on by name. It is said in fixed words, with nothing of the backend's output.
+func TestExpiredBackendCredentialsAreNamedWithoutTheBackendOutput(t *testing.T) {
+	stderr := "ERROR: (gcloud.config.config-helper) There was a problem refreshing your current auth tokens: " +
+		"Reauthentication failed. cannot prompt during non-interactive execution. Please run: gcloud auth login (project=platform-obin-staging-saas-accounts)"
+	err := &CommandError{Command: "kubectl get clustersecretstore", stderr: stderr}
+	if !strings.Contains(err.Error(), "gcloud auth login") {
+		t.Fatalf("an expired login is not named: %s", err)
+	}
+	if strings.Contains(err.Error(), "platform-obin-staging") || strings.Contains(fmt.Sprintf("%+v", err), "project=") {
+		t.Fatalf("the backend's output leaked: %s", err)
+	}
+	other := &CommandError{Command: "gcloud secrets describe", stderr: "ERROR: NOT_FOUND: Secret [key] not found"}
+	if other.Error() != "gcloud secrets describe failed (backend output withheld)" {
+		t.Fatalf("an ordinary failure is still withheld: %s", other)
+	}
+}

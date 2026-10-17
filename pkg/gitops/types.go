@@ -12,13 +12,11 @@ import (
 
 const (
 	InventoryFilename = ".codefly-render.json"
-	SchemaVersion     = 7
-	// There is no prior schema a loader still accepts. Schema 7 carries the
-	// settled, signed delivery record and the workspace configuration group
-	// digests; a tree without them is one an older CLI rendered, and reading
-	// it would deliver its documents unsettled and unsigned, and let a consumer
-	// of a changed group through with no digest to hold it against. The
-	// intermediate schema 6 was never released, so nothing is owed a read.
+	SchemaVersion     = 8
+	// There is no prior schema a loader still accepts. Schema 8 delivers one
+	// module manifest per module (moduleManifestPath) where schema 7 delivered
+	// presence, authority and endpoint documents, which no host reads any
+	// more: a tree an older CLI rendered is rendered again, never read.
 	EvidenceSchemaVersion = 1
 )
 
@@ -91,20 +89,16 @@ type Inventory struct {
 	AppProject    string `json:"appProject"`
 	OwnedPath     string `json:"ownedPath"`
 	ModulePath    string `json:"modulePath,omitempty"`
-	// SolutionHostBindingPath is the render subdirectory holding the declared
-	// SolutionHostBinding documents, when this render declared any. Publish
-	// points an Argo Application at its environment overlay and derives the
-	// promotion's authority from it, exactly as it does for a unit.
-	SolutionHostBindingPath string `json:"solutionHostBindingPath,omitempty"`
+	// ModuleManifestPath is the render subdirectory holding the module's
+	// manifest, when this render declared one. Publish points an Argo
+	// Application at its environment overlay and derives the promotion's
+	// authority from it, exactly as it does for a unit.
+	ModuleManifestPath string `json:"moduleManifestPath,omitempty"`
 	// HostsDelivery is true for the module that serves the environment's
 	// delivery API: its own delivery cannot precede the API it posts to, so
 	// it is ordered after the module's units where every other module's
 	// delivery goes beside them.
 	HostsDelivery bool `json:"hostsDelivery,omitempty"`
-	// SolutionAuthorityPath is the render subdirectory holding the declared
-	// authority documents, when this render declared any. Delivered into the
-	// platform's authority namespace, through its own Argo component.
-	SolutionAuthorityPath string `json:"solutionAuthorityPath,omitempty"`
 	// Package identifies the module package this render was produced from
 	// (module.package.codefly.yaml id/version), when the module has one.
 	Package *InventoryPackage `json:"package,omitempty"`
@@ -123,14 +117,10 @@ type Inventory struct {
 	// composition declares them: the data the cell's applier compiles into
 	// its mesh policy (mesh_edges.go). Absent when the environment declares
 	// no host.
-	MeshEdges *MeshEdges `json:"meshEdges,omitempty"`
-	// EndpointCarriers are the in-cluster carriers of this module's endpoints
-	// the host routes, keyed as the gateway reads them: address-only, bound
-	// to a presence generation and signed only at publish.
-	EndpointCarriers map[string]string `json:"endpointCarriers,omitempty"`
-	Units            []InventoryUnit   `json:"units"`
-	Files            []InventoryFile   `json:"files"`
-	Digest           string            `json:"digest"`
+	MeshEdges *MeshEdges      `json:"meshEdges,omitempty"`
+	Units     []InventoryUnit `json:"units"`
+	Files     []InventoryFile `json:"files"`
+	Digest    string          `json:"digest"`
 	// Dev lists the dev deployments (`codefly deploy dev`) applied on top of
 	// this render: services whose image was re-pinned to code no release
 	// describes. A full render re-derives the tree and never carries it over.
@@ -154,6 +144,20 @@ type InventoryUnit struct {
 	// contracts/api catalog) and consumes (from the libraries its service
 	// declares in library-dependencies with a sources[] block).
 	Contracts []InventoryContract `json:"contracts,omitempty"`
+	// Endpoints are the ports the render resolved for each endpoint the unit
+	// serves in-cluster — the Service port a consumer connects to and the
+	// container port the mesh authorizes — from the flow's network mappings
+	// and the unit's rendered pods. Recorded for every pod-producing unit, a
+	// managed store included, so the cell file reads them back and keeps no
+	// port matcher of its own.
+	Endpoints []InventoryEndpoint `json:"endpoints,omitempty"`
+}
+
+// InventoryEndpoint is one in-cluster endpoint of a unit with its resolved ports.
+type InventoryEndpoint struct {
+	Name       string `json:"name"`
+	Port       uint32 `json:"port,omitempty"`
+	TargetPort uint32 `json:"targetPort,omitempty"`
 }
 
 // InventoryContract records one API contract a unit exposes or consumes,
@@ -267,14 +271,14 @@ type RenderOptions struct {
 	Package              *InventoryPackage
 	// ReleaseArtifacts is what the module's package manifest declares the
 	// release publishes; the runtime artifact named frontend among them is
-	// the bundle a presence's generated frontend.payload names.
+	// the bundle a module manifest's generated frontend.payload names.
 	ReleaseArtifacts []composition.ReleaseArtifact
-	// Workspace is the composing workspace's name. A solution host binding ID
+	// Workspace is the composing workspace's name. A module manifest's binding ID
 	// is scoped by it, so two workspaces delivering to one host never claim the
 	// same binding.
 	Workspace string
 	// Host is the deployment host this render delivers to, as the environment
-	// declares it. Absent, no solution host binding is rendered: a binding names
+	// declares it. Absent, no module manifest is rendered: a manifest names
 	// a host, and a derived coordinate is a guess the host refuses later.
 	Host *environments.EnvironmentHost
 	// Target is the environment a hosted render delivers to: the delivery
@@ -288,36 +292,26 @@ type RenderOptions struct {
 	// WorkspaceConfigurationDigests are the digests of the workspace
 	// configuration groups this render bakes in, recorded in the inventory.
 	WorkspaceConfigurationDigests map[string]string
-	// SolutionHostBindingPath is set by the render once it has written binding
-	// documents, so the inventory records the delivered path rather than the
+	// ModuleManifestPath is set by the render once it has written the
+	// manifest, so the inventory records the delivered path rather than the
 	// intent to write one.
-	SolutionHostBindingPath string
+	ModuleManifestPath string
 	// HostsDelivery carries Inventory.HostsDelivery across a publish's
 	// re-render of the inventory.
 	HostsDelivery bool
-	// SolutionInstances are the solution instances of the resolved composition
-	// whose workloads this render delivers, resolved by the caller from the same
-	// resolution the workloads came from. One SolutionHostBinding is rendered
-	// per entry.
-	SolutionInstances []SolutionInstance
-	// UndeclaredPresence is why this render declares no presence for the
-	// module, when it declares none for a reason other than the environment
-	// naming no host.
-	UndeclaredPresence string
-	// AuthorityInstances are the authority documents this render declares, one
-	// per module-identity service of a module publishing a contract.
-	AuthorityInstances []AuthorityInstance
-	// SolutionAuthorityPath is set by the render once it has written authority
-	// documents, so the inventory records the delivered path.
-	SolutionAuthorityPath string
-	// UndeclaredAuthority is why this render declares no authority, when the
-	// reason is the module's own.
-	UndeclaredAuthority string
+	// Instance is the module instance whose workloads this render delivers,
+	// resolved by the caller from the same resolution the workloads came from;
+	// its manifest is rendered from it.
+	Instance *ModuleInstance
+	// UndeclaredManifest is why this render declares no module manifest, when
+	// it declares none for a reason other than the environment naming no host.
+	UndeclaredManifest string
 	// MeshEdges are the edges into this module's workloads, recorded in the
 	// inventory for the cell's applier.
 	MeshEdges *MeshEdges
-	// EndpointCarriers are the render's in-cluster carriers of the module's
-	// routed endpoints (see Inventory.EndpointCarriers).
+	// EndpointCarriers are the render's in-cluster addresses of the module's
+	// routed endpoints, keyed as the gateway reads them: what its manifest's
+	// endpoints carry.
 	EndpointCarriers map[string]string
 	renderRoot       *renderRoot
 }
@@ -346,7 +340,14 @@ func inventoryKubernetesOutput(output *builderv0.DeploymentOutput) *InventoryKub
 }
 
 type RenderResult struct {
-	Path      string       `json:"path"`
+	Path string `json:"path"`
+	// Cell is the environment's cell file as re-rendered after this module,
+	// when the environment declares a host.
+	Cell *CellResult `json:"cell,omitempty"`
+	// CellError says why the cell file could not be re-derived after this
+	// render — a sibling module's tree this CLI cannot read, typically. The
+	// module render stands; the cell file is stale until the named render.
+	CellError string       `json:"cellError,omitempty"`
 	Inventory Inventory    `json:"inventory"`
 	Sizing    SizingReport `json:"sizing"`
 	// ElidedNamespaces are the tree-relative manifest paths the render dropped
@@ -358,18 +359,13 @@ type RenderResult struct {
 	// ClearedDev are the dev deployments the tree this render replaced carried.
 	// A full render re-derives every image, so they no longer run.
 	ClearedDev []InventoryDevDeployment `json:"clearedDev,omitempty"`
-	// SolutionHostBindings are the SolutionHostBinding documents this render
-	// declared: what it says should be present on the host, one per solution
-	// instance.
-	SolutionHostBindings []DeclaredSolutionHostBinding `json:"solutionHostBindings,omitempty"`
-	// UndeclaredPresence says why the module declares no presence when the
-	// reason is the module's own — no package manifest to name a release from.
-	UndeclaredPresence string `json:"undeclaredPresence,omitempty"`
-	// SolutionAuthorities are the authority documents this render declared.
-	SolutionAuthorities []DeclaredAuthority `json:"solutionAuthorities,omitempty"`
-	// UndeclaredAuthority says why the module declares no authority: no
-	// contract, no module-identity service, or no presence to be effective from.
-	UndeclaredAuthority string `json:"undeclaredAuthority,omitempty"`
+	// ModuleManifest is the module manifest this render declared: what it
+	// says should be present on the host.
+	ModuleManifest *DeclaredModuleManifest `json:"moduleManifest,omitempty"`
+	// UndeclaredManifest says why the module declares no manifest when the
+	// reason is the module's own: no package manifest to name a release from,
+	// or no service that runs as the module.
+	UndeclaredManifest string `json:"undeclaredManifest,omitempty"`
 	// StaleGroupConsumers maps a workspace configuration group this render
 	// consumes to the sibling modules whose rendered trees bake in another
 	// value of it: rendered before the group changed, to be rendered next.
@@ -388,16 +384,15 @@ type InventoryDelivery struct {
 	// Identity is the envelope's claimed key ID when Signed. This field is
 	// reporting only; the publisher and host verify the envelope separately.
 	Identity string `json:"identity,omitempty"`
-	// Documents are the documents delivered, presence and authority alike.
+	// Documents are the module manifests delivered.
 	Documents []InventoryDeliveredDocument `json:"documents,omitempty"`
 }
 
 // InventoryDeliveredDocument is one delivered document.
 type InventoryDeliveredDocument struct {
-	// Kind is "presence" or "authority".
+	// Kind is "manifest".
 	Kind string `json:"kind"`
-	// ID is the binding ID of a presence document or the authority ID of an
-	// authority document.
+	// ID is the binding the manifest declares.
 	ID         string `json:"id"`
 	Generation uint64 `json:"generation"`
 	// Removed marks a tombstone.
@@ -406,17 +401,10 @@ type InventoryDeliveredDocument struct {
 	Digest string `json:"digest"`
 }
 
-// DeclaredSolutionHostBinding is one rendered binding document: where it was
-// written, which binding it declares, and at which generation.
-//
-// The generation is reported rather than left in the file because a reset is
-// otherwise invisible. The prior generation comes from the tree this render
-// replaced, and that tree is per module and not per environment — rendering
-// another environment replaces it whole. So rendering staging and then
-// production again finds no prior production document and starts at 1, which
-// the production host refuses as stale. Printing the generation is what turns
-// that into something an operator sees at the render instead of at the host.
-type DeclaredSolutionHostBinding struct {
+// DeclaredModuleManifest is the rendered module manifest: where it was
+// written, which binding it declares, and at which provisional generation
+// (publish settles the real one against the delivery repository).
+type DeclaredModuleManifest struct {
 	Path       string `json:"path"`
 	Binding    string `json:"binding"`
 	Generation uint64 `json:"generation"`
@@ -521,9 +509,8 @@ type PublishResult struct {
 	PullRequest      string          `json:"pullRequest"`
 	PullRequestID    int             `json:"pullRequestId,omitempty"`
 	ContractChecks   []ContractCheck `json:"contractChecks,omitempty"`
-	// Delivery is what this publish settled and signed: every presence and
-	// authority document at its settled generation, and the identity that
-	// signed them.
+	// Delivery is what this publish settled and signed: every module manifest
+	// at its settled generation, and the identity that signed them.
 	Delivery *InventoryDelivery `json:"delivery,omitempty"`
 	// Promoted reports that this publish advanced the base branch itself: a
 	// developer-signed local promotion (PublishPlan.SelfPromotes).
