@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/distribution/reference"
 )
 
 // REGISTRY MIRRORS: READING A BASE IMAGE FROM SOMEWHERE ELSE.
@@ -57,33 +58,47 @@ func registryMirrors(env *environments.Environment) map[string]string {
 // so `debian:trixie-slim` is read as `<mirror>/library/debian:trixie-slim`,
 // which is what an Artifact Registry remote repository (and a pull-through
 // registry generally) serves it at.
-func mirroredReference(reference string, mirrors map[string]string) string {
+func mirroredReference(ref string, mirrors map[string]string) string {
 	if len(mirrors) == 0 {
-		return reference
+		return ref
 	}
-	host, repository := referenceRegistry(reference)
+	host, repository, ok := referenceRegistry(ref)
+	if !ok {
+		return ref
+	}
 	mirror := mirrors[host]
 	if mirror == "" {
-		return reference
+		return ref
 	}
 	return mirror + "/" + repository
 }
 
-// referenceRegistry splits an image reference into the canonical host of the
-// registry it resolves against and the repository (with its tag or digest)
-// within it, by Docker's own rule: a first path component carrying a dot or a
-// port, or spelled `localhost`, is a registry host, and anything else is a
-// Docker Hub repository — one with no path component at all being in Hub's
-// `library` namespace.
-func referenceRegistry(reference string) (string, string) {
-	first, rest, qualified := strings.Cut(reference, "/")
-	if qualified && (strings.ContainsAny(first, ".:") || first == "localhost") {
-		return environments.RegistryMirrorHost(first), rest
+// referenceRegistry splits an image reference into the host of the registry it
+// resolves against and the repository (with its tag or digest) within it, using
+// the same parser the daemon, BuildKit and containerd all normalize references
+// with — so the host this keys a mirror on is the host BuildKit will look that
+// mirror up under, and the two cannot disagree about what a reference names.
+//
+// That parser folds exactly one alias, `index.docker.io`, into `docker.io`, and
+// puts a reference with no path component in Hub's `library` namespace.
+// `registry-1.docker.io` is NOT folded — it is a distinct registry to the
+// parser and to BuildKit alike, so a reference spelling it reads through a
+// mirror declared under that spelling and no other. A reference this cannot
+// parse is reported unsplit: the build will fail on it with the registry's own
+// error, which says more than a guess made here would.
+func referenceRegistry(ref string) (string, string, bool) {
+	named, err := reference.ParseNormalizedNamed(ref)
+	if err != nil {
+		return "", "", false
 	}
-	if !qualified {
-		return environments.DockerHubRegistry, "library/" + reference
+	repository := reference.Path(named)
+	if tagged, ok := named.(reference.Tagged); ok {
+		repository += ":" + tagged.Tag()
 	}
-	return environments.DockerHubRegistry, reference
+	if digested, ok := named.(reference.Digested); ok {
+		repository += "@" + digested.Digest().String()
+	}
+	return reference.Domain(named), repository, true
 }
 
 // buildkitRegistryConfig renders the mirrors as the buildkitd configuration a
@@ -109,6 +124,16 @@ func buildkitRegistryConfig(mirrors map[string]string) string {
 		fmt.Fprintf(&config, "[registry.%q]\n  mirrors = [%q]\n", host, mirror)
 	}
 	return config.String()
+}
+
+// mirrorSummary renders the declared mirrors for a log line, in the same
+// stable order the buildkitd configuration is written in.
+func mirrorSummary(mirrors map[string]string) string {
+	summary := make([]string, 0, len(mirrors))
+	for _, host := range slices.Sorted(maps.Keys(mirrors)) {
+		summary = append(summary, host+" -> "+mirrors[host])
+	}
+	return strings.Join(summary, ", ")
 }
 
 // buildxBuilderFor names the builder that carries this registry configuration.

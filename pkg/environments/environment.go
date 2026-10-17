@@ -12,6 +12,7 @@ import (
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
+	"github.com/distribution/reference"
 	"gopkg.in/yaml.v3"
 )
 
@@ -78,19 +79,28 @@ type EnvironmentRegistry struct {
 // the key a mirror for it is declared under.
 const DockerHubRegistry = "docker.io"
 
-// dockerHubAliases are the other spellings of Docker Hub a reference may carry.
-// A mirror is declared under the canonical host alone, so that one key covers
-// every reference naming the same registry rather than only the spelling the
-// author happened to write.
-var dockerHubAliases = map[string]bool{"index.docker.io": true, "registry-1.docker.io": true}
+// mirrorHostProbe is the repository a host is parsed under to learn the
+// registry a reference naming that host actually resolves against. The parser
+// takes a reference, not a host, and the repository part is irrelevant to the
+// answer.
+const mirrorHostProbe = "probe"
 
-// RegistryMirrorHost is the canonical registry host of a reference's registry
-// spelling: the key a mirror for it is declared under.
+// RegistryMirrorHost is the registry a reference spelling this host resolves
+// against, as the parser the daemon, BuildKit and containerd all normalize
+// references with reports it: the key a mirror for that registry must be
+// declared under.
+//
+// That parser folds exactly one alias, `index.docker.io`, into `docker.io`, and
+// reads a first component carrying no dot, colon or `localhost` as a Hub
+// repository rather than a host. `registry-1.docker.io` is NOT folded: it is a
+// distinct registry to the parser and to BuildKit alike, so it is its own
+// mirror key, covering the references that spell it and no others.
 func RegistryMirrorHost(host string) string {
-	if dockerHubAliases[host] {
-		return DockerHubRegistry
+	named, err := reference.ParseNormalizedNamed(host + "/" + mirrorHostProbe)
+	if err != nil {
+		return host
 	}
-	return host
+	return reference.Domain(named)
 }
 
 // Validate holds a declared mirror to what both a BuildKit registry
@@ -111,7 +121,7 @@ func (registry *EnvironmentRegistry) Validate() error {
 			return fmt.Errorf("registry mirror key %q names a repository path; a mirror is declared for a registry host", host)
 		}
 		if canonical := RegistryMirrorHost(host); canonical != host {
-			return fmt.Errorf("registry mirror key %q is an alias of %q; declare the mirror under %q so every reference to that registry reads through it", host, canonical, canonical)
+			return fmt.Errorf("registry mirror key %q is not how a reference names its registry: a reference under it resolves against %q, so declare the mirror under %q", host, canonical, canonical)
 		}
 		if err := validateRegistryReference(fmt.Sprintf("registry mirror of %q", host), mirror); err != nil {
 			return err

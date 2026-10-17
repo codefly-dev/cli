@@ -938,10 +938,22 @@ It is a read-side substitution only: nothing is pushed to a mirror, the recipe
 is unchanged, and **the image's identity does not change because a mirror served
 it** — a mirror serves the same content, so the resolved digest is the same and
 it is the digest, never the registry it came from, that the reuse key binds.
-Authenticate the mirror the way its registry requires; a mirror on the same host
-as `registry.url` is covered by that registry's `auth`. Every spelling of Docker
-Hub (`docker.io`, `index.docker.io`, `registry-1.docker.io`) reads through the
-one `docker.io` key, which is the key it must be declared under.
+
+A mirror is **not** authenticated by `registry.auth`, which is the push side and
+covers `registry.url` alone (and today is wired for `ecr` and `acr` only — `gar`
+and `ghcr` are stubs). Both halves of a mirrored read use the host's Docker
+credential store instead: `docker buildx imagetools inspect` for the resolution,
+and the container-driver builder for the pull. So log in to the mirror's
+registry on the machine that renders before it renders — for an Artifact
+Registry remote repository, `gcloud auth configure-docker us-east1-docker.pkg.dev`
+— or use a mirror that serves anonymously.
+
+The key is the registry host as a reference parser normalizes it, which is also
+how BuildKit looks a mirror up, so the two never disagree about which registry a
+reference names. An unqualified reference and `index.docker.io` both normalize
+to `docker.io` and read through a `docker.io` key; `registry-1.docker.io` is
+folded by neither the parser nor BuildKit, so it is a registry of its own —
+declare a second key under that spelling if a Dockerfile writes it.
 
 `mirror.gcr.io` is a public, anonymous Docker Hub mirror and needs no
 infrastructure of your own, so it is the quickest way to see the field work
@@ -950,6 +962,18 @@ environment should use, because it is the one whose quota and availability the
 cell owns. Either way the mirror must serve the upstream repository path
 unchanged — a pull-through registry does; a repository you push copies into by
 hand does not, and would resolve a base to a different digest.
+
+That property is load-bearing, because the mirror is not on every path. A
+`--builder` the caller supplies runs with its own buildkitd configuration — the
+render warns when an environment declares a mirror and a build lands on one —
+and BuildKit treats a mirror as a preference rather than a rule: when the mirror
+does not serve a manifest or a blob it falls back to the upstream registry. In
+both cases the resolution still read the mirror and bound its digest while the
+pull went elsewhere. A mirror serving the upstream content makes that
+indistinguishable — the digest is the same either way, which is the whole
+premise — but it also means neither the build output nor the reuse key records
+*which* registry answered, so a mirror serving something else would be
+bound as if it were upstream.
 
 `render` is a function of the workspace and needs no cluster: by default no
 service's manifests are sent to a Kubernetes API. Pass `--validate-cluster` to

@@ -299,6 +299,16 @@ func (b *Builder) buildRecipe(
 // alone.
 func (b *Builder) selectImageBuilder(ctx context.Context, multiArch bool, mirrors map[string]string) (string, error) {
 	if name := b.world.BuildxBuilder; name != "" {
+		if len(mirrors) > 0 {
+			// The one place the mirror is declared and not applied to the pull:
+			// a caller's builder carries its own buildkitd configuration. The
+			// resolution still reads the mirror, so the digest is the same, but
+			// the quota this exists to spare is spent anyway — said out loud
+			// rather than left to be rediscovered as a 429.
+			wool.Get(ctx).In("orchestration.selectImageBuilder").Warn(
+				"this environment mirrors a registry, but the build runs on a supplied builder whose registry configuration the CLI does not set",
+				wool.Field("builder", name), wool.Field("mirrors", mirrorSummary(mirrors)))
+		}
 		return name, nil
 	}
 	if b.world.BuildCache != nil {
@@ -596,6 +606,14 @@ func prepareRecipeContext(ctx context.Context, contextDir, outputDir string, rec
 // registry configuration other than the one asked for here.
 func ensureBuildxBuilder(ctx context.Context, mirrors map[string]string) (string, error) {
 	name := buildxBuilderFor(mirrors)
+	w := wool.Get(ctx).In("orchestration.ensureBuildxBuilder")
+	if len(mirrors) > 0 {
+		// An environment that mirrors a registry builds on a builder of its
+		// own, named for the configuration it carries. Which builder that is,
+		// and what it redirects, is otherwise invisible in the render output.
+		w.Info("this environment mirrors a registry; its builds run on their own buildx builder",
+			wool.Field("builder", name), wool.Field("mirrors", mirrorSummary(mirrors)))
+	}
 	switch buildxBuilderState(ctx, name) {
 	case buildxBuilderReady:
 		return name, nil
@@ -618,6 +636,7 @@ func ensureBuildxBuilder(ctx context.Context, mirrors map[string]string) (string
 		}
 		return "", fmt.Errorf("create buildx builder %q: %w: %s", name, err, strings.TrimSpace(string(output)))
 	}
+	w.Info("provisioned buildx builder", wool.Field("builder", name), wool.Field("mirrors", mirrorSummary(mirrors)))
 	return name, nil
 }
 

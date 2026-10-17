@@ -397,13 +397,22 @@ func baseImageDigests(ctx context.Context, dockerfilePath, builderName string, m
 	if err != nil {
 		return nil, err
 	}
+	w := wool.Get(ctx).In("orchestration.baseImageDigests")
 	digests := make([]string, 0, len(references))
 	for _, reference := range references {
 		if _, pinned, ok := strings.Cut(reference, "@"); ok && strings.HasPrefix(pinned, "sha256:") {
 			digests = append(digests, reference+"@"+pinned)
 			continue
 		}
-		digest, err := resolveImageManifestDigest(ctx, mirroredReference(reference, mirrors), builderName)
+		read := mirroredReference(reference, mirrors)
+		if read != reference {
+			// Said out loud: an environment that redirects a registry changes
+			// where every generically named base is read from, and nothing in
+			// the recipe or the output names the mirror otherwise.
+			w.Info("reading a base image through the environment's registry mirror",
+				wool.Field("base", reference), wool.Field("read", read))
+		}
+		digest, err := resolveImageManifestDigest(ctx, read, builderName)
 		if err != nil {
 			return nil, fmt.Errorf("resolve base image %s: %w", reference, err)
 		}

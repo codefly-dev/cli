@@ -25,9 +25,19 @@ func TestAReferenceIsMirroredByTheRegistryItResolvesAgainst(t *testing.T) {
 		{"debian:trixie-slim", "us-east1-docker.pkg.dev/example/dockerhub/library/debian:trixie-slim"},
 		{"golang:1.25", "us-east1-docker.pkg.dev/example/dockerhub/library/golang:1.25"},
 		{"bitnami/postgresql:17", "us-east1-docker.pkg.dev/example/dockerhub/bitnami/postgresql:17"},
-		// Every spelling of Docker Hub reads through the one declared mirror.
+		// index.docker.io is the one alias the reference parser folds into
+		// docker.io, so a mirror declared there covers it.
 		{"index.docker.io/library/debian:trixie-slim", "us-east1-docker.pkg.dev/example/dockerhub/library/debian:trixie-slim"},
-		{"registry-1.docker.io/library/debian:trixie-slim", "us-east1-docker.pkg.dev/example/dockerhub/library/debian:trixie-slim"},
+		// registry-1.docker.io is not folded — by the parser or by BuildKit —
+		// so the docker.io mirror does not cover it, and the resolution must
+		// not pretend otherwise: a read redirected here while the build pulls
+		// direct is exactly the skew this keeps out.
+		{"registry-1.docker.io/library/debian:trixie-slim", "registry-1.docker.io/library/debian:trixie-slim"},
+		// A digest-pinned reference keeps its digest through the mirror.
+		{"debian@sha256:" + strings.Repeat("a", 64), "us-east1-docker.pkg.dev/example/dockerhub/library/debian@sha256:" + strings.Repeat("a", 64)},
+		// A reference the parser refuses (an uppercase repository) is read
+		// where it is named, and fails there with the registry's own error.
+		{"Debian:trixie-slim", "Debian:trixie-slim"},
 		{"ghcr.io/codefly-dev/toolbox:v1", "us-east1-docker.pkg.dev/example/ghcr/codefly-dev/toolbox:v1"},
 		// A registry with no declared mirror is read where it is named, and so
 		// is a host-qualified reference nobody mirrored.
@@ -41,6 +51,11 @@ func TestAReferenceIsMirroredByTheRegistryItResolvesAgainst(t *testing.T) {
 			require.Equal(t, testCase.reference, mirroredReference(testCase.reference, nil))
 		})
 	}
+	// Declared under its own spelling, registry-1.docker.io is a registry like
+	// any other — which is the way to cover a Dockerfile that spells it.
+	require.Equal(t, "mirror.example/hub-api/library/debian:trixie-slim",
+		mirroredReference("registry-1.docker.io/library/debian:trixie-slim",
+			map[string]string{"registry-1.docker.io": "mirror.example/hub-api"}))
 }
 
 // The builder carries the mirror in its buildkitd configuration, which is what
@@ -106,7 +121,7 @@ func TestNoBaseImageReadReachesTheMirroredRegistry(t *testing.T) {
 		asked = append(asked, reference)
 		// The blocked host: Docker Hub answers nothing at all here, so a read
 		// that reached it would fail the recipe rather than pass unnoticed.
-		if host, _ := referenceRegistry(reference); host == environments.DockerHubRegistry {
+		if host, _, _ := referenceRegistry(reference); host == environments.DockerHubRegistry {
 			return "", fmt.Errorf("dial registry-1.docker.io: blocked")
 		}
 		return "sha256:" + strings.Repeat("a", 64), nil
@@ -189,6 +204,11 @@ func TestADeclaredMirrorIsHeldToARegistryReference(t *testing.T) {
 	require.ErrorContains(t, valid("docker.io", "mirror.example/hub@sha256:abc"), "carries a digest")
 	require.ErrorContains(t, valid("docker.io", "mirror.example/\"]\ninsecure = true"), "is not a registry reference")
 	require.ErrorContains(t, valid("docker.io/library", "mirror.example"), "names a repository path")
+	// index.docker.io is folded into docker.io by the reference parser, so no
+	// reference ever keys a mirror on it; a bare word is a Hub repository, not
+	// a host. registry-1.docker.io is folded by nothing — neither the parser
+	// nor BuildKit — so it is a key of its own rather than a rejected alias.
 	require.ErrorContains(t, valid("index.docker.io", "mirror.example"), `declare the mirror under "docker.io"`)
-	require.ErrorContains(t, valid("registry-1.docker.io", "mirror.example"), `declare the mirror under "docker.io"`)
+	require.ErrorContains(t, valid("myregistry", "mirror.example"), `declare the mirror under "docker.io"`)
+	require.NoError(t, valid("registry-1.docker.io", "mirror.example"))
 }
