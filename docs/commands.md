@@ -897,6 +897,52 @@ refused before anything is built. A pushed `codefly build service` for an
 environment with no `cluster` builds a portable artifact instead: every platform
 its recipe declares.
 
+**Base images follow the environment's registry mirror.** Every agent's
+Dockerfile names its base generically (`FROM debian:trixie-slim`), because an
+agent is written once and built into every cell — so that reference resolves
+against Docker Hub, anonymously, for every service of every environment. Docker
+Hub throttles anonymous reads per IP, and one `429` fails a render. An
+environment answers that with `registry.mirrors`: a map from a registry's
+canonical host to where **this** environment reads it from instead, imported
+from a `codefly/coordinate/v1` contract exactly like `registry.url`.
+
+```yaml
+environments:
+  - name: staging
+    registry:
+      url: us-east1-docker.pkg.dev/example/images
+      auth: gar
+      mirrors:
+        docker.io: us-east1-docker.pkg.dev/example/dockerhub   # a remote repository
+```
+
+The builder applies it in the two places a build reaches a base image:
+
+- the BuildKit builder the CLI provisions is created with a buildkitd registry
+  configuration naming the mirror, so `FROM debian:trixie-slim` pulls through it
+  with **no Dockerfile naming a cell's registry**. An environment that declares
+  a mirror therefore always builds on the CLI's own container-driver builder,
+  whatever the platforms, because the default `docker`-driver builder takes no
+  buildkitd configuration at all. A builder's configuration cannot be read back
+  out of it, so each distinct mirror set gets a builder of its own
+  (`codefly-<digest>`); an environment with no mirrors keeps the shared
+  `codefly` builder. A `--builder` the caller supplies is still authoritative
+  and is used as given;
+- the base-image resolution the [reuse decision](#keeping-an-image-whose-inputs-did-not-change) performs
+  reads each manifest from the mirrored reference. A reference with no path
+  component is in Docker Hub's `library` namespace, which is where a
+  pull-through repository serves it, so `debian:trixie-slim` is read as
+  `<mirror>/library/debian:trixie-slim`.
+
+It is a read-side substitution only: nothing is pushed to a mirror, the recipe
+is unchanged, and **the image's identity does not change because a mirror served
+it** — a mirror serves the same content, so the resolved digest is the same and
+it is the digest, never the registry it came from, that the reuse key binds.
+Authenticate the mirror the way its registry requires; a mirror on the same host
+as `registry.url` is covered by that registry's `auth`. Every spelling of Docker
+Hub (`docker.io`, `index.docker.io`, `registry-1.docker.io`) reads through the
+one `docker.io` key, which is the key it must be declared under.
+
 `render` is a function of the workspace and needs no cluster: by default no
 service's manifests are sent to a Kubernetes API. Pass `--validate-cluster` to
 also dry-run each rendered service server-side (`kubectl apply --server-side
@@ -3549,6 +3595,16 @@ is patched, so a reference is resolved to its manifest digest and the digest goe
 in the key. A base reference the build cannot resolve — an unreachable registry,
 no container engine, a value the recipe parameterizes — makes the recipe decline
 reuse and build.
+
+A reference **already pinned by digest** (`FROM debian@sha256:…`) is bound
+without any registry read: the digest is the resolution, so asking can only
+return the same answer or fail. That matters beyond the saved round trip, since
+an unresolvable reference declines its whole recipe — a throttled registry would
+otherwise rebuild every image whose inputs provably did not move. Where a
+reference that is *not* pinned is read from follows the environment's
+[`registry.mirrors`](#codefly-deploy-service-name); what goes in the key is the
+reference the recipe names with the digest that was resolved, so an image is not
+a changed input because a mirror served it.
 
 **What no digest over inputs can bind:** whatever a build step fetches from the
 network itself. A `RUN` that installs from a mutable package index reads bytes no

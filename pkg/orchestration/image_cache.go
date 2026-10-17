@@ -253,7 +253,7 @@ func contextDigest(ctx context.Context, recipe *builderv0.DockerBuildRecipe, sco
 
 // imageBuildIdentity digests the inputs of one recipe's image build. A zero
 // identity with no error means the build is not cacheable and must run.
-func imageBuildIdentity(ctx context.Context, recipe *builderv0.DockerBuildRecipe, plan *builderv0.DockerBuildPlan, scope imageBuildScope, dockerfilePath, builderName string, args []string, proxies map[string]string) (imageIdentity, error) {
+func imageBuildIdentity(ctx context.Context, recipe *builderv0.DockerBuildRecipe, plan *builderv0.DockerBuildPlan, scope imageBuildScope, dockerfilePath, builderName string, args []string, proxies, mirrors map[string]string) (imageIdentity, error) {
 	recipeTree := plan.GetDigest()
 	if recipeTree == "" {
 		return imageIdentity{}, fmt.Errorf("recipe tree of %s declares no verified content digest", recipe.GetName())
@@ -266,7 +266,7 @@ func imageBuildIdentity(ctx context.Context, recipe *builderv0.DockerBuildRecipe
 	if err != nil {
 		return imageIdentity{}, err
 	}
-	bases, err := baseImageDigests(ctx, dockerfilePath, builderName)
+	bases, err := baseImageDigests(ctx, dockerfilePath, builderName, mirrors)
 	if err != nil {
 		return imageIdentity{}, err
 	}
@@ -373,18 +373,37 @@ func goModuleManifestDigests(contextDir string, recipe *builderv0.DockerBuildRec
 // build is about to pull anyway, on the path that decides whether minutes of
 // build are skipped.
 //
+// A reference already pinned by digest names its manifest and is bound without
+// a read: the digest IS the resolution, so asking a registry for it can only
+// return the same answer or fail. That matters beyond the saved round trip —
+// every unreachable registry declines its whole recipe, so a throttled Docker
+// Hub would otherwise make every digest-pinned recipe rebuild an image whose
+// inputs provably did not move. It is bound in exactly the spelling a resolved
+// reference produces (`<reference>@<digest>`, the reference here already
+// carrying that digest), so identities recorded before this short circuit
+// existed still match.
+//
 // A reference that names an earlier stage is not external and is skipped; a
 // reference the recipe parameterizes, or one that cannot be resolved — an
 // unreachable registry, an unauthenticated one, no container engine — makes the
 // whole recipe decline, so the build runs.
-func baseImageDigests(ctx context.Context, dockerfilePath, builderName string) ([]string, error) {
+//
+// What is read is the mirrored reference (mirroredReference) when the
+// environment declares a mirror for the reference's registry; what is bound is
+// always the reference the recipe names, because a mirror serves the same
+// content and where a manifest was read from is not an input of the image.
+func baseImageDigests(ctx context.Context, dockerfilePath, builderName string, mirrors map[string]string) ([]string, error) {
 	references, err := externalBaseReferences(dockerfilePath)
 	if err != nil {
 		return nil, err
 	}
 	digests := make([]string, 0, len(references))
 	for _, reference := range references {
-		digest, err := resolveImageManifestDigest(ctx, reference, builderName)
+		if _, pinned, ok := strings.Cut(reference, "@"); ok && strings.HasPrefix(pinned, "sha256:") {
+			digests = append(digests, reference+"@"+pinned)
+			continue
+		}
+		digest, err := resolveImageManifestDigest(ctx, mirroredReference(reference, mirrors), builderName)
 		if err != nil {
 			return nil, fmt.Errorf("resolve base image %s: %w", reference, err)
 		}
