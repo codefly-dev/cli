@@ -198,8 +198,23 @@ func TestDeliveryScriptAttemptsEveryDocumentEveryRound(t *testing.T) {
 	if err := os.WriteFile(identity, []byte("t"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The script's clock is date and sleep; a logical one makes the rounds it
+	// fits in its budget independent of how loaded the machine running it is.
+	clock := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(clock, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"date":  "#!/bin/sh\ncat \"$(dirname \"$0\")/now\"\n",
+		"sleep": "#!/bin/sh\nnow=\"$(dirname \"$0\")/now\"\necho $(($(cat \"$now\") + $1)) > \"$now\"\n",
+		"now":   "0\n",
+	} {
+		if err := os.WriteFile(filepath.Join(clock, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	cmd := exec.Command("/bin/sh", "-ec", deliveryScript)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(os.Environ(), "PATH="+clock+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"DELIVERY_URL="+server.URL, "DELIVERY_PATH=/deliver", "DELIVERY_DOCUMENTS="+documents, "DELIVERY_IDENTITY_FILE="+identity,
 		"DELIVERY_BUDGET_SECONDS=3", "DELIVERY_REQUEST_SECONDS=1", "DELIVERY_MAX_PAUSE_SECONDS=1")
 	out, err := cmd.CombinedOutput()
