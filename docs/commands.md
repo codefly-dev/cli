@@ -943,6 +943,14 @@ as `registry.url` is covered by that registry's `auth`. Every spelling of Docker
 Hub (`docker.io`, `index.docker.io`, `registry-1.docker.io`) reads through the
 one `docker.io` key, which is the key it must be declared under.
 
+`mirror.gcr.io` is a public, anonymous Docker Hub mirror and needs no
+infrastructure of your own, so it is the quickest way to see the field work
+(`docker.io: mirror.gcr.io`); a per-cell remote repository is what a deployed
+environment should use, because it is the one whose quota and availability the
+cell owns. Either way the mirror must serve the upstream repository path
+unchanged — a pull-through registry does; a repository you push copies into by
+hand does not, and would resolve a base to a different digest.
+
 `render` is a function of the workspace and needs no cluster: by default no
 service's manifests are sent to a Kubernetes API. Pass `--validate-cluster` to
 also dry-run each rendered service server-side (`kubectl apply --server-side
