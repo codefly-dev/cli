@@ -203,7 +203,7 @@ func decodeInventory(data []byte, label string) (Inventory, error) {
 	if err := json.Unmarshal(data, &inventory); err != nil {
 		return Inventory{}, fmt.Errorf("decode %s inventory: %w", label, err)
 	}
-	if inventory.SchemaVersion != SchemaVersion {
+	if inventory.SchemaVersion != SchemaVersion && inventory.SchemaVersion != priorSchemaVersion {
 		return Inventory{}, fmt.Errorf("unsupported %s inventory schema %d", label, inventory.SchemaVersion)
 	}
 	canonical, err := json.MarshalIndent(inventory, "", "  ")
@@ -1524,7 +1524,8 @@ func inventoryHead(opts *RenderOptions) Inventory {
 			inventory.Units = append(inventory.Units, InventoryUnit{
 				Kind:   UnitKindService,
 				Module: opts.Module, Name: name,
-				Path: filepath.ToSlash(filepath.Join(serviceDir, name)),
+				Path:   filepath.ToSlash(filepath.Join(serviceDir, name)),
+				Source: releaseSource(opts.Package),
 			})
 		}
 	}

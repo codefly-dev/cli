@@ -44,6 +44,10 @@ var ModuleCmd = &cobra.Command{
 		cli.Init()
 		cli.RegisterCleanup(services.ClearAgents)
 
+		ctx, err := forEnvironment(ctx, envInput)
+		if err != nil {
+			return err
+		}
 		workspace, module, err := common.LoadRequiredModuleWithPinnedModulesE(ctx, args)
 		if err != nil {
 			return err

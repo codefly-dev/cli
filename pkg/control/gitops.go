@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/internal/mutationauthority"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/core/resources"
 )
 
 func (p *planeImpl) RenderGitOps(ctx context.Context, request GitOpsRenderRequest) (gitops.RenderResult, error) {
@@ -24,6 +26,16 @@ func (p *planeImpl) RenderGitOps(ctx context.Context, request GitOpsRenderReques
 	}
 	if request.Module == "" {
 		return gitops.RenderResult{}, fmt.Errorf("module is required")
+	}
+	if envName != orchestration.LocalEnvironmentName {
+		// A render for a hosted environment resolves from pins, as the CLI's
+		// does (composition.FromPins); the workspace is loaded again under it.
+		if ctx, err = composition.FromPins(ctx, workspace, envName); err != nil {
+			return gitops.RenderResult{}, err
+		}
+		if workspace, err = resources.LoadWorkspaceFromDir(ctx, workspace.Dir()); err != nil {
+			return gitops.RenderResult{}, fmt.Errorf("load workspace from pins: %w", err)
+		}
 	}
 	module, err := workspace.LoadModuleFromName(ctx, request.Module)
 	if err != nil {

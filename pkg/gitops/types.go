@@ -12,13 +12,16 @@ import (
 
 const (
 	InventoryFilename = ".codefly-render.json"
-	SchemaVersion     = 7
-	// There is no prior schema a loader still accepts. Schema 7 carries the
-	// settled, signed delivery record and the workspace configuration group
-	// digests; a tree without them is one an older CLI rendered, and reading
-	// it would deliver its documents unsettled and unsigned, and let a consumer
-	// of a changed group through with no digest to hold it against. The
-	// intermediate schema 6 was never released, so nothing is owed a read.
+	SchemaVersion     = 8
+	// priorSchemaVersion is the last schema a loader still accepts. Schema 8
+	// adds each unit's source provenance (InventoryUnit.Source); a schema 7
+	// tree lacks only that record, so it is read as it is — a reader sees no
+	// source for its units, which is the truth about that render — rather than
+	// forcing every tree in the delivery repository to be re-rendered at once.
+	// Schema 7 itself accepted nothing older: it carries the settled, signed
+	// delivery record and the workspace configuration group digests, and a
+	// tree without them would deliver its documents unsettled and unsigned.
+	priorSchemaVersion    = 7
 	EvidenceSchemaVersion = 1
 )
 
@@ -154,6 +157,40 @@ type InventoryUnit struct {
 	// contracts/api catalog) and consumes (from the libraries its service
 	// declares in library-dependencies with a sources[] block).
 	Contracts []InventoryContract `json:"contracts,omitempty"`
+	// Source is where this unit's code came from, so a reader can tell a unit
+	// rendered from the module's release from one carrying local code. Absent
+	// in a tree rendered before schema 8, and for a module with no package
+	// manifest.
+	Source *InventoryUnitSource `json:"source,omitempty"`
+}
+
+// InventoryUnitSource is one of two things, never both: the module package
+// release the unit was rendered from, or the local directory whose code it
+// carries — a machine-local override a local render honoured, or the source a
+// `deploy dev` re-pinned the unit's image to. A render for any environment
+// other than local never sees an override, so there an Override is always a
+// dev deployment.
+type InventoryUnitSource struct {
+	Release  *InventoryPackage      `json:"release,omitempty"`
+	Override *InventoryUnitOverride `json:"override,omitempty"`
+}
+
+// InventoryUnitOverride names local code by its directory and the commit that
+// directory was at, with Dirty set when the working tree had changes no commit
+// describes.
+type InventoryUnitOverride struct {
+	Path   string `json:"path"`
+	Commit string `json:"commit,omitempty"`
+	Dirty  bool   `json:"dirty,omitempty"`
+}
+
+// releaseSource is the provenance of a unit rendered from the module's own
+// tree: its package release, or nothing when the module has no manifest.
+func releaseSource(pkg *InventoryPackage) *InventoryUnitSource {
+	if pkg == nil {
+		return nil
+	}
+	return &InventoryUnitSource{Release: &InventoryPackage{ID: pkg.ID, Version: pkg.Version}}
 }
 
 // InventoryContract records one API contract a unit exposes or consumes,

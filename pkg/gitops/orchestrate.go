@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/codefly-dev/cli/pkg/builder"
+	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	"github.com/codefly-dev/cli/pkg/orchestration"
@@ -356,6 +357,10 @@ func (r *moduleRender) inventoryUnits(
 	injections renderInjections,
 ) error {
 	unitDir, _ := unitDirectory(UnitKindService)
+	overrides, err := r.honouredOverrides(ctx)
+	if err != nil {
+		return err
+	}
 	for _, service := range services {
 		managedService, managed := r.env.ManagedService(r.module.Name, service.Name)
 		entry := InventoryUnit{
@@ -364,6 +369,7 @@ func (r *moduleRender) inventoryUnits(
 			Name:      service.Name,
 			Managed:   managed,
 			Contracts: catalog.exposedContracts(r.module.Name, service.Name),
+			Source:    r.unitSource(ctx, service, overrides),
 		}
 		unique := resources.ServiceUnique(r.module.Name, service.Name)
 		if managed {
@@ -415,6 +421,32 @@ func (r *moduleRender) inventoryUnits(
 		return r.options.Units[i].Name < r.options.Units[j].Name
 	})
 	return nil
+}
+
+// honouredOverrides are the machine-local overrides this render's code came
+// from. Only a local render honours codefly.local.yaml: a render for any other
+// environment is loaded from pins (composition.FromPins), so
+// it has none to record.
+func (r *moduleRender) honouredOverrides(ctx context.Context) ([]composition.LocalOverride, error) {
+	if r.env.Name != orchestration.LocalEnvironmentName || r.workspace == nil {
+		return nil, nil
+	}
+	return composition.LocalOverrides(ctx, r.workspace)
+}
+
+// unitSource is where the unit's code came from: the directory a honoured
+// override supplied it from, for the service or for its whole module,
+// otherwise the module's package release. The commit is read from the
+// service's own directory, as `deploy dev` reads its source's.
+func (r *moduleRender) unitSource(ctx context.Context, service *resources.Service, overrides []composition.LocalOverride) *InventoryUnitSource {
+	for _, override := range overrides {
+		if override.Module != r.module.Name || (override.Service != "" && override.Service != service.Name) {
+			continue
+		}
+		commit, dirty := sourceRevision(ctx, service.Dir())
+		return &InventoryUnitSource{Override: &InventoryUnitOverride{Path: service.Dir(), Commit: commit, Dirty: dirty}}
+	}
+	return releaseSource(r.options.Package)
 }
 
 // declareInstances declares presence from the resolution this render already

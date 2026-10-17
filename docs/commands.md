@@ -837,6 +837,30 @@ the workspace's composed pinned modules — which is what the readiness check
 itself needs in order to judge configuration at all, and which is free once it
 has happened. Everything the failure used to hide behind still comes after.
 
+<a id="codefly-deploy-gitops-render-from-pins"></a>
+**A render for any environment other than `local` renders from pins.** The
+`resolve:` overrides in `codefly.local.yaml` — `resolve.<module>.path` or
+`worktree`, and every `resolve.<module>.services.<service>` entry — exist to
+point a local run at a developer's checkout. `render` and `snapshot` — and
+`codefly deploy module`, `codefly deploy service` and the control plane's
+GitOps render — for any environment but `local` resolve every composed module and service as if those overrides
+did not exist: a module a developer moved is materialized from
+its pin into the same cache a run uses, and a service falls back to the
+module's own copy. Each override ignored is named, with its path and never a
+value:
+
+```
+ignoring local override for tracing: /Users/me/tracing/module (environment staging renders from pins)
+ignoring local override for compute/engine: /Users/me/compute/services/engine (environment staging renders from pins)
+```
+
+The file is not rewritten, so the next `codefly run` (and a render with `--env
+local`) honours every override exactly as before. The CLI's own entries — the
+path it materialized a pinned module to, a `git:` resolution selector — are not
+overrides and keep applying. To put local code on a hosted cell, use [`codefly
+deploy dev`](#codefly-deploy-dev-moduleservice--the-dev-escape-hatch): it is
+explicit, per service, and records the source's commit.
+
 **In-cluster ports are allocated, never declared.** Each endpoint's in-cluster
 port is core's `network.DeployedEndpointPorts`: the conventional endpoint of each
 API takes the canonical port (`grpc` 9090, `rest` 8080, `connect` 8081, …) and
@@ -1030,6 +1054,13 @@ links that revision.
 contracts it exposes (from the module's `contracts/api/catalog.codefly.json`)
 and consumes (from its libraries' generated-client provenance), plus the
 module's own package identity when it has a `module.package.codefly.yaml`.
+Each unit also records its `source` (schema 8): `{"release": {"id",
+"version"}}` from that package manifest when it was rendered from the module's
+own tree, or `{"override": {"path", "commit", "dirty"}}` when its code came
+from a local directory — a `deploy dev` of that service, or a local override a
+`--env local` render honoured. A render for any other environment never
+records an override, because it never sees one. A schema 7 inventory, which
+predates the record, is still read; its units carry no source.
 At `plan` and `publish`, every consumed contract is checked against the
 exposing module's own `.codefly-render.json` in the same GitOps path: the
 module must be deployed there, still expose the endpoint, and its package
@@ -1252,6 +1283,9 @@ codefly deploy dev payments/api --env staging --commit --push
    source origin and path, the source's git commit and whether it was dirty, the
    image and digest, and the time. `codefly doctor workspace` reports each one as
    a `gitops_dev_deployment_active` warning.
+   The service's unit also records the dev source as its `source` — an
+   `override` with that path, commit and dirty flag — in place of the release
+   the render recorded.
 5. **Git.** The changed files are staged and the exact commit and push commands
    printed. `--commit` commits them as
    `dev: <module>/<service> from <path>@<sha>[-dirty]`; `--push` (which needs
@@ -1379,6 +1413,11 @@ Composition splits **identity** (what to compose, portable) from **location**
   overlay — a `resolve:` directive per module (`path:` for `--source`,
   `worktree: <owner/repo>@<ref>` for `--worktree`). It never lands in committed
   config, so a local source choice keeps `git status` clean.
+- **A location is a local-run choice only.** `codefly deploy gitops render`
+  (and `deploy module`/`deploy service`) for any environment other than
+  `local` ignores every `resolve:` override and
+  names each one it ignored ([render from pins](#codefly-deploy-gitops-render-from-pins)),
+  so no deploy depends on what one machine's overlay points at.
 - **`path:` and `worktree:` point at different things.** `path:` resolves to
   the module directory itself and does **not** join the composition's
   `module:` subpath, while `worktree:` resolves to the checkout and then joins
