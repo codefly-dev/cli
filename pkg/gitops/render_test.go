@@ -8,8 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/composition"
 	coreservices "github.com/codefly-dev/core/agents/services"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
+	"github.com/codefly-dev/core/resources"
 )
 
 const pinnedDeployment = `apiVersion: apps/v1
@@ -264,7 +266,7 @@ func TestLoadInventoryRefusesAnOlderSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	downgraded := strings.Replace(string(data), `"schemaVersion": 7`, `"schemaVersion": 6`, 1)
+	downgraded := strings.Replace(string(data), `"schemaVersion": 8`, `"schemaVersion": 6`, 1)
 	if downgraded == string(data) {
 		t.Fatal("rendered inventory did not carry the current schema version")
 	}
@@ -273,6 +275,46 @@ func TestLoadInventoryRefusesAnOlderSchema(t *testing.T) {
 	}
 	if _, err := LoadInventory(destination); err == nil || !strings.Contains(err.Error(), "unsupported") || !strings.Contains(err.Error(), "schema 6") {
 		t.Fatalf("an older schema must be refused by number, got %v", err)
+	}
+	// Schema 7 lacks only the units' source provenance: it is read as it is.
+	prior := strings.Replace(string(data), `"schemaVersion": 8`, `"schemaVersion": 7`, 1)
+	if err := os.WriteFile(path, []byte(prior), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if inventory, err := LoadInventory(destination); err != nil || inventory.SchemaVersion != priorSchemaVersion {
+		t.Fatalf("the prior schema must still be read, got %+v %v", inventory, err)
+	}
+}
+
+// Every unit records where its code came from: the module's package release
+// for a render from the module's own tree, the directory and commit of a
+// machine-local override a local render honoured for that service or for the
+// whole module.
+func TestUnitSourceIsTheReleaseUnlessALocalOverrideSuppliedIt(t *testing.T) {
+	checkout := t.TempDir()
+	pkg := &InventoryPackage{ID: "acme/shop", Version: "1.2.3"}
+	api := &resources.Service{Name: "api"}
+	api.WithDir(filepath.Join(checkout, "services", "api"))
+	web := &resources.Service{Name: "web"}
+	web.WithDir(filepath.Join(checkout, "services", "web"))
+	render := &moduleRender{module: &resources.Module{Name: "shop"}, options: &RenderOptions{Package: pkg}}
+
+	if got := render.unitSource(context.Background(), api, nil); got == nil || got.Release == nil || *got.Release != *pkg || got.Override != nil {
+		t.Fatalf("a unit from the module's tree records its release, got %+v", got)
+	}
+	overrides := []composition.LocalOverride{{Module: "shop", Service: "api", Path: "elsewhere"}, {Module: "other", Path: "elsewhere"}}
+	if got := render.unitSource(context.Background(), api, overrides); got == nil || got.Override == nil || got.Override.Path != api.Dir() || !got.Override.Dirty || got.Release != nil {
+		t.Fatalf("an overridden service records its directory (no git: dirty, no commit), got %+v", got)
+	}
+	if got := render.unitSource(context.Background(), web, overrides); got == nil || got.Release == nil {
+		t.Fatalf("another module's override does not touch this one, got %+v", got)
+	}
+	if got := render.unitSource(context.Background(), web, []composition.LocalOverride{{Module: "shop", Path: checkout}}); got == nil || got.Override == nil || got.Override.Path != web.Dir() {
+		t.Fatalf("a whole-module override covers every service, got %+v", got)
+	}
+	render.options.Package = nil
+	if got := render.unitSource(context.Background(), web, nil); got != nil {
+		t.Fatalf("no manifest, no release to record, got %+v", got)
 	}
 }
 

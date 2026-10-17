@@ -222,6 +222,13 @@ func TestDeployDevRepinsOnlyTheServiceImage(t *testing.T) {
 		Image: newImage, Digest: devNewDigest, DeployedAt: now,
 	}}, inventory.Dev)
 	require.Equal(t, inventory.Dev[0], result.Entry)
+	for _, unit := range inventory.Units {
+		if unit.Name == "api" {
+			require.Equal(t, &InventoryUnitSource{Override: &InventoryUnitOverride{Path: source, Commit: head, Dirty: true}}, unit.Source, "the re-pinned unit names the dev source as its own")
+		} else {
+			require.True(t, unit.Source == nil || unit.Source.Override == nil, "no other unit changes source: %+v", unit)
+		}
+	}
 	// The re-derived inventory still describes the tree exactly.
 	_, _, err = loadDevTarget(root, "shop", "api", "staging", "")
 	require.NoError(t, err)

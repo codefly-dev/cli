@@ -26,6 +26,19 @@ import (
 // the same cache, receipts and overlay, and free once it has happened.
 var loadGitOpsModule = common.LoadRequiredModuleWithPinnedModulesE
 
+// forEnvironment is the context a render or deploy for environment loads its
+// workspace under. The local environment keeps every override of
+// codefly.local.yaml, as a run does; any other resolves from pins and names
+// each override it ignored (common.FromPinsContext). `deploy dev` does not
+// come through here: it keeps its explicit, SHA-recorded path for putting
+// local code on a cell.
+func forEnvironment(ctx context.Context, environment string) (context.Context, error) {
+	if environment == orchestration.LocalEnvironmentName {
+		return ctx, nil
+	}
+	return common.FromPinsContext(ctx, environment)
+}
+
 var GitOpsCmd = &cobra.Command{
 	Use:   "gitops",
 	Short: "Render, publish, observe, and recover reviewed GitOps promotions",
@@ -38,6 +51,10 @@ var gitOpsRenderCmd = &cobra.Command{
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
+		ctx, err := forEnvironment(ctx, gitOpsEnv)
+		if err != nil {
+			return err
+		}
 		workspace, module, err := loadGitOpsModule(ctx, args)
 		if err != nil {
 			return err
@@ -74,6 +91,10 @@ var gitOpsSnapshotCmd = &cobra.Command{
 	RunE: func(_ *cobra.Command, args []string) error {
 		ctx, done := common.NewContext()
 		defer done()
+		ctx, err := forEnvironment(ctx, gitOpsEnv)
+		if err != nil {
+			return err
+		}
 		workspace, module, err := loadGitOpsModule(ctx, args)
 		if err != nil {
 			return err

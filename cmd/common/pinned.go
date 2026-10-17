@@ -76,3 +76,16 @@ func LoadRequiredWithPinnedModulesE(ctx context.Context, args []string) (*resour
 	}
 	return LoadRequiredE(ctx, args)
 }
+
+// FromPinsContext is the context a command producing an environment other
+// than local runs under: the workspace is materialized exactly as for a run,
+// then every load under the returned context resolves each module and service
+// from the source the workspace commits, as if codefly.local.yaml held no
+// override (composition.FromPins), and each override ignored is named.
+func FromPinsContext(ctx context.Context, environment string) (context.Context, error) {
+	workspace, err := LoadWorkspaceWithPinnedModules(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return composition.FromPins(ctx, workspace, environment)
+}

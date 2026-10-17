@@ -301,7 +301,12 @@ func treeDigest(t *testing.T, root string) string {
 // presence; delivery documents settled and signed at publish) and now main's
 // restricted property beside them. The manifests are unchanged by either, and
 // the two cases below still agree, which is the property this digest pins.
-const undeclaredFixtureDigest = "fe83664635e75df2d8d13f24c9bed8a0b28dd14c74370e591258251f39b81b70"
+//
+// It moved with inventory schema 8 (each unit's source provenance): the
+// fixture module has no package manifest, so its units record no source and
+// the only differing bytes are `"schemaVersion": 8` in .codefly-render.json —
+// verified by diffing the fixture's rendered tree against main c8c50d66.
+const undeclaredFixtureDigest = "49cb877e08a7a2079deea3c862b33ad5e592ede4d449aebc02682ede9f60021f"
 
 func TestRenderModuleWithoutDeclarationsIsByteIdentical(t *testing.T) {
 	installFakeAgents(t)

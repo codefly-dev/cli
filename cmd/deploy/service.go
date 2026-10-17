@@ -33,6 +33,10 @@ var ServiceCmd = &cobra.Command{
 		cli.Init()
 		cli.RegisterCleanup(services.ClearAgents)
 
+		ctx, err := forEnvironment(ctx, envInput)
+		if err != nil {
+			return err
+		}
 		workspace, module, service, err := common.LoadRequiredWithPinnedModulesE(ctx, args)
 		if err != nil {
 			return err

@@ -389,6 +389,15 @@ func applyDevImages(root string, inventory *Inventory, unit *InventoryUnit, imag
 	entry.Image = primary.image
 	entry.Digest = primary.image[strings.LastIndex(primary.image, "@")+1:]
 
+	// The unit now carries the dev source's code, and its inventory record says
+	// so in place of the release the render recorded.
+	units := append([]InventoryUnit(nil), inventory.Units...)
+	for i := range units {
+		if units[i].Kind == unit.Kind && units[i].Name == unit.Name {
+			units[i].Source = &InventoryUnitSource{Override: &InventoryUnitOverride{Path: entry.Source, Commit: entry.Commit, Dirty: entry.Dirty}}
+		}
+	}
+	inventory.Units = units
 	rebuilt, err := buildInventory(root, inventoryRenderOptions(inventory))
 	if err != nil {
 		return nil, err
