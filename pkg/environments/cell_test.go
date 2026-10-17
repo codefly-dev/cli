@@ -55,3 +55,42 @@ cell:
 		}
 	}
 }
+
+// A service-mesh entry labels a presenter's Service: it is read back as
+// declared, and refused, naming the service, for a service that declares no
+// presenter endpoint, a label the render owns, or an unknown key.
+func TestServiceMeshLabelsOnlyAPresenter(t *testing.T) {
+	env := decodeEnvironment(t, `name: staging
+cell:
+  saas/auth-gateway: {presenter: [workload]}
+  saas/accounts: {bindings: [vault]}
+service-mesh:
+  services:
+    saas/auth-gateway:
+      labels: {istio.io/use-waypoint: ns-waypoint, istio.io/use-waypoint-namespace: istio-waypoint}
+`)
+	if err := env.validateServiceMesh(); err != nil {
+		t.Fatal(err)
+	}
+	if labels := env.ServiceMeshLabels("saas", "auth-gateway"); labels["istio.io/use-waypoint"] != "ns-waypoint" || labels["istio.io/use-waypoint-namespace"] != "istio-waypoint" {
+		t.Fatalf("labels = %v", labels)
+	}
+	if labels := env.ServiceMeshLabels("saas", "accounts"); labels != nil {
+		t.Fatalf("a service without an entry is labelled %v", labels)
+	}
+	for bad, refusal := range map[string]string{
+		"cell:\n  saas/accounts: {bindings: [vault]}\nservice-mesh:\n  services:\n    saas/accounts: {labels: {istio.io/use-waypoint: w}}\n": "service-mesh saas/accounts: the service declares no presenter endpoint",
+		"service-mesh:\n  services:\n    saas/missing: {labels: {istio.io/use-waypoint: w}}\n":                                               "service-mesh saas/missing: the service declares no presenter endpoint",
+		"cell:\n  saas/g: {presenter: [workload]}\nservice-mesh:\n  services:\n    saas/g: {labels: {codefly.dev/workload: w}}\n":            `service-mesh saas/g: label "codefly.dev/workload" is the render's own`,
+		"service-mesh:\n  services:\n    g: {labels: {a: b}}\n":                                                                              "module-qualified",
+	} {
+		env := decodeEnvironment(t, "name: s\n"+bad)
+		if err := env.validateServiceMesh(); err == nil || !strings.Contains(err.Error(), refusal) {
+			t.Fatalf("%s: err = %v, want %q", bad, err, refusal)
+		}
+	}
+	var env2 Environment
+	if err := yaml.Unmarshal([]byte("name: s\nservice-mesh:\n  services:\n    saas/g: {label: {a: b}}\n"), &env2); err == nil || !strings.Contains(err.Error(), `unknown service-mesh service field "label"`) {
+		t.Fatalf("a mistyped key is refused: %v", err)
+	}
+}

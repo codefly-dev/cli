@@ -117,6 +117,9 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err = projectWorkloadIdentity(tree, owned, opts); err != nil {
 		return RenderResult{}, err
 	}
+	if err = projectServiceMesh(tree, owned, opts); err != nil {
+		return RenderResult{}, err
+	}
 	// Before the manifest and the validation read the tree: a Job or CronJob
 	// an agent rendered without pod labels is given the two that name it,
 	// so every pod-producing workload is one the cell file can select.

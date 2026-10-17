@@ -341,7 +341,7 @@ type podProjection struct {
 	env map[string]string
 }
 
-func (projection *podProjection) environmentEntries() []any {
+func (projection podProjection) environmentEntries() []any {
 	keys := make([]string, 0, len(projection.env))
 	for key := range projection.env {
 		keys = append(keys, key)
@@ -357,7 +357,7 @@ func (projection *podProjection) environmentEntries() []any {
 }
 
 // patch is the projection as an inline strategic-merge patch.
-func (projection *podProjection) patch() (map[string]any, error) {
+func (projection podProjection) patch() (map[string]any, error) {
 	container := map[string]any{keyName: projection.container, "volumeMounts": []any{projection.mount}}
 	if len(projection.env) > 0 {
 		container["env"] = projection.environmentEntries()
@@ -379,7 +379,7 @@ func (projection *podProjection) patch() (map[string]any, error) {
 }
 
 // applyTo adds the projection to a decoded manifest of its workload.
-func (projection *podProjection) applyTo(document map[string]any) bool {
+func (projection podProjection) applyTo(document map[string]any) bool {
 	if kind, _ := document[keyKind].(string); kind != projection.kind || metadataString(document, keyName) != projection.name {
 		return false
 	}
@@ -407,10 +407,23 @@ func (projection *podProjection) applyTo(document map[string]any) bool {
 	return true
 }
 
+// target names the workload the projection patches.
+func (projection podProjection) target() (kind, name string) {
+	return projection.kind, projection.name
+}
+
+// overlayProjection is one change the render makes to an object of a unit's
+// environment overlay: a pod projection, or a Service's labels.
+type overlayProjection interface {
+	patch() (map[string]any, error)
+	applyTo(document map[string]any) bool
+	target() (kind, name string)
+}
+
 // addOverlayPatches writes the projections into the unit's environment
 // overlay: as inline patches in its kustomization, or — an overlay of plain
 // manifests, as a tree assembled without an agent is — into the manifests.
-func addOverlayPatches(tree *renderRoot, unitDir, environment string, projections []podProjection) error {
+func addOverlayPatches[P overlayProjection](tree *renderRoot, unitDir, environment string, projections []P) error {
 	if len(projections) == 0 {
 		return nil
 	}
@@ -461,7 +474,7 @@ func addOverlayPatches(tree *renderRoot, unitDir, environment string, projection
 }
 
 // projectIntoManifests applies the projections to the overlay's manifests.
-func projectIntoManifests(tree *renderRoot, overlay string, projections []podProjection) error {
+func projectIntoManifests[P overlayProjection](tree *renderRoot, overlay string, projections []P) error {
 	entries, err := tree.readDir(overlay)
 	if err != nil {
 		return err
@@ -514,7 +527,8 @@ func projectIntoManifests(tree *renderRoot, overlay string, projections []podPro
 	}
 	for index, done := range applied {
 		if !done {
-			return fmt.Errorf("overlay %s carries no manifest of %s %s to project into", overlay, projections[index].kind, projections[index].name)
+			kind, name := projections[index].target()
+			return fmt.Errorf("overlay %s carries no manifest of %s %s to project into", overlay, kind, name)
 		}
 	}
 	return nil

@@ -1144,6 +1144,11 @@ func (env *Environment) serviceScopedNames() map[string][]string {
 			names["service-identity"] = append(names["service-identity"], name)
 		}
 	}
+	if env.ServiceMesh != nil {
+		for name := range env.ServiceMesh.Services {
+			names["service-mesh"] = append(names["service-mesh"], name)
+		}
+	}
 	return names
 }
 
@@ -1286,6 +1291,10 @@ type Environment struct {
 	// it so the cell derives the service's consumers from a declaration the
 	// composition owns.
 	Cell map[string]EnvironmentCellWorkload `yaml:"cell,omitempty"`
+	// ServiceMesh names, per `<module>/<service>`, the labels the cell needs
+	// on that service's Service (its waypoint attachment). The render stamps
+	// them in the unit's environment overlay. Only a presenter may carry one.
+	ServiceMesh *EnvironmentServiceMesh `yaml:"service-mesh,omitempty"`
 
 	// DNS carries the environment's DNS contract. Its AppHostSuffix lets the network layer
 	// derive an external endpoint's public host from declared config instead of
@@ -1544,6 +1553,97 @@ func (env *Environment) validateCell() error {
 		}
 	}
 	return nil
+}
+
+// EnvironmentServiceMesh carries the Kubernetes labels the cell needs on a
+// service's Service, per `<module>/<service>`: today the waypoint attachment
+// (`istio.io/use-waypoint`, `istio.io/use-waypoint-namespace`) that puts the
+// cell's protected waypoint in front of a presenter. The values are the cell's
+// convention, so the render stamps them as declared and derives none of them.
+// Only a service that declares a presenter endpoint under `cell:` may carry an
+// entry: attaching any other Service puts its traffic behind an L7 hop it was
+// never rendered for.
+type EnvironmentServiceMesh struct {
+	Services map[string]EnvironmentMeshService `yaml:"services,omitempty"`
+}
+
+// EnvironmentMeshService is what one service's Service carries for the mesh.
+type EnvironmentMeshService struct {
+	Labels map[string]string `yaml:"labels,omitempty"`
+}
+
+// UnmarshalYAML refuses an unknown key: a mistyped `services` or `labels`
+// would leave the presenter unattached and its consumers denied, with nothing
+// naming why.
+func (mesh *EnvironmentServiceMesh) UnmarshalYAML(node *yaml.Node) error {
+	if err := rejectUnknownKeys(node, "service-mesh", "services"); err != nil {
+		return err
+	}
+	type plain EnvironmentServiceMesh
+	return node.Decode((*plain)(mesh))
+}
+
+func (service *EnvironmentMeshService) UnmarshalYAML(node *yaml.Node) error {
+	if err := rejectUnknownKeys(node, "service-mesh service", "labels"); err != nil {
+		return err
+	}
+	type plain EnvironmentMeshService
+	return node.Decode((*plain)(service))
+}
+
+// RenderOwnedLabelPrefix is the label namespace the render stamps itself; a
+// declared label in it would fight the render for the value.
+const RenderOwnedLabelPrefix = "codefly.dev/"
+
+// Validate checks the block's shape: qualified keys, a non-empty label map,
+// no label the render owns. A nil receiver is "not declared".
+func (mesh *EnvironmentServiceMesh) Validate() error {
+	if mesh == nil {
+		return nil
+	}
+	if len(mesh.Services) == 0 {
+		return fmt.Errorf("service-mesh declares no service")
+	}
+	for key, service := range mesh.Services {
+		if err := validateServiceIdentityKey("service-mesh", key); err != nil {
+			return err
+		}
+		if len(service.Labels) == 0 {
+			return fmt.Errorf("service-mesh %s declares no label", key)
+		}
+		for label, value := range service.Labels {
+			if strings.TrimSpace(label) == "" || strings.TrimSpace(value) == "" {
+				return fmt.Errorf("service-mesh %s: a label needs a name and a value", key)
+			}
+			if strings.HasPrefix(label, RenderOwnedLabelPrefix) {
+				return fmt.Errorf("service-mesh %s: label %q is the render's own (%s*)", key, label, RenderOwnedLabelPrefix)
+			}
+		}
+	}
+	return nil
+}
+
+// validateServiceMesh holds every service-mesh entry to a presenter the
+// environment declares under `cell:`.
+func (env *Environment) validateServiceMesh() error {
+	if err := env.ServiceMesh.Validate(); err != nil || env.ServiceMesh == nil {
+		return err
+	}
+	for key := range env.ServiceMesh.Services {
+		if len(env.Cell[key].Presenter) == 0 {
+			return fmt.Errorf("service-mesh %s: the service declares no presenter endpoint (cell: %s: presenter), and only a presenter's Service is attached to the cell's waypoint", key, key)
+		}
+	}
+	return nil
+}
+
+// ServiceMeshLabels are the labels the environment declares for a service's
+// Service, or nil.
+func (env *Environment) ServiceMeshLabels(module, service string) map[string]string {
+	if env == nil || env.ServiceMesh == nil {
+		return nil
+	}
+	return maps.Clone(env.ServiceMesh.Services[resources.ServiceUnique(module, service)].Labels)
 }
 
 // CellWorkload is the cell declaration of one service, bindings sorted.

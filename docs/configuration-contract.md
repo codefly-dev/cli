@@ -51,6 +51,27 @@ Producers must supply:
   the identity webhook keys off a label. Unknown keys in either block are refused
   rather than dropped: a mistyped `services` would otherwise leave a valid
   `default` standing and silently collapse every override onto it.
+- Any labels the cell needs on a service's Service under `service-mesh`, keyed
+  `<module>/<service>`: today the waypoint attachment that puts the cell's
+  protected waypoint in front of a presenter. The values are the cell's
+  convention, so the render carries them verbatim and derives none of them:
+
+  ```yaml
+  service-mesh:
+    services:
+      shop/gateway:
+        labels:
+          istio.io/use-waypoint: <namespace>-waypoint
+          istio.io/use-waypoint-namespace: istio-waypoint
+  ```
+
+  The render stamps them as `metadata.labels` on that service's Service, as a
+  patch in the unit's environment overlay, and on no other Service: a Service
+  is the finest attachment there is, so every port of an attached Service goes
+  behind the waypoint's L7 hop. An entry is refused, naming the service, unless
+  the service declares a presenter endpoint under `cell:`; a service the
+  workspace does not have, an unknown key, a `codefly.dev/` label and a label
+  the rendered Service already carries are refused too.
 - Any application secret mappings through the existing `service-secrets` model.
 - Any resolved non-secret values through `service-config`, keyed by consuming
   service and then by the exact key the service reads. The producer resolves the

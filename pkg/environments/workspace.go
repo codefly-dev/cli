@@ -144,6 +144,9 @@ func (env *Environment) Validate() error {
 	if err := env.validateCell(); err != nil {
 		return err
 	}
+	if err := env.validateServiceMesh(); err != nil {
+		return err
+	}
 	for name, managed := range env.ManagedServices {
 		if err := validateManagedServiceKey(name); err != nil {
 			return err
@@ -217,7 +220,7 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 				// A module-qualified service-identity key names exactly one
 				// service of that module, or nothing (a typo that would leave
 				// the workload on the default identity with no report).
-				if _, service, qualified := strings.Cut(name, "/"); qualified && block == "service-identity" {
+				if _, service, qualified := strings.Cut(name, "/"); qualified && (block == "service-identity" || block == "service-mesh") {
 					if !slices.Contains(byName[service], name) {
 						return w.Wrap(fmt.Errorf("environment %q %s references unknown service %q", env.Name, block, name))
 					}

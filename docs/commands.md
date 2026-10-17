@@ -807,7 +807,9 @@ fronts each presenter endpoint with a waypoint, admits the waypoint alone on
 that port, hands the service the waypoint's identity and exports the principal
 the waypoint runs as; the file carries the fact on the endpoint
 (`presenter: true`). A presenter endpoint the service does not declare is
-refused at render, by name. A service whose render includes a non-serving
+refused at render, by name. The labels that attach the waypoint to the presenter's
+Service are the cell's to name and come from the environment's `service-mesh:`
+block (`docs/configuration-contract.md`); the cell file does not carry them. A service whose render includes a non-serving
 workload (an agent's bootstrap Job) is listed as a consumer of its own
 endpoints, so the Job's identity is admitted to the service it bootstraps.
 
