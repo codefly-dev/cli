@@ -1389,10 +1389,10 @@ For the lifetime of one run, the CLI is:
   reaches the gateway is the workspace value the composition points at the
   gateway's `workload` endpoint, resolved like every other `${endpoint:…}`
   reference at the address the run allocated.
-- **the delivery pipeline** — once a workload is running it signs that
-  workload's presence and authority with the developer key and POSTs them to
-  the host's own delivery endpoints, and writes the module envelope through
-  the fixture's platform administrator.
+- **the delivery pipeline** — once a workload is running, and once the host
+  is ready to take it, it signs that workload's presence and authority with
+  the developer key and POSTs them to the host's own delivery endpoints, and
+  writes the module envelope through the fixture's platform administrator.
 
 The host is pointed at the stand-in by two settings the run supplies,
 `SOLUTION_HOST_LOCAL_CLUSTER` and `SOLUTION_HOST_LOCAL_TRUST_ANCHOR`, both
@@ -1433,6 +1433,28 @@ Three things it does, and why:
   it by projecting the token only after delivery. The workload waits for the
   token, and from then on the host answers "not established yet" until its
   registry has read the documents.
+- **A delivery waits for the host, within a deadline.** A workload reports
+  Running on its own schedule: a module the gateway does not depend on can be
+  Running before `host.gateway` has started, and a gateway that listens can
+  still answer 503 until it has configured itself. So a workload's delivery
+  starts only once the gateway and the `host.delivery` service are ready by
+  the readiness the run gates on (Start completed, consumed endpoints
+  answering), and a refusal that only says the host is not serving yet is
+  asked again with a backoff from 0.5 s doubling to 10 s, for at most
+  **10 minutes** from Running: a 5xx; a 404 from the gateway (sign-in or
+  envelope) before it exposes the route; a 409 on the envelope (a lost
+  revision race); no answer at all (refused, reset, timed out). A refusal
+  that says no fails at once with its reason: any other 4xx, including a 404
+  from the host's own delivery endpoint (a wrong `host.delivery`), a policy
+  refusal, an address that is not a URL, an agent that reports no started
+  artifact. The first wait and every change of its reason are logged at info
+  with the service, its module and the reason. A workload not delivered by
+  the deadline is reported as an error naming it, why the host is still not
+  serving, the last refusal it answered, and the consequence: every gateway
+  route to its module answers 404 until it is delivered, which a restart of
+  the workload attempts again. A workload has one delivery in flight: a
+  restart replaces the waiting one, and a workload the composition withdraws
+  while it waits is not delivered.
 - **The build is what the agent says it started.** The run asks no question of
   the filesystem about where a workload's build lives, because the answer
   differs per agent family and only the agent that started the process knows
