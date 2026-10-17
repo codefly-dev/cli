@@ -188,7 +188,7 @@ func TestAgentCIAuditStage(t *testing.T) {
 			root, home := t.TempDir(), t.TempDir()
 			selected := writeAgentCICandidate(t, root, home, peerBytes, selection)
 			report, calls, err := runAgentCIFixture(t, cli, root, home, peer)
-			require.NoError(t, err)
+			require.NoError(t, err, "agent CI report: %s", report)
 			require.Equal(t, "passed", report.GetStatus())
 			require.Equal(t, "audit", report.Stages[3].GetName())
 			require.Equal(t, "passed", report.Stages[3].GetStatus())

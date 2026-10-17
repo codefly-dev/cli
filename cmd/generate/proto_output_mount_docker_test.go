@@ -26,7 +26,7 @@ import (
 // The image is alpine rather than the proto companion: all the probe needs is
 // `rm`, and pulling the companion would make a mount proof fail on a buf or
 // registry problem. Keep the tag in step with the image the workflow pulls.
-const mountQualificationImage = "alpine:3.22"
+const mountQualificationImage = "mirror.gcr.io/library/alpine:3.22"
 
 func TestProtoStagingMountIsQualifiedAgainstARealBindMount(t *testing.T) {
 	requireDockerDaemon(t)
