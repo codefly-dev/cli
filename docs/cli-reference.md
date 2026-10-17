@@ -2195,6 +2195,7 @@ codefly deploy gitops render [module]
 Flags:
 
 ```
+      --all                                                                               Render every module the workspace composes, the host first, and derive the environment's cell file once at the end
       --app-project string                                                                AppProject contract for cluster-scoped resources
       --env string                                                                        Environment to promote (default "local")
       --rebuild                                                                           Build every image even when no input of it changed, instead of keeping the image already built from those inputs

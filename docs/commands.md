@@ -799,8 +799,32 @@ container port the mesh authorizes, `service_port` the Service's), who the
 composition says calls them (service dependencies and a solution's
 `api.consumes`), the ingress routed onto them, the presence delivery Job,
 and what the environment declares per `<module>/<service>` under `cell:`
-(platform `bindings`, `cloud-identity`) and `egress:` (external hosts; a
-managed service's `egress-cidrs`). The file names the commit it was emitted
+and `egress:` (external hosts; a managed service's `egress-cidrs`). The
+`cell:` entry names the platform `bindings` the service holds, `cloud-identity`
+when it runs under a cloud identity, and `presenter`: the endpoints whose
+listener accepts only a protected waypoint's assertion of the caller. The cell
+fronts each presenter endpoint with a waypoint, admits the waypoint alone on
+that port, hands the service the waypoint's identity and exports the principal
+the waypoint runs as; the file carries the fact on the endpoint
+(`presenter: true`). A presenter endpoint the service does not declare is
+refused at render, by name. A service whose render includes a non-serving
+workload (an agent's bootstrap Job) is listed as a consumer of its own
+endpoints, so the Job's identity is admitted to the service it bootstraps.
+
+```yaml
+environments:
+  staging:
+    host: {coordinate: region-a, component: platform-host, trust_domain: cell.example}
+    cell:
+      edge/gateway: {bindings: [identity], presenter: [workload]}
+      shop/api: {bindings: [vault, identity], cloud-identity: true}
+    egress:
+      shop/api: {hosts: [identity.example.test, {name: api.github.com, port: 8443}]}
+```
+
+This cell file is the render's inventory of a composition; it is not the
+retired `codefly/cell/v1` *import descriptor* that `environment import`
+rejects below, which named a cluster's coordinates and never a workload. The file names the commit it was emitted
 from (`source`) when the environment declares a gitops `repo-url` and `branch`
 and the workspace is a git checkout; the render says so when it cannot. It is
 regenerated whole — a workload absent from it is not delivered — and is what
@@ -813,6 +837,7 @@ For a complete module promotion, use the GitOps lifecycle:
 
 ```bash
 codefly deploy gitops render payments --env production --app-project payments
+codefly deploy gitops render --all --env production   # Every composed module, the host first
 codefly deploy gitops plan payments --env production
 codefly deploy gitops publish payments --env production
 
@@ -825,6 +850,19 @@ codefly deploy gitops observe payments --env production \
 codefly deploy gitops rollback payments --env production \
   --to-revision <previous-reviewed-commit>
 ```
+
+`render --all` renders every module the workspace composes, the host first,
+and derives the environment's cell file once at the end from all of them, so
+one command renders one composition and a stale sibling tree is never a reason
+to run the render again. A single-module `render` re-derives the cell file
+from its own tree and the sibling trees already rendered; a sibling the cell
+file cannot read, or one left at another inventory schema, is reported as
+stale by name rather than failing the render. An image whose inputs did not
+change is kept rather than rebuilt, and that decision is taken before any Go
+module graph is fetched, so a render of an up-to-date composition fetches
+nothing; `--rebuild` builds every image regardless. A service that declares
+module identity runs as its own ServiceAccount, and a rendered Job without pod
+labels is labelled so the cell file can select it.
 
 `render`, `snapshot`, `plan` and `publish` evaluate the workspace readiness
 verdict for the target environment **before** they do any expensive work, and
