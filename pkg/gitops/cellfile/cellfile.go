@@ -116,6 +116,11 @@ type Endpoint struct {
 	Port        int      `yaml:"port,omitempty"`
 	ServicePort int      `yaml:"service_port,omitempty"`
 	Consumers   []string `yaml:"consumers,omitempty"`
+	// Presenter marks an endpoint whose listener accepts only a protected
+	// waypoint's assertion of the caller: the cell fronts it with a waypoint,
+	// admits the waypoint alone on this port, and hands the service the
+	// waypoint's identity. Declared by the composition's environment.
+	Presenter bool `yaml:"presenter,omitempty"`
 }
 
 // Ingress is one edge route onto an endpoint: every host the environment

@@ -48,7 +48,7 @@ environments:
     egress:
       shop/api: {hosts: [identity.example.test, {name: api.github.com, port: 8443}]}
     cell:
-      shop/api: {bindings: [vault, identity], cloud-identity: true}
+      shop/api: {bindings: [vault, identity], cloud-identity: true, presenter: [http]}
     host:
       coordinate: region-a
       component: platform-host
@@ -212,9 +212,9 @@ func TestCellFileInventoriesEveryRenderedWorkload(t *testing.T) {
 	}, api.Containers, "a tag is dropped from the repository; the digest is the identity")
 	require.Equal(t, &cellfile.Release{Publisher: "acme", Name: "shop", Version: "1.2.0"}, api.Release)
 	require.Equal(t, []cellfile.Endpoint{
-		{Name: "grpc", API: "grpc", Port: 9090, ServicePort: 9090, Consumers: []string{"billing/ledger"}},
-		{Name: "http", API: "http", Port: 3000, ServicePort: 8080},
-	}, api.Endpoints, "port is the container port the mesh authorizes, service_port the Service's, both as the render resolved and recorded them; the grpc endpoint has a declared consumer, the http endpoint none, visibly")
+		{Name: "grpc", API: "grpc", Port: 9090, ServicePort: 9090, Consumers: []string{"billing/ledger", "shop/api"}},
+		{Name: "http", API: "http", Port: 3000, ServicePort: 8080, Consumers: []string{"shop/api"}, Presenter: true},
+	}, api.Endpoints, "port is the container port the mesh authorizes, service_port the Service's, both as the render resolved and recorded them; the grpc endpoint has a declared consumer; a service that renders a bootstrap Job names itself on every endpoint, so the Job's identity is admitted to the service it bootstraps; and the endpoint the environment declares as a presenter carries that fact for the cell to front it with a protected waypoint")
 	require.Equal(t, []cellfile.Ingress{{Endpoint: "http", Hosts: []string{"shop.example.test"}}}, api.Ingress)
 	migrate := shop.Workloads[1]
 	require.Equal(t, "api-migrate", migrate.Name)

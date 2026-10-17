@@ -212,6 +212,16 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 		}
 		servicePorts, containerPorts := unitPorts(unit)
 		grant, _ := env.CellWorkload(inventory.Module, unit.Name)
+		// A service whose render includes a non-serving workload (an agent's
+		// bootstrap Job: a store's role creation, a warehouse's migration)
+		// reaches the service it bootstraps under that Job's own identity,
+		// and the mesh admits only the callers the cell declares. So such a
+		// service declares itself a consumer of every endpoint it serves:
+		// the reader resolves the reference to every workload running the
+		// service, the Job included, and admits exactly those identities.
+		// Nothing widens -- the Job is the service's own pod -- and nothing
+		// is assumed about which endpoint it dials.
+		selfConsuming := slices.ContainsFunc(workloads, func(w renderedWorkload) bool { return !servingKind(w.Kind) })
 		for index := range workloads {
 			rendered := &workloads[index]
 			selector, err := podSelector(manifests, rendered.Name, rendered.Kind)
@@ -247,15 +257,28 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 					if endpoint == nil {
 						continue
 					}
+					callers := consumers[workload.Service+"/"+endpoint.Name]
+					if selfConsuming && !slices.Contains(callers, workload.Service) {
+						callers = append(append([]string(nil), callers...), workload.Service)
+					}
 					entry := cellfile.Endpoint{
 						Name: endpoint.Name, API: endpoint.API,
 						Port:        int(containerPorts[endpoint.Name]),
 						ServicePort: int(servicePorts[endpoint.Name]),
-						Consumers:   consumers[workload.Service+"/"+endpoint.Name],
+						Consumers:   callers,
+						Presenter:   slices.Contains(grant.Presenter, endpoint.Name),
 					}
 					workload.Endpoints = append(workload.Endpoints, entry)
 				}
 				sort.Slice(workload.Endpoints, func(i, j int) bool { return workload.Endpoints[i].Name < workload.Endpoints[j].Name })
+				// A presenter endpoint the service does not declare would be a
+				// protection the cell never builds and a listener that refuses
+				// every caller: refused here, by name.
+				for _, name := range grant.Presenter {
+					if !slices.ContainsFunc(workload.Endpoints, func(e cellfile.Endpoint) bool { return e.Name == name }) {
+						return cellfile.Namespace{}, fmt.Errorf("unit %s/%s: the environment declares presenter endpoint %q, which the service does not declare", inventory.Module, unit.Name, name)
+					}
+				}
 				// One ingress entry per endpoint, every host once: the
 				// environment may route one endpoint through several
 				// declarations, and a count in a cell is a count a reader

@@ -1507,10 +1507,14 @@ func (env *Environment) EgressHosts(module, service string) []EnvironmentEgressH
 }
 
 // EnvironmentCellWorkload is what the composition declares about one service
-// for the cell: the platform bindings it holds, and cloud identity.
+// for the cell: the platform bindings it holds, cloud identity, and the
+// endpoints whose listener accepts only a protected waypoint's assertion of
+// the caller (`presenter`): the cell fronts each with a waypoint, narrows the
+// destination to it, and hands the service the waypoint's identity.
 type EnvironmentCellWorkload struct {
 	Bindings      []string `yaml:"bindings,omitempty"`
 	CloudIdentity bool     `yaml:"cloud-identity,omitempty"`
+	Presenter     []string `yaml:"presenter,omitempty"`
 }
 
 var cellBindingPattern = regexp.MustCompile(`^[a-z0-9]+(?:[_-][a-z0-9]+)*$`)
@@ -1520,8 +1524,13 @@ func (env *Environment) validateCell() error {
 		if err := validateServiceIdentityKey("cell", key); err != nil {
 			return err
 		}
-		if len(workload.Bindings) == 0 && !workload.CloudIdentity {
-			return fmt.Errorf("cell %s declares nothing: name the bindings the service holds, or cloud-identity, or drop the entry", key)
+		if len(workload.Bindings) == 0 && !workload.CloudIdentity && len(workload.Presenter) == 0 {
+			return fmt.Errorf("cell %s declares nothing: name the bindings the service holds, cloud-identity, or the presenter endpoints, or drop the entry", key)
+		}
+		for _, endpoint := range workload.Presenter {
+			if !cellBindingPattern.MatchString(endpoint) {
+				return fmt.Errorf("cell %s: presenter endpoint %q is not an endpoint name", key, endpoint)
+			}
 		}
 		seen := make(map[string]struct{}, len(workload.Bindings))
 		for _, binding := range workload.Bindings {
@@ -1548,5 +1557,7 @@ func (env *Environment) CellWorkload(module, service string) (EnvironmentCellWor
 	}
 	bindings := append([]string(nil), workload.Bindings...)
 	sort.Strings(bindings)
-	return EnvironmentCellWorkload{Bindings: bindings, CloudIdentity: workload.CloudIdentity}, true
+	presenter := append([]string(nil), workload.Presenter...)
+	sort.Strings(presenter)
+	return EnvironmentCellWorkload{Bindings: bindings, CloudIdentity: workload.CloudIdentity, Presenter: presenter}, true
 }
