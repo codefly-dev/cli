@@ -1237,6 +1237,16 @@ once and nowhere else:
   ingress gateway reaches it, under a principal the cell names, not the
   composition.
 
+One source is not in the composition at all. A service whose render includes a
+workload that does **not** serve its endpoints — an agent's bootstrap Job,
+which runs under the service's own ServiceAccount and so under the service's
+own mesh principal — reaches the endpoints of the very service it belongs to.
+Nothing declares it, because it is not a dependency between services but one
+rendered workload reaching another, and the rendered tree is the only place it
+is visible. So a service that renders one admits itself to each of its own
+endpoints, once. Without it the cell's default-deny mesh refuses a Postgres
+bootstrap Job the database it exists to initialize.
+
 An endpoint nobody is declared to reach has no edge (default deny is what the
 applier compiles, and the absence is the declaration); an endpoint with no
 in-cluster port (an external one) is not in the cell; a managed service has
