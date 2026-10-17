@@ -65,7 +65,7 @@ type nativeCluster struct {
 	authority  *nativecluster.Authority
 	workspace  *resources.Workspace
 	env        *environments.Environment
-	flow       *orchestration.Flow
+	flow       nativeFlow
 	fixture    string
 	stateDir   string
 	identities map[string]gitops.NativeIdentity
@@ -103,6 +103,12 @@ type nativeCluster struct {
 	running   map[string]bool
 	envelope  *gitops.EnvelopeWriter
 	stop      chan struct{}
+
+	// schedule bounds each workload's wait for the host; waiters are the
+	// deliveries in flight, one per workload.
+	schedule  deliverySchedule
+	waitersMu sync.Mutex
+	waiters   map[string]*deliveryWaiter
 }
 
 var (
@@ -151,6 +157,7 @@ func attachNativeCluster(ctx context.Context, flow *orchestration.Flow, workspac
 		solutions:   map[string]bool{},
 		running:     map[string]bool{},
 		stop:        make(chan struct{}),
+		schedule:    nativeDeliverySchedule,
 	}
 	parts := strings.Split(env.Host.Delivery, "/")
 	if len(parts) != 3 {
@@ -582,10 +589,26 @@ func (cluster *nativeCluster) onRunning(ctx context.Context, unique string) {
 		w.Warn("cannot resolve the running service", wool.ErrField(err))
 		return
 	}
-	err = deliverWhenHostReady(ctx, cluster.stop, nativeDeliverySchedule, cluster.hostReady, func(ctx context.Context) error {
-		return cluster.deliver(ctx, unique, identity, service)
-	})
-	if err != nil && !errors.Is(err, errRunStopped) {
+	waiter := cluster.waitFor(unique)
+	defer cluster.doneWaiting(unique, waiter)
+	err = hostDelivery{
+		schedule: cluster.schedule, stop: cluster.stop, superseded: waiter.superseded,
+		log: w.With(wool.Field("module", identity.Module)),
+		ready: func(ctx context.Context) error {
+			// A refreshed composition can withdraw the workload while its
+			// delivery waits; nothing is then delivered on its behalf.
+			if _, composed := cluster.identity(unique); !composed {
+				return errWorkloadGone
+			}
+			return cluster.hostReady(ctx)
+		},
+		deliver: func(ctx context.Context) error { return cluster.deliver(ctx, unique, identity, service) },
+	}.run(ctx)
+	if deliveryAbandoned(err) {
+		w.Debug("delivery abandoned", wool.ErrField(err))
+		return
+	}
+	if err != nil {
 		w.Error(fmt.Sprintf("delivery to the host failed: %s was not delivered, so every gateway route to module %s answers 404 until it is (a restart of the workload delivers again)", unique, identity.Module), wool.ErrField(err))
 	}
 }

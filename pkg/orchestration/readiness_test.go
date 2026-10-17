@@ -413,22 +413,28 @@ func TestServiceReachableIgnoresEndpointNoConsumerDeclares(t *testing.T) {
 	require.False(t, stack.flow.ServiceReachable(ctx, "data/store"))
 }
 
-// ServiceReady is the run's readiness for one service: a service whose Start
-// has not completed is not ready however its port answers, and a Running
-// service is not ready once its consumed endpoint stops answering.
-func TestServiceReadyRequiresRunningAndReachable(t *testing.T) {
+// ServiceReadiness is the run's readiness for one service, with its reason: a
+// service whose Start has not completed is not ready however its port
+// answers, and a Running service is not ready once its consumed endpoint
+// stops answering.
+func TestServiceReadinessRequiresRunningAndReachable(t *testing.T) {
 	stack := newReadinessStack(t)
 	ctx := context.Background()
-	require.True(t, stack.flow.ServiceReady(ctx, "data/store"))
+	require.Nil(t, stack.flow.ServiceReadiness(ctx, "data/store"))
 
 	stack.flow.emitState("data/store", tui.StateStarting, 0)
 	require.True(t, stack.flow.ServiceReachable(ctx, "data/store"), "the port still answers")
-	require.False(t, stack.flow.ServiceReady(ctx, "data/store"), "but Start has not completed")
+	failure := stack.flow.ServiceReadiness(ctx, "data/store")
+	require.NotNil(t, failure, "but Start has not completed")
+	require.Equal(t, PredicateLifecycle, failure.Predicate)
 
 	stack.flow.emitState("data/store", tui.StateRunning, 0)
 	stack.store.Stop()
-	require.False(t, stack.flow.ServiceReady(ctx, "data/store"))
-	require.False(t, (*Flow)(nil).ServiceReady(ctx, "data/store"))
+	failure = stack.flow.ServiceReadiness(ctx, "data/store")
+	require.NotNil(t, failure)
+	require.Equal(t, PredicateGRPCHealth, failure.Predicate)
+	require.Contains(t, failure.String(), "data/store")
+	require.NotNil(t, (*Flow)(nil).ServiceReadiness(ctx, "data/store"))
 }
 
 func TestReadinessProbesReportFirstFailureWithoutWaitingOnSlowerOnes(t *testing.T) {

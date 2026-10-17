@@ -1463,13 +1463,24 @@ func (flow *Flow) ServiceReachable(ctx context.Context, service string) bool {
 	return evaluateReadinessProbes(ctx, requirements) == nil
 }
 
-// ServiceReady reports whether one service meets, on its own, the readiness
-// the run gates on (Readiness): its runtime Start completed, and every endpoint
-// its consumers need answers its declared predicate (ServiceReachable). A
-// caller that must act only once a service it depends on is serving asks
-// this, rather than probing the service a second way.
-func (flow *Flow) ServiceReady(ctx context.Context, service string) bool {
-	return flow != nil && flow.startedRun(service) && flow.ServiceReachable(ctx, service)
+// ServiceReadiness is the readiness the run gates on (Readiness), for one
+// service: its runtime Start completed, and every endpoint its consumers need
+// answers its declared predicate. It returns the requirement that does not
+// hold, or nil when the service is ready, so a caller that must act only once
+// a service it depends on is serving can say why it is still waiting, rather
+// than probing the service a second way.
+func (flow *Flow) ServiceReadiness(ctx context.Context, service string) *ReadinessFailure {
+	if flow == nil {
+		return &ReadinessFailure{Service: service, Predicate: PredicateRequirements, Reason: "flow has not started"}
+	}
+	if !flow.startedRun(service) {
+		return &ReadinessFailure{Service: service, Predicate: PredicateLifecycle, Reason: "runtime start has not completed"}
+	}
+	requirements, err := flow.serviceEndpointRequirements(ctx, service)
+	if err != nil {
+		return &ReadinessFailure{Service: service, Predicate: PredicateRequirements, Reason: err.Error()}
+	}
+	return evaluateReadinessProbes(ctx, requirements)
 }
 
 // PromoteReachable invokes onReady once for each managed dependency (origin

@@ -1439,15 +1439,22 @@ Three things it does, and why:
   still answer 503 until it has configured itself. So a workload's delivery
   starts only once the gateway and the `host.delivery` service are ready by
   the readiness the run gates on (Start completed, consumed endpoints
-  answering), and a refusal that only says the host is not serving yet — a
-  5xx, a 404 before a route is exposed, a 409 on the envelope, no answer at
-  all — is asked again with a backoff from 0.5 s doubling to 10 s, for at
-  most **10 minutes** from Running. A refusal that says no (any other 4xx, a
-  policy refusal, an agent that reports no started artifact) fails at once
-  with its reason. A workload not delivered by then is reported as an error
-  naming it, the last answer, and the consequence: every gateway route to
-  its module answers 404 until it is delivered, which a restart of the
-  workload attempts again.
+  answering), and a refusal that only says the host is not serving yet is
+  asked again with a backoff from 0.5 s doubling to 10 s, for at most
+  **10 minutes** from Running: a 5xx; a 404 from the gateway (sign-in or
+  envelope) before it exposes the route; a 409 on the envelope (a lost
+  revision race); no answer at all (refused, reset, timed out). A refusal
+  that says no fails at once with its reason: any other 4xx, including a 404
+  from the host's own delivery endpoint (a wrong `host.delivery`), a policy
+  refusal, an address that is not a URL, an agent that reports no started
+  artifact. The first wait and every change of its reason are logged at info
+  with the service, its module and the reason. A workload not delivered by
+  the deadline is reported as an error naming it, why the host is still not
+  serving, the last refusal it answered, and the consequence: every gateway
+  route to its module answers 404 until it is delivered, which a restart of
+  the workload attempts again. A workload has one delivery in flight: a
+  restart replaces the waiting one, and a workload the composition withdraws
+  while it waits is not delivered.
 - **The build is what the agent says it started.** The run asks no question of
   the filesystem about where a workload's build lives, because the answer
   differs per agent family and only the agent that started the process knows
