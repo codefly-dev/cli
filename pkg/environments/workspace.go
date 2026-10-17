@@ -118,6 +118,9 @@ func (env *Environment) Validate() error {
 	if err := env.Host.Validate(); err != nil {
 		return err
 	}
+	if err := env.Registry.Validate(); err != nil {
+		return err
+	}
 	// A developer identity is a local host's allowlist entry. A deployed host
 	// refuses it anyway, by its own allowlist; refusing it here keeps a
 	// developer's identity out of every manifest a hosted environment renders.

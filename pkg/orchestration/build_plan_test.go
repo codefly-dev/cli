@@ -94,7 +94,7 @@ func TestBuildxArgsSinglePlatformPushOnCallerBuilder(t *testing.T) {
 }
 
 func TestBuildxCreateArgsUsesHostNetworkContainerDriver(t *testing.T) {
-	args := buildxCreateArgs()
+	args := buildxCreateArgs("codefly", "")
 	joined := strings.Join(args, " ")
 
 	require.Equal(t, []string{"buildx", "create"}, args[:2])
@@ -104,6 +104,15 @@ func TestBuildxCreateArgsUsesHostNetworkContainerDriver(t *testing.T) {
 	// tailnet split-DNS private registry instead of stalling on DNS.
 	require.Contains(t, joined, "--driver-opt network=host")
 	require.Contains(t, joined, "--bootstrap")
+	// No mirrors, no buildkitd configuration at all: the builder keeps the
+	// host's registry configuration.
+	require.NotContains(t, joined, "--config")
+
+	// A declared mirror is carried as the builder's buildkitd configuration,
+	// and the builder it configures is named for it.
+	mirrored := buildxCreateArgs("codefly-abc123", "/tmp/buildkitd.toml")
+	require.Contains(t, strings.Join(mirrored, " "), "--name codefly-abc123 ")
+	require.Contains(t, strings.Join(mirrored, " "), "--config /tmp/buildkitd.toml")
 }
 
 func TestBuilderHasHostNetwork(t *testing.T) {

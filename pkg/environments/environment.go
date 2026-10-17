@@ -13,6 +13,7 @@ import (
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
+	"github.com/distribution/reference"
 	"gopkg.in/yaml.v3"
 )
 
@@ -62,9 +63,104 @@ type EnvironmentCluster struct {
 //	      "ecr" (run `aws ecr get-login-password`), "gcr" / "gar" (gcloud
 //	      access token), "ghcr" (GITHUB_TOKEN env). The CLI handles auth
 //	      side-effects based on this value.
+//	Mirrors: where to READ an image from instead of the registry its
+//	      reference names, keyed by that registry's canonical host
+//	      ("docker.io": "us-east1-docker.pkg.dev/<project>/<remote-repo>").
+//	      It is a read-side substitution only: nothing is pushed to a mirror,
+//	      and the reference a recipe is written against never changes. See
+//	      Validate for what a key and a value may be.
 type EnvironmentRegistry struct {
-	URL  string `yaml:"url,omitempty"`
-	Auth string `yaml:"auth,omitempty"`
+	URL     string            `yaml:"url,omitempty"`
+	Auth    string            `yaml:"auth,omitempty"`
+	Mirrors map[string]string `yaml:"mirrors,omitempty"`
+}
+
+// DockerHubRegistry is Docker Hub's canonical registry host: the one an
+// unqualified reference ("debian:trixie-slim") resolves against, and therefore
+// the key a mirror for it is declared under.
+const DockerHubRegistry = "docker.io"
+
+// mirrorHostProbe is the repository a host is parsed under to learn the
+// registry a reference naming that host actually resolves against. The parser
+// takes a reference, not a host, and the repository part is irrelevant to the
+// answer.
+const mirrorHostProbe = "probe"
+
+// RegistryMirrorHost is the registry a reference spelling this host resolves
+// against, as the parser the daemon, BuildKit and containerd all normalize
+// references with reports it: the key a mirror for that registry must be
+// declared under.
+//
+// That parser folds exactly one alias, `index.docker.io`, into `docker.io`, and
+// reads a first component carrying no dot, colon or `localhost` as a Hub
+// repository rather than a host. `registry-1.docker.io` is NOT folded: it is a
+// distinct registry to the parser and to BuildKit alike, so it is its own
+// mirror key, covering the references that spell it and no others.
+func RegistryMirrorHost(host string) string {
+	named, err := reference.ParseNormalizedNamed(host + "/" + mirrorHostProbe)
+	if err != nil {
+		return host
+	}
+	return reference.Domain(named)
+}
+
+// Validate holds a declared mirror to what both a BuildKit registry
+// configuration and an image reference can carry: a bare registry host as the
+// key, and a host with an optional repository path as the value. Neither may
+// carry a scheme, a tag, a digest or anything needing quoting — a value that
+// does would be written into the builder's buildkitd.toml, where it is a
+// configuration the build silently reads a base image through.
+func (registry *EnvironmentRegistry) Validate() error {
+	if registry == nil {
+		return nil
+	}
+	for host, mirror := range registry.Mirrors {
+		if err := validateRegistryReference("registry mirror key", host); err != nil {
+			return err
+		}
+		if strings.Contains(host, "/") {
+			return fmt.Errorf("registry mirror key %q names a repository path; a mirror is declared for a registry host", host)
+		}
+		if canonical := RegistryMirrorHost(host); canonical != host {
+			return fmt.Errorf("registry mirror key %q is not how a reference names its registry: a reference under it resolves against %q, so declare the mirror under %q", host, canonical, canonical)
+		}
+		if err := validateRegistryReference(fmt.Sprintf("registry mirror of %q", host), mirror); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// registryMirrorToken is what a mirror host or repository path component may
+// contain: the characters a registry reference admits, and nothing a TOML
+// string or a shell would read as anything else.
+var registryMirrorToken = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*$`)
+
+func validateRegistryReference(kind, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s cannot be empty", kind)
+	}
+	if value != strings.TrimSpace(value) {
+		return fmt.Errorf("%s %q is surrounded by whitespace", kind, value)
+	}
+	if strings.Contains(value, "://") {
+		return fmt.Errorf("%s %q carries a scheme; write the host alone", kind, value)
+	}
+	if strings.Contains(value, "@") {
+		return fmt.Errorf("%s %q carries a digest; a mirror is a registry, not an image", kind, value)
+	}
+	components := strings.Split(value, "/")
+	for index, component := range components {
+		if !registryMirrorToken.MatchString(component) {
+			return fmt.Errorf("%s %q is not a registry reference", kind, value)
+		}
+		// Only a registry host may carry a port; a colon anywhere else is the
+		// tag separator, and a mirror names no image.
+		if index > 0 && strings.Contains(component, ":") {
+			return fmt.Errorf("%s %q carries a tag; a mirror is a registry, not an image", kind, value)
+		}
+	}
+	return nil
 }
 
 // EnvironmentGitops identifies the reviewed repository snapshot reconciled for

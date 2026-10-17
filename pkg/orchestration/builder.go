@@ -256,11 +256,11 @@ func (b *Builder) dockerBuildContext(ctx context.Context) (*builderv0.DockerBuil
 	}
 	dockerContext.Cache = scopedBuildCache(b.world.BuildCache, b.world.Workspace.Name, b.instance.Unique(), "")
 	dockerContext.BuildxBuilder = b.world.BuildxBuilder
-	if dockerContext.Cache != nil && dockerContext.BuildxBuilder == "" {
-		if err = ensureBuildxBuilder(ctx); err != nil {
+	mirrors := registryMirrors(b.world.Env)
+	if dockerContext.BuildxBuilder == "" && (dockerContext.Cache != nil || len(mirrors) > 0) {
+		if dockerContext.BuildxBuilder, err = ensureBuildxBuilder(ctx, mirrors); err != nil {
 			return nil, fmt.Errorf("cannot provision buildx builder for %s: %w", b.instance.Unique(), err)
 		}
-		dockerContext.BuildxBuilder = buildxBuilderName
 	}
 	return dockerContext, nil
 }

@@ -79,6 +79,9 @@ func (c *CoordinateContract) validate() error {
 	if env.Registry != nil && strings.TrimSpace(env.Registry.URL) == "" {
 		return fmt.Errorf("declared registry requires a URL")
 	}
+	if err := env.Registry.Validate(); err != nil {
+		return err
+	}
 	if env.Gitops != nil && (strings.TrimSpace(env.Gitops.RepoURL) == "" || strings.TrimSpace(env.Gitops.Path) == "" || strings.TrimSpace(env.Gitops.Branch) == "") {
 		return fmt.Errorf("declared delivery target requires repository, path and branch")
 	}
