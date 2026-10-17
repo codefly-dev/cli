@@ -3,6 +3,7 @@ package gitops
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -225,5 +226,81 @@ func TestAServiceRenderingANonServingWorkloadReachesItself(t *testing.T) {
 			map[string]bool{"wiki/backend": false})
 		require.NoError(t, err)
 		require.Equal(t, []string{gateway}, edges.Edges[0].Principals)
+	})
+}
+
+// A database service as its agent renders it: the StatefulSet that serves the
+// endpoint, and the bootstrap Job that initializes it under the same account.
+const bootstrappedUnit = `apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ledger
+spec:
+  template:
+    spec:
+      serviceAccountName: ledger
+      containers:
+        - name: postgres
+          image: docker.io/library/postgres@sha256:` + sixtyFourZeros + `
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ledger-bootstrap
+spec:
+  template:
+    spec:
+      serviceAccountName: ledger
+      containers:
+        - name: bootstrap
+          image: docker.io/library/postgres@sha256:` + sixtyFourZeros + `
+`
+
+const cronJobWorkload = `---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ledger-vacuum
+spec:
+  schedule: "0 3 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: ledger
+          containers:
+            - name: vacuum
+              image: docker.io/library/postgres@sha256:` + sixtyFourZeros + `
+`
+
+const sixtyFourZeros = "0000000000000000000000000000000000000000000000000000000000000000"
+
+// deriveMeshEdges is handed selfConsuming by the render, which reads it off the
+// rendered tree. That reading is the half a composition fixture cannot cover:
+// if it stops seeing the Job, every edge below it silently goes back to being
+// declared-consumers-only and the bootstrap Job is denied again.
+func TestTheRenderReadsSelfConsumptionOffTheRenderedTree(t *testing.T) {
+	selfConsumes := func(t *testing.T, manifests string) bool {
+		t.Helper()
+		unit := writeUnit(t, manifests, nil)
+		tree, err := newRenderRoot(unit)
+		require.NoError(t, err)
+		defer tree.Close()
+		consumes, err := renderTreeSelfConsumes(tree, unit, "staging")
+		require.NoError(t, err)
+		return consumes
+	}
+
+	t.Run("a rendered bootstrap Job is a non-serving workload", func(t *testing.T) {
+		require.True(t, selfConsumes(t, bootstrappedUnit))
+	})
+	t.Run("a render that serves everything it holds reaches nothing of its own", func(t *testing.T) {
+		serving, _, found := strings.Cut(bootstrappedUnit, "---\n")
+		require.True(t, found)
+		require.False(t, selfConsumes(t, serving))
+	})
+	t.Run("a CronJob counts the same as a Job", func(t *testing.T) {
+		serving, _, _ := strings.Cut(bootstrappedUnit, "---\n")
+		require.True(t, selfConsumes(t, serving+cronJobWorkload))
 	})
 }

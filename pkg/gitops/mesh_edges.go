@@ -193,6 +193,24 @@ func (index *meshComposition) sources(module, service, endpoint string) []string
 	return slices.Sorted(maps.Keys(admitted))
 }
 
+// renderTreeSelfConsumes reads, off one unit's rendered overlay, whether the
+// service reaches its own endpoints: it does when the overlay holds a workload
+// that does not serve them — an agent's bootstrap Job, running under the
+// service's own ServiceAccount and so under its own mesh principal.
+//
+// It is read from the render rather than the composition because the
+// composition never says it: a Job the agent emits is not a dependency between
+// services, and nothing but the rendered tree knows it exists.
+func renderTreeSelfConsumes(tree *renderRoot, unitDir, environment string) (bool, error) {
+	workloads, err := renderedWorkloadsInTree(tree, unitDir, environment)
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(workloads, func(workload renderedWorkload) bool {
+		return !servingKind(workload.Kind)
+	}), nil
+}
+
 // deriveMeshEdges computes the edges into one module's services, from the
 // composition the render is of and the in-cluster ports it learned. Nothing
 // is derived for an environment that declares no host: there is no mesh to

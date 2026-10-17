@@ -6,7 +6,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 
@@ -187,13 +186,9 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 			if err != nil {
 				return fmt.Errorf("derive mesh container ports for %s: %w", unique, err)
 			}
-			workloads, workloadErr := renderedWorkloadsInTree(r.options.renderRoot, unitDir, r.env.Name)
-			if workloadErr != nil {
-				return fmt.Errorf("read the rendered workloads of %s: %w", unique, workloadErr)
+			if selfConsuming[unique], err = renderTreeSelfConsumes(r.options.renderRoot, unitDir, r.env.Name); err != nil {
+				return fmt.Errorf("read the rendered workloads of %s: %w", unique, err)
 			}
-			selfConsuming[unique] = slices.ContainsFunc(workloads, func(workload renderedWorkload) bool {
-				return !servingKind(workload.Kind)
-			})
 		}
 	}
 	if len(rendered.endpointCarriers) > 0 {
