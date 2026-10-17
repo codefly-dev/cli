@@ -3,6 +3,7 @@ package gitops
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -114,7 +115,7 @@ func TestMeshEdgesAreTheCompositionsDeclaredReach(t *testing.T) {
 
 	t.Run("a module endpoint admits its consumers and the gateway", func(t *testing.T) {
 		module, services := moduleServices(t, workspace, "app")
-		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports, ports)
+		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports, ports, nil)
 		require.NoError(t, err)
 		require.Equal(t, MeshEdgesSchemaVersion, edges.SchemaVersion)
 		require.Equal(t, "local.example", edges.TrustDomain)
@@ -129,7 +130,7 @@ func TestMeshEdgesAreTheCompositionsDeclaredReach(t *testing.T) {
 	})
 	t.Run("a solution's backend admits the gateway", func(t *testing.T) {
 		module, services := moduleServices(t, workspace, "wiki")
-		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports, ports)
+		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports, ports, nil)
 		require.NoError(t, err)
 		require.Equal(t, []MeshEdge{{
 			Module: "wiki", Service: "backend", Namespace: "example-wiki", Account: "backend", Principal: backend,
@@ -138,7 +139,7 @@ func TestMeshEdgesAreTheCompositionsDeclaredReach(t *testing.T) {
 	})
 	t.Run("the gateway admits every workload on its workload port and the ingress on its public one", func(t *testing.T) {
 		module, services := moduleServices(t, workspace, "edge")
-		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports, ports)
+		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports, ports, nil)
 		require.NoError(t, err)
 		require.Equal(t, "edge/gateway", edges.Gateway)
 		require.Equal(t, []MeshEdge{
@@ -149,26 +150,157 @@ func TestMeshEdgesAreTheCompositionsDeclaredReach(t *testing.T) {
 	t.Run("service and container ports are independently carried", func(t *testing.T) {
 		module, services := moduleServices(t, workspace, "edge")
 		targets := map[string]map[string]uint32{"edge/gateway": {"rest": 3000, "workload": 3001}}
-		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports, targets)
+		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports, targets, nil)
 		require.NoError(t, err)
 		require.EqualValues(t, 8080, edges.Edges[0].Port)
 		require.EqualValues(t, 3000, edges.Edges[0].TargetPort)
 		delete(targets["edge/gateway"], "workload")
-		_, err = deriveMeshEdges(t.Context(), workspace, env, module, services, ports, targets)
+		_, err = deriveMeshEdges(t.Context(), workspace, env, module, services, ports, targets, nil)
 		require.ErrorContains(t, err, "no resolved container target port")
 	})
 	t.Run("no host, no mesh, no edges", func(t *testing.T) {
 		module, services := moduleServices(t, workspace, "app")
 		hostless := *env
 		hostless.Host = nil
-		edges, err := deriveMeshEdges(t.Context(), workspace, &hostless, module, services, ports, ports)
+		edges, err := deriveMeshEdges(t.Context(), workspace, &hostless, module, services, ports, ports, nil)
 		require.NoError(t, err)
 		require.Nil(t, edges)
 	})
 	t.Run("an endpoint with no in-cluster port is not in the cell", func(t *testing.T) {
 		module, services := moduleServices(t, workspace, "wiki")
-		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, map[string]map[string]uint32{}, nil)
+		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, map[string]map[string]uint32{}, nil, nil)
 		require.NoError(t, err)
 		require.Empty(t, edges.Edges)
+	})
+}
+
+// A service whose render includes a workload that does not serve its endpoints
+// — an agent's bootstrap Job, running under the service's own ServiceAccount —
+// reaches those endpoints as a client of itself. No composition declares that:
+// it is one rendered workload of a service reaching another, so the render is
+// where it enters. Without it the cell's default-deny mesh refuses a Postgres
+// bootstrap Job the database it exists to initialize.
+func TestAServiceRenderingANonServingWorkloadReachesItself(t *testing.T) {
+	workspace, env := meshWorkspace(t)
+	const domain = "spiffe://local.example/ns/example-"
+	gateway, api, worker, backend := domain+"edge/sa/gateway", domain+"app/sa/api", domain+"app/sa/worker", domain+"wiki/sa/backend"
+	ports := map[string]map[string]uint32{
+		"edge/gateway": {"rest": 8080, "workload": 8081},
+		"app/api":      {"grpc": 9090, "admin": 8082},
+		"wiki/backend": {"http": 8080},
+	}
+
+	t.Run("its own principal joins the endpoint's", func(t *testing.T) {
+		module, services := moduleServices(t, workspace, "wiki")
+		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports, ports,
+			map[string]bool{"wiki/backend": true})
+		require.NoError(t, err)
+		require.Equal(t, []MeshEdge{{
+			Module: "wiki", Service: "backend", Namespace: "example-wiki", Account: "backend", Principal: backend,
+			Endpoint: "http", Port: 8080, TargetPort: 8080, Principals: []string{gateway, backend},
+		}}, edges.Edges)
+	})
+	t.Run("an endpoint only it reaches gets the edge it would otherwise not have", func(t *testing.T) {
+		module, services := moduleServices(t, workspace, "app")
+		// Nobody is declared to reach api's private admin endpoint, so without
+		// a non-serving workload it has no edge at all.
+		plain, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports, ports, nil)
+		require.NoError(t, err)
+		require.Len(t, plain.Edges, 1)
+
+		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports, ports,
+			map[string]bool{"app/api": true})
+		require.NoError(t, err)
+		require.Equal(t, []MeshEdge{
+			{Module: "app", Service: "api", Namespace: "example-app", Account: "api", Principal: api,
+				Endpoint: "admin", Port: 8082, TargetPort: 8082, Principals: []string{api}},
+			{Module: "app", Service: "api", Namespace: "example-app", Account: "api", Principal: api,
+				// Its own principal was already admitted here, as a workload of
+				// the consumer module: it is admitted once, not twice.
+				Endpoint: "grpc", Port: 9090, TargetPort: 9090, Principals: []string{api, worker, gateway}},
+		}, edges.Edges)
+	})
+	t.Run("a service whose render serves everything is unchanged", func(t *testing.T) {
+		module, services := moduleServices(t, workspace, "wiki")
+		edges, err := deriveMeshEdges(t.Context(), workspace, env, module, services, ports, ports,
+			map[string]bool{"wiki/backend": false})
+		require.NoError(t, err)
+		require.Equal(t, []string{gateway}, edges.Edges[0].Principals)
+	})
+}
+
+// A database service as its agent renders it: the StatefulSet that serves the
+// endpoint, and the bootstrap Job that initializes it under the same account.
+const bootstrappedUnit = `apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ledger
+spec:
+  template:
+    spec:
+      serviceAccountName: ledger
+      containers:
+        - name: postgres
+          image: docker.io/library/postgres@sha256:` + sixtyFourZeros + `
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ledger-bootstrap
+spec:
+  template:
+    spec:
+      serviceAccountName: ledger
+      containers:
+        - name: bootstrap
+          image: docker.io/library/postgres@sha256:` + sixtyFourZeros + `
+`
+
+const cronJobWorkload = `---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ledger-vacuum
+spec:
+  schedule: "0 3 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: ledger
+          containers:
+            - name: vacuum
+              image: docker.io/library/postgres@sha256:` + sixtyFourZeros + `
+`
+
+const sixtyFourZeros = "0000000000000000000000000000000000000000000000000000000000000000"
+
+// deriveMeshEdges is handed selfConsuming by the render, which reads it off the
+// rendered tree. That reading is the half a composition fixture cannot cover:
+// if it stops seeing the Job, every edge below it silently goes back to being
+// declared-consumers-only and the bootstrap Job is denied again.
+func TestTheRenderReadsSelfConsumptionOffTheRenderedTree(t *testing.T) {
+	selfConsumes := func(t *testing.T, manifests string) bool {
+		t.Helper()
+		unit := writeUnit(t, manifests, nil)
+		tree, err := newRenderRoot(unit)
+		require.NoError(t, err)
+		defer tree.Close()
+		consumes, err := renderTreeSelfConsumes(tree, unit, "staging")
+		require.NoError(t, err)
+		return consumes
+	}
+
+	t.Run("a rendered bootstrap Job is a non-serving workload", func(t *testing.T) {
+		require.True(t, selfConsumes(t, bootstrappedUnit))
+	})
+	t.Run("a render that serves everything it holds reaches nothing of its own", func(t *testing.T) {
+		serving, _, found := strings.Cut(bootstrappedUnit, "---\n")
+		require.True(t, found)
+		require.False(t, selfConsumes(t, serving))
+	})
+	t.Run("a CronJob counts the same as a Job", func(t *testing.T) {
+		serving, _, _ := strings.Cut(bootstrappedUnit, "---\n")
+		require.True(t, selfConsumes(t, serving+cronJobWorkload))
 	})
 }

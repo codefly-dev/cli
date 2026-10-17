@@ -44,6 +44,16 @@ import (
 //     gateway, whose principal is the cell's to name, so it is marked rather
 //     than named.
 //
+// One source is not in the composition at all: a service whose render includes
+// a workload that does not serve its endpoints — an agent's bootstrap Job,
+// which runs under the service's own ServiceAccount and therefore under the
+// service's own mesh principal — reaches the endpoints of the very service it
+// belongs to. Nothing declares that, because it is not a dependency between
+// services; it is one rendered workload reaching another. The render is the
+// only place it is visible, so a service that renders one admits itself
+// (selfConsuming below). Without it the Postgres bootstrap Job is denied by
+// the cell's default-deny mesh on the database it exists to initialize.
+//
 // An endpoint nobody is declared to reach has no edge: default deny is what
 // the applier compiles, and the absence is the declaration.
 
@@ -183,10 +193,32 @@ func (index *meshComposition) sources(module, service, endpoint string) []string
 	return slices.Sorted(maps.Keys(admitted))
 }
 
+// renderTreeSelfConsumes reads, off one unit's rendered overlay, whether the
+// service reaches its own endpoints: it does when the overlay holds a workload
+// that does not serve them — an agent's bootstrap Job, running under the
+// service's own ServiceAccount and so under its own mesh principal.
+//
+// It is read from the render rather than the composition because the
+// composition never says it: a Job the agent emits is not a dependency between
+// services, and nothing but the rendered tree knows it exists.
+func renderTreeSelfConsumes(tree *renderRoot, unitDir, environment string) (bool, error) {
+	workloads, err := renderedWorkloadsInTree(tree, unitDir, environment)
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(workloads, func(workload renderedWorkload) bool {
+		return !servingKind(workload.Kind)
+	}), nil
+}
+
 // deriveMeshEdges computes the edges into one module's services, from the
 // composition the render is of and the in-cluster ports it learned. Nothing
 // is derived for an environment that declares no host: there is no mesh to
 // deliver edges to.
+//
+// selfConsuming names, by service unique, the services whose rendered tree
+// holds a workload that does not serve the service's endpoints and so reaches
+// them as a client under the service's own principal.
 func deriveMeshEdges(
 	ctx context.Context,
 	workspace *resources.Workspace,
@@ -194,6 +226,7 @@ func deriveMeshEdges(
 	module *resources.Module,
 	services []*resources.Service,
 	ports, containerPorts map[string]map[string]uint32,
+	selfConsuming map[string]bool,
 ) (*MeshEdges, error) {
 	if env == nil || env.Host == nil {
 		return nil, nil
@@ -222,7 +255,15 @@ func deriveMeshEdges(
 				// in the cell.
 				continue
 			}
+			principal := meshPrincipal(env.Host, namespace, service.Name)
 			principals := index.sources(module.Name, service.Name, endpoint.Name)
+			// A non-serving workload of this service runs as this service and
+			// reaches this endpoint; the composition never declares it, so the
+			// render is where it enters.
+			if selfConsuming[unique] && !slices.Contains(principals, principal) {
+				principals = append(principals, principal)
+				slices.Sort(principals)
+			}
 			// Public exposure, judged on the manifest endpoint as core's
 			// IsExposedEndpoint judges the proto one: the one condition a
 			// public address exists on, and so the one the cell's ingress
@@ -240,7 +281,7 @@ func deriveMeshEdges(
 			}
 			record.Edges = append(record.Edges, MeshEdge{
 				Module: module.Name, Service: service.Name, Namespace: namespace,
-				Account: workloadAccount(service.Name), Principal: meshPrincipal(env.Host, namespace, service.Name),
+				Account: workloadAccount(service.Name), Principal: principal,
 				Endpoint: endpoint.Name, Port: port, TargetPort: targetPort, Principals: principals, Ingress: ingress,
 			})
 		}

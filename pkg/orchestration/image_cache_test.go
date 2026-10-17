@@ -395,6 +395,9 @@ type identityFixture struct {
 	service string
 	output  string
 	scope   imageBuildScope
+	// mirrors is the environment's declared registry mirrors, read by the
+	// base-image resolution. Nil for every fixture that is not about them.
+	mirrors map[string]string
 }
 
 func newIdentityFixture(t *testing.T, dockerfile string, emitted ...string) *identityFixture {
@@ -439,7 +442,7 @@ func (fixture *identityFixture) key(t *testing.T, emitted []string, options ...f
 	}
 	dockerfilePath := filepath.Join(fixture.output, "Dockerfile")
 	args := []string{"buildx", "build", "-t", recipe.GetImage(), "-f", dockerfilePath, fixture.scope.ContextDir}
-	identity, err := imageBuildIdentity(t.Context(), recipe, plan, fixture.scope, dockerfilePath, "", args, nil)
+	identity, err := imageBuildIdentity(t.Context(), recipe, plan, fixture.scope, dockerfilePath, "", args, nil, fixture.mirrors)
 	require.NoError(t, err)
 	require.NotEmpty(t, identity.Key)
 	return identity.Key
@@ -480,7 +483,7 @@ func TestDeclaredGoModuleRootOutsideTheContextRefusesToCache(t *testing.T) {
 	recipe := plan.GetRecipes()[0]
 	recipe.GoModuleDownloads = []*builderv0.GoModuleDownload{{ModuleRoot: "../elsewhere", ProxyContext: "proxy"}}
 	dockerfilePath := filepath.Join(fixture.output, "Dockerfile")
-	_, err = imageBuildIdentity(t.Context(), recipe, plan, fixture.scope, dockerfilePath, "", []string{"buildx", "build"}, nil)
+	_, err = imageBuildIdentity(t.Context(), recipe, plan, fixture.scope, dockerfilePath, "", []string{"buildx", "build"}, nil, nil)
 	require.ErrorContains(t, err, "outside its build context")
 }
 
@@ -517,7 +520,7 @@ func TestUnresolvableBaseImageRefusesToCache(t *testing.T) {
 	plan, err := coreservices.SingleImageBuildPlan(fixture.output, "example.test/app:v1", []string{"linux/amd64"}, []string{"Dockerfile"})
 	require.NoError(t, err)
 	dockerfilePath := filepath.Join(fixture.output, "Dockerfile")
-	_, err = imageBuildIdentity(t.Context(), plan.GetRecipes()[0], plan, fixture.scope, dockerfilePath, "", []string{"buildx", "build"}, nil)
+	_, err = imageBuildIdentity(t.Context(), plan.GetRecipes()[0], plan, fixture.scope, dockerfilePath, "", []string{"buildx", "build"}, nil, nil)
 	require.ErrorContains(t, err, "resolve base image example.test/base:stable")
 }
 
@@ -610,7 +613,7 @@ func TestTreeScopeAssembledContextIsHashedAsTheContext(t *testing.T) {
 		plan, scope := assemble(t)
 		dockerfilePath := filepath.Join(output, "Dockerfile")
 		args := []string{"buildx", "build", "-t", "example.test/app:v1", "-f", dockerfilePath, scope.ContextDir}
-		identity, err := imageBuildIdentity(t.Context(), plan.GetRecipes()[0], plan, scope, dockerfilePath, "", args, nil)
+		identity, err := imageBuildIdentity(t.Context(), plan.GetRecipes()[0], plan, scope, dockerfilePath, "", args, nil, nil)
 		require.NoError(t, err)
 		return identity.Key
 	}
@@ -645,7 +648,7 @@ func TestMaterializedServiceKeepsAStableIdentity(t *testing.T) {
 		require.NoError(t, err)
 		dockerfilePath := filepath.Join(output, "Dockerfile")
 		identity, err := imageBuildIdentity(t.Context(), plan.GetRecipes()[0], plan, scope, dockerfilePath, "",
-			[]string{"buildx", "build", "-t", "example.test/store:v1", "-f", dockerfilePath, scope.ContextDir}, nil)
+			[]string{"buildx", "build", "-t", "example.test/store:v1", "-f", dockerfilePath, scope.ContextDir}, nil, nil)
 		require.NoError(t, err)
 		return identity.Key
 	}
@@ -678,7 +681,7 @@ func TestTwoRecipesOfOnePlanGetDistinctIdentities(t *testing.T) {
 	for _, recipe := range plan.GetRecipes() {
 		dockerfilePath := filepath.Join(fixture.output, "Dockerfile")
 		args := []string{"buildx", "build", "--target", recipe.GetTarget(), "-t", recipe.GetImage(), "-f", dockerfilePath, fixture.scope.ContextDir}
-		identity, err := imageBuildIdentity(t.Context(), recipe, plan, fixture.scope, dockerfilePath, "", args, nil)
+		identity, err := imageBuildIdentity(t.Context(), recipe, plan, fixture.scope, dockerfilePath, "", args, nil, fixture.mirrors)
 		require.NoError(t, err)
 		keys[recipe.GetName()] = identity.Key
 	}
