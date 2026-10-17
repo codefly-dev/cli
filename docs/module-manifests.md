@@ -426,7 +426,11 @@ ordering against a real readiness model.
 A render records, per workspace configuration group its services and its
 contract's slots consume, a digest of the group as the environment provided
 it, and **reports** the sibling modules rendered for the same environment that
-record another digest for a group they both consume. The rule is enforced at
+record another digest for a group they both consume. `deploy gitops render <module>`
+then renders those siblings in the same run, one at a time and each once —
+the readers of the changed group and no other module, with one line per
+reader naming the group that brought it in — so the publish below finds every
+reader agreeing; `render --all` renders every module as before. The rule is enforced at
 **publish**, where every refusal has one action that satisfies it: a module
 whose recorded digest is not the composition's current value was rendered
 before the group changed and is refused until rendered again — and the groups

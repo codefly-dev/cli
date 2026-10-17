@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -222,6 +223,51 @@ func staleGroupConsumers(workspaceDir, module, environment string, digests map[s
 		sort.Strings(stale[group])
 	}
 	return stale, nil
+}
+
+// RenderGroupReaders renders module, then — one at a time, in the same run —
+// every module a render reports as a reader of a workspace configuration
+// group that changed since that module rendered it (StaleGroupConsumers),
+// each once, so publish finds every reader agreeing on the group's value.
+// A module that reads no changed group is never rendered. rerendering is
+// told, before each reader renders, which changed groups it reads.
+func RenderGroupReaders(
+	ctx context.Context,
+	module string,
+	render func(context.Context, string) (RenderResult, error),
+	rerendering func(reader string, groups []string),
+) ([]RenderResult, error) {
+	queue := []string{module}
+	causes := map[string][]string{module: nil}
+	var results []RenderResult
+	for len(queue) > 0 {
+		next := queue[0]
+		queue = queue[1:]
+		if next != module {
+			rerendering(next, causes[next])
+		}
+		result, err := render(ctx, next)
+		if err != nil {
+			return results, fmt.Errorf("render %s: %w", next, err)
+		}
+		results = append(results, result)
+		groups := make([]string, 0, len(result.StaleGroupConsumers))
+		for group := range result.StaleGroupConsumers {
+			groups = append(groups, group)
+		}
+		sort.Strings(groups)
+		for _, group := range groups {
+			for _, reader := range result.StaleGroupConsumers[group] {
+				if _, known := causes[reader]; !known {
+					queue = append(queue, reader)
+				}
+				if !slices.Contains(causes[reader], group) {
+					causes[reader] = append(causes[reader], group)
+				}
+			}
+		}
+	}
+	return results, nil
 }
 
 // refuseStaleGroupConsumers refuses a publish while a sibling consumer's local

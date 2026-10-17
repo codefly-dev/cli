@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -15,6 +16,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/control"
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/core/resources"
 	"github.com/spf13/cobra"
 )
 
@@ -55,24 +57,61 @@ var gitOpsRenderCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		result, err := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
-			Workspace: workspace, Module: module, Environment: env,
-			AppProject: gitOpsProject, ValidateCluster: gitOpsValidateCluster,
-			Rebuild: gitOpsRebuild, Sink: cli.NewOutputSink(),
-		})
-		if err != nil {
+		// The module asked for, then the modules that read a workspace
+		// configuration group it found changed since they rendered it: publish
+		// refuses until every reader bakes in the same value, and nothing else
+		// needs to move. The cell file is derived once, after the last.
+		var composed []*resources.Module
+		render := func(ctx context.Context, name string) (gitops.RenderResult, error) {
+			target := module
+			if name != module.Name {
+				if composed == nil {
+					if composed, err = workspace.LoadModules(ctx); err != nil {
+						return gitops.RenderResult{}, err
+					}
+				}
+				index := slices.IndexFunc(composed, func(candidate *resources.Module) bool { return candidate.Name == name })
+				if index < 0 {
+					return gitops.RenderResult{}, fmt.Errorf("the workspace composes no module %s", name)
+				}
+				target = composed[index]
+				if err := requireWorkspaceReady(ctx, "render", gitOpsEnv, name); err != nil {
+					return gitops.RenderResult{}, err
+				}
+			}
+			result, err := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
+				Workspace: workspace, Module: target, Environment: env,
+				AppProject: gitOpsProject, ValidateCluster: gitOpsValidateCluster,
+				Rebuild: gitOpsRebuild, WithoutCell: true, Sink: cli.NewOutputSink(),
+			})
+			if err != nil {
+				return result, err
+			}
+			cli.Info("Rendered %s", result.Path)
+			cli.Info("Digest %s", result.Inventory.Digest)
+			printSizingReport(result.Sizing)
+			printElidedNamespaces(result.ElidedNamespaces)
+			// Its stale readers render next in this run, so they are not
+			// reported as owed.
+			printed := result
+			printed.StaleGroupConsumers = nil
+			printModuleManifest(&printed)
+			printClearedDev(result.ClearedDev)
+			return result, nil
+		}
+		if _, err = gitops.RenderGroupReaders(ctx, module.Name, render, func(reader string, groups []string) {
+			cli.Info("Rendering %s: it reads workspace configuration group %s, which changed since it rendered", reader, strings.Join(groups, ", "))
+		}); err != nil {
 			return err
 		}
-		cli.Info("Rendered %s", result.Path)
-		cli.Info("Digest %s", result.Inventory.Digest)
-		printCell(result.Cell)
-		if result.CellError != "" {
-			cli.Warning("Cell file not re-derived: %s", result.CellError)
+		if env.Host != nil {
+			cell, cellErr := gitops.RenderCell(ctx, workspace, env)
+			if cellErr != nil {
+				cli.Warning("Cell file not re-derived: %s", cellErr)
+				return nil
+			}
+			printCell(&cell)
 		}
-		printSizingReport(result.Sizing)
-		printElidedNamespaces(result.ElidedNamespaces)
-		printModuleManifest(&result)
-		printClearedDev(result.ClearedDev)
 		return nil
 	},
 }
