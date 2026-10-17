@@ -731,10 +731,24 @@ func (d *NativeDeliverer) post(ctx context.Context, kind, spiffeID string, paylo
 		if message == "" {
 			message = strings.TrimSpace(string(answer))
 		}
-		return receipt, fmt.Errorf("the host refused the %s delivery (%s): %s", kind, response.Status, message)
+		return receipt, &HostStatusError{Status: response.StatusCode, Message: fmt.Sprintf("the host refused the %s delivery (%s): %s", kind, response.Status, message)}
 	}
 	return receipt, nil
 }
+
+// HostStatusError is an answer the host or its gateway gave with a status
+// other than success. The status is kept, not only printed, so the caller
+// that retries can tell a host that is not serving yet (a 5xx, a 404 before
+// its routes are exposed) from one that refused for good (a policy refusal,
+// a stale or mismatched document). Envelope marks a read or write of the
+// module envelope, where a 409 is a lost revision race, not a refusal.
+type HostStatusError struct {
+	Status   int
+	Envelope bool
+	Message  string
+}
+
+func (e *HostStatusError) Error() string { return e.Message }
 
 // endpointDeliveryKind is the host inbox a signed endpoint delivery is posted
 // to: the same inbox, credentials and signing path as the presence it joins.
@@ -961,7 +975,7 @@ func (w *EnvelopeWriter) signIn(ctx context.Context) error {
 	defer response.Body.Close()
 	answer, _ := io.ReadAll(io.LimitReader(response.Body, 1<<16))
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("sign in as the fixture administrator %q (provider %q): %s: %s", w.FixtureToken, w.FixtureProvider, response.Status, strings.TrimSpace(string(answer)))
+		return &HostStatusError{Status: response.StatusCode, Message: fmt.Sprintf("sign in as the fixture administrator %q (provider %q): %s: %s", w.FixtureToken, w.FixtureProvider, response.Status, strings.TrimSpace(string(answer)))}
 	}
 	var session struct {
 		AccessToken string `json:"accessToken"`
@@ -1029,7 +1043,7 @@ func (w *EnvelopeWriter) Current(ctx context.Context) (uint64, []byte, error) {
 		return 0, nil, nil
 	}
 	if status != http.StatusOK {
-		return 0, nil, fmt.Errorf("read the module envelope: HTTP %d: %s", status, strings.TrimSpace(string(answer)))
+		return 0, nil, &HostStatusError{Status: status, Envelope: true, Message: fmt.Sprintf("read the module envelope: HTTP %d: %s", status, strings.TrimSpace(string(answer)))}
 	}
 	var parsed envelopeAnswer
 	if err = json.Unmarshal(answer, &parsed); err != nil {
@@ -1076,7 +1090,7 @@ func (w *EnvelopeWriter) Plan(ctx context.Context, build func(revision uint64, c
 			return err
 		}
 		if status != http.StatusOK {
-			return fmt.Errorf("write module envelope revision %d: HTTP %d: %s", current+1, status, strings.TrimSpace(string(answer)))
+			return &HostStatusError{Status: status, Envelope: true, Message: fmt.Sprintf("write module envelope revision %d: HTTP %d: %s", current+1, status, strings.TrimSpace(string(answer)))}
 		}
 		return nil
 	}

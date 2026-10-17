@@ -568,7 +568,9 @@ func (cluster *nativeCluster) refreshTokens() {
 
 // onRunning is the cell's delivery, for one workload that just started: pin
 // the build it runs, write the envelope the host admits it under, and deliver
-// its presence and authority.
+// its presence and authority — once the host is ready to take them, retrying
+// while it is not serving yet (deliverWhenHostReady). A workload that is not
+// delivered is said so plainly: the gateway routes nothing to it.
 func (cluster *nativeCluster) onRunning(ctx context.Context, unique string) {
 	w := wool.Get(ctx).In("nativeCluster.deliver", wool.Field("service", unique))
 	identity, ok := cluster.identity(unique)
@@ -580,9 +582,11 @@ func (cluster *nativeCluster) onRunning(ctx context.Context, unique string) {
 		w.Warn("cannot resolve the running service", wool.ErrField(err))
 		return
 	}
-	if err := cluster.deliver(ctx, unique, identity, service); err != nil {
-		w.Error("delivery to the host failed", wool.ErrField(err))
-		return
+	err = deliverWhenHostReady(ctx, cluster.stop, nativeDeliverySchedule, cluster.hostReady, func(ctx context.Context) error {
+		return cluster.deliver(ctx, unique, identity, service)
+	})
+	if err != nil && !errors.Is(err, errRunStopped) {
+		w.Error(fmt.Sprintf("delivery to the host failed: %s was not delivered, so every gateway route to module %s answers 404 until it is (a restart of the workload delivers again)", unique, identity.Module), wool.ErrField(err))
 	}
 }
 

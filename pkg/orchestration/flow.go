@@ -1463,6 +1463,15 @@ func (flow *Flow) ServiceReachable(ctx context.Context, service string) bool {
 	return evaluateReadinessProbes(ctx, requirements) == nil
 }
 
+// ServiceReady reports whether one service meets, on its own, the readiness
+// the run gates on (Readiness): its runtime Start completed, and every endpoint
+// its consumers need answers its declared predicate (ServiceReachable). A
+// caller that must act only once a service it depends on is serving asks
+// this, rather than probing the service a second way.
+func (flow *Flow) ServiceReady(ctx context.Context, service string) bool {
+	return flow != nil && flow.startedRun(service) && flow.ServiceReachable(ctx, service)
+}
+
 // PromoteReachable invokes onReady once for each managed dependency (origin
 // excluded) that this run launched and is now accepting connections. It exists
 // because the action loop emits a dependency's StateRunning only when its
