@@ -14,6 +14,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops/cellfile"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
+	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
 	"gopkg.in/yaml.v3"
@@ -51,6 +52,10 @@ type CellResult struct {
 	// workspace is not a git checkout; a consumer binding a delivery to an
 	// exact revision needs it.
 	Source bool
+	// ConfiguredEdges says, one line each, the consumer edges a service's
+	// configuration declares (an ${endpoint:…} it reads) that no service
+	// dependency does.
+	ConfiguredEdges []string
 }
 
 // cellRoot is the gitops root the cell file is written under: the
@@ -95,7 +100,7 @@ func RenderCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 	if err != nil {
 		return CellResult{}, fmt.Errorf("list rendered modules: %w", err)
 	}
-	consumers, err := endpointConsumers(ctx, workspace)
+	consumers, configured, err := endpointConsumers(ctx, workspace, env)
 	if err != nil {
 		return CellResult{}, err
 	}
@@ -104,7 +109,7 @@ func RenderCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 		Coordinate: env.Host.Coordinate, Component: env.Host.Component, Domain: env.Host.Domain, TrustDomain: env.Host.TrustDomain,
 		Source: cellSource(ctx, workspace, env),
 	}
-	result := CellResult{Source: file.Source != nil}
+	result := CellResult{Source: file.Source != nil, ConfiguredEdges: configured}
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -467,8 +472,13 @@ func renderedDelivery(tree string, env *environments.Environment, namespace stri
 // endpoints it names (or all of the target's when it names none), and every
 // endpoint a composed solution consumes through its manifest, attributed to
 // the solution's entry service.
-func endpointConsumers(ctx context.Context, workspace *resources.Workspace) (map[string][]string, error) {
+func endpointConsumers(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (map[string][]string, []string, error) {
+	references, err := configuredEndpointReferences(ctx, workspace, env)
+	if err != nil {
+		return nil, nil, err
+	}
 	consumers := map[string][]string{}
+	var configured []string
 	add := func(key, consumer string) {
 		if !slices.Contains(consumers[key], consumer) {
 			consumers[key] = append(consumers[key], consumer)
@@ -477,12 +487,12 @@ func endpointConsumers(ctx context.Context, workspace *resources.Workspace) (map
 	for _, reference := range workspace.Modules {
 		module, err := workspace.LoadModuleFromReference(ctx, reference)
 		if err != nil {
-			return nil, fmt.Errorf("load module %s to index its dependencies: %w", reference.Name, err)
+			return nil, nil, fmt.Errorf("load module %s to index its dependencies: %w", reference.Name, err)
 		}
 		for _, serviceReference := range module.ServiceReferences {
 			service, err := module.LoadServiceFromName(ctx, serviceReference.Name)
 			if err != nil {
-				return nil, fmt.Errorf("load service %s/%s to index its dependencies: %w", module.Name, serviceReference.Name, err)
+				return nil, nil, fmt.Errorf("load service %s/%s to index its dependencies: %w", module.Name, serviceReference.Name, err)
 			}
 			consumer := resources.ServiceUnique(module.Name, service.Name)
 			for _, dependency := range service.ServiceDependencies {
@@ -514,11 +524,25 @@ func endpointConsumers(ctx context.Context, workspace *resources.Workspace) (map
 					add(resources.ServiceUnique(targetModule, target.Name)+"/"+name, consumer)
 				}
 			}
+			reads := references[consumer]
+			for _, group := range service.WorkspaceConfigurationDependencies {
+				reads = append(reads, references[group]...)
+			}
+			for _, read := range reads {
+				key, err := configuredEndpoint(ctx, workspace, consumer, read)
+				if err != nil {
+					return nil, nil, err
+				}
+				if !slices.Contains(consumers[key], consumer) {
+					configured = append(configured, fmt.Sprintf("cell: %s reaches %s through %s; declared by the configuration, not by a service dependency", consumer, key, read.source))
+				}
+				add(key, consumer)
+			}
 		}
 	}
 	consumed, err := solutionrun.ConsumedEndpoints(ctx, workspace)
 	if err != nil {
-		return nil, fmt.Errorf("index what the composed solutions consume: %w", err)
+		return nil, nil, fmt.Errorf("index what the composed solutions consume: %w", err)
 	}
 	for _, consumption := range consumed {
 		module, err := workspace.LoadModuleFromName(ctx, consumption.Solution)
@@ -530,7 +554,65 @@ func endpointConsumers(ctx context.Context, workspace *resources.Workspace) (map
 	for key := range consumers {
 		sort.Strings(consumers[key])
 	}
-	return consumers, nil
+	return consumers, configured, nil
+}
+
+// configuredReference is one ${endpoint:…} a configuration value carries, and
+// the `<configuration>/<KEY>` it is read from.
+type configuredReference struct{ source, reference string }
+
+// configuredEndpointReferences reads the ${endpoint:…} references the
+// environment's configurations carry, as the configuration loader provides
+// them before any is resolved: per workspace configuration group, and per
+// service (`<module>/<service>`) for a service's own configuration. A service
+// reading one dials that endpoint, so it is a consumer of it exactly as a
+// service dependency makes it one.
+func configuredEndpointReferences(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (map[string][]configuredReference, error) {
+	reader, err := configurations.NewConfigurationLocalReader(ctx, workspace)
+	if err != nil {
+		return nil, err
+	}
+	if err = reader.Load(ctx, env.Runtime()); err != nil {
+		return nil, fmt.Errorf("read the configurations of environment %s for the endpoints they reference: %w", env.Name, err)
+	}
+	references := map[string][]configuredReference{}
+	for _, conf := range reader.Configurations() {
+		for _, info := range conf.Infos {
+			owner := conf.Origin
+			if owner == resources.ConfigurationWorkspace {
+				owner = info.Name
+			}
+			for _, value := range info.ConfigurationValues {
+				for _, reference := range resources.ConfigurationValueEndpointReferences(value) {
+					references[owner] = append(references[owner], configuredReference{source: info.Name + "/" + value.Key, reference: reference})
+				}
+			}
+		}
+	}
+	return references, nil
+}
+
+// configuredEndpoint is the `<module>/<service>/<endpoint>` a configured
+// reference names, refused, naming the service, the key and the target, when
+// the composition has no such endpoint.
+func configuredEndpoint(ctx context.Context, workspace *resources.Workspace, consumer string, read configuredReference) (string, error) {
+	refuse := func(why string) error {
+		return fmt.Errorf("service %s reads %s = ${endpoint:%s}, %s", consumer, read.source, read.reference, why)
+	}
+	info, err := resources.ParseEndpointReference(read.reference)
+	if err != nil {
+		return "", refuse(err.Error())
+	}
+	target, err := workspace.LoadService(ctx, &resources.ServiceWithModule{Name: info.Service, Module: info.Module})
+	if err != nil {
+		return "", refuse(fmt.Sprintf("but the workspace composes no service %s/%s", info.Module, info.Service))
+	}
+	for _, endpoint := range target.Endpoints {
+		if endpoint != nil && ((info.Name != "" && endpoint.Name == info.Name) || (info.Name == "" && endpoint.API == info.API)) {
+			return resources.ServiceUnique(info.Module, info.Service) + "/" + endpoint.Name, nil
+		}
+	}
+	return "", refuse(fmt.Sprintf("but service %s/%s declares no such endpoint", info.Module, info.Service))
 }
 
 const (

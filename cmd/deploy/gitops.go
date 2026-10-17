@@ -666,6 +666,9 @@ func printCell(cell *gitops.CellResult) {
 		return
 	}
 	cli.Info("Cell file %s covers modules %s", cell.Path, strings.Join(cell.Modules, ", "))
+	for _, edge := range cell.ConfiguredEdges {
+		cli.Info("%s", edge)
+	}
 	if len(cell.Skipped) > 0 {
 		cli.Info("Cell file leaves out %s: rendered for another environment", strings.Join(cell.Skipped, ", "))
 	}

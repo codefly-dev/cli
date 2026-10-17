@@ -310,3 +310,50 @@ func TestRenderLabelsAnUnlabelledJobTemplateSoTheCellCanSelectIt(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, map[string]string{"app": "labelled"}, labelled)
 }
+
+// writeConfiguredWorkspace composes shop/api (grpc, http), billing/ledger,
+// which declares the platform group, and audit/reader, which does not; the
+// staging platform group carries gateway=<value>.
+func writeConfiguredWorkspace(t *testing.T, value string) *resources.Workspace {
+	t.Helper()
+	root := t.TempDir()
+	files := map[string]string{
+		resources.WorkspaceConfigurationName:                                                          "name: acme\nlayout: modules\nmodules:\n  - name: shop\n  - name: billing\n  - name: audit\nenvironments:\n  - name: staging\n    namespace: acme\n",
+		filepath.Join("configurations", "staging", "platform.env"):                                    "gateway=" + value + "\n",
+		filepath.Join("modules", "shop", resources.ModuleConfigurationName):                           "kind: module\nname: shop\nservices:\n  - name: api\n",
+		filepath.Join("modules", "shop", "services", "api", resources.ServiceConfigurationName):       cellServiceYAML("api"),
+		filepath.Join("modules", "billing", resources.ModuleConfigurationName):                        "kind: module\nname: billing\nservices:\n  - name: ledger\n",
+		filepath.Join("modules", "billing", "services", "ledger", resources.ServiceConfigurationName): cellServiceYAML("ledger") + "workspace-configuration-dependencies:\n  - platform\n",
+		filepath.Join("modules", "audit", resources.ModuleConfigurationName):                          "kind: module\nname: audit\nservices:\n  - name: reader\n",
+		filepath.Join("modules", "audit", "services", "reader", resources.ServiceConfigurationName):   cellServiceYAML("reader"),
+	}
+	for rel, content := range files {
+		full := filepath.Join(root, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+	}
+	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	require.NoError(t, err)
+	return workspace
+}
+
+// A service that reads ${endpoint:…} through a group it declares dials that
+// endpoint, so it is the endpoint's consumer exactly as a service dependency
+// would make it; a service that does not declare the group is not.
+func TestAConfiguredEndpointReferenceIsAConsumerEdge(t *testing.T) {
+	workspace := writeConfiguredWorkspace(t, "${endpoint:shop/api/http}")
+	consumers, configured, err := endpointConsumers(context.Background(), workspace, selectedEnvironment(t, workspace, "staging"))
+	require.NoError(t, err)
+	require.Equal(t, []string{"billing/ledger"}, consumers["shop/api/http"], "audit/reader declares no platform group")
+	require.Empty(t, consumers["shop/api/grpc"], "the reference names one endpoint, not the service")
+	require.Equal(t, []string{"cell: billing/ledger reaches shop/api/http through platform/gateway; declared by the configuration, not by a service dependency"}, configured)
+}
+
+func TestAConfiguredReferenceToAnUnknownEndpointIsRefused(t *testing.T) {
+	workspace := writeConfiguredWorkspace(t, "http://${endpoint:shop/api/workload}")
+	_, _, err := endpointConsumers(context.Background(), workspace, selectedEnvironment(t, workspace, "staging"))
+	require.EqualError(t, err, "service billing/ledger reads platform/gateway = ${endpoint:shop/api/workload}, but service shop/api declares no such endpoint")
+	workspace = writeConfiguredWorkspace(t, "${endpoint:shop/missing/http}")
+	_, _, err = endpointConsumers(context.Background(), workspace, selectedEnvironment(t, workspace, "staging"))
+	require.ErrorContains(t, err, "but the workspace composes no service shop/missing")
+}

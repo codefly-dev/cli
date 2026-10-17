@@ -796,8 +796,12 @@ environment, each workload as rendered — its exact pod selector, the account
 and SPIFFE identity it runs as, the container that authenticates, every image
 by digest — with the endpoints a serving workload declares (`port` is the
 container port the mesh authorizes, `service_port` the Service's), who the
-composition says calls them (service dependencies and a solution's
-`api.consumes`), the ingress routed onto them, the presence delivery Job,
+composition says calls them (service dependencies, a solution's
+`api.consumes`, and every `${endpoint:<module>/<service>/<endpoint>}` a
+service reads through a workspace configuration group it declares or its own
+configuration for the environment — the render names each edge only the
+configuration declares, and refuses a reference to an endpoint the
+composition does not have, naming the service, the key and the target), the ingress routed onto them, the presence delivery Job,
 and what the environment declares per `<module>/<service>` under `cell:`
 and `egress:` (external hosts; a managed service's `egress-cidrs`). The
 `cell:` entry names the platform `bindings` the service holds, `cloud-identity`
