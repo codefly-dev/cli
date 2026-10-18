@@ -220,6 +220,22 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 		}
 		relative = append(relative, filepath.ToSlash(rel))
 	}
+	// A cell admits only the builds its cell file names: a validation cell takes
+	// that approval from the branch head's file, so a new digest the file does
+	// not carry is refused at admission and the deployment never runs. The cell
+	// file is re-derived from the rendered trees exactly as a render does, and
+	// committed with the digest it now approves.
+	if request.Environment != nil && request.Environment.Host != nil {
+		cell, cellErr := RenderCell(ctx, request.Workspace, request.Environment)
+		if cellErr != nil {
+			return DevResult{}, fmt.Errorf("the dev image is pushed, but environment %s's cell file could not be re-derived, and its cell admits only the builds that file names: %w", request.Environment.Name, cellErr)
+		}
+		rel, relErr := filepath.Rel(request.Workspace.Dir(), cell.Path)
+		if relErr != nil {
+			return DevResult{}, relErr
+		}
+		relative = append(relative, filepath.ToSlash(rel))
+	}
 	entry = inventory.Dev[devEntryIndex(inventory.Dev, request.Service)]
 	return DevResult{Root: root, Changed: relative, Entry: entry}, nil
 }
