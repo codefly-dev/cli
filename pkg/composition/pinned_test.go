@@ -374,12 +374,24 @@ func TestResolutionModeFor(t *testing.T) {
 	cacheShapedPath := filepath.Join(t.TempDir(), ".codefly", "modules", "owner", "repo", "v1.0.0")
 	for _, tc := range []struct {
 		name      string
+		version   string
 		directive *resources.ModuleResolveDirective
 		recorded  *ResolutionReceipt
 		declared  WorkspaceResolution
 		want      ResolutionMode
 	}{
 		{name: "bare reference, nothing recorded", want: ResolutionModeVerified},
+		{
+			// No package is published at a commit, so nothing — not an opt-in,
+			// not a declaration — can make a commit pin resolve any other way.
+			name:      "a commit pin resolves by its commit whatever else says",
+			version:   "0123456789abcdef0123456789abcdef01234567",
+			directive: &resources.ModuleResolveDirective{Pinned: true},
+			recorded:  &ResolutionReceipt{Mode: ResolutionModeOverlayVerified},
+			declared:  WorkspaceResolutionGit,
+			want:      ResolutionModeCommit,
+		},
+		{name: "a short SHA is not a commit pin", version: "0123456", want: ResolutionModeVerified},
 		{name: "bare reference, recorded", recorded: &ResolutionReceipt{Mode: ResolutionModeGit}, want: ResolutionModeGit},
 		{
 			name:      "git opts in",
@@ -476,7 +488,7 @@ func TestResolutionModeFor(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ResolutionModeFor(tc.directive, tc.recorded, tc.declared); got != tc.want {
+			if got := ResolutionModeFor(&resources.ModuleReference{Name: "saas", Version: tc.version}, tc.directive, tc.recorded, tc.declared); got != tc.want {
 				t.Fatalf("ResolutionModeFor = %v, want %v", got, tc.want)
 			}
 		})
@@ -624,7 +636,7 @@ func TestLoadResolutionReceiptsMigratesGitResolvedRecord(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, ResolutionModeGit, receipts["saas"].Mode)
 	require.Equal(t, "/cache/saas/v0.0.1", receipts["saas"].Path)
-	require.True(t, ResolutionModeFor(nil, receipts["saas"], "").Unverified(), "the opt-out must survive the upgrade")
+	require.True(t, ResolutionModeFor(nil, nil, receipts["saas"], "").Unverified(), "the opt-out must survive the upgrade")
 
 	ref := &resources.ModuleReference{Name: "saas", Source: "owner/saas", Version: "v0.0.1"}
 	require.False(t, receipts["saas"].Answers(ref, ResolutionModeGit),

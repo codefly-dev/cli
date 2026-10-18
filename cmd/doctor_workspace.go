@@ -541,12 +541,20 @@ func checkModuleTrust(ctx context.Context, ws *resources.Workspace, report *work
 		}
 		directive := overlayDirective(overlay, ref.Name)
 		receipt := receipts[ref.Name]
-		mode := composition.ResolutionModeFor(directive, receipt, declared[ref.Name])
+		mode := composition.ResolutionModeFor(ref, directive, receipt, declared[ref.Name])
 		checkModuleMaterialization(ref, directive, receipt, mode, report)
 		if mode == composition.ResolutionModeDeclaredGit {
 			report.add(codeModuleResolutionGit, "resolution of "+ref.Name, "ok",
 				fmt.Sprintf("module %q is declared %s: git in %s: it resolves by cloning %s at its %s tag, unverified by declaration", ref.Name, composition.ModuleResolutionKey, resources.WorkspaceConfigurationName, ref.Source, moduleVersionLabel(ref)),
 				fmt.Sprintf("once %s publishes a signed module package, add module-trust.repositories/signers for %q and drop it from %s — nothing else about the entry changes", ref.Source, ref.Name, composition.ModuleResolutionKey))
+		}
+		if mode == composition.ResolutionModeCommit {
+			// Named apart from the opt-outs: no module-trust entry can make a
+			// commit verified, so the remediation is the tag, not the policy.
+			report.add(codeModuleUnverified, "module-trust for "+ref.Name, "warn",
+				fmt.Sprintf("module %q is pinned at commit %s: it resolves by cloning %s at that commit, and nothing about it is signature- or digest-checked — a commit pin is for validation", ref.Name, ref.Version, ref.Source),
+				fmt.Sprintf("release from a tag: once the cell is green, cut the tag on %s and set the `version:` of module %q in %s to it", ref.Source, ref.Name, resources.WorkspaceConfigurationName))
+			continue
 		}
 		if mode.Unverified() {
 			report.add(codeModuleUnverified, "module-trust for "+ref.Name, "warn",

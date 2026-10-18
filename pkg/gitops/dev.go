@@ -284,7 +284,7 @@ func inventoryRenderOptions(inventory *Inventory) *RenderOptions {
 	return &RenderOptions{
 		Module: inventory.Module, Unit: inventory.Unit, Environment: inventory.Environment,
 		Namespace: inventory.Namespace, AppProject: inventory.AppProject, OwnedPath: inventory.OwnedPath,
-		ModulePath: inventory.ModulePath, Package: inventory.Package, Units: inventory.Units,
+		ModulePath: inventory.ModulePath, Package: inventory.Package, Pin: inventory.Pin, Units: inventory.Units,
 		// A dev deployment re-derives the inventory in place, so every field
 		// the render recorded has to be carried back or it is dropped without
 		// a diff. Dropping this one stops Argo delivering the declared

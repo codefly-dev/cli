@@ -5,13 +5,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/Masterminds/semver"
 
+	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/redact"
+	"github.com/codefly-dev/core/resources"
 )
 
 // Engine runs the actual release flow. Holds the Manifest plus the
@@ -267,6 +271,51 @@ func (e *Engine) preflight(ctx context.Context) error {
 	}
 	if err := e.assertSyncedWithOrigin(ctx); err != nil {
 		return err
+	}
+	if err := e.assertNoCommitPins(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+// assertNoCommitPins refuses to release a repository whose workspace composes
+// any module or workspace at a commit, before anything is bumped, signed or
+// pushed. A commit pin is for validation — a cell built at commits, the tag cut
+// once it is green — so a release composed over one would publish a version
+// nothing immutable and reviewed names. The workspace is read where a module
+// release reads it (beside the manifest) and at the repository root, from the
+// committed manifest only: the machine-local overlay says nothing about what a
+// release composes.
+func (e *Engine) assertNoCommitPins(ctx context.Context) error {
+	if e.Manifest == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, dir := range []string{filepath.Dir(e.Manifest.Path), e.WorkDir} {
+		if dir == "" || seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		if _, err := os.Stat(filepath.Join(dir, resources.WorkspaceConfigurationName)); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		workspace, err := resources.LoadFromDir[resources.Workspace](ctx, dir)
+		if err != nil {
+			return fmt.Errorf("read %s to check what the release composes: %w", filepath.Join(dir, resources.WorkspaceConfigurationName), err)
+		}
+		for _, ref := range workspace.Modules {
+			if commit, ok := composition.CommitPin(ref.Version); ok {
+				return fmt.Errorf("module %s is pinned at commit %s: a commit pin is for validation; release from a tag", ref.Name, commit)
+			}
+		}
+		for _, ref := range workspace.Workspaces {
+			if commit, ok := composition.CommitPin(ref.Version); ok {
+				return fmt.Errorf("workspace %s is pinned at commit %s: a commit pin is for validation; release from a tag", ref.Name, commit)
+			}
+		}
 	}
 	return nil
 }

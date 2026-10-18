@@ -240,6 +240,7 @@ func (r *moduleRender) resolveInputs(ctx context.Context, services []*resources.
 		return nil, nil, err
 	}
 	r.options.Package, r.options.ReleaseArtifacts = pkg, artifacts
+	r.options.Pin = compositionPin(r.workspace, r.module.Name)
 	catalog, err := loadContractCatalog(r.module.Dir())
 	if err != nil {
 		return nil, nil, err
@@ -576,6 +577,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		AppProject:       project,
 		Promotable:       true,
 		Package:          pkg,
+		Pin:              compositionPin(workspace, module.Name),
 	}
 	return RenderOwnedTree(ctx, options, func(ctx context.Context, stage string) error {
 		// A configuration error refuses the render before any image is built or
