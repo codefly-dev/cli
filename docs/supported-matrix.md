@@ -27,11 +27,17 @@ When `go.mod` moves to a new core release line, update the `core` field in
 `go test ./pkg/conformance/...` before the full coverage and race gates.
 `TestMatrixCoreMatchesGoMod` refuses a stale declared version.
 
-The current pin is a `v0.19.5` pseudo-version of core, ahead of any tag: it
-carries the `runtime-started-artifact/v1` contract (codefly-dev/core#796,
-codefly-dev/cli#989), which has no released core yet; this CLI no longer reads
-it (a module manifest names no build). Releasing a CLI on it requires core `v0.19.5` to be tagged
-first. On top of `v0.19.2`, `v0.19.4` adds
+The current pin is a `v0.19.6` pseudo-version of core, ahead of any tag:
+`b81d92e6`, the merge of codefly-dev/core#812 — the module manifest
+(`solutionhost.ModuleManifest`, one signed document per module, whose
+workload is `(service, container)` and which names no build) and
+`workloadidentity`, which a native run attests its workloads with. Its
+companion is `github.com/codefly-dev/sdk-go/workcontext` at `70dc7a54`
+(codefly-dev/sdk-go#80, a credential carries no build seal). Releasing a CLI
+on it requires core `v0.19.6` and a `workcontext` release past `v0.1.0` to
+be tagged first. The previous pin, a `v0.19.5` pseudo-version, carried the
+`runtime-started-artifact/v1` contract (codefly-dev/core#796,
+codefly-dev/cli#989), which this CLI no longer reads. On top of `v0.19.2`, `v0.19.4` adds
 the issuer's non-consuming `Authority.ReadBack` and moves kustomize back to
 `v0.21.1`, whose kube-openapi does not pull `structured-merge-diff/v7` (the
 `v0.21.3` that `v0.19.2` and `v0.19.3` carried broke every build compiling
