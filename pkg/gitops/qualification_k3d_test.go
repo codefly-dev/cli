@@ -228,7 +228,7 @@ spec:
   source:
     repoURL: %s
     targetRevision: %s
-    path: environments/deployments/modules/payments/services/%s/overlays/local
+    path: environments/modules/payments/services/%s/overlays/local
   destination:
     server: https://kubernetes.default.svc
     namespace: payments
@@ -390,7 +390,7 @@ spec:
   source:
     repoURL: %s
     targetRevision: %s
-    path: environments/deployments/modules/lastlogin-go/solutions/lastlogin-go/overlays/local
+    path: environments/modules/lastlogin-go/solutions/lastlogin-go/overlays/local
   destination:
     server: https://kubernetes.default.svc
     namespace: lastlogin-go
@@ -560,7 +560,7 @@ func renderMindShapedFixture(t *testing.T, root, environment string) {
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: filepath.Join(root, "deployments", "modules", "payments"),
 		Module:      "payments", UnitNames: services, Environment: environment,
-		AppProject: "payments", OwnedPath: "environments/deployments/modules/payments",
+		AppProject: "payments", OwnedPath: "environments/modules/payments",
 		Units: graph, Promotable: true,
 	}, func(ctx context.Context, root string) error {
 		for _, service := range services {

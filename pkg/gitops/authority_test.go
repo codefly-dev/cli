@@ -458,7 +458,7 @@ func TestAuthorityRefusesAnUnresolvedSlot(t *testing.T) {
 // platform's delivery account. "Signed AND isolated" is this test.
 func TestAuthorityReachesArgoUnderItsOwnProject(t *testing.T) {
 	root := t.TempDir()
-	targetPath := "environments/deployments/modules/shop"
+	targetPath := "environments/modules/shop"
 	inventory := &Inventory{
 		SchemaVersion: SchemaVersion, Module: "shop", Environment: "staging", Namespace: "acme-shop", AppProject: "acme-staging",
 		Units:                 []InventoryUnit{{Kind: UnitKindService, Module: "shop", Name: "api", Path: "services/api"}},

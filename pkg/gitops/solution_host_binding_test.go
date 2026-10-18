@@ -584,7 +584,7 @@ func TestDeliveredCarrierMatchesTheGolden(t *testing.T) {
 // refused at sync.
 func TestDeclaredBindingsReachArgo(t *testing.T) {
 	root := t.TempDir()
-	targetPath := "environments/deployments/modules/crm"
+	targetPath := "environments/modules/crm"
 	inventory := &Inventory{
 		SchemaVersion: SchemaVersion,
 		Module:        "crm",
