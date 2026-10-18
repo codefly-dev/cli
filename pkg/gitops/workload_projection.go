@@ -35,7 +35,13 @@ import (
 //     constant path, as one projected ConfigMap source — the shape the
 //     platform's admission pins (obin-ai/infra-base#1366): the platform
 //     renders that ConfigMap, the composition's Deployment carries the
-//     mount, and this render is that Deployment.
+//     mount, and this render is that Deployment. The same workloads, and
+//     no other, mount their ServiceAccount's Kubernetes API credential
+//     (automountServiceAccountToken: true): the host authorises every
+//     delivered carrier by TokenReview, and reads the in-cluster CA and
+//     token at the standard paths the ServiceAccount admission plugin
+//     injects them at — nothing else. Every other workload keeps the
+//     agents' default, false.
 //
 // Both land as patches in the unit's environment overlay, so the base the
 // agent rendered is untouched and the overlay's bytes — which the presence
@@ -96,6 +102,7 @@ const (
 	keyConfigMap           = "configMap"
 	keyContainers          = "containers"
 	keyNamespace           = "namespace"
+	keyAutomountToken      = "automountServiceAccountToken"
 	LocalTrustAnchorVolume = "codefly-delivery-trust"
 )
 
@@ -217,8 +224,10 @@ func trustAnchorSource(opts *RenderOptions) (configMap, mountPath string, err er
 // projectTrustAnchor mounts the host's trust anchor into the verifier: the
 // local trust ConfigMap at the declared path on a k3d environment, the
 // platform's trust ConfigMap at the host's constant path on a hosted one.
-// Only the verifier's module is judged, so a host block the source refuses
-// refuses that one render and no other module's.
+// The same workloads mount their ServiceAccount's API credential, which the
+// host's TokenReview of a delivered carrier needs and no other workload
+// holds. Only the verifier's module is judged, so a host block the source
+// refuses refuses that one render and no other module's.
 func projectTrustAnchor(tree *renderRoot, owned string, opts *RenderOptions) error {
 	module, service, _ := opts.Host.DeliveryEndpoint()
 	if module != opts.Module {
@@ -254,7 +263,7 @@ func projectTrustAnchor(tree *renderRoot, owned string, opts *RenderOptions) err
 			if workload.hasVolume(LocalTrustAnchorVolume) {
 				return fmt.Errorf("the host's verifier workload %s already declares a volume named %s, which the render projects; rename it", workload.Name, LocalTrustAnchorVolume)
 			}
-			patches = append(patches, podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: volume, mount: mount})
+			patches = append(patches, podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: volume, mount: mount, automountToken: true})
 		}
 		if len(patches) == 0 {
 			return fmt.Errorf("the host's verifier %s/%s renders no serving workload to mount the trust anchor into", module, service)
@@ -346,6 +355,10 @@ type podProjection struct {
 	volume, mount         map[string]any
 	// env binds CLI-owned file paths to the same container as their volume.
 	env map[string]string
+	// automountToken mounts the pod's ServiceAccount API credential at the
+	// standard paths (automountServiceAccountToken: true), the one the
+	// host's verifier reviews tokens with.
+	automountToken bool
 }
 
 func (projection *podProjection) environmentEntries() []any {
@@ -369,14 +382,15 @@ func (projection *podProjection) patch() (map[string]any, error) {
 	if len(projection.env) > 0 {
 		container["env"] = projection.environmentEntries()
 	}
+	spec := map[string]any{"volumes": []any{projection.volume}, keyContainers: []any{container}}
+	if projection.automountToken {
+		spec[keyAutomountToken] = true
+	}
 	body := map[string]any{
 		keyAPIVersion: "apps/v1",
 		keyKind:       projection.kind,
 		"metadata":    map[string]any{keyName: projection.name},
-		keySpec: map[string]any{"template": map[string]any{keySpec: map[string]any{
-			"volumes":     []any{projection.volume},
-			keyContainers: []any{container},
-		}}},
+		keySpec:       map[string]any{"template": map[string]any{keySpec: spec}},
 	}
 	encoded, err := yaml.Marshal(body)
 	if err != nil {
@@ -395,6 +409,9 @@ func (projection *podProjection) applyTo(document map[string]any) bool {
 		return false
 	}
 	spec["volumes"] = append(sliceField(spec, "volumes"), projection.volume)
+	if projection.automountToken {
+		spec[keyAutomountToken] = true
+	}
 	for _, entry := range sliceField(spec, "containers") {
 		if container, _ := entry.(map[string]any); container != nil && container[keyName] == projection.container {
 			container["volumeMounts"] = append(sliceField(container, "volumeMounts"), projection.mount)

@@ -25,6 +25,7 @@ spec:
         app: api
     spec:
       serviceAccountName: api
+      automountServiceAccountToken: false
       containers:
         - name: api
           image: ghcr.io/codefly-dev/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -241,6 +242,24 @@ func TestAnExistingTokenIsReusedOnlyWhereTheSDKReadsIt(t *testing.T) {
 	}
 }
 
+// renderedAutomount reads the named service's rendered Deployment back as
+// Kubernetes would run it and returns its pod's automountServiceAccountToken.
+func renderedAutomount(t *testing.T, destination, service string) any {
+	t.Helper()
+	manifests, err := overlayManifests(filepath.Join(destination, "services", service, "overlays", "prod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range manifests {
+		if item.kind == kindDeployment {
+			spec, _ := podSpec(item)
+			return spec[keyAutomountToken]
+		}
+	}
+	t.Fatalf("service %s renders no Deployment", service)
+	return nil
+}
+
 // requireTrustAnchorMount reads the verifier's rendered unit back and holds
 // it to the one shape a trust anchor takes: one projected volume whose only
 // source is the named ConfigMap, keys not remapped, mounted read-only, no
@@ -291,6 +310,9 @@ func TestALocalHostMountsItsTrustAnchorWhereItReadsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireTrustAnchorMount(t, destination, LocalTrustAnchorObjects, anchor)
+	if got := renderedAutomount(t, destination, "api"); got != true {
+		t.Fatalf("the local host's verifier has automountServiceAccountToken %v, want true: the host on k3d reads the same API credential a hosted one does", got)
+	}
 
 	unstated := filepath.Join(t.TempDir(), "modules", "crm")
 	if _, err := RenderOwnedTree(context.Background(), options(unstated, ""), kustomizedWorkload(sidecarDeployment)); err != nil {
@@ -298,6 +320,9 @@ func TestALocalHostMountsItsTrustAnchorWhereItReadsIt(t *testing.T) {
 	}
 	if volume, _ := renderedVolume(t, unstated, LocalTrustAnchorVolume); volume != nil {
 		t.Fatal("a k3d environment stating no trust-anchor path mounted one")
+	}
+	if got := renderedAutomount(t, unstated, "api"); got != false {
+		t.Fatalf("a k3d environment stating no trust-anchor path set automountServiceAccountToken to %v", got)
 	}
 }
 
@@ -311,7 +336,10 @@ func TestALocalHostMountsItsTrustAnchorWhereItReadsIt(t *testing.T) {
 // workloads of the module, and every other module, mount nothing; a hosted
 // environment that still states host.trust_anchor is refused, not mounted
 // elsewhere; and a host.component that cannot name a ConfigMap refuses the
-// verifier's render alone, never another module's.
+// verifier's render alone, never another module's. The verifier is also the
+// one workload that mounts its ServiceAccount's API credential
+// (automountServiceAccountToken: true), for the TokenReview that authorises
+// a delivered carrier; every other workload keeps the agents' false.
 func TestAHostedHostMountsThePlatformsTrustAnchorAtItsConstantPath(t *testing.T) {
 	options := func(destination, delivery string) *RenderOptions {
 		opts := solutionRenderOptions(destination)
@@ -327,8 +355,14 @@ func TestAHostedHostMountsThePlatformsTrustAnchorAtItsConstantPath(t *testing.T)
 		t.Fatal(err)
 	}
 	requireTrustAnchorMount(t, destination, "platform-host-delivery-trust", HostedTrustAnchorPath)
+	if got := renderedAutomount(t, destination, "api"); got != true {
+		t.Fatalf("the host's verifier has automountServiceAccountToken %v, want true: the host reviews a delivered carrier's token with its own API credential", got)
+	}
 	if volume, _ := renderedVolumeOf(t, destination, "web", LocalTrustAnchorVolume); volume != nil {
 		t.Fatal("a service that is not the host's verifier mounted the platform's trust anchor")
+	}
+	if got := renderedAutomount(t, destination, "web"); got != false {
+		t.Fatalf("a service that is not the host's verifier has automountServiceAccountToken %v, want the agents' false", got)
 	}
 
 	other := filepath.Join(t.TempDir(), "modules", "crm")
@@ -337,6 +371,9 @@ func TestAHostedHostMountsThePlatformsTrustAnchorAtItsConstantPath(t *testing.T)
 	}
 	if volume, _ := renderedVolumeOf(t, other, "api", LocalTrustAnchorVolume); volume != nil {
 		t.Fatal("a module that does not render the host's verifier mounted the platform's trust anchor")
+	}
+	if got := renderedAutomount(t, other, "api"); got != false {
+		t.Fatalf("a module that does not render the host's verifier has automountServiceAccountToken %v, want the agents' false", got)
 	}
 
 	relocated := options(filepath.Join(t.TempDir(), "modules", "crm"), "crm/api/rest")
