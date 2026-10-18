@@ -88,8 +88,21 @@ content, so the next generation.
 headless component; an empty or malformed one refuses delivery. Its `payload`
 is never authored: it is generated from the release's runtime artifact named
 `frontend` in the package manifest (`release-artifacts`) — artifact name,
-digest and media type, verbatim — and a release declaring none gives a
-frontend no payload. A native run delivers what runs: the bundle its frontend
+digest and media type, verbatim. A deployed render of a release declaring
+none builds the bundle from the release's own source, as it builds the
+release's images: `npm ci && npm run build` in the remote's npm project
+(`services/fe-remote`, else the component root), inside a digest-pinned Node
+image, on the committed tree (HEAD) of the repository the component is
+released from: nothing untracked or ignored reaches the builder (nor do
+uncommitted edits), and the module cache is never written. A component in no
+repository builds from its own directory alone. It archives `services/fe-remote/dist` in core's
+canonical form, publishes it by digest to
+`<registry.url>/<workspace>/frontend-bundles` (rooted against registry garbage
+collection and read back), and stamps that artifact as the payload. The same
+render hands every service declaring the `artifact-cache` workspace
+configuration `REPOSITORY`, that repository, which a host reads bundles from by
+the digest it admits. A local render and a local k3d cluster's publish and
+project nothing. A native run delivers what runs: the bundle its frontend
 build wrote (`services/fe-remote/dist`, with `mf-manifest.json` at its root),
 archived in core's canonical form, retained in the workspace's artifact cache
 under its digest, and named as the payload; a declared page without a built

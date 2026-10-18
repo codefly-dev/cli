@@ -12,17 +12,22 @@ import (
 // ModuleAuthorityConfiguration requests per-workload authority from the render.
 const ModuleAuthorityConfiguration = "module-authority"
 
-// ArtifactCacheConfiguration requests, from a NATIVE run only, the root of the
-// workspace's artifact cache (ArtifactCacheRootKey): the digest-named files
-// the CLI retains and acquires, which a host's read-only native bundle source
-// reads a frontend bundle from by the digest the module manifest names. A cell's
-// render projects nothing for it, so in Kubernetes the value is absent and
-// the host's directory source stays refused there.
+// ArtifactCacheConfiguration is the render-owned group naming where a host
+// reads frontend bundles from, by the digest a signed module manifest names.
+// A NATIVE run hands ArtifactCacheRootKey, the workspace's artifact cache the
+// CLI retains bundles in; a deployed render hands ArtifactCacheRepositoryKey,
+// the one repository it publishes bundles to. A service receives at most one;
+// a render that publishes no bundles (a local k3d cluster) hands neither.
 const ArtifactCacheConfiguration = "artifact-cache"
 
-// ArtifactCacheRootKey is the one value of ArtifactCacheConfiguration: the
+// ArtifactCacheRootKey is the native value of ArtifactCacheConfiguration: the
 // absolute path of the cache directory.
 const ArtifactCacheRootKey = "ROOT"
+
+// ArtifactCacheRepositoryKey is the deployed value of
+// ArtifactCacheConfiguration: the OCI repository (registry host and path, no
+// tag or digest) the render publishes every frontend bundle to.
+const ArtifactCacheRepositoryKey = "REPOSITORY"
 
 // FederationConfiguration is the host's authored workspace configuration
 // group (its registration secrets live there, declared by the composition).
