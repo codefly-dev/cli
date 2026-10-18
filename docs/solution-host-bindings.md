@@ -89,7 +89,11 @@ trust anchor (the public verification policy) from, which is a constant
 of the host. A local cluster run mounts the local trust anchor it provisions
 there, the way a cell's platform mounts its own; stating another path moves
 nothing on the host, which then has no anchor and refuses to start. Refused on
-any environment that is not k3d. See "Local runs" below.
+any environment that is not k3d: a deployed host's trust anchor is its
+platform's, and the render mounts the platform's `<host.component>-delivery-trust`
+ConfigMap at the host's constant path itself — the mount is the render's,
+the content the platform's. See "Local runs" below, and "On a hosted cell"
+there.
 
 Nothing here is derived. A derived coordinate is a guess a host silently
 refuses at reconcile time; an unlisted ownership domain is refused by the host
@@ -1322,6 +1326,20 @@ of the module `host.delivery` names. On k3d, `host.trust_anchor` makes the
 render mount that ConfigMap alone, read-only with keys unchanged, into the
 verifier's authenticating container. Provisioning fetches no trust material
 and writes no Secret. The host's `SOLUTION_HOST_TRUST_POLICY` is `keys`.
+
+**On a hosted cell** (cli#1036). The platform renders the trust ConfigMap,
+`<host.component>-delivery-trust`, in the verifier's namespace, and its
+contract says the composition's Deployment carries the mount — which is this
+render's output. So on any environment that declares a host and is not a
+local k3d one, the render mounts that ConfigMap, read-only with keys
+unchanged, into the verifier's authenticating container at the host's
+constant path, `/etc/obin/delivery-trust` (`gitops.HostedTrustAnchorPath`,
+the other half of the host's own constant, which it refuses to relocate from
+inside a pod). The render declares nothing about the ConfigMap's content: the
+platform owns what the anchor says, the render owns only that the pod reads
+it where the host looks. The path is never a workspace value — a composition
+that could name it could point the verifier at a policy it wrote itself — so
+`host.trust_anchor` stays refused on every environment that is not k3d.
 
 The host proves the binding at boot (the CA in its projected bundle, and a TLS
 handshake to its API server with that CA alone), so a profile copied to any
