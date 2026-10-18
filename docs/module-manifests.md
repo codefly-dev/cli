@@ -45,21 +45,29 @@ administrator); the render never reads it.
 | `release` | the module's package manifest: `<publisher>/<name>` and its exact version |
 | `group` | a solution's group in the composing workspace's `solution-groups` (generated, authored nowhere else) |
 | `frontend` | the component's `solution.frontend.codefly.yaml`, with a generated `payload` (below) |
-| `workloads` | **every** service of the module declaring `module-identity: true`: its service name, the container that authenticates, and the SPIFFE ID of the account it runs as |
+| `workloads` | **every** service of the module declaring `module-identity: true`: its service name and the container that authenticates — nothing of where it runs, which the cell spells by rule |
 | `endpoints` | the module's endpoints the host routes, each with the address the composition resolved for it |
 | `authority` | what the module asks for, always with `principal: <module name>` |
 
 **Workloads.** A module runs as every service that declares
 `module-identity` — a serving process and a worker, say — so its one manifest
-lists each, all in the module's namespace (core and the host refuse a manifest
-whose workloads span namespaces). In a cell each is read off the unit that
+lists each. A workload is `(service, container)` and carries no namespace,
+account or SPIFFE ID (core's `solutionhost.Workload`, since core#812): a cell
+runs it as the ServiceAccount named after the service, in the module's
+delivered namespace — `<delivery>-<environment>-<module>` when the workspace
+composes several modules (the environment's `namespace` being
+`<delivery>-<environment>`), the environment's namespace when it composes one
+(handbook decision
+`a-delivered-namespace-is-named-by-its-delivery-environment-and-module`).
+In a cell each is read off the unit that
 renders it: the serving workloads (Deployments, StatefulSets, DaemonSets) of
 the unit must agree on one container and one account; the container is the one
 named like the service, or the only one; a workload running as the
 namespace's `default` account, or as the `delivery` account the delivery Job
-uses, is refused. A bootstrap Job or CronJob never authenticates as the
-service and is not a workload. The SPIFFE ID is
-`spiffe://<host.trust_domain>/ns/<namespace>/sa/<account>`. A module with no
+uses, is refused, and so is any account but the one named after the service.
+A bootstrap Job or CronJob never authenticates as the service and is not a
+workload. Its mesh identity is
+`spiffe://<host.trust_domain>/ns/<namespace>/sa/<service>`. A module with no
 `module-identity` service has nothing that runs as it and declares no manifest
 (the render says why); one that publishes a contract or asks for scopes with
 no such service is refused, since the request would otherwise be dropped. A
@@ -319,7 +327,7 @@ never withdrawn by this publish.
 
 **Held to the host declared now.** Every manifest the render declares is held,
 at publish, to the environment's host block as it is then — the ownership
-domain, the host coordinate and the trust domain of every workload — and a
+domain and the host coordinate — and a
 render made before the block changed is refused by name; a render for an
 environment that names no host any more is refused outright.
 
@@ -803,8 +811,8 @@ run, the CLI is:
   mint answers "not established yet", which the workload retries.
 - **not the mesh** — every hop is plain HTTP on loopback, and only the host's
   gateway may be reachable off it.
-- **the delivery pipeline** — once an identity workload reaches Running, the
-  run builds its module's manifest (the same `moduleInstanceOf` and
+- **the delivery pipeline** — once an identity workload reaches Running, and
+  once the host is ready to take it (below), the run builds its module's manifest (the same `moduleInstanceOf` and
   `ModuleManifestOf` a cell's render uses), listing **every** identity
   workload of the module that runs now, with the addresses this run allocated
   for its routed endpoints, signs it with the developer key and POSTs it to
@@ -827,6 +835,28 @@ run, the CLI is:
   name. It is written through `PlatformAdminService/PutModuleEnvelope` as
   the fixture's `super_admin`, at the next revision and only when it changed.
   A composition stating no grant writes none.
+
+**A delivery waits for the host, within a deadline.** A workload reports
+Running on its own schedule: a module the gateway does not depend on can be
+Running before `host.gateway` has started, and a gateway that listens can
+still answer 503 until it has configured itself. So a workload's delivery
+starts only once the gateway and the `host.delivery` service are ready by the
+readiness the run gates on (`Flow.ServiceReadiness`: Start completed, consumed
+endpoints answering), and a refusal that only says the host is not serving
+yet is asked again with a backoff from 0.5 s doubling to 10 s, for at most
+**10 minutes** from Running: a 5xx; a 404 from the gateway (sign-in or
+envelope) before it exposes the route; a 409 on the envelope (a lost revision
+race); no answer at all (refused, reset, timed out). A refusal that says no
+fails at once with its reason: any other 4xx, including a 404 from the host's
+own delivery endpoint (a wrong `host.delivery`), a policy refusal, an address
+that is not a URL, a manifest the host received and withheld with a reason. The first
+wait and every change of its reason are logged at info with the service, its
+module and the reason. A workload not delivered by the deadline is reported as
+an error naming it, why the host is still not serving, the last refusal it
+answered, and the consequence: every gateway route to its module answers 404
+until it is delivered, which a restart of the workload attempts again. A
+workload has one delivery in flight: a restart replaces the waiting one, and a
+workload the composition withdraws while it waits is not delivered.
 
 The host is pointed at the stand-in by `CODEFLY_NATIVE_IDENTITY_ANCHOR` and
 `SOLUTION_HOST_LOCAL_TRUST_ANCHOR`, both under
