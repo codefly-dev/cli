@@ -192,8 +192,10 @@ func TestADeveloperIdentityNeverSignsARelease(t *testing.T) {
 // delivers to exactly that tree — never `deployments/deployments/modules`,
 // the doubled path obin-ai/platform-obin#128 committed, which the cell's
 // ApplicationSet never globs — and the next publish reads the prior
-// generation back from the same tree, so a rebuild settles at generation 2
-// against generation 1 rather than against nothing.
+// generation back from the same tree, so a changed manifest settles at
+// generation 2 against generation 1 rather than against nothing. (A rebuild
+// alone is no change: a manifest names no build since core#812, so the change
+// here is the container that authenticates.)
 func TestAPublishDeliversUnderTheGitopsPathExactlyAsRendered(t *testing.T) {
 	ctx, workspace, remote := developerPublishWorkspace(t)
 	configPath := filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName)
@@ -246,10 +248,10 @@ func TestAPublishDeliversUnderTheGitopsPathExactlyAsRendered(t *testing.T) {
 		t.Fatalf("the promoted tree prefixes the gitops path twice:\n%s", delivered)
 	}
 
-	renderHostedPayments(t, workspace, env, strings.ReplaceAll(pinnedDeployment, "aaaa", "bbbb"), hostedPaymentsInstances())
+	renderHostedPayments(t, workspace, env, strings.Replace(pinnedDeployment, "- name: api\n", "- name: api-v2\n", 1), hostedPaymentsInstances())
 	second, _ := publish()
 	if g1, g2 := first.Delivery.Documents[0].Generation, second.Delivery.Documents[0].Generation; g1 != 1 || g2 != 2 {
-		t.Fatalf("a rebuilt module settled at generations %d then %d, want 1 then 2", g1, g2)
+		t.Fatalf("a changed module settled at generations %d then %d, want 1 then 2", g1, g2)
 	}
 }
 
@@ -257,7 +259,7 @@ func TestAPublishDeliversUnderTheGitopsPathExactlyAsRendered(t *testing.T) {
 // promotion rule: on a k3d environment whose host lists developers, the
 // developer's signed publish advances the local base branch itself, so the
 // next publish settles against it — a module whose manifest changed (here the
-// account its workload runs as) lands at generation 2, never at a second
+// container that authenticates) lands at generation 2, never at a second
 // generation 1 the host would refuse as a rewrite — and both commits
 // fast-forward the base, the second descending from the first.
 func TestALocalPromotionSettlesAChangedManifestAtTheNextGeneration(t *testing.T) {
@@ -285,7 +287,7 @@ func TestALocalPromotionSettlesAChangedManifestAtTheNextGeneration(t *testing.T)
 	}
 
 	env := selectedEnvironment(t, workspace, "production")
-	renderHostedPayments(t, workspace, env, strings.ReplaceAll(pinnedDeployment, "serviceAccountName: api", "serviceAccountName: api-v2"), hostedPaymentsInstances())
+	renderHostedPayments(t, workspace, env, strings.Replace(pinnedDeployment, "- name: api\n", "- name: api-v2\n", 1), hostedPaymentsInstances())
 	second, secondResult := publish()
 	if g1, g2 := first.Delivery.Documents[0].Generation, second.Delivery.Documents[0].Generation; g1 != 1 || g2 != 2 {
 		t.Fatalf("a changed module settled at generations %d then %d, want 1 then 2", g1, g2)
@@ -329,7 +331,7 @@ func TestALocalPromotionSettlesAChangedManifestAtTheNextGeneration(t *testing.T)
 	// again from it, and its promotion fast-forwards — never forced, never a
 	// divergence.
 	request.PromotionBranch = "codefly/promote-other-production"
-	renderHostedPayments(t, workspace, env, strings.ReplaceAll(pinnedDeployment, "serviceAccountName: api", "serviceAccountName: api-v3"), hostedPaymentsInstances())
+	renderHostedPayments(t, workspace, env, strings.Replace(pinnedDeployment, "- name: api\n", "- name: api-v3\n", 1), hostedPaymentsInstances())
 	third, thirdResult := publish()
 	if third.Delivery.Documents[0].Generation != 3 {
 		t.Fatalf("a promotion on another branch settled at generation %d, want 3", third.Delivery.Documents[0].Generation)
