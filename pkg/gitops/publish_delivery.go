@@ -48,8 +48,9 @@ type deliveryPublishOptions struct {
 	// environment decides (signing.FromEnvironment).
 	Signer signing.Signer
 	// Coordinate and TrustDomain name the host the environment declares at
-	// publish; every rendered manifest, and every workload in it, must be
-	// stamped with them. Empty when the environment declares no host.
+	// publish; every rendered manifest is stamped with the coordinate, and the
+	// render's recorded mesh edges with the trust domain. Empty when the
+	// environment declares no host.
 	Coordinate, TrustDomain string
 	// ReuseCheck verifies a carrier signed BEFORE this publish — by the base
 	// branch's release, or by the plan this publish executes — under the
@@ -165,6 +166,9 @@ func settleManifestDelivery(
 				return nil, err
 			}
 		}
+		if err = refuseMovedTrustDomain(inventory, opts); err != nil {
+			return nil, err
+		}
 	}
 	settled, err := settledManifestSet(rendered, prior)
 	if err != nil {
@@ -227,6 +231,21 @@ func refuseMovedManifest(binding string, manifest *solutionhost.ModuleManifest, 
 		return fmt.Errorf("module manifest %s was rendered for host %s and the environment declares %s now; render again before publishing", binding, manifest.Host.Coordinate, opts.Coordinate)
 	}
 	return nil
+}
+
+// refuseMovedTrustDomain holds the render to the trust domain the environment
+// declares now. A manifest workload names no trust domain (the cell spells
+// its identity by rule), but the render baked the trust domain into every
+// principal it wrote — the mesh edges the cell file is read from, each
+// module-authority PRINCIPAL — so a render made before the host's trust domain
+// moved would deliver identities the mesh no longer issues. The render
+// records the trust domain it used with its mesh edges.
+func refuseMovedTrustDomain(inventory *Inventory, opts *deliveryPublishOptions) error {
+	if opts.TrustDomain == "" || inventory.MeshEdges == nil || inventory.MeshEdges.TrustDomain == opts.TrustDomain {
+		return nil
+	}
+	return fmt.Errorf("module %s was rendered for trust domain %q and the environment declares %q now; render again before publishing",
+		inventory.Module, inventory.MeshEdges.TrustDomain, opts.TrustDomain)
 }
 
 // refuseForeignWithdrawal refuses to withdraw a binding delivered under

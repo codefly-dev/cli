@@ -420,11 +420,21 @@ func TestPublishHoldsEveryManifestToTheHostDeclaredNow(t *testing.T) {
 		`ownership domain "example"`: {Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "other", Module: "crm"},
 		"elsewhere/prod/x":           {Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", Module: "crm", Coordinate: "elsewhere/prod/x"},
 		"names no host now":          {Signer: &fakeSigner{}, Domain: "example", Module: "crm"},
-		"trust domain":               {Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", Module: "crm", TrustDomain: "other.example"},
 	} {
 		_, err := repository.settle(inventory, &opts)
 		require.ErrorContains(t, err, want)
 	}
+	// A manifest workload carries no trust domain; the render records the one
+	// it baked into every principal with its mesh edges, and that is held.
+	inventory.MeshEdges = &MeshEdges{SchemaVersion: MeshEdgesSchemaVersion, TrustDomain: testHost().TrustDomain}
+	moved := deliveryPublishOptions{Signer: &fakeSigner{}, Target: testDeliveryTarget(), Domain: "example", Module: "crm", TrustDomain: "other.example"}
+	_, err := repository.settle(inventory, &moved)
+	require.ErrorContains(t, err, `trust domain "cluster.example"`)
+	require.ErrorContains(t, err, "other.example")
+	current := moved
+	current.TrustDomain = testHost().TrustDomain
+	_, err = repository.settle(inventory, &current)
+	require.NoError(t, err)
 }
 
 // TestPublishRefusesAReusedCarrierThatSignsOtherBytes: a carrier delivered
