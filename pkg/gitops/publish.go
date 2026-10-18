@@ -211,7 +211,7 @@ func preparePublish(
 		cleanup()
 		return nil, err
 	}
-	targetPath := filepath.ToSlash(filepath.Join(pathRoot, "deployments", "modules", request.Module))
+	targetPath := deliveryModulePath(pathRoot, request.Module)
 	target, err := confinedJoin(repo, targetPath)
 	if err != nil {
 		return fail(err)
@@ -646,7 +646,8 @@ func stageRollbackPublication(
 
 // resolveGitopsModuleInventory resolves a consumed contract's exposing module
 // against its rendered inventory at
-// <gitopsPath>/deployments/modules/<module>/.codefly-render.json, read from
+// <gitopsPath>/modules/<module>/.codefly-render.json (deliveryModulePath),
+// read from
 // the base branch (refs/remotes/origin/baseBranch) rather than repo's checked-
 // out working tree. The working tree is the promotion branch, which is
 // long-lived and reused across every publish for the module owning it
@@ -667,7 +668,7 @@ func resolveGitopsModuleInventory(ctx context.Context, repo, baseBranch, gitopsP
 		if err := validatePathComponent("consumed contract module", module); err != nil {
 			return nil, err
 		}
-		relative := filepath.ToSlash(filepath.Join(gitopsPath, "deployments", "modules", module, InventoryFilename))
+		relative := filepath.ToSlash(filepath.Join(deliveryModulePath(gitopsPath, module), InventoryFilename))
 		blob := "refs/remotes/origin/" + baseBranch + ":" + relative
 		if _, err := gitCommand(ctx, repo, "cat-file", "-e", blob); err != nil {
 			return nil, fmt.Errorf("module %s has no inventory on %s: %w", module, baseBranch, os.ErrNotExist)
@@ -869,7 +870,7 @@ func loadPublicationInventory(
 			inventory.Unit,
 		)
 	}
-	expectedOwnedPath := filepath.ToSlash(filepath.Join(pathRoot, "deployments", "modules", request.Module))
+	expectedOwnedPath := deliveryModulePath(pathRoot, request.Module)
 	if inventory.OwnedPath != expectedOwnedPath {
 		return Inventory{}, fmt.Errorf("render inventory owns path %q, expected %q", inventory.OwnedPath, expectedOwnedPath)
 	}
@@ -2178,10 +2179,12 @@ func resolveGitops(workspace *resources.Workspace, environment string, local boo
 	if err != nil {
 		return nil, "", "", "", err
 	}
+	var selected *environments.Environment
 	for _, candidate := range declared {
 		if candidate.Name != environment || candidate.Gitops == nil {
 			continue
 		}
+		selected = candidate
 		config = repositoryConfig{
 			RepoURL:      candidate.Gitops.RepoURL,
 			FetchRepoURL: candidate.Gitops.FetchRepoURL,
@@ -2195,20 +2198,18 @@ func resolveGitops(workspace *resources.Workspace, environment string, local boo
 		return nil, "", "", "", err
 	}
 	if config.RepoURL == "" && defaults != nil {
-		// An environment may override the path alone; the render lays its
-		// tree out under it (moduleOwnedPath), so the publish delivers there
-		// — in the workspace's repository, on its branch.
-		path := config.Path
+		// An environment may override the path alone — in the workspace's
+		// repository, on its branch.
 		config = repositoryConfig{
 			RepoURL:      defaults.RepoURL,
 			FetchRepoURL: defaults.FetchRepoURL,
-			Path:         defaults.Path,
 			Branch:       defaults.Branch,
 		}
-		if path != "" {
-			config.Path = path
-		}
 	}
+	// The path is selected exactly as the render selected it when it laid
+	// the tree out (moduleOwnedPath), so the publish delivers where the
+	// render said it would.
+	config.Path = gitopsPathOf(selected, defaults)
 	if config.RepoURL == "" {
 		return nil, "", "", "", fmt.Errorf("environment %q gitops.repo-url is required", environment)
 	}

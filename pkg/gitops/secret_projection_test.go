@@ -778,7 +778,7 @@ func TestValidateInventoryUnitsGovernSecretsBearingManagedBootstrapUnit(t *testi
 	}
 	inventory := &Inventory{
 		SchemaVersion: SchemaVersion, Module: "payments",
-		OwnedPath: "environments/deployments/modules/payments",
+		OwnedPath: "environments/modules/payments",
 		Units:     []InventoryUnit{unit},
 	}
 	if err := validateInventoryUnits(inventory); err != nil {
