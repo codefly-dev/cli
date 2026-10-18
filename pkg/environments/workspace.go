@@ -100,6 +100,9 @@ func WorkspaceGitops(workspace *resources.Workspace) (*EnvironmentGitops, error)
 }
 
 func (env *Environment) Validate() error {
+	if err := env.admitCarried(); err != nil {
+		return err
+	}
 	if _, err := env.Proto(); err != nil {
 		return err
 	}
