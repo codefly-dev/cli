@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
@@ -61,14 +62,26 @@ func TestRenderModuleLeavesAnExcludedServiceOutOfTheTreeAndTheInventory(t *testi
 		`rendered unit "store" is a service environment "staging" excludes`)
 }
 
+// withdrawnCellWorkspace is the cell fixture with staging excluding shop/api
+// and withdrawing billing/ledger's edge to it — and, as the exclusion
+// requires, with no ingress, egress or cell declaration naming shop/api left.
+func withdrawnCellWorkspace(t *testing.T) *resources.Workspace {
+	t.Helper()
+	workspace := writeCellWorkspace(t,
+		[3]string{resources.WorkspaceConfigurationName, "    ingress:\n      - name: shop-http\n        service: shop/api\n        endpoint: http\n        hosts: [shop.example.test]\n", ""},
+		[3]string{resources.WorkspaceConfigurationName, "    egress:\n      shop/api: {hosts: [identity.example.test, {name: api.github.com, port: 8443}]}\n", ""},
+		[3]string{resources.WorkspaceConfigurationName, "    cell:\n      shop/api: {bindings: [vault, identity], cloud-identity: true, presenter: [http]}\n", `    exclude-services:
+      - service: shop/api
+        withdrawn-from: [billing/ledger]
+`})
+	require.NoError(t, environments.ValidateWorkspace(context.Background(), workspace), "the fixture is a state the exclusion admits")
+	return workspace
+}
+
 // A withdrawn edge is no consumer in the cell file: the cell admits nothing to
 // a workload that is not there.
 func TestAWithdrawnEdgeIsNoCellConsumer(t *testing.T) {
-	workspace := writeCellWorkspace(t, [3]string{resources.WorkspaceConfigurationName, "    host:\n", `    exclude-services:
-      - service: shop/api
-        withdrawn-from: [billing/ledger]
-    host:
-`})
+	workspace := withdrawnCellWorkspace(t)
 	consumers, _, err := endpointConsumers(context.Background(), workspace, selectedEnvironment(t, workspace, "staging"))
 	require.NoError(t, err)
 	require.Empty(t, consumers["shop/api/grpc"])
@@ -77,11 +90,7 @@ func TestAWithdrawnEdgeIsNoCellConsumer(t *testing.T) {
 // A cell file is never derived from a tree that still delivers an excluded
 // service: the render of that module is owed first.
 func TestCellFileRefusesATreeThatStillDeliversAnExcludedService(t *testing.T) {
-	workspace := writeCellWorkspace(t, [3]string{resources.WorkspaceConfigurationName, "    host:\n", `    exclude-services:
-      - service: shop/api
-        withdrawn-from: [billing/ledger]
-    host:
-`})
+	workspace := withdrawnCellWorkspace(t)
 	renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
 	_, err := RenderCell(context.Background(), workspace, selectedEnvironment(t, workspace, "staging"))
 	require.ErrorContains(t, err, "the render of module shop still delivers shop/api, which environment staging excludes")
@@ -106,6 +115,7 @@ func TestPlanRefusesAConfigurationReferenceToAnExcludedService(t *testing.T) {
 	require.NoError(t, err)
 
 	err = orchestration.PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{ledger}, false)
-	require.ErrorContains(t, err, "the environment's exclude-services")
+	require.ErrorContains(t, err, "from this environment (exclude-services")
 	require.ErrorContains(t, err, "shop/api")
+
 }

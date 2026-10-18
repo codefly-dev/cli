@@ -444,7 +444,7 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	if err := environments.ValidateManagedServices(ctx, workspace); err != nil {
 		return nil, w.Wrap(err)
 	}
-	if err := environments.ValidateExcludedServices(ctx, workspace); err != nil {
+	if err := environments.ValidateEnvironmentExclusions(ctx, workspace, env); err != nil {
 		return nil, w.Wrap(err)
 	}
 	if service != nil && module != nil && env.Excludes(module.Name, service.Name) {

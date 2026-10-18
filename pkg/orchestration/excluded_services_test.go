@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
 )
 
@@ -91,4 +92,33 @@ func TestNewFlowRefusesAnExclusionSomethingStillConsumes(t *testing.T) {
 	require.NoError(t, err)
 	_, err = NewFlow(ctx, workspace, module, api, env, RunMode)
 	require.ErrorContains(t, err, "shop/api declares a dependency on it")
+}
+
+// A reference reaching a consumer only through a composition-root group (one
+// the consumer does not declare) is judged against the whole workspace — less
+// what the environment excludes: such a producer has no address anywhere in
+// it. (Independent review of #1057, finding M1.)
+func TestPlanRefusesARootGroupReferenceToAnExcludedService(t *testing.T) {
+	ctx := context.Background()
+	workspace := writeTempWorkspace(t, map[string]string{
+		"workspace.codefly.yaml": "name: boundary\nlayout: modules\nmodules:\n    - name: platform\n    - name: payments\n" +
+			"environments:\n    - name: staging\n      namespace: boundary\n      exclude-services:\n          - service: platform/authority\n",
+		"modules/platform/module.codefly.yaml": "kind: module\nname: platform\nservices:\n    - name: authority\n",
+		"modules/platform/services/authority/service.codefly.yaml": "kind: service\nname: authority\nversion: 0.0.0\nmodule: platform\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n" +
+			"endpoints:\n    - name: admin\n      api: rest\n      visibility: public\n" + statedExposure("public"),
+		"modules/payments/module.codefly.yaml": "kind: module\nname: payments\nservices:\n    - name: worker\n",
+		"modules/payments/services/worker/service.codefly.yaml": "kind: service\nname: worker\nversion: 0.0.0\nmodule: payments\n" +
+			"agent:\n    kind: runtime::service\n    name: go-grpc\n    version: 0.0.16\n    publisher: codefly.ai\n",
+		"configurations/staging/work-context.env": "authority-endpoint=${endpoint:platform/authority/admin}\n",
+	})
+	env, err := SelectEnvironment(workspace, "staging")
+	require.NoError(t, err)
+	consumer, err := loadService(ctx, t, workspace, "payments", "worker")
+	require.NoError(t, err)
+	require.Empty(t, consumer.WorkspaceConfigurationDependencies)
+
+	err = PlanConfigurationReferences(ctx, workspace, env, []*resources.Service{consumer}, false)
+	require.ErrorContains(t, err, "from this environment (exclude-services")
+	require.ErrorContains(t, err, "platform/authority")
 }

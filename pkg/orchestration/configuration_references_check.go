@@ -82,6 +82,11 @@ func CheckConfigurationReferences(
 	if lookupErr != nil {
 		return errors.Join(err, lookupErr)
 	}
+	// A service the ENVIRONMENT excludes is no producer anywhere in it, root
+	// groups included: unlike a run's narrower closure, it has no address in
+	// this environment at all. (A run profile's exclusions stay visible here:
+	// those are a local run's trim, not the environment's composition.)
+	lookup = withoutEnvironmentExclusions(env, lookup)
 	rootConsumers := consumersWithRootGroupsOnly(consumers, rootGroups, profile)
 	if len(rootConsumers) == 0 {
 		if err != nil {
@@ -104,7 +109,9 @@ func CheckConfigurationReferences(
 		rootOnly[group] = true
 	}
 	rootInfos := credentialsOf(provided.Infos, rootOnly).received(provided.Infos)
-	rootProblems := configurations.CheckEndpointReferences(rootInfos, rootConsumers, profile, lookup)
+	rootProblems := withExcludedProducerReasons(
+		configurations.CheckEndpointReferences(rootInfos, rootConsumers, profile, lookup),
+		environmentExclusions(env), rootInfos)
 	if merged := mergeUnresolvedReferences(err, rootProblems); merged != nil {
 		return merged
 	}
@@ -319,6 +326,30 @@ func WorkspaceConfigurationsForChecking(
 	}, reader.CompositionRootWorkspaceConfigurationNames(), nil
 }
 
+// environmentExclusions is the environment's exclude-services as a set.
+func environmentExclusions(env *environments.Environment) map[string]bool {
+	excluded := map[string]bool{}
+	for _, unique := range env.ExcludedServiceUniques() {
+		excluded[unique] = true
+	}
+	return excluded
+}
+
+// withoutEnvironmentExclusions answers "absent" for a service the environment
+// excludes, and as lookup does for every other.
+func withoutEnvironmentExclusions(env *environments.Environment, lookup configurations.ProducerLookup) configurations.ProducerLookup {
+	excluded := environmentExclusions(env)
+	if len(excluded) == 0 || lookup == nil {
+		return lookup
+	}
+	return func(unique string) (*resources.Service, bool) {
+		if excluded[unique] {
+			return nil, false
+		}
+		return lookup(unique)
+	}
+}
+
 // withExcludedProducerReasons restates every unresolved reference whose producer
 // the caller itself excluded from the plan. Core cannot tell the two apart — an
 // excluded service is simply not in the graph — so the reason it gives ("not a
@@ -349,7 +380,7 @@ func withExcludedProducerReasons(err error, excludedProducers map[string]bool, i
 			continue
 		}
 		reference.Reason = fmt.Sprintf(
-			"the producer is excluded from this run (--exclude-dependency, a run profile, or the environment's exclude-services); exclude the %q workspace configuration too, or stop excluding %s",
+			"the producer is excluded from this run (--exclude-dependency or a run profile: exclude the %q workspace configuration too) or from this environment (exclude-services: drop the reference from that configuration in this environment); or stop excluding %s",
 			reference.Group, producer)
 	}
 	return err
