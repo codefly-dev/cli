@@ -477,8 +477,8 @@ func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, 
 		return PropertyPlan{}, "", err
 	}
 	if declaredKey != "" && generator.Format == environments.SecretGeneratorFormatEd25519PKCS8 {
-		if err := refuseSharedSigningKey(state, property, lookup, states, declaredKey); err != nil {
-			return PropertyPlan{}, "", err
+		if refusal := refuseSharedSigningKey(state, property, lookup, states, declaredKey); refusal != nil {
+			return PropertyPlan{}, "", refusal
 		}
 	}
 	var holders, unread []string
