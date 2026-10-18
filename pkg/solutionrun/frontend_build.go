@@ -50,10 +50,12 @@ func FrontendProject(module *resources.Module) (string, error) {
 // checkout does) builds from that repository's committed tree at HEAD, so a
 // remote's dependency on a package beside it resolves exactly as in the
 // repository's own CI, and nothing untracked or ignored — a workspace's local
-// secrets, another module's cache, node_modules — ever reaches the builder.
-// A component in no repository (a verified package) builds from what its
-// package carries. A component the repository does not track at HEAD is
-// refused by name rather than built from a tree that is not its own.
+// secrets, another module's cache, node_modules — ever reaches the builder;
+// uncommitted edits are not built either. A component in no repository builds
+// from its own directory alone, so a remote depending on a package beside it
+// cannot build there (a verified package: a follow-up). A component the
+// repository does not track at HEAD is refused by name rather than built from
+// a tree that is not its own.
 func frontendBuildContext(ctx context.Context, module *resources.Module, scratch string) (string, string, error) {
 	repository := ""
 	for dir := module.Dir(); ; dir = filepath.Dir(dir) {
@@ -79,7 +81,7 @@ func frontendBuildContext(ctx context.Context, module *resources.Module, scratch
 	}
 	source := filepath.Join(scratch, "source")
 	if err = corecomposition.ExtractArchive(ctx, archive.Bytes(), source); err != nil {
-		return "", "", fmt.Errorf("stage the committed tree of %s for the frontend of %s: %w", repository, module.Name, err)
+		return "", "", fmt.Errorf("stage the committed tree of %s for the frontend of %s (a committed symlink or special file is refused): %w", repository, module.Name, err)
 	}
 	if info, err := os.Stat(filepath.Join(source, component)); err != nil || !info.IsDir() {
 		return "", "", fmt.Errorf("%s is not tracked at HEAD of %s, so its frontend has no committed source to build from", module.Name, repository)

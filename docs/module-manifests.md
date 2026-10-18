@@ -93,9 +93,9 @@ none builds the bundle from the release's own source, as it builds the
 release's images: `npm ci && npm run build` in the remote's npm project
 (`services/fe-remote`, else the component root), inside a digest-pinned Node
 image, on the committed tree (HEAD) of the repository the component is
-released from: nothing untracked or ignored reaches the builder and the module
-cache is never written; a component in no repository builds from what its
-package carries. It archives `services/fe-remote/dist` in core's
+released from: nothing untracked or ignored reaches the builder (nor do
+uncommitted edits), and the module cache is never written. A component in no
+repository builds from its own directory alone. It archives `services/fe-remote/dist` in core's
 canonical form, publishes it by digest to
 `<registry.url>/<workspace>/frontend-bundles` (rooted against registry garbage
 collection and read back), and stamps that artifact as the payload. The same
