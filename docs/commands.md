@@ -2917,9 +2917,17 @@ libraries/saas-starter-accounts-client/
     catalog.codefly.json         # the endpoint's catalog entry (subset if --services)
     contract.binpb | openapi.json
   go/        go.mod, gen/…, accounts_facade.pb.go
-  typescript/ package.json, src/gen/…, src/accounts_facade.ts
+  typescript/ package.json, tsconfig.json, src/index.ts, src/gen/…, src/accounts_facade.ts
   python/    pyproject.toml, <pkg>/_gen/…, <pkg>/accounts.py
 ```
+
+The TypeScript library is an ESM package whose root resolves to `dist/index.js`
+(types `dist/index.d.ts`). `src/index.ts` is generated output, rewritten on
+every run: a barrel re-exporting every facade and every generated binding, so
+the package name alone reaches every client and message schema. The scaffold
+(`package.json`, `tsconfig.json`) is written once and declares a `typescript`
+dev dependency and a `build` script (`tsc -p tsconfig.json`) that produces
+`dist/` — the only directory, with the README, that the package ships.
 
 Use `codefly sync library-dependencies` to link a generated library into a
 service locally, and `codefly publish library <name>` to distribute it.
