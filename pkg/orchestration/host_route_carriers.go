@@ -27,7 +27,7 @@ import (
 //     one HTTP endpoint the solution's entry service declares — in plain
 //     HTTP, the way it already reaches a module. Nothing a solution reports
 //     at run time is an address: the gateway routes a solution from its
-//     applied presence's endpoints and from these carriers, as it routes a
+//     applied module manifest's endpoints, which carry these addresses, as it routes a
 //     module, and a solution's transport identity is the mesh's, not a
 //     certificate it serves.
 //
@@ -182,6 +182,12 @@ func HostRouteTargets(ctx context.Context, workspace *resources.Workspace, hostM
 
 func hostRoutes(ctx context.Context, workspace *resources.Workspace, hostModule string) ([]hostRoute, error) {
 	consumptions, err := solutionrun.ConsumedEndpoints(ctx, workspace)
+	if err == nil && hostModule == "" && len(consumptions) > 0 {
+		// Without the host's module nothing can tell a consumed host endpoint
+		// from a routed module, and the refusal below would name the host as
+		// a module consumed under the wrong alias.
+		return nil, fmt.Errorf("the environment's host declares no gateway, and %d consumed endpoint(s) route through it; declare host.gateway as <module>/<service>", len(consumptions))
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -14,9 +14,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
 	"github.com/codefly-dev/core/resources"
-	"github.com/codefly-dev/core/solutionhost"
 	"github.com/codefly-dev/core/wool"
 )
 
@@ -29,13 +27,12 @@ import (
 // is not serving yet, until a deadline. A refusal that says no is never
 // retried.
 
-// nativeFlow is what the native cluster reads from the run's flow.
-type nativeFlow interface {
+// launcherFlow is what the launcher reads from the run's flow.
+type launcherFlow interface {
 	World() *orchestration.World
 	ServiceFromUnique(unique string) (*resources.Service, error)
 	GetAddressForEndpoint(ctx context.Context, module, service, endpoint string) (string, error)
-	StartedArtifact(unique string) *runtimev0.StartedArtifact
-	EndpointDelivery(ctx context.Context, document *solutionhost.SolutionHostBinding, access *basev0.NetworkAccess) ([]byte, error)
+	EndpointCarriers(ctx context.Context, module string, access *basev0.NetworkAccess) (map[string]string, error)
 	ServiceReadiness(ctx context.Context, service string) *orchestration.ReadinessFailure
 }
 
@@ -71,8 +68,8 @@ func deliveryAbandoned(err error) bool {
 // (a 404 from the host's own delivery endpoint is a wrong endpoint, not a
 // wait); a 409 on the envelope (a lost revision race); or no answer at all —
 // refused, reset or timed out, never a request that could not be formed.
-// Anything else — another 4xx, a policy refusal, an agent that reports no
-// started artifact — is not, and fails at once.
+// Anything else — another 4xx, a policy refusal, a manifest the host refuses —
+// is not, and fails at once.
 func transientDeliveryRefusal(err error) bool {
 	var refusal *gitops.HostStatusError
 	if errors.As(err, &refusal) {
@@ -95,7 +92,8 @@ func transientDeliveryRefusal(err error) bool {
 		errors.Is(transport.Err, syscall.ECONNRESET) || errors.Is(transport.Err, io.EOF) || errors.Is(transport.Err, io.ErrUnexpectedEOF)
 }
 
-// hostDelivery is one workload's delivery as the run attempts it.
+// hostDelivery is one workload's delivery as the run attempts it: its
+// module's manifest, listing it.
 type hostDelivery struct {
 	schedule deliverySchedule
 	// stop is the run's; superseded is closed when the workload starts again.
@@ -160,7 +158,7 @@ func (d hostDelivery) run(ctx context.Context) error {
 // hostReady reports which of the host's services, if any, is not ready yet:
 // the gateway the envelope is written through, then the service whose
 // delivery endpoint receives the documents.
-func (cluster *nativeCluster) hostReady(ctx context.Context) error {
+func (cluster *launcher) hostReady(ctx context.Context) error {
 	for _, unique := range []string{cluster.env.Host.Gateway, cluster.hostModule + "/" + cluster.hostService} {
 		if unique == "" {
 			continue
@@ -178,7 +176,7 @@ type deliveryWaiter struct{ superseded chan struct{} }
 // waitFor registers a workload's delivery, superseding the one a previous
 // start left waiting: a reload starts the workload again, and only its newest
 // start is delivered.
-func (cluster *nativeCluster) waitFor(unique string) *deliveryWaiter {
+func (cluster *launcher) waitFor(unique string) *deliveryWaiter {
 	cluster.waitersMu.Lock()
 	defer cluster.waitersMu.Unlock()
 	if previous, ok := cluster.waiters[unique]; ok {
@@ -192,7 +190,7 @@ func (cluster *nativeCluster) waitFor(unique string) *deliveryWaiter {
 	return waiter
 }
 
-func (cluster *nativeCluster) doneWaiting(unique string, waiter *deliveryWaiter) {
+func (cluster *launcher) doneWaiting(unique string, waiter *deliveryWaiter) {
 	cluster.waitersMu.Lock()
 	defer cluster.waitersMu.Unlock()
 	if cluster.waiters[unique] == waiter {

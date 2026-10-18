@@ -9,6 +9,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 )
 
@@ -40,7 +41,6 @@ environments:
       audience: mint
       module_audience: module-capabilities
       trust_domain: local.example
-      envelope_revision: 1
       delivery: edge/gateway/rest
       gateway: edge/gateway
 `,
@@ -63,9 +63,9 @@ environments:
 
 // The principal module-authority hands a service is its mesh principal: the
 // SPIFFE ID the cell's mesh issues to the ServiceAccount the rendered pod
-// runs as, the same one its presence names. Nothing is issued or mounted for
+// runs as, the same one its module manifest names. Nothing is issued or mounted for
 // it, and the internal token aliases the existing internal-auth secret.
-func TestModuleAuthorityMatchesDeliveredPresenceAndReusesInternalSecret(t *testing.T) {
+func TestModuleAuthorityMatchesTheDeliveredManifestAndReusesInternalSecret(t *testing.T) {
 	workspace, env := hostComposition(t)
 	env.ServiceSecrets = storeEnvironment().ServiceSecrets
 	// A known value exists in the composition, but rendering must never copy it.
@@ -85,11 +85,11 @@ func TestModuleAuthorityMatchesDeliveredPresenceAndReusesInternalSecret(t *testi
 			opts := solutionRenderOptions(filepath.Join(t.TempDir(), "rendered"))
 			opts.Module, opts.Namespace, opts.Host = module, scope.Namespace, env.Host
 			opts.Units = promotableServiceGraph(module, []string{name})
-			instance := &opts.SolutionInstances[0]
-			instance.Name, instance.Alias = module, module
-			instance.Units = []SolutionArtifactUnit{{Name: name, Path: "services/" + name, Subject: "workload@example.test"}}
+			instance := opts.Instance
+			instance.Name = module
+			instance.Identities = []IdentityWorkload{{Service: name, Path: "services/" + name}}
 			instance.Endpoints = nil
-			instance.Modules[0].Module = module
+			instance.Authority = &solutionhost.Authority{Principal: module}
 			result, err := RenderOwnedTree(t.Context(), opts, func(ctx context.Context, stage string) error {
 				unit := filepath.Join(stage, "services", name)
 				writeConsumerTree(t, unit, env.Name, scope.Namespace, name, "database.example:5432")
@@ -97,18 +97,20 @@ func TestModuleAuthorityMatchesDeliveredPresenceAndReusesInternalSecret(t *testi
 				return projectServiceConfiguration(ctx, testRenderRoot(t, unit), unit, service, env, scope, serviceInjection{Secrets: map[string]string{storedSecretKey: storedSecretKey}})
 			})
 			require.NoError(t, err)
-			presence := deliveredBinding(t, result.Path, "example.prod."+module)
-			require.Len(t, presence.Workloads, 1)
+			manifest := deliveredModuleManifest(t, result.Path, "example.prod."+module)
+			require.Len(t, manifest.Workloads, 1)
 			rendered := buildOverlay(t, filepath.Join(result.Path, "services", name), env.Name)
 			data := configMapData(t, rendered)
-			require.Equal(t, presence.Workloads[0].Identity.SPIFFEID, data[authorityPrefix+"PRINCIPAL"])
+			// A cell's principal is the mesh identity of the declared workload:
+			// its module's delivered namespace (<delivery>-<environment>-<module>,
+			// handbook decisions/a-delivered-namespace-is-named-by-its-delivery-environment-and-module.md),
+			// as the account named after the service.
 			require.Equal(t, "spiffe://local.example/ns/example-"+module+"/sa/"+name, data[authorityPrefix+"PRINCIPAL"])
 			// The host's name for a module capability's audience, the same for
 			// every module, and never the module's own name.
 			require.Equal(t, env.Host.ModuleAudience, data[authorityPrefix+"AUDIENCE"])
 			require.Equal(t, "module-capabilities", data[authorityPrefix+"AUDIENCE"])
-			require.Equal(t, module, presence.Modules[0].Module)
-			require.Equal(t, presence.Workloads[0].Identity.Audience, data[authorityPrefix+"PROJECTION_AUDIENCE"])
+			require.Equal(t, module, manifest.Authority.Principal)
 			require.Equal(t, env.Host.Audience, data[authorityPrefix+"PROJECTION_AUDIENCE"])
 			principals[module] = data[authorityPrefix+"PRINCIPAL"].(string)
 			variables := containerEnvironment(t, rendered)

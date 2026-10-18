@@ -15,14 +15,13 @@ import (
 
 // --- Delivery Jobs ---
 //
-// A delivery document declares; a delivery Job delivers. The documents a render
-// writes are desired state Argo keeps true in the cluster, and nothing more:
+// A module manifest declares; a delivery Job delivers. The manifest a render
+// writes is desired state Argo keeps true in the cluster, and nothing more:
 // the host learns of a generation when its delivery API is POSTed the signed
-// carrier, which is what these Jobs do. One presence Job per module tree, run
-// in the module's own namespace, POSTs every presence carrier the tree
-// delivers; one authority Job, run in the platform's authority namespace —
-// which only the delivery pipeline may create Jobs in — POSTs every authority
-// carrier.
+// carrier, which is what this Job does. One Job per module tree, run in the
+// module's own namespace — the namespace of the manifest's workloads, the one
+// the host authorizes the carrier in — as the `delivery` ServiceAccount,
+// POSTs every manifest carrier the tree delivers, a withdrawal included.
 //
 // The Jobs are Argo CD Sync hooks rather than tracked resources, on purpose. A
 // tracked Job is applied once and, being Complete, never re-synced: restore the
@@ -40,9 +39,8 @@ import (
 // express "after the host's delivery API is reachable", because the host is
 // another module's Application; so the Job retries a transport failure or a
 // 5xx with backoff until the API answers, inside its budget. What the wave
-// orders is narrower: the Job lives in the bindings (or authority)
-// Application beside the ConfigMaps it mounts and the ServiceAccount it runs
-// as, which sit at the default wave, and is annotated one wave later so it
+// orders is narrower: the Job lives in the module-manifests Application
+// beside the ConfigMaps it mounts and the ServiceAccount it runs as, which sit at the default wave, and is annotated one wave later so it
 // runs once they exist. Where a parent syncs the module's Applications by
 // wave, that Application lands beside the module's consumers (after its
 // bootstrap units) — neither waits for the other — except for the module
@@ -67,39 +65,24 @@ const (
 	// deliveryContainerName is the one container of a delivery Job.
 	deliveryContainerName = "deliver"
 
-	// deliveryServiceAccount is the ServiceAccount a delivery Job runs as. In a
-	// module's namespace the render creates it; in the authority namespace the
-	// platform does, because that namespace is not the module's to populate.
+	// deliveryServiceAccount is the ServiceAccount a delivery Job runs as,
+	// which the render creates in the module's namespace: the host authorizes
+	// a carrier whose account is `delivery` in the namespace of the
+	// manifest's workloads.
 	deliveryServiceAccount = "delivery"
 
-	// authorityNamespace is the namespace authority Jobs run in. The platform
-	// provisions it so that only the delivery pipeline may create Jobs there
-	// (the writer-trust decision: signed AND isolated).
-	authorityNamespace = "platform-authority"
+	// manifestDeliveryPath is the host's delivery API route, relative to the
+	// delivery endpoint the environment names.
+	manifestDeliveryPath = "/platform/_delivery/manifest"
 
-	// presenceDeliveryPath and authorityDeliveryPath are the host's delivery API
-	// routes, relative to the delivery endpoint the environment names.
-	presenceDeliveryPath  = "/platform/_delivery/presence"
-	authorityDeliveryPath = "/platform/_delivery/authority"
-	endpointsDeliveryPath = "/platform/_delivery/endpoints"
-
-	// presenceCarrierKey and authorityCarrierKey are the ConfigMap data keys
-	// holding the signed carrier of each document type: the canonical bytes that
-	// were signed, verbatim, beside the DSSE envelope over them. The carrier is
-	// JSON under a YAML extension because a JSON object is valid YAML and a YAML
-	// emitter would fold the long scalar the signature covers.
-	presenceCarrierKey  = "solution-host-binding.signed.codefly.yaml"
-	authorityCarrierKey = "solution-authority.signed.codefly.yaml"
-	// endpointCarrierKey holds, beside a presence's signed carrier, the
-	// signed endpoint delivery bound to that presence generation: the
-	// in-cluster carriers of the endpoints it names, delivered after it.
-	endpointCarrierKey = "endpoint-delivery.signed.codefly.yaml"
-
-	// deliveryLabel marks the objects that deliver documents, by document type.
-	deliveryLabel     = "codefly.dev/delivery"
-	deliveryPresence  = "presence"
-	deliveryAuthority = "authority"
-	deliveryEndpoints = "endpoints"
+	// deliveryLabel marks the objects that deliver documents, and
+	// deliveryManifest is its value (and the Job's kind) for a module
+	// manifest. The signed carrier is held in the manifest's ConfigMap under
+	// core's SignedFileName: JSON under a YAML extension, because a JSON
+	// object is valid YAML and a YAML emitter would fold the long scalar the
+	// signature covers.
+	deliveryLabel    = "codefly.dev/delivery"
+	deliveryManifest = "manifest"
 
 	deliveryDocumentsMount = "/delivery/documents"
 	deliveryIdentityMount  = "/var/run/secrets/codefly/delivery"
@@ -466,7 +449,7 @@ func renderDeliveryServiceAccountInTree(tree *renderRoot, directory, namespace s
 		Kind:       kindServiceAccount,
 		Metadata: deliveryAccountMetadata{
 			Name: deliveryServiceAccount, Namespace: namespace,
-			Labels: map[string]string{managedByLabel: managedByCodefly, deliveryLabel: deliveryPresence},
+			Labels: map[string]string{managedByLabel: managedByCodefly, deliveryLabel: deliveryManifest},
 		},
 		AutomountServiceAccountToken: false,
 	}
@@ -489,7 +472,7 @@ func renderDeliveryServiceAccountInTree(tree *renderRoot, directory, namespace s
 // set is the same Job, which every sync RE-RUNS as a Sync hook: a re-sync
 // re-POSTs a generation the host answers "current" to. The environment keeps
 // two environments of one workspace on one cluster from replacing each other's
-// Job in the authority namespace, which they share.
+// Job when they share a namespace.
 func deliveryJobName(kind, module, environment string, carriers [][]byte) string {
 	sum := sha256.New()
 	for _, carrier := range carriers {

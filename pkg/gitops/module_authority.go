@@ -36,9 +36,9 @@ func refuseAuthoredRenderConfigurations(ctx context.Context, workspace *resource
 
 // meshPrincipal is the SPIFFE ID the cell's mesh issues to a workload: the one
 // of the ServiceAccount Core names for the service, in the module's namespace,
-// under the host's trust domain. It is the same identity presence names per
-// workload (presenceWorkloads reads the account off the rendered pod and
-// asks the same function), and the only transport identity a workload has:
+// under the host's trust domain. It is the same identity a module manifest
+// names per workload (renderedIdentityWorkload reads the account off the
+// rendered pod and asks the same function), and the only transport identity a workload has:
 // the mesh presents it, the workload never does.
 func meshPrincipal(host *environments.EnvironmentHost, namespace, service string) string {
 	return host.SPIFFEID(namespace, workloadAccount(service))

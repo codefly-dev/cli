@@ -144,7 +144,7 @@ func TestCloudKMSSignsAVerifiableP256Envelope(t *testing.T) {
 	}
 	// The host's own pin check over the fixture's ownership domain, then
 	// core's verifier over the envelope.
-	check, err := KeyCheck(signer, solutionhost.KeyKindRelease, "alpha", "delivery-v3")
+	check, err := KeyCheck(signer, solutionhost.KeyKindRelease, "acme", "delivery-v3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestCloudKMSSignsAVerifiableP256Envelope(t *testing.T) {
 	if kms.calls != 2 {
 		t.Fatalf("%d requests", kms.calls)
 	}
-	if _, err = KeyCheck(signer, solutionhost.KeyKindRelease, "alpha", "delivery-v2"); err == nil || !strings.Contains(err.Error(), "delivery-v3") {
+	if _, err = KeyCheck(signer, solutionhost.KeyKindRelease, "acme", "delivery-v2"); err == nil || !strings.Contains(err.Error(), "delivery-v3") {
 		t.Fatalf("a pin for another version was admitted: %v", err)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	modulecontract "github.com/codefly-dev/core/contracts/module"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,9 +23,9 @@ import (
 // which reads the contract a module publishes — rather than through core's
 // parser, which would prove nothing about this reader. Every fixture core
 // refuses is refused here with the same sentinel and reason. Every fixture
-// core accepts is read, and then either derives authority instances or is
+// core accepts is read, and then either derives the manifest's authority or is
 // refused by the derivation for the ONE reason it names past the reader (a
-// destination naming an endpoint the module does not render); which accepted
+// destination naming an endpoint the module does not declare); which accepted
 // fixtures that is holds as a fixed set, so a derivation failing for any
 // other reason — an unresolved slot, a configuration it cannot read, a
 // defect — fails the kit instead of passing as acceptance.
@@ -56,7 +57,6 @@ func TestTheModuleContractKitRunsThroughTheRender(t *testing.T) {
 	require.NoError(t, err)
 	env := selectedEnvironment(t, workspace, "staging")
 	services := loadServices(t, workspace, "assistant", "api")
-	units := []SolutionArtifactUnit{{Name: "api", Path: "services/api"}}
 	fixtures, err := modulecontract.Fixtures()
 	require.NoError(t, err)
 	names := map[string]string{}
@@ -66,18 +66,16 @@ func TestTheModuleContractKitRunsThroughTheRender(t *testing.T) {
 	var uncarried []string
 	modulecontract.Run(t, func(document []byte) error {
 		require.NoError(t, os.WriteFile(filepath.Join(module.Dir(), modulecontract.FileName), document, 0o600))
-		instances, _, err := authorityInstancesOf(ctx, workspace, module, services, env, units, nil)
-		verdict, past := kitVerdict(instances, err)
+		authority, err := shopAuthority(t, workspace, module, services, env)
+		verdict, past := kitVerdict(authority, err)
 		if past {
 			uncarried = append(uncarried, names[string(document)])
 		}
 		return verdict
 	})
 	sort.Strings(uncarried)
-	// The accepted fixtures declaring a destination this kit's module does
-	// not render (it renders no endpoint), and no other: scope ceilings,
-	// several queues or namespaces, binding keys and lookup methods are
-	// carried by the document since core#735.
+	// The accepted fixtures declaring a destination naming an endpoint this
+	// kit's module does not declare, and no other.
 	require.Equal(t, []string{"upper-case-slot-key", "valid"}, uncarried)
 }
 
@@ -86,13 +84,13 @@ func TestTheModuleContractKitRunsThroughTheRender(t *testing.T) {
 // reader accepted and the derivation refused for the one reason it names past
 // the reader (errUnrenderedDestination) is acceptance for the kit, reported as
 // past so the test can hold the set of such fixtures. A success must have
-// derived instances. Anything else is a failure the kit must see: mapping it
+// derived an authority. Anything else is a failure the kit must see: mapping it
 // to acceptance would make the run green about a name.
-func kitVerdict(instances []AuthorityInstance, err error) (verdict error, past bool) {
+func kitVerdict(authority *solutionhost.Authority, err error) (verdict error, past bool) {
 	switch {
 	case err == nil:
-		if len(instances) == 0 {
-			return errors.New("the contract was read and resolved but derived no authority instance"), false
+		if authority == nil {
+			return errors.New("the contract was read and resolved but derived no authority"), false
 		}
 		return nil, false
 	case errors.Is(err, modulecontract.ErrInvalid), errors.Is(err, modulecontract.ErrSchema):
@@ -141,7 +139,7 @@ func TestTheModuleContractKitAdapterFailsOnUnrelatedErrors(t *testing.T) {
 	verdict, past = kitVerdict(nil, nil)
 	require.Error(t, verdict, "a success deriving nothing is not acceptance")
 	require.False(t, past)
-	verdict, past = kitVerdict([]AuthorityInstance{{}}, nil)
+	verdict, past = kitVerdict(&solutionhost.Authority{Principal: "shop"}, nil)
 	require.NoError(t, verdict)
 	require.False(t, past)
 }

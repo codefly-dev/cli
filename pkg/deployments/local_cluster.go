@@ -15,8 +15,8 @@ import (
 )
 
 // A local cluster run needs the platform's prerequisites: Argo CD, which
-// syncs the promoted tree and runs delivery Jobs, the authority namespace
-// with its delivery account, and the SPIFFE issuer in local_spiffe.go.
+// syncs the promoted tree and runs delivery Jobs, and the SPIFFE issuer in
+// local_spiffe.go.
 // They are provisioned for a verified local k3d target only.
 
 // The Argo CD release a local cluster run (and the k3d qualification, through
@@ -91,16 +91,7 @@ func fetchHTTPS(ctx context.Context, url string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(response.Body, argoCDManifestLimit))
 }
 
-const (
-	argoCDNamespace = "argocd"
-	// AuthorityNamespace and DeliveryAccount are the platform's: the
-	// authority Job runs in that namespace as that account, which a cell's
-	// platform provisions and the rendered tree deliberately cannot (the
-	// authority AppProject admits ConfigMaps and Jobs there, nothing else).
-	AuthorityNamespace = "platform-authority"
-	DeliveryAccount    = "delivery"
-	localRunManagedBy  = "codefly-local-cluster-run"
-)
+const argoCDNamespace = "argocd"
 
 // Kubectl runs one kubectl invocation against a target, with stdin.
 type Kubectl func(ctx context.Context, stdin string, args ...string) (string, error)
@@ -159,25 +150,4 @@ func EnsureArgoCD(ctx context.Context, kubectl Kubectl, fetch Fetch) (bool, erro
 		return false, nil
 	}
 	return true, InstallArgoCD(ctx, kubectl, fetch)
-}
-
-// DeliveryAccountManifest is the authority namespace and its delivery
-// ServiceAccount, as a local cluster run provisions them.
-func DeliveryAccountManifest() string {
-	labels := "  labels:\n    app.kubernetes.io/managed-by: " + localRunManagedBy + "\n"
-	return strings.Join([]string{
-		"apiVersion: v1\nkind: Namespace\nmetadata:\n  name: " + AuthorityNamespace + "\n" + labels,
-		"apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: " + DeliveryAccount + "\n  namespace: " + AuthorityNamespace + "\n" + labels +
-			"automountServiceAccountToken: false\n",
-	}, "---\n")
-}
-
-// EnsureDeliveryAccount applies the authority namespace and its delivery
-// ServiceAccount. The account mounts no token by default: the delivery Job
-// projects its own, for the host's audience, as it does in a cell.
-func EnsureDeliveryAccount(ctx context.Context, kubectl Kubectl) error {
-	if _, err := kubectl(ctx, DeliveryAccountManifest(), "apply", "-f", "-"); err != nil {
-		return fmt.Errorf("provision the %s namespace and its %s account: %w", AuthorityNamespace, DeliveryAccount, err)
-	}
-	return nil
 }

@@ -24,7 +24,9 @@ import (
 type renderBuild struct {
 	standAlone      bool
 	validateCluster bool
-	rebuild         bool
+	rebuild         bool // withoutCell leaves the environment's cell file to the caller: a
+	// whole-composition render derives it once, after every module.
+	withoutCell bool
 }
 
 func RenderModule(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment, project string, sink orchestration.OutputSink) (RenderResult, error) {
@@ -88,6 +90,20 @@ func renderModuleTree(
 		return RenderResult{}, err
 	}
 	result.StaleGroupConsumers = render.staleConsumers
+	// A hosted environment's cell file describes every module tree rendered
+	// for it; this render moved one, so the file is derived again from all
+	// of them as they stand now.
+	// A sibling tree this CLI cannot read (an older render) stops the file,
+	// not this render: re-rendering the modules one by one converges, and the
+	// last render writes the file. The result says what is still owed.
+	if env.Host != nil && !build.withoutCell {
+		cell, cellErr := RenderCell(ctx, workspace, env)
+		if cellErr != nil {
+			result.CellError = cellErr.Error()
+		} else {
+			result.Cell = &cell
+		}
+	}
 	return result, nil
 }
 
@@ -166,7 +182,7 @@ type moduleRender struct {
 }
 
 // stage fills the staged owned tree: every root service rendered through its
-// agent, the units inventoried, the module's presence and authority declared,
+// agent, the units inventoried, the module's instance declared,
 // and the module bundle or the environment bootstrap staged beside them.
 func (r *moduleRender) stage(ctx context.Context, stage string) error {
 	services, err := loadModuleServices(ctx, r.module)
@@ -215,8 +231,9 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 	// place it can be read.
 	selfConsuming := map[string]bool{}
 	if r.env.Host != nil {
-		for _, unit := range r.options.Units {
-			if unit.Managed || unit.Path == "" {
+		for index := range r.options.Units {
+			unit := &r.options.Units[index]
+			if unit.Path == "" {
 				continue
 			}
 			unique := resources.ServiceUnique(r.module.Name, unit.Name)
@@ -224,8 +241,9 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 			containerPorts[unique], err = renderedContainerPortsInTree(r.options.renderRoot,
 				unitDir, r.env.Name, rendered.inClusterPorts[unique])
 			if err != nil {
-				return fmt.Errorf("derive mesh container ports for %s: %w", unique, err)
+				return fmt.Errorf("derive container ports for %s: %w", unique, err)
 			}
+			unit.Endpoints = inventoryEndpoints(rendered.inClusterPorts[unique], containerPorts[unique])
 			if selfConsuming[unique], err = renderTreeSelfConsumes(r.options.renderRoot, unitDir, r.env.Name); err != nil {
 				return fmt.Errorf("read the rendered workloads of %s: %w", unique, err)
 			}
@@ -313,9 +331,9 @@ type renderedRoots struct {
 	outputs       map[string]*builderv0.DeploymentOutput
 	selfEndpoints map[string]map[string]string
 	hostRoutes    map[string]map[string]string
-	// endpointCarriers are the in-cluster carriers of this module's endpoints
-	// the host routes, as the gateway reads them: what a publication binds
-	// to each settled presence generation and delivers.
+	// endpointCarriers are the in-cluster addresses of this module's
+	// endpoints the host routes, keyed as the gateway reads them: what its
+	// module manifest's endpoints carry.
 	endpointCarriers map[string]string
 	deployed         map[string]*basev0.Configuration
 	secretKeys       map[string][]string
@@ -458,38 +476,24 @@ func (r *moduleRender) inventoryUnits(
 	return nil
 }
 
-// declareInstances declares presence from the resolution this render already
-// holds — the module it is rendering, the services it loaded from it, the
-// package it resolved, and the units it just assembled — so the binding
-// cannot describe a composition the workloads did not come from. Authority is
-// effective from a presence generation, so a module declaring no presence
-// asks for none.
+// declareInstances declares the module's instance from the resolution this
+// render already holds — the module it is rendering, the services it loaded
+// from it, the package it resolved, the units it just assembled and the
+// addresses it resolved for the module's routed endpoints — so the manifest
+// cannot describe a composition the workloads did not come from.
 func (r *moduleRender) declareInstances(ctx context.Context, services []*resources.Service) error {
-	instance, undeclared, err := presenceInstanceOf(r.module, services, r.env, r.options)
+	instance, undeclared, err := moduleInstanceOf(ctx, r.workspace, r.module, services, r.env,
+		r.options.Package, r.options.ReleaseArtifacts, r.options.EndpointCarriers)
 	if err != nil {
 		return err
 	}
-	r.options.UndeclaredPresence = undeclared
-	if instance == nil {
-		// A module that asks for authority — a published contract, or a
-		// solution's scoped consumption — needs a presence, because authority
-		// is effective from a presence generation: with no presence to
-		// declare, the request would be dropped silently.
-		request, requestErr := authorityRequestOf(r.module)
-		if requestErr != nil {
-			return requestErr
+	if instance != nil {
+		if err = bindIdentityUnits(instance, r.options.Units); err != nil {
+			return err
 		}
-		if request.undeclared == "" {
-			return fmt.Errorf("module %s %s but declares no presence (%s); authority is effective from a presence generation, so a module that asks for authority must declare presence", r.module.Name, request.source, undeclared)
-		}
-		r.options.UndeclaredAuthority = "the module declares no presence, so no authority can be effective from it"
-		return nil
 	}
-	// The group is the composition's, read where the composition is.
-	instance.Group = solutionGroupOf(r.workspace, instance)
-	r.options.SolutionInstances = []SolutionInstance{*instance}
-	r.options.AuthorityInstances, r.options.UndeclaredAuthority, err = authorityInstancesOf(ctx, r.workspace, r.module, services, r.env, instance.Units, instance.Endpoints)
-	return err
+	r.options.Instance, r.options.UndeclaredManifest = instance, undeclared
+	return nil
 }
 
 // stageBootstrap copies the module's environment bootstrap into the stage and
@@ -836,4 +840,19 @@ func (gitOpsDeploymentOutputManager) Handle(
 	*builderv0.DeploymentOutput,
 ) error {
 	return nil
+}
+
+// inventoryEndpoints records, sorted by endpoint, the Service port and the
+// container port the render resolved for each in-cluster endpoint of a unit.
+func inventoryEndpoints(inCluster, container map[string]uint32) []InventoryEndpoint {
+	names := make([]string, 0, len(inCluster))
+	for name := range inCluster {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	endpoints := make([]InventoryEndpoint, 0, len(names))
+	for _, name := range names {
+		endpoints = append(endpoints, InventoryEndpoint{Name: name, Port: inCluster[name], TargetPort: container[name]})
+	}
+	return endpoints
 }

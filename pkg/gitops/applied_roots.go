@@ -27,12 +27,12 @@ func inventoryAppliedRoots(opts *RenderOptions) []appliedRoot {
 	if inventory.Unit != "" {
 		add(serviceRenderPath(inventory.Module, inventory.Unit), opts.Namespace)
 	}
-	for _, unit := range renderedUnits(&inventory) {
-		add(unit.Path, opts.Namespace)
+	units := renderedUnits(&inventory)
+	for index := range units {
+		add(units[index].Path, opts.Namespace)
 	}
 	add(inventory.ModulePath, opts.Namespace)
-	add(inventory.SolutionHostBindingPath, opts.Namespace)
-	add(inventory.SolutionAuthorityPath, authorityNamespace)
+	add(inventory.ModuleManifestPath, opts.Namespace)
 	return roots
 }
 

@@ -12,21 +12,20 @@ import (
 	"github.com/codefly-dev/core/solutionhost"
 )
 
-// hostedPaymentsInstances is the presence the hosted fixture declares.
-func hostedPaymentsInstances() []SolutionInstance {
-	return []SolutionInstance{{
-		Kind: solutionhost.KindModule, Name: "payments", Package: "example/payments", Version: "1.0.0", ReleaseDigest: testReleaseDigest,
-		Units: []SolutionArtifactUnit{
-			{Name: "api", Path: "services/api", Subject: "payments@example.iam.test"},
-			{Name: "host", Path: "services/host", Subject: "payments@example.iam.test"},
-		},
-	}}
+// hostedPaymentsInstances is the module instance the hosted fixture declares:
+// its api runs as the module.
+func hostedPaymentsInstances() *ModuleInstance {
+	return &ModuleInstance{
+		Kind: solutionhost.KindModule, Name: "payments", Package: "example/payments", Version: "1.0.0",
+		Identities: []IdentityWorkload{{Service: "api", Path: "services/api"}},
+		Authority:  &solutionhost.Authority{Principal: "payments"},
+	}
 }
 
 // renderHostedPayments renders the payments module of the hosted fixture with
-// the given Deployment manifest for its two services and the presence it
+// the given Deployment manifest for its two services and the instance it
 // declares; nil declares none, which withdraws it.
-func renderHostedPayments(t *testing.T, workspace *resources.Workspace, env *environments.Environment, deployment string, instances []SolutionInstance) {
+func renderHostedPayments(t *testing.T, workspace *resources.Workspace, env *environments.Environment, deployment string, instance *ModuleInstance) {
 	t.Helper()
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
 	// The owned path is the render's own rule, so the fixture follows the
@@ -41,7 +40,7 @@ func renderHostedPayments(t *testing.T, workspace *resources.Workspace, env *env
 		Units:       promotableServiceGraph("payments", []string{"api", "host"}),
 		Environment: "production", Namespace: "payments", AppProject: "payments", Promotable: true,
 		Workspace: "payments", Host: env.Host, Target: env,
-		SolutionInstances: instances,
+		Instance: instance,
 	}, func(_ context.Context, stage string) error {
 		for _, name := range []string{"api", "host"} {
 			overlay := filepath.Join(stage, "services", name, "overlays", "production")

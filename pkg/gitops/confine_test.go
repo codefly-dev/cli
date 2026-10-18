@@ -44,7 +44,7 @@ func TestRenderRootRefusesSymlinkedServiceAncestors(t *testing.T) {
 				case "patch":
 					// A base symlink is not read by the patch writer. Its whole subtree
 					// preflight must still refuse before modifying the overlay index.
-					err = addOverlayPatches(tree, filepath.Join(root, "services", "api"), env.Name, []podProjection{projection})
+					err = addOverlayPatches(tree, filepath.Join(root, "services", "api"), env.Name, []*podProjection{&projection})
 				case "configuration":
 					err = projectServiceConfiguration(t.Context(), tree, filepath.Join(root, "services", "api"), service, env, scope, serviceInjection{})
 				case "full render":
@@ -97,7 +97,7 @@ func TestOverlayWritesDoNotTruncateExternalHardlinks(t *testing.T) {
 			require.NoError(t, os.Link(file, filepath.Join(outside, "original")))
 			before := snapshotTree(t, outside)
 			projection := podProjection{kind: kindDeployment, name: "api", container: "api", volume: projectedVolume("test"), mount: readOnlyMount("test", "/test")}
-			require.NoError(t, addOverlayPatches(testRenderRoot(t, root), filepath.Join(root, "services", "api"), "prod", []podProjection{projection}))
+			require.NoError(t, addOverlayPatches(testRenderRoot(t, root), filepath.Join(root, "services", "api"), "prod", []*podProjection{&projection}))
 			require.Equal(t, before, snapshotTree(t, outside))
 		})
 	}

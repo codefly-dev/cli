@@ -65,7 +65,7 @@ func (f fakeManifestProducer) Produce(ctx context.Context, request ProduceReques
 		Destination: destination, Module: f.module, Environment: f.environment,
 		AppProject: f.appProject, Promotable: true,
 		OwnedPath: deliveryModulePath(defaults.Path, f.module),
-		Units: promotableServiceGraph(f.module, f.services),
+		Units:     promotableServiceGraph(f.module, f.services),
 	}, func(_ context.Context, stage string) error {
 		for _, service := range f.services {
 			overlay := filepath.Join(stage, "services", service, "overlays", f.environment)

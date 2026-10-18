@@ -80,3 +80,25 @@ func TestGatewayMeshEvidenceRefusesBypassAndAmbiguity(t *testing.T) {
 		require.ErrorContains(t, bindGatewayTestUnit(t, record, gatewayServiceUnit, nil), "distinct resolved container ports")
 	})
 }
+
+// A gateway Service port that carries HTTP by the mesh's port-name convention
+// (`http-<suffix>`, what the service agents render) is evidence; a port that
+// says neither appProtocol nor an http name is not, and one that says another
+// appProtocol is refused even under an http name.
+func TestGatewayServicePortSaysHTTPByNameOrAppProtocol(t *testing.T) {
+	for _, tc := range []struct {
+		name, portName, appProtocol string
+		ok                          bool
+	}{
+		{"explicit appProtocol", "rest", "http", true},
+		{"http-prefixed name", "http-port", "", true},
+		{"bare http name", "http", "", true},
+		{"grpc name", "grpc-port", "", false},
+		{"http name but another appProtocol", "http-port", "grpc", false},
+	} {
+		entry := &MeshRenderedService{Name: "gateway", Selector: map[string]string{"app": "gateway"}, PortName: tc.portName, Protocol: "TCP", AppProtocol: tc.appProtocol}
+		if got := servicePortSaysHTTP(entry); got != tc.ok {
+			t.Fatalf("%s: servicePortSaysHTTP = %v, want %v", tc.name, got, tc.ok)
+		}
+	}
+}

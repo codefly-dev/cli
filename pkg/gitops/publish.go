@@ -399,7 +399,7 @@ func (p *deliveryPublication) selfPromotes(env *environments.Environment) bool {
 }
 
 // addressHost points the publication at the environment's host: the delivery
-// API its Jobs post to, and the envelope revision and the domain its
+// API its Jobs post to, and the host and the domain its
 // documents must declare.
 func (p *deliveryPublication) addressHost(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) error {
 	// Hosted delivery is what needs the release identity; a publication with
@@ -423,12 +423,9 @@ func (p *deliveryPublication) addressHost(ctx context.Context, workspace *resour
 	}
 	p.options.Target = target
 	if env.Host != nil {
-		p.options.EnvelopeRevision = env.Host.EnvelopeRevision
 		p.options.Domain = env.Host.Domain
 		p.options.Coordinate = env.Host.Coordinate
-		p.options.Component = env.Host.Component
 		p.options.TrustDomain = env.Host.TrustDomain
-		p.options.Audience = env.Host.Audience
 	}
 	return nil
 }
@@ -742,7 +739,8 @@ func checkContract(unitName string, contract *InventoryContract, resolve func(st
 		return check
 	}
 	var exposed *InventoryContract
-	for _, hostUnit := range host.Units {
+	for idx := range host.Units {
+		hostUnit := &host.Units[idx]
 		if hostUnit.Name != contract.Service {
 			continue
 		}
@@ -896,7 +894,8 @@ func loadPublicationInventory(
 // A solution owns its own unit graph and Argo transport, so it is published
 // without a service-module resource to cross-check against.
 func inventoryHasSolutionUnits(inventory *Inventory) bool {
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Kind == UnitKindSolution {
 			return true
 		}
@@ -909,7 +908,8 @@ func inventoryHasSolutionUnits(inventory *Inventory) bool {
 // only invariants to enforce are that every rendered unit is a solution unit of
 // the published module — no service units smuggled in, no foreign module.
 func validateSolutionUnits(moduleName string, units []InventoryUnit) error {
-	for _, unit := range units {
+	for idx := range units {
+		unit := &units[idx]
 		if unit.Kind != UnitKindSolution {
 			return fmt.Errorf("solution publication contains non-solution unit %q of kind %q", unit.Name, unit.Kind)
 		}
@@ -956,7 +956,8 @@ func validateModuleUnits(
 	}
 	sort.Strings(declared)
 	actual := make([]string, 0, len(rendered))
-	for _, unit := range rendered {
+	for idx := range rendered {
+		unit := &rendered[idx]
 		if unit.Module != moduleName {
 			return fmt.Errorf("rendered unit %q belongs to module %q, expected %q", unit.Name, unit.Module, moduleName)
 		}
@@ -1060,16 +1061,14 @@ func prepareServicePublication(
 		AppProject:                    renderedInventory.AppProject,
 		Promotable:                    true,
 		CheckUnitDirectories:          true,
-		SolutionHostBindingPath:       renderedInventory.SolutionHostBindingPath,
+		ModuleManifestPath:            renderedInventory.ModuleManifestPath,
 		HostsDelivery:                 renderedInventory.HostsDelivery,
-		SolutionAuthorityPath:         renderedInventory.SolutionAuthorityPath,
 		Delivered:                     delivery,
 		WorkspaceConfigurationDigests: renderedInventory.WorkspaceConfigurationDigests,
 		// The mesh edges are the render's record of the composition's reach;
 		// a publication carries them unchanged, or the cell's applier reads
 		// an inventory that admits nothing.
-		MeshEdges:        renderedInventory.MeshEdges,
-		EndpointCarriers: renderedInventory.EndpointCarriers,
+		MeshEdges: renderedInventory.MeshEdges,
 	}
 	if _, err = validateTree(target, options); err != nil {
 		return "", Inventory{}, fmt.Errorf("validate generated publication: %w", err)
@@ -1155,23 +1154,21 @@ func prepareServiceSnapshot(
 	}
 	serviceNames := inventoryUnitNames(renderedInventory.Units)
 	snapshotOptions := &RenderOptions{
-		Module:                  renderedInventory.Module,
-		UnitNames:               serviceNames,
-		OwnedPath:               targetPath,
-		ModulePath:              renderedInventory.ModulePath,
-		Units:                   renderedInventory.Units,
-		Package:                 renderedInventory.Package,
-		Pin:                     renderedInventory.Pin,
-		Environment:             renderedInventory.Environment,
-		Namespace:               renderedInventory.Namespace,
-		AppProject:              renderedInventory.AppProject,
-		Promotable:              true,
-		SolutionHostBindingPath: renderedInventory.SolutionHostBindingPath,
-		HostsDelivery:           renderedInventory.HostsDelivery,
-		SolutionAuthorityPath:   renderedInventory.SolutionAuthorityPath,
-		Delivered:               delivery,
-		MeshEdges:               renderedInventory.MeshEdges,
-		EndpointCarriers:        renderedInventory.EndpointCarriers,
+		Module:             renderedInventory.Module,
+		UnitNames:          serviceNames,
+		OwnedPath:          targetPath,
+		ModulePath:         renderedInventory.ModulePath,
+		Units:              renderedInventory.Units,
+		Package:            renderedInventory.Package,
+		Pin:                renderedInventory.Pin,
+		Environment:        renderedInventory.Environment,
+		Namespace:          renderedInventory.Namespace,
+		AppProject:         renderedInventory.AppProject,
+		Promotable:         true,
+		ModuleManifestPath: renderedInventory.ModuleManifestPath,
+		HostsDelivery:      renderedInventory.HostsDelivery,
+		Delivered:          delivery,
+		MeshEdges:          renderedInventory.MeshEdges,
 	}
 	snapshotInventory, err := buildInventory(target, snapshotOptions)
 	if err != nil {
@@ -1259,7 +1256,8 @@ func canonicalInventory(inventory *Inventory) ([]byte, error) {
 
 func inventoryUnitNames(units []InventoryUnit) []string {
 	names := make([]string, 0, len(units))
-	for _, unit := range units {
+	for idx := range units {
+		unit := &units[idx]
 		if unit.Path != "" {
 			names = append(names, unit.Name)
 		}
@@ -1275,7 +1273,8 @@ func inventoryUnitNames(units []InventoryUnit) []string {
 // immutability check without further edits.
 func inventoryUnitDirectories(inventory *Inventory) ([]string, error) {
 	seen := make(map[string]struct{})
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Path == "" {
 			continue
 		}
@@ -1409,7 +1408,7 @@ func serviceSnapshotBranch(module, environment string) string {
 func removePublicationRemainder(target string, unitDirs []string) error {
 	// The delivery directories are kept whole: they hold every environment's
 	// delivered overlay, and a publish stages its own environment's only.
-	keep := map[string]struct{}{moduleBundleDir: {}, solutionHostBindingDir: {}, solutionAuthorityDir: {}}
+	keep := map[string]struct{}{moduleBundleDir: {}, moduleManifestDir: {}}
 	for _, directory := range unitDirs {
 		keep[directory] = struct{}{}
 	}
@@ -1458,18 +1457,16 @@ func validateBootstrapUnits(root, targetPath string, inventory *Inventory, envir
 		path := filepath.ToSlash(filepath.Join(targetPath, inventory.ModulePath, "overlays", environment))
 		expected[path] = struct{}{}
 	}
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Path == "" {
 			continue
 		}
 		path := filepath.ToSlash(filepath.Join(targetPath, unit.Path, "overlays", environment))
 		expected[path] = struct{}{}
 	}
-	if inventory.SolutionHostBindingPath != "" {
-		expected[filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionHostBindingPath, "overlays", environment))] = struct{}{}
-	}
-	if inventory.SolutionAuthorityPath != "" {
-		expected[filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionAuthorityPath, "overlays", environment))] = struct{}{}
+	if inventory.ModuleManifestPath != "" {
+		expected[filepath.ToSlash(filepath.Join(targetPath, inventory.ModuleManifestPath, "overlays", environment))] = struct{}{}
 	}
 	err := walkBootstrapApplications(root, func(path, _ string, sourcePath string) error {
 		if _, exists := expected[sourcePath]; !exists {
@@ -1995,7 +1992,7 @@ func clonePromotionRepository(ctx context.Context, repository, baseBranch, promo
 // absent.
 func restoreDeliveredOverlays(ctx context.Context, repo, baseBranch, targetPath string) error {
 	ref := "refs/remotes/origin/" + baseBranch
-	for _, directory := range []string{solutionHostBindingDir, solutionAuthorityDir} {
+	for _, directory := range []string{moduleManifestDir} {
 		path := filepath.ToSlash(filepath.Join(targetPath, directory))
 		// The restore left the historical overlays staged; -f drops them
 		// whether staged or not.
@@ -2550,7 +2547,7 @@ func stageAndSettleDelivery(
 	// configuration included — keeps its generations and its tombstones. A
 	// render that declares none here clears its own overlay for the
 	// tombstones the settlement writes from the base branch's record.
-	for _, directory := range []string{solutionHostBindingDir, solutionAuthorityDir} {
+	for _, directory := range []string{moduleManifestDir} {
 		overlay := filepath.ToSlash(filepath.Join(directory, "overlays", environment))
 		source := filepath.Join(rendered, filepath.FromSlash(overlay))
 		switch _, err := os.Stat(source); {
@@ -2566,35 +2563,7 @@ func stageAndSettleDelivery(
 			return nil, fmt.Errorf("read the rendered delivery overlay: %w", err)
 		}
 	}
-	presence, err := settlePresenceDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, &publication.options)
-	if err != nil {
-		return nil, err
-	}
-	authority, err := settleAuthorityDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, presence, &publication.options)
-	if err != nil {
-		return nil, err
-	}
-	return mergeDeliveries(presence, authority), nil
-}
-
-// mergeDeliveries joins what the two settlements delivered into one inventory
-// record: signed only when both halves are.
-func mergeDeliveries(parts ...*InventoryDelivery) *InventoryDelivery {
-	var merged *InventoryDelivery
-	for _, part := range parts {
-		if part == nil {
-			continue
-		}
-		if merged == nil {
-			merged = &InventoryDelivery{Signed: true}
-		}
-		merged.Signed = merged.Signed && part.Signed
-		if merged.Identity == "" {
-			merged.Identity = part.Identity
-		}
-		merged.Documents = append(merged.Documents, part.Documents...)
-	}
-	return merged
+	return settleManifestDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, &publication.options)
 }
 
 // gitSaysAbsent reports a git read that failed because the path or the ref

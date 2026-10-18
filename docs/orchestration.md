@@ -155,7 +155,7 @@ native run that declares a host supplies it the way the render does; elsewhere
 it supplies no values and each service decides whether it can run without
 them. `doctor workspace` reports it as supplied on local k3d and warns
 elsewhere: "supplied only by a local k3d or cell render; absent here". See
-[mesh principals and module authority](solution-host-bindings.md#mesh-principals-and-module-authority)
+[module authority](module-manifests.md#local-runs)
 for its values and environment requirements. No group carries a certificate:
 a workload's transport identity is the mesh's, never a file it reads.
 

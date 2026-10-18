@@ -94,6 +94,9 @@ func (c *CoordinateContract) validate() error {
 	if err := env.ServiceIdentity.Validate(); err != nil {
 		return err
 	}
+	if err := env.ServiceMesh.Validate(); err != nil {
+		return err
+	}
 	if err := env.validateServiceKeyCollisions(); err != nil {
 		return err
 	}

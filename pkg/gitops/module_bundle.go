@@ -342,7 +342,8 @@ func loadSelectedModuleBundle(
 
 	var expectedServices []string
 	var expectedManaged []string
-	for _, service := range graph {
+	for idx := range graph {
+		service := &graph[idx]
 		if service.Managed {
 			expectedManaged = append(expectedManaged, service.Name)
 		} else {

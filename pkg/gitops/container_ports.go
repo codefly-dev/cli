@@ -271,7 +271,8 @@ func ServiceContainerPorts(workspace *resources.Workspace, module, service, envi
 		return nil, "", fmt.Errorf("the render at %s is for environment %s, not %s: render %s for %s, or pass --env %s",
 			root, inventory.Environment, environment, module, environment, inventory.Environment)
 	}
-	for _, unit := range inventory.Units {
+	for index := range inventory.Units {
+		unit := &inventory.Units[index]
 		if unit.Kind != UnitKindService || unit.Name != service || unit.Path == "" || unit.Managed {
 			continue
 		}

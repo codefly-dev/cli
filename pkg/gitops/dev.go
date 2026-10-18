@@ -187,16 +187,6 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 	if err != nil {
 		return DevResult{}, err
 	}
-	// A tree that declares presence or authority pins, in signed documents,
-	// the exact build each workload runs. A dev re-pin changes the build
-	// under those documents and leaves them describing bytes nobody runs: the
-	// host refuses the new pod, and publishing the tree would sign a false
-	// declaration. The declaration is re-derived by a render, so a render is
-	// what a delivering module gets.
-	if inventory.SolutionHostBindingPath != "" || inventory.SolutionAuthorityPath != "" {
-		return DevResult{}, fmt.Errorf("module %s declares presence or authority to a host in environment %s, and a dev deployment would re-pin %s's image under documents that declare the build it runs; render the module instead (codefly deploy gitops %s --env %s), which re-derives the declaration with the new build",
-			request.Module.Name, request.Environment.Name, request.Service, request.Module.Name, request.Environment.Name)
-	}
 	service, err := loadDevService(ctx, request.Module, request.Service, request.Source)
 	if err != nil {
 		return DevResult{}, err
@@ -266,14 +256,15 @@ func loadDevTarget(root, module, service, environment, appProject string) (Inven
 	if err := validateInventory(&inventory, &actual, "rendered tree"); err != nil {
 		return Inventory{}, InventoryUnit{}, fmt.Errorf("%w; the tree was edited since it was rendered: %s", err, renderFirst)
 	}
-	for _, unit := range inventory.Units {
+	for index := range inventory.Units {
+		unit := &inventory.Units[index]
 		if unit.Kind != UnitKindService || unit.Name != service {
 			continue
 		}
 		if unit.Path == "" {
 			return Inventory{}, InventoryUnit{}, fmt.Errorf("service %s/%s is managed outside the rendered tree in %s; there is no image to deploy", module, service, environment)
 		}
-		return inventory, unit, nil
+		return inventory, *unit, nil
 	}
 	return Inventory{}, InventoryUnit{}, fmt.Errorf("the render of module %s does not contain service %s: %s", module, service, renderFirst)
 }
@@ -288,10 +279,9 @@ func inventoryRenderOptions(inventory *Inventory) *RenderOptions {
 		// A dev deployment re-derives the inventory in place, so every field
 		// the render recorded has to be carried back or it is dropped without
 		// a diff. Dropping this one stops Argo delivering the declared
-		// bindings on the next publish while the documents stay in the tree.
-		SolutionHostBindingPath:       inventory.SolutionHostBindingPath,
+		// manifest on the next publish while it stays in the tree.
+		ModuleManifestPath:            inventory.ModuleManifestPath,
 		HostsDelivery:                 inventory.HostsDelivery,
-		SolutionAuthorityPath:         inventory.SolutionAuthorityPath,
 		Delivered:                     inventory.Delivery,
 		WorkspaceConfigurationDigests: inventory.WorkspaceConfigurationDigests,
 	}
