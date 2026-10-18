@@ -741,7 +741,7 @@ const (
 	SecretGeneratorFormatIdentifier = "identifier"
 	// SecretGeneratorFormatEd25519PKCS8 mints an Ed25519 private key (standard
 	// base64 of its PKCS#8 DER) instead of random bytes; it takes no `bytes`.
-	SecretGeneratorFormatEd25519PKCS8 = "ed25519-pkcs8"
+	SecretGeneratorFormatEd25519PKCS8 = "ed25519-pkcs8" //nolint:gosec // G101: a generator format name, not a credential
 )
 
 // EnvironmentSecretGenerator names keys of one configuration group that the
