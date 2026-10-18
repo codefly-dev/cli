@@ -870,8 +870,8 @@ codefly deploy gitops rollback payments --env production \
 `render --all` renders every module the workspace composes, the host first,
 and derives the environment's cell file once at the end from all of them, so
 one command renders one composition and a stale sibling tree is never a reason
-to run the render again. A single-module `render` (and a `deploy dev`)
-re-derives the cell file from its own tree and the sibling trees already rendered; a sibling the cell
+to run the render again. A single-module `render` re-derives the cell file
+from its own tree and the sibling trees already rendered; a sibling the cell
 file cannot read, or one left at another inventory schema, is reported as
 stale by name rather than failing the render. An image whose inputs did not
 change is kept rather than rebuilt, and that decision is taken before any Go
@@ -1326,14 +1326,21 @@ codefly deploy dev payments/api --env staging --commit --push
    produced — in every case: run the full render first.
 
    When the environment declares a `host:` block, the environment's cell file
-   (`<gitops path>/cells/<environment>/cell.yaml`) is then re-derived from the
-   rendered trees exactly as a render derives it, and is among the changed
-   files. A cell admits only the builds its cell file names — a validation cell
-   takes that approval from the branch head's file — so a re-pin the file did
-   not carry would be refused at admission and never run. In the file, that
-   workload's image digest and the `source` revision move. If the cell file
-   cannot be re-derived the command refuses with the reason, after the image is
-   pushed and the tree patched: fix what the refusal names and run it again.
+   (`<gitops path>/cells/<environment>/cell.yaml`) is re-derived from the
+   rendered trees exactly as a render derives it, written, and is among the
+   changed files. A cell admits only the builds its cell file names — a
+   validation cell takes that approval from the branch head's file — so a
+   re-pin the file did not carry would be refused at admission and never run.
+   Because the file is derived from the whole workspace, it may move nothing
+   but the service's own image digests and the `source` revision against the
+   file the branch carries (the workspace's `HEAD`; the file on disk when the
+   workspace is not a git checkout). Anything else — a sibling module rendered
+   and not committed, an uncommitted environment change, a sibling tree at
+   another inventory schema — would be approved by the dev deployment's
+   commit, so it is refused, naming each namespace that moved, before the image
+   is built: commit those changes, or render the environment again
+   (`codefly deploy gitops render --all --env <env>`). With no committed cell
+   file there is no approval to replace, and it refuses the same way.
 4. **Record.** `.codefly-render.json` gains a `dev` entry for the service:
    source origin and path, the source's git commit and whether it was dirty, the
    image and digest, and the time. `codefly doctor workspace` reports each one as
