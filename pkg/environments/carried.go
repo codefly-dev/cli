@@ -51,7 +51,8 @@ var CarriedManagedServiceKeys = []string{"auth-mode", "egress-namespace", "insta
 // the workspace document.
 func (carried Carried) MarshalJSON() ([]byte, error) {
 	plain := make(map[string]any, len(carried))
-	for key, value := range carried {
+	for key := range carried {
+		value := carried[key]
 		var decoded any
 		if err := value.Decode(&decoded); err != nil {
 			return nil, fmt.Errorf("carried key %q: %w", key, err)
