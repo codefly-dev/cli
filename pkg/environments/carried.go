@@ -1,6 +1,7 @@
 package environments
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"sort"
@@ -43,6 +44,22 @@ var CarriedEnvironmentKeys = []string{"key-service"}
 //   - instance-connection-name: the `project:region:instance` coordinate a
 //     Cloud SQL instance is addressed by, which is not a DNS name.
 var CarriedManagedServiceKeys = []string{"auth-mode", "egress-namespace", "instance-connection-name"}
+
+// MarshalJSON writes each carried value as the plain JSON value it spells
+// (`"key-service": "kms"`), never the YAML node that holds it, so a JSON
+// projection of an environment (`codefly environment show --json`) reads like
+// the workspace document.
+func (carried Carried) MarshalJSON() ([]byte, error) {
+	plain := make(map[string]any, len(carried))
+	for key, value := range carried {
+		var decoded any
+		if err := value.Decode(&decoded); err != nil {
+			return nil, fmt.Errorf("carried key %q: %w", key, err)
+		}
+		plain[key] = decoded
+	}
+	return json.Marshal(plain)
+}
 
 // admit refuses any carried key outside permitted, naming it and the block it
 // was written in, so a typo fails the load the way an unknown field does.

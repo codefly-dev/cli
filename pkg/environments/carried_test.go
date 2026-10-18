@@ -1,6 +1,7 @@
 package environments_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -131,4 +132,19 @@ func TestCoordinateContractCarriesModuleOwnedKeys(t *testing.T) {
 	require.Equal(t, "kms", contract.Environment.Carried["key-service"].Value)
 	_, err = environments.ParseCoordinateContract([]byte(`{"schema":"codefly/coordinate/v1","environment":{"name":"staging","namespace":"product","key_service":"kms"}}`))
 	require.ErrorContains(t, err, `field "key_service" not found in environment`)
+	_, err = environments.ParseCoordinateContract([]byte(`{"schema":"codefly/coordinate/v1","environment":{"name":"staging","namespace":"product","managed-services":{"store":{"kind":"postgres","external-name":"db.example","port":5432,"auth-mod":"password"}}}}`))
+	require.ErrorContains(t, err, `field "auth-mod" not found in managed service "store"`)
+}
+
+// A JSON projection of an environment writes a carried value as the value it
+// spells, not the YAML node holding it.
+func TestCarriedKeysMarshalAsPlainJSON(t *testing.T) {
+	staging, err := environments.Select(loadCarriedWorkspace(t, carriedWorkspace), "staging")
+	require.NoError(t, err)
+	data, err := json.Marshal(staging.Carried)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"key-service":"kms"}`, string(data))
+	data, err = json.Marshal(staging.ManagedServices["store"].Carried)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"auth-mode":"external-identity","instance-connection-name":"project-1:us-east1:store"}`, string(data))
 }

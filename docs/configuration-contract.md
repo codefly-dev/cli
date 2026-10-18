@@ -96,7 +96,13 @@ CLI still validates the selected operation, service graph and deployment target.
 Local secret resolution and deployed secret projection remain separate consumers
 of the existing configuration model; secret values do not belong in descriptors.
 
-### Module-owned keys
+Unknown fields and required capabilities are rejected. A producer declaring an
+identity on a managed service uses
+`requires_capabilities: ["managed-service-identity"]`; one declaring a consuming
+service's own identity uses `["service-identity"]`.
+Proxy containers, image choices and loopback routing are not part of this contract.
+
+## Module-owned keys
 
 A few keys on an environment belong to a **module agent**, not to the CLI. The
 CLI admits them, preserves them on load and save, and hands them verbatim to the
@@ -129,7 +135,9 @@ The list is closed (`environments.CarriedEnvironmentKeys`,
 `environments.CarriedManagedServiceKeys`): every other key in either block is
 still refused by name at workspace load, so `key-servce` fails exactly as a
 mistyped CLI field does, and a module-owned key written on the wrong block is
-refused too. Admitting a new one is one entry in that list. Because the keys
+refused too. Admitting a new one is one entry in that list. A key written
+with no value is carried as null, which a module agent may read as unstated;
+refusing it is the agent's, as for any other value. Because the keys
 load, a declaration on one deployed environment no longer fails the whole
 workspace — including the local environment a `codefly run` selects.
 
@@ -138,12 +146,6 @@ whose `module.codefly.yaml` names a module agent). It does not change the
 service set the CLI itself renders for a module composed by version: that
 projection has no per-environment notion of an excluded service
 (codefly-dev/cli#1022).
-
-Unknown fields and required capabilities are rejected. A producer declaring an
-identity on a managed service uses
-`requires_capabilities: ["managed-service-identity"]`; one declaring a consuming
-service's own identity uses `["service-identity"]`.
-Proxy containers, image choices and loopback routing are not part of this contract.
 
 ## Configuration and secret injection
 
