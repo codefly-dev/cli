@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -1990,7 +1991,10 @@ func TestEnsurePinnedArtifactRefusesShortShaAndBranchKeepsTag(t *testing.T) {
 
 	_, _, err := pull(second[:7])
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "clone "+source+"@"+second[:7], "a short SHA is tried as a tag and fails as one")
+	// An all-digit abbreviation (about one in 27) also parses as a bare
+	// semver major and is tried as the tag v<digits>; either way it is tried
+	// as a tag and fails as one.
+	require.Regexp(t, regexp.QuoteMeta("clone "+source+"@")+"v?"+second[:7], err.Error(), "a short SHA is tried as a tag and fails as one")
 
 	_, _, err = pull(branch)
 	require.Error(t, err)
