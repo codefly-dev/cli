@@ -482,6 +482,11 @@ func (r *moduleRender) inventoryUnits(
 // addresses it resolved for the module's routed endpoints — so the manifest
 // cannot describe a composition the workloads did not come from.
 func (r *moduleRender) declareInstances(ctx context.Context, services []*resources.Service) error {
+	artifacts, err := publishFrontendBundle(ctx, r.workspace, r.module, r.env, r.options.ReleaseArtifacts)
+	if err != nil {
+		return err
+	}
+	r.options.ReleaseArtifacts = artifacts
 	instance, undeclared, err := moduleInstanceOf(ctx, r.workspace, r.module, services, r.env,
 		r.options.Package, r.options.ReleaseArtifacts, r.options.EndpointCarriers)
 	if err != nil {

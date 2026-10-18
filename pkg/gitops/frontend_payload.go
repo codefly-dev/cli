@@ -1,10 +1,20 @@
 package gitops
 
 import (
+	"context"
 	"fmt"
+	"maps"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 
+	clicomposition "github.com/codefly-dev/cli/pkg/composition"
+	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/composition"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
 )
 
@@ -39,4 +49,93 @@ func stampFrontendPayload(instance *ModuleInstance, artifacts []composition.Rele
 	}
 	instance.Frontend.Payload = &solutionhost.FrontendPayload{Artifact: bundle.Name, Digest: solutionhost.PayloadDigest(bundle.Digest), MediaType: bundle.MediaType}
 	return nil
+}
+
+// FrontendBundleRepository is the repository, under the environment's image
+// repository for the workspace (beside <module>/<service>), that a render
+// publishes every component's frontend bundle to: one repository, so a host
+// reads every bundle from the one source it is handed (ArtifactCacheRepositoryKey).
+const FrontendBundleRepository = "frontend-bundles"
+
+// frontendBundleRepositoryOf is where a render of a workspace's modules for
+// env publishes frontend bundles: beside the images of its services, by the
+// rule a module render names them (<registry>/<workspace>/<module>/<service>).
+func frontendBundleRepositoryOf(env *environments.Environment, workspace string) (string, error) {
+	if env.Registry == nil || strings.TrimSpace(env.Registry.URL) == "" {
+		return "", fmt.Errorf("environment %s declares no registry.url, so a frontend bundle has nowhere to be published", env.Name)
+	}
+	return strings.TrimSuffix(env.Registry.URL, "/") + "/" + workspace + "/" + FrontendBundleRepository, nil
+}
+
+// artifactCacheInjection projects the artifact-cache group for a service that
+// declares it in a deployed render: REPOSITORY, the one repository this
+// render publishes frontend bundles to, which a host's registry source reads
+// a bundle from by the digest a signed manifest names. A local render projects
+// nothing; there the native run hands the cache ROOT instead.
+func artifactCacheInjection(service *resources.Service, env *environments.Environment, scope unitScope, injection serviceInjection) (serviceInjection, error) {
+	if env.Local() || !slices.Contains(service.WorkspaceConfigurationDependencies, environments.ArtifactCacheConfiguration) {
+		return injection, nil
+	}
+	repository, err := frontendBundleRepositoryOf(env, scope.Workspace)
+	if err != nil {
+		return serviceInjection{}, err
+	}
+	configuration := &basev0.Configuration{Origin: resources.ConfigurationWorkspace}
+	key := resources.ConfigurationValueEnvironmentKey(configuration, environments.ArtifactCacheConfiguration,
+		&basev0.ConfigurationValue{Key: environments.ArtifactCacheRepositoryKey})
+	if _, exists := injection.Public[key]; exists {
+		return serviceInjection{}, fmt.Errorf("service %s already derives render-owned key %s", resources.ServiceUnique(scope.Module, service.Name), key)
+	}
+	public := map[string]string{key: repository}
+	maps.Copy(public, injection.Public)
+	return serviceInjection{Public: public, Secrets: injection.Secrets}, nil
+}
+
+// buildFrontendBundle and publishRuntimeArtifact are the build and the push a
+// test stands in for, the way stubBuild stands in for an image build.
+var (
+	buildFrontendBundle    = solutionrun.BuildFrontendBundle
+	publishRuntimeArtifact = clicomposition.PublishRuntimeArtifact
+)
+
+// publishFrontendBundle gives a deployed render of a component that declares
+// a page the frontend release artifact its payload is stamped from: the
+// render builds the bundle from the release's own source, as it builds the
+// release's images, archives it in core's canonical form and publishes it to
+// the environment's bundle repository by digest. A host fetches those bytes by
+// the digest the signed manifest names and verifies them before serving.
+//
+// A release that declares its own frontend artifact keeps it: the render
+// invents nothing over the release's metadata. A local render publishes
+// nothing, since a native run builds and retains its bundle itself.
+func publishFrontendBundle(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment, artifacts []composition.ReleaseArtifact) ([]composition.ReleaseArtifact, error) {
+	if env.Local() || slices.ContainsFunc(artifacts, func(artifact composition.ReleaseArtifact) bool { return artifact.Name == FrontendArtifactName }) {
+		return artifacts, nil
+	}
+	frontend, err := solutionrun.DeclaredFrontend(ctx, module)
+	if err != nil || frontend == nil {
+		return artifacts, err
+	}
+	repository, err := frontendBundleRepositoryOf(env, workspace.Name)
+	if err != nil {
+		return nil, err
+	}
+	scratch, err := os.MkdirTemp("", "codefly-frontend-")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.RemoveAll(scratch) }()
+	bundle := filepath.Join(scratch, "bundle")
+	if err = buildFrontendBundle(ctx, module, bundle); err != nil {
+		return nil, err
+	}
+	archive, _, err := composition.CanonicalArchive(bundle)
+	if err != nil {
+		return nil, fmt.Errorf("archive the frontend bundle of %s: %w", module.Name, err)
+	}
+	artifact, err := publishRuntimeArtifact(ctx, repository, FrontendArtifactName, clicomposition.CanonicalArchiveMediaType, archive, nil)
+	if err != nil {
+		return nil, fmt.Errorf("publish the frontend bundle of %s to %s: %w", module.Name, repository, err)
+	}
+	return append(slices.Clone(artifacts), artifact), nil
 }

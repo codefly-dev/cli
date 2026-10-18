@@ -26,6 +26,9 @@ func projectServiceConfiguration(ctx context.Context, tree *renderRoot, root str
 	if err != nil {
 		return err
 	}
+	if injection, err = artifactCacheInjection(service, env, scope, injection); err != nil {
+		return err
+	}
 	if err := projectConfigurationValuesInTree(ctx, tree, root, service.Name, env); err != nil {
 		return fmt.Errorf("project service %s configuration: %w", service.Name, err)
 	}

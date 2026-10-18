@@ -138,7 +138,8 @@ three for its environment.
 
 **The artifact cache as a native bundle source.** A service that declares the
 workspace configuration `artifact-cache` receives `ROOT`, the absolute path of
-`.codefly/selection-artifacts`, from a native run and from nothing else; the
+`.codefly/selection-artifacts`, from a native run (a deployed render hands
+`REPOSITORY` instead, the repository it publishes bundles to); the
 host's native adapter reads a component's frontend bundle there, read-only, by
 the digest the module manifest names, and the run retains that bundle (the
 canonical archive of `services/fe-remote/dist`) before it delivers the manifest.
