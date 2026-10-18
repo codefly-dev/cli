@@ -952,6 +952,11 @@ func validateModuleUnits(
 	}
 	declared := make([]string, 0, len(module.ServiceReferences))
 	for _, reference := range module.ServiceReferences {
+		// An excluded service is rendered as no unit; a unit for it is the
+		// mismatch below.
+		if selectedEnvironment.Excludes(moduleName, reference.Name) {
+			continue
+		}
 		declared = append(declared, reference.Name)
 	}
 	sort.Strings(declared)
@@ -960,6 +965,9 @@ func validateModuleUnits(
 		unit := &rendered[idx]
 		if unit.Module != moduleName {
 			return fmt.Errorf("rendered unit %q belongs to module %q, expected %q", unit.Name, unit.Module, moduleName)
+		}
+		if selectedEnvironment.Excludes(moduleName, unit.Name) {
+			return fmt.Errorf("rendered unit %q is a service environment %q excludes (exclude-services); render %s again", unit.Name, environment, moduleName)
 		}
 		_, expectedManaged := selectedEnvironment.ManagedService(moduleName, unit.Name)
 		if unit.Managed != expectedManaged {

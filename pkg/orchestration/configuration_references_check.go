@@ -349,7 +349,7 @@ func withExcludedProducerReasons(err error, excludedProducers map[string]bool, i
 			continue
 		}
 		reference.Reason = fmt.Sprintf(
-			"the producer is excluded from this run (--exclude-dependency or a run profile); exclude the %q workspace configuration too, or stop excluding %s",
+			"the producer is excluded from this run (--exclude-dependency, a run profile, or the environment's exclude-services); exclude the %q workspace configuration too, or stop excluding %s",
 			reference.Group, producer)
 	}
 	return err
@@ -424,6 +424,14 @@ func PlanConfigurationReferences(ctx context.Context, workspace *resources.Works
 	if option := configurationReferenceOptionFrom(provided); option != nil {
 		options = append(options, option)
 	}
+	excluded := env.ExcludedServiceUniques()
+	excludedProducers := make(map[string]bool, len(excluded))
+	for _, unique := range excluded {
+		excludedProducers[unique] = true
+	}
+	if len(excluded) > 0 {
+		options = append(options, architecture.ExcludeServices(excluded...))
+	}
 	dependencies, err := architecture.NewServiceDependencies(ctx, workspace, options...)
 	if err != nil {
 		return err
@@ -454,7 +462,7 @@ func PlanConfigurationReferences(ctx context.Context, workspace *resources.Works
 		}
 	}
 	return CheckConfigurationReferences(ctx, workspace, env, provided, dependencies, consumers,
-		resources.RunProfile{}, nil, rootGroups)
+		resources.RunProfile{}, excludedProducers, rootGroups)
 }
 
 // checkConfigurationReferences runs the plan-time check for a flow whose run
