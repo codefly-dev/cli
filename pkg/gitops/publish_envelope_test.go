@@ -98,7 +98,8 @@ func TestPublishDeliversTheModuleEnvelopeLikeAManifest(t *testing.T) {
 	require.NoError(t, err)
 	var job deliveryJobManifest
 	require.NoError(t, yaml.Unmarshal(jobBytes, &job))
-	require.Equal(t, deliveredEnvelopeKind, job.Metadata.Labels[deliveryLabel])
+	require.Equal(t, deliveredEnvelopeKind, job.Metadata.Labels[deliveredDocumentLabel])
+	require.Equal(t, deliveryCarrierValue, job.Metadata.Labels[deliveryLabel], "the Job is selected as the carrier too")
 	require.Equal(t, deliveryCarrierOf().Labels, job.Spec.Template.Metadata.Labels, "the pod is the carrier the cell admits")
 	require.Equal(t, "crm", job.Metadata.Namespace)
 	for _, want := range []string{"value: " + envelopeDeliveryPath, "key: " + solutionhost.EnvelopeSignedFileName, "name: " + moduleEnvelopeConfigMap, "serviceAccountName: delivery"} {
@@ -241,7 +242,7 @@ func TestOnlyTheHostingModulesHostedPublishDeclaresTheEnvelope(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte("name: acme\nlayout: modules\n"), 0o644))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "configurations", "prod"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(root, "configurations", "prod", "module-envelope.json"), []byte(`{"principals":{"records":{"operation_audiences":{}}}}`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "configurations", "prod", "module-envelope.json"), []byte(`{"principals":{"records":{"operation_audiences":{}}},"minimum_revision":3}`), 0o644))
 	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)
 	require.NoError(t, err)
 
@@ -264,8 +265,63 @@ func TestOnlyTheHostingModulesHostedPublishDeclaresTheEnvelope(t *testing.T) {
 		require.NotNil(t, publication.options.Envelope)
 		require.True(t, publication.options.Envelope.Stated)
 		require.Contains(t, publication.options.Envelope.Principals, "records")
+		require.Equal(t, uint64(3), publication.options.Envelope.MinimumRevision)
 	}
 	other := &deliveryPublication{workspace: workspace, options: deliveryPublishOptions{Target: testDeliveryTarget()}}
 	require.NoError(t, other.declareEnvelope(hosting, "staging"))
 	require.False(t, other.options.Envelope.Stated, "an environment with no file states nothing")
+}
+
+// TestTheMinimumRevisionLiftsTheSettledRevision: a floor above the settled
+// revision is the revision delivered; one below leaves the settled revision;
+// one that lifts an unchanged envelope is a new revision, signed anew; and an
+// unchanged envelope already delivered at the floor keeps its carrier.
+func TestTheMinimumRevisionLiftsTheSettledRevision(t *testing.T) {
+	repository := newDeliveryRepository(t)
+	signer := &fakeSigner{}
+	floored := func(principals map[string]json.RawMessage, floor uint64) deliveryPublishOptions {
+		opts := envelopeOptions(t, signer, principals)
+		opts.Envelope.MinimumRevision = floor
+		return opts
+	}
+	revision := func(delivery *InventoryDelivery) uint64 {
+		return documentByID(delivery, deliveredEnvelopeID).Generation
+	}
+	carrier := func() string {
+		return deliveredEnvelope(t, repository).Data[solutionhost.EnvelopeSignedFileName]
+	}
+
+	// Above the first revision: the floor.
+	opts := floored(recordsGrant("tracing"), 5)
+	delivery, err := repository.settle(repository.stageRender(t, ""), &opts)
+	require.NoError(t, err)
+	require.Equal(t, uint64(5), revision(delivery))
+	require.Equal(t, uint64(5), verifyAsTheHost(t, signer, carrier()).Revision)
+	repository.deliver(t)
+
+	// Below the settled revision: the settled one (changed content, 5 + 1).
+	opts = floored(recordsGrant("annotations"), 2)
+	delivery, err = repository.settle(repository.stageRender(t, ""), &opts)
+	require.NoError(t, err)
+	require.Equal(t, uint64(6), revision(delivery))
+	repository.deliver(t)
+
+	// Unchanged content lifted by a floor: a new revision, re-signed.
+	signed, before := signer.signed, carrier()
+	opts = floored(recordsGrant("annotations"), 9)
+	delivery, err = repository.settle(repository.stageRender(t, ""), &opts)
+	require.NoError(t, err)
+	require.Equal(t, uint64(9), revision(delivery))
+	require.Equal(t, signed+1, signer.signed, "a lifted revision is a new signature")
+	require.NotEqual(t, before, carrier())
+	require.Equal(t, uint64(9), verifyAsTheHost(t, signer, carrier()).Revision)
+	repository.deliver(t)
+
+	// Unchanged and already at the floor: kept, nothing signed.
+	signed, before = signer.signed, carrier()
+	delivery, err = repository.settle(repository.stageRender(t, ""), &opts)
+	require.NoError(t, err)
+	require.Equal(t, uint64(9), revision(delivery))
+	require.Equal(t, signed, signer.signed)
+	require.Equal(t, before, carrier())
 }

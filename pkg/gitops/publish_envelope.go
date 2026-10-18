@@ -27,7 +27,9 @@ import (
 //
 //   - The REVISION is settled like a generation: the same canonical content
 //     keeps the delivered revision and its carrier, other content is the next
-//     one, and the first envelope is revision 1.
+//     one, and the first envelope is revision 1 — never below the
+//     composition's minimum_revision, which lifts it (and re-signs) to step
+//     past a revision the host's administrator wrote interactively.
 //   - A composition that delivered an envelope and now states none is
 //     refused, never read as "nothing to say": revoking every grant is the
 //     statement {"principals": {}}.
@@ -62,6 +64,10 @@ const (
 type declaredEnvelope struct {
 	Principals map[string]json.RawMessage
 	Stated     bool
+	// MinimumRevision is the lowest revision the delivered envelope may
+	// carry (minimum_revision), 0 for none: how a composition steps past a
+	// revision the host's administrator wrote interactively.
+	MinimumRevision uint64
 }
 
 // declareEnvelope reads the composition's envelope into the publication's
@@ -80,7 +86,11 @@ func (p *deliveryPublication) declareEnvelope(inventory *Inventory, environment 
 	if err != nil {
 		return err
 	}
-	p.options.Envelope = &declaredEnvelope{Principals: principals, Stated: stated}
+	floor, err := fixture.ReadCompositionMinimumRevision(p.workspace, environment)
+	if err != nil {
+		return err
+	}
+	p.options.Envelope = &declaredEnvelope{Principals: principals, Stated: stated, MinimumRevision: floor}
 	return nil
 }
 
@@ -128,6 +138,10 @@ func settleEnvelope(
 	carrier, err = settleEnvelopeRevision(previous, candidate, carrier)
 	if err != nil {
 		return nil, nil, err
+	}
+	if candidate.Revision < declared.MinimumRevision {
+		// The floor lifts the revision, and a new revision is a new signature.
+		candidate.Revision, carrier = declared.MinimumRevision, nil
 	}
 	if _, err = solutionhost.AdmitEnvelope(candidate.Host.Coordinate, previous, candidate); err != nil {
 		return nil, nil, fmt.Errorf("the module envelope is not admissible: %w", err)

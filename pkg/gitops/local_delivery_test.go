@@ -528,7 +528,7 @@ func TestADeliveryJobNamesTheApplicationTheCLIRendered(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(tree, filepath.FromSlash(overlay)), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	job := "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: deliver-manifest-payments-local-abc\n  namespace: payments\n  labels:\n    codefly.dev/delivery: manifest\n"
+	job := "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: deliver-manifest-payments-local-abc\n  namespace: payments\n  labels:\n    codefly.dev/delivery: carrier\n    codefly.dev/delivered-document: manifest\n"
 	if err := os.WriteFile(filepath.Join(tree, filepath.FromSlash(overlay), "deliver-"+deliveryManifest+".yaml"), []byte(job), 0o644); err != nil {
 		t.Fatal(err)
 	}

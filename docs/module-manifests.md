@@ -440,7 +440,19 @@ the binding's previously applied manifest). A Job is named
 `{"disposition": "accepted"|"replayed", "generation": N}`, 409 for a stale or
 rewritten generation or a withdrawn binding, 401/403 for the carrier, 400 for
 an invalid manifest. There is no platform authority namespace, no authority
-AppProject and no second Job.
+AppProject and no second manifest Job.
+
+**One carrier per namespace, labelled as the carrier.** A cell admits exactly
+one delivery carrier per namespace, by the exact labels the cell file
+declares. Every delivery Job's pod — whatever it delivers — and the `delivery`
+account carry `codefly.dev/delivery: carrier`, and the cell file's carrier
+selector is rendered from the same constant, so the two cannot drift. The Job
+itself also carries `codefly.dev/delivered-document: manifest` (or
+`envelope`), naming the document kind; nothing selects on it. Earlier CLIs
+labelled the carrier `codefly.dev/delivery: manifest`. One render moves both
+the Jobs and the cell file's selector; a cell admits the new carrier only once
+it is pinned to the cell file of that render, so the cell pin lands with the
+delivery promotion of the same render, never after it.
 
 The overlay is part of the **immutable service snapshot**: every Application
 the bootstrap stamps reads the one snapshot revision, the delivery Application
@@ -494,7 +506,15 @@ writing it as the fixture's administrator (below).
 envelope the base branch delivers in the host module's overlay. The same
 canonical content apart from the revision keeps the delivered revision and
 its carrier, nothing signed again; changed content is the delivered revision
-+ 1; none delivered is revision 1. Core's `AdmitEnvelope` runs over the base
++ 1; none delivered is revision 1. The file may also state a top-level
+`"minimum_revision": N` (an integer of at least 1, beside `principals`): the
+delivered revision is never below it, so a floor above the settled revision
+is the revision delivered — signed anew, even for unchanged content — and an
+unchanged envelope already delivered at or above it keeps its revision and
+carrier. Across a composition the consuming workspace's floor decides;
+composed workspaces stating different floors that the consuming workspace
+does not decide are refused by name, never resolved to either. A native run
+ignores the floor. Core's `AdmitEnvelope` runs over the base
 branch's record before the host runs it over its own.
 
 **Stating nothing is not revoking.** A composition that delivered an envelope
@@ -533,25 +553,25 @@ host module's delivered path, listed in the overlay's kustomization:
   `deliver-envelope-<module>-<environment>-<digest of its carrier>`, the same
   Sync hook as a manifest's, posting the carrier to
   `POST /platform/_delivery/envelope` as the `delivery` account of the host
-  module's namespace. Its pod is the carrier the cell file declares for that
-  namespace (`codefly.dev/delivery: manifest`); only the Job's own label names
-  the kind (`codefly.dev/delivery: envelope`). The cell declares the carrier
-  for the host module whenever the composition states an envelope, even when
-  that module renders no manifest of its own.
+  module's namespace. Its pod is the one carrier the cell file declares for
+  that namespace; the Job's own `codefly.dev/delivered-document: envelope`
+  names the kind (see [the delivery Job](#the-delivery-job)). The cell
+  declares the carrier for the host module whenever the composition states an
+  envelope, even when that module renders no manifest of its own.
 
 The Job's verdicts are the manifest Job's: 401/403 for the carrier, 422 for an
 envelope the host refuses (a `tenant`, a grant it cannot read), 409 for a
 revision the host will not apply, and each fails the Job.
 
-**A 409 after an administrator's write is a manual reconcile today.** A host
-also holds an envelope its administrator wrote interactively, at a revision of
-its own, and answers 409 to a delivered revision that does not exceed it. The
-remedy is to state the administrator's change in the composition's
-`module-envelope.json`, so the delivered envelope says what the host holds;
-the next delivered revision must still exceed the administrator's, and publish
-settles revisions against the base branch only — it never reads the host.
-Until the two revisions are reconciled by hand, the delivery Job keeps
-failing with 409. Nothing reconciles them automatically.
+**A 409 after an administrator's write is reconciled by hand.** A host also
+holds an envelope its administrator wrote interactively, at a revision of its
+own, and answers 409 to a delivered revision that does not exceed it. Publish
+settles revisions against the base branch only — it never reads the host — so
+the remedy is a change to the composition: state the administrator's change
+in `module-envelope.json`, so the delivered envelope says what the host holds,
+and set `minimum_revision` above the administrator's revision, read from the
+host. The next publish delivers at that floor. Nothing reconciles the two
+automatically.
 
 ## Workspace configuration groups a render bakes in
 

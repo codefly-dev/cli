@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -79,13 +80,19 @@ const (
 	manifestDeliveryPath = "/platform/_delivery/manifest"
 
 	// deliveryLabel marks the objects that deliver documents, and
-	// deliveryManifest is its value (and the Job's kind) for a module
-	// manifest. The signed carrier is held in the manifest's ConfigMap under
-	// core's SignedFileName: JSON under a YAML extension, because a JSON
-	// object is valid YAML and a YAML emitter would fold the long scalar the
-	// signature covers.
-	deliveryLabel    = "codefly.dev/delivery"
-	deliveryManifest = "manifest"
+	// deliveryCarrierValue is its one value: it names the CARRIER — the pod a
+	// cell admits per namespace by this exact label, the account it runs as —
+	// never a document kind, so the cell file's selector and every Job's pod
+	// are rendered from this one constant whatever the Job delivers.
+	// deliveredDocumentLabel, on the Job alone, names the kind it delivers:
+	// deliveryManifest for module manifests. The signed carrier is held in the
+	// manifest's ConfigMap under core's SignedFileName: JSON under a YAML
+	// extension, because a JSON object is valid YAML and a YAML emitter would
+	// fold the long scalar the signature covers.
+	deliveryLabel          = "codefly.dev/delivery"
+	deliveryCarrierValue   = "carrier"
+	deliveredDocumentLabel = "codefly.dev/delivered-document"
+	deliveryManifest       = "manifest"
 
 	deliveryDocumentsMount = "/delivery/documents"
 	deliveryIdentityMount  = "/var/run/secrets/codefly/delivery"
@@ -354,14 +361,14 @@ type deliveryCarrier struct {
 
 // deliveryCarrierOf is the carrier every delivery Job runs, whatever document
 // it posts. A cell admits ONE carrier per namespace by its exact labels, so
-// the pod is labelled as the carrier (`delivery: manifest`, the selector cell
-// files already declare) and only the Job's own labels name the kind it
-// delivers: an envelope Job in the host's namespace runs the same admitted
-// pod as that namespace's manifest Job.
+// the pod is labelled as the carrier and only the Job's own
+// deliveredDocumentLabel names the kind it delivers: an envelope Job in the
+// host's namespace runs the same admitted pod as that namespace's manifest
+// Job.
 func deliveryCarrierOf() deliveryCarrier {
 	return deliveryCarrier{
 		Kind:           kindJob,
-		Labels:         map[string]string{managedByLabel: managedByCodefly, deliveryLabel: deliveryManifest},
+		Labels:         map[string]string{managedByLabel: managedByCodefly, deliveryLabel: deliveryCarrierValue},
 		ServiceAccount: deliveryServiceAccount,
 		Container:      deliveryContainerName,
 		Image:          deliveryImage,
@@ -392,11 +399,13 @@ func renderDeliveryJob(directory, name, namespace, kind, path string, target *De
 		}})
 	}
 	carrier := deliveryCarrierOf()
+	jobLabels := maps.Clone(carrier.Labels)
+	jobLabels[deliveredDocumentLabel] = kind
 	job := deliveryJobManifest{
 		APIVersion: "batch/v1",
 		Kind:       carrier.Kind,
 		Metadata: deliveryJobMetadata{
-			Name: name, Namespace: namespace, Labels: map[string]string{managedByLabel: managedByCodefly, deliveryLabel: kind},
+			Name: name, Namespace: namespace, Labels: jobLabels,
 			Annotations: map[string]string{
 				argoHookAnnotation:     argoHookSync,
 				argoHookDeletePolicy:   argoHookBeforeHookCreation,
@@ -482,7 +491,7 @@ func renderDeliveryServiceAccountInTree(tree *renderRoot, directory, namespace s
 		Kind:       kindServiceAccount,
 		Metadata: deliveryAccountMetadata{
 			Name: deliveryServiceAccount, Namespace: namespace,
-			Labels: map[string]string{managedByLabel: managedByCodefly, deliveryLabel: deliveryManifest},
+			Labels: map[string]string{managedByLabel: managedByCodefly, deliveryLabel: deliveryCarrierValue},
 		},
 		AutomountServiceAccountToken: false,
 	}

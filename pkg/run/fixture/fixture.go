@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 
 	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
@@ -71,6 +72,86 @@ func ReadGrants(workspaceDir, environment string) (map[string]json.RawMessage, e
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	return document.Principals, nil
+}
+
+// ReadMinimumRevision reads the top-level "minimum_revision" of a workspace's
+// configurations/<env>/module-envelope.json: the lowest revision a delivered
+// envelope may carry, 0 when the file states none. A stated floor is an
+// integer of at least 1. A native run never reads it: it writes the envelope
+// at the host's next revision, whatever the floor.
+func ReadMinimumRevision(workspaceDir, environment string) (uint64, error) {
+	path := grantsPath(workspaceDir, environment)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	var document struct {
+		MinimumRevision json.RawMessage `json:"minimum_revision"`
+	}
+	if err = json.Unmarshal(data, &document); err != nil {
+		return 0, fmt.Errorf("read %s: %w", path, err)
+	}
+	if document.MinimumRevision == nil {
+		return 0, nil
+	}
+	floor, err := strconv.ParseUint(string(document.MinimumRevision), 10, 64)
+	if err != nil || floor == 0 {
+		return 0, fmt.Errorf("%s: minimum_revision is %s; it is an integer of at least 1", path, document.MinimumRevision)
+	}
+	return floor, nil
+}
+
+// ReadCompositionMinimumRevision is the composition's revision floor, with
+// the precedence grants have: the consuming workspace's when it states one;
+// otherwise the one floor the composed workspaces stating it agree on. Two
+// composed workspaces stating different floors, which the consuming
+// workspace does not decide, are refused by name rather than resolved to
+// either: a floor is a statement about the host's history, and only the
+// workspace that publishes to it knows which history is true.
+func ReadCompositionMinimumRevision(workspace *resources.Workspace, environment string) (uint64, error) {
+	own, err := ReadMinimumRevision(workspace.Dir(), environment)
+	if err != nil {
+		return 0, err
+	}
+	children := composedWorkspacesOf(workspace)
+	composed := make([]FloorSource, 0, len(children))
+	for _, child := range children {
+		floor, readErr := ReadMinimumRevision(child.Dir(), environment)
+		if readErr != nil {
+			return 0, readErr
+		}
+		composed = append(composed, FloorSource{Workspace: child.Name, Floor: floor})
+	}
+	return MergeMinimumRevision(FloorSource{Workspace: workspace.Name, Floor: own}, composed, environment)
+}
+
+// FloorSource is one workspace's minimum_revision, 0 when it states none.
+type FloorSource struct {
+	Workspace string
+	Floor     uint64
+}
+
+// MergeMinimumRevision is the composition's floor from its sources (see
+// ReadCompositionMinimumRevision).
+func MergeMinimumRevision(own FloorSource, composed []FloorSource, environment string) (uint64, error) {
+	if own.Floor > 0 {
+		return own.Floor, nil
+	}
+	var decided FloorSource
+	for _, source := range composed {
+		switch {
+		case source.Floor == 0 || source.Floor == decided.Floor:
+		case decided.Floor == 0:
+			decided = source
+		default:
+			return 0, fmt.Errorf("workspaces %q and %q state minimum_revision %d and %d, and workspace %q does not decide it: state it in %s/configurations/%s/module-envelope.json",
+				decided.Workspace, source.Workspace, decided.Floor, source.Floor, own.Workspace, own.Workspace, environment)
+		}
+	}
+	return decided.Floor, nil
 }
 
 // GrantSource is one workspace's envelope policy: the workspace that states it
