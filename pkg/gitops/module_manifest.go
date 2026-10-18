@@ -242,18 +242,15 @@ func renderedIdentityWorkload(tree *renderRoot, owned string, opts *RenderOption
 		if err != nil {
 			return solutionhost.Workload{}, fmt.Errorf("service %s workload %s: %w", identity.Service, workload.Name, err)
 		}
-		// The rule a host reads a pod back by: the ServiceAccount is the
-		// service's name, in the namespace named after the module. A render
-		// that spells either differently is refused here, not discovered at
-		// the first mint.
+		// A manifest workload names no account: the cell spells it by rule,
+		// the ServiceAccount named after the service. A render that spells it
+		// differently is refused here, not discovered at the first mint. The
+		// namespace is not checked here: it is the module's delivered
+		// namespace, which the render takes from the one function stating
+		// that rule (environments.Environment.ModuleNamespace).
 		if workload.ServiceAccount != workloadAccount(identity.Service) {
 			return solutionhost.Workload{}, fmt.Errorf("service %s workload %s runs as ServiceAccount %q; a module's service runs as the account named after it (%q), which is how the host knows the pod",
 				identity.Service, workload.Name, workload.ServiceAccount, workloadAccount(identity.Service))
-		}
-		// Scratch build for the prefixed-namespace render: the namespace is <env.Namespace>-<module>.
-		if opts.Namespace != opts.Module && !strings.HasSuffix(opts.Namespace, "-"+opts.Module) {
-			return solutionhost.Workload{}, fmt.Errorf("service %s renders into namespace %q; a module's workloads run in the namespace named after it (%q), which is how the host knows the pod",
-				identity.Service, opts.Namespace, opts.Module)
 		}
 		candidate := solutionhost.Workload{Service: identity.Service, Container: container.Name}
 		if found != nil && *found != candidate {

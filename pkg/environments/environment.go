@@ -1197,11 +1197,17 @@ func ValidateNamespaceName(kind, name string) error {
 //
 // A workspace composing a single module — a flat workspace, or a modules layout
 // with one reference — renders it into the declared Namespace unchanged. A
-// workspace composing several modules gives each its own "<namespace>-<module>":
-// modules are independent service graphs that routinely ship a service of the
-// same name (a "store", say), and one namespace cannot hold two Services, two
-// StatefulSets or two "cm-store" ConfigMaps of that name, nor answer
-// "store.<namespace>.svc.cluster.local" for both. The suffix is derived, not
+// workspace composing several modules gives each its own "<namespace>-<module>",
+// the environment's namespace being "<delivery>-<environment>": a delivered
+// namespace is "<delivery>-<environment>-<module>" (handbook decision
+// a-delivered-namespace-is-named-by-its-delivery-environment-and-module),
+// never the bare module name. It is the namespace segment of every workload's
+// SPIFFE ID; a reader that needs the module back reads it from the workload's
+// labels, never by splitting this string. Several modules need their own
+// namespaces because modules are independent service graphs that routinely
+// ship a service of the same name (a "store", say), and one namespace cannot
+// hold two Services, two StatefulSets or two "cm-store" ConfigMaps of that
+// name, nor answer "store.<namespace>.svc.cluster.local" for both. The suffix is derived, not
 // declared, so every projection that names the namespace — manifests, render
 // record, Argo destinations, quota, ExternalSecrets, cross-module addresses —
 // agrees by construction.
