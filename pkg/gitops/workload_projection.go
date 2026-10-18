@@ -32,8 +32,10 @@ import (
 //     path it is the local trust ConfigMap a local cluster run provisions,
 //     at that path. On any other environment that declares a host it is the
 //     platform's `<host.component>-delivery-trust` ConfigMap at the host's
-//     constant path: the platform renders that ConfigMap, the composition's
-//     Deployment carries the mount, and this render is that Deployment.
+//     constant path, as one projected ConfigMap source — the shape the
+//     platform's admission pins (obin-ai/infra-base#1366): the platform
+//     renders that ConfigMap, the composition's Deployment carries the
+//     mount, and this render is that Deployment.
 //
 // Both land as patches in the unit's environment overlay, so the base the
 // agent rendered is untouched and the overlay's bytes — which the presence
@@ -73,7 +75,9 @@ const (
 	// hostedTrustAnchorSuffix completes the platform's name for the trust
 	// ConfigMap it renders in the verifier's namespace,
 	// `<host.component>-delivery-trust` (obin-ai/infra-base cell_contract.py,
-	// `{cell.delivery}-delivery-trust`). The render names it and declares
+	// `{cell.delivery}-delivery-trust`). The render projects it as one
+	// ConfigMap source, no items, read-only, at the constant path — the shape
+	// the platform's admission pins (obin-ai/infra-base#1366) — and declares
 	// nothing about its content.
 	hostedTrustAnchorSuffix = "-delivery-trust"
 
@@ -181,9 +185,11 @@ func projectIdentityToken(tree *renderRoot, owned string, opts *RenderOptions, u
 }
 
 // configMapNamePattern is a DNS-1123 subdomain, the shape a ConfigMap name
-// takes; a host component the pattern refuses cannot name the platform's
-// trust ConfigMap.
+// takes, with configMapNameLimit its length; a host component they refuse
+// cannot name the platform's trust ConfigMap.
 var configMapNamePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
+
+const configMapNameLimit = 253
 
 // trustAnchorSource is the ConfigMap the verifier's trust anchor is projected
 // from and the path it is mounted at, or empty when this render mounts none:
@@ -202,8 +208,8 @@ func trustAnchorSource(opts *RenderOptions) (configMap, mountPath string, err er
 		return "", "", fmt.Errorf("environment %s declares host.trust_anchor, which only a local cluster run mounts; a deployed host's trust anchor is its platform's, mounted at %s", opts.Target.Name, HostedTrustAnchorPath)
 	}
 	name := opts.Host.Component + hostedTrustAnchorSuffix
-	if !configMapNamePattern.MatchString(name) {
-		return "", "", fmt.Errorf("environment %s declares host.component %q, which cannot name the platform's trust anchor ConfigMap %s: a ConfigMap name is a lowercase DNS subdomain", opts.Target.Name, opts.Host.Component, name)
+	if len(name) > configMapNameLimit || !configMapNamePattern.MatchString(name) {
+		return "", "", fmt.Errorf("environment %s declares host.component %q, which cannot name the platform's trust anchor ConfigMap %s: a ConfigMap name is a lowercase DNS subdomain of at most %d characters", opts.Target.Name, opts.Host.Component, name, configMapNameLimit)
 	}
 	return name, HostedTrustAnchorPath, nil
 }
@@ -211,14 +217,16 @@ func trustAnchorSource(opts *RenderOptions) (configMap, mountPath string, err er
 // projectTrustAnchor mounts the host's trust anchor into the verifier: the
 // local trust ConfigMap at the declared path on a k3d environment, the
 // platform's trust ConfigMap at the host's constant path on a hosted one.
+// Only the verifier's module is judged, so a host block the source refuses
+// refuses that one render and no other module's.
 func projectTrustAnchor(tree *renderRoot, owned string, opts *RenderOptions) error {
-	configMap, mountPath, err := trustAnchorSource(opts)
-	if err != nil || configMap == "" {
-		return err
-	}
 	module, service, _ := opts.Host.DeliveryEndpoint()
 	if module != opts.Module {
 		return nil
+	}
+	configMap, mountPath, err := trustAnchorSource(opts)
+	if err != nil || configMap == "" {
+		return err
 	}
 	for index := range opts.Units {
 		unit := &opts.Units[index]

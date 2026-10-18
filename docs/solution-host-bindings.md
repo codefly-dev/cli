@@ -1331,15 +1331,18 @@ and writes no Secret. The host's `SOLUTION_HOST_TRUST_POLICY` is `keys`.
 `<host.component>-delivery-trust`, in the verifier's namespace, and its
 contract says the composition's Deployment carries the mount — which is this
 render's output. So on any environment that declares a host and is not a
-local k3d one, the render mounts that ConfigMap, read-only with keys
-unchanged, into the verifier's authenticating container at the host's
-constant path, `/etc/obin/delivery-trust` (`gitops.HostedTrustAnchorPath`,
-the other half of the host's own constant, which it refuses to relocate from
-inside a pod). The render declares nothing about the ConfigMap's content: the
-platform owns what the anchor says, the render owns only that the pod reads
-it where the host looks. The path is never a workspace value — a composition
-that could name it could point the verifier at a policy it wrote itself — so
-`host.trust_anchor` stays refused on every environment that is not k3d.
+local k3d one, the render mounts that ConfigMap into the verifier's
+authenticating container at the host's constant path,
+`/etc/obin/delivery-trust` (`gitops.HostedTrustAnchorPath`, the other half of
+the host's own constant, which it refuses to relocate from inside a pod), as
+one projected volume with one ConfigMap source, no `items`, read-only — the
+shape the platform's admission pins (obin-ai/infra-base#1366); a pod
+mounting the anchor any other way is refused by the cell. The render declares
+nothing about the ConfigMap's content: the platform owns what the anchor
+says, the render owns only that the pod reads it where the host looks. The
+path is never a workspace value — a composition that could name it could
+point the verifier at a policy it wrote itself — so `host.trust_anchor` stays
+refused on every environment that is not k3d.
 
 The host proves the binding at boot (the CA in its projected bundle, and a TLS
 handshake to its API server with that CA alone), so a profile copied to any

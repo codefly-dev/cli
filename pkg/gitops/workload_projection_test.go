@@ -304,11 +304,14 @@ func TestALocalHostMountsItsTrustAnchorWhereItReadsIt(t *testing.T) {
 // TestAHostedHostMountsThePlatformsTrustAnchorAtItsConstantPath: on an
 // environment that declares a host and is not a local k3d one, the host's
 // verifier mounts the platform's trust ConfigMap,
-// `<host.component>-delivery-trust`, at the host's constant path — the
-// composition's Deployment carries the mount, and the render is that
-// Deployment. The other serving workloads of the module, and every other
-// module, mount nothing; and a hosted environment that still states
-// host.trust_anchor is refused, not mounted elsewhere.
+// `<host.component>-delivery-trust`, at the host's constant path, as one
+// projected ConfigMap source, no items, read-only — the shape the platform's
+// admission pins (obin-ai/infra-base#1366): the composition's Deployment
+// carries the mount, and the render is that Deployment. The other serving
+// workloads of the module, and every other module, mount nothing; a hosted
+// environment that still states host.trust_anchor is refused, not mounted
+// elsewhere; and a host.component that cannot name a ConfigMap refuses the
+// verifier's render alone, never another module's.
 func TestAHostedHostMountsThePlatformsTrustAnchorAtItsConstantPath(t *testing.T) {
 	options := func(destination, delivery string) *RenderOptions {
 		opts := solutionRenderOptions(destination)
@@ -340,6 +343,17 @@ func TestAHostedHostMountsThePlatformsTrustAnchorAtItsConstantPath(t *testing.T)
 	relocated.Host.TrustAnchor = "/etc/host/delivery-trust"
 	if _, err := RenderOwnedTree(context.Background(), relocated, units); err == nil || !strings.Contains(err.Error(), "host.trust_anchor") {
 		t.Fatalf("a hosted environment stating host.trust_anchor was rendered: %v", err)
+	}
+
+	unnameable := options(filepath.Join(t.TempDir(), "modules", "crm"), "crm/api/rest")
+	unnameable.Host.Component = "platform/host"
+	if _, err := RenderOwnedTree(context.Background(), unnameable, units); err == nil || !strings.Contains(err.Error(), "host.component") {
+		t.Fatalf("a host.component that cannot name a ConfigMap was rendered: %v", err)
+	}
+	elsewhere := options(filepath.Join(t.TempDir(), "modules", "crm"), "platform/accounts/rest")
+	elsewhere.Host.Component = "platform/host"
+	if _, err := RenderOwnedTree(context.Background(), elsewhere, units); err != nil {
+		t.Fatalf("a host.component that cannot name a ConfigMap refused a module that does not render the verifier: %v", err)
 	}
 }
 
