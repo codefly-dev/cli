@@ -9,6 +9,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/solution/manifest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -89,6 +90,16 @@ func TestExcludeServicesAdmitsADeclaredWithdrawal(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, local.Excludes("shop", "vault"), "another environment still composes the service")
 
+	// The one list every module-wide loop (render, build, deploy) reads.
+	module, err := workspace.LoadModuleFromName(context.Background(), "shop")
+	require.NoError(t, err)
+	var composed []string
+	for _, reference := range staging.ComposedServices(module) {
+		composed = append(composed, reference.Name)
+	}
+	require.Equal(t, []string{"api", "cache"}, composed)
+	require.Len(t, local.ComposedServices(module), 3)
+
 	unconsumed := writeExclusionWorkspace(t, `    exclude-services:
       - service: shop/cache
 `)
@@ -144,6 +155,60 @@ func TestExcludeServicesRefusesAnInterfaceExportOfIt(t *testing.T) {
 `, "interface:\n    endpoints:\n        - service: cache\n          endpoint: tcp\n          visibility: internal\n")
 	err := environments.ValidateWorkspace(context.Background(), workspace)
 	require.ErrorContains(t, err, "module shop exports shop/cache/tcp through its interface")
+}
+
+// A module naming the excluded service its entry routes the host to a service
+// that is not there.
+func TestExcludeServicesRefusesTheModuleServiceEntry(t *testing.T) {
+	workspace := writeExclusionWorkspaceExporting(t, `    exclude-services:
+      - service: shop/cache
+`, "service-entry: cache\n")
+	err := environments.ValidateWorkspace(context.Background(), workspace)
+	require.ErrorContains(t, err, "module shop names shop/cache its service-entry")
+}
+
+// A solution consuming one of its endpoints through its manifest is a consumer
+// the service graph does not show; it is refused all the same.
+func TestExcludeServicesRefusesASolutionConsumingIt(t *testing.T) {
+	workspace := writeExclusionWorkspace(t, `    exclude-services:
+      - service: shop/cache
+`)
+	root := workspace.Dir()
+	files := map[string]string{
+		"workspace.codefly.yaml":                           "",
+		"modules/portal/module.codefly.yaml":               "kind: module\nname: portal\nservice-entry: web\nservices:\n    - name: web\n",
+		"modules/portal/services/web/service.codefly.yaml": "kind: service\nname: web\nversion: 0.0.0\nagent:\n  kind: runtime::service\n  name: go-grpc\n  version: 0.0.1\n  publisher: codefly.ai\n",
+		filepath.Join("modules", "portal", manifest.FileName): `schema_version: codefly.solution-manifest/v0
+protocol_version: codefly.solution/v0
+agent:
+  kind: codefly:solution
+  publisher: codefly.dev
+  name: portal
+  version: 0.1.0
+api:
+  consumes:
+    - id: cache
+      protocol: tcp
+      module: shop
+      service: cache
+      endpoint: tcp
+      as: cache
+`,
+	}
+	for rel, content := range files {
+		full := filepath.Join(root, rel)
+		if rel == "workspace.codefly.yaml" {
+			data, err := os.ReadFile(full)
+			require.NoError(t, err)
+			content = strings.Replace(string(data), "  - name: shop\n", "  - name: shop\n  - name: portal\n", 1)
+		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+	}
+	reloaded, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	require.NoError(t, err)
+	err = environments.ValidateWorkspace(context.Background(), reloaded)
+	require.ErrorContains(t, err, "solution portal consumes shop/cache/tcp (api.consumes)")
 }
 
 // The block's own shape is refused at load, before any graph is read.

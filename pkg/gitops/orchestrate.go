@@ -284,11 +284,9 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 // A service the environment excludes (exclude-services) is not one of them:
 // it has no unit, no tree, no image and no workload in this environment.
 func loadModuleServices(ctx context.Context, module *resources.Module, env *environments.Environment) ([]*resources.Service, error) {
-	services := make([]*resources.Service, 0, len(module.ServiceReferences))
-	for _, reference := range module.ServiceReferences {
-		if env.Excludes(module.Name, reference.Name) {
-			continue
-		}
+	references := env.ComposedServices(module)
+	services := make([]*resources.Service, 0, len(references))
+	for _, reference := range references {
 		service, err := module.LoadServiceFromName(ctx, reference.Name)
 		if err != nil {
 			return nil, fmt.Errorf("load service %s: %w", reference.Name, err)

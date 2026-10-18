@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
 )
@@ -60,6 +61,22 @@ func (env *Environment) Excludes(module, service string) bool {
 	return false
 }
 
+// ComposedServices returns the module's service references this environment
+// composes: the module's own list less what it excludes. Every loop over a
+// module's services for one environment — render, build, deploy — reads it.
+func (env *Environment) ComposedServices(module *resources.Module) []*resources.ServiceReference {
+	if module == nil {
+		return nil
+	}
+	composed := make([]*resources.ServiceReference, 0, len(module.ServiceReferences))
+	for _, reference := range module.ServiceReferences {
+		if reference != nil && !env.Excludes(module.Name, reference.Name) {
+			composed = append(composed, reference)
+		}
+	}
+	return composed
+}
+
 // ExcludedServiceUniques returns the "<module>/<service>" this environment
 // withdraws, sorted: the form architecture.ExcludeServices keys on.
 func (env *Environment) ExcludedServiceUniques() []string {
@@ -111,6 +128,23 @@ func validateQualifiedService(label, value string) error {
 	return validateResourcePathComponent(label, service)
 }
 
+// ValidateEnvironmentExclusions is ValidateExcludedServices for the one
+// environment a run, build or deploy selected: a flow is held to its own
+// environment's composition, never refused over another's.
+func ValidateEnvironmentExclusions(ctx context.Context, workspace *resources.Workspace, env *Environment) error {
+	if env == nil || len(env.ExcludeServices) == 0 {
+		return nil
+	}
+	graph, err := loadExclusionGraph(ctx, workspace)
+	if err != nil {
+		return err
+	}
+	if err := env.validateExclusionsAgainst(graph); err != nil {
+		return fmt.Errorf("environment %q: %w", env.Name, err)
+	}
+	return nil
+}
+
 // ValidateExcludedServices holds every environment's exclude-services to the
 // workspace graph: each names a composed service, every service that still
 // consumes it is a declared withdrawal, and no other declaration of the
@@ -121,28 +155,50 @@ func ValidateExcludedServices(ctx context.Context, workspace *resources.Workspac
 	if err != nil {
 		return err
 	}
-	var services []*resources.Service
-	var modules []*resources.Module
+	var graph *exclusionGraph
 	for _, env := range declared {
 		if env == nil || len(env.ExcludeServices) == 0 {
 			continue
 		}
-		if services == nil {
-			if services, err = workspace.LoadServices(ctx); err != nil {
-				return err
-			}
-			if modules, err = workspace.LoadModules(ctx); err != nil {
+		if graph == nil {
+			if graph, err = loadExclusionGraph(ctx, workspace); err != nil {
 				return err
 			}
 		}
-		if err := env.validateExclusionsAgainst(services, modules); err != nil {
+		if err := env.validateExclusionsAgainst(graph); err != nil {
 			return fmt.Errorf("environment %q: %w", env.Name, err)
 		}
 	}
 	return nil
 }
 
-func (env *Environment) validateExclusionsAgainst(services []*resources.Service, modules []*resources.Module) error {
+// exclusionGraph is what an exclusion is held to: every composed service, every
+// module (its interface and service-entry), and what each composed solution
+// consumes through its manifest.
+type exclusionGraph struct {
+	services []*resources.Service
+	modules  []*resources.Module
+	consumed []solutionrun.Consumption
+}
+
+func loadExclusionGraph(ctx context.Context, workspace *resources.Workspace) (*exclusionGraph, error) {
+	services, err := workspace.LoadServices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	modules, err := workspace.LoadModules(ctx)
+	if err != nil {
+		return nil, err
+	}
+	consumed, err := solutionrun.ConsumedEndpoints(ctx, workspace)
+	if err != nil {
+		return nil, err
+	}
+	return &exclusionGraph{services: services, modules: modules, consumed: consumed}, nil
+}
+
+func (env *Environment) validateExclusionsAgainst(graph *exclusionGraph) error {
+	services, modules := graph.services, graph.modules
 	composed := map[string]bool{}
 	byName := map[string][]string{}
 	// consumers[target] are the services declaring a dependency on target.
@@ -193,16 +249,29 @@ func (env *Environment) validateExclusionsAgainst(services []*resources.Service,
 			}
 		}
 	}
-	// A module interface exporting one of its endpoints promises the
-	// composition an endpoint this environment does not have.
+	// A module interface exporting one of its endpoints, or naming it the
+	// module's entry, promises the composition what this environment does
+	// not have; so does a solution consuming one of its endpoints.
 	for _, module := range modules {
-		if module == nil || module.Interface == nil {
+		if module == nil {
+			continue
+		}
+		if module.ServiceEntry != "" && excluded[resources.ServiceUnique(module.Name, module.ServiceEntry)] {
+			return fmt.Errorf("module %s names %s/%s its service-entry, which exclude-services withdraws from this environment", module.Name, module.Name, module.ServiceEntry)
+		}
+		if module.Interface == nil {
 			continue
 		}
 		for _, exported := range module.Interface.Endpoints {
 			if exported != nil && excluded[resources.ServiceUnique(module.Name, exported.Service)] {
 				return fmt.Errorf("module %s exports %s/%s/%s through its interface, which exclude-services withdraws from this environment", module.Name, module.Name, exported.Service, exported.Endpoint)
 			}
+		}
+	}
+	for index := range graph.consumed {
+		consumption := &graph.consumed[index]
+		if excluded[resources.ServiceUnique(consumption.Module, consumption.Service)] {
+			return fmt.Errorf("solution %s consumes %s/%s/%s (api.consumes), which exclude-services withdraws from this environment", consumption.Solution, consumption.Module, consumption.Service, consumption.Endpoint)
 		}
 	}
 	for _, named := range env.serviceDeclarations() {
