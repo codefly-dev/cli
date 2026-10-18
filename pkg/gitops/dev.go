@@ -107,9 +107,12 @@ type DevResult struct {
 	// Root is the rendered module tree that was patched.
 	Root string
 	// Changed are the workspace-relative paths the deployment rewrote,
-	// including the render inventory.
+	// including the render inventory and, in an environment with a host, the
+	// environment's cell file.
 	Changed []string
 	Entry   InventoryDevDeployment
+	// Cell is the re-derived cell file, in an environment with a host.
+	Cell *CellResult
 }
 
 // buildServiceImage is the build/push boundary of a dev deployment. It is a
@@ -195,6 +198,20 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 	if err = orchestration.PlanConfigurationReferences(ctx, request.Workspace, request.Environment, []*resources.Service{service}, true); err != nil {
 		return DevResult{}, err
 	}
+	// A hosted cell admits only the builds its cell file names, so the file is
+	// committed with the new digest. Whether it can be — re-derived, and moving
+	// nothing but this service's images — is settled before anything is built.
+	hosted := request.Environment.Host != nil
+	cellService := request.Module.Name + "/" + request.Service
+	var startCell devCell
+	if hosted {
+		if startCell, err = loadDevCell(ctx, request.Workspace, request.Environment); err != nil {
+			return DevResult{}, err
+		}
+		if _, _, err = deriveDevCell(ctx, request.Workspace, request.Environment, startCell, cellService, nil); err != nil {
+			return DevResult{}, err
+		}
+	}
 	images, err := buildServiceImage(ctx, request.Workspace, request.Module, service, request.Environment, request.Rebuild, request.Sink)
 	if err != nil {
 		return DevResult{}, err
@@ -220,8 +237,29 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 		}
 		relative = append(relative, filepath.ToSlash(rel))
 	}
+	// A cell admits only the builds its cell file names: a validation cell takes
+	// that approval from the branch head's file, so a new digest the file does
+	// not carry is refused at admission and the deployment never runs. The cell
+	// file is re-derived from the rendered trees exactly as a render does, and
+	// committed with the digest it now approves.
+	var cell *CellResult
+	if hosted {
+		file, derived, cellErr := deriveDevCell(ctx, request.Workspace, request.Environment, startCell, cellService, images)
+		if cellErr == nil {
+			cellErr = writeCell(&file, derived.Path)
+		}
+		if cellErr != nil {
+			return DevResult{}, fmt.Errorf("the dev image is pushed and re-pinned in %s, but nothing is staged: %w", strings.Join(relative, ", "), cellErr)
+		}
+		rel, relErr := filepath.Rel(request.Workspace.Dir(), derived.Path)
+		if relErr != nil {
+			return DevResult{}, relErr
+		}
+		relative = append(relative, filepath.ToSlash(rel))
+		cell = &derived
+	}
 	entry = inventory.Dev[devEntryIndex(inventory.Dev, request.Service)]
-	return DevResult{Root: root, Changed: relative, Entry: entry}, nil
+	return DevResult{Root: root, Changed: relative, Entry: entry, Cell: cell}, nil
 }
 
 // moduleRenderDestination is where a full module render writes its owned tree.

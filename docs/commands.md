@@ -1336,6 +1336,26 @@ codefly deploy dev payments/api --env staging --commit --push
    rendered, was rendered for another environment (or another `--app-project`,
    when given), was edited since its render, or does not pin the image the build
    produced — in every case: run the full render first.
+
+   When the environment declares a `host:` block, the environment's cell file
+   (`<gitops path>/cells/<environment>/cell.yaml`) is re-derived from the
+   rendered trees exactly as a render derives it, written, and is among the
+   changed files. A cell admits only the builds its cell file names — a
+   validation cell takes that approval from the branch head's file — so a
+   re-pin the file did not carry would be refused at admission and never run.
+   Because the file is derived from the whole workspace, it may move nothing
+   but the service's own image digests and the `source` revision against the
+   file the branch carries (the workspace's `HEAD`; the file on disk when the
+   workspace is not a git checkout). Anything else — a sibling module rendered
+   and not committed, an uncommitted environment change, a sibling tree at
+   another inventory schema — would be approved by the dev deployment's
+   commit, so it is refused, naming each namespace that moved, before the image
+   is built: commit those changes (after `codefly deploy gitops render --all
+   --env <env>` if the trees are stale), then deploy again. That includes an
+   earlier dev deployment of another service left uncommitted: commit it
+   before the next. After the build, only digests of the repositories it
+   produced may move. With no committed cell file there is no approval to
+   replace, and it refuses the same way.
 4. **Record.** `.codefly-render.json` gains a `dev` entry for the service:
    source origin and path, the source's git commit and whether it was dirty, the
    image and digest, and the time. `codefly doctor workspace` reports each one as

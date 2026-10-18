@@ -86,23 +86,36 @@ func CellPath(workspace *resources.Workspace, env *environments.Environment) (st
 // composition that produced them, and writes it. It runs after a module
 // render, so the file always describes the trees as they stand.
 func RenderCell(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (CellResult, error) {
+	file, result, err := deriveCell(ctx, workspace, env)
+	if err != nil {
+		return CellResult{}, err
+	}
+	if err := writeCell(&file, result.Path); err != nil {
+		return CellResult{}, err
+	}
+	return result, nil
+}
+
+// deriveCell is RenderCell without the write: the cell file the rendered
+// trees and the composition describe, and the path it belongs at.
+func deriveCell(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (cellfile.File, CellResult, error) {
 	if workspace == nil || env == nil {
-		return CellResult{}, errors.New("a cell is rendered for a workspace and an environment")
+		return cellfile.File{}, CellResult{}, errors.New("a cell is rendered for a workspace and an environment")
 	}
 	if env.Host == nil {
-		return CellResult{}, fmt.Errorf("environment %s declares no host, so it has no cell to describe", env.Name)
+		return cellfile.File{}, CellResult{}, fmt.Errorf("environment %s declares no host, so it has no cell to describe", env.Name)
 	}
 	modulesDir := filepath.Dir(moduleRenderDestination(workspace, "module"))
 	entries, err := os.ReadDir(modulesDir)
 	if errors.Is(err, fs.ErrNotExist) {
-		return CellResult{}, fmt.Errorf("no module has been rendered under %s", modulesDir)
+		return cellfile.File{}, CellResult{}, fmt.Errorf("no module has been rendered under %s", modulesDir)
 	}
 	if err != nil {
-		return CellResult{}, fmt.Errorf("list rendered modules: %w", err)
+		return cellfile.File{}, CellResult{}, fmt.Errorf("list rendered modules: %w", err)
 	}
 	consumers, configured, err := endpointConsumers(ctx, workspace, env)
 	if err != nil {
-		return CellResult{}, err
+		return cellfile.File{}, CellResult{}, err
 	}
 	file := cellfile.File{
 		Schema: cellfile.Schema, Environment: env.Name,
@@ -120,7 +133,7 @@ func RenderCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 			continue
 		}
 		if loadErr != nil {
-			return CellResult{}, fmt.Errorf("the render of module %s cannot be read, so the cell file cannot describe what it delivers; render %s again for %s: %w", entry.Name(), entry.Name(), env.Name, loadErr)
+			return cellfile.File{}, CellResult{}, fmt.Errorf("the render of module %s cannot be read, so the cell file cannot describe what it delivers; render %s again for %s: %w", entry.Name(), entry.Name(), env.Name, loadErr)
 		}
 		if inventory.Environment != env.Name {
 			result.Skipped = append(result.Skipped, inventory.Module)
@@ -128,31 +141,36 @@ func RenderCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 		}
 		namespace, namespaceErr := cellNamespace(ctx, workspace, env, tree, &inventory, consumers)
 		if namespaceErr != nil {
-			return CellResult{}, namespaceErr
+			return cellfile.File{}, CellResult{}, namespaceErr
 		}
 		file.Namespaces = append(file.Namespaces, namespace)
 		result.Modules = append(result.Modules, inventory.Module)
 	}
 	if len(file.Namespaces) == 0 {
-		return CellResult{}, fmt.Errorf("no module is rendered for environment %s under %s", env.Name, modulesDir)
+		return cellfile.File{}, CellResult{}, fmt.Errorf("no module is rendered for environment %s under %s", env.Name, modulesDir)
 	}
 	sort.Slice(file.Namespaces, func(i, j int) bool { return file.Namespaces[i].Name < file.Namespaces[j].Name })
 	sort.Strings(result.Modules)
 	sort.Strings(result.Skipped)
+	if result.Path, err = CellPath(workspace, env); err != nil {
+		return cellfile.File{}, CellResult{}, err
+	}
+	return file, result, nil
+}
+
+// writeCell encodes the cell file and writes it at path.
+func writeCell(file *cellfile.File, path string) error {
 	body, err := file.Encode()
 	if err != nil {
-		return CellResult{}, fmt.Errorf("the rendered cell cannot be written: %w", err)
+		return fmt.Errorf("the rendered cell cannot be written: %w", err)
 	}
-	if result.Path, err = CellPath(workspace, env); err != nil {
-		return CellResult{}, err
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create the cell directory: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(result.Path), 0o755); err != nil {
-		return CellResult{}, fmt.Errorf("create the cell directory: %w", err)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		return fmt.Errorf("write the cell file: %w", err)
 	}
-	if err := os.WriteFile(result.Path, body, 0o600); err != nil {
-		return CellResult{}, fmt.Errorf("write the cell file: %w", err)
-	}
-	return result, nil
+	return nil
 }
 
 // cellSource is the repository and publication branch the environment's
