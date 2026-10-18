@@ -31,7 +31,8 @@ func projectServiceMesh(tree *renderRoot, owned string, opts *RenderOptions) err
 	for _, key := range keys {
 		_, service, _ := strings.Cut(key, "/")
 		unitDir := ""
-		for _, unit := range opts.Units {
+		for idx := range opts.Units {
+			unit := &opts.Units[idx]
 			if unit.Kind == UnitKindService && unit.Name == service && !unit.Managed && unit.Path != "" {
 				unitDir = filepath.Join(owned, filepath.FromSlash(unit.Path))
 			}
@@ -89,7 +90,7 @@ func (projection serviceLabels) patch() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"target": map[string]any{"version": "v1", keyKind: kindService, keyName: projection.name}, "patch": string(encoded)}, nil
+	return map[string]any{keyPatchTarget: map[string]any{"version": "v1", keyKind: kindService, keyName: projection.name}, "patch": string(encoded)}, nil
 }
 
 func (projection serviceLabels) applyTo(document map[string]any) bool {

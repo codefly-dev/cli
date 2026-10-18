@@ -256,14 +256,15 @@ func loadDevTarget(root, module, service, environment, appProject string) (Inven
 	if err := validateInventory(&inventory, &actual, "rendered tree"); err != nil {
 		return Inventory{}, InventoryUnit{}, fmt.Errorf("%w; the tree was edited since it was rendered: %s", err, renderFirst)
 	}
-	for _, unit := range inventory.Units {
+	for index := range inventory.Units {
+		unit := &inventory.Units[index]
 		if unit.Kind != UnitKindService || unit.Name != service {
 			continue
 		}
 		if unit.Path == "" {
 			return Inventory{}, InventoryUnit{}, fmt.Errorf("service %s/%s is managed outside the rendered tree in %s; there is no image to deploy", module, service, environment)
 		}
-		return inventory, unit, nil
+		return inventory, *unit, nil
 	}
 	return Inventory{}, InventoryUnit{}, fmt.Errorf("the render of module %s does not contain service %s: %s", module, service, renderFirst)
 }

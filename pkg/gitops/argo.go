@@ -376,9 +376,9 @@ func snapshotAuthority(target string, inventory *Inventory, environment string) 
 	if inventory.ModulePath != "" {
 		sources = append(sources, filepath.Join(target, filepath.FromSlash(inventory.ModulePath), "overlays", environment))
 	}
-	for _, unit := range inventory.Units {
-		if unit.Path != "" {
-			sources = append(sources, filepath.Join(target, filepath.FromSlash(unit.Path), "overlays", environment))
+	for index := range inventory.Units {
+		if path := inventory.Units[index].Path; path != "" {
+			sources = append(sources, filepath.Join(target, filepath.FromSlash(path), "overlays", environment))
 		}
 	}
 	if inventory.ModuleManifestPath != "" {

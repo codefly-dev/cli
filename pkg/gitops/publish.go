@@ -739,7 +739,8 @@ func checkContract(unitName string, contract *InventoryContract, resolve func(st
 		return check
 	}
 	var exposed *InventoryContract
-	for _, hostUnit := range host.Units {
+	for idx := range host.Units {
+		hostUnit := &host.Units[idx]
 		if hostUnit.Name != contract.Service {
 			continue
 		}
@@ -893,7 +894,8 @@ func loadPublicationInventory(
 // A solution owns its own unit graph and Argo transport, so it is published
 // without a service-module resource to cross-check against.
 func inventoryHasSolutionUnits(inventory *Inventory) bool {
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Kind == UnitKindSolution {
 			return true
 		}
@@ -906,7 +908,8 @@ func inventoryHasSolutionUnits(inventory *Inventory) bool {
 // only invariants to enforce are that every rendered unit is a solution unit of
 // the published module — no service units smuggled in, no foreign module.
 func validateSolutionUnits(moduleName string, units []InventoryUnit) error {
-	for _, unit := range units {
+	for idx := range units {
+		unit := &units[idx]
 		if unit.Kind != UnitKindSolution {
 			return fmt.Errorf("solution publication contains non-solution unit %q of kind %q", unit.Name, unit.Kind)
 		}
@@ -953,7 +956,8 @@ func validateModuleUnits(
 	}
 	sort.Strings(declared)
 	actual := make([]string, 0, len(rendered))
-	for _, unit := range rendered {
+	for idx := range rendered {
+		unit := &rendered[idx]
 		if unit.Module != moduleName {
 			return fmt.Errorf("rendered unit %q belongs to module %q, expected %q", unit.Name, unit.Module, moduleName)
 		}
@@ -1252,7 +1256,8 @@ func canonicalInventory(inventory *Inventory) ([]byte, error) {
 
 func inventoryUnitNames(units []InventoryUnit) []string {
 	names := make([]string, 0, len(units))
-	for _, unit := range units {
+	for idx := range units {
+		unit := &units[idx]
 		if unit.Path != "" {
 			names = append(names, unit.Name)
 		}
@@ -1268,7 +1273,8 @@ func inventoryUnitNames(units []InventoryUnit) []string {
 // immutability check without further edits.
 func inventoryUnitDirectories(inventory *Inventory) ([]string, error) {
 	seen := make(map[string]struct{})
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Path == "" {
 			continue
 		}
@@ -1451,7 +1457,8 @@ func validateBootstrapUnits(root, targetPath string, inventory *Inventory, envir
 		path := filepath.ToSlash(filepath.Join(targetPath, inventory.ModulePath, "overlays", environment))
 		expected[path] = struct{}{}
 	}
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Path == "" {
 			continue
 		}

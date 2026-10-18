@@ -95,15 +95,17 @@ const (
 	TrustAnchorAnnotation = "codefly.dev/trust-anchor"
 
 	// The manifest keys a projection writes and reads.
-	keyName                = "name"
-	keyKind                = "kind"
-	keySpec                = "spec"
-	keyAPIVersion          = "apiVersion"
-	keyMetadata            = "metadata"
-	keyConfigMap           = "configMap"
-	keyContainers          = "containers"
-	keyNamespace           = "namespace"
-	keyAutomountToken      = "automountServiceAccountToken"
+	keyName           = "name"
+	keyKind           = "kind"
+	keySpec           = "spec"
+	keyAPIVersion     = "apiVersion"
+	keyMetadata       = "metadata"
+	keyConfigMap      = "configMap"
+	keyContainers     = "containers"
+	keyNamespace      = "namespace"
+	keyAutomountToken = "automountServiceAccountToken"
+	// keyPatchTarget names the object a kustomize patch applies to.
+	keyPatchTarget         = "target"
 	LocalTrustAnchorVolume = "codefly-delivery-trust"
 )
 
@@ -163,7 +165,7 @@ func projectIdentityToken(tree *renderRoot, owned string, opts *RenderOptions, i
 	if err != nil {
 		return err
 	}
-	var patches []podProjection
+	var patches []*podProjection
 	for index := range workloads {
 		workload := &workloads[index]
 		if !servingKind(workload.Kind) {
@@ -187,7 +189,7 @@ func projectIdentityToken(tree *renderRoot, owned string, opts *RenderOptions, i
 		if workload.hasVolume(identityTokenVolume) {
 			return fmt.Errorf("workload %s already declares a volume named %s, which the render projects; rename it", workload.Name, identityTokenVolume)
 		}
-		patches = append(patches, podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: volume, mount: mount})
+		patches = append(patches, &podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: volume, mount: mount})
 	}
 	return addOverlayPatches(tree, unitDir, opts.Environment, patches)
 }
@@ -248,7 +250,7 @@ func projectTrustAnchor(tree *renderRoot, owned string, opts *RenderOptions) err
 		if err != nil {
 			return err
 		}
-		var patches []podProjection
+		var patches []*podProjection
 		for index := range workloads {
 			workload := &workloads[index]
 			if !servingKind(workload.Kind) {
@@ -264,7 +266,7 @@ func projectTrustAnchor(tree *renderRoot, owned string, opts *RenderOptions) err
 			if workload.hasVolume(LocalTrustAnchorVolume) {
 				return fmt.Errorf("the host's verifier workload %s already declares a volume named %s, which the render projects; rename it", workload.Name, LocalTrustAnchorVolume)
 			}
-			patches = append(patches, podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: volume, mount: mount, automountToken: true})
+			patches = append(patches, &podProjection{kind: workload.Kind, name: workload.Name, container: container.Name, volume: volume, mount: mount, automountToken: true})
 		}
 		if len(patches) == 0 {
 			return fmt.Errorf("the host's verifier %s/%s renders no serving workload to mount the trust anchor into", module, service)
@@ -416,7 +418,7 @@ type podProjection struct {
 	automountToken bool
 }
 
-func (projection podProjection) environmentEntries() []any {
+func (projection *podProjection) environmentEntries() []any {
 	keys := make([]string, 0, len(projection.env))
 	for key := range projection.env {
 		keys = append(keys, key)
@@ -432,7 +434,7 @@ func (projection podProjection) environmentEntries() []any {
 }
 
 // patch is the projection as an inline strategic-merge patch.
-func (projection podProjection) patch() (map[string]any, error) {
+func (projection *podProjection) patch() (map[string]any, error) {
 	container := map[string]any{keyName: projection.container, "volumeMounts": []any{projection.mount}}
 	if len(projection.env) > 0 {
 		container["env"] = projection.environmentEntries()
@@ -451,11 +453,11 @@ func (projection podProjection) patch() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"target": map[string]any{keyKind: projection.kind, keyName: projection.name}, "patch": string(encoded)}, nil
+	return map[string]any{keyPatchTarget: map[string]any{keyKind: projection.kind, keyName: projection.name}, "patch": string(encoded)}, nil
 }
 
 // applyTo adds the projection to a decoded manifest of its workload.
-func (projection podProjection) applyTo(document map[string]any) bool {
+func (projection *podProjection) applyTo(document map[string]any) bool {
 	if kind, _ := document[keyKind].(string); kind != projection.kind || metadataString(document, keyName) != projection.name {
 		return false
 	}
@@ -487,7 +489,7 @@ func (projection podProjection) applyTo(document map[string]any) bool {
 }
 
 // target names the workload the projection patches.
-func (projection podProjection) target() (kind, name string) {
+func (projection *podProjection) target() (kind, name string) {
 	return projection.kind, projection.name
 }
 

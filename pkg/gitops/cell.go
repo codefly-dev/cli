@@ -187,7 +187,8 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 			release = &cellfile.Release{Publisher: publisher, Name: name, Version: inventory.Package.Version}
 		}
 	}
-	for _, unit := range inventory.Units {
+	for index := range inventory.Units {
+		unit := &inventory.Units[index]
 		// Every pod-producing unit is inventoried: a managed service's
 		// bootstrap Job runs under the same closed admission set as a
 		// serving workload. What differs is only that a managed unit
@@ -309,7 +310,16 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 		return cellfile.Namespace{}, fmt.Errorf("module %s: %w", inventory.Module, err)
 	}
 	namespace.Delivery = delivery
-	for _, unit := range inventory.Units {
+	namespace.Egress = cellEgress(env, inventory)
+	return namespace, nil
+}
+
+// cellEgress is what each service of the module declares it reaches outside
+// the cell: the environment's egress hosts and a managed service's CIDRs.
+func cellEgress(env *environments.Environment, inventory *Inventory) []cellfile.Egress {
+	var out []cellfile.Egress
+	for index := range inventory.Units {
+		unit := &inventory.Units[index]
 		if unit.Kind != UnitKindService {
 			continue
 		}
@@ -323,10 +333,10 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 		if len(egress.Hosts) == 0 && len(egress.CIDRs) == 0 {
 			continue
 		}
-		namespace.Egress = append(namespace.Egress, egress)
+		out = append(out, egress)
 	}
-	sort.Slice(namespace.Egress, func(i, j int) bool { return namespace.Egress[i].Service < namespace.Egress[j].Service })
-	return namespace, nil
+	sort.Slice(out, func(i, j int) bool { return out[i].Service < out[j].Service })
+	return out
 }
 
 func cellContainers(containers []renderedContainer) []cellfile.Container {
@@ -353,7 +363,7 @@ func isDeliveryVerifier(env *environments.Environment, kind, service string) boo
 // mappings and the unit's rendered pods and recorded in the inventory. An
 // endpoint the render could not place in-cluster has none here, and the cell's
 // consumer says so if a policy needs one.
-func unitPorts(unit InventoryUnit) (servicePorts, containerPorts map[string]uint32) {
+func unitPorts(unit *InventoryUnit) (servicePorts, containerPorts map[string]uint32) {
 	servicePorts, containerPorts = map[string]uint32{}, map[string]uint32{}
 	for _, endpoint := range unit.Endpoints {
 		if endpoint.Port > 0 {
@@ -473,9 +483,9 @@ func renderedDelivery(tree string, env *environments.Environment, namespace stri
 // endpoint a composed solution consumes through its manifest, attributed to
 // the solution's entry service.
 func endpointConsumers(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (map[string][]string, []string, error) {
-	references, err := configuredEndpointReferences(ctx, workspace, env)
-	if err != nil {
-		return nil, nil, err
+	references, referencesErr := configuredEndpointReferences(ctx, workspace, env)
+	if referencesErr != nil {
+		return nil, nil, referencesErr
 	}
 	consumers := map[string][]string{}
 	var configured []string
@@ -544,9 +554,10 @@ func endpointConsumers(ctx context.Context, workspace *resources.Workspace, env 
 	if err != nil {
 		return nil, nil, fmt.Errorf("index what the composed solutions consume: %w", err)
 	}
-	for _, consumption := range consumed {
-		module, err := workspace.LoadModuleFromName(ctx, consumption.Solution)
-		if err != nil || module.ServiceEntry == "" {
+	for index := range consumed {
+		consumption := &consumed[index]
+		module, loadErr := workspace.LoadModuleFromName(ctx, consumption.Solution)
+		if loadErr != nil || module.ServiceEntry == "" {
 			continue
 		}
 		add(consumption.Module+"/"+consumption.Service+"/"+consumption.Endpoint, resources.ServiceUnique(module.Name, module.ServiceEntry))

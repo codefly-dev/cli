@@ -256,7 +256,8 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 		AppProject: project, Promotable: promotable, Package: inventory.Package, Pin: inventory.Pin,
 		CheckUnitDirectories: inventory.Unit == "",
 	}
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Path != "" {
 			opts.UnitNames = append(opts.UnitNames, unit.Name)
 		}
@@ -297,7 +298,8 @@ func ValidateServiceSnapshot(root string) error {
 		allowed[inventory.ModuleManifestPath] = struct{}{}
 	}
 	rendered := renderedUnits(&inventory)
-	for _, unit := range rendered {
+	for idx := range rendered {
+		unit := &rendered[idx]
 		directory, ok := unitDirectory(unit.Kind)
 		if !ok {
 			return fmt.Errorf("service snapshot unit %s has unknown kind %q", unit.Name, unit.Kind)
@@ -320,7 +322,8 @@ func ValidateServiceSnapshot(root string) error {
 		return err
 	}
 	names := make([]string, 0, len(rendered))
-	for _, unit := range rendered {
+	for idx := range rendered {
+		unit := &rendered[idx]
 		names = append(names, unit.Name)
 	}
 	opts := &RenderOptions{
@@ -346,9 +349,10 @@ func ValidateServiceSnapshot(root string) error {
 
 func renderedUnits(inventory *Inventory) []InventoryUnit {
 	rendered := make([]InventoryUnit, 0, len(inventory.Units))
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Path != "" {
-			rendered = append(rendered, unit)
+			rendered = append(rendered, *unit)
 		}
 	}
 	return rendered
@@ -362,7 +366,8 @@ func validateSnapshotCoverage(inventory *Inventory) error {
 	if inventory.ModuleManifestPath != "" {
 		covered[inventory.ModuleManifestPath] = false
 	}
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Path != "" {
 			covered[unit.Path] = false
 		}
@@ -398,11 +403,12 @@ func validateInventoryUnits(inventory *Inventory) error {
 		return nil
 	}
 	previous := ""
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Name == "" || unit.Module != inventory.Module {
 			return fmt.Errorf("render inventory contains invalid unit graph entry %q/%q", unit.Module, unit.Name)
 		}
-		if err := validateInventoryContracts(&unit); err != nil {
+		if err := validateInventoryContracts(unit); err != nil {
 			return err
 		}
 		directory, ok := unitDirectory(unit.Kind)
@@ -637,7 +643,8 @@ func validateRenderDirectories(tree *renderRoot, root string, opts *RenderOption
 
 func validateUnitDirectoriesInTree(tree *renderRoot, root string, units []InventoryUnit, environment string) error {
 	byDirectory := make(map[string]map[string]struct{})
-	for _, unit := range units {
+	for idx := range units {
+		unit := &units[idx]
 		directory, ok := unitDirectory(unit.Kind)
 		if !ok {
 			return fmt.Errorf("rendered unit %s has unknown kind %q", unit.Name, unit.Kind)
@@ -1071,7 +1078,7 @@ func onlyExternalSecrets(manifests []manifest) bool {
 func externalSecretTemplateDataPath(path []string) bool {
 	return len(path) == 5 &&
 		path[0] == "spec" &&
-		path[1] == "target" &&
+		path[1] == keyPatchTarget &&
 		path[2] == "template" &&
 		path[3] == dataKey
 }

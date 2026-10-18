@@ -72,7 +72,7 @@ func TestOverlayPatchesRefuseHostileEnvironmentBeforeWriting(t *testing.T) {
 			require.NoError(t, kustomizedWorkload(pinnedDeployment)(t.Context(), root))
 			before := snapshotTree(t, root)
 			projection := podProjection{kind: kindDeployment, name: "api", container: "api", volume: projectedVolume("test"), mount: readOnlyMount("test", "/test")}
-			err := addOverlayPatches(testRenderRoot(t, root), filepath.Join(root, "services", "api"), environment, []podProjection{projection})
+			err := addOverlayPatches(testRenderRoot(t, root), filepath.Join(root, "services", "api"), environment, []*podProjection{&projection})
 			require.ErrorContains(t, err, "environment")
 			require.Equal(t, before, snapshotTree(t, root))
 		})
@@ -89,7 +89,7 @@ func TestOverlayPatchesRefuseSymlinkOutsideRenderRoot(t *testing.T) {
 	require.NoError(t, os.Symlink(filepath.Join(external, "prod"), overlay))
 	before := snapshotTree(t, external)
 	projection := podProjection{kind: kindDeployment, name: "api", container: "api", volume: projectedVolume("test"), mount: readOnlyMount("test", "/test")}
-	require.ErrorContains(t, addOverlayPatches(testRenderRoot(t, root), unit, "prod", []podProjection{projection}), "symbolic link")
+	require.ErrorContains(t, addOverlayPatches(testRenderRoot(t, root), unit, "prod", []*podProjection{&projection}), "symbolic link")
 	require.Equal(t, before, snapshotTree(t, external))
 }
 

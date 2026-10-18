@@ -107,7 +107,7 @@ func (l *Launcher) Project(unique string, workload workloadidentity.Workload) (C
 		Workload: workload, Container: workload.Service,
 		File: filepath.Join(l.stateDir, "identities", workload.Module, workload.Service, "credential"),
 	}
-	if err := l.issuer.WriteCredential(credential.File, l.subject(credential), l.audience); err != nil {
+	if err := l.issuer.WriteCredential(credential.File, l.subject(&credential), l.audience); err != nil {
 		return Credential{}, err
 	}
 	l.credentials[unique] = credential
@@ -121,7 +121,7 @@ func (l *Launcher) Refresh() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, credential := range l.credentials {
-		_ = l.issuer.WriteCredential(credential.File, l.subject(credential), l.audience)
+		_ = l.issuer.WriteCredential(credential.File, l.subject(&credential), l.audience)
 	}
 }
 
@@ -150,7 +150,7 @@ func (l *Launcher) Issue(workload workloadidentity.Workload) (string, error) {
 	return l.issuer.Issue(native.Subject{Workload: workload}, l.audience)
 }
 
-func (l *Launcher) subject(credential Credential) native.Subject {
+func (l *Launcher) subject(credential *Credential) native.Subject {
 	return native.Subject{Workload: credential.Workload, Container: credential.Container}
 }
 

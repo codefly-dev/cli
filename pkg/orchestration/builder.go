@@ -329,7 +329,7 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 	// (a uv path-source service copies its tree while skipping the recipe
 	// directory by identity), and under the scratch root of a materialized
 	// module nothing else ever created it.
-	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+	if err = os.MkdirAll(outputDir, 0o755); err != nil {
 		return nil, w.Wrapf(err, "cannot create build recipe directory %s", outputDir)
 	}
 

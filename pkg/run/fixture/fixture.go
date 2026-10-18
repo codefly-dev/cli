@@ -7,11 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/codefly-dev/core/resources"
 	"os"
 	"path/filepath"
 	"reflect"
 
+	"github.com/codefly-dev/core/resources"
 	"gopkg.in/yaml.v3"
 )
 
@@ -107,8 +107,9 @@ func ReadCompositionGrants(workspace *resources.Workspace, environment string) (
 // composedWorkspacesOf is every workspace the composition inherits from, the
 // deepest first, so a base's base is read before the base.
 func composedWorkspacesOf(workspace *resources.Workspace) []*resources.Workspace {
-	var out []*resources.Workspace
-	for _, child := range workspace.ComposedWorkspaces() {
+	children := workspace.ComposedWorkspaces()
+	out := make([]*resources.Workspace, 0, len(children))
+	for _, child := range children {
 		out = append(out, composedWorkspacesOf(child)...)
 		out = append(out, child)
 	}

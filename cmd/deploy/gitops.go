@@ -66,26 +66,28 @@ var gitOpsRenderCmd = &cobra.Command{
 			target := module
 			if name != module.Name {
 				if composed == nil {
-					if composed, err = workspace.LoadModules(ctx); err != nil {
-						return gitops.RenderResult{}, err
+					loaded, loadErr := workspace.LoadModules(ctx)
+					if loadErr != nil {
+						return gitops.RenderResult{}, loadErr
 					}
+					composed = loaded
 				}
 				index := slices.IndexFunc(composed, func(candidate *resources.Module) bool { return candidate.Name == name })
 				if index < 0 {
 					return gitops.RenderResult{}, fmt.Errorf("the workspace composes no module %s", name)
 				}
 				target = composed[index]
-				if err := requireWorkspaceReady(ctx, "render", gitOpsEnv, name); err != nil {
-					return gitops.RenderResult{}, err
+				if readyErr := requireWorkspaceReady(ctx, "render", gitOpsEnv, name); readyErr != nil {
+					return gitops.RenderResult{}, readyErr
 				}
 			}
-			result, err := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
+			result, renderErr := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
 				Workspace: workspace, Module: target, Environment: env,
 				AppProject: gitOpsProject, ValidateCluster: gitOpsValidateCluster,
 				Rebuild: gitOpsRebuild, WithoutCell: true, Sink: cli.NewOutputSink(),
 			})
-			if err != nil {
-				return result, err
+			if renderErr != nil {
+				return result, renderErr
 			}
 			cli.Info("Rendered %s", result.Path)
 			cli.Info("Digest %s", result.Inventory.Digest)
@@ -714,13 +716,13 @@ func renderComposition(ctx context.Context) error {
 		if err = requireWorkspaceReady(ctx, "render", gitOpsEnv, module.Name); err != nil {
 			return err
 		}
-		result, err := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
+		result, renderErr := gitops.NewCoordinator().Render(ctx, gitops.ProduceRequest{
 			Workspace: workspace, Module: module, Environment: env,
 			AppProject: gitOpsProject, ValidateCluster: gitOpsValidateCluster,
 			Rebuild: gitOpsRebuild, WithoutCell: true, Sink: cli.NewOutputSink(),
 		})
-		if err != nil {
-			return fmt.Errorf("render %s: %w", module.Name, err)
+		if renderErr != nil {
+			return fmt.Errorf("render %s: %w", module.Name, renderErr)
 		}
 		cli.Info("Rendered %s", result.Path)
 		cli.Info("Digest %s", result.Inventory.Digest)

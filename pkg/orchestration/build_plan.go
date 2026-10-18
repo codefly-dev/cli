@@ -280,9 +280,9 @@ func (b *Builder) buildRecipe(
 	// The reuse decision comes before any build work, and one the plan phase
 	// already took is not taken again.
 	if reuse == nil {
-		decided, err := b.decideImageReuse(ctx, w, outputDir, contextRoot, plan, recipe, shouldPush)
-		if err != nil {
-			return err
+		decided, decideErr := b.decideImageReuse(ctx, w, outputDir, contextRoot, plan, recipe, shouldPush)
+		if decideErr != nil {
+			return decideErr
 		}
 		reuse = &decided
 	}
