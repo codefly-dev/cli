@@ -132,3 +132,44 @@ func TestArtifactCacheRepositoryReachesTheServicesDeclaringIt(t *testing.T) {
 		})
 	}
 }
+
+// The render stage publishes and stamps through declareInstances itself: a
+// staging render's declared instance carries the payload of the bundle it
+// published, with no helper called by hand.
+func TestTheRenderStageStampsThePublishedBundle(t *testing.T) {
+	builds, repository := stubFrontendPublication(t)
+	module, services := bundleModule(t, "", false)
+	pkg, artifacts, err := modulePackage(module.Dir())
+	require.NoError(t, err)
+	render := &moduleRender{
+		workspace: &resources.Workspace{Name: "platform", Layout: resources.LayoutKindModules},
+		module:    module,
+		env:       deployedBundleEnvironment("staging"),
+		options:   &RenderOptions{Package: pkg, ReleaseArtifacts: artifacts, Units: []InventoryUnit{{Name: "api", Path: "services/api"}}},
+	}
+	require.NoError(t, render.declareInstances(t.Context(), services))
+	require.Equal(t, 1, *builds)
+	require.Equal(t, "registry.example/project/repo/platform/"+FrontendBundleRepository, *repository)
+	payload := render.options.Instance.Frontend.Payload
+	require.NotNil(t, payload)
+	require.Equal(t, render.options.ReleaseArtifacts[len(render.options.ReleaseArtifacts)-1].Digest, string(payload.Digest))
+}
+
+// The repository reaches the rendered ConfigMap of a host service through the
+// service's own projection, and a local k3d cluster's render projects none.
+func TestTheRenderedHostConfigurationCarriesTheBundleRepository(t *testing.T) {
+	key := "CODEFLY__WORKSPACE_CONFIGURATION__ARTIFACT_CACHE__REPOSITORY"
+	service := &resources.Service{Name: "accounts", WorkspaceConfigurationDependencies: []string{environments.ArtifactCacheConfiguration}}
+	env := storeEnvironment()
+	env.Registry = &environments.EnvironmentRegistry{URL: "registry.example/project/repo"}
+	root := t.TempDir()
+	writeConsumerTree(t, root, env.Name, env.Namespace, service.Name, "database.example:5432")
+	require.NoError(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, service, env, scopeOf(env), serviceInjection{}))
+	require.Equal(t, "registry.example/project/repo/platform/"+FrontendBundleRepository, configMapData(t, buildOverlay(t, root, env.Name))[key])
+
+	env.Cluster = &environments.EnvironmentCluster{Kind: environments.ClusterKindK3d, Context: "k3d-example"}
+	root = t.TempDir()
+	writeConsumerTree(t, root, env.Name, env.Namespace, service.Name, "database.example:5432")
+	require.NoError(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, service, env, scopeOf(env), serviceInjection{}))
+	require.NotContains(t, configMapData(t, buildOverlay(t, root, env.Name)), key)
+}

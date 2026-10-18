@@ -57,9 +57,18 @@ func stampFrontendPayload(instance *ModuleInstance, artifacts []composition.Rele
 // reads every bundle from the one source it is handed (ArtifactCacheRepositoryKey).
 const FrontendBundleRepository = "frontend-bundles"
 
+// publishesFrontendBundles reports whether a render for env publishes
+// frontend bundles: a deployed environment's, never a local one's nor a local
+// k3d cluster's, whose registry the host's Pods cannot read and the artifact
+// client does not speak (it is HTTPS only). Those render no REPOSITORY either.
+func publishesFrontendBundles(env *environments.Environment) bool {
+	return !env.Local() && !env.DeclaresLocalK3d()
+}
+
 // frontendBundleRepositoryOf is where a render of a workspace's modules for
-// env publishes frontend bundles: beside the images of its services, by the
-// rule a module render names them (<registry>/<workspace>/<module>/<service>).
+// env publishes frontend bundles: under the workspace's segment of the
+// registry, beside <workspace>/<module>/<service> where a modules-layout
+// workspace's images go.
 func frontendBundleRepositoryOf(env *environments.Environment, workspace string) (string, error) {
 	if env.Registry == nil || strings.TrimSpace(env.Registry.URL) == "" {
 		return "", fmt.Errorf("environment %s declares no registry.url, so a frontend bundle has nowhere to be published", env.Name)
@@ -73,7 +82,7 @@ func frontendBundleRepositoryOf(env *environments.Environment, workspace string)
 // a bundle from by the digest a signed manifest names. A local render projects
 // nothing; there the native run hands the cache ROOT instead.
 func artifactCacheInjection(service *resources.Service, env *environments.Environment, scope unitScope, injection serviceInjection) (serviceInjection, error) {
-	if env.Local() || !slices.Contains(service.WorkspaceConfigurationDependencies, environments.ArtifactCacheConfiguration) {
+	if !publishesFrontendBundles(env) || !slices.Contains(service.WorkspaceConfigurationDependencies, environments.ArtifactCacheConfiguration) {
 		return injection, nil
 	}
 	repository, err := frontendBundleRepositoryOf(env, scope.Workspace)
@@ -109,7 +118,7 @@ var (
 // invents nothing over the release's metadata. A local render publishes
 // nothing, since a native run builds and retains its bundle itself.
 func publishFrontendBundle(ctx context.Context, workspace *resources.Workspace, module *resources.Module, env *environments.Environment, artifacts []composition.ReleaseArtifact) ([]composition.ReleaseArtifact, error) {
-	if env.Local() || slices.ContainsFunc(artifacts, func(artifact composition.ReleaseArtifact) bool { return artifact.Name == FrontendArtifactName }) {
+	if !publishesFrontendBundles(env) || slices.ContainsFunc(artifacts, func(artifact composition.ReleaseArtifact) bool { return artifact.Name == FrontendArtifactName }) {
 		return artifacts, nil
 	}
 	frontend, err := solutionrun.DeclaredFrontend(ctx, module)

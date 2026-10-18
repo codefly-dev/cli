@@ -16,7 +16,8 @@ const ModuleAuthorityConfiguration = "module-authority"
 // reads frontend bundles from, by the digest a signed module manifest names.
 // A NATIVE run hands ArtifactCacheRootKey, the workspace's artifact cache the
 // CLI retains bundles in; a deployed render hands ArtifactCacheRepositoryKey,
-// the one repository it publishes bundles to. A service receives exactly one.
+// the one repository it publishes bundles to. A service receives at most one;
+// a render that publishes no bundles (a local k3d cluster) hands neither.
 const ArtifactCacheConfiguration = "artifact-cache"
 
 // ArtifactCacheRootKey is the native value of ArtifactCacheConfiguration: the
