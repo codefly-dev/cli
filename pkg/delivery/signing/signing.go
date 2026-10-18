@@ -60,7 +60,7 @@ type SelfCheck func(ctx context.Context, envelope, payload []byte) error
 
 // KeyCheck refuses a custody key outside the environment's declaration before
 // signing, and holds what was signed to the host's own verifier: a module
-// manifest, its canonical bytes and its ownership domain.
+// manifest or a module envelope, its canonical bytes and its ownership domain.
 func KeyCheck(signer Signer, kind solutionhost.KeyKind, domain string, admitted ...string) (SelfCheck, error) {
 	if signer == nil {
 		return nil, ErrNoIdentity
@@ -91,8 +91,15 @@ func KeyCheck(signer Signer, kind solutionhost.KeyKind, domain string, admitted 
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrSignature, err)
 		}
-		// Delivered verifies canonical content and ownership as well as the envelope.
-		_, err = solutionhost.VerifyDelivered(ctx, carrier, verifier)
+		// Delivered verifies canonical content and ownership as well as the
+		// envelope. A module envelope is verified as its host verifies it,
+		// which admits only a release key: a key pinned here as a person's
+		// fails the check rather than produce a carrier the host refuses.
+		if solutionhost.SchemaOf(payload) == solutionhost.SchemaModuleEnvelopeV1 {
+			_, err = solutionhost.VerifyDeliveredEnvelope(ctx, carrier, verifier)
+		} else {
+			_, err = solutionhost.VerifyDelivered(ctx, carrier, verifier)
+		}
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrSignature, err)
 		}

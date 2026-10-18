@@ -369,8 +369,10 @@ generation at 1 and lose every withdrawal.
 
 Delivery uses platform-owned keys. Core's `solutionhost.Signer` is the custody
 boundary and `SignEnvelope` creates a DSSE envelope over the manifest's
-canonical bytes; one document kind is signed. No third-party service
-participates in signing or verification.
+canonical bytes; two document kinds are signed with the same custody — the
+module manifest and the [module envelope](#the-module-envelope), each under
+its own DSSE payload type, so neither signature verifies as the other. No
+third-party service participates in signing or verification.
 
 Release custody is the platform's Vault Transit, configured only for a release
 publish with `VAULT_ADDR`, `VAULT_TOKEN`, and `CODEFLY_RELEASE_TRANSIT_KEY`
@@ -412,7 +414,8 @@ PEM under `~/.codefly/delivery-keys`). A local publish uses it only when
 itself, admitting this machine's key for the host's domain, so a shared
 composition never carries a per-machine key.
 
-Fresh and reused carriers pass the same core verifier (`VerifyDelivered`) over
+Fresh and reused carriers pass the same core verifier (`VerifyDelivered`, or
+`VerifyDeliveredEnvelope` for an envelope, which admits a `release` key only) over
 a pinned set holding the custody signer's public key, its kind (`release` or
 `person`) and the environment's ownership domain. The carrier is core's
 `Signed` (`{document, envelope}`), held beside the manifest in its ConfigMap
@@ -469,6 +472,86 @@ by wave, the delivery goes beside the module's consumers, after its bootstrap
 units; the module that serves the delivery API itself (`hostsDelivery`)
 follows its units. What is not verified: no parent application has run this
 ordering against a real readiness model.
+
+## The module envelope
+
+The module envelope is what a host grants each module principal: one
+document per host, replaced whole at each revision. The composition declares
+it beside itself, in `configurations/<environment>/module-envelope.json`
+(`{"principals": {"<principal>": <grant>}}`, each grant in the host's own
+shape), read across the composition exactly as a native run reads it — every
+composed workspace's file first, then the consuming workspace's own, which
+decides a principal it states.
+
+`codefly deploy gitops publish` delivers it the way it delivers a manifest,
+and only in the publish of the module that serves the delivery API
+(`hostsDelivery`), to an environment that declares a host, outside local
+qualification. A local host pins developer keys and admits an envelope only
+from a release key, so a local publish delivers none; a native run keeps
+writing it as the fixture's administrator (below).
+
+**The revision is settled against the base branch.** Publish reads the
+envelope the base branch delivers in the host module's overlay. The same
+canonical content apart from the revision keeps the delivered revision and
+its carrier, nothing signed again; changed content is the delivered revision
++ 1; none delivered is revision 1. Core's `AdmitEnvelope` runs over the base
+branch's record before the host runs it over its own.
+
+**Stating nothing is not revoking.** A composition that delivered an envelope
+and no longer states one — no `module-envelope.json` in any workspace of the
+composition for the environment — is refused. Revoking every grant is a
+statement: `{"principals": {}}`, delivered at the next revision. An envelope
+delivered by a module that no longer hosts the delivery API, or to an
+environment that no longer names a host, is refused the same way.
+
+**A delivered grant names no organization.** A grant carrying a non-empty
+`tenant` is refused at publish, naming the principals: tenancy resolves
+through each organization's installation, and pinning a module to one
+organization is an administrator's interactive write on the host. The host
+refuses the same grant; refusing it at publish saves a failed Job.
+
+**It is signed by the release custody.** The canonical bytes are signed by
+the same signer as the manifests (Vault Transit or Cloud KMS, checked against
+`host.release.key_id`), and the carrier is held, right after signing, to the
+verifier the host runs: a signature that verifies, from a key pinned as a
+`release` key for the environment's ownership domain. A developer key is a
+`person` key and never signs an envelope. Carrier reuse, `--resign` and the
+plan's carriers work exactly as for manifests; the inventory's `delivery`
+record lists it as kind `envelope`, ID `module-envelope`, its revision as the
+generation, and its digest.
+
+**What publish writes**, in `module-manifests/overlays/<environment>/` of the
+host module's delivered path, listed in the overlay's kustomization:
+
+- `module-envelope.yaml`: the ConfigMap `module-envelope` (labelled
+  `codefly.dev/document: module-envelope`), holding the canonical document
+  under `module-envelope.json` and the signed carrier under core's
+  `EnvelopeSignedFileName` (`module-envelope.signed.codefly.yaml`);
+- `delivery-service-account.yaml`, the `delivery` account, when the module's
+  manifests did not already write it;
+- `deliver-envelope.yaml`: a delivery Job named
+  `deliver-envelope-<module>-<environment>-<digest of its carrier>`, the same
+  Sync hook as a manifest's, posting the carrier to
+  `POST /platform/_delivery/envelope` as the `delivery` account of the host
+  module's namespace. Its pod is the carrier the cell file declares for that
+  namespace (`codefly.dev/delivery: manifest`); only the Job's own label names
+  the kind (`codefly.dev/delivery: envelope`). The cell declares the carrier
+  for the host module whenever the composition states an envelope, even when
+  that module renders no manifest of its own.
+
+The Job's verdicts are the manifest Job's: 401/403 for the carrier, 422 for an
+envelope the host refuses (a `tenant`, a grant it cannot read), 409 for a
+revision the host will not apply, and each fails the Job.
+
+**A 409 after an administrator's write is a manual reconcile today.** A host
+also holds an envelope its administrator wrote interactively, at a revision of
+its own, and answers 409 to a delivered revision that does not exceed it. The
+remedy is to state the administrator's change in the composition's
+`module-envelope.json`, so the delivered envelope says what the host holds;
+the next delivered revision must still exceed the administrator's, and publish
+settles revisions against the base branch only — it never reads the host.
+Until the two revisions are reconciled by hand, the delivery Job keeps
+failing with 409. Nothing reconciles them automatically.
 
 ## Workspace configuration groups a render bakes in
 
@@ -917,6 +1000,11 @@ with the host's port, but agreement is not a running system. Vault custody is
 exercised with a loopback HTTP server; cryptographic verification uses core's
 real verifier. The packaged solution path (`RenderSolution`) runs through an
 in-process executor.
+
+No cell has received a delivered module envelope yet; the envelope route is the
+host's parallel change, verified against core's verifier only. A native run
+still writes the envelope as the fixture's administrator; converging it onto
+the delivered path is named and not built.
 
 Named and not built: a **withdrawal path for a whole module** — a module
 removed from the composition has no render and so no publish, and its manifest

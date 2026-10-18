@@ -2563,6 +2563,9 @@ func stageAndSettleDelivery(
 			return nil, fmt.Errorf("read the rendered delivery overlay: %w", err)
 		}
 	}
+	if err := publication.declareEnvelope(inventory, environment); err != nil {
+		return nil, err
+	}
 	return settleManifestDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, &publication.options)
 }
 

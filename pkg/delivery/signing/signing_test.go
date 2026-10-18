@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -116,4 +117,46 @@ func testPayload(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return payload
+}
+
+// TestKeyCheckHoldsAnEnvelopeToARelease: a module envelope is held to the
+// verifier its host runs, which admits it only from a release key: the same
+// key pinned as a person's signs it and fails the check, so a publish never
+// writes an envelope carrier the host refuses.
+func TestKeyCheckHoldsAnEnvelopeToARelease(t *testing.T) {
+	document := &solutionhost.ModuleEnvelope{
+		Schema: solutionhost.SchemaModuleEnvelopeV1, Revision: 1,
+		Host:       solutionhost.HostTarget{Coordinate: "acme/local", Domain: "acme"},
+		Principals: map[string]json.RawMessage{"records": json.RawMessage(`{"operation_audiences":{}}`)},
+	}
+	payload, err := document.CanonicalBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := testSigner(t)
+	envelope, err := SignEnvelope(payload, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := KeyCheck(signer, solutionhost.KeyKindRelease, "acme", signer.KeyID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = release(context.Background(), envelope, payload); err != nil {
+		t.Fatalf("a release key's envelope refused: %v", err)
+	}
+	person, err := KeyCheck(signer, solutionhost.KeyKindPerson, "acme", signer.KeyID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = person(context.Background(), envelope, payload); !errors.Is(err, solutionhost.ErrEnvelopeSignerNotRelease) || !errors.Is(err, ErrSignature) {
+		t.Fatalf("a person key's envelope = %v, want ErrEnvelopeSignerNotRelease", err)
+	}
+	foreign, err := KeyCheck(signer, solutionhost.KeyKindRelease, "another-domain", signer.KeyID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = foreign(context.Background(), envelope, payload); err == nil {
+		t.Fatal("an envelope speaking for a domain its key is not pinned for admitted")
+	}
 }

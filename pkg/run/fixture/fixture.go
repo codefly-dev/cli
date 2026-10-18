@@ -56,7 +56,7 @@ func ReadAdministrator(moduleDir, fixture string) (Administrator, error) {
 // ReadGrants reads configurations/<env>/module-envelope.json: each principal's
 // grant, raw. No file is an empty envelope.
 func ReadGrants(workspaceDir, environment string) (map[string]json.RawMessage, error) {
-	path := filepath.Join(workspaceDir, "configurations", environment, "module-envelope.json")
+	path := grantsPath(workspaceDir, environment)
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return map[string]json.RawMessage{}, nil
@@ -102,6 +102,37 @@ func ReadCompositionGrants(workspace *resources.Workspace, environment string) (
 		return nil, err
 	}
 	return MergeGrants(GrantSource{Workspace: workspace.Name, Principals: own}, composed)
+}
+
+// StatesGrants reports whether any workspace of the composition writes
+// configurations/<env>/module-envelope.json at all. Reading the grants cannot
+// tell: no file reads as an empty envelope, and "states nothing" is not the
+// statement "grants nothing" ({"principals": {}}) when an envelope was
+// delivered before.
+func StatesGrants(workspace *resources.Workspace, environment string) (bool, error) {
+	for _, dir := range append(composedDirsOf(workspace), workspace.Dir()) {
+		_, err := os.Stat(grantsPath(dir, environment))
+		if err == nil {
+			return true, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+func composedDirsOf(workspace *resources.Workspace) []string {
+	children := composedWorkspacesOf(workspace)
+	dirs := make([]string, 0, len(children)+1)
+	for _, child := range children {
+		dirs = append(dirs, child.Dir())
+	}
+	return dirs
+}
+
+func grantsPath(workspaceDir, environment string) string {
+	return filepath.Join(workspaceDir, "configurations", environment, "module-envelope.json")
 }
 
 // composedWorkspacesOf is every workspace the composition inherits from, the

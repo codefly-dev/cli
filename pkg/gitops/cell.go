@@ -15,6 +15,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops/cellfile"
 	"github.com/codefly-dev/cli/pkg/orchestration"
+	"github.com/codefly-dev/cli/pkg/run/fixture"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/resources"
@@ -333,7 +334,11 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 		}
 	}
 	sort.Slice(namespace.Workloads, func(i, j int) bool { return namespace.Workloads[i].Name < namespace.Workloads[j].Name })
-	if inventory.ModuleManifestPath != "" {
+	carries, err := carriesDelivery(workspace, env, inventory)
+	if err != nil {
+		return cellfile.Namespace{}, err
+	}
+	if carries {
 		delivery, err := cellDelivery(env, namespace.Name)
 		if err != nil {
 			return cellfile.Namespace{}, fmt.Errorf("module %s: %w", inventory.Module, err)
@@ -460,6 +465,20 @@ func podSelector(manifests []manifest, name, kind string) (map[string]string, er
 	return nil, fmt.Errorf("workload %s %s is not among the rendered manifests", kind, name)
 }
 
+// carriesDelivery reports whether a delivery Job runs in the module's
+// namespace: it renders a module manifest, or it hosts the delivery API and
+// the composition states the environment's module envelope, which publish
+// delivers from the host's namespace.
+func carriesDelivery(workspace *resources.Workspace, env *environments.Environment, inventory *Inventory) (bool, error) {
+	if inventory.ModuleManifestPath != "" {
+		return true, nil
+	}
+	if !inventory.HostsDelivery || env.Host == nil || workspace == nil {
+		return false, nil
+	}
+	return fixture.StatesGrants(workspace, env.Name)
+}
+
 // cellDelivery is the presence carrier of a module that renders a module
 // manifest for a hosted environment: the Job publish writes to POST it,
 // declared from deliveryCarrierOf — the rule that Job is rendered from — and
@@ -468,7 +487,7 @@ func podSelector(manifests []manifest, name, kind string) (map[string]string, er
 // repository, so a tree in the workspace never holds it, and the cell must
 // declare it before publish runs for its admission to let the Job in.
 func cellDelivery(env *environments.Environment, namespace string) (*cellfile.Delivery, error) {
-	carrier := deliveryCarrierOf(deliveryManifest)
+	carrier := deliveryCarrierOf()
 	repository, digest, err := splitPinnedImage(carrier.Image)
 	if err != nil {
 		return nil, fmt.Errorf("the delivery Job's %w", err)
