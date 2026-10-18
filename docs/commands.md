@@ -1236,7 +1236,16 @@ service-secrets:
       services: [runtime/store]
       keys: [POSTGRES_USER]
       format: identifier          # hex (default), base64, identifier; `bytes` sizes it
+    - scope: service
+      configuration: signing
+      services: [witness/log]
+      keys: [SIGNING_KEY]
+      format: ed25519-pkcs8       # an Ed25519 private key, base64 PKCS#8 DER; no `bytes`
 ```
+
+`ed25519-pkcs8` mints a private key rather than random bytes. Like every
+generated value it is written only where no remote key holds it, so a key a
+service already signs with is never replaced by a second run.
 
 A key its producer declares as a template (core's `ConfigurationValue.template`
 — a Postgres agent's `READ_WRITE_CONNECTION`, say: role, address and database
