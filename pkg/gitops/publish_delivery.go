@@ -124,7 +124,7 @@ type deliveryPublishOptions struct {
 func unsignedRefusal(what string, unsigned []string, environment string, cause error, opts *deliveryPublishOptions) error {
 	signs := opts.Signs
 	if signs == "" {
-		signs = "configure VAULT_ADDR, VAULT_TOKEN and CODEFLY_RELEASE_TRANSIT_KEY to sign with the platform release key"
+		signs = "configure VAULT_ADDR, VAULT_TOKEN and CODEFLY_RELEASE_TRANSIT_KEY (Vault Transit) or CODEFLY_RELEASE_KMS_KEY (Cloud KMS) to sign with the platform release key"
 	}
 	return fmt.Errorf("%w: the %s documents %s cannot be delivered unsigned to %s (%v); %s",
 		signing.ErrNoIdentity, what, strings.Join(unsigned, ", "), environment, cause, signs)

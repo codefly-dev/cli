@@ -171,7 +171,7 @@ func TestADeveloperIdentityNeverSignsARelease(t *testing.T) {
 	t.Setenv("GIT_CONFIG_COUNT", strconv.Itoa(configured+1))
 	t.Setenv(fmt.Sprintf("GIT_CONFIG_KEY_%d", configured), "url.file://"+remote+".insteadOf")
 	t.Setenv(fmt.Sprintf("GIT_CONFIG_VALUE_%d", configured), repository)
-	for _, name := range []string{"VAULT_ADDR", "VAULT_TOKEN", "CODEFLY_RELEASE_TRANSIT_KEY"} {
+	for _, name := range []string{"VAULT_ADDR", "VAULT_TOKEN", "CODEFLY_RELEASE_TRANSIT_KEY", "CODEFLY_RELEASE_KMS_KEY"} {
 		t.Setenv(name, "")
 		if err := os.Unsetenv(name); err != nil {
 			t.Fatal(err)

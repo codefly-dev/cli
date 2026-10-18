@@ -1228,7 +1228,7 @@ func TestOnlyHostedDeliveryNeedsTheWorkflowIdentity(t *testing.T) {
 	require.Contains(t, err.Error(), "host.release")
 	// With the policy, the workflow identity is required.
 	host.Release = &environments.HostReleasePolicy{KeyID: "release-v1"}
-	for _, name := range []string{"VAULT_ADDR", "VAULT_TOKEN", "CODEFLY_RELEASE_TRANSIT_KEY"} {
+	for _, name := range []string{"VAULT_ADDR", "VAULT_TOKEN", "CODEFLY_RELEASE_TRANSIT_KEY", "CODEFLY_RELEASE_KMS_KEY"} {
 		t.Setenv(name, "")
 		require.NoError(t, os.Unsetenv(name))
 	}
