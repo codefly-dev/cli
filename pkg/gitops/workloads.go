@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"sigs.k8s.io/kustomize/api/krusty"
@@ -158,6 +159,26 @@ func audienceTokenVolumes(raw []any) map[string][]tokenSource {
 	return audiences
 }
 
+// pinnedImageDigest is the one digest form an image is pinned by: an
+// image-manifest sha256, as the registry and a running pod's status spell it.
+var pinnedImageDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// splitPinnedImage splits an image reference pinned by digest into the
+// repository (its tag dropped: the digest is the identity) and the digest. An
+// image that is not pinned by a sha256 digest is refused: a policy compares
+// that digest with a running pod's, and anything else after an `@` is a digest
+// no pod reports.
+func splitPinnedImage(image string) (repository, digest string, err error) {
+	repository, digest, found := strings.Cut(image, "@")
+	if !found || repository == "" || !pinnedImageDigest.MatchString(digest) {
+		return "", "", fmt.Errorf("image %q is not pinned by digest (`@sha256:` and 64 lowercase hex characters)", image)
+	}
+	if at := strings.LastIndex(repository, ":"); at > strings.LastIndex(repository, "/") {
+		repository = repository[:at]
+	}
+	return repository, digest, nil
+}
+
 // renderedContainers reads a pod template's containers, refusing an image not
 // pinned by digest, and the audience-bearing token volumes each mounts.
 func renderedContainers(workload string, raw []any, tokens map[string][]tokenSource, mounts map[string][]tokenMount, paths map[string][]containerMount) ([]renderedContainer, error) {
@@ -166,12 +187,9 @@ func renderedContainers(workload string, raw []any, tokens map[string][]tokenSou
 		container, _ := entry.(map[string]any)
 		name, _ := container["name"].(string)
 		image, _ := container["image"].(string)
-		if !strings.Contains(image, "@") {
-			return nil, fmt.Errorf("workload %s container %s image %q is not pinned by digest", workload, name, image)
-		}
-		repository, digest, _ := strings.Cut(image, "@")
-		if at := strings.LastIndex(repository, ":"); at > strings.LastIndex(repository, "/") {
-			repository = repository[:at]
+		repository, digest, err := splitPinnedImage(image)
+		if err != nil {
+			return nil, fmt.Errorf("workload %s container %s: %w", workload, name, err)
 		}
 		rendered := renderedContainer{Name: name, Repository: repository, Digest: digest}
 		for _, raw := range sliceField(container, "volumeMounts") {

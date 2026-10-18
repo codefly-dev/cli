@@ -461,7 +461,7 @@ func writeManifestSet(target, overlay string, inventory *Inventory, settled map[
 	files = append(files, account)
 	if len(documents) > 0 {
 		job, err := renderDeliveryJob(directory, deliveryJobName(deliveryManifest, inventory.Module, inventory.Environment, carriers), inventory.Namespace,
-			deliveryServiceAccount, deliveryManifest, manifestDeliveryPath, opts.Target, documents)
+			deliveryManifest, manifestDeliveryPath, opts.Target, documents)
 		if err != nil {
 			return nil, err
 		}

@@ -804,7 +804,7 @@ run, the CLI is:
   its credential **when it is projected**, before it starts — for the host's
   audience, naming the workload's namespace, account and declared container
   (the service), and nothing else: no build. It is written under
-  `.codefly/native-cluster/<environment>/identities/` and handed to the
+  `.codefly/run/<environment>/identities/` and handed to the
   process as `CODEFLY__WORKLOAD_TOKEN_FILE` (a pod reads the mounted path),
   reissued at 80 % of its lifetime as a kubelet rotates a projected token.
   Nothing is withheld: until the host has applied the module's manifest a
@@ -821,7 +821,7 @@ run, the CLI is:
   workloads changes, the manifest is delivered again; its generation is
   settled from its content — unchanged content replays its generation,
   changed content is the next one — and recorded under
-  `.codefly/native-cluster/<environment>/delivery/generations.json`, so a
+  `.codefly/run/<environment>/delivery/generations.json`, so a
   restart replays rather than rewrites.
 - **the administrator** — before delivering, it makes sure the host holds the
   composition's envelope: `{"revision": N, "principals": {"<module>":
@@ -860,7 +860,7 @@ workload the composition withdraws while it waits is not delivered.
 
 The host is pointed at the stand-in by `CODEFLY_NATIVE_IDENTITY_ANCHOR` and
 `SOLUTION_HOST_LOCAL_TRUST_ANCHOR`, both under
-`.codefly/native-cluster/<environment>/host/`; it refuses both in a pod. The
+`.codefly/run/<environment>/host/`; it refuses both in a pod. The
 delivery host turns its surface on from the `federation` keys
 `SOLUTION_HOST_COORDINATE`, `SOLUTION_HOST_OWNERSHIP_DOMAINS` and
 `SOLUTION_HOST_TRUST_POLICY`, which a native run derives from the host block.
@@ -896,4 +896,4 @@ in-process executor.
 Named and not built: a **withdrawal path for a whole module** — a module
 removed from the composition has no render and so no publish, and its manifest
 stays applied on the host until a publish of that module's path with no
-instance writes its withdrawal. **No cell inventory is written here.**
+instance writes its withdrawal.
