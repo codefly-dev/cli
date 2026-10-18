@@ -1338,9 +1338,12 @@ codefly deploy dev payments/api --env staging --commit --push
    and not committed, an uncommitted environment change, a sibling tree at
    another inventory schema — would be approved by the dev deployment's
    commit, so it is refused, naming each namespace that moved, before the image
-   is built: commit those changes, or render the environment again
-   (`codefly deploy gitops render --all --env <env>`). With no committed cell
-   file there is no approval to replace, and it refuses the same way.
+   is built: commit those changes (after `codefly deploy gitops render --all
+   --env <env>` if the trees are stale), then deploy again. That includes an
+   earlier dev deployment of another service left uncommitted: commit it
+   before the next. After the build, only digests of the repositories it
+   produced may move. With no committed cell file there is no approval to
+   replace, and it refuses the same way.
 4. **Record.** `.codefly-render.json` gains a `dev` entry for the service:
    source origin and path, the source's git commit and whether it was dirty, the
    image and digest, and the time. `codefly doctor workspace` reports each one as

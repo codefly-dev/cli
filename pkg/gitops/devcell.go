@@ -73,31 +73,46 @@ func loadDevCell(ctx context.Context, workspace *resources.Workspace, env *envir
 // anything but the image digests of service's own workloads and the source
 // revision: anything else is a render or a configuration change the branch
 // does not carry, which the dev deployment's commit would approve with it.
-func deriveDevCell(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, start devCell, service string) (cellfile.File, CellResult, error) {
+// Given the images the dev build produced, only digests of those repositories
+// may move; before the build, when they are not known yet, any of the
+// service's may.
+func deriveDevCell(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, start devCell, service string, images []string) (cellfile.File, CellResult, error) {
 	derived, result, err := deriveCell(ctx, workspace, env)
 	if err != nil {
 		return cellfile.File{}, CellResult{}, fmt.Errorf("environment %s's cell file cannot be re-derived, and its cell admits only the builds that file names: %w", env.Name, err)
 	}
-	moved, err := cellMovesBeyond(start.file, &derived, service)
+	var repositories map[string]bool
+	if images != nil {
+		repositories = make(map[string]bool, len(images))
+		for _, image := range images {
+			repository, _, splitErr := splitPinnedImage(image)
+			if splitErr != nil {
+				return cellfile.File{}, CellResult{}, splitErr
+			}
+			repositories[repository] = true
+		}
+	}
+	moved, err := cellMovesBeyond(start.file, &derived, service, repositories)
 	if err != nil {
 		return cellfile.File{}, CellResult{}, err
 	}
 	if len(moved) > 0 {
 		return cellfile.File{}, CellResult{}, fmt.Errorf(
-			"re-deriving environment %s's cell file from this workspace changes more than %s's images — %s differ from the %s cell file — so committing it would approve renders or configuration the branch does not carry: commit those first, or render the environment again (codefly deploy gitops render --all --env %s)",
+			"re-deriving environment %s's cell file from this workspace changes more than %s's images — %s differ from the %s cell file — so committing it would approve renders, dev deployments or configuration the branch does not carry: commit them first (after `codefly deploy gitops render --all --env %s` if the trees are stale), then deploy again",
 			env.Name, service, strings.Join(moved, ", "), start.origin, env.Name)
 	}
 	return derived, result, nil
 }
 
 // cellMovesBeyond names where derived differs from start once the image
-// digests of service's workloads and the source revision are set aside.
-func cellMovesBeyond(start, derived *cellfile.File, service string) ([]string, error) {
-	before, err := cellWithoutDevMoves(start, service)
+// digests of service's workloads (of repositories, when given) and the source
+// revision are set aside.
+func cellMovesBeyond(start, derived *cellfile.File, service string, repositories map[string]bool) ([]string, error) {
+	before, err := cellWithoutDevMoves(start, service, repositories)
 	if err != nil {
 		return nil, err
 	}
-	after, err := cellWithoutDevMoves(derived, service)
+	after, err := cellWithoutDevMoves(derived, service, repositories)
 	if err != nil {
 		return nil, err
 	}
@@ -134,9 +149,10 @@ func cellMovesBeyond(start, derived *cellfile.File, service string) ([]string, e
 }
 
 // cellWithoutDevMoves is a copy of file with what a dev deployment of service
-// moves cleared: its workloads' image digests and the source revision. The
-// copy goes through the file's own writer and reader, so file is untouched.
-func cellWithoutDevMoves(file *cellfile.File, service string) (*cellfile.File, error) {
+// moves cleared: its workloads' image digests (only of repositories, when
+// given) and the source revision. The copy goes through the file's own writer
+// and reader, so file is untouched.
+func cellWithoutDevMoves(file *cellfile.File, service string, repositories map[string]bool) (*cellfile.File, error) {
 	data, err := file.Encode()
 	if err != nil {
 		return nil, err
@@ -154,11 +170,12 @@ func cellWithoutDevMoves(file *cellfile.File, service string) (*cellfile.File, e
 			if workload.Service != service {
 				continue
 			}
-			for c := range workload.Containers {
-				workload.Containers[c].Image.Digest = ""
-			}
-			for c := range workload.InitContainers {
-				workload.InitContainers[c].Image.Digest = ""
+			for _, containers := range [][]cellfile.Container{workload.Containers, workload.InitContainers} {
+				for c := range containers {
+					if repositories == nil || repositories[containers[c].Image.Repository] {
+						containers[c].Image.Digest = ""
+					}
+				}
 			}
 		}
 	}

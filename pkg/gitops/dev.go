@@ -208,7 +208,7 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 		if startCell, err = loadDevCell(ctx, request.Workspace, request.Environment); err != nil {
 			return DevResult{}, err
 		}
-		if _, _, err = deriveDevCell(ctx, request.Workspace, request.Environment, startCell, cellService); err != nil {
+		if _, _, err = deriveDevCell(ctx, request.Workspace, request.Environment, startCell, cellService, nil); err != nil {
 			return DevResult{}, err
 		}
 	}
@@ -244,7 +244,7 @@ func DeployDev(ctx context.Context, request *DevRequest) (DevResult, error) {
 	// committed with the digest it now approves.
 	var cell *CellResult
 	if hosted {
-		file, derived, cellErr := deriveDevCell(ctx, request.Workspace, request.Environment, startCell, cellService)
+		file, derived, cellErr := deriveDevCell(ctx, request.Workspace, request.Environment, startCell, cellService, images)
 		if cellErr == nil {
 			cellErr = writeCell(&file, derived.Path)
 		}

@@ -495,8 +495,37 @@ func TestDeployDevRefusesACellFileThatMovesMoreThanItsService(t *testing.T) {
 
 	_, err = DeployDev(context.Background(), request)
 	require.ErrorContains(t, err, "changes more than shop/api's images — namespace acme-billing differ from the committed cell file")
-	require.ErrorContains(t, err, "codefly deploy gitops render --all --env staging")
+	require.ErrorContains(t, err, "commit them first")
 	require.Zero(t, *calls, "nothing is built for a refused deployment")
+}
+
+// Only the digests of the images the dev build produced may move: a sidecar
+// of the same service the branch pins differently is not the dev
+// deployment's to approve.
+func TestDevCellMovesOnlyTheBuiltRepositories(t *testing.T) {
+	_, _, _, cellPath := hostedDevFixture(t)
+	data, err := os.ReadFile(cellPath)
+	require.NoError(t, err)
+	start, err := cellfile.Parse(data)
+	require.NoError(t, err)
+	derived, err := cellfile.Parse(data)
+	require.NoError(t, err)
+	shop := &derived.Namespaces[1]
+	require.Equal(t, "acme-shop", shop.Name)
+	shop.Workloads[0].Containers[0].Image.Digest = devNewDigest
+	built := map[string]bool{"registry.example.test/acme/api": true}
+	moved, err := cellMovesBeyond(start, derived, "shop/api", built)
+	require.NoError(t, err)
+	require.Empty(t, moved, "the built image's digest moves")
+
+	require.Equal(t, "proxy", shop.Workloads[0].Containers[1].Name)
+	shop.Workloads[0].Containers[1].Image.Digest = "sha256:" + strings.Repeat("f", 64)
+	moved, err = cellMovesBeyond(start, derived, "shop/api", built)
+	require.NoError(t, err)
+	require.Equal(t, []string{"namespace acme-shop"}, moved, "the proxy sidecar was not built")
+	moved, err = cellMovesBeyond(start, derived, "shop/api", nil)
+	require.NoError(t, err)
+	require.Empty(t, moved, "before the build, any of the service's digests may move")
 }
 
 // Without a committed cell file the branch approves no build to replace, so a
