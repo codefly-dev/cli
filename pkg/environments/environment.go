@@ -739,6 +739,9 @@ const (
 	SecretGeneratorFormatHex        = "hex"
 	SecretGeneratorFormatBase64     = "base64"
 	SecretGeneratorFormatIdentifier = "identifier"
+	// SecretGeneratorFormatEd25519PKCS8 mints an Ed25519 private key (standard
+	// base64 of its PKCS#8 DER) instead of random bytes; it takes no `bytes`.
+	SecretGeneratorFormatEd25519PKCS8 = "ed25519-pkcs8"
 )
 
 // EnvironmentSecretGenerator names keys of one configuration group that the
@@ -749,7 +752,8 @@ const (
 // Format is the value's encoding: hex (default) or base64 of Bytes random bytes
 // (default 32), or identifier — a lowercase letter followed by hex, for a value
 // that must also be a SQL or DNS identifier (a database owner name), of Bytes
-// random bytes (default 12).
+// random bytes (default 12), or ed25519-pkcs8 — an Ed25519 private key as
+// standard base64 of its PKCS#8 DER, sized by the algorithm (no Bytes).
 type EnvironmentSecretGenerator struct {
 	Scope         string   `yaml:"scope"`
 	Configuration string   `yaml:"configuration"`
@@ -799,12 +803,29 @@ func (generator *EnvironmentSecretGenerator) validate(index int) error {
 		}
 	}
 	switch generator.Format {
-	case "", SecretGeneratorFormatHex, SecretGeneratorFormatBase64, SecretGeneratorFormatIdentifier:
+	case "", SecretGeneratorFormatHex, SecretGeneratorFormatBase64, SecretGeneratorFormatIdentifier,
+		SecretGeneratorFormatEd25519PKCS8:
 	default:
-		return fmt.Errorf("%s: format must be hex, base64 or identifier, got %q", label, generator.Format)
+		return fmt.Errorf("%s: format must be hex, base64, identifier or ed25519-pkcs8, got %q", label, generator.Format)
 	}
 	if generator.Bytes < 0 {
 		return fmt.Errorf("%s: bytes must be positive", label)
+	}
+	if generator.Format == SecretGeneratorFormatEd25519PKCS8 {
+		// The key's size is the algorithm's. Refused at load, not at the first
+		// `deploy secrets`, so a declaration that cannot mint is never planned.
+		if generator.Bytes != 0 {
+			return fmt.Errorf("%s: format ed25519-pkcs8 is sized by the algorithm; bytes cannot be set", label)
+		}
+		// A signing key is ONE workload's identity. A service configuration of
+		// several services would hand the same private key to every reader, and
+		// any of them could sign as the others. A workspace group is checked when
+		// the plan knows who reads it: `deploy secrets` refuses one read by more
+		// than one service.
+		if len(generator.Keys) != 1 ||
+			(generator.Scope == SecretGeneratorScopeService && len(generator.Services) != 1) {
+			return fmt.Errorf("%s: format ed25519-pkcs8 is one service's signing key: declare exactly one key, and for scope service exactly one service", label)
+		}
 	}
 	return nil
 }
