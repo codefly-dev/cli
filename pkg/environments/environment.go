@@ -811,10 +811,18 @@ func (generator *EnvironmentSecretGenerator) validate(index int) error {
 	if generator.Bytes < 0 {
 		return fmt.Errorf("%s: bytes must be positive", label)
 	}
-	if generator.Format == SecretGeneratorFormatEd25519PKCS8 && generator.Bytes != 0 {
+	if generator.Format == SecretGeneratorFormatEd25519PKCS8 {
 		// The key's size is the algorithm's. Refused at load, not at the first
 		// `deploy secrets`, so a declaration that cannot mint is never planned.
-		return fmt.Errorf("%s: format ed25519-pkcs8 is sized by the algorithm; bytes cannot be set", label)
+		if generator.Bytes != 0 {
+			return fmt.Errorf("%s: format ed25519-pkcs8 is sized by the algorithm; bytes cannot be set", label)
+		}
+		// A signing key is ONE workload's identity. A workspace group, or a
+		// service configuration of several services, would hand the same private
+		// key to every reader, and any of them could sign as the others.
+		if generator.Scope != SecretGeneratorScopeService || len(generator.Services) != 1 || len(generator.Keys) != 1 {
+			return fmt.Errorf("%s: format ed25519-pkcs8 is one service's signing key: declare scope service, exactly one service and exactly one key", label)
+		}
 	}
 	return nil
 }
