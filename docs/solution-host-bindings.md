@@ -686,6 +686,28 @@ a mismatch with `host.release.key_id` refuses before signing and names both.
 Rotation is: pin the new public key on the host, deliver with its new key ID,
 then remove the old pin.
 
+### Cloud KMS custody
+
+A cloud provider's KMS may sit behind the same custody interface as an
+optional adapter, never a requirement: a hosted cell whose key custody is the
+cloud's KMS has no Vault to hold a Transit key. Google Cloud KMS is configured
+only for a release publish with `CODEFLY_RELEASE_KMS_KEY`, the full
+cryptoKeyVersion resource name
+(`projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<name>/cryptoKeyVersions/<n>`).
+The derived ID is `<name>-v<n>`, so `host.release.key_id` keeps one spelling
+across custodies. The key version must sign with `EC_SIGN_P256_SHA256` (core
+verifies ECDSA P-256 and Cloud KMS offers no Ed25519); any other algorithm is
+refused by name. The CLI reads the public key once, holds it to the host's
+pin the same way, and signs the SHA-256 digest of each DSSE message through
+`asymmetricSign` with the ambient Google credential (Application Default
+Credentials), which it never reads from a file of its own choosing.
+`CODEFLY_RELEASE_KMS_ENDPOINT` selects a regional or private endpoint
+(default `https://cloudkms.googleapis.com`); HTTPS is required, HTTP admitted
+only for loopback. Exactly one release custody is configured at a time: Cloud
+KMS is selected when `CODEFLY_RELEASE_KMS_KEY` is set and no Transit variable
+is, and a publish that sets both is refused naming each, never one silently
+winning.
+
 Developer custody is one Ed25519 key per machine. `codefly delivery key`
 creates or loads it and prints only its ID and public PEM. Its ID is `dev-`
 plus the first 16 lowercase hex characters of SHA-256 over the public key's

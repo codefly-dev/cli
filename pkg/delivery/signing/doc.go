@@ -2,8 +2,10 @@
 // solutionhost package owns the signed envelope and its verification; this
 // package supplies the key that approves the settled document.
 //
-// A release key stays in the platform's Vault Transit. A developer key stays
-// on that developer's machine and signs only for a declared local cluster.
+// A release key stays in the platform's Vault Transit, or — the optional
+// adapter the decision admits behind the same custody interface, never a
+// requirement — in a cloud provider's KMS. A developer key stays on that
+// developer's machine and signs only for a declared local cluster.
 // The host pins the public half and the ownership domains it may speak for.
 // No third party certifies, logs or approves a delivery: custody and admission
 // belong to the platform that operates it. This is the handbook decision
