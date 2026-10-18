@@ -183,7 +183,7 @@ func TestRenderDerivesAuthorityFromTheModuleContract(t *testing.T) {
 	_, manifest := renderShopManifest(t, workspace, module, env)
 	require.Equal(t, want, manifest.Authority)
 
-	require.Equal(t, []solutionhost.Workload{{Service: "api", Container: "api", Kubernetes: &solutionhost.WorkloadAccount{TrustDomain: "cluster.example", Namespace: "acme-shop", Account: "api"}}}, manifest.Workloads)
+	require.Equal(t, []solutionhost.Workload{{Service: "api", Container: "api"}}, manifest.Workloads)
 }
 
 // TestAModuleWithoutAContractAsksForNothingButRunsAsItsPrincipal: a module

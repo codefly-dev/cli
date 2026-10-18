@@ -19,7 +19,7 @@ func testManifest(t *testing.T) *solutionhost.ModuleManifest {
 		Schema: solutionhost.SchemaModuleManifestV1, Binding: "acme.local.wiki", Alias: "wiki", Kind: solutionhost.KindModule,
 		Generation: 1, Host: solutionhost.HostTarget{Coordinate: "acme/local", Domain: "acme"},
 		Release:   solutionhost.Release{Publisher: "acme", Name: "wiki", Version: "0.1.0"},
-		Workloads: []solutionhost.Workload{{Service: "backend", Container: "backend", Kubernetes: &solutionhost.WorkloadAccount{TrustDomain: "cluster.local", Namespace: "acme-wiki", Account: "backend"}}},
+		Workloads: []solutionhost.Workload{{Service: "backend", Container: "backend"}},
 		Authority: &solutionhost.Authority{Principal: "wiki"},
 	}
 	if err := manifest.Validate(); err != nil {

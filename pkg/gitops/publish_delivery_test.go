@@ -236,7 +236,7 @@ func TestPublishSettlesGenerationsAgainstTheBaseBranch(t *testing.T) {
 
 func TestSettledGenerationFollowsCanonicalContent(t *testing.T) {
 	prior, err := ModuleManifestOf("example.prod.crm", testHost(), solutionRenderOptions("").Instance,
-		[]solutionhost.Workload{{Service: "api", Container: "api", Kubernetes: &solutionhost.WorkloadAccount{TrustDomain: "cluster.example", Namespace: "crm", Account: "api"}}})
+		[]solutionhost.Workload{{Service: "api", Container: "api"}})
 	require.NoError(t, err)
 	prior.Generation = 4
 	same := *prior
@@ -297,7 +297,7 @@ func TestPublishWithdrawsWhatThisModuleStoppedDeclaring(t *testing.T) {
 
 func TestWithdrawalOfCarriesOnlyTheIdentity(t *testing.T) {
 	live, err := ModuleManifestOf("example.prod.crm", testHost(), solutionRenderOptions("").Instance,
-		[]solutionhost.Workload{{Service: "api", Container: "api", Kubernetes: &solutionhost.WorkloadAccount{TrustDomain: "cluster.example", Namespace: "crm", Account: "api"}}})
+		[]solutionhost.Workload{{Service: "api", Container: "api"}})
 	require.NoError(t, err)
 	live.Generation = 3
 	withdrawal, err := WithdrawalOf(live)

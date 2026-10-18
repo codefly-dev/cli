@@ -133,7 +133,7 @@ func TestRenderDeclaresOneManifestPerModuleInstance(t *testing.T) {
 	if manifest.Release != (solutionhost.Release{Publisher: "example", Name: "crm", Version: "1.4.0"}) {
 		t.Fatalf("release %+v", manifest.Release)
 	}
-	want := solutionhost.Workload{Service: "api", Container: "api", Kubernetes: &solutionhost.WorkloadAccount{TrustDomain: "cluster.example", Namespace: "crm", Account: "api"}}
+	want := solutionhost.Workload{Service: "api", Container: "api"}
 	if len(manifest.Workloads) != 1 || !reflect.DeepEqual(manifest.Workloads[0], want) {
 		t.Fatalf("workloads %+v, want %+v", manifest.Workloads, want)
 	}
@@ -171,8 +171,8 @@ func TestTwoIdentityWorkloadsAreOneManifest(t *testing.T) {
 	}
 	manifest := deliveredModuleManifest(t, destination, "example.prod.crm")
 	want := []solutionhost.Workload{
-		{Service: "api", Container: "api", Kubernetes: &solutionhost.WorkloadAccount{TrustDomain: "cluster.example", Namespace: "crm", Account: "api"}},
-		{Service: "worker", Container: "worker", Kubernetes: &solutionhost.WorkloadAccount{TrustDomain: "cluster.example", Namespace: "crm", Account: "worker"}},
+		{Service: "api", Container: "api"},
+		{Service: "worker", Container: "worker"},
 	}
 	if !reflect.DeepEqual(manifest.Workloads, want) {
 		t.Fatalf("workloads %+v, want %+v", manifest.Workloads, want)
@@ -211,12 +211,19 @@ func TestManifestGenerationAdvancesOnlyWhenItsContentChanges(t *testing.T) {
 	if string(first) != string(again) {
 		t.Fatalf("a change the manifest does not carry rewrote it:\n%s\n---\n%s", first, again)
 	}
+	// A workload that runs as an account other than its service's name is not
+	// a move: it is refused, because the host reads a pod back by that rule.
 	moved := strings.Replace(pinnedDeployment, "serviceAccountName: api", "serviceAccountName: api-v2", 1)
-	if _, err = RenderOwnedTree(context.Background(), options, renderWorkload(moved)); err != nil {
+	if _, err = RenderOwnedTree(context.Background(), options, renderWorkload(moved)); err == nil || !strings.Contains(err.Error(), "account named after it") {
+		t.Fatalf("a workload running as another account must be refused, got %v", err)
+	}
+	// The authenticating container's name is part of the declaration: renaming
+	// it moves the manifest to the next generation.
+	renamed := strings.Replace(pinnedDeployment, "- name: api\n", "- name: api-v2\n", 1)
+	if _, err = RenderOwnedTree(context.Background(), options, renderWorkload(renamed)); err != nil {
 		t.Fatal(err)
 	}
-	if bumped := deliveredModuleManifest(t, destination, "example.prod.crm"); bumped.Generation != 2 ||
-		bumped.Workloads[0].Kubernetes == nil || bumped.Workloads[0].Kubernetes.Account != "api-v2" {
+	if bumped := deliveredModuleManifest(t, destination, "example.prod.crm"); bumped.Generation != 2 || bumped.Workloads[0].Container != "api-v2" {
 		t.Fatalf("a changed manifest is generation %d with %+v, want 2", bumped.Generation, bumped.Workloads)
 	}
 }
@@ -487,18 +494,5 @@ func TestARenderThatDeclaresNothingClearsTheDeliveryPath(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(destination, moduleManifestDir)); !os.IsNotExist(statErr) {
 		t.Fatalf("the manifest directory survived a render that declared none: %v", statErr)
-	}
-}
-
-// TestAManifestsWorkloadsShareOneNamespace: the host authorizes a manifest's
-// delivery carrier in the namespace of its workloads, so they share one.
-func TestAManifestsWorkloadsShareOneNamespace(t *testing.T) {
-	instance := solutionRenderOptions("").Instance
-	_, err := ModuleManifestOf("example.prod.crm", testHost(), instance, []solutionhost.Workload{
-		{Service: "api", Container: "api", Kubernetes: &solutionhost.WorkloadAccount{TrustDomain: "cluster.example", Namespace: "crm", Account: "api"}},
-		{Service: "worker", Container: "worker", Kubernetes: &solutionhost.WorkloadAccount{TrustDomain: "cluster.example", Namespace: "other", Account: "worker"}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "share one namespace") {
-		t.Fatalf("workloads in two namespaces were declared: %v", err)
 	}
 }

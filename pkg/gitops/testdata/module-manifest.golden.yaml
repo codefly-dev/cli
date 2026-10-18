@@ -24,10 +24,6 @@ data:
         workloads:
             - service: api
               container: api
-              kubernetes:
-                trust_domain: cluster.example
-                namespace: crm
-                service_account: api
         endpoints:
             - name: grpc
               service: api

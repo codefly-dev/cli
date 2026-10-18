@@ -137,20 +137,6 @@ func ModuleManifestOf(binding string, host *environments.EnvironmentHost, instan
 		Endpoints:  instance.Endpoints,
 		Authority:  instance.Authority,
 	}
-	// One manifest's workloads share one namespace: the host authorizes its
-	// delivery carrier in it.
-	namespace := ""
-	for _, workload := range workloads {
-		account, declared := workload.Account()
-		if !declared {
-			// A native workload declares no cell, so no namespace.
-			continue
-		}
-		if namespace != "" && account.Namespace != namespace {
-			return nil, fmt.Errorf("%s %s runs workloads in namespaces %s and %s; a module's workloads share one namespace", instance.Kind, instance.Name, namespace, account.Namespace)
-		}
-		namespace = account.Namespace
-	}
 	if err := manifest.Validate(); err != nil {
 		return nil, fmt.Errorf("%s %s declares an invalid module manifest: %w", instance.Kind, instance.Name, err)
 	}
@@ -256,10 +242,22 @@ func renderedIdentityWorkload(tree *renderRoot, owned string, opts *RenderOption
 		if err != nil {
 			return solutionhost.Workload{}, fmt.Errorf("service %s workload %s: %w", identity.Service, workload.Name, err)
 		}
-		candidate := solutionhost.Workload{Service: identity.Service, Container: container.Name,
-			Kubernetes: &solutionhost.WorkloadAccount{TrustDomain: opts.Host.TrustDomain, Namespace: opts.Namespace, Account: workload.ServiceAccount}}
-		if found != nil && !sameWorkload(*found, candidate) {
-			return solutionhost.Workload{}, fmt.Errorf("service %s renders serving workloads that authenticate as %s (%s) and %s (%s); a service runs as one account from one container", identity.Service, found.Kubernetes.SPIFFEID(), found.Container, candidate.Kubernetes.SPIFFEID(), candidate.Container)
+		// The rule a host reads a pod back by: the ServiceAccount is the
+		// service's name, in the namespace named after the module. A render
+		// that spells either differently is refused here, not discovered at
+		// the first mint.
+		if workload.ServiceAccount != workloadAccount(identity.Service) {
+			return solutionhost.Workload{}, fmt.Errorf("service %s workload %s runs as ServiceAccount %q; a module's service runs as the account named after it (%q), which is how the host knows the pod",
+				identity.Service, workload.Name, workload.ServiceAccount, workloadAccount(identity.Service))
+		}
+		// Scratch build for the prefixed-namespace render: the namespace is <env.Namespace>-<module>.
+		if opts.Namespace != opts.Module && !strings.HasSuffix(opts.Namespace, "-"+opts.Module) {
+			return solutionhost.Workload{}, fmt.Errorf("service %s renders into namespace %q; a module's workloads run in the namespace named after it (%q), which is how the host knows the pod",
+				identity.Service, opts.Namespace, opts.Module)
+		}
+		candidate := solutionhost.Workload{Service: identity.Service, Container: container.Name}
+		if found != nil && *found != candidate {
+			return solutionhost.Workload{}, fmt.Errorf("service %s renders serving workloads that authenticate as %s (%s) and %s (%s); a service runs as one account from one container", identity.Service, found.Service, found.Container, candidate.Service, candidate.Container)
 		}
 		found = &candidate
 	}
@@ -591,12 +589,4 @@ func routedEndpoints(module string, services []*resources.Service, carriers map[
 		}
 	}
 	return endpoints, nil
-}
-
-// sameWorkload compares two declared workloads, cell block included.
-func sameWorkload(a, b solutionhost.Workload) bool {
-	if a.Service != b.Service || a.Container != b.Container || (a.Kubernetes == nil) != (b.Kubernetes == nil) {
-		return false
-	}
-	return a.Kubernetes == nil || *a.Kubernetes == *b.Kubernetes
 }
