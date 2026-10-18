@@ -143,9 +143,59 @@ workspace — including the local environment a `codefly run` selects.
 
 A module-owned key only reaches a module that renders its own bundle (a module
 whose `module.codefly.yaml` names a module agent). It does not change the
-service set the CLI itself renders for a module composed by version: that
-projection has no per-environment notion of an excluded service
-(codefly-dev/cli#1022).
+service set the CLI itself renders for a module composed by version; that is
+`exclude-services`, below.
+
+## Excluding a service from one environment
+
+`exclude-services` withdraws named services of composed modules from one
+environment. The composition decides it; the module's own `services:` list is
+untouched, so every other environment — the local run included — still
+composes the service.
+
+```yaml
+environments:
+  - name: staging
+    key-service: kms          # the module's own word for why (module-owned key)
+    exclude-services:
+      - service: saas/vault
+        withdrawn-from: [saas/accounts]
+```
+
+In that environment an excluded service is not in the dependency graph: it is
+not built, published, rendered or started, has no unit in the render
+inventory, no tree under `deployments/modules/<module>/services/`, no workload
+in the cell file and no mesh principal. A tree rendered before the exclusion is
+refused by name — by the cell file and by publish — until the module is
+rendered again.
+
+Nothing may still consume what is withdrawn, so the render can never produce a
+graph with a hole in it. Each is refused at workspace load (or at plan time,
+for a configuration reference), naming the service and what holds on to it:
+
+- **A declared dependency.** A service whose `service-dependencies` name the
+  excluded one is refused unless `withdrawn-from` names it. Naming it withdraws
+  that edge with the service: the consumer is handed no address for it, and no
+  mesh edge or cell consumer is derived from it. Every consumer must be named,
+  and every name must be a consumer, so a stale entry is refused too. Withdraw
+  an edge only from a consumer that does not use it in that environment (in the
+  example, `accounts` on the cloud key service opens no Vault connection).
+- **A configuration reference.** A workspace configuration a rendered service
+  resolves that carries `${endpoint:<module>/<service>/…}` for an excluded
+  service is refused at plan time; exclude that configuration as well, or keep
+  the service.
+- **A declaration of the environment.** `ingress`, `host.gateway`,
+  `host.delivery`, `cell`, `egress`, `service-mesh`, `service-identity`,
+  `service-config`, `service-secrets` (including a generator's `services`) and
+  `managed-services` naming the service are refused — a service is either
+  rendered, managed or excluded, never two of them.
+- **A module interface export.** A module whose `interface` exports one of the
+  excluded service's endpoints is refused: it would promise the composition an
+  endpoint this environment does not have.
+
+Entries are `<module>/<service>`, never bare names; an unknown key in an entry
+is refused. A `codefly run`, build or deploy of the excluded service itself in
+that environment is refused: there is nothing to run there.
 
 ## Configuration and secret injection
 

@@ -1292,6 +1292,9 @@ type Environment struct {
 	// a service nobody declared managed. Read it through ManagedService, never by
 	// indexing the map with a bare name.
 	ManagedServices map[string]EnvironmentManagedService `yaml:"managed-services,omitempty"`
+	// ExcludeServices withdraws named services of composed modules from this
+	// environment (EnvironmentExcludedService). Read it through Excludes.
+	ExcludeServices []EnvironmentExcludedService `yaml:"exclude-services,omitempty"`
 	// Egress names, per `<module>/<service>`, the external hosts the service
 	// reaches. The cell file carries it so the cell can allow exactly those.
 	Egress map[string]EnvironmentEgress `yaml:"egress,omitempty"`

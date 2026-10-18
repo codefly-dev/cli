@@ -96,7 +96,7 @@ func moduleServices(t *testing.T, workspace *resources.Workspace, name string) (
 	t.Helper()
 	module, err := workspace.LoadModuleFromName(t.Context(), name)
 	require.NoError(t, err)
-	services, err := loadModuleServices(t.Context(), module)
+	services, err := loadModuleServices(t.Context(), module, nil)
 	require.NoError(t, err)
 	return module, services
 }
