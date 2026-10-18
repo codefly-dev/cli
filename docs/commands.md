@@ -1525,6 +1525,16 @@ when it materializes one, while `codefly doctor workspace` reports it as
 `module_unverified` with the tag as the remediation. A short SHA or a branch
 name is not a commit pin and keeps failing as a tag that does not exist.
 
+Two readers hold the line between validation and release. The render records
+the pin in its inventory — `pin: {source, version, mode: tag|commit, commit}`,
+absent for a module composed from the workspace's own tree — and judges
+nothing: whether a commit-pinned delivery may land is the cell's call, by its
+class, and that record is what its loader refuses on. `codefly publish` refuses
+at pre-flight, before any version is bumped, anything is signed or a tag
+reaches origin, a repository whose committed workspace pins any module or
+workspace at a commit: `module <name> is pinned at commit <sha>: a commit pin
+is for validation; release from a tag`.
+
 ##### Committed git resolution
 
 The overlay is machine-local, so it cannot answer the case where a module has

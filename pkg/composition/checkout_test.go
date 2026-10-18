@@ -64,8 +64,11 @@ func TestDescribeCheckoutWithOnlyNonVersionTags(t *testing.T) {
 	runGit(t, dir, "add", ".")
 	runGit(t, dir, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "tagged")
 	runGit(t, dir, "-c", "tag.gpgSign=false", "tag", "nightly-2026-09-17")
-	_, ok := DescribeCheckout(context.Background(), dir)
-	require.False(t, ok)
+	description, ok := DescribeCheckout(context.Background(), dir)
+	require.True(t, ok)
+	require.Empty(t, description.Tag, "a tag outside both namespaces never names a version")
+	require.True(t, description.SatisfiesVersion("v0.0.1"), "left alone for a tag pin")
+	require.True(t, description.SatisfiesVersion(description.Commit), "but judged by HEAD for a commit pin")
 }
 
 // The module-package tag convention is what a producer publishing under that
@@ -128,8 +131,16 @@ func TestDescribeCheckoutWithoutAnAnswer(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(untagged, "file"), []byte("x"), 0o644))
 	runGit(t, untagged, "add", ".")
 	runGit(t, untagged, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "untagged")
-	_, ok = DescribeCheckout(context.Background(), untagged)
-	require.False(t, ok)
+	// No version tag describes HEAD, so the tag verdict stays silent — not
+	// evidence of drift — while HEAD still answers a commit pin.
+	description, ok := DescribeCheckout(context.Background(), untagged)
+	require.True(t, ok)
+	require.Empty(t, description.Tag)
+	require.Len(t, description.Commit, 40)
+	require.Equal(t, description.Commit, description.Raw)
+	require.True(t, description.SatisfiesVersion("v0.0.1"), "a tag pin is not judged by a checkout git cannot describe")
+	require.True(t, description.SatisfiesVersion(description.Commit))
+	require.False(t, description.SatisfiesVersion("0123456789abcdef0123456789abcdef01234567"), "a tagless checkout still gets a drift verdict for a commit pin")
 }
 
 func TestCheckoutSatisfiesVersion(t *testing.T) {

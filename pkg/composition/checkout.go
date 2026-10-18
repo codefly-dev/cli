@@ -66,16 +66,24 @@ func CheckoutRoot(ctx context.Context, dir string) (string, bool) {
 // a repository that also carries a per-component or nightly tag (the shape of
 // the monorepos that get vendored) would report a checkout sitting exactly on
 // its pin as drifted.
+//
+// The commit is read first, and is an answer on its own: a checkout no
+// version tag describes still has a HEAD, which is all a commit pin is judged
+// by, so such a checkout gets a drift verdict for a commit pin and stays
+// silent — Tag empty — for a tag pin.
 func DescribeCheckout(ctx context.Context, dir string) (*CheckoutDescription, bool) {
+	// rev-parse is one of the two queries established not to refresh the index
+	// (see gitRead), so it adds nothing to what this inspection may execute.
+	commit, hasCommit := gitRead(ctx, dir, "rev-parse", "HEAD")
 	raw, ok := gitRead(ctx, dir, "describe", "--tags",
 		"--match", "v*", "--match", modulePackageTagPrefix+"*")
 	if !ok {
-		return nil, false
+		if !hasCommit {
+			return nil, false
+		}
+		return &CheckoutDescription{Raw: commit, Commit: commit}, true
 	}
-	description := &CheckoutDescription{Raw: raw, Tag: raw}
-	// rev-parse is one of the two queries established not to refresh the index
-	// (see gitRead), so it adds nothing to what this inspection may execute.
-	description.Commit, _ = gitRead(ctx, dir, "rev-parse", "HEAD")
+	description := &CheckoutDescription{Raw: raw, Tag: raw, Commit: commit}
 	if match := describeAhead.FindStringSubmatch(raw); match != nil {
 		description.Tag = match[1]
 		ahead, err := strconv.Atoi(match[2])
@@ -95,6 +103,11 @@ func DescribeCheckout(ctx context.Context, dir string) (*CheckoutDescription, bo
 func (description *CheckoutDescription) SatisfiesVersion(version string) bool {
 	if commit, ok := CommitPin(version); ok {
 		return description.Commit == commit
+	}
+	if description.Tag == "" {
+		// No version tag describes HEAD, which is the normal state of a shallow
+		// clone: not evidence of drift, so not reported as any.
+		return true
 	}
 	if description.Ahead > 0 {
 		return false
