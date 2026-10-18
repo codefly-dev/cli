@@ -18,6 +18,8 @@ type CheckoutDescription struct {
 	Raw   string
 	Tag   string
 	Ahead int
+	// Commit is HEAD's full object name, the one fact a commit pin is judged by.
+	Commit string
 }
 
 // describeAhead splits the "-<n>-g<sha>" suffix `git describe` appends when
@@ -71,6 +73,9 @@ func DescribeCheckout(ctx context.Context, dir string) (*CheckoutDescription, bo
 		return nil, false
 	}
 	description := &CheckoutDescription{Raw: raw, Tag: raw}
+	// rev-parse is one of the two queries established not to refresh the index
+	// (see gitRead), so it adds nothing to what this inspection may execute.
+	description.Commit, _ = gitRead(ctx, dir, "rev-parse", "HEAD")
 	if match := describeAhead.FindStringSubmatch(raw); match != nil {
 		description.Tag = match[1]
 		ahead, err := strconv.Atoi(match[2])
@@ -85,8 +90,12 @@ func DescribeCheckout(ctx context.Context, dir string) (*CheckoutDescription, bo
 // SatisfiesVersion reports whether the checkout is the version a composition
 // pins: sitting exactly on a tag naming that version, with no commits past it.
 // A commit past the tag is a different tree than the pin names, whatever the
-// tag was.
+// tag was. A commit pin is judged by HEAD alone: the tag it sits on or past
+// says nothing about whether it is that commit.
 func (description *CheckoutDescription) SatisfiesVersion(version string) bool {
+	if commit, ok := CommitPin(version); ok {
+		return description.Commit == commit
+	}
 	if description.Ahead > 0 {
 		return false
 	}

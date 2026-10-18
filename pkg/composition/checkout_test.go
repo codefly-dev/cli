@@ -158,3 +158,15 @@ func TestCheckoutSatisfiesVersion(t *testing.T) {
 		})
 	}
 }
+
+// A commit pin is judged by HEAD alone: the tag the checkout sits on, or how far
+// past it HEAD is, says nothing about whether it is that commit.
+func TestCheckoutSatisfiesCommitPin(t *testing.T) {
+	dir := taggedCheckout(t, "v0.0.1", 2)
+	description, ok := DescribeCheckout(context.Background(), dir)
+	require.True(t, ok)
+	require.Len(t, description.Commit, 40)
+	require.True(t, description.SatisfiesVersion(description.Commit), "two commits past the tag, but exactly the pinned commit")
+	require.False(t, description.SatisfiesVersion("0123456789abcdef0123456789abcdef01234567"))
+	require.False(t, description.SatisfiesVersion("v0.0.1"), "a tag pin is still judged by the tag")
+}

@@ -1503,6 +1503,28 @@ clone's `path:` once it materializes the module, and says so when it does.
 Setting `resolve.<name>.pinned: true` revokes the opt-out and returns the
 module to verified resolution.
 
+##### Pinning at a commit (validation)
+
+A module's `version:` may be a full commit SHA — exactly 40 lowercase hex
+characters — instead of a tag. This is how a validation environment composes
+modules before any tag exists: the cell is built at commits, and the tag is cut
+once the cell is green. The pin resolves by cloning `source` at exactly that
+commit, lands in the cache beside the tagged checkouts as
+`<owner>/<repo>/<sha>/`, and is recorded with mode `commit` in the
+[receipt](#resolution-receipts), with the commit in its `commit` field. No `v`
+prefix is applied, no tag lookup is made, and the moved-branch check holds by
+construction — a commit's name is the hash of its content — so what `run`
+verifies instead is that the checkout's HEAD is the pinned commit. The clone
+asks the server for that one object shallowly first and falls back to a full
+fetch when the server refuses a request for an unadvertised object. Nothing
+about a commit pin is signature- or digest-checked, and no `module-trust`
+entry can make it so: **a commit pin is for validation; a release still needs
+a tag.** It needs no `git: true` or `module-resolution` entry — the pin itself
+says it, and `run` prints `commit pin for <name>: cloned at <sha>, unverified`
+when it materializes one, while `codefly doctor workspace` reports it as
+`module_unverified` with the tag as the remediation. A short SHA or a branch
+name is not a commit pin and keeps failing as a tag that does not exist.
+
 ##### Committed git resolution
 
 The overlay is machine-local, so it cannot answer the case where a module has
@@ -1795,8 +1817,9 @@ do](#which-commands-materialize) — is recorded as a receipt in
 receipt binds the request it answered — canonical source, module subpath,
 requested version or constraint — to what that request resolved to: the
 materialization mode (`verified`, `git` for the overlay opt-out, or
-`declared-git` for the committed `module-resolution` entry, and
-`overlay-verified` for a `pinned: true` the CLI has consumed), the exact
+`declared-git` for the committed `module-resolution` entry,
+`overlay-verified` for a `pinned: true` the CLI has consumed, and `commit`
+for a [commit pin](#pinning-at-a-commit-validation)), the exact
 resolved version,
 the path, and for a verified package its artifact digest and commit.
 
