@@ -15,7 +15,9 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -77,6 +79,9 @@ func NewCloudKMS(lookup func(string) (string, bool), credential oauth2.TokenSour
 	if err != nil {
 		return nil, err
 	}
+	if !kmsHost(address) {
+		return nil, errors.New("CODEFLY_RELEASE_KMS_ENDPOINT must be a googleapis.com host or loopback: the Google credential never reaches another host")
+	}
 	if credential == nil {
 		if credential, err = google.DefaultTokenSource(context.Background(), kmsScope); err != nil {
 			return nil, fmt.Errorf("the Cloud KMS custody needs an ambient Google credential: %w", err)
@@ -103,20 +108,25 @@ func NewCloudKMS(lookup func(string) (string, bool), credential oauth2.TokenSour
 		}
 		return nil, fmt.Errorf("the Cloud KMS key version signs with %s; release custody requires %s", algorithm, kmsAlgorithmP256)
 	}
-	if response.PEMCRC32C != "" && !crc32cMatches(response.PEMCRC32C, []byte(response.PEM)) {
+	// A missing checksum is refused as a failed one: integrity is never optional.
+	if !crc32cMatches(response.PEMCRC32C, []byte(response.PEM)) {
 		return nil, errors.New("the Cloud KMS public key failed its integrity check")
 	}
-	// Core owns PEM shape and key validity, as for Transit.
-	if _, err = solutionhost.NewPinnedKeySet(solutionhost.PinnedKey{KeyID: signer.KeyID(), PublicKeyPEM: response.PEM, Kind: solutionhost.KeyKindRelease, OwnershipDomains: []string{"kms-custody"}}); err != nil {
-		return nil, errors.New("the Cloud KMS returned an invalid public key")
-	}
+	// The key behind the claimed algorithm is refused by name first; then
+	// core owns PEM shape and key validity, as for Transit.
 	block, _ := pem.Decode([]byte(response.PEM))
+	if block == nil {
+		return nil, errors.New("the Cloud KMS returned an unreadable public key")
+	}
 	signer.public, err = x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
 		return nil, errors.New("the Cloud KMS returned an unreadable public key")
 	}
 	if key, ok := signer.public.(*ecdsa.PublicKey); !ok || key.Curve != elliptic.P256() {
 		return nil, errors.New("the Cloud KMS public key does not match " + kmsAlgorithmP256)
+	}
+	if _, err = solutionhost.NewPinnedKeySet(solutionhost.PinnedKey{KeyID: signer.KeyID(), PublicKeyPEM: response.PEM, Kind: solutionhost.KeyKindRelease, OwnershipDomains: []string{"kms-custody"}}); err != nil {
+		return nil, errors.New("the Cloud KMS returned an invalid public key")
 	}
 	return signer, nil
 }
@@ -178,7 +188,7 @@ func (s *CloudKMS) Sign(message []byte) ([]byte, error) {
 	if err != nil || len(signature) == 0 {
 		return nil, errors.New("the Cloud KMS returned an unreadable signature")
 	}
-	if response.SignatureCRC32C != "" && !crc32cMatches(response.SignatureCRC32C, signature) {
+	if !crc32cMatches(response.SignatureCRC32C, signature) {
 		return nil, errors.New("the Cloud KMS signature failed its integrity check")
 	}
 	return signature, nil
@@ -211,6 +221,18 @@ func (s *CloudKMS) request(method, operation string, body []byte, result any) er
 		return fmt.Errorf("the Cloud KMS %s returned unreadable JSON", stage)
 	}
 	return nil
+}
+
+// kmsHost admits only Google's API hosts, where the ambient credential's
+// bearer token belongs, and loopback for a fake.
+func kmsHost(address string) bool {
+	parsed, err := url.Parse(address)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	ip := net.ParseIP(host)
+	return strings.HasSuffix(host, ".googleapis.com") || host == "localhost" || ip != nil && ip.IsLoopback()
 }
 
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)

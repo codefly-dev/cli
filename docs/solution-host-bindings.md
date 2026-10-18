@@ -697,13 +697,15 @@ cryptoKeyVersion resource name
 The derived ID is `<name>-v<n>`, so `host.release.key_id` keeps one spelling
 across custodies. The key version must sign with `EC_SIGN_P256_SHA256` (core
 verifies ECDSA P-256 and Cloud KMS offers no Ed25519); any other algorithm is
-refused by name. The CLI reads the public key once, holds it to the host's
-pin the same way, and signs the SHA-256 digest of each DSSE message through
+refused by name. The CLI reads the public key once, checks the derived ID
+against `host.release.key_id` before signing (the public key itself is pinned
+by the host), and signs the SHA-256 digest of each DSSE message through
 `asymmetricSign` with the ambient Google credential (Application Default
 Credentials), which it never reads from a file of its own choosing.
 `CODEFLY_RELEASE_KMS_ENDPOINT` selects a regional or private endpoint
-(default `https://cloudkms.googleapis.com`); HTTPS is required, HTTP admitted
-only for loopback. Exactly one release custody is configured at a time: Cloud
+(default `https://cloudkms.googleapis.com`); the host must be under
+`googleapis.com` or loopback, HTTPS is required, HTTP admitted only for
+loopback. A response without its CRC32C checksum is refused as a failed one. Exactly one release custody is configured at a time: Cloud
 KMS is selected when `CODEFLY_RELEASE_KMS_KEY` is set and no Transit variable
 is, and a publish that sets both is refused naming each, never one silently
 winning.

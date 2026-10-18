@@ -3,6 +3,7 @@ package signing
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
@@ -45,6 +46,8 @@ type fakeKMS struct {
 	pem       string
 	calls     int
 	fail      string
+	// checksum replaces the CRC32C the fake reports: "" withholds it.
+	checksum func(string) string
 }
 
 func newFakeKMS(t *testing.T) *fakeKMS {
@@ -54,7 +57,7 @@ func newFakeKMS(t *testing.T) *fakeKMS {
 		t.Fatal(err)
 	}
 	der, _ := x509.MarshalPKIXPublicKey(&key.PublicKey)
-	return &fakeKMS{t: t, key: key, algorithm: kmsAlgorithmP256, pem: string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))}
+	return &fakeKMS{t: t, key: key, algorithm: kmsAlgorithmP256, pem: string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})), checksum: func(crc string) string { return crc }}
 }
 
 func (f *fakeKMS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -84,7 +87,7 @@ func (f *fakeKMS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || len(raw) != 0 {
 			f.t.Error("wrong public key request")
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"pem": f.pem, "algorithm": f.algorithm, "pemCrc32c": crc32c([]byte(f.pem)), "name": kmsTestVersion})
+		_ = json.NewEncoder(w).Encode(map[string]any{"pem": f.pem, "algorithm": f.algorithm, "pemCrc32c": f.checksum(crc32c([]byte(f.pem))), "name": kmsTestVersion})
 	case "/v1/" + kmsTestVersion + ":asymmetricSign":
 		if r.Method != http.MethodPost {
 			f.t.Error("wrong sign method")
@@ -116,7 +119,7 @@ func (f *fakeKMS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "corrupt signature":
 			signature[len(signature)-1]++
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"name": name, "signature": base64.StdEncoding.EncodeToString(signature), "signatureCrc32c": crc32c(signature), "verifiedDigestCrc32c": verified})
+		_ = json.NewEncoder(w).Encode(map[string]any{"name": name, "signature": base64.StdEncoding.EncodeToString(signature), "signatureCrc32c": f.checksum(crc32c(signature)), "verifiedDigestCrc32c": verified})
 	default:
 		f.t.Errorf("unexpected request %s", r.URL.Path)
 		w.WriteHeader(404)
@@ -175,15 +178,52 @@ func TestCloudKMSRefusesAnyOtherAlgorithm(t *testing.T) {
 			t.Fatalf("the refusal does not name the key's algorithm: %v", err)
 		}
 	}
-	// A P-256 claim over another curve's key is refused as well.
-	kms := newFakeKMS(t)
-	other, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
-	der, _ := x509.MarshalPKIXPublicKey(&other.PublicKey)
-	kms.pem = string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
-	server := httptest.NewServer(kms)
-	defer server.Close()
-	if _, err := NewCloudKMS(kmsLookup(server.URL), kmsTestCredential); err == nil {
-		t.Fatal("a P-384 key was admitted as P-256")
+	// A P-256 claim over another key is refused as well, including an
+	// Ed25519 key core would otherwise accept.
+	p384, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	ed, _, _ := ed25519.GenerateKey(rand.Reader)
+	for name, public := range map[string]any{"P-384": &p384.PublicKey, "Ed25519": ed} {
+		kms := newFakeKMS(t)
+		der, _ := x509.MarshalPKIXPublicKey(public)
+		kms.pem = string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+		server := httptest.NewServer(kms)
+		_, err := NewCloudKMS(kmsLookup(server.URL), kmsTestCredential)
+		server.Close()
+		if err == nil || !strings.Contains(err.Error(), kmsAlgorithmP256) {
+			t.Fatalf("a %s key was admitted as P-256: %v", name, err)
+		}
+	}
+}
+
+// A checksum Cloud KMS withholds or gets wrong refuses, before core sees the bytes.
+func TestCloudKMSFailsClosedOnChecksums(t *testing.T) {
+	for _, failure := range []string{"absent public key checksum", "wrong public key checksum", "absent signature checksum", "wrong signature checksum"} {
+		t.Run(failure, func(t *testing.T) {
+			kms := newFakeKMS(t)
+			publicKeyRead := false
+			kms.checksum = func(crc string) string {
+				stage := "signature"
+				if !publicKeyRead {
+					stage, publicKeyRead = "public key", true
+				}
+				switch {
+				case failure == "absent "+stage+" checksum":
+					return ""
+				case failure == "wrong "+stage+" checksum":
+					return crc32c([]byte("other bytes"))
+				}
+				return crc
+			}
+			server := httptest.NewServer(kms)
+			defer server.Close()
+			signer, err := NewCloudKMS(kmsLookup(server.URL), kmsTestCredential)
+			if err == nil {
+				_, err = signer.Sign([]byte("message"))
+			}
+			if err == nil || !strings.Contains(err.Error(), "integrity check") {
+				t.Fatalf("%s: %v", failure, err)
+			}
+		})
 	}
 }
 
@@ -218,7 +258,9 @@ func TestCloudKMSRefusalsNeverExposeToken(t *testing.T) {
 }
 
 func TestCloudKMSRejectsUnsafeConfiguration(t *testing.T) {
-	for _, endpoint := range []string{"http://example.test", "http://192.0.2.1", "ftp://localhost", "https://private-test-token@example.test", "https://example.test?token=private-test-token"} {
+	for _, endpoint := range []string{"http://example.test", "http://192.0.2.1", "ftp://localhost", "https://private-test-token@example.test", "https://example.test?token=private-test-token",
+		// The bearer token belongs to Google's hosts only.
+		"https://kms.example.test", "https://cloudkms.googleapis.com.example.test", "https://googleapis.com"} {
 		if _, err := NewCloudKMS(kmsLookup(endpoint), kmsTestCredential); err == nil || strings.Contains(err.Error(), "private-test-token") {
 			t.Fatalf("invalid endpoint %s: %v", endpoint, err)
 		}
