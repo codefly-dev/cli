@@ -1367,6 +1367,14 @@ says, the render owns only that the pod reads it where the host looks. The
 path is never a workspace value — a composition that could name it could
 point the verifier at a policy it wrote itself — so `host.trust_anchor` stays
 refused on every environment that is not k3d.
+The same workloads, and no other, carry `automountServiceAccountToken: true`:
+the verifier is the one workload with a Kubernetes API credential, for the
+TokenReview that authorises a delivered carrier, read with the cluster CA at
+the standard paths the ServiceAccount admission plugin injects them at — the
+`kube-api-access-…` projection the cell's admission tolerates and its
+`verifier_rbac` already expects — while every other workload keeps the
+agents' `false` (the k3d render that mounts a local trust anchor sets it the
+same way, since the host reads the same paths there).
 
 The host proves the binding at boot (the CA in its projected bundle, and a TLS
 handshake to its API server with that CA alone), so a profile copied to any
