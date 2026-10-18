@@ -821,6 +821,13 @@ Service are the cell's to name and come from the environment's `service-mesh:`
 block (`docs/configuration-contract.md`); the cell file does not carry them. A service whose render includes a non-serving
 workload (an agent's bootstrap Job) is listed as a consumer of its own
 endpoints, so the Job's identity is admitted to the service it bootstraps.
+The host's gateway (`host.gateway`) is listed as a consumer of exactly the
+endpoints a module's delivered module manifest routes — read off the manifests
+the render wrote, since the host routes from them — so the install step, a
+solution's backend and a module route the host fronts are reachable through the
+mesh. It is a consumer of no endpoint the manifest does not route, of nothing
+in a module that delivers no manifest, and of nothing when the host names no
+gateway.
 
 ```yaml
 environments:

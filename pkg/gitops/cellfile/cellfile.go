@@ -112,7 +112,8 @@ type Release struct {
 // CONTAINER port — where a connection lands after Service resolution, which is
 // what the mesh authorizes; ServicePort is the Service's port, used by an edge
 // route. Consumers are the services the composition declares as callers, each
-// `<module>/<service>`: the edge list a policy is derived from.
+// `<module>/<service>` — the host's gateway among them on every endpoint a
+// delivered module manifest routes: the edge list a policy is derived from.
 type Endpoint struct {
 	Name        string   `yaml:"name"`
 	API         string   `yaml:"api,omitempty"`
