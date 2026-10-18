@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -47,10 +48,9 @@ type CellResult struct {
 	// Skipped names module trees rendered for another environment, which
 	// describe another cell.
 	Skipped []string
-	// Source reports whether the file names the commit it was emitted from.
-	// It does not when the environment declares no gitops repository or the
-	// workspace is not a git checkout; a consumer binding a delivery to an
-	// exact revision needs it.
+	// Source reports whether the file names its repository, branch and base
+	// revision. It does not when the environment declares no gitops
+	// repository or the workspace is not a git checkout.
 	Source bool
 	// ConfiguredEdges says, one line each, the consumer edges a service's
 	// configuration declares (an ${endpoint:…} it reads) that no service
@@ -155,10 +155,16 @@ func RenderCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 	return result, nil
 }
 
-// cellSource is the repository, publication branch and exact commit the
-// inventory is emitted from: the environment's gitops declaration and the
-// workspace checkout's HEAD. Nil when either is missing, which the result
-// reports rather than inventing a revision.
+// cellSource is the repository and publication branch the environment's
+// gitops declaration names, and the revision the render was BASED on: the
+// workspace checkout's HEAD when it ran. That is the parent of the commit that
+// will hold the rendered trees and this file — a render cannot name the commit
+// it will be committed in — and equals it only for a re-render that changed
+// nothing. A consumer that binds a delivery to an exact commit sets the
+// revision itself when it pins the file (infra-base's pin, which requires the
+// field and writes the commit it reviewed); a cell tracking the branch reads
+// the branch head. Nil when either half is missing, which the result reports
+// rather than inventing a revision.
 func cellSource(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) *cellfile.Source {
 	if env.Gitops == nil || env.Gitops.RepoURL == "" || env.Gitops.Branch == "" {
 		return nil
@@ -237,6 +243,11 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 			if rendered.ServiceAccount == deliveryServiceAccount {
 				return cellfile.Namespace{}, fmt.Errorf("unit %s/%s workload %s runs as the %q ServiceAccount, which is reserved for the delivery Job", inventory.Module, unit.Name, rendered.Name, deliveryServiceAccount)
 			}
+			// The carrier is declared by its labels; a workload selected by
+			// the same label would be admitted as the carrier.
+			if _, carrier := selector[deliveryLabel]; carrier {
+				return cellfile.Namespace{}, fmt.Errorf("unit %s/%s workload %s selects its pods by the %q label, which is reserved for the delivery Job", inventory.Module, unit.Name, rendered.Name, deliveryLabel)
+			}
 			authenticating, err := authenticatingContainer(unit.Name, rendered)
 			if err != nil {
 				return cellfile.Namespace{}, fmt.Errorf("unit %s/%s workload %s: %w", inventory.Module, unit.Name, rendered.Name, err)
@@ -289,11 +300,9 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 				// environment may route one endpoint through several
 				// declarations, and a count in a cell is a count a reader
 				// trusts. A route names its service module-qualified.
-				routes := map[string][]string{}
-				for _, route := range env.Ingress {
-					if route.Service == workload.Service {
-						routes[route.Endpoint] = append(routes[route.Endpoint], route.Hosts...)
-					}
+				routes, err := ingressRoutes(env, service, workload.Service)
+				if err != nil {
+					return cellfile.Namespace{}, err
 				}
 				for endpoint, hosts := range routes {
 					sort.Strings(hosts)
@@ -305,13 +314,38 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 		}
 	}
 	sort.Slice(namespace.Workloads, func(i, j int) bool { return namespace.Workloads[i].Name < namespace.Workloads[j].Name })
-	delivery, err := renderedDelivery(tree, env, namespace.Name)
-	if err != nil {
-		return cellfile.Namespace{}, fmt.Errorf("module %s: %w", inventory.Module, err)
+	if inventory.ModuleManifestPath != "" {
+		delivery, err := cellDelivery(env, namespace.Name)
+		if err != nil {
+			return cellfile.Namespace{}, fmt.Errorf("module %s: %w", inventory.Module, err)
+		}
+		namespace.Delivery = delivery
 	}
-	namespace.Delivery = delivery
 	namespace.Egress = cellEgress(env, inventory)
 	return namespace, nil
+}
+
+// ingressRoutes is every host the environment routes onto each endpoint of a
+// service. A route onto an endpoint the service does not declare, or does not
+// expose publicly, is refused by name — the mesh render refuses the same route
+// (mesh_edges.go), judged on the manifest endpoint as core's IsExposedEndpoint
+// judges the proto one; the cell must not admit an edge the mesh refuses.
+func ingressRoutes(env *environments.Environment, service *resources.Service, unique string) (map[string][]string, error) {
+	routes := map[string][]string{}
+	for _, route := range env.Ingress {
+		if route.Service != unique {
+			continue
+		}
+		index := slices.IndexFunc(service.Endpoints, func(e *resources.Endpoint) bool { return e != nil && e.Name == route.Endpoint })
+		if index < 0 {
+			return nil, fmt.Errorf("ingress route %s routes onto %s endpoint %q, which the service does not declare", route.Name, unique, route.Endpoint)
+		}
+		if exposure := service.Endpoints[index].Exposure; exposure != resources.ExposurePublic {
+			return nil, fmt.Errorf("ingress route %s routes onto %s endpoint %q, which the service declares %q, not public; a route reaches only an endpoint its module exposes", route.Name, unique, route.Endpoint, exposure)
+		}
+		routes[route.Endpoint] = append(routes[route.Endpoint], route.Hosts...)
+	}
+	return routes, nil
 }
 
 // cellEgress is what each service of the module declares it reaches outside
@@ -407,74 +441,24 @@ func podSelector(manifests []manifest, name, kind string) (map[string]string, er
 	return nil, fmt.Errorf("workload %s %s is not among the rendered manifests", kind, name)
 }
 
-// renderedDelivery is the presence carrier the render wrote for a module: the
-// Job labelled as the manifest delivery, read off the tree so the cell
-// declares exactly what runs. Nil when the module renders none.
-func renderedDelivery(tree string, env *environments.Environment, namespace string) (*cellfile.Delivery, error) {
-	var found *cellfile.Delivery
-	err := filepath.WalkDir(tree, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil || entry.IsDir() || (filepath.Ext(path) != yamlExtension && filepath.Ext(path) != ymlExtension) {
-			return walkErr
-		}
-		relative, err := filepath.Rel(tree, path)
-		if err != nil {
-			return err
-		}
-		data, err := readWithin(tree, relative)
-		if err != nil {
-			return err
-		}
-		documents, _, err := decodeYAML(relative, data)
-		if err != nil {
-			return nil
-		}
-		for _, document := range documents {
-			if document.kind != kindJob && document.kind != kindCronJob {
-				continue
-			}
-			labels := mapField(mapField(document.value, "metadata"), "labels")
-			if kind, _ := labels[deliveryLabel].(string); kind != deliveryManifest {
-				continue
-			}
-			if found != nil {
-				return fmt.Errorf("the tree renders two delivery Jobs (%s and %s); the cell declares one carrier per namespace", found.Container, metadataString(document.value, "name"))
-			}
-			spec, ok := podSpec(document)
-			if !ok {
-				continue
-			}
-			template := mapField(mapField(podTemplate(document), "metadata"), "labels")
-			selector := map[string]string{}
-			for key, value := range template {
-				selector[key] = fmt.Sprint(value)
-			}
-			containers := sliceField(spec, "containers")
-			if len(containers) != 1 {
-				return fmt.Errorf("the delivery Job %s runs %d containers; the cell declares the one that delivers", metadataString(document.value, "name"), len(containers))
-			}
-			container, _ := containers[0].(map[string]any)
-			name, _ := container["name"].(string)
-			image, _ := container["image"].(string)
-			repository, digest, pinned := strings.Cut(image, "@")
-			if !pinned {
-				return fmt.Errorf("the delivery Job %s image %q is not pinned by digest", metadataString(document.value, "name"), image)
-			}
-			account, _ := spec["serviceAccountName"].(string)
-			if account == "" {
-				account = defaultServiceAccount
-			}
-			found = &cellfile.Delivery{
-				Kind: document.kind, Selector: selector, ServiceAccount: account,
-				SPIFFEID:  env.Host.SPIFFEID(namespace, account),
-				Container: name, Image: cellfile.Image{Repository: repository, Digest: digest},
-			}
-		}
-		return nil
-	})
+// cellDelivery is the presence carrier of a module that renders a module
+// manifest for a hosted environment: the Job publish writes to POST it,
+// declared from deliveryCarrierOf — the rule that Job is rendered from — and
+// never read off a tree. The render writes the manifest and the account the
+// Job runs as; the Job itself is written only at publish, into the delivery
+// repository, so a tree in the workspace never holds it, and the cell must
+// declare it before publish runs for its admission to let the Job in.
+func cellDelivery(env *environments.Environment, namespace string) (*cellfile.Delivery, error) {
+	carrier := deliveryCarrierOf(deliveryManifest)
+	repository, digest, err := splitPinnedImage(carrier.Image)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("the delivery Job's %w", err)
 	}
-	return found, nil
+	return &cellfile.Delivery{
+		Kind: carrier.Kind, Selector: maps.Clone(carrier.Labels), ServiceAccount: carrier.ServiceAccount,
+		SPIFFEID:  env.Host.SPIFFEID(namespace, carrier.ServiceAccount),
+		Container: carrier.Container, Image: cellfile.Image{Repository: repository, Digest: digest},
+	}, nil
 }
 
 // endpointConsumers indexes, by `<module>/<service>/<endpoint>`, the services
@@ -655,7 +639,7 @@ func labelPodTemplates(ctx context.Context, root string) error {
 		}
 		documents, _, err := decodeYAML(relative, data)
 		if err != nil {
-			return nil
+			return fmt.Errorf("label the pod templates of %s: %w", relative, err)
 		}
 		changed := false
 		for _, document := range documents {

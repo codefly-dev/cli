@@ -29,7 +29,7 @@ func testDeliveryTarget() *DeliveryTarget {
 // succeed later and fails on the host's verdicts.
 func TestDeliveryJobIsASyncHookThatPostsEveryCarrier(t *testing.T) {
 	directory := t.TempDir()
-	file, err := renderDeliveryJob(directory, deliveryJobName(deliveryManifest, "crm", "prod", [][]byte{[]byte("carrier")}), "crm", deliveryServiceAccount,
+	file, err := renderDeliveryJob(directory, deliveryJobName(deliveryManifest, "crm", "prod", [][]byte{[]byte("carrier")}), "crm",
 		deliveryManifest, manifestDeliveryPath, testDeliveryTarget(), []deliveryDocument{
 			{ConfigMap: "module-manifest-example.prod.crm", Key: solutionhost.SignedFileName, Name: "example.prod.crm.json"},
 			{ConfigMap: "module-manifest-example.prod.billing", Key: solutionhost.SignedFileName, Name: "example.prod.billing.json"},
@@ -131,11 +131,11 @@ func TestDeliveryJobIsASyncHookThatPostsEveryCarrier(t *testing.T) {
 
 func TestDeliveryJobRefusesWithoutATargetOrADocument(t *testing.T) {
 	directory := t.TempDir()
-	if _, err := renderDeliveryJob(directory, "deliver", "crm", deliveryServiceAccount, deliveryManifest, manifestDeliveryPath, nil,
+	if _, err := renderDeliveryJob(directory, "deliver", "crm", deliveryManifest, manifestDeliveryPath, nil,
 		[]deliveryDocument{{ConfigMap: "a", Key: solutionhost.SignedFileName, Name: "a.json"}}); err == nil || !strings.Contains(err.Error(), "no delivery endpoint") {
 		t.Fatalf("a missing target was not refused: %v", err)
 	}
-	if _, err := renderDeliveryJob(directory, "deliver", "crm", deliveryServiceAccount, deliveryManifest, manifestDeliveryPath, testDeliveryTarget(), nil); err == nil || !strings.Contains(err.Error(), "no manifest document") {
+	if _, err := renderDeliveryJob(directory, "deliver", "crm", deliveryManifest, manifestDeliveryPath, testDeliveryTarget(), nil); err == nil || !strings.Contains(err.Error(), "no manifest document") {
 		t.Fatalf("an empty document list was not refused: %v", err)
 	}
 }
@@ -308,11 +308,11 @@ func TestDeliveryJobRefusesASetPastItsBound(t *testing.T) {
 	for i := range documents {
 		documents[i] = deliveryDocument{ConfigMap: fmt.Sprintf("doc-%d", i), Key: "carrier", Name: fmt.Sprintf("doc-%d.json", i)}
 	}
-	_, err := renderDeliveryJob(t.TempDir(), "deliver", "crm", deliveryServiceAccount, deliveryManifest, manifestDeliveryPath, testDeliveryTarget(), documents)
+	_, err := renderDeliveryJob(t.TempDir(), "deliver", "crm", deliveryManifest, manifestDeliveryPath, testDeliveryTarget(), documents)
 	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("attempts at most %d", deliveryDocumentBound)) {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := renderDeliveryJob(t.TempDir(), "deliver", "crm", deliveryServiceAccount, deliveryManifest, manifestDeliveryPath, testDeliveryTarget(), documents[:deliveryDocumentBound]); err != nil {
+	if _, err := renderDeliveryJob(t.TempDir(), "deliver", "crm", deliveryManifest, manifestDeliveryPath, testDeliveryTarget(), documents[:deliveryDocumentBound]); err != nil {
 		t.Fatal(err)
 	}
 }

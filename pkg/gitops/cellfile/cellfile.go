@@ -40,10 +40,13 @@ type File struct {
 	Namespaces  []Namespace `yaml:"namespaces"`
 }
 
-// Source is the composition-owned repository and the immutable commit the
-// inventory was emitted from, with the branch the rendered trees are
-// published on. A consumer that binds a delivery to an exact revision reads it
-// from here.
+// Source is the composition-owned repository, the branch the rendered trees
+// are published on, and the revision the render was based on: the commit
+// checked out when it ran, which is the parent of the commit that holds the
+// rendered trees (equal to it only when the render changed nothing). The
+// producer cannot name the commit it will be committed in, so a consumer that
+// binds a delivery to an exact commit sets Revision itself when it pins the
+// file, and a consumer tracking Branch reads its head.
 type Source struct {
 	Repo     string `yaml:"repo"`
 	Revision string `yaml:"revision"`

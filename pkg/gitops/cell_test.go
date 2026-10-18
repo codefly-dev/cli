@@ -10,6 +10,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/gitops/cellfile"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/solutionhost"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,7 +23,16 @@ func cellServiceYAML(name string) string {
 `
 }
 
-func writeCellWorkspace(t *testing.T) *resources.Workspace {
+// exposedCellServiceYAML is cellServiceYAML for the service whose `http`
+// endpoint the staging environment routes an ingress to: it is public and
+// states its exposure, or the route is refused.
+func exposedCellServiceYAML(name string) string {
+	return strings.Replace(cellServiceYAML(name), "    api: http\n", "    api: http\n    visibility: public\n    exposure: public\n", 1)
+}
+
+// writeCellWorkspace lays down the cell fixture; each edit replaces one
+// string of a file, keyed by the file's path, before the workspace loads.
+func writeCellWorkspace(t *testing.T, edits ...[3]string) *resources.Workspace {
 	t.Helper()
 	root := t.TempDir()
 	files := map[string]string{
@@ -58,9 +68,13 @@ environments:
       delivery: billing/ledger/http
 `,
 		filepath.Join("modules", "shop", resources.ModuleConfigurationName):                           "kind: module\nname: shop\nservices:\n  - name: api\n",
-		filepath.Join("modules", "shop", "services", "api", resources.ServiceConfigurationName):       cellServiceYAML("api"),
+		filepath.Join("modules", "shop", "services", "api", resources.ServiceConfigurationName):       exposedCellServiceYAML("api"),
 		filepath.Join("modules", "billing", resources.ModuleConfigurationName):                        "kind: module\nname: billing\nservices:\n  - name: ledger\n",
 		filepath.Join("modules", "billing", "services", "ledger", resources.ServiceConfigurationName): cellServiceYAML("ledger") + "service-dependencies:\n  - name: api\n    module: shop\n    endpoints:\n      - name: grpc\n",
+	}
+	for _, edit := range edits {
+		require.Contains(t, files[edit[0]], edit[1])
+		files[edit[0]] = strings.Replace(files[edit[0]], edit[1], edit[2], 1)
 	}
 	for rel, content := range files {
 		full := filepath.Join(root, rel)
@@ -144,13 +158,20 @@ func unitsWithPorts(module, service string) []InventoryUnit {
 
 func renderCellTree(t *testing.T, workspace *resources.Workspace, module, service, namespace, environment string) RenderResult {
 	t.Helper()
-	result, err := RenderOwnedTree(context.Background(), &RenderOptions{
+	return renderCellTreeWith(t, &RenderOptions{
 		Destination: moduleRenderDestination(workspace, module),
 		Module:      module, Environment: environment, Namespace: namespace, AppProject: "acme-" + environment,
 		Promotable: true, OwnedPath: "deployments/modules/" + module,
 		Units:   unitsWithPorts(module, service),
 		Package: &InventoryPackage{ID: "acme/" + module, Version: "1.2.0"},
-	}, func(_ context.Context, root string) error {
+	}, service, environment)
+}
+
+// renderCellTreeWith renders one unit of the cell fixture under the options
+// given, so a test can render a module that delivers a module manifest.
+func renderCellTreeWith(t *testing.T, options *RenderOptions, service, environment string) RenderResult {
+	t.Helper()
+	result, err := RenderOwnedTree(context.Background(), options, func(_ context.Context, root string) error {
 		overlay := filepath.Join(root, "services", service, "overlays", environment)
 		if err := os.MkdirAll(overlay, 0o755); err != nil {
 			return err
@@ -215,7 +236,8 @@ func TestCellFileInventoriesEveryRenderedWorkload(t *testing.T) {
 		{Name: "grpc", API: "grpc", Port: 9090, ServicePort: 9090, Consumers: []string{"billing/ledger", "shop/api"}},
 		{Name: "http", API: "http", Port: 3000, ServicePort: 8080, Consumers: []string{"shop/api"}, Presenter: true},
 	}, api.Endpoints, "port is the container port the mesh authorizes, service_port the Service's, both as the render resolved and recorded them; the grpc endpoint has a declared consumer; a service that renders a bootstrap Job names itself on every endpoint, so the Job's identity is admitted to the service it bootstraps; and the endpoint the environment declares as a presenter carries that fact for the cell to front it with a protected waypoint")
-	require.Equal(t, []cellfile.Ingress{{Endpoint: "http", Hosts: []string{"shop.example.test"}}}, api.Ingress)
+	require.Equal(t, []cellfile.Ingress{{Endpoint: "http", Hosts: []string{"shop.example.test"}}}, api.Ingress, "the route lands on an endpoint the service exposes publicly")
+	require.Nil(t, shop.Delivery, "a module that renders no module manifest has no delivery carrier")
 	migrate := shop.Workloads[1]
 	require.Equal(t, "api-migrate", migrate.Name)
 	require.Equal(t, kindJob, migrate.Kind)
@@ -356,4 +378,135 @@ func TestAConfiguredReferenceToAnUnknownEndpointIsRefused(t *testing.T) {
 	workspace = writeConfiguredWorkspace(t, "${endpoint:shop/missing/http}")
 	_, _, err = endpointConsumers(context.Background(), workspace, selectedEnvironment(t, workspace, "staging"))
 	require.ErrorContains(t, err, "but the workspace composes no service shop/missing")
+}
+
+// A route onto an endpoint the service does not declare, or does not expose
+// publicly, refuses the render by route, service and endpoint, as the mesh
+// render does: the cell must never admit an edge onto an internal listener.
+func TestCellFileRefusesIngressOntoAnEndpointThatIsNotPublic(t *testing.T) {
+	service := filepath.Join("modules", "shop", "services", "api", resources.ServiceConfigurationName)
+	for name, edit := range map[string][3]string{
+		"not public":   {service, "    exposure: public\n", "    exposure: none\n"},
+		"not declared": {resources.WorkspaceConfigurationName, "endpoint: http", "endpoint: admin"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			workspace := writeCellWorkspace(t, edit)
+			env := selectedEnvironment(t, workspace, "staging")
+			renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
+			_, err := RenderCell(context.Background(), workspace, env)
+			require.Error(t, err)
+			if name == "not public" {
+				require.ErrorContains(t, err, `ingress route shop-http routes onto shop/api endpoint "http", which the service declares "none", not public`)
+			} else {
+				require.ErrorContains(t, err, `ingress route shop-http routes onto shop/api endpoint "admin", which the service does not declare`)
+			}
+		})
+	}
+}
+
+// A render — no publish — of a hosted environment declares the delivery
+// carrier of every module that renders a module manifest, and of no other,
+// identical to the pod of the Job publish writes to POST that manifest: the
+// render never writes that Job, so the carrier is the Job's own rule, never a
+// Job read off the tree.
+func TestCellFileDeclaresTheCarrierOfEveryModuleThatRendersAManifest(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	result := renderCellTreeWith(t, &RenderOptions{
+		Destination: moduleRenderDestination(workspace, "shop"),
+		Module:      "shop", Environment: "staging", Namespace: "acme-shop", AppProject: "acme-staging",
+		Promotable: true, OwnedPath: "deployments/modules/shop", Workspace: "acme", Host: env.Host,
+		Units:   unitsWithPorts("shop", "api"),
+		Package: &InventoryPackage{ID: "acme/shop", Version: "1.2.0"},
+		Instance: &ModuleInstance{
+			Kind: solutionhost.KindModule, Name: "shop", Package: "acme/shop", Version: "1.2.0",
+			Identities: []IdentityWorkload{{Service: "api", Path: "services/api"}},
+			Endpoints:  []solutionhost.Endpoint{{Name: "grpc", Service: "api", API: "grpc", Address: "http://api.acme-shop.svc.cluster.local:9090"}},
+			Authority:  &solutionhost.Authority{Principal: "shop"},
+		},
+	}, "api", "staging")
+	require.NotEmpty(t, result.Inventory.ModuleManifestPath, "the fixture renders a module manifest")
+	require.NoFileExists(t, filepath.Join(result.Path, filepath.FromSlash(moduleManifestOverlay("staging")), "deliver-"+deliveryManifest+".yaml"), "a render never writes the delivery Job")
+	require.FileExists(t, filepath.Join(result.Path, filepath.FromSlash(moduleManifestOverlay("staging")), "delivery-service-account.yaml"), "it writes the account the Job runs as")
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+	cell, err := RenderCell(context.Background(), workspace, env)
+	require.NoError(t, err)
+	data, err := os.ReadFile(cell.Path)
+	require.NoError(t, err)
+	file, err := cellfile.Parse(data)
+	require.NoError(t, err)
+	require.Nil(t, file.Namespaces[0].Delivery, "billing renders no module manifest")
+	shop := file.Namespaces[1]
+	require.NotNil(t, shop.Delivery, "a render, without publish, declares the carrier")
+
+	// The Job publish writes, read back as a cell reads a pod.
+	directory := t.TempDir()
+	job, err := renderDeliveryJob(directory, deliveryJobName(deliveryManifest, "shop", "staging", [][]byte{[]byte("carrier")}), "acme-shop",
+		deliveryManifest, manifestDeliveryPath, testDeliveryTarget(), []deliveryDocument{{ConfigMap: "manifest", Key: "signed.yaml", Name: "shop.json"}})
+	require.NoError(t, err)
+	body, err := os.ReadFile(filepath.Join(directory, job))
+	require.NoError(t, err)
+	documents, _, err := decodeYAML(job, body)
+	require.NoError(t, err)
+	require.Len(t, documents, 1)
+	rendered := documents[0]
+	selector, err := podSelector(documents, metadataString(rendered.value, "name"), rendered.kind)
+	require.NoError(t, err)
+	spec, ok := podSpec(rendered)
+	require.True(t, ok)
+	containers := sliceField(spec, "containers")
+	require.Len(t, containers, 1)
+	container, _ := containers[0].(map[string]any)
+	repository, digest, err := splitPinnedImage(fmt.Sprint(container["image"]))
+	require.NoError(t, err)
+	account := fmt.Sprint(spec["serviceAccountName"])
+	require.Equal(t, &cellfile.Delivery{
+		Kind: rendered.kind, Selector: selector, ServiceAccount: account,
+		SPIFFEID:  "spiffe://cluster.example/ns/acme-shop/sa/" + account,
+		Container: fmt.Sprint(container["name"]), Image: cellfile.Image{Repository: repository, Digest: digest},
+	}, shop.Delivery)
+	require.Equal(t, deliveryServiceAccount, account, "the delivery account in the module's namespace")
+}
+
+// An image is pinned by a sha256 image-manifest digest and nothing else: an
+// `@` followed by another algorithm, a short digest or upper-case hex is a
+// digest no running pod reports, and is refused.
+func TestOnlyASha256DigestPinsAnImage(t *testing.T) {
+	repository, digest, err := splitPinnedImage("registry.example.test/acme/api:1.2.0@sha256:" + strings.Repeat("a", 64))
+	require.NoError(t, err)
+	require.Equal(t, "registry.example.test/acme/api", repository)
+	require.Equal(t, "sha256:"+strings.Repeat("a", 64), digest)
+	for _, image := range []string{
+		"registry.example.test/acme/api:1.2.0",
+		"registry.example.test/acme/api@latest",
+		"registry.example.test/acme/api@sha256:abc",
+		"registry.example.test/acme/api@sha512:" + strings.Repeat("a", 64),
+		"registry.example.test/acme/api@sha256:" + strings.Repeat("A", 64),
+		"@sha256:" + strings.Repeat("a", 64),
+	} {
+		_, _, err := splitPinnedImage(image)
+		require.ErrorContains(t, err, "is not pinned by digest", image)
+	}
+}
+
+// A file the render cannot decode stops the labelling, by name, rather than
+// leaving a Job the cell cannot select.
+func TestLabellingRefusesAManifestItCannotDecode(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "job.yaml"), []byte("kind: Job\nmetadata: [unclosed\n"), 0o644))
+	require.ErrorContains(t, labelPodTemplates(context.Background(), root), "label the pod templates of job.yaml")
+}
+
+// A workload selected by the carrier's label would be admitted as the
+// carrier: refused by name.
+func TestCellFileRefusesAWorkloadSelectedByTheCarrierLabel(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	result := renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
+	rendered := filepath.Join(result.Path, "services", "api", "overlays", "staging", "deployment.yaml")
+	data, err := os.ReadFile(rendered)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(rendered, []byte(strings.ReplaceAll(string(data), "app.kubernetes.io/name: api", deliveryLabel+": "+deliveryManifest)), 0o644))
+	_, err = RenderCell(context.Background(), workspace, env)
+	require.ErrorContains(t, err, `workload api selects its pods by the "codefly.dev/delivery" label, which is reserved for the delivery Job`)
 }

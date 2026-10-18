@@ -336,9 +336,34 @@ echo "delivered $delivered document(s) to $url in $round round(s), $refused refu
 [ "$refused" -eq 0 ]
 `
 
+// deliveryCarrier is the pod a delivery Job of one kind runs: the labels its
+// pods carry, the account it runs as, its one container and that container's
+// image. It is the ONE statement of the carrier: publish renders the Job from
+// it and the cell file declares the carrier from it (cellDelivery), so what a
+// cell admits is what the Job runs, without either reading the other back.
+type deliveryCarrier struct {
+	Kind           string
+	Labels         map[string]string
+	ServiceAccount string
+	Container      string
+	Image          string
+}
+
+// deliveryCarrierOf is the carrier of one kind of delivered document.
+func deliveryCarrierOf(kind string) deliveryCarrier {
+	return deliveryCarrier{
+		Kind:           kindJob,
+		Labels:         map[string]string{managedByLabel: managedByCodefly, deliveryLabel: kind},
+		ServiceAccount: deliveryServiceAccount,
+		Container:      deliveryContainerName,
+		Image:          deliveryImage,
+	}
+}
+
 // renderDeliveryJob writes the Job delivering documents to the host's delivery
-// route into the overlay directory, and returns the manifest's file name.
-func renderDeliveryJob(directory, name, namespace, serviceAccount, kind, path string, target *DeliveryTarget, documents []deliveryDocument) (string, error) {
+// route into the overlay directory, and returns the manifest's file name. The
+// pod it runs is deliveryCarrierOf(kind), and nothing else.
+func renderDeliveryJob(directory, name, namespace, kind, path string, target *DeliveryTarget, documents []deliveryDocument) (string, error) {
 	if len(documents) > deliveryDocumentBound {
 		return "", fmt.Errorf("the %s set carries %d documents and one delivery Job attempts at most %d within its budget (%d seconds, %d per request); the set does not shrink until the host acknowledges its tombstones, which the delivery API does not offer yet",
 			kind, len(documents), deliveryDocumentBound, deliveryBudgetSeconds, deliveryRequestSeconds)
@@ -358,12 +383,12 @@ func renderDeliveryJob(directory, name, namespace, serviceAccount, kind, path st
 			Items: []deliveryKeyToPath{{Key: document.Key, Path: document.Name}},
 		}})
 	}
-	labels := map[string]string{managedByLabel: managedByCodefly, deliveryLabel: kind}
+	carrier := deliveryCarrierOf(kind)
 	job := deliveryJobManifest{
 		APIVersion: "batch/v1",
-		Kind:       kindJob,
+		Kind:       carrier.Kind,
 		Metadata: deliveryJobMetadata{
-			Name: name, Namespace: namespace, Labels: labels,
+			Name: name, Namespace: namespace, Labels: carrier.Labels,
 			Annotations: map[string]string{
 				argoHookAnnotation:     argoHookSync,
 				argoHookDeletePolicy:   argoHookBeforeHookCreation,
@@ -372,9 +397,9 @@ func renderDeliveryJob(directory, name, namespace, serviceAccount, kind, path st
 		},
 		Spec: deliveryJobSpec{BackoffLimit: deliveryBackoffLimit, ActiveDeadlineSeconds: deliveryDeadlineSeconds},
 	}
-	job.Spec.Template.Metadata.Labels = labels
+	job.Spec.Template.Metadata.Labels = carrier.Labels
 	job.Spec.Template.Spec = deliveryPodSpec{
-		ServiceAccountName: serviceAccount,
+		ServiceAccountName: carrier.ServiceAccount,
 		// The default mount is the unscoped API token; the only token this pod
 		// needs is the one projected for the host's audience below.
 		AutomountServiceAccountToken: false,
@@ -384,8 +409,8 @@ func renderDeliveryJob(directory, name, namespace, serviceAccount, kind, path st
 			"seccompProfile": map[string]any{"type": "RuntimeDefault"},
 		},
 		Containers: []deliveryContainer{{
-			Name:    deliveryContainerName,
-			Image:   deliveryImage,
+			Name:    carrier.Container,
+			Image:   carrier.Image,
 			Command: []string{"/bin/sh", "-ec", deliveryScript},
 			Env: []deliveryEnv{
 				{Name: "DELIVERY_URL", Value: target.URL},

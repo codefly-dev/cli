@@ -801,7 +801,11 @@ composition says calls them (service dependencies, a solution's
 service reads through a workspace configuration group it declares or its own
 configuration for the environment — the render names each edge only the
 configuration declares, and refuses a reference to an endpoint the
-composition does not have, naming the service, the key and the target), the ingress routed onto them, the presence delivery Job,
+composition does not have, naming the service, the key and the target), the ingress routed onto them (a route onto an
+endpoint the service does not declare, or does not expose `public`, refuses the render by route, service and endpoint,
+as the mesh render does), the presence carrier of every module that renders a module manifest (the Job publish writes
+to POST it: its pod labels, the `delivery` account in the module's namespace, its container and digest-pinned image,
+declared from the same rule the Job is rendered from — the render never writes that Job, so it is never read off a tree),
 and what the environment declares per `<module>/<service>` under `cell:`
 and `egress:` (external hosts; a managed service's `egress-cidrs`). The
 `cell:` entry names the platform `bindings` the service holds, `cloud-identity`
@@ -830,9 +834,15 @@ environments:
 
 This cell file is the render's inventory of a composition; it is not the
 retired `codefly/cell/v1` *import descriptor* that `environment import`
-rejects below, which named a cluster's coordinates and never a workload. The file names the commit it was emitted
-from (`source`) when the environment declares a gitops `repo-url` and `branch`
-and the workspace is a git checkout; the render says so when it cannot. It is
+rejects below, which named a cluster's coordinates and never a workload. The file names its repository, branch
+and revision (`source`) when the environment declares a gitops `repo-url` and `branch`
+and the workspace is a git checkout; the render says so when it cannot. The
+`revision` is the commit the render was **based on** (the checkout's HEAD), the
+parent of the commit that will hold the rendered trees and the file — a render
+cannot name the commit it is committed in — and equal to it only when the
+render changed nothing. A consumer that pins the cell to an exact commit sets
+`revision` itself (infra-base's pin writes the commit it reviewed); a cell
+tracking the branch reads the branch head. It is
 regenerated whole — a workload absent from it is not delivered — and is what
 the cell's infrastructure derives its namespaces, mesh contract, admission set
 and verifier allows from, instead of transcribing them. The consumer validates
