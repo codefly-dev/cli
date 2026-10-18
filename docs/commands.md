@@ -1245,7 +1245,9 @@ service-secrets:
 
 `ed25519-pkcs8` mints a private key rather than random bytes. Like every
 generated value it is written only where no remote key holds it, so a key a
-service already signs with is never replaced by a second run.
+service already signs with is never replaced by a second run. It is one
+workload's key: a plan in which more than one service reads it is refused, and
+the remedy is to remove the extra reader, never to re-mint the key.
 
 A key its producer declares as a template (core's `ConfigurationValue.template`
 — a Postgres agent's `READ_WRITE_CONNECTION`, say: role, address and database

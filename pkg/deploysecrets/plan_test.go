@@ -683,3 +683,22 @@ func storePasswordProperty(t *testing.T, rendered gitops.RenderedEnvironment) st
 	t.Fatal("the fixture files no store password")
 	return ""
 }
+
+// One remote key read by two services hands both the same private key: the
+// guard counts readers by service, not by remote key.
+func TestAnEd25519SigningKeyInOneRemoteKeyReadByTwoServicesIsRefused(t *testing.T) {
+	ctx := context.Background()
+	key := "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__SIGNING__SIGNING_KEY"
+	rendered := gitops.RenderedEnvironment{Secrets: []gitops.RenderedServiceSecret{{
+		RemoteKey: "ws-witness", Services: []string{"witness/log", "witness/other"},
+		Properties: []gitops.RenderedSecretProperty{{Property: key, Keys: []string{key}, Readers: []gitops.RenderedSecretReader{
+			{Service: "witness/log", Key: key}, {Service: "witness/other", Key: key}}}},
+	}}}
+	store := newFakeStore(map[string]map[string]string{})
+	_, err := Build(ctx, &Inputs{Rendered: rendered, Generators: []environments.EnvironmentSecretGenerator{{
+		Scope: environments.SecretGeneratorScopeWorkspace, Configuration: "signing", Keys: []string{"SIGNING_KEY"},
+		Format: environments.SecretGeneratorFormatEd25519PKCS8}}, Store: store, ReadPayloads: true})
+	if err == nil || !strings.Contains(err.Error(), "witness/other") {
+		t.Fatalf("Build = %v, want a refusal naming both services", err)
+	}
+}
