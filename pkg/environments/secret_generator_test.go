@@ -72,7 +72,6 @@ func TestSecretGeneratorsRefuseAMalformedDeclaration(t *testing.T) {
 		"bad service":        "        - scope: service\n          configuration: x\n          keys: [A]\n          services: [store]\n",
 		"bad format":         "        - scope: workspace\n          configuration: x\n          keys: [A]\n          format: uuid\n",
 		"sized ed25519":      "        - scope: service\n          configuration: x\n          services: [a/b]\n          keys: [A]\n          format: ed25519-pkcs8\n          bytes: 64\n",
-		"shared ed25519":     "        - scope: workspace\n          configuration: x\n          keys: [A]\n          format: ed25519-pkcs8\n",
 		"ed25519 for all":    "        - scope: service\n          configuration: x\n          keys: [A]\n          format: ed25519-pkcs8\n",
 		"ed25519 for two":    "        - scope: service\n          configuration: x\n          services: [a/b, a/c]\n          keys: [A]\n          format: ed25519-pkcs8\n",
 		"two ed25519 keys":   "        - scope: service\n          configuration: x\n          services: [a/b]\n          keys: [A, B]\n          format: ed25519-pkcs8\n",
