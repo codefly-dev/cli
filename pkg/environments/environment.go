@@ -251,6 +251,10 @@ type EnvironmentManagedService struct {
 	SecretReferences []EnvironmentManagedSecretReference `yaml:"secret-references,omitempty"`
 	// Identity is independent of any explicitly declared secret references.
 	Identity *EnvironmentWorkloadIdentity `yaml:"identity,omitempty"`
+	// Carried holds the module-owned keys of a managed-services entry
+	// (CarriedManagedServiceKeys), handed to the module bundle generator
+	// verbatim and never interpreted here.
+	Carried Carried `yaml:",inline"`
 }
 
 // ManagedService returns the environment's replacement for a service, or false
@@ -1337,6 +1341,11 @@ type Environment struct {
 	// manifests fail when their backend is absent. Legacy plaintext *.secret.*
 	// files remain local-only. CLI-side; not serialized to proto.
 	Secrets []*resources.EnvironmentSecretProvider `yaml:"secrets,omitempty"`
+
+	// Carried holds the module-owned keys of this environment
+	// (CarriedEnvironmentKeys), handed to the module bundle generator verbatim.
+	// CLI-side; never interpreted here and never serialized to proto.
+	Carried Carried `yaml:",inline"`
 }
 
 // EnvironmentDNS is the environment's DNS contract.

@@ -96,6 +96,49 @@ CLI still validates the selected operation, service graph and deployment target.
 Local secret resolution and deployed secret projection remain separate consumers
 of the existing configuration model; secret values do not belong in descriptors.
 
+### Module-owned keys
+
+A few keys on an environment belong to a **module agent**, not to the CLI. The
+CLI admits them, preserves them on load and save, and hands them verbatim to the
+module bundle generator in the workspace it stages for it; it never interprets
+them, never validates their values (the agent does, and refuses an unsupported
+one by name), and never sends them to a service agent: `Runtime()` projects
+none of them.
+
+| Block | Key | Meaning (the module agent's) |
+| --- | --- | --- |
+| environment | `key-service` | Which key service holds this environment's keys, in the `key-service` configuration group's `KEY_SERVICE_BACKEND` vocabulary. A module reads it to decide whether it composes a secrets store here at all. |
+| `managed-services.<svc>` | `auth-mode` | `password` (a connection secret through `secret-references`) or `external-identity` (the workload authenticates as its own identity). |
+| `managed-services.<svc>` | `egress-namespace` | For an in-cluster managed dependency, the namespace the caller's egress policy selects on. |
+| `managed-services.<svc>` | `instance-connection-name` | The `project:region:instance` coordinate a Cloud SQL instance is addressed by, which is not a DNS name. |
+
+```yaml
+environments:
+  - name: staging
+    key-service: kms
+    managed-services:
+      shop/store:
+        kind: cloud-sql-postgres
+        external-name: 127.0.0.1
+        port: 5432
+        auth-mode: external-identity
+        instance-connection-name: project:us-east1:store
+```
+
+The list is closed (`environments.CarriedEnvironmentKeys`,
+`environments.CarriedManagedServiceKeys`): every other key in either block is
+still refused by name at workspace load, so `key-servce` fails exactly as a
+mistyped CLI field does, and a module-owned key written on the wrong block is
+refused too. Admitting a new one is one entry in that list. Because the keys
+load, a declaration on one deployed environment no longer fails the whole
+workspace — including the local environment a `codefly run` selects.
+
+A module-owned key only reaches a module that renders its own bundle (a module
+whose `module.codefly.yaml` names a module agent). It does not change the
+service set the CLI itself renders for a module composed by version: that
+projection has no per-environment notion of an excluded service
+(codefly-dev/cli#1022).
+
 Unknown fields and required capabilities are rejected. A producer declaring an
 identity on a managed service uses
 `requires_capabilities: ["managed-service-identity"]`; one declaring a consuming
