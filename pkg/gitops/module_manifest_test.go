@@ -364,7 +364,7 @@ func TestDeliveredCarrierMatchesTheGolden(t *testing.T) {
 // and applied to nothing; and the derived AppProject must admit its kinds.
 func TestDeclaredManifestReachesArgo(t *testing.T) {
 	root := t.TempDir()
-	targetPath := "environments/deployments/modules/crm"
+	targetPath := "environments/modules/crm"
 	inventory := &Inventory{
 		SchemaVersion: SchemaVersion, Module: "crm", Environment: "prod", Namespace: "crm", AppProject: "crm",
 		Units:              []InventoryUnit{{Kind: UnitKindService, Module: "crm", Name: "api", Path: "services/api"}},

@@ -90,7 +90,7 @@ func TestRenderModuleScopesNamespacePerModule(t *testing.T) {
 		require.NoError(t, copyTree(result.Path, bootstrap))
 		require.NoError(t, generateArgoBootstrap(
 			ctx, &repositoryConfig{RepoURL: "https://git.example.com/acme/manifests.git"},
-			bootstrap, "environments/deployments/modules/"+module, &result.Inventory, "staging", strings.Repeat("c", 40), "",
+			bootstrap, "environments/modules/"+module, &result.Inventory, "staging", strings.Repeat("c", 40), "",
 		))
 		project, err := os.ReadFile(filepath.Join(bootstrap, "bootstrap", "project.yaml"))
 		require.NoError(t, err)

@@ -2,14 +2,11 @@ package run
 
 import (
 	"context"
-	"fmt"
 	"github.com/codefly-dev/core/workloadidentity"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops"
@@ -18,41 +15,6 @@ import (
 	"github.com/codefly-dev/core/workloadidentity/native"
 	"github.com/stretchr/testify/require"
 )
-
-func TestAwaitGatewayWaitsForListener(t *testing.T) {
-	cluster := &launcher{}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	address := listener.Addr().String()
-	require.NoError(t, listener.Close())
-
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		late, listenErr := net.Listen("tcp", address)
-		if listenErr != nil {
-			return
-		}
-		defer late.Close()
-		for {
-			conn, acceptErr := late.Accept()
-			if acceptErr != nil {
-				return
-			}
-			_ = conn.Close()
-		}
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	require.NoError(t, cluster.awaitGateway(ctx, fmt.Sprintf("http://%s", address)))
-}
-
-func TestAwaitGatewayRejectsAnUnusableURL(t *testing.T) {
-	cluster := &launcher{}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	require.ErrorContains(t, cluster.awaitGateway(ctx, "not a URL"), "names no host")
-}
 
 // TestEveryIdentityWorkloadIsIssuedItsCredentialAtProjection: a module runs
 // as each of its identity services, and each is issued its credential the

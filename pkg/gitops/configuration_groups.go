@@ -364,7 +364,7 @@ func staleBaseConsumers(ctx context.Context, repo, baseBranch, pathRoot, module 
 		return nil, nil
 	}
 	ref := "refs/remotes/origin/" + baseBranch
-	modulesPath := filepath.ToSlash(filepath.Join(pathRoot, "deployments", "modules"))
+	modulesPath := deliveryModulesPath(pathRoot)
 	listing, err := gitCommand(ctx, repo, "ls-tree", "--name-only", ref+":"+modulesPath)
 	if err != nil {
 		if gitSaysAbsent(err) {

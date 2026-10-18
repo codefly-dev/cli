@@ -107,23 +107,63 @@ func renderModuleTree(
 	return result, nil
 }
 
+// DefaultGitopsPath is the directory a delivery repository holds its modules
+// tree under when the environment's gitops block names no path. It is the
+// layout a render leaves in the workspace (deployments/modules/<module>), so a
+// workspace delivering into its own repository delivers exactly where it
+// rendered.
+const DefaultGitopsPath = "deployments"
+
+// gitopsPathOf is the one selection of an environment's gitops path, shared
+// by the render (moduleOwnedPath) and the publish (resolveGitops) so the two
+// never lay the tree out differently: the environment's own path when its
+// block names one; the workspace default when the environment's block names
+// no repository of its own (an environment may override the path alone);
+// and the repository root when it names its own repository and no path.
+func gitopsPathOf(env *environments.Environment, defaults *environments.EnvironmentGitops) string {
+	if env != nil && env.Gitops != nil && (env.Gitops.Path != "" || env.Gitops.RepoURL != "") {
+		return env.Gitops.Path
+	}
+	if defaults != nil {
+		return defaults.Path
+	}
+	return ""
+}
+
+// deliveryModulesPath is the one rule for where the gitops path puts the
+// modules tree in the delivery repository: `<path>/modules`, the path
+// defaulting to DefaultGitopsPath. gitopsPath is the environment's
+// `gitops.path` as validateRelativePath returns it: "" for none or ".".
+// Every path a render records and a publish writes, reads or settles
+// against derives from here, so `path: deployments` and no path are the
+// same tree, and no path is ever prefixed twice.
+func deliveryModulesPath(gitopsPath string) string {
+	if gitopsPath == "" {
+		gitopsPath = DefaultGitopsPath
+	}
+	return filepath.ToSlash(filepath.Join(gitopsPath, "modules"))
+}
+
+// deliveryModulePath is one module's tree in the delivery repository:
+// `<path>/modules/<module>` (deliveryModulesPath).
+func deliveryModulePath(gitopsPath, module string) string {
+	return filepath.ToSlash(filepath.Join(deliveryModulesPath(gitopsPath), module))
+}
+
 // moduleOwnedPath is where the module's tree lives in the delivery
 // repository: under the environment's gitops path when it declares one, the
-// workspace's default otherwise.
+// workspace's default otherwise (gitopsPathOf), laid out as
+// deliveryModulePath says.
 func moduleOwnedPath(workspace *resources.Workspace, env *environments.Environment, module string) (string, error) {
-	ownedPath := filepath.ToSlash(filepath.Join("deployments", "modules", module))
-	gitopsPath := ""
-	if env.Gitops != nil {
-		gitopsPath = env.Gitops.Path
-	} else if defaults, err := environments.WorkspaceGitops(workspace); err != nil {
+	defaults, err := environments.WorkspaceGitops(workspace)
+	if err != nil {
 		return "", err
-	} else if defaults != nil {
-		gitopsPath = defaults.Path
 	}
-	if gitopsPath != "" {
-		ownedPath = filepath.ToSlash(filepath.Join(gitopsPath, ownedPath))
+	gitopsPath, err := validateRelativePath(gitopsPathOf(env, defaults))
+	if err != nil {
+		return "", fmt.Errorf("gitops.path: %w", err)
 	}
-	return ownedPath, nil
+	return deliveryModulePath(gitopsPath, module), nil
 }
 
 // moduleRender is one module's render in progress: what it was asked to
@@ -258,6 +298,7 @@ func (r *moduleRender) resolveInputs(ctx context.Context, services []*resources.
 		return nil, nil, err
 	}
 	r.options.Package, r.options.ReleaseArtifacts = pkg, artifacts
+	r.options.Pin = compositionPin(r.workspace, r.module.Name)
 	catalog, err := loadContractCatalog(r.module.Dir())
 	if err != nil {
 		return nil, nil, err
@@ -580,6 +621,7 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		AppProject:       project,
 		Promotable:       true,
 		Package:          pkg,
+		Pin:              compositionPin(workspace, module.Name),
 	}
 	return RenderOwnedTree(ctx, options, func(ctx context.Context, stage string) error {
 		// A configuration error refuses the render before any image is built or

@@ -102,6 +102,8 @@ type Inventory struct {
 	// Package identifies the module package this render was produced from
 	// (module.package.codefly.yaml id/version), when the module has one.
 	Package *InventoryPackage `json:"package,omitempty"`
+	// Pin records how the composition pinned this module (see InventoryPin).
+	Pin *InventoryPin `json:"pin,omitempty"`
 	// Delivery records the delivery documents publish settled and signed into
 	// this tree: each document's identity, generation and whether it is a
 	// tombstone, and the identity that signed them. A render records none; the
@@ -130,6 +132,28 @@ type Inventory struct {
 type InventoryPackage struct {
 	ID      string `json:"id"`
 	Version string `json:"version"`
+}
+
+// Pin modes, as the inventory spells how the composition pinned a module.
+const (
+	// PinModeTag: the version is one a tag answers — an exact version, a
+	// range or `latest`.
+	PinModeTag = "tag"
+	// PinModeCommit: the version is a full commit SHA, carried in Commit.
+	PinModeCommit = "commit"
+)
+
+// InventoryPin records how the composition pinned the rendered module: the
+// identity the workspace composes it by, the version it asked for, and
+// whether that version is a tag or a commit. It is the fact a cell's loader
+// judges a delivery on — a commit pin is for validation, so a non-validation
+// cell refuses one — and it is absent for a module the workspace composes
+// from its own tree, which pins nothing.
+type InventoryPin struct {
+	Source  string `json:"source"`
+	Version string `json:"version"`
+	Mode    string `json:"mode"`
+	Commit  string `json:"commit,omitempty"`
 }
 
 type InventoryUnit struct {
@@ -269,6 +293,8 @@ type RenderOptions struct {
 	ModulePath           string
 	Units                []InventoryUnit
 	Package              *InventoryPackage
+	// Pin is how the composition pinned the module, recorded in the inventory.
+	Pin *InventoryPin
 	// ReleaseArtifacts is what the module's package manifest declares the
 	// release publishes; the runtime artifact named frontend among them is
 	// the bundle a module manifest's generated frontend.payload names.

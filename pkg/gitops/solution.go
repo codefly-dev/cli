@@ -69,17 +69,9 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 		return RenderResult{}, err
 	}
 	destination := filepath.Join(req.Workspace.Dir(), "deployments", "modules", req.Name)
-	ownedPath := filepath.ToSlash(filepath.Join("deployments", "modules", req.Name))
-	gitopsPath := ""
-	if env.Gitops != nil {
-		gitopsPath = env.Gitops.Path
-	} else if defaults, err := environments.WorkspaceGitops(req.Workspace); err != nil {
+	ownedPath, err := moduleOwnedPath(req.Workspace, env, req.Name)
+	if err != nil {
 		return RenderResult{}, err
-	} else if defaults != nil {
-		gitopsPath = defaults.Path
-	}
-	if gitopsPath != "" {
-		ownedPath = filepath.ToSlash(filepath.Join(gitopsPath, ownedPath))
 	}
 	options := &RenderOptions{
 		Destination: destination,

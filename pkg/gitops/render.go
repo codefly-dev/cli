@@ -253,7 +253,7 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 		ModuleManifestPath: inventory.ModuleManifestPath,
 		OwnedPath:          inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
 		Environment: inventory.Environment, Namespace: inventory.Namespace,
-		AppProject: project, Promotable: promotable, Package: inventory.Package,
+		AppProject: project, Promotable: promotable, Package: inventory.Package, Pin: inventory.Pin,
 		CheckUnitDirectories: inventory.Unit == "",
 	}
 	for _, unit := range inventory.Units {
@@ -329,7 +329,7 @@ func ValidateServiceSnapshot(root string) error {
 		ModuleManifestPath: inventory.ModuleManifestPath,
 		OwnedPath:          inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
 		Environment: inventory.Environment, Namespace: inventory.Namespace,
-		AppProject: inventory.AppProject, Promotable: true, Package: inventory.Package,
+		AppProject: inventory.AppProject, Promotable: true, Package: inventory.Package, Pin: inventory.Pin,
 	}
 	// Validate the applied graph with its original root. A service may import
 	// shared inputs outside its own directory, and independently applied units
@@ -1485,7 +1485,7 @@ func inventoryHead(opts *RenderOptions) Inventory {
 		SchemaVersion: SchemaVersion,
 		Module:        opts.Module, Unit: opts.Unit, Environment: opts.Environment,
 		Namespace: opts.Namespace, AppProject: opts.AppProject, OwnedPath: filepath.ToSlash(opts.OwnedPath),
-		ModulePath: filepath.ToSlash(opts.ModulePath), Package: opts.Package,
+		ModulePath: filepath.ToSlash(opts.ModulePath), Package: opts.Package, Pin: opts.Pin,
 		ModuleManifestPath: filepath.ToSlash(opts.ModuleManifestPath),
 		HostsDelivery:      opts.HostsDelivery || hostsDeliveryAPI(opts),
 		Units:              append([]InventoryUnit(nil), opts.Units...),

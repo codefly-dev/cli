@@ -3,8 +3,6 @@ package run
 import (
 	"context"
 	"fmt"
-	"net"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codefly-dev/cli/cmd/common"
 	"github.com/codefly-dev/cli/pkg/composition"
 	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -63,7 +60,7 @@ type launcher struct {
 	vouch      *identity.Launcher
 	workspace  *resources.Workspace
 	env        *environments.Environment
-	flow       *orchestration.Flow
+	flow       launcherFlow
 	fixture    string
 	stateDir   string
 	identities map[string]gitops.NativeIdentity
@@ -90,6 +87,12 @@ type launcher struct {
 	pendingWithdrawals map[string]bool
 	envelope           *gitops.EnvelopeWriter
 	stop               chan struct{}
+
+	// schedule bounds each workload's wait for the host; waiters are the
+	// deliveries in flight, one per workload.
+	schedule  deliverySchedule
+	waitersMu sync.Mutex
+	waiters   map[string]*deliveryWaiter
 }
 
 var (
@@ -135,6 +138,7 @@ func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *re
 		delivered:          map[string]*solutionhost.ModuleManifest{},
 		pendingWithdrawals: map[string]bool{},
 		stop:               make(chan struct{}),
+		schedule:           nativeDeliverySchedule,
 	}
 	parts := strings.Split(env.Host.Delivery, "/")
 	if len(parts) != 3 {
@@ -487,7 +491,9 @@ func (cluster *launcher) refreshTokens() {
 }
 
 // onRunning is the cell's delivery, for one identity workload that just
-// started: its module's manifest, listing it.
+// started: its module's manifest, listing it — once the host is ready to take
+// it, retrying while it is not serving yet (hostDelivery). A workload that is
+// not delivered is said so plainly: the gateway routes nothing to its module.
 func (cluster *launcher) onRunning(ctx context.Context, unique string) {
 	w := wool.Get(ctx).In("launcher.deliver", wool.Field("service", unique))
 	identity, ok := cluster.identity(unique)
@@ -497,8 +503,27 @@ func (cluster *launcher) onRunning(ctx context.Context, unique string) {
 	cluster.mu.Lock()
 	cluster.running[unique] = true
 	cluster.mu.Unlock()
-	if err := cluster.deliver(ctx, identity.Module); err != nil {
-		w.Error("delivery to the host failed", wool.ErrField(err))
+	waiter := cluster.waitFor(unique)
+	defer cluster.doneWaiting(unique, waiter)
+	err := hostDelivery{
+		schedule: cluster.schedule, stop: cluster.stop, superseded: waiter.superseded,
+		log: w.With(wool.Field("module", identity.Module)),
+		ready: func(ctx context.Context) error {
+			// A refreshed composition can withdraw the workload while its
+			// delivery waits; nothing is then delivered on its behalf.
+			if _, composed := cluster.identity(unique); !composed {
+				return errWorkloadGone
+			}
+			return cluster.hostReady(ctx)
+		},
+		deliver: func(ctx context.Context) error { return cluster.deliver(ctx, identity.Module) },
+	}.run(ctx)
+	if deliveryAbandoned(err) {
+		w.Debug("delivery abandoned", wool.ErrField(err))
+		return
+	}
+	if err != nil {
+		w.Error(fmt.Sprintf("delivery to the host failed: module %s's manifest does not list %s, so every gateway route to module %s answers 404 until it is delivered (a restart of the workload delivers again)", identity.Module, unique, identity.Module), wool.ErrField(err))
 	}
 }
 
@@ -719,9 +744,6 @@ func (cluster *launcher) ensureEnvelope(ctx context.Context, gatewayURL string) 
 	if err != nil || len(grants) == 0 {
 		return err
 	}
-	if err = cluster.awaitGateway(ctx, gatewayURL); err != nil {
-		return err
-	}
 	writer, err := cluster.envelopeFor(ctx, gatewayURL)
 	if err != nil {
 		return err
@@ -730,48 +752,6 @@ func (cluster *launcher) ensureEnvelope(ctx context.Context, gatewayURL string) 
 		return fmt.Errorf("write the module envelope: %w", err)
 	}
 	return nil
-}
-
-// gatewayAcceptTimeout bounds the wait for the gateway's REST listener. The
-// race it covers is a few seconds of process start; a gateway still refusing
-// after this is a fault to report, not a slow start to keep waiting on.
-const gatewayAcceptTimeout = 2 * time.Minute
-
-// awaitGateway waits for the host gateway's REST listener to ACCEPT a
-// connection, which is what the envelope's sign-in needs and what the flow's
-// readiness does not promise: a service is reported Running once its own
-// workload is up, while the gateway announces its REST address earlier still,
-// so the first module to start reaches an address nothing is listening on yet.
-// Delivery is attempted once per module, when that module starts, and a
-// failure is logged rather than retried (onRunning) — so a refused connection
-// there costs the module its delivery for the whole life of the run, which is
-// how a composition came up with every module delivered except the one that
-// started first. Waiting for the listener is the condition the hop actually
-// has; reading a refusal as a delivery verdict is the defect.
-func (cluster *launcher) awaitGateway(ctx context.Context, gatewayURL string) error {
-	parsed, err := url.Parse(gatewayURL)
-	if err != nil {
-		return fmt.Errorf("the module envelope is written through the host gateway, and %q is not a URL: %w", gatewayURL, err)
-	}
-	hostPort := parsed.Host
-	if hostPort == "" {
-		return fmt.Errorf("the module envelope is written through the host gateway, and %q names no host", gatewayURL)
-	}
-	if parsed.Port() == "" {
-		switch parsed.Scheme {
-		case "https":
-			hostPort = net.JoinHostPort(hostPort, "443")
-		default:
-			hostPort = net.JoinHostPort(hostPort, "80")
-		}
-	}
-	if common.WaitReachable(ctx, hostPort, gatewayAcceptTimeout) {
-		return nil
-	}
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	return fmt.Errorf("the host gateway %s accepts no connection after %s, and the module envelope is written through it", hostPort, gatewayAcceptTimeout)
 }
 
 // fixtureAdministrator is the platform administrator the selected fixture

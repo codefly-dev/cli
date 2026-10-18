@@ -25,6 +25,7 @@ spec:
         app: api
     spec:
       serviceAccountName: api
+      automountServiceAccountToken: false
       containers:
         - name: api
           image: ghcr.io/codefly-dev/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -35,21 +36,32 @@ spec:
 // kustomizedWorkload writes a unit the way an agent renders it: the workload
 // in a base, and an environment overlay that is a kustomization over it.
 func kustomizedWorkload(body string) func(context.Context, string) error {
+	return kustomizedWorkloads(map[string]string{"api": body})
+}
+
+// kustomizedWorkloads writes one unit per service, each the way an agent
+// renders it.
+func kustomizedWorkloads(bodies map[string]string) func(context.Context, string) error {
 	return func(_ context.Context, root string) error {
-		base := filepath.Join(root, "services", "api", "base")
-		overlay := filepath.Join(root, "services", "api", "overlays", "prod")
-		for _, dir := range []string{base, overlay} {
-			if err := os.MkdirAll(dir, 0o755); err != nil {
+		for service, body := range bodies {
+			base := filepath.Join(root, "services", service, "base")
+			overlay := filepath.Join(root, "services", service, "overlays", "prod")
+			for _, dir := range []string{base, overlay} {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					return err
+				}
+			}
+			if err := os.WriteFile(filepath.Join(base, "deployment.yaml"), []byte(body), 0o644); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(base, "kustomization.yaml"), []byte("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.yaml\n"), 0o644); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(overlay, "kustomization.yaml"), []byte("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - ../../base\n"), 0o644); err != nil {
 				return err
 			}
 		}
-		if err := os.WriteFile(filepath.Join(base, "deployment.yaml"), []byte(body), 0o644); err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(base, "kustomization.yaml"), []byte("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.yaml\n"), 0o644); err != nil {
-			return err
-		}
-		return os.WriteFile(filepath.Join(overlay, "kustomization.yaml"), []byte("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - ../../base\n"), 0o644)
+		return nil
 	}
 }
 
@@ -230,33 +242,38 @@ func TestAnExistingTokenIsReusedOnlyWhereTheSDKReadsIt(t *testing.T) {
 	}
 }
 
-// TestALocalHostMountsItsTrustAnchorWhereItReadsIt: on a k3d environment that
-// states the host's trust-anchor path, the host's verifier — the service
-// host.delivery names — mounts the local trust anchor there: one projected
-// volume whose only sources are the local trust ConfigMap, keys not
-// remapped, read-only, in the authenticating container alone. Any other
-// environment mounts nothing: a deployed host's anchor is its platform's.
-func TestALocalHostMountsItsTrustAnchorWhereItReadsIt(t *testing.T) {
-	const anchor = "/etc/host/delivery-trust"
-	options := func(destination, kind string) *RenderOptions {
-		opts := solutionRenderOptions(destination)
-		opts.Host.Delivery = "crm/api/rest"
-		opts.Host.TrustAnchor = anchor
-		opts.Target = &environments.Environment{Name: "prod", Cluster: &environments.EnvironmentCluster{Kind: kind, Context: "k3d-dev"}}
-		return opts
-	}
-	destination := filepath.Join(t.TempDir(), "modules", "crm")
-	if _, err := RenderOwnedTree(context.Background(), options(destination, "k3d"), kustomizedWorkload(sidecarDeployment)); err != nil {
+// renderedAutomount reads the named service's rendered Deployment back as
+// Kubernetes would run it and returns its pod's automountServiceAccountToken.
+func renderedAutomount(t *testing.T, destination, service string) any {
+	t.Helper()
+	manifests, err := overlayManifests(filepath.Join(destination, "services", service, "overlays", "prod"))
+	if err != nil {
 		t.Fatal(err)
 	}
+	for _, item := range manifests {
+		if item.kind == kindDeployment {
+			spec, _ := podSpec(item)
+			return spec[keyAutomountToken]
+		}
+	}
+	t.Fatalf("service %s renders no Deployment", service)
+	return nil
+}
+
+// requireTrustAnchorMount reads the verifier's rendered unit back and holds
+// it to the one shape a trust anchor takes: one projected volume whose only
+// source is the named ConfigMap, keys not remapped, mounted read-only, no
+// subPath, in the authenticating container alone, at the path.
+func requireTrustAnchorMount(t *testing.T, destination, configMap, path string) {
+	t.Helper()
 	volume, mounts := renderedVolume(t, destination, LocalTrustAnchorVolume)
 	if volume == nil {
-		t.Fatal("the local host's verifier mounts no trust anchor")
+		t.Fatal("the host's verifier mounts no trust anchor")
 	}
 	sources := sliceField(mapField(volume, "projected"), "sources")
 	if len(sources) != 1 ||
-		mapField(sources[0].(map[string]any), "configMap")["name"] != LocalTrustAnchorObjects {
-		t.Fatalf("the trust anchor's sources are %v, want the local trust ConfigMap alone", sources)
+		mapField(sources[0].(map[string]any), "configMap")["name"] != configMap {
+		t.Fatalf("the trust anchor's sources are %v, want the ConfigMap %s alone", sources, configMap)
 	}
 	for _, source := range sources {
 		for _, object := range source.(map[string]any) {
@@ -265,16 +282,115 @@ func TestALocalHostMountsItsTrustAnchorWhereItReadsIt(t *testing.T) {
 			}
 		}
 	}
-	if len(mounts) != 1 || len(mounts["api"]) != 1 || mounts["api"][0]["mountPath"] != anchor || mounts["api"][0]["readOnly"] != true {
-		t.Fatalf("the trust anchor is mounted as %v, want into the verifier's container alone, read-only, at %s", mounts, anchor)
+	if len(mounts) != 1 || len(mounts["api"]) != 1 || mounts["api"][0]["mountPath"] != path || mounts["api"][0]["readOnly"] != true {
+		t.Fatalf("the trust anchor is mounted as %v, want into the verifier's container alone, read-only, at %s", mounts, path)
 	}
+	if _, subPathed := mounts["api"][0]["subPath"]; subPathed {
+		t.Fatal("the trust anchor is mounted with a subPath")
+	}
+}
 
-	hosted := filepath.Join(t.TempDir(), "modules", "crm")
-	if _, err := RenderOwnedTree(context.Background(), options(hosted, "gke"), kustomizedWorkload(sidecarDeployment)); err != nil {
+// TestALocalHostMountsItsTrustAnchorWhereItReadsIt: on a k3d environment that
+// states the host's trust-anchor path, the host's verifier — the service
+// host.delivery names — mounts the local trust anchor there: one projected
+// volume whose only sources are the local trust ConfigMap, keys not
+// remapped, read-only, in the authenticating container alone. A k3d
+// environment that states no path mounts nothing: omitting a field narrows.
+func TestALocalHostMountsItsTrustAnchorWhereItReadsIt(t *testing.T) {
+	const anchor = "/etc/host/delivery-trust"
+	options := func(destination, trustAnchor string) *RenderOptions {
+		opts := solutionRenderOptions(destination)
+		opts.Host.Delivery = "crm/api/rest"
+		opts.Host.TrustAnchor = trustAnchor
+		opts.Target = &environments.Environment{Name: "prod", Cluster: &environments.EnvironmentCluster{Kind: "k3d", Context: "k3d-dev"}}
+		return opts
+	}
+	destination := filepath.Join(t.TempDir(), "modules", "crm")
+	if _, err := RenderOwnedTree(context.Background(), options(destination, anchor), kustomizedWorkload(sidecarDeployment)); err != nil {
 		t.Fatal(err)
 	}
-	if volume, _ := renderedVolume(t, hosted, LocalTrustAnchorVolume); volume != nil {
-		t.Fatal("a hosted environment's render mounted a local trust anchor")
+	requireTrustAnchorMount(t, destination, LocalTrustAnchorObjects, anchor)
+	if got := renderedAutomount(t, destination, "api"); got != true {
+		t.Fatalf("the local host's verifier has automountServiceAccountToken %v, want true: the host on k3d reads the same API credential a hosted one does", got)
+	}
+
+	unstated := filepath.Join(t.TempDir(), "modules", "crm")
+	if _, err := RenderOwnedTree(context.Background(), options(unstated, ""), kustomizedWorkload(sidecarDeployment)); err != nil {
+		t.Fatal(err)
+	}
+	if volume, _ := renderedVolume(t, unstated, LocalTrustAnchorVolume); volume != nil {
+		t.Fatal("a k3d environment stating no trust-anchor path mounted one")
+	}
+	if got := renderedAutomount(t, unstated, "api"); got != false {
+		t.Fatalf("a k3d environment stating no trust-anchor path set automountServiceAccountToken to %v", got)
+	}
+}
+
+// TestAHostedHostMountsThePlatformsTrustAnchorAtItsConstantPath: on an
+// environment that declares a host and is not a local k3d one, the host's
+// verifier mounts the platform's trust ConfigMap,
+// `<host.component>-delivery-trust`, at the host's constant path, as one
+// projected ConfigMap source, no items, read-only — the shape the platform's
+// admission pins (obin-ai/infra-base#1366): the composition's Deployment
+// carries the mount, and the render is that Deployment. The other serving
+// workloads of the module, and every other module, mount nothing; a hosted
+// environment that still states host.trust_anchor is refused, not mounted
+// elsewhere; and a host.component that cannot name a ConfigMap refuses the
+// verifier's render alone, never another module's. The verifier is also the
+// one workload that mounts its ServiceAccount's API credential
+// (automountServiceAccountToken: true), for the TokenReview that authorises
+// a delivered carrier; every other workload keeps the agents' false.
+func TestAHostedHostMountsThePlatformsTrustAnchorAtItsConstantPath(t *testing.T) {
+	options := func(destination, delivery string) *RenderOptions {
+		opts := solutionRenderOptions(destination)
+		opts.Host.Delivery = delivery
+		opts.Units = promotableServiceGraph("crm", []string{"api", "web"})
+		opts.Target = &environments.Environment{Name: "prod", Cluster: &environments.EnvironmentCluster{Kind: "gke", Context: "gke-prod"}}
+		return opts
+	}
+	units := kustomizedWorkloads(map[string]string{"api": sidecarDeployment, "web": strings.ReplaceAll(sidecarDeployment, " api\n", " web\n")})
+
+	destination := filepath.Join(t.TempDir(), "modules", "crm")
+	if _, err := RenderOwnedTree(context.Background(), options(destination, "crm/api/rest"), units); err != nil {
+		t.Fatal(err)
+	}
+	requireTrustAnchorMount(t, destination, "platform-host-delivery-trust", HostedTrustAnchorPath)
+	if got := renderedAutomount(t, destination, "api"); got != true {
+		t.Fatalf("the host's verifier has automountServiceAccountToken %v, want true: the host reviews a delivered carrier's token with its own API credential", got)
+	}
+	if volume, _ := renderedVolumeOf(t, destination, "web", LocalTrustAnchorVolume); volume != nil {
+		t.Fatal("a service that is not the host's verifier mounted the platform's trust anchor")
+	}
+	if got := renderedAutomount(t, destination, "web"); got != false {
+		t.Fatalf("a service that is not the host's verifier has automountServiceAccountToken %v, want the agents' false", got)
+	}
+
+	other := filepath.Join(t.TempDir(), "modules", "crm")
+	if _, err := RenderOwnedTree(context.Background(), options(other, "platform/accounts/rest"), units); err != nil {
+		t.Fatal(err)
+	}
+	if volume, _ := renderedVolumeOf(t, other, "api", LocalTrustAnchorVolume); volume != nil {
+		t.Fatal("a module that does not render the host's verifier mounted the platform's trust anchor")
+	}
+	if got := renderedAutomount(t, other, "api"); got != false {
+		t.Fatalf("a module that does not render the host's verifier has automountServiceAccountToken %v, want the agents' false", got)
+	}
+
+	relocated := options(filepath.Join(t.TempDir(), "modules", "crm"), "crm/api/rest")
+	relocated.Host.TrustAnchor = "/etc/host/delivery-trust"
+	if _, err := RenderOwnedTree(context.Background(), relocated, units); err == nil || !strings.Contains(err.Error(), "host.trust_anchor") {
+		t.Fatalf("a hosted environment stating host.trust_anchor was rendered: %v", err)
+	}
+
+	unnameable := options(filepath.Join(t.TempDir(), "modules", "crm"), "crm/api/rest")
+	unnameable.Host.Component = "platform/host"
+	if _, err := RenderOwnedTree(context.Background(), unnameable, units); err == nil || !strings.Contains(err.Error(), "host.component") {
+		t.Fatalf("a host.component that cannot name a ConfigMap was rendered: %v", err)
+	}
+	elsewhere := options(filepath.Join(t.TempDir(), "modules", "crm"), "platform/accounts/rest")
+	elsewhere.Host.Component = "platform/host"
+	if _, err := RenderOwnedTree(context.Background(), elsewhere, units); err != nil {
+		t.Fatalf("a host.component that cannot name a ConfigMap refused a module that does not render the verifier: %v", err)
 	}
 }
 

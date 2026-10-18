@@ -142,7 +142,11 @@ trust anchor (the public verification policy) from, which is a constant
 of the host. A local cluster run mounts the local trust anchor it provisions
 there, the way a cell's platform mounts its own; stating another path moves
 nothing on the host, which then has no anchor and refuses to start. Refused on
-any environment that is not k3d. See "Local runs" below.
+any environment that is not k3d: a deployed host's trust anchor is its
+platform's, and the render mounts the platform's `<host.component>-delivery-trust`
+ConfigMap at the host's constant path itself — the mount is the render's,
+the content the platform's. See "Local runs" below, and "On a hosted cell"
+there.
 
 Nothing here is derived. A derived coordinate is a guess a host silently
 refuses at reconcile time; an unlisted ownership domain is refused by the host
@@ -354,6 +358,30 @@ HTTPS, with HTTP admitted only for loopback; the CLI performs no login and
 sends the token only in `X-Vault-Token`. Only Ed25519 and ECDSA P-256 are
 supported. The derived key ID is `<name>-v<version>`; a mismatch with
 `host.release.key_id` refuses before signing and names both.
+
+### Cloud KMS custody
+
+A cloud provider's KMS may sit behind the same custody interface as an
+optional adapter, never a requirement: a hosted cell whose key custody is the
+cloud's KMS has no Vault to hold a Transit key. Google Cloud KMS is configured
+only for a release publish with `CODEFLY_RELEASE_KMS_KEY`, the full
+cryptoKeyVersion resource name
+(`projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<name>/cryptoKeyVersions/<n>`).
+The derived ID is `<name>-v<n>`, so `host.release.key_id` keeps one spelling
+across custodies. The key version must sign with `EC_SIGN_P256_SHA256` (core
+verifies ECDSA P-256 and Cloud KMS offers no Ed25519); any other algorithm is
+refused by name. The CLI reads the public key once, checks the derived ID
+against `host.release.key_id` before signing (the public key itself is pinned
+by the host), and signs the SHA-256 digest of each DSSE message through
+`asymmetricSign` with the ambient Google credential (Application Default
+Credentials), which it never reads from a file of its own choosing.
+`CODEFLY_RELEASE_KMS_ENDPOINT` selects a regional or private endpoint
+(default `https://cloudkms.googleapis.com`); the host must be under
+`googleapis.com` or loopback, HTTPS is required, HTTP admitted only for
+loopback. A response without its CRC32C checksum is refused as a failed one. Exactly one release custody is configured at a time: Cloud
+KMS is selected when `CODEFLY_RELEASE_KMS_KEY` is set and no Transit variable
+is, and a publish that sets both is refused naming each, never one silently
+winning.
 
 Developer custody is one Ed25519 key per machine, created or loaded by
 `codefly delivery key` (ID `dev-` plus 16 lowercase hex characters of the
@@ -693,6 +721,31 @@ of the module `host.delivery` names. On k3d, `host.trust_anchor` makes the
 render mount that ConfigMap alone, read-only with keys unchanged, into the
 verifier's authenticating container. Provisioning fetches no trust material
 and writes no Secret. The host's `SOLUTION_HOST_TRUST_POLICY` is `keys`.
+
+**On a hosted cell** (cli#1036). The platform renders the trust ConfigMap,
+`<host.component>-delivery-trust`, in the verifier's namespace, and its
+contract says the composition's Deployment carries the mount — which is this
+render's output. So on any environment that declares a host and is not a
+local k3d one, the render mounts that ConfigMap into the verifier's
+authenticating container at the host's constant path,
+`/etc/obin/delivery-trust` (`gitops.HostedTrustAnchorPath`, the other half of
+the host's own constant, which it refuses to relocate from inside a pod), as
+one projected volume with one ConfigMap source, no `items`, read-only — the
+shape the platform's admission pins (obin-ai/infra-base#1366); a pod
+mounting the anchor any other way is refused by the cell. The render declares
+nothing about the ConfigMap's content: the platform owns what the anchor
+says, the render owns only that the pod reads it where the host looks. The
+path is never a workspace value — a composition that could name it could
+point the verifier at a policy it wrote itself — so `host.trust_anchor` stays
+refused on every environment that is not k3d.
+The same workloads, and no other, carry `automountServiceAccountToken: true`:
+the verifier is the one workload with a Kubernetes API credential, for the
+TokenReview that authorises a delivered carrier, read with the cluster CA at
+the standard paths the ServiceAccount admission plugin injects them at — the
+`kube-api-access-…` projection the cell's admission tolerates and its
+`verifier_rbac` already expects — while every other workload keeps the
+agents' `false` (the k3d render that mounts a local trust anchor sets it the
+same way, since the host reads the same paths there).
 
 The host proves the binding at boot (the CA in its projected bundle, and a TLS
 handshake to its API server with that CA alone), so a profile copied to any

@@ -28,9 +28,15 @@ func hostedPaymentsInstances() *ModuleInstance {
 func renderHostedPayments(t *testing.T, workspace *resources.Workspace, env *environments.Environment, deployment string, instance *ModuleInstance) {
 	t.Helper()
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
+	// The owned path is the render's own rule, so the fixture follows the
+	// workspace's gitops path exactly as a real render does.
+	ownedPath, err := moduleOwnedPath(workspace, env, "payments")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: destination, Module: "payments", UnitNames: []string{"api", "host"},
-		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "deployments", "modules", "payments")),
+		OwnedPath:   ownedPath,
 		Units:       promotableServiceGraph("payments", []string{"api", "host"}),
 		Environment: "production", Namespace: "payments", AppProject: "payments", Promotable: true,
 		Workspace: "payments", Host: env.Host, Target: env,

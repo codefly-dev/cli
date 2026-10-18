@@ -142,7 +142,7 @@ func TestLocalGitopsPublishPlansThenCreatesSignedExactRefs(t *testing.T) {
 	if plan.ID == "" || plan.Diff == "" || len(plan.Changed) == 0 {
 		t.Fatalf("publication plan is not inspectable: %+v", plan)
 	}
-	if plan.Path != "environments/deployments/modules/payments" {
+	if plan.Path != "environments/modules/payments" {
 		t.Fatalf("publication path = %q", plan.Path)
 	}
 	snapshotRef := "refs/heads/codefly/snapshot-payments-production"
@@ -274,7 +274,7 @@ func TestReleasePublishRefusesToDeliverWithoutItsWorkflowIdentity(t *testing.T) 
 	t.Setenv("GIT_CONFIG_COUNT", strconv.Itoa(configured+1))
 	t.Setenv(fmt.Sprintf("GIT_CONFIG_KEY_%d", configured), "url.file://"+remote+".insteadOf")
 	t.Setenv(fmt.Sprintf("GIT_CONFIG_VALUE_%d", configured), repository)
-	for _, name := range []string{"VAULT_ADDR", "VAULT_TOKEN", "CODEFLY_RELEASE_TRANSIT_KEY"} {
+	for _, name := range []string{"VAULT_ADDR", "VAULT_TOKEN", "CODEFLY_RELEASE_TRANSIT_KEY", "CODEFLY_RELEASE_KMS_KEY"} {
 		t.Setenv(name, "")
 		if err := os.Unsetenv(name); err != nil {
 			t.Fatal(err)
@@ -360,7 +360,7 @@ func TestPlanPublishReportsOkContractCheckAgainstDeployedHost(t *testing.T) {
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
 	_, err := RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination, Module: "payments", UnitNames: []string{"api"},
-		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "deployments", "modules", "payments")),
+		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "modules", "payments")),
 		Units:       graph,
 		Environment: "production", Namespace: "payments", AppProject: "payments", Promotable: true,
 	}, func(_ context.Context, stage string) error {
@@ -465,7 +465,7 @@ func TestPublishRefusesUnresolvedConsumedContractUnlessAllowed(t *testing.T) {
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
 	_, err := RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination, Module: "payments", UnitNames: []string{"api"},
-		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "deployments", "modules", "payments")),
+		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "modules", "payments")),
 		Units:       graph,
 		Environment: "production", Namespace: "payments", AppProject: "payments", Promotable: true,
 	}, func(_ context.Context, stage string) error {
@@ -717,7 +717,7 @@ spec:
 		context.Background(),
 		config,
 		root,
-		"environments/deployments/modules/payments",
+		"environments/modules/payments",
 		inventory,
 		"production",
 		revision,
@@ -731,7 +731,7 @@ spec:
 	}
 	if !strings.Contains(string(applicationSet), "kind: ApplicationSet") ||
 		!strings.Contains(string(applicationSet), "targetRevision: "+revision) ||
-		!strings.Contains(string(applicationSet), "overlay: environments/deployments/modules/payments/services/store/overlays/production") ||
+		!strings.Contains(string(applicationSet), "overlay: environments/modules/payments/services/store/overlays/production") ||
 		!strings.Contains(string(applicationSet), "tenant: in-cluster") {
 		t.Fatalf("managed bootstrap ApplicationSet = %s", applicationSet)
 	}
@@ -888,12 +888,12 @@ EOF
 	)
 	if !strings.Contains(applicationSet, "kind: ApplicationSet") ||
 		!strings.Contains(applicationSet, "targetRevision: "+result.SnapshotRevision) ||
-		!strings.Contains(applicationSet, "overlay: environments/deployments/modules/payments/services/api/overlays/production") ||
-		!strings.Contains(applicationSet, "overlay: environments/deployments/modules/payments/module/overlays/production") ||
+		!strings.Contains(applicationSet, "overlay: environments/modules/payments/services/api/overlays/production") ||
+		!strings.Contains(applicationSet, "overlay: environments/modules/payments/module/overlays/production") ||
 		// The tenant registry the generator discovers lives outside the module path,
 		// so re-publishing never wipes or prunes an operator's tenant.
 		!strings.Contains(applicationSet, "tenants/production/*/cluster.json") ||
-		strings.Contains(applicationSet, "environments/deployments/modules/payments/tenants") ||
+		strings.Contains(applicationSet, "environments/modules/payments/tenants") ||
 		!strings.Contains(applicationSet, "tenant: in-cluster") {
 		t.Fatalf("generated ApplicationSet = %s", applicationSet)
 	}
@@ -1177,7 +1177,7 @@ func TestPlanPublishRejectsRepositorySymlinkWithoutTouchingItsTarget(t *testing.
 	gitRun(t, work, "config", "user.name", "Codefly Test")
 	gitRun(t, work, "config", "user.email", "codefly@example.com")
 	gitRun(t, work, "config", "commit.gpgsign", "false")
-	targetParent := filepath.Join(work, "environments", "deployments", "modules")
+	targetParent := filepath.Join(work, "environments", "modules")
 	if err := os.MkdirAll(targetParent, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1290,7 +1290,7 @@ func TestRollbackRefusesUnresolvedConsumedContractUnlessAllowed(t *testing.T) {
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", "payments")
 	_, err := RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination, Module: "payments", UnitNames: []string{"api"},
-		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "deployments", "modules", "payments")),
+		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "modules", "payments")),
 		Units:       graph,
 		Environment: "production", Namespace: "payments", AppProject: "payments", Promotable: true,
 	}, func(_ context.Context, stage string) error {
@@ -1322,7 +1322,7 @@ func TestRollbackRefusesUnresolvedConsumedContractUnlessAllowed(t *testing.T) {
 	}
 
 	// saas is torn down after payments was reviewed and published against it.
-	removeGitopsPath(t, remote, "environments/deployments/modules/saas")
+	removeGitopsPath(t, remote, "environments/modules/saas")
 
 	rollbackRequest := RollbackRequest{PublishRequest: request, ToRevision: published.Commit}
 	rollbackPlan, err := PlanRollback(ctx, workspace, &rollbackRequest)
@@ -1483,7 +1483,7 @@ func seedHostModuleInventory(t *testing.T, remote, gitopsPath, module string, in
 	gitRun(t, work, "config", "user.name", "Codefly Test")
 	gitRun(t, work, "config", "user.email", "codefly@example.com")
 	gitRun(t, work, "config", "commit.gpgsign", "false")
-	dir := filepath.Join(work, filepath.FromSlash(gitopsPath), "deployments", "modules", module)
+	dir := filepath.Join(work, filepath.FromSlash(deliveryModulePath(gitopsPath, module)))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1646,7 +1646,7 @@ func renderPublishFixture(t *testing.T, root, module, environment, name string) 
 	destination := filepath.Join(root, "deployments", "modules", module)
 	_, err := RenderOwnedTree(context.Background(), &RenderOptions{
 		Destination: destination, Module: module, UnitNames: []string{"api"},
-		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "deployments", "modules", module)),
+		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "modules", module)),
 		Units:       promotableServiceGraph(module, []string{"api"}),
 		Environment: environment, Namespace: "payments", AppProject: "payments", Promotable: true,
 	}, func(ctx context.Context, stage string) error {
@@ -1672,7 +1672,7 @@ func renderPublishFixtureWithModuleAgent(t *testing.T, workspace *resources.Work
 	destination := filepath.Join(workspace.Dir(), "deployments", "modules", moduleName)
 	_, err = RenderOwnedTree(ctx, &RenderOptions{
 		Destination: destination, Module: moduleName, UnitNames: []string{"api"},
-		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "deployments", "modules", moduleName)),
+		OwnedPath:   filepath.ToSlash(filepath.Join("environments", "modules", moduleName)),
 		ModulePath:  "module",
 		Units:       graph,
 		Environment: environmentName, Namespace: environment.Namespace,

@@ -171,7 +171,7 @@ func TestADeveloperIdentityNeverSignsARelease(t *testing.T) {
 	t.Setenv("GIT_CONFIG_COUNT", strconv.Itoa(configured+1))
 	t.Setenv(fmt.Sprintf("GIT_CONFIG_KEY_%d", configured), "url.file://"+remote+".insteadOf")
 	t.Setenv(fmt.Sprintf("GIT_CONFIG_VALUE_%d", configured), repository)
-	for _, name := range []string{"VAULT_ADDR", "VAULT_TOKEN", "CODEFLY_RELEASE_TRANSIT_KEY"} {
+	for _, name := range []string{"VAULT_ADDR", "VAULT_TOKEN", "CODEFLY_RELEASE_TRANSIT_KEY", "CODEFLY_RELEASE_KMS_KEY"} {
 		t.Setenv(name, "")
 		if err := os.Unsetenv(name); err != nil {
 			t.Fatal(err)
@@ -183,6 +183,73 @@ func TestADeveloperIdentityNeverSignsARelease(t *testing.T) {
 	}
 	if fake.loaded != 0 {
 		t.Fatal("a release publish built the developer signer")
+	}
+}
+
+// TestAPublishDeliversUnderTheGitopsPathExactlyAsRendered: a workspace
+// delivering into its own repository declares `path: deployments`, the
+// directory its render already writes `modules/<module>` under. The publish
+// delivers to exactly that tree — never `deployments/deployments/modules`,
+// the doubled path obin-ai/platform-obin#128 committed, which the cell's
+// ApplicationSet never globs — and the next publish reads the prior
+// generation back from the same tree, so a rebuild settles at generation 2
+// against generation 1 rather than against nothing.
+func TestAPublishDeliversUnderTheGitopsPathExactlyAsRendered(t *testing.T) {
+	ctx, workspace, remote := developerPublishWorkspace(t)
+	configPath := filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName)
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := strings.Replace(string(config), "  path: environments\n", "  path: deployments\n", 1)
+	if declared == string(config) {
+		t.Fatal("the fixture's gitops path was not found")
+	}
+	if err = os.WriteFile(configPath, []byte(declared), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if workspace, err = resources.LoadWorkspaceFromDir(ctx, workspace.Dir()); err != nil {
+		t.Fatal(err)
+	}
+	env := selectedEnvironment(t, workspace, "production")
+	renderHostedPayments(t, workspace, env, pinnedDeployment, hostedPaymentsInstances())
+	inventory, err := LoadInventory(filepath.Join(workspace.Dir(), "deployments", "modules", "payments"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inventory.OwnedPath != "deployments/modules/payments" {
+		t.Fatalf("the render owns %q, want the workspace's own deployments/modules/payments", inventory.OwnedPath)
+	}
+	installDeveloperSigning(t, &developerSigning{signer: &fakeSigner{nonce: true}})
+	request := PublishRequest{Module: "payments", Environment: "production", Local: true, PromotionBranch: "codefly/promote-payments-production"}
+	publish := func() (PublishPlan, PublishResult) {
+		t.Helper()
+		plan, err := PlanPublish(ctx, workspace, &request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers}, preparedPermit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return plan, result
+	}
+	first, firstResult := publish()
+	if first.Path != "deployments/modules/payments" || firstResult.Path != first.Path {
+		t.Fatalf("the publish delivered to %q (result %q), want deployments/modules/payments", first.Path, firstResult.Path)
+	}
+	delivered := gitOutput(t, "", "--git-dir", remote, "ls-tree", "-r", "--name-only", "refs/heads/main")
+	if !strings.Contains(delivered, "deployments/modules/payments/"+InventoryFilename+"\n") {
+		t.Fatalf("the promoted tree holds no inventory at deployments/modules/payments:\n%s", delivered)
+	}
+	if strings.Contains(delivered, "deployments/deployments/") {
+		t.Fatalf("the promoted tree prefixes the gitops path twice:\n%s", delivered)
+	}
+
+	renderHostedPayments(t, workspace, env, strings.ReplaceAll(pinnedDeployment, "aaaa", "bbbb"), hostedPaymentsInstances())
+	second, _ := publish()
+	if g1, g2 := first.Delivery.Documents[0].Generation, second.Delivery.Documents[0].Generation; g1 != 1 || g2 != 2 {
+		t.Fatalf("a rebuilt module settled at generations %d then %d, want 1 then 2", g1, g2)
 	}
 }
 
@@ -454,7 +521,7 @@ func TestALocalPromotionIsACompareAndSwapOnTheSettledBase(t *testing.T) {
 // — so the run can hold the cluster's Application to all of it.
 func TestADeliveryJobNamesTheApplicationTheCLIRendered(t *testing.T) {
 	tree := t.TempDir()
-	module := "env/deployments/modules/payments"
+	module := "env/modules/payments"
 	overlay := module + "/" + moduleManifestDir + "/overlays/local"
 	if err := os.MkdirAll(filepath.Join(tree, filepath.FromSlash(overlay)), 0o755); err != nil {
 		t.Fatal(err)
