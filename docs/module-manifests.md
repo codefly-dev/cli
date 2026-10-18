@@ -882,8 +882,9 @@ redelivered unchanged (the host replays it) on the next signal.
 ## Dev deployments
 
 `codefly deploy dev` re-pins a service's image inside an already-rendered
-tree. A module manifest names no build, so a re-pin leaves it true and a
-delivering module is re-pinned like any other.
+tree, and re-derives the environment's cell file when it declares a host. A
+module manifest names no build, so a re-pin leaves it true and a delivering
+module is re-pinned like any other.
 
 ## What is not verified
 

@@ -30,6 +30,8 @@ var DevCmd = &cobra.Command{
 	Long: `Build and push ONE service from local code — --path, else its machine-local
 service override — through the same build path ` + "`deploy gitops render`" + ` uses, then
 re-pin only that service's image digest in the environment's rendered tree.
+When the environment declares a host, its cell file is re-derived as well: the
+cell admits only the builds that file names, so the new digest goes with it.
 
 The environment then runs code no release describes. The render inventory
 records it under "dev", ` + "`codefly doctor workspace`" + ` warns while it is active, and

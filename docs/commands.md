@@ -870,8 +870,8 @@ codefly deploy gitops rollback payments --env production \
 `render --all` renders every module the workspace composes, the host first,
 and derives the environment's cell file once at the end from all of them, so
 one command renders one composition and a stale sibling tree is never a reason
-to run the render again. A single-module `render` re-derives the cell file
-from its own tree and the sibling trees already rendered; a sibling the cell
+to run the render again. A single-module `render` (and a `deploy dev`)
+re-derives the cell file from its own tree and the sibling trees already rendered; a sibling the cell
 file cannot read, or one left at another inventory schema, is reported as
 stale by name rather than failing the render. An image whose inputs did not
 change is kept rather than rebuilt, and that decision is taken before any Go
@@ -1324,6 +1324,16 @@ codefly deploy dev payments/api --env staging --commit --push
    rendered, was rendered for another environment (or another `--app-project`,
    when given), was edited since its render, or does not pin the image the build
    produced — in every case: run the full render first.
+
+   When the environment declares a `host:` block, the environment's cell file
+   (`<gitops path>/cells/<environment>/cell.yaml`) is then re-derived from the
+   rendered trees exactly as a render derives it, and is among the changed
+   files. A cell admits only the builds its cell file names — a validation cell
+   takes that approval from the branch head's file — so a re-pin the file did
+   not carry would be refused at admission and never run. In the file, that
+   workload's image digest and the `source` revision move. If the cell file
+   cannot be re-derived the command refuses with the reason, after the image is
+   pushed and the tree patched: fix what the refusal names and run it again.
 4. **Record.** `.codefly-render.json` gains a `dev` entry for the service:
    source origin and path, the source's git commit and whether it was dirty, the
    image and digest, and the time. `codefly doctor workspace` reports each one as

@@ -29,7 +29,7 @@ edit ──▶ codefly run service          local, no image build       seconds
 | Plan | `codefly deploy gitops plan <module> --env <env>` | Shows the exact publication diff — what publishing would change in the GitOps repository — and writes nothing. | Seconds. |
 | Publish | `codefly deploy gitops publish <module> --env <env>` | Creates a signed promotion commit and opens or updates its pull request. The cluster changes when that lands and Argo CD syncs it, never from this command. | Seconds. |
 | Observe | `codefly deploy gitops observe <module> --env <env>` | Verifies Argo CD reconciled the reviewed revision and stores the evidence. | As long as the rollout takes. See [deployment-completion.md](deployment-completion.md). |
-| Escape hatch | `codefly deploy dev <module>/<service> --env <env>` | Builds one service from local code and re-pins only that service's digest in an already-rendered tree. | One image build. The environment then runs code no release describes until the next full render. |
+| Escape hatch | `codefly deploy dev <module>/<service> --env <env>` | Builds one service from local code and re-pins only that service's digest in an already-rendered tree; in an environment with a `host:` block it re-derives the cell file too, since the cell admits only the builds that file names. | One image build. The environment then runs code no release describes until the next full render. |
 
 `render`, `snapshot`, `plan` and `publish` evaluate the workspace readiness
 verdict before doing any expensive work and refuse with `codefly doctor

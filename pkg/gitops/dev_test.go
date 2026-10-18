@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/gitops/cellfile"
 	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/core/resources"
 	"github.com/stretchr/testify/require"
@@ -381,4 +382,50 @@ func TestDeployDevCarriesRebuildToTheBuild(t *testing.T) {
 			require.Equal(t, rebuild, asked, "the build must be told whether to rebuild")
 		})
 	}
+}
+
+// A hosted cell admits only the builds its cell file names, so a dev
+// deployment into an environment with a host re-derives that file with the
+// new digest and reports it among what it changed, for the commit to carry.
+func TestDeployDevIntoAHostedEnvironmentRederivesTheCellFile(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+	cell, err := RenderCell(context.Background(), workspace, env)
+	require.NoError(t, err)
+	workloadImage := func() cellfile.Image {
+		data, readErr := os.ReadFile(cell.Path)
+		require.NoError(t, readErr)
+		file, parseErr := cellfile.Parse(data)
+		require.NoError(t, parseErr)
+		for _, namespace := range file.Namespaces {
+			for _, workload := range namespace.Workloads {
+				if workload.Name == "api" {
+					return workload.Containers[0].Image
+				}
+			}
+		}
+		t.Fatal("the cell file has no api workload")
+		return cellfile.Image{}
+	}
+	require.Equal(t, "sha256:"+strings.Repeat("a", 64), workloadImage().Digest)
+
+	module, err := workspace.LoadModuleFromName(context.Background(), "shop")
+	require.NoError(t, err)
+	source := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(source, resources.ServiceConfigurationName), []byte(exposedCellServiceYAML("api")), 0o644))
+	stubBuild(t, []string{"registry.example.test/acme/api:1.2.0@" + devNewDigest}, nil)
+
+	result, err := DeployDev(context.Background(), &DevRequest{
+		Workspace: workspace, Module: module, Service: "api", Environment: env,
+		AppProject: "acme-staging", Source: DevSource{Dir: source, Origin: DevSourceFlag},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"deployments/modules/shop/services/api/overlays/staging/deployment.yaml",
+		"deployments/modules/shop/" + InventoryFilename,
+		"deployments/cells/staging/cell.yaml",
+	}, result.Changed, "the cell file is committed with the digest it now admits")
+	require.Equal(t, cellfile.Image{Repository: "registry.example.test/acme/api", Digest: devNewDigest}, workloadImage())
 }
