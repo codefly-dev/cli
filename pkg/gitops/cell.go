@@ -14,6 +14,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops/cellfile"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/resources"
@@ -489,6 +490,10 @@ func endpointConsumers(ctx context.Context, workspace *resources.Workspace, env 
 	if referencesErr != nil {
 		return nil, nil, referencesErr
 	}
+	reach, reachErr := derivedRunnableReach(ctx, workspace)
+	if reachErr != nil {
+		return nil, nil, reachErr
+	}
 	consumers := map[string][]string{}
 	var configured []string
 	add := func(key, consumer string) {
@@ -508,32 +513,8 @@ func endpointConsumers(ctx context.Context, workspace *resources.Workspace, env 
 			}
 			consumer := resources.ServiceUnique(module.Name, service.Name)
 			for _, dependency := range service.ServiceDependencies {
-				if dependency == nil || dependency.Name == "" {
-					continue
-				}
-				targetModule := dependency.Module
-				if targetModule == "" {
-					targetModule = module.Name
-				}
-				target, err := workspace.LoadService(ctx, &resources.ServiceWithModule{Name: dependency.Name, Module: targetModule})
-				if err != nil {
-					continue
-				}
-				var names []string
-				for _, endpoint := range dependency.Endpoints {
-					if endpoint != nil && endpoint.Name != "" {
-						names = append(names, endpoint.Name)
-					}
-				}
-				if len(names) == 0 {
-					for _, endpoint := range target.Endpoints {
-						if endpoint != nil {
-							names = append(names, endpoint.Name)
-						}
-					}
-				}
-				for _, name := range names {
-					add(resources.ServiceUnique(targetModule, target.Name)+"/"+name, consumer)
+				for _, key := range dependencyKeys(ctx, workspace, module.Name, dependency) {
+					add(key, consumer)
 				}
 			}
 			reads := references[consumer]
@@ -551,6 +532,17 @@ func endpointConsumers(ctx context.Context, workspace *resources.Workspace, env 
 				add(key, consumer)
 			}
 		}
+	}
+	gatewayEdges, gatewayErr := hostRouteConsumers(ctx, workspace, env)
+	if gatewayErr != nil {
+		return nil, nil, gatewayErr
+	}
+	for _, edge := range append(gatewayEdges, preparedReachConsumers(reach)...) {
+		if slices.Contains(consumers[edge.key], edge.consumer) {
+			continue
+		}
+		configured = append(configured, edge.why)
+		add(edge.key, edge.consumer)
 	}
 	consumed, err := solutionrun.ConsumedEndpoints(ctx, workspace)
 	if err != nil {
@@ -695,4 +687,99 @@ func labelPodTemplates(ctx context.Context, root string) error {
 		}
 		return shared.WriteFileAtomic(ctx, path, []byte(out.String()), 0o644)
 	})
+}
+
+// consumerEdge is one consumer of one endpoint, with the sentence the render
+// prints to say where it came from: an edge nobody declared is reported, or
+// an operator reads a cell admitting a caller no service names.
+type consumerEdge struct {
+	key      string
+	consumer string
+	why      string
+}
+
+// hostRouteConsumers is the gateway on every endpoint a composed solution
+// reaches through the host (orchestration.HostRouteTargets, the derivation the
+// mesh edges read). A route is one hop THROUGH the gateway, not a direct call,
+// so a cell that admits only the solution's backend denies every proxied call
+// with nothing in the module's log to say so.
+func hostRouteConsumers(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) ([]consumerEdge, error) {
+	if env.Host == nil || env.Host.Gateway == "" {
+		return nil, nil
+	}
+	gatewayModule, _, _ := strings.Cut(env.Host.Gateway, "/")
+	targets, err := orchestration.HostRouteTargets(ctx, workspace, gatewayModule)
+	if err != nil {
+		return nil, err
+	}
+	edges := make([]consumerEdge, 0, len(targets))
+	for _, target := range targets {
+		key := resources.ServiceUnique(target.Module, target.Service) + "/" + target.Endpoint
+		edges = append(edges, consumerEdge{key: key, consumer: env.Host.Gateway,
+			why: fmt.Sprintf("cell: %s reaches %s because the host routes it there; declared by the composition's consumption, not by a service dependency", env.Host.Gateway, key)})
+	}
+	return edges, nil
+}
+
+// preparedReachConsumers is every executor on every owner endpoint its
+// prepared runnable bindings call (derivedRunnableReach). The owner publishes
+// an operation and the executor installs it; neither declares a dependency on
+// the other, so without this the cell admits nobody on the owner's endpoint,
+// the mesh denies the call, and the executor reports only an owner that did
+// not answer.
+func preparedReachConsumers(reach *runnableReach) []consumerEdge {
+	if reach == nil {
+		return nil
+	}
+	var edges []consumerEdge
+	for key := range reach.owners {
+		for _, executor := range reach.executors {
+			consumer := executor.Unique()
+			edges = append(edges, consumerEdge{key: key, consumer: consumer,
+				why: fmt.Sprintf("cell: %s reaches %s through the runnable bindings it installs; prepared by the composition, not declared by either service", consumer, key)})
+		}
+	}
+	slices.SortFunc(edges, func(a, b consumerEdge) int {
+		if a.key != b.key {
+			return strings.Compare(a.key, b.key)
+		}
+		return strings.Compare(a.consumer, b.consumer)
+	})
+	return edges
+}
+
+// dependencyKeys is the `<module>/<service>/<endpoint>` of every endpoint one
+// declared service dependency reaches: the endpoints it names, or all of the
+// target's when it names none. A dependency on a service the workspace does
+// not compose reaches nothing here; the composition refuses it elsewhere.
+func dependencyKeys(ctx context.Context, workspace *resources.Workspace, module string, dependency *resources.ServiceDependency) []string {
+	if dependency == nil || dependency.Name == "" {
+		return nil
+	}
+	targetModule := dependency.Module
+	if targetModule == "" {
+		targetModule = module
+	}
+	target, err := workspace.LoadService(ctx, &resources.ServiceWithModule{Name: dependency.Name, Module: targetModule})
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, endpoint := range dependency.Endpoints {
+		if endpoint != nil && endpoint.Name != "" {
+			names = append(names, endpoint.Name)
+		}
+	}
+	if len(names) == 0 {
+		for _, endpoint := range target.Endpoints {
+			if endpoint != nil {
+				names = append(names, endpoint.Name)
+			}
+		}
+	}
+	keys := make([]string, 0, len(names))
+	for _, name := range names {
+		keys = append(keys, resources.ServiceUnique(targetModule, target.Name)+"/"+name)
+	}
+	return keys
 }

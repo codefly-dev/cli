@@ -657,7 +657,18 @@ once and nowhere else:
   principal: every module mints on it;
 - a public endpoint — the gateway's `rest` — is marked `ingress`: the cell's
   ingress gateway reaches it, under a principal the cell names, not the
-  composition.
+  composition;
+- the endpoint a module's **derived operation** is called on admits every
+  service that installs prepared runnable bindings — the services declaring
+  the `runnable-bindings` workspace-configuration group. An executor such as
+  the runtime calls owners it does not and must not declare; the composition
+  prepares those calls (`codefly generate runnable-bindings`), so the
+  composition is where the edge comes from. The owner endpoint is the one the
+  prepared call targets: the published endpoint for a REST publication, the
+  service's connect endpoint for a gRPC or Connect one. Without this source
+  the owner's connect endpoint had no consumer at all, and every fan-out
+  operation on a cell settled `OWNER_UNAVAILABLE` at the mesh
+  (codefly-dev/cli#1072).
 
 One source is not in the composition at all. A service whose render includes a
 workload that does **not** serve its endpoints — an agent's bootstrap Job,

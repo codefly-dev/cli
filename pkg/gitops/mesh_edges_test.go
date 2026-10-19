@@ -28,6 +28,7 @@ layout: modules
 modules:
   - name: edge
   - name: app
+  - name: exec
   - name: wiki
 environments:
   - name: prod
@@ -51,7 +52,14 @@ environments:
 			"endpoints:\n  - name: rest\n    api: rest\n    visibility: public\n    exposure: public\n  - name: workload\n    api: http\n    visibility: internal\n"),
 		"modules/app/" + resources.ModuleConfigurationName: "kind: module\nname: app\nservices:\n  - name: api\n  - name: worker\n",
 		"modules/app/services/api/" + resources.ServiceConfigurationName: service("api",
-			"endpoints:\n  - name: grpc\n    api: grpc\n    visibility: internal\n  - name: admin\n    api: rest\n"),
+			"endpoints:\n  - name: grpc\n    api: grpc\n    visibility: internal\n  - name: connect\n    api: connect\n    visibility: internal\n  - name: admin\n    api: rest\n"),
+		// app derives one operation on api's grpc publication: a prepared binding
+		// calls it on api's connect endpoint, and whoever installs the bindings
+		// reaches that endpoint.
+		"modules/app/contracts/runnables/index.json":        `{"schema":"codefly/runnable-operations/v1","workspace":"example","module":"app","operations":[{"name":"do","version":"0.0.1","digest":"sha256:0","service":"api","endpoint":"grpc","method":"Do","input_message":"DoRequest","output_message":"DoResponse","path":"do"}]}`,
+		"modules/exec/" + resources.ModuleConfigurationName: "kind: module\nname: exec\nservices:\n  - name: runner\n",
+		"modules/exec/services/runner/" + resources.ServiceConfigurationName: service("runner",
+			"workspace-configuration-dependencies:\n  - runnable-bindings\n"),
 		"modules/app/services/worker/" + resources.ServiceConfigurationName: service("worker",
 			"service-dependencies:\n  - name: api\n    endpoints:\n      - name: grpc\n"),
 		"modules/wiki/" + resources.ModuleConfigurationName: "kind: module\nname: wiki\nservice-entry: backend\nservices:\n  - name: backend\n",
@@ -110,10 +118,10 @@ func moduleServices(t *testing.T, workspace *resources.Workspace, name string) (
 func TestMeshEdgesAreTheCompositionsDeclaredReach(t *testing.T) {
 	workspace, env := meshWorkspace(t)
 	const domain = "spiffe://local.example/ns/example-"
-	gateway, api, worker, backend := domain+"edge/sa/gateway", domain+"app/sa/api", domain+"app/sa/worker", domain+"wiki/sa/backend"
+	gateway, api, worker, backend, runner := domain+"edge/sa/gateway", domain+"app/sa/api", domain+"app/sa/worker", domain+"wiki/sa/backend", domain+"exec/sa/runner"
 	ports := map[string]map[string]uint32{
 		"edge/gateway": {"rest": 8080, "workload": 8081},
-		"app/api":      {"grpc": 9090, "admin": 8082},
+		"app/api":      {"grpc": 9090, "connect": 8081, "admin": 8082},
 		"wiki/backend": {"http": 8080},
 	}
 
@@ -124,6 +132,12 @@ func TestMeshEdgesAreTheCompositionsDeclaredReach(t *testing.T) {
 		require.Equal(t, MeshEdgesSchemaVersion, edges.SchemaVersion)
 		require.Equal(t, "local.example", edges.TrustDomain)
 		require.Equal(t, []MeshEdge{{
+			// The executor installing the prepared bindings reaches the connect
+			// endpoint the derived operation is called on, and nobody else:
+			// the composition prepared that call, it declared no dependency.
+			Module: "app", Service: "api", Namespace: "example-app", Account: "api", Principal: api,
+			Endpoint: "connect", Port: 8081, TargetPort: 8081, Principals: []string{runner},
+		}, {
 			Module: "app", Service: "api", Namespace: "example-app", Account: "api", Principal: api,
 			Endpoint: "grpc", Port: 9090, TargetPort: 9090,
 			// Every workload of the consumer module, and the gateway the
@@ -148,7 +162,7 @@ func TestMeshEdgesAreTheCompositionsDeclaredReach(t *testing.T) {
 		require.Equal(t, "edge/gateway", edges.Gateway)
 		require.Equal(t, []MeshEdge{
 			{Module: "edge", Service: "gateway", Namespace: "example-edge", Account: "gateway", Principal: gateway, Endpoint: "rest", Port: 8080, TargetPort: 8080, Ingress: true},
-			{Module: "edge", Service: "gateway", Namespace: "example-edge", Account: "gateway", Principal: gateway, Endpoint: "workload", Port: 8081, TargetPort: 8081, Principals: []string{api, worker, gateway, backend}},
+			{Module: "edge", Service: "gateway", Namespace: "example-edge", Account: "gateway", Principal: gateway, Endpoint: "workload", Port: 8081, TargetPort: 8081, Principals: []string{api, worker, gateway, runner, backend}},
 		}, edges.Edges)
 	})
 	t.Run("service and container ports are independently carried", func(t *testing.T) {
@@ -185,6 +199,8 @@ func TestMeshEdgesAreTheCompositionsDeclaredReach(t *testing.T) {
 // is an ingress edge.
 func TestIngressEdgesAreTheEnvironmentsRoutes(t *testing.T) {
 	workspace, env := meshWorkspace(t)
+	// api's connect endpoint is left without an in-cluster port here: this test
+	// is about the self-consumed grpc edge alone.
 	ports := map[string]map[string]uint32{"edge/gateway": {"rest": 8080, "workload": 8081}, "app/api": {"grpc": 9090, "admin": 8082}}
 	module, services := moduleServices(t, workspace, "edge")
 	routed := *env

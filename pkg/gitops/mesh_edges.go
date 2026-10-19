@@ -42,7 +42,16 @@ import (
 //     principal (every module mints on it);
 //   - a public endpoint — the gateway's `rest` — admits the cell's ingress
 //     gateway, whose principal is the cell's to name, so it is marked rather
-//     than named.
+//     than named;
+//   - the endpoint a module's DERIVED OPERATION is called on (the owner's
+//     served connect endpoint, or the published REST one) admits every
+//     service that installs prepared runnable bindings — the services
+//     declaring the `runnable-bindings` workspace-configuration group. An
+//     executor (the runtime) calls owners it does not and must not declare;
+//     the composition prepares those calls (`codefly generate
+//     runnable-bindings`), so the composition is where the edge comes from.
+//     Without it the owner's connect endpoint had no consumer at all and every
+//     fan-out operation on a cell settled OWNER_UNAVAILABLE at the mesh.
 //
 // One source is not in the composition at all: a service whose render includes
 // a workload that does not serve its endpoints — an agent's bootstrap Job,
@@ -129,6 +138,10 @@ type meshComposition struct {
 	gatewayPrincipal string
 	allow            resources.DerivedAllowModules
 	targets          []orchestration.HostRouteTarget
+	// executors are the principals of the services that install prepared
+	// runnable bindings; owners are the endpoints their prepared calls target.
+	executors []string
+	reach     *runnableReach
 }
 
 // indexMeshComposition derives the composition's side of every edge once.
@@ -165,6 +178,26 @@ func indexMeshComposition(ctx context.Context, workspace *resources.Workspace, e
 	if host.Gateway != "" {
 		index.gatewayPrincipal = meshPrincipal(host, env.ModuleNamespace(workspace, gatewayModule), gatewayService)
 	}
+	// The reach the composition prepares rather than declares, derived once
+	// for the cell file and the mesh alike (derivedRunnableReach): the
+	// executors' principals, and the owner endpoints their prepared bindings
+	// call.
+	reach, err := derivedRunnableReach(ctx, workspace)
+	if err != nil {
+		return nil, err
+	}
+	index.reach = reach
+	for _, executor := range reach.executors {
+		if _, managed := env.ManagedService(executor.Module, executor.Service); managed {
+			continue
+		}
+		namespace := env.ModuleNamespace(workspace, executor.Module)
+		if namespace == "" {
+			continue
+		}
+		index.executors = append(index.executors, meshPrincipal(host, namespace, executor.Service))
+	}
+	slices.Sort(index.executors)
 	return index, nil
 }
 
@@ -187,6 +220,11 @@ func (index *meshComposition) sources(module, service, endpoint string) []string
 	}
 	if resources.ServiceUnique(module, service) == index.gateway && endpoint == gatewayWorkloadEndpoint {
 		for _, principal := range index.every {
+			admitted[principal] = true
+		}
+	}
+	if index.reach.reaches(module, service, endpoint) {
+		for _, principal := range index.executors {
 			admitted[principal] = true
 		}
 	}
