@@ -557,43 +557,16 @@ func endpointConsumers(ctx context.Context, workspace *resources.Workspace, env 
 			}
 		}
 	}
-	// The gateway forwards to every endpoint a composed solution reaches
-	// through the host (orchestration.HostRouteTargets, the derivation the
-	// mesh edges read), so the gateway's own workload is that endpoint's
-	// caller. The solution's backend is recorded beside it, below: a route
-	// is one hop through the gateway, not a direct call, and a cell that
-	// admits only the backend denies every proxied call with nothing in the
-	// module's log to say so.
-	if env.Host != nil && env.Host.Gateway != "" {
-		gatewayModule, _, _ := strings.Cut(env.Host.Gateway, "/")
-		targets, targetsErr := orchestration.HostRouteTargets(ctx, workspace, gatewayModule)
-		if targetsErr != nil {
-			return nil, nil, targetsErr
-		}
-		for _, target := range targets {
-			key := resources.ServiceUnique(target.Module, target.Service) + "/" + target.Endpoint
-			if slices.Contains(consumers[key], env.Host.Gateway) {
-				continue
-			}
-			configured = append(configured, fmt.Sprintf("cell: %s reaches %s because the host routes it there; declared by the composition's consumption, not by a service dependency", env.Host.Gateway, key))
-			add(key, env.Host.Gateway)
-		}
+	gatewayEdges, gatewayErr := hostRouteConsumers(ctx, workspace, env)
+	if gatewayErr != nil {
+		return nil, nil, gatewayErr
 	}
-	// The reach the composition prepares rather than declares: a service that
-	// installs prepared runnable bindings calls the owner of every derived
-	// operation, and neither side declares a dependency on the other. Derived
-	// here so a cell cannot be rendered in which the executor's call to an
-	// owner is denied by the mesh — the failure the owner reports to nobody
-	// and the executor sees only as an owner that did not answer.
-	for key := range reach.owners {
-		for _, executor := range reach.executors {
-			consumer := executor.Unique()
-			if slices.Contains(consumers[key], consumer) {
-				continue
-			}
-			configured = append(configured, fmt.Sprintf("cell: %s reaches %s through the runnable bindings it installs; prepared by the composition, not declared by either service", consumer, key))
-			add(key, consumer)
+	for _, edge := range append(gatewayEdges, preparedReachConsumers(reach)...) {
+		if slices.Contains(consumers[edge.key], edge.consumer) {
+			continue
 		}
+		configured = append(configured, edge.why)
+		add(edge.key, edge.consumer)
 	}
 	consumed, err := solutionrun.ConsumedEndpoints(ctx, workspace)
 	if err != nil {
@@ -738,4 +711,63 @@ func labelPodTemplates(ctx context.Context, root string) error {
 		}
 		return shared.WriteFileAtomic(ctx, path, []byte(out.String()), 0o644)
 	})
+}
+
+// consumerEdge is one consumer of one endpoint, with the sentence the render
+// prints to say where it came from: an edge nobody declared is reported, or
+// an operator reads a cell admitting a caller no service names.
+type consumerEdge struct {
+	key      string
+	consumer string
+	why      string
+}
+
+// hostRouteConsumers is the gateway on every endpoint a composed solution
+// reaches through the host (orchestration.HostRouteTargets, the derivation the
+// mesh edges read). A route is one hop THROUGH the gateway, not a direct call,
+// so a cell that admits only the solution's backend denies every proxied call
+// with nothing in the module's log to say so.
+func hostRouteConsumers(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) ([]consumerEdge, error) {
+	if env.Host == nil || env.Host.Gateway == "" {
+		return nil, nil
+	}
+	gatewayModule, _, _ := strings.Cut(env.Host.Gateway, "/")
+	targets, err := orchestration.HostRouteTargets(ctx, workspace, gatewayModule)
+	if err != nil {
+		return nil, err
+	}
+	edges := make([]consumerEdge, 0, len(targets))
+	for _, target := range targets {
+		key := resources.ServiceUnique(target.Module, target.Service) + "/" + target.Endpoint
+		edges = append(edges, consumerEdge{key: key, consumer: env.Host.Gateway,
+			why: fmt.Sprintf("cell: %s reaches %s because the host routes it there; declared by the composition's consumption, not by a service dependency", env.Host.Gateway, key)})
+	}
+	return edges, nil
+}
+
+// preparedReachConsumers is every executor on every owner endpoint its
+// prepared runnable bindings call (derivedRunnableReach). The owner publishes
+// an operation and the executor installs it; neither declares a dependency on
+// the other, so without this the cell admits nobody on the owner's endpoint,
+// the mesh denies the call, and the executor reports only an owner that did
+// not answer.
+func preparedReachConsumers(reach *runnableReach) []consumerEdge {
+	if reach == nil {
+		return nil
+	}
+	var edges []consumerEdge
+	for key := range reach.owners {
+		for _, executor := range reach.executors {
+			consumer := executor.Unique()
+			edges = append(edges, consumerEdge{key: key, consumer: consumer,
+				why: fmt.Sprintf("cell: %s reaches %s through the runnable bindings it installs; prepared by the composition, not declared by either service", consumer, key)})
+		}
+	}
+	slices.SortFunc(edges, func(a, b consumerEdge) int {
+		if a.key != b.key {
+			return strings.Compare(a.key, b.key)
+		}
+		return strings.Compare(a.consumer, b.consumer)
+	})
+	return edges
 }

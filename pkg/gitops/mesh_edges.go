@@ -201,10 +201,6 @@ func indexMeshComposition(ctx context.Context, workspace *resources.Workspace, e
 	return index, nil
 }
 
-func meshEndpointKey(module, service, endpoint string) string {
-	return module + "/" + service + "/" + endpoint
-}
-
 // sources is who the composition admits to one endpoint, sorted and each
 // once: the consumer modules' workloads, the gateway when it forwards to the
 // endpoint, and every workload on the gateway's workload port.
