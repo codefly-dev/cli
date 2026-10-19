@@ -3,6 +3,9 @@ package gitops
 import (
 	"context"
 	"fmt"
+	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	"github.com/codefly-dev/core/standards"
 	"maps"
 	"slices"
 	"sort"
@@ -42,7 +45,16 @@ import (
 //     principal (every module mints on it);
 //   - a public endpoint — the gateway's `rest` — admits the cell's ingress
 //     gateway, whose principal is the cell's to name, so it is marked rather
-//     than named.
+//     than named;
+//   - the endpoint a module's DERIVED OPERATION is called on (the owner's
+//     served connect endpoint, or the published REST one) admits every
+//     service that installs prepared runnable bindings — the services
+//     declaring the `runnable-bindings` workspace-configuration group. An
+//     executor (the runtime) calls owners it does not and must not declare;
+//     the composition prepares those calls (`codefly generate
+//     runnable-bindings`), so the composition is where the edge comes from.
+//     Without it the owner's connect endpoint had no consumer at all and every
+//     fan-out operation on a cell settled OWNER_UNAVAILABLE at the mesh.
 //
 // One source is not in the composition at all: a service whose render includes
 // a workload that does not serve its endpoints — an agent's bootstrap Job,
@@ -129,6 +141,10 @@ type meshComposition struct {
 	gatewayPrincipal string
 	allow            resources.DerivedAllowModules
 	targets          []orchestration.HostRouteTarget
+	// executors are the principals of the services that install prepared
+	// runnable bindings; owners are the endpoints their prepared calls target.
+	executors []string
+	owners    map[string]bool
 }
 
 // indexMeshComposition derives the composition's side of every edge once.
@@ -147,7 +163,7 @@ func indexMeshComposition(ctx context.Context, workspace *resources.Workspace, e
 	if err != nil {
 		return nil, err
 	}
-	index := &meshComposition{byModule: map[string][]string{}, gateway: host.Gateway, allow: allow, targets: targets}
+	index := &meshComposition{byModule: map[string][]string{}, gateway: host.Gateway, allow: allow, targets: targets, owners: map[string]bool{}}
 	// Every composed workload's principal, by module: a managed service has
 	// no workload of its own in the cell, so it holds no principal.
 	for _, ref := range refs {
@@ -165,7 +181,98 @@ func indexMeshComposition(ctx context.Context, workspace *resources.Workspace, e
 	if host.Gateway != "" {
 		index.gatewayPrincipal = meshPrincipal(host, env.ModuleNamespace(workspace, gatewayModule), gatewayService)
 	}
+	if err := index.indexDerivedReach(ctx, workspace, env, refs); err != nil {
+		return nil, err
+	}
 	return index, nil
+}
+
+// indexDerivedReach records the one reach the composition prepares rather
+// than declares: every service installing prepared runnable bindings (it
+// declares the `runnable-bindings` group) reaches the endpoint each derived
+// operation of each module is called on. The owner endpoint is the one a
+// prepared call targets: the published endpoint for REST, the service's
+// connect endpoint for a gRPC or Connect publication (the published one when
+// it is itself connect).
+func (index *meshComposition) indexDerivedReach(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, refs []*resources.ServiceWithModule) error {
+	modules, err := workspace.LoadModules(ctx)
+	if err != nil {
+		return err
+	}
+	byName := map[string]*resources.Module{}
+	for _, module := range modules {
+		byName[module.Name] = module
+	}
+	for _, ref := range refs {
+		module := byName[ref.Module]
+		if module == nil {
+			continue
+		}
+		if _, managed := env.ManagedService(ref.Module, ref.Name); managed {
+			continue
+		}
+		service, err := module.LoadServiceFromName(ctx, ref.Name)
+		if err != nil {
+			return err
+		}
+		if slices.Contains(service.WorkspaceConfigurationDependencies, runnablespkg.RunnableBindingsGroup) {
+			index.executors = append(index.executors, meshPrincipal(env.Host, env.ModuleNamespace(workspace, ref.Module), ref.Name))
+		}
+	}
+	if len(index.executors) == 0 {
+		return nil
+	}
+	slices.Sort(index.executors)
+	for _, module := range modules {
+		derived, err := runnablespkg.LoadIndex(module.Dir())
+		if err != nil {
+			return fmt.Errorf("module %s: %w", module.Name, err)
+		}
+		if derived == nil {
+			continue
+		}
+		for i := range derived.Operations {
+			entry := &derived.Operations[i]
+			service, err := module.LoadServiceFromName(ctx, entry.Service)
+			if err != nil {
+				return fmt.Errorf("module %s operation %s: %w", module.Name, entry.Name, err)
+			}
+			endpoints, err := service.LoadEndpoints(ctx)
+			if err != nil {
+				return fmt.Errorf("module %s operation %s: %w", module.Name, entry.Name, err)
+			}
+			var published *basev0.Endpoint
+			for _, endpoint := range endpoints {
+				if endpoint.GetName() == entry.Endpoint {
+					published = endpoint
+				}
+			}
+			if published == nil {
+				return fmt.Errorf("module %s operation %s: service %s declares no endpoint %s", module.Name, entry.Name, entry.Service, entry.Endpoint)
+			}
+			switch published.GetApi() {
+			case standards.CONNECT:
+				index.owners[meshEndpointKey(module.Name, entry.Service, published.GetName())] = true
+			case standards.GRPC:
+				// A gRPC publication is called over the service's connect
+				// endpoint (cmd/generate's servedConnectEndpoint); the mesh
+				// admits the executor on every connect endpoint the service
+				// serves, which is one in every composed module today.
+				for _, endpoint := range endpoints {
+					if endpoint.GetApi() == standards.CONNECT {
+						index.owners[meshEndpointKey(module.Name, entry.Service, endpoint.GetName())] = true
+					}
+				}
+			default:
+				index.owners[meshEndpointKey(module.Name, entry.Service, published.GetName())] = true
+			}
+		}
+	}
+	return nil
+}
+
+func meshEndpointKey(module, service, endpoint string) string {
+	return module + "/" + service + "/" + endpoint
 }
 
 // sources is who the composition admits to one endpoint, sorted and each
@@ -187,6 +294,11 @@ func (index *meshComposition) sources(module, service, endpoint string) []string
 	}
 	if resources.ServiceUnique(module, service) == index.gateway && endpoint == gatewayWorkloadEndpoint {
 		for _, principal := range index.every {
+			admitted[principal] = true
+		}
+	}
+	if index.owners[meshEndpointKey(module, service, endpoint)] {
+		for _, principal := range index.executors {
 			admitted[principal] = true
 		}
 	}
