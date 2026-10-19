@@ -211,6 +211,10 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 			release = &cellfile.Release{Publisher: publisher, Name: name, Version: inventory.Package.Version}
 		}
 	}
+	routed, err := hostRoutedEndpoints(tree, env, inventory)
+	if err != nil {
+		return cellfile.Namespace{}, err
+	}
 	for index := range inventory.Units {
 		unit := &inventory.Units[index]
 		// Every pod-producing unit is inventoried: a managed service's
@@ -292,10 +296,8 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 					if endpoint == nil {
 						continue
 					}
-					callers := consumers[workload.Service+"/"+endpoint.Name]
-					if selfConsuming && !slices.Contains(callers, workload.Service) {
-						callers = append(append([]string(nil), callers...), workload.Service)
-					}
+					key := workload.Service + "/" + endpoint.Name
+					callers := endpointCallers(consumers[key], env.Host.Gateway, routed[key], workload.Service, selfConsuming)
 					entry := cellfile.Endpoint{
 						Name: endpoint.Name, API: endpoint.API,
 						Port:        int(containerPorts[endpoint.Name]),
@@ -341,6 +343,47 @@ func cellNamespace(ctx context.Context, workspace *resources.Workspace, env *env
 	}
 	namespace.Egress = cellEgress(env, inventory)
 	return namespace, nil
+}
+
+// endpointCallers is who the cell admits to one endpoint: the callers the
+// composition declares; the host's gateway when a delivered manifest routes the
+// endpoint, since the gateway forwards to it; and the service itself when its
+// render holds a non-serving workload (see cellNamespace). declared is never
+// modified.
+func endpointCallers(declared []string, gateway string, routed bool, service string, selfConsuming bool) []string {
+	callers := declared
+	if routed && !slices.Contains(callers, gateway) {
+		callers = append(append([]string(nil), callers...), gateway)
+		sort.Strings(callers)
+	}
+	if selfConsuming && !slices.Contains(callers, service) {
+		callers = append(append([]string(nil), callers...), service)
+	}
+	return callers
+}
+
+// hostRoutedEndpoints is the set, keyed `<module>/<service>/<endpoint>`, of
+// the endpoints the module's delivered manifests route through the host: the
+// endpoints the host's gateway forwards to, and so calls, once the manifest is
+// applied. It is read off the manifests the render wrote, never re-derived,
+// because the manifest is what the host routes from. A module that delivers
+// no manifest is routed by nothing, and an environment whose host names no
+// gateway has none to admit.
+func hostRoutedEndpoints(tree string, env *environments.Environment, inventory *Inventory) (map[string]bool, error) {
+	if env.Host == nil || env.Host.Gateway == "" || inventory.ModuleManifestPath == "" {
+		return nil, nil
+	}
+	manifests, err := renderedManifests(filepath.Join(tree, filepath.FromSlash(moduleManifestOverlay(env.Name))))
+	if err != nil {
+		return nil, fmt.Errorf("module %s: %w", inventory.Module, err)
+	}
+	routed := map[string]bool{}
+	for _, delivered := range manifests {
+		for _, endpoint := range delivered.manifest.Endpoints {
+			routed[resources.ServiceUnique(inventory.Module, endpoint.Service)+"/"+endpoint.Name] = true
+		}
+	}
+	return routed, nil
 }
 
 // ingressRoutes is every host the environment routes onto each endpoint of a

@@ -31,7 +31,8 @@ func exposedCellServiceYAML(name string) string {
 }
 
 // writeCellWorkspace lays down the cell fixture; each edit replaces one
-// string of a file, keyed by the file's path, before the workspace loads.
+// string of a file, keyed by the file's path, before the workspace loads. An
+// edit with no string to replace adds a file the fixture does not have.
 func writeCellWorkspace(t *testing.T, edits ...[3]string) *resources.Workspace {
 	t.Helper()
 	root := t.TempDir()
@@ -73,6 +74,11 @@ environments:
 		filepath.Join("modules", "billing", "services", "ledger", resources.ServiceConfigurationName): cellServiceYAML("ledger") + "service-dependencies:\n  - name: api\n    module: shop\n    endpoints:\n      - name: grpc\n",
 	}
 	for _, edit := range edits {
+		if edit[1] == "" {
+			require.NotContains(t, files, edit[0], "an added file is new to the fixture")
+			files[edit[0]] = edit[2]
+			continue
+		}
 		require.Contains(t, files[edit[0]], edit[1])
 		files[edit[0]] = strings.Replace(files[edit[0]], edit[1], edit[2], 1)
 	}
@@ -466,6 +472,63 @@ func TestCellFileDeclaresTheCarrierOfEveryModuleThatRendersAManifest(t *testing.
 		Container: fmt.Sprint(container["name"]), Image: cellfile.Image{Repository: repository, Digest: digest},
 	}, shop.Delivery)
 	require.Equal(t, deliveryServiceAccount, account, "the delivery account in the module's namespace")
+}
+
+// The host's gateway forwards to every endpoint a module's delivered manifest
+// routes, so the cell names it a caller of exactly those: not of an endpoint
+// the manifest does not route, not of a module that delivers no manifest, and
+// nothing at all when the environment's host names no gateway.
+func TestCellFileAdmitsTheHostGatewayToTheEndpointsAManifestRoutes(t *testing.T) {
+	edge := [][3]string{
+		{resources.WorkspaceConfigurationName, "  - name: billing\n", "  - name: billing\n  - name: edge\n"},
+		{filepath.Join("modules", "edge", resources.ModuleConfigurationName), "", "kind: module\nname: edge\nservices:\n  - name: gateway\n"},
+		{filepath.Join("modules", "edge", "services", "gateway", resources.ServiceConfigurationName), "", cellServiceYAML("gateway")},
+	}
+	gateway := [3]string{resources.WorkspaceConfigurationName, "      delivery: billing/ledger/http\n", "      delivery: billing/ledger/http\n      gateway: edge/gateway\n"}
+	for name, edits := range map[string][][3]string{
+		"with a gateway":    append(append([][3]string(nil), edge...), gateway),
+		"without a gateway": edge,
+	} {
+		t.Run(name, func(t *testing.T) {
+			workspace := writeCellWorkspace(t, edits...)
+			env := selectedEnvironment(t, workspace, "staging")
+			renderCellTreeWith(t, &RenderOptions{
+				Destination: moduleRenderDestination(workspace, "shop"),
+				Module:      "shop", Environment: "staging", Namespace: "acme-shop", AppProject: "acme-staging",
+				Promotable: true, OwnedPath: "deployments/modules/shop", Workspace: "acme", Host: env.Host,
+				Units:   unitsWithPorts("shop", "api"),
+				Package: &InventoryPackage{ID: "acme/shop", Version: "1.2.0"},
+				Instance: &ModuleInstance{
+					Kind: solutionhost.KindModule, Name: "shop", Package: "acme/shop", Version: "1.2.0",
+					Identities: []IdentityWorkload{{Service: "api", Path: "services/api"}},
+					Endpoints:  []solutionhost.Endpoint{{Name: "http", Service: "api", API: "http", Address: "http://api.acme-shop.svc.cluster.local:8080"}},
+					Authority:  &solutionhost.Authority{Principal: "shop"},
+				},
+			}, "api", "staging")
+			renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+			cell, err := RenderCell(context.Background(), workspace, env)
+			require.NoError(t, err)
+			data, err := os.ReadFile(cell.Path)
+			require.NoError(t, err)
+			file, err := cellfile.Parse(data)
+			require.NoError(t, err)
+			consumers := map[string][]string{}
+			for _, namespace := range file.Namespaces {
+				for _, workload := range namespace.Workloads {
+					for _, endpoint := range workload.Endpoints {
+						consumers[workload.Service+"/"+endpoint.Name] = endpoint.Consumers
+					}
+				}
+			}
+			http := []string{"shop/api"}
+			if name == "with a gateway" {
+				http = []string{"edge/gateway", "shop/api"}
+			}
+			require.Equal(t, http, consumers["shop/api/http"], "the endpoint the manifest routes admits the gateway, and only when the host names one")
+			require.Equal(t, []string{"billing/ledger", "shop/api"}, consumers["shop/api/grpc"], "an endpoint the manifest does not route is not the gateway's to call")
+			require.Equal(t, []string{"billing/ledger"}, consumers["billing/ledger/http"], "a module that delivers no manifest is routed by nothing")
+		})
+	}
 }
 
 // An image is pinned by a sha256 image-manifest digest and nothing else: an
