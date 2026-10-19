@@ -513,32 +513,8 @@ func endpointConsumers(ctx context.Context, workspace *resources.Workspace, env 
 			}
 			consumer := resources.ServiceUnique(module.Name, service.Name)
 			for _, dependency := range service.ServiceDependencies {
-				if dependency == nil || dependency.Name == "" {
-					continue
-				}
-				targetModule := dependency.Module
-				if targetModule == "" {
-					targetModule = module.Name
-				}
-				target, err := workspace.LoadService(ctx, &resources.ServiceWithModule{Name: dependency.Name, Module: targetModule})
-				if err != nil {
-					continue
-				}
-				var names []string
-				for _, endpoint := range dependency.Endpoints {
-					if endpoint != nil && endpoint.Name != "" {
-						names = append(names, endpoint.Name)
-					}
-				}
-				if len(names) == 0 {
-					for _, endpoint := range target.Endpoints {
-						if endpoint != nil {
-							names = append(names, endpoint.Name)
-						}
-					}
-				}
-				for _, name := range names {
-					add(resources.ServiceUnique(targetModule, target.Name)+"/"+name, consumer)
+				for _, key := range dependencyKeys(ctx, workspace, module.Name, dependency) {
+					add(key, consumer)
 				}
 			}
 			reads := references[consumer]
@@ -770,4 +746,40 @@ func preparedReachConsumers(reach *runnableReach) []consumerEdge {
 		return strings.Compare(a.consumer, b.consumer)
 	})
 	return edges
+}
+
+// dependencyKeys is the `<module>/<service>/<endpoint>` of every endpoint one
+// declared service dependency reaches: the endpoints it names, or all of the
+// target's when it names none. A dependency on a service the workspace does
+// not compose reaches nothing here; the composition refuses it elsewhere.
+func dependencyKeys(ctx context.Context, workspace *resources.Workspace, module string, dependency *resources.ServiceDependency) []string {
+	if dependency == nil || dependency.Name == "" {
+		return nil
+	}
+	targetModule := dependency.Module
+	if targetModule == "" {
+		targetModule = module
+	}
+	target, err := workspace.LoadService(ctx, &resources.ServiceWithModule{Name: dependency.Name, Module: targetModule})
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, endpoint := range dependency.Endpoints {
+		if endpoint != nil && endpoint.Name != "" {
+			names = append(names, endpoint.Name)
+		}
+	}
+	if len(names) == 0 {
+		for _, endpoint := range target.Endpoints {
+			if endpoint != nil {
+				names = append(names, endpoint.Name)
+			}
+		}
+	}
+	keys := make([]string, 0, len(names))
+	for _, name := range names {
+		keys = append(keys, resources.ServiceUnique(targetModule, target.Name)+"/"+name)
+	}
+	return keys
 }
