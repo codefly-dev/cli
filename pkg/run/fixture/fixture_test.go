@@ -131,3 +131,39 @@ func TestCompositionMinimumRevisionIsDecidedNeverPicked(t *testing.T) {
 		t.Fatalf("nobody states one = %d, %v", floor, err)
 	}
 }
+
+// statesPrincipalsIn separates "this file states what the grants are" from
+// "this file exists", because only the first may be delivered as a revocation.
+// An authored {} states it; an absent key, an explicit null, and a file written
+// for another key alone do not.
+func TestStatesPrincipalsSeparatesAnAuthoredEmptyFromAnOmission(t *testing.T) {
+	dir := t.TempDir()
+	write := func(body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(dir, "configurations", "prod"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "configurations", "prod", "module-envelope.json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if stated, err := statesPrincipalsIn(dir, "prod"); err != nil || stated {
+		t.Fatalf("no file = %v, %v", stated, err)
+	}
+	for _, body := range []string{`{}`, `{"minimum_revision":12}`, `{"principals":null}`, `{"principal":{}}`} {
+		write(body)
+		if stated, err := statesPrincipalsIn(dir, "prod"); err != nil || stated {
+			t.Fatalf("%s = %v, %v, want not stated", body, stated, err)
+		}
+	}
+	for _, body := range []string{`{"principals":{}}`, `{"principals":{"records":{}}}`, `{"principals":{},"minimum_revision":12}`} {
+		write(body)
+		if stated, err := statesPrincipalsIn(dir, "prod"); err != nil || !stated {
+			t.Fatalf("%s = %v, %v, want stated", body, stated, err)
+		}
+	}
+	write(`{"principals":`)
+	if _, err := statesPrincipalsIn(dir, "prod"); err == nil {
+		t.Fatal("a malformed file must be read as an error, never as no statement")
+	}
+}

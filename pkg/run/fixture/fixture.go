@@ -203,6 +203,53 @@ func StatesGrants(workspace *resources.Workspace, environment string) (bool, err
 	return false, nil
 }
 
+// StatesPrincipals reports whether any workspace of the composition states a
+// "principals" OBJECT in configurations/<env>/module-envelope.json. The file
+// existing is not that statement: a file written for another key — a
+// minimum_revision floor, say — states no grants at all, and delivering its
+// absence as {} revokes every grant on the cell under release custody, which
+// stops every module principal minting. Core refuses a nil principals for
+// exactly this reason ("an envelope granting nothing writes {}"), and the
+// refusal has to be made here too, because by the time the grants are merged a
+// renderer's omission and an authored {} are the same empty map. An explicit
+// null is an omission, not a revocation.
+func StatesPrincipals(workspace *resources.Workspace, environment string) (bool, error) {
+	for _, dir := range append(composedDirsOf(workspace), workspace.Dir()) {
+		stated, err := statesPrincipalsIn(dir, environment)
+		if err != nil {
+			return false, err
+		}
+		if stated {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func statesPrincipalsIn(workspaceDir, environment string) (bool, error) {
+	path := grantsPath(workspaceDir, environment)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(data, &document); err != nil {
+		return false, fmt.Errorf("read %s: %w", path, err)
+	}
+	raw, present := document["principals"]
+	if !present {
+		return false, nil
+	}
+	var principals map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &principals); err != nil || principals == nil {
+		return false, nil
+	}
+	return true, nil
+}
+
 func composedDirsOf(workspace *resources.Workspace) []string {
 	children := composedWorkspacesOf(workspace)
 	dirs := make([]string, 0, len(children)+1)

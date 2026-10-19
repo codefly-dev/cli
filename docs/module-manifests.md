@@ -445,14 +445,23 @@ AppProject and no second manifest Job.
 **One carrier per namespace, labelled as the carrier.** A cell admits exactly
 one delivery carrier per namespace, by the exact labels the cell file
 declares. Every delivery Job's pod — whatever it delivers — and the `delivery`
-account carry `codefly.dev/delivery: carrier`, and the cell file's carrier
+account carry `codefly.dev/delivery: manifest`, and the cell file's carrier
 selector is rendered from the same constant, so the two cannot drift. The Job
 itself also carries `codefly.dev/delivered-document: manifest` (or
-`envelope`), naming the document kind; nothing selects on it. Earlier CLIs
-labelled the carrier `codefly.dev/delivery: manifest`. One render moves both
-the Jobs and the cell file's selector; a cell admits the new carrier only once
-it is pinned to the cell file of that render, so the cell pin lands with the
-delivery promotion of the same render, never after it.
+`envelope`), naming the document kind; nothing selects on it — that is where
+the kind lives, which is why the carrier label keeps a value that reads like
+one kind.
+
+**The carrier label's value cannot be renamed on its own.** A cell turns each
+namespace's carrier selector into one entry of a closed execution-admission
+set, matched on the exact label set, and a render regenerates the cell file
+whole — every namespace at once — while a Job moves only when its own module
+is published. So a renamed value flips every namespace's selector in one
+commit and leaves every not-yet-republished module's delivered pod matching no
+approved entry: the pod is refused, that module's delivery sync fails, and the
+refusal names neither the label nor the rename. Renaming it means
+re-publishing every module in the environment in the change that pins the new
+cell.
 
 The overlay is part of the **immutable service snapshot**: every Application
 the bootstrap stamps reads the one snapshot revision, the delivery Application
@@ -523,6 +532,13 @@ composition for the environment — is refused. Revoking every grant is a
 statement: `{"principals": {}}`, delivered at the next revision. An envelope
 delivered by a module that no longer hosts the delivery API, or to an
 environment that no longer names a host, is refused the same way.
+
+A file that exists states nothing by itself: one written for
+`minimum_revision` alone, or whose `principals` key is dropped, misspelled or
+`null`, is refused too, naming the two spellings. Only an authored
+`{"principals": {}}` revokes — otherwise a dropped key would be signed under
+release custody as the revocation of every grant on the cell, and every module
+principal would stop minting.
 
 **A delivered grant names no organization.** A grant carrying a non-empty
 `tenant` is refused at publish, naming the principals: tenancy resolves

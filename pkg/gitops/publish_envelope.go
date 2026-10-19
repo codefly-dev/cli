@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/codefly-dev/cli/pkg/delivery/signing"
 	"github.com/codefly-dev/cli/pkg/run/fixture"
 	"github.com/codefly-dev/core/solutionhost"
 	"gopkg.in/yaml.v3"
@@ -64,6 +63,11 @@ const (
 type declaredEnvelope struct {
 	Principals map[string]json.RawMessage
 	Stated     bool
+	// StatesPrincipals is whether a workspace states a "principals" object,
+	// which the file existing does not say: a file written for the floor
+	// alone states no grants, and its empty merge must not be signed as a
+	// revocation of every grant on the cell.
+	StatesPrincipals bool
 	// MinimumRevision is the lowest revision the delivered envelope may
 	// carry (minimum_revision), 0 for none: how a composition steps past a
 	// revision the host's administrator wrote interactively.
@@ -86,11 +90,15 @@ func (p *deliveryPublication) declareEnvelope(inventory *Inventory, environment 
 	if err != nil {
 		return err
 	}
+	statesPrincipals, err := fixture.StatesPrincipals(p.workspace, environment)
+	if err != nil {
+		return err
+	}
 	floor, err := fixture.ReadCompositionMinimumRevision(p.workspace, environment)
 	if err != nil {
 		return err
 	}
-	p.options.Envelope = &declaredEnvelope{Principals: principals, Stated: stated, MinimumRevision: floor}
+	p.options.Envelope = &declaredEnvelope{Principals: principals, Stated: stated, StatesPrincipals: statesPrincipals, MinimumRevision: floor}
 	return nil
 }
 
@@ -121,18 +129,22 @@ func settleEnvelope(
 		return nil, nil, fmt.Errorf("module %s delivered the module envelope (revision %d) to %s and the composition states none now; to revoke every grant, state {\"principals\": {}} in configurations/%s/module-envelope.json",
 			inventory.Module, previous.Revision, environment, environment)
 	}
+	// Revoking every grant is a statement, and only an authored {} makes it.
+	// A file that states no principals object — written for the floor alone,
+	// or with the key dropped or misspelled — would otherwise be signed as
+	// that revocation and stop every module principal on the cell minting.
+	if !declared.StatesPrincipals || declared.Principals == nil {
+		return nil, nil, fmt.Errorf("the module envelope configurations/%s/module-envelope.json of %s states no principals, and stating nothing is not revoking: state {\"principals\": {...}}, or {\"principals\": {}} to revoke every grant",
+			environment, inventory.Module)
+	}
 	if err = refuseTenantGrants(declared.Principals, environment); err != nil {
 		return nil, nil, err
 	}
 	if slices.Contains(files, moduleEnvelopeFile) {
 		return nil, nil, fmt.Errorf("a module manifest of %s is delivered as %s, the module envelope's file; rename its instance", inventory.Module, moduleEnvelopeFile)
 	}
-	principals := declared.Principals
-	if principals == nil {
-		principals = map[string]json.RawMessage{}
-	}
 	candidate := &solutionhost.ModuleEnvelope{
-		Schema: solutionhost.SchemaModuleEnvelopeV1, Revision: 1, Principals: principals,
+		Schema: solutionhost.SchemaModuleEnvelopeV1, Revision: 1, Principals: declared.Principals,
 		Host: solutionhost.HostTarget{Coordinate: opts.Coordinate, Domain: opts.Domain},
 	}
 	carrier, err = settleEnvelopeRevision(previous, candidate, carrier)
@@ -150,10 +162,7 @@ func settleEnvelope(
 	if err != nil {
 		return nil, nil, err
 	}
-	signer := opts.Signer
-	if signer == nil {
-		signer = signing.FromEnvironment(nil)
-	}
+	signer := resolvedSigner(opts)
 	key := carrierKey(deliveredEnvelopeKind, deliveredEnvelopeID, candidate.Revision)
 	identity, unsigned, err := signCarrier(ctx, "the module envelope", payload, &carrier, opts.Reuse[key], signer, opts)
 	if err != nil {

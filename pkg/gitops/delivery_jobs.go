@@ -85,12 +85,25 @@ const (
 	// never a document kind, so the cell file's selector and every Job's pod
 	// are rendered from this one constant whatever the Job delivers.
 	// deliveredDocumentLabel, on the Job alone, names the kind it delivers:
-	// deliveryManifest for module manifests. The signed carrier is held in the
+	// deliveryManifest for module manifests.
+	//
+	// The VALUE is a compatibility-bearing identifier, not a name to tidy. A
+	// cell turns each namespace's delivery selector into one entry of a CLOSED
+	// execution-admission set, matched on the exact label set, and a render
+	// regenerates the cell file whole while a Job moves only when its own
+	// module is published. So a renamed value flips every namespace's selector
+	// in one commit and leaves every not-yet-republished module's delivered
+	// pod matching no approved entry — refused by admission, its delivery sync
+	// failing, with nothing in the refusal naming the label. It stays
+	// "manifest" for that reason alone: kind-neutrality is expressed by
+	// deliveredDocumentLabel, which nothing selects on. Changing it means
+	// re-publishing every module in the environment in the same change that
+	// pins the new cell. The signed carrier is held in the
 	// manifest's ConfigMap under core's SignedFileName: JSON under a YAML
 	// extension, because a JSON object is valid YAML and a YAML emitter would
 	// fold the long scalar the signature covers.
 	deliveryLabel          = "codefly.dev/delivery"
-	deliveryCarrierValue   = "carrier"
+	deliveryCarrierValue   = "manifest"
 	deliveredDocumentLabel = "codefly.dev/delivered-document"
 	deliveryManifest       = "manifest"
 

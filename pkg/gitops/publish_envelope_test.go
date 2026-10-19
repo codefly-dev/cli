@@ -23,7 +23,7 @@ func envelopeOptions(t *testing.T, signer *fakeSigner, principals map[string]jso
 	opts := publishOptions(signer)
 	opts.Coordinate = testHost().Coordinate
 	opts.SelfCheck, opts.ReuseCheck = check, check
-	opts.Envelope = &declaredEnvelope{Principals: principals, Stated: principals != nil}
+	opts.Envelope = &declaredEnvelope{Principals: principals, Stated: principals != nil, StatesPrincipals: principals != nil}
 	return opts
 }
 
@@ -166,6 +166,30 @@ func TestPublishRefusesAnEnvelopeTheCompositionStoppedStating(t *testing.T) {
 	require.Empty(t, verifyAsTheHost(t, signer, deliveredEnvelope(t, repository).Data[solutionhost.EnvelopeSignedFileName]).Principals)
 }
 
+// TestPublishRefusesAStatedEnvelopeThatStatesNoPrincipals: the file existing
+// is not the statement "grants nothing". A composition that writes
+// module-envelope.json for the floor alone — the shape the 409 remedy walks an
+// operator toward — states no principals, and signing its empty merge under
+// release custody would revoke every grant on the cell and stop every module
+// principal minting. Only an authored {} revokes.
+func TestPublishRefusesAStatedEnvelopeThatStatesNoPrincipals(t *testing.T) {
+	repository := newDeliveryRepository(t)
+	signer := &fakeSigner{}
+
+	floorOnly := envelopeOptions(t, signer, nil)
+	floorOnly.Envelope = &declaredEnvelope{Stated: true, MinimumRevision: 12}
+	_, err := repository.settle(repository.stageRender(t, "crm"), &floorOnly)
+	require.ErrorContains(t, err, "states no principals")
+	require.ErrorContains(t, err, `state {"principals": {...}}`)
+
+	// The same refusal when the key was stated but read as absent, so no
+	// reading of the file reaches the signature as a revocation.
+	dropped := envelopeOptions(t, signer, nil)
+	dropped.Envelope = &declaredEnvelope{Stated: true, StatesPrincipals: true}
+	_, err = repository.settle(repository.stageRender(t, "crm"), &dropped)
+	require.ErrorContains(t, err, "states no principals")
+}
+
 // TestPublishDeliversNoEnvelopeNobodyStates: no declaration (another module,
 // no host, local qualification) and no file in the composition both deliver
 // nothing when nothing was delivered before.
@@ -209,7 +233,7 @@ func TestPublishRefusesAnUnsignedEnvelopeOutsideLocalQualification(t *testing.T)
 	inventory := repository.stageRender(t, "")
 	opts := publishOptions(signing.FromEnvironment(func(string) (string, bool) { return "", false }))
 	opts.Coordinate = testHost().Coordinate
-	opts.Envelope = &declaredEnvelope{Principals: recordsGrant("tracing"), Stated: true}
+	opts.Envelope = &declaredEnvelope{Principals: recordsGrant("tracing"), Stated: true, StatesPrincipals: true}
 	_, err := repository.settle(inventory, &opts)
 	require.ErrorIs(t, err, signing.ErrNoIdentity)
 	require.ErrorContains(t, err, "the module envelope cannot be delivered unsigned to prod")
