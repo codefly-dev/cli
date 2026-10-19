@@ -131,15 +131,8 @@ func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *re
 	if err != nil {
 		return err
 	}
-	// The run serves the key set a service verifies inbound Work Contexts
-	// against. Nothing else does when the composition has no host, and the
-	// transport rule already admits a loopback key set on a local run.
-	authority, err := runworkcontext.Start(launcherIdentity.AnchorFingerprint())
-	if err != nil {
-		return err
-	}
 	cluster := &launcher{
-		vouch: launcherIdentity, authority: authority, workspace: workspace, env: env, flow: flow, fixture: fixture,
+		vouch: launcherIdentity, authority: flow.WorkContextAuthority(), workspace: workspace, env: env, flow: flow, fixture: fixture,
 		stateDir:           stateDir,
 		identities:         identities,
 		signer:             signer,
@@ -373,12 +366,6 @@ func (cluster *launcher) renderOwnedGroups(ctx context.Context, service *resourc
 		}
 		out = append(out, group)
 	}
-	// Handed before module-authority and after any authored group: a
-	// composition with a host declares work-context itself, and this only
-	// answers for the composition that has none.
-	if slices.Contains(service.WorkspaceConfigurationDependencies, environments.WorkContextConfiguration) {
-		out = append(out, cluster.workContextGroup())
-	}
 	if !slices.Contains(service.WorkspaceConfigurationDependencies, environments.ModuleAuthorityConfiguration) {
 		return out, nil
 	}
@@ -397,18 +384,6 @@ func (cluster *launcher) renderOwnedGroups(ctx context.Context, service *resourc
 		{Key: "INTERNAL_TOKEN", Value: token, Secret: true},
 	}}
 	return append(out, &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{authority}}), nil
-}
-
-// workContextGroup is the verification surface a native run hands a service
-// that verifies inbound Work Contexts: where this run serves its key set, and
-// the issuer it stamps. A deployed service pins the host's issuer, so nothing
-// this run signs is acceptable anywhere but this run.
-func (cluster *launcher) workContextGroup() *basev0.Configuration {
-	group := &basev0.ConfigurationInformation{Name: environments.WorkContextConfiguration, ConfigurationValues: []*basev0.ConfigurationValue{
-		{Key: environments.WorkContextKeySetURLKey, Value: cluster.authority.KeySetURL()},
-		{Key: environments.WorkContextIssuerKey, Value: cluster.authority.Issuer()},
-	}}
-	return &basev0.Configuration{Origin: resources.ConfigurationWorkspace, Infos: []*basev0.ConfigurationInformation{group}}
 }
 
 // federationGroup is the federation surface a native run hands the delivery

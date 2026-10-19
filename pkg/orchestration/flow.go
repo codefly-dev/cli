@@ -2,6 +2,8 @@ package orchestration
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -20,6 +22,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/internal/selectionguard"
 	"github.com/codefly-dev/cli/pkg/remotenetwork"
+	runworkcontext "github.com/codefly-dev/cli/pkg/run/workcontext"
 	"github.com/codefly-dev/core/architecture"
 	"github.com/codefly-dev/core/configurations"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
@@ -35,6 +38,11 @@ import (
 )
 
 type Flow struct {
+	// workContext serves the key set a service verifies inbound Work Contexts
+	// against, for the composition that authors no work-context group. Created
+	// here because the loader that layers its group is bound here.
+	workContext *runworkcontext.Authority
+
 	// configurationReferences orders a consumer after the producers its
 	// workspace configurations reference (configurationReferenceOption); every
 	// rebuild of the graph carries it.
@@ -423,6 +431,10 @@ func (f FlowFailure) Error() string {
 	return fmt.Sprintf("%s: %s", f.Service, f.Message)
 }
 
+// WorkContextAuthority is the key set this run serves, for the composition
+// that authors no work-context group. The launcher closes it with the run.
+func (flow *Flow) WorkContextAuthority() *runworkcontext.Authority { return flow.workContext }
+
 func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resources.Module, service *resources.Service, env *environments.Environment, mode Mode, opts ...FlowOption) (*Flow, error) {
 	w := wool.Get(ctx).In("NewFlow")
 
@@ -501,7 +513,19 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	if err != nil {
 		return nil, w.Wrap(err)
 	}
-	configurationManager.WithLoader(localReader)
+	// The run serves the key set a service verifies inbound Work Contexts
+	// against, layered over the loader so it is part of the set the manager
+	// resolves DECLARED dependencies from. A composition that authors the group
+	// keeps its own; this answers only for the one that does not.
+	runID := make([]byte, 8)
+	if _, err := rand.Read(runID); err != nil {
+		return nil, w.Wrap(err)
+	}
+	workContext, err := runworkcontext.Start(hex.EncodeToString(runID))
+	if err != nil {
+		return nil, w.Wrap(err)
+	}
+	configurationManager.WithLoader(runworkcontext.WithKeySet(localReader, workContext))
 	// Bound here, with the loader: the resolution plans producer discovery
 	// against the root's group names, so a manager that loaded a root group and
 	// a world that cannot name it would resolve that group's references for
@@ -553,6 +577,7 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	}
 
 	flow := &Flow{
+		workContext:    workContext,
 		workspace:      workspace,
 		graphWorkspace: graphWorkspace,
 		moduleSeeds:    options.moduleClosureSeeds,
