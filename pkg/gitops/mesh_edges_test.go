@@ -56,7 +56,7 @@ environments:
 		// app derives one operation on api's grpc publication: a prepared binding
 		// calls it on api's connect endpoint, and whoever installs the bindings
 		// reaches that endpoint.
-		"modules/app/contracts/runnables/index.json": `{"schema":"codefly/runnable-operations/v1","workspace":"example","module":"app","operations":[{"name":"do","version":"0.0.1","digest":"sha256:0","service":"api","endpoint":"grpc","method":"Do","input_message":"DoRequest","output_message":"DoResponse","path":"do"}]}`,
+		"modules/app/contracts/runnables/index.json":        `{"schema":"codefly/runnable-operations/v1","workspace":"example","module":"app","operations":[{"name":"do","version":"0.0.1","digest":"sha256:0","service":"api","endpoint":"grpc","method":"Do","input_message":"DoRequest","output_message":"DoResponse","path":"do"}]}`,
 		"modules/exec/" + resources.ModuleConfigurationName: "kind: module\nname: exec\nservices:\n  - name: runner\n",
 		"modules/exec/services/runner/" + resources.ServiceConfigurationName: service("runner",
 			"workspace-configuration-dependencies:\n  - runnable-bindings\n"),

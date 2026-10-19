@@ -3,13 +3,14 @@ package gitops
 import (
 	"context"
 	"fmt"
-	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
-	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
-	"github.com/codefly-dev/core/standards"
 	"maps"
 	"slices"
 	"sort"
 	"strings"
+
+	runnablespkg "github.com/codefly-dev/cli/pkg/runnables"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
+	"github.com/codefly-dev/core/standards"
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/orchestration"
