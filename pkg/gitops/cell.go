@@ -14,6 +14,7 @@ import (
 
 	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops/cellfile"
+	"github.com/codefly-dev/cli/pkg/orchestration"
 	"github.com/codefly-dev/cli/pkg/solutionrun"
 	"github.com/codefly-dev/core/configurations"
 	"github.com/codefly-dev/core/resources"
@@ -489,6 +490,10 @@ func endpointConsumers(ctx context.Context, workspace *resources.Workspace, env 
 	if referencesErr != nil {
 		return nil, nil, referencesErr
 	}
+	reach, reachErr := derivedRunnableReach(ctx, workspace)
+	if reachErr != nil {
+		return nil, nil, reachErr
+	}
 	consumers := map[string][]string{}
 	var configured []string
 	add := func(key, consumer string) {
@@ -550,6 +555,44 @@ func endpointConsumers(ctx context.Context, workspace *resources.Workspace, env 
 				}
 				add(key, consumer)
 			}
+		}
+	}
+	// The gateway forwards to every endpoint a composed solution reaches
+	// through the host (orchestration.HostRouteTargets, the derivation the
+	// mesh edges read), so the gateway's own workload is that endpoint's
+	// caller. The solution's backend is recorded beside it, below: a route
+	// is one hop through the gateway, not a direct call, and a cell that
+	// admits only the backend denies every proxied call with nothing in the
+	// module's log to say so.
+	if env.Host != nil && env.Host.Gateway != "" {
+		gatewayModule, _, _ := strings.Cut(env.Host.Gateway, "/")
+		targets, targetsErr := orchestration.HostRouteTargets(ctx, workspace, gatewayModule)
+		if targetsErr != nil {
+			return nil, nil, targetsErr
+		}
+		for _, target := range targets {
+			key := resources.ServiceUnique(target.Module, target.Service) + "/" + target.Endpoint
+			if slices.Contains(consumers[key], env.Host.Gateway) {
+				continue
+			}
+			configured = append(configured, fmt.Sprintf("cell: %s reaches %s because the host routes it there; declared by the composition's consumption, not by a service dependency", env.Host.Gateway, key))
+			add(key, env.Host.Gateway)
+		}
+	}
+	// The reach the composition prepares rather than declares: a service that
+	// installs prepared runnable bindings calls the owner of every derived
+	// operation, and neither side declares a dependency on the other. Derived
+	// here so a cell cannot be rendered in which the executor's call to an
+	// owner is denied by the mesh — the failure the owner reports to nobody
+	// and the executor sees only as an owner that did not answer.
+	for key := range reach.owners {
+		for _, executor := range reach.executors {
+			consumer := executor.Unique()
+			if slices.Contains(consumers[key], consumer) {
+				continue
+			}
+			configured = append(configured, fmt.Sprintf("cell: %s reaches %s through the runnable bindings it installs; prepared by the composition, not declared by either service", consumer, key))
+			add(key, consumer)
 		}
 	}
 	consumed, err := solutionrun.ConsumedEndpoints(ctx, workspace)
