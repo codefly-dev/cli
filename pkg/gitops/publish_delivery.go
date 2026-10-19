@@ -376,11 +376,19 @@ func WithdrawalOf(prior *solutionhost.ModuleManifest) (*solutionhost.ModuleManif
 // signManifestSet signs every settled manifest's canonical bytes and assembles
 // its carrier, recording what was delivered. Manifests the signer cannot sign
 // are left unsigned only when the publish allows it.
-func signManifestSet(ctx context.Context, settled map[string]deliveredManifest, names []string, opts *deliveryPublishOptions, environment string) (*InventoryDelivery, error) {
-	signer := opts.Signer
-	if signer == nil {
-		signer = signing.FromEnvironment(nil)
+// resolvedSigner is the custody a publish signs with: the one the publish was
+// held to, or the environment's. Both document kinds resolve it here, so the
+// manifests and the envelope of one publish can never be signed under
+// different defaults.
+func resolvedSigner(opts *deliveryPublishOptions) signing.Signer {
+	if opts.Signer != nil {
+		return opts.Signer
 	}
+	return signing.FromEnvironment(nil)
+}
+
+func signManifestSet(ctx context.Context, settled map[string]deliveredManifest, names []string, opts *deliveryPublishOptions, environment string) (*InventoryDelivery, error) {
+	signer := resolvedSigner(opts)
 	delivery := &InventoryDelivery{Signed: true}
 	var unsigned []string
 	var unsignedCause error

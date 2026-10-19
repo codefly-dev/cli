@@ -479,13 +479,17 @@ func carriesDelivery(workspace *resources.Workspace, env *environments.Environme
 	return fixture.StatesGrants(workspace, env.Name)
 }
 
-// cellDelivery is the presence carrier of a module that renders a module
-// manifest for a hosted environment: the Job publish writes to POST it,
-// declared from deliveryCarrierOf — the rule that Job is rendered from — and
-// never read off a tree. The render writes the manifest and the account the
-// Job runs as; the Job itself is written only at publish, into the delivery
-// repository, so a tree in the workspace never holds it, and the cell must
-// declare it before publish runs for its admission to let the Job in.
+// cellDelivery is the presence carrier of a module that carries delivery for a
+// hosted environment — one that renders a module manifest, or that hosts the
+// delivery API for a composition stating the envelope (carriesDelivery): the
+// Job publish writes to POST the document, declared from deliveryCarrierOf —
+// the rule that Job is rendered from — and never read off a tree. A module
+// that renders a manifest has its manifest and its delivery account written by
+// the render; a module that carries only the envelope has neither, because
+// publish writes that account (writeEnvelope) along with the Job. The Job
+// itself is always written at publish, into the delivery repository, so a tree
+// in the workspace never holds it, and the cell must declare the carrier
+// before publish runs for its admission to let the Job in.
 func cellDelivery(env *environments.Environment, namespace string) (*cellfile.Delivery, error) {
 	carrier := deliveryCarrierOf()
 	repository, digest, err := splitPinnedImage(carrier.Image)
