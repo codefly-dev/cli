@@ -431,6 +431,31 @@ func (f FlowFailure) Error() string {
 	return fmt.Sprintf("%s: %s", f.Service, f.Message)
 }
 
+// declaredWorkspaceConfigurationGroups names every workspace-configuration
+// group a service in this workspace depends on. A declared group nothing
+// supplies is refused by the configuration manager before any service reads a
+// value from it, so a local run routes them in empty rather than leaving a
+// module that composes no host unable to start.
+func declaredWorkspaceConfigurationGroups(ctx context.Context, workspace *resources.Workspace) []string {
+	refs, err := workspace.LoadServiceWithModules(ctx)
+	if err != nil {
+		return nil
+	}
+	var groups []string
+	for _, ref := range refs {
+		service, loadErr := workspace.LoadService(ctx, ref)
+		if loadErr != nil {
+			continue
+		}
+		for _, group := range service.WorkspaceConfigurationDependencies {
+			if !slices.Contains(groups, group) {
+				groups = append(groups, group)
+			}
+		}
+	}
+	return groups
+}
+
 // WorkContextAuthority is the key set this run serves, for the composition
 // that authors no work-context group. The launcher closes it with the run.
 func (flow *Flow) WorkContextAuthority() *runworkcontext.Authority { return flow.workContext }
@@ -518,14 +543,14 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	// resolves DECLARED dependencies from. A composition that authors the group
 	// keeps its own; this answers only for the one that does not.
 	runID := make([]byte, 8)
-	if _, err := rand.Read(runID); err != nil {
-		return nil, w.Wrap(err)
+	if _, readErr := rand.Read(runID); readErr != nil {
+		return nil, w.Wrap(readErr)
 	}
-	workContext, err := runworkcontext.Start(hex.EncodeToString(runID))
-	if err != nil {
-		return nil, w.Wrap(err)
+	workContext, startErr := runworkcontext.Start(hex.EncodeToString(runID))
+	if startErr != nil {
+		return nil, w.Wrap(startErr)
 	}
-	configurationManager.WithLoader(runworkcontext.WithKeySet(localReader, workContext))
+	configurationManager.WithLoader(runworkcontext.WithKeySet(localReader, workContext, declaredWorkspaceConfigurationGroups(ctx, workspace)))
 	// Bound here, with the loader: the resolution plans producer discovery
 	// against the root's group names, so a manager that loaded a root group and
 	// a world that cannot name it would resolve that group's references for
