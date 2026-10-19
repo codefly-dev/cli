@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/cli/pkg/gitops/cellfile"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/solutionhost"
@@ -439,11 +440,21 @@ func TestCellFileDeclaresTheCarrierOfEveryModuleThatRendersAManifest(t *testing.
 	shop := file.Namespaces[1]
 	require.NotNil(t, shop.Delivery, "a render, without publish, declares the carrier")
 
-	// The Job publish writes, read back as a cell reads a pod.
-	directory := t.TempDir()
-	job, err := renderDeliveryJob(directory, deliveryJobName(deliveryManifest, "shop", "staging", [][]byte{[]byte("carrier")}), "acme-shop",
-		deliveryManifest, manifestDeliveryPath, testDeliveryTarget(), []deliveryDocument{{ConfigMap: "manifest", Key: "signed.yaml", Name: "shop.json"}})
-	require.NoError(t, err)
+	// Each Job publish writes — a manifest's, and the envelope's from the
+	// host's namespace — read back as a cell reads a pod: one carrier.
+	for kind, path := range map[string]string{deliveryManifest: manifestDeliveryPath, deliveredEnvelopeKind: envelopeDeliveryPath} {
+		directory := t.TempDir()
+		job, err := renderDeliveryJob(directory, deliveryJobName(kind, "shop", "staging", [][]byte{[]byte("carrier")}), "acme-shop",
+			kind, path, testDeliveryTarget(), []deliveryDocument{{ConfigMap: "manifest", Key: "signed.yaml", Name: "shop.json"}})
+		require.NoError(t, err)
+		requireTheAdmittedCarrier(t, directory, job, shop.Delivery)
+	}
+}
+
+// requireTheAdmittedCarrier reads a rendered delivery Job's pod as a cell
+// reads one and requires it to be the carrier the cell declares.
+func requireTheAdmittedCarrier(t *testing.T, directory, job string, declared *cellfile.Delivery) {
+	t.Helper()
 	body, err := os.ReadFile(filepath.Join(directory, job))
 	require.NoError(t, err)
 	documents, _, err := decodeYAML(job, body)
@@ -464,8 +475,31 @@ func TestCellFileDeclaresTheCarrierOfEveryModuleThatRendersAManifest(t *testing.
 		Kind: rendered.kind, Selector: selector, ServiceAccount: account,
 		SPIFFEID:  "spiffe://cluster.example/ns/acme-shop/sa/" + account,
 		Container: fmt.Sprint(container["name"]), Image: cellfile.Image{Repository: repository, Digest: digest},
-	}, shop.Delivery)
+	}, declared)
 	require.Equal(t, deliveryServiceAccount, account, "the delivery account in the module's namespace")
+}
+
+// TestAHostStatingAnEnvelopeCarriesDelivery: the module hosting the delivery
+// API carries the delivery Job when the composition states the environment's
+// envelope, though it renders no manifest of its own.
+func TestAHostStatingAnEnvelopeCarriesDelivery(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte("name: acme\nlayout: modules\n"), 0o644))
+	workspace, err := resources.LoadWorkspaceFromDir(context.Background(), root)
+	require.NoError(t, err)
+	env := &environments.Environment{Name: "staging", Host: testHost()}
+	host := &Inventory{Module: "platform", HostsDelivery: true}
+	carries, err := carriesDelivery(workspace, env, host)
+	require.NoError(t, err)
+	require.False(t, carries, "no envelope stated, no manifest rendered")
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "configurations", "staging"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "configurations", "staging", "module-envelope.json"), []byte(`{"principals":{}}`), 0o644))
+	carries, err = carriesDelivery(workspace, env, host)
+	require.NoError(t, err)
+	require.True(t, carries)
+	carries, err = carriesDelivery(workspace, env, &Inventory{Module: "crm"})
+	require.NoError(t, err)
+	require.False(t, carries, "only the host delivers the envelope")
 }
 
 // An image is pinned by a sha256 image-manifest digest and nothing else: an

@@ -89,6 +89,9 @@ type deliveryPublishOptions struct {
 	// domain — so a carrier the host would refuse never leaves the
 	// publisher. nil runs no check.
 	SelfCheck signing.SelfCheck
+	// Envelope is the module envelope the composition states, set only for
+	// the publish that delivers it (declareEnvelope); nil delivers none.
+	Envelope *declaredEnvelope
 	// Signs names who signs this publish's manifests, for the refusal a
 	// publish that may not deliver unsigned gives when its signer had no
 	// identity. Empty means the release workflow.
@@ -96,15 +99,15 @@ type deliveryPublishOptions struct {
 }
 
 // unsignedRefusal is the refusal of a publish that may not deliver unsigned
-// and could not sign: the manifests left unsigned, why the signer had no
+// and could not sign: the documents left unsigned, why the signer had no
 // identity, and who signs instead.
-func unsignedRefusal(unsigned []string, environment string, cause error, opts *deliveryPublishOptions) error {
+func unsignedRefusal(unsigned, environment string, cause error, opts *deliveryPublishOptions) error {
 	signs := opts.Signs
 	if signs == "" {
 		signs = "configure VAULT_ADDR, VAULT_TOKEN and CODEFLY_RELEASE_TRANSIT_KEY (Vault Transit) or CODEFLY_RELEASE_KMS_KEY (Cloud KMS) to sign with the platform release key"
 	}
-	return fmt.Errorf("%w: the module manifests %s cannot be delivered unsigned to %s (%v); %s",
-		signing.ErrNoIdentity, strings.Join(unsigned, ", "), environment, cause, signs)
+	return fmt.Errorf("%w: %s cannot be delivered unsigned to %s (%v); %s",
+		signing.ErrNoIdentity, unsigned, environment, cause, signs)
 }
 
 // deliveredManifest is one manifest after settling, with the carrier it is
@@ -114,65 +117,92 @@ type deliveredManifest struct {
 	carrier  []byte
 }
 
-// settleManifestDelivery settles the manifests of the tree staged at target
-// against the base branch, writes the withdrawal of every binding this module
-// delivered before and no longer declares, signs every manifest, writes the
-// carriers, the delivery Job and the overlay's kustomization, and returns what
-// it delivered for the inventory.
+// settleManifestDelivery settles the delivery documents of the tree staged at
+// target against the base branch — the module's manifests and, for the module
+// that hosts the delivery API, the environment's module envelope — writes the
+// overlay's kustomization over everything they deliver, and returns what was
+// delivered for the inventory.
 func settleManifestDelivery(
 	ctx context.Context,
 	repo, baseBranch, target, targetPath, environment string,
 	inventory *Inventory,
 	opts *deliveryPublishOptions,
 ) (*InventoryDelivery, error) {
+	delivery, files, err := settleManifests(ctx, repo, baseBranch, target, targetPath, environment, inventory, opts)
+	if err != nil {
+		return nil, err
+	}
+	if delivery, files, err = settleEnvelope(ctx, repo, baseBranch, target, targetPath, environment, inventory, delivery, files, opts); err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return delivery, nil
+	}
+	if err := writeModuleManifestKustomization(target, environment, files); err != nil {
+		return nil, err
+	}
+	inventory.ModuleManifestPath = moduleManifestDir
+	return delivery, nil
+}
+
+// settleManifests settles the manifests of the staged tree against the base
+// branch, writes the withdrawal of every binding this module delivered before
+// and no longer declares, signs every manifest, writes the carriers and the
+// delivery Job, and returns what it delivered and the files it wrote.
+func settleManifests(
+	ctx context.Context,
+	repo, baseBranch, target, targetPath, environment string,
+	inventory *Inventory,
+	opts *deliveryPublishOptions,
+) (*InventoryDelivery, []string, error) {
 	overlay := moduleManifestOverlay(environment)
 	prior, err := priorDeliveredManifests(ctx, repo, baseBranch, filepath.ToSlash(filepath.Join(targetPath, overlay)))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	rendered := map[string]deliveredManifest{}
 	if inventory.ModuleManifestPath != "" {
 		if rendered, err = renderedManifests(filepath.Join(target, filepath.FromSlash(overlay))); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if len(rendered) == 0 && len(prior) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if len(rendered) == 0 && opts.Target == nil {
 		// Withdrawing on the removal of a host declaration would withdraw
 		// every binding; writing nothing would leave the host holding what it
 		// can no longer be told about. Neither is a publish to make silently.
-		return nil, fmt.Errorf(
+		return nil, nil, fmt.Errorf(
 			"module %s delivered the bindings %s to %s before and this render declares none and names no host; to withdraw them, render with the environment's host block in place and without the instances, so publish writes their withdrawals",
 			inventory.Module, strings.Join(sortedBindings(prior), ", "), environment)
 	}
 	for binding, previous := range prior {
 		if err = refuseAnotherHostsRecord(binding, previous.manifest.Host, opts); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if _, present := rendered[binding]; !present {
 			if err = refuseForeignWithdrawal(binding, previous.manifest.Host.Domain, opts.Domain); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 	}
 	if len(rendered) > 0 {
 		if opts.Target == nil {
-			return nil, fmt.Errorf("the render declares the module manifests %s for %s but the environment names no host now; render again against the environment as it is, or declare the host they are delivered to", strings.Join(sortedBindings(rendered), ", "), environment)
+			return nil, nil, fmt.Errorf("the render declares the module manifests %s for %s but the environment names no host now; render again against the environment as it is, or declare the host they are delivered to", strings.Join(sortedBindings(rendered), ", "), environment)
 		}
 		for binding, entry := range rendered {
 			if err = refuseMovedManifest(binding, entry.manifest, opts); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 		if err = refuseMovedTrustDomain(inventory, opts); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	settled, err := settledManifestSet(rendered, prior)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	names := sortedBindings(settled)
 	// Each manifest at its settled generation is held against what the base
@@ -188,24 +218,20 @@ func settleManifestDelivery(
 		candidate := settled[binding].manifest
 		if _, admitErr := solutionhost.Admit(candidate.Host.Coordinate, previous, candidate); admitErr != nil {
 			if errors.Is(admitErr, solutionhost.ErrWithdrawn) {
-				return nil, fmt.Errorf("module manifest %s is not admissible: %w; a new instance needs a new name, which gives it a new binding", binding, admitErr)
+				return nil, nil, fmt.Errorf("module manifest %s is not admissible: %w; a new instance needs a new name, which gives it a new binding", binding, admitErr)
 			}
-			return nil, fmt.Errorf("module manifest %s is not admissible: %w", binding, admitErr)
+			return nil, nil, fmt.Errorf("module manifest %s is not admissible: %w", binding, admitErr)
 		}
 	}
 	delivery, err := signManifestSet(ctx, settled, names, opts, environment)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	files, err := writeManifestSet(target, overlay, inventory, settled, names, opts)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := writeModuleManifestKustomization(target, environment, files); err != nil {
-		return nil, err
-	}
-	inventory.ModuleManifestPath = moduleManifestDir
-	return delivery, nil
+	return delivery, files, nil
 }
 
 // refuseAnotherHostsRecord holds what the base branch delivered under this
@@ -368,37 +394,15 @@ func signManifestSet(ctx context.Context, settled map[string]deliveredManifest, 
 		if err != nil {
 			return nil, fmt.Errorf("canonicalize module manifest %s: %w", binding, err)
 		}
-		identity, reused, err := reuseCarrier(ctx, "module manifest "+binding, &entry.carrier, opts.Reuse[key], payload, opts)
+		identity, unsignedErr, err := signCarrier(ctx, "module manifest "+binding, payload, &entry.carrier, opts.Reuse[key], signer, opts)
 		if err != nil {
 			return nil, err
 		}
-		if !reused {
-			envelope, signErr := signing.SignEnvelope(payload, signer)
-			switch {
-			case signErr == nil:
-				if opts.SelfCheck != nil {
-					if checkErr := opts.SelfCheck(ctx, envelope, payload); checkErr != nil {
-						return nil, fmt.Errorf("module manifest %s: %w", binding, checkErr)
-					}
-				}
-				signed, carrierErr := solutionhost.Carrier(payload, envelope)
-				if carrierErr != nil {
-					return nil, fmt.Errorf("assemble the signed carrier of module manifest %s: %w", binding, carrierErr)
-				}
-				if entry.carrier, err = solutionhost.MarshalSigned(signed); err != nil {
-					return nil, fmt.Errorf("encode the signed carrier of module manifest %s: %w", binding, err)
-				}
-				if read, readErr := signing.ReadIdentity(envelope); readErr == nil {
-					identity = read.KeyID
-				}
-			case errors.Is(signErr, signing.ErrNoIdentity):
-				unsigned = append(unsigned, binding)
-				delivery.Signed = false
-				if unsignedCause == nil {
-					unsignedCause = signErr
-				}
-			default:
-				return nil, fmt.Errorf("sign module manifest %s: %w", binding, signErr)
+		if unsignedErr != nil {
+			unsigned = append(unsigned, binding)
+			delivery.Signed = false
+			if unsignedCause == nil {
+				unsignedCause = unsignedErr
 			}
 		}
 		if len(entry.carrier) > 0 {
@@ -417,9 +421,44 @@ func signManifestSet(ctx context.Context, settled map[string]deliveredManifest, 
 		settled[binding] = entry
 	}
 	if len(unsigned) > 0 && !opts.AllowUnsigned {
-		return nil, unsignedRefusal(unsigned, environment, unsignedCause, opts)
+		return nil, unsignedRefusal("the module manifests "+strings.Join(unsigned, ", "), environment, unsignedCause, opts)
 	}
 	return delivery, nil
+}
+
+// signCarrier settles what carries one document's canonical payload: the
+// carrier delivered before or planned (reuseCarrier), or a fresh signature,
+// checked as the host would check it before it is kept. A signer with no
+// identity leaves the document uncarried and answers why in unsigned, for the
+// caller to allow (local qualification) or refuse by name.
+func signCarrier(ctx context.Context, what string, payload []byte, carrier *[]byte, planned []byte, signer signing.Signer, opts *deliveryPublishOptions) (identity string, unsigned, err error) {
+	identity, reused, err := reuseCarrier(ctx, what, carrier, planned, payload, opts)
+	if err != nil || reused {
+		return identity, nil, err
+	}
+	envelope, err := signing.SignEnvelope(payload, signer)
+	switch {
+	case errors.Is(err, signing.ErrNoIdentity):
+		return "", err, nil
+	case err != nil:
+		return "", nil, fmt.Errorf("sign %s: %w", what, err)
+	}
+	if opts.SelfCheck != nil {
+		if err = opts.SelfCheck(ctx, envelope, payload); err != nil {
+			return "", nil, fmt.Errorf("%s: %w", what, err)
+		}
+	}
+	signed, err := solutionhost.Carrier(payload, envelope)
+	if err != nil {
+		return "", nil, fmt.Errorf("assemble the signed carrier of %s: %w", what, err)
+	}
+	if *carrier, err = solutionhost.MarshalSigned(signed); err != nil {
+		return "", nil, fmt.Errorf("encode the signed carrier of %s: %w", what, err)
+	}
+	if read, readErr := signing.ReadIdentity(envelope); readErr == nil {
+		identity = read.KeyID
+	}
+	return identity, nil, nil
 }
 
 // writeManifestSet writes the settled manifests, the delivery account and the

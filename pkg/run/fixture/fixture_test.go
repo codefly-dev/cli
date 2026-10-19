@@ -2,6 +2,8 @@ package fixture
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -67,4 +69,65 @@ func contains(s, sub string) bool {
 		}
 		return false
 	})()
+}
+
+// A floor is an integer of at least 1, read beside the principals; a file
+// stating none, or no file, is no floor. ReadGrants never reads it, so the
+// native run is untouched by it.
+func TestMinimumRevisionIsAPositiveInteger(t *testing.T) {
+	dir := t.TempDir()
+	write := func(body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(dir, "configurations", "prod"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "configurations", "prod", "module-envelope.json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if floor, err := ReadMinimumRevision(dir, "prod"); err != nil || floor != 0 {
+		t.Fatalf("no file = %d, %v", floor, err)
+	}
+	write(`{"principals":{"records":{}},"minimum_revision":7}`)
+	if floor, err := ReadMinimumRevision(dir, "prod"); err != nil || floor != 7 {
+		t.Fatalf("floor = %d, %v", floor, err)
+	}
+	principals, err := ReadGrants(dir, "prod")
+	if err != nil || len(principals) != 1 {
+		t.Fatalf("the grants beside a floor = %v, %v", principals, err)
+	}
+	for _, refused := range []string{`0`, `-1`, `1.5`, `"3"`, `null`, `1e3`} {
+		write(`{"principals":{},"minimum_revision":` + refused + `}`)
+		if _, err := ReadMinimumRevision(dir, "prod"); err == nil || !contains(err.Error(), "at least 1") {
+			t.Fatalf("minimum_revision %s = %v, want refused", refused, err)
+		}
+	}
+	write(`{"principals":{}}`)
+	if floor, err := ReadMinimumRevision(dir, "prod"); err != nil || floor != 0 {
+		t.Fatalf("no floor stated = %d, %v", floor, err)
+	}
+}
+
+// The consuming workspace decides the floor; composed workspaces that state
+// one must agree, or the disagreement is refused by name.
+func TestCompositionMinimumRevisionIsDecidedNeverPicked(t *testing.T) {
+	a, b, none := FloorSource{Workspace: "a", Floor: 4}, FloorSource{Workspace: "b", Floor: 9}, FloorSource{Workspace: "c"}
+	if floor, err := MergeMinimumRevision(FloorSource{Workspace: "app"}, []FloorSource{a, none, {Workspace: "d", Floor: 4}}, "prod"); err != nil || floor != 4 {
+		t.Fatalf("agreeing bases = %d, %v", floor, err)
+	}
+	_, err := MergeMinimumRevision(FloorSource{Workspace: "app"}, []FloorSource{a, b}, "prod")
+	if err == nil {
+		t.Fatal("a disagreement nobody decides must be refused")
+	}
+	for _, want := range []string{`"a"`, `"b"`, `"app"`, "4", "9"} {
+		if !contains(err.Error(), want) {
+			t.Fatalf("refusal %q does not name %s", err, want)
+		}
+	}
+	if floor, err := MergeMinimumRevision(FloorSource{Workspace: "app", Floor: 2}, []FloorSource{a, b}, "prod"); err != nil || floor != 2 {
+		t.Fatalf("the consuming workspace decides = %d, %v", floor, err)
+	}
+	if floor, err := MergeMinimumRevision(FloorSource{Workspace: "app"}, nil, "prod"); err != nil || floor != 0 {
+		t.Fatalf("nobody states one = %d, %v", floor, err)
+	}
 }

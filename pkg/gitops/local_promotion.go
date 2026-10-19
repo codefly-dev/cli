@@ -139,7 +139,7 @@ func DeliveryJobsOf(tree, publishedPath, environment string) ([]DeliveryJob, err
 			return fmt.Errorf("delivery Job %s names no Job, name or namespace", file)
 		}
 		jobs = append(jobs, DeliveryJob{
-			Kind: job.Metadata.Labels[deliveryLabel], Name: job.Metadata.Name, Namespace: job.Metadata.Namespace, Path: file,
+			Kind: job.Metadata.Labels[deliveredDocumentLabel], Name: job.Metadata.Name, Namespace: job.Metadata.Namespace, Path: file,
 		})
 		return nil
 	})
