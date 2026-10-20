@@ -48,22 +48,42 @@ func (l *keySetLoader) Load(ctx context.Context, env *resources.Environment) err
 		return err
 	}
 	loaded := l.Loader.Configurations()
-	if l.authority == nil || named(loaded, environments.WorkContextConfiguration) {
-		l.configurations = loaded
-		return nil
+	layered := append([]*basev0.Configuration{}, loaded...)
+
+	// Routing a declared group in empty is a LOCAL answer only. A deployed
+	// composition that declares a group and supplies nothing has a
+	// misconfiguration, and the manager refusing to start is how that is found;
+	// covering it here would turn a loud boot failure into a service running
+	// silently without the capability it said it needed.
+	if local(env) {
+		layered = append(layered, l.empties(loaded)...)
 	}
-	l.configurations = append(append([]*basev0.Configuration{}, loaded...), l.empties(loaded)...)
-	l.configurations = append(l.configurations, &basev0.Configuration{
-		Origin: resources.ConfigurationWorkspace,
-		Infos: []*basev0.ConfigurationInformation{{
-			Name: environments.WorkContextConfiguration,
-			ConfigurationValues: []*basev0.ConfigurationValue{
-				{Key: environments.WorkContextKeySetURLKey, Value: l.authority.KeySetURL()},
-				{Key: environments.WorkContextIssuerKey, Value: l.authority.Issuer()},
-			},
-		}},
-	})
+
+	// The key set is added on its own terms: a composition that authors the
+	// group keeps its own, and a run with no authority adds nothing. This is
+	// deliberately NOT folded into the check above — the two were conjoined,
+	// so a composition that authored work-context and nothing else had its
+	// other declared groups silently skipped.
+	if l.authority != nil && !named(loaded, environments.WorkContextConfiguration) {
+		layered = append(layered, &basev0.Configuration{
+			Origin: resources.ConfigurationWorkspace,
+			Infos: []*basev0.ConfigurationInformation{{
+				Name: environments.WorkContextConfiguration,
+				ConfigurationValues: []*basev0.ConfigurationValue{
+					{Key: environments.WorkContextKeySetURLKey, Value: l.authority.KeySetURL()},
+					{Key: environments.WorkContextIssuerKey, Value: l.authority.Issuer()},
+				},
+			}},
+		})
+	}
+	l.configurations = layered
 	return nil
+}
+
+// local reports whether this run is the local environment, which is the only
+// one a missing declared group is answered for rather than refused.
+func local(env *resources.Environment) bool {
+	return env != nil && resources.Match(env.Name, resources.LocalEnvironment().Name)
 }
 
 // empties routes in every declared group the composition did not supply,
