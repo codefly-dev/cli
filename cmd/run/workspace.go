@@ -139,6 +139,9 @@ func init() {
 	WorkspaceCmd.Flags().StringSliceVar(&silent, "silent", nil, "Silence services in CLI output")
 	WorkspaceCmd.Flags().StringVar(&runtimeContext, "runtime-context", defaultRuntimeContext(), "Runtime context for the flow (native/container/nix/free)")
 	WorkspaceCmd.Flags().StringVar(&namingScope, "naming-scope", "", NamingScopeUsage)
+	WorkspaceCmd.Flags().BoolVar(&temporaryPorts, "temporary-ports", false, TemporaryPortsUsage)
+	WorkspaceCmd.Flags().StringVar(&outputEnv, "output-env", "", "Write one service's full SDK/runtime environment to an owner-only file")
+	WorkspaceCmd.Flags().StringVar(&outputEnvService, "output-env-service", "", "Service whose runtime environment to export (module/service; defaults to the first composition root)")
 	WorkspaceCmd.Flags().BoolVar(&withCLIServer, "cli-server", false, "Start CLI server")
 	WorkspaceCmd.Flags().BoolVar(&startDocker, "start-docker", true, "Auto-start a local Docker engine if a service needs Docker and it isn't running")
 }

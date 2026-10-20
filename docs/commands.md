@@ -113,9 +113,16 @@ Run the whole composition locally: the host's ingress services, and every
 service of every other composed module. Every service, not only what the
 dependency graph reaches: a solution's `api.consumes` and a module's
 configuration references (`${endpoint:model/model/rest}`) name producers the
-graph never sees. It takes the flags of `codefly run service` and no service
-names; `--exclude-dependency` and `--exclude-workspace-configuration` leave a
-service or a configuration group out.
+graph never sees. It takes no service names and the flags of `codefly run
+service` that do not name one root service — `--naming-scope`,
+`--temporary-ports`, `--output-env`, `--runtime-context`, `--set` among them,
+never `--stand-alone` or `--exclude-root`; `--exclude-dependency` and
+`--exclude-workspace-configuration` leave a service or a configuration group
+out. The deterministic port hash folds every endpoint into a few thousand
+buckets, so a `--naming-scope` can hash two endpoints to one port and abort
+the run; `--temporary-ports` sidesteps the hash, under the ordering its
+allocation needs — a workspace configuration reference to a service that has
+not initialized yet cannot be resolved (see [orchestration](orchestration.md)).
 
 **Addresses across a reload.** A service keeps the addresses it was accepted
 at for the whole run: under `--temporary-ports` the kernel-assigned ports of
