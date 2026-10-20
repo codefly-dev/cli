@@ -148,7 +148,11 @@ func ResolveSolutionEntry(ctx context.Context, workspace *resources.Workspace) (
 	for _, root := range roots {
 		uniques = append(uniques, entryUnique(root))
 	}
-	return "", fmt.Errorf("ambiguous solution root in workspace <%s>: multiple modules declare a service-entry and none depends on another (%s); run `codefly run service <module/service>` explicitly", workspace.Name, strings.Join(uniques, ", "))
+	// A product composing more than one solution has no single root by
+	// construction, and that is not a mistake to work around by hand: `run
+	// workspace` starts the whole composition from the same declarations, so it
+	// is named first. Naming services stays the way to run LESS than all of it.
+	return "", fmt.Errorf("ambiguous solution root in workspace <%s>: multiple modules declare a service-entry and none depends on another (%s); run `codefly run workspace` for the whole composition, or `codefly run service <module/service>` for a subset", workspace.Name, strings.Join(uniques, ", "))
 }
 
 // entryUnique is the "<module>/<service-entry>" unique of a module's entry.
