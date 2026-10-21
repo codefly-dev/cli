@@ -175,8 +175,9 @@ func (p *gitSourcePrefetch) Close() error {
 //     fetch fails instead of hanging;
 //   - gitPrefetchConfig;
 //   - no variable pointing git at another repository or template;
-//   - no tracing: a trace prints a credential helper's command line and
-//     protocol traffic into the output this reports.
+//   - no tracing, whether the host enables it in the environment or in its
+//     git configuration: a trace prints a credential helper's command line and
+//     protocol traffic into the output this reports or a file.
 //
 // It sets no GIT_ALLOW_PROTOCOL: git checks that after the host's insteadOf
 // rewrites, so it would refuse a host rewrite to a local path; the declared URL
@@ -199,7 +200,9 @@ func gitSourcePrefetchEnv(base []string) []string {
 		}
 		env = append(env, entry)
 	}
-	env = append(env, "GIT_TERMINAL_PROMPT=0")
+	// Trace2 is also enabled from configuration (trace2.*Target), which the
+	// environment overrides; turning each target off here covers both.
+	env = append(env, "GIT_TERMINAL_PROMPT=0", "GIT_TRACE2=0", "GIT_TRACE2_EVENT=0", "GIT_TRACE2_PERF=0")
 	if !interactive {
 		env = append(env, "GCM_INTERACTIVE=never")
 	}

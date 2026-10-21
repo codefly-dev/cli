@@ -252,21 +252,44 @@ func unauthorizedGitHost(t *testing.T) string {
 }
 
 // TestGitSourcePrefetchTracesNoCredential pins that a host's git tracing,
-// which prints a credential helper's command line, does not carry a secret into
-// the error the prefetch reports and logs.
+// which prints a credential helper's command line, carries no secret into the
+// error the prefetch reports and logs, nor into a trace file, whether the host
+// enables it in the environment or through a trace2 target in its git
+// configuration.
 func TestGitSourcePrefetchTracesNoCredential(t *testing.T) {
 	requireGit(t)
 	const secret = "not-a-real-secret-0123"
-	hostGitConfig(t, "[credential]\n\thelper = \"!f() { echo username=ci; echo password="+secret+"; }; f\"\n")
-	for _, variable := range []string{"GIT_TRACE", "GIT_TRACE_CURL", "GIT_TRACE_PACKET", "GIT_TRACE2", "GIT_CURL_VERBOSE"} {
-		t.Setenv(variable, "1")
+	helper := "[credential]\n\thelper = \"!f() { echo username=ci; echo password=" + secret + "; }; f\"\n"
+	for name, target := range map[string]string{
+		"environment":         "",
+		"trace2.normalTarget": "1",
+		"trace2.eventTarget":  "file",
+		"trace2.perfTarget":   "file",
+	} {
+		t.Run(name, func(t *testing.T) {
+			traceFile := filepath.Join(t.TempDir(), "trace")
+			config := helper
+			switch target {
+			case "":
+				for _, variable := range []string{"GIT_TRACE", "GIT_TRACE_CURL", "GIT_TRACE_PACKET", "GIT_TRACE2", "GIT_CURL_VERBOSE"} {
+					t.Setenv(variable, "1")
+				}
+			case "file":
+				config += fmt.Sprintf("[trace2]\n\t%s = %s\n", strings.TrimPrefix(name, "trace2."), traceFile)
+			default:
+				config += fmt.Sprintf("[trace2]\n\t%s = %s\n", strings.TrimPrefix(name, "trace2."), target)
+			}
+			hostGitConfig(t, config)
+			t.Setenv("GIT_TRACE_REDACT", "0")
+			prefetch := newGitSourcePrefetch()
+			t.Cleanup(func() { _ = prefetch.Close() })
+			_, err := prefetch.fetch(context.Background(), unauthorizedGitHost(t), commitOne)
+			require.ErrorContains(t, err, "Authentication failed", "the credential helper was consulted")
+			require.NotContains(t, err.Error(), secret)
+			traced, _ := os.ReadFile(traceFile)
+			require.NotContains(t, string(traced), secret)
+		})
 	}
-	t.Setenv("GIT_TRACE_REDACT", "0")
-	prefetch := newGitSourcePrefetch()
-	t.Cleanup(func() { _ = prefetch.Close() })
-	_, err := prefetch.fetch(context.Background(), unauthorizedGitHost(t), commitOne)
-	require.ErrorContains(t, err, "Authentication failed", "the credential helper was consulted")
-	require.NotContains(t, err.Error(), secret)
 }
 
 // TestGitSourcePrefetchStopsAHelperWithItsContext pins that a credential helper
@@ -302,9 +325,13 @@ func TestGitSourcePrefetchEnvKeepsHowTheHostReachesRepositories(t *testing.T) {
 	require.Equal(t, "0", value)
 	value, _ = envValue(env, "GCM_INTERACTIVE")
 	require.Equal(t, "never", value)
-	for _, dropped := range []string{"GIT_DIR", "GIT_ALLOW_PROTOCOL", "GIT_TEMPLATE_DIR", "GIT_TRACE", "GIT_TRACE2_EVENT", "GIT_CURL_VERBOSE"} {
+	for _, dropped := range []string{"GIT_DIR", "GIT_ALLOW_PROTOCOL", "GIT_TEMPLATE_DIR", "GIT_TRACE", "GIT_CURL_VERBOSE"} {
 		_, set := envValue(env, dropped)
 		require.False(t, set, dropped)
+	}
+	for _, off := range []string{"GIT_TRACE2", "GIT_TRACE2_EVENT", "GIT_TRACE2_PERF"} {
+		value, _ = envValue(env, off)
+		require.Equal(t, "0", value, "%s is off, overriding a trace2 target in the host's configuration", off)
 	}
 	value, _ = envValue(gitSourcePrefetchEnv([]string{"GCM_INTERACTIVE=always"}), "GCM_INTERACTIVE")
 	require.Equal(t, "always", value, "a host's own choice is kept")
