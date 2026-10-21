@@ -204,27 +204,9 @@ func serviceSecretProjection(scope unitScope, service string, secrets *environme
 			return nil, err
 		}
 	}
-	projected := make([]string, 0, len(remotes))
-	for key := range remotes {
-		projected = append(projected, key)
-	}
-	sort.Strings(projected)
-	data := make([]externalSecretData, 0, len(projected))
-	for _, key := range projected {
-		remote := remotes[key]
-		item := externalSecretData{
-			SecretKey: key,
-			RemoteRef: externalSecretRemote{Key: remote.Key, Property: remote.Property},
-		}
-		// A key declared with its own store reads through it; one declared with
-		// the service's store, explicitly or by omission, needs no sourceRef.
-		if remote.SecretStore != nil && *remote.SecretStore != store {
-			if _, ok := externalSecretStoreKinds[remote.SecretStore.Kind]; !ok {
-				return nil, fmt.Errorf("service %q secret key %s names secret-store kind %q", service, key, remote.SecretStore.Kind)
-			}
-			item.SourceRef = &externalSecretSourceRef{StoreRef: externalSecretStoreRef{Name: remote.SecretStore.Name, Kind: remote.SecretStore.Kind}}
-		}
-		data = append(data, item)
+	data, err := externalSecretDataItems(service, store, remotes)
+	if err != nil {
+		return nil, err
 	}
 	projection, err := externalSecretProjection(service, namespace, store, data)
 	if err != nil {
@@ -281,6 +263,33 @@ func serviceSecretProjection(scope unitScope, service string, secrets *environme
 		}
 	}
 	return projection, nil
+}
+
+// externalSecretDataItems renders one data item per secret key, in key order.
+// A key declared with its own store reads through it (the item's sourceRef);
+// one declared with the service's store, explicitly or by omission, needs none.
+func externalSecretDataItems(service string, store environments.EnvironmentSecretStoreReference, remotes map[string]environments.EnvironmentSecretRemoteRef) ([]externalSecretData, error) {
+	projected := make([]string, 0, len(remotes))
+	for key := range remotes {
+		projected = append(projected, key)
+	}
+	sort.Strings(projected)
+	data := make([]externalSecretData, 0, len(projected))
+	for _, key := range projected {
+		remote := remotes[key]
+		item := externalSecretData{
+			SecretKey: key,
+			RemoteRef: externalSecretRemote{Key: remote.Key, Property: remote.Property},
+		}
+		if remote.SecretStore != nil && *remote.SecretStore != store {
+			if _, ok := externalSecretStoreKinds[remote.SecretStore.Kind]; !ok {
+				return nil, fmt.Errorf("service %q secret key %s names secret-store kind %q", service, key, remote.SecretStore.Kind)
+			}
+			item.SourceRef = &externalSecretSourceRef{StoreRef: externalSecretStoreRef{Name: remote.SecretStore.Name, Kind: remote.SecretStore.Kind}}
+		}
+		data = append(data, item)
+	}
+	return data, nil
 }
 
 // externalSecretProjection assembles the ExternalSecret shared by the managed- and
