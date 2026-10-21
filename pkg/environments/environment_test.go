@@ -241,6 +241,12 @@ environments:
             kind: SecretStore
           remote-keys:
             stripe-key: stripe/prod/key
+            identity-client-secret:
+              key: workos-app
+              property: client_secret
+              secret-store:
+                name: platform-identity
+                kind: ClusterSecretStore
 `
 	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(workspace), 0o644); err != nil {
 		t.Fatal(err)
@@ -274,6 +280,45 @@ environments:
 	}
 	if billing.Name != "aws-secrets-billing" || billing.Kind != "SecretStore" {
 		t.Fatalf("billing secret store override = %+v", billing)
+	}
+	// One key of billing is read through a store of its own, the way a cell keeps
+	// its identity provider's secrets apart; the service's other keys are not.
+	identity := secrets.Services["billing"].RemoteKeys["identity-client-secret"]
+	if identity.Key != "workos-app" || identity.Property != "client_secret" || identity.SecretStore == nil ||
+		*identity.SecretStore != (environments.EnvironmentSecretStoreReference{Name: "platform-identity", Kind: "ClusterSecretStore"}) {
+		t.Fatalf("per-key secret store = %+v", identity)
+	}
+	if stripe := secrets.Services["billing"].RemoteKeys["stripe-key"]; stripe.SecretStore != nil {
+		t.Fatalf("a key without its own store = %+v", stripe)
+	}
+}
+
+// A per-key secret-store is a reference an ExternalSecret can resolve, or it is
+// refused where it is declared rather than rendered into a data item External
+// Secrets rejects.
+func TestEnvironmentSecretRemoteRefRefusesAnUnresolvableStore(t *testing.T) {
+	for name, declaration := range map[string]string{
+		"no kind":       "key: workos-app\nsecret-store:\n  name: platform-identity\n",
+		"backend kind":  "key: workos-app\nsecret-store:\n  name: platform-identity\n  kind: gcp-secret-manager\n",
+		"unknown field": "key: workos-app\nstore: platform-identity\n",
+	} {
+		var ref environments.EnvironmentSecretRemoteRef
+		if err := yaml.Unmarshal([]byte(declaration), &ref); err == nil {
+			t.Errorf("%s: declaration %q loaded as %+v", name, declaration, ref)
+		}
+	}
+	var ref environments.EnvironmentSecretRemoteRef
+	if err := yaml.Unmarshal([]byte("key: workos-app\nproperty: client_secret\nsecret-store:\n  name: platform-identity\n  kind: ClusterSecretStore\n"), &ref); err != nil {
+		t.Fatal(err)
+	}
+	// The round trip keeps the store: `environment import` rewrites the workspace.
+	out, err := yaml.Marshal(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var again environments.EnvironmentSecretRemoteRef
+	if err := yaml.Unmarshal(out, &again); err != nil || !again.Equal(ref) {
+		t.Fatalf("round trip %q -> %+v (%v)", out, again, err)
 	}
 }
 

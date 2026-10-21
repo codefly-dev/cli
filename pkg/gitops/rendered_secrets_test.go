@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/codefly-dev/cli/pkg/environments"
 )
 
 const renderedExternalSecret = `apiVersion: external-secrets.io/v1
@@ -340,5 +342,48 @@ func TestRenderedSecretsKeepActualServicePropertyBindings(t *testing.T) {
 		if !reflect.DeepEqual(readers, []RenderedSecretReader{{Service: service, Key: key}}) {
 			t.Fatal("service/key association was lost")
 		}
+	}
+}
+
+// An item that names its own store is seeded there, not in the ExternalSecret's
+// store: the read-back groups it under the store the item reads through.
+func TestRenderedServiceSecretsReadsAnItemThroughItsOwnStore(t *testing.T) {
+	workspace := t.TempDir()
+	root := filepath.Join(workspace, "deployments", "modules", "billing")
+	data := "        - secretKey: A_KEY\n          remoteRef:\n            key: example-billing-api\n            property: A_KEY\n" +
+		"        - secretKey: IDENTITY_CLIENT_SECRET\n          remoteRef:\n            key: workos-app\n            property: client_secret\n" +
+		"          sourceRef:\n            storeRef:\n              name: platform-identity\n              kind: ClusterSecretStore\n"
+	content := []byte(fmt.Sprintf(renderedExternalSecret, "api", "billing", "api", data))
+	relative := "services/api/overlays/staging/external-secret.yaml"
+	path := filepath.Join(root, filepath.FromSlash(relative))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(content)
+	inventory := Inventory{SchemaVersion: SchemaVersion, Module: "billing", Environment: "staging", AppProject: "example", OwnedPath: "deployments/modules/billing",
+		Units: []InventoryUnit{{Kind: "service", Module: "billing", Name: "api", Path: "services/api"}},
+		Files: []InventoryFile{{Path: relative, SHA256: "sha256:" + hex.EncodeToString(sum[:]), Size: int64(len(content))}}}
+	encoded, err := json.MarshalIndent(inventory, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, InventoryFilename), append(encoded, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rendered, err := RenderedServiceSecrets(workspace, "staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stores := map[string]environments.EnvironmentSecretStoreReference{}
+	for _, secret := range rendered.Secrets {
+		stores[secret.RemoteKey] = secret.Store
+	}
+	if stores["workos-app"] != (environments.EnvironmentSecretStoreReference{Name: "platform-identity", Kind: "ClusterSecretStore"}) ||
+		stores["example-billing-api"] != (environments.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"}) {
+		t.Fatalf("stores by remote key = %+v", stores)
 	}
 }

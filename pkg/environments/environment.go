@@ -207,6 +207,29 @@ type EnvironmentManagedSecretReference struct {
 type EnvironmentSecretRemoteRef struct {
 	Key      string `yaml:"key"`
 	Property string `yaml:"property,omitempty"`
+	// SecretStore, when set, is the store THIS key is read through, where the
+	// service's other keys read through the service's (or the environment's)
+	// store. A producer resolves it like every other reference: a cell keeps
+	// its identity provider's secrets in a store of their own, and the
+	// contract names it per key rather than moving the whole service. Rendered
+	// as the ExternalSecret data item's sourceRef.storeRef.
+	SecretStore *EnvironmentSecretStoreReference `yaml:"secret-store,omitempty"`
+}
+
+// Equal reports whether two references name the same remote location: the
+// same key and property, read through the same store (nil meaning the
+// service's). A pointer field would otherwise compare by address.
+func (ref EnvironmentSecretRemoteRef) Equal(other EnvironmentSecretRemoteRef) bool {
+	if ref.Key != other.Key || ref.Property != other.Property {
+		return false
+	}
+	switch {
+	case ref.SecretStore == nil && other.SecretStore == nil:
+		return true
+	case ref.SecretStore == nil || other.SecretStore == nil:
+		return false
+	}
+	return *ref.SecretStore == *other.SecretStore
 }
 
 // UnmarshalYAML accepts either a scalar remote key ("lodestar-accounts", which
@@ -219,13 +242,24 @@ func (ref *EnvironmentSecretRemoteRef) UnmarshalYAML(node *yaml.Node) error {
 	}
 	if node.Kind == yaml.MappingNode {
 		for i := 0; i < len(node.Content); i += 2 {
-			if key := node.Content[i].Value; key != "key" && key != "property" {
+			if key := node.Content[i].Value; key != "key" && key != "property" && key != "secret-store" {
 				return fmt.Errorf("unknown secret reference field %q", key)
 			}
 		}
 	}
 	type plain EnvironmentSecretRemoteRef
-	return node.Decode((*plain)(ref))
+	if err := node.Decode((*plain)(ref)); err != nil {
+		return err
+	}
+	if ref.SecretStore != nil {
+		if ref.SecretStore.Name == "" || ref.SecretStore.Kind == "" {
+			return fmt.Errorf("secret reference %q names a secret-store without both name and kind", ref.Key)
+		}
+		if ref.SecretStore.Kind != "SecretStore" && ref.SecretStore.Kind != "ClusterSecretStore" {
+			return fmt.Errorf("secret reference %q names secret-store kind %q; only SecretStore and ClusterSecretStore resolve an ExternalSecret", ref.Key, ref.SecretStore.Kind)
+		}
+	}
+	return nil
 }
 
 // MarshalYAML emits the terse scalar form (the remote key alone) when no property
@@ -233,7 +267,7 @@ func (ref *EnvironmentSecretRemoteRef) UnmarshalYAML(node *yaml.Node) error {
 // rewrites it in place — preserves a scalar remote-key declaration instead of
 // expanding it to a {key: …} mapping. With a property it emits the full mapping.
 func (ref EnvironmentSecretRemoteRef) MarshalYAML() (any, error) {
-	if ref.Property == "" {
+	if ref.Property == "" && ref.SecretStore == nil {
 		return ref.Key, nil
 	}
 	type plain EnvironmentSecretRemoteRef

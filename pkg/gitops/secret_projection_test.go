@@ -790,3 +790,48 @@ func TestValidateInventoryUnitsGovernSecretsBearingManagedBootstrapUnit(t *testi
 		t.Fatal("managed bootstrap unit without deployment evidence was accepted")
 	}
 }
+
+// A remote key declared with its own secret-store is read through that store
+// alone — the ExternalSecret keeps the service's store and the one item carries
+// a sourceRef — so a cell can keep its identity provider's secrets in a store
+// of their own without moving the whole service off the cell's.
+func TestServiceSecretProjectionReadsAKeyThroughItsOwnStore(t *testing.T) {
+	identity := environments.EnvironmentSecretStoreReference{Name: "platform-identity", Kind: "ClusterSecretStore"}
+	secrets := cellServiceSecrets(environments.EnvironmentServiceSecretMapping{
+		RemoteKeys: map[string]environments.EnvironmentSecretRemoteRef{
+			"IDENTITY_CLIENT_SECRET": {Key: "workos-app", Property: "client_secret", SecretStore: &identity},
+			"CACHE_PASSWORD":         {Key: "cell-accounts", Property: "CACHE_PASSWORD"},
+		},
+	})
+	projection, err := serviceSecretProjection(unitScope{Namespace: "payments"}, "accounts", secrets, []string{"IDENTITY_CLIENT_SECRET", "CACHE_PASSWORD"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.Spec.SecretStoreRef.Name != "cell-secrets" {
+		t.Fatalf("the ExternalSecret keeps the service's store: %+v", projection.Spec.SecretStoreRef)
+	}
+	byKey := map[string]externalSecretData{}
+	for _, item := range projection.Spec.Data {
+		byKey[item.SecretKey] = item
+	}
+	own := byKey["IDENTITY_CLIENT_SECRET"]
+	if own.SourceRef == nil || own.SourceRef.StoreRef != (externalSecretStoreRef{Name: "platform-identity", Kind: "ClusterSecretStore"}) {
+		t.Fatalf("the key declared with its own store reads through it: %+v", own)
+	}
+	if own.RemoteRef != (externalSecretRemote{Key: "workos-app", Property: "client_secret"}) {
+		t.Fatalf("remote ref lost: %+v", own.RemoteRef)
+	}
+	if byKey["CACHE_PASSWORD"].SourceRef != nil {
+		t.Fatalf("a key on the service's store carries no sourceRef: %+v", byKey["CACHE_PASSWORD"])
+	}
+	// Naming the service's own store explicitly is the same as omitting it.
+	cell := secrets.SecretStore
+	secrets.Services["accounts"].RemoteKeys["CACHE_PASSWORD"] = environments.EnvironmentSecretRemoteRef{Key: "cell-accounts", Property: "CACHE_PASSWORD", SecretStore: &cell}
+	projection, err = serviceSecretProjection(unitScope{Namespace: "payments"}, "accounts", secrets, []string{"CACHE_PASSWORD"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.Spec.Data[0].SourceRef != nil {
+		t.Fatalf("the service's own store needs no sourceRef: %+v", projection.Spec.Data[0])
+	}
+}
