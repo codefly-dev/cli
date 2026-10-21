@@ -102,15 +102,17 @@ func (p *gitSourcePrefetch) fetch(ctx context.Context, repository, commit string
 		if _, fullErr := git(full...); fullErr != nil {
 			return "", fmt.Errorf("cannot fetch commit %s of a declared git source: %w", commit, errors.Join(err, fullErr))
 		}
+		// The branches and tags arrived but none reaches the commit: the
+		// source no longer holds it, whatever git's own wording was.
 		if _, err := git("update-ref", ref, commit); err != nil {
-			return "", fmt.Errorf("the declared git source does not hold commit %s: %w", commit, err)
+			return "", fmt.Errorf("%s: the declared git source does not hold commit %s", gitCommitUnavailable, commit)
 		}
 	}
 	// The mirror ref must name exactly the locked commit: a branch spelled like
 	// a commit id is never taken for it.
 	resolved, err := git("rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
 	if err != nil {
-		return "", fmt.Errorf("the declared git source does not hold commit %s: %w", commit, err)
+		return "", fmt.Errorf("%s: the declared git source does not hold commit %s", gitCommitUnavailable, commit)
 	}
 	if resolved != commit {
 		return "", fmt.Errorf("%s: the mirror ref of commit %s resolves to %s", gitCommitUnavailable, commit, resolved)

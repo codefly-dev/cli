@@ -122,7 +122,28 @@ func TestGitSourcePrefetchReportsACommitTheSourceLacks(t *testing.T) {
 	t.Cleanup(func() { _ = prefetch.Close() })
 	_, err := prefetch.mirrorsFor(context.Background(), gitSourceRecipe(&builderv0.GitSourceDownload{Repository: gitSourceURL, Commit: commitOne, MirrorContext: "gitsources"}))
 	require.ErrorContains(t, err, "recipe app git source 0")
-	require.ErrorContains(t, err, "does not hold commit "+commitOne)
+	require.ErrorContains(t, err, "commit not available: the declared git source does not hold commit "+commitOne)
+}
+
+// TestGitSourcePrefetchClassifiesACommitMissingAfterTheFallback pins that a
+// commit still absent once the branches and tags arrived reads as unavailable,
+// not as a generic git failure.
+func TestGitSourcePrefetchClassifiesACommitMissingAfterTheFallback(t *testing.T) {
+	prefetch := newGitSourcePrefetch()
+	prefetch.run = func(_ context.Context, _ []string, args ...string) (string, error) {
+		if args[0] == "init" {
+			return "", os.MkdirAll(args[len(args)-1], 0o755)
+		}
+		if slices.Contains(args, "--depth=1") || slices.Contains(args, "update-ref") {
+			return "", errors.New("git update-ref exited with status 128: git failed")
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { _ = prefetch.Close() })
+	_, err := prefetch.mirrorsFor(context.Background(), gitSourceRecipe(&builderv0.GitSourceDownload{Repository: gitSourceURL, Commit: commitOne, MirrorContext: "gitsources"}))
+	require.ErrorContains(t, err, "recipe app git source 0")
+	require.ErrorContains(t, err, "commit not available: the declared git source does not hold commit "+commitOne)
+	require.NotContains(t, err.Error(), "git failed")
 }
 
 // TestGitSourcePrefetchRefusesAMirrorRefNamingAnotherCommit pins that the
