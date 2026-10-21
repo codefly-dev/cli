@@ -214,7 +214,11 @@ func (r *moduleRender) stage(ctx context.Context, stage string) error {
 	if err = collectRenderTemplates(r.scope.Templates, rendered.deployed, rendered.secretKeys); err != nil {
 		return err
 	}
-	injections, err := deriveRenderInjections(ctx, r.workspace, rendered.selfEndpoints, rendered.hostRoutes, r.sink)
+	uniques := make([]string, 0, len(rendered.outputs))
+	for unique := range rendered.outputs {
+		uniques = append(uniques, unique)
+	}
+	injections, err := deriveRenderInjections(ctx, r.workspace, rendered.selfEndpoints, rendered.hostRoutes, telemetryCarriersForRender(r.env, uniques), r.sink)
 	if err != nil {
 		return err
 	}
@@ -664,7 +668,11 @@ func renderService(ctx context.Context, workspace *resources.Workspace, module *
 		); err != nil {
 			return err
 		}
-		injections, err := deriveRenderInjections(ctx, workspace, selfEndpoints, hostRoutes, sink)
+		uniques := make([]string, 0, len(graph))
+		for unique := range graph {
+			uniques = append(uniques, unique)
+		}
+		injections, err := deriveRenderInjections(ctx, workspace, selfEndpoints, hostRoutes, telemetryCarriersForRender(env, uniques), sink)
 		if err != nil {
 			return err
 		}

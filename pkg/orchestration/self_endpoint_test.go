@@ -6,6 +6,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/environments"
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/services"
 	"github.com/stretchr/testify/require"
 )
 
@@ -81,4 +82,25 @@ func TestRunnerOverridesLetAnExplicitSetWinOverTheSelfEndpoint(t *testing.T) {
 		runtimeContext:  resources.RuntimeContextContainer,
 	}
 	require.Equal(t, "https://wiki.example.com", runner.runtimeOverrides()[wikiSelfKey])
+}
+
+// TestNativeRunDeliversTheEnvironmentsTelemetryCarriers pins that a native run
+// hands every service the environment's telemetry carriers, derived like the
+// self carrier and beneath an operator's --set, and nothing when the
+// environment declares no telemetry.
+func TestNativeRunDeliversTheEnvironmentsTelemetryCarriers(t *testing.T) {
+	instance := &services.Instance{Module: &resources.Module{Name: "saas"}, Service: &resources.Service{Name: "accounts"}}
+	runner := &Runner{
+		instance:       instance,
+		world:          &World{Env: &environments.Environment{Name: "local", Telemetry: &environments.EnvironmentTelemetry{OTLPEndpoint: "localhost:4317", Insecure: true}}},
+		overrides:      map[string]string{"OTEL_SERVICE_NAME": "operator-named"},
+		runtimeContext: resources.RuntimeContextNative,
+	}
+	got := runner.runtimeOverridesFor(nil)
+	require.Equal(t, "http://localhost:4317", got["OTEL_EXPORTER_OTLP_ENDPOINT"])
+	require.Equal(t, "service.namespace=saas,deployment.environment.name=local", got["OTEL_RESOURCE_ATTRIBUTES"])
+	require.Equal(t, "operator-named", got["OTEL_SERVICE_NAME"], "an explicit --set of the same key is the operator's to make")
+
+	silent := &Runner{instance: instance, world: &World{Env: &environments.Environment{Name: "local"}}, runtimeContext: resources.RuntimeContextNative}
+	require.NotContains(t, silent.runtimeOverridesFor(nil), "OTEL_EXPORTER_OTLP_ENDPOINT")
 }
