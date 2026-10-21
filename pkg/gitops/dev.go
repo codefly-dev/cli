@@ -291,7 +291,13 @@ func loadDevTarget(root, module, service, environment, appProject string) (Inven
 	if err != nil {
 		return Inventory{}, InventoryUnit{}, err
 	}
-	if err := validateInventory(&inventory, &actual, "rendered tree"); err != nil {
+	// The delivery overlay is publish's, not the render's: publish settles
+	// and signs the manifest the render wrote provisionally, adds the Job that
+	// delivers it, and the branch carries that version. A dev deployment
+	// re-pins one service's image and leaves the overlay as it finds it, so
+	// the overlay is left out of this comparison and carried into the
+	// re-derived inventory as found.
+	if err := validateInventoryOutside(&inventory, &actual, inventory.ModuleManifestPath, "rendered tree"); err != nil {
 		return Inventory{}, InventoryUnit{}, fmt.Errorf("%w; the tree was edited since it was rendered: %s", err, renderFirst)
 	}
 	for index := range inventory.Units {

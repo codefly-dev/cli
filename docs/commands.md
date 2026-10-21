@@ -1370,7 +1370,11 @@ codefly deploy dev payments/api --env staging --commit --push
    re-derived so the tree still matches it. It refuses when the module was never
    rendered, was rendered for another environment (or another `--app-project`,
    when given), was edited since its render, or does not pin the image the build
-   produced — in every case: run the full render first.
+   produced — in every case: run the full render first. The delivery overlay
+   (`module-manifests/`) is publish's, not the render's: publish settles and
+   signs the manifest there and adds its delivery Job after the render, so that
+   directory is compared on neither side and carried into the re-derived
+   inventory as found; "edited since its render" means a file the render owns.
 
    When the environment declares a `host:` block, the environment's cell file
    (`<gitops path>/cells/<environment>/cell.yaml`) is re-derived from the

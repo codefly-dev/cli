@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"net/url"
@@ -1550,11 +1551,46 @@ func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
 		return Inventory{}, err
 	}
 	sort.Slice(inventory.Files, func(i, j int) bool { return inventory.Files[i].Path < inventory.Files[j].Path })
-	for _, file := range inventory.Files {
+	inventory.Digest = inventoryDigest(hash, inventory.Files)
+	return inventory, nil
+}
+
+// inventoryDigest is the render digest: one line per file, in path order.
+func inventoryDigest(hash hash.Hash, files []InventoryFile) string {
+	for _, file := range files {
 		fmt.Fprintf(hash, "%s\x00%s\x00%d\n", file.Path, file.SHA256, file.Size)
 	}
-	inventory.Digest = "sha256:" + hex.EncodeToString(hash.Sum(nil))
-	return inventory, nil
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil))
+}
+
+// filesOutside is the inventory's files that are not under directory.
+func filesOutside(files []InventoryFile, directory string) []InventoryFile {
+	if directory == "" {
+		return files
+	}
+	kept := make([]InventoryFile, 0, len(files))
+	for _, file := range files {
+		if file.Path == directory || strings.HasPrefix(file.Path, directory+"/") {
+			continue
+		}
+		kept = append(kept, file)
+	}
+	return kept
+}
+
+// validateInventoryOutside validates the tree against its inventory with one
+// directory left out of the comparison on both sides: the delivery overlay,
+// which publish owns and settles after a render (the signed manifest, its
+// delivery Job, the kustomization that lists them). A render records the
+// overlay as it provisionally wrote it; publish replaces it and the branch
+// carries publish's version, so a tree is "edited since its render" only
+// when a file the render owns moved.
+func validateInventoryOutside(inventory, actual *Inventory, directory, label string) error {
+	recorded := Inventory{Files: filesOutside(inventory.Files, directory)}
+	recorded.Digest = inventoryDigest(sha256.New(), recorded.Files)
+	measured := Inventory{Files: filesOutside(actual.Files, directory)}
+	measured.Digest = inventoryDigest(sha256.New(), measured.Files)
+	return validateInventory(&recorded, &measured, label)
 }
 
 func walkRegularFiles(root string, visit func(path, relative string, info os.FileInfo) error) error {
