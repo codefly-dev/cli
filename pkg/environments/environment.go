@@ -1291,6 +1291,11 @@ type Environment struct {
 
 	Ingress []EnvironmentIngressRoute `yaml:"ingress,omitempty"`
 
+	// Telemetry is the OTLP intake this environment's services export their
+	// operational telemetry to; see EnvironmentTelemetry. CLI-side; delivered
+	// to services as OpenTelemetry's own environment variables.
+	Telemetry *EnvironmentTelemetry `yaml:"telemetry,omitempty"`
+
 	// Host names the deployment host this environment delivers to: the
 	// coordinate that identifies it, the component instance within it, the
 	// ownership domain this composition delivers under, the audience a workload

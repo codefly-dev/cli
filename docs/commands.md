@@ -833,12 +833,29 @@ endpoints, so the Job's identity is admitted to the service it bootstraps.
 environments:
   staging:
     host: {coordinate: region-a, component: platform-host, trust_domain: cell.example}
+    telemetry: {otlp-endpoint: otel.internal.ops.example:443}
     cell:
       edge/gateway: {bindings: [identity], presenter: [workload]}
       shop/api: {bindings: [vault, identity], cloud-identity: true}
     egress:
       shop/api: {hosts: [identity.example.test, {name: api.github.com, port: 8443}]}
 ```
+
+**Where a service's telemetry goes.** An environment's `telemetry:` block names
+the OTLP intake its services export operational traces to: `otlp-endpoint` as
+`host:port` (TLS; `insecure: true` for plaintext) or as an `http://`/`https://`
+URL. On a hosted environment it is imported from the coordinate contract — the
+producer resolves it, as it resolves every other address; `local` names the
+developer's own collector. No service declares it and no configuration group
+carries it: every service the CLI runs (`codefly run`, native or container) or
+renders (`codefly deploy gitops render`) receives OpenTelemetry's own variables,
+derived like the self-endpoint carrier and layered beneath an operator's `--set` —
+`OTEL_EXPORTER_OTLP_ENDPOINT` (always a URL: a bare `host:port` is delivered as
+`https://host:port`, or `http://` when `insecure`, because the scheme is how every
+SDK learns the transport), `OTEL_SERVICE_NAME` (`<module>/<service>`) and
+`OTEL_RESOURCE_ATTRIBUTES` (`service.namespace=<module>,deployment.environment.name=<env>`).
+An SDK that sees them exports; an environment with no `telemetry:` delivers none
+and a service exports nothing.
 
 This cell file is the render's inventory of a composition; it is not the
 retired `codefly/cell/v1` *import descriptor* that `environment import`

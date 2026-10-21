@@ -1668,6 +1668,13 @@ func (runner *Runner) runtimeOverridesFor(own []*basev0.NetworkMapping) map[stri
 	for key, value := range runner.hostRoutes() {
 		overrides[key] = value
 	}
+	// Where the environment's services export operational telemetry: derived
+	// from the environment, layered beneath --set like the carriers above.
+	if runner.world != nil && runner.instance != nil && runner.instance.Module != nil && runner.instance.Service != nil {
+		for key, value := range runner.world.Env.TelemetryCarriers(runner.instance.Module.Name, runner.instance.Service.Name) {
+			overrides[key] = value
+		}
+	}
 	for key, value := range runner.overrides {
 		overrides[key] = value
 	}

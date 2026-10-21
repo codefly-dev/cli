@@ -121,6 +121,9 @@ func (env *Environment) Validate() error {
 	if err := env.Host.Validate(); err != nil {
 		return err
 	}
+	if err := env.Telemetry.Validate(); err != nil {
+		return fmt.Errorf("environment %s: %w", env.Name, err)
+	}
 	if err := env.Registry.Validate(); err != nil {
 		return err
 	}
