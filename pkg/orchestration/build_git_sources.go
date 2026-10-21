@@ -15,8 +15,6 @@ import (
 
 	coreservices "github.com/codefly-dev/core/agents/services"
 	builderv0 "github.com/codefly-dev/core/generated/go/codefly/services/builder/v0"
-
-	"github.com/codefly-dev/cli/pkg/redact"
 )
 
 // gitSourcePrefetch fetches the locked git commits a flow's recipes declare
@@ -115,7 +113,7 @@ func (p *gitSourcePrefetch) fetch(ctx context.Context, repository, commit string
 		return "", fmt.Errorf("the declared git source does not hold commit %s: %w", commit, err)
 	}
 	if resolved != commit {
-		return "", fmt.Errorf("the declared git source resolves commit %s to %s", commit, resolved)
+		return "", fmt.Errorf("%s: the mirror ref of commit %s resolves to %s", gitCommitUnavailable, commit, resolved)
 	}
 	p.fetched[[2]string{repository, commit}] = true
 	return p.root, nil
@@ -218,6 +216,12 @@ const gitWaitDelay = 5 * time.Second
 // runGitCommand runs git in its own process group, so cancelling the context
 // stops git and every helper it started, and returns its trimmed standard
 // output.
+//
+// A failure never carries git's own output. git prints a credential helper's
+// command line, a missing helper's path, and whatever a helper or askpass
+// writes to stderr, and none of that is a URL a redaction can recognise. The
+// error names the git subcommand, its exit status and a reason classified from
+// the output, which is matched here and then dropped.
 func runGitCommand(ctx context.Context, env []string, args ...string) (string, error) {
 	gitBinary, err := exec.LookPath("git")
 	if err != nil {
@@ -232,8 +236,52 @@ func runGitCommand(ctx context.Context, env []string, args ...string) (string, e
 	command.Stdout = &stdout
 	command.Stderr = &output
 	if err := command.Run(); err != nil {
-		output.Write(stdout.Bytes())
-		return "", fmt.Errorf("git %s: %w\n%s", redact.URLCredentials(strings.Join(args, " ")), err, redact.URLCredentials(lastLines(output.String(), 40)))
+		subcommand := gitSubcommand(args)
+		failure := fmt.Errorf("git %s exited with status %d: %s; rerun the same git %s with the host's git to see its own output",
+			subcommand, command.ProcessState.ExitCode(), classifyGitFailure(output.String()+stdout.String()), subcommand)
+		if ctx.Err() != nil {
+			return "", errors.Join(failure, ctx.Err())
+		}
+		return "", failure
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+// gitSubcommand is the first argument that is not an option.
+func gitSubcommand(args []string) string {
+	for _, argument := range args {
+		if !strings.HasPrefix(argument, "-") {
+			return argument
+		}
+	}
+	return "git"
+}
+
+// gitFailureReasons is the fixed set a git failure is reported as, each with
+// the output that identifies it, checked in order.
+var gitFailureReasons = []struct {
+	reason  string
+	markers []string
+}{
+	{gitCommitUnavailable, []string{"not our ref", "couldn't find remote ref", "unadvertised object"}},
+	{"authentication failed", []string{"authentication failed", "could not read username", "could not read password",
+		"terminal prompts disabled", "permission denied (publickey)", "told us to quit"}},
+	{"host unreachable", []string{"could not resolve host", "connection refused", "connection timed out", "failed to connect"}},
+	{"repository not found", []string{"repository not found", "does not appear to be a git repository", "not found"}},
+}
+
+const gitCommitUnavailable = "commit not available"
+
+// classifyGitFailure reduces git's output to one of gitFailureReasons, or
+// "git failed".
+func classifyGitFailure(output string) string {
+	output = strings.ToLower(output)
+	for _, candidate := range gitFailureReasons {
+		for _, marker := range candidate.markers {
+			if strings.Contains(output, marker) {
+				return candidate.reason
+			}
+		}
+	}
+	return "git failed"
 }

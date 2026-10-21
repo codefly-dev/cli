@@ -139,7 +139,7 @@ func TestGitSourcePrefetchRefusesAMirrorRefNamingAnotherCommit(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = prefetch.Close() })
 	_, err := prefetch.fetch(context.Background(), gitSourceURL, commitOne)
-	require.ErrorContains(t, err, "resolves commit "+commitOne+" to "+commitTwo)
+	require.ErrorContains(t, err, "commit not available: the mirror ref of commit "+commitOne+" resolves to "+commitTwo)
 }
 
 // TestGitSourcePrefetchMatchesTheObjectFormatToTheCommit pins that a 64-digit
@@ -284,11 +284,70 @@ func TestGitSourcePrefetchTracesNoCredential(t *testing.T) {
 			prefetch := newGitSourcePrefetch()
 			t.Cleanup(func() { _ = prefetch.Close() })
 			_, err := prefetch.fetch(context.Background(), unauthorizedGitHost(t), commitOne)
-			require.ErrorContains(t, err, "Authentication failed", "the credential helper was consulted")
+			require.ErrorContains(t, err, "authentication failed", "the credential helper was consulted")
 			require.NotContains(t, err.Error(), secret)
 			traced, _ := os.ReadFile(traceFile)
 			require.NotContains(t, string(traced), secret)
 		})
+	}
+}
+
+// TestGitSourceFailuresAreClassifiedNotEchoed pins that git's own output never
+// reaches the error the prefetch returns, which the plan phase logs: git prints
+// a credential helper's command line, a missing helper's path, and what a
+// helper or askpass writes to stderr, and none of it is a URL redaction can
+// recognise. The failure is classified instead.
+func TestGitSourceFailuresAreClassifiedNotEchoed(t *testing.T) {
+	requireGit(t)
+	const marker = "secret-marker-4711"
+	askpass := filepath.Join(t.TempDir(), "askpass")
+	require.NoError(t, os.WriteFile(askpass, []byte("#!/bin/sh\necho "+marker+" >&2\nexit 1\n"), 0o755))
+	for name, setup := range map[string]func(t *testing.T){
+		"a helper's command": func(t *testing.T) {
+			hostGitConfig(t, "[credential]\n\thelper = \"!f() { token="+marker+"; echo quit=true; }; f\"\n")
+		},
+		"a missing helper": func(t *testing.T) {
+			hostGitConfig(t, "[credential]\n\thelper = /nonexistent/"+marker+"\n")
+		},
+		"a helper's stderr": func(t *testing.T) {
+			hostGitConfig(t, "[credential]\n\thelper = \"!f() { echo "+marker+" >&2; }; f\"\n")
+		},
+		"askpass stderr": func(t *testing.T) {
+			hostGitConfig(t, "")
+			t.Setenv("GIT_ASKPASS", askpass)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setup(t)
+			prefetch := newGitSourcePrefetch()
+			t.Cleanup(func() { _ = prefetch.Close() })
+			_, err := prefetch.mirrorsFor(context.Background(), gitSourceRecipe(&builderv0.GitSourceDownload{
+				Repository: unauthorizedGitHost(t), Commit: commitOne, MirrorContext: "gitsources"}))
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), marker)
+			require.ErrorContains(t, err, "recipe app git source 0")
+			require.ErrorContains(t, err, "git fetch exited with status 128: authentication failed")
+			require.ErrorContains(t, err, "rerun")
+		})
+	}
+}
+
+// TestGitFailureClassification pins the fixed set of reasons a failure is
+// reported as.
+func TestGitFailureClassification(t *testing.T) {
+	for output, reason := range map[string]string{
+		"fatal: Authentication failed for 'https://h/r'":                            "authentication failed",
+		"fatal: could not read Username for 'https://h': terminal prompts disabled": "authentication failed",
+		"git@h: Permission denied (publickey).":                                     "authentication failed",
+		"fatal: unable to access 'https://h/': Could not resolve host: h":           "host unreachable",
+		"Failed to connect to h port 443: Connection refused":                       "host unreachable",
+		"remote: Repository not found.":                                             "repository not found",
+		"fatal: '/x' does not appear to be a git repository":                        "repository not found",
+		"error: upload-pack: not our ref 1111":                                      "commit not available",
+		"fatal: couldn't find remote ref 1111":                                      "commit not available",
+		"fatal: something else":                                                     "git failed",
+	} {
+		require.Equal(t, reason, classifyGitFailure(output), output)
 	}
 }
 
