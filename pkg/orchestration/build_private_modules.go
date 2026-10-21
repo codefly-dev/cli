@@ -21,7 +21,9 @@ type privateModuleBuild struct {
 	// paths, not credentials.
 	GoPrivate string
 	// Proxies maps each Go module proxy and git source mirror build context the
-	// recipe declares to the prefetched directory supplied under that name.
+	// recipe declares to the prefetched directory supplied under that name. Git
+	// source mirrors (gitSourcePrefetch) share this route, the same named build
+	// context, so they share the field rather than a second one.
 	Proxies map[string]string
 }
 

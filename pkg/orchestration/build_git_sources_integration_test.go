@@ -22,31 +22,8 @@ import (
 // credential the host holds and the image build does not.
 const lockedGitSource = "https://git.invalid/team/lib.git"
 
-// lockedGitRepository writes a bare repository with two commits and returns it
-// with the first, which is not a branch tip, so fetching it by id is a request
-// for an unadvertised commit.
-func lockedGitRepository(t *testing.T) (string, string) {
-	t.Helper()
-	work := t.TempDir()
-	git := func(dir string, args ...string) string {
-		t.Helper()
-		command := exec.Command("git", args...)
-		command.Dir = dir
-		command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
-			"GIT_AUTHOR_NAME=codefly", "GIT_AUTHOR_EMAIL=codefly@example.com",
-			"GIT_COMMITTER_NAME=codefly", "GIT_COMMITTER_EMAIL=codefly@example.com")
-		out, err := command.CombinedOutput()
-		require.NoError(t, err, "git %s: %s", strings.Join(args, " "), out)
-		return strings.TrimSpace(string(out))
-	}
-	git(work, "init", "-q", "-b", "main", ".")
-	git(work, "commit", "-q", "--allow-empty", "-m", "the locked commit")
-	locked := git(work, "rev-parse", "HEAD")
-	git(work, "commit", "-q", "--allow-empty", "-m", "a later commit")
-	repository := filepath.Join(t.TempDir(), "lib.git")
-	git(work, "clone", "-q", "--bare", work, repository)
-	return repository, locked
-}
+// gitSourceBuildImage is the image the build test fetches in: git, pinned.
+const gitSourceBuildImage = "alpine/git:v2.52.0@sha256:4a0e72d49596a1f5d3701aeedafdadc5c0da4062be4657c7bdc4017387f591cc"
 
 // reachLockedSourceThroughGit points the host's git at the repository on disk,
 // as a developer's or CI job's insteadOf points it at a private repository.
@@ -55,7 +32,7 @@ func reachLockedSourceThroughGit(t *testing.T, repository, extra string) {
 	t.Helper()
 	configuration := filepath.Join(t.TempDir(), "gitconfig")
 	require.NoError(t, os.WriteFile(configuration, []byte(fmt.Sprintf(
-		"[url \"file://%s\"]\n\tinsteadOf = %s\n%s", repository, lockedGitSource, extra)), 0o644))
+		"[url \"%s\"]\n\tinsteadOf = %s\n%s", repository, lockedGitSource, extra)), 0o644))
 	t.Setenv("GIT_CONFIG_GLOBAL", configuration)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 }
@@ -76,7 +53,7 @@ func TestALockedGitSourceIsMirroredWithTheHostsGitConfiguration(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
-			repository, locked := lockedGitRepository(t)
+			repository, locked := gitSourceRepository(t, "sha1")
 			reachLockedSourceThroughGit(t, repository, extra)
 
 			prefetch := newGitSourcePrefetch()
@@ -114,7 +91,7 @@ func TestAGitSourceBuildNeedsNoCredentialWithThePrefetchedMirror(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	repository, locked := lockedGitRepository(t)
+	repository, locked := gitSourceRepository(t, "sha1")
 	reachLockedSourceThroughGit(t, repository, "")
 
 	prefetch := newGitSourcePrefetch()
@@ -128,15 +105,19 @@ func TestAGitSourceBuildNeedsNoCredentialWithThePrefetchedMirror(t *testing.T) {
 	require.NoError(t, err)
 
 	contextDir := t.TempDir()
+	// The consumer's own fetch, as a package manager installing a locked git
+	// dependency runs it (uv: `git fetch --force --update-head-ok <url>
+	// +<commit>:refs/commit/<commit>`), against the shallow mirror through an
+	// insteadOf rewrite, with no network; then the locked file is read.
 	dockerfile := fmt.Sprintf(`FROM scratch AS gitsources
 
-FROM alpine:3.22
-RUN apk add --no-cache git
+FROM %s
 RUN --network=none --mount=type=bind,from=gitsources,target=/gitsources \
-    git init -q /src && \
-    git -C /src -c safe.directory='*' -c url.file:///gitsources/%s.insteadOf=%s \
-        fetch -q %s +%s:refs/commit/%s
-`, coreservices.GitSourceMirrorPath(lockedGitSource), lockedGitSource, lockedGitSource, locked, locked)
+    git init -q /src && cd /src && \
+    git -c safe.directory='*' -c url.file:///gitsources/%s.insteadOf=%s \
+        fetch --force --update-head-ok %s '+%s:refs/commit/%s' && \
+    git checkout -q %s && test "$(cat lib.txt)" = locked
+`, gitSourceBuildImage, coreservices.GitSourceMirrorPath(lockedGitSource), lockedGitSource, lockedGitSource, locked, locked, locked)
 	require.NoError(t, os.WriteFile(filepath.Join(contextDir, "Dockerfile"), []byte(dockerfile), 0o644))
 
 	build := func(private privateModuleBuild) (string, error) {

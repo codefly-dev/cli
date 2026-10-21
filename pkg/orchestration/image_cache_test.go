@@ -114,8 +114,10 @@ type imageCachePeer struct {
 	goModules bool
 	// image is the recipe's image; empty means example.test/app:v1.
 	image string
-	// gitSources makes the recipe declare a locked git commit for prefetching.
+	// gitSources makes the recipe declare a locked git commit for prefetching:
+	// commitOne, or gitCommit when set.
 	gitSources bool
+	gitCommit  string
 }
 
 func (*imageCachePeer) BuildCapabilities(context.Context, *builderv0.BuildCapabilitiesRequest) (*builderv0.BuildCapabilitiesResponse, error) {
@@ -140,7 +142,11 @@ func (peer *imageCachePeer) Build(_ context.Context, request *builderv0.BuildReq
 		options = append(options, coreservices.WithGoModuleDownloads(&builderv0.GoModuleDownload{ModuleRoot: "code", ProxyContext: "gomodproxy"}))
 	}
 	if peer.gitSources {
-		options = append(options, coreservices.WithGitSourceDownloads(&builderv0.GitSourceDownload{Repository: gitSourceURL, Commit: commitOne, MirrorContext: "gitsources"}))
+		commit := peer.gitCommit
+		if commit == "" {
+			commit = commitOne
+		}
+		options = append(options, coreservices.WithGitSourceDownloads(&builderv0.GitSourceDownload{Repository: gitSourceURL, Commit: commit, MirrorContext: "gitsources"}))
 	}
 	plan, err := coreservices.SingleImageBuildPlan(output, peer.imageName(), coreservices.RecipeBuildPlatforms(), []string{"Dockerfile", "dockerignore"}, options...)
 	if err != nil {
@@ -397,7 +403,8 @@ func TestAnUpToDateImageFetchesNoGoModules(t *testing.T) {
 
 // TestAnUpToDateImageFetchesNoGitSources is the same plan phase for a declared
 // git source: fetched before the first build and handed to it as the mirror
-// context, not fetched for an image already built from these inputs.
+// context, not fetched for an image already built from these inputs, and a
+// changed commit is a new identity, fetched and built.
 func TestAnUpToDateImageFetchesNoGitSources(t *testing.T) {
 	harness := newImageCacheHarness(t, true, true)
 	harness.peer.gitSources = true
@@ -412,6 +419,12 @@ func TestAnUpToDateImageFetchesNoGitSources(t *testing.T) {
 	require.Equal(t, first, harness.build(t))
 	require.Equal(t, 1, harness.docker.calls(t, "build"))
 	require.Len(t, harness.gitCalls, 3, "an image built from these inputs needs no fetch")
+
+	harness.peer.gitCommit = commitTwo
+	require.NotEqual(t, first, harness.build(t))
+	require.Equal(t, 2, harness.docker.calls(t, "build"))
+	require.Len(t, harness.gitCalls, 6, "a changed commit is fetched before it is built")
+	require.Contains(t, harness.gitCalls[4], "+"+commitTwo+":"+coreservices.GitSourceMirrorRef(commitTwo))
 }
 
 // TestPlaceholderProxiesNormalizeLikeFetchedPaths pins what lets the reuse

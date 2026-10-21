@@ -49,7 +49,7 @@ const (
 // recipe — multi-arch and pushed as a manifest list when pushing — so the build
 // recipe is a durable, first-class artifact and images are not tied to the
 // builder's host architecture.
-func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *builderv0.DockerBuildPlan, proxies map[string]map[string]string, reuse map[string]imageReuse) error {
+func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *builderv0.DockerBuildPlan, prefetched map[string]map[string]string, reuse map[string]imageReuse) error {
 	w := wool.Get(ctx).In("Builder.buildFromPlan", wool.ThisField(b.instance))
 	if err := coreservices.VerifyDockerBuildPlan(outputDir, plan); err != nil {
 		return w.Wrapf(err, "cannot verify build recipe for %s", b.instance.Unique())
@@ -74,7 +74,7 @@ func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *bui
 		if decision, ok := reuse[recipe.GetName()]; ok {
 			decided = &decision
 		}
-		if err := b.buildRecipe(ctx, w, outputDir, contextRoot, plan, recipe, shouldPush, proxies[recipe.GetName()], decided); err != nil {
+		if err := b.buildRecipe(ctx, w, outputDir, contextRoot, plan, recipe, shouldPush, prefetched[recipe.GetName()], decided); err != nil {
 			return err
 		}
 	}
@@ -396,7 +396,7 @@ func (b *Builder) buildRecipe(
 	}
 	started := time.Now()
 	w.Info("building image", wool.Field("image", recipe.GetImage()), wool.Field("push", shouldPush),
-		wool.Field("goprivate", private.GoPrivate), wool.Field("go_module_proxies", len(private.Proxies)))
+		wool.Field("goprivate", private.GoPrivate), wool.Field("prefetched_contexts", len(private.Proxies)))
 	command := exec.CommandContext(ctx, "docker", args...)
 	command.Stdout = os.Stderr
 	command.Stderr = os.Stderr

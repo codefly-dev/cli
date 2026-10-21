@@ -287,9 +287,9 @@ type plannedBuild struct {
 	recipeRoot string
 	outputDir  string
 	response   *builderv0.BuildResponse
-	// proxies maps a recipe name to its prefetched Go module proxies and git
+	// prefetched maps a recipe name to its prefetched Go module proxies and git
 	// source mirrors, keyed by the build-context name the recipe declares.
-	proxies map[string]map[string]string
+	prefetched map[string]map[string]string
 	// reuse maps a recipe name to the reuse decision Plan took for it, for the
 	// recipes it decided before fetching; Build adopts or builds from it.
 	reuse map[string]imageReuse
@@ -417,10 +417,10 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 				}
 				maps.Copy(proxies, mirrors)
 			}
-			if planned.proxies == nil {
-				planned.proxies = map[string]map[string]string{}
+			if planned.prefetched == nil {
+				planned.prefetched = map[string]map[string]string{}
 			}
-			planned.proxies[recipe.GetName()] = proxies
+			planned.prefetched[recipe.GetName()] = proxies
 		}
 	}
 	b.planned = planned
@@ -457,7 +457,7 @@ func (b *Builder) Build(ctx context.Context) (*OutputProperty, error) {
 
 	buildResult := dockerBuildResult(resp.Result)
 	if plan != nil {
-		if err = b.buildFromPlan(ctx, outputDir, plan, planned.proxies, planned.reuse); err != nil {
+		if err = b.buildFromPlan(ctx, outputDir, plan, planned.prefetched, planned.reuse); err != nil {
 			return nil, err
 		}
 	} else if buildResult != nil {
