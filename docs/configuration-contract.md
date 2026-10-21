@@ -72,6 +72,19 @@ Producers must supply:
   the service declares a presenter endpoint under `cell:`; a service the
   workspace does not have, an unknown key, a `codefly.dev/` label and a label
   the rendered Service already carries are refused too.
+- Where every workload exports operational telemetry, under `telemetry`: the
+  OTLP intake the cell's infrastructure provides, resolved by the producer like
+  every other address, as an `https://` (or, declared `insecure`, `http://`) URL:
+
+  ```yaml
+  telemetry:
+    otlp-endpoint: https://otel.internal.ops.example:443
+  ```
+
+  The CLI delivers it to every service it runs or renders as
+  `OTEL_EXPORTER_OTLP_ENDPOINT`, with `OTEL_SERVICE_NAME` and
+  `OTEL_RESOURCE_ATTRIBUTES` (`codefly run`, `docs/commands.md`: "Where a
+  service's telemetry goes"). No module declares a configuration group for it.
 - Any application secret mappings through the existing `service-secrets` model.
 - Any resolved non-secret values through `service-config`, keyed by consuming
   service and then by the exact key the service reads. The producer resolves the
