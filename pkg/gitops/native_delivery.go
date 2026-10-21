@@ -51,25 +51,71 @@ func (identity NativeIdentity) Workload(trustDomain string) workloadidentity.Wor
 // composition, each in its module's namespace. A native run has no cluster
 // to require.
 func ResolveNativeIdentities(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (map[string]NativeIdentity, error) {
+	plan, err := ResolveNativeIdentityPlan(ctx, workspace, env)
+	if err != nil {
+		return nil, err
+	}
+	return plan.Identities, nil
+}
+
+// NativeIdentityPlan uses the resolved service inventory once, keeping explicit
+// projections separate from workloads that participate in host delivery.
+type NativeIdentityPlan struct {
+	Identities  map[string]NativeIdentity
+	Projections map[string][]string
+	Verifiers   map[string]bool
+}
+
+func ResolveNativeIdentityPlan(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (*NativeIdentityPlan, error) {
 	if env.Host == nil {
 		return nil, fmt.Errorf("environment %s declares no host", env.Name)
+	}
+	if err := env.Validate(); err != nil {
+		return nil, err
 	}
 	refs, err := workspace.LoadServiceWithModules(ctx)
 	if err != nil {
 		return nil, err
 	}
-	identities := map[string]NativeIdentity{}
+	plan := &NativeIdentityPlan{Identities: map[string]NativeIdentity{}, Projections: map[string][]string{}, Verifiers: map[string]bool{}}
+	services := map[string]*resources.Service{}
 	for _, ref := range refs {
-		service, loadErr := workspace.LoadService(ctx, ref)
-		if loadErr != nil {
-			return nil, loadErr
+		service, err := workspace.LoadService(ctx, ref)
+		if err != nil {
+			return nil, err
 		}
-		if !service.ModuleIdentity {
-			continue
+		unique := resources.ServiceUnique(ref.Module, ref.Name)
+		services[unique] = service
+		if service.ModuleIdentity {
+			plan.Identities[unique] = NativeIdentity{Module: ref.Module, Service: ref.Name}
 		}
-		identities[resources.ServiceUnique(ref.Module, ref.Name)] = NativeIdentity{Module: ref.Module, Service: ref.Name}
 	}
-	return identities, nil
+	if env.NativeIdentity == nil {
+		return plan, nil
+	}
+	validate := func(ref string) error {
+		if services[ref] == nil {
+			return fmt.Errorf("native-identity references unknown service %q", ref)
+		}
+		module, service, _ := strings.Cut(ref, "/")
+		if _, managed := env.ManagedService(module, service); managed {
+			return fmt.Errorf("native-identity service %q is managed and has no native workload", ref)
+		}
+		return nil
+	}
+	for _, projection := range env.NativeIdentity.Projections {
+		if err := validate(projection.Service); err != nil {
+			return nil, err
+		}
+		plan.Projections[projection.Service] = append([]string(nil), projection.Audiences...)
+	}
+	for _, verifier := range env.NativeIdentity.Verifiers {
+		if err := validate(verifier); err != nil {
+			return nil, err
+		}
+		plan.Verifiers[verifier] = true
+	}
+	return plan, nil
 }
 
 // NativeWorkload is one module a native run delivers a manifest for: the

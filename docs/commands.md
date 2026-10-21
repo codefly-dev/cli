@@ -194,6 +194,10 @@ service is issued a workload credential when it is projected, its module's
 signed manifest is delivered to the host once it runs, and the module is
 offered for installation in the host's own registry. See
 [module-manifests.md](module-manifests.md#a-native-run-the-run-answers-as-the-cluster).
+An environment can opt into additional native audience credentials and explicit
+verifier recipients with `native-identity`; see the
+[declaration and runtime carrier](module-manifests.md#additional-native-audience-projections-new-cli-contract).
+This requires native/nix execution and does not opt a service into module delivery.
 
 ### `codefly run service [name...]`
 

@@ -217,3 +217,78 @@ func TestWithdrawRetainsRootsWhenAStopRPCFails(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, flow.Roots(), "wiki/backend")
 }
+
+// Exercise Flow -> Manager -> Runner -> Runtime.Stop -> RuntimeStopped, rather
+// than a manager stub that cannot distinguish process stop from local cleanup.
+func TestWithdrawReconcilesStoppedRunnersDespiteCleanupFailure(t *testing.T) {
+	for _, failedRPC := range []string{"", "wiki/backend", "documents/documents"} {
+		t.Run("failed RPC="+failedRPC, func(t *testing.T) {
+			flow, ctx := multiRootFlow(t, "lastlogin-go/backend", "wiki/backend")
+			required, err := flow.runClosure(ctx)
+			require.NoError(t, err)
+			flow.hub = &Hub{}
+			flow.playbook = &Playbook{}
+			flow.policy = &RuntimeStartPolicy{dependencies: flow.world.Dependencies, ExecutorManager: flow}
+			cleanupErr := errors.New("credential cleanup failed")
+			rpcErr := errors.New("runtime stop unavailable")
+			failCleanup := true
+			flow.world.RuntimeStopped = func(service *resources.Service) error {
+				if failCleanup && resources.WithUnique(service).Unique() == "wiki/backend" {
+					return cleanupErr
+				}
+				return nil
+			}
+			clients := map[string]*restartRuntimeClient{}
+			for _, unique := range append(uniques(required), "lastlogin-go/backend") {
+				ref, err := resources.ParseServiceWithOptionalModule(unique)
+				require.NoError(t, err)
+				service, err := flow.workspace.LoadService(ctx, ref)
+				require.NoError(t, err)
+				client := &restartRuntimeClient{}
+				if unique == failedRPC {
+					client.stopErr = rpcErr
+				}
+				runner := runnerWithRuntimeClient(client)
+				runner.instance.Identity, err = service.Identity()
+				require.NoError(t, err)
+				runner.instance.Service = service
+				runner.world = flow.world
+				flow.hub.add(&Manager{service: service, world: flow.world, Runner: runner})
+				flow.services = append(flow.services, service)
+				clients[unique] = client
+			}
+			reloaded, err := resources.LoadWorkspaceFromDir(ctx, "testdata/multi-root")
+			require.NoError(t, err)
+			stopped, err := flow.Withdraw(ctx, reloaded, []string{"wiki/backend"})
+			require.ErrorIs(t, err, cleanupErr, "cleanup failure stays visible to the caller")
+			require.Equal(t, 1, clients["wiki/backend"].stopCalls)
+			if failedRPC == "" {
+				require.Equal(t, []string{"wiki/backend", "documents/documents"}, stopped, "every stopped workload must reach host reconciliation")
+				require.Equal(t, 1, clients["documents/documents"].stopCalls, "cleanup failure must not skip subsequent stops")
+				require.NotContains(t, flow.Roots(), "wiki/backend")
+				for _, manager := range flow.hub.all() {
+					require.NotContains(t, stopped, manager.Unique(), "successfully stopped managers leave the flow")
+				}
+			} else {
+				require.ErrorIs(t, err, rpcErr)
+				require.Contains(t, flow.Roots(), "wiki/backend", "a real RPC failure retains the root for retry")
+				if failedRPC == "wiki/backend" {
+					require.Empty(t, stopped, "failed RPC plus cleanup error is still a failed process stop")
+					require.Zero(t, clients["documents/documents"].stopCalls)
+				} else {
+					require.Equal(t, []string{"wiki/backend"}, stopped, "earlier successful process stops still reach reconciliation")
+				}
+				failCleanup = false
+				clients[failedRPC].stopErr = nil
+				stopped, err = flow.Withdraw(ctx, reloaded, []string{"wiki/backend"})
+				require.NoError(t, err)
+				require.Equal(t, []string{"wiki/backend", "documents/documents"}, stopped)
+				require.NotContains(t, flow.Roots(), "wiki/backend")
+				require.Equal(t, 2, clients[failedRPC].stopCalls, "failed process stop is retried")
+			}
+			require.Zero(t, clients["lastlogin-go/backend"].stopCalls)
+			require.Zero(t, clients["saas/frontend"].stopCalls)
+			require.Zero(t, clients["saas/auth-gateway"].stopCalls)
+		})
+	}
+}

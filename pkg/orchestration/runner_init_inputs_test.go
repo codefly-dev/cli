@@ -2,8 +2,10 @@ package orchestration
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
+	"github.com/codefly-dev/cli/pkg/environments"
 	"github.com/codefly-dev/core/agents/contract"
 	agentv0 "github.com/codefly-dev/core/generated/go/codefly/services/agent/v0"
 	runtimev0 "github.com/codefly-dev/core/generated/go/codefly/services/runtime/v0"
@@ -106,4 +108,50 @@ func TestInitCarriesNoFixtureOrOverridesWhenTheInvocationSelectsNone(t *testing.
 	observed := exposedValues(ctx, t, world)
 	require.Equal(t, "", observed["fixture"])
 	require.NotContains(t, observed, "CODEFLY__API_CONSUMES")
+}
+
+func TestNativeProjectionReachesInitAndRefusesFailure(t *testing.T) {
+	runner, world := gatewayRunner(t, startRealAgent(t, realAgentInputs))
+	world.RuntimeOverrides = func(*resources.Service) (map[string]string, error) {
+		return nil, fmt.Errorf("credential projection failed")
+	}
+	_, err := runner.Init(t.Context())
+	require.ErrorContains(t, err, "credential projection failed")
+	mapping := `{"second/audience":"/run/generated/credential"}`
+	world.RuntimeOverrides = func(*resources.Service) (map[string]string, error) {
+		return map[string]string{environments.NativeIdentityCredentials: mapping}, nil
+	}
+	_, err = runner.Init(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, mapping, exposedValues(t.Context(), t, world)[environments.NativeIdentityCredentials])
+	world.RuntimeOverrides = func(*resources.Service) (map[string]string, error) {
+		return nil, fmt.Errorf("credential projection failed before Start")
+	}
+	_, err = runner.Start(t.Context())
+	require.ErrorContains(t, err, "credential projection failed before Start")
+}
+
+// A remote recipient must fail before either remote arm. The existing peer
+// reports Init inputs, so an unrelated remote remains a positive control.
+func TestNativeIdentityRemoteRecipientsRefuseBeforeRemoteLifecycle(t *testing.T) {
+	for _, verifier := range []bool{false, true} {
+		t.Run(fmt.Sprint("verifier=", verifier), func(t *testing.T) {
+			runner, world := gatewayRunner(t, startRealAgent(t, realAgentInputs))
+			declaration := &environments.EnvironmentNativeIdentity{}
+			if verifier {
+				declaration.Verifiers = []string{"web/gateway"}
+			} else {
+				declaration.Projections = []environments.NativeIdentityProjection{{Service: "web/gateway", Audiences: []string{"second"}}}
+			}
+			world.Env.NativeIdentity = declaration
+			runner.WithRemote(&environments.Environment{Name: "remote"})
+			_, err := runner.Init(t.Context())
+			require.ErrorContains(t, err, "native-identity recipient web/gateway cannot run with --remote")
+			_, err = runner.Start(t.Context())
+			require.ErrorContains(t, err, "native-identity recipient web/gateway cannot run with --remote")
+			world.Env.NativeIdentity = &environments.EnvironmentNativeIdentity{Verifiers: []string{"web/frontend"}}
+			_, err = runner.Init(t.Context())
+			require.NoError(t, err, "an unrelated remote still uses the existing remote lifecycle")
+		})
+	}
 }

@@ -1343,6 +1343,8 @@ type Environment struct {
 	// CLI-side; not serialized to proto.
 	Host *EnvironmentHost `yaml:"host,omitempty"`
 
+	NativeIdentity *EnvironmentNativeIdentity `yaml:"native-identity,omitempty"`
+
 	// ManagedServices keys a replacement by the identity of the service it
 	// replaces: "<module>/<service>", or a bare "<service>" when exactly one
 	// module in the workspace declares that name. Composed modules routinely ship

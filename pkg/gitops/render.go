@@ -62,6 +62,9 @@ type projectContract struct {
 }
 
 func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(context.Context, string) error) (RenderResult, error) {
+	if err := opts.Target.ValidateNativeExecution("deployment"); err != nil {
+		return RenderResult{}, err
+	}
 	if opts.Destination == "" {
 		return RenderResult{}, fmt.Errorf("render destination is required")
 	}

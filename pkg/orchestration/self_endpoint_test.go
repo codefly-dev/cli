@@ -63,15 +63,15 @@ func TestRunnerOverridesCarryTheSelfEndpointAtInitAndStart(t *testing.T) {
 		runtimeContext: resources.RuntimeContextNative,
 	}
 
-	init := runner.runtimeOverridesFor(proposed)
+	init := testRuntimeOverridesFor(t, runner, proposed)
 	require.Equal(t, "localhost:8080", init[wikiSelfKey])
 	require.Equal(t, "dogfood", init["APPLICATION_MODE"])
 
 	runner.networkMappings = accepted
-	require.Equal(t, "localhost:8081", runner.runtimeOverrides()[wikiSelfKey])
+	require.Equal(t, "localhost:8081", testRuntimeOverrides(t, runner)[wikiSelfKey])
 
 	runner.runtimeContext = resources.RuntimeContextContainer
-	require.Equal(t, "host.docker.internal:8081", runner.runtimeOverrides()[wikiSelfKey])
+	require.Equal(t, "host.docker.internal:8081", testRuntimeOverrides(t, runner)[wikiSelfKey])
 }
 
 func TestRunnerOverridesLetAnExplicitSetWinOverTheSelfEndpoint(t *testing.T) {
@@ -81,7 +81,7 @@ func TestRunnerOverridesLetAnExplicitSetWinOverTheSelfEndpoint(t *testing.T) {
 		networkMappings: []*basev0.NetworkMapping{ownMapping("localhost:8080", "host.docker.internal:8080")},
 		runtimeContext:  resources.RuntimeContextContainer,
 	}
-	require.Equal(t, "https://wiki.example.com", runner.runtimeOverrides()[wikiSelfKey])
+	require.Equal(t, "https://wiki.example.com", testRuntimeOverrides(t, runner)[wikiSelfKey])
 }
 
 // TestNativeRunDeliversTheEnvironmentsTelemetryCarriers pins that a native run
@@ -96,11 +96,11 @@ func TestNativeRunDeliversTheEnvironmentsTelemetryCarriers(t *testing.T) {
 		overrides:      map[string]string{"OTEL_SERVICE_NAME": "operator-named"},
 		runtimeContext: resources.RuntimeContextNative,
 	}
-	got := runner.runtimeOverridesFor(nil)
+	got := testRuntimeOverridesFor(t, runner, nil)
 	require.Equal(t, "http://localhost:4317", got["OTEL_EXPORTER_OTLP_ENDPOINT"])
 	require.Equal(t, "service.namespace=saas,deployment.environment.name=local", got["OTEL_RESOURCE_ATTRIBUTES"])
 	require.Equal(t, "operator-named", got["OTEL_SERVICE_NAME"], "an explicit --set of the same key is the operator's to make")
 
 	silent := &Runner{instance: instance, world: &World{Env: &environments.Environment{Name: "local"}}, runtimeContext: resources.RuntimeContextNative}
-	require.NotContains(t, silent.runtimeOverridesFor(nil), "OTEL_EXPORTER_OTLP_ENDPOINT")
+	require.NotContains(t, testRuntimeOverridesFor(t, silent, nil), "OTEL_EXPORTER_OTLP_ENDPOINT")
 }

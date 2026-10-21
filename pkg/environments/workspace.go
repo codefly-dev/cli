@@ -100,6 +100,9 @@ func WorkspaceGitops(workspace *resources.Workspace) (*EnvironmentGitops, error)
 }
 
 func (env *Environment) Validate() error {
+	if err := env.validateNativeIdentity(); err != nil {
+		return err
+	}
 	if err := env.admitCarried(); err != nil {
 		return err
 	}

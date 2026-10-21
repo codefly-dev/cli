@@ -236,8 +236,12 @@ type World struct {
 	// derives for the composition it stands in for (a cluster's in-cluster
 	// address, the host's mint address). Read when a runner initializes, so
 	// a value that depends on another service's address is resolved after
-	// every service has been loaded. Nil outside such a run.
-	RuntimeOverrides func(service *resources.Service) map[string]string
+	// every service has been loaded. Errors refuse Init/Start before the RPC.
+	// Nil outside such a run.
+	RuntimeOverrides func(service *resources.Service) (map[string]string, error)
+
+	// RuntimeStopped retires launcher-owned process values after a stop attempt.
+	RuntimeStopped func(service *resources.Service) error
 
 	Env  *environments.Environment
 	Mode Mode

@@ -11,10 +11,13 @@ package identity
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/codefly-dev/core/workloadidentity"
@@ -38,7 +41,9 @@ type Launcher struct {
 	runID       string
 
 	mu          sync.Mutex
-	credentials map[string]Credential // unique -> projected credential
+	credentials map[projection]Credential // active refresh only
+	cleanup     map[string]bool           // retired paths retained until removal succeeds
+	closed      bool
 }
 
 // Start creates the run's issuer. trustDomain is the environment's, audience
@@ -51,7 +56,7 @@ func Start(trustDomain, audience, stateDir string) (*Launcher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Launcher{issuer: issuer, trustDomain: trustDomain, audience: audience, stateDir: stateDir, runID: randomID(), credentials: map[string]Credential{}}, nil
+	return &Launcher{issuer: issuer, trustDomain: trustDomain, audience: audience, stateDir: stateDir, runID: randomID(), credentials: map[projection]Credential{}}, nil
 }
 
 // Workload is the declared workload of module/service under this run's trust
@@ -93,53 +98,139 @@ func (l *Launcher) WriteAnchor(path string) error {
 	return l.issuer.Anchor().WriteFile(path)
 }
 
-// Project issues the credential of unique's workload once, to a file the
-// process reads, and returns it. A second Project of the same unique returns
-// the same credential.
+type projection struct {
+	Unique   string
+	Audience string
+}
+
+// Project preserves the implicit host-audience projection.
 func (l *Launcher) Project(unique string, workload workloadidentity.Workload) (Credential, error) {
+	return l.ProjectForAudience(unique, workload, l.audience)
+}
+
+// ProjectForAudience projects one declared workload for one audience. Every
+// audience shares the workload instance, but reads a separate private file.
+func (l *Launcher) ProjectForAudience(unique string, workload workloadidentity.Workload, audience string) (Credential, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if credential, done := l.credentials[unique]; done {
+	if l.closed {
+		return Credential{}, fmt.Errorf("native identity launcher is closed")
+	}
+	if unique != workload.Unique() || workload.TrustDomain != l.trustDomain || workload.Instance != "" {
+		return Credential{}, fmt.Errorf("projection %q must name its declared workload under this run's trust domain", unique)
+	}
+	if audience == "" {
+		return Credential{}, fmt.Errorf("native projection requires an audience")
+	}
+	for _, part := range []string{workload.Module, workload.Service} {
+		if part == "." || part == ".." || part == "" || strings.ContainsAny(part, "/\\\x00") {
+			return Credential{}, fmt.Errorf("native workload name %q is not a safe path component", part)
+		}
+	}
+	key := projection{unique, audience}
+	if credential, done := l.credentials[key]; done {
 		return credential, nil
 	}
 	workload.Instance = workload.Service + "-" + l.runID
-	credential := Credential{
-		Workload: workload, Container: workload.Service,
-		File: filepath.Join(l.stateDir, "identities", workload.Module, workload.Service, "credential"),
+	// Preserve the host file path. Additional audiences are opaque, so only
+	// their full digest enters the generated path, under the same workload.
+	path := filepath.Join(l.stateDir, "identities", workload.Module, workload.Service, "credential")
+	if audience != l.audience {
+		audienceKey := sha256.Sum256([]byte(audience))
+		path = filepath.Join(filepath.Dir(path), "audiences", hex.EncodeToString(audienceKey[:]), "credential")
 	}
-	if err := l.issuer.WriteCredential(credential.File, l.subject(&credential), l.audience); err != nil {
+	if l.cleanup[path] {
+		if err := l.removeCredential(path); err != nil {
+			return Credential{}, err
+		}
+	}
+	credential := Credential{Workload: workload, Container: workload.Service, File: path}
+	if err := l.issuer.WriteCredential(credential.File, l.subject(&credential), audience); err != nil {
 		return Credential{}, err
 	}
-	l.credentials[unique] = credential
+	l.credentials[key] = credential
 	return credential, nil
 }
 
-// Refresh re-issues every projected credential, as a cell rotates a projected
-// token: a client that re-reads the file before every mint always presents
-// one the host has not recorded yet.
-func (l *Launcher) Refresh() {
+// Refresh re-issues each projection under its original audience.
+func (l *Launcher) Refresh() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for _, credential := range l.credentials {
-		_ = l.issuer.WriteCredential(credential.File, l.subject(&credential), l.audience)
+	var failures []error
+	for key, credential := range l.credentials {
+		if err := l.issuer.WriteCredential(credential.File, l.subject(&credential), key.Audience); err != nil {
+			failures = append(failures, fmt.Errorf("refresh %s for %q: %w", key.Unique, key.Audience, err))
+		}
 	}
+	return errors.Join(failures...)
 }
 
 // RefreshInterval is how often Refresh runs.
 const RefreshInterval = native.RefreshInterval
 
-// Forget drops a stopped workload's projection.
-func (l *Launcher) Forget(unique string) {
+// Forget retires every audience before attempting removal. Failed paths stay
+// pending, never active: Refresh cannot recreate a stopped workload's files.
+func (l *Launcher) Forget(unique string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	delete(l.credentials, unique)
+	l.retire(unique)
+	return l.cleanupFiles()
+}
+
+func (l *Launcher) retire(unique string) {
+	if l.cleanup == nil {
+		l.cleanup = map[string]bool{}
+	}
+	for key, credential := range l.credentials {
+		if unique != "" && key.Unique != unique {
+			continue
+		}
+		delete(l.credentials, key)
+		l.cleanup[credential.File] = true
+	}
+}
+
+// RetryCleanup retries retired files without reactivating their credentials.
+func (l *Launcher) RetryCleanup() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.cleanupFiles()
+}
+
+func (l *Launcher) cleanupFiles() error {
+	var failures []error
+	for path := range l.cleanup {
+		if err := l.removeCredential(path); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+func (l *Launcher) removeCredential(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove native credential %s: %w", path, err)
+	}
+	delete(l.cleanup, path)
+	return nil
+}
+
+// Close prevents further projections, retires all credentials and retries any
+// pending removals. It leaves unrelated run state intact. Copied tokens expire;
+// deleting a projected file does not revoke bytes already read by a process.
+func (l *Launcher) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.closed = true
+	l.retire("")
+	return l.cleanupFiles()
 }
 
 // Projected reports whether unique has a credential.
 func (l *Launcher) Projected(unique string) (Credential, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	credential, ok := l.credentials[unique]
+	credential, ok := l.credentials[projection{unique, l.audience}]
 	return credential, ok
 }
 

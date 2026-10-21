@@ -263,3 +263,16 @@ carrier, and SDK-Go exposes raw and typed document accessors. This is separate
 from `service-config.values`, whose explicitly declared environment values
 remain strings. Render qualification does not establish live cloud identity,
 secret-store access or database connectivity.
+
+## Native workload identity
+
+`Environment.NativeIdentity` (`native-identity`) is an opt-in native execution
+declaration, separate from cloud `service-identity` attachments. It declares
+qualified service/audience projections and qualified verifier services. It is
+preserved through environment load/save, not projected into Core runtime context
+or new agent protocol fields. The existing runtime override map carries the generated
+`CODEFLY_NATIVE_IDENTITY_CREDENTIALS` audience-to-file JSON and verifier anchor.
+See [native audience projections](module-manifests.md#additional-native-audience-projections-new-cli-contract)
+for its strict validation, recipient isolation, runtime restrictions and assurance
+boundary. Importing this declaration does not make a deployment support it;
+deployment rendering refuses it.

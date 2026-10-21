@@ -261,6 +261,9 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("Runner.Init", wool.ThisField(runner.instance))
 
 	if runner.remoteEnvironment != nil {
+		if err := runner.validateRemoteIdentity(); err != nil {
+			return nil, err
+		}
 		return runner.InitRemote(ctx)
 
 	}
@@ -303,6 +306,10 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 	// altogether, so a fixture or an override delivered only at Start reaches
 	// every dependency and never the service the suite is about. Start still
 	// carries both, and the agent takes the first non-empty.
+	overrides, err := runner.runtimeOverridesFor(networkMappings)
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot project runtime overrides")
+	}
 	req := &runtimev0.InitRequest{
 		RuntimeContext:              runtimeContext,
 		ProposedNetworkMappings:     networkMappings,
@@ -312,7 +319,7 @@ func (runner *Runner) Init(ctx context.Context) (*OutputProperty, error) {
 		WorkspaceConfigurations:     workspaceConfigurations,
 		DependenciesConfigurations:  dependenciesConfigurations,
 		Fixture:                     runner.fixture,
-		Overrides:                   runner.runtimeOverridesFor(networkMappings),
+		Overrides:                   overrides,
 	}
 	err = resources.Validate(req)
 	if err != nil {
@@ -907,6 +914,9 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	w.Debug("start")
 
 	if runner.remoteEnvironment != nil {
+		if err := runner.validateRemoteIdentity(); err != nil {
+			return nil, err
+		}
 		return runner.StartRemote(ctx)
 	}
 
@@ -919,6 +929,10 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	dependenciesNetworkMappings, err := runner.world.SharedState.GetDependenciesNetworkMappings(ctx, runner.instance.Service)
 	if err != nil {
 		return nil, w.Wrapf(err, "cannot load service instance")
+	}
+	overrides, err := runner.runtimeOverrides()
+	if err != nil {
+		return nil, w.Wrapf(err, "cannot project runtime overrides")
 	}
 	if runner.outputEnv != "" {
 		runtimeContext, runtimeErr := resources.NewRuntimeContext(runner.runtimeContext)
@@ -983,7 +997,7 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 			identity,
 			runtimeContext,
 			runner.fixture,
-			runner.runtimeOverrides(),
+			overrides,
 			endpointMappings,
 		); appendErr != nil {
 			return nil, w.Wrapf(appendErr, "cannot write runtime environment variables to file")
@@ -993,7 +1007,7 @@ func (runner *Runner) Start(ctx context.Context) (*OutputProperty, error) {
 	req := &runtimev0.StartRequest{
 		DependenciesNetworkMappings: dependenciesNetworkMappings,
 		Fixture:                     runner.fixture,
-		Overrides:                   runner.runtimeOverrides(),
+		Overrides:                   overrides,
 	}
 	err = resources.Validate(req)
 	if err != nil {
@@ -1395,6 +1409,14 @@ func (runner *Runner) Stop(ctx context.Context) (*OutputProperty, error) {
 	return runner.stop(ctx)
 }
 
+// runtimeStopCleanupError reports a confirmed process stop whose local cleanup
+// failed. Withdrawal must still reconcile that stopped workload with the host.
+// It is never returned when the runtime Stop RPC itself failed.
+type runtimeStopCleanupError struct{ cause error }
+
+func (err *runtimeStopCleanupError) Error() string { return err.cause.Error() }
+func (err *runtimeStopCleanupError) Unwrap() error { return err.cause }
+
 func (runner *Runner) stop(ctx context.Context) (*OutputProperty, error) {
 	w := wool.Get(ctx).In("service.RunnerDoStop", wool.ThisField(runner.instance))
 	// Info-level so a user watching `codefly run service` shutdown
@@ -1406,11 +1428,18 @@ func (runner *Runner) stop(ctx context.Context) (*OutputProperty, error) {
 	// the runtime's own bounded cleanup and abandons its final response.
 	stoppingContext, cancel := context.WithTimeout(ctx, defaultStopPhaseBudget)
 	defer cancel()
-	_, err := runner.instance.Runtime.Stop(stoppingContext, &runtimev0.StopRequest{})
-	if err != nil {
-		return nil, w.Wrapf(err, "cannot stop service instance: %s", runner.Unique())
+	_, stopErr := runner.instance.Runtime.Stop(stoppingContext, &runtimev0.StopRequest{})
+	var cleanupErr error
+	if runner.world != nil && runner.world.RuntimeStopped != nil {
+		cleanupErr = runner.world.RuntimeStopped(runner.instance.Service)
+	}
+	if stopErr != nil {
+		return nil, w.Wrapf(errors.Join(stopErr, cleanupErr), "cannot stop service instance: %s", runner.Unique())
 	}
 	w.Info(fmt.Sprintf("stopped %s in %s", runner.Unique(), time.Since(start).Round(time.Millisecond)))
+	if cleanupErr != nil {
+		return &OutputProperty{}, &runtimeStopCleanupError{w.Wrapf(cleanupErr, "runtime stopped but cleanup failed for %s", runner.Unique())}
+	}
 	return &OutputProperty{}, nil
 }
 
@@ -1629,7 +1658,7 @@ func (runner *Runner) WithOverrides(overrides map[string]string) {
 // isolation available to already-published service agents; newer agents also
 // derive the same carrier from Environment, so both paths converge on the
 // identical value.
-func (runner *Runner) runtimeOverrides() map[string]string {
+func (runner *Runner) runtimeOverrides() (map[string]string, error) {
 	return runner.runtimeOverridesFor(runner.networkMappings)
 }
 
@@ -1656,7 +1685,7 @@ func (runner *Runner) selfNetworkAccess() *basev0.NetworkAccess {
 // override seam so it reaches agents built before core emits it themselves
 // (RuntimeWrapper.AddSelfEndpoints); the derivation is core's, so both paths
 // converge on the same value.
-func (runner *Runner) runtimeOverridesFor(own []*basev0.NetworkMapping) map[string]string {
+func (runner *Runner) runtimeOverridesFor(own []*basev0.NetworkMapping) (map[string]string, error) {
 	self := SelfEndpointEnvironmentVariables(context.Background(), own, runner.selfNetworkAccess())
 	overrides := make(map[string]string, len(self)+len(runner.overrides)+1)
 	for key, value := range self {
@@ -1679,14 +1708,33 @@ func (runner *Runner) runtimeOverridesFor(own []*basev0.NetworkMapping) map[stri
 		overrides[key] = value
 	}
 	if runner.world != nil && runner.world.RuntimeOverrides != nil {
-		for key, value := range runner.world.RuntimeOverrides(runner.instance.Service) {
+		owned, err := runner.world.RuntimeOverrides(runner.instance.Service)
+		if err != nil {
+			return nil, err
+		}
+		if runner.world.Env != nil && runner.world.Env.NativeIdentity != nil {
+			if len(owned) > 0 {
+				if err := runner.world.Env.ValidateNativeExecution(runner.runtimeContext); err != nil {
+					return nil, err
+				}
+			}
+			for key := range runner.overrides {
+				if environments.NativeIdentityCarrier(key) {
+					return nil, fmt.Errorf("runtime override %s conflicts with native-identity launcher ownership", key)
+				}
+			}
+		}
+		for key, value := range owned {
+			if authored, exists := runner.overrides[key]; exists && authored != value {
+				return nil, fmt.Errorf("runtime override %s conflicts with the native launcher projection", key)
+			}
 			overrides[key] = value
 		}
 	}
 	if runner.world != nil && runner.world.Env != nil && runner.world.Env.NamingScope != "" {
 		overrides[resources.NamingScopePrefix] = runner.world.Env.NamingScope
 	}
-	return overrides
+	return overrides, nil
 }
 
 // hostRoutes is the host gateway's route carriers for this run, derived once
@@ -2023,4 +2071,13 @@ func (runner *Runner) initReadFailure(cfgCtx context.Context, w *wool.Wool, err 
 		return w.Wrapf(err, "init timeout: %s not available within 30s", what)
 	}
 	return w.Wrapf(err, "cannot get %s", what)
+}
+
+// Remote services cannot receive this run's local credential files or anchor.
+// Refuse explicit recipients before remote initialization or network exposure.
+func (runner *Runner) validateRemoteIdentity() error {
+	if runner.world != nil && runner.world.Env != nil && runner.world.Env.NativeIdentityRecipient(runner.Unique()) {
+		return fmt.Errorf("native-identity recipient %s cannot run with --remote", runner.Unique())
+	}
+	return nil
 }
