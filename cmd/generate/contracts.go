@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -51,6 +50,9 @@ gRPC and connect endpoints get a serialized FileDescriptorSet (contract.binpb)
 plus a copy of the service's proto sources; REST endpoints get their OpenAPI
 document (openapi.json). HTTP, TCP, and MCP endpoints have no machine-readable
 contract and are skipped, as is a connect endpoint whose service has no proto.
+One http endpoint does carry one: a solution backend's, whose contract is the
+interface document the backend commits at openapi/api.swagger.json (the
+solution runtime renders it from the backend's documented operations).
 
 For restricted listeners, module contracts.codefly.yaml maps service names under
 surfaces to service-relative JSON procedure inventories. This is CLI publication
@@ -162,6 +164,17 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 	for _, serviceName := range serviceNames {
 		exported := byService[serviceName]
 
+		// A solution backend's http endpoint carries the interface document
+		// the backend commits; it is written from that file, with no Builder.
+		exported, documented, backendErr := writeSolutionBackendContract(ctx, module, serviceName, exported, opts)
+		if backendErr != nil {
+			return nil, backendErr
+		}
+		if documented != nil {
+			contractEndpoints = append(contractEndpoints, *documented)
+			printContractLine(documented)
+		}
+
 		if !anyCarriesContract(exported) {
 			for _, endpoint := range exported {
 				cli.Info("endpoint %s/%s (api %s) has no contract; skipped", serviceName, endpoint.Name, endpoint.Api)
@@ -220,6 +233,42 @@ func generateContracts(ctx context.Context, workspace *resources.Workspace, modu
 	}
 
 	return writeContractCatalog(ctx, module, contractEndpoints, opts)
+}
+
+// writeSolutionBackendContract writes the contract of a solution backend's
+// exported http endpoint from the interface document the backend commits, and
+// returns the service's other exported endpoints for the usual path. A service
+// that is not a solution backend, or does not export that endpoint, comes back
+// unchanged. A backend that commits no document has its endpoint skipped with
+// a notice saying how to produce one, like every other contract-less export.
+func writeSolutionBackendContract(ctx context.Context, module *resources.Module, serviceName string, exported []*basev0.Endpoint, opts generateOptions) ([]*basev0.Endpoint, *composition.APIContractEndpoint, error) {
+	if module.ServiceEntry != serviceName {
+		return exported, nil, nil
+	}
+	service, err := module.LoadServiceFromName(ctx, serviceName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot load service %s: %w", serviceName, err)
+	}
+	backend, err := solutionBackendOf(ctx, module, service)
+	if err != nil || backend == nil {
+		return exported, nil, err
+	}
+	var others []*basev0.Endpoint
+	var written *composition.APIContractEndpoint
+	for _, endpoint := range exported {
+		if endpoint.Name != backend.endpoint {
+			others = append(others, endpoint)
+			continue
+		}
+		if backend.document == nil {
+			cli.Info("%s; skipped", backend.missingDocument(module.Name, serviceName))
+			continue
+		}
+		if written, err = writeEndpointContract(ctx, module, service, backend.contractEndpoint(module.Name, serviceName), nil, opts); err != nil {
+			return nil, nil, fmt.Errorf("cannot write contract for %s/%s: %w", serviceName, endpoint.Name, err)
+		}
+	}
+	return others, written, nil
 }
 
 // exportedEndpointsByService groups the exported endpoints by owning service,
@@ -349,7 +398,9 @@ func writeEndpointContract(ctx context.Context, module *resources.Module, servic
 	if endpoint.Api == standards.CONNECT || resources.IsGRPC(ctx, endpoint) != nil {
 		return writeProtobufContract(ctx, module, service, endpoint, surface, physicalDir, canonicalDir)
 	}
-	if rest := resources.IsRest(ctx, endpoint); rest != nil {
+	// The endpoint's REST details, whatever its api: a rest endpoint's from
+	// core, a solution backend's http endpoint's from its interface document.
+	if rest := resources.EndpointRestAPI(endpoint); rest != nil {
 		return writeRestContract(ctx, module, endpoint, rest, physicalDir, canonicalDir)
 	}
 	return nil, fmt.Errorf("endpoint %s reports neither a grpc/connect nor a rest contract", endpoint.Name)
@@ -534,33 +585,36 @@ func writeRestContract(ctx context.Context, module *resources.Module, endpoint *
 		return nil, err
 	}
 
-	title, err := openAPITitle(rest.Openapi)
-	if err != nil {
-		return nil, fmt.Errorf("cannot read OpenAPI info.title: %w", err)
-	}
-
-	var routes []composition.APIContractRoute
-	for _, group := range rest.Groups {
-		for _, route := range group.Routes {
-			routes = append(routes, composition.APIContractRoute{
-				Method: route.Method.String(),
-				Path:   path.Join(group.Path, route.Path),
-			})
-		}
-	}
-
 	relPath, err := relativeContractPath(module, filepath.Join(canonicalDir, "openapi.json"))
 	if err != nil {
 		return nil, err
 	}
+	return openAPIContractEndpoint(endpoint, rest, relPath)
+}
 
+// openAPIContractEndpoint is the catalog entry of an endpoint whose contract is
+// the OpenAPI document rest carries, recorded at contractPath. Each route is
+// recorded at its own path: core keys a route group by the path of the routes
+// it holds and gives every route its full path, so joining the two would
+// record "/x" as "/x/x".
+func openAPIContractEndpoint(endpoint *basev0.Endpoint, rest *basev0.RestAPI, contractPath string) (*composition.APIContractEndpoint, error) {
+	title, err := openAPITitle(rest.Openapi)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read OpenAPI info.title: %w", err)
+	}
+	var routes []composition.APIContractRoute
+	for _, group := range rest.Groups {
+		for _, route := range group.Routes {
+			routes = append(routes, composition.APIContractRoute{Method: route.Method.String(), Path: route.Path})
+		}
+	}
 	return &composition.APIContractEndpoint{
 		Service:  endpoint.Service,
 		Endpoint: endpoint.Name,
 		API:      endpoint.Api,
 		Kind:     composition.APIContractKindOpenAPI,
 		Package:  title,
-		Path:     relPath,
+		Path:     contractPath,
 		Digest:   composition.APIContractDigest(rest.Openapi),
 		Routes:   routes,
 	}, nil

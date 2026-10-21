@@ -267,6 +267,16 @@ func assembleOpenAPILibrary(ctx context.Context, lang languages.Language, langDi
 	if err := os.RemoveAll(genDir); err != nil {
 		return generatedLanguageExport{}, err
 	}
+	if lang == languages.TYPESCRIPT {
+		// The TypeScript types go under src/, the one directory tsconfig
+		// compiles and the src/index.ts barrel re-exports, like the protobuf
+		// bindings. The gen/ removed above is where they used to land, outside
+		// both, so the package shipped no types.
+		genDir = filepath.Join(langDir, "src", "gen")
+		if err := os.RemoveAll(genDir); err != nil {
+			return generatedLanguageExport{}, err
+		}
+	}
 	if err := os.MkdirAll(genDir, 0o755); err != nil {
 		return generatedLanguageExport{}, err
 	}
@@ -300,6 +310,9 @@ func assembleOpenAPILibrary(ctx context.Context, lang languages.Language, langDi
 		bestEffortGoModTidy(langDir)
 		return generatedLanguageExport{Name: "go", Path: "go/", Exports: []string{goModule}}, nil
 	}
+	if err := typeScriptDeclarationsAsSource(genDir); err != nil {
+		return generatedLanguageExport{}, err
+	}
 	if err := writeTypeScriptScaffold(langDir, npmPackage); err != nil {
 		return generatedLanguageExport{}, err
 	}
@@ -307,6 +320,30 @@ func assembleOpenAPILibrary(ctx context.Context, lang languages.Language, langDi
 		return generatedLanguageExport{}, err
 	}
 	return generatedLanguageExport{Name: "typescript", Path: "typescript/", Exports: []string{npmPackage}}, nil
+}
+
+// typeScriptDeclarationsAsSource renames the declaration files the OpenAPI
+// generator writes (openapi-typescript's api.d.ts) to .ts sources. They hold
+// only types, which are as valid in a .ts file; but tsc neither compiles a
+// .d.ts nor copies it to dist/, so a barrel re-exporting one would point the
+// built package at a module it never ships. As a .ts it builds into its own
+// declaration and an empty module the barrel can re-export. The generator
+// writes flat into genDir, so only genDir's own entries are read.
+func typeScriptDeclarationsAsSource(genDir string) error {
+	entries, err := os.ReadDir(genDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".d.ts") {
+			continue
+		}
+		if err := os.Rename(filepath.Join(genDir, name), filepath.Join(genDir, strings.TrimSuffix(name, ".d.ts")+".ts")); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // goFacadeImportRe matches a single Go import line ("ident? \"path\"") whose
