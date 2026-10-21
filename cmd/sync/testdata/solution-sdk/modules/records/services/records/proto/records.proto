@@ -1,0 +1,9 @@
+syntax = "proto3";
+package fixture.records.v1;
+
+message GetRequest { string key = 1; }
+message GetResponse { bytes value = 1; }
+
+service RecordsService {
+  rpc Get(GetRequest) returns (GetResponse);
+}

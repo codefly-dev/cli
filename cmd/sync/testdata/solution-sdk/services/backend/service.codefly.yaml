@@ -1,0 +1,13 @@
+kind: service
+name: backend
+version: 0.0.1
+module: portal
+agent:
+    kind: codefly:service
+    name: go
+    publisher: codefly.dev
+    version: 0.0.1
+endpoints:
+    - name: http
+      api: http
+      visibility: private

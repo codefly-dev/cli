@@ -51,23 +51,45 @@ func wipeGoLibrary(langDir string) error {
 	if err := os.RemoveAll(filepath.Join(langDir, "gen")); err != nil {
 		return err
 	}
-	return removeMatching(langDir, "*_facade.pb.go")
+	if err := removeMatching(langDir, "*_facade.pb.go"); err != nil {
+		return err
+	}
+	// A facade package (FacadePackages) is go/<module>/: its facade file is
+	// this command's, the directory only while nothing else lives in it.
+	packages, err := filepath.Glob(filepath.Join(langDir, "*", "*_facade.pb.go"))
+	if err != nil {
+		return err
+	}
+	for _, facade := range packages {
+		if err := os.Remove(facade); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		_ = os.Remove(filepath.Dir(facade)) // kept when a hand-added file remains
+	}
+	return nil
 }
 
 // mergeGoEntry rewrites raw's hardcoded import prefix to goModule/gen (keyed
 // to this entry's own facade module name) and moves it into langDir: the
-// *_facade.pb.go file(s) to the go/ root, everything else to go/gen/.
-func mergeGoEntry(langDir, raw, moduleName, goModule string) error {
+// *_facade.pb.go file(s) to the go/ root, everything else to go/gen/. With
+// facadePackages the entry's facade moves to its own package go/<module>/ and
+// its bindings to go/gen/<module>/: buf writes a binding where its proto file
+// sits in the contract, and two contracts each rooted at an api.proto would
+// otherwise write one go/gen/api.pb.go.
+func mergeGoEntry(langDir, raw, moduleName, goModule string, facadePackages bool) error {
 	service := moduleName
 	if service == "" {
 		service = defaultFacadeModule
 	}
+	genDir, genImport, facadeDir := filepath.Join(langDir, "gen"), goModule+"/gen", langDir
+	if facadePackages {
+		genDir, genImport, facadeDir = filepath.Join(genDir, service), genImport+"/"+service, filepath.Join(langDir, service)
+	}
 	oldPrefix := "github.com/codefly-dev/cli/pkg/builder/clients/" + service
-	if err := rewriteGoImportPrefix(raw, oldPrefix, goModule+"/gen"); err != nil {
+	if err := rewriteGoImportPrefix(raw, oldPrefix, genImport); err != nil {
 		return fmt.Errorf("cannot rewrite generated import paths: %w", err)
 	}
-	genDir := filepath.Join(langDir, "gen")
-	return moveTreeSplitBySuffix(raw, genDir, langDir, "_facade.pb.go")
+	return moveTreeSplitBySuffix(raw, genDir, facadeDir, "_facade.pb.go")
 }
 
 // finalizeGoLibrary writes go.mod (if absent), resolves it and proves the
@@ -92,78 +114,126 @@ func wipeTypeScriptLibrary(langDir string) error {
 }
 
 // mergeTypeScriptEntry moves raw's tree under src/gen/, hoists the
-// *_facade.ts file(s) to src/, and rewrites the facade's same-directory
-// relative import ("./x") to reach into its new location under gen/ instead.
-func mergeTypeScriptEntry(langDir, raw string) error {
+// *_facade.ts file(s) to src/ — or, with facadePackages, moves the bindings
+// under src/gen/<module>/ and the facade to the entry's own src/<module>/,
+// beside an index.ts re-exporting that facade and the entry's bindings — and
+// rewrites the facade's same-directory relative import ("./x") to reach into
+// its new location under gen/ instead.
+func mergeTypeScriptEntry(langDir, raw, moduleName string, facadePackages bool) error {
 	srcDir := filepath.Join(langDir, "src")
 	genDir := filepath.Join(srcDir, "gen")
-	facadeFiles, err := moveTreeSplitBySuffixWithRelDir(raw, genDir, srcDir, "_facade.ts")
+	facadeDir, toGen := srcDir, "./gen"
+	if facadePackages {
+		genDir, facadeDir, toGen = filepath.Join(genDir, moduleName), filepath.Join(srcDir, moduleName), "../gen/"+moduleName
+	}
+	bindings, err := typeScriptModules(raw, "_facade.ts")
+	if err != nil {
+		return err
+	}
+	facadeFiles, err := moveTreeSplitBySuffixWithRelDir(raw, genDir, facadeDir, "_facade.ts")
 	if err != nil {
 		return err
 	}
 	relImportRe := regexp.MustCompile(`(from\s+")\.\/`)
 	for facadePath, relDir := range facadeFiles {
-		data, err := os.ReadFile(facadePath) //nolint:gosec // facadePath is a file this command just wrote
+		data, readErr := os.ReadFile(facadePath) //nolint:gosec // facadePath is a file this command just wrote
+		if readErr != nil {
+			return readErr
+		}
+		rewritten := relImportRe.ReplaceAll(data, []byte(`${1}`+toGen+`/`+filepath.ToSlash(relDir)+`/`))
+		if writeErr := os.WriteFile(facadePath, rewritten, 0o644); writeErr != nil { //nolint:gosec
+			return writeErr
+		}
+	}
+	if !facadePackages {
+		return nil
+	}
+	facades, err := typeScriptModules(facadeDir, "")
+	if err != nil {
+		return err
+	}
+	modules := make([]string, 0, len(facades)+len(bindings))
+	for _, facade := range facades {
+		modules = append(modules, "./"+facade)
+	}
+	for _, binding := range bindings {
+		modules = append(modules, toGen+"/"+binding)
+	}
+	return writeTypeScriptBarrel(filepath.Join(facadeDir, "index.ts"), modules)
+}
+
+// typeScriptModules lists the .ts files under dir as the ".js" module
+// specifiers the generated sources import each other by, relative to dir and
+// sorted, leaving out index.ts and, when excludeSuffix is set, the files
+// ending in it.
+func typeScriptModules(dir, excludeSuffix string) ([]string, error) {
+	var modules []string
+	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rewritten := relImportRe.ReplaceAll(data, []byte(`${1}./gen/`+filepath.ToSlash(relDir)+`/`))
-		if err := os.WriteFile(facadePath, rewritten, 0o644); err != nil { //nolint:gosec
-			return err
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".ts") || name == "index.ts" || (excludeSuffix != "" && strings.HasSuffix(name, excludeSuffix)) {
+			return nil
 		}
-	}
-	return nil
+		relative, relErr := filepath.Rel(dir, path)
+		if relErr != nil {
+			return relErr
+		}
+		// The ".js" specifier the generated bindings and facades already use:
+		// the sources are ESM and resolve by emitted path, not by source name.
+		modules = append(modules, strings.TrimSuffix(filepath.ToSlash(relative), ".ts")+".js")
+		return nil
+	})
+	sort.Strings(modules)
+	return modules, err
 }
 
-func finalizeTypeScriptLibrary(langDir, npmPackage string) (generatedLanguageExport, error) {
-	if err := writeTypeScriptScaffold(langDir, npmPackage); err != nil {
+func finalizeTypeScriptLibrary(langDir, npmPackage string, facadePackages bool) (generatedLanguageExport, error) {
+	if err := writeTypeScriptScaffold(langDir, npmPackage, facadePackages); err != nil {
 		return generatedLanguageExport{}, err
 	}
-	if err := writeTypeScriptIndex(langDir); err != nil {
+	if err := writeTypeScriptIndex(langDir, facadePackages); err != nil {
 		return generatedLanguageExport{}, err
 	}
 	return generatedLanguageExport{Name: "typescript", Path: "typescript/", Exports: []string{npmPackage}}, nil
 }
 
 // writeTypeScriptIndex writes src/index.ts: the barrel re-exporting every
-// hoisted facade and every generated binding, and so the one file
-// package.json's "exports" names. It is generated output, not a scaffold —
-// src/ is wholly owned by this command (wipeTypeScriptLibrary removes it) and
-// which files exist depends on the contracts generated — so it is rewritten on
-// every run instead of written once. Without it the library declares an entry
-// point nothing produced and cannot be resolved at all.
-func writeTypeScriptIndex(langDir string) error {
+// hoisted facade and every generated binding — or, with facadePackages, every
+// facade alone, since two contracts' bindings may declare one name and each
+// facade package (src/<module>/index.ts) re-exports its own — and so the one
+// file package.json's "." export names. It is generated output, not a
+// scaffold — src/ is wholly owned by this command (wipeTypeScriptLibrary
+// removes it) and which files exist depends on the contracts generated — so it
+// is rewritten on every run instead of written once. Without it the library
+// declares an entry point nothing produced and cannot be resolved at all.
+func writeTypeScriptIndex(langDir string, facadePackages bool) error {
 	srcDir := filepath.Join(langDir, "src")
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		return err
 	}
-	index := filepath.Join(srcDir, "index.ts")
-	var modules []string
-	if err := filepath.WalkDir(srcDir, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() || path == index || !strings.HasSuffix(entry.Name(), ".ts") {
-			return nil
-		}
-		relative, relErr := filepath.Rel(srcDir, path)
-		if relErr != nil {
-			return relErr
-		}
-		// The ".js" specifier the generated bindings and facades already use:
-		// the sources are ESM and resolve by emitted path, not by source name.
-		modules = append(modules, "./"+strings.TrimSuffix(filepath.ToSlash(relative), ".ts")+".js")
-		return nil
-	}); err != nil {
+	modules, err := typeScriptModules(srcDir, "")
+	if err != nil {
 		return err
 	}
-	sort.Strings(modules)
+	exported := make([]string, 0, len(modules))
+	for _, module := range modules {
+		if facadePackages && !strings.HasSuffix(module, "_facade.js") {
+			continue
+		}
+		exported = append(exported, "./"+module)
+	}
+	return writeTypeScriptBarrel(filepath.Join(srcDir, "index.ts"), exported)
+}
+
+func writeTypeScriptBarrel(path string, modules []string) error {
 	var content strings.Builder
 	content.WriteString("// generated by codefly generate client; do not edit\n")
 	for _, module := range modules {
 		fmt.Fprintf(&content, "export * from %q;\n", module)
 	}
-	return os.WriteFile(index, []byte(content.String()), 0o644) //nolint:gosec
+	return os.WriteFile(path, []byte(content.String()), 0o644) //nolint:gosec
 }
 
 // wipePythonLibrary clears pkgDir's generated content once, before any entry
@@ -300,10 +370,10 @@ func assembleOpenAPILibrary(ctx context.Context, lang languages.Language, langDi
 		bestEffortGoModTidy(langDir)
 		return generatedLanguageExport{Name: "go", Path: "go/", Exports: []string{goModule}}, nil
 	}
-	if err := writeTypeScriptScaffold(langDir, npmPackage); err != nil {
+	if err := writeTypeScriptScaffold(langDir, npmPackage, false); err != nil {
 		return generatedLanguageExport{}, err
 	}
-	if err := writeTypeScriptIndex(langDir); err != nil {
+	if err := writeTypeScriptIndex(langDir, false); err != nil {
 		return generatedLanguageExport{}, err
 	}
 	return generatedLanguageExport{Name: "typescript", Path: "typescript/", Exports: []string{npmPackage}}, nil
@@ -640,7 +710,19 @@ func bestEffortGoModTidy(dir string) {
 	}
 }
 
-func writeTypeScriptScaffold(langDir, npmPackage string) error {
+// writeTypeScriptScaffold writes package.json and tsconfig.json once. With
+// facadePackages, package.json also exports each facade package by its
+// directory ("<package>/<module>"), the import a Go consumer writes as
+// "<module path>/<module>".
+func writeTypeScriptScaffold(langDir, npmPackage string, facadePackages bool) error {
+	subpaths := ""
+	if facadePackages {
+		subpaths = `,
+    "./*": {
+      "types": "./dist/*/index.d.ts",
+      "import": "./dist/*/index.js"
+    }`
+	}
 	packageJSON := fmt.Sprintf(`{
   "name": %q,
   "version": "0.0.1",
@@ -649,7 +731,7 @@ func writeTypeScriptScaffold(langDir, npmPackage string) error {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    }%s
   },
   "files": [
     "dist",
@@ -669,7 +751,7 @@ func writeTypeScriptScaffold(langDir, npmPackage string) error {
     "registry": "https://npm.pkg.github.com"
   }
 }
-`, npmPackage, pinnedTypeScriptVersion)
+`, npmPackage, subpaths, pinnedTypeScriptVersion)
 	if err := writeFileIfMissing(filepath.Join(langDir, "package.json"), []byte(packageJSON)); err != nil {
 		return err
 	}
