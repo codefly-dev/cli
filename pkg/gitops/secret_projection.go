@@ -76,6 +76,16 @@ type externalSecretTemplate struct {
 type externalSecretData struct {
 	SecretKey string               `yaml:"secretKey"`
 	RemoteRef externalSecretRemote `yaml:"remoteRef"`
+	// SourceRef, when set, reads this one item through its own store instead
+	// of the ExternalSecret's secretStoreRef (External Secrets' per-item
+	// sourceRef.storeRef): how a key the environment declared with its own
+	// secret-store is resolved without a second ExternalSecret contending for
+	// the same target Secret.
+	SourceRef *externalSecretSourceRef `yaml:"sourceRef,omitempty"`
+}
+
+type externalSecretSourceRef struct {
+	StoreRef externalSecretStoreRef `yaml:"storeRef"`
 }
 
 type externalSecretRemote struct {
@@ -141,7 +151,7 @@ func serviceSecretProjection(scope unitScope, service string, secrets *environme
 	}
 	remotes := make(map[string]environments.EnvironmentSecretRemoteRef, len(keys))
 	read := func(key string, remote environments.EnvironmentSecretRemoteRef) error {
-		if prior, seen := remotes[key]; seen && prior != remote {
+		if prior, seen := remotes[key]; seen && !prior.Equal(remote) {
 			return fmt.Errorf("service %q reads secret key %s from two remote locations", service, key)
 		}
 		remotes[key] = remote
@@ -202,10 +212,19 @@ func serviceSecretProjection(scope unitScope, service string, secrets *environme
 	data := make([]externalSecretData, 0, len(projected))
 	for _, key := range projected {
 		remote := remotes[key]
-		data = append(data, externalSecretData{
+		item := externalSecretData{
 			SecretKey: key,
 			RemoteRef: externalSecretRemote{Key: remote.Key, Property: remote.Property},
-		})
+		}
+		// A key declared with its own store reads through it; one declared with
+		// the service's store, explicitly or by omission, needs no sourceRef.
+		if remote.SecretStore != nil && *remote.SecretStore != store {
+			if _, ok := externalSecretStoreKinds[remote.SecretStore.Kind]; !ok {
+				return nil, fmt.Errorf("service %q secret key %s names secret-store kind %q", service, key, remote.SecretStore.Kind)
+			}
+			item.SourceRef = &externalSecretSourceRef{StoreRef: externalSecretStoreRef{Name: remote.SecretStore.Name, Kind: remote.SecretStore.Kind}}
+		}
+		data = append(data, item)
 	}
 	projection, err := externalSecretProjection(service, namespace, store, data)
 	if err != nil {

@@ -1164,6 +1164,17 @@ service-secrets:
         CODEFLY__…__IDENTITY_CLIENT_SECRET:
           key: lodestar-identity
           property: client_secret
+        # key + property + secret-store: this one key is read through a store of
+        # its own (a cell keeps its identity provider's secrets apart); the
+        # service's other keys keep the service's store. Rendered as the
+        # ExternalSecret data item's sourceRef.storeRef, so one ExternalSecret
+        # still owns the service's Secret.
+        CODEFLY__…__IDENTITY_CLIENT_ID:
+          key: workos-app
+          property: client_id
+          secret-store:
+            name: platform-identity
+            kind: ClusterSecretStore
       # defaults template: applies to every key not listed above; "{service}"
       # and "{key}" are substituted
       defaults:
