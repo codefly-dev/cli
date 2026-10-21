@@ -20,8 +20,8 @@ type privateModuleBuild struct {
 	// GoPrivate is the host's GOPRIVATE, empty when unset. It names module
 	// paths, not credentials.
 	GoPrivate string
-	// Proxies maps each Go module proxy build context the recipe declares to
-	// the prefetched directory supplied under that name.
+	// Proxies maps each Go module proxy and git source mirror build context the
+	// recipe declares to the prefetched directory supplied under that name.
 	Proxies map[string]string
 }
 

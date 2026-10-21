@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"regexp"
@@ -280,13 +281,14 @@ func (b *Builder) buildRecipeRoot() (string, error) {
 }
 
 // plannedBuild is one service's emitted build: where its recipe lives, the
-// agent's answer, and the Go module proxies prefetched for each recipe.
+// agent's answer, and the Go module proxies and git source mirrors prefetched
+// for each recipe.
 type plannedBuild struct {
 	recipeRoot string
 	outputDir  string
 	response   *builderv0.BuildResponse
-	// proxies maps a recipe name to its prefetched Go module proxies, keyed by
-	// the build-context name the recipe declares.
+	// proxies maps a recipe name to its prefetched Go module proxies and git
+	// source mirrors, keyed by the build-context name the recipe declares.
 	proxies map[string]map[string]string
 	// reuse maps a recipe name to the reuse decision Plan took for it, for the
 	// recipes it decided before fetching; Build adopts or builds from it.
@@ -358,7 +360,7 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 		}
 		contextRoot := recipeContextRoot(b.instance.Service.Dir(), outputDir, plan)
 		for _, recipe := range plan.GetRecipes() {
-			if len(recipe.GetGoModuleDownloads()) == 0 {
+			if len(recipe.GetGoModuleDownloads()) == 0 && len(recipe.GetGitSourceDownloads()) == 0 {
 				continue
 			}
 			// Decide reuse before fetching, on the recipe as it will be built: an
@@ -377,7 +379,7 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 			}
 			planned.reuse[recipe.GetName()] = reuse
 			if reuse.entry != nil {
-				w.Info("no image input changed; the Go modules this recipe declares are not fetched",
+				w.Info("no image input changed; the Go modules and git sources this recipe declares are not fetched",
 					wool.Field("recipe", recipe.GetName()), wool.Field("image", reuse.entry.Image))
 				continue
 			}
@@ -385,7 +387,9 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 			if err != nil {
 				return nil, w.Wrapf(err, "cannot resolve build context for recipe %s of %s", recipe.GetName(), b.instance.Unique())
 			}
-			w.Info("fetching Go modules before any image build", wool.Field("recipe", recipe.GetName()))
+			if len(recipe.GetGoModuleDownloads()) > 0 {
+				w.Info("fetching Go modules before any image build", wool.Field("recipe", recipe.GetName()))
+			}
 			proxies, err := b.world.goModules().proxiesFor(ctx, contextDir, recipe)
 			if err != nil {
 				// What names the cause of a failed fetch is the go tool's own
@@ -397,6 +401,21 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 				w.Warn("cannot fetch the Go modules this recipe declares",
 					wool.Field("recipe", recipe.GetName()), wool.ErrField(err))
 				return nil, w.Wrapf(err, "cannot fetch the Go modules of %s", b.instance.Unique())
+			}
+			// The same phase and route for a dependency locked to a git commit:
+			// the host's git fetches it, the build reads a mirror context.
+			if len(recipe.GetGitSourceDownloads()) > 0 {
+				w.Info("fetching git sources before any image build", wool.Field("recipe", recipe.GetName()))
+				mirrors, err := b.world.gitSources().mirrorsFor(ctx, recipe)
+				if err != nil {
+					w.Warn("cannot fetch the git sources this recipe declares",
+						wool.Field("recipe", recipe.GetName()), wool.ErrField(err))
+					return nil, w.Wrapf(err, "cannot fetch the git sources of %s", b.instance.Unique())
+				}
+				if proxies == nil {
+					proxies = make(map[string]string, len(mirrors))
+				}
+				maps.Copy(proxies, mirrors)
 			}
 			if planned.proxies == nil {
 				planned.proxies = map[string]map[string]string{}

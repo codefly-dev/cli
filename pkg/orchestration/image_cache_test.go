@@ -114,6 +114,8 @@ type imageCachePeer struct {
 	goModules bool
 	// image is the recipe's image; empty means example.test/app:v1.
 	image string
+	// gitSources makes the recipe declare a locked git commit for prefetching.
+	gitSources bool
 }
 
 func (*imageCachePeer) BuildCapabilities(context.Context, *builderv0.BuildCapabilitiesRequest) (*builderv0.BuildCapabilitiesResponse, error) {
@@ -137,6 +139,9 @@ func (peer *imageCachePeer) Build(_ context.Context, request *builderv0.BuildReq
 	if peer.goModules {
 		options = append(options, coreservices.WithGoModuleDownloads(&builderv0.GoModuleDownload{ModuleRoot: "code", ProxyContext: "gomodproxy"}))
 	}
+	if peer.gitSources {
+		options = append(options, coreservices.WithGitSourceDownloads(&builderv0.GitSourceDownload{Repository: gitSourceURL, Commit: commitOne, MirrorContext: "gitsources"}))
+	}
 	plan, err := coreservices.SingleImageBuildPlan(output, peer.imageName(), coreservices.RecipeBuildPlatforms(), []string{"Dockerfile", "dockerignore"}, options...)
 	if err != nil {
 		return nil, err
@@ -159,6 +164,8 @@ type imageCacheHarness struct {
 	rebuild      bool
 	// goCalls records every go command the prefetch of each build runs.
 	goCalls []goCall
+	// gitCalls records every git command the git source prefetch runs.
+	gitCalls [][]string
 }
 
 func newImageCacheHarness(t *testing.T, push, registryServes bool) *imageCacheHarness {
@@ -232,6 +239,10 @@ func (harness *imageCacheHarness) build(t *testing.T) string {
 	prefetch.run = recordingGo(&harness.goCalls, nil)
 	world.goModulePrefetch = prefetch
 	t.Cleanup(func() { require.NoError(t, prefetch.Close()) })
+	gitPrefetch := newGitSourcePrefetch()
+	gitPrefetch.run = recordingGit(&harness.gitCalls, "")
+	world.gitSourcePrefetch = gitPrefetch
+	t.Cleanup(func() { require.NoError(t, gitPrefetch.Close()) })
 	build, err := harness.run(ctx, instance, world)
 	require.NoError(t, err)
 	if harness.push {
@@ -382,6 +393,25 @@ func TestAnUpToDateImageFetchesNoGoModules(t *testing.T) {
 	require.NotEqual(t, first, harness.build(t))
 	require.Equal(t, 2, harness.docker.calls(t, "build"))
 	require.Len(t, harness.goCalls, 4, "a changed input is fetched before it is built")
+}
+
+// TestAnUpToDateImageFetchesNoGitSources is the same plan phase for a declared
+// git source: fetched before the first build and handed to it as the mirror
+// context, not fetched for an image already built from these inputs.
+func TestAnUpToDateImageFetchesNoGitSources(t *testing.T) {
+	harness := newImageCacheHarness(t, true, true)
+	harness.peer.gitSources = true
+	require.NoError(t, os.WriteFile(filepath.Join(harness.docker.dir, "hook"), []byte(`printf '%s\n' "$@" > "$STATE/args"`+"\n"), 0o644))
+	first := harness.build(t)
+	require.Equal(t, 1, harness.docker.calls(t, "build"))
+	require.Len(t, harness.gitCalls, 3, "the first build fetches the declared commit")
+	args, err := os.ReadFile(filepath.Join(harness.docker.dir, "args"))
+	require.NoError(t, err)
+	require.Contains(t, string(args), "--build-context\ngitsources=")
+
+	require.Equal(t, first, harness.build(t))
+	require.Equal(t, 1, harness.docker.calls(t, "build"))
+	require.Len(t, harness.gitCalls, 3, "an image built from these inputs needs no fetch")
 }
 
 // TestPlaceholderProxiesNormalizeLikeFetchedPaths pins what lets the reuse

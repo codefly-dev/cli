@@ -68,7 +68,10 @@ import (
 // version missing from go.sum fail the fetch instead of being written in. A
 // filesystem `replace` resolves to a directory rather than the proxy, and the
 // build can only read that directory if it is in the context, where it is hashed
-// like any other file.
+// like any other file. A recipe declaring git sources is handed a mirror
+// directory the same way, normalized out of the key the same way; the
+// repositories and commits it holds are the declaration's, which the recipe
+// tree digest covers.
 //
 // A base image is resolved, not taken from its name. A recipe that says
 // `FROM golang:1.25` is built from whatever manifest that tag points at when the
