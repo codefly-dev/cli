@@ -128,7 +128,7 @@ func selectionReceipt(ref *resources.ModuleReference, directive *resources.Modul
 	if receipt == nil {
 		return r
 	}
-	mode := composition.ResolutionModeFor(directive, receipt, declared)
+	mode := composition.ResolutionModeFor(ref, directive, receipt, declared)
 	if !receipt.Answers(ref, mode) || receipt.Service != "" {
 		r.State = "different-request"
 		r.Previous = &previousSelectionReceipt{Source: receipt.Source, Module: receipt.Module, Requested: receipt.Requested, Version: receipt.Version, Mode: string(receipt.Mode), Service: receipt.Service}

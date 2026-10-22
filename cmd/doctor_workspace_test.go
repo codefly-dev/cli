@@ -1757,3 +1757,34 @@ func TestDoctorWorkspaceSourcesOnlyUsesResolverWithoutProvider(t *testing.T) {
 		}
 	}
 }
+
+func TestDoctorRefusesRootAndImportedLegacyMigration(t *testing.T) {
+	for _, imported := range []bool{false, true} {
+		for _, sourceOnly := range []bool{false, true} {
+			t.Run(fmt.Sprintf("imported=%t/sourceOnly=%t", imported, sourceOnly), func(t *testing.T) {
+				files := map[string]string{
+					"workspace.codefly.yaml": "name: legacy\nlayout: flat\n",
+					"module.codefly.yaml":    "kind: module\nname: legacy\nservices:\n  - name: api\n",
+				}
+				if imported {
+					files["base/workspace.codefly.yaml"] = files["workspace.codefly.yaml"]
+					files["base/module.codefly.yaml"] = files["module.codefly.yaml"]
+					delete(files, "module.codefly.yaml")
+					files["workspace.codefly.yaml"] = "name: product\nlayout: modules\nworkspaces:\n  - name: legacy\n    path: base\n"
+				}
+				dir := writeTestWorkspace(t, files)
+				report := runReadiness(t, workspaceReadinessOptions{dir: dir, sourceOnly: sourceOnly})
+				diagnostic := requireCode(t, report, codeWorkspaceInvalid, "fail")
+				if !strings.Contains(diagnostic.Message, "inspection refuses before rewriting") {
+					t.Fatalf("unexpected diagnostic: %+v", diagnostic)
+				}
+				for path, content := range files {
+					got, err := os.ReadFile(filepath.Join(dir, path))
+					if err != nil || string(got) != content {
+						t.Fatalf("inspection changed %s: %v", path, err)
+					}
+				}
+			})
+		}
+	}
+}

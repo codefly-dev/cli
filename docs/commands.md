@@ -4091,3 +4091,12 @@ including empty arrays. An empty inventory is meaningful only with
 `configuration_resolved: true` and accepted collection evidence; it is distinct
 from failed or unavailable collection. Workspace inspection uses cached exact
 release imports only, in normal doctor as well as source-only mode.
+
+### Inspection and legacy workspaces
+
+`show selection` and `doctor workspace` attach Core's workspace migration-refusal
+policy before loading the root or any imported workspace. A legacy flat workspace
+with `module.codefly.yaml` is refused before decoding, saving or deleting it.
+Inspection also resolves only cached exact workspace releases; it never acquires
+missing imports. Perform explicit migration or preparation separately before
+retrying inspection.

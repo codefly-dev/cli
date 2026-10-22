@@ -59,8 +59,10 @@ func WithWorkspaceResolver(ctx context.Context) context.Context {
 
 // WithWorkspaceInspection resolves only already-cached, exact workspace releases.
 // Inspection cannot acquire an import or choose a remote/floating version. A
-// missing release is a diagnostic for an explicit preparation operation.
+// missing release is a diagnostic for an explicit preparation operation. Core also
+// refuses legacy migration throughout the recursive import closure.
 func WithWorkspaceInspection(ctx context.Context) context.Context {
+	ctx = resources.WithWorkspaceMigrationRefusal(ctx)
 	return WithWorkspaceResolver(context.WithValue(ctx, workspaceInspectionKey{}, true))
 }
 

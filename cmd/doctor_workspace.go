@@ -284,35 +284,6 @@ func checkWorkspace(ctx context.Context, opts *workspaceReadinessOptions, report
 		return nil
 	}
 
-	// Probe the raw YAML before the real load: loading a flat-layout workspace
-	// that still carries a legacy module.codefly.yaml migrates it on disk
-	// (rewrites workspace.codefly.yaml, deletes the module file). The doctor is
-	// strictly read-only, so that state is reported instead of loaded.
-	raw, err := os.ReadFile(filepath.Join(dir, resources.WorkspaceConfigurationName))
-	if err != nil {
-		report.add(codeWorkspaceInvalid, "workspace", "fail",
-			fmt.Sprintf("cannot read %s: %v", resources.WorkspaceConfigurationName, err),
-			"check file permissions on the workspace directory")
-		return nil
-	}
-	var probe struct {
-		Layout string `yaml:"layout"`
-	}
-	if probeErr := yaml.Unmarshal(raw, &probe); probeErr != nil {
-		report.add(codeWorkspaceInvalid, "workspace", "fail",
-			fmt.Sprintf("%s is not valid YAML: %v", resources.WorkspaceConfigurationName, probeErr),
-			"fix the workspace manifest syntax")
-		return nil
-	}
-	if probe.Layout == resources.LayoutKindFlat {
-		if _, statErr := os.Stat(filepath.Join(dir, resources.ModuleConfigurationName)); statErr == nil {
-			report.add(codeWorkspaceInvalid, "workspace", "fail",
-				fmt.Sprintf("flat-layout workspace still has a legacy %s pending migration; loading it would rewrite workspace files", resources.ModuleConfigurationName),
-				"run `codefly update workspace` once in your primary checkout, commit the migration, then re-run")
-			return nil
-		}
-	}
-
 	ws, err := resources.LoadWorkspaceFromDir(ctx, dir)
 	if err != nil {
 		report.add(codeWorkspaceInvalid, "workspace", "fail",

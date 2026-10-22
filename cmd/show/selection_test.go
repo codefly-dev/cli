@@ -119,3 +119,33 @@ func TestSelectionPolicyRereadKeepsInspectionContext(t *testing.T) {
 	_, err = os.Stat(cache)
 	require.True(t, os.IsNotExist(err), "policy re-read must not acquire a newly declared import")
 }
+
+func TestSelectionRefusesRootAndImportedLegacyMigration(t *testing.T) {
+	for _, imported := range []bool{false, true} {
+		t.Run(fmt.Sprintf("imported=%t", imported), func(t *testing.T) {
+			root := t.TempDir()
+			legacyDir := root
+			rootManifest := "name: legacy\nlayout: flat\n"
+			if imported {
+				legacyDir = filepath.Join(root, "base")
+				require.NoError(t, os.Mkdir(legacyDir, 0700))
+				rootManifest = "name: product\nlayout: modules\nworkspaces:\n  - name: legacy\n    path: base\n"
+				require.NoError(t, os.WriteFile(filepath.Join(legacyDir, "workspace.codefly.yaml"), []byte("name: legacy\nlayout: flat\n"), 0600))
+			}
+			manifest := filepath.Join(root, "workspace.codefly.yaml")
+			legacy := filepath.Join(legacyDir, "module.codefly.yaml")
+			require.NoError(t, os.WriteFile(manifest, []byte(rootManifest), 0600))
+			legacyBytes := []byte("kind: module\nname: legacy\nservices:\n  - name: api\n")
+			require.NoError(t, os.WriteFile(legacy, legacyBytes, 0600))
+			t.Chdir(root)
+			err := SelectionCmd.RunE(SelectionCmd, nil)
+			require.ErrorContains(t, err, "inspection refuses before rewriting")
+			got, err := os.ReadFile(legacy)
+			require.NoError(t, err)
+			require.Equal(t, legacyBytes, got)
+			got, err = os.ReadFile(manifest)
+			require.NoError(t, err)
+			require.Equal(t, rootManifest, string(got))
+		})
+	}
+}
