@@ -192,6 +192,13 @@ refused when the environment is read, because it would look like either.
 there is nothing to decline and it would hide a typo, and `[]` on a key that
 names no derived operation is refused as an unknown key.
 
+A module whose service installs prepared bindings asks for each one in its
+manifest's authority request, by its key, with the binding's audience, kinds
+and actions and no resource id; the module's installation scope narrows it to
+the resources an organization consents to
+([module manifests](module-manifests.md#what-a-module-asks-for)). A declined
+operation has no prepared binding, so nothing asks for it.
+
 A service that installs a declined operation is refused at its own point: the
 `runnable-bindings` key it names is not configured, and it reports that key.
 The decline is the environment's own answer, so the same operation can be
