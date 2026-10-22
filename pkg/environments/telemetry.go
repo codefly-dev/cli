@@ -75,6 +75,19 @@ func (telemetry *EnvironmentTelemetry) Validate() error {
 // environment, so a trace read anywhere says which service of which composition
 // in which environment produced it. The keys are the OpenTelemetry
 // specification's, read by every SDK; nothing here is Codefly's own vocabulary.
+// IsTelemetryCarrier reports whether key is one of the carriers
+// TelemetryCarriers delivers. They are offered, never required: a process
+// that loads no Codefly ConfigMap (a vendor image such as redis or postgres)
+// has no SDK to export with and reads none of them, so a render must not
+// refuse such a service for lacking a container to deliver them into.
+func IsTelemetryCarrier(key string) bool {
+	switch key {
+	case "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_SERVICE_NAME", "OTEL_RESOURCE_ATTRIBUTES":
+		return true
+	}
+	return false
+}
+
 func (env *Environment) TelemetryCarriers(module, service string) map[string]string {
 	if env == nil || env.Telemetry == nil {
 		return nil
