@@ -36,11 +36,12 @@ func (injections renderInjections) forService(module, service string) serviceInj
 
 // deriveRenderInjections joins the api.consumes projection of the workspace's
 // composed solutions with the self-endpoint carriers of the services the render
-// deployed and the host gateway's route carriers (orchestration's
+// deployed, the host gateway's route carriers (orchestration's
 // HostRouteCarriers: the addresses of what composed solutions consume through
-// it). All are public values of the same shape; a key is never derived by two,
-// so the join is a plain union.
-func deriveRenderInjections(ctx context.Context, workspace *resources.Workspace, selfEndpoints, hostRoutes map[string]map[string]string, sink orchestration.OutputSink) (renderInjections, error) {
+// it) and the environment's telemetry carriers (telemetryCarriersForRender).
+// All are public values of the same shape; a key is never derived by two, so
+// the join is a plain union.
+func deriveRenderInjections(ctx context.Context, workspace *resources.Workspace, selfEndpoints, hostRoutes, telemetry map[string]map[string]string, sink orchestration.OutputSink) (renderInjections, error) {
 	solutions, err := solutionrun.DerivedDeployInputs(ctx, workspace)
 	if err != nil {
 		return nil, err
@@ -58,7 +59,7 @@ func deriveRenderInjections(ctx context.Context, workspace *resources.Workspace,
 	for unique, injection := range solutions.Services {
 		injections[unique] = injection
 	}
-	for _, carriers := range []map[string]map[string]string{selfEndpoints, hostRoutes} {
+	for _, carriers := range []map[string]map[string]string{selfEndpoints, hostRoutes, telemetry} {
 		for unique, variables := range carriers {
 			injection := injections[unique]
 			if injection.Public == nil {
@@ -213,13 +214,17 @@ func projectServiceInjectionInTree(ctx context.Context, tree *renderRoot, root, 
 }
 
 // offeredOnly reports whether every carrier a service derives is one offered to
-// any Codefly-aware process of it — its own reachable address — rather than one
-// the render must deliver (a solution's consumed routes). A container that
-// declares no CODEFLY__SERVICE (a vendor image: postgres, redis) reads none of
-// them, so an unclaimed service may skip offered carriers.
+// any Codefly-aware process of it — its own reachable address, the
+// environment's telemetry intake — rather than one the render must deliver (a
+// solution's consumed routes). A container that declares no CODEFLY__SERVICE
+// (a vendor image: postgres, redis) reads none of them, so an unclaimed
+// service may skip offered carriers. The telemetry carriers are offered for
+// the same reason the self endpoint is: a vendor image has no SDK to export
+// with, and refusing it would stop every render composing one the moment an
+// environment declares an intake.
 func offeredOnly(injection serviceInjection) bool {
 	offered := func(key string) bool {
-		return strings.HasPrefix(key, resources.SelfEndpointPrefix+"__")
+		return strings.HasPrefix(key, resources.SelfEndpointPrefix+"__") || environments.IsTelemetryCarrier(key)
 	}
 	for key := range injection.Public {
 		if !offered(key) {
@@ -419,4 +424,25 @@ func sortedKeys(values map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// telemetryCarriersForRender is the environment's telemetry carriers
+// (environments.Environment.TelemetryCarriers) for every rendered service,
+// keyed by unique: a render delivers them exactly as a native run does, so a
+// service exports to the same place however it is started.
+func telemetryCarriersForRender(env *environments.Environment, uniques []string) map[string]map[string]string {
+	if env == nil || env.Telemetry == nil {
+		return nil
+	}
+	carriers := map[string]map[string]string{}
+	for _, unique := range uniques {
+		module, service, found := strings.Cut(unique, "/")
+		if !found {
+			continue
+		}
+		if variables := env.TelemetryCarriers(module, service); len(variables) > 0 {
+			carriers[unique] = variables
+		}
+	}
+	return carriers
 }

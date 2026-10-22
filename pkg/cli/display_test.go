@@ -10,6 +10,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -221,3 +222,38 @@ type customWrap struct {
 
 func (c *customWrap) Error() string { return c.msg }
 func (c *customWrap) Unwrap() error { return c.inner }
+
+// A command that failed wraps the process's exit (so callers can still ask
+// for the exit code), but "exit status 1" is not a cause anyone can act on:
+// plain mode shows the layer that ran the command and read its stderr.
+func TestActionableRootSkipsABareProcessExit(t *testing.T) {
+	exit := exec.Command("sh", "-c", "exit 1").Run()
+	var exitError *exec.ExitError
+	if !errors.As(exit, &exitError) {
+		t.Fatalf("want an *exec.ExitError, got %T", exit)
+	}
+	cmd := fmt.Errorf("kubectl get clustersecretstore cell-secrets failed: the backend's credentials have expired and it cannot prompt here; refresh them (gcloud auth login) and re-run: %w", exit)
+	top := fmt.Errorf("read the cell's secret store: %w", cmd)
+	got := actionableRoot(top)
+	want := "kubectl get clustersecretstore cell-secrets failed: the backend's credentials have expired and it cannot prompt here; refresh them (gcloud auth login) and re-run"
+	if got != want {
+		t.Errorf("\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+// An exit status with nothing above it is still the only thing to show.
+func TestActionableRootKeepsABareProcessExitAlone(t *testing.T) {
+	exit := exec.Command("sh", "-c", "exit 3").Run()
+	if got := actionableRoot(exit); got != "exit status 3" {
+		t.Errorf("got %q, want the exit status itself", got)
+	}
+}
+
+// Nothing changes for a chain without a process exit: the innermost layer
+// stays the root.
+func TestActionableRootIsTheInnermostLayerOtherwise(t *testing.T) {
+	top := fmt.Errorf("service start: %w", fmt.Errorf("postgres ping failed: %w", errors.New("connection refused")))
+	if got := actionableRoot(top); got != "connection refused" {
+		t.Errorf("got %q, want the innermost layer", got)
+	}
+}

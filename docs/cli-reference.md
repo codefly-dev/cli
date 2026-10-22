@@ -2012,6 +2012,10 @@ DEV ESCAPE HATCH: push one service's local code into an already-rendered GitOps 
 Build and push ONE service from local code — --path, else its machine-local
 service override — through the same build path `deploy gitops render` uses, then
 re-pin only that service's image digest in the environment's rendered tree.
+When the environment declares a host, its cell file is re-derived as well: the
+cell admits only the builds that file names, so the new digest goes with it.
+It refuses, before building, when the re-derived file would move anything but
+this service's images against the file the branch carries.
 
 The environment then runs code no release describes. The render inventory
 records it under "dev", `codefly doctor workspace` warns while it is active, and
@@ -2195,6 +2199,7 @@ codefly deploy gitops render [module]
 Flags:
 
 ```
+      --all                                                                               Render every module the workspace composes, the host first, and derive the environment's cell file once at the end
       --app-project string                                                                AppProject contract for cluster-scoped resources
       --env string                                                                        Environment to promote (default "local")
       --rebuild                                                                           Build every image even when no input of it changed, instead of keeping the image already built from those inputs
@@ -2280,7 +2285,8 @@ deployments/modules, and resolves each remote property to a source: kept (alread
 stored), propagated (a configuration value another remote key already holds),
 generated (declared random by the environment's service-secrets.generate), or
 required (supplied by the operator, and named). The store is the backend behind
-the SecretStore the render names, read from the environment's cluster.
+the SecretStore the render names, read from the environment's cluster; a render
+reading through several stores is planned and written store by store.
 
 Each property is resolved by the secret key the render reads out of it, not by
 the property name the environment files that key under, so an environment that
@@ -2417,6 +2423,7 @@ service_override_active, service_override_unresolved,
 service_override_contract_drift, agent_override_active,
 agent_override_invalid, gitops_dev_deployment_active,
 agent_dev_build, runnable_binding_declined,
+runnable_binding_decline_invalid, runnable_operations_unreadable,
 configuration_directory_missing, configuration_missing,
 configuration_invalid, configuration_duplicate, provider_not_configured,
 provider_executable_missing, provider_authentication_required,
@@ -3696,6 +3703,14 @@ Requires the gh CLI to be authenticated.
 
 Module-agent repos run source/build/audit CI and publish the immutable Git tag
 their module package is built from; they do not publish service-loader assets.
+A module agent's release carries its version everywhere the module states one:
+the release commit also sets the top-level version: of every service.codefly.yaml
+the repository's workspace composes (the value Codefly hands each service as
+CODEFLY__SERVICE_VERSION) and of each module.package.codefly.yaml, and
+regenerates each packageable module's API catalog and derived runnables at that
+version through the generators. The workspace is read without the machine-local
+codefly.local.yaml, and a pinned module reference is skipped. A manifest already
+past the release version is refused: a release never moves a version backwards.
 
 Running from CI (--ci, on by default when CI=true): the runner has no git
 identity and no signing key, so the release commit and tag are made as the
@@ -4000,16 +4015,15 @@ Run the composition on the local k3d cluster through the signed delivery a cell 
 
 ```
 Run the composition on the environment's local k3d cluster, through the same
-delivery a cell receives (docs/solution-host-bindings.md, "Local runs"):
+delivery a cell receives (docs/module-manifests.md, "Local runs"):
 
-  1. Argo CD and the SPIFFE workload issuer (installed if absent), the platform-authority
-     namespace with its delivery ServiceAccount, the modules' namespaces, and
+  1. Argo CD (installed if absent), the modules' namespaces, and
      the local host's trust anchor (one public-key verification policy admitting
      this machine's key when host.developers lists it, bound to this cluster's
      CA; re-written, and the host restarted, when the cluster is recreated);
   2. for each module (every composed module when none is named): build and
-     push its images, render its tree with its presence and authority
-     documents, sign them as you (a developer the environment's
+     push its images, render its tree with its module manifest, sign it as
+     you (a developer the environment's
      host.developers lists — using this machine's delivery key), and
      promote it locally;
   3. the latest promotion served to the cluster's Argo CD, each module's Argo
@@ -4017,10 +4031,10 @@ delivery a cell receives (docs/solution-host-bindings.md, "Local runs"):
 
 The environment must declare a k3d cluster (kind and context), a host,
 host.developers, and host.trust_anchor (the path the host reads its trust
-anchor from). Services declaring workload-identity also require host.gateway
-(<module>/<service>); their SVIDs and peer files are projected by the render.
+anchor from). Transport identity is the cell's mesh (a workload's ServiceAccount
+is its principal): no SVID or peer file is issued or projected.
 Stopping a run is not removal: withdrawing a binding is a
-published tombstone.
+published withdrawal (the manifest with removed: true).
 ```
 
 ```
@@ -4191,12 +4205,15 @@ Flags:
       --fixture string                            Fixture override (defaults to the selected Codefly environment)
       --headless                                  Run without TUI (auto-enabled when no TTY, e.g. MCP, CI, pipes)
       --naming-scope string                       Runtime naming scope: fold a scope into port derivation for a disjoint port set (parallel runs / test encapsulation)
+      --output-env string                         Write one service's full SDK/runtime environment to an owner-only file
+      --output-env-service string                 Service whose runtime environment to export (module/service; defaults to the first composition root)
       --profile string                            Named workspace run profile
       --readiness-timeout duration                Maximum time to wait for the flow to become ready (default 10m0s)
       --runtime-context string                    Runtime context for the flow (native/container/nix/free) (default "free")
       --set strings                               Per-service runtime env override (repeatable)
       --silent strings                            Silence services in CLI output
       --start-docker                              Auto-start a local Docker engine if a service needs Docker and it isn't running (default true)
+      --temporary-ports show network              Run this flow as a disposable invocation: OS-probed ephemeral ports plus a generated naming scope isolating its agents, containers and runtime state (advanced; not previewable via show network). The Codefly SDK sets it for test-owned dependency stacks. Passing --naming-scope wins, and passing it empty asks for no scope at all
 ```
 
 ## `codefly sbom`

@@ -51,6 +51,40 @@ Producers must supply:
   the identity webhook keys off a label. Unknown keys in either block are refused
   rather than dropped: a mistyped `services` would otherwise leave a valid
   `default` standing and silently collapse every override onto it.
+- Any labels the cell needs on a service's Service under `service-mesh`, keyed
+  `<module>/<service>`: today the waypoint attachment that puts the cell's
+  protected waypoint in front of a presenter. The values are the cell's
+  convention, so the render carries them verbatim and derives none of them:
+
+  ```yaml
+  service-mesh:
+    services:
+      shop/gateway:
+        labels:
+          istio.io/use-waypoint: <namespace>-waypoint
+          istio.io/use-waypoint-namespace: istio-waypoint
+  ```
+
+  The render stamps them as `metadata.labels` on that service's Service, as a
+  patch in the unit's environment overlay, and on no other Service: a Service
+  is the finest attachment there is, so every port of an attached Service goes
+  behind the waypoint's L7 hop. An entry is refused, naming the service, unless
+  the service declares a presenter endpoint under `cell:`; a service the
+  workspace does not have, an unknown key, a `codefly.dev/` label and a label
+  the rendered Service already carries are refused too.
+- Where every workload exports operational telemetry, under `telemetry`: the
+  OTLP intake the cell's infrastructure provides, resolved by the producer like
+  every other address, as an `https://` (or, declared `insecure`, `http://`) URL:
+
+  ```yaml
+  telemetry:
+    otlp-endpoint: https://otel.internal.ops.example:443
+  ```
+
+  The CLI delivers it to every service it runs or renders as
+  `OTEL_EXPORTER_OTLP_ENDPOINT`, with `OTEL_SERVICE_NAME` and
+  `OTEL_RESOURCE_ATTRIBUTES` (`codefly run`, `docs/commands.md`: "Where a
+  service's telemetry goes"). No module declares a configuration group for it.
 - Any application secret mappings through the existing `service-secrets` model.
 - Any resolved non-secret values through `service-config`, keyed by consuming
   service and then by the exact key the service reads. The producer resolves the
@@ -80,6 +114,51 @@ identity on a managed service uses
 `requires_capabilities: ["managed-service-identity"]`; one declaring a consuming
 service's own identity uses `["service-identity"]`.
 Proxy containers, image choices and loopback routing are not part of this contract.
+
+## Module-owned keys
+
+A few keys on an environment belong to a **module agent**, not to the CLI. The
+CLI admits them, preserves them on load and save, and hands them verbatim to the
+module bundle generator in the workspace it stages for it; it never interprets
+them, never validates their values (the agent does, and refuses an unsupported
+one by name), and never sends them to a service agent: `Runtime()` projects
+none of them.
+
+| Block | Key | Meaning (the module agent's) |
+| --- | --- | --- |
+| environment | `key-service` | Which key service holds this environment's keys, in the `key-service` configuration group's `KEY_SERVICE_BACKEND` vocabulary. A module reads it to decide whether it composes a secrets store here at all. |
+| `managed-services.<svc>` | `auth-mode` | `password` (a connection secret through `secret-references`) or `external-identity` (the workload authenticates as its own identity). |
+| `managed-services.<svc>` | `egress-namespace` | For an in-cluster managed dependency, the namespace the caller's egress policy selects on. |
+| `managed-services.<svc>` | `instance-connection-name` | The `project:region:instance` coordinate a Cloud SQL instance is addressed by, which is not a DNS name. |
+
+```yaml
+environments:
+  - name: staging
+    key-service: kms
+    managed-services:
+      shop/store:
+        kind: cloud-sql-postgres
+        external-name: 127.0.0.1
+        port: 5432
+        auth-mode: external-identity
+        instance-connection-name: project:us-east1:store
+```
+
+The list is closed (`environments.CarriedEnvironmentKeys`,
+`environments.CarriedManagedServiceKeys`): every other key in either block is
+still refused by name at workspace load, so `key-servce` fails exactly as a
+mistyped CLI field does, and a module-owned key written on the wrong block is
+refused too. Admitting a new one is one entry in that list. A key written
+with no value is carried as null, which a module agent may read as unstated;
+refusing it is the agent's, as for any other value. Because the keys
+load, a declaration on one deployed environment no longer fails the whole
+workspace — including the local environment a `codefly run` selects.
+
+A module-owned key only reaches a module that renders its own bundle (a module
+whose `module.codefly.yaml` names a module agent). It does not change the
+service set the CLI itself renders for a module composed by version: that
+projection has no per-environment notion of an excluded service
+(codefly-dev/cli#1022).
 
 ## Configuration and secret injection
 

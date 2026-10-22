@@ -19,6 +19,10 @@ import (
 const (
 	// IndexSchema versions the derived-operation index.
 	IndexSchema = "codefly/runnable-operations/v1"
+	// RunnableBindingsGroup is the workspace-configuration group a service
+	// declares to receive the bindings a composition prepared, and so the
+	// declaration that says it calls the owners those bindings name.
+	RunnableBindingsGroup = "runnable-bindings"
 	// IndexFileName is the index a composition reads to prepare bindings.
 	IndexFileName = "index.json"
 	// PackageFileName is the canonical package one derived operation carries.

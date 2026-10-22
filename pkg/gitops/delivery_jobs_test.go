@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codefly-dev/core/solutionhost"
 	"gopkg.in/yaml.v3"
 )
 
@@ -28,15 +29,15 @@ func testDeliveryTarget() *DeliveryTarget {
 // succeed later and fails on the host's verdicts.
 func TestDeliveryJobIsASyncHookThatPostsEveryCarrier(t *testing.T) {
 	directory := t.TempDir()
-	file, err := renderDeliveryJob(directory, deliveryJobName(deliveryPresence, "crm", "prod", [][]byte{[]byte("carrier")}), "crm", deliveryServiceAccount,
-		deliveryPresence, presenceDeliveryPath, testDeliveryTarget(), []deliveryDocument{
-			{ConfigMap: "solution-host-binding-example.prod.crm", Key: presenceCarrierKey, Name: "example.prod.crm.json"},
-			{ConfigMap: "solution-host-binding-example.prod.billing", Key: presenceCarrierKey, Name: "example.prod.billing.json"},
+	file, err := renderDeliveryJob(directory, deliveryJobName(deliveryManifest, "crm", "prod", [][]byte{[]byte("carrier")}), "crm",
+		deliveryManifest, manifestDeliveryPath, testDeliveryTarget(), []deliveryDocument{
+			{ConfigMap: "module-manifest-example.prod.crm", Key: solutionhost.SignedFileName, Name: "example.prod.crm.json"},
+			{ConfigMap: "module-manifest-example.prod.billing", Key: solutionhost.SignedFileName, Name: "example.prod.billing.json"},
 		})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if file != "deliver-presence.yaml" {
+	if file != "deliver-manifest.yaml" {
 		t.Fatalf("job file %q", file)
 	}
 	data, err := os.ReadFile(filepath.Join(directory, file))
@@ -50,13 +51,13 @@ func TestDeliveryJobIsASyncHookThatPostsEveryCarrier(t *testing.T) {
 	// Named per settled set: the kind, the module, the environment and a
 	// digest of the carriers, so a changed set is a new Job and two
 	// environments of one workspace never replace each other's.
-	if job.APIVersion != "batch/v1" || job.Kind != kindJob || job.Metadata.Namespace != "crm" || !strings.HasPrefix(job.Metadata.Name, "deliver-presence-crm-prod-") || len(job.Metadata.Name) != len("deliver-presence-crm-prod-")+10 {
+	if job.APIVersion != "batch/v1" || job.Kind != kindJob || job.Metadata.Namespace != "crm" || !strings.HasPrefix(job.Metadata.Name, "deliver-manifest-crm-prod-") || len(job.Metadata.Name) != len("deliver-manifest-crm-prod-")+10 {
 		t.Fatalf("job identity %+v", job.Metadata)
 	}
-	if other := deliveryJobName(deliveryPresence, "crm", "prod", [][]byte{[]byte("another carrier")}); other == job.Metadata.Name {
+	if other := deliveryJobName(deliveryManifest, "crm", "prod", [][]byte{[]byte("another carrier")}); other == job.Metadata.Name {
 		t.Fatalf("a changed set must be a new Job, got %q twice", other)
 	}
-	if staging := deliveryJobName(deliveryPresence, "crm", "staging", [][]byte{[]byte("carrier")}); staging == job.Metadata.Name {
+	if staging := deliveryJobName(deliveryManifest, "crm", "staging", [][]byte{[]byte("carrier")}); staging == job.Metadata.Name {
 		t.Fatalf("two environments must not share a Job name, got %q twice", staging)
 	}
 	for key, want := range map[string]string{
@@ -77,7 +78,7 @@ func TestDeliveryJobIsASyncHookThatPostsEveryCarrier(t *testing.T) {
 	for _, entry := range spec.Containers[0].Env {
 		env[entry.Name] = entry.Value
 	}
-	if env["DELIVERY_URL"] != "https://accounts.platform.svc.cluster.local:8443" || env["DELIVERY_PATH"] != presenceDeliveryPath {
+	if env["DELIVERY_URL"] != "https://accounts.platform.svc.cluster.local:8443" || env["DELIVERY_PATH"] != "/platform/_delivery/manifest" {
 		t.Fatalf("delivery env %v", env)
 	}
 	// The script's budget is the manifest's, inside the Job's deadline with a
@@ -114,8 +115,8 @@ func TestDeliveryJobIsASyncHookThatPostsEveryCarrier(t *testing.T) {
 	encoded := string(data)
 	for _, want := range []string{
 		"audience: accounts", "expirationSeconds: 600", "path: token",
-		"name: solution-host-binding-example.prod.billing", "path: example.prod.billing.json",
-		"name: solution-host-binding-example.prod.crm", "key: " + presenceCarrierKey,
+		"name: module-manifest-example.prod.billing", "path: example.prod.billing.json",
+		"name: module-manifest-example.prod.crm", "key: " + solutionhost.SignedFileName,
 	} {
 		if !strings.Contains(encoded, want) {
 			t.Fatalf("job lacks %q:\n%s", want, encoded)
@@ -130,11 +131,11 @@ func TestDeliveryJobIsASyncHookThatPostsEveryCarrier(t *testing.T) {
 
 func TestDeliveryJobRefusesWithoutATargetOrADocument(t *testing.T) {
 	directory := t.TempDir()
-	if _, err := renderDeliveryJob(directory, "deliver", "crm", deliveryServiceAccount, deliveryPresence, presenceDeliveryPath, nil,
-		[]deliveryDocument{{ConfigMap: "a", Key: presenceCarrierKey, Name: "a.json"}}); err == nil || !strings.Contains(err.Error(), "no delivery endpoint") {
+	if _, err := renderDeliveryJob(directory, "deliver", "crm", deliveryManifest, manifestDeliveryPath, nil,
+		[]deliveryDocument{{ConfigMap: "a", Key: solutionhost.SignedFileName, Name: "a.json"}}); err == nil || !strings.Contains(err.Error(), "no delivery endpoint") {
 		t.Fatalf("a missing target was not refused: %v", err)
 	}
-	if _, err := renderDeliveryJob(directory, "deliver", "crm", deliveryServiceAccount, deliveryAuthority, authorityDeliveryPath, testDeliveryTarget(), nil); err == nil || !strings.Contains(err.Error(), "no authority document") {
+	if _, err := renderDeliveryJob(directory, "deliver", "crm", deliveryManifest, manifestDeliveryPath, testDeliveryTarget(), nil); err == nil || !strings.Contains(err.Error(), "no manifest document") {
 		t.Fatalf("an empty document list was not refused: %v", err)
 	}
 }
@@ -198,8 +199,23 @@ func TestDeliveryScriptAttemptsEveryDocumentEveryRound(t *testing.T) {
 	if err := os.WriteFile(identity, []byte("t"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The script's clock is date and sleep; a logical one makes the rounds it
+	// fits in its budget independent of how loaded the machine running it is.
+	clock := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(clock, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"date":  "#!/bin/sh\ncat \"$(dirname \"$0\")/now\"\n",
+		"sleep": "#!/bin/sh\nnow=\"$(dirname \"$0\")/now\"\necho $(($(cat \"$now\") + $1)) > \"$now\"\n",
+		"now":   "0\n",
+	} {
+		if err := os.WriteFile(filepath.Join(clock, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	cmd := exec.Command("/bin/sh", "-ec", deliveryScript)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(os.Environ(), "PATH="+clock+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"DELIVERY_URL="+server.URL, "DELIVERY_PATH=/deliver", "DELIVERY_DOCUMENTS="+documents, "DELIVERY_IDENTITY_FILE="+identity,
 		"DELIVERY_BUDGET_SECONDS=3", "DELIVERY_REQUEST_SECONDS=1", "DELIVERY_MAX_PAUSE_SECONDS=1")
 	out, err := cmd.CombinedOutput()
@@ -292,11 +308,11 @@ func TestDeliveryJobRefusesASetPastItsBound(t *testing.T) {
 	for i := range documents {
 		documents[i] = deliveryDocument{ConfigMap: fmt.Sprintf("doc-%d", i), Key: "carrier", Name: fmt.Sprintf("doc-%d.json", i)}
 	}
-	_, err := renderDeliveryJob(t.TempDir(), "deliver", "crm", deliveryServiceAccount, deliveryPresence, presenceDeliveryPath, testDeliveryTarget(), documents)
+	_, err := renderDeliveryJob(t.TempDir(), "deliver", "crm", deliveryManifest, manifestDeliveryPath, testDeliveryTarget(), documents)
 	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("attempts at most %d", deliveryDocumentBound)) {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := renderDeliveryJob(t.TempDir(), "deliver", "crm", deliveryServiceAccount, deliveryPresence, presenceDeliveryPath, testDeliveryTarget(), documents[:deliveryDocumentBound]); err != nil {
+	if _, err := renderDeliveryJob(t.TempDir(), "deliver", "crm", deliveryManifest, manifestDeliveryPath, testDeliveryTarget(), documents[:deliveryDocumentBound]); err != nil {
 		t.Fatal(err)
 	}
 }

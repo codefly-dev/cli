@@ -221,10 +221,7 @@ func replacePublishedInputPath(inputs []RuntimeFile, from, to string) error {
 // output bytes; its digest-derived tag also survives deletion of untagged
 // manifests. Consumers never resolve this tag to choose their runtime bytes.
 func retainPublishedOutputs(ctx context.Context, repository *remote.Repository, outputs []derivedPublication, staged *StagedBuild) (string, error) {
-	empty := []byte("{}")
-	config := ocispec.Descriptor{MediaType: ocispec.MediaTypeEmptyJSON, Digest: digest.FromBytes(empty), Size: int64(len(empty))}
-	manifest := ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageManifest, ArtifactType: "application/vnd.codefly.build-outputs.v1", Config: config,
-		Annotations: map[string]string{"dev.codefly.selection": staged.SelectionIdentity, "dev.codefly.build": staged.Identity}}
+	layers := make([]ocispec.Descriptor, 0, len(outputs))
 	for _, output := range outputs {
 		file, err := openInputFile(ctx, output.directory, output.name)
 		if err != nil {
@@ -234,8 +231,19 @@ func retainPublishedOutputs(ctx context.Context, repository *remote.Repository, 
 		if err = errors.Join(err, file.Close()); err != nil {
 			return "", err
 		}
-		manifest.Layers = append(manifest.Layers, ocispec.Descriptor{MediaType: output.artifact.MediaType, Digest: digest.Digest(output.artifact.Digest), Size: info.Size()})
+		layers = append(layers, ocispec.Descriptor{MediaType: output.artifact.MediaType, Digest: digest.Digest(output.artifact.Digest), Size: info.Size()})
 	}
+	return retainLayers(ctx, repository, "application/vnd.codefly.build-outputs.v1",
+		map[string]string{"dev.codefly.selection": staged.SelectionIdentity, "dev.codefly.build": staged.Identity}, layers)
+}
+
+// retainLayers roots already-pushed blobs in an OCI manifest tagged by its own
+// digest, and reads the manifest back: the GC root a digest-only blob lacks.
+func retainLayers(ctx context.Context, repository *remote.Repository, artifactType string, annotations map[string]string, layers []ocispec.Descriptor) (string, error) {
+	empty := []byte("{}")
+	config := ocispec.Descriptor{MediaType: ocispec.MediaTypeEmptyJSON, Digest: digest.FromBytes(empty), Size: int64(len(empty))}
+	manifest := ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageManifest, ArtifactType: artifactType, Config: config,
+		Annotations: annotations, Layers: layers}
 	encoded, err := json.Marshal(manifest)
 	if err != nil {
 		return "", err

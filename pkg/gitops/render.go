@@ -7,7 +7,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"net/url"
@@ -108,27 +110,28 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	if err != nil {
 		return RenderResult{}, err
 	}
-	// Declared presence, before anything validates or measures the tree: the
-	// binding pins the digest of every rendered artifact, so it is written once
-	// the artifacts are final, and it is written BEFORE validateTree so the
-	// ConfigMaps that carry it are held to the same promotable ruleset as the
-	// rest of the tree, and before buildInventory so they are hashed into the
-	// render digest like any other delivered file.
-	// Before presence digests the units: the projections are part of what
-	// runs, so they are part of the bytes the document pins.
+	// The workload credential is projected into each identity workload's
+	// declared container, and the module manifest written, BEFORE validateTree
+	// so the ConfigMap that carries it is held to the same promotable ruleset
+	// as the rest of the tree, and before buildInventory so both are hashed
+	// into the render digest like any other delivered file.
 	if err = projectWorkloadIdentity(tree, owned, opts); err != nil {
 		return RenderResult{}, err
 	}
-	bindings, err := renderSolutionHostBindings(owned, destination, opts)
+	if err = projectServiceMesh(tree, owned, opts); err != nil {
+		return RenderResult{}, err
+	}
+	// Before the manifest and the validation read the tree: a Job or CronJob
+	// an agent rendered without pod labels is given the two that name it,
+	// so every pod-producing workload is one the cell file can select.
+	if err = labelPodTemplates(ctx, owned); err != nil {
+		return RenderResult{}, err
+	}
+	declared, err := renderModuleManifest(owned, destination, opts)
 	if err != nil {
 		return RenderResult{}, err
 	}
-	opts.SolutionHostBindingPath = deliveredBindingPath(bindings)
-	authorities, err := renderAuthorityDocuments(owned, opts)
-	if err != nil {
-		return RenderResult{}, err
-	}
-	opts.SolutionAuthorityPath = deliveredAuthorityPath(authorities)
+	opts.ModuleManifestPath = deliveredManifestPath(declared)
 	manifests, err := validateTree(owned, opts)
 	if err != nil {
 		return RenderResult{}, err
@@ -173,9 +176,7 @@ func RenderOwnedTree(ctx context.Context, opts *RenderOptions, generate func(con
 	return RenderResult{
 		Path: destination, Inventory: inventory, Sizing: sizing,
 		ElidedNamespaces: elided, ClearedDev: cleared,
-		SolutionHostBindings: bindings,
-		UndeclaredPresence:   opts.UndeclaredPresence,
-		SolutionAuthorities:  authorities, UndeclaredAuthority: opts.UndeclaredAuthority,
+		ModuleManifest: declared, UndeclaredManifest: opts.UndeclaredManifest,
 	}, nil
 }
 
@@ -198,13 +199,20 @@ func loadInventory(directory, label string) (Inventory, error) {
 // refreshes the one module path it is republishing — every sibling module's
 // working-tree copy can be stale relative to the base branch — so it needs
 // the exact same canonical/schema validation without going through a path.
+// ErrUnsupportedInventorySchema is an inventory written at another schema
+// version: a tree rendered by another CLI, which this one cannot read and must
+// not vouch for. A reader that walks sibling trees reports such a tree as one
+// to render again rather than refusing to proceed, so a schema move converges
+// module by module instead of deadlocking on every sibling at once.
+var ErrUnsupportedInventorySchema = errors.New("unsupported render inventory schema")
+
 func decodeInventory(data []byte, label string) (Inventory, error) {
 	var inventory Inventory
 	if err := json.Unmarshal(data, &inventory); err != nil {
 		return Inventory{}, fmt.Errorf("decode %s inventory: %w", label, err)
 	}
 	if inventory.SchemaVersion != SchemaVersion {
-		return Inventory{}, fmt.Errorf("unsupported %s inventory schema %d", label, inventory.SchemaVersion)
+		return Inventory{}, fmt.Errorf("%w: %s inventory schema %d (this CLI reads %d)", ErrUnsupportedInventorySchema, label, inventory.SchemaVersion, SchemaVersion)
 	}
 	canonical, err := json.MarshalIndent(inventory, "", "  ")
 	if err != nil {
@@ -242,14 +250,15 @@ func ValidateRenderedTree(root, project string, promotable bool) error {
 	}
 	opts := &RenderOptions{
 		Module: inventory.Module, Unit: inventory.Unit,
-		renderRoot:              tree,
-		SolutionHostBindingPath: inventory.SolutionHostBindingPath, SolutionAuthorityPath: inventory.SolutionAuthorityPath,
-		OwnedPath: inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
+		renderRoot:         tree,
+		ModuleManifestPath: inventory.ModuleManifestPath,
+		OwnedPath:          inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
 		Environment: inventory.Environment, Namespace: inventory.Namespace,
-		AppProject: project, Promotable: promotable, Package: inventory.Package,
+		AppProject: project, Promotable: promotable, Package: inventory.Package, Pin: inventory.Pin,
 		CheckUnitDirectories: inventory.Unit == "",
 	}
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Path != "" {
 			opts.UnitNames = append(opts.UnitNames, unit.Name)
 		}
@@ -286,13 +295,12 @@ func ValidateServiceSnapshot(root string) error {
 	allowed := map[string]struct{}{InventoryFilename: {}, moduleBundleDir: {}}
 	// The delivery overlays the inventory records are part of the snapshot:
 	// the Applications that deliver them read the snapshot revision.
-	for _, path := range []string{inventory.SolutionHostBindingPath, inventory.SolutionAuthorityPath} {
-		if path != "" {
-			allowed[path] = struct{}{}
-		}
+	if inventory.ModuleManifestPath != "" {
+		allowed[inventory.ModuleManifestPath] = struct{}{}
 	}
 	rendered := renderedUnits(&inventory)
-	for _, unit := range rendered {
+	for idx := range rendered {
+		unit := &rendered[idx]
 		directory, ok := unitDirectory(unit.Kind)
 		if !ok {
 			return fmt.Errorf("service snapshot unit %s has unknown kind %q", unit.Name, unit.Kind)
@@ -315,16 +323,17 @@ func ValidateServiceSnapshot(root string) error {
 		return err
 	}
 	names := make([]string, 0, len(rendered))
-	for _, unit := range rendered {
+	for idx := range rendered {
+		unit := &rendered[idx]
 		names = append(names, unit.Name)
 	}
 	opts := &RenderOptions{
 		Module: inventory.Module, UnitNames: names,
-		renderRoot:              tree,
-		SolutionHostBindingPath: inventory.SolutionHostBindingPath, SolutionAuthorityPath: inventory.SolutionAuthorityPath,
-		OwnedPath: inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
+		renderRoot:         tree,
+		ModuleManifestPath: inventory.ModuleManifestPath,
+		OwnedPath:          inventory.OwnedPath, ModulePath: inventory.ModulePath, Units: inventory.Units,
 		Environment: inventory.Environment, Namespace: inventory.Namespace,
-		AppProject: inventory.AppProject, Promotable: true, Package: inventory.Package,
+		AppProject: inventory.AppProject, Promotable: true, Package: inventory.Package, Pin: inventory.Pin,
 	}
 	// Validate the applied graph with its original root. A service may import
 	// shared inputs outside its own directory, and independently applied units
@@ -341,9 +350,10 @@ func ValidateServiceSnapshot(root string) error {
 
 func renderedUnits(inventory *Inventory) []InventoryUnit {
 	rendered := make([]InventoryUnit, 0, len(inventory.Units))
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Path != "" {
-			rendered = append(rendered, unit)
+			rendered = append(rendered, *unit)
 		}
 	}
 	return rendered
@@ -354,12 +364,11 @@ func validateSnapshotCoverage(inventory *Inventory) error {
 	if inventory.ModulePath != "" {
 		covered[inventory.ModulePath] = false
 	}
-	for _, path := range []string{inventory.SolutionHostBindingPath, inventory.SolutionAuthorityPath} {
-		if path != "" {
-			covered[path] = false
-		}
+	if inventory.ModuleManifestPath != "" {
+		covered[inventory.ModuleManifestPath] = false
 	}
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Path != "" {
 			covered[unit.Path] = false
 		}
@@ -395,11 +404,12 @@ func validateInventoryUnits(inventory *Inventory) error {
 		return nil
 	}
 	previous := ""
-	for _, unit := range inventory.Units {
+	for idx := range inventory.Units {
+		unit := &inventory.Units[idx]
 		if unit.Name == "" || unit.Module != inventory.Module {
 			return fmt.Errorf("render inventory contains invalid unit graph entry %q/%q", unit.Module, unit.Name)
 		}
-		if err := validateInventoryContracts(&unit); err != nil {
+		if err := validateInventoryContracts(unit); err != nil {
 			return err
 		}
 		directory, ok := unitDirectory(unit.Kind)
@@ -595,9 +605,6 @@ func validateTree(root string, opts *RenderOptions) ([]manifest, error) {
 	if err = validateObjectIdentities(effective, opts.Namespace); err != nil {
 		return nil, err
 	}
-	if err = validateWorkloadIdentityChecks(effective, opts.workloadIdentityChecks); err != nil {
-		return nil, err
-	}
 	return effective, nil
 }
 
@@ -637,7 +644,8 @@ func validateRenderDirectories(tree *renderRoot, root string, opts *RenderOption
 
 func validateUnitDirectoriesInTree(tree *renderRoot, root string, units []InventoryUnit, environment string) error {
 	byDirectory := make(map[string]map[string]struct{})
-	for _, unit := range units {
+	for idx := range units {
+		unit := &units[idx]
 		directory, ok := unitDirectory(unit.Kind)
 		if !ok {
 			return fmt.Errorf("rendered unit %s has unknown kind %q", unit.Name, unit.Kind)
@@ -1071,7 +1079,7 @@ func onlyExternalSecrets(manifests []manifest) bool {
 func externalSecretTemplateDataPath(path []string) bool {
 	return len(path) == 5 &&
 		path[0] == "spec" &&
-		path[1] == "target" &&
+		path[1] == keyPatchTarget &&
 		path[2] == "template" &&
 		path[3] == dataKey
 }
@@ -1135,9 +1143,7 @@ func validateApplicationSet(item manifest, contract *projectContract) error {
 		switch project {
 		case contract.name:
 		case "{{ .project }}":
-			// Stamped per component: every element names the selected project,
-			// or the authority project — and that one only into the authority
-			// namespace, which is the whole reason it is a separate project.
+			// Stamped per component: every element names the selected project.
 			if err := validateComponentProjects(spec, contract.name); err != nil {
 				return err
 			}
@@ -1149,10 +1155,8 @@ func validateApplicationSet(item manifest, contract *projectContract) error {
 }
 
 // validateComponentProjects walks the list generators' elements of a bootstrap
-// ApplicationSet and holds each component's project and namespace to the two
-// projects a module may stamp.
+// ApplicationSet and holds each component to the selected project.
 func validateComponentProjects(spec map[string]any, selected string) error {
-	authority := argoAuthorityProjectName(selected)
 	var walk func(value any) error
 	walk = func(value any) error {
 		switch typed := value.(type) {
@@ -1180,25 +1184,8 @@ func validateComponentProjects(spec map[string]any, selected string) error {
 					if component == "" || overlay == "" || project == "" || namespace == "" {
 						return fmt.Errorf("ApplicationSet component %q (overlay %q, project %q, namespace %q) lacks a component, overlay, project or namespace, or carries one that is not a string; every stamped Application needs all four", component, overlay, project, namespace)
 					}
-					// The authority overlay, the authority project and the
-					// authority namespace name each other: a component under
-					// the module's project may not point at the overlay, and
-					// one under the authority project may point at nothing else.
-					underAuthority := strings.Contains("/"+overlay+"/", "/"+solutionAuthorityDir+"/")
-					switch project {
-					case selected:
-						if underAuthority {
-							return fmt.Errorf("ApplicationSet component %q points at the authority overlay %s but is stamped under the module project %q; the authority overlay is delivered under %q only", component, overlay, selected, authority)
-						}
-					case authority:
-						if namespace != authorityNamespace {
-							return fmt.Errorf("ApplicationSet component %q is stamped under the authority project into namespace %q; that project reaches %s only", component, namespace, authorityNamespace)
-						}
-						if !underAuthority {
-							return fmt.Errorf("ApplicationSet component %q is stamped under the authority project %q but points at %s, which is not the authority overlay; that project delivers the authority overlay only", component, authority, overlay)
-						}
-					default:
-						return fmt.Errorf("ApplicationSet component %q is stamped under project %q, which is neither the selected AppProject %q nor its authority project", element["component"], project, selected)
+					if project != selected {
+						return fmt.Errorf("ApplicationSet component %q is stamped under project %q, which is not the selected AppProject %q", component, project, selected)
 					}
 				}
 			}
@@ -1227,7 +1214,7 @@ func inspectTemplatedValue(value any, path []string) error {
 	case map[string]any:
 		for key, child := range typed {
 			next := extendPath(path, key)
-			if isCredentialKey(key, isConfigurationDataPath(path)) && scalarHasValue(child) && !workloadIdentityPath(key, child) {
+			if isCredentialKey(key, isConfigurationDataPath(path)) && scalarHasValue(child) {
 				return fmt.Errorf("%s contains credential value", strings.Join(next, "."))
 			}
 			if err := inspectTemplatedValue(child, next); err != nil {
@@ -1297,12 +1284,12 @@ func inspectValueAllowingExpressions(
 	}
 	switch typed := value.(type) {
 	case map[string]any:
-		if name, ok := typed["name"].(string); ok && isCredentialKey(name, true) && scalarHasValue(typed["value"]) && !workloadIdentityPath(name, typed["value"]) {
+		if name, ok := typed["name"].(string); ok && isCredentialKey(name, true) && scalarHasValue(typed["value"]) {
 			return fmt.Errorf("%s.value contains credential value", strings.Join(path, "."))
 		}
 		for key, child := range typed {
 			next := extendPath(path, key)
-			if isCredentialKey(key, isConfigurationDataPath(path)) && scalarHasValue(child) && !workloadIdentityPath(key, child) &&
+			if isCredentialKey(key, isConfigurationDataPath(path)) && scalarHasValue(child) &&
 				(allowCredentialReference == nil || !allowCredentialReference(next)) && !expressionAt(next, child) {
 				return fmt.Errorf("%s contains credential value", strings.Join(next, "."))
 			}
@@ -1429,15 +1416,26 @@ var manifestFieldNormalizer = strings.NewReplacer("-", "", "_", "", ".", "")
 // Every key, configuration name or schema field, is also checked against the
 // camelCase field fragments above, and any key mentioning a token defers to
 // core, which keeps every TOKEN sensitive except a whole-word TOKENS count.
+//
+// A codefly configuration carrier is scanned on its configuration KEY alone,
+// read by core's one parser of a carrier (resources.ConfigurationCarrierKey):
+// the module, service and configuration-name segments in front of it are
+// structure, so a group called credential-policy or client-secret-policy
+// does not make its CLIENT_ID a credential, exactly as core classifies it.
+// Anything that is not a carrier is scanned whole, as before.
 func isCredentialKey(key string, configurationName bool) bool {
 	classify := resources.IsSensitiveKey
+	scanned := key
 	if configurationName {
 		classify = resources.IsSensitiveEnvironmentVariable
 		if classify(key) {
 			return true
 		}
+		if configurationKey, ok := resources.ConfigurationCarrierKey(key); ok {
+			scanned = configurationKey
+		}
 	}
-	normalized := strings.ToLower(manifestFieldNormalizer.Replace(key))
+	normalized := strings.ToLower(manifestFieldNormalizer.Replace(scanned))
 	for _, fragment := range manifestFieldCredentialFragments {
 		if strings.Contains(normalized, fragment) {
 			return true
@@ -1495,13 +1493,13 @@ func inventoryHead(opts *RenderOptions) Inventory {
 		SchemaVersion: SchemaVersion,
 		Module:        opts.Module, Unit: opts.Unit, Environment: opts.Environment,
 		Namespace: opts.Namespace, AppProject: opts.AppProject, OwnedPath: filepath.ToSlash(opts.OwnedPath),
-		ModulePath: filepath.ToSlash(opts.ModulePath), Package: opts.Package,
-		SolutionHostBindingPath: filepath.ToSlash(opts.SolutionHostBindingPath),
-		HostsDelivery:           opts.HostsDelivery || hostsDeliveryAPI(opts),
-		SolutionAuthorityPath:   filepath.ToSlash(opts.SolutionAuthorityPath),
-		Units:                   append([]InventoryUnit(nil), opts.Units...),
+		ModulePath: filepath.ToSlash(opts.ModulePath), Package: opts.Package, Pin: opts.Pin,
+		ModuleManifestPath: filepath.ToSlash(opts.ModuleManifestPath),
+		HostsDelivery:      opts.HostsDelivery || hostsDeliveryAPI(opts),
+		Units:              append([]InventoryUnit(nil), opts.Units...),
 	}
 	inventory.Delivery = opts.Delivered
+	inventory.MeshEdges = opts.MeshEdges
 	if len(opts.WorkspaceConfigurationDigests) > 0 {
 		inventory.WorkspaceConfigurationDigests = make(map[string]string, len(opts.WorkspaceConfigurationDigests))
 		for group, digest := range opts.WorkspaceConfigurationDigests {
@@ -1553,11 +1551,46 @@ func buildInventory(root string, opts *RenderOptions) (Inventory, error) {
 		return Inventory{}, err
 	}
 	sort.Slice(inventory.Files, func(i, j int) bool { return inventory.Files[i].Path < inventory.Files[j].Path })
-	for _, file := range inventory.Files {
+	inventory.Digest = inventoryDigest(hash, inventory.Files)
+	return inventory, nil
+}
+
+// inventoryDigest is the render digest: one line per file, in path order.
+func inventoryDigest(hash hash.Hash, files []InventoryFile) string {
+	for _, file := range files {
 		fmt.Fprintf(hash, "%s\x00%s\x00%d\n", file.Path, file.SHA256, file.Size)
 	}
-	inventory.Digest = "sha256:" + hex.EncodeToString(hash.Sum(nil))
-	return inventory, nil
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil))
+}
+
+// filesOutside is the inventory's files that are not under directory.
+func filesOutside(files []InventoryFile, directory string) []InventoryFile {
+	if directory == "" {
+		return files
+	}
+	kept := make([]InventoryFile, 0, len(files))
+	for _, file := range files {
+		if file.Path == directory || strings.HasPrefix(file.Path, directory+"/") {
+			continue
+		}
+		kept = append(kept, file)
+	}
+	return kept
+}
+
+// validateInventoryOutside validates the tree against its inventory with one
+// directory left out of the comparison on both sides: the delivery overlay,
+// which publish owns and settles after a render (the signed manifest, its
+// delivery Job, the kustomization that lists them). A render records the
+// overlay as it provisionally wrote it; publish replaces it and the branch
+// carries publish's version, so a tree is "edited since its render" only
+// when a file the render owns moved.
+func validateInventoryOutside(inventory, actual *Inventory, directory, label string) error {
+	recorded := Inventory{Files: filesOutside(inventory.Files, directory)}
+	recorded.Digest = inventoryDigest(sha256.New(), recorded.Files)
+	measured := Inventory{Files: filesOutside(actual.Files, directory)}
+	measured.Digest = inventoryDigest(sha256.New(), measured.Files)
+	return validateInventory(&recorded, &measured, label)
 }
 
 func walkRegularFiles(root string, visit func(path, relative string, info os.FileInfo) error) error {

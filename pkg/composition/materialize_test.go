@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/composition/pinnedfixture"
 	"github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/wool"
+	"github.com/stretchr/testify/require"
 )
 
 func strptr(s string) *string { return &s }
@@ -1828,4 +1830,204 @@ func TestEnsurePinnedModulesFailsClosedAndDropsTheStalePath(t *testing.T) {
 	if directive := overlay.Resolve["saas"]; directive != nil && directive.Path == stale {
 		t.Fatalf("the stale path must stop being selected once it answers no request: %+v", directive)
 	}
+}
+
+// gitOutput runs a git query in dir and returns its trimmed stdout.
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// commitFixtureFile adds one file to the fixture repository behind source (as
+// initModuleRepo returns it), commits it, and returns the new commit's SHA.
+func commitFixtureFile(t *testing.T, source, name string) string {
+	t.Helper()
+	repo := strings.TrimPrefix(source, "file://")
+	path := filepath.Join(repo, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(name), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", name)
+	return gitOutput(t, repo, "rev-parse", "HEAD")
+}
+
+func TestCommitPin(t *testing.T) {
+	full := "0123456789abcdef0123456789abcdef01234567"
+	for version, want := range map[string]bool{
+		full:                  true,
+		"  " + full + "\n":    true,
+		strings.ToUpper(full): false, // git prints lowercase; an uppercase spelling is not the one spelling
+		full[:39]:             false,
+		full + "0":            false,
+		full[:7]:              false, // abbreviated: not immutable, can become ambiguous
+		"v" + full[:39]:       false,
+		"main":                false,
+		"v0.0.1":              false,
+		"":                    false,
+		"0123456789abcdef0123456789abcdef0123456g": false,
+	} {
+		commit, ok := CommitPin(version)
+		if ok != want {
+			t.Errorf("CommitPin(%q) = %v, want %v", version, ok, want)
+		}
+		if ok && commit != full {
+			t.Errorf("CommitPin(%q) = %q, want %q", version, commit, full)
+		}
+	}
+}
+
+// A `version:` that is a full commit SHA materializes the module at exactly that
+// commit — not HEAD, not the nearest tag — under the default (no overlay, no
+// declaration, no module-trust) resolution, keyed in the cache by the SHA, and
+// is recorded as a `commit` receipt carrying that commit.
+func TestMaterializePinnedModulesPinsAtCommit(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	source := initModuleRepo(t, "module", "v0.0.1")
+	second := commitFixtureFile(t, source, "module/second")
+	commitFixtureFile(t, source, "module/third")
+
+	workspaceDir := t.TempDir()
+	workspace := &resources.Workspace{
+		Name:    "wiki",
+		Modules: []*resources.ModuleReference{{Name: "saas", Source: source, Module: "module", Version: second}},
+	}
+	workspace.WithDir(workspaceDir)
+	require.NoError(t, MaterializePinnedModules(context.Background(), workspace))
+
+	overlay, err := resources.LoadLocalOverlay(context.Background(), workspaceDir)
+	require.NoError(t, err)
+	require.NotNil(t, overlay.Resolve["saas"])
+	moduleDir := overlay.Resolve["saas"].Path
+	require.Equal(t, filepath.Join(mustCacheRoot(t), filepath.FromSlash(source), second, "module"), moduleDir, "the cache key is <source>@<sha>, no v prefix")
+	checkout := filepath.Dir(moduleDir)
+	require.Equal(t, second, gitOutput(t, checkout, "rev-parse", "HEAD"))
+	require.FileExists(t, filepath.Join(moduleDir, "second"))
+	require.NoFileExists(t, filepath.Join(moduleDir, "third"), "the checkout is the pinned commit, not the branch head")
+
+	receipts, err := LoadResolutionReceipts(workspaceDir)
+	require.NoError(t, err)
+	receipt := receipts["saas"]
+	require.NotNil(t, receipt)
+	require.Equal(t, ResolutionModeCommit, receipt.Mode)
+	require.Equal(t, second, receipt.Requested)
+	require.Equal(t, second, receipt.Version)
+	require.Equal(t, second, receipt.Commit)
+	require.Equal(t, moduleDir, receipt.Path)
+
+	answered, err := pinnedRequestsAnswered(context.Background(), workspace)
+	require.NoError(t, err)
+	require.True(t, answered, "a commit pin, once materialized, is answered without a second clone")
+}
+
+// The clone of a commit takes one of two paths, and the checkout is judged the
+// same way on both: a shallow fetch of that one object where the server allows
+// an unadvertised object in a want (protocol v2, GitHub), and a full fetch of
+// every branch and tag where it does not (protocol v0 without
+// uploadpack.allowReachableSHA1InWant). Forcing v0 through the environment
+// makes a file:// fixture refuse the shallow request, so both are exercised.
+func TestEnsurePinnedArtifactAtCommitShallowAndFullFetch(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		protocol string
+	}{
+		{name: "shallow fetch by SHA", protocol: ""},
+		{name: "full fetch when the server refuses an unadvertised object", protocol: "0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.protocol != "" {
+				t.Setenv("GIT_CONFIG_COUNT", "1")
+				t.Setenv("GIT_CONFIG_KEY_0", "protocol.version")
+				t.Setenv("GIT_CONFIG_VALUE_0", tc.protocol)
+			}
+			source := initModuleRepo(t, "module", "v0.0.1")
+			second := commitFixtureFile(t, source, "module/second")
+			commitFixtureFile(t, source, "module/third")
+			if tc.protocol != "" {
+				// The configuration must actually refuse the shallow path, or this
+				// case would silently test the other one.
+				scratch := t.TempDir()
+				runGit(t, scratch, "init", "--quiet")
+				runGit(t, scratch, "remote", "add", "origin", source)
+				cmd := exec.Command("git", "fetch", "--quiet", "--depth", "1", "origin", second)
+				cmd.Dir = scratch
+				out, err := cmd.CombinedOutput()
+				require.Error(t, err, "shallow fetch by SHA must be refused under protocol v0: %s", out)
+			}
+			cacheRoot := filepath.Join(t.TempDir(), "modules")
+			ref := &resources.ModuleReference{Name: "saas", Source: source, Module: "module", Version: second}
+			dir, resolved, err := ensurePinnedArtifact(context.Background(), ref, cacheRoot)
+			require.NoError(t, err)
+			require.Equal(t, second, resolved)
+			require.Equal(t, filepath.Join(cacheRoot, filepath.FromSlash(source), second, "module"), dir)
+			require.Equal(t, second, gitOutput(t, filepath.Dir(dir), "rev-parse", "HEAD"))
+			require.NoFileExists(t, filepath.Join(dir, "third"))
+		})
+	}
+}
+
+// Only the full SHA is a commit pin. An abbreviated SHA and a branch name keep
+// failing exactly as a tag that does not exist, or a ref that is not a tag,
+// fails today; a tag keeps working.
+func TestEnsurePinnedArtifactRefusesShortShaAndBranchKeepsTag(t *testing.T) {
+	source := initModuleRepo(t, "module", "v0.0.1")
+	repo := strings.TrimPrefix(source, "file://")
+	tagged := gitOutput(t, repo, "rev-parse", "HEAD")
+	second := commitFixtureFile(t, source, "module/second")
+	branch := gitOutput(t, repo, "rev-parse", "--abbrev-ref", "HEAD")
+	cacheRoot := filepath.Join(t.TempDir(), "modules")
+	pull := func(version string) (string, string, error) {
+		return ensurePinnedArtifact(context.Background(), &resources.ModuleReference{Name: "saas", Source: source, Module: "module", Version: version}, cacheRoot)
+	}
+
+	_, _, err := pull(second[:7])
+	require.Error(t, err)
+	// An all-digit abbreviation (about one in 27) also parses as a bare
+	// semver major and is tried as the tag v<digits>; either way it is tried
+	// as a tag and fails as one.
+	require.Regexp(t, regexp.QuoteMeta("clone "+source+"@")+"v?"+second[:7], err.Error(), "a short SHA is tried as a tag and fails as one")
+
+	_, _, err = pull(branch)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "is not an immutable tag", "the moved-branch check is untouched")
+
+	dir, resolved, err := pull("0.0.1")
+	require.NoError(t, err)
+	require.Equal(t, "v0.0.1", resolved, "a bare semver still gains the v prefix")
+	require.Equal(t, tagged, gitOutput(t, filepath.Dir(dir), "rev-parse", "HEAD"))
+}
+
+// The verified-package reader refuses a commit pin by name: a commit is a
+// well-formed pin that no package is published for, not a malformed version.
+func TestResolvePinnedModuleRefusesACommitPinByName(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	_, err := ResolvePinnedModule(context.Background(), t.TempDir(), &resources.ModuleReference{Name: "saas", Source: "owner/repo", Version: sha})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "pins commit "+sha)
+	require.Contains(t, err.Error(), "a commit pin is for validation")
+	require.Contains(t, err.Error(), "release from a tag")
+}
+
+// A `workspaces:` reference is pulled by the same path as a module, so it may
+// pin a commit the same way (handbook#346: "resolve to an immutable ref — a tag
+// or a full commit SHA").
+func TestResolveWorkspaceReferenceAtCommit(t *testing.T) {
+	t.Setenv(resources.CodeflyHomeEnv, t.TempDir())
+	source := initModuleRepo(t, "platform")
+	second := commitFixtureFile(t, source, "platform/second")
+	commitFixtureFile(t, source, "platform/third")
+	dir, err := ResolveWorkspaceReference(context.Background(), &resources.WorkspaceReference{Name: "platform-core", Source: source, Workspace: "platform", Version: second})
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(mustCacheRoot(t), filepath.FromSlash(source), second, "platform"), dir)
+	require.FileExists(t, filepath.Join(dir, "second"))
+	require.NoFileExists(t, filepath.Join(dir, "third"))
 }

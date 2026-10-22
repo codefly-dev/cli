@@ -38,7 +38,8 @@ deployments/modules, and resolves each remote property to a source: kept (alread
 stored), propagated (a configuration value another remote key already holds),
 generated (declared random by the environment's service-secrets.generate), or
 required (supplied by the operator, and named). The store is the backend behind
-the SecretStore the render names, read from the environment's cluster.
+the SecretStore the render names, read from the environment's cluster; a render
+reading through several stores is planned and written store by store.
 
 Each property is resolved by the secret key the render reads out of it, not by
 the property name the environment files that key under, so an environment that
@@ -84,27 +85,64 @@ the store already holds, but nothing outside the scope is planned or written.`,
 				return fmt.Errorf("--module %s: not a module rendered for %s (rendered: %s)", module, env.Name, strings.Join(rendered.Modules, ", "))
 			}
 		}
-		store, err := resolveSecretStore(ctx, env, rendered)
-		if err != nil {
-			return err
+		// A render that reads through several stores (the cell's store and a
+		// per-key store such as an identity provider's) is planned and written
+		// store by store: one plan writes one store, and each is confirmed on
+		// its own.
+		for _, group := range renderedByStore(rendered) {
+			store, err := resolveSecretStore(ctx, env, group)
+			if err != nil {
+				return err
+			}
+			plan, err := deploysecrets.Build(ctx, &deploysecrets.Inputs{
+				Rendered:     group,
+				Generators:   env.ServiceSecrets.Generate,
+				Services:     workspaceServiceUniques(ctx, workspace),
+				Store:        store,
+				ReadPayloads: !secretsMetadataOnly,
+				Modules:      secretsModules,
+				MayBeEmpty:   env.ServiceSecrets.MayBeEmpty,
+			})
+			if err != nil {
+				return err
+			}
+			printSecretsPlan(cmd.OutOrStdout(), env.Name, group, plan)
+			if err := finishSecretsPlan(ctx, plan, store, secretsDryRun, secretsAllowMissing, func() bool {
+				return secretsYes || models.Confirm(ctx, fmt.Sprintf("Write %d remote keys to %s?", len(plan.Changes()), plan.Store), false)
+			}); err != nil {
+				return err
+			}
 		}
-		plan, err := deploysecrets.Build(ctx, &deploysecrets.Inputs{
-			Rendered:     rendered,
-			Generators:   env.ServiceSecrets.Generate,
-			Services:     workspaceServiceUniques(ctx, workspace),
-			Store:        store,
-			ReadPayloads: !secretsMetadataOnly,
-			Modules:      secretsModules,
-			MayBeEmpty:   env.ServiceSecrets.MayBeEmpty,
-		})
-		if err != nil {
-			return err
-		}
-		printSecretsPlan(cmd.OutOrStdout(), env.Name, rendered, plan)
-		return finishSecretsPlan(ctx, plan, store, secretsDryRun, secretsAllowMissing, func() bool {
-			return secretsYes || models.Confirm(ctx, fmt.Sprintf("Write %d remote keys to %s?", len(plan.Changes()), plan.Store), false)
-		})
+		return nil
 	},
+}
+
+// renderedByStore splits a render into one RenderedEnvironment per secret
+// store — per namespace for a namespaced SecretStore — in the order the stores
+// are first read, each carrying the whole render's module lists. One plan
+// writes one store; a render reading through the cell's store and a per-key
+// store is seeded store by store rather than refused.
+func renderedByStore(rendered gitops.RenderedEnvironment) []gitops.RenderedEnvironment {
+	type storeKey struct{ name, kind, namespace string }
+	var order []storeKey
+	groups := map[storeKey][]gitops.RenderedServiceSecret{}
+	for _, secret := range rendered.Secrets {
+		key := storeKey{name: secret.Store.Name, kind: secret.Store.Kind}
+		if secret.Store.Kind == "SecretStore" {
+			key.namespace = secret.Namespace
+		}
+		if _, seen := groups[key]; !seen {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], secret)
+	}
+	out := make([]gitops.RenderedEnvironment, 0, len(order))
+	for _, key := range order {
+		group := rendered
+		group.Secrets = groups[key]
+		out = append(out, group)
+	}
+	return out
 }
 
 // finishSecretsPlan validates completeness before even a no-op apply succeeds.
@@ -129,13 +167,14 @@ func finishSecretsPlan(ctx context.Context, plan *deploysecrets.Plan, store depl
 	return err
 }
 
-// resolveSecretStore resolves the one store every rendered ExternalSecret reads
-// through, from the environment's cluster.
+// resolveSecretStore resolves the one store every ExternalSecret of a
+// renderedByStore group reads through, from the environment's cluster. A mixed
+// group is a programming error and is refused by name.
 func resolveSecretStore(ctx context.Context, env *environments.Environment, rendered gitops.RenderedEnvironment) (deploysecrets.Store, error) {
 	first := rendered.Secrets[0]
 	for _, secret := range rendered.Secrets[1:] {
 		if secret.Store != first.Store || (first.Store.Kind == "SecretStore" && secret.Namespace != first.Namespace) {
-			return nil, fmt.Errorf("the render reads through more than one secret store (%s and %s); planning several stores at once is not supported yet", first.Store.Name, secret.Store.Name)
+			return nil, fmt.Errorf("the render reads through more than one secret store (%s and %s); a plan writes one store", first.Store.Name, secret.Store.Name)
 		}
 	}
 	if env.Cluster == nil || env.Cluster.Context == "" {

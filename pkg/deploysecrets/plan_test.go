@@ -2,6 +2,9 @@ package deploysecrets
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/x509"
+	"encoding/base64"
 	"fmt"
 	"maps"
 	"reflect"
@@ -606,4 +609,96 @@ func TestBuildStillRefusesAnEmptyPropertyInsideTheModuleScope(t *testing.T) {
 func withEmpty(documents map[string]map[string]string, key, property string) map[string]map[string]string {
 	documents[key][property] = ""
 	return documents
+}
+
+// An ed25519-pkcs8 key read by ONE remote key is minted once, as a key, and a
+// second plan over the written store keeps it rather than minting another.
+func TestAnEd25519SigningKeyIsMintedOnceForItsOneReader(t *testing.T) {
+	ctx := context.Background()
+	rendered := fixture()
+	store := newFakeStore(map[string]map[string]string{})
+	keyGenerator := []environments.EnvironmentSecretGenerator{{Scope: environments.SecretGeneratorScopeService,
+		Configuration: "postgres", Services: []string{"tasks/store"}, Keys: []string{"POSTGRES_PASSWORD"},
+		Format: environments.SecretGeneratorFormatEd25519PKCS8}}
+	plan, err := Build(ctx, &Inputs{Rendered: rendered, Generators: keyGenerator,
+		Services: []string{"tasks/store"}, Store: store, ReadPayloads: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := propertyPlan(t, plan, "tasks-store", storePassword); got.Action != ActionGenerate {
+		t.Fatalf("the absent signing key = %s, want generate", got.Action)
+	}
+	if _, err := plan.Apply(ctx, store, true); err != nil {
+		t.Fatal(err)
+	}
+	minted := store.documents["tasks-store"][storePasswordProperty(t, rendered)]
+	der, err := base64.StdEncoding.Strict().DecodeString(minted)
+	if err != nil {
+		t.Fatalf("the minted value is not standard base64: %v", err)
+	}
+	if parsed, err := x509.ParsePKCS8PrivateKey(der); err != nil {
+		t.Fatalf("the minted value is not PKCS#8: %v", err)
+	} else if _, ok := parsed.(ed25519.PrivateKey); !ok {
+		t.Fatalf("the minted key is %T", parsed)
+	}
+	again, err := Build(ctx, &Inputs{Rendered: rendered, Generators: keyGenerator,
+		Services: []string{"tasks/store"}, Store: store, ReadPayloads: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := propertyPlan(t, again, "tasks-store", storePassword); got.Action != ActionKeep {
+		t.Fatalf("a held signing key = %s, want keep", got.Action)
+	}
+}
+
+// A signing key is one workload's: a workspace group read by several remote
+// keys is refused, naming the readers, before anything is minted.
+func TestAnEd25519SigningKeyReadBySeveralRemoteKeysIsRefused(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore(map[string]map[string]string{})
+	_, err := Build(ctx, &Inputs{Rendered: fixture(), Generators: []environments.EnvironmentSecretGenerator{{
+		Scope: environments.SecretGeneratorScopeWorkspace, Configuration: "internal-auth",
+		Keys: []string{"CODEFLY_INTERNAL_TOKEN"}, Format: environments.SecretGeneratorFormatEd25519PKCS8}},
+		Store: store, ReadPayloads: true})
+	if err == nil || !strings.Contains(err.Error(), "one workload's") {
+		t.Fatalf("Build = %v, want a refusal naming a shared signing key", err)
+	}
+	if len(store.writes) != 0 {
+		t.Fatalf("wrote %v", store.writes)
+	}
+}
+
+func storePasswordProperty(t *testing.T, rendered gitops.RenderedEnvironment) string {
+	t.Helper()
+	for _, secret := range rendered.Secrets {
+		if secret.RemoteKey != "tasks-store" {
+			continue
+		}
+		for _, property := range secret.Properties {
+			if slices.Contains(property.Keys, storePassword) {
+				return property.Property
+			}
+		}
+	}
+	t.Fatal("the fixture files no store password")
+	return ""
+}
+
+// One remote key read by two services hands both the same private key: the
+// guard counts readers by service, not by remote key.
+func TestAnEd25519SigningKeyInOneRemoteKeyReadByTwoServicesIsRefused(t *testing.T) {
+	ctx := context.Background()
+	key := "CODEFLY__WORKSPACE_SECRET_CONFIGURATION__SIGNING__SIGNING_KEY"
+	rendered := gitops.RenderedEnvironment{Secrets: []gitops.RenderedServiceSecret{{
+		RemoteKey: "ws-witness", Services: []string{"witness/log", "witness/other"},
+		Properties: []gitops.RenderedSecretProperty{{Property: key, Keys: []string{key}, Readers: []gitops.RenderedSecretReader{
+			{Service: "witness/log", Key: key}, {Service: "witness/other", Key: key}}}},
+	}}}
+	store := newFakeStore(map[string]map[string]string{})
+	_, err := Build(ctx, &Inputs{Rendered: rendered, Generators: []environments.EnvironmentSecretGenerator{{
+		Scope: environments.SecretGeneratorScopeWorkspace, Configuration: "signing", Keys: []string{"SIGNING_KEY"},
+		Format: environments.SecretGeneratorFormatEd25519PKCS8}}, Store: store, ReadPayloads: true})
+	if err == nil || !strings.Contains(err.Error(), "witness/other") {
+		t.Fatalf("Build = %v, want a refusal naming both services", err)
+	}
 }

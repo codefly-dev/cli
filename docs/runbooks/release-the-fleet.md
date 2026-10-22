@@ -72,6 +72,16 @@ authorization; they are not permission to merge or publish automatically.
 
 ## Gotchas
 
+- **A module agent's release carries the module's version everywhere it is
+  read.** In a module repository (`agent.codefly.yaml` with `kind:
+  codefly:module`) `codefly publish` sets, in the release commit, the top-level
+  `version:` of every `service.codefly.yaml` the repository's workspace
+  composes and of each `module.package.codefly.yaml`, and regenerates each
+  packageable module's API catalog and derived runnables at that version through
+  the generators. Never bump any of them by hand; `--dry-run` lists all of
+  them, and a manifest already past the release is refused — release `minor` or
+  `major` to reach it. See [publish](../commands.md#codefly-publish-patchminormajorbeta).
+
 - **One artifact publisher per executable agent.** `agent.codefly.yaml` must
   declare `release.owner: workflow` with `release.workflow` naming its file in
   `.github/workflows`, or explicitly declare `release.owner: cli` when no other

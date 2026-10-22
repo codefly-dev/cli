@@ -147,6 +147,15 @@ func recordBuildRecipe(ctx context.Context, service *resources.Service, root str
 	if err != nil {
 		return w.Wrapf(err, "cannot archive build recipe")
 	}
+	if len(files) == 0 {
+		// The directory exists — the caller creates it before asking the
+		// agent — and the agent emitted nothing into it: a legacy agent that
+		// builds in-process. There is no recipe to archive.
+		return nil
+	}
+	if err = os.MkdirAll(destination, 0o755); err != nil {
+		return w.Wrapf(err, "cannot create recipe archive")
+	}
 	manifest := BuildRecipe{
 		Schema:    buildRecipeSchema,
 		Publisher: service.Agent.Publisher,

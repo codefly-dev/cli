@@ -81,13 +81,8 @@ type argoBootstrapComponent struct {
 	Overlay   string
 	Wave      string
 	// Project and Namespace are the AppProject the component's Application
-	// belongs to and the namespace it is applied into. Every component of a
-	// module shares the module's, except the authority overlay, which is
-	// applied into the platform's authority namespace under a project of its
-	// own: an AppProject destination applies to every Application in the
-	// project, so letting the module's project reach that namespace would let
-	// any unit of the module run a pod there as the platform's delivery
-	// account. Empty means the module's.
+	// belongs to and the namespace it is applied into. Empty means the
+	// module's.
 	Project   string
 	Namespace string
 }
@@ -276,29 +271,6 @@ func generateArgoBootstrap(
 		return err
 	}
 	bootstrapResources := []string{"project.yaml", "applicationset.yaml"}
-	authorityProject := ""
-	if inventory.SolutionAuthorityPath != "" {
-		// Authority documents land in the platform's authority namespace. That
-		// namespace is reachable from exactly one Application of the module —
-		// the authority overlay's — under a project of its own that admits one
-		// destination and two kinds, the carrier ConfigMap and the delivery
-		// Job. It is NOT a destination of the module's project: an AppProject
-		// destination applies to every Application in the project, so adding
-		// it there would let any unit overlay place a pod in the authority
-		// namespace running as the platform's delivery account.
-		authorityProject = argoAuthorityProjectName(inventory.AppProject)
-		isolated := argoProjectManifest{APIVersion: "argoproj.io/v1alpha1", Kind: kindAppProject}
-		isolated.Metadata.Name = authorityProject
-		isolated.Metadata.Namespace = argoNamespace
-		isolated.Spec.SourceRepos = []string{repository}
-		isolated.Spec.Destinations = []argoDestination{{Namespace: authorityNamespace, Server: inClusterServer}}
-		isolated.Spec.ClusterResourceWhitelist = []argoResourceAuthority{}
-		isolated.Spec.NamespaceResourceWhitelist = authorityNamespaceResources()
-		if err := writeArgoYAML(filepath.Join(bootstrap, authorityProjectFile), isolated); err != nil {
-			return err
-		}
-		bootstrapResources = []string{"project.yaml", authorityProjectFile, "applicationset.yaml"}
-	}
 
 	var components []argoBootstrapComponent
 	if inventory.ModulePath != "" {
@@ -320,20 +292,11 @@ func generateArgoBootstrap(
 		})
 	}
 
-	if inventory.SolutionHostBindingPath != "" {
+	if inventory.ModuleManifestPath != "" {
 		components = append(components, argoBootstrapComponent{
-			Component: argoBoundedName(componentNameBudget, inventory.Module, "solution-host-bindings"),
-			Overlay:   filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionHostBindingPath, "overlays", environment)),
+			Component: argoBoundedName(componentNameBudget, inventory.Module, moduleManifestDir),
+			Overlay:   filepath.ToSlash(filepath.Join(targetPath, inventory.ModuleManifestPath, "overlays", environment)),
 			Wave:      deliveryWaveFor(inventory),
-		})
-	}
-	if inventory.SolutionAuthorityPath != "" {
-		components = append(components, argoBootstrapComponent{
-			Component: argoBoundedName(componentNameBudget, inventory.Module, "solution-authority"),
-			Overlay:   filepath.ToSlash(filepath.Join(targetPath, inventory.SolutionAuthorityPath, "overlays", environment)),
-			Wave:      deliveryWaveFor(inventory),
-			Project:   authorityProject,
-			Namespace: authorityNamespace,
 		})
 	}
 
@@ -361,28 +324,6 @@ func generateArgoBootstrap(
 	})
 }
 
-// batchAPIGroup is the API group of a Job.
-const batchAPIGroup = "batch"
-
-// authorityProjectFile is the bootstrap file of the authority overlay's own
-// AppProject, beside the module's project.yaml.
-const authorityProjectFile = "authority-project.yaml"
-
-// argoAuthorityProjectName names the AppProject the authority overlay is
-// applied under: the module's project name with a suffix, bounded as Argo
-// names are.
-func argoAuthorityProjectName(project string) string {
-	return argoBoundedName(63, project, "authority")
-}
-
-// authorityNamespaceResources is the closed set of kinds the authority project
-// may apply into the authority namespace: the carrier ConfigMap and the
-// delivery Job, and nothing that runs otherwise — no Deployment, no CronJob, no
-// Secret — so a hand-edited authority overlay cannot put a workload there.
-func authorityNamespaceResources() []argoResourceAuthority {
-	return []argoResourceAuthority{{Group: "", Kind: kindConfigMap}, {Group: batchAPIGroup, Kind: kindJob}}
-}
-
 // argoRepository derives the Argo Application repoURL. localFetchHost, when
 // non-empty, is the container DNS of the managed local k3d fetch remote; a fetch
 // URL on that host is the reachable in-cluster endpoint and is accepted without
@@ -394,7 +335,7 @@ func argoRepository(config *repositoryConfig, localFetchHost string) (string, er
 		if err != nil || parsed.Host == "" || parsed.Path == "" {
 			return "", fmt.Errorf("environment gitops.fetch-repo-url must be an absolute HTTP(S) URL")
 		}
-		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		if parsed.Scheme != httpScheme && parsed.Scheme != httpsScheme {
 			return "", fmt.Errorf("environment gitops.fetch-repo-url must use HTTP(S)")
 		}
 		if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || strings.Contains(parsed.Host, "*") {
@@ -435,16 +376,14 @@ func snapshotAuthority(target string, inventory *Inventory, environment string) 
 	if inventory.ModulePath != "" {
 		sources = append(sources, filepath.Join(target, filepath.FromSlash(inventory.ModulePath), "overlays", environment))
 	}
-	for _, unit := range inventory.Units {
-		if unit.Path != "" {
-			sources = append(sources, filepath.Join(target, filepath.FromSlash(unit.Path), "overlays", environment))
+	for index := range inventory.Units {
+		if path := inventory.Units[index].Path; path != "" {
+			sources = append(sources, filepath.Join(target, filepath.FromSlash(path), "overlays", environment))
 		}
 	}
-	if inventory.SolutionHostBindingPath != "" {
-		sources = append(sources, filepath.Join(target, filepath.FromSlash(inventory.SolutionHostBindingPath), "overlays", environment))
+	if inventory.ModuleManifestPath != "" {
+		sources = append(sources, filepath.Join(target, filepath.FromSlash(inventory.ModuleManifestPath), "overlays", environment))
 	}
-	// The authority overlay is deliberately absent: its kinds belong to the
-	// authority project's own closed whitelist, not the module's.
 	cluster := make(map[string]argoResourceAuthority)
 	namespaced := make(map[string]argoResourceAuthority)
 	for _, source := range sources {

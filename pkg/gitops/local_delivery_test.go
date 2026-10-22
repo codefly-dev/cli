@@ -92,7 +92,7 @@ func TestLocalPublishSignsAsTheDeveloperAndDeliversThroughTheJobs(t *testing.T) 
 	}
 	signer := fake.signer.(*fakeSigner)
 	if signer.signed != 1 {
-		t.Fatalf("the plan signed %d documents", signer.signed)
+		t.Fatalf("the plan signed %d documents, want the one module manifest", signer.signed)
 	}
 	for _, raw := range plan.Carriers {
 		carrier, err := solutionhost.ParseSigned(raw)
@@ -114,9 +114,9 @@ func TestLocalPublishSignsAsTheDeveloperAndDeliversThroughTheJobs(t *testing.T) 
 	if signer.signed != 1 {
 		t.Fatalf("the publish signed again (%d signatures): the plan's carriers were not reused", signer.signed)
 	}
-	overlay := result.Path + "/" + solutionHostBindingDir + "/overlays/production/"
-	job := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+overlay+"deliver-presence.yaml")
-	for _, want := range []string{"serviceAccountName: delivery", "audience: accounts", "http://host.payments.svc.cluster.local:8080", "/platform/_delivery/presence"} {
+	overlay := result.Path + "/" + moduleManifestDir + "/overlays/production/"
+	job := gitOutput(t, "", "--git-dir", remote, "show", result.Commit+":"+overlay+"deliver-manifest.yaml")
+	for _, want := range []string{"serviceAccountName: delivery", "namespace: payments", "audience: accounts", "http://host.payments.svc.cluster.local:8080", manifestDeliveryPath} {
 		if !strings.Contains(job, want) {
 			t.Fatalf("the local publish's Job lacks %q:\n%s", want, job)
 		}
@@ -171,7 +171,7 @@ func TestADeveloperIdentityNeverSignsARelease(t *testing.T) {
 	t.Setenv("GIT_CONFIG_COUNT", strconv.Itoa(configured+1))
 	t.Setenv(fmt.Sprintf("GIT_CONFIG_KEY_%d", configured), "url.file://"+remote+".insteadOf")
 	t.Setenv(fmt.Sprintf("GIT_CONFIG_VALUE_%d", configured), repository)
-	for _, name := range []string{"VAULT_ADDR", "VAULT_TOKEN", "CODEFLY_RELEASE_TRANSIT_KEY"} {
+	for _, name := range []string{"VAULT_ADDR", "VAULT_TOKEN", "CODEFLY_RELEASE_TRANSIT_KEY", "CODEFLY_RELEASE_KMS_KEY"} {
 		t.Setenv(name, "")
 		if err := os.Unsetenv(name); err != nil {
 			t.Fatal(err)
@@ -186,14 +186,83 @@ func TestADeveloperIdentityNeverSignsARelease(t *testing.T) {
 	}
 }
 
-// TestALocalPromotionSettlesARebuildAtTheNextGeneration is the local
+// TestAPublishDeliversUnderTheGitopsPathExactlyAsRendered: a workspace
+// delivering into its own repository declares `path: deployments`, the
+// directory its render already writes `modules/<module>` under. The publish
+// delivers to exactly that tree — never `deployments/deployments/modules`,
+// the doubled path obin-ai/platform-obin#128 committed, which the cell's
+// ApplicationSet never globs — and the next publish reads the prior
+// generation back from the same tree, so a changed manifest settles at
+// generation 2 against generation 1 rather than against nothing. (A rebuild
+// alone is no change: a manifest names no build since core#812, so the change
+// here is the container that authenticates.)
+func TestAPublishDeliversUnderTheGitopsPathExactlyAsRendered(t *testing.T) {
+	ctx, workspace, remote := developerPublishWorkspace(t)
+	configPath := filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName)
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := strings.Replace(string(config), "  path: environments\n", "  path: deployments\n", 1)
+	if declared == string(config) {
+		t.Fatal("the fixture's gitops path was not found")
+	}
+	if err = os.WriteFile(configPath, []byte(declared), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if workspace, err = resources.LoadWorkspaceFromDir(ctx, workspace.Dir()); err != nil {
+		t.Fatal(err)
+	}
+	env := selectedEnvironment(t, workspace, "production")
+	renderHostedPayments(t, workspace, env, pinnedDeployment, hostedPaymentsInstances())
+	inventory, err := LoadInventory(filepath.Join(workspace.Dir(), "deployments", "modules", "payments"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inventory.OwnedPath != "deployments/modules/payments" {
+		t.Fatalf("the render owns %q, want the workspace's own deployments/modules/payments", inventory.OwnedPath)
+	}
+	installDeveloperSigning(t, &developerSigning{signer: &fakeSigner{nonce: true}})
+	request := PublishRequest{Module: "payments", Environment: "production", Local: true, PromotionBranch: "codefly/promote-payments-production"}
+	publish := func() (PublishPlan, PublishResult) {
+		t.Helper()
+		plan, err := PlanPublish(ctx, workspace, &request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := Publish(ctx, workspace, &PublishMutation{Request: request, PlanID: plan.ID, Carriers: plan.Carriers}, preparedPermit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return plan, result
+	}
+	first, firstResult := publish()
+	if first.Path != "deployments/modules/payments" || firstResult.Path != first.Path {
+		t.Fatalf("the publish delivered to %q (result %q), want deployments/modules/payments", first.Path, firstResult.Path)
+	}
+	delivered := gitOutput(t, "", "--git-dir", remote, "ls-tree", "-r", "--name-only", "refs/heads/main")
+	if !strings.Contains(delivered, "deployments/modules/payments/"+InventoryFilename+"\n") {
+		t.Fatalf("the promoted tree holds no inventory at deployments/modules/payments:\n%s", delivered)
+	}
+	if strings.Contains(delivered, "deployments/deployments/") {
+		t.Fatalf("the promoted tree prefixes the gitops path twice:\n%s", delivered)
+	}
+
+	renderHostedPayments(t, workspace, env, strings.Replace(pinnedDeployment, "- name: api\n", "- name: api-v2\n", 1), hostedPaymentsInstances())
+	second, _ := publish()
+	if g1, g2 := first.Delivery.Documents[0].Generation, second.Delivery.Documents[0].Generation; g1 != 1 || g2 != 2 {
+		t.Fatalf("a changed module settled at generations %d then %d, want 1 then 2", g1, g2)
+	}
+}
+
+// TestALocalPromotionSettlesAChangedManifestAtTheNextGeneration is the local
 // promotion rule: on a k3d environment whose host lists developers, the
 // developer's signed publish advances the local base branch itself, so the
-// next publish settles against it — a rebuilt module lands at generation 2
-// with its new digest, never at a second generation 1 the host would refuse
-// as a rewrite — and both commits fast-forward the base, the second
-// descending from the first.
-func TestALocalPromotionSettlesARebuildAtTheNextGeneration(t *testing.T) {
+// next publish settles against it — a module whose manifest changed (here the
+// container that authenticates) lands at generation 2, never at a second
+// generation 1 the host would refuse as a rewrite — and both commits
+// fast-forward the base, the second descending from the first.
+func TestALocalPromotionSettlesAChangedManifestAtTheNextGeneration(t *testing.T) {
 	ctx, workspace, remote := developerPublishWorkspace(t)
 	installDeveloperSigning(t, &developerSigning{signer: &fakeSigner{nonce: true}})
 	request := PublishRequest{Module: "payments", Environment: "production", Local: true, PromotionBranch: "codefly/promote-payments-production"}
@@ -218,13 +287,13 @@ func TestALocalPromotionSettlesARebuildAtTheNextGeneration(t *testing.T) {
 	}
 
 	env := selectedEnvironment(t, workspace, "production")
-	renderHostedPayments(t, workspace, env, strings.ReplaceAll(pinnedDeployment, "aaaa", "bbbb"), hostedPaymentsInstances())
+	renderHostedPayments(t, workspace, env, strings.Replace(pinnedDeployment, "- name: api\n", "- name: api-v2\n", 1), hostedPaymentsInstances())
 	second, secondResult := publish()
 	if g1, g2 := first.Delivery.Documents[0].Generation, second.Delivery.Documents[0].Generation; g1 != 1 || g2 != 2 {
-		t.Fatalf("a rebuilt module settled at generations %d then %d, want 1 then 2", g1, g2)
+		t.Fatalf("a changed module settled at generations %d then %d, want 1 then 2", g1, g2)
 	}
 	if first.Delivery.Documents[0].Digest == second.Delivery.Documents[0].Digest {
-		t.Fatal("the rebuilt module's document did not change, so this test proves nothing")
+		t.Fatal("the module's manifest did not change, so this test proves nothing")
 	}
 	if base := gitOutput(t, "", "--git-dir", remote, "rev-parse", "refs/heads/main"); base != secondResult.Commit {
 		t.Fatalf("the second promotion left the base at %s, want %s", base, secondResult.Commit)
@@ -232,8 +301,8 @@ func TestALocalPromotionSettlesARebuildAtTheNextGeneration(t *testing.T) {
 	gitRun(t, "", "--git-dir", remote, "merge-base", "--is-ancestor", firstResult.Commit, secondResult.Commit)
 
 	// What a cluster run reads back: the latest promotion is the second
-	// commit, and the tree it promoted renders the presence Job that POSTs
-	// the generation-2 carrier.
+	// commit, and the tree it promoted renders the one Job that POSTs the
+	// generation-2 manifest carrier.
 	latest, err := LatestLocalPromotion(ctx, workspace, "production")
 	if err != nil || latest != secondResult.Commit {
 		t.Fatalf("latest local promotion %s (%v), want %s", latest, err, secondResult.Commit)
@@ -246,11 +315,11 @@ func TestALocalPromotionSettlesARebuildAtTheNextGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(jobs) != 1 || jobs[0].Kind != deliveryPresence || jobs[0].Namespace != "payments" || !strings.HasPrefix(jobs[0].Name, "deliver-presence-payments-production-") {
+	if len(jobs) != 1 || jobs[0].Kind != deliveryManifest || jobs[0].Namespace != "payments" || !strings.HasPrefix(jobs[0].Name, "deliver-manifest-payments-production-") {
 		t.Fatalf("the promoted tree's delivery Jobs are %+v", jobs)
 	}
 
-	// Running it again with nothing rebuilt re-delivers what is promoted: the
+	// Running it again with nothing changed re-delivers what is promoted: the
 	// same generation, the same commit, no refusal for having no changes.
 	again, againResult := publish()
 	if again.Delivery.Documents[0].Generation != 2 || againResult.Commit != secondResult.Commit {
@@ -262,7 +331,7 @@ func TestALocalPromotionSettlesARebuildAtTheNextGeneration(t *testing.T) {
 	// again from it, and its promotion fast-forwards — never forced, never a
 	// divergence.
 	request.PromotionBranch = "codefly/promote-other-production"
-	renderHostedPayments(t, workspace, env, strings.ReplaceAll(pinnedDeployment, "aaaa", "dddd"), hostedPaymentsInstances())
+	renderHostedPayments(t, workspace, env, strings.Replace(pinnedDeployment, "- name: api\n", "- name: api-v3\n", 1), hostedPaymentsInstances())
 	third, thirdResult := publish()
 	if third.Delivery.Documents[0].Generation != 3 {
 		t.Fatalf("a promotion on another branch settled at generation %d, want 3", third.Delivery.Documents[0].Generation)
@@ -454,16 +523,20 @@ func TestALocalPromotionIsACompareAndSwapOnTheSettledBase(t *testing.T) {
 // — so the run can hold the cluster's Application to all of it.
 func TestADeliveryJobNamesTheApplicationTheCLIRendered(t *testing.T) {
 	tree := t.TempDir()
-	module := "env/deployments/modules/payments"
-	overlay := module + "/solution-host-bindings/overlays/local"
+	module := "env/modules/payments"
+	overlay := module + "/" + moduleManifestDir + "/overlays/local"
 	if err := os.MkdirAll(filepath.Join(tree, filepath.FromSlash(overlay)), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	job := "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: deliver-presence-payments-local-abc\n  namespace: payments\n  labels:\n    codefly.dev/delivery: presence\n"
+	job := "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: deliver-manifest-payments-local-abc\n  namespace: payments\n  labels:\n    codefly.dev/delivery: carrier\n    codefly.dev/delivered-document: manifest\n"
+	if err := os.WriteFile(filepath.Join(tree, filepath.FromSlash(overlay), "deliver-"+deliveryManifest+".yaml"), []byte(job), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A file of a retired delivery kind is no Job the run awaits.
 	if err := os.WriteFile(filepath.Join(tree, filepath.FromSlash(overlay), "deliver-presence.yaml"), []byte(job), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	component := argoBoundedName(componentNameBudget, "payments", "solution-host-bindings")
+	component := argoBoundedName(componentNameBudget, "payments", moduleManifestDir)
 	if err := os.MkdirAll(filepath.Join(tree, filepath.FromSlash(module), "bootstrap"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -482,8 +555,8 @@ func TestADeliveryJobNamesTheApplicationTheCLIRendered(t *testing.T) {
 		Server: "https://kubernetes.default.svc", Namespace: "payments",
 		Owner: ApplicationSetIdentity{APIVersion: argoAPIVersion, Kind: kindApplicationSet, Name: "payments-local", Namespace: "argocd"},
 	}
-	if len(jobs) != 1 || jobs[0].Application != want {
-		t.Fatalf("jobs %+v, want the Application %+v", jobs, want)
+	if len(jobs) != 1 || jobs[0].Kind != deliveryManifest || jobs[0].Application != want {
+		t.Fatalf("jobs %+v, want the manifest Job naming the Application %+v", jobs, want)
 	}
 }
 

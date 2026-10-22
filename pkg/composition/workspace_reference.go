@@ -19,7 +19,7 @@ import (
 // committed artifact cannot depend on that (obin-ai/platform-obin#104).
 //
 // A workspace is the same kind of artifact as a module: a repository at an
-// immutable tag, with an optional subpath. So it is pulled by exactly the same
+// immutable tag (or a commit pin, for validation), with an optional subpath. So it is pulled by exactly the same
 // path -- same cache, same tag resolution, same refusal of a moved branch, same
 // atomic promotion -- with `workspace:` where a module reference carries
 // `module:`. Sharing that machinery is the point: a workspace pulled some other

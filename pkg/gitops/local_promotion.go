@@ -59,7 +59,7 @@ func ExportPromotion(ctx context.Context, workspace *resources.Workspace, enviro
 }
 
 // DeliveryJob is one delivery Job a promoted tree renders: its kind
-// (presence or authority), its name and namespace, and the file it is in.
+// (manifest), its name and namespace, and the file it is in.
 type DeliveryJob struct {
 	Kind      string `json:"kind"`
 	Name      string `json:"name"`
@@ -114,7 +114,7 @@ func DeliveryJobsOf(tree, publishedPath, environment string) ([]DeliveryJob, err
 		if walkErr != nil {
 			return walkErr
 		}
-		if entry.IsDir() || (entry.Name() != "deliver-"+deliveryPresence+".yaml" && entry.Name() != "deliver-"+deliveryAuthority+".yaml") {
+		if entry.IsDir() || entry.Name() != "deliver-"+deliveryManifest+".yaml" {
 			return nil
 		}
 		if path.Base(path.Dir(file)) != environment || path.Base(path.Dir(path.Dir(file))) != overlaysDirectory {
@@ -139,7 +139,7 @@ func DeliveryJobsOf(tree, publishedPath, environment string) ([]DeliveryJob, err
 			return fmt.Errorf("delivery Job %s names no Job, name or namespace", file)
 		}
 		jobs = append(jobs, DeliveryJob{
-			Kind: job.Metadata.Labels[deliveryLabel], Name: job.Metadata.Name, Namespace: job.Metadata.Namespace, Path: file,
+			Kind: job.Metadata.Labels[deliveredDocumentLabel], Name: job.Metadata.Name, Namespace: job.Metadata.Namespace, Path: file,
 		})
 		return nil
 	})

@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/codefly-dev/cli/cmd/common"
@@ -382,7 +383,7 @@ func writeBuiltProtobufContract(ctx context.Context, module *resources.Module, s
 		return nil, fmt.Errorf("cannot parse generated descriptor set: %w", err)
 	}
 
-	pkg, err := serviceContractPackage(&set, protoDir)
+	pkg, err := serviceContractPackage(&set, protoDir, surface)
 	if err != nil {
 		return nil, fmt.Errorf("service %s endpoint %s: %w", service.Name, endpoint.Name, err)
 	}
@@ -422,7 +423,18 @@ func writeBuiltProtobufContract(ctx context.Context, module *resources.Module, s
 // all of its RPC services in one package; message-only packages contributed
 // alongside it (composed settings, shared types) carry no service to expose in
 // a client contract and are ignored.
-func serviceContractPackage(set *descriptorpb.FileDescriptorSet, protoDir string) (string, error) {
+//
+// `surface` is the endpoint's declared served surface, when the module declares
+// one through contracts.codefly.yaml. It names which services this endpoint
+// serves, so it also settles which proto package the contract covers, and the
+// candidates are scoped to it. That matters for a service that must generate
+// client stubs from ANOTHER service's API: those protos declare services in a
+// foreign package and have to live in the owned tree for codegen to reach them,
+// yet the endpoint does not serve them, so without this they make a
+// single-package endpoint look multi-package and the export fails on a
+// contract that is in fact well formed. A module that declares no surface is
+// unchanged: nothing narrows the candidates and the single-package rule stands.
+func serviceContractPackage(set *descriptorpb.FileDescriptorSet, protoDir string, surface []composition.APIContractService) (string, error) {
 	own := map[string]struct{}{}
 	walkErr := filepath.WalkDir(protoDir, func(p string, entry os.DirEntry, err error) error {
 		if err != nil {
@@ -462,6 +474,23 @@ func serviceContractPackage(set *descriptorpb.FileDescriptorSet, protoDir string
 	}
 	sort.Strings(packages)
 
+	// Scope to the declared surface. Dropping to zero means the surface names
+	// no package the descriptor set declares a service in, which is a
+	// configuration error the unscoped diagnostics below describe better than a
+	// silent empty contract, so the narrowing is only applied when it keeps at
+	// least one candidate.
+	if served := surfacePackages(surface); len(served) > 0 {
+		scoped := make([]string, 0, len(packages))
+		for _, pkg := range packages {
+			if _, ok := served[pkg]; ok {
+				scoped = append(scoped, pkg)
+			}
+		}
+		if len(scoped) > 0 {
+			packages = scoped
+		}
+	}
+
 	switch len(packages) {
 	case 0:
 		// buf always includes the service's own files in the descriptor set,
@@ -479,6 +508,21 @@ func serviceContractPackage(set *descriptorpb.FileDescriptorSet, protoDir string
 	default:
 		return "", fmt.Errorf("proto declares services in multiple packages %v; a contract endpoint must be single-package", packages)
 	}
+}
+
+// surfacePackages is the set of proto packages a declared surface names, taken
+// from each service's fully-qualified name. A name carrying no package
+// qualifier contributes nothing rather than an empty-string package.
+func surfacePackages(surface []composition.APIContractService) map[string]struct{} {
+	packages := make(map[string]struct{}, len(surface))
+	for _, service := range surface {
+		dot := strings.LastIndex(service.FullName, ".")
+		if dot <= 0 {
+			continue
+		}
+		packages[service.FullName[:dot]] = struct{}{}
+	}
+	return packages
 }
 
 func writeRestContract(ctx context.Context, module *resources.Module, endpoint *basev0.Endpoint, rest *basev0.RestAPI, physicalDir, canonicalDir string) (*composition.APIContractEndpoint, error) {

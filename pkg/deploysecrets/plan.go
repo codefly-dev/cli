@@ -417,6 +417,48 @@ func sharesConfigurationKey(a, b gitops.RenderedSecretProperty) bool {
 	return false
 }
 
+// refuseSharedSigningKey refuses an ed25519-pkcs8 value that more than one
+// remote key reads. A signing key is one workload's identity: filed in two
+// services' documents, either could sign as the other. Checked here, where the
+// readers are known, because a workspace group's readers are not known when
+// the environment loads.
+func refuseSharedSigningKey(state *remoteState, property gitops.RenderedSecretProperty, lookup gitops.RenderedSecretProperty,
+	states []*remoteState, declaredKey string) error {
+	// Counted by SERVICE, not by remote key: one remote key can be read by several
+	// services (a defaults template without {service}, or a remote-keys mapping),
+	// and each of them would be handed the same private key.
+	readers := map[string]struct{}{}
+	for _, other := range states {
+		for _, candidate := range other.secret.Properties {
+			if (other != state || candidate.Property != property.Property) && !sharesConfigurationKey(lookup, candidate) {
+				continue
+			}
+			if len(candidate.Readers) == 0 {
+				for _, service := range other.secret.Services {
+					readers[service] = struct{}{}
+				}
+				if len(other.secret.Services) == 0 {
+					readers[other.secret.RemoteKey] = struct{}{}
+				}
+				continue
+			}
+			for _, reader := range candidate.Readers {
+				readers[reader.Service] = struct{}{}
+			}
+		}
+	}
+	if len(readers) > 1 {
+		names := make([]string, 0, len(readers))
+		for name := range readers {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		return fmt.Errorf("%s is an ed25519-pkcs8 signing key read by %d services (%s): a signing key is one workload's, so exactly one may read it — remove the other readers; never re-mint it",
+			declaredKey, len(readers), strings.Join(names, ", "))
+	}
+	return nil
+}
+
 // planConfigured plans one property.
 //
 // The other keys holding the same configuration value are looked at before this
@@ -430,8 +472,14 @@ func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, 
 	generators map[string]environments.EnvironmentSecretGenerator, generated map[string]string, keys []string) (PropertyPlan, string, error) {
 	lookup := property
 	lookup.Keys = keys
-	if _, _, err := declaredGenerator(lookup, generators); err != nil {
+	declaredKey, generator, err := declaredGenerator(lookup, generators)
+	if err != nil {
 		return PropertyPlan{}, "", err
+	}
+	if declaredKey != "" && generator.Format == environments.SecretGeneratorFormatEd25519PKCS8 {
+		if err = refuseSharedSigningKey(state, property, lookup, states, declaredKey); err != nil {
+			return PropertyPlan{}, "", err
+		}
 	}
 	var holders, unread []string
 	var holderValue string

@@ -6,12 +6,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
 
 	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"github.com/codefly-dev/core/resources"
+	"github.com/distribution/reference"
 	"gopkg.in/yaml.v3"
 )
 
@@ -61,9 +63,104 @@ type EnvironmentCluster struct {
 //	      "ecr" (run `aws ecr get-login-password`), "gcr" / "gar" (gcloud
 //	      access token), "ghcr" (GITHUB_TOKEN env). The CLI handles auth
 //	      side-effects based on this value.
+//	Mirrors: where to READ an image from instead of the registry its
+//	      reference names, keyed by that registry's canonical host
+//	      ("docker.io": "us-east1-docker.pkg.dev/<project>/<remote-repo>").
+//	      It is a read-side substitution only: nothing is pushed to a mirror,
+//	      and the reference a recipe is written against never changes. See
+//	      Validate for what a key and a value may be.
 type EnvironmentRegistry struct {
-	URL  string `yaml:"url,omitempty"`
-	Auth string `yaml:"auth,omitempty"`
+	URL     string            `yaml:"url,omitempty"`
+	Auth    string            `yaml:"auth,omitempty"`
+	Mirrors map[string]string `yaml:"mirrors,omitempty"`
+}
+
+// DockerHubRegistry is Docker Hub's canonical registry host: the one an
+// unqualified reference ("debian:trixie-slim") resolves against, and therefore
+// the key a mirror for it is declared under.
+const DockerHubRegistry = "docker.io"
+
+// mirrorHostProbe is the repository a host is parsed under to learn the
+// registry a reference naming that host actually resolves against. The parser
+// takes a reference, not a host, and the repository part is irrelevant to the
+// answer.
+const mirrorHostProbe = "probe"
+
+// RegistryMirrorHost is the registry a reference spelling this host resolves
+// against, as the parser the daemon, BuildKit and containerd all normalize
+// references with reports it: the key a mirror for that registry must be
+// declared under.
+//
+// That parser folds exactly one alias, `index.docker.io`, into `docker.io`, and
+// reads a first component carrying no dot, colon or `localhost` as a Hub
+// repository rather than a host. `registry-1.docker.io` is NOT folded: it is a
+// distinct registry to the parser and to BuildKit alike, so it is its own
+// mirror key, covering the references that spell it and no others.
+func RegistryMirrorHost(host string) string {
+	named, err := reference.ParseNormalizedNamed(host + "/" + mirrorHostProbe)
+	if err != nil {
+		return host
+	}
+	return reference.Domain(named)
+}
+
+// Validate holds a declared mirror to what both a BuildKit registry
+// configuration and an image reference can carry: a bare registry host as the
+// key, and a host with an optional repository path as the value. Neither may
+// carry a scheme, a tag, a digest or anything needing quoting — a value that
+// does would be written into the builder's buildkitd.toml, where it is a
+// configuration the build silently reads a base image through.
+func (registry *EnvironmentRegistry) Validate() error {
+	if registry == nil {
+		return nil
+	}
+	for host, mirror := range registry.Mirrors {
+		if err := validateRegistryReference("registry mirror key", host); err != nil {
+			return err
+		}
+		if strings.Contains(host, "/") {
+			return fmt.Errorf("registry mirror key %q names a repository path; a mirror is declared for a registry host", host)
+		}
+		if canonical := RegistryMirrorHost(host); canonical != host {
+			return fmt.Errorf("registry mirror key %q is not how a reference names its registry: a reference under it resolves against %q, so declare the mirror under %q", host, canonical, canonical)
+		}
+		if err := validateRegistryReference(fmt.Sprintf("registry mirror of %q", host), mirror); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// registryMirrorToken is what a mirror host or repository path component may
+// contain: the characters a registry reference admits, and nothing a TOML
+// string or a shell would read as anything else.
+var registryMirrorToken = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*$`)
+
+func validateRegistryReference(kind, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s cannot be empty", kind)
+	}
+	if value != strings.TrimSpace(value) {
+		return fmt.Errorf("%s %q is surrounded by whitespace", kind, value)
+	}
+	if strings.Contains(value, "://") {
+		return fmt.Errorf("%s %q carries a scheme; write the host alone", kind, value)
+	}
+	if strings.Contains(value, "@") {
+		return fmt.Errorf("%s %q carries a digest; a mirror is a registry, not an image", kind, value)
+	}
+	components := strings.Split(value, "/")
+	for index, component := range components {
+		if !registryMirrorToken.MatchString(component) {
+			return fmt.Errorf("%s %q is not a registry reference", kind, value)
+		}
+		// Only a registry host may carry a port; a colon anywhere else is the
+		// tag separator, and a mirror names no image.
+		if index > 0 && strings.Contains(component, ":") {
+			return fmt.Errorf("%s %q carries a tag; a mirror is a registry, not an image", kind, value)
+		}
+	}
+	return nil
 }
 
 // EnvironmentGitops identifies the reviewed repository snapshot reconciled for
@@ -110,6 +207,29 @@ type EnvironmentManagedSecretReference struct {
 type EnvironmentSecretRemoteRef struct {
 	Key      string `yaml:"key"`
 	Property string `yaml:"property,omitempty"`
+	// SecretStore, when set, is the store THIS key is read through, where the
+	// service's other keys read through the service's (or the environment's)
+	// store. A producer resolves it like every other reference: a cell keeps
+	// its identity provider's secrets in a store of their own, and the
+	// contract names it per key rather than moving the whole service. Rendered
+	// as the ExternalSecret data item's sourceRef.storeRef.
+	SecretStore *EnvironmentSecretStoreReference `yaml:"secret-store,omitempty"`
+}
+
+// Equal reports whether two references name the same remote location: the
+// same key and property, read through the same store (nil meaning the
+// service's). A pointer field would otherwise compare by address.
+func (ref EnvironmentSecretRemoteRef) Equal(other EnvironmentSecretRemoteRef) bool {
+	if ref.Key != other.Key || ref.Property != other.Property {
+		return false
+	}
+	switch {
+	case ref.SecretStore == nil && other.SecretStore == nil:
+		return true
+	case ref.SecretStore == nil || other.SecretStore == nil:
+		return false
+	}
+	return *ref.SecretStore == *other.SecretStore
 }
 
 // UnmarshalYAML accepts either a scalar remote key ("lodestar-accounts", which
@@ -122,13 +242,24 @@ func (ref *EnvironmentSecretRemoteRef) UnmarshalYAML(node *yaml.Node) error {
 	}
 	if node.Kind == yaml.MappingNode {
 		for i := 0; i < len(node.Content); i += 2 {
-			if key := node.Content[i].Value; key != "key" && key != "property" {
+			if key := node.Content[i].Value; key != "key" && key != "property" && key != "secret-store" {
 				return fmt.Errorf("unknown secret reference field %q", key)
 			}
 		}
 	}
 	type plain EnvironmentSecretRemoteRef
-	return node.Decode((*plain)(ref))
+	if err := node.Decode((*plain)(ref)); err != nil {
+		return err
+	}
+	if ref.SecretStore != nil {
+		if ref.SecretStore.Name == "" || ref.SecretStore.Kind == "" {
+			return fmt.Errorf("secret reference %q names a secret-store without both name and kind", ref.Key)
+		}
+		if ref.SecretStore.Kind != "SecretStore" && ref.SecretStore.Kind != "ClusterSecretStore" {
+			return fmt.Errorf("secret reference %q names secret-store kind %q; only SecretStore and ClusterSecretStore resolve an ExternalSecret", ref.Key, ref.SecretStore.Kind)
+		}
+	}
+	return nil
 }
 
 // MarshalYAML emits the terse scalar form (the remote key alone) when no property
@@ -136,7 +267,7 @@ func (ref *EnvironmentSecretRemoteRef) UnmarshalYAML(node *yaml.Node) error {
 // rewrites it in place — preserves a scalar remote-key declaration instead of
 // expanding it to a {key: …} mapping. With a property it emits the full mapping.
 func (ref EnvironmentSecretRemoteRef) MarshalYAML() (any, error) {
-	if ref.Property == "" {
+	if ref.Property == "" && ref.SecretStore == nil {
 		return ref.Key, nil
 	}
 	type plain EnvironmentSecretRemoteRef
@@ -154,6 +285,10 @@ type EnvironmentManagedService struct {
 	SecretReferences []EnvironmentManagedSecretReference `yaml:"secret-references,omitempty"`
 	// Identity is independent of any explicitly declared secret references.
 	Identity *EnvironmentWorkloadIdentity `yaml:"identity,omitempty"`
+	// Carried holds the module-owned keys of a managed-services entry
+	// (CarriedManagedServiceKeys), handed to the module bundle generator
+	// verbatim and never interpreted here.
+	Carried Carried `yaml:",inline"`
 }
 
 // ManagedService returns the environment's replacement for a service, or false
@@ -202,11 +337,10 @@ func validateManagedServiceKey(key string) error {
 // them at once: Coordinate is matched by the host, Component names the
 // component instance within it, Domain is the ownership domain this
 // composition delivers under, Audience is what the host expects a workload's
-// token to be bound to, TrustDomain is the SPIFFE trust domain the host's
-// issuer puts in a workload's SVID, and EnvelopeRevision is the revision of
-// the host's envelope this composition was reviewed against. A partial
-// declaration would render a document the host cannot use, so UnmarshalYAML
-// refuses an unknown key and Validate refuses a missing one.
+// token to be bound to, and TrustDomain is the SPIFFE trust domain the cell's
+// mesh names a workload's principal under. A partial declaration would render
+// a manifest the host cannot use, so UnmarshalYAML refuses an unknown key and
+// Validate refuses a missing one.
 type EnvironmentHost struct {
 	Coordinate string `yaml:"coordinate"`
 	Component  string `yaml:"component"`
@@ -220,18 +354,11 @@ type EnvironmentHost struct {
 	// Audience is the token audience the host verifies a workload's projected
 	// token against. It is the host's bare audience string, not an address.
 	Audience string `yaml:"audience"`
-	// TrustDomain is the SPIFFE trust domain of the host's workload identity
-	// issuer. A presence document names, per workload, the SPIFFE ID the host
-	// must verify on the connection: spiffe://<trust domain>/ns/<namespace>/sa/<account>.
+	// TrustDomain is the SPIFFE trust domain of the cell's mesh. A module
+	// manifest names, per workload, its SPIFFE ID — the one the mesh issues to
+	// the workload's ServiceAccount, never a certificate the workload serves:
+	// spiffe://<trust domain>/ns/<namespace>/sa/<account>.
 	TrustDomain string `yaml:"trust_domain"`
-	// EnvelopeRevision is the revision of the host's envelope — the ceiling a
-	// platform administrator writes at runtime — that this composition was
-	// reviewed against. Both delivery documents carry it inside their signed
-	// bytes and the host refuses a document naming another revision, so a
-	// composition pins the revision it was reviewed against here, and bumps it
-	// when the envelope is re-reviewed. Never derived: the render does not
-	// read the envelope.
-	EnvelopeRevision uint64 `yaml:"envelope_revision"`
 	// Delivery names the host's delivery API by composition identity —
 	// "<module>/<service>/<endpoint>" — the way api.consumes names a producing
 	// endpoint. The render resolves it to the in-cluster address the delivery
@@ -239,8 +366,11 @@ type EnvironmentHost struct {
 	// composition names which endpoint is the delivery API and never where it
 	// lives.
 	Delivery string `yaml:"delivery"`
-	// Gateway names the service that fronts solutions and serves the mint.
-	// It is required when a composed service requests workload-identity.
+	// Gateway names the service that fronts solutions and serves the mint on
+	// its `workload` endpoint: the one principal every solution backend and
+	// consumed module endpoint admits, and the one native listener that may
+	// be reached off loopback. It is required when the composition routes
+	// anything through the host.
 	Gateway string `yaml:"gateway,omitempty"`
 	// ModuleAudience is the audience the host stamps on a composed module's
 	// own capability — the host's name for it, not the module's. A module
@@ -302,7 +432,7 @@ func (policy *HostReleasePolicy) Validate() error {
 }
 
 // hostFields are the keys a host block may carry, in declaration order.
-var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "envelope_revision", "delivery", "gateway", "module_audience", "release", "developers", "trust_anchor"}
+var hostFields = []string{"coordinate", "component", "domain", "audience", "trust_domain", "delivery", "gateway", "module_audience", "release", "developers", "trust_anchor"}
 
 // deliveryPattern is a composition identity: <module>/<service>/<endpoint>,
 // each a lowercase name.
@@ -367,9 +497,6 @@ func (host *EnvironmentHost) Validate() error {
 	if err := ValidateTrustDomain(host.TrustDomain); err != nil {
 		return err
 	}
-	if host.EnvelopeRevision == 0 {
-		return fmt.Errorf("host envelope_revision must be the revision (at least 1) of the host envelope this composition was reviewed against")
-	}
 	if !deliveryPattern.MatchString(host.Delivery) {
 		return fmt.Errorf("host delivery %q is not the composition identity <module>/<service>/<endpoint> of the host's delivery API", host.Delivery)
 	}
@@ -402,8 +529,9 @@ func (host *EnvironmentHost) DeliveryEndpoint() (module, service, endpoint strin
 	return parts[0], parts[1], parts[2]
 }
 
-// SPIFFEID is the SPIFFE ID of the workload running as account in namespace on
-// this host, as the host's issuer names it: spiffe://<trust domain>/ns/<namespace>/sa/<account>.
+// SPIFFEID is the mesh principal of the workload running as account in
+// namespace on this host, as the cell's mesh names it:
+// spiffe://<trust domain>/ns/<namespace>/sa/<account>.
 func (host *EnvironmentHost) SPIFFEID(namespace, account string) string {
 	return "spiffe://" + host.TrustDomain + "/ns/" + namespace + "/sa/" + account
 }
@@ -645,6 +773,9 @@ const (
 	SecretGeneratorFormatHex        = "hex"
 	SecretGeneratorFormatBase64     = "base64"
 	SecretGeneratorFormatIdentifier = "identifier"
+	// SecretGeneratorFormatEd25519PKCS8 mints an Ed25519 private key (standard
+	// base64 of its PKCS#8 DER) instead of random bytes; it takes no `bytes`.
+	SecretGeneratorFormatEd25519PKCS8 = "ed25519-pkcs8" //nolint:gosec // G101: a generator format name, not a credential
 )
 
 // EnvironmentSecretGenerator names keys of one configuration group that the
@@ -655,7 +786,8 @@ const (
 // Format is the value's encoding: hex (default) or base64 of Bytes random bytes
 // (default 32), or identifier — a lowercase letter followed by hex, for a value
 // that must also be a SQL or DNS identifier (a database owner name), of Bytes
-// random bytes (default 12).
+// random bytes (default 12), or ed25519-pkcs8 — an Ed25519 private key as
+// standard base64 of its PKCS#8 DER, sized by the algorithm (no Bytes).
 type EnvironmentSecretGenerator struct {
 	Scope         string   `yaml:"scope"`
 	Configuration string   `yaml:"configuration"`
@@ -705,12 +837,29 @@ func (generator *EnvironmentSecretGenerator) validate(index int) error {
 		}
 	}
 	switch generator.Format {
-	case "", SecretGeneratorFormatHex, SecretGeneratorFormatBase64, SecretGeneratorFormatIdentifier:
+	case "", SecretGeneratorFormatHex, SecretGeneratorFormatBase64, SecretGeneratorFormatIdentifier,
+		SecretGeneratorFormatEd25519PKCS8:
 	default:
-		return fmt.Errorf("%s: format must be hex, base64 or identifier, got %q", label, generator.Format)
+		return fmt.Errorf("%s: format must be hex, base64, identifier or ed25519-pkcs8, got %q", label, generator.Format)
 	}
 	if generator.Bytes < 0 {
 		return fmt.Errorf("%s: bytes must be positive", label)
+	}
+	if generator.Format == SecretGeneratorFormatEd25519PKCS8 {
+		// The key's size is the algorithm's. Refused at load, not at the first
+		// `deploy secrets`, so a declaration that cannot mint is never planned.
+		if generator.Bytes != 0 {
+			return fmt.Errorf("%s: format ed25519-pkcs8 is sized by the algorithm; bytes cannot be set", label)
+		}
+		// A signing key is ONE workload's identity. A service configuration of
+		// several services would hand the same private key to every reader, and
+		// any of them could sign as the others. A workspace group is checked when
+		// the plan knows who reads it: `deploy secrets` refuses one read by more
+		// than one service.
+		if len(generator.Keys) != 1 ||
+			(generator.Scope == SecretGeneratorScopeService && len(generator.Services) != 1) {
+			return fmt.Errorf("%s: format ed25519-pkcs8 is one service's signing key: declare exactly one key, and for scope service exactly one service", label)
+		}
 	}
 	return nil
 }
@@ -1054,6 +1203,11 @@ func (env *Environment) serviceScopedNames() map[string][]string {
 			names["service-identity"] = append(names["service-identity"], name)
 		}
 	}
+	if env.ServiceMesh != nil {
+		for name := range env.ServiceMesh.Services {
+			names["service-mesh"] = append(names["service-mesh"], name)
+		}
+	}
 	return names
 }
 
@@ -1102,11 +1256,17 @@ func ValidateNamespaceName(kind, name string) error {
 //
 // A workspace composing a single module — a flat workspace, or a modules layout
 // with one reference — renders it into the declared Namespace unchanged. A
-// workspace composing several modules gives each its own "<namespace>-<module>":
-// modules are independent service graphs that routinely ship a service of the
-// same name (a "store", say), and one namespace cannot hold two Services, two
-// StatefulSets or two "cm-store" ConfigMaps of that name, nor answer
-// "store.<namespace>.svc.cluster.local" for both. The suffix is derived, not
+// workspace composing several modules gives each its own "<namespace>-<module>",
+// the environment's namespace being "<delivery>-<environment>": a delivered
+// namespace is "<delivery>-<environment>-<module>" (handbook decision
+// a-delivered-namespace-is-named-by-its-delivery-environment-and-module),
+// never the bare module name. It is the namespace segment of every workload's
+// SPIFFE ID; a reader that needs the module back reads it from the workload's
+// labels, never by splitting this string. Several modules need their own
+// namespaces because modules are independent service graphs that routinely
+// ship a service of the same name (a "store", say), and one namespace cannot
+// hold two Services, two StatefulSets or two "cm-store" ConfigMaps of that
+// name, nor answer "store.<namespace>.svc.cluster.local" for both. The suffix is derived, not
 // declared, so every projection that names the namespace — manifests, render
 // record, Argo destinations, quota, ExternalSecrets, cross-module addresses —
 // agrees by construction.
@@ -1165,6 +1325,11 @@ type Environment struct {
 
 	Ingress []EnvironmentIngressRoute `yaml:"ingress,omitempty"`
 
+	// Telemetry is the OTLP intake this environment's services export their
+	// operational telemetry to; see EnvironmentTelemetry. CLI-side; delivered
+	// to services as OpenTelemetry's own environment variables.
+	Telemetry *EnvironmentTelemetry `yaml:"telemetry,omitempty"`
+
 	// Host names the deployment host this environment delivers to: the
 	// coordinate that identifies it, the component instance within it, the
 	// ownership domain this composition delivers under, the audience a workload
@@ -1174,7 +1339,7 @@ type Environment struct {
 	// target, and the CLI has no other durable record of it — `codefly
 	// environment import` reads the coordinate off a codefly/coordinate/v1
 	// contract and keeps it only as a provenance comment. Absent, a render
-	// declares no presence and no authority rather than inventing a host.
+	// declares no module manifest rather than inventing a host.
 	// CLI-side; not serialized to proto.
 	Host *EnvironmentHost `yaml:"host,omitempty"`
 
@@ -1187,6 +1352,19 @@ type Environment struct {
 	// a service nobody declared managed. Read it through ManagedService, never by
 	// indexing the map with a bare name.
 	ManagedServices map[string]EnvironmentManagedService `yaml:"managed-services,omitempty"`
+	// Egress names, per `<module>/<service>`, the external hosts the service
+	// reaches. The cell file carries it so the cell can allow exactly those.
+	Egress map[string]EnvironmentEgress `yaml:"egress,omitempty"`
+	// Cell names, per `<module>/<service>`, the platform bindings the service
+	// holds (vault, object_storage, model_gateway, identity, audit) and whether
+	// it authenticates to the cloud by workload identity. The cell file carries
+	// it so the cell derives the service's consumers from a declaration the
+	// composition owns.
+	Cell map[string]EnvironmentCellWorkload `yaml:"cell,omitempty"`
+	// ServiceMesh names, per `<module>/<service>`, the labels the cell needs
+	// on that service's Service (its waypoint attachment). The render stamps
+	// them in the unit's environment overlay. Only a presenter may carry one.
+	ServiceMesh *EnvironmentServiceMesh `yaml:"service-mesh,omitempty"`
 
 	// DNS carries the environment's DNS contract. Its AppHostSuffix lets the network layer
 	// derive an external endpoint's public host from declared config instead of
@@ -1223,6 +1401,11 @@ type Environment struct {
 	// manifests fail when their backend is absent. Legacy plaintext *.secret.*
 	// files remain local-only. CLI-side; not serialized to proto.
 	Secrets []*resources.EnvironmentSecretProvider `yaml:"secrets,omitempty"`
+
+	// Carried holds the module-owned keys of this environment
+	// (CarriedEnvironmentKeys), handed to the module bundle generator verbatim.
+	// CLI-side; never interpreted here and never serialized to proto.
+	Carried Carried `yaml:",inline"`
 }
 
 // EnvironmentDNS is the environment's DNS contract.
@@ -1297,4 +1480,259 @@ func (env *Environment) IsK3d() bool {
 	// as local-k3d. Preserves the old "default to k3d image import"
 	// behavior in cli/pkg/deployments/manager.go.
 	return env.Local()
+}
+
+// EnvironmentEgress is the external reach one service declares.
+type EnvironmentEgress struct {
+	Hosts []EnvironmentEgressHost `yaml:"hosts"`
+}
+
+// EnvironmentEgressHost is one external host, a bare DNS name, and its port;
+// a bare scalar names the host on the default port.
+type EnvironmentEgressHost struct {
+	Name string `yaml:"name"`
+	Port int    `yaml:"port,omitempty"`
+}
+
+// EgressDefaultPort is the port an egress host named without one is reached on.
+const EgressDefaultPort = 443
+
+func (host *EnvironmentEgressHost) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		return node.Decode(&host.Name)
+	}
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i < len(node.Content); i += 2 {
+			if key := node.Content[i].Value; key != "name" && key != "port" {
+				return fmt.Errorf("unknown egress host field %q (a host is a bare name, or {name, port})", key)
+			}
+		}
+	}
+	type plain EnvironmentEgressHost
+	return node.Decode((*plain)(host))
+}
+
+func (host EnvironmentEgressHost) MarshalYAML() (any, error) {
+	if host.Port == 0 {
+		return host.Name, nil
+	}
+	type plain EnvironmentEgressHost
+	return plain(host), nil
+}
+
+// EffectivePort is the port, or the default when none is named.
+func (host EnvironmentEgressHost) EffectivePort() int {
+	if host.Port == 0 {
+		return EgressDefaultPort
+	}
+	return host.Port
+}
+
+var egressHostPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$`)
+
+func (env *Environment) validateEgress() error {
+	for key, egress := range env.Egress {
+		if err := validateServiceIdentityKey("egress", key); err != nil {
+			return err
+		}
+		if len(egress.Hosts) == 0 {
+			return fmt.Errorf("egress %s declares no host", key)
+		}
+		seen := make(map[string]struct{}, len(egress.Hosts))
+		for _, host := range egress.Hosts {
+			if !egressHostPattern.MatchString(host.Name) {
+				return fmt.Errorf("egress %s host %q is not a bare DNS host name (no scheme, port or path)", key, host.Name)
+			}
+			if host.Port < 0 || host.Port > 65535 {
+				return fmt.Errorf("egress %s host %s port %d is not a port", key, host.Name, host.Port)
+			}
+			id := fmt.Sprintf("%s:%d", host.Name, host.EffectivePort())
+			if _, exists := seen[id]; exists {
+				return fmt.Errorf("egress %s declares %s twice", key, id)
+			}
+			seen[id] = struct{}{}
+		}
+	}
+	return nil
+}
+
+func validateServiceIdentityKey(label, key string) error {
+	module, service, qualified := strings.Cut(key, "/")
+	if !qualified {
+		return fmt.Errorf("%s key %q must be the module-qualified identity <module>/<service> of the service it declares for", label, key)
+	}
+	if err := validateResourcePathComponent(label+" module", module); err != nil {
+		return err
+	}
+	return validateResourcePathComponent(label+" service", service)
+}
+
+// EgressHosts is the declared external reach of one service, sorted, with
+// every port made explicit.
+func (env *Environment) EgressHosts(module, service string) []EnvironmentEgressHost {
+	if env == nil {
+		return nil
+	}
+	egress, declared := env.Egress[resources.ServiceUnique(module, service)]
+	if !declared {
+		return nil
+	}
+	hosts := make([]EnvironmentEgressHost, 0, len(egress.Hosts))
+	for _, host := range egress.Hosts {
+		hosts = append(hosts, EnvironmentEgressHost{Name: host.Name, Port: host.EffectivePort()})
+	}
+	sort.Slice(hosts, func(i, j int) bool {
+		if hosts[i].Name != hosts[j].Name {
+			return hosts[i].Name < hosts[j].Name
+		}
+		return hosts[i].Port < hosts[j].Port
+	})
+	return hosts
+}
+
+// EnvironmentCellWorkload is what the composition declares about one service
+// for the cell: the platform bindings it holds, cloud identity, and the
+// endpoints whose listener accepts only a protected waypoint's assertion of
+// the caller (`presenter`): the cell fronts each with a waypoint, narrows the
+// destination to it, and hands the service the waypoint's identity.
+type EnvironmentCellWorkload struct {
+	Bindings      []string `yaml:"bindings,omitempty"`
+	CloudIdentity bool     `yaml:"cloud-identity,omitempty"`
+	Presenter     []string `yaml:"presenter,omitempty"`
+}
+
+var cellBindingPattern = regexp.MustCompile(`^[a-z0-9]+(?:[_-][a-z0-9]+)*$`)
+
+func (env *Environment) validateCell() error {
+	for key, workload := range env.Cell {
+		if err := validateServiceIdentityKey("cell", key); err != nil {
+			return err
+		}
+		if len(workload.Bindings) == 0 && !workload.CloudIdentity && len(workload.Presenter) == 0 {
+			return fmt.Errorf("cell %s declares nothing: name the bindings the service holds, cloud-identity, or the presenter endpoints, or drop the entry", key)
+		}
+		for _, endpoint := range workload.Presenter {
+			if !cellBindingPattern.MatchString(endpoint) {
+				return fmt.Errorf("cell %s: presenter endpoint %q is not an endpoint name", key, endpoint)
+			}
+		}
+		seen := make(map[string]struct{}, len(workload.Bindings))
+		for _, binding := range workload.Bindings {
+			if !cellBindingPattern.MatchString(binding) {
+				return fmt.Errorf("cell %s binding %q is not a lowercase resource name", key, binding)
+			}
+			if _, exists := seen[binding]; exists {
+				return fmt.Errorf("cell %s binding %q is declared twice", key, binding)
+			}
+			seen[binding] = struct{}{}
+		}
+	}
+	return nil
+}
+
+// EnvironmentServiceMesh carries the Kubernetes labels the cell needs on a
+// service's Service, per `<module>/<service>`: today the waypoint attachment
+// (`istio.io/use-waypoint`, `istio.io/use-waypoint-namespace`) that puts the
+// cell's protected waypoint in front of a presenter. The values are the cell's
+// convention, so the render stamps them as declared and derives none of them.
+// Only a service that declares a presenter endpoint under `cell:` may carry an
+// entry: attaching any other Service puts its traffic behind an L7 hop it was
+// never rendered for.
+type EnvironmentServiceMesh struct {
+	Services map[string]EnvironmentMeshService `yaml:"services,omitempty"`
+}
+
+// EnvironmentMeshService is what one service's Service carries for the mesh.
+type EnvironmentMeshService struct {
+	Labels map[string]string `yaml:"labels,omitempty"`
+}
+
+// UnmarshalYAML refuses an unknown key: a mistyped `services` or `labels`
+// would leave the presenter unattached and its consumers denied, with nothing
+// naming why.
+func (mesh *EnvironmentServiceMesh) UnmarshalYAML(node *yaml.Node) error {
+	if err := rejectUnknownKeys(node, "service-mesh", "services"); err != nil {
+		return err
+	}
+	type plain EnvironmentServiceMesh
+	return node.Decode((*plain)(mesh))
+}
+
+func (service *EnvironmentMeshService) UnmarshalYAML(node *yaml.Node) error {
+	if err := rejectUnknownKeys(node, "service-mesh service", "labels"); err != nil {
+		return err
+	}
+	type plain EnvironmentMeshService
+	return node.Decode((*plain)(service))
+}
+
+// RenderOwnedLabelPrefix is the label namespace the render stamps itself; a
+// declared label in it would fight the render for the value.
+const RenderOwnedLabelPrefix = "codefly.dev/"
+
+// Validate checks the block's shape: qualified keys, a non-empty label map,
+// no label the render owns. A nil receiver is "not declared".
+func (mesh *EnvironmentServiceMesh) Validate() error {
+	if mesh == nil {
+		return nil
+	}
+	if len(mesh.Services) == 0 {
+		return fmt.Errorf("service-mesh declares no service")
+	}
+	for key, service := range mesh.Services {
+		if err := validateServiceIdentityKey("service-mesh", key); err != nil {
+			return err
+		}
+		if len(service.Labels) == 0 {
+			return fmt.Errorf("service-mesh %s declares no label", key)
+		}
+		for label, value := range service.Labels {
+			if strings.TrimSpace(label) == "" || strings.TrimSpace(value) == "" {
+				return fmt.Errorf("service-mesh %s: a label needs a name and a value", key)
+			}
+			if strings.HasPrefix(label, RenderOwnedLabelPrefix) {
+				return fmt.Errorf("service-mesh %s: label %q is the render's own (%s*)", key, label, RenderOwnedLabelPrefix)
+			}
+		}
+	}
+	return nil
+}
+
+// validateServiceMesh holds every service-mesh entry to a presenter the
+// environment declares under `cell:`.
+func (env *Environment) validateServiceMesh() error {
+	if err := env.ServiceMesh.Validate(); err != nil || env.ServiceMesh == nil {
+		return err
+	}
+	for key := range env.ServiceMesh.Services {
+		if len(env.Cell[key].Presenter) == 0 {
+			return fmt.Errorf("service-mesh %s: the service declares no presenter endpoint (cell: %s: presenter), and only a presenter's Service is attached to the cell's waypoint", key, key)
+		}
+	}
+	return nil
+}
+
+// ServiceMeshLabels are the labels the environment declares for a service's
+// Service, or nil.
+func (env *Environment) ServiceMeshLabels(module, service string) map[string]string {
+	if env == nil || env.ServiceMesh == nil {
+		return nil
+	}
+	return maps.Clone(env.ServiceMesh.Services[resources.ServiceUnique(module, service)].Labels)
+}
+
+// CellWorkload is the cell declaration of one service, bindings sorted.
+func (env *Environment) CellWorkload(module, service string) (EnvironmentCellWorkload, bool) {
+	if env == nil {
+		return EnvironmentCellWorkload{}, false
+	}
+	workload, declared := env.Cell[resources.ServiceUnique(module, service)]
+	if !declared {
+		return EnvironmentCellWorkload{}, false
+	}
+	bindings := append([]string(nil), workload.Bindings...)
+	sort.Strings(bindings)
+	presenter := append([]string(nil), workload.Presenter...)
+	sort.Strings(presenter)
+	return EnvironmentCellWorkload{Bindings: bindings, CloudIdentity: workload.CloudIdentity, Presenter: presenter}, true
 }

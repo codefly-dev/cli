@@ -49,6 +49,22 @@ exercise a path — no cluster, no credentials, agents not rebuilt — the PR sa
 
 ---
 
+**Prove reuse before you build.** The default answer is that the platform
+already has it and your change fills a gap or adds a helper on it, so the PR
+body names what you reused and what you deliberately did not. A second
+mechanism for a job one seam already does is refused however clean it is. Two
+tells you are reinventing: what you are writing re-answers a question an
+existing seam answered, and your reason for its placement is that a convenient
+loop was already there rather than that the responsibility belongs to it.
+
+**Build the simplest thing that works; size is the signal.** A coding task's
+budget is about **500 hand-written lines** — generated output does not count,
+tests count apart — and past **2,000** the change has become a second system,
+so **stop and ask the user** instead of finishing it. Two tells, checkable
+before the code exists: you cannot name the one responsibility the change adds,
+and it is growing to make the end goal pass rather than to put a behaviour
+where it belongs. Wanting it to work licenses no means to get there.
+
 ## How-To Index
 
 Task-oriented procedures. Each links to a full runbook under `docs/runbooks/` and is also
@@ -79,7 +95,7 @@ new runbook (and its skill) whenever you do a multi-step operational task a seco
 - **Runnables** (what the CLI does with `runnable.codefly.yaml`, and what is deliberately not implemented yet) → [docs/runnable.md](docs/runnable.md)
 - **Product-owned selections** (Core resolution, local checkouts, evidence and execution blockers) → [docs/composition-selections.md](docs/composition-selections.md)
 - **Deployment completion stages** (rendered / applied / bootstrapped / healthy, bootstrap ordering, expand/contract schema rollout) → [docs/deployment-completion.md](docs/deployment-completion.md)
-- **Delivery documents** (presence and authority: the environment's `host` block, the module contract, what publish settles and signs, the carrier Jobs) → [docs/solution-host-bindings.md](docs/solution-host-bindings.md)
+- **Module manifests** (the one signed document per module: the environment's `host` block, its workloads, endpoints and authority request, what publish settles and signs, the delivery Job, the native run) → [docs/module-manifests.md](docs/module-manifests.md)
 - **Execution receipts** (the gateway's governed execution: Work Contexts verified with core's authenticator, the live sources it needs, why `--governed-execution` is unavailable until a client for them exists) → [docs/execution-receipts.md](docs/execution-receipts.md)
 - **The prerelease gate** (why a prerelease version never reaches `main`, the one labelled exception, and how each repo wires the check in) → [docs/prerelease-gate.md](docs/prerelease-gate.md)
 - **Agent CI & port isolation** (why sequential agent CI must not share a host port) → [docs/agent-ci-port-isolation.md](docs/agent-ci-port-isolation.md)
@@ -232,8 +248,8 @@ relative paths.
   credential; a value a service does not receive is decided **before** anything
   is checked or resolved, so it imposes no obligation on that service. See
   [docs/orchestration.md](docs/orchestration.md#workspace-configuration-groups).
-- **Configs flow as environment variables, not files.** Connection strings derived from network
-  mappings are injected as `CODEFLY__SERVICE_...` env vars.
+- **Configuration uses runtime carriers.** Live host routes are the endpoint addresses inside each module's applied manifest; the native run replaces
+  files in one stable directory. See `docs/module-manifests.md` for delivery ownership.
 - **Daemon state lives in `~/.codefly/`** (override with `CODEFLY_HOME`). PID file, logs, agent
   binaries all live there.
 - **MCP exposes codefly capabilities to AI agents.** When adding a CLI feature, consider whether

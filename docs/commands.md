@@ -113,9 +113,70 @@ Run the whole composition locally: the host's ingress services, and every
 service of every other composed module. Every service, not only what the
 dependency graph reaches: a solution's `api.consumes` and a module's
 configuration references (`${endpoint:model/model/rest}`) name producers the
-graph never sees. It takes the flags of `codefly run service` and no service
-names; `--exclude-dependency` and `--exclude-workspace-configuration` leave a
-service or a configuration group out.
+graph never sees. It takes no service names and the flags of `codefly run
+service` that do not name one root service — `--naming-scope`,
+`--temporary-ports`, `--output-env`, `--runtime-context`, `--set` among them,
+never `--stand-alone` or `--exclude-root`; `--exclude-dependency` and
+`--exclude-workspace-configuration` leave a service or a configuration group
+out. The deterministic port hash folds every endpoint into a few thousand
+buckets, so a `--naming-scope` can hash two endpoints to one port and abort
+the run; `--temporary-ports` sidesteps the hash, under the ordering its
+allocation needs — a workspace configuration reference to a service that has
+not initialized yet cannot be resolved (see [orchestration](orchestration.md)).
+
+**Addresses across a reload.** A service keeps the addresses it was accepted
+at for the whole run: under `--temporary-ports` the kernel-assigned ports of
+its first initialization are pinned, so a watch-driven reload re-initializes
+it on the same ports and its dependents keep a true address, and a
+hot-reloading agent whose addresses did move is restarted rather than left
+serving where nothing resolves it. The host gateway's route carriers are
+derived afresh on each of its initializations, and a native run's envelope
+writer follows the gateway's current address. The `--output-env` file is a map
+of the run's current environment, rewritten whole: a key written again
+replaces its line, so a reader never meets two values for one key.
+
+**The delivery host's federation surface.** In a host environment the native
+run hands the service `host.delivery` names, when it declares the `federation`
+workspace configuration, the three keys that turn its delivery surface on,
+derived from the host block: `SOLUTION_HOST_COORDINATE` (`host.coordinate`),
+`SOLUTION_HOST_OWNERSHIP_DOMAINS` (`host.domain`) and
+`SOLUTION_HOST_TRUST_POLICY` (`keys`); a cell's composition declares the same
+three for its environment.
+
+**The artifact cache as a native bundle source.** A service that declares the
+workspace configuration `artifact-cache` receives `ROOT`, the absolute path of
+`.codefly/selection-artifacts`, from a native run (a deployed render hands
+`REPOSITORY` instead, the repository it publishes bundles to); the
+host's native adapter reads a component's frontend bundle there, read-only, by
+the digest the module manifest names, and the run retains that bundle (the
+canonical archive of `services/fe-remote/dist`) before it delivers the manifest.
+
+**Adding a component while the run is up.** Compose the module or solution
+into the workspace and send the running `codefly run` process — a service, a
+solution or the workspace — `SIGUSR1` (`kill -USR1 <pid>`). The run reloads
+the composition, admits every root composed after it started (a root the
+composition already named when a service or solution run began, outside that
+run's closure, stays outside it), and starts that root's closure in the
+running flow in dependency order; in a host environment the native cluster projects the
+newcomer's identity and delivers its module's manifest (its workloads, routes
+and authority request) once it is Running, and the host keeps its process. A component already running is
+never restarted or replaced by this: a changed identity is refused by name,
+and the run continues as it was.
+
+**Removing a component while the run is up.** Take the module or solution out
+of the composition and send the same `SIGUSR1`. A root the run started and the
+composition no longer names is withdrawn: the flow stops what only that root
+needed, dependents first (what the remaining roots reach keeps its process),
+and in a host environment the native cluster takes each stopped workload out
+of its module's manifest: a module still running an identity workload is
+delivered again listing what remains, and one running none is withdrawn — its
+manifest at the next generation with `removed: true` — then forgotten. The
+host keeps its process, and the envelope is untouched. A withdrawal is
+terminal for the binding at the host, as it is for a published one: the
+component comes back under a new instance name. The roots a `run service` or
+`run solution` names on its command line are never withdrawn; a workspace run
+pins none. An update of a running component is its own restart: a manifest
+names no build, so a rebuild changes nothing the host is told.
 
 ```bash
 codefly run workspace --fixture dev-admin          # the host and every module
@@ -128,10 +189,11 @@ codefly run workspace --runtime-context native \
 and `codefly run solution`.
 
 In a composition whose environment declares a `host`, a native run stands in
-for the cell the composition would be delivered to: each solution gets a
-workload identity, its presence and authority are delivered to the host, and
-it is offered for installation in the host's own registry. See
-[solution-host-bindings.md](solution-host-bindings.md#a-native-run-the-run-answers-as-the-cluster).
+for the cell the composition would be delivered to: every `module-identity`
+service is issued a workload credential when it is projected, its module's
+signed manifest is delivered to the host once it runs, and the module is
+offered for installation in the host's own registry. See
+[module-manifests.md](module-manifests.md#a-native-run-the-run-answers-as-the-cluster).
 
 ### `codefly run service [name...]`
 
@@ -311,24 +373,40 @@ rendered into the entry service's ConfigMap with the value a run injects. The
 projection names routes, not credentials, so it is a plain value; a render never
 writes a secret value into the tree.
 
-**The host gateway is handed the routes solutions consume through it.** A
-solution calls a consumed module through the host's gateway (`/v1/<as>/…`), so
-the environment's `host.gateway` service receives a `CODEFLY__ENDPOINT__…`
-carrier for every module endpoint a composed solution's `api.consumes` names —
-in a run at the address the run allocated, at the gateway's own network access;
-in a render at the producer's in-cluster address — and the gateway resolves the
-module through the Codefly SDK from it. No dependency edge is added: the gateway
-neither waits on nor builds a module. The derivation is the one every carrier
-uses (the producer's own mappings, judged by its declared visibility for the
-gateway's module). A composition with no single answer — a consume that names a
-module under another `as` (the host routes `/v1/<module>`), a module the
-workspace does not compose, or two solutions reaching one module through
-different endpoints — is refused naming it. One route that cannot be derived —
-an endpoint the gateway's module may not reach, a producer outside the run or
-not addressed yet, no address at the gateway's network access — is **refused in
-a render** (a committed tree never ships a gateway that answers that module
-503) and **warned in a run**, once, naming it: the gateway starts with every
-other route.
+**The host gateway is handed the routes solutions consume through it, and
+each solution's own backend.** A solution calls a consumed module through the
+host's gateway (`/v1/<as>/…`), and a browser reaches a solution's page and
+backend through it (`/<alias>/…`), so the environment's `host.gateway` service
+receives a `CODEFLY__ENDPOINT__…` carrier for every module endpoint a composed
+solution's `api.consumes` names and one for every composed solution's backend
+endpoint — the one `http` or `rest` endpoint its `service-entry` declares — in
+a run at the address the run allocated, at the gateway's own network access;
+in a render at the producer's in-cluster address. The gateway resolves both
+through the Codefly SDK from the carrier and forwards plain HTTP: a solution
+reports no address and serves no certificate, the mesh carries its identity.
+No dependency edge is added: the gateway neither waits on nor builds a module
+or a solution. The derivation is the one every carrier uses (the producer's
+own mappings, judged by its declared visibility for the gateway's module, so a
+solution's backend endpoint is `visibility: internal`). A composition with no
+single answer — a consume that names a module under another `as` (the host
+routes `/v1/<module>`), a module the workspace does not compose, two solutions
+reaching one module through different endpoints, or a solution entry with no
+or several HTTP endpoints — is refused naming it. One route that cannot be
+derived — an endpoint the gateway's module may not reach, a producer outside
+the run or not addressed yet, no address at the gateway's network access — is
+**refused in a render** (a committed tree never ships a gateway that answers
+that module 503) and **warned in a run**, once, naming it: the gateway starts
+with every other route.
+
+**A native run is loopback, except the host gateway.** The address a native
+run hands every service to listen on (its own `CODEFLY__ENDPOINT__…` carrier)
+is a loopback address, the laptop's stand-in for the mesh's reachability rule:
+nothing off the machine reaches a service, and only the host's gateway may be
+reachable off loopback. A service must listen on exactly the host its carrier
+names. Once a service is Running the run dials each of its ports once on each
+of the machine's non-loopback addresses and **warns** when one answers, naming
+the service, its agent and the address; it is a warning until every agent
+listens on its carrier's host, when it becomes a refusal.
 
 A render delivers a service the **same workspace configuration groups** `codefly
 run` delivers it: the groups it declares under
@@ -536,7 +614,11 @@ codefly run job db-migration --module=backend --with-services  # Start service d
 ### `codefly delivery key`
 
 Create or load this machine's developer delivery key and print its key ID and
-public key PEM. Add the ID under `host.developers` on a declared local k3d
+public key PEM. A native run (`codefly run service`, `solution` or
+`workspace` in a host environment) needs no workspace entry for it: the run
+owns a temporary CA and writes the host's local profile itself, admitting this
+key for the host's domain, so nothing per machine is committed to a shared
+composition. Add the ID under `host.developers` on a declared local k3d
 environment before running it. Private custody stays in the OS keychain, or a
 0600 file in `~/.codefly/delivery-keys` when no keychain is available. The same
 machine key is returned on later calls.
@@ -561,14 +643,7 @@ codefly run cluster documents --env local --app-project platform --yes
 ```
 
 It installs Argo CD if the cluster has none (the release the k3d qualification
-pins), and the local SPIFFE issuer: cert-manager v1.21.2 with its default
-CertificateRequest approver disabled, csi-driver-spiffe v0.15.0, and a cluster
-CA kept in Kubernetes. Both manifests are verified before applying and every
-image is pinned by digest. Existing components are used as installed; an
-existing cert-manager must already disable its default approver before the
-CLI can add the SPIFFE driver. It waits for the webhook, issuer, driver and
-approver before rendering modules. It provisions the `platform-authority` namespace and its `delivery`
-ServiceAccount and the modules' namespaces, writes the local host's trust
+pins). It provisions the modules' namespaces, writes the local host's trust
 anchor — one public-key verification policy admitting the
 listed developer key held on this machine, bound to this cluster's CA fingerprint, re-written (and the
 host restarted) when the cluster is recreated — then for each module renders it (images built and pushed),
@@ -577,19 +652,20 @@ promotes it locally — the developer's signed publish is the approval on a loca
 cluster, so it fast-forwards the local base branch and generations rise with
 each rebuild — serves the latest promotion to Argo CD, applies each module's
 Argo bootstrap, and waits for every delivery Job, printing the host's answer
-for each document. A refused delivery fails the run. `--delivery-timeout`
+for each module manifest. A refused delivery fails the run. `--delivery-timeout`
 bounds each wait. Stopping a run is not removal: a binding is withdrawn by a
-published tombstone. See [delivery documents, "Local runs"](solution-host-bindings.md#local-runs),
+published withdrawal. See [module manifests, "Local runs"](module-manifests.md#local-runs),
 which also lists what the local host's profile must contain.
 
-A service requesting `workspace-configuration-dependencies: [workload-identity]`
-requires `host.gateway: <module>/<service>` in the environment. The render
-mounts its SVID at `/var/run/secrets/spiffe.io`, grants its ServiceAccount
-permission to create CertificateRequests, and mounts three peer allowlists at
-`/etc/codefly/workload-peers`. It supplies the configuration group's seven
-file paths, including the existing projected token. Peer identities come
-from the composition: each consumer trusts the gateway; the gateway trusts
-every explicit consumer, including itself when it requests the group.
+No workload is issued a certificate: a workload's transport identity is the
+cell's mesh principal, the SPIFFE ID of its ServiceAccount, which the mesh
+presents on every hop and the workload never does. A service requesting
+`workspace-configuration-dependencies: [module-authority]` is handed that
+principal (with the host's two audiences and the internal token) by the
+render, and runs as the account it names. The edges the mesh admits are
+delivered as data in the render record (`meshEdges` in
+`.codefly-render.json`), for the cell's applier to compile; see
+[module manifests, "Mesh edges"](module-manifests.md#mesh-edges).
 
 ### `codefly build runnable <name>`
 
@@ -720,10 +796,89 @@ is the total observation budget for the command, shared across every service it
 observes. The same flags apply to `codefly deploy module`. See
 [deployment completion stages](deployment-completion.md).
 
+**The cell file.** A render for an environment that declares a `host:` block
+also re-derives that environment's cell file,
+`<gitops path>/cells/<environment>/cell.yaml` (`codefly/cell/v1`,
+`pkg/gitops/cellfile`): one namespace entry per module tree rendered for the
+environment, each workload as rendered — its exact pod selector, the account
+and SPIFFE identity it runs as, the container that authenticates, every image
+by digest — with the endpoints a serving workload declares (`port` is the
+container port the mesh authorizes, `service_port` the Service's), who the
+composition says calls them (service dependencies, a solution's
+`api.consumes`, and every `${endpoint:<module>/<service>/<endpoint>}` a
+service reads through a workspace configuration group it declares or its own
+configuration for the environment — the render names each edge only the
+configuration declares, and refuses a reference to an endpoint the
+composition does not have, naming the service, the key and the target), the ingress routed onto them (a route onto an
+endpoint the service does not declare, or does not expose `public`, refuses the render by route, service and endpoint,
+as the mesh render does), the presence carrier of every module that renders a module manifest (the Job publish writes
+to POST it: its pod labels, the `delivery` account in the module's namespace, its container and digest-pinned image,
+declared from the same rule the Job is rendered from — the render never writes that Job, so it is never read off a tree),
+and what the environment declares per `<module>/<service>` under `cell:`
+and `egress:` (external hosts; a managed service's `egress-cidrs`). The
+`cell:` entry names the platform `bindings` the service holds, `cloud-identity`
+when it runs under a cloud identity, and `presenter`: the endpoints whose
+listener accepts only a protected waypoint's assertion of the caller. The cell
+fronts each presenter endpoint with a waypoint, admits the waypoint alone on
+that port, hands the service the waypoint's identity and exports the principal
+the waypoint runs as; the file carries the fact on the endpoint
+(`presenter: true`). A presenter endpoint the service does not declare is
+refused at render, by name. The labels that attach the waypoint to the presenter's
+Service are the cell's to name and come from the environment's `service-mesh:`
+block (`docs/configuration-contract.md`); the cell file does not carry them. A service whose render includes a non-serving
+workload (an agent's bootstrap Job) is listed as a consumer of its own
+endpoints, so the Job's identity is admitted to the service it bootstraps.
+
+```yaml
+environments:
+  staging:
+    host: {coordinate: region-a, component: platform-host, trust_domain: cell.example}
+    telemetry: {otlp-endpoint: otel.internal.ops.example:443}
+    cell:
+      edge/gateway: {bindings: [identity], presenter: [workload]}
+      shop/api: {bindings: [vault, identity], cloud-identity: true}
+    egress:
+      shop/api: {hosts: [identity.example.test, {name: api.github.com, port: 8443}]}
+```
+
+**Where a service's telemetry goes.** An environment's `telemetry:` block names
+the OTLP intake its services export operational traces to: `otlp-endpoint` as
+`host:port` (TLS; `insecure: true` for plaintext) or as an `http://`/`https://`
+URL. On a hosted environment it is imported from the coordinate contract — the
+producer resolves it, as it resolves every other address; `local` names the
+developer's own collector. No service declares it and no configuration group
+carries it: every service the CLI runs (`codefly run`, native or container) or
+renders (`codefly deploy gitops render`) receives OpenTelemetry's own variables,
+derived like the self-endpoint carrier and layered beneath an operator's `--set` —
+`OTEL_EXPORTER_OTLP_ENDPOINT` (always a URL: a bare `host:port` is delivered as
+`https://host:port`, or `http://` when `insecure`, because the scheme is how every
+SDK learns the transport), `OTEL_SERVICE_NAME` (`<module>/<service>`) and
+`OTEL_RESOURCE_ATTRIBUTES` (`service.namespace=<module>,deployment.environment.name=<env>`).
+An SDK that sees them exports; an environment with no `telemetry:` delivers none
+and a service exports nothing.
+
+This cell file is the render's inventory of a composition; it is not the
+retired `codefly/cell/v1` *import descriptor* that `environment import`
+rejects below, which named a cluster's coordinates and never a workload. The file names its repository, branch
+and revision (`source`) when the environment declares a gitops `repo-url` and `branch`
+and the workspace is a git checkout; the render says so when it cannot. The
+`revision` is the commit the render was **based on** (the checkout's HEAD), the
+parent of the commit that will hold the rendered trees and the file — a render
+cannot name the commit it is committed in — and equal to it only when the
+render changed nothing. A consumer that pins the cell to an exact commit sets
+`revision` itself (infra-base's pin writes the commit it reviewed); a cell
+tracking the branch reads the branch head. It is
+regenerated whole — a workload absent from it is not delivered — and is what
+the cell's infrastructure derives its namespaces, mesh contract, admission set
+and verifier allows from, instead of transcribing them. The consumer validates
+it as another repository's output; this side writes it deterministically and
+reads it back through its own reader.
+
 For a complete module promotion, use the GitOps lifecycle:
 
 ```bash
 codefly deploy gitops render payments --env production --app-project payments
+codefly deploy gitops render --all --env production   # Every composed module, the host first
 codefly deploy gitops plan payments --env production
 codefly deploy gitops publish payments --env production
 
@@ -736,6 +891,19 @@ codefly deploy gitops observe payments --env production \
 codefly deploy gitops rollback payments --env production \
   --to-revision <previous-reviewed-commit>
 ```
+
+`render --all` renders every module the workspace composes, the host first,
+and derives the environment's cell file once at the end from all of them, so
+one command renders one composition and a stale sibling tree is never a reason
+to run the render again. A single-module `render` re-derives the cell file
+from its own tree and the sibling trees already rendered; a sibling the cell
+file cannot read, or one left at another inventory schema, is reported as
+stale by name rather than failing the render. An image whose inputs did not
+change is kept rather than rebuilt, and that decision is taken before any Go
+module graph is fetched, so a render of an up-to-date composition fetches
+nothing; `--rebuild` builds every image regardless. A service that declares
+module identity runs as its own ServiceAccount, and a rendered Job without pod
+labels is labelled so the cell file can select it.
 
 `render`, `snapshot`, `plan` and `publish` evaluate the workspace readiness
 verdict for the target environment **before** they do any expensive work, and
@@ -830,6 +998,84 @@ refused before anything is built. A pushed `codefly build service` for an
 environment with no `cluster` builds a portable artifact instead: every platform
 its recipe declares.
 
+**Base images follow the environment's registry mirror.** Every agent's
+Dockerfile names its base generically (`FROM debian:trixie-slim`), because an
+agent is written once and built into every cell — so that reference resolves
+against Docker Hub, anonymously, for every service of every environment. Docker
+Hub throttles anonymous reads per IP, and one `429` fails a render. An
+environment answers that with `registry.mirrors`: a map from a registry's
+canonical host to where **this** environment reads it from instead, imported
+from a `codefly/coordinate/v1` contract exactly like `registry.url`.
+
+```yaml
+environments:
+  - name: staging
+    registry:
+      url: us-east1-docker.pkg.dev/example/images
+      auth: gar
+      mirrors:
+        docker.io: us-east1-docker.pkg.dev/example/dockerhub   # a remote repository
+```
+
+The builder applies it in the two places a build reaches a base image:
+
+- the BuildKit builder the CLI provisions is created with a buildkitd registry
+  configuration naming the mirror, so `FROM debian:trixie-slim` pulls through it
+  with **no Dockerfile naming a cell's registry**. An environment that declares
+  a mirror therefore always builds on the CLI's own container-driver builder,
+  whatever the platforms, because the default `docker`-driver builder takes no
+  buildkitd configuration at all. A builder's configuration cannot be read back
+  out of it, so each distinct mirror set gets a builder of its own
+  (`codefly-<digest>`); an environment with no mirrors keeps the shared
+  `codefly` builder. A `--builder` the caller supplies is still authoritative
+  and is used as given;
+- the base-image resolution the [reuse decision](#keeping-an-image-whose-inputs-did-not-change) performs
+  reads each manifest from the mirrored reference. A reference with no path
+  component is in Docker Hub's `library` namespace, which is where a
+  pull-through repository serves it, so `debian:trixie-slim` is read as
+  `<mirror>/library/debian:trixie-slim`.
+
+It is a read-side substitution only: nothing is pushed to a mirror, the recipe
+is unchanged, and **the image's identity does not change because a mirror served
+it** — a mirror serves the same content, so the resolved digest is the same and
+it is the digest, never the registry it came from, that the reuse key binds.
+
+A mirror is **not** authenticated by `registry.auth`, which is the push side and
+covers `registry.url` alone (and today is wired for `ecr` and `acr` only — `gar`
+and `ghcr` are stubs). Both halves of a mirrored read use the host's Docker
+credential store instead: `docker buildx imagetools inspect` for the resolution,
+and the container-driver builder for the pull. So log in to the mirror's
+registry on the machine that renders before it renders — for an Artifact
+Registry remote repository, `gcloud auth configure-docker us-east1-docker.pkg.dev`
+— or use a mirror that serves anonymously.
+
+The key is the registry host as a reference parser normalizes it, which is also
+how BuildKit looks a mirror up, so the two never disagree about which registry a
+reference names. An unqualified reference and `index.docker.io` both normalize
+to `docker.io` and read through a `docker.io` key; `registry-1.docker.io` is
+folded by neither the parser nor BuildKit, so it is a registry of its own —
+declare a second key under that spelling if a Dockerfile writes it.
+
+`mirror.gcr.io` is a public, anonymous Docker Hub mirror and needs no
+infrastructure of your own, so it is the quickest way to see the field work
+(`docker.io: mirror.gcr.io`); a per-cell remote repository is what a deployed
+environment should use, because it is the one whose quota and availability the
+cell owns. Either way the mirror must serve the upstream repository path
+unchanged — a pull-through registry does; a repository you push copies into by
+hand does not, and would resolve a base to a different digest.
+
+That property is load-bearing, because the mirror is not on every path. A
+`--builder` the caller supplies runs with its own buildkitd configuration — the
+render warns when an environment declares a mirror and a build lands on one —
+and BuildKit treats a mirror as a preference rather than a rule: when the mirror
+does not serve a manifest or a blob it falls back to the upstream registry. In
+both cases the resolution still read the mirror and bound its digest while the
+pull went elsewhere. A mirror serving the upstream content makes that
+indistinguishable — the digest is the same either way, which is the whole
+premise — but it also means neither the build output nor the reuse key records
+*which* registry answered, so a mirror serving something else would be
+bound as if it were upstream.
+
 `render` is a function of the workspace and needs no cluster: by default no
 service's manifests are sent to a Kubernetes API. Pass `--validate-cluster` to
 also dry-run each rendered service server-side (`kubectl apply --server-side
@@ -918,6 +1164,17 @@ service-secrets:
         CODEFLY__…__IDENTITY_CLIENT_SECRET:
           key: lodestar-identity
           property: client_secret
+        # key + property + secret-store: this one key is read through a store of
+        # its own (a cell keeps its identity provider's secrets apart); the
+        # service's other keys keep the service's store. Rendered as the
+        # ExternalSecret data item's sourceRef.storeRef, so one ExternalSecret
+        # still owns the service's Secret.
+        CODEFLY__…__IDENTITY_CLIENT_ID:
+          key: workos-app
+          property: client_id
+          secret-store:
+            name: platform-identity
+            kind: ClusterSecretStore
       # defaults template: applies to every key not listed above; "{service}"
       # and "{key}" are substituted
       defaults:
@@ -1015,7 +1272,18 @@ service-secrets:
       services: [runtime/store]
       keys: [POSTGRES_USER]
       format: identifier          # hex (default), base64, identifier; `bytes` sizes it
+    - scope: service
+      configuration: signing
+      services: [witness/log]
+      keys: [SIGNING_KEY]
+      format: ed25519-pkcs8       # an Ed25519 private key, base64 PKCS#8 DER; no `bytes`
 ```
+
+`ed25519-pkcs8` mints a private key rather than random bytes. Like every
+generated value it is written only where no remote key holds it, so a key a
+service already signs with is never replaced by a second run. It is one
+workload's key: a plan in which more than one service reads it is refused, and
+the remedy is to remove the extra reader, never to re-mint the key.
 
 A key its producer declares as a template (core's `ConfigurationValue.template`
 — a Postgres agent's `READ_WRITE_CONNECTION`, say: role, address and database
@@ -1102,7 +1370,31 @@ codefly deploy dev payments/api --env staging --commit --push
    re-derived so the tree still matches it. It refuses when the module was never
    rendered, was rendered for another environment (or another `--app-project`,
    when given), was edited since its render, or does not pin the image the build
-   produced — in every case: run the full render first.
+   produced — in every case: run the full render first. The delivery overlay
+   (`module-manifests/`) is publish's, not the render's: publish settles and
+   signs the manifest there and adds its delivery Job after the render, so that
+   directory is compared on neither side and carried into the re-derived
+   inventory as found; "edited since its render" means a file the render owns.
+
+   When the environment declares a `host:` block, the environment's cell file
+   (`<gitops path>/cells/<environment>/cell.yaml`) is re-derived from the
+   rendered trees exactly as a render derives it, written, and is among the
+   changed files. A cell admits only the builds its cell file names — a
+   validation cell takes that approval from the branch head's file — so a
+   re-pin the file did not carry would be refused at admission and never run.
+   Because the file is derived from the whole workspace, it may move nothing
+   but the service's own image digests and the `source` revision against the
+   file the branch carries (the workspace's `HEAD`; the file on disk when the
+   workspace is not a git checkout). Anything else — a sibling module rendered
+   and not committed, an uncommitted environment change, a sibling tree at
+   another inventory schema — would be approved by the dev deployment's
+   commit, so it is refused, naming each namespace that moved, before the image
+   is built: commit those changes (after `codefly deploy gitops render --all
+   --env <env>` if the trees are stale), then deploy again. That includes an
+   earlier dev deployment of another service left uncommitted: commit it
+   before the next. After the build, only digests of the repositories it
+   produced may move. With no committed cell file there is no approval to
+   replace, and it refuses the same way.
 4. **Record.** `.codefly-render.json` gains a `dev` entry for the service:
    source origin and path, the source's git commit and whether it was dirty, the
    image and digest, and the time. `codefly doctor workspace` reports each one as
@@ -1357,6 +1649,38 @@ per run when it does). An overlay entry selects exactly one of
 clone's `path:` once it materializes the module, and says so when it does.
 Setting `resolve.<name>.pinned: true` revokes the opt-out and returns the
 module to verified resolution.
+
+##### Pinning at a commit (validation)
+
+A module's `version:` may be a full commit SHA — exactly 40 lowercase hex
+characters — instead of a tag. This is how a validation environment composes
+modules before any tag exists: the cell is built at commits, and the tag is cut
+once the cell is green. The pin resolves by cloning `source` at exactly that
+commit, lands in the cache beside the tagged checkouts as
+`<owner>/<repo>/<sha>/`, and is recorded with mode `commit` in the
+[receipt](#resolution-receipts), with the commit in its `commit` field. No `v`
+prefix is applied, no tag lookup is made, and the moved-branch check holds by
+construction — a commit's name is the hash of its content — so what `run`
+verifies instead is that the checkout's HEAD is the pinned commit. The clone
+asks the server for that one object shallowly first and falls back to a full
+fetch when the server refuses a request for an unadvertised object. Nothing
+about a commit pin is signature- or digest-checked, and no `module-trust`
+entry can make it so: **a commit pin is for validation; a release still needs
+a tag.** It needs no `git: true` or `module-resolution` entry — the pin itself
+says it, and `run` prints `commit pin for <name>: cloned at <sha>, unverified`
+when it materializes one, while `codefly doctor workspace` reports it as
+`module_unverified` with the tag as the remediation. A short SHA or a branch
+name is not a commit pin and keeps failing as a tag that does not exist.
+
+Two readers hold the line between validation and release. The render records
+the pin in its inventory — `pin: {source, version, mode: tag|commit, commit}`,
+absent for a module composed from the workspace's own tree — and judges
+nothing: whether a commit-pinned delivery may land is the cell's call, by its
+class, and that record is what its loader refuses on. `codefly publish` refuses
+at pre-flight, before any version is bumped, anything is signed or a tag
+reaches origin, a repository whose committed workspace pins any module or
+workspace at a commit: `module <name> is pinned at commit <sha>: a commit pin
+is for validation; release from a tag`.
 
 ##### Committed git resolution
 
@@ -1650,8 +1974,9 @@ do](#which-commands-materialize) — is recorded as a receipt in
 receipt binds the request it answered — canonical source, module subpath,
 requested version or constraint — to what that request resolved to: the
 materialization mode (`verified`, `git` for the overlay opt-out, or
-`declared-git` for the committed `module-resolution` entry, and
-`overlay-verified` for a `pinned: true` the CLI has consumed), the exact
+`declared-git` for the committed `module-resolution` entry,
+`overlay-verified` for a `pinned: true` the CLI has consumed, and `commit`
+for a [commit pin](#pinning-at-a-commit-validation)), the exact
 resolved version,
 the path, and for a verified package its artifact digest and commit.
 
@@ -2089,6 +2414,40 @@ process; public agent downloads continue to work without either.
 A module-agent repository publishes only the immutable Git tag. If the release
 pull request merged but the tag push failed, re-run: the untagged release commit
 is recognised and finished rather than bumped again.
+
+A module agent's release carries its version everywhere the module states one.
+In a module repository (`agent.codefly.yaml` with `kind: codefly:module`) the
+release commit also:
+
+- sets the top-level `version:` of every `service.codefly.yaml` the
+  repository's workspace composes — the value Codefly hands each service as
+  `CODEFLY__SERVICE_VERSION`, so a released module's services report the
+  module's version on `/version`, in a run plan and in producer ids, instead of
+  `0.0.0`;
+- sets the `version:` of each composed module's `module.package.codefly.yaml`,
+  the version core resolves a verified package from (GitHub release
+  `v<package version>`);
+- regenerates that module's API catalog (`contracts/api/catalog.codefly.json`)
+  and its derived runnables (`contracts/runnables/`) at the released version,
+  through the generators that wrote them: the catalog is re-emitted by `generate
+  contracts`' writer over the endpoints it records, after the committed
+  contract files are verified against it, and the runnables are derived again
+  in full. A catalog that no longer matches its contract files is refused —
+  run `codefly generate contracts` and commit it first.
+
+The services and modules are found through `workspace.codefly.yaml` and each
+`module.codefly.yaml` — never by searching the tree, so a fixture workspace
+elsewhere in the repository is not touched, and never through the machine-local
+`codefly.local.yaml`, so a developer's local `path:` override does not change
+what is released. A pinned module reference (one with a `source`, `module` or
+`version`) is released from its own repository and is skipped.
+`agent.codefly.yaml` stays the one place the version is decided: nobody edits a
+service's or a package's `version:` by hand, and the release refuses a merged
+`main` where any manifest disagrees with the tag. A manifest already carrying a
+version past the release is refused rather than moved backwards (release with
+`minor` or `major` to reach it), a composed service or package with no
+`version:` is refused at pre-flight, and `--dry-run` lists every manifest it
+would set and every path it would regenerate.
 
 Releasing does not update what the repository *pins*. Move a dependency first —
 `codefly agent deps --dir <agent> --pin vX.Y.Z` for an agent's Core pin,
@@ -2705,9 +3064,17 @@ libraries/saas-starter-accounts-client/
     catalog.codefly.json         # the endpoint's catalog entry (subset if --services)
     contract.binpb | openapi.json
   go/        go.mod, gen/…, accounts_facade.pb.go
-  typescript/ package.json, src/gen/…, src/accounts_facade.ts
+  typescript/ package.json, tsconfig.json, src/index.ts, src/gen/…, src/accounts_facade.ts
   python/    pyproject.toml, <pkg>/_gen/…, <pkg>/accounts.py
 ```
+
+The TypeScript library is an ESM package whose root resolves to `dist/index.js`
+(types `dist/index.d.ts`). `src/index.ts` is generated output, rewritten on
+every run: a barrel re-exporting every facade and every generated binding, so
+the package name alone reaches every client and message schema. The scaffold
+(`package.json`, `tsconfig.json`) is written once and declares a `typescript`
+dev dependency and a `build` script (`tsc -p tsconfig.json`) that produces
+`dist/` — the only directory, with the README, that the package ships.
 
 Use `codefly sync library-dependencies` to link a generated library into a
 service locally, and `codefly publish library <name>` to distribute it.
@@ -2771,6 +3138,18 @@ complete and unchanged; the inventory supplies each catalog row's served
 supply the inventory, since copying a full descriptor to each cannot prove which
 listener serves a method. A single endpoint keeps the full-descriptor default;
 restricted single listeners must also supply their inventory.
+
+A declared inventory also settles which proto **package** each endpoint's
+contract covers, which matters for a service that generates client stubs from
+another service's API. Those protos declare services in a foreign package and
+must sit in the owned tree for codegen to reach them, yet the endpoint does not
+serve them. Without an inventory such a tree is refused — `proto declares
+services in multiple packages …; a contract endpoint must be single-package` —
+for a contract that is in fact single-package. With one, candidate packages are
+scoped to those the inventory names. A service that declares no inventory is
+unaffected, and so is one whose inventory names no package the descriptor set
+declares a service in: the single-package rule and its diagnostics stand
+unchanged, rather than yielding an empty contract.
 
 This input is a stopgap for the released Core/agent endpoint report. In Core
 v0.18.0, `GrpcAPI.rpcs` is loaded from the service's shared proto, without
@@ -2899,10 +3278,13 @@ environments:
       SAAS__ACCOUNTS_CONNECT_INVOKE_SOURCE_OPERATION: []
 ```
 
-The output records each decline as a comment line, the command names it, and
-`codefly doctor workspace` reports it as `runnable_binding_declined`. An absent
-key is still refused, a null value is refused, and `[]` on an operation with no
-required scope slot or on a key naming no derived operation is refused. See
+The output records each decline as a comment line naming the key and no
+environment (the file is the configuration profile's, which several
+environments may share), the command names it, and `codefly doctor workspace`
+reports it as `runnable_binding_declined`. An absent key is still refused, a
+null value is refused, and `[]` on an operation with no required scope slot or
+on a key naming no derived operation is refused — by generation, and by the
+doctor as `runnable_binding_decline_invalid`. See
 [declining a binding](runnable.md#declining-a-binding-in-an-environment).
 
 Each binding becomes one key in the workspace configuration group
@@ -3229,12 +3611,20 @@ What it checks, in order:
 3. The requested environment resolves through the workspace declaration
    (`local` is implicit when undeclared).
 4. Declared secret backends are supported and their executables are on PATH
-   (`op` for 1Password). Each runnable binding the environment declines with
-   `runnable-scope-selections: { KEY: [] }` is named as a
+   (`op` for 1Password).
+5. Each runnable binding the environment declines with
+   `runnable-scope-selections: { KEY: [] }` is judged against the operations
+   the workspace's modules derive, with the rule `generate runnable-bindings`
+   applies. A decline generation honours is named as a
    `runnable_binding_declined` warning: no binding is prepared for it, so a
-   service that installs it is refused where it reads `runnable-bindings/KEY`
-   (see [generate runnable-bindings](#generate-runnable-bindings)).
-5. Every workspace configuration group services declare under
+   service that installs it is refused where it reads `runnable-bindings/KEY`.
+   A decline generation refuses — the key names no derived operation, or one
+   with no required scope slot — fails as `runnable_binding_decline_invalid`
+   (see [generate runnable-bindings](#generate-runnable-bindings)). Derived
+   operations that cannot be read at all fail as
+   `runnable_operations_unreadable`. Like the checks below, it needs every
+   composed module materialized.
+6. Every workspace configuration group services declare under
    `workspace-configuration-dependencies` is provided and defines values.
    The doctor reads exactly what a run provisions: the workspace's own
    `configurations/<profile>/*` composed with the groups each composed module
@@ -3244,8 +3634,8 @@ What it checks, in order:
    (`configuration_duplicate`, naming both providers) until the workspace
    declares it. A missing `configurations/<profile>` directory fails only for
    the groups no composed module provides. The directory is never created.
-6. Per-service `configurations/<env>` files parse; duplicates are flagged.
-7. Every `${endpoint:<module>/<service>/<endpoint>}` reference in a workspace
+7. Per-service `configurations/<env>` files parse; duplicates are flagged.
+8. Every `${endpoint:<module>/<service>/<endpoint>}` reference in a workspace
    configuration a service in scope declares names a service of the workspace
    and an endpoint that service declares and the consumer's module may receive
    (`configuration_reference_unresolved`, one per reference, naming the
@@ -3260,7 +3650,7 @@ What it checks, in order:
    profile's `exclude-dependencies` — is not refused here: the producer is
    still a service of the workspace, and core's resolution drops that value
    for the consumer, saying so, when the producer is not part of the run.
-8. Secret provider references (`op://…`) resolve in memory through the
+9. Secret provider references (`op://…`) resolve in memory through the
    configured backend; resolved values are discarded immediately. Plaintext
    values shaped like unsupported reference schemes are flagged.
 
@@ -3289,7 +3679,9 @@ message, remediation?}]}`. Output never contains configuration values, raw
 `provider_resolution_failed`, `plaintext_not_allowed`,
 `reference_scheme_unknown`, `module_not_materialized`,
 `agent_override_active`, `agent_override_invalid`,
-`runnable_binding_declined`, `timeout`. Automation
+`runnable_binding_declined`, `runnable_binding_decline_invalid`,
+`runnable_operations_unreadable`, `timeout`.
+Automation
 should match on codes, never
 on message prose; renaming or removing a code bumps `schema_version`.
 
@@ -3423,6 +3815,16 @@ is patched, so a reference is resolved to its manifest digest and the digest goe
 in the key. A base reference the build cannot resolve — an unreachable registry,
 no container engine, a value the recipe parameterizes — makes the recipe decline
 reuse and build.
+
+A reference **already pinned by digest** (`FROM debian@sha256:…`) is bound
+without any registry read: the digest is the resolution, so asking can only
+return the same answer or fail. That matters beyond the saved round trip, since
+an unresolvable reference declines its whole recipe — a throttled registry would
+otherwise rebuild every image whose inputs provably did not move. Where a
+reference that is *not* pinned is read from follows the environment's
+[`registry.mirrors`](#codefly-deploy-service-name); what goes in the key is the
+reference the recipe names with the digest that was resolved, so an image is not
+a changed input because a mirror served it.
 
 **What no digest over inputs can bind:** whatever a build step fetches from the
 network itself. A `RUN` that installs from a mutable package index reads bytes no

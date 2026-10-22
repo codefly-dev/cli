@@ -1,8 +1,6 @@
 package gitops
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 )
 
@@ -53,16 +51,4 @@ func validateObjectIdentities(documents []manifest, namespace string) error {
 		}
 	}
 	return nil
-}
-
-// Compare complete effective objects, with deterministic encoding so formatting
-// of their source YAML is immaterial. Identity defaulting does not alter these
-// bytes: an enclosing transform may not rewrite a service's own output.
-func sameObjectBytes(left, right manifest) (bool, error) {
-	a, err := json.Marshal(left.value)
-	if err != nil {
-		return false, err
-	}
-	b, err := json.Marshal(right.value)
-	return bytes.Equal(a, b), err
 }

@@ -160,6 +160,13 @@ func (d *derivation) refusal() error {
 // deriveRunnables walks every protobuf contract the module published and
 // derives the operations its methods declare.
 func deriveRunnables(ctx context.Context, workspace *resources.Workspace, module *resources.Module) (*derivation, error) {
+	return deriveRunnablesIn(ctx, workspace.Name, workspace.Dir(), module)
+}
+
+// deriveRunnablesIn is deriveRunnables for a caller that holds the workspace's
+// name and root rather than a loaded workspace — a release, which reads the
+// repository's committed declarations only.
+func deriveRunnablesIn(ctx context.Context, workspaceName, workspaceDir string, module *resources.Module) (*derivation, error) {
 	catalog, err := loadPublishedContracts(module)
 	if err != nil {
 		return nil, err
@@ -172,10 +179,10 @@ func deriveRunnables(ctx context.Context, workspace *resources.Workspace, module
 
 	derived := &derivation{
 		release:      release,
-		workspaceDir: workspace.Dir(),
+		workspaceDir: workspaceDir,
 		index: &runnablespkg.Index{
 			Schema:     runnablespkg.IndexSchema,
-			Workspace:  workspace.Name,
+			Workspace:  workspaceName,
 			Module:     module.Name,
 			Operations: []runnablespkg.IndexEntry{},
 		},

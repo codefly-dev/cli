@@ -180,3 +180,47 @@ func decodedModuleManagedServices(t *testing.T, encoded []byte) map[string]any {
 	}
 	return decoded.Environments[0].ManagedServices
 }
+
+// The module bundle generator is the agent that reads the carried keys, so the
+// workspace it is handed carries them verbatim: the environment's own and each
+// managed service's.
+func TestTransportNeutralModuleWorkspaceCarriesModuleOwnedKeys(t *testing.T) {
+	var declared environments.Environment
+	if err := yaml.Unmarshal([]byte(`name: production
+namespace: payments
+key-service: kms
+managed-services:
+  store:
+    kind: cloud-sql-postgres
+    external-name: 127.0.0.1
+    port: 5432
+    auth-mode: external-identity
+    instance-connection-name: project-1:us-east1:store
+`), &declared); err != nil {
+		t.Fatal(err)
+	}
+	workspace := &resources.Workspace{
+		Name:         "workspace",
+		Environments: []*resources.Environment{resourceEnvironment(t, &declared)},
+	}
+	encoded, err := encodeTransportNeutralModuleWorkspace(workspace, "payments")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Environments []struct {
+			KeyService      string                    `yaml:"key-service"`
+			ManagedServices map[string]map[string]any `yaml:"managed-services"`
+		} `yaml:"environments"`
+	}
+	if err := yaml.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Environments) != 1 || decoded.Environments[0].KeyService != "kms" {
+		t.Fatalf("the generator was not handed key-service:\n%s", encoded)
+	}
+	store := decoded.Environments[0].ManagedServices["store"]
+	if store["auth-mode"] != "external-identity" || store["instance-connection-name"] != "project-1:us-east1:store" {
+		t.Fatalf("the generator was not handed the managed service's carried keys:\n%s", encoded)
+	}
+}

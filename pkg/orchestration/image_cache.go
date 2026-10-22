@@ -253,7 +253,7 @@ func contextDigest(ctx context.Context, recipe *builderv0.DockerBuildRecipe, sco
 
 // imageBuildIdentity digests the inputs of one recipe's image build. A zero
 // identity with no error means the build is not cacheable and must run.
-func imageBuildIdentity(ctx context.Context, recipe *builderv0.DockerBuildRecipe, plan *builderv0.DockerBuildPlan, scope imageBuildScope, dockerfilePath, builderName string, args []string, proxies map[string]string) (imageIdentity, error) {
+func imageBuildIdentity(ctx context.Context, recipe *builderv0.DockerBuildRecipe, plan *builderv0.DockerBuildPlan, scope imageBuildScope, dockerfilePath, builderName string, args []string, proxies, mirrors map[string]string) (imageIdentity, error) {
 	recipeTree := plan.GetDigest()
 	if recipeTree == "" {
 		return imageIdentity{}, fmt.Errorf("recipe tree of %s declares no verified content digest", recipe.GetName())
@@ -266,7 +266,7 @@ func imageBuildIdentity(ctx context.Context, recipe *builderv0.DockerBuildRecipe
 	if err != nil {
 		return imageIdentity{}, err
 	}
-	bases, err := baseImageDigests(ctx, dockerfilePath, builderName)
+	bases, err := baseImageDigests(ctx, dockerfilePath, builderName, mirrors)
 	if err != nil {
 		return imageIdentity{}, err
 	}
@@ -290,6 +290,11 @@ func imageBuildIdentity(ctx context.Context, recipe *builderv0.DockerBuildRecipe
 	return imageIdentity{Key: "sha256:" + hex.EncodeToString(sum[:]), ContextTree: contextTree}, nil
 }
 
+// proxyPlaceholder is what every fetched Go module proxy path reads as in an
+// identity. It is also what stands in for a proxy that is not fetched yet
+// (placeholderProxies), which is why the two identities agree.
+const proxyPlaceholder = "{proxy}"
+
 // normalizedBuildxArgs rewrites the invocation into the form described on
 // imageInputs.Command: per-run paths become placeholders, and the two flags that
 // say where the build runs and where its metadata lands are dropped.
@@ -297,7 +302,10 @@ func normalizedBuildxArgs(args []string, contextDir, dockerfilePath string, prox
 	substitutions := make([][2]string, 0, 2+len(proxies))
 	substitutions = append(substitutions, [2]string{dockerfilePath, "{dockerfile}"}, [2]string{contextDir, "{context}"})
 	for _, proxy := range proxies {
-		substitutions = append(substitutions, [2]string{proxy, "{proxy}"})
+		if proxy == proxyPlaceholder {
+			continue
+		}
+		substitutions = append(substitutions, [2]string{proxy, proxyPlaceholder})
 	}
 	// Longest literal first: a staged Dockerfile or a proxy can sit inside the
 	// build context, and collapsing the shorter path first would leave the
@@ -373,18 +381,46 @@ func goModuleManifestDigests(contextDir string, recipe *builderv0.DockerBuildRec
 // build is about to pull anyway, on the path that decides whether minutes of
 // build are skipped.
 //
+// A reference already pinned by digest names its manifest and is bound without
+// a read: the digest IS the resolution, so asking a registry for it can only
+// return the same answer or fail. That matters beyond the saved round trip —
+// every unreachable registry declines its whole recipe, so a throttled Docker
+// Hub would otherwise make every digest-pinned recipe rebuild an image whose
+// inputs provably did not move. It is bound in exactly the spelling a resolved
+// reference produces (`<reference>@<digest>`, the reference here already
+// carrying that digest), so identities recorded before this short circuit
+// existed still match.
+//
 // A reference that names an earlier stage is not external and is skipped; a
 // reference the recipe parameterizes, or one that cannot be resolved — an
 // unreachable registry, an unauthenticated one, no container engine — makes the
 // whole recipe decline, so the build runs.
-func baseImageDigests(ctx context.Context, dockerfilePath, builderName string) ([]string, error) {
+//
+// What is read is the mirrored reference (mirroredReference) when the
+// environment declares a mirror for the reference's registry; what is bound is
+// always the reference the recipe names, because a mirror serves the same
+// content and where a manifest was read from is not an input of the image.
+func baseImageDigests(ctx context.Context, dockerfilePath, builderName string, mirrors map[string]string) ([]string, error) {
 	references, err := externalBaseReferences(dockerfilePath)
 	if err != nil {
 		return nil, err
 	}
+	w := wool.Get(ctx).In("orchestration.baseImageDigests")
 	digests := make([]string, 0, len(references))
 	for _, reference := range references {
-		digest, err := resolveImageManifestDigest(ctx, reference, builderName)
+		if _, pinned, ok := strings.Cut(reference, "@"); ok && strings.HasPrefix(pinned, "sha256:") {
+			digests = append(digests, reference+"@"+pinned)
+			continue
+		}
+		read := mirroredReference(reference, mirrors)
+		if read != reference {
+			// Said out loud: an environment that redirects a registry changes
+			// where every generically named base is read from, and nothing in
+			// the recipe or the output names the mirror otherwise.
+			w.Info("reading a base image through the environment's registry mirror",
+				wool.Field("base", reference), wool.Field("read", read))
+		}
+		digest, err := resolveImageManifestDigest(ctx, read, builderName)
 		if err != nil {
 			return nil, fmt.Errorf("resolve base image %s: %w", reference, err)
 		}

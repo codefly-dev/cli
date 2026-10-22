@@ -123,3 +123,10 @@ response naming any other profile is refused, and the local-apply profile is
 the one documented exemption from restricted-rendering evidence, because it
 produces no promotable artifact and nothing persists it.
 
+**A native run asks an agent nothing about what it started.** A `codefly
+run` of a composition whose environment declares a `host` delivers each
+module's signed manifest, which names the workloads that run as the module and
+never their build: the host mints on the attested account, never on a digest.
+`StartStatus.started_artifact` (`runtime-started-artifact/v1`) is not read. See
+[module manifests](module-manifests.md#a-native-run-the-run-answers-as-the-cluster).
+

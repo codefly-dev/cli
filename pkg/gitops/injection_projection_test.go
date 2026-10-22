@@ -192,10 +192,27 @@ func TestDerivedInjectionLeavesUntouchedFilesByteForByte(t *testing.T) {
 func TestRenderInjectionsJoinSelfEndpoints(t *testing.T) {
 	injections, err := deriveRenderInjections(t.Context(), singleModuleWorkspace(), map[string]map[string]string{
 		"wiki/backend": {selfEndpointKey: "http://backend.example-wiki.svc.cluster.local:8080"},
-	}, nil, nil)
+	}, nil, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, "http://backend.example-wiki.svc.cluster.local:8080", injections.forService("wiki", "backend").Public[selfEndpointKey])
 	require.Empty(t, injections.forService("wiki", "other").Public)
+}
+
+// A render delivers the environment's telemetry carriers to every rendered
+// service, exactly as a native run does, so a service exports to the same
+// intake however it is started; an environment declaring none delivers none.
+func TestRenderInjectsTheEnvironmentsTelemetryCarriers(t *testing.T) {
+	env := &environments.Environment{Name: "staging", Telemetry: &environments.EnvironmentTelemetry{OTLPEndpoint: "otel.internal.ops.example:443"}}
+	carriers := telemetryCarriersForRender(env, []string{"wiki/backend", "wiki/worker", "not-a-unique"})
+	require.Len(t, carriers, 2)
+	injections, err := deriveRenderInjections(t.Context(), singleModuleWorkspace(), nil, nil, carriers, nil)
+	require.NoError(t, err)
+	backend := injections.forService("wiki", "backend").Public
+	require.Equal(t, "https://otel.internal.ops.example:443", backend["OTEL_EXPORTER_OTLP_ENDPOINT"])
+	require.Equal(t, "wiki/backend", backend["OTEL_SERVICE_NAME"])
+	require.Equal(t, "service.namespace=wiki,deployment.environment.name=staging", backend["OTEL_RESOURCE_ATTRIBUTES"])
+	require.NoError(t, validateInjectionClassification("backend", injections.forService("wiki", "backend")))
+	require.Nil(t, telemetryCarriersForRender(&environments.Environment{Name: "local"}, []string{"wiki/backend"}))
 }
 
 // A vendor image (redis) declares no CODEFLY__SERVICE, so no container claims
@@ -214,6 +231,20 @@ func TestDerivedInjectionSkipsOfferedCarriersNoContainerClaims(t *testing.T) {
 	}}
 	require.NoError(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, &resources.Service{Name: "cache"}, env, scopeOf(env), selfOnly))
 	after, err := os.ReadFile(filepath.Join(root, "base", "deployment.yaml"))
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(after))
+
+	// The environment's telemetry carriers are offered too: a vendor image has
+	// no SDK to export with. An environment declaring an intake must not stop
+	// every render composing a redis or a postgres.
+	selfAndTelemetry := serviceInjection{Public: map[string]string{
+		"CODEFLY__SELF_ENDPOINT__SAAS__CACHE__READ__TCP": "tcp://cache.example-saas.svc.cluster.local:6379",
+		"OTEL_EXPORTER_OTLP_ENDPOINT":                    "https://otel.internal.ops.example:443",
+		"OTEL_SERVICE_NAME":                              "saas/cache",
+		"OTEL_RESOURCE_ATTRIBUTES":                       "service.namespace=saas,deployment.environment.name=staging",
+	}}
+	require.NoError(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, &resources.Service{Name: "cache"}, env, scopeOf(env), selfAndTelemetry))
+	after, err = os.ReadFile(filepath.Join(root, "base", "deployment.yaml"))
 	require.NoError(t, err)
 	require.Equal(t, string(before), string(after))
 
