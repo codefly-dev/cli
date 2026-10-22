@@ -2285,7 +2285,8 @@ deployments/modules, and resolves each remote property to a source: kept (alread
 stored), propagated (a configuration value another remote key already holds),
 generated (declared random by the environment's service-secrets.generate), or
 required (supplied by the operator, and named). The store is the backend behind
-the SecretStore the render names, read from the environment's cluster.
+the SecretStore the render names, read from the environment's cluster; a render
+reading through several stores is planned and written store by store.
 
 Each property is resolved by the secret key the render reads out of it, not by
 the property name the environment files that key under, so an environment that

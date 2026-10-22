@@ -31,9 +31,46 @@ func TestSecretsRefusesMetadataOnlyWithoutDryRun(t *testing.T) {
 	}
 }
 
-// One plan writes one store. Two stores in one render is a composition this verb
-// cannot seed, and it says which two rather than seeding whichever it saw first.
-func TestResolveSecretStoreRefusesTwoStores(t *testing.T) {
+// One plan writes one store. A render reading through two stores is split into
+// one group per store, each carrying the render's module lists, so each store
+// is planned and written on its own rather than the render being refused.
+func TestRenderedByStoreSplitsOneGroupPerStore(t *testing.T) {
+	cell := environments.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"}
+	identity := environments.EnvironmentSecretStoreReference{Name: "platform-identity", Kind: "ClusterSecretStore"}
+	rendered := gitops.RenderedEnvironment{
+		Modules: []string{"saas", "documents"},
+		Secrets: []gitops.RenderedServiceSecret{
+			{Store: cell, RemoteKey: "a"},
+			{Store: identity, RemoteKey: "b"},
+			{Store: cell, RemoteKey: "c"},
+		},
+	}
+	groups := renderedByStore(rendered)
+	if len(groups) != 2 {
+		t.Fatalf("renderedByStore = %d groups, want 2", len(groups))
+	}
+	if groups[0].Secrets[0].Store != cell || len(groups[0].Secrets) != 2 || groups[1].Secrets[0].Store != identity || len(groups[1].Secrets) != 1 {
+		t.Fatalf("renderedByStore groups = %+v, want cell-secrets (a, c) then platform-identity (b)", groups)
+	}
+	for _, group := range groups {
+		if strings.Join(group.Modules, ",") != "saas,documents" {
+			t.Fatalf("group modules = %v, want the render's", group.Modules)
+		}
+	}
+	// A namespaced SecretStore is one store per namespace.
+	namespaced := environments.EnvironmentSecretStoreReference{Name: "local", Kind: "SecretStore"}
+	perNamespace := renderedByStore(gitops.RenderedEnvironment{Secrets: []gitops.RenderedServiceSecret{
+		{Store: namespaced, Namespace: "saas", RemoteKey: "a"},
+		{Store: namespaced, Namespace: "documents", RemoteKey: "b"},
+	}})
+	if len(perNamespace) != 2 {
+		t.Fatalf("renderedByStore(namespaced) = %d groups, want 2", len(perNamespace))
+	}
+}
+
+// A mixed group never reaches a store: resolveSecretStore names both stores
+// rather than seeding whichever it saw first.
+func TestResolveSecretStoreRefusesAMixedGroup(t *testing.T) {
 	rendered := gitops.RenderedEnvironment{Secrets: []gitops.RenderedServiceSecret{
 		{Store: environments.EnvironmentSecretStoreReference{Name: "cell-secrets", Kind: "ClusterSecretStore"}, RemoteKey: "a"},
 		{Store: environments.EnvironmentSecretStoreReference{Name: "other-secrets", Kind: "ClusterSecretStore"}, RemoteKey: "b"},
