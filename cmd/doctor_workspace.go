@@ -288,7 +288,7 @@ func checkWorkspace(ctx context.Context, opts *workspaceReadinessOptions, report
 	if err != nil {
 		report.add(codeWorkspaceInvalid, "workspace", "fail",
 			fmt.Sprintf("cannot load workspace: %v", err),
-			fmt.Sprintf("fix %s in %s", resources.WorkspaceConfigurationName, dir))
+			"fix the workspace identified by the diagnostic, then retry; explicitly migrate legacy layout before inspection")
 		return nil
 	}
 	report.Workspace = ws.Name
