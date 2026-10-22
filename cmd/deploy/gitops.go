@@ -671,6 +671,9 @@ func printCell(cell *gitops.CellResult) {
 	for _, edge := range cell.ConfiguredEdges {
 		cli.Info("%s", edge)
 	}
+	for _, edge := range cell.DroppedConsumers {
+		cli.Info("%s", edge)
+	}
 	if len(cell.Skipped) > 0 {
 		cli.Info("Cell file leaves out %s: rendered for another environment", strings.Join(cell.Skipped, ", "))
 	}

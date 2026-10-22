@@ -58,6 +58,12 @@ type CellResult struct {
 	// configuration declares (an ${endpoint:…} it reads) that no service
 	// dependency does.
 	ConfiguredEdges []string
+	// DroppedConsumers says, one line each, the consumer edges the
+	// composition declares whose consumer runs no workload this cell file
+	// declares (its module is composed but not rendered for the environment,
+	// or rendered for another one). Such an allow admits nothing, so it is
+	// left out of the file and reported here.
+	DroppedConsumers []string
 }
 
 // cellRoot is the gitops root the cell file is written under: the
@@ -152,12 +158,54 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 		return cellfile.File{}, CellResult{}, fmt.Errorf("no module is rendered for environment %s under %s", env.Name, modulesDir)
 	}
 	sort.Slice(file.Namespaces, func(i, j int) bool { return file.Namespaces[i].Name < file.Namespaces[j].Name })
+	// Consumers are indexed from the whole composition, but a consumer names
+	// a service the reader resolves to this file's workloads. Filtered once
+	// every namespace is known, since a consumer may run in a namespace
+	// derived after the endpoint it calls.
+	result.DroppedConsumers = dropUnrenderedConsumers(&file)
 	sort.Strings(result.Modules)
 	sort.Strings(result.Skipped)
 	if result.Path, err = CellPath(workspace, env); err != nil {
 		return cellfile.File{}, CellResult{}, err
 	}
 	return file, result, nil
+}
+
+// dropUnrenderedConsumers removes from every endpoint each consumer that names
+// a service no workload of the file runs, and returns one sorted line per
+// removed edge. A consumer the reader cannot resolve to a workload is an allow
+// that admits nothing; the file must not carry it. The service's own
+// bootstrap consumer and a host gateway are workloads whenever their module is
+// rendered, so they are kept exactly then.
+func dropUnrenderedConsumers(file *cellfile.File) []string {
+	rendered := map[string]bool{}
+	for index := range file.Namespaces {
+		for _, workload := range file.Namespaces[index].Workloads {
+			rendered[workload.Service] = true
+		}
+	}
+	dropped := map[string]bool{}
+	for namespaceIndex := range file.Namespaces {
+		workloads := file.Namespaces[namespaceIndex].Workloads
+		for workloadIndex := range workloads {
+			workload := &workloads[workloadIndex]
+			for endpointIndex := range workload.Endpoints {
+				endpoint := &workload.Endpoints[endpointIndex]
+				var kept []string
+				for _, consumer := range endpoint.Consumers {
+					if rendered[consumer] {
+						kept = append(kept, consumer)
+						continue
+					}
+					dropped[fmt.Sprintf("cell: %s is composed but runs no workload in environment %s; its allow on %s/%s is not written", consumer, file.Environment, workload.Service, endpoint.Name)] = true
+				}
+				// A new slice: the consumer lists are shared between the
+				// workloads serving one service.
+				endpoint.Consumers = kept
+			}
+		}
+	}
+	return slices.Sorted(maps.Keys(dropped))
 }
 
 // writeCell encodes the cell file and writes it at path.
