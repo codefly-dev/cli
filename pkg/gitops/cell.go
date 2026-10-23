@@ -197,7 +197,11 @@ func cellSource(ctx context.Context, workspace *resources.Workspace, env *enviro
 	if len(revision) != 40 {
 		return nil
 	}
-	return &cellfile.Source{Repo: env.Gitops.RepoURL, Revision: revision, Branch: env.Gitops.Branch}
+	source := &cellfile.Source{Repo: env.Gitops.RepoURL, Revision: revision, Branch: env.Gitops.Branch}
+	if path, err := validateRelativePath(env.Gitops.Path); err == nil && path != "" && path != DefaultGitopsPath {
+		source.Path = filepath.ToSlash(path)
+	}
+	return source
 }
 
 // cellNamespace derives one module's namespace entry from its rendered tree

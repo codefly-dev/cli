@@ -2214,6 +2214,28 @@ readiness validation runs for the selected environment; when it reports the
 workspace is not ready, the command prints the diagnostics and exits non-zero.
 The merged file is still written, so the diagnostics can be read against it.
 
+An imported environment may declare `configuration-source: hosted` and select
+`configuration-profiles: [blue, local]`. Import generates a `profile.codefly.yaml`
+in `configurations/blue/` deriving from `hosted`, using Core's profile inheritance.
+The profile chain selects the first directory at each location; inheritance adds
+shared groups and per-profile values. Import validates every inherited source:
+only flat `.env` inputs and profile derivation metadata are accepted; secret
+files contain empty placeholders, symlinks are refused, and sources may
+not contain environment-specific runnable bindings. Dry-run writes nothing.
+Import refuses authored destination files and retires only its own earlier copied
+outputs, preserving the environment's separately generated runnable bindings.
+Run `codefly generate runnable-bindings --env blue` after import so addresses are
+resolved for blue rather than copied from a sibling.
+
+The cell inventory also carries `source.path` when publication uses a root other
+than `deployments`. Consumers must use that root to discover the published module
+trees. The local render directory remains a qualification tree; `publish` writes
+the environment's declared publication path.
+
+`service-config.services` accepts `<module>/<service>` keys for compositions
+with same-named services. Qualified values override bare values per key. Unknown
+qualified entries and ambiguous bare entries fail workspace validation.
+
 #### `codefly environment show`
 
 Print the resolved `resources.Environment` as YAML (default) or `--json`.

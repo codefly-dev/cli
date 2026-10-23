@@ -937,6 +937,20 @@ type EnvironmentServiceConfig struct {
 	Services map[string]EnvironmentServiceConfigMapping `yaml:"services,omitempty"`
 }
 
+// ValuesFor overlays qualified values on the bare service's values, per key.
+// Workspace validation refuses a bare entry shared by multiple modules.
+func (c *EnvironmentServiceConfig) ValuesFor(module, service string) map[string]string {
+	if c == nil {
+		return nil
+	}
+	values := make(map[string]string)
+	maps.Copy(values, c.Services[service].Values)
+	if module != "" {
+		maps.Copy(values, c.Services[module+"/"+service].Values)
+	}
+	return values
+}
+
 // EnvironmentServiceConfigMapping holds one service's resolved values keyed by
 // the configuration key that consumes them.
 type EnvironmentServiceConfigMapping struct {
@@ -1170,13 +1184,15 @@ func (env *Environment) validateServiceKeyCollisions() error {
 		return nil
 	}
 	for name, config := range env.ServiceConfig.Services {
-		secrets, declared := env.ServiceSecrets.Services[name]
-		if !declared {
-			continue
+		secretNames := []string{name}
+		if _, bare, qualified := strings.Cut(name, "/"); qualified {
+			secretNames = append(secretNames, bare)
 		}
-		for key := range config.Values {
-			if _, collides := secrets.RemoteKeys[key]; collides {
-				return fmt.Errorf("service %q declares %q as both a service-config value and a service-secrets remote key", name, key)
+		for _, secretName := range secretNames {
+			for key := range config.Values {
+				if _, collides := env.ServiceSecrets.Services[secretName].RemoteKeys[key]; collides {
+					return fmt.Errorf("service %q declares %q as both a service-config value and a service-secrets remote key", name, key)
+				}
 			}
 		}
 	}
@@ -1308,6 +1324,9 @@ type Environment struct {
 	// to ConfigurationProfile: each configuration location reads the first
 	// profile it holds (resources.Environment.ConfigurationProfiles).
 	ConfigurationProfiles []string `yaml:"configuration-profiles,omitempty"`
+	// ConfigurationSource is an authored workspace profile materialized by import
+	// into the first selected profile. The destination contains generated files.
+	ConfigurationSource string `yaml:"configuration-source,omitempty"`
 
 	// RunnableScopeSelections answers owner-declared slots per binding key
 	// (the same MODULE__OPERATION key generate runnable-bindings emits).

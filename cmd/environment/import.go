@@ -223,6 +223,9 @@ func runImport(ctx context.Context, opts *importOptions) error {
 	if _, err := environments.FromWorkspace(merged); err != nil {
 		return fmt.Errorf("merged environment declarations: %w", err)
 	}
+	if err := materializeConfigurationProfile(ctx, opts.dir, env, opts.dryRun); err != nil {
+		return err
+	}
 	if opts.dryRun {
 		diff, derr := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
 			A:        difflib.SplitLines(string(original)),
