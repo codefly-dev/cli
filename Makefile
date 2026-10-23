@@ -17,6 +17,12 @@ install-golangci-lint:
 # The gate itself: the whole repository, no baseline — CI runs the same full
 # report, and the rule is that it is clean at the head, pre-existing findings
 # fixed in the PR that meets them.
+# The repository's git hooks (.githooks): gofmt on commit, and on push the
+# golangci-lint and CLI-reference checks CI runs, over what the push changes.
+.PHONY: hooks
+hooks:
+	git config core.hooksPath .githooks
+
 .PHONY: lint
 lint: install-golangci-lint
 	${GOBIN}/golangci-lint run ./...
