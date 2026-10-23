@@ -245,6 +245,7 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		// trailing lines.
 		endLine := yamledit.EndLine(envNode)
 		applyContractFields(envNode, declaredEnvironment)
+		withdrawContractOwnedAbsences(envNode, declaredEnvironment)
 		stampProvenance(envNode, contract, opts)
 		updated, err = spliceEnvironment(original, envNode, endLine)
 	}
@@ -459,6 +460,36 @@ func applyContractFields(target, declaration *yaml.Node) {
 			continue
 		}
 		yamledit.SetMapValue(target, key, value)
+	}
+}
+
+// contractOwnedOptional names the keys a coordinate contract owns whose ABSENCE is
+// itself a statement (docs/coordinate-contract-conventions.md in infra-base): an absent
+// registry.mirrors means "pull the upstream as the Dockerfile names it". Merging alone
+// would keep a mirror the contract withdrew, and the builder would keep mapping to a
+// repository that no longer exists.
+var contractOwnedOptional = map[string][]string{"registry": {"mirrors"}}
+
+// withdrawContractOwnedAbsences removes each contract-owned optional key the contract
+// no longer carries, under a parent the contract does declare. A parent the contract
+// omits, and every operator-owned key, are left to applyContractFields' merge.
+func withdrawContractOwnedAbsences(target, declaration *yaml.Node) {
+	for parent, keys := range contractOwnedOptional {
+		declared, current := yamledit.MapValue(declaration, parent), yamledit.MapValue(target, parent)
+		if declared == nil || current == nil || current.Kind != yaml.MappingNode {
+			continue
+		}
+		for _, key := range keys {
+			if yamledit.MapValue(declared, key) != nil {
+				continue
+			}
+			for i := 0; i+1 < len(current.Content); i += 2 {
+				if current.Content[i].Value == key {
+					current.Content = append(current.Content[:i], current.Content[i+2:]...)
+					break
+				}
+			}
+		}
 	}
 }
 
