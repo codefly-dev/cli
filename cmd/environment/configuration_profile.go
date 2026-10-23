@@ -48,8 +48,8 @@ func materializeConfigurationProfile(ctx context.Context, directory string, env 
 		return fmt.Errorf("configuration-source profile does not exist")
 	}
 	for _, layer := range layers {
-		if err := validateConfigurationSourceLayer(layer, destination); err != nil {
-			return err
+		if layerErr := validateConfigurationSourceLayer(layer, destination); layerErr != nil {
+			return layerErr
 		}
 	}
 	output := filepath.Join(destination, configurations.ProfileDerivationFile)
