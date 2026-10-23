@@ -937,6 +937,20 @@ type EnvironmentServiceConfig struct {
 	Services map[string]EnvironmentServiceConfigMapping `yaml:"services,omitempty"`
 }
 
+// ValuesFor selects the qualified workload first, then a bare service entry.
+// Workspace validation refuses a bare entry shared by multiple modules.
+func (c *EnvironmentServiceConfig) ValuesFor(module, service string) map[string]string {
+	if c == nil {
+		return nil
+	}
+	if module != "" {
+		if mapping, ok := c.Services[module+"/"+service]; ok {
+			return mapping.Values
+		}
+	}
+	return c.Services[service].Values
+}
+
 // EnvironmentServiceConfigMapping holds one service's resolved values keyed by
 // the configuration key that consumes them.
 type EnvironmentServiceConfigMapping struct {

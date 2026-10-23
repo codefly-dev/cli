@@ -23,6 +23,30 @@ func injectionContract(t *testing.T) *environments.Environment {
 	return &contract.Environment
 }
 
+func TestQualifiedConfigurationKeepsSameNamedWorkloadsIsolated(t *testing.T) {
+	env := &environments.Environment{Name: "blue", Namespace: "product", ServiceConfig: &environments.EnvironmentServiceConfig{
+		Services: map[string]environments.EnvironmentServiceConfigMapping{
+			"wiki/backend":      {Values: map[string]string{"PUBLIC_URL": "https://wiki.example"}},
+			"proposals/backend": {Values: map[string]string{"PUBLIC_URL": "https://proposals.example"}},
+		},
+	}}
+	for _, module := range []string{"wiki", "proposals", "other"} {
+		t.Run(module, func(t *testing.T) {
+			root := t.TempDir()
+			writeConsumerTree(t, root, env.Name, env.Namespace, "backend", "declared.example")
+			scope := scopeOf(env)
+			scope.Module = module
+			require.NoError(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, &resources.Service{Name: "backend"}, env, scope, serviceInjection{}))
+			values := containerEnvironment(t, buildOverlay(t, root, env.Name))
+			if module == "other" {
+				require.NotContains(t, values, "PUBLIC_URL")
+			} else {
+				require.Equal(t, "https://"+module+".example", values["PUBLIC_URL"]["value"])
+			}
+		})
+	}
+}
+
 func TestActualInfraBaseValuesReachRenderedWorkload(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "environments", "testdata", "coordinates", "infra-base-lodestar.json"))
 	require.NoError(t, err)

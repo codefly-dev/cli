@@ -2214,8 +2214,6 @@ readiness validation runs for the selected environment; when it reports the
 workspace is not ready, the command prints the diagnostics and exits non-zero.
 The merged file is still written, so the diagnostics can be read against it.
 
-#### `codefly environment show`
-
 An imported environment may declare `configuration-source: hosted` and select
 `configuration-profiles: [blue, local]`. Import materializes the authored
 `configurations/hosted/*.env` inputs into the generated `configurations/blue/`
@@ -2229,6 +2227,12 @@ The cell inventory also carries `source.path` when publication uses a root other
 than `deployments`. Consumers must use that root to discover the published module
 trees. The local render directory remains a qualification tree; `publish` writes
 the environment's declared publication path.
+
+`service-config.services` accepts `<module>/<service>` keys for compositions
+with same-named services. A qualified entry wins over the bare name. Unknown
+qualified entries and ambiguous bare entries fail workspace validation.
+
+#### `codefly environment show`
 
 Print the resolved `resources.Environment` as YAML (default) or `--json`.
 
