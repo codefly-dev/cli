@@ -338,6 +338,7 @@ func (b *Builder) Plan(ctx context.Context) (*OutputProperty, error) {
 		OutputDirectory: outputDir,
 	})
 	if err != nil {
+		w.Warn("cannot ask the agent for its image build plan", wool.Field("service", b.instance.Unique()), wool.ErrField(err))
 		return nil, w.Wrapf(err, "cannot call build")
 	}
 	if resp == nil {
