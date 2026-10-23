@@ -71,9 +71,10 @@ func (telemetry *EnvironmentTelemetry) Validate() error {
 // TelemetryCarriers is the process environment a service of this environment
 // receives so its SDK exports operational telemetry: nil when the environment
 // declares none. The endpoint is always delivered as a URL (see below). OTEL_SERVICE_NAME is the service's unique name in the
-// composition and OTEL_RESOURCE_ATTRIBUTES names the module and the
-// environment, so a trace read anywhere says which service of which composition
-// in which environment produced it. The keys are the OpenTelemetry
+// composition and OTEL_RESOURCE_ATTRIBUTES names the environment, so a trace
+// read anywhere says which service of which composition in which environment
+// produced it. The resource keys stay within the platform's tracing attribute
+// contract, which admits service.name and deployment.environment.name only. The keys are the OpenTelemetry
 // specification's, read by every SDK; nothing here is Codefly's own vocabulary.
 // IsTelemetryCarrier reports whether key is one of the carriers
 // TelemetryCarriers delivers. They are offered, never required: a process
@@ -110,6 +111,13 @@ func (env *Environment) TelemetryCarriers(module, service string) map[string]str
 	return map[string]string{
 		"OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
 		"OTEL_SERVICE_NAME":           module + "/" + service,
-		"OTEL_RESOURCE_ATTRIBUTES":    "service.namespace=" + module + ",deployment.environment.name=" + env.Name,
+		// Only deployment.environment.name: the platform's tracing attribute
+		// contract (obin.trace.attributes v1, which a producer enforces
+		// fail-closed before it exports anything) lets a producer set
+		// service.name and deployment.environment.name and no other resource
+		// key. service.namespace is a specification key the contract does not
+		// admit, and injecting it switched every contract-bound producer's
+		// trace export OFF. The module is already named by OTEL_SERVICE_NAME.
+		"OTEL_RESOURCE_ATTRIBUTES":    "deployment.environment.name=" + env.Name,
 	}
 }

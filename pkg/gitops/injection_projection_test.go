@@ -210,7 +210,11 @@ func TestRenderInjectsTheEnvironmentsTelemetryCarriers(t *testing.T) {
 	backend := injections.forService("wiki", "backend").Public
 	require.Equal(t, "https://otel.internal.ops.example:443", backend["OTEL_EXPORTER_OTLP_ENDPOINT"])
 	require.Equal(t, "wiki/backend", backend["OTEL_SERVICE_NAME"])
-	require.Equal(t, "service.namespace=wiki,deployment.environment.name=staging", backend["OTEL_RESOURCE_ATTRIBUTES"])
+	// Within the tracing attribute contract: deployment.environment.name only;
+	// service.namespace is not a key a producer may set, and a producer that
+	// enforces the contract refuses its whole export when it is injected.
+	require.Equal(t, "deployment.environment.name=staging", backend["OTEL_RESOURCE_ATTRIBUTES"])
+	require.NotContains(t, backend["OTEL_RESOURCE_ATTRIBUTES"], "service.namespace")
 	require.NoError(t, validateInjectionClassification("backend", injections.forService("wiki", "backend")))
 	require.Nil(t, telemetryCarriersForRender(&environments.Environment{Name: "local"}, []string{"wiki/backend"}))
 }
