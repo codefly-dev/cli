@@ -148,6 +148,10 @@ func (store *AzureKeyVault) Describe(ctx context.Context, key string) (Descripti
 			return Description{Exists: true, HasVersion: true, Revision: fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(versions, "\n"))))}, nil
 		}
 	}
+	return store.describeDeleted(ctx, key)
+}
+
+func (store *AzureKeyVault) describeDeleted(ctx context.Context, key string) (Description, error) {
 	// Absence from the active list is insufficient: recoverable material must
 	// never be purged, recovered or replaced as part of credential seeding.
 	deleted := store.client.NewListDeletedSecretPropertiesPager(nil)
