@@ -3809,7 +3809,22 @@ but it was built on top of `X`, so it is not behind it. Any other prerelease
 
 ### Keeping an image whose inputs did not change
 
-A build reuses the image this workspace already built from the same inputs
+**A released version is built once.** A service's image is named
+`<registry>/<module>/<service>` and tagged with the service's version, which
+`codefly publish` stamps on every service of a release. The name carries no
+workspace: the same module release composed by two workspaces, or delivered to
+two environments, is one image. Before a pushed build of a released version
+(an exact `x.y.z`, never the unversioned `0.0.0`), the render asks the registry
+for `<image>:<version>`. Every build records its input digest on the image as
+the label `org.codefly.build.inputs`, and the published image is adopted —
+nothing is built — when that label equals this build's inputs. A published
+image recording **other** inputs refuses the build: its version was not moved
+with its code, and the fix is a new release, never a rebuild under the old
+version. One recording none (pushed before builds recorded their inputs) is
+built again. With a registry whose tags are immutable, each version then holds
+exactly one build for good.
+
+A build also reuses the image this workspace already built from the same inputs
 instead of building it again. A configuration-only change — an edit to a value
 under `configurations/`, a workspace or module manifest, anything a service reads
 at runtime rather than at build time — re-renders the configuration and leaves
