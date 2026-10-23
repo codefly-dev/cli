@@ -1,0 +1,18 @@
+# A solution that names no executor: nothing it runs reads an agent block,
+# so it declares none. It reaches both modules through the host's gateway,
+# so its backend declares no service-dependencies on them.
+schema_version: codefly.solution-manifest/v0
+protocol_version: codefly.solution/v0
+api:
+    consumes:
+        - id: accounts
+          protocol: connect
+          module: accounts
+          service: accounts
+          endpoint: connect
+          services: [AccountsService]
+        - id: records
+          protocol: rest
+          module: records
+          service: records
+          endpoint: rest

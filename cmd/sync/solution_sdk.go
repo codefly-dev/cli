@@ -19,6 +19,7 @@ import (
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/shared"
 	"github.com/codefly-dev/core/solution/manifest"
+	"github.com/codefly-dev/core/standards"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -43,8 +44,13 @@ var SolutionSDKCmd = &cobra.Command{
 	Short: "Aggregate one client library per solution from api.consumes",
 	Long: `Reads api.consumes in solution.codefly.yaml and produces one aggregated
 client library per solution, carrying only the declared services, generated
-from the contracts of the module packages the workspace composes. Also keeps
-the runtime service-dependencies in step with the declaration.
+from the contracts of the module packages the workspace composes. A consume
+of a module's rest or connect endpoint is generated from that service's
+protobuf contract. Each consumed module's facade gets a package of its own.
+
+A consume of another module is reached through the host's gateway and needs
+no service-dependencies entry; only a consume of the solution's own module is
+a direct call, and that one is kept in step with the declaration.
 `,
 	Args: cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
@@ -59,7 +65,7 @@ the runtime service-dependencies in step with the declaration.
 func init() {
 	SolutionSDKCmd.Flags().StringSliceVar(&solutionSDKLanguages, "language", nil, "languages to generate: go,typescript,python")
 	SolutionSDKCmd.Flags().BoolVar(&solutionSDKCheck, "check", false, "do not write; exit 1 if the library or service-dependencies are out of date")
-	SolutionSDKCmd.Flags().BoolVar(&solutionSDKApply, "apply-dependencies", false, "add missing service-dependencies entries for every bound consume entry")
+	SolutionSDKCmd.Flags().BoolVar(&solutionSDKApply, "apply-dependencies", false, "add missing service-dependencies entries for consumes of the solution's own module (other modules are reached through the host gateway)")
 }
 
 func runSyncSolutionSDK(ctx context.Context) error {
@@ -75,7 +81,11 @@ func runSyncSolutionSDK(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("cannot read %s: %w", manifest.FileName, err)
 	}
-	solutionManifest, err := manifest.Load(data)
+	// This command reads api.consumes and nothing else, so it reads the
+	// manifest the way core says such a reader must: LoadConsumption holds the
+	// consumption strictly and leaves the executor sections (agent, lifecycle)
+	// unread, so a solution with no executor is not refused for lacking one.
+	solutionManifest, err := manifest.LoadConsumption(data)
 	if err != nil {
 		return fmt.Errorf("cannot load %s: %w", manifest.FileName, err)
 	}
@@ -94,7 +104,7 @@ func runSyncSolutionSDK(ctx context.Context) error {
 		return err
 	}
 
-	missing, err := missingServiceDependencies(entryService, entries)
+	missing, err := missingServiceDependencies(entryModule, entryService, solutionManifest.API.Consumes)
 	if err != nil {
 		return err
 	}
@@ -176,15 +186,9 @@ func resolveConsumedContracts(ctx context.Context, workspace *resources.Workspac
 			}
 		}
 
-		var endpointEntry *composition.APIContractEndpoint
-		for i := range catalog.Endpoints {
-			if catalog.Endpoints[i].Service == consume.Service && catalog.Endpoints[i].Endpoint == consume.Endpoint {
-				endpointEntry = &catalog.Endpoints[i]
-				break
-			}
-		}
-		if endpointEntry == nil {
-			return nil, fmt.Errorf("module %s catalog has no endpoint %s/%s", consume.Module, consume.Service, consume.Endpoint)
+		endpointEntry, err := consumedContract(ctx, dir, catalog, consume)
+		if err != nil {
+			return nil, err
 		}
 
 		if len(consume.Services) > 0 {
@@ -220,6 +224,82 @@ func resolveConsumedContracts(ctx context.Context, workspace *resources.Workspac
 		})
 	}
 	return entries, nil
+}
+
+// consumedContract selects the catalog entry a consume is generated from. The
+// endpoint it names wins when the catalog carries a protobuf contract for it.
+// A rest or connect endpoint otherwise serves its service's protobuf contract
+// over another transport — connect natively, rest transcoded — while the
+// catalog carries that contract under the service's grpc endpoint, so the
+// consume resolves to the service's one protobuf entry. A rest endpoint of a
+// service with no protobuf contract keeps its own OpenAPI entry.
+func consumedContract(ctx context.Context, moduleDir string, catalog *composition.APIContractCatalog, consume *manifest.APIDeclaration) (*composition.APIContractEndpoint, error) {
+	var named *composition.APIContractEndpoint
+	var protobuf []*composition.APIContractEndpoint
+	for i := range catalog.Endpoints {
+		entry := &catalog.Endpoints[i]
+		if entry.Service != consume.Service {
+			continue
+		}
+		if entry.Endpoint == consume.Endpoint {
+			named = entry
+		}
+		if entry.Kind == composition.APIContractKindProtobuf {
+			protobuf = append(protobuf, entry)
+		}
+	}
+	if named != nil && named.Kind == composition.APIContractKindProtobuf {
+		return named, nil
+	}
+
+	api := ""
+	if named != nil {
+		api = named.API
+	} else {
+		declared, err := producerEndpointAPI(ctx, moduleDir, consume)
+		if err != nil {
+			return nil, err
+		}
+		api = declared
+	}
+	if api == standards.REST || api == standards.CONNECT {
+		switch len(protobuf) {
+		case 0:
+		case 1:
+			return protobuf[0], nil
+		default:
+			endpoints := make([]string, 0, len(protobuf))
+			for _, entry := range protobuf {
+				endpoints = append(endpoints, entry.Endpoint)
+			}
+			return nil, fmt.Errorf("consume %s/%s/%s: service %s exports protobuf contracts on several endpoints (%s), so which one its %s endpoint serves has no single answer; consume one of them by name",
+				consume.Module, consume.Service, consume.Endpoint, consume.Service, strings.Join(endpoints, ", "), api)
+		}
+	}
+	if named != nil {
+		return named, nil
+	}
+	return nil, fmt.Errorf("module %s catalog has no contract for endpoint %s/%s (api %s)", consume.Module, consume.Service, consume.Endpoint, api)
+}
+
+// producerEndpointAPI reads the API of the endpoint a consume names from the
+// producing service's own declaration, for an endpoint the catalog carries no
+// contract for.
+func producerEndpointAPI(ctx context.Context, moduleDir string, consume *manifest.APIDeclaration) (string, error) {
+	module, err := resources.LoadModuleFromDir(ctx, moduleDir)
+	if err != nil {
+		return "", fmt.Errorf("cannot load module %s: %w", consume.Module, err)
+	}
+	service, err := module.LoadServiceFromName(ctx, consume.Service)
+	if err != nil {
+		return "", fmt.Errorf("consume %s/%s/%s: module %s has no service %s: %w", consume.Module, consume.Service, consume.Endpoint, consume.Module, consume.Service, err)
+	}
+	for _, endpoint := range service.Endpoints {
+		if endpoint != nil && endpoint.Name == consume.Endpoint {
+			return endpoint.API, nil
+		}
+	}
+	return "", fmt.Errorf("consume %s/%s/%s: service %s/%s declares no endpoint %s", consume.Module, consume.Service, consume.Endpoint, consume.Module, consume.Service, consume.Endpoint)
 }
 
 // resolveSolutionEntryService finds the solution root — the workspace's own
@@ -266,21 +346,28 @@ type missingDependency struct {
 	Module, Service, Endpoint string
 }
 
-// missingServiceDependencies reports which consumed entries have no matching
-// service-dependencies item, matched by (name, module) — the same identity
-// granularity core's own Application.HasServiceDependency uses.
-func missingServiceDependencies(service *resources.Service, entries []generators.ContractEntry) ([]missingDependency, error) {
+// missingServiceDependencies reports which consumed entries the entry service
+// calls directly and declares no service-dependencies item for, matched by
+// (name, module) — the same identity granularity core's own
+// Application.HasServiceDependency uses.
+//
+// Only a consume of the solution's own module is a direct call. A consume of
+// any other module is reached through the host's gateway (the routes
+// orchestration.HostRouteTargets derives from the same api.consumes), and a
+// service-dependency on it would be a mesh edge past the gateway — the path a
+// solution must not hold — so none is asked for, or added.
+func missingServiceDependencies(solution *resources.Module, service *resources.Service, consumes []manifest.APIDeclaration) ([]missingDependency, error) {
 	existing := make(map[[2]string]bool, len(service.ServiceDependencies))
 	for _, dep := range service.ServiceDependencies {
 		existing[[2]string{dep.Name, dep.Module}] = true
 	}
 	var missing []missingDependency
-	for i := range entries {
-		entry := &entries[i]
-		if existing[[2]string{entry.Endpoint.Service, entry.ModuleName}] {
+	for i := range consumes {
+		consume := &consumes[i]
+		if consume.Module != solution.Name || existing[[2]string{consume.Service, consume.Module}] {
 			continue
 		}
-		missing = append(missing, missingDependency{Module: entry.ModuleName, Service: entry.Endpoint.Service, Endpoint: entry.Endpoint.Endpoint})
+		missing = append(missing, missingDependency{Module: consume.Module, Service: consume.Service, Endpoint: consume.Endpoint})
 	}
 	return missing, nil
 }
@@ -403,6 +490,9 @@ func generateSolutionSDKInto(ctx context.Context, name, outputDir string, entrie
 		Entries:    entries,
 		GoModule:   "github.com/codefly-dev/" + name + "-go",
 		NpmPackage: "@codefly-dev/" + name,
+		// One library aggregates every consumed module, so each facade
+		// gets a package of its own.
+		FacadePackages: true,
 	})
 }
 

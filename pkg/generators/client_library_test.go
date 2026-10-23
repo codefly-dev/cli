@@ -165,7 +165,7 @@ func TestTypeScriptLibraryDeclaresAnEntryPointItProduces(t *testing.T) {
 		}
 	}
 
-	export, err := finalizeTypeScriptLibrary(langDir, "@acme/pdf-client")
+	export, err := finalizeTypeScriptLibrary(langDir, "@acme/pdf-client", false)
 	if err != nil {
 		t.Fatalf("finalizeTypeScriptLibrary: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestTypeScriptLibraryDeclaresAnEntryPointItProduces(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(genDir, "other_pb.ts"), []byte("export const Other = {};\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = finalizeTypeScriptLibrary(langDir, "@acme/pdf-client"); err != nil {
+	if _, err = finalizeTypeScriptLibrary(langDir, "@acme/pdf-client", false); err != nil {
 		t.Fatalf("second finalizeTypeScriptLibrary: %v", err)
 	}
 	index, err = os.ReadFile(filepath.Join(langDir, "src", "index.ts"))

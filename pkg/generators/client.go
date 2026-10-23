@@ -75,6 +75,17 @@ type ClientLibraryRequest struct {
 	Force      bool
 	GoModule   string
 	NpmPackage string
+
+	// FacadePackages gives every entry's facade a package of its own, named
+	// after its facade entry-point: go/<module>/ (import <GoModule>/<module>)
+	// and typescript/src/<module>/ (import <NpmPackage>/<module>, the facade
+	// and that entry's bindings), with the TypeScript root re-exporting the
+	// facades alone. An aggregated library needs it: each Go facade carries
+	// its own package clause, so two cannot share go/, and two contracts'
+	// bindings can declare the same message name, so one TypeScript barrel
+	// cannot re-export both. Without it the single facade sits at the root,
+	// the layout `generate client` has always produced.
+	FacadePackages bool
 }
 
 // generatedLanguageExport is one languages: entry of library.codefly.yaml.
@@ -110,6 +121,9 @@ func GenerateClientLibrary(ctx context.Context, req *ClientLibraryRequest) error
 		return fmt.Errorf("--language is required")
 	}
 	if err := checkContractDiamond(req.Entries); err != nil {
+		return err
+	}
+	if err := checkFacadeNames(req.Entries); err != nil {
 		return err
 	}
 	openAPICount := 0
@@ -170,7 +184,7 @@ func GenerateClientLibrary(ctx context.Context, req *ClientLibraryRequest) error
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		export, genErr := generateLanguageForEntries(ctx, lang, filepath.Join(req.Output, string(lang)), req.Entries, !req.NoFacade, req.GoModule, req.NpmPackage, pyPackage)
+		export, genErr := generateLanguageForEntries(ctx, lang, filepath.Join(req.Output, string(lang)), req.Entries, !req.NoFacade, req.FacadePackages, req.GoModule, req.NpmPackage, pyPackage)
 		if genErr != nil {
 			return fmt.Errorf("cannot generate %s client: %w", lang, genErr)
 		}
@@ -228,24 +242,44 @@ func checkContractDiamond(entries []ContractEntry) error {
 	return nil
 }
 
+// checkFacadeNames refuses two entries generating the same facade entry-point:
+// in every language the name is a file (and, with FacadePackages, a package
+// directory), so the second would overwrite the first.
+func checkFacadeNames(entries []ContractEntry) error {
+	seen := map[string]*ContractEntry{}
+	for i := range entries {
+		entry := &entries[i]
+		if entry.Endpoint.Kind != composition.APIContractKindProtobuf {
+			continue
+		}
+		name := entryModuleName(entry)
+		if previous, exists := seen[name]; exists {
+			return fmt.Errorf("%s/%s/%s and %s/%s/%s both generate the facade %q; give one of them its own name (`as` in api.consumes)",
+				previous.ModuleName, previous.Endpoint.Service, previous.Endpoint.Endpoint, entry.ModuleName, entry.Endpoint.Service, entry.Endpoint.Endpoint, name)
+		}
+		seen[name] = entry
+	}
+	return nil
+}
+
 // generateLanguageForEntries generates one language's export for the library.
 // An OpenAPI contract has no facade to aggregate and is only ever generated
 // alone (GenerateClientLibrary refuses to mix it with other entries).
-func generateLanguageForEntries(ctx context.Context, lang languages.Language, langDir string, entries []ContractEntry, facade bool, goModule, npmPackage, pyPackage string) (generatedLanguageExport, error) {
+func generateLanguageForEntries(ctx context.Context, lang languages.Language, langDir string, entries []ContractEntry, facade, facadePackages bool, goModule, npmPackage, pyPackage string) (generatedLanguageExport, error) {
 	if err := os.MkdirAll(langDir, 0o755); err != nil {
 		return generatedLanguageExport{}, err
 	}
 	if len(entries) == 1 && entries[0].Endpoint.Kind == composition.APIContractKindOpenAPI {
 		return generateOpenAPILanguageEntry(ctx, lang, langDir, &entries[0], goModule, npmPackage)
 	}
-	return generateProtobufLanguageEntries(ctx, lang, langDir, entries, facade, goModule, npmPackage, pyPackage)
+	return generateProtobufLanguageEntries(ctx, lang, langDir, entries, facade, facadePackages, goModule, npmPackage, pyPackage)
 }
 
 // generateProtobufLanguageEntries wipes langDir's generated content once,
 // then runs proto.GenerateClient once per entry and merges each result in —
 // so N entries land in one gen/ tree with one facade file per entry, sharing
 // one scaffold.
-func generateProtobufLanguageEntries(ctx context.Context, lang languages.Language, langDir string, entries []ContractEntry, facade bool, goModule, npmPackage, pyPackage string) (generatedLanguageExport, error) {
+func generateProtobufLanguageEntries(ctx context.Context, lang languages.Language, langDir string, entries []ContractEntry, facade, facadePackages bool, goModule, npmPackage, pyPackage string) (generatedLanguageExport, error) {
 	switch lang {
 	case languages.GO:
 		if err := wipeGoLibrary(langDir); err != nil {
@@ -266,7 +300,7 @@ func generateProtobufLanguageEntries(ctx context.Context, lang languages.Languag
 	var mapped []upstreamProtoModule
 	for i := range entries {
 		entry := &entries[i]
-		marked, err := generateOneProtobufEntry(ctx, lang, langDir, entry, facade, goModule, pyPackage)
+		marked, err := generateOneProtobufEntry(ctx, lang, langDir, entry, facade, facadePackages, goModule, pyPackage)
 		if err != nil {
 			return generatedLanguageExport{}, fmt.Errorf("entry %s/%s/%s: %w", entry.ModuleName, entry.Endpoint.Service, entry.Endpoint.Endpoint, err)
 		}
@@ -277,7 +311,7 @@ func generateProtobufLanguageEntries(ctx context.Context, lang languages.Languag
 	case languages.GO:
 		return finalizeGoLibrary(langDir, goModule)
 	case languages.TYPESCRIPT:
-		return finalizeTypeScriptLibrary(langDir, npmPackage)
+		return finalizeTypeScriptLibrary(langDir, npmPackage, facadePackages)
 	case languages.PYTHON:
 		return finalizePythonLibrary(langDir, pyPackage, pythonPackagesFor(mapped))
 	default:
@@ -288,7 +322,7 @@ func generateProtobufLanguageEntries(ctx context.Context, lang languages.Languag
 // generateOneProtobufEntry generates one contract entry into langDir and
 // reports the upstream proto modules it dropped from the output, which the
 // library's own dependency declaration must now cover.
-func generateOneProtobufEntry(ctx context.Context, lang languages.Language, langDir string, entry *ContractEntry, facade bool, goModule, pyPackage string) ([]upstreamProtoModule, error) {
+func generateOneProtobufEntry(ctx context.Context, lang languages.Language, langDir string, entry *ContractEntry, facade, facadePackages bool, goModule, pyPackage string) ([]upstreamProtoModule, error) {
 	raw, err := os.MkdirTemp("", "codefly-client-raw")
 	if err != nil {
 		return nil, err
@@ -325,9 +359,9 @@ func generateOneProtobufEntry(ctx context.Context, lang languages.Language, lang
 
 	switch lang {
 	case languages.GO:
-		return mapped, mergeGoEntry(langDir, raw, moduleName, goModule)
+		return mapped, mergeGoEntry(langDir, raw, moduleName, goModule, facadePackages)
 	case languages.TYPESCRIPT:
-		return mapped, mergeTypeScriptEntry(langDir, raw)
+		return mapped, mergeTypeScriptEntry(langDir, raw, moduleName, facadePackages)
 	case languages.PYTHON:
 		return mapped, mergePythonEntry(filepath.Join(langDir, pyPackage), raw, moduleName, pyPackage)
 	default:
