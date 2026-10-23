@@ -49,7 +49,7 @@ const (
 // recipe — multi-arch and pushed as a manifest list when pushing — so the build
 // recipe is a durable, first-class artifact and images are not tied to the
 // builder's host architecture.
-func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *builderv0.DockerBuildPlan, proxies map[string]map[string]string, reuse map[string]imageReuse) error {
+func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *builderv0.DockerBuildPlan, prefetched map[string]map[string]string, reuse map[string]imageReuse) error {
 	w := wool.Get(ctx).In("Builder.buildFromPlan", wool.ThisField(b.instance))
 	if err := coreservices.VerifyDockerBuildPlan(outputDir, plan); err != nil {
 		return w.Wrapf(err, "cannot verify build recipe for %s", b.instance.Unique())
@@ -74,7 +74,7 @@ func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *bui
 		if decision, ok := reuse[recipe.GetName()]; ok {
 			decided = &decision
 		}
-		if err := b.buildRecipe(ctx, w, outputDir, contextRoot, plan, recipe, shouldPush, proxies[recipe.GetName()], decided); err != nil {
+		if err := b.buildRecipe(ctx, w, outputDir, contextRoot, plan, recipe, shouldPush, prefetched[recipe.GetName()], decided); err != nil {
 			return err
 		}
 	}
@@ -199,19 +199,22 @@ func (b *Builder) decideImageReuse(
 	return decision, nil
 }
 
-// placeholderProxies stands in for the Go module proxies a recipe declares
-// before they are fetched. normalizedBuildxArgs rewrites every fetched proxy
+// placeholderProxies stands in for the Go module proxies and git source mirrors
+// a recipe declares before they are fetched. normalizedBuildxArgs rewrites every fetched proxy
 // path to this same placeholder, so an identity computed over these equals the
 // one computed over the fetched paths — which is what lets the reuse decision
 // precede the fetch.
 func placeholderProxies(recipe *builderv0.DockerBuildRecipe) map[string]string {
 	downloads := recipe.GetGoModuleDownloads()
-	if len(downloads) == 0 {
+	if len(downloads) == 0 && len(recipe.GetGitSourceDownloads()) == 0 {
 		return nil
 	}
-	proxies := make(map[string]string, len(downloads))
+	proxies := make(map[string]string, len(downloads)+len(recipe.GetGitSourceDownloads()))
 	for _, download := range downloads {
 		proxies[download.GetProxyContext()] = proxyPlaceholder
+	}
+	for _, download := range recipe.GetGitSourceDownloads() {
+		proxies[download.GetMirrorContext()] = proxyPlaceholder
 	}
 	return proxies
 }
@@ -296,7 +299,7 @@ func (b *Builder) buildRecipe(
 	plan *builderv0.DockerBuildPlan,
 	recipe *builderv0.DockerBuildRecipe,
 	shouldPush bool,
-	goModuleProxies map[string]string,
+	prefetched map[string]string,
 	reuse *imageReuse,
 ) error {
 	recipe, err := b.recipeAsBuilt(recipe, shouldPush)
@@ -332,8 +335,12 @@ func (b *Builder) buildRecipe(
 	// A recipe declaring Go module downloads is only built with the proxies
 	// its plan phase fetched; building it without them would fall back to
 	// fetching inside the build, which is what declaring them removes.
-	if recipeMissesGoModuleProxies(recipe, goModuleProxies) {
+	if recipeMissesGoModuleProxies(recipe, prefetched) {
 		return w.NewError("recipe %s of %s declares Go module downloads that were not fetched before the build", recipe.GetName(), b.instance.Unique())
+	}
+	// The same for a recipe declaring git sources and their mirrors.
+	if recipeMissesGitSourceMirrors(recipe, prefetched) {
+		return w.NewError("recipe %s of %s declares git sources that were not fetched before the build", recipe.GetName(), b.instance.Unique())
 	}
 
 	contextDir, err := recipeContext(contextRoot, recipe)
@@ -355,7 +362,7 @@ func (b *Builder) buildRecipe(
 	// A service that imports a private Go module reads it from the proxy the
 	// plan phase fetched; GOPRIVATE, a list of module paths and not a
 	// credential, still reaches recipes that declare it as an ARG.
-	private := resolvePrivateModuleBuild(os.LookupEnv).withProxies(goModuleProxies)
+	private := resolvePrivateModuleBuild(os.LookupEnv).withProxies(prefetched)
 
 	// Where this environment reads a mirrored registry from. It reaches the
 	// build through the builder's buildkitd configuration and the base-image
@@ -389,7 +396,7 @@ func (b *Builder) buildRecipe(
 	}
 	started := time.Now()
 	w.Info("building image", wool.Field("image", recipe.GetImage()), wool.Field("push", shouldPush),
-		wool.Field("goprivate", private.GoPrivate), wool.Field("go_module_proxies", len(private.Proxies)))
+		wool.Field("goprivate", private.GoPrivate), wool.Field("prefetched_contexts", len(private.Proxies)))
 	command := exec.CommandContext(ctx, "docker", args...)
 	command.Stdout = os.Stderr
 	command.Stderr = os.Stderr

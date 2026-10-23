@@ -271,6 +271,9 @@ type World struct {
 	// fetched once on the host before any image build (see goModulePrefetch).
 	// It is removed when the flow stops.
 	goModulePrefetch *goModulePrefetch
+	// gitSourcePrefetch holds the git source mirrors this flow's recipes
+	// declared, fetched the same way (see gitSourcePrefetch).
+	gitSourcePrefetch *gitSourcePrefetch
 
 	// hostArchitecture reads the container engine's architecture, which a
 	// local cluster's nodes run; nil selects `docker info`.
@@ -1607,6 +1610,9 @@ func (flow *Flow) Stop() error {
 		if err := flow.world.goModulePrefetch.Close(); err != nil {
 			wool.Get(context.Background()).In("flow.Stop").Warn("cannot remove the Go module prefetch", wool.ErrField(err))
 		}
+		if err := flow.world.gitSourcePrefetch.Close(); err != nil {
+			wool.Get(context.Background()).In("flow.Stop").Warn("cannot remove the git source prefetch", wool.ErrField(err))
+		}
 	}
 	// Builder-only flows have no Runtime runner to stop. Their service-scoped
 	// agent connections are closed by the caller after this lifecycle hook.
@@ -2550,6 +2556,14 @@ func (world *World) goModules() *goModulePrefetch {
 		world.goModulePrefetch = newGoModulePrefetch()
 	}
 	return world.goModulePrefetch
+}
+
+// gitSources is the flow's git source prefetch, created on first use.
+func (world *World) gitSources() *gitSourcePrefetch {
+	if world.gitSourcePrefetch == nil {
+		world.gitSourcePrefetch = newGitSourcePrefetch()
+	}
+	return world.gitSourcePrefetch
 }
 
 // imagePlatforms is the environment's image platforms, resolved once per flow.
