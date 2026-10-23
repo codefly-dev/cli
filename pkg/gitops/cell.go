@@ -141,6 +141,14 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 			result.Skipped = append(result.Skipped, inventory.Module)
 			continue
 		}
+		// A tree rendered before the environment excluded one of its services
+		// still delivers it; describing it would put back what the
+		// composition withdrew.
+		for index := range inventory.Units {
+			if unit := &inventory.Units[index]; env.Excludes(inventory.Module, unit.Name) {
+				return cellfile.File{}, CellResult{}, fmt.Errorf("the render of module %s still delivers %s/%s, which environment %s excludes (exclude-services); render %s again for %s", inventory.Module, inventory.Module, unit.Name, env.Name, inventory.Module, env.Name)
+			}
+		}
 		namespace, namespaceErr := cellNamespace(ctx, workspace, env, tree, &inventory, consumers)
 		if namespaceErr != nil {
 			return cellfile.File{}, CellResult{}, namespaceErr
@@ -539,7 +547,21 @@ func endpointConsumers(ctx context.Context, workspace *resources.Workspace, env 
 				return nil, nil, fmt.Errorf("load service %s/%s to index its dependencies: %w", module.Name, serviceReference.Name, err)
 			}
 			consumer := resources.ServiceUnique(module.Name, service.Name)
+			if env.Excludes(module.Name, service.Name) {
+				continue
+			}
 			for _, dependency := range service.ServiceDependencies {
+				if dependency == nil {
+					continue
+				}
+				targetModule := dependency.Module
+				if targetModule == "" {
+					targetModule = module.Name
+				}
+				// A withdrawn edge reaches nothing in this environment.
+				if env.Excludes(targetModule, dependency.Name) {
+					continue
+				}
 				for _, key := range dependencyKeys(ctx, workspace, module.Name, dependency) {
 					add(key, consumer)
 				}
@@ -549,7 +571,7 @@ func endpointConsumers(ctx context.Context, workspace *resources.Workspace, env 
 				reads = append(reads, references[group]...)
 			}
 			for _, read := range reads {
-				key, err := configuredEndpoint(ctx, workspace, consumer, read)
+				key, err := configuredEndpoint(ctx, workspace, env, consumer, read)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -627,13 +649,16 @@ func configuredEndpointReferences(ctx context.Context, workspace *resources.Work
 // configuredEndpoint is the `<module>/<service>/<endpoint>` a configured
 // reference names, refused, naming the service, the key and the target, when
 // the composition has no such endpoint.
-func configuredEndpoint(ctx context.Context, workspace *resources.Workspace, consumer string, read configuredReference) (string, error) {
+func configuredEndpoint(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, consumer string, read configuredReference) (string, error) {
 	refuse := func(why string) error {
 		return fmt.Errorf("service %s reads %s = ${endpoint:%s}, %s", consumer, read.source, read.reference, why)
 	}
 	info, err := resources.ParseEndpointReference(read.reference)
 	if err != nil {
 		return "", refuse(err.Error())
+	}
+	if env.Excludes(info.Module, info.Service) {
+		return "", refuse(fmt.Sprintf("but environment %s excludes %s/%s (exclude-services), so it has no address there", env.Name, info.Module, info.Service))
 	}
 	target, err := workspace.LoadService(ctx, &resources.ServiceWithModule{Name: info.Service, Module: info.Module})
 	if err != nil {

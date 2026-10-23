@@ -111,7 +111,7 @@ the store already holds, but nothing outside the scope is planned or written.`,
 			plan, err := deploysecrets.Build(ctx, &deploysecrets.Inputs{
 				Rendered:     group,
 				Generators:   env.ServiceSecrets.Generate,
-				Services:     workspaceServiceUniques(ctx, workspace),
+				Services:     workspaceServiceUniques(ctx, workspace, env),
 				Store:        store,
 				ReadPayloads: !secretsMetadataOnly,
 				Modules:      secretsModules,
@@ -203,17 +203,17 @@ func resolveSecretStore(ctx context.Context, env *environments.Environment, rend
 		deploysecrets.ClusterTarget{Kubeconfig: kubeconfig, Context: env.Cluster.Context}, first.Store, first.Namespace)
 }
 
-// workspaceServiceUniques lists every service the workspace composes. A module
+// workspaceServiceUniques lists every service the workspace composes in env. A module
 // or service that does not load is skipped: it is not one this environment
 // renders either.
-func workspaceServiceUniques(ctx context.Context, workspace *resources.Workspace) []string {
+func workspaceServiceUniques(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) []string {
 	var uniques []string
 	for _, ref := range workspace.Modules {
 		mod, err := workspace.LoadModuleFromReference(ctx, ref)
 		if err != nil {
 			continue
 		}
-		for _, svc := range mod.ServiceReferences {
+		for _, svc := range env.ComposedServices(mod) {
 			uniques = append(uniques, resources.ServiceUnique(mod.Name, svc.Name))
 		}
 	}

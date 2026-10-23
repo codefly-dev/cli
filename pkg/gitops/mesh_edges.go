@@ -161,10 +161,11 @@ func indexMeshComposition(ctx context.Context, workspace *resources.Workspace, e
 		return nil, err
 	}
 	index := &meshComposition{byModule: map[string][]string{}, gateway: host.Gateway, allow: allow, targets: targets}
-	// Every composed workload's principal, by module: a managed service has
-	// no workload of its own in the cell, so it holds no principal.
+	// Every composed workload's principal, by module: a managed or an
+	// excluded service has no workload of its own in the cell, so it holds no
+	// principal.
 	for _, ref := range refs {
-		if _, managed := env.ManagedService(ref.Module, ref.Name); managed {
+		if _, managed := env.ManagedService(ref.Module, ref.Name); managed || env.Excludes(ref.Module, ref.Name) {
 			continue
 		}
 		namespace := env.ModuleNamespace(workspace, ref.Module)

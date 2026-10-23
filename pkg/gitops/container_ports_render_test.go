@@ -78,6 +78,10 @@ func installFakeAgents(t *testing.T) {
 		}
 		graph := []*resources.Service{root}
 		for _, dependency := range root.ServiceDependencies {
+			// As the real flow's graph: an excluded service is not in it.
+			if env.Excludes(module.Name, dependency.Name) {
+				continue
+			}
 			loaded, loadErr := module.LoadServiceFromName(ctx, dependency.Name)
 			if loadErr != nil {
 				return loadErr

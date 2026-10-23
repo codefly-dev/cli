@@ -123,22 +123,20 @@ func digestRecordedGroups(ctx context.Context, workspace *resources.Workspace, e
 }
 
 func currentGroupDigests(ctx context.Context, workspace *resources.Workspace, env *environments.Environment, module *resources.Module) (map[string]string, error) {
-	services := make([]*resources.Service, 0, len(module.ServiceReferences))
-	for _, reference := range module.ServiceReferences {
-		service, err := module.LoadServiceFromName(ctx, reference.Name)
-		if err != nil {
-			return nil, fmt.Errorf("load service %s: %w", reference.Name, err)
-		}
-		services = append(services, service)
+	// The services this environment renders: a group only an excluded
+	// service reads is baked into no tree here.
+	services, err := loadModuleServices(ctx, module, env)
+	if err != nil {
+		return nil, err
 	}
 	var slotGroups []string
-	contract, err := modulecontract.Load(module.Dir())
+	contract, contractErr := modulecontract.Load(module.Dir())
 	switch {
-	case err == nil:
+	case contractErr == nil:
 		slotGroups = contract.SlotGroups()
-	case errors.Is(err, os.ErrNotExist):
+	case errors.Is(contractErr, os.ErrNotExist):
 	default:
-		return nil, err
+		return nil, contractErr
 	}
 	return workspaceConfigurationDigests(ctx, workspace, env, services, slotGroups)
 }
