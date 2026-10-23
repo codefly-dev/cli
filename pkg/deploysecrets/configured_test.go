@@ -313,14 +313,14 @@ func TestReadConfiguredIndexesBothScopesOfTheWorkspace(t *testing.T) {
 // and the read stops.
 func TestTwoConfigurationNamesSpellingOneCarrierAreRefused(t *testing.T) {
 	root := t.TempDir()
-	writeSecretConfiguration(t, root, "staging", "datasource-oauth", configuredKeyName+"=one")
-	writeSecretConfiguration(t, root, "staging", "datasource_oauth", configuredKeyName+"=another")
+	writeSecretConfiguration(t, root, "staging", "example-group", configuredKeyName+"=one")
+	writeSecretConfiguration(t, root, "staging", "example_group", configuredKeyName+"=another")
 
 	err := readConfiguredScope(map[string]ConfiguredValue{}, root, root, "staging", resources.ConfigurationWorkspace)
 	if err == nil {
 		t.Fatal("two configuration names spelling one carrier were accepted")
 	}
-	for _, want := range []string{"datasource-oauth.secret.env", "datasource_oauth.secret.env", "one carrier"} {
+	for _, want := range []string{"example-group.secret.env", "example_group.secret.env", "one carrier"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("readConfiguredScope error = %q, want it to contain %q", err, want)
 		}

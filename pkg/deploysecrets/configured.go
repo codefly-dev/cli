@@ -105,8 +105,8 @@ func ReadConfigured(ctx context.Context, workspace *resources.Workspace, env *en
 //
 // Two files resolving to one secret key with different values is refused by
 // name. Core folds a configuration name into the carrier (`-` and `_` both
-// become `_`, upper-cased), so `datasource-oauth.secret.env` and
-// `datasource_oauth.secret.env` are two files whose keys are one carrier; a
+// become `_`, upper-cased), so `example-group.secret.env` and
+// `example_group.secret.env` are two files whose keys are one carrier; a
 // plan cannot choose between them, and choosing the one that sorted first would
 // write a value by an accident of filesystem order.
 func readConfiguredScope(index map[string]ConfiguredValue, root, scopeDir, profile, origin string) error {
