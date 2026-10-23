@@ -937,18 +937,18 @@ type EnvironmentServiceConfig struct {
 	Services map[string]EnvironmentServiceConfigMapping `yaml:"services,omitempty"`
 }
 
-// ValuesFor selects the qualified workload first, then a bare service entry.
+// ValuesFor overlays qualified values on the bare service's values, per key.
 // Workspace validation refuses a bare entry shared by multiple modules.
 func (c *EnvironmentServiceConfig) ValuesFor(module, service string) map[string]string {
 	if c == nil {
 		return nil
 	}
+	values := make(map[string]string)
+	maps.Copy(values, c.Services[service].Values)
 	if module != "" {
-		if mapping, ok := c.Services[module+"/"+service]; ok {
-			return mapping.Values
-		}
+		maps.Copy(values, c.Services[module+"/"+service].Values)
 	}
-	return c.Services[service].Values
+	return values
 }
 
 // EnvironmentServiceConfigMapping holds one service's resolved values keyed by
@@ -1184,13 +1184,15 @@ func (env *Environment) validateServiceKeyCollisions() error {
 		return nil
 	}
 	for name, config := range env.ServiceConfig.Services {
-		secrets, declared := env.ServiceSecrets.Services[name]
-		if !declared {
-			continue
+		secretNames := []string{name}
+		if _, bare, qualified := strings.Cut(name, "/"); qualified {
+			secretNames = append(secretNames, bare)
 		}
-		for key := range config.Values {
-			if _, collides := secrets.RemoteKeys[key]; collides {
-				return fmt.Errorf("service %q declares %q as both a service-config value and a service-secrets remote key", name, key)
+		for _, secretName := range secretNames {
+			for key := range config.Values {
+				if _, collides := env.ServiceSecrets.Services[secretName].RemoteKeys[key]; collides {
+					return fmt.Errorf("service %q declares %q as both a service-config value and a service-secrets remote key", name, key)
+				}
 			}
 		}
 	}

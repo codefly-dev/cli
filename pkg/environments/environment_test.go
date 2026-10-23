@@ -792,16 +792,18 @@ environments:
             DATABASE_HOST: accounts/prod/host
 `
 	}
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(workspaceWith("accounts")), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	_, err := loadDeploymentWorkspace(context.Background(), root)
-	if err == nil {
-		t.Fatal("expected load to refuse a key declared as both a value and a secret")
-	}
-	if !strings.Contains(err.Error(), "DATABASE_HOST") || !strings.Contains(err.Error(), "accounts") {
-		t.Fatalf("error = %v, want it to name the service and the key", err)
+	for _, name := range []string{"accounts", "saas/accounts"} {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, resources.WorkspaceConfigurationName), []byte(workspaceWith(name)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := loadDeploymentWorkspace(context.Background(), root)
+		if err == nil {
+			t.Fatal("expected load to refuse a key declared as both a value and a secret")
+		}
+		if !strings.Contains(err.Error(), "DATABASE_HOST") || !strings.Contains(err.Error(), name) {
+			t.Fatalf("error = %v, want it to name the service and the key", err)
+		}
 	}
 
 	other := t.TempDir()

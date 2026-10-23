@@ -47,6 +47,23 @@ func TestQualifiedConfigurationKeepsSameNamedWorkloadsIsolated(t *testing.T) {
 	}
 }
 
+func TestQualifiedConfigurationRetainsImportedResourceValues(t *testing.T) {
+	env := &environments.Environment{Name: "blue", Namespace: "product", ServiceConfig: &environments.EnvironmentServiceConfig{
+		Services: map[string]environments.EnvironmentServiceConfigMapping{
+			"accounts":      {Values: map[string]string{"BACKEND": "managed", "PUBLIC_URL": "https://default.example"}},
+			"saas/accounts": {Values: map[string]string{"PUBLIC_URL": "https://app.example"}},
+		},
+	}}
+	root := t.TempDir()
+	writeConsumerTree(t, root, env.Name, env.Namespace, "accounts", "declared.example")
+	scope := scopeOf(env)
+	scope.Module = "saas"
+	require.NoError(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, &resources.Service{Name: "accounts"}, env, scope, serviceInjection{}))
+	values := containerEnvironment(t, buildOverlay(t, root, env.Name))
+	require.Equal(t, "managed", values["BACKEND"]["value"])
+	require.Equal(t, "https://app.example", values["PUBLIC_URL"]["value"])
+}
+
 func TestActualInfraBaseValuesReachRenderedWorkload(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "environments", "testdata", "coordinates", "infra-base-lodestar.json"))
 	require.NoError(t, err)

@@ -2219,7 +2219,8 @@ An imported environment may declare `configuration-source: hosted` and select
 in `configurations/blue/` deriving from `hosted`, using Core's profile inheritance.
 The profile chain selects the first directory at each location; inheritance adds
 shared groups and per-profile values. Import validates every inherited source:
-secret files contain empty placeholders, symlinks are refused, and sources may
+only flat `.env` inputs and profile derivation metadata are accepted; secret
+files contain empty placeholders, symlinks are refused, and sources may
 not contain environment-specific runnable bindings. Dry-run writes nothing.
 Import refuses authored destination files and retires only its own earlier copied
 outputs, preserving the environment's separately generated runnable bindings.
@@ -2232,7 +2233,7 @@ trees. The local render directory remains a qualification tree; `publish` writes
 the environment's declared publication path.
 
 `service-config.services` accepts `<module>/<service>` keys for compositions
-with same-named services. A qualified entry wins over the bare name. Unknown
+with same-named services. Qualified values override bare values per key. Unknown
 qualified entries and ambiguous bare entries fail workspace validation.
 
 #### `codefly environment show`

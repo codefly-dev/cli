@@ -61,7 +61,7 @@ func materializeConfigurationProfile(ctx context.Context, directory string, env 
 		}
 		for _, entry := range entries {
 			if !strings.HasSuffix(entry.Name(), ".env") && entry.Name() != configurations.ProfileDerivationFile {
-				continue
+				return fmt.Errorf("configuration-source supports only flat .env inputs and profile derivation metadata: %s", entry.Name())
 			}
 			info, err := entry.Info()
 			if err != nil || !info.Mode().IsRegular() {

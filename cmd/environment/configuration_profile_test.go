@@ -108,6 +108,16 @@ func TestProfileImportRefusesCredentialValuesBeforeWriting(t *testing.T) {
 	require.True(t, os.IsNotExist(err))
 }
 
+func TestProfileImportRefusesUnvalidatedInheritedInputFormats(t *testing.T) {
+	root := profileSource(t)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "configurations", "hosted", "credentials.secret.yaml"), []byte("token: fixture-value\n"), 0o600))
+	err := materializeConfigurationProfile(t.Context(), root, profileEnvironment("blue"), false)
+	require.ErrorContains(t, err, "only flat .env inputs")
+	require.NotContains(t, err.Error(), "fixture-value")
+	_, err = os.Stat(filepath.Join(root, "configurations", "blue"))
+	require.True(t, os.IsNotExist(err))
+}
+
 func TestProfileImportRefusesAuthoredOrSymlinkedFiles(t *testing.T) {
 	for _, symlink := range []bool{false, true} {
 		t.Run(map[bool]string{false: "authored", true: "symlink"}[symlink], func(t *testing.T) {
