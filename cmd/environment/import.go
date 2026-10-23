@@ -186,16 +186,16 @@ func runImport(ctx context.Context, opts *importOptions) error {
 	}
 	declaredEnvironment := yamledit.MapValue(declaration, "environment")
 	if opts.productIntentData != nil {
-		exclusions, err := productExclusions(opts.productIntentData, opts.envName)
-		if err != nil {
-			return err
+		exclusions, exclusionsErr := productExclusions(opts.productIntentData, opts.envName)
+		if exclusionsErr != nil {
+			return exclusionsErr
 		}
 		if yamledit.MapValue(declaredEnvironment, "exclude-services") != nil {
 			return fmt.Errorf("exclude-services is declared by both coordinate contract and product intent; select one owner")
 		}
-		node, err := yamledit.Encode(exclusions)
-		if err != nil {
-			return err
+		node, encodeErr := yamledit.Encode(exclusions)
+		if encodeErr != nil {
+			return encodeErr
 		}
 		yamledit.SetMapValue(declaredEnvironment, "exclude-services", node)
 		contract.Environment.ExcludeServices = exclusions
