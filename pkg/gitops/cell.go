@@ -146,7 +146,7 @@ func deriveCell(ctx context.Context, workspace *resources.Workspace, env *enviro
 		// composition withdrew.
 		for index := range inventory.Units {
 			if unit := &inventory.Units[index]; env.Excludes(inventory.Module, unit.Name) {
-				return CellResult{}, fmt.Errorf("the render of module %s still delivers %s/%s, which environment %s excludes (exclude-services); render %s again for %s", inventory.Module, inventory.Module, unit.Name, env.Name, inventory.Module, env.Name)
+				return cellfile.File{}, CellResult{}, fmt.Errorf("the render of module %s still delivers %s/%s, which environment %s excludes (exclude-services); render %s again for %s", inventory.Module, inventory.Module, unit.Name, env.Name, inventory.Module, env.Name)
 			}
 		}
 		namespace, namespaceErr := cellNamespace(ctx, workspace, env, tree, &inventory, consumers)

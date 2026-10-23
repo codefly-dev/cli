@@ -220,7 +220,7 @@ func WithPreparedBindingGrants(ctx context.Context, workspace *resources.Workspa
 		if _, granted := principals[module.Name]; !granted {
 			continue
 		}
-		services, loadErr := loadModuleServices(ctx, module)
+		services, loadErr := loadModuleServices(ctx, module, env)
 		if loadErr != nil {
 			return nil, loadErr
 		}

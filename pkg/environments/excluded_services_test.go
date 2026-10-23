@@ -233,3 +233,16 @@ func TestExcludeServicesRefusesAMalformedEntry(t *testing.T) {
 		})
 	}
 }
+
+// The producer's JSON contract preserves the environment exclusion alongside
+// the module-owned KMS choice when imported into workspace YAML.
+func TestCoordinateContractCarriesExcludedServices(t *testing.T) {
+	contract, err := environments.ParseCoordinateContract([]byte(`{"schema":"codefly/coordinate/v1","environment":{"name":"blue","namespace":"obin","key-service":"kms","exclude-services":[{"service":"saas/vault","withdrawn-from":["saas/accounts"]}]}}`))
+	require.NoError(t, err)
+	env, err := contract.ToEnvironment("blue", "obin")
+	require.NoError(t, err)
+	require.Equal(t, "kms", env.Carried["key-service"].Value)
+	require.Equal(t, []environments.EnvironmentExcludedService{{Service: "saas/vault", WithdrawnFrom: []string{"saas/accounts"}}}, env.ExcludeServices)
+	env.ExcludeServices[0].WithdrawnFrom[0] = "changed/consumer"
+	require.Equal(t, "saas/accounts", contract.Environment.ExcludeServices[0].WithdrawnFrom[0])
+}
