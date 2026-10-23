@@ -47,7 +47,11 @@ must match the declaration; import never retargets a contract.
 
 Declared fields replace their named values. Omitted fields and unrelated map
 entries are preserved, comments included. Read from stdin with
---coordinate-contract -.`,
+--coordinate-contract -.
+
+--product-intent <file> additionally imports environment-specific composition
+exclusions from an authored product file. It accepts only environments and
+exclude-services; it does not interpret the legacy full delivery.intent.yaml.`,
 	Args:         cobra.ExactArgs(1),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -66,18 +70,34 @@ entries are preserved, comments included. Read from stdin with
 			return err
 		}
 
+		productPath, err := cmd.Flags().GetString("product-intent")
+		if err != nil {
+			return err
+		}
+		var productData []byte
+		if cmd.Flags().Changed("product-intent") {
+			if productPath == "" || productPath == "-" {
+				return fmt.Errorf("--product-intent requires an authored file path")
+			}
+			productData, err = os.ReadFile(productPath)
+			if err != nil {
+				return err
+			}
+		}
+
 		dir, err := resources.FindUp[resources.Workspace](ctx)
 		if err != nil || dir == nil {
 			return fmt.Errorf("no %s found from the current directory upward", resources.WorkspaceConfigurationName)
 		}
 
 		opts := importOptions{
-			dir:          *dir,
-			envName:      args[0],
-			contractData: data,
-			namespace:    importNamespace,
-			namespaceSet: cmd.Flags().Changed("namespace"),
-			dryRun:       importDryRun,
+			dir:               *dir,
+			envName:           args[0],
+			contractData:      data,
+			productIntentData: productData,
+			namespace:         importNamespace,
+			namespaceSet:      cmd.Flags().Changed("namespace"),
+			dryRun:            importDryRun,
 			// UTC so the provenance timestamp does not vary by the operator's
 			// machine timezone and churn the diff on re-import across a team.
 			now:    time.Now().UTC(),
@@ -133,14 +153,15 @@ func readContract(stdin io.Reader, path string) ([]byte, error) {
 }
 
 type importOptions struct {
-	dir          string
-	envName      string
-	contractData []byte
-	namespace    string
-	namespaceSet bool
-	dryRun       bool
-	now          time.Time
-	stdout       io.Writer
+	dir               string
+	envName           string
+	contractData      []byte
+	productIntentData []byte
+	namespace         string
+	namespaceSet      bool
+	dryRun            bool
+	now               time.Time
+	stdout            io.Writer
 }
 
 // runImport parses the contract, merges its owned fields into the named
@@ -164,6 +185,21 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		return err
 	}
 	declaredEnvironment := yamledit.MapValue(declaration, "environment")
+	if opts.productIntentData != nil {
+		exclusions, exclusionsErr := productExclusions(opts.productIntentData, opts.envName)
+		if exclusionsErr != nil {
+			return exclusionsErr
+		}
+		if yamledit.MapValue(declaredEnvironment, "exclude-services") != nil {
+			return fmt.Errorf("exclude-services is declared by both coordinate contract and product intent; select one owner")
+		}
+		node, encodeErr := yamledit.Encode(exclusions)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		yamledit.SetMapValue(declaredEnvironment, "exclude-services", node)
+		contract.Environment.ExcludeServices = exclusions
+	}
 
 	file := filepath.Join(opts.dir, resources.WorkspaceConfigurationName)
 	original, err := os.ReadFile(file)
@@ -222,6 +258,19 @@ func runImport(ctx context.Context, opts *importOptions) error {
 	}
 	if _, err := environments.FromWorkspace(merged); err != nil {
 		return fmt.Errorf("merged environment declarations: %w", err)
+	}
+	if opts.productIntentData != nil {
+		selected, err := environments.Select(merged, opts.envName)
+		if err != nil {
+			return err
+		}
+		workspace, err := resources.LoadWorkspaceFromDir(ctx, opts.dir)
+		if err != nil {
+			return err
+		}
+		if err := environments.ValidateEnvironmentExclusions(ctx, workspace, selected); err != nil {
+			return fmt.Errorf("product intent: %w", err)
+		}
 	}
 	if err := materializeConfigurationProfile(ctx, opts.dir, env, opts.dryRun); err != nil {
 		return err
@@ -419,6 +468,10 @@ func stampProvenance(envNode *yaml.Node, contract *environments.CoordinateContra
 	line := fmt.Sprintf("# %s%s on %s; re-run: codefly environment import %s --coordinate-contract …",
 		provenanceMarker, labelled(contract.Coordinate), opts.now.Format(time.RFC3339), opts.envName)
 
+	if opts.productIntentData != nil {
+		line += " --product-intent …"
+	}
+
 	kept := make([]string, 0)
 	for _, existing := range strings.Split(envNode.HeadComment, "\n") {
 		if existing == "" ||
@@ -433,6 +486,7 @@ func stampProvenance(envNode *yaml.Node, contract *environments.CoordinateContra
 
 func init() {
 	importCmd.Flags().String("coordinate-contract", "", "Path to a codefly/coordinate/v1 descriptor, or - for stdin")
+	importCmd.Flags().String("product-intent", "", "Authored environment exclusions; accepts environments.<env>.exclude-services only")
 	importCmd.Flags().String("cell-contract", "", "Former spelling of --coordinate-contract")
 	_ = importCmd.Flags().MarkDeprecated("cell-contract", "use --coordinate-contract")
 	importCmd.Flags().StringVar(&importNamespace, "namespace", "", "Assert the namespace declared by the producer")
