@@ -235,3 +235,23 @@ func TestAzureFailureNeverExposesResponseOrPayload(t *testing.T) {
 		require.False(t, strings.Contains(output, "private-marker"))
 	}
 }
+
+func TestAzureForbiddenClassifiesOnlyKnownCodes(t *testing.T) {
+	for code, want := range map[string]string{
+		"ForbiddenByRbac":       "data-plane role denied",
+		"ForbiddenByConnection": "private-network access denied",
+		"ForbiddenByFirewall":   "private-network access denied",
+		"private-marker":        "HTTP 403; backend output withheld",
+	} {
+		t.Run(code, func(t *testing.T) {
+			store := azureTestStore(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(403)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": "Forbidden", "message": "private-marker", "innererror": map[string]any{"code": code}}})
+			})
+			err := store.Write(context.Background(), "key", map[string]string{"key": "private-marker"}, true)
+			require.ErrorContains(t, err, want)
+			require.NotContains(t, fmt.Sprintf("%v %+v %#v", err, err, err), "private-marker")
+		})
+	}
+}

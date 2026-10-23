@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azsecrets"
 	"github.com/codefly-dev/cli/pkg/environments"
@@ -223,7 +224,28 @@ func azureError(err error) error {
 	}
 	var response *azcore.ResponseError
 	if errors.As(err, &response) {
-		return fmt.Errorf("azure Key Vault request failed (HTTP %d; backend output withheld)", response.StatusCode)
+		reason := ""
+		if response.StatusCode == 403 && response.RawResponse != nil {
+			// Inspect only the SDK's response payload for a closed diagnostic code.
+			// No provider text, IDs, URLs or unknown code can enter the error.
+			payload, readErr := runtime.Payload(response.RawResponse)
+			var detail struct {
+				Error struct {
+					InnerError struct {
+						Code string `json:"code"`
+					} `json:"innererror"`
+				} `json:"error"`
+			}
+			if readErr == nil && len(payload) <= 65536 && json.Unmarshal(payload, &detail) == nil {
+				switch detail.Error.InnerError.Code {
+				case "ForbiddenByRbac":
+					reason = "; data-plane role denied"
+				case "ForbiddenByConnection", "ForbiddenByFirewall":
+					reason = "; private-network access denied"
+				}
+			}
+		}
+		return fmt.Errorf("azure Key Vault request failed (HTTP %d%s; backend output withheld)", response.StatusCode, reason)
 	}
 	return errors.New("azure Key Vault authentication or transport failed (backend output withheld)")
 }
