@@ -25,9 +25,14 @@ from the store's `tenantId` or its referenced service account's
 `azure.workload.identity/tenant-id` annotation, exactly one source. A namespaced
 store cannot reference a service account in another namespace.
 
-The Microsoft Key Vault SDK uses the operator's Azure CLI login, pinned to that
-tenant, with no fallback credential chain. The workload's identity remains ESO's
-responsibility. A mismatched vault tenant is refused by the SDK's authentication
+The Microsoft Key Vault SDK defaults to the operator's Azure CLI login, pinned to
+that tenant. An authorized in-cluster publisher can explicitly select
+`CODEFLY_AZURE_CREDENTIAL=workload`; the SDK then uses its projected
+`AZURE_FEDERATED_TOKEN_FILE`, `AZURE_CLIENT_ID` and `AZURE_TENANT_ID`. The tenant must
+match the store's declaration. Neither mode falls back to another credential, and
+neither borrows the service account ESO uses to read secrets. The publisher must
+already have its own write grant; this option creates no identity, grant or Job.
+A mismatched vault tenant is refused by the SDK's authentication
 challenge validation. Metadata-only planning lists active/deleted secret metadata
 and versions; it never fetches a secret value. Disabled, expired, not-yet-valid,
 managed and recoverable deleted secrets are refused, not treated as absent.

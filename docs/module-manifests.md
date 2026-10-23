@@ -412,6 +412,10 @@ Azure Key Vault uses that same release-signing interface. Set
 `https://<hsm>.managedhsm.azure.net/keys/<name>/<32-digit-version>`) and
 `CODEFLY_RELEASE_AZURE_TENANT` to the tenant UUID. The operator's Azure CLI
 credential is restricted to that tenant; no fallback credential chain is used.
+An authorized release publisher can instead explicitly select
+`CODEFLY_AZURE_CREDENTIAL=workload`, with the projected `AZURE_FEDERATED_TOKEN_FILE`,
+`AZURE_CLIENT_ID` and matching `AZURE_TENANT_ID`. This selects the publisher's own
+workload identity; it neither grants signing access nor approves a host trust entry.
 This adapter supports public-cloud Key Vault and Managed HSM endpoints and enabled, currently
 valid EC or EC-HSM P-256 keys permitting `sign`. The operator needs public-key
 read and signing permissions. Private key material remains in the selected custody.

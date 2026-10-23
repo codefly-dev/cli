@@ -18,8 +18,8 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
-	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys"
+	"github.com/codefly-dev/cli/pkg/internal/azureauth"
 	"github.com/google/uuid"
 )
 
@@ -35,7 +35,7 @@ type AzureKeyVault struct {
 	publicBytes           []byte
 }
 
-// NewAzureKeyVault uses the operator's tenant-bound Azure CLI credential.
+// NewAzureKeyVault uses the explicitly selected tenant-bound publication credential.
 func NewAzureKeyVault(lookup func(string) (string, bool)) (*AzureKeyVault, error) {
 	return newAzureKeyVault(lookup, nil, nil)
 }
@@ -63,9 +63,9 @@ func newAzureKeyVault(lookup func(string) (string, bool), credential azcore.Toke
 		if parseErr != nil || id == uuid.Nil || id.String() != tenant {
 			return nil, errors.New("CODEFLY_RELEASE_AZURE_TENANT must name the declared tenant UUID")
 		}
-		credential, err = azidentity.NewAzureCLICredential(&azidentity.AzureCLICredentialOptions{TenantID: tenant})
+		credential, err = azureauth.Credential(tenant, lookup)
 		if err != nil {
-			return nil, errors.New("cannot initialize the Azure release credential")
+			return nil, err
 		}
 	}
 	if transport == nil {

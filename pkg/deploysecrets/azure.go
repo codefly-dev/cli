@@ -14,14 +14,14 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
-	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azsecrets"
 	"github.com/codefly-dev/cli/pkg/environments"
+	"github.com/codefly-dev/cli/pkg/internal/azureauth"
 )
 
-// AzureKeyVault uses the operator's Azure CLI identity, restricted to the ESO
-// store's tenant. It never borrows the workload's credential or falls back to
-// another credential source. The SDK owns authentication and paging.
+// AzureKeyVault uses the selected publisher identity, restricted to the ESO
+// store's tenant. It never borrows ESO's credential or falls back to another
+// credential source. The SDK owns authentication and paging.
 type AzureKeyVault struct {
 	vaultURL string
 	client   *azsecrets.Client
@@ -82,9 +82,9 @@ func resolveAzureStore(ctx context.Context, run Runner, target ClusterTarget, re
 	if provider.TenantID == "" {
 		return nil, errors.New("azurekv declares no tenant identity")
 	}
-	credential, err := azidentity.NewAzureCLICredential(&azidentity.AzureCLICredentialOptions{TenantID: provider.TenantID})
+	credential, err := azureauth.Credential(provider.TenantID, nil)
 	if err != nil {
-		return nil, errors.New("invalid azurekv tenant identity")
+		return nil, err
 	}
 	client, err := azsecrets.NewClient(strings.TrimRight(provider.VaultURL, "/"), credential, nil)
 	if err != nil {
