@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/codefly-dev/cli/pkg/runnables"
 	"github.com/codefly-dev/core/resources"
 )
 
@@ -54,6 +55,21 @@ const (
 // authored workspace configuration files.
 func RenderOwnedWorkspaceConfiguration(group string) bool {
 	return group == ModuleAuthorityConfiguration || group == ArtifactCacheConfiguration
+}
+
+// OptionalWorkspaceConfiguration names the groups whose absence is itself an
+// answer. The CLI generates them, and generates nothing for an environment
+// that has nothing to put there: `codefly generate runnable-bindings` writes
+// no runnable-bindings file for an environment that prepares no runnable
+// binding. A service that declares such a group reads the keys it needs and
+// treats an absent one as not configured, so every path that resolves a
+// service's declared groups delivers nothing for one the workspace does not
+// provide, instead of refusing it as missing. A provided group is delivered
+// like any other, and one two composed modules define differently is still
+// refused. `codefly doctor workspace` judges the absence against what the
+// environment prepares.
+func OptionalWorkspaceConfiguration(group string) bool {
+	return group == runnables.RunnableBindingsGroup
 }
 
 // ValidateHostComposition checks what a host block asks of the composition: a

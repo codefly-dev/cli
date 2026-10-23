@@ -2844,6 +2844,13 @@ environment's first configuration profile. --check regenerates in memory and
 exits non-zero when the file differs, including after a scope selection or a
 decline changes.
 
+When no module derives an operation, no file is written. An absent
+runnable-bindings group is how an environment prepares no runnable binding: a
+service that declares the group receives nothing for it on a run, a build and
+a render, and reads every key as not configured. `codefly doctor workspace`
+accepts the group absent or empty exactly when the environment selects no
+binding.
+
 Examples:
   codefly generate runnable-bindings
   codefly generate runnable-bindings --env staging

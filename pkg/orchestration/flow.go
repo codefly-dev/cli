@@ -345,6 +345,13 @@ type World struct {
 	// reason as compositionRootGroups: the read happens after the World exists.
 	providedWorkspaceConfigurationInfos func() []*basev0.ConfigurationInformation
 
+	// ambiguousWorkspaceConfigurations names the groups two composed modules
+	// define differently, from the same loader. Such a group is absent from
+	// providedWorkspaceConfigurationInfos, and an optional group in it must
+	// still reach core, which refuses it naming both providers, rather than
+	// read as unprovided (unprovidedOptionalGroup).
+	ambiguousWorkspaceConfigurations func() map[string]error
+
 	// workspaceProducerLookup answers "is this <module>/<service> a service of
 	// the workspace", which the dependency graph cannot: an excluded producer is
 	// absent from the graph exactly like a service of another workspace, and the
@@ -518,6 +525,7 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	world.providedWorkspaceConfigurationInfos = func() []*basev0.ConfigurationInformation {
 		return workspaceConfigurationInfos(localReader.Configurations())
 	}
+	world.ambiguousWorkspaceConfigurations = localReader.AmbiguousWorkspaceConfigurations
 
 	// A GitOps snapshot render is value-free: it emits secret references derived
 	// from the committed declarations and discards every secret value. Resolving
