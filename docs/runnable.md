@@ -149,6 +149,14 @@ endpoint with the same membership checks. Legacy gRPC-only catalogs must publish
 the called Connect surface before binding. Endpoint addresses still come from
 the existing network resolver.
 
+An environment that prepares no binding has no file when no module derives an
+operation. That absence is an answer, not a missing file: a service that
+declares `runnable-bindings` receives nothing for the group on a run, a build
+and a render, and reads every key as not configured, and `codefly doctor
+workspace` accepts the group absent or empty exactly when the environment
+selects no binding. A selected binding the group does not hold fails there,
+naming `codefly generate runnable-bindings --env <env>`.
+
 Binding and selection keys contain the derived service/endpoint/method name.
 Moving a method between endpoints changes its key: update the composition's
 selections and consumers and regenerate. Old selection keys are refused as

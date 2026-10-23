@@ -3335,6 +3335,15 @@ the command after `generate runnables` in every module it binds, and after an
 owner endpoint or scope selection changes. The output uses the environment's
 first configuration profile; selections are specific to the named environment.
 
+When no module derives an operation, no file is written (and an existing one
+is removed). An **absent** `runnable-bindings` group is how an environment
+prepares no runnable binding: a service that declares the group receives
+nothing for it, on a run, a build and a render alike, and reads every key as
+not configured. It is the one group whose absence is an answer
+(`environments.OptionalWorkspaceConfiguration`); a group two composed modules
+define differently is still refused. `codefly doctor workspace` accepts it
+absent or empty exactly when the environment selects no binding.
+
 | Flag | Description |
 |------|-------------|
 | `--env` | Environment supplying resolved addresses and `runnable-scope-selections` (default: `local`) |
@@ -3656,6 +3665,12 @@ What it checks, in order:
    (`configuration_duplicate`, naming both providers) until the workspace
    declares it. A missing `configurations/<profile>` directory fails only for
    the groups no composed module provides. The directory is never created.
+   `runnable-bindings` is judged against the bindings the environment selects,
+   with the rule `generate runnable-bindings` applies: when it selects none
+   (nothing derived, or every binding declined) the group absent or holding no
+   value is ok; a selected binding the group does not hold fails as
+   `configuration_missing` with `codefly generate runnable-bindings --env
+   <env>` as its remedy.
 7. Per-service `configurations/<env>` files parse; duplicates are flagged.
 8. Every `${endpoint:<module>/<service>/<endpoint>}` reference in a workspace
    configuration a service in scope declares names a service of the workspace
