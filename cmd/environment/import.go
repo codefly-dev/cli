@@ -65,6 +65,8 @@ entries are preserved, comments included. Read from stdin with
 		if err != nil {
 			return err
 		}
+		configurationSource, _ := cmd.Flags().GetString("configuration-source")
+		configurationProfiles, _ := cmd.Flags().GetStringSlice("configuration-profiles")
 
 		dir, err := resources.FindUp[resources.Workspace](ctx)
 		if err != nil || dir == nil {
@@ -72,12 +74,14 @@ entries are preserved, comments included. Read from stdin with
 		}
 
 		opts := importOptions{
-			dir:          *dir,
-			envName:      args[0],
-			contractData: data,
-			namespace:    importNamespace,
-			namespaceSet: cmd.Flags().Changed("namespace"),
-			dryRun:       importDryRun,
+			dir:                   *dir,
+			envName:               args[0],
+			contractData:          data,
+			namespace:             importNamespace,
+			namespaceSet:          cmd.Flags().Changed("namespace"),
+			dryRun:                importDryRun,
+			configurationSource:   configurationSource,
+			configurationProfiles: configurationProfiles,
 			// UTC so the provenance timestamp does not vary by the operator's
 			// machine timezone and churn the diff on re-import across a team.
 			now:    time.Now().UTC(),
@@ -133,14 +137,16 @@ func readContract(stdin io.Reader, path string) ([]byte, error) {
 }
 
 type importOptions struct {
-	dir          string
-	envName      string
-	contractData []byte
-	namespace    string
-	namespaceSet bool
-	dryRun       bool
-	now          time.Time
-	stdout       io.Writer
+	dir                   string
+	envName               string
+	contractData          []byte
+	namespace             string
+	namespaceSet          bool
+	dryRun                bool
+	now                   time.Time
+	stdout                io.Writer
+	configurationSource   string
+	configurationProfiles []string
 }
 
 // runImport parses the contract, merges its owned fields into the named
@@ -164,6 +170,30 @@ func runImport(ctx context.Context, opts *importOptions) error {
 		return err
 	}
 	declaredEnvironment := yamledit.MapValue(declaration, "environment")
+	// Product profiles are owned by the consuming workspace. A placement-only
+	// producer need not acquire product configuration to import its target.
+	if opts.configurationSource != "" {
+		if existing := contract.Environment.ConfigurationSource; existing != "" && existing != opts.configurationSource {
+			return fmt.Errorf("--configuration-source conflicts with the coordinate declaration")
+		}
+		contract.Environment.ConfigurationSource = opts.configurationSource
+		node, encodeErr := yamledit.Encode(opts.configurationSource)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		yamledit.SetMapValue(declaredEnvironment, "configuration-source", node)
+	}
+	if len(opts.configurationProfiles) > 0 {
+		if contract.Environment.ConfigurationProfile != "" || len(contract.Environment.ConfigurationProfiles) > 0 {
+			return fmt.Errorf("--configuration-profiles cannot replace coordinate-declared profiles")
+		}
+		contract.Environment.ConfigurationProfiles = opts.configurationProfiles
+		node, encodeErr := yamledit.Encode(opts.configurationProfiles)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		yamledit.SetMapValue(declaredEnvironment, "configuration-profiles", node)
+	}
 
 	file := filepath.Join(opts.dir, resources.WorkspaceConfigurationName)
 	original, err := os.ReadFile(file)
@@ -220,10 +250,14 @@ func runImport(ctx context.Context, opts *importOptions) error {
 	if err != nil {
 		return err
 	}
-	if _, err := environments.FromWorkspace(merged); err != nil {
+	if _, err = environments.FromWorkspace(merged); err != nil {
 		return fmt.Errorf("merged environment declarations: %w", err)
 	}
-	if err := materializeConfigurationProfile(ctx, opts.dir, env, opts.dryRun); err != nil {
+	selected, err := environments.FromRuntime(merged.FindEnvironment(opts.envName))
+	if err != nil {
+		return err
+	}
+	if err := materializeConfigurationProfile(ctx, opts.dir, selected, opts.dryRun); err != nil {
 		return err
 	}
 	if opts.dryRun {
@@ -433,6 +467,8 @@ func stampProvenance(envNode *yaml.Node, contract *environments.CoordinateContra
 
 func init() {
 	importCmd.Flags().String("coordinate-contract", "", "Path to a codefly/coordinate/v1 descriptor, or - for stdin")
+	importCmd.Flags().String("configuration-source", "", "Authored product profile inherited by the imported environment")
+	importCmd.Flags().StringSlice("configuration-profiles", nil, "Product configuration profile chain when absent from the coordinate declaration")
 	importCmd.Flags().String("cell-contract", "", "Former spelling of --coordinate-contract")
 	_ = importCmd.Flags().MarkDeprecated("cell-contract", "use --coordinate-contract")
 	importCmd.Flags().StringVar(&importNamespace, "namespace", "", "Assert the namespace declared by the producer")

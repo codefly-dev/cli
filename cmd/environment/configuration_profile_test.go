@@ -1,6 +1,7 @@
 package environment
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,46 @@ import (
 	"github.com/codefly-dev/core/configurations"
 	"github.com/stretchr/testify/require"
 )
+
+func TestImportProductProfileIntoExistingPlacement(t *testing.T) {
+	root := profileSource(t)
+	workspace := "name: acme\nlayout: modules\nenvironments:\n- name: azure\n  namespace: acme\n  service-identity:\n    services:\n      model/model:\n        principal: applied-client\n"
+	require.NoError(t, os.WriteFile(filepath.Join(root, "workspace.codefly.yaml"), []byte(workspace), 0o644))
+	opts := importOptions{configurationSource: "hosted", configurationProfiles: []string{"azure", "local"}, dryRun: true}
+	doImport(t, root, opts)
+	require.Equal(t, workspace, readFile(t, filepath.Join(root, "workspace.codefly.yaml")))
+	_, err := os.Stat(filepath.Join(root, "configurations", "azure"))
+	require.True(t, os.IsNotExist(err))
+	opts.dryRun = false
+	doImport(t, root, opts)
+	env := loadWorkspace(t, root).FindEnvironment("azure")
+	require.Equal(t, "hosted", env.ConfigurationSource)
+	require.Equal(t, []string{"azure", "local"}, env.ConfigurationProfiles)
+	require.Contains(t, readFile(t, filepath.Join(root, "workspace.codefly.yaml")), "principal: applied-client")
+	profile := filepath.Join(root, "configurations", "azure", configurations.ProfileDerivationFile)
+	require.Contains(t, readFile(t, profile), "derives-from: hosted")
+	// A later placement refresh keeps and regenerates the product selection.
+	require.NoError(t, os.Remove(profile))
+	doImport(t, root, importOptions{})
+	require.Contains(t, readFile(t, profile), "derives-from: hosted")
+}
+
+func TestImportProductProfileRefusesCoordinateConflict(t *testing.T) {
+	for _, declared := range []string{
+		`"configuration-source":"other"`,
+		`"configuration-profile":"other"`,
+		`"configuration-profiles":["other"]`,
+	} {
+		t.Run(declared, func(t *testing.T) {
+			root := profileSource(t)
+			workspace := "name: acme\nlayout: modules\n"
+			require.NoError(t, os.WriteFile(filepath.Join(root, "workspace.codefly.yaml"), []byte(workspace), 0o644))
+			opts := importOptions{dir: root, envName: "azure", configurationSource: "hosted", configurationProfiles: []string{"azure", "local"}, contractData: []byte(`{"schema":"codefly/coordinate/v1","environment":{"name":"azure",` + declared + `}}`), stdout: &bytes.Buffer{}}
+			require.Error(t, runImport(t.Context(), &opts))
+			require.Equal(t, workspace, readFile(t, filepath.Join(root, "workspace.codefly.yaml")))
+		})
+	}
+}
 
 func profileSource(t *testing.T) string {
 	t.Helper()

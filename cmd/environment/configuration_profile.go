@@ -47,18 +47,55 @@ func materializeConfigurationProfile(ctx context.Context, directory string, env 
 	if !exists {
 		return fmt.Errorf("configuration-source profile does not exist")
 	}
+	if err = validateConfigurationSources(layers, destination); err != nil {
+		return err
+	}
+	confined, err := os.OpenRoot(configurationRoot)
+	if err != nil {
+		return err
+	}
+	defer confined.Close()
+	retired, err := importedProfileRetirements(confined, target)
+	if err != nil {
+		return err
+	}
+	output := filepath.Join(destination, configurations.ProfileDerivationFile)
+	if dryRun {
+		return nil
+	}
+	if err := confined.MkdirAll(target, 0o755); err != nil {
+		return err
+	}
+	body := profileMarker + env.ConfigurationSource + "\nderives-from: " + env.ConfigurationSource + "\n"
+	if err := shared.WriteFileAtomic(ctx, output, []byte(body), 0o644); err != nil {
+		return err
+	}
+	for _, path := range retired {
+		if err := confined.Remove(path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateConfigurationSources(layers []string, destination string) error {
 	for _, layer := range layers {
 		if layer == destination {
 			return fmt.Errorf("configuration-source must not derive from its destination")
 		}
-		resolved, err := filepath.EvalSymlinks(layer)
-		if err != nil || resolved != layer {
+		resolved, resolveErr := filepath.EvalSymlinks(layer)
+		if resolveErr != nil || resolved != layer {
 			return fmt.Errorf("configuration source must be an ordinary profile directory")
 		}
 		entries, err := os.ReadDir(layer)
 		if err != nil {
 			return err
 		}
+		confined, err := os.OpenRoot(layer)
+		if err != nil {
+			return err
+		}
+		defer confined.Close()
 		for _, entry := range entries {
 			if !strings.HasSuffix(entry.Name(), ".env") && entry.Name() != configurations.ProfileDerivationFile {
 				return fmt.Errorf("configuration-source supports only flat .env inputs and profile derivation metadata: %s", entry.Name())
@@ -71,7 +108,7 @@ func materializeConfigurationProfile(ctx context.Context, directory string, env 
 				return fmt.Errorf("configuration-source must not contain environment-specific runnable bindings")
 			}
 			if strings.HasSuffix(entry.Name(), ".secret.env") {
-				body, err := os.ReadFile(filepath.Join(layer, entry.Name()))
+				body, err := confined.ReadFile(entry.Name())
 				if err != nil {
 					return err
 				}
@@ -88,52 +125,40 @@ func materializeConfigurationProfile(ctx context.Context, directory string, env 
 			}
 		}
 	}
-	if info, err := os.Lstat(destination); err == nil && !info.IsDir() {
-		return fmt.Errorf("generated profile must be an ordinary directory")
+	return nil
+}
+
+func importedProfileRetirements(confined *os.Root, target string) ([]string, error) {
+	if info, err := confined.Lstat(target); err == nil && !info.IsDir() {
+		return nil, fmt.Errorf("generated profile must be an ordinary directory")
 	} else if err != nil && !os.IsNotExist(err) {
-		return err
+		return nil, err
 	}
-	output := filepath.Join(destination, configurations.ProfileDerivationFile)
 	var retired []string
-	previous, err := os.ReadDir(destination)
+	previous, err := os.ReadDir(filepath.Join(confined.Name(), target))
 	if err != nil && !os.IsNotExist(err) {
-		return err
+		return nil, err
 	}
 	for _, entry := range previous {
 		if !strings.HasSuffix(entry.Name(), ".env") && entry.Name() != configurations.ProfileDerivationFile {
 			continue
 		}
-		path := filepath.Join(destination, entry.Name())
+		path := filepath.Join(target, entry.Name())
 		info, err := entry.Info()
 		if err != nil || !info.Mode().IsRegular() {
-			return fmt.Errorf("generated configuration %s must be a regular file", entry.Name())
+			return nil, fmt.Errorf("generated configuration %s must be a regular file", entry.Name())
 		}
-		body, err := os.ReadFile(path)
+		body, err := confined.ReadFile(filepath.Join(target, entry.Name()))
 		if err != nil {
-			return err
+			return nil, err
 		}
 		owned := strings.HasPrefix(string(body), profileMarker)
 		if !owned && entry.Name() != "runnable-bindings.env" {
-			return fmt.Errorf("refusing to overwrite authored configuration %s", entry.Name())
+			return nil, fmt.Errorf("refusing to overwrite authored configuration %s", entry.Name())
 		}
-		if path != output && owned {
+		if entry.Name() != configurations.ProfileDerivationFile && owned {
 			retired = append(retired, path)
 		}
 	}
-	if dryRun {
-		return nil
-	}
-	if err := os.MkdirAll(destination, 0o755); err != nil {
-		return err
-	}
-	body := profileMarker + env.ConfigurationSource + "\nderives-from: " + env.ConfigurationSource + "\n"
-	if err := shared.WriteFileAtomic(ctx, output, []byte(body), 0o644); err != nil {
-		return err
-	}
-	for _, path := range retired {
-		if err := os.Remove(path); err != nil {
-			return err
-		}
-	}
-	return nil
+	return retired, nil
 }
