@@ -22,7 +22,7 @@ const deployReadinessTimeout = 30 * time.Second
 // `environment.PostImportValidate` uses, for the same reason.
 func init() {
 	deploy.WorkspaceReadiness = func(ctx context.Context, env, module string) error {
-		report := workspaceReadiness(ctx, workspaceReadinessOptions{
+		report := workspaceReadiness(ctx, &workspaceReadinessOptions{
 			env:     env,
 			module:  module,
 			timeout: deployReadinessTimeout,
