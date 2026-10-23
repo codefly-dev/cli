@@ -36,10 +36,17 @@ var SecretsCmd = &cobra.Command{
 	Long: `Reads every ExternalSecret ` + "`deploy gitops render`" + ` projected for --env under
 deployments/modules, and resolves each remote property to a source: kept (already
 stored), propagated (a configuration value another remote key already holds),
-generated (declared random by the environment's service-secrets.generate), or
-required (supplied by the operator, and named). The store is the backend behind
-the SecretStore the render names, read from the environment's cluster; a render
-reading through several stores is planned and written store by store.
+configured (the environment's own configurations/<profile>/<group>.secret.env
+holds the value, as written by ` + "`codefly config set`" + `), generated (declared random
+by the environment's service-secrets.generate), or required (supplied by the
+operator, and named). The store is the backend behind the SecretStore the render
+names, read from the environment's cluster; a render reading through several
+stores is planned and written store by store.
+
+A stored value is never rotated: a property the store already holds is kept even
+when a configuration file holds one too, and the two disagreeing is refused
+rather than resolved. A configured key with an empty value supplies nothing, so
+a tracked placeholder file still leaves its properties to be supplied.
 
 Each property is resolved by the secret key the render reads out of it, not by
 the property name the environment files that key under, so an environment that
@@ -85,6 +92,13 @@ the store already holds, but nothing outside the scope is planned or written.`,
 				return fmt.Errorf("--module %s: not a module rendered for %s (rendered: %s)", module, env.Name, strings.Join(rendered.Modules, ", "))
 			}
 		}
+		// The operator's own configuration files, read once for the whole
+		// environment: they are a property of the workspace, not of a store, so
+		// every per-store plan below resolves against the same index.
+		configured, err := deploysecrets.ReadConfigured(ctx, workspace, env)
+		if err != nil {
+			return err
+		}
 		// A render that reads through several stores (the cell's store and a
 		// per-key store such as an identity provider's) is planned and written
 		// store by store: one plan writes one store, and each is confirmed on
@@ -102,6 +116,7 @@ the store already holds, but nothing outside the scope is planned or written.`,
 				ReadPayloads: !secretsMetadataOnly,
 				Modules:      secretsModules,
 				MayBeEmpty:   env.ServiceSecrets.MayBeEmpty,
+				Configured:   configured,
 			})
 			if err != nil {
 				return err
