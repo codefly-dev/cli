@@ -27,6 +27,7 @@ var (
 	secretsAllowMissing bool
 	secretsYes          bool
 	secretsModules      []string
+	secretsMintKeys     []string
 )
 
 // SecretsCmd seeds an environment's secret store with what its render reads.
@@ -102,6 +103,7 @@ the store already holds, but nothing outside the scope is planned or written.`,
 				ReadPayloads: !secretsMetadataOnly,
 				Modules:      secretsModules,
 				MayBeEmpty:   env.ServiceSecrets.MayBeEmpty,
+				MintKeys:     secretsMintKeys,
 			})
 			if err != nil {
 				return err
@@ -256,4 +258,5 @@ func init() {
 	SecretsCmd.Flags().BoolVar(&secretsAllowMissing, "allow-missing", false, "Write what can be resolved even when some properties must still be supplied")
 	SecretsCmd.Flags().BoolVarP(&secretsYes, "yes", "y", false, "Write without an interactive confirmation")
 	SecretsCmd.Flags().StringSliceVar(&secretsModules, "module", nil, "Plan only these modules' remote keys (comma-separated or repeated)")
+	SecretsCmd.Flags().StringSliceVar(&secretsMintKeys, "mint", nil, "Acknowledge first creation of these signing secret keys (comma-separated or repeated); never rotate existing keys")
 }

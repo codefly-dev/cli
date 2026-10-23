@@ -36,9 +36,11 @@ type Store interface {
 // Description is what can be known about a remote key without reading it.
 type Description struct {
 	Exists bool
-	// HasVersion is false for a key created with no enabled version: reading it
-	// fails, so it is planned as an empty document.
+	// HasVersion is false when no version can be read. Existing material must
+	// not be treated as absent in that case.
 	HasVersion bool
+	// Revision identifies metadata observed by Describe, without payloads.
+	Revision string
 }
 
 // Runner executes a command with stdin and returns its standard output. The
@@ -145,6 +147,12 @@ func ResolveStore(ctx context.Context, run Runner, target ClusterTarget, ref env
 	if err := json.Unmarshal(output, &store); err != nil {
 		return nil, fmt.Errorf("decode %s %s: invalid store document (backend output withheld)", ref.Kind, ref.Name)
 	}
+	if len(store.Spec.Provider) != 1 {
+		return nil, fmt.Errorf("%s %s must declare exactly one secret provider", ref.Kind, ref.Name)
+	}
+	if raw, ok := store.Spec.Provider["azurekv"]; ok {
+		return resolveAzureStore(ctx, run, target, ref, namespace, raw)
+	}
 	if raw, ok := store.Spec.Provider["gcpsm"]; ok {
 		var gcp struct {
 			ProjectID string `json:"projectID"`
@@ -161,7 +169,7 @@ func ResolveStore(ctx context.Context, run Runner, target ClusterTarget, ref env
 	for provider := range store.Spec.Provider {
 		providers = append(providers, provider)
 	}
-	return nil, fmt.Errorf("%s %s resolves through provider %v, which `codefly deploy secrets` cannot write yet (supported: gcpsm)", ref.Kind, ref.Name, providers)
+	return nil, fmt.Errorf("%s %s resolves through provider %v, which `codefly deploy secrets` cannot write yet (supported: gcpsm, azurekv)", ref.Kind, ref.Name, providers)
 }
 
 // GoogleSecretManager is a gcpsm-backed store, driven through the operator's own
@@ -187,7 +195,8 @@ func (store *GoogleSecretManager) Describe(ctx context.Context, key string) (Des
 	if err != nil {
 		return Description{}, err
 	}
-	return Description{Exists: true, HasVersion: strings.TrimSpace(string(versions)) != ""}, nil
+	revision := strings.TrimSpace(string(versions))
+	return Description{Exists: true, HasVersion: revision != "", Revision: revision}, nil
 }
 
 func (store *GoogleSecretManager) Read(ctx context.Context, key string) (map[string]string, error) {

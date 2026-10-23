@@ -59,7 +59,7 @@ func RenderSolution(ctx context.Context, req *SolutionRenderRequest) (RenderResu
 	if err := selectionguard.RejectUnboundExecution(req.Workspace.Dir(), req.Source); err != nil {
 		return RenderResult{}, err
 	}
-	if err := environments.ValidateWorkspace(ctx, req.Workspace); err != nil {
+	if err := environments.ValidateWorkspace(ctx, req.Workspace, req.Environment); err != nil {
 		return RenderResult{}, err
 	}
 	env := req.Environment
