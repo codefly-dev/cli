@@ -2215,13 +2215,16 @@ workspace is not ready, the command prints the diagnostics and exits non-zero.
 The merged file is still written, so the diagnostics can be read against it.
 
 An imported environment may declare `configuration-source: hosted` and select
-`configuration-profiles: [blue, local]`. Import materializes the authored
-`configurations/hosted/*.env` inputs into the generated `configurations/blue/`
-profile. Secret source files must contain empty placeholders. Import refuses
-symlinks and authored destination files; dry-run writes nothing. Removed source
-groups retire only import-owned files, preserving the environment's separately
-generated runnable bindings. Run `codefly generate runnable-bindings --env blue`
-after import so addresses are resolved for blue rather than copied from a sibling.
+`configuration-profiles: [blue, local]`. Import generates a `profile.codefly.yaml`
+in `configurations/blue/` deriving from `hosted`, using Core's profile inheritance.
+The profile chain selects the first directory at each location; inheritance adds
+shared groups and per-profile values. Import validates every inherited source:
+secret files contain empty placeholders, symlinks are refused, and sources may
+not contain environment-specific runnable bindings. Dry-run writes nothing.
+Import refuses authored destination files and retires only its own earlier copied
+outputs, preserving the environment's separately generated runnable bindings.
+Run `codefly generate runnable-bindings --env blue` after import so addresses are
+resolved for blue rather than copied from a sibling.
 
 The cell inventory also carries `source.path` when publication uses a root other
 than `deployments`. Consumers must use that root to discover the published module
