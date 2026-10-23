@@ -23,7 +23,7 @@ import (
 	"github.com/google/uuid"
 )
 
-var azureReleaseHost = regexp.MustCompile(`^[a-z][a-z0-9-]{1,22}[a-z0-9]\.vault\.azure\.net$`)
+var azureReleaseHost = regexp.MustCompile(`^[a-z][a-z0-9-]{1,22}[a-z0-9]\.(vault|managedhsm)\.azure\.net$`)
 var azureReleasePath = regexp.MustCompile(`^/keys/([A-Za-z0-9-]{1,127})/([a-f0-9]{32})$`)
 
 // AzureKeyVault signs with one explicitly versioned P-256 key. Only the public
@@ -51,7 +51,7 @@ func newAzureKeyVault(lookup func(string) (string, bool), credential azcore.Toke
 	u, err := url.Parse(keyURI)
 	if err != nil || u.Scheme != "https" || !azureReleaseHost.MatchString(u.Host) || u.User != nil ||
 		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawPath != "" {
-		return nil, errors.New("CODEFLY_RELEASE_AZURE_KEY must be an HTTPS public-cloud Azure Key Vault key-version URL")
+		return nil, errors.New("CODEFLY_RELEASE_AZURE_KEY must be an HTTPS public-cloud Azure Key Vault or Managed HSM key-version URL")
 	}
 	parts := azureReleasePath.FindStringSubmatch(u.Path)
 	if parts == nil {

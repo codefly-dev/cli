@@ -408,12 +408,14 @@ winning.
 
 Azure Key Vault uses that same release-signing interface. Set
 `CODEFLY_RELEASE_AZURE_KEY` to an exact version URL
-(`https://<vault>.vault.azure.net/keys/<name>/<32-digit-version>`) and
+(`https://<vault>.vault.azure.net/keys/<name>/<32-digit-version>` or
+`https://<hsm>.managedhsm.azure.net/keys/<name>/<32-digit-version>`) and
 `CODEFLY_RELEASE_AZURE_TENANT` to the tenant UUID. The operator's Azure CLI
 credential is restricted to that tenant; no fallback credential chain is used.
-This adapter supports public-cloud Key Vault endpoints and enabled, currently
+This adapter supports public-cloud Key Vault and Managed HSM endpoints and enabled, currently
 valid EC or EC-HSM P-256 keys permitting `sign`. The operator needs public-key
-read and signing permissions. Private key material remains in Key Vault.
+read and signing permissions. Private key material remains in the selected custody.
+The existing Azure SDK handles each endpoint's authentication challenge and resource audience.
 
 For Azure, `host.release.key_id` is the **entire version URL**, so different
 vaults cannot share a key ID accidentally. Core still owns the envelope and

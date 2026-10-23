@@ -23,10 +23,14 @@ import (
 
 const azureTestKey = "https://release.vault.azure.net/keys/delivery/0123456789abcdef0123456789abcdef"
 
-type azureReleaseCredential struct{}
+type azureReleaseCredential struct{ resource string }
 
-func (azureReleaseCredential) GetToken(_ context.Context, options policy.TokenRequestOptions) (azcore.AccessToken, error) {
-	if len(options.Scopes) != 1 || options.Scopes[0] != "https://vault.azure.net/.default" {
+func (credential azureReleaseCredential) GetToken(_ context.Context, options policy.TokenRequestOptions) (azcore.AccessToken, error) {
+	resource := credential.resource
+	if resource == "" {
+		resource = "https://vault.azure.net"
+	}
+	if len(options.Scopes) != 1 || options.Scopes[0] != resource+"/.default" {
 		return azcore.AccessToken{}, fmt.Errorf("unexpected scope")
 	}
 	return azcore.AccessToken{Token: "private-release-test-token", ExpiresOn: time.Now().Add(time.Hour)}, nil
@@ -42,12 +46,17 @@ func azureReleaseLookup(values map[string]string) func(string) (string, bool) {
 
 func azureReleaseFixture(t *testing.T, mutate func(string, map[string]any), failSign bool) (*AzureKeyVault, error, *int) {
 	t.Helper()
+	return azureReleaseFixtureForKey(t, azureTestKey, "https://vault.azure.net", "EC", mutate, failSign)
+}
+
+func azureReleaseFixtureForKey(t *testing.T, keyURI, resource, keyType string, mutate func(string, map[string]any), failSign bool) (*AzureKeyVault, error, *int) {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	calls := 0
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") == "" {
-			w.Header().Set("WWW-Authenticate", `Bearer authorization="https://login.microsoftonline.com/tenant", resource="https://vault.azure.net"`)
+			w.Header().Set("WWW-Authenticate", `Bearer authorization="https://login.microsoftonline.com/tenant", resource="`+resource+`"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -59,7 +68,7 @@ func azureReleaseFixture(t *testing.T, mutate func(string, map[string]any), fail
 		case http.MethodGet:
 			require.Equal(t, "/keys/delivery/0123456789abcdef0123456789abcdef", r.URL.Path)
 			response = map[string]any{
-				"key": map[string]any{"kid": azureTestKey, "kty": "EC", "crv": "P-256", "key_ops": []string{"sign", "verify"},
+				"key": map[string]any{"kid": keyURI, "kty": keyType, "crv": "P-256", "key_ops": []string{"sign", "verify"},
 					"x": base64.RawURLEncoding.EncodeToString(key.X.FillBytes(make([]byte, 32))),
 					"y": base64.RawURLEncoding.EncodeToString(key.Y.FillBytes(make([]byte, 32)))},
 				"attributes": map[string]any{"enabled": true},
@@ -83,7 +92,7 @@ func azureReleaseFixture(t *testing.T, mutate func(string, map[string]any), fail
 			r, s, err := ecdsa.Sign(rand.Reader, key, digest)
 			require.NoError(t, err)
 			raw := append(r.FillBytes(make([]byte, 32)), s.FillBytes(make([]byte, 32))...)
-			response = map[string]any{"kid": azureTestKey, "value": base64.RawURLEncoding.EncodeToString(raw)}
+			response = map[string]any{"kid": keyURI, "value": base64.RawURLEncoding.EncodeToString(raw)}
 		default:
 			t.Errorf("unexpected operation %s", r.Method)
 		}
@@ -106,8 +115,28 @@ func azureReleaseFixture(t *testing.T, mutate func(string, map[string]any), fail
 		}
 		return response, err
 	})
-	signer, err := newAzureKeyVault(azureReleaseLookup(map[string]string{"CODEFLY_RELEASE_AZURE_KEY": azureTestKey}), azureReleaseCredential{}, transport)
+	signer, err := newAzureKeyVault(azureReleaseLookup(map[string]string{"CODEFLY_RELEASE_AZURE_KEY": keyURI}), azureReleaseCredential{resource: resource}, transport)
 	return signer, err, &calls
+}
+
+func TestAzureManagedHSMReleaseSignsTheCoreDeliveryEnvelope(t *testing.T) {
+	keyURI := strings.Replace(azureTestKey, ".vault.", ".managedhsm.", 1)
+	signer, err, calls := azureReleaseFixtureForKey(t, keyURI, "https://managedhsm.azure.net", "EC-HSM", nil, false)
+	require.NoError(t, err)
+	check, err := KeyCheck(signer, solutionhost.KeyKindRelease, "acme", keyURI)
+	require.NoError(t, err)
+	payload := testPayload(t)
+	envelope, err := SignEnvelope(payload, signer)
+	require.NoError(t, err)
+	require.NoError(t, check(context.Background(), envelope, payload))
+	require.Equal(t, 2, *calls)
+}
+
+func TestAzureManagedHSMRefusesAnotherResourceChallenge(t *testing.T) {
+	keyURI := strings.Replace(azureTestKey, ".vault.", ".managedhsm.", 1)
+	_, err, calls := azureReleaseFixtureForKey(t, keyURI, "https://vault.azure.net", "EC-HSM", nil, false)
+	require.Error(t, err)
+	require.Zero(t, *calls)
 }
 
 func TestAzureReleaseSignsTheCoreDeliveryEnvelope(t *testing.T) {
@@ -190,6 +219,7 @@ func TestAzureReleaseRefusesUnsafeConfigurationBeforeNetwork(t *testing.T) {
 		strings.Replace(azureTestKey, "https:", "http:", 1), strings.Replace(azureTestKey, "vault.azure.net", "evil.example", 1),
 		azureTestKey + "?query=1", azureTestKey + "?", azureTestKey + "#fragment", azureTestKey + "/extra",
 		"https://release.vault.azure.net/keys/delivery", strings.Replace(azureTestKey, "/keys/", "/%6beys/", 1),
+		strings.Replace(azureTestKey, "vault.azure.net", "managedhsm.azure.net.evil.example", 1),
 	} {
 		_, err := NewAzureKeyVault(azureReleaseLookup(map[string]string{"CODEFLY_RELEASE_AZURE_KEY": key}))
 		require.Error(t, err)
