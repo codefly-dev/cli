@@ -201,6 +201,7 @@ func TestCellFileInventoriesEveryRenderedWorkload(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"billing", "shop"}, result.Modules)
 	require.Empty(t, result.Skipped)
+	require.Empty(t, result.DroppedConsumers, "every consumer runs a workload of this cell")
 	require.False(t, result.Source, "a workspace that is not a git checkout names no source commit, and says so")
 	require.Equal(t, filepath.Join(workspace.Dir(), "deployments", "cells", "staging", "cell.yaml"), result.Path)
 	data, err := os.ReadFile(result.Path)
@@ -273,6 +274,46 @@ func TestCellFileSkipsTreesRenderedForAnotherEnvironment(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"shop"}, result.Modules)
 	require.Equal(t, []string{"billing"}, result.Skipped)
+	require.Equal(t, []string{"cell: billing/ledger is composed but runs no workload in environment staging; its allow on shop/api/grpc is not written"}, result.DroppedConsumers,
+		"a consumer whose tree describes another cell runs nothing here")
+}
+
+// The composition names consumers from every module it composes, but a cell
+// file names only the workloads rendered for its environment: a consumer
+// whose module is composed and not rendered runs nothing the reader can
+// resolve, so its allow is left out and reported; a rendered consumer, the
+// service's own bootstrap identity included, keeps its row.
+func TestCellFileNamesOnlyRenderedWorkloadsAsConsumers(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	env := selectedEnvironment(t, workspace, "staging")
+	renderCellTree(t, workspace, "shop", "api", "acme-shop", "staging")
+	result, err := RenderCell(context.Background(), workspace, env)
+	require.NoError(t, err)
+	require.Equal(t, []string{"shop"}, result.Modules)
+	require.Empty(t, result.Skipped, "billing is composed but was never rendered")
+	require.Equal(t, []string{"cell: billing/ledger is composed but runs no workload in environment staging; its allow on shop/api/grpc is not written"}, result.DroppedConsumers)
+	data, err := os.ReadFile(result.Path)
+	require.NoError(t, err)
+	file, err := cellfile.Parse(data)
+	require.NoError(t, err)
+	require.Len(t, file.Namespaces, 1)
+	api := file.Namespaces[0].Workloads[0]
+	require.Equal(t, "shop/api", api.Service)
+	require.Equal(t, []cellfile.Endpoint{
+		{Name: "grpc", API: "grpc", Port: 9090, ServicePort: 9090, Consumers: []string{"shop/api"}},
+		{Name: "http", API: "http", Port: 3000, ServicePort: 8080, Consumers: []string{"shop/api"}, Presenter: true},
+	}, api.Endpoints, "the unrendered caller is gone; the service's own bootstrap consumer stays")
+	require.NotContains(t, string(data), "billing/ledger")
+
+	renderCellTree(t, workspace, "billing", "ledger", "acme-billing", "staging")
+	again, err := RenderCell(context.Background(), workspace, env)
+	require.NoError(t, err)
+	require.Empty(t, again.DroppedConsumers, "once rendered, the caller is a workload and keeps its row")
+	data, err = os.ReadFile(again.Path)
+	require.NoError(t, err)
+	file, err = cellfile.Parse(data)
+	require.NoError(t, err)
+	require.Equal(t, []string{"billing/ledger", "shop/api"}, file.Namespaces[1].Workloads[0].Endpoints[0].Consumers)
 }
 
 // A workload whose authenticating container cannot be told from a sidecar is
