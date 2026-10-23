@@ -2214,6 +2214,14 @@ readiness validation runs for the selected environment; when it reports the
 workspace is not ready, the command prints the diagnostics and exits non-zero.
 The merged file is still written, so the diagnostics can be read against it.
 
+`--product-intent delivery.environments.yaml` also reads product-owned composition
+exclusions from `environments.<selected-name>.exclude-services`. This narrow authored
+input cannot override placement or runtime bindings and does not interpret the full
+legacy `delivery.intent.yaml` launch format. Unknown keys, missing environments and
+invalid withdrawals are refused before writing. `exclude-services: []` clears the
+selection; without the flag, existing merge behavior is unchanged. See
+[the configuration contract](configuration-contract.md) for the blue/green example.
+
 An imported environment may declare `configuration-source: hosted` and select
 `configuration-profiles: [blue, local]`. Import generates a `profile.codefly.yaml`
 in `configurations/blue/` deriving from `hosted`, using Core's profile inheritance.

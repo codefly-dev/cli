@@ -175,6 +175,37 @@ environments:
         withdrawn-from: [saas/accounts]
 ```
 
+A product whose hosted environment is imported can keep this decision in an
+**authored** `delivery.environments.yaml` and pass it alongside the producer's
+contract:
+
+```yaml
+environments:
+  blue:
+    exclude-services:
+      - service: saas/vault
+        withdrawn-from: [saas/accounts]
+  green:
+    exclude-services:
+      - service: saas/vault
+        withdrawn-from: [saas/accounts]
+```
+
+```bash
+codefly environment import blue --coordinate-contract blue.json --product-intent delivery.environments.yaml
+```
+
+This optional input accepts only `environments.<name>.exclude-services`. It is
+not the historical full `delivery.intent.yaml` launch format: profiles, host,
+ingress and secret generation are not interpreted here. The coordinate producer
+continues to own placement, runtime bindings and `key-service`. Unknown fields,
+placement overrides, a missing target environment, malformed exclusions, an
+invalid withdrawal and exclusions declared by both inputs are refused before
+workspace or profile files are written. Only the selected environment is imported.
+Use `exclude-services: []` to clear an earlier exclusion; a missing or null list
+is refused. Omitting `--product-intent` preserves the existing importer behavior,
+including already imported exclusions omitted from the producer's contract.
+
 In that environment an excluded service is not in the dependency graph: it is
 not built, published, rendered or started, has no unit in the render
 inventory, no tree under `deployments/modules/<module>/services/`, no workload
