@@ -105,7 +105,8 @@ var ModuleCmd = &cobra.Command{
 		// module loop is the dependency walker now). Failure on any
 		// service aborts the module deploy — partial deploys are worse
 		// than a clean failure to investigate.
-		for _, ref := range module.ServiceReferences {
+		// A service the environment excludes is not deployed there.
+		for _, ref := range env.ComposedServices(module) {
 			cli.Header(2, "Deploying service %s", ref.Name)
 			if err := deployOneService(ctx, workspace, module, ref.Name, env, deploymentManager); err != nil {
 				reportCompletion(evidenceProvider)

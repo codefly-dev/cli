@@ -103,6 +103,9 @@ func (env *Environment) Validate() error {
 	if err := env.admitCarried(); err != nil {
 		return err
 	}
+	if err := env.validateExcludedServices(); err != nil {
+		return err
+	}
 	if _, err := env.Proto(); err != nil {
 		return err
 	}
@@ -201,6 +204,9 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 		if hostErr := ValidateHostComposition(ctx, workspace, env); hostErr != nil {
 			return w.Wrap(hostErr)
 		}
+	}
+	if excludedErr := ValidateExcludedServices(ctx, workspace); excludedErr != nil {
+		return w.Wrap(excludedErr)
 	}
 	needsGraph := false
 

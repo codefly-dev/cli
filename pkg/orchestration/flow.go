@@ -180,6 +180,9 @@ type Flow struct {
 	remoteServices []*Remote
 
 	excludedDependencyServices []string
+	// excludedByEnvironment is the environment's exclude-services, kept
+	// apart so a run profile's exclusions add to it rather than replace it.
+	excludedByEnvironment []string
 	// runProfile is the run profile WithRunProfile applied, as resolved; the
 	// plan-time reference check hands it to core unchanged. Zero when none was.
 	runProfile resources.RunProfile
@@ -441,6 +444,12 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	if err := environments.ValidateManagedServices(ctx, workspace); err != nil {
 		return nil, w.Wrap(err)
 	}
+	if err := environments.ValidateEnvironmentExclusions(ctx, workspace, env); err != nil {
+		return nil, w.Wrap(err)
+	}
+	if service != nil && module != nil && env.Excludes(module.Name, service.Name) {
+		return nil, w.NewError("environment %q excludes %s (exclude-services), so it has nothing to run, build or deploy there", env.Name, resources.ServiceUnique(module.Name, service.Name))
+	}
 	graphWorkspace, err := runModuleClosure(ctx, workspace, options.moduleClosureSeeds)
 	if err != nil {
 		return nil, w.Wrap(err)
@@ -477,6 +486,13 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	var graphOptions []architecture.DependencyOption
 	if configurationReferences != nil {
 		graphOptions = append(graphOptions, configurationReferences)
+	}
+	// A service the environment withdraws is not in the graph at all, and
+	// neither is a consumer's edge to it (ValidateExcludedServices admitted
+	// only declared withdrawals).
+	excludedByEnvironment := env.ExcludedServiceUniques()
+	if len(excludedByEnvironment) > 0 {
+		graphOptions = append(graphOptions, architecture.ExcludeServices(excludedByEnvironment...))
 	}
 	dependencies, err := architecture.NewServiceDependencies(ctx, graphWorkspace, graphOptions...)
 	if err != nil {
@@ -572,6 +588,9 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 
 		endpoints:       make(map[string][]*basev0.Endpoint),
 		networkMappings: make(map[string][]*basev0.NetworkMapping),
+
+		excludedByEnvironment:      excludedByEnvironment,
+		excludedDependencyServices: excludedByEnvironment,
 	}
 	world.runtimeContextFor = flow.runtimeContextFor
 	// Per-developer runtime preferences (~/.codefly/preferences.yaml). Best
@@ -2526,7 +2545,7 @@ func (flow *Flow) WithRunProfile(profile resources.RunProfile) error {
 		return fmt.Errorf("run profiles can only be applied to run or test flows")
 	}
 	flow.runProfile = profile
-	flow.excludedDependencyServices = append([]string(nil), profile.ExcludeDependencies...)
+	flow.excludedDependencyServices = append(slices.Clone(flow.excludedByEnvironment), profile.ExcludeDependencies...)
 	flow.world.excludedWorkspaceConfigurations = make(map[string]bool, len(profile.ExcludeWorkspaceConfigurations))
 	for _, configuration := range profile.ExcludeWorkspaceConfigurations {
 		flow.world.excludedWorkspaceConfigurations[configuration] = true

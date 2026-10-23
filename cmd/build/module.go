@@ -62,7 +62,8 @@ var ModuleCmd = &cobra.Command{
 
 		cli.Header(1, "Building module %s for env %s", module.Name, env.Name)
 
-		for _, ref := range module.ServiceReferences {
+		// A service the environment excludes is not built for it.
+		for _, ref := range env.ComposedServices(module) {
 			cli.Header(2, "Building service %s", ref.Name)
 			if err := buildOneService(ctx, workspace, module, ref.Name, env); err != nil {
 				return fmt.Errorf("cannot build service %s: %w", ref.Name, err)

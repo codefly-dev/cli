@@ -2506,6 +2506,10 @@ must match the declaration; import never retargets a contract.
 Declared fields replace their named values. Omitted fields and unrelated map
 entries are preserved, comments included. Read from stdin with
 --coordinate-contract -.
+
+--product-intent <file> additionally imports environment-specific composition
+exclusions from an authored product file. It accepts only environments and
+exclude-services; it does not interpret the legacy full delivery.intent.yaml.
 ```
 
 ```
@@ -2518,6 +2522,7 @@ Flags:
       --coordinate-contract string   Path to a codefly/coordinate/v1 descriptor, or - for stdin
       --dry-run                      Print the unified diff of workspace.codefly.yaml and write nothing
       --namespace string             Assert the namespace declared by the producer
+      --product-intent string        Authored environment exclusions; accepts environments.<env>.exclude-services only
 ```
 
 ## `codefly environment show`
