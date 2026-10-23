@@ -18,8 +18,8 @@ import (
 
 // FrontendBuilderImage is the image a component's frontend bundle is built
 // in: Node 24, the line every remote's own CI builds with, pinned by digest so
-// the build reads the same toolchain wherever it runs. The daemon's registry
-// mirror serves it like any other base.
+// the build reads the same toolchain wherever it runs. The selected builder's
+// registry mirror serves it like any other base.
 const FrontendBuilderImage = "docker.io/library/node:24-bookworm-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5"
 
 // FrontendProject is the npm project a component's frontend build runs in,
@@ -100,7 +100,8 @@ var buildPath = regexp.MustCompile(`^[A-Za-z0-9._@/-]+$`)
 // written into the component's directory, which for a release is the
 // immutable module cache. The builder sees no variable from this process, so
 // an ASSET_PREFIX left in the shell cannot bake an origin into the remote.
-func BuildFrontendBundle(ctx context.Context, module *resources.Module, destination string) error {
+// The caller selects the builder to retain its environment's resolver and mirrors.
+func BuildFrontendBundle(ctx context.Context, module *resources.Module, destination, builder string) error {
 	project, err := FrontendProject(module)
 	if err != nil {
 		return err
@@ -128,8 +129,12 @@ func BuildFrontendBundle(ctx context.Context, module *resources.Module, destinat
 	}
 	dockerfile := fmt.Sprintf("FROM %s AS build\nWORKDIR /source\nCOPY [\".\", \".\"]\nWORKDIR %s\nRUN [\"sh\", \"-c\", \"npm ci && npm run build\"]\nFROM scratch\nCOPY --from=build [\"%s/\", \"/\"]\n",
 		FrontendBuilderImage, workdir, bundle)
+	args := []string{"build", "--file", "-", "--output", "type=local,dest=" + destination}
+	if builder != "" {
+		args = append(args, "--builder", builder)
+	}
 	//nolint:gosec // G204: fixed docker executable, separate arguments, no shell; the Dockerfile arrives on stdin.
-	command := exec.CommandContext(ctx, "docker", "build", "--file", "-", "--output", "type=local,dest="+destination, root)
+	command := exec.CommandContext(ctx, "docker", append(args, root)...)
 	command.Stdin = strings.NewReader(dockerfile)
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output

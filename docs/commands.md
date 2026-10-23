@@ -1035,6 +1035,12 @@ The builder applies it in the two places a build reaches a base image:
   pull-through repository serves it, so `debian:trixie-slim` is read as
   `<mirror>/library/debian:trixie-slim`.
 
+Frontend bundles use the same environment-specific builder, including its host
+networking and registry mirrors. The bundle build does not fall back to Docker's
+default builder when that builder cannot be selected. The frontend source and
+pinned Node image remain the bundle's inputs; shell environment values are not
+injected into the build.
+
 It is a read-side substitution only: nothing is pushed to a mirror, the recipe
 is unchanged, and **the image's identity does not change because a mirror served
 it** — a mirror serves the same content, so the resolved digest is the same and

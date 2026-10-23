@@ -22,9 +22,15 @@ import (
 func stubFrontendPublication(t *testing.T) (*int, *string) {
 	t.Helper()
 	builds, published := 0, ""
-	previousBuild, previousPublish := buildFrontendBundle, publishRuntimeArtifact
-	t.Cleanup(func() { buildFrontendBundle, publishRuntimeArtifact = previousBuild, previousPublish })
-	buildFrontendBundle = func(_ context.Context, _ *resources.Module, destination string) error {
+	previousBuilder, previousBuild, previousPublish := frontendBuildxBuilder, buildFrontendBundle, publishRuntimeArtifact
+	t.Cleanup(func() {
+		frontendBuildxBuilder, buildFrontendBundle, publishRuntimeArtifact = previousBuilder, previousBuild, previousPublish
+	})
+	frontendBuildxBuilder = func(context.Context, *environments.Environment) (string, error) {
+		return "environment-builder", nil
+	}
+	buildFrontendBundle = func(_ context.Context, _ *resources.Module, destination, builder string) error {
+		require.Equal(t, "environment-builder", builder)
 		builds++
 		require.NoError(t, os.MkdirAll(destination, 0o755))
 		return os.WriteFile(filepath.Join(destination, solutionrun.FrontendBundleManifest), []byte("{}"), 0o600)
@@ -103,6 +109,34 @@ func TestADeployedRenderWithoutARegistryRefusesAPage(t *testing.T) {
 	env.Registry = nil
 	_, err := publishFrontendBundle(t.Context(), &resources.Workspace{Name: "platform"}, module, env, nil)
 	require.ErrorContains(t, err, "declares no registry.url")
+}
+
+func TestFrontendPublicationUsesItsEnvironmentBuilder(t *testing.T) {
+	for _, refused := range []bool{false, true} {
+		t.Run(fmt.Sprintf("builder-refused=%t", refused), func(t *testing.T) {
+			builds, published := stubFrontendPublication(t)
+			module, _ := bundleModule(t, "", false)
+			env := deployedBundleEnvironment("green")
+			env.Registry.Mirrors = map[string]string{"docker.io": "mirror.example/hub"}
+			frontendBuildxBuilder = func(_ context.Context, selected *environments.Environment) (string, error) {
+				require.Same(t, env, selected, "builder selection must retain this environment's mirror configuration")
+				if refused {
+					return "", fmt.Errorf("builder is stale")
+				}
+				return "environment-builder", nil
+			}
+			_, err := publishFrontendBundle(t.Context(), &resources.Workspace{Name: "platform"}, module, env, nil)
+			if refused {
+				require.ErrorContains(t, err, "builder is stale")
+				require.Zero(t, *builds)
+				require.Empty(t, *published)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, 1, *builds)
+			require.NotEmpty(t, *published)
+		})
+	}
 }
 
 // The render hands a host the repository it publishes bundles to, through the

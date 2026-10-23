@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codefly-dev/cli/pkg/environments"
+
 	"google.golang.org/protobuf/proto"
 
 	coreservices "github.com/codefly-dev/core/agents/services"
@@ -730,6 +732,12 @@ func ensureBuildxBuilder(ctx context.Context, mirrors map[string]string) (string
 	}
 	w.Info("provisioned buildx builder", wool.Field("builder", name), wool.Field("mirrors", mirrorSummary(mirrors)))
 	return name, nil
+}
+
+// EnvironmentBuildxBuilder reuses the environment's host-networked, mirror-bound
+// builder for builds outside the service-image recipe flow, such as frontend bundles.
+func EnvironmentBuildxBuilder(ctx context.Context, env *environments.Environment) (string, error) {
+	return ensureBuildxBuilder(ctx, registryMirrors(env))
 }
 
 // buildxCreateArgs renders the docker buildx create argv for the dedicated

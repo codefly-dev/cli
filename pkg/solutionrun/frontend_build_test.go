@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codefly-dev/core/resources"
@@ -51,7 +52,7 @@ func TestFrontendBundleBuildsInTheBuilderAndLeavesTheSourceUntouched(t *testing.
 		"services/fe-remote/package-lock.json": `{"name":"remote","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"remote","version":"1.0.0"}}}`,
 	})
 	destination := filepath.Join(t.TempDir(), "bundle")
-	require.NoError(t, BuildFrontendBundle(t.Context(), module, destination))
+	require.NoError(t, BuildFrontendBundle(t.Context(), module, destination, ""))
 	entries, err := os.ReadDir(destination)
 	require.NoError(t, err)
 	names := []string{}
@@ -61,7 +62,7 @@ func TestFrontendBundleBuildsInTheBuilderAndLeavesTheSourceUntouched(t *testing.
 	require.ElementsMatch(t, []string{FrontendBundleManifest, "remoteEntry.js"}, names)
 	_, err = os.Stat(filepath.Join(module.ServicesDir(), "fe-remote", "dist"))
 	require.ErrorIs(t, err, os.ErrNotExist)
-	require.ErrorContains(t, BuildFrontendBundle(t.Context(), module, destination), "must not exist")
+	require.ErrorContains(t, BuildFrontendBundle(t.Context(), module, destination, ""), "must not exist")
 }
 
 // gitRepository commits files into a fresh repository and returns its root.
@@ -129,6 +130,36 @@ func TestFrontendBuildRefusesAPathItCannotNameSafely(t *testing.T) {
 	root := gitRepository(t, map[string]string{"solutions/my wiki/services/fe-remote/package.json": "{}"})
 	module := &resources.Module{Name: "wiki"}
 	module.WithDir(filepath.Join(root, "solutions", "my wiki"))
-	err := BuildFrontendBundle(t.Context(), module, filepath.Join(t.TempDir(), "bundle"))
+	err := BuildFrontendBundle(t.Context(), module, filepath.Join(t.TempDir(), "bundle"), "")
 	require.ErrorContains(t, err, "a build path may not carry")
+}
+
+func TestFrontendBuildUsesTheSelectedBuilder(t *testing.T) {
+	module := frontendModule(t, map[string]string{"package.json": "{}"})
+	tools := t.TempDir()
+	arguments := filepath.Join(tools, "arguments")
+	t.Setenv("FRONTEND_TEST_ARGUMENTS", arguments)
+	t.Setenv("PATH", tools+string(os.PathListSeparator)+os.Getenv("PATH"))
+	require.NoError(t, os.WriteFile(filepath.Join(tools, "docker"), []byte(`#!/bin/sh
+set -eu
+printf '%s\n' "$@" > "$FRONTEND_TEST_ARGUMENTS"
+cat > /dev/null
+for argument in "$@"; do
+  case "$argument" in
+    type=local,dest=*) destination="${argument#type=local,dest=}" ;;
+  esac
+done
+mkdir -p "$destination"
+printf '{}' > "$destination/mf-manifest.json"
+`), 0o700))
+	require.NoError(t, BuildFrontendBundle(t.Context(), module, filepath.Join(t.TempDir(), "bundle"), "mirror-bound-builder"))
+	got, err := os.ReadFile(arguments)
+	require.NoError(t, err)
+	args := strings.Split(strings.TrimSpace(string(got)), "\n")
+	require.Contains(t, args, "--builder")
+	for index, argument := range args {
+		if argument == "--builder" {
+			require.Equal(t, "mirror-bound-builder", args[index+1])
+		}
+	}
 }
