@@ -106,6 +106,13 @@ type NativeDeliverer struct {
 	// ObserverToken belongs to the separate read-only applied-state publisher.
 	ObserverToken func() (string, error)
 	Client        *http.Client
+
+	// Post, when set, carries a signed manifest to the host instead of the HTTP
+	// delivery route: a host that implements codefly.dev/composition receives it
+	// through ApplyManifest. Applied, when set, answers the applied state the
+	// same way. Both nil is the saas HTTP delivery, the transition's.
+	Post    func(ctx context.Context, module string, signed *solutionhost.Signed, token string) (Receipt, error)
+	Applied func(ctx context.Context, binding string) (*appliedManifest, bool, error)
 }
 
 // Render builds the manifest of a module this run started identity workloads
@@ -284,6 +291,9 @@ func (d *NativeDeliverer) post(ctx context.Context, module string, payload []byt
 	token, err := d.Token(module)
 	if err != nil {
 		return Receipt{}, err
+	}
+	if d.Post != nil {
+		return d.Post(ctx, module, signed, token)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(d.DeliveryURL, "/")+manifestDeliveryPath, bytes.NewReader(body))
 	if err != nil {

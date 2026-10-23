@@ -104,6 +104,9 @@ func (d *NativeDeliverer) WaitForApplied(ctx context.Context, manifest *solution
 
 // appliedState reads the host's applied record of binding; found is false on 404.
 func (d *NativeDeliverer) appliedState(ctx context.Context, binding string) (*appliedManifest, bool, error) {
+	if d.Applied != nil {
+		return d.Applied(ctx, binding)
+	}
 	token, err := d.ObserverToken()
 	if err != nil {
 		return nil, false, err
