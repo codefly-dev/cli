@@ -2314,6 +2314,7 @@ Flags:
       --dry-run          Print the plan and write nothing
       --env string       Environment whose rendered ExternalSecrets to seed (default "local")
       --metadata-only    With --dry-run: never read a stored value, only which remote keys exist
+      --mint strings     Acknowledge first creation of these signing secret keys (comma-separated or repeated); never rotate existing keys
       --module strings   Plan only these modules' remote keys (comma-separated or repeated)
   -y, --yes              Write without an interactive confirmation
 ```

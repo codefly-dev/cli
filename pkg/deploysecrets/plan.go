@@ -97,6 +97,7 @@ type Plan struct {
 	Secrets []SecretPlan
 
 	writes []pendingWrite
+	states []*remoteState
 }
 
 type pendingWrite struct {
@@ -162,6 +163,8 @@ type Inputs struct {
 	// empty, from service-secrets.may-be-empty. A present-but-empty property is
 	// otherwise refused.
 	MayBeEmpty []string
+	// MintKeys explicitly acknowledges first creation of lifelong signing keys.
+	MintKeys []string
 }
 
 // remoteState is one remote key as the plan sees it.
@@ -202,6 +205,7 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	plan.states = states
 
 	generators, err := generatorIndex(in.Generators, in.Services)
 	if err != nil {
@@ -225,7 +229,7 @@ func Build(ctx context.Context, in *Inputs) (*Plan, error) {
 		}
 		changes := map[string]string{}
 		for _, property := range state.secret.Properties {
-			propertyPlan, value, err := planConfigured(state, property, states, generators, generated, aliases[propertyLocation{state.secret.RemoteKey, property.Property}])
+			propertyPlan, value, err := planConfigured(state, property, states, generators, generated, aliases[propertyLocation{state.secret.RemoteKey, property.Property}], in.MintKeys)
 			if err != nil {
 				return nil, err
 			}
@@ -297,8 +301,12 @@ func readStates(ctx context.Context, in *Inputs) ([]*remoteState, error) {
 				return
 			}
 			state := &remoteState{secret: secret, description: description}
+			if description.Exists && !description.HasVersion {
+				fail(fmt.Errorf("remote key %s exists without a readable version; refusing to regenerate retained material", secret.RemoteKey))
+				return
+			}
 			switch {
-			case !description.Exists || !description.HasVersion:
+			case !description.Exists:
 				state.document = map[string]string{}
 			case in.ReadPayloads:
 				document, err := in.Store.Read(ctx, secret.RemoteKey)
@@ -306,6 +314,14 @@ func readStates(ctx context.Context, in *Inputs) ([]*remoteState, error) {
 					return
 				}
 				state.document = document
+				current, err := in.Store.Describe(ctx, secret.RemoteKey)
+				if fail(wrapKeyError("describe after read", secret.RemoteKey, err)) {
+					return
+				}
+				if current != description {
+					fail(fmt.Errorf("remote key %s changed while reading; rebuild the plan", secret.RemoteKey))
+					return
+				}
 			}
 			// An empty stored value is refused, because an empty credential is
 			// almost always a half-finished seed. Two things narrow that:
@@ -469,7 +485,7 @@ func refuseSharedSigningKey(state *remoteState, property gitops.RenderedSecretPr
 // would report the divergence as `keep`, which is the one reading an operator
 // cannot act on.
 func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, states []*remoteState,
-	generators map[string]environments.EnvironmentSecretGenerator, generated map[string]string, keys []string) (PropertyPlan, string, error) {
+	generators map[string]environments.EnvironmentSecretGenerator, generated map[string]string, keys, mintKeys []string) (PropertyPlan, string, error) {
 	lookup := property
 	lookup.Keys = keys
 	declaredKey, generator, err := declaredGenerator(lookup, generators)
@@ -511,6 +527,15 @@ func planConfigured(state *remoteState, property gitops.RenderedSecretProperty, 
 					strings.Join(property.Keys, ", "), state.secret.RemoteKey, holders[0])
 			}
 			return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionKeep, Source: "stored"}, "", nil
+		}
+	}
+	if generator.Format == environments.SecretGeneratorFormatEd25519PKCS8 && len(holders) == 0 && len(unread) == 0 {
+		if state.description.Exists {
+			return PropertyPlan{}, "", fmt.Errorf("remote key %s exists but lacks signing key %s; restore its original material, never re-mint it", state.secret.RemoteKey, declaredKey)
+		}
+		if !slices.Contains(mintKeys, declaredKey) {
+			return PropertyPlan{Property: property.Property, Keys: property.Keys, Action: ActionRequire,
+				Source: "first signing-key creation requires --mint " + declaredKey}, "", nil
 		}
 	}
 	fallback, value, err := fallbackSource(lookup, generators, generated)
@@ -614,14 +639,54 @@ func (plan *Plan) Apply(ctx context.Context, store Store, allowMissing bool) ([]
 	if err := plan.ValidateApply(allowMissing); err != nil {
 		return nil, err
 	}
+	if store.Name() != plan.Store {
+		return nil, fmt.Errorf("plan belongs to a different secret store")
+	}
+	// Check propagation sources as well as destinations before the first write.
+	for _, state := range plan.states {
+		if err := unchanged(ctx, store, state); err != nil {
+			return nil, err
+		}
+	}
 	var written []string
 	for _, write := range plan.writes {
+		for _, state := range plan.states {
+			if state.secret.RemoteKey == write.key {
+				if err := unchanged(ctx, store, state); err != nil {
+					return written, err
+				}
+				break
+			}
+		}
 		if err := store.Write(ctx, write.key, write.document, write.create); err != nil {
 			return written, fmt.Errorf("write %s: %w", write.key, err)
 		}
 		written = append(written, write.key)
 	}
 	return written, nil
+}
+
+// This is an optimistic check, not an atomic compare-and-set. Neither backend's
+// version creation API offers that guarantee; operators must serialize writers.
+func unchanged(ctx context.Context, store Store, state *remoteState) error {
+	key := state.secret.RemoteKey
+	description, err := store.Describe(ctx, key)
+	if err != nil {
+		return wrapKeyError("recheck", key, err)
+	}
+	if description != state.description {
+		return fmt.Errorf("remote key %s changed since planning; rebuild the plan", key)
+	}
+	if description.HasVersion {
+		document, err := store.Read(ctx, key)
+		if err != nil {
+			return wrapKeyError("recheck", key, err)
+		}
+		if !maps.Equal(document, state.document) {
+			return fmt.Errorf("remote key %s changed since planning; rebuild the plan", key)
+		}
+	}
+	return nil
 }
 
 // ValidateApply checks completeness before confirmation, no-op success or writes.
