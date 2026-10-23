@@ -3,6 +3,7 @@ package generate
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	resources "github.com/codefly-dev/core/resources"
 	"github.com/codefly-dev/core/services"
 	"github.com/codefly-dev/core/shared"
+	"github.com/codefly-dev/core/standards"
 	googleproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
@@ -59,6 +61,11 @@ contract it was generated from.
 The contract can come from the local module (--from module/service[/endpoint]),
 from a composed module package (--from package:<id>@<version>), or from a
 contracts directory on disk (--from contracts:<dir>).
+
+A solution backend's http endpoint is a contract source too: --from
+<solution>/<backend> generates the frontend client of the backend's documented
+operations from the interface document the backend commits at
+openapi/api.swagger.json.
 `,
 	Args: cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
@@ -296,6 +303,9 @@ func resolveLocalSource(ctx context.Context, workspace *resources.Workspace, fro
 	if err != nil {
 		return nil, fmt.Errorf("cannot load service %q: %w", serviceName, err)
 	}
+	if source, answered, backendErr := resolveSolutionBackendSource(ctx, module, service, endpointHint); answered || backendErr != nil {
+		return source, backendErr
+	}
 	endpoints, err := generators.LoadServiceEndpoints(ctx, workspace, module, service)
 	if err != nil {
 		return nil, fmt.Errorf("cannot load endpoints for %s/%s: %w", moduleName, serviceName, err)
@@ -325,6 +335,53 @@ func resolveLocalSource(ctx context.Context, workspace *resources.Workspace, fro
 		facadeModuleDefault: generators.DefaultFacadeModuleName(contractEndpoint),
 		protoSources:        protoSources,
 	}, nil
+}
+
+// resolveSolutionBackendSource answers --from module/service[/endpoint] when
+// service is a solution backend and the request is for its http endpoint:
+// named by hint, or the only contract-carrying endpoint the backend declares.
+// The contract is the interface document the backend commits, so no Builder
+// is loaded. answered is false when the usual path decides instead.
+func resolveSolutionBackendSource(ctx context.Context, module *resources.Module, service *resources.Service, hint string) (*resolvedContractSource, bool, error) {
+	backend, err := solutionBackendOf(ctx, module, service)
+	if err != nil || backend == nil {
+		return nil, false, err
+	}
+	if hint != "" && hint != backend.endpoint {
+		return nil, false, nil
+	}
+	if hint == "" {
+		names := []string{backend.endpoint}
+		for _, endpoint := range service.Endpoints {
+			if endpoint != nil && (endpoint.API == standards.GRPC || endpoint.API == standards.REST) {
+				names = append(names, endpoint.Name)
+			}
+		}
+		if len(names) > 1 {
+			return nil, true, fmt.Errorf("service %s/%s has multiple contract endpoints (%s); specify one with --from %s/%s/<endpoint>", module.Name, service.Name, strings.Join(names, ", "), module.Name, service.Name)
+		}
+	}
+	if backend.document == nil {
+		return nil, true, errors.New(backend.missingDocument(module.Name, service.Name))
+	}
+
+	endpoint := backend.contractEndpoint(module.Name, service.Name)
+	contractEndpoint, err := openAPIContractEndpoint(endpoint, backend.document, "openapi.json")
+	if err != nil {
+		return nil, true, fmt.Errorf("cannot build contract for %s/%s/%s: %w", module.Name, service.Name, backend.endpoint, err)
+	}
+	version := service.Version
+	if strings.TrimSpace(version) == "" {
+		version = "0.0.1"
+	}
+	return &resolvedContractSource{
+		endpoint:            *contractEndpoint,
+		contractBytes:       backend.document.Openapi,
+		packageID:           "local",
+		packageVersion:      version,
+		moduleName:          module.Name,
+		facadeModuleDefault: generators.DefaultFacadeModuleName(contractEndpoint),
+	}, true, nil
 }
 
 // pickContractEndpoint selects the endpoint named by hint, or the single
@@ -396,26 +453,12 @@ func buildLocalContractEndpoint(ctx context.Context, service *resources.Service,
 		if len(rest.Openapi) == 0 {
 			return nil, nil, nil, fmt.Errorf("endpoint %s has no OpenAPI document", endpoint.Name)
 		}
-		title, err := openAPITitle(rest.Openapi)
+		contractEndpoint, err := openAPIContractEndpoint(endpoint, rest, "openapi.json")
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("cannot read OpenAPI info.title: %w", err)
+			return nil, nil, nil, err
 		}
-		var routes []composition.APIContractRoute
-		for _, group := range rest.Groups {
-			for _, route := range group.Routes {
-				routes = append(routes, composition.APIContractRoute{Method: route.Method.String(), Path: filepath.ToSlash(filepath.Join(group.Path, route.Path))})
-			}
-		}
-		return rest.Openapi, &composition.APIContractEndpoint{
-			Service:  service.Name,
-			Endpoint: endpoint.Name,
-			API:      endpoint.Api,
-			Kind:     composition.APIContractKindOpenAPI,
-			Package:  title,
-			Path:     "openapi.json",
-			Digest:   composition.APIContractDigest(rest.Openapi),
-			Routes:   routes,
-		}, nil, nil
+		contractEndpoint.Service = service.Name
+		return rest.Openapi, contractEndpoint, nil, nil
 	}
 	return nil, nil, nil, fmt.Errorf("endpoint %s reports neither a grpc nor a rest contract", endpoint.Name)
 }

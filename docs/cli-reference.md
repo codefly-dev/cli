@@ -2686,6 +2686,11 @@ contract it was generated from.
 The contract can come from the local module (--from module/service[/endpoint]),
 from a composed module package (--from package:<id>@<version>), or from a
 contracts directory on disk (--from contracts:<dir>).
+
+A solution backend's http endpoint is a contract source too: --from
+<solution>/<backend> generates the frontend client of the backend's documented
+operations from the interface document the backend commits at
+openapi/api.swagger.json.
 ```
 
 ```
@@ -2721,6 +2726,9 @@ gRPC and connect endpoints get a serialized FileDescriptorSet (contract.binpb)
 plus a copy of the service's proto sources; REST endpoints get their OpenAPI
 document (openapi.json). HTTP, TCP, and MCP endpoints have no machine-readable
 contract and are skipped, as is a connect endpoint whose service has no proto.
+One http endpoint does carry one: a solution backend's, whose contract is the
+interface document the backend commits at openapi/api.swagger.json (the
+solution runtime renders it from the backend's documented operations).
 
 For restricted listeners, module contracts.codefly.yaml maps service names under
 surfaces to service-relative JSON procedure inventories. This is CLI publication

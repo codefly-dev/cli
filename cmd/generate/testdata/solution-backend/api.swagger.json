@@ -1,0 +1,146 @@
+{
+  "basePath": "/solutions/notes",
+  "consumes": [
+    "application/json"
+  ],
+  "definitions": {
+    "CreateItem": {
+      "properties": {
+        "title": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Error": {
+      "properties": {
+        "error": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Item": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ItemList": {
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/definitions/Item"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "info": {
+    "description": "The notes solution's backend surface.",
+    "title": "notes solution backend",
+    "version": "0.0.1"
+  },
+  "paths": {
+    "/items": {
+      "get": {
+        "description": "Any member of the organization\n\nEvery item, newest first",
+        "operationId": "Notes_Items",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/ItemList"
+            }
+          },
+          "401": {
+            "description": "The request carried no bearer token.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          },
+          "502": {
+            "description": "A call this operation makes through the host gateway failed.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          }
+        },
+        "summary": "List the items the viewer may read",
+        "tags": [
+          "notes"
+        ]
+      }
+    },
+    "/items/create": {
+      "post": {
+        "description": "A member who may write items\n\nThe created item",
+        "operationId": "Notes_Items_Create",
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/CreateItem"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/Item"
+            }
+          },
+          "401": {
+            "description": "The request carried no bearer token.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          },
+          "502": {
+            "description": "A call this operation makes through the host gateway failed.",
+            "schema": {
+              "$ref": "#/definitions/Error"
+            }
+          }
+        },
+        "summary": "Create one item",
+        "tags": [
+          "notes"
+        ]
+      }
+    }
+  },
+  "produces": [
+    "application/json"
+  ],
+  "security": [
+    {
+      "bearer": []
+    }
+  ],
+  "securityDefinitions": {
+    "bearer": {
+      "description": "The signed-in person's access token, forwarded by the host. Every operation requires it.",
+      "in": "header",
+      "name": "Authorization",
+      "type": "apiKey"
+    }
+  },
+  "swagger": "2.0"
+}

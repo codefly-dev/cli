@@ -2873,6 +2873,7 @@ Generate client code from service APIs.
 codefly generate client --from billing/api/grpc --language go --output libraries/billing-api-client  # A codefly library from a live local service
 codefly generate client --from package:codefly/saas-starter@0.1.0 --language go,typescript --services AuditService  # From a composed module package's contract
 codefly generate client --from contracts:module-saas-starter/contracts/api --language python --no-facade  # From a `generate contracts` export, bindings only
+codefly generate client --from notes/backend --language typescript                     # The frontend client of a solution backend's documented operations
 codefly generate proto --proto ../proto --output ./generated                             # Generate code from local proto files, in the proto companion
 codefly generate contracts saas-starter                                                  # Export a module's interface endpoints as API contracts
 codefly generate contracts saas-starter --check                                          # CI drift gate: fail if the on-disk catalog is stale
@@ -3048,7 +3049,9 @@ both commands share one schema.
 
 `--from module/service[/endpoint]` loads the service's Builder to build a
 one-entry contract in memory (the same way `generate contracts` does) and
-generates from the service's own proto sources. `--from package:`/`contracts:`
+generates from the service's own proto sources. A solution backend is the one
+local source that loads no Builder: see [A solution backend's
+contract](#a-solution-backends-contract) below. `--from package:`/`contracts:`
 read an already-persisted contract (a `contract.binpb`/`openapi.json` plus
 catalog entry) and generate from its descriptor bytes — a known upstream
 limitation in the facade plugin currently means `--services` filtering does not
@@ -3071,7 +3074,12 @@ libraries/saas-starter-accounts-client/
 The TypeScript library is an ESM package whose root resolves to `dist/index.js`
 (types `dist/index.d.ts`). `src/index.ts` is generated output, rewritten on
 every run: a barrel re-exporting every facade and every generated binding, so
-the package name alone reaches every client and message schema. The scaffold
+the package name alone reaches every client and message schema. An OpenAPI
+contract has no facade: its library is the document's types
+(openapi-typescript's `paths`, `components` and `operations`) in
+`src/gen/api.ts`, re-exported by the same barrel. They are written as a `.ts`
+source, not the generator's `api.d.ts`, because `tsc` neither compiles a
+`.d.ts` nor copies it to `dist/`. The scaffold
 (`package.json`, `tsconfig.json`) is written once and declares a `typescript`
 dev dependency and a `build` script (`tsc -p tsconfig.json`) that produces
 `dist/` — the only directory, with the README, that the package ships.
@@ -3080,6 +3088,41 @@ Use `codefly sync library-dependencies` to link a generated library into a
 service locally, and `codefly publish library <name>` to distribute it.
 
 Generation runs buf inside the `proto` companion image; Docker must be running.
+
+##### A solution backend's contract
+
+A solution backend serves its routes as documented operations, and the solution
+runtime renders exactly those into its **interface document**: a Swagger 2.0
+document (`solution.InterfaceArtifact` in `solution-runtime-go`) that the
+backend commits at `openapi/api.swagger.json` and re-renders in CI, failing on a
+diff. That is core's `standards.OpenAPIPath`, the file and dialect core reads as
+a `rest` endpoint's OpenAPI document. The CLI therefore takes it as the contract
+of the backend's `http` endpoint, which stays `api: http`: the document
+describes the endpoint, it does not change how the endpoint is reached.
+
+A service is a solution backend when its module ships `solution.codefly.yaml`
+and names it as its `service-entry` (the service the host forwards
+`/<solution>/` to), and its one `http`-or-`rest` endpoint is `http`. Then:
+
+- `codefly generate client --from <solution>/<backend> --language typescript`
+  generates the frontend client of the backend's documented operations from the
+  committed document, with no Builder loaded. The library records the endpoint as
+  `api: http`, `kind: openapi`. `/<endpoint>` may name the endpoint; with no
+  endpoint named, a backend that also declares a `grpc` or `rest` endpoint is
+  ambiguous and refused.
+- `codefly generate contracts` exports the same document as that endpoint's
+  `openapi.json` when the module's `interface:` exports the endpoint, and
+  `--check` compares it like any other contract.
+- A backend that commits no document is refused by `generate client` and
+  skipped by `generate contracts`, each saying where the document goes and that
+  the runtime renders it. The CLI never writes or edits the document: it is the
+  backend's own rendering of its operations, so the generated client cannot
+  drift from the routes the backend serves without the backend's CI failing
+  first.
+
+The runtime describes a field's shape but not whether it is required, nor a
+string's allowed values, so every field of the generated types is optional and
+an enumerated string is `string`.
 
 #### generate contracts
 
@@ -3092,9 +3135,20 @@ the service's proto sources; REST endpoints get their OpenAPI document
 skipped. When the module has a `module.package.codefly.yaml`, its
 `services[*].api-contracts` are updated to match.
 
+A solution backend's `http` endpoint is the one `http` endpoint that carries a
+contract: the interface document the backend commits (see [A solution
+backend's contract](#a-solution-backends-contract)), exported as its
+`openapi.json` with `api: http`.
+
 An exported endpoint that carries no machine-readable contract is skipped with a
 notice, never a failure: `http` and `tcp` endpoints, a `connect` endpoint on a
-service with no proto, and a `rest` endpoint with no OpenAPI document. An
+service with no proto, a `rest` endpoint with no OpenAPI document, and a
+solution backend that commits no interface document.
+
+Every OpenAPI entry records each route at the document's own path. Core gives a
+route its full path and keys its group by that same path, and the export used to
+join the two, recording `/items` as `/items/items`; a catalog written by an
+earlier CLI differs on `--check` until regenerated. An
 interface may export such an endpoint so composed modules can reach it (a
 gateway's REST surface, say); that export is reachability, not a contract.
 
