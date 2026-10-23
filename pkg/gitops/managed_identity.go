@@ -29,7 +29,7 @@ func projectServiceConfiguration(ctx context.Context, tree *renderRoot, root str
 	if injection, err = artifactCacheInjection(service, env, scope, injection); err != nil {
 		return err
 	}
-	if err := projectConfigurationValuesInTree(ctx, tree, root, service.Name, env); err != nil {
+	if err := projectConfigurationValuesInTree(ctx, tree, root, scope.Module+"/"+service.Name, env); err != nil {
 		return fmt.Errorf("project service %s configuration: %w", service.Name, err)
 	}
 	// Before the secret projection: the derived secretKeyRefs are part of what

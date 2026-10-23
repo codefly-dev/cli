@@ -1094,6 +1094,18 @@ type SecretScope struct {
 	Service   string
 }
 
+// MappingFor selects a module-qualified declaration before the unqualified fallback,
+// matching service configuration and identity selection.
+func (s *EnvironmentServiceSecrets) MappingFor(module, service string) EnvironmentServiceSecretMapping {
+	if s == nil {
+		return EnvironmentServiceSecretMapping{}
+	}
+	if mapping, ok := s.Services[module+"/"+service]; module != "" && ok {
+		return mapping
+	}
+	return s.Services[service]
+}
+
 // RemoteRef locates one secret key of a service in the remote store. An explicit
 // per-service RemoteKeys entry wins; else the service's own Defaults template;
 // else the environment-wide Defaults template; else the "<service>/<key>" store
@@ -1102,7 +1114,7 @@ type SecretScope struct {
 // fallback path, the same as an environment that declares nothing.
 func (s *EnvironmentServiceSecrets) RemoteRef(scope SecretScope, key string) EnvironmentSecretRemoteRef {
 	if s != nil {
-		mapping := s.Services[scope.Service]
+		mapping := s.MappingFor(scope.Module, scope.Service)
 		if remote, ok := mapping.RemoteKeys[key]; ok {
 			return remote
 		}

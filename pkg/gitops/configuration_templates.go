@@ -196,7 +196,7 @@ func producerPrimitiveRemote(
 		// The producer's own projection takes its per-service override the same
 		// way (serviceSecretProjection), so this is the store its ExternalSecret
 		// actually reads from.
-		if override := secrets.Services[service].SecretStore; override != nil {
+		if override := secrets.MappingFor(module, service).SecretStore; override != nil {
 			store = *override
 		}
 	}

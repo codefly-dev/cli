@@ -90,9 +90,10 @@ func serviceIdentityDeclaration(serviceName string) string {
 // service passes the graph check.
 func TestValidateEnvironmentsAllowsKnownService(t *testing.T) {
 	for name, declaration := range map[string]string{
-		"service-secrets":  serviceSecretsDeclaration("accounts"),
-		"service-config":   serviceConfigDeclaration("accounts"),
-		"service-identity": serviceIdentityDeclaration("accounts"),
+		"service-secrets":           serviceSecretsDeclaration("accounts"),
+		"service-config":            serviceConfigDeclaration("accounts"),
+		"qualified service-secrets": serviceSecretsDeclaration("saas/accounts"),
+		"service-identity":          serviceIdentityDeclaration("accounts"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
@@ -112,9 +113,10 @@ func TestValidateEnvironmentsAllowsKnownService(t *testing.T) {
 // projection time; the graph check must reject it.
 func TestValidateEnvironmentsRejectsUnknownService(t *testing.T) {
 	for name, declaration := range map[string]string{
-		"service-secrets":  serviceSecretsDeclaration("accunts"),
-		"service-config":   serviceConfigDeclaration("accunts"),
-		"service-identity": serviceIdentityDeclaration("accunts"),
+		"service-secrets":           serviceSecretsDeclaration("accunts"),
+		"service-config":            serviceConfigDeclaration("accunts"),
+		"qualified service-secrets": serviceSecretsDeclaration("wrong/accounts"),
+		"service-identity":          serviceIdentityDeclaration("accunts"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
@@ -126,7 +128,7 @@ func TestValidateEnvironmentsRejectsUnknownService(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected ValidateEnvironments to reject unknown service")
 			}
-			if !strings.Contains(err.Error(), "accunts") || !strings.Contains(err.Error(), name) {
+			if !strings.Contains(err.Error(), strings.TrimPrefix(name, "qualified ")) || (!strings.Contains(err.Error(), "accunts") && !strings.Contains(err.Error(), "wrong/accounts")) {
 				t.Fatalf("error = %v, want it to name the block and the unknown service", err)
 			}
 		})

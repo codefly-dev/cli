@@ -26,13 +26,19 @@ func projectConfigurationValues(ctx context.Context, root, service string, env *
 }
 
 func projectConfigurationValuesInTree(ctx context.Context, tree *renderRoot, root, service string, env *environments.Environment) error {
+	module, bare, qualified := strings.Cut(service, "/")
+	if qualified {
+		service = bare
+	} else {
+		module = ""
+	}
 	values := map[string]string{}
 	if env.ServiceConfig != nil {
 		values = env.ServiceConfig.Services[service].Values
 	}
 	refs := map[string]environments.EnvironmentSecretRemoteRef{}
 	if env.ServiceSecrets != nil {
-		refs = env.ServiceSecrets.Services[service].RemoteKeys
+		refs = env.ServiceSecrets.MappingFor(module, service).RemoteKeys
 	}
 	if len(values) == 0 && len(refs) == 0 {
 		return nil
@@ -190,7 +196,7 @@ func validateProjectedConfigurationInTree(tree *renderRoot, root string, service
 	}
 	refs := map[string]environments.EnvironmentSecretRemoteRef{}
 	if env.ServiceSecrets != nil {
-		refs = env.ServiceSecrets.Services[service.Name].RemoteKeys
+		refs = env.ServiceSecrets.MappingFor(scope.Module, service.Name).RemoteKeys
 	}
 	identity, err := soleWorkloadIdentity(scope.Module, service.Name, consumedManagedServices(service, scope.Module, env), env)
 	if err != nil {
