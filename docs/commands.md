@@ -2216,6 +2216,20 @@ The merged file is still written, so the diagnostics can be read against it.
 
 #### `codefly environment show`
 
+An imported environment may declare `configuration-source: hosted` and select
+`configuration-profiles: [blue, local]`. Import materializes the authored
+`configurations/hosted/*.env` inputs into the generated `configurations/blue/`
+profile. Secret source files must contain empty placeholders. Import refuses
+symlinks and authored destination files; dry-run writes nothing. Removed source
+groups retire only import-owned files, preserving the environment's separately
+generated runnable bindings. Run `codefly generate runnable-bindings --env blue`
+after import so addresses are resolved for blue rather than copied from a sibling.
+
+The cell inventory also carries `source.path` when publication uses a root other
+than `deployments`. Consumers must use that root to discover the published module
+trees. The local render directory remains a qualification tree; `publish` writes
+the environment's declared publication path.
+
 Print the resolved `resources.Environment` as YAML (default) or `--json`.
 
 ```bash

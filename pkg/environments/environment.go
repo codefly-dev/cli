@@ -1308,6 +1308,9 @@ type Environment struct {
 	// to ConfigurationProfile: each configuration location reads the first
 	// profile it holds (resources.Environment.ConfigurationProfiles).
 	ConfigurationProfiles []string `yaml:"configuration-profiles,omitempty"`
+	// ConfigurationSource is an authored workspace profile materialized by import
+	// into the first selected profile. The destination contains generated files.
+	ConfigurationSource string `yaml:"configuration-source,omitempty"`
 
 	// RunnableScopeSelections answers owner-declared slots per binding key
 	// (the same MODULE__OPERATION key generate runnable-bindings emits).

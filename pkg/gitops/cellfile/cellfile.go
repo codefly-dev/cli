@@ -51,6 +51,8 @@ type Source struct {
 	Repo     string `yaml:"repo"`
 	Revision string `yaml:"revision"`
 	Branch   string `yaml:"branch"`
+	// Path is the publication root containing modules/. Absent means deployments.
+	Path string `yaml:"path,omitempty"`
 }
 
 // Namespace is one module's namespace: what runs in it, the external reach it
