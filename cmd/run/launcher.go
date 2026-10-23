@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+
+	compositionv1 "github.com/codefly-dev/authority/libraries/authority-client/go/gen/host/composition/v1"
 	"os"
 	"path/filepath"
 	"slices"
@@ -546,7 +548,14 @@ func (cluster *launcher) newDeliverer(ctx context.Context) (*gitops.NativeDelive
 		if err != nil {
 			return nil, "", fmt.Errorf("dial the host's composition interface: %w", err)
 		}
-		composition := gitops.NewCompositionDelivery(conn)
+		composition := gitops.NewCompositionDelivery(conn, cluster.signer,
+			func(ctx context.Context, module string) ([]*compositionv1.MethodPolicyV1, bool, error) {
+				m, err := cluster.composed().LoadModuleFromName(ctx, module)
+				if err != nil {
+					return nil, false, err
+				}
+				return gitops.MethodPolicies(m.Dir())
+			})
 		return &gitops.NativeDeliverer{
 			Workspace: cluster.composed(), Env: cluster.env, Signer: cluster.signer,
 			StateDir: filepath.Join(cluster.stateDir, "delivery"), DeliveryURL: deliveryURL,

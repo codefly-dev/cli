@@ -54,7 +54,7 @@ func TestCompositionDeliveryCarriesTheSignedManifestThroughApplyManifest(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	delivery := NewCompositionDelivery(conn)
+	delivery := NewCompositionDelivery(conn, nil, nil)
 	manifest := &solutionhost.ModuleManifest{
 		Schema: solutionhost.SchemaModuleManifestV1, Binding: "probe", Alias: "probe", Kind: solutionhost.KindModule, Generation: 2,
 		Host: solutionhost.HostTarget{Coordinate: "local", Domain: "local"}, Release: solutionhost.Release{Publisher: "test", Name: "probe", Version: "0.1.0"},
@@ -72,6 +72,9 @@ func TestCompositionDeliveryCarriesTheSignedManifestThroughApplyManifest(t *test
 	}
 	if stub.seen[0].GetCredential() != "delivery-credential" || string(stub.seen[0].GetCarrier().GetDocument()) != string(document) {
 		t.Fatal("the carrier and the credential reach the host as sent")
+	}
+	if stub.seen[0].GetAuthority() != nil {
+		t.Fatal("with no method source, no authority document is sent")
 	}
 	applied, found, err := delivery.Applied(ctx, "probe")
 	if err != nil || !found || applied.Generation != 2 {
