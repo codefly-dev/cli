@@ -101,6 +101,17 @@ func moduleAuthority(
 		}
 		authority.Bindings = append(authority.Bindings, solutionhost.AuthorityBinding{ID: binding.ID, Audience: binding.Audience, Operations: operations})
 	}
+	// A module that installs prepared bindings also asks for each one it
+	// installs (runnable_grants.go).
+	if installsPreparedBindings(services) {
+		grants, err := preparedGrants(provided)
+		if err != nil {
+			return nil, fmt.Errorf("module %s: %w", module.Name, err)
+		}
+		if err := appendPreparedBindings(authority, module.Name, grants); err != nil {
+			return nil, err
+		}
+	}
 	authority.Queues = append([]string(nil), resolved.Queues...)
 	authority.Namespaces = append([]string(nil), resolved.Namespaces...)
 	for _, ceiling := range resolved.ScopeCeilings {

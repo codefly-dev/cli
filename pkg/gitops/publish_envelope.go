@@ -102,6 +102,22 @@ func (p *deliveryPublication) declareEnvelope(inventory *Inventory, environment 
 	return nil
 }
 
+// listPreparedBindings lists, in the envelope this publish delivers, each
+// prepared binding a module installs, exactly as a native run lists them
+// (WithPreparedBindingGrants), so a cell grants what a run grants. An
+// envelope this publish does not deliver is left alone.
+func (p *deliveryPublication) listPreparedBindings(ctx context.Context, environment string) error {
+	if p.options.Envelope == nil {
+		return nil
+	}
+	principals, err := WithPreparedBindingGrants(ctx, p.workspace, p.env, p.options.Envelope.Principals)
+	if err != nil {
+		return fmt.Errorf("list the prepared bindings in the module envelope for %s: %w", environment, err)
+	}
+	p.options.Envelope.Principals = principals
+	return nil
+}
+
 // settleEnvelope settles, signs and writes the envelope beside the manifests
 // already settled, and returns the delivery record and file list extended by
 // it. Nothing to deliver and nothing delivered before leaves both unchanged.

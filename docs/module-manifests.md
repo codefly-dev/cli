@@ -260,6 +260,20 @@ Both at once is refused by name. The request is advisory: the host grants the
 envelope's grant for the principal, reports requested bindings the grant lacks
 as a reason on the binding, and never widens or narrows the grant from it.
 
+**A module that installs prepared bindings also asks for each one.** When one
+of its services declares the `runnable-bindings` workspace configuration group
+([Runnable](runnable.md)), the module's request gains a binding for every
+prepared binding the environment's group carries:
+`{id: <the prepared key, MODULE__OPERATION>, audience, operations: {invoke, lookup}}`,
+with the audience and the kinds and actions of the binding's resolved policy.
+It carries **no resource id**: which resources an organization lets the module
+reach is that organization's consent, written to the module's installation
+scope, which narrows the binding there. A prepared key equal to a binding id
+the module's own declaration uses is refused by name, and a value in the group
+that is not a prepared binding fails the render by key. A module that asks for
+nothing — no contract, no scoped consumption — gains nothing: the host grants
+it its envelope whole, and a request would change that.
+
 The contract declares the principal, the operation bindings the module redeems
 (each with the operations it needs and a scope ceiling per operation), the
 module's queues and namespaces, its own scope ceilings and the destinations it
@@ -525,6 +539,19 @@ composed workspaces stating different floors that the consuming workspace
 does not decide are refused by name, never resolved to either. A native run
 ignores the floor. Core's `AdmitEnvelope` runs over the base
 branch's record before the host runs it over its own.
+
+**Prepared bindings are listed for the module that installs them (a
+stopgap).** The host reads a binding's delegation mode only from the
+envelope's entry for it, so a requested binding the envelope does not list is
+never granted. A native run and a publish therefore add, to the grant of each
+module that asks for authority and installs prepared bindings, an
+`operation_audiences` entry per prepared key the grant does not already state:
+the binding's audience, its kinds and actions **without resource ids**, and
+`"delegation_mode": "module_actor"`, so a call through it names the installing
+module as the actor. An entry the composition states for that key is kept as
+stated, and a principal the composition does not grant gains none. This exists
+only because the mode is read from the envelope; when the mode travels with
+the manifest's binding, it goes away.
 
 **Stating nothing is not revoking.** A composition that delivered an envelope
 and no longer states one — no `module-envelope.json` in any workspace of the

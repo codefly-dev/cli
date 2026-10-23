@@ -2566,6 +2566,9 @@ func stageAndSettleDelivery(
 	if err := publication.declareEnvelope(inventory, environment); err != nil {
 		return nil, err
 	}
+	if err := publication.listPreparedBindings(ctx, environment); err != nil {
+		return nil, err
+	}
 	return settleManifestDelivery(ctx, repo, publication.baseBranch, target, targetPath, environment, inventory, &publication.options)
 }
 
