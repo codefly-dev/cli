@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -165,6 +166,7 @@ func (flow *Flow) Withdraw(ctx context.Context, workspace *resources.Workspace, 
 		managers[manager.Unique()] = manager
 	}
 	var stopped []string
+	var cleanupFailures []error
 	for i := len(before) - 1; i >= 0; i-- {
 		unique := before[i]
 		manager, managed := managers[unique]
@@ -172,6 +174,12 @@ func (flow *Flow) Withdraw(ctx context.Context, workspace *resources.Workspace, 
 			continue
 		}
 		if _, stopErr := manager.RunnerDoStop(ctx); stopErr != nil {
+			var cleanupErr *runtimeStopCleanupError
+			if errors.As(stopErr, &cleanupErr) {
+				cleanupFailures = append(cleanupFailures, fmt.Errorf("%s cleanup: %w", unique, stopErr))
+				stopped = append(stopped, unique)
+				continue
+			}
 			*flow.workspace = originalWorkspace
 			flow.graphWorkspace = originalGraphWorkspace
 			flow.moduleSeeds = originalModuleSeeds
@@ -184,7 +192,7 @@ func (flow *Flow) Withdraw(ctx context.Context, workspace *resources.Workspace, 
 			if policy, ok := flow.policy.(*RuntimeStartPolicy); ok {
 				policy.SetDependencies(originalDependencies)
 			}
-			return stopped, fmt.Errorf("%s stop: %w", unique, stopErr)
+			return stopped, errors.Join(append(cleanupFailures, fmt.Errorf("%s stop: %w", unique, stopErr))...)
 		}
 		stopped = append(stopped, unique)
 	}
@@ -195,7 +203,7 @@ func (flow *Flow) Withdraw(ctx context.Context, workspace *resources.Workspace, 
 		return service != nil && !kept[resources.WithUnique(service).Unique()]
 	})
 	w.Info("narrowed the running composition", wool.Field("roots", withdrawn), wool.Field("stopped", stopped))
-	return stopped, nil
+	return stopped, errors.Join(cleanupFailures...)
 }
 
 // admitRoots takes the reloaded composition in and records the roots it adds:

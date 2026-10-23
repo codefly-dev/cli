@@ -2,7 +2,7 @@ package run
 
 import (
 	"context"
-	"github.com/codefly-dev/core/workloadidentity"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +12,7 @@ import (
 	"github.com/codefly-dev/cli/pkg/gitops"
 	"github.com/codefly-dev/cli/pkg/run/identity"
 	"github.com/codefly-dev/core/resources"
+	"github.com/codefly-dev/core/workloadidentity"
 	"github.com/codefly-dev/core/workloadidentity/native"
 	"github.com/stretchr/testify/require"
 )
@@ -237,4 +238,128 @@ func writeNonGoWorkloadDir(t *testing.T, name string) string {
 		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
 	}
 	return root
+}
+
+func TestNativeAudienceMappingsAndVerifierIsolation(t *testing.T) {
+	workspace, env := writeHostedNativeWorkspace(t)
+	env.NativeIdentity = &environments.EnvironmentNativeIdentity{
+		Projections: []environments.NativeIdentityProjection{
+			{Service: "model/model", Audiences: []string{env.Host.Audience, "other-audience"}},
+		}, Verifiers: []string{"ledger/store"},
+	}
+	plan, err := gitops.ResolveNativeIdentityPlan(t.Context(), workspace, env)
+	require.NoError(t, err)
+	vouch, err := identity.Start(env.Host.TrustDomain, env.Host.Audience, t.TempDir())
+	require.NoError(t, err)
+	cluster := &launcher{vouch: vouch, workspace: workspace, env: env, identities: plan.Identities,
+		projections: plan.Projections, verifiers: plan.Verifiers, hostIdentityAnchor: filepath.Join(t.TempDir(), "anchor.json"), running: map[string]bool{}}
+	cluster.declare(plan.Identities)
+	cluster.declareProjections()
+	require.NoError(t, vouch.WriteAnchor(cluster.hostIdentityAnchor))
+	t.Setenv(native.AnchorEnvironment, cluster.hostIdentityAnchor)
+	attester, err := native.LoadAttester()
+	require.NoError(t, err)
+	service, err := workspace.LoadService(t.Context(), &resources.ServiceWithModule{Module: "model", Name: "model"})
+	require.NoError(t, err)
+	overrides, err := cluster.runtimeOverrides(service)
+	require.NoError(t, err)
+	require.NotContains(t, overrides, native.AnchorEnvironment)
+	var mapping map[string]string
+	require.NoError(t, json.Unmarshal([]byte(overrides[environments.NativeIdentityCredentials]), &mapping))
+	require.Len(t, mapping, 2)
+	require.Equal(t, overrides[workloadTokenFileVariable], mapping[env.Host.Audience])
+	for audience, path := range mapping {
+		token, err := os.ReadFile(path)
+		require.NoError(t, err)
+		_, err = attester.Attest(t.Context(), string(token), audience)
+		require.NoError(t, err)
+	}
+	verifier, err := workspace.LoadService(t.Context(), &resources.ServiceWithModule{Module: "ledger", Name: "store"})
+	require.NoError(t, err)
+	overrides, err = cluster.runtimeOverrides(verifier)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{native.AnchorEnvironment: cluster.hostIdentityAnchor}, overrides)
+	unrelated := &resources.Service{Name: "other"}
+	unrelated.WithModule("example")
+	overrides, err = cluster.runtimeOverrides(unrelated)
+	require.NoError(t, err)
+	require.Empty(t, overrides)
+	require.NoError(t, cluster.forget("model/model"))
+	require.NoError(t, vouch.Refresh())
+	for _, path := range mapping {
+		require.NoFileExists(t, path)
+	}
+}
+
+func TestNativeProjectionDoesNotOptIntoModuleDelivery(t *testing.T) {
+	workspace, env := writeHostedNativeWorkspace(t)
+	env.NativeIdentity = &environments.EnvironmentNativeIdentity{
+		Projections: []environments.NativeIdentityProjection{{Service: "ledger/store", Audiences: []string{"second"}}},
+	}
+	plan, err := gitops.ResolveNativeIdentityPlan(t.Context(), workspace, env)
+	require.NoError(t, err)
+	require.NotContains(t, plan.Identities, "ledger/store")
+	require.Equal(t, []string{"second"}, plan.Projections["ledger/store"])
+	vouch, err := identity.Start(env.Host.TrustDomain, env.Host.Audience, t.TempDir())
+	require.NoError(t, err)
+	cluster := &launcher{vouch: vouch, env: env, identities: plan.Identities, projections: plan.Projections}
+	cluster.declare(plan.Identities)
+	cluster.declareProjections()
+	service, err := workspace.LoadService(t.Context(), &resources.ServiceWithModule{Module: "ledger", Name: "store"})
+	require.NoError(t, err)
+	overrides, err := cluster.runtimeOverrides(service)
+	require.NoError(t, err)
+	require.Len(t, overrides, 1)
+	require.Contains(t, overrides, environments.NativeIdentityCredentials)
+	require.False(t, vouch.Anchor().Vouches(vouch.Workload("ledger", workloadidentity.DeliveryService)))
+
+	env.NativeIdentity.Projections[0].Service = "absent/service"
+	_, err = gitops.ResolveNativeIdentityPlan(t.Context(), workspace, env)
+	require.ErrorContains(t, err, "unknown service")
+	env.NativeIdentity.Projections[0].Service = "ledger/store"
+	env.ManagedServices = map[string]environments.EnvironmentManagedService{"ledger/store": {Kind: "external", ExternalName: "example.test"}}
+	_, err = gitops.ResolveNativeIdentityPlan(t.Context(), workspace, env)
+	require.ErrorContains(t, err, "managed")
+}
+
+func TestNativeProjectionFailureIsReturned(t *testing.T) {
+	workspace, env := writeHostedNativeWorkspace(t)
+	blocked := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(blocked, []byte("not a directory"), 0o600))
+	vouch, err := identity.Start(env.Host.TrustDomain, env.Host.Audience, blocked)
+	require.NoError(t, err)
+	identities, err := gitops.ResolveNativeIdentities(t.Context(), workspace, env)
+	require.NoError(t, err)
+	cluster := &launcher{vouch: vouch, env: env, identities: identities}
+	cluster.declare(identities)
+	service, err := workspace.LoadService(t.Context(), &resources.ServiceWithModule{Module: "model", Name: "model"})
+	require.NoError(t, err)
+	overrides, err := cluster.runtimeOverrides(service)
+	require.ErrorContains(t, err, "project model/model")
+	require.Nil(t, overrides)
+}
+
+func TestNativeDeclarationChangeRequiresNewRun(t *testing.T) {
+	workspace, env := writeHostedNativeWorkspace(t)
+	cluster := &launcher{workspace: workspace, env: env}
+	file := filepath.Join(workspace.Dir(), resources.WorkspaceConfigurationName)
+	contents, err := os.ReadFile(file)
+	require.NoError(t, err)
+	contents = append(contents, []byte("    native-identity:\n      verifiers: [ledger/store]\n")...)
+	require.NoError(t, os.WriteFile(file, contents, 0o600))
+	reloaded, err := resources.LoadWorkspaceFromDir(t.Context(), workspace.Dir())
+	require.NoError(t, err)
+	_, err = cluster.admit(t.Context(), reloaded)
+	require.ErrorContains(t, err, "native-identity declaration changed")
+	require.Same(t, workspace, cluster.workspace)
+}
+
+func TestNativeIdentityRefusesIncompatibleAttachBeforeAnyLaunch(t *testing.T) {
+	previous := runtimeContext
+	t.Cleanup(func() { runtimeContext = previous })
+	env := &environments.Environment{Host: &environments.EnvironmentHost{}, NativeIdentity: &environments.EnvironmentNativeIdentity{Verifiers: []string{"example/api"}}}
+	for _, runtime := range []string{resources.RuntimeContextContainer, resources.RuntimeContextFree} {
+		runtimeContext = runtime
+		require.ErrorContains(t, attachLauncher(t.Context(), nil, nil, env, ""), "native-identity requires")
+	}
 }

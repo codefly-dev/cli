@@ -47,7 +47,7 @@ func TestIsolatedInvocationPropagatesToRunners(t *testing.T) {
 	id := flow.WithIsolatedInvocation()
 	runner := &Runner{world: flow.world}
 
-	require.Equal(t, id, runner.runtimeOverrides()[resources.NamingScopePrefix])
+	require.Equal(t, id, testRuntimeOverrides(t, runner)[resources.NamingScopePrefix])
 }
 
 // The scope is a human label the caller owns; codefly must not silently

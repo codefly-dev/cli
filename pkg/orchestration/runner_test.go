@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/codefly-dev/cli/pkg/run/identity"
 	"net"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -293,4 +295,48 @@ func TestFollowKeepsMonitoringAfterFastRestart(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("runner death was not reported after restart")
 	}
+}
+
+func TestRunnerStopRetiresNativeCredentialsAndRestartProjectsFresh(t *testing.T) {
+	client := &restartRuntimeClient{}
+	runner := runnerWithRuntimeClient(client)
+	runner.instance.Service = &resources.Service{Name: "auth-sidecar"}
+	issuer, err := identity.Start("example.test", "host", t.TempDir())
+	require.NoError(t, err)
+	workload := issuer.Workload("backend", "auth-sidecar")
+	issuer.Declare(workload)
+	runner.world = &World{
+		RuntimeOverrides: func(*resources.Service) (map[string]string, error) {
+			credential, err := issuer.ProjectForAudience(runner.Unique(), workload, "second")
+			return map[string]string{"credential": credential.File}, err
+		},
+		RuntimeStopped: func(*resources.Service) error { return issuer.Forget(runner.Unique()) },
+	}
+	projected, err := runner.runtimeOverrides()
+	require.NoError(t, err)
+	before, err := os.ReadFile(projected["credential"])
+	require.NoError(t, err)
+	_, err = runner.Stop(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, 1, client.stopCalls)
+	require.NoError(t, issuer.Refresh())
+	require.NoFileExists(t, projected["credential"])
+	// The same Init/Start projection seam is used after an individual stop;
+	// the issuer and declaration remain available throughout the run.
+	projected, err = runner.runtimeOverrides()
+	require.NoError(t, err)
+	after, err := os.ReadFile(projected["credential"])
+	require.NoError(t, err)
+	require.NotEqual(t, before, after)
+	require.NoError(t, os.Remove(projected["credential"]))
+	require.NoError(t, os.Mkdir(projected["credential"], 0o700))
+	blocker := filepath.Join(projected["credential"], "busy")
+	require.NoError(t, os.WriteFile(blocker, []byte("fixture"), 0o600))
+	client.stopErr = errors.New("agent stop failed")
+	_, err = runner.Stop(t.Context())
+	require.ErrorContains(t, err, "agent stop failed")
+	require.ErrorContains(t, err, "remove native credential")
+	require.NoError(t, issuer.Refresh(), "cleanup failure cannot keep refreshing")
+	require.NoError(t, os.Remove(blocker))
+	require.NoError(t, issuer.Close())
 }

@@ -2,9 +2,12 @@ package run
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -57,14 +60,16 @@ import (
 // "not established yet", which the workload retries.
 
 type launcher struct {
-	vouch      *identity.Launcher
-	workspace  *resources.Workspace
-	env        *environments.Environment
-	flow       launcherFlow
-	fixture    string
-	stateDir   string
-	identities map[string]gitops.NativeIdentity
-	signer     solutionhost.Signer
+	vouch       *identity.Launcher
+	workspace   *resources.Workspace
+	env         *environments.Environment
+	flow        launcherFlow
+	fixture     string
+	stateDir    string
+	identities  map[string]gitops.NativeIdentity
+	projections map[string][]string
+	verifiers   map[string]bool
+	signer      solutionhost.Signer
 
 	hostModule, hostService string
 
@@ -82,11 +87,14 @@ type launcher struct {
 	// delivered is the last manifest delivered per module, a withdrawal
 	// included.
 	delivered map[string]*solutionhost.ModuleManifest
-	// pendingWithdrawals are modules whose withdrawal the host has not applied
-	// yet: retried on the next composition refresh, even with no gone roots.
+	// pendingWithdrawals are modules whose stopped workloads have not been
+	// reconciled with the host: a reduced manifest or full withdrawal is
+	// retried on the next composition refresh, even with no gone roots.
 	pendingWithdrawals map[string]bool
 	envelope           *gitops.EnvelopeWriter
 	stop               chan struct{}
+	closeOnce          sync.Once
+	refresh            sync.WaitGroup
 
 	// schedule bounds each workload's wait for the host; waiters are the
 	// deliveries in flight, one per workload.
@@ -103,6 +111,9 @@ var (
 // attachLauncher wires the run as the composition's cluster when its
 // environment declares a host and the run is native. It is a no-op otherwise.
 func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *resources.Workspace, env *environments.Environment, fixture string) error {
+	if err := env.ValidateNativeExecution(runtimeContext); err != nil {
+		return err
+	}
 	if env == nil || env.Host == nil || runtimeContext == resources.RuntimeContextContainer {
 		return nil
 	}
@@ -110,13 +121,15 @@ func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *re
 	launcherMu.Lock()
 	defer launcherMu.Unlock()
 	if launcherActive != nil {
-		launcherActive.close()
+		if err := launcherActive.close(); err != nil {
+			return err
+		}
 		launcherActive = nil
 	}
 	if err := env.Host.Validate(); err != nil {
 		return err
 	}
-	identities, err := gitops.ResolveNativeIdentities(ctx, workspace, env)
+	plan, err := gitops.ResolveNativeIdentityPlan(ctx, workspace, env)
 	if err != nil {
 		return err
 	}
@@ -131,8 +144,9 @@ func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *re
 	}
 	cluster := &launcher{
 		vouch: launcherIdentity, workspace: workspace, env: env, flow: flow, fixture: fixture,
-		stateDir:           stateDir,
-		identities:         identities,
+		stateDir:    stateDir,
+		identities:  plan.Identities,
+		projections: plan.Projections, verifiers: plan.Verifiers,
 		signer:             signer,
 		running:            map[string]bool{},
 		delivered:          map[string]*solutionhost.ModuleManifest{},
@@ -147,37 +161,50 @@ func attachLauncher(ctx context.Context, flow *orchestration.Flow, workspace *re
 	cluster.hostModule, cluster.hostService = parts[0], parts[1]
 	// The run vouches for exactly what it composes: each identity workload,
 	// each module's delivery carrier, and the applied observer it acts as.
-	cluster.declare(identities)
+	cluster.declare(plan.Identities)
+	cluster.declareProjections()
 	if err := cluster.projectHost(); err != nil {
 		return err
 	}
 	world := flow.World()
 	world.RenderOwnedGroups = cluster.renderOwnedGroups
 	world.RuntimeOverrides = cluster.runtimeOverrides
+	world.RuntimeStopped = func(service *resources.Service) error {
+		return cluster.stopWorkload(resources.WithUnique(service).Unique())
+	}
 	flow.WithRunningHook(func(service string, _ int) {
 		go cluster.onRunning(context.WithoutCancel(ctx), service)
 	})
-	go cluster.refreshTokens()
+	cluster.refresh.Add(1)
+	go func() { defer cluster.refresh.Done(); cluster.refreshTokens() }()
 	w.Info("native run: the run vouches for the composition's workloads", wool.Field("anchor", launcherIdentity.AnchorFingerprint()[:16]))
 	launcherActive = cluster
 	return nil
 }
 
-func stopLauncher() {
+func stopLauncher() error {
 	launcherMu.Lock()
 	defer launcherMu.Unlock()
 	if launcherActive != nil {
-		launcherActive.close()
+		if err := launcherActive.close(); err != nil {
+			return err
+		}
 		launcherActive = nil
 	}
+	return nil
 }
 
-func (cluster *launcher) close() {
-	select {
-	case <-cluster.stop:
-	default:
-		close(cluster.stop)
+func (cluster *launcher) close() error {
+	cluster.closeOnce.Do(func() {
+		if cluster.stop != nil {
+			close(cluster.stop)
+		}
+	})
+	cluster.refresh.Wait()
+	if cluster.vouch != nil {
+		return cluster.vouch.Close()
 	}
+	return nil
 }
 
 // declare records identity workloads the run vouches for, with their delivery
@@ -265,10 +292,18 @@ func (cluster *launcher) identityOf(service *resources.Service) (string, gitops.
 // component is projected, delivered and enveloped through the same path as
 // any workload reaching Running. It returns the uniques admitted, sorted.
 func (cluster *launcher) admit(ctx context.Context, workspace *resources.Workspace) ([]string, error) {
-	identities, err := gitops.ResolveNativeIdentities(ctx, workspace, cluster.env)
+	reloadedEnv, err := environments.Select(workspace, cluster.env.Name)
 	if err != nil {
 		return nil, err
 	}
+	if !reflect.DeepEqual(reloadedEnv.NativeIdentity, cluster.env.NativeIdentity) {
+		return nil, fmt.Errorf("native-identity declaration changed; stop the run before changing projections or verifiers")
+	}
+	plan, err := gitops.ResolveNativeIdentityPlan(ctx, workspace, cluster.env)
+	if err != nil {
+		return nil, err
+	}
+	identities := plan.Identities
 	cluster.composition.Lock()
 	defer cluster.composition.Unlock()
 	knownUniques := make([]string, 0, len(cluster.identities))
@@ -299,7 +334,9 @@ func (cluster *launcher) admit(ctx context.Context, workspace *resources.Workspa
 		newcomers[unique] = identities[unique]
 	}
 	cluster.workspace = workspace
+	cluster.projections, cluster.verifiers = plan.Projections, plan.Verifiers
 	cluster.declare(newcomers)
+	cluster.declareProjections()
 	if cluster.vouch != nil && cluster.hostIdentityAnchor != "" && len(added) > 0 {
 		// The host re-reads the anchor: a newcomer is vouched for from now on.
 		if err := cluster.vouch.WriteAnchor(cluster.hostIdentityAnchor); err != nil {
@@ -309,30 +346,59 @@ func (cluster *launcher) admit(ctx context.Context, workspace *resources.Workspa
 	return added, nil
 }
 
+func (cluster *launcher) declareProjections() {
+	if cluster.vouch == nil {
+		return
+	}
+	for unique := range cluster.projections {
+		module, service, _ := strings.Cut(unique, "/")
+		cluster.vouch.Declare(cluster.vouch.Workload(module, service))
+	}
+}
+
 // runtimeOverrides is the process environment a cell gives a workload and a
 // laptop does not: the host finds its API server, a module-identity service
 // finds its projected token. Where a workload reaches the host's gateway is
 // not here: it is the workspace value the composition points at the gateway's
 // `workload` endpoint, which the run resolves like every other
 // `${endpoint:…}` reference, at the address this run allocated.
-func (cluster *launcher) runtimeOverrides(service *resources.Service) map[string]string {
+func (cluster *launcher) runtimeOverrides(service *resources.Service) (map[string]string, error) {
 	unique, identity, ok := cluster.identityOf(service)
 	out := map[string]string{}
 	if ok {
-		// A module-identity service reads its token from the path a cell's
-		// render mounts unless told otherwise; this is the otherwise.
 		credential, err := cluster.project(unique, identity)
 		if err != nil {
-			wool.Get(context.Background()).In("launcher").Warn("cannot project the module's credential", wool.Field("service", unique), wool.ErrField(err))
-			return out
+			return nil, fmt.Errorf("project %s host credential: %w", unique, err)
 		}
 		out[workloadTokenFileVariable] = credential.File
 	}
-	if unique == resources.ServiceUnique(cluster.hostModule, cluster.hostService) {
+	cluster.composition.RLock()
+	audiences := append([]string(nil), cluster.projections[unique]...)
+	verifier := cluster.verifiers[unique]
+	cluster.composition.RUnlock()
+	if len(audiences) > 0 {
+		module, name, _ := strings.Cut(unique, "/")
+		paths := map[string]string{}
+		for _, audience := range audiences {
+			credential, err := cluster.vouch.ProjectForAudience(unique, cluster.vouch.Workload(module, name), audience)
+			if err != nil {
+				return nil, fmt.Errorf("project %s for %q: %w", unique, audience, err)
+			}
+			paths[audience] = credential.File
+		}
+		mapping, err := json.Marshal(paths)
+		if err != nil {
+			return nil, err
+		}
+		out[environments.NativeIdentityCredentials] = string(mapping)
+	}
+	if verifier || unique == resources.ServiceUnique(cluster.hostModule, cluster.hostService) {
 		out[nativeidentity.AnchorEnvironment] = cluster.hostIdentityAnchor
+	}
+	if unique == resources.ServiceUnique(cluster.hostModule, cluster.hostService) {
 		out["SOLUTION_HOST_LOCAL_TRUST_ANCHOR"] = cluster.hostAnchorDir
 	}
-	return out
+	return out, nil
 }
 
 // renderOwnedGroups projects the authority a cell's render would project for
@@ -485,7 +551,9 @@ func (cluster *launcher) refreshTokens() {
 		case <-cluster.stop:
 			return
 		case <-ticker.C:
-			cluster.vouch.Refresh()
+			if err := cluster.vouch.Refresh(); err != nil {
+				wool.Get(context.Background()).In("launcher").Error("cannot refresh native credentials", wool.ErrField(err))
+			}
 		}
 	}
 }
@@ -501,6 +569,15 @@ func (cluster *launcher) onRunning(ctx context.Context, unique string) {
 		return
 	}
 	cluster.mu.Lock()
+	// A queued Running hook can arrive after Stop. Only a still-projected
+	// workload may rejoin delivery; Stop removes its credentials before
+	// clearing running under this same lock.
+	if cluster.vouch != nil {
+		if _, projected := cluster.vouch.Projected(unique); !projected {
+			cluster.mu.Unlock()
+			return
+		}
+	}
 	cluster.running[unique] = true
 	cluster.mu.Unlock()
 	waiter := cluster.waitFor(unique)
@@ -564,40 +641,54 @@ func (cluster *launcher) newDeliverer(ctx context.Context) (*gitops.NativeDelive
 // workload is forgotten. The run's authority, the envelope and the host's
 // process are untouched. Returned are the modules withdrawn.
 func (cluster *launcher) withdraw(ctx context.Context, uniques []string) ([]string, error) {
-	modules := map[string]bool{}
+	var failures []error
 	for _, unique := range uniques {
 		if identity, ok := cluster.identity(unique); ok && cluster.delivers(identity) {
-			modules[identity.Module] = true
+			cluster.mu.Lock()
+			if cluster.pendingWithdrawals == nil {
+				cluster.pendingWithdrawals = map[string]bool{}
+			}
+			cluster.pendingWithdrawals[identity.Module] = true
+			cluster.mu.Unlock()
 		}
-		cluster.forget(unique)
+		if err := cluster.forget(unique); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	if cluster.vouch != nil {
+		if err := cluster.vouch.RetryCleanup(); err != nil {
+			failures = append(failures, err)
+		}
 	}
 	cluster.mu.Lock()
+	pending := make([]string, 0, len(cluster.pendingWithdrawals))
 	for module := range cluster.pendingWithdrawals {
-		modules[module] = true
-	}
-	cluster.mu.Unlock()
-	pending := make([]string, 0, len(modules))
-	for module := range modules {
 		pending = append(pending, module)
 	}
+	cluster.mu.Unlock()
 	sort.Strings(pending)
 	var withdrawn []string
 	for _, module := range pending {
 		if len(cluster.startedIdentities(module)) > 0 {
 			if err := cluster.deliver(ctx, module); err != nil {
-				return withdrawn, fmt.Errorf("%s: deliver the workloads that remain: %w", module, err)
+				failures = append(failures, fmt.Errorf("%s: deliver the workloads that remain: %w", module, err))
+				continue
 			}
+			cluster.mu.Lock()
+			delete(cluster.pendingWithdrawals, module)
+			cluster.mu.Unlock()
 			continue
 		}
 		done, err := cluster.withdrawModule(ctx, module)
 		if err != nil {
-			return withdrawn, fmt.Errorf("%s: withdraw: %w", module, err)
+			failures = append(failures, fmt.Errorf("%s: withdraw: %w", module, err))
+			continue
 		}
 		if done {
 			withdrawn = append(withdrawn, module)
 		}
 	}
-	return withdrawn, nil
+	return withdrawn, errors.Join(failures...)
 }
 
 // withdrawModule delivers a module's withdrawal and waits for the host to
@@ -638,16 +729,33 @@ func (cluster *launcher) withdrawModule(ctx context.Context, module string) (boo
 // forget drops everything this run keeps for one workload: the identity the
 // composition gave it, its projection and whether it runs. Nothing of the
 // run's authority is touched.
-func (cluster *launcher) forget(unique string) {
+func (cluster *launcher) forget(unique string) error {
 	cluster.composition.Lock()
 	delete(cluster.identities, unique)
 	cluster.composition.Unlock()
+	return cluster.stopWorkload(unique)
+}
+
+// stopWorkload retires credentials without forgetting the declaration: a
+// supported individual restart projects fresh credentials through Init/Start.
+func (cluster *launcher) stopWorkload(unique string) error {
+	cluster.waitersMu.Lock()
+	if waiter := cluster.waiters[unique]; waiter != nil {
+		close(waiter.superseded)
+		delete(cluster.waiters, unique)
+	}
+	cluster.waitersMu.Unlock()
+	var err error
 	if cluster.vouch != nil {
-		cluster.vouch.Forget(unique)
+		err = cluster.vouch.Forget(unique)
 	}
 	cluster.mu.Lock()
 	delete(cluster.running, unique)
 	cluster.mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("remove stopped workload %s credentials: %w", unique, err)
+	}
+	return nil
 }
 
 // workloadTokenFileVariable names the projected token's path to a process

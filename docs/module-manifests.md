@@ -1022,6 +1022,70 @@ until the host's read-only applied record
 holds that exact withdrawal. A withdrawal not yet applied stays pending and is
 redelivered unchanged (the host replays it) on the next signal.
 
+### Additional native audience projections (new CLI contract)
+
+An environment may opt into additional workload credentials and explicit
+verifiers. This extends the existing native launcher; it does not change Core's
+credential format or grant application permission. For example, with the named
+services already in the resolved composition:
+
+```yaml
+native-identity:
+  projections:
+    - service: example/api
+      audiences: [host-audience, example-verifier]
+  verifiers: [example/verifier]
+```
+
+Place this block beside `host` in the environment declaration. The host supplies
+the run's trust domain and default audience. References must be qualified
+`<module>/<service>` names of actual, unmanaged composed services. Unknown keys,
+unknown services, duplicate service records, duplicate audiences/verifiers, empty
+audiences and audiences containing whitespace/control characters are refused.
+An audience is otherwise opaque; no service address is inferred from it.
+
+Each projected workload receives `CODEFLY_NATIVE_IDENTITY_CREDENTIALS`, a JSON
+object mapping only its requested audiences to absolute credential-file paths.
+The launcher chooses collision-safe paths within its private run directory;
+authors cannot choose output paths, subjects or environment-variable names.
+The existing `module-identity` host credential remains implicit and reaches its
+workload through `CODEFLY__WORKLOAD_TOKEN_FILE`. Requesting that same audience in
+the new block reuses that projection. Other audiences have distinct files and
+share the declared workload and instance. Each refresh uses the original
+audience. Clients must re-read the file before a call.
+
+Only explicit `verifiers` and the existing delivery host receive
+`CODEFLY_NATIVE_IDENTITY_ANCHOR`. A verifier-only service receives no credential
+mapping. A projection-only service is declared to Core's native issuer without
+becoming a `module-identity` workload or joining module-manifest delivery. The
+verifier uses Core's native attester with its expected audience and must separately
+authorize the exact caller. Endpoint reach still comes from existing dependency
+and configuration-reference checks; a projection creates no route.
+
+This declaration requires `native` or `nix` execution. Container/free-choice
+execution, execution inside a pod, deployment rendering, and a combined
+`cluster` or `gitops` declaration refuse it. A per-service non-native runtime override also refuses delivery to a
+recipient. An explicit projection or verifier selected with `--remote` refuses
+before remote initialization or exposure. Conflicting launcher-owned runtime
+overrides and `service-config` values are errors. Projection errors stop initialization/start. Refresh errors
+are reported; existing credentials expire at Core's normal short lifetime.
+Stopping a workload retires every audience from refresh, then removes its files.
+Removal failures are reported and kept for retry; they never keep credentials
+refreshing. Composition withdrawal still attempts host reconciliation for every
+stopped workload and retries pending cleanup and reconciliation on the next
+refresh even when no new roots stopped. Ordinary shutdown joins the refresh loop,
+removes all projections and returns cleanup failures to its caller, preserving
+unrelated delivery state. An individual restart uses the existing Init/Start
+projection path to write fresh credentials. None of these file operations revoke
+credential bytes already copied before the stop; those expire normally. Changing
+the declaration during composition reload requires stopping and starting the run; it is never silently ignored.
+
+This is native laptop assurance: the run owns one ephemeral issuer, and files are
+private to its operating-system user. It provides no isolation from another
+process with that same user identity and makes no deployed authentication or
+witness qualification claim. The declaration/carrier is a new CLI public contract;
+consumers must adopt it explicitly before it can qualify their integration.
+
 ## Dev deployments
 
 `codefly deploy dev` re-pins a service's image inside an already-rendered

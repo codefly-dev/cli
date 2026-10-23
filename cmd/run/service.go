@@ -224,8 +224,7 @@ func runServiceCommand(cmd *cobra.Command, args []string) (returnErr error) {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		err := stopService(shutdownCtx, run.flow)
 		shutdownCancel()
-		stopLauncher()
-		return err
+		return errors.Join(err, stopLauncher())
 	}
 	defer func() { returnErr = errors.Join(returnErr, stopFresh()) }()
 
