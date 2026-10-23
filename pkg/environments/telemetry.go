@@ -118,6 +118,6 @@ func (env *Environment) TelemetryCarriers(module, service string) map[string]str
 		// key. service.namespace is a specification key the contract does not
 		// admit, and injecting it switched every contract-bound producer's
 		// trace export OFF. The module is already named by OTEL_SERVICE_NAME.
-		"OTEL_RESOURCE_ATTRIBUTES":    "deployment.environment.name=" + env.Name,
+		"OTEL_RESOURCE_ATTRIBUTES": "deployment.environment.name=" + env.Name,
 	}
 }

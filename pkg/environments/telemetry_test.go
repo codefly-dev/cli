@@ -40,11 +40,13 @@ func TestTelemetryRefusesWhatAServiceCannotDial(t *testing.T) {
 // resource attributes naming its module and environment — and nothing at all
 // from an environment that declares no telemetry.
 func TestTelemetryCarriersNameTheServiceAndItsEnvironment(t *testing.T) {
+	// The resource attributes stay within the tracing attribute contract:
+	// deployment.environment.name only; the module is in OTEL_SERVICE_NAME.
 	env := &Environment{Name: "staging", Telemetry: &EnvironmentTelemetry{OTLPEndpoint: "otel.internal.ops.example:443"}}
 	require.Equal(t, map[string]string{
 		"OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.internal.ops.example:443",
 		"OTEL_SERVICE_NAME":           "saas/accounts",
-		"OTEL_RESOURCE_ATTRIBUTES":    "service.namespace=saas,deployment.environment.name=staging",
+		"OTEL_RESOURCE_ATTRIBUTES":    "deployment.environment.name=staging",
 	}, env.TelemetryCarriers("saas", "accounts"), "a bare host:port is delivered as the URL its transport implies, so every SDK reads the same thing")
 
 	local := &Environment{Name: "local", Telemetry: &EnvironmentTelemetry{OTLPEndpoint: "localhost:4317", Insecure: true}}
