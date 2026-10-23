@@ -545,26 +545,40 @@ value only from a source its planner can reach:
 - a federation derivation covers it (`derive`, `update`);
 - another remote key in the environment holds the same configuration value
   (`propagate`);
+- the environment's own `configurations/<profile>/<group>.secret.env` holds the
+  value — the file `codefly config set` writes (`configured`);
 - the environment declares a generator for the key under
   `service-secrets.generate` (`generate`).
 
-An arbitrary root-group credential is none of those. The render discarded its
-plaintext — that is what keeps it out of the committed manifest — so the planner
-never sees the configuration value, and the plan reports the property as
-`require`: a value **the operator must supply**. `codefly deploy secrets
---dry-run` lists every such property as `remote-key#property (key)`.
+The render discarded the credential's plaintext — that is what keeps it out of
+the committed manifest — so the planner never sees the configuration value *in
+the render*. It does see the operator's own file, and that is the source to
+reach for: the group a root-group credential lives in is a workspace
+configuration group, so
+
+```bash
+codefly config set work-context AUTHORITY_TOKEN=$TOKEN --env staging
+codefly deploy secrets --env staging
+```
+
+plans it as `configured` and writes it, naming the file and never the value. A
+credential that is in none of the five sources is reported as `require`: a value
+**the operator must supply**, and `codefly deploy secrets --dry-run` lists every
+such property as `remote-key#property (key)`.
 
 So re-running `deploy secrets` after a root group's credential first reaches the
-render does not by itself make the workload startable.
+render makes the workload startable when its value is in the environment's own
+configuration, and tells you which property to supply when it is not.
 
-**First, a prerequisite the generator depends on: the key must be read as a
+**First, a prerequisite every source depends on: the key must be read as a
 property of a JSON document.** With no `service-secrets.defaults` and no
 per-service `remote-keys` entry, a key falls back to the remote key
 `<service>/<key>` read as a **bare value**, and the planner refuses that shape
 before it chooses any source at all — *"remote key … is read as a bare value;
-only a JSON document read by property can be planned"*. Declaring the generator
-without this gets you that refusal, not the value and not even the `require`
-line. One environment-wide declaration covers every service:
+only a JSON document read by property can be planned"*. Configuring the value or
+declaring the generator without this gets you that refusal, not the value and
+not even the `require` line. One environment-wide declaration covers every
+service:
 
 ```yaml
 service-secrets:
@@ -576,8 +590,8 @@ service-secrets:
     property: "{key}"
 ```
 
-With the key plannable, either write the value into the store, or declare a
-generator for it so the verb can mint it:
+With the key plannable, supply the value with `codefly config set` as above, or
+declare a generator for it so the verb can mint it:
 
 ```yaml
 service-secrets:
@@ -1206,8 +1220,59 @@ resolves every remote property to a source, never printing a value:
 | --- | --- |
 | `keep` | the store already holds it; nothing stored is ever rotated |
 | `propagate` | a configuration value (`CODEFLY__WORKSPACE_SECRET_CONFIGURATION__…`, `CODEFLY__SERVICE_SECRET_CONFIGURATION__…`) is one value however many services read it, so it is copied from the remote key that holds it |
+| `configured` | the environment's own `configurations/<profile>/<group>.secret.env` holds the value — the file `codefly config set` writes — and the plan seeds the store from it, naming the file as its source |
 | `generate` | declared random by `service-secrets.generate` (below) |
 | `require` | nothing produces it: the operator supplies it — an external credential, or a value its producing agent derives |
+
+**`configured`: the environment's own files are a source.** `codefly config set
+<group> KEY=VALUE --env <env>` writes
+`<scope>/configurations/<profile>/<group>.secret.env` (0600, in a 0700
+directory, refused when git would track it, never printed), and that is the file
+a local run reads. `deploy secrets` now reads it too, so the whole operator path
+for an external credential is:
+
+```bash
+codefly config set identity OAUTH_CLIENT_SECRET=$SECRET --env staging
+codefly deploy gitops render --env staging
+codefly deploy secrets --env staging
+```
+
+with nothing typed into a store's console or `gcloud`. Both scopes are read —
+the workspace's own `configurations/<profile>/` under the workspace carrier and
+each service's under that service's — and each value is indexed by the secret
+key core encodes for it, which is the same `secretKey` the render recorded, so a
+key reaches its value whichever way the group or key was spelled.
+
+Four rules bound it:
+
+- **A stored value still wins and is never rotated.** A property the store
+  already holds is `keep`, file or no file.
+- **A stored value that differs from the configured one is refused**, like two
+  remote keys disagreeing: keeping it would leave the deployed workload on one
+  value and every local run on the other, reported as `keep`. Change the
+  configuration to match what is stored, or remove the stored property so the
+  plan seeds it from the file.
+- **An empty value supplies nothing.** A tracked placeholder file — the
+  committed shape that declares which keys an environment needs and holds none
+  of them — keeps contributing keys and no values, so its properties stay
+  `require`.
+- **Only `<group>.secret.env` is read.** A reference-only manifest
+  (`<group>.secret.ref.env`) holds `op://…` references resolved against a
+  backend; writing one to the store would store the reference, not the value. A
+  value an environment reaches only through a later profile of a
+  `configuration-profiles` chain, or through a profile derivation
+  (`derives-from`), is likewise not a source yet and its property stays
+  `require`.
+
+A configured value is preferred to a declared generator: a generator mints what
+nothing supplies, the same reason a stored value is kept rather than
+regenerated, so a key that is both configured and declared random is seeded from
+the file. `--dry-run` names the file each value would come from, and no value is
+printed on any stream. `TestAConfiguredPropertyIsSeededFromTheEnvironmentsOwnFile`,
+`TestAStoredValueDifferingFromTheConfiguredOneRefuses`,
+`TestATrackedEmptyPlaceholderSuppliesNoValue` and
+`TestReadConfiguredIndexesBothScopesOfTheWorkspace` (`pkg/deploysecrets`) pin
+each of those.
 
 **Each property is resolved by the secret key read out of it, not by the
 property's name.** An `ExternalSecret` entry has both: `remoteRef.property` is

@@ -87,6 +87,11 @@ var setCmd = &cobra.Command{
 Existing keys are preserved unless --force is passed, so re-running a setup
 sequence is idempotent. The value is taken from the argument; nothing is echoed.
 
+A secret written here is read by a local run and, for a deployed environment, by
+` + "`codefly deploy secrets`" + `, which seeds the environment's secret store from this
+file rather than asking the operator to type the value into a store console. A
+key written with an empty value declares the key and supplies no value.
+
 Examples:
   codefly config set internal-auth CODEFLY_INTERNAL_TOKEN=$TOKEN
   codefly config set runtime EXECUTION_SCHEDULER_TOKEN=$TOKEN --service mind/mind
@@ -289,6 +294,19 @@ Examples:
 		}
 		return nil
 	},
+}
+
+// SecretConfigurationNames lists the secret configuration names a profile
+// directory holds: the `<name>` of every `<name>.secret.env` in it, sorted. A
+// directory that does not exist holds none, which is not an error.
+//
+// It is exported so the symmetric reader of these files — `codefly deploy
+// secrets`, seeding the environment's store from them — selects them by the
+// same suffix this package writes them under, rather than spelling it again.
+// A reference-only manifest (`<name>.secret.ref.env`) is deliberately not
+// listed: its values are references into a backend, not values to store.
+func SecretConfigurationNames(dir string) ([]string, error) {
+	return configurationNames(dir, SecretSuffix)
 }
 
 // configurationNames lists configuration names in dir carrying the suffix. The

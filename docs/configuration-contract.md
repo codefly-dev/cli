@@ -240,6 +240,33 @@ Rendered manifests admit template delimiters, and credential-named keys, only at
 an ExternalSecret's `spec.target.template.data.<key>`, and only for a value that
 carries a template action.
 
+**What is credential-named is core's decision, narrowed in exactly one place: a
+public OAuth client identifier.** A client id identifies the client to an
+authorization server and is published in redirects, in discovery documents and
+in browser requests; the matching secret is the client **secret**. Core already
+calls a bare `CLIENT_ID` public; what it still classified was the spelling an
+operator writes — `OAUTH_CLIENT_ID`, `AUTH_CLIENT_ID` — and only through the
+`AUTH` word in front of it, so the render refused a public value and the only
+way to deliver it was a `secretKeyRef` into a store entry somebody had to fill.
+A key is read as a public client identifier only when all three hold: it ends in
+the client-identifier spelling (`client_id`, `client-id`, `clientId`), core
+classifies it today (this narrows core's reading and never widens it), and
+removing the `AUTH` marker makes core stop classifying it — so the `AUTH` word
+is the only credential signal in the name. `CLIENT_SECRET`, `OAUTH_ACCESS_TOKEN`,
+`AUTH_PASSWORD`, `OAUTH_CLIENT_KEY`, `CLIENT_ID_SECRET` and
+`OAUTH_TOKEN_CLIENT_ID` all keep their refusal, and a **secret** configuration
+carrier (`CODEFLY__WORKSPACE_SECRET_CONFIGURATION__…`) is sensitive whatever its
+key: the value was authored as a secret, and that declaration outranks any
+reading of its name. Both sides are pinned by
+`TestTheRenderGuardAcceptsAPublicClientIdAndRefusesACredential` and
+`TestRenderAcceptsAPlainClientIdAndRefusesAPlainClientSecret` (`pkg/gitops`).
+
+This narrows the render's own tree guard. Promotion to a `secretKeyRef`
+(`pkg/orchestration`) is unchanged and still routes such a key to the secret
+store, because core's restricted-deployment guard
+(`validateRestrictedDeploymentRequest`) refuses the inline value by the same
+classification; narrowing that half needs the change in core.
+
 Validation rebuilds the selected overlay and checks the complete CLI-owned
 ExternalSecret delivery specification, including its store, target, keys and
 properties. Overlay patches may not redirect or replace that specification.
