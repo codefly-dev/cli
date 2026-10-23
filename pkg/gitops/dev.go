@@ -134,7 +134,7 @@ func buildRenderedServiceImages(
 	rebuild bool,
 	sink orchestration.OutputSink,
 ) ([]string, error) {
-	if err := environments.ValidateWorkspace(ctx, workspace); err != nil {
+	if err := environments.ValidateWorkspace(ctx, workspace, env); err != nil {
 		return nil, err
 	}
 	if err := prepareSnapshotRegistry(ctx, env); err != nil {

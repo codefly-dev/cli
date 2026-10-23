@@ -133,6 +133,24 @@ func TestValidateEnvironmentsRejectsUnknownService(t *testing.T) {
 	}
 }
 
+func TestSelectedEnvironmentUsesItsOwnServiceReferences(t *testing.T) {
+	ctx := context.Background()
+	ws, err := loadDeploymentWorkspace(ctx, writeServiceScopedWorkspace(t, serviceIdentityDeclaration("removed-service")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := &environments.Environment{Name: "azure-staging", Namespace: "azure-platform"}
+	if err := environments.ValidateWorkspace(ctx, ws.Workspace, selected); err != nil {
+		t.Fatalf("unrelated environment blocked selected render: %v", err)
+	}
+	if err := environments.ValidateWorkspace(ctx, ws.Workspace); err == nil {
+		t.Fatal("whole-workspace validation must still reject the removed service")
+	}
+	if err := environments.ValidateWorkspace(ctx, ws.Workspace, ws.Environments[0]); err == nil {
+		t.Fatal("selecting the broken environment must still fail")
+	}
+}
+
 // An empty list item under environments unmarshals to a nil *Environment;
 // postLoad must reject it with an error instead of dereferencing it into a panic.
 func TestLoadWorkspaceRejectsEmptyEnvironmentEntry(t *testing.T) {
