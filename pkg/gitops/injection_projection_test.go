@@ -245,7 +245,7 @@ func TestDerivedInjectionSkipsOfferedCarriersNoContainerClaims(t *testing.T) {
 		"CODEFLY__SELF_ENDPOINT__SAAS__CACHE__READ__TCP": "tcp://cache.example-saas.svc.cluster.local:6379",
 		"OTEL_EXPORTER_OTLP_ENDPOINT":                    "https://otel.internal.ops.example:443",
 		"OTEL_SERVICE_NAME":                              "saas/cache",
-		"OTEL_RESOURCE_ATTRIBUTES":                       "service.namespace=saas,deployment.environment.name=staging",
+		"OTEL_RESOURCE_ATTRIBUTES":                       "deployment.environment.name=staging",
 	}}
 	require.NoError(t, projectServiceConfiguration(t.Context(), testRenderRoot(t, root), root, &resources.Service{Name: "cache"}, env, scopeOf(env), selfAndTelemetry))
 	after, err = os.ReadFile(filepath.Join(root, "base", "deployment.yaml"))
