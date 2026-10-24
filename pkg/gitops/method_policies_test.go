@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	modulecontract "github.com/codefly-dev/core/contracts/module"
 	"github.com/codefly-dev/core/solutionhost"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -262,5 +264,52 @@ func TestRoutePoliciesAreReadFromThePublishedOpenAPIContract(t *testing.T) {
 	_, _, err = MethodPolicies(routePackage(t, `{"paths":{"/v1/x":{"get":{"x-codefly-authority-policy":{"requires":"everything"}}}}}`))
 	if err == nil || !strings.Contains(err.Error(), "authority.hop.v1.Policy") {
 		t.Fatalf("an extension that is not a policy: %v", err)
+	}
+}
+
+// A module serving a protocol it does not own declares those methods in its
+// module contract; they are delivered beside its published methods, with what
+// each requires, and one that a published contract also serves is refused.
+func TestForeignMethodsJoinThePublishedOnes(t *testing.T) {
+	dir := policyPackage(t, false)
+	contract := `schema: codefly/module-contract/v1
+principal: console
+namespaces: []
+queues: []
+scope_ceilings:
+    - resource_kind: console.spans
+      actions: [export]
+bindings: []
+destinations: []
+foreign_methods:
+    - method: %s
+      requires:
+          - resource_kind: console.spans
+            actions: [export]
+`
+	write := func(method string) {
+		if err := os.WriteFile(filepath.Join(dir, modulecontract.FileName), []byte(fmt.Sprintf(contract, method)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("/opentelemetry.proto.collector.trace.v1.TraceService/Export")
+	methods, ok, err := MethodPolicies(dir)
+	if err != nil || !ok {
+		t.Fatalf("methods: %v %v", ok, err)
+	}
+	byName := map[string]*compositionv1.MethodPolicyV1{}
+	for _, m := range methods {
+		byName[m.GetMethod()] = m
+	}
+	export := byName["/opentelemetry.proto.collector.trace.v1.TraceService/Export"]
+	if export == nil || len(export.GetRequires()) != 1 || export.GetRequires()[0].GetResourceKind() != "console.spans" || export.GetRequires()[0].GetActions()[0] != "export" {
+		t.Fatalf("the foreign Export: %v", export)
+	}
+	if byName["/api.ApiService/WhoAmI"] == nil {
+		t.Fatal("the published methods are still delivered")
+	}
+	write("/api.ApiService/WhoAmI")
+	if _, _, err := MethodPolicies(dir); err == nil || !strings.Contains(err.Error(), "already serve") {
+		t.Fatalf("a foreign method the package publishes: %v", err)
 	}
 }

@@ -29,8 +29,12 @@ import (
 // field set, so the authority tells "declares nothing" from "not served".
 // A module with no package declares no method policy: ok is false.
 func MethodPolicies(dir string) (methods []*compositionv1.MethodPolicyV1, ok bool, err error) {
+	foreign, err := foreignMethods(dir)
+	if err != nil {
+		return nil, false, err
+	}
 	if _, err := os.Stat(filepath.Join(dir, composition.PackageManifestFileName)); os.IsNotExist(err) {
-		return nil, false, nil
+		return foreign, len(foreign) > 0, nil
 	}
 	manifest, err := composition.LoadPackageManifest(dir)
 	if err != nil {
@@ -59,8 +63,39 @@ func MethodPolicies(dir string) (methods []*compositionv1.MethodPolicyV1, ok boo
 			}
 		}
 	}
+	// A foreign method is one no published contract serves: a module that
+	// declares one it also publishes would have two answers for one method.
+	for _, m := range foreign {
+		if seen[m.GetMethod()] {
+			return nil, false, fmt.Errorf("module package %s declares foreign method %s, which its published contracts already serve", manifest.ID, m.GetMethod())
+		}
+		seen[m.GetMethod()] = true
+		methods = append(methods, m)
+	}
 	sort.Slice(methods, func(i, j int) bool { return methods[i].GetMethod() < methods[j].GetMethod() })
 	return methods, true, nil
+}
+
+// foreignMethods reads the methods the module at dir serves from a protocol
+// it does not own, from its module contract, each with what a call requires.
+// A module that publishes no contract declares none.
+func foreignMethods(dir string) ([]*compositionv1.MethodPolicyV1, error) {
+	contract, err := modulecontract.Load(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []*compositionv1.MethodPolicyV1
+	for _, method := range contract.ForeignMethods {
+		m := &compositionv1.MethodPolicyV1{Method: method.Method}
+		for _, required := range method.Requires {
+			m.Requires = append(m.Requires, &authorityv1.WorkScopeV1{ResourceKind: required.ResourceKind, Actions: required.Actions})
+		}
+		out = append(out, m)
+	}
+	return out, nil
 }
 
 // contractMethods reads one published contract, refusing one whose bytes are
