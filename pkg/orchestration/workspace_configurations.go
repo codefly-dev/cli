@@ -199,7 +199,7 @@ func (world *World) workspaceConfigurationsFor(
 	// declares them: the resolver above skipped those names on purpose, since a
 	// render projects them, and this is the run standing in for that render.
 	if world.RenderOwnedGroups != nil {
-		owned, ownedErr := world.RenderOwnedGroups(ctx, service)
+		owned, ownedErr := world.RenderOwnedGroups(ctx, world.withoutExcludedGroups(service))
 		if ownedErr != nil {
 			return nil, ownedErr
 		}
@@ -1077,4 +1077,27 @@ func (b *Builder) workspaceConfigurations(
 ) ([]*basev0.Configuration, error) {
 	return b.world.workspaceConfigurationsFor(ctx, b.instance.Service,
 		dependencyMappings, resources.NewContainerNetworkAccess())
+}
+
+// withoutExcludedGroups is service as the run sees it: its declared workspace
+// configuration groups less the ones the run excludes. A render-owned group is
+// rendered by the CLI rather than resolved, so it is trimmed here, before the
+// render, or an excluded group would still be rendered — and refused when this
+// run's host has nothing to render it from.
+func (world *World) withoutExcludedGroups(service *resources.Service) *resources.Service {
+	if len(world.excludedWorkspaceConfigurations) == 0 {
+		return service
+	}
+	kept := make([]string, 0, len(service.WorkspaceConfigurationDependencies))
+	for _, group := range service.WorkspaceConfigurationDependencies {
+		if !world.excludedWorkspaceConfigurations[group] {
+			kept = append(kept, group)
+		}
+	}
+	if len(kept) == len(service.WorkspaceConfigurationDependencies) {
+		return service
+	}
+	trimmed := *service
+	trimmed.WorkspaceConfigurationDependencies = kept
+	return &trimmed
 }
