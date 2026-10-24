@@ -873,15 +873,20 @@ func writeContractsCatalog(t *testing.T, moduleDir, packageID string, contractBy
 // module/service/connect selects it.
 func TestPickContractEndpointAcceptsConnect(t *testing.T) {
 	ctx := context.Background()
-	endpoints := []*basev0.Endpoint{{Name: "grpc", Api: standards.GRPC}, {Name: "connect", Api: standards.CONNECT}, {Name: "tcp", Api: standards.TCP}}
-	e, err := pickContractEndpoint(ctx, endpoints, "connect", "evaluation", "registry")
+	connect := &basev0.Endpoint{Name: "connect", Api: standards.CONNECT}
+	tcp := &basev0.Endpoint{Name: "tcp", Api: standards.TCP}
+	e, err := pickContractEndpoint(ctx, []*basev0.Endpoint{connect, tcp}, "connect", "evaluation", "registry")
 	if err != nil || e.Name != "connect" {
-		t.Fatalf("connect: %v %v", e, err)
+		t.Fatalf("connect by name: %v %v", e, err)
 	}
-	if _, err := pickContractEndpoint(ctx, endpoints, "", "evaluation", "registry"); err == nil || !strings.Contains(err.Error(), "multiple") {
+	if e, err := pickContractEndpoint(ctx, []*basev0.Endpoint{connect, tcp}, "", "evaluation", "registry"); err != nil || e.Name != "connect" {
+		t.Fatalf("the one contract endpoint is picked without a hint: %v %v", e, err)
+	}
+	two := []*basev0.Endpoint{connect, {Name: "connect-admin", Api: standards.CONNECT}}
+	if _, err := pickContractEndpoint(ctx, two, "", "evaluation", "registry"); err == nil || !strings.Contains(err.Error(), "multiple") {
 		t.Fatalf("two contract endpoints need a hint: %v", err)
 	}
-	if _, err := pickContractEndpoint(ctx, endpoints, "tcp", "evaluation", "registry"); err == nil {
+	if _, err := pickContractEndpoint(ctx, []*basev0.Endpoint{connect, tcp}, "tcp", "evaluation", "registry"); err == nil {
 		t.Fatal("tcp serves no contract")
 	}
 }
