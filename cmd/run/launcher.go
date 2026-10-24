@@ -782,7 +782,7 @@ func (cluster *launcher) deliver(ctx context.Context, module string) error {
 // the fixture's platform administrator, unless the host holds it already. A
 // composition that states no grant writes none.
 func (cluster *launcher) ensureEnvelope(ctx context.Context, gatewayURL string) error {
-	grants, err := cluster.grants()
+	grants, err := cluster.grants(ctx)
 	if err != nil || len(grants) == 0 {
 		return err
 	}
@@ -814,10 +814,14 @@ func (cluster *launcher) fixtureAdministrator(ctx context.Context) (runfixture.A
 // grants each module principal, in the host's own grant shape. A platform base
 // states its modules' grants and a solution composed on it states its own
 // principal's; the consuming workspace decides a principal it states
-// (runfixture.ReadCompositionGrants).
-func (cluster *launcher) grants() (map[string]gitops.EnvelopeGrant, error) {
+// (runfixture.ReadCompositionGrants), with an entry for each prepared binding
+// a module installs (gitops.WithPreparedBindingGrants).
+func (cluster *launcher) grants(ctx context.Context) (map[string]gitops.EnvelopeGrant, error) {
 	principals, err := runfixture.ReadCompositionGrants(cluster.composed(), cluster.env.Name)
 	if err != nil {
+		return nil, err
+	}
+	if principals, err = gitops.WithPreparedBindingGrants(ctx, cluster.composed(), cluster.env, principals); err != nil {
 		return nil, err
 	}
 	out := map[string]gitops.EnvelopeGrant{}

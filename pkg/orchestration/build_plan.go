@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -48,7 +49,7 @@ const (
 // recipe — multi-arch and pushed as a manifest list when pushing — so the build
 // recipe is a durable, first-class artifact and images are not tied to the
 // builder's host architecture.
-func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *builderv0.DockerBuildPlan, proxies map[string]map[string]string, reuse map[string]imageReuse) error {
+func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *builderv0.DockerBuildPlan, prefetched map[string]map[string]string, reuse map[string]imageReuse) error {
 	w := wool.Get(ctx).In("Builder.buildFromPlan", wool.ThisField(b.instance))
 	if err := coreservices.VerifyDockerBuildPlan(outputDir, plan); err != nil {
 		return w.Wrapf(err, "cannot verify build recipe for %s", b.instance.Unique())
@@ -73,7 +74,7 @@ func (b *Builder) buildFromPlan(ctx context.Context, outputDir string, plan *bui
 		if decision, ok := reuse[recipe.GetName()]; ok {
 			decided = &decision
 		}
-		if err := b.buildRecipe(ctx, w, outputDir, contextRoot, plan, recipe, shouldPush, proxies[recipe.GetName()], decided); err != nil {
+		if err := b.buildRecipe(ctx, w, outputDir, contextRoot, plan, recipe, shouldPush, prefetched[recipe.GetName()], decided); err != nil {
 			return err
 		}
 	}
@@ -147,7 +148,41 @@ func (b *Builder) decideImageReuse(
 			wool.Field("recipe", recipe.GetName()), wool.ErrField(identityErr))
 	}
 	decision := imageReuse{identity: identity}
-	if identity.Key == "" || b.world.RebuildImages {
+	if b.world.RebuildImages {
+		return decision, nil
+	}
+	// A released version is built once. The image is tagged with the service's
+	// version, which `codefly publish` stamps on every service of the release, and
+	// a registry with immutable tags keeps that tag on that one build forever: so
+	// when the registry already holds this service at this version, it is that
+	// image, whichever environment, machine or checkout pushed it, and nothing is
+	// built. An unversioned service (0.0.0, never published) is not a release and
+	// is built as before.
+	if shouldPush && releasedVersionTag(recipe.GetImage()) {
+		if digest, err := resolveImageManifestDigest(ctx, recipe.GetImage(), probeBuilder); err == nil && digest != "" {
+			// The version alone is not proof: a service whose version was not moved
+			// with its code would hand back another release's image. The published
+			// image records the inputs it was built from, and only those inputs
+			// adopt it.
+			published, _ := resolveImageBuildInputs(ctx, recipe.GetImage(), probeBuilder)
+			switch {
+			case identity.Key != "" && published == identity.Key:
+				decision.entry = &imageCacheEntry{
+					Schema: imageCacheSchema, Key: identity.Key, Service: b.instance.Unique(), Recipe: recipe.GetName(),
+					Image: recipe.GetImage(), Pushed: true, Digest: digest, Platforms: recipe.GetPlatforms(),
+				}
+				return decision, nil
+			case identity.Key != "" && published != "":
+				return decision, w.NewError(
+					"%s is already published from other inputs: its version was not moved with its code; release a new version (codefly publish) instead of rebuilding a published one",
+					recipe.GetImage())
+			default:
+				w.Warn("the published image records no build inputs; building it again",
+					wool.Field("image", recipe.GetImage()), wool.Field("recipe", recipe.GetName()))
+			}
+		}
+	}
+	if identity.Key == "" {
 		return decision, nil
 	}
 	entry, found := b.imageBuildCache().lookup(identity.Key, b.instance.Unique(), shouldPush)
@@ -164,19 +199,22 @@ func (b *Builder) decideImageReuse(
 	return decision, nil
 }
 
-// placeholderProxies stands in for the Go module proxies a recipe declares
-// before they are fetched. normalizedBuildxArgs rewrites every fetched proxy
+// placeholderProxies stands in for the Go module proxies and git source mirrors
+// a recipe declares before they are fetched. normalizedBuildxArgs rewrites every fetched proxy
 // path to this same placeholder, so an identity computed over these equals the
 // one computed over the fetched paths — which is what lets the reuse decision
 // precede the fetch.
 func placeholderProxies(recipe *builderv0.DockerBuildRecipe) map[string]string {
 	downloads := recipe.GetGoModuleDownloads()
-	if len(downloads) == 0 {
+	if len(downloads) == 0 && len(recipe.GetGitSourceDownloads()) == 0 {
 		return nil
 	}
-	proxies := make(map[string]string, len(downloads))
+	proxies := make(map[string]string, len(downloads)+len(recipe.GetGitSourceDownloads()))
 	for _, download := range downloads {
 		proxies[download.GetProxyContext()] = proxyPlaceholder
+	}
+	for _, download := range recipe.GetGitSourceDownloads() {
+		proxies[download.GetMirrorContext()] = proxyPlaceholder
 	}
 	return proxies
 }
@@ -261,7 +299,7 @@ func (b *Builder) buildRecipe(
 	plan *builderv0.DockerBuildPlan,
 	recipe *builderv0.DockerBuildRecipe,
 	shouldPush bool,
-	goModuleProxies map[string]string,
+	prefetched map[string]string,
 	reuse *imageReuse,
 ) error {
 	recipe, err := b.recipeAsBuilt(recipe, shouldPush)
@@ -297,8 +335,12 @@ func (b *Builder) buildRecipe(
 	// A recipe declaring Go module downloads is only built with the proxies
 	// its plan phase fetched; building it without them would fall back to
 	// fetching inside the build, which is what declaring them removes.
-	if recipeMissesGoModuleProxies(recipe, goModuleProxies) {
+	if recipeMissesGoModuleProxies(recipe, prefetched) {
 		return w.NewError("recipe %s of %s declares Go module downloads that were not fetched before the build", recipe.GetName(), b.instance.Unique())
+	}
+	// The same for a recipe declaring git sources and their mirrors.
+	if recipeMissesGitSourceMirrors(recipe, prefetched) {
+		return w.NewError("recipe %s of %s declares git sources that were not fetched before the build", recipe.GetName(), b.instance.Unique())
 	}
 
 	contextDir, err := recipeContext(contextRoot, recipe)
@@ -320,7 +362,7 @@ func (b *Builder) buildRecipe(
 	// A service that imports a private Go module reads it from the proxy the
 	// plan phase fetched; GOPRIVATE, a list of module paths and not a
 	// credential, still reaches recipes that declare it as an ARG.
-	private := resolvePrivateModuleBuild(os.LookupEnv).withProxies(goModuleProxies)
+	private := resolvePrivateModuleBuild(os.LookupEnv).withProxies(prefetched)
 
 	// Where this environment reads a mirrored registry from. It reaches the
 	// build through the builder's buildkitd configuration and the base-image
@@ -346,12 +388,15 @@ func (b *Builder) buildRecipe(
 	defer removeMetadata()
 
 	args, err := cachedBuildxArgs(recipe, dockerfile, contextDir, shouldPush, multiArch, metadataFile, builderName, cache, private)
+	if err == nil {
+		args = withBuildInputsLabel(args, identity.Key)
+	}
 	if err != nil {
 		return err
 	}
 	started := time.Now()
 	w.Info("building image", wool.Field("image", recipe.GetImage()), wool.Field("push", shouldPush),
-		wool.Field("goprivate", private.GoPrivate), wool.Field("go_module_proxies", len(private.Proxies)))
+		wool.Field("goprivate", private.GoPrivate), wool.Field("prefetched_contexts", len(private.Proxies)))
 	command := exec.CommandContext(ctx, "docker", args...)
 	command.Stdout = os.Stderr
 	command.Stderr = os.Stderr
@@ -933,4 +978,94 @@ func (b *Builder) stageBuildMetadata(wanted bool) (string, func(), error) {
 	path := file.Name()
 	_ = file.Close()
 	return path, func() { _ = os.Remove(path) }, nil
+}
+
+// releasedVersionTag reports whether image is tagged with a released service
+// version: an exact semantic version other than the unversioned 0.0.0 every
+// service carries until `codefly publish` stamps its release on it. A
+// pre-release, a moving name (latest) or a digest reference is not one.
+func releasedVersionTag(image string) bool {
+	if image == "" || strings.Contains(image, "@") {
+		return false
+	}
+	last := image
+	if separator := strings.LastIndex(image, "/"); separator >= 0 {
+		last = image[separator+1:]
+	}
+	colon := strings.LastIndex(last, ":")
+	if colon < 0 {
+		return false
+	}
+	tag := strings.TrimPrefix(last[colon+1:], "v")
+	return releasedVersion.MatchString(tag) && tag != "0.0.0"
+}
+
+var releasedVersion = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+
+// buildInputsLabel is the image label a build records its input identity under,
+// so a later render can tell whether a published version holds exactly these
+// inputs (decideImageReuse).
+const buildInputsLabel = "org.codefly.build.inputs"
+
+// withBuildInputsLabel records the build's input identity on the image. It is
+// added to the build's own argv after the identity was computed from it, so the
+// label is never an input to the identity it records.
+func withBuildInputsLabel(args []string, identityKey string) []string {
+	if identityKey == "" {
+		return args
+	}
+	for index, argument := range args {
+		if argument == "build" {
+			labelled := append([]string(nil), args[:index+1]...)
+			labelled = append(labelled, "--label", buildInputsLabel+"="+identityKey)
+			return append(labelled, args[index+1:]...)
+		}
+	}
+	return args
+}
+
+// resolveImageBuildInputs reads the build-inputs label every platform of a
+// published image carries, or "" when it carries none or its platforms disagree.
+// A seam so a test needs no registry.
+var resolveImageBuildInputs = func(ctx context.Context, reference, builderName string) (string, error) {
+	probe, cancel := context.WithTimeout(ctx, imageRegistryProbeTimeout)
+	defer cancel()
+	args := []string{buildxCommand, "imagetools", "inspect"}
+	if builderName != "" {
+		args = append(args, "--builder", builderName)
+	}
+	args = append(args, "--format", "{{json .Image}}", reference)
+	out, err := exec.CommandContext(probe, "docker", args...).Output()
+	if err != nil {
+		return "", err
+	}
+	return buildInputsFromImageConfig(out), nil
+}
+
+// buildInputsFromImageConfig reads the label out of `imagetools inspect`'s image
+// configuration: one configuration for a single-platform image, one per platform
+// otherwise. Every platform must record the same value.
+func buildInputsFromImageConfig(raw []byte) string {
+	type config struct {
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"config"`
+	}
+	var single config
+	if err := json.Unmarshal(raw, &single); err == nil && single.Config.Labels != nil {
+		return single.Config.Labels[buildInputsLabel]
+	}
+	var platforms map[string]config
+	if err := json.Unmarshal(raw, &platforms); err != nil || len(platforms) == 0 {
+		return ""
+	}
+	value := ""
+	for _, platform := range platforms {
+		label := platform.Config.Labels[buildInputsLabel]
+		if label == "" || (value != "" && label != value) {
+			return ""
+		}
+		value = label
+	}
+	return value
 }

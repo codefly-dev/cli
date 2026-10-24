@@ -545,26 +545,40 @@ value only from a source its planner can reach:
 - a federation derivation covers it (`derive`, `update`);
 - another remote key in the environment holds the same configuration value
   (`propagate`);
+- the environment's own `configurations/<profile>/<group>.secret.env` holds the
+  value — the file `codefly config set` writes (`configured`);
 - the environment declares a generator for the key under
   `service-secrets.generate` (`generate`).
 
-An arbitrary root-group credential is none of those. The render discarded its
-plaintext — that is what keeps it out of the committed manifest — so the planner
-never sees the configuration value, and the plan reports the property as
-`require`: a value **the operator must supply**. `codefly deploy secrets
---dry-run` lists every such property as `remote-key#property (key)`.
+The render discarded the credential's plaintext — that is what keeps it out of
+the committed manifest — so the planner never sees the configuration value *in
+the render*. It does see the operator's own file, and that is the source to
+reach for: the group a root-group credential lives in is a workspace
+configuration group, so
+
+```bash
+codefly config set work-context AUTHORITY_TOKEN=$TOKEN --env staging
+codefly deploy secrets --env staging
+```
+
+plans it as `configured` and writes it, naming the file and never the value. A
+credential that is in none of the five sources is reported as `require`: a value
+**the operator must supply**, and `codefly deploy secrets --dry-run` lists every
+such property as `remote-key#property (key)`.
 
 So re-running `deploy secrets` after a root group's credential first reaches the
-render does not by itself make the workload startable.
+render makes the workload startable when its value is in the environment's own
+configuration, and tells you which property to supply when it is not.
 
-**First, a prerequisite the generator depends on: the key must be read as a
+**First, a prerequisite every source depends on: the key must be read as a
 property of a JSON document.** With no `service-secrets.defaults` and no
 per-service `remote-keys` entry, a key falls back to the remote key
 `<service>/<key>` read as a **bare value**, and the planner refuses that shape
 before it chooses any source at all — *"remote key … is read as a bare value;
-only a JSON document read by property can be planned"*. Declaring the generator
-without this gets you that refusal, not the value and not even the `require`
-line. One environment-wide declaration covers every service:
+only a JSON document read by property can be planned"*. Configuring the value or
+declaring the generator without this gets you that refusal, not the value and
+not even the `require` line. One environment-wide declaration covers every
+service:
 
 ```yaml
 service-secrets:
@@ -576,8 +590,8 @@ service-secrets:
     property: "{key}"
 ```
 
-With the key plannable, either write the value into the store, or declare a
-generator for it so the verb can mint it:
+With the key plannable, supply the value with `codefly config set` as above, or
+declare a generator for it so the verb can mint it:
 
 ```yaml
 service-secrets:
@@ -1206,8 +1220,59 @@ resolves every remote property to a source, never printing a value:
 | --- | --- |
 | `keep` | the store already holds it; nothing stored is ever rotated |
 | `propagate` | a configuration value (`CODEFLY__WORKSPACE_SECRET_CONFIGURATION__…`, `CODEFLY__SERVICE_SECRET_CONFIGURATION__…`) is one value however many services read it, so it is copied from the remote key that holds it |
+| `configured` | the environment's own `configurations/<profile>/<group>.secret.env` holds the value — the file `codefly config set` writes — and the plan seeds the store from it, naming the file as its source |
 | `generate` | declared random by `service-secrets.generate` (below) |
 | `require` | nothing produces it: the operator supplies it — an external credential, or a value its producing agent derives |
+
+**`configured`: the environment's own files are a source.** `codefly config set
+<group> KEY=VALUE --env <env>` writes
+`<scope>/configurations/<profile>/<group>.secret.env` (0600, in a 0700
+directory, refused when git would track it, never printed), and that is the file
+a local run reads. `deploy secrets` now reads it too, so the whole operator path
+for an external credential is:
+
+```bash
+codefly config set identity OAUTH_CLIENT_SECRET=$SECRET --env staging
+codefly deploy gitops render --env staging
+codefly deploy secrets --env staging
+```
+
+with nothing typed into a store's console or `gcloud`. Both scopes are read —
+the workspace's own `configurations/<profile>/` under the workspace carrier and
+each service's under that service's — and each value is indexed by the secret
+key core encodes for it, which is the same `secretKey` the render recorded, so a
+key reaches its value whichever way the group or key was spelled.
+
+Four rules bound it:
+
+- **A stored value still wins and is never rotated.** A property the store
+  already holds is `keep`, file or no file.
+- **A stored value that differs from the configured one is refused**, like two
+  remote keys disagreeing: keeping it would leave the deployed workload on one
+  value and every local run on the other, reported as `keep`. Change the
+  configuration to match what is stored, or remove the stored property so the
+  plan seeds it from the file.
+- **An empty value supplies nothing.** A tracked placeholder file — the
+  committed shape that declares which keys an environment needs and holds none
+  of them — keeps contributing keys and no values, so its properties stay
+  `require`.
+- **Only `<group>.secret.env` is read.** A reference-only manifest
+  (`<group>.secret.ref.env`) holds `op://…` references resolved against a
+  backend; writing one to the store would store the reference, not the value. A
+  value an environment reaches only through a later profile of a
+  `configuration-profiles` chain, or through a profile derivation
+  (`derives-from`), is likewise not a source yet and its property stays
+  `require`.
+
+A configured value is preferred to a declared generator: a generator mints what
+nothing supplies, the same reason a stored value is kept rather than
+regenerated, so a key that is both configured and declared random is seeded from
+the file. `--dry-run` names the file each value would come from, and no value is
+printed on any stream. `TestAConfiguredPropertyIsSeededFromTheEnvironmentsOwnFile`,
+`TestAStoredValueDifferingFromTheConfiguredOneRefuses`,
+`TestATrackedEmptyPlaceholderSuppliesNoValue` and
+`TestReadConfiguredIndexesBothScopesOfTheWorkspace` (`pkg/deploysecrets`) pin
+each of those.
 
 **Each property is resolved by the secret key read out of it, not by the
 property's name.** An `ExternalSecret` entry has both: `remoteRef.property` is
@@ -2204,6 +2269,10 @@ former spelling of `--coordinate-contract` for one release.
 Declared fields replace their exact named values. Maps merge by explicit key;
 omitted fields and unrelated entries remain intact. Explicit empty maps, empty
 sequences and nulls clear the corresponding field where its schema permits.
+One key is the contract's alone and its absence is a statement: `registry.mirrors`.
+A contract that declares `registry` without `mirrors` withdraws any mirror an earlier
+import wrote, so the builder stops mapping to a repository the environment no longer
+holds.
 There is no special `store` alias, single-database limit, default secret path or
 ignored producer extension. Unknown fields and capabilities fail validation.
 
@@ -2213,6 +2282,36 @@ import time. `--dry-run` prints the diff without writing. After a write, workspa
 readiness validation runs for the selected environment; when it reports the
 workspace is not ready, the command prints the diagnostics and exits non-zero.
 The merged file is still written, so the diagnostics can be read against it.
+
+`--product-intent delivery.environments.yaml` also reads product-owned composition
+exclusions from `environments.<selected-name>.exclude-services`. This narrow authored
+input cannot override placement or runtime bindings and does not interpret the full
+legacy `delivery.intent.yaml` launch format. Unknown keys, missing environments and
+invalid withdrawals are refused before writing. `exclude-services: []` clears the
+selection; without the flag, existing merge behavior is unchanged. See
+[the configuration contract](configuration-contract.md) for the blue/green example.
+
+An imported environment may declare `configuration-source: hosted` and select
+`configuration-profiles: [blue, local]`. Import generates a `profile.codefly.yaml`
+in `configurations/blue/` deriving from `hosted`, using Core's profile inheritance.
+The profile chain selects the first directory at each location; inheritance adds
+shared groups and per-profile values. Import validates every inherited source:
+only flat `.env` inputs and profile derivation metadata are accepted; secret
+files contain empty placeholders, symlinks are refused, and sources may
+not contain environment-specific runnable bindings. Dry-run writes nothing.
+Import refuses authored destination files and retires only its own earlier copied
+outputs, preserving the environment's separately generated runnable bindings.
+Run `codefly generate runnable-bindings --env blue` after import so addresses are
+resolved for blue rather than copied from a sibling.
+
+The cell inventory also carries `source.path` when publication uses a root other
+than `deployments`. Consumers must use that root to discover the published module
+trees. The local render directory remains a qualification tree; `publish` writes
+the environment's declared publication path.
+
+`service-config.services` accepts `<module>/<service>` keys for compositions
+with same-named services. Qualified values override bare values per key. Unknown
+qualified entries and ambiguous bare entries fail workspace validation.
 
 #### `codefly environment show`
 
@@ -3313,6 +3412,15 @@ the command after `generate runnables` in every module it binds, and after an
 owner endpoint or scope selection changes. The output uses the environment's
 first configuration profile; selections are specific to the named environment.
 
+When no module derives an operation, no file is written (and an existing one
+is removed). An **absent** `runnable-bindings` group is how an environment
+prepares no runnable binding: a service that declares the group receives
+nothing for it, on a run, a build and a render alike, and reads every key as
+not configured. It is the one group whose absence is an answer
+(`environments.OptionalWorkspaceConfiguration`); a group two composed modules
+define differently is still refused. `codefly doctor workspace` accepts it
+absent or empty exactly when the environment selects no binding.
+
 | Flag | Description |
 |------|-------------|
 | `--env` | Environment supplying resolved addresses and `runnable-scope-selections` (default: `local`) |
@@ -3634,6 +3742,12 @@ What it checks, in order:
    (`configuration_duplicate`, naming both providers) until the workspace
    declares it. A missing `configurations/<profile>` directory fails only for
    the groups no composed module provides. The directory is never created.
+   `runnable-bindings` is judged against the bindings the environment selects,
+   with the rule `generate runnable-bindings` applies: when it selects none
+   (nothing derived, or every binding declined) the group absent or holding no
+   value is ok; a selected binding the group does not hold fails as
+   `configuration_missing` with `codefly generate runnable-bindings --env
+   <env>` as its remedy.
 7. Per-service `configurations/<env>` files parse; duplicates are flagged.
 8. Every `${endpoint:<module>/<service>/<endpoint>}` reference in a workspace
    configuration a service in scope declares names a service of the workspace
@@ -3787,7 +3901,22 @@ but it was built on top of `X`, so it is not behind it. Any other prerelease
 
 ### Keeping an image whose inputs did not change
 
-A build reuses the image this workspace already built from the same inputs
+**A released version is built once.** A service's image is named
+`<registry>/<module>/<service>` and tagged with the service's version, which
+`codefly publish` stamps on every service of a release. The name carries no
+workspace: the same module release composed by two workspaces, or delivered to
+two environments, is one image. Before a pushed build of a released version
+(an exact `x.y.z`, never the unversioned `0.0.0`), the render asks the registry
+for `<image>:<version>`. Every build records its input digest on the image as
+the label `org.codefly.build.inputs`, and the published image is adopted —
+nothing is built — when that label equals this build's inputs. A published
+image recording **other** inputs refuses the build: its version was not moved
+with its code, and the fix is a new release, never a rebuild under the old
+version. One recording none (pushed before builds recorded their inputs) is
+built again. With a registry whose tags are immutable, each version then holds
+exactly one build for good.
+
+A build also reuses the image this workspace already built from the same inputs
 instead of building it again. A configuration-only change — an edit to a value
 under `configurations/`, a workspace or module manifest, anything a service reads
 at runtime rather than at build time — re-renders the configuration and leaves

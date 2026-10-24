@@ -149,6 +149,14 @@ endpoint with the same membership checks. Legacy gRPC-only catalogs must publish
 the called Connect surface before binding. Endpoint addresses still come from
 the existing network resolver.
 
+An environment that prepares no binding has no file when no module derives an
+operation. That absence is an answer, not a missing file: a service that
+declares `runnable-bindings` receives nothing for the group on a run, a build
+and a render, and reads every key as not configured, and `codefly doctor
+workspace` accepts the group absent or empty exactly when the environment
+selects no binding. A selected binding the group does not hold fails there,
+naming `codefly generate runnable-bindings --env <env>`.
+
 Binding and selection keys contain the derived service/endpoint/method name.
 Moving a method between endpoints changes its key: update the composition's
 selections and consumers and regenerate. Old selection keys are refused as
@@ -191,6 +199,13 @@ refused when the environment is read, because it would look like either.
 `[]` on an operation that declares no required scope slot is refused, since
 there is nothing to decline and it would hide a typo, and `[]` on a key that
 names no derived operation is refused as an unknown key.
+
+A module whose service installs prepared bindings asks for each one in its
+manifest's authority request, by its key, with the binding's audience, kinds
+and actions and no resource id; the module's installation scope narrows it to
+the resources an organization consents to
+([module manifests](module-manifests.md#what-a-module-asks-for)). A declined
+operation has no prepared binding, so nothing asks for it.
 
 A service that installs a declined operation is refused at its own point: the
 `runnable-bindings` key it names is not configured, and it reports that key.

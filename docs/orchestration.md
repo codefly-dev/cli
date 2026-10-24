@@ -159,6 +159,14 @@ elsewhere: "supplied only by a local k3d or cell render; absent here". See
 for its values and environment requirements. No group carries a certificate:
 a workload's transport identity is the mesh's, never a file it reads.
 
+An optional group — `runnable-bindings`, which `codefly generate
+runnable-bindings` writes nothing for when the environment prepares no binding
+(`environments.OptionalWorkspaceConfiguration`) — that the workspace does not
+provide is left out the same way on every path: a service that declares it
+receives nothing for it and reads each key as not configured. A provided one
+is delivered like any other group, and one two composed modules define
+differently is still refused.
+
 **Addresses are kept across a reload.** `Runner.Init` pins the host ports a
 service was accepted at through core's port-override seam
 (`RuntimeManager.WithPortOverrides`), so every later proposal for it, a hot

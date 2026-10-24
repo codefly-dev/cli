@@ -1423,17 +1423,22 @@ var manifestFieldNormalizer = strings.NewReplacer("-", "", "_", "", ".", "")
 // structure, so a group called credential-policy or client-secret-policy
 // does not make its CLIENT_ID a credential, exactly as core classifies it.
 // Anything that is not a carrier is scanned whole, as before.
+//
+// One narrowing of core's classification is made here, and only here: a public
+// client identifier. See publicClientIdentifier.
 func isCredentialKey(key string, configurationName bool) bool {
 	classify := resources.IsSensitiveKey
 	scanned := key
 	if configurationName {
 		classify = resources.IsSensitiveEnvironmentVariable
-		if classify(key) {
+		if classify(key) && !publicClientIdentifier(key, true) {
 			return true
 		}
 		if configurationKey, ok := resources.ConfigurationCarrierKey(key); ok {
 			scanned = configurationKey
 		}
+	} else if publicClientIdentifier(key, false) {
+		return false
 	}
 	normalized := strings.ToLower(manifestFieldNormalizer.Replace(scanned))
 	for _, fragment := range manifestFieldCredentialFragments {
@@ -1442,6 +1447,72 @@ func isCredentialKey(key string, configurationName bool) bool {
 		}
 	}
 	return strings.Contains(normalized, "token") && classify(key)
+}
+
+// clientIdentifierSuffix is the separator-free spelling a public OAuth client
+// identifier ends in, so `client_id`, `client-id`, `clientId` and
+// `OAUTH_CLIENT_ID` are one name. The suffix is required, not merely contained:
+// `CLIENT_ID_SECRET` and `OAUTH_CLIENT_KEY` name credentials and must keep
+// their refusal.
+const clientIdentifierSuffix = "clientid"
+
+// authMarkerStripper removes the AUTH marker so core can be asked whether
+// anything ELSE in a name is a credential. It is the same technique
+// pkg/orchestration uses to narrow the OIDC endpoint keys (isSecretEndpointKey):
+// strip the one marker in question and defer to core for everything else, so a
+// real credential marker — including one core adds later — is never narrowed by
+// a list kept here.
+var authMarkerStripper = strings.NewReplacer("AUTH", "", "auth", "")
+
+// publicClientIdentifier reports whether a key names an OAuth client
+// identifier, which is a PUBLIC value.
+//
+// A client id identifies the client to an authorization server; it is published
+// in redirects, in discovery documents and in browser requests. The matching
+// secret is the client SECRET. Refusing a client id as a credential has one
+// visible consequence: its value cannot be rendered into a committed ConfigMap,
+// so it is delivered as a `secretKeyRef` instead, and a public identifier ends
+// up occupying a secret-store entry that an operator must then fill by hand.
+//
+// Core classifies a bare CLIENT_ID as public already. What it still calls
+// sensitive is the spelling an operator actually writes — OAUTH_CLIENT_ID,
+// AUTH_CLIENT_ID — and only through the AUTH word in front of it (core's
+// authWordSensitive). So this narrows exactly that case, under three conditions
+// together:
+//
+//   - the name ends in the client-identifier spelling, so CLIENT_SECRET,
+//     CLIENT_ID_SECRET and OAUTH_CLIENT_KEY are untouched;
+//   - core classifies it today, so this only ever narrows core's reading and
+//     never widens it;
+//   - with the AUTH marker removed core no longer classifies it, so the AUTH
+//     word is the ONLY credential signal in the name. OAUTH_TOKEN_CLIENT_ID
+//     keeps its TOKEN marker and stays refused.
+//
+// A SECRET configuration carrier is never narrowed, whatever its key: the value
+// was authored as a secret, and that declaration outranks any reading of the
+// name it rides under. An operator who filed a client id in a `*.secret.env`
+// gets the refusal that says so.
+func publicClientIdentifier(key string, configurationName bool) bool {
+	scanned := key
+	if configurationName {
+		canonical := strings.ToUpper(key)
+		for _, prefix := range []string{
+			resources.WorkspaceSecretConfigurationPrefix + "__",
+			resources.ServiceSecretConfigurationPrefix + "__",
+			resources.SecretConfigurationDocumentPrefix,
+		} {
+			if strings.HasPrefix(canonical, prefix) {
+				return false
+			}
+		}
+		if carrierKey, ok := resources.ConfigurationCarrierKey(key); ok {
+			scanned = carrierKey
+		}
+	}
+	if !strings.HasSuffix(strings.ToLower(manifestFieldNormalizer.Replace(scanned)), clientIdentifierSuffix) {
+		return false
+	}
+	return resources.IsSensitiveKey(scanned) && !resources.IsSensitiveKey(authMarkerStripper.Replace(scanned))
 }
 
 // isConfigurationDataPath reports whether the map at path holds configuration

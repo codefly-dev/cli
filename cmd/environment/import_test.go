@@ -837,3 +837,21 @@ func TestImportRefusesANullRunnableScopeSelectionWithoutWriting(t *testing.T) {
 		})
 	}
 }
+
+func TestReimportWithdrawsAMirrorTheContractNoLongerCarries(t *testing.T) {
+	dir := writeWorkspace(t, existingAzureWorkspace)
+	mirrored := strings.Replace(fixtureContract, `"registry": {"url": "x.azurecr.io"}`,
+		`"registry": {"url": "x.azurecr.io", "mirrors": {"docker.io": "x.azurecr.io/docker-hub"}}`, 1)
+	doImport(t, dir, importOptions{contractData: []byte(mirrored)})
+	if got := loadWorkspace(t, dir).FindEnvironment("azure").Registry.Mirrors; got["docker.io"] != "x.azurecr.io/docker-hub" {
+		t.Fatalf("mirror not imported: %v", got)
+	}
+	doImport(t, dir, importOptions{contractData: []byte(fixtureContract)})
+	env := loadWorkspace(t, dir).FindEnvironment("azure")
+	if len(env.Registry.Mirrors) != 0 || env.Registry.URL != "x.azurecr.io" {
+		t.Fatalf("a mirror the contract withdrew survived re-import: %+v", env.Registry)
+	}
+	if strings.Contains(readFile(t, filepath.Join(dir, resources.WorkspaceConfigurationName)), "docker-hub") {
+		t.Fatal("the withdrawn mirror is still written in the workspace")
+	}
+}

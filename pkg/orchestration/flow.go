@@ -180,6 +180,9 @@ type Flow struct {
 	remoteServices []*Remote
 
 	excludedDependencyServices []string
+	// excludedByEnvironment is the environment's exclude-services, kept
+	// apart so a run profile's exclusions add to it rather than replace it.
+	excludedByEnvironment []string
 	// runProfile is the run profile WithRunProfile applied, as resolved; the
 	// plan-time reference check hands it to core unchanged. Zero when none was.
 	runProfile resources.RunProfile
@@ -271,6 +274,9 @@ type World struct {
 	// fetched once on the host before any image build (see goModulePrefetch).
 	// It is removed when the flow stops.
 	goModulePrefetch *goModulePrefetch
+	// gitSourcePrefetch holds the git source mirrors this flow's recipes
+	// declared, fetched the same way (see gitSourcePrefetch).
+	gitSourcePrefetch *gitSourcePrefetch
 
 	// hostArchitecture reads the container engine's architecture, which a
 	// local cluster's nodes run; nil selects `docker info`.
@@ -344,6 +350,13 @@ type World struct {
 	// (checkEffectiveWorkspaceConfigurationReferences). A function for the same
 	// reason as compositionRootGroups: the read happens after the World exists.
 	providedWorkspaceConfigurationInfos func() []*basev0.ConfigurationInformation
+
+	// ambiguousWorkspaceConfigurations names the groups two composed modules
+	// define differently, from the same loader. Such a group is absent from
+	// providedWorkspaceConfigurationInfos, and an optional group in it must
+	// still reach core, which refuses it naming both providers, rather than
+	// read as unprovided (unprovidedOptionalGroup).
+	ambiguousWorkspaceConfigurations func() map[string]error
 
 	// workspaceProducerLookup answers "is this <module>/<service> a service of
 	// the workspace", which the dependency graph cannot: an excluded producer is
@@ -441,6 +454,12 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	if err := environments.ValidateManagedServices(ctx, workspace); err != nil {
 		return nil, w.Wrap(err)
 	}
+	if err := environments.ValidateEnvironmentExclusions(ctx, workspace, env); err != nil {
+		return nil, w.Wrap(err)
+	}
+	if service != nil && module != nil && env.Excludes(module.Name, service.Name) {
+		return nil, w.NewError("environment %q excludes %s (exclude-services), so it has nothing to run, build or deploy there", env.Name, resources.ServiceUnique(module.Name, service.Name))
+	}
 	graphWorkspace, err := runModuleClosure(ctx, workspace, options.moduleClosureSeeds)
 	if err != nil {
 		return nil, w.Wrap(err)
@@ -477,6 +496,13 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	var graphOptions []architecture.DependencyOption
 	if configurationReferences != nil {
 		graphOptions = append(graphOptions, configurationReferences)
+	}
+	// A service the environment withdraws is not in the graph at all, and
+	// neither is a consumer's edge to it (ValidateExcludedServices admitted
+	// only declared withdrawals).
+	excludedByEnvironment := env.ExcludedServiceUniques()
+	if len(excludedByEnvironment) > 0 {
+		graphOptions = append(graphOptions, architecture.ExcludeServices(excludedByEnvironment...))
 	}
 	dependencies, err := architecture.NewServiceDependencies(ctx, graphWorkspace, graphOptions...)
 	if err != nil {
@@ -518,6 +544,7 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 	world.providedWorkspaceConfigurationInfos = func() []*basev0.ConfigurationInformation {
 		return workspaceConfigurationInfos(localReader.Configurations())
 	}
+	world.ambiguousWorkspaceConfigurations = localReader.AmbiguousWorkspaceConfigurations
 
 	// A GitOps snapshot render is value-free: it emits secret references derived
 	// from the committed declarations and discards every secret value. Resolving
@@ -572,6 +599,9 @@ func NewFlow(ctx context.Context, workspace *resources.Workspace, module *resour
 
 		endpoints:       make(map[string][]*basev0.Endpoint),
 		networkMappings: make(map[string][]*basev0.NetworkMapping),
+
+		excludedByEnvironment:      excludedByEnvironment,
+		excludedDependencyServices: excludedByEnvironment,
 	}
 	world.runtimeContextFor = flow.runtimeContextFor
 	// Per-developer runtime preferences (~/.codefly/preferences.yaml). Best
@@ -1599,6 +1629,9 @@ func (flow *Flow) Stop() error {
 		if err := flow.world.goModulePrefetch.Close(); err != nil {
 			wool.Get(context.Background()).In("flow.Stop").Warn("cannot remove the Go module prefetch", wool.ErrField(err))
 		}
+		if err := flow.world.gitSourcePrefetch.Close(); err != nil {
+			wool.Get(context.Background()).In("flow.Stop").Warn("cannot remove the git source prefetch", wool.ErrField(err))
+		}
 	}
 	// Builder-only flows have no Runtime runner to stop. Their service-scoped
 	// agent connections are closed by the caller after this lifecycle hook.
@@ -2526,7 +2559,7 @@ func (flow *Flow) WithRunProfile(profile resources.RunProfile) error {
 		return fmt.Errorf("run profiles can only be applied to run or test flows")
 	}
 	flow.runProfile = profile
-	flow.excludedDependencyServices = append([]string(nil), profile.ExcludeDependencies...)
+	flow.excludedDependencyServices = append(slices.Clone(flow.excludedByEnvironment), profile.ExcludeDependencies...)
 	flow.world.excludedWorkspaceConfigurations = make(map[string]bool, len(profile.ExcludeWorkspaceConfigurations))
 	for _, configuration := range profile.ExcludeWorkspaceConfigurations {
 		flow.world.excludedWorkspaceConfigurations[configuration] = true
@@ -2542,6 +2575,14 @@ func (world *World) goModules() *goModulePrefetch {
 		world.goModulePrefetch = newGoModulePrefetch()
 	}
 	return world.goModulePrefetch
+}
+
+// gitSources is the flow's git source prefetch, created on first use.
+func (world *World) gitSources() *gitSourcePrefetch {
+	if world.gitSourcePrefetch == nil {
+		world.gitSourcePrefetch = newGitSourcePrefetch()
+	}
+	return world.gitSourcePrefetch
 }
 
 // imagePlatforms is the environment's image platforms, resolved once per flow.

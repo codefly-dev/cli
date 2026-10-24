@@ -24,6 +24,24 @@ func cellServiceYAML(name string) string {
 `
 }
 
+func TestCellSourceCarriesTheEnvironmentPublicationPath(t *testing.T) {
+	workspace := writeCellWorkspace(t)
+	runGit(t, workspace.Dir(), "init", "--initial-branch=main")
+	runGit(t, workspace.Dir(), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "source")
+	for _, path := range []string{"deployments", "deployments/environments/blue"} {
+		env := &environments.Environment{Gitops: &environments.EnvironmentGitops{
+			RepoURL: "https://github.com/obin-ai/platform-obin.git", Branch: "main", Path: path,
+		}}
+		source := cellSource(context.Background(), workspace, env)
+		require.NotNil(t, source)
+		if path == DefaultGitopsPath {
+			require.Empty(t, source.Path, "retained cell files preserve their default publication path")
+		} else {
+			require.Equal(t, path, source.Path, "infra must read the same root that publish writes")
+		}
+	}
+}
+
 // exposedCellServiceYAML is cellServiceYAML for the service whose `http`
 // endpoint the staging environment routes an ingress to: it is public and
 // states its exposure, or the route is refused.

@@ -103,6 +103,9 @@ func (env *Environment) Validate() error {
 	if err := env.admitCarried(); err != nil {
 		return err
 	}
+	if err := env.validateExcludedServices(); err != nil {
+		return err
+	}
 	if _, err := env.Proto(); err != nil {
 		return err
 	}
@@ -202,6 +205,9 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 			return w.Wrap(hostErr)
 		}
 	}
+	if excludedErr := ValidateExcludedServices(ctx, workspace); excludedErr != nil {
+		return w.Wrap(excludedErr)
+	}
 	needsGraph := false
 
 	for _, env := range environments {
@@ -226,7 +232,7 @@ func ValidateWorkspace(ctx context.Context, workspace *resources.Workspace) erro
 				// A module-qualified service-identity key names exactly one
 				// service of that module, or nothing (a typo that would leave
 				// the workload on the default identity with no report).
-				if _, service, qualified := strings.Cut(name, "/"); qualified && (block == "service-identity" || block == "service-mesh") {
+				if _, service, qualified := strings.Cut(name, "/"); qualified && (block == "service-identity" || block == "service-mesh" || block == "service-config") {
 					if !slices.Contains(byName[service], name) {
 						return w.Wrap(fmt.Errorf("environment %q %s references unknown service %q", env.Name, block, name))
 					}

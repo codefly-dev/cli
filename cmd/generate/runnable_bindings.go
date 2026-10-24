@@ -99,6 +99,13 @@ environment's first configuration profile. --check regenerates in memory and
 exits non-zero when the file differs, including after a scope selection or a
 decline changes.
 
+When no module derives an operation, no file is written. An absent
+` + RunnableBindingsGroup + ` group is how an environment prepares no runnable binding: a
+service that declares the group receives nothing for it on a run, a build and
+a render, and reads every key as not configured. ` + "`codefly doctor workspace`" + `
+accepts the group absent or empty exactly when the environment selects no
+binding.
+
 Examples:
   codefly generate runnable-bindings
   codefly generate runnable-bindings --env staging
@@ -297,19 +304,41 @@ type RunnableBindingDecline struct {
 }
 
 // CheckRunnableBindingDeclines judges every key env declines exactly as
-// `generate runnable-bindings` does, without resolving an address or
-// preparing a binding: it reads only each module's derived operations. The
-// error is for a module whose derived operations cannot be read at all, which
-// generation refuses too.
+// `generate runnable-bindings` does (SelectRunnableBindings). An environment
+// that declines nothing reads no module.
 func CheckRunnableBindingDeclines(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) ([]RunnableBindingDecline, error) {
-	keys := env.DeclinedRunnableBindings()
-	if len(keys) == 0 {
+	if len(env.DeclinedRunnableBindings()) == 0 {
 		return nil, nil
 	}
+	selection, err := SelectRunnableBindings(ctx, workspace, env)
+	if err != nil {
+		return nil, err
+	}
+	return selection.Declines, nil
+}
+
+// RunnableBindingSelection is how one environment answers the operations the
+// workspace's modules derive.
+type RunnableBindingSelection struct {
+	// Selected is every key generation prepares a binding for: derived, and
+	// not declined. Sorted. An environment with none prepares no runnable
+	// binding, and generation writes no binding for it.
+	Selected []string
+	// Declines is every key the environment declines, in its order.
+	Declines []RunnableBindingDecline
+}
+
+// SelectRunnableBindings judges, exactly as `generate runnable-bindings` does,
+// which derived operations env binds and which it declines, without resolving
+// an address or preparing a binding: it reads only each module's derived
+// operations. The error is for a module whose derived operations cannot be
+// read at all, which generation refuses too.
+func SelectRunnableBindings(ctx context.Context, workspace *resources.Workspace, env *environments.Environment) (*RunnableBindingSelection, error) {
 	modules, err := workspace.LoadModules(ctx)
 	if err != nil {
 		return nil, err
 	}
+	selection := &RunnableBindingSelection{}
 	refusals := map[string]error{}
 	derivedKeys := map[string]bool{}
 	for _, module := range modules {
@@ -323,18 +352,20 @@ func CheckRunnableBindingDeclines(ctx context.Context, workspace *resources.Work
 			derivedKeys[key] = true
 			if env.DeclinesRunnableBinding(key) {
 				refusals[key] = declinableOperation(env, key, module.Name, operation)
+				continue
 			}
+			selection.Selected = append(selection.Selected, key)
 		}
 	}
-	declines := make([]RunnableBindingDecline, 0, len(keys))
-	for _, key := range keys {
+	sort.Strings(selection.Selected)
+	for _, key := range env.DeclinedRunnableBindings() {
 		decline := RunnableBindingDecline{Key: key, Refusal: refusals[key]}
 		if !derivedKeys[key] {
 			decline.Refusal = unknownSelectionKey(env, key)
 		}
-		declines = append(declines, decline)
+		selection.Declines = append(selection.Declines, decline)
 	}
-	return declines, nil
+	return selection, nil
 }
 
 // RunnableBindingKey is the configuration key an operation is bound under:

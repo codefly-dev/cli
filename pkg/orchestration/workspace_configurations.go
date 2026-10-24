@@ -25,6 +25,9 @@ import (
 // Every path leaves render-owned groups to the per-workload projections, so
 // those declarations never become manager dependencies here. Outside a render
 // they supply no values; the service decides whether it can run without them.
+// An optional group the workspace does not provide (runnable-bindings for an
+// environment that prepares no binding) is left out the same way, on every
+// path, by unprovidedOptionalGroup.
 //
 // The rendered deployment is the source of truth for that set, and the local run
 // resolves the identical one. The two must not differ in either direction. A
@@ -74,6 +77,11 @@ func (world *World) workspaceConfigurationsFor(
 		// projects these groups per workload; asking Core for them here requires
 		// a file the render refuses, even when no render is involved.
 		if environments.RenderOwnedWorkspaceConfiguration(dependency) {
+			continue
+		}
+		// A group whose absence is an answer, which the workspace does not
+		// provide, delivers nothing: the service reads it as not configured.
+		if world.unprovidedOptionalGroup(dependency) {
 			continue
 		}
 		if !world.excludedWorkspaceConfigurations[dependency] {
@@ -645,6 +653,29 @@ func (world *World) workspaceProducers(ctx context.Context) (configurations.Prod
 		return nil, world.workspaceProducerLookupErr
 	}
 	return world.workspaceProducerLookup, nil
+}
+
+// unprovidedOptionalGroup reports whether a declared group is one whose
+// absence is an answer (environments.OptionalWorkspaceConfiguration) and that
+// the workspace provides nowhere: not in its own configurations, not shipped
+// by a composed module, and not defined differently by two of them. Such a
+// group is not asked of core, which would refuse it as missing. A World that
+// cannot say what its loader read asks core, as for any other group.
+func (world *World) unprovidedOptionalGroup(group string) bool {
+	if world == nil || world.providedWorkspaceConfigurationInfos == nil || !environments.OptionalWorkspaceConfiguration(group) {
+		return false
+	}
+	if world.ambiguousWorkspaceConfigurations != nil {
+		if _, ambiguous := world.ambiguousWorkspaceConfigurations()[group]; ambiguous {
+			return false
+		}
+	}
+	for _, info := range world.providedWorkspaceConfigurationInfos() {
+		if info.GetName() == group {
+			return false
+		}
+	}
+	return true
 }
 
 // effectiveWorkspaceConfigurationGroups is the group set one service receives,

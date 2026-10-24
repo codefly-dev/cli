@@ -1774,6 +1774,11 @@ Set stores KEY=VALUE pairs in a configuration Codefly reads.
 Existing keys are preserved unless --force is passed, so re-running a setup
 sequence is idempotent. The value is taken from the argument; nothing is echoed.
 
+A secret written here is read by a local run and, for a deployed environment, by
+`codefly deploy secrets`, which seeds the environment's secret store from this
+file rather than asking the operator to type the value into a store console. A
+key written with an empty value declares the key and supplies no value.
+
 Examples:
   codefly config set internal-auth CODEFLY_INTERNAL_TOKEN=$TOKEN
   codefly config set runtime EXECUTION_SCHEDULER_TOKEN=$TOKEN --service mind/mind
@@ -2283,10 +2288,17 @@ Plan and write the secret-store values a rendered environment's ExternalSecrets 
 Reads every ExternalSecret `deploy gitops render` projected for --env under
 deployments/modules, and resolves each remote property to a source: kept (already
 stored), propagated (a configuration value another remote key already holds),
-generated (declared random by the environment's service-secrets.generate), or
-required (supplied by the operator, and named). The store is the backend behind
-the SecretStore the render names, read from the environment's cluster; a render
-reading through several stores is planned and written store by store.
+configured (the environment's own configurations/<profile>/<group>.secret.env
+holds the value, as written by `codefly config set`), generated (declared random
+by the environment's service-secrets.generate), or required (supplied by the
+operator, and named). The store is the backend behind the SecretStore the render
+names, read from the environment's cluster; a render reading through several
+stores is planned and written store by store.
+
+A stored value is never rotated: a property the store already holds is kept even
+when a configuration file holds one too, and the two disagreeing is refused
+rather than resolved. A configured key with an empty value supplies nothing, so
+a tracked placeholder file still leaves its properties to be supplied.
 
 Each property is resolved by the secret key the render reads out of it, not by
 the property name the environment files that key under, so an environment that
@@ -2506,6 +2518,10 @@ must match the declaration; import never retargets a contract.
 Declared fields replace their named values. Omitted fields and unrelated map
 entries are preserved, comments included. Read from stdin with
 --coordinate-contract -.
+
+--product-intent <file> additionally imports environment-specific composition
+exclusions from an authored product file. It accepts only environments and
+exclude-services; it does not interpret the legacy full delivery.intent.yaml.
 ```
 
 ```
@@ -2518,6 +2534,7 @@ Flags:
       --coordinate-contract string   Path to a codefly/coordinate/v1 descriptor, or - for stdin
       --dry-run                      Print the unified diff of workspace.codefly.yaml and write nothing
       --namespace string             Assert the namespace declared by the producer
+      --product-intent string        Authored environment exclusions; accepts environments.<env>.exclude-services only
 ```
 
 ## `codefly environment show`
@@ -2843,6 +2860,13 @@ The output is configurations/<profile>/runnable-bindings.env in the workspace, f
 environment's first configuration profile. --check regenerates in memory and
 exits non-zero when the file differs, including after a scope selection or a
 decline changes.
+
+When no module derives an operation, no file is written. An absent
+runnable-bindings group is how an environment prepares no runnable binding: a
+service that declares the group receives nothing for it on a run, a build and
+a render, and reads every key as not configured. `codefly doctor workspace`
+accepts the group absent or empty exactly when the environment selects no
+binding.
 
 Examples:
   codefly generate runnable-bindings

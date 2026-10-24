@@ -14,8 +14,10 @@ const modelOutputTokensKey = "CODEFLY__WORKSPACE_CONFIGURATION__MODEL_INSTALLATI
 
 // The render guard classifies configuration names through core's
 // resources.IsSensitiveKey, the same function orchestration promotes secrets
-// with. A model output-token limit is a count, not a credential (core#645), so a
-// render carrying it must not be refused; every credential name must still be.
+// with, narrowed in exactly one place (publicClientIdentifier, pinned by
+// TestTheRenderGuardAcceptsAPublicClientIdAndRefusesACredential). A model
+// output-token limit is a count, not a credential (core#645), so a render
+// carrying it must not be refused; every credential name must still be.
 func TestRenderGuardClassifiesConfigurationNamesThroughCore(t *testing.T) {
 	public := []string{modelOutputTokensKey, "MAX_OUTPUT_TOKENS", "TOKENS_LIMIT", "LOG_LEVEL"}
 	credential := []string{
