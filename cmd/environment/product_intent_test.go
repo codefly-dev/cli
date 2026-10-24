@@ -111,3 +111,106 @@ func TestProductIntentFlagDryRun(t *testing.T) {
 	require.NoError(t, executeImport(t, dir, "--product-intent", path, "--dry-run"))
 	require.Equal(t, before, readFile(t, file))
 }
+
+const productSecretsIntent = `environments:
+  azure:
+    exclude-services: []
+    service-secrets:
+      generate:
+        - {scope: service, configuration: clickhouse, keys: [CLICKHOUSE_PASSWORD], services: [shop/api]}
+      may-be-empty: [CODEFLY__SERVICE_SECRET_CONFIGURATION__SHOP__API__CLICKHOUSE__SENTRY_DSN]
+`
+
+// productSecretsWorkspace is productImportWorkspace whose shop/api declares a
+// secret clickhouse configuration for the azure profile.
+func productSecretsWorkspace(t *testing.T) string {
+	t.Helper()
+	dir := productImportWorkspace(t)
+	path := filepath.Join(dir, "modules/shop/services/api/configurations/azure/clickhouse.secret.env")
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte("CLICKHOUSE_PASSWORD=\nSENTRY_DSN=\n"), 0o600))
+	return dir
+}
+
+func TestProductIntentImportsAndWithdrawsSecretPolicy(t *testing.T) {
+	dir := productSecretsWorkspace(t)
+	contract := strings.Replace(fixtureContract,
+		`"service-secrets": {"secret-store": {"name": "cell-secrets", "kind": "ClusterSecretStore"}},`,
+		`"service-secrets": {"secret-store": {"name": "cell-secrets", "kind": "ClusterSecretStore"}, "services": {"shop/api": {"remote-keys": {"K": "api/k"}}}},`, 1)
+	doImport(t, dir, importOptions{contractData: []byte(contract), productIntentData: []byte(productSecretsIntent)})
+	secrets := loadWorkspace(t, dir).FindEnvironment("azure").ServiceSecrets
+	require.Equal(t, "cell-secrets", secrets.SecretStore.Name)
+	require.Equal(t, "api/k", secrets.Services["shop/api"].RemoteKeys["K"].Key)
+	require.Len(t, secrets.Generate, 1)
+	require.Equal(t, []string{"CLICKHOUSE_PASSWORD"}, secrets.Generate[0].Keys)
+	require.Equal(t, []string{"shop/api"}, secrets.Generate[0].Services)
+	require.Equal(t, []string{"CODEFLY__SERVICE_SECRET_CONFIGURATION__SHOP__API__CLICKHOUSE__SENTRY_DSN"}, secrets.MayBeEmpty)
+
+	// A producer-only refresh keeps the product's policy.
+	doImport(t, dir, importOptions{contractData: []byte(contract)})
+	require.Len(t, loadWorkspace(t, dir).FindEnvironment("azure").ServiceSecrets.Generate, 1)
+
+	// An intent that drops may-be-empty withdraws it and keeps generate.
+	withoutEmpty := strings.Replace(productSecretsIntent, "      may-be-empty: [CODEFLY__SERVICE_SECRET_CONFIGURATION__SHOP__API__CLICKHOUSE__SENTRY_DSN]\n", "", 1)
+	doImport(t, dir, importOptions{contractData: []byte(contract), productIntentData: []byte(withoutEmpty)})
+	secrets = loadWorkspace(t, dir).FindEnvironment("azure").ServiceSecrets
+	require.Empty(t, secrets.MayBeEmpty)
+	require.Len(t, secrets.Generate, 1)
+
+	// An intent with no service-secrets withdraws the rest; the contract's
+	// fields stay.
+	doImport(t, dir, importOptions{contractData: []byte(contract), productIntentData: []byte("environments:\n  azure:\n    exclude-services: []\n")})
+	secrets = loadWorkspace(t, dir).FindEnvironment("azure").ServiceSecrets
+	require.Empty(t, secrets.Generate)
+	require.Empty(t, secrets.MayBeEmpty)
+	require.Equal(t, "cell-secrets", secrets.SecretStore.Name)
+	require.Equal(t, "api/k", secrets.Services["shop/api"].RemoteKeys["K"].Key)
+}
+
+func TestProductIntentSecretPolicyRefusalsDoNotWrite(t *testing.T) {
+	for name, tc := range map[string]struct{ intent, contract, want string }{
+		"unknown service": {intent: strings.Replace(productSecretsIntent, "services: [shop/api]", "services: [shop/missing]", 1),
+			want: `"shop/missing", which the workspace does not compose`},
+		"undeclared configuration": {intent: strings.Replace(productSecretsIntent, "configuration: clickhouse", "configuration: postgres", 1),
+			want: `service shop/api declares no secret configuration "postgres"`},
+		"undeclared key": {intent: strings.Replace(productSecretsIntent, "keys: [CLICKHOUSE_PASSWORD]", "keys: [CLICKHOUSE_USER]", 1),
+			want: `declares no key "CLICKHOUSE_USER"`},
+		"workspace group": {intent: strings.Replace(productSecretsIntent, "{scope: service, configuration: clickhouse, keys: [CLICKHOUSE_PASSWORD], services: [shop/api]}", "{scope: workspace, configuration: clickhouse, keys: [CLICKHOUSE_PASSWORD]}", 1),
+			want: `the workspace declares no secret configuration "clickhouse"`},
+		"undeclared may-be-empty": {intent: strings.Replace(productSecretsIntent, "SENTRY_DSN]", "OTHER]", 1),
+			want: `may-be-empty names "CODEFLY__SERVICE_SECRET_CONFIGURATION__SHOP__API__CLICKHOUSE__OTHER"`},
+		"unknown generator field": {intent: strings.Replace(productSecretsIntent, "keys:", "kyes:", 1), want: "kyes"},
+		"unknown policy field":    {intent: strings.Replace(productSecretsIntent, "      generate:", "      secret-store: {name: x, kind: y}\n      generate:", 1), want: "secret-store"},
+		"invalid scope":           {intent: strings.Replace(productSecretsIntent, "scope: service", "scope: module", 1), want: "scope must be"},
+		"dual ownership": {intent: productSecretsIntent,
+			contract: strings.Replace(fixtureContract, `"kind": "ClusterSecretStore"}}`, `"kind": "ClusterSecretStore"}, "may-be-empty": ["X"]}`, 1),
+			want:     "service-secrets.may-be-empty is declared by both coordinate contract and product intent"},
+		"no secret store": {intent: productSecretsIntent,
+			contract: strings.Replace(fixtureContract, `"service-secrets": {"secret-store": {"name": "cell-secrets", "kind": "ClusterSecretStore"}},`, "", 1),
+			want:     "declares its service-secrets secret-store"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := productSecretsWorkspace(t)
+			file := filepath.Join(dir, resources.WorkspaceConfigurationName)
+			before := readFile(t, file)
+			contract := tc.contract
+			if contract == "" {
+				contract = fixtureContract
+			}
+			err := runImport(context.Background(), &importOptions{dir: dir, envName: "azure", contractData: []byte(contract), productIntentData: []byte(tc.intent), stdout: io.Discard})
+			require.ErrorContains(t, err, tc.want)
+			require.Equal(t, before, readFile(t, file))
+		})
+	}
+}
+
+func TestProductIntentGeneratorWithoutServicesNeedsADeclaringService(t *testing.T) {
+	dir := productSecretsWorkspace(t)
+	intent := strings.Replace(productSecretsIntent, ", services: [shop/api]", "", 1)
+	doImport(t, dir, importOptions{productIntentData: []byte(intent)})
+	require.Empty(t, loadWorkspace(t, dir).FindEnvironment("azure").ServiceSecrets.Generate[0].Services)
+
+	missing := strings.Replace(intent, "configuration: clickhouse", "configuration: postgres", 1)
+	err := runImport(t.Context(), &importOptions{dir: dir, envName: "azure", contractData: []byte(fixtureContract), productIntentData: []byte(missing), stdout: io.Discard})
+	require.ErrorContains(t, err, `no composed service declares secret configuration "postgres"`)
+}

@@ -2532,9 +2532,25 @@ Declared fields replace their named values. Omitted fields and unrelated map
 entries are preserved, comments included. Read from stdin with
 --coordinate-contract -.
 
---product-intent <file> additionally imports environment-specific composition
-exclusions from an authored product file. It accepts only environments and
-exclude-services; it does not interpret the legacy full delivery.intent.yaml.
+--product-intent <file> additionally imports what the product, not the cell,
+decides per environment, from an authored product file:
+
+  environments:
+    <env>:
+      exclude-services: []          # required; [] clears
+      service-secrets:              # optional
+        generate:                   # keys minted at random by deploy secrets
+          - {scope: service, configuration: clickhouse, keys: [CLICKHOUSE_PASSWORD], services: [tracing/evidence]}
+        may-be-empty: [<stored key>] # keys whose correct value here is empty
+
+The intent owns exclude-services, service-secrets.generate and
+service-secrets.may-be-empty: a contract declaring one of them too is refused,
+and an entry the intent no longer carries is withdrawn on re-import. The
+contract keeps the rest of service-secrets (secret-store, defaults, services),
+which names the cell's store. Each entry is checked against the secret
+configurations the environment's profile declares; an unknown service,
+configuration or key is refused by name. Any other field is refused; the legacy
+full delivery.intent.yaml is not interpreted.
 ```
 
 ```
@@ -2547,7 +2563,7 @@ Flags:
       --coordinate-contract string   Path to a codefly/coordinate/v1 descriptor, or - for stdin
       --dry-run                      Print the unified diff of workspace.codefly.yaml and write nothing
       --namespace string             Assert the namespace declared by the producer
-      --product-intent string        Authored environment exclusions; accepts environments.<env>.exclude-services only
+      --product-intent string        Authored product decisions: environments.<env>.exclude-services and service-secrets generate / may-be-empty
 ```
 
 ## `codefly environment show`

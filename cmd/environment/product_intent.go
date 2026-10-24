@@ -9,13 +9,23 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// productExclusions reads only the product-owned composition decision. Cloud
-// placement and runtime bindings remain in the coordinate producer's contract.
-// This deliberately does not interpret the historical full launch intent.
-func productExclusions(data []byte, name string) ([]environments.EnvironmentExcludedService, error) {
+// productIntent is what an authored product file decides for one environment:
+// its composition exclusions and the product-owned part of its service-secrets
+// (environments.ProductSecretPolicy). Cloud placement, runtime bindings and the
+// cell's secret store remain in the coordinate producer's contract. This
+// deliberately does not interpret the historical full launch intent.
+type productIntent struct {
+	ExcludeServices []environments.EnvironmentExcludedService
+	// ServiceSecrets is nil when the intent declares none for the environment,
+	// which withdraws every product-owned service-secrets entry on import.
+	ServiceSecrets *environments.ProductSecretPolicy
+}
+
+func parseProductIntent(data []byte, name string) (*productIntent, error) {
 	var intent struct {
 		Environments map[string]struct {
 			ExcludeServices *[]environments.EnvironmentExcludedService `yaml:"exclude-services"`
+			ServiceSecrets  *environments.ProductSecretPolicy          `yaml:"service-secrets"`
 		} `yaml:"environments"`
 	}
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
@@ -35,10 +45,13 @@ func productExclusions(data []byte, name string) ([]environments.EnvironmentExcl
 		if err := env.Validate(); err != nil {
 			return nil, fmt.Errorf("product intent environment %q: %w", environment, err)
 		}
+		if err := selected.ServiceSecrets.Validate(); err != nil {
+			return nil, fmt.Errorf("product intent environment %q: %w", environment, err)
+		}
 	}
 	selected, ok := intent.Environments[name]
 	if !ok {
 		return nil, fmt.Errorf("product intent does not declare environment %q", name)
 	}
-	return *selected.ExcludeServices, nil
+	return &productIntent{ExcludeServices: *selected.ExcludeServices, ServiceSecrets: selected.ServiceSecrets}, nil
 }

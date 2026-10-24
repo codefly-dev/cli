@@ -195,10 +195,37 @@ environments:
 codefly environment import blue --coordinate-contract blue.json --product-intent delivery.environments.yaml
 ```
 
-This optional input accepts only `environments.<name>.exclude-services`. It is
-not the historical full `delivery.intent.yaml` launch format: profiles, host,
-ingress and secret generation are not interpreted here. The coordinate producer
-continues to own placement, runtime bindings and `key-service`. Unknown fields,
+This optional input accepts only `environments.<name>.exclude-services` and,
+optionally, `environments.<name>.service-secrets` with `generate` and
+`may-be-empty`:
+
+```yaml
+environments:
+  blue:
+    exclude-services: []
+    service-secrets:
+      generate:
+        - {scope: service, configuration: clickhouse, keys: [CLICKHOUSE_PASSWORD], services: [tracing/evidence]}
+      may-be-empty: [CODEFLY__SERVICE_SECRET_CONFIGURATION__SAAS__ACCOUNTS__SENTRY__DSN]
+```
+
+Which keys are minted at random and which hold no value are decisions about the
+product's own configuration, which no cell producer can know; where the cell's
+store files each value is a cell fact. So the import merges the two: `secret-store`,
+`defaults` and `services` (remote keys, per-service stores, templates, refresh
+intervals) come from the contract, `generate` and `may-be-empty` from the intent,
+and a contract declaring either of those is refused. Once the intent is passed it
+is their only source: re-importing an intent that drops an entry withdraws it
+from the workspace. Each generator must name a secret configuration a composed
+service (or, for `scope: workspace`, the workspace) declares in the environment's
+profile, with keys that configuration declares, and each `may-be-empty` key a
+stored secret key of a declared configuration; anything else is refused by name.
+An intent declaring `service-secrets` for an environment with no secret store in
+the contract or the workspace is refused.
+
+It is not the historical full `delivery.intent.yaml` launch format: profiles,
+host and ingress are not interpreted here. The coordinate producer continues to
+own placement, runtime bindings, the secret store and `key-service`. Unknown fields,
 placement overrides, a missing target environment, malformed exclusions, an
 invalid withdrawal and exclusions declared by both inputs are refused before
 workspace or profile files are written. Only the selected environment is imported.
