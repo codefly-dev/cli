@@ -888,6 +888,34 @@ and verifier allows from, instead of transcribing them. The consumer validates
 it as another repository's output; this side writes it deterministically and
 reads it back through its own reader.
 
+Because absence is removal, **the cell file is never written without a module
+the workspace composes.** The per-module render records
+(`deployments/modules/<module>/.codefly-render.json`) are the file's only
+source, and they are uncommitted render outputs: a `git clean` of
+`deployments/` removes them. A render that finds a composed module with no
+record for the environment — none at all, or one rendered for another
+environment — writes no cell file, leaves the one on disk as it was, and names
+each such module with the command that renders it (`codefly deploy gitops
+render <module> --env <env>`, or `render --all`). It does not keep that
+module's entries from the file already on disk: an entry is derived from the
+whole composition (its consumers are other modules' dependencies, its bindings
+and egress the environment's), so an entry carried over is a claim about a
+composition that may no longer exist, and no digest is invented for a module
+that was not rendered.
+
+**A publish holds the cell file to the base branch's.** The cell file is
+committed with the rendered trees, and a cell admits only what it names, so
+`plan` and `publish` read the workspace's cell file for a hosted environment
+and the one the delivery base branch carries at
+`<gitops path>/cells/<environment>/cell.yaml`, and refuse when the workspace's
+removes a namespace, a workload, an endpoint or a consumer of an endpoint the
+base admits — naming each removal and the modules it concerns. A removal that
+is intended (a module the workspace no longer composes, a dependency dropped)
+is named with `--allow-cell-removal <module>` (repeatable); a consumer edge is
+covered by naming either the endpoint's module or the consumer's, and the plan
+lists every removal it lets through. A base with no cell file has nothing to
+hold the workspace's to.
+
 For a complete module promotion, use the GitOps lifecycle:
 
 ```bash
@@ -912,7 +940,9 @@ one command renders one composition and a stale sibling tree is never a reason
 to run the render again. A single-module `render` re-derives the cell file
 from its own tree and the sibling trees already rendered; a sibling the cell
 file cannot read, or one left at another inventory schema, is reported as
-stale by name rather than failing the render. An image whose inputs did not
+stale by name rather than failing the render, and so is a composed module with
+no render at all: the module's tree is written, the cell file is not, and the
+warning names the renders still owed. An image whose inputs did not
 change is kept rather than rebuilt, and that decision is taken before any Go
 module graph is fetched, so a render of an up-to-date composition fetches
 nothing; `--rebuild` builds every image regardless. A service that declares

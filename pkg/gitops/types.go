@@ -460,6 +460,11 @@ type PublishRequest struct {
 	// release policy no longer admits — after a signing identity rotated.
 	// Deliberate: without it such a carrier refuses the publish by name.
 	Resign bool `json:"resign,omitempty"`
+	// AllowCellRemovals names the modules whose removal from the hosted
+	// environment's cell file this publish intends: a namespace, workload,
+	// endpoint or consumer the delivery base branch's cell file carries and
+	// the workspace's does not. Any other removal refuses the publish.
+	AllowCellRemovals []string `json:"allowCellRemovals,omitempty"`
 }
 
 type PublishPlan struct {
@@ -494,6 +499,9 @@ type PublishPlan struct {
 	// Reported rather than refused: refusing would hold every consumer's
 	// publish on every other's.
 	StaleConsumers []string `json:"staleConsumers,omitempty"`
+	// CellRemovals are the removals from the base branch's cell file the
+	// request named (AllowCellRemovals), for the reviewer to see.
+	CellRemovals []string `json:"cellRemovals,omitempty"`
 	// Carriers are the carriers this plan signed, keyed by kind, ID and
 	// generation. The publish that executes the plan delivers exactly these
 	// bytes — signing is once, here — after holding each to its document.

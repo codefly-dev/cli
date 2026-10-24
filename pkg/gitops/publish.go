@@ -251,6 +251,10 @@ func preparePublish(
 		return fail(err)
 	}
 	staleConsumers := describeStaleConsumers(staleOnBase)
+	allowedRemovals, err := holdCellToBase(ctx, workspace, env, repo, baseBranch, baseRevision, pathRoot, request.AllowCellRemovals)
+	if err != nil {
+		return fail(err)
+	}
 	changed, err := stagedPathsSince(ctx, repo, startRevision, publishedPaths...)
 	if err != nil {
 		return fail(err)
@@ -274,6 +278,7 @@ func preparePublish(
 		Changed: changed, Diff: diff, ContractChecks: contractChecks,
 		Delivery:        inventory.Delivery,
 		StaleConsumers:  staleConsumers,
+		CellRemovals:    allowedRemovals,
 		Carriers:        publication.options.Carriers,
 		SelfPromotes:    selfPromotes,
 		LocalRepository: bound,
