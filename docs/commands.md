@@ -2416,12 +2416,20 @@ readiness validation runs for the selected environment; when it reports the
 workspace is not ready, the command prints the diagnostics and exits non-zero.
 The merged file is still written, so the diagnostics can be read against it.
 
-`--product-intent delivery.environments.yaml` also reads product-owned composition
-exclusions from `environments.<selected-name>.exclude-services`. This narrow authored
-input cannot override placement or runtime bindings and does not interpret the full
-legacy `delivery.intent.yaml` launch format. Unknown keys, missing environments and
-invalid withdrawals are refused before writing. `exclude-services: []` clears the
-selection; without the flag, existing merge behavior is unchanged. See
+`--product-intent delivery.environments.yaml` also reads what the product decides
+for `environments.<selected-name>`: its composition exclusions (`exclude-services`)
+and the product-owned part of its secret policy (`service-secrets.generate`, the
+keys `codefly deploy secrets` mints and `--rotate` may rotate, and
+`service-secrets.may-be-empty`). This narrow authored input cannot override
+placement, runtime bindings or the cell's secret store — `secret-store`,
+`defaults` and per-service `services` stay the contract's — and does not interpret
+the full legacy `delivery.intent.yaml` launch format. Unknown keys, missing
+environments, invalid withdrawals, and a generator or may-be-empty key naming a
+service, configuration or key the environment's profile does not declare as
+secret are refused before writing, by name. A product-owned field the contract
+declares too is refused. With the flag, the intent is the only source of those
+fields: an entry it no longer carries is withdrawn, and `exclude-services: []`
+clears the selection; without the flag, existing merge behavior is unchanged. See
 [the configuration contract](configuration-contract.md) for the blue/green example.
 
 An imported environment may declare `configuration-source: hosted` and select
