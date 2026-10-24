@@ -2,6 +2,7 @@ package generators
 
 import (
 	"bytes"
+	coreproto "github.com/codefly-dev/core/companions/proto"
 	"slices"
 	"testing"
 
@@ -409,4 +410,21 @@ func bufModuleIdentity(t *testing.T, fileName string, moduleInfo []byte) string 
 		name = name[tagLength+length:]
 	}
 	return segments[bufModuleNameRemoteField] + "/" + segments[bufModuleNameOwnerField] + "/" + segments[bufModuleNameRepositoryField]
+}
+
+// A service that vendors an upstream module's protos under its own tree does
+// not have them generated as its own files.
+func TestVendoredUpstreamProtosAreNotOwnSources(t *testing.T) {
+	set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+		{Name: googleproto.String("documents/v1/api.proto"), Package: googleproto.String("documents.v1")},
+		{Name: googleproto.String("codefly/base/v0/agent.proto"), Package: googleproto.String("codefly.base.v0")},
+	}}
+	own := []coreproto.Source{{Path: "documents/v1/api.proto"}}
+	if vendorsUpstreamModules(own, set, languages.GO) {
+		t.Fatal("a service's own file is not an upstream module")
+	}
+	vendored := append(own, coreproto.Source{Path: "codefly/base/v0/agent.proto"})
+	if !vendorsUpstreamModules(vendored, set, languages.GO) {
+		t.Fatal("a vendored codefly/base file is an upstream module's")
+	}
 }

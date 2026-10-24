@@ -308,10 +308,15 @@ func generateOneProtobufEntry(ctx context.Context, lang languages.Language, lang
 		return nil, fmt.Errorf("cannot parse contract descriptor set: %w", err)
 	}
 	var mapped []upstreamProtoModule
-	if len(entry.ProtoSources) > 0 {
+	if len(entry.ProtoSources) > 0 && !vendorsUpstreamModules(entry.ProtoSources, &set, lang) {
 		// Generated from sources, buf compiles only the entry's own files: the
 		// shared modules it imports are left to their distributions, exactly as
-		// when they are marked as imports below.
+		// when they are marked as imports below. A service that vendors an
+		// upstream module's files under its own proto tree (codefly/base,
+		// authority/hop) takes the descriptor path instead, where those files
+		// are marked as imports: compiled as sources they would be emitted
+		// again beside the module that owns them, and a binary linking both
+		// panics at init on the duplicate registration.
 		req.Sources = entry.ProtoSources
 		mapped = upstreamModulesIn(&set, lang)
 	} else {
@@ -497,6 +502,28 @@ func markUpstreamModulesAsImports(set *descriptorpb.FileDescriptorSet, lang lang
 
 // upstreamModulesIn is the set of upstream proto modules set's files belong
 // to, once each.
+// vendorsUpstreamModules is whether any of sources is a file of an upstream
+// proto module (by its path and package in set): a vendored copy, which must
+// be generated as an import, never as the library's own file.
+func vendorsUpstreamModules(sources []coreproto.Source, set *descriptorpb.FileDescriptorSet, lang languages.Language) bool {
+	own := make(map[string]bool, len(sources))
+	for _, source := range sources {
+		own[filepath.ToSlash(source.Path)] = true
+	}
+	for _, file := range set.GetFile() {
+		if !own[file.GetName()] {
+			continue
+		}
+		if coreproto.IsForeignFile(file, lang) {
+			return true
+		}
+		if _, found := upstreamModuleFor(file, lang); found {
+			return true
+		}
+	}
+	return false
+}
+
 func upstreamModulesIn(set *descriptorpb.FileDescriptorSet, lang languages.Language) []upstreamProtoModule {
 	var modules []upstreamProtoModule
 	seen := map[string]bool{}
