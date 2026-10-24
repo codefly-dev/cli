@@ -409,12 +409,7 @@ func buildLocalContractEndpoint(ctx context.Context, service *resources.Service,
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("cannot read OpenAPI info.title: %w", err)
 		}
-		var routes []composition.APIContractRoute
-		for _, group := range rest.Groups {
-			for _, route := range group.Routes {
-				routes = append(routes, composition.APIContractRoute{Method: route.Method.String(), Path: filepath.ToSlash(filepath.Join(group.Path, route.Path))})
-			}
-		}
+		routes := contractRoutes(rest.Groups)
 		return rest.Openapi, &composition.APIContractEndpoint{
 			Service:  service.Name,
 			Endpoint: endpoint.Name,

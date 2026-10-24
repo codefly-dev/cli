@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -536,15 +535,7 @@ func writeRestContract(ctx context.Context, module *resources.Module, endpoint *
 		return nil, fmt.Errorf("cannot read OpenAPI info.title: %w", err)
 	}
 
-	var routes []composition.APIContractRoute
-	for _, group := range rest.Groups {
-		for _, route := range group.Routes {
-			routes = append(routes, composition.APIContractRoute{
-				Method: route.Method.String(),
-				Path:   path.Join(group.Path, route.Path),
-			})
-		}
-	}
+	routes := contractRoutes(rest.Groups)
 
 	relPath, err := relativeContractPath(module, filepath.Join(canonicalDir, "openapi.json"))
 	if err != nil {
@@ -931,4 +922,18 @@ func appendScalarField(node *yaml.Node, key, value string) {
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: yamlStringTag, Value: key},
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: yamlStringTag, Value: value},
 	)
+}
+
+// contractRoutes lists a REST endpoint's routes for its contract entry. A
+// route's path is already the full path (core's loader holds every route to
+// start with its group's path), so the group's path is never prepended: doing
+// so wrote "/v1/x/y/v1/x/y" into every catalog.
+func contractRoutes(groups []*basev0.RestRouteGroup) []composition.APIContractRoute {
+	var routes []composition.APIContractRoute
+	for _, group := range groups {
+		for _, route := range group.Routes {
+			routes = append(routes, composition.APIContractRoute{Method: route.Method.String(), Path: route.Path})
+		}
+	}
+	return routes
 }

@@ -3,6 +3,7 @@ package generate
 import (
 	"context"
 	"encoding/json"
+	basev0 "github.com/codefly-dev/core/generated/go/codefly/base/v0"
 	"io"
 	"os"
 	"os/exec"
@@ -676,4 +677,15 @@ func TestServiceContractPackage(t *testing.T) {
 			t.Fatalf("error = %v, want it to name the file-name remap cause", err)
 		}
 	})
+}
+
+// A route's path is the full path; the group's path is never prepended to it.
+func TestContractRoutesAreNotDoubledByTheirGroupPath(t *testing.T) {
+	routes := contractRoutes([]*basev0.RestRouteGroup{{Path: "/v1/robin/chat/bounded", Routes: []*basev0.RestRoute{
+		{Path: "/v1/robin/chat/bounded/cancel", Method: basev0.HTTPMethod_POST},
+		{Path: "/v1/robin/chat/bounded/facets", Method: basev0.HTTPMethod_GET},
+	}}})
+	if len(routes) != 2 || routes[0].Path != "/v1/robin/chat/bounded/cancel" || routes[0].Method != "POST" || routes[1].Path != "/v1/robin/chat/bounded/facets" {
+		t.Fatalf("routes: %+v", routes)
+	}
 }
