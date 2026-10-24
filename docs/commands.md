@@ -1131,6 +1131,12 @@ Publish clones the selected GitOps repository, commits and advertises the
 immutable service/module snapshot, derives exact AppProject authority from that
 snapshot, and adds CLI-owned Applications pinned to its commit and paths. It
 then creates the signed publication commit and opens or updates a pull request.
+An existing promotion branch is continued only when it contains the base
+branch; one the base does not contain (its pull request squash-merged and the
+branch kept) is restarted from the base and replaced with a push leased on the
+tip the plan reviewed, which the plan prints as the revision it replaces. A
+stale branch carrying a change outside the module's path is refused, never
+overwritten.
 Planning does not advertise the snapshot or mutate the remote. Observe requires an
 approved, merged pull request and verifies the publication digest, the
 snapshot revision bound into every Application, exact service paths, project

@@ -487,8 +487,12 @@ The Job is an Argo CD **Sync hook** (`argocd.argoproj.io/hook: Sync`,
 on every sync from state that still exists, so a replay after a restore is an
 ordinary sync, and a sync that changes nothing re-POSTs a generation the host
 replays. Its token is projected for the host's audience and re-read per
-request; it runs a digest-pinned `curl` image, read-only, as a non-root user
-with every capability dropped. The script spells its variables `$NAME`, never
+request; it runs codefly's own base companion image
+(`ghcr.io/codefly-dev/codefly`, pinned by digest — never a Docker Hub image),
+read-only, as a non-root user with every capability dropped. The cell file
+declares that same image as the namespace's delivery carrier, so moving its
+digest changes every cell file: re-render the cell and publish it with, or
+before, the first Job that runs the new image. The script spells its variables `$NAME`, never
 `${NAME}` (the promotable ruleset refuses `${…}` as an unresolved
 placeholder), and the token file is named `DELIVERY_IDENTITY_FILE` (a variable
 named `*_TOKEN` carrying a value is a credential to that ruleset).
@@ -869,6 +873,18 @@ diverged from it is refused by name, and the base branch of a non-k3d
 environment — or of a local one whose host lists no developer — moves only by
 a merge after review, as before. `remote up` with no module serves the latest
 promotion, and re-running it after a new one moves Argo CD to it.
+
+The hosted counterpart of the same rule: a reviewed publish continues its
+promotion branch only while that branch **contains the base**. A branch the
+base does not contain — its pull request was squash-merged and the branch
+kept, or another promotion moved the base past it — is stale, and a commit
+stacked on it would fork from the old base and conflict add/add on every file
+the base already holds. So the publish starts again from the base and replaces
+the branch with a push leased on the stale tip it reviewed
+(`--force-with-lease`), recorded in the plan as `replacesBranchRevision` and
+part of its ID: a branch that moved after review refuses the publish. A stale
+branch carrying anything outside the module's own path is someone else's work
+and is refused by name, never overwritten.
 
 **How a local pod's identity reaches the host.** Not through anything the run
 projects: there is no `MODULE_IDENTITY_PREFIX`, no secret and no

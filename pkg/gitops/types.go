@@ -463,22 +463,29 @@ type PublishRequest struct {
 }
 
 type PublishPlan struct {
-	ID               string          `json:"id"`
-	Repository       string          `json:"repository"`
-	RepositorySlug   string          `json:"repositorySlug,omitempty"`
-	Path             string          `json:"path"`
-	BaseBranch       string          `json:"baseBranch"`
-	BaseRevision     string          `json:"baseRevision"`
-	PromotionBranch  string          `json:"promotionBranch"`
-	BranchRevision   string          `json:"branchRevision,omitempty"`
-	ExistingCommit   string          `json:"existingCommit,omitempty"`
-	Module           string          `json:"module"`
-	Environment      string          `json:"environment"`
-	RenderDigest     string          `json:"renderDigest"`
-	SnapshotRevision string          `json:"snapshotRevision"`
-	Changed          []string        `json:"changed"`
-	Diff             string          `json:"diff"`
-	ContractChecks   []ContractCheck `json:"contractChecks,omitempty"` // Delivery is what the publication settled and signed, for the plan's
+	ID              string `json:"id"`
+	Repository      string `json:"repository"`
+	RepositorySlug  string `json:"repositorySlug,omitempty"`
+	Path            string `json:"path"`
+	BaseBranch      string `json:"baseBranch"`
+	BaseRevision    string `json:"baseRevision"`
+	PromotionBranch string `json:"promotionBranch"`
+	BranchRevision  string `json:"branchRevision,omitempty"`
+	ExistingCommit  string `json:"existingCommit,omitempty"`
+	// ReplacesBranchRevision is the tip of a stale promotion branch this
+	// publish replaces: a branch that does not contain the base branch (its
+	// pull request was squash-merged and the branch kept, or the base moved
+	// past it), which the publish restarts from the base and pushes over with
+	// a lease on exactly this revision. Part of the plan's identity, so a
+	// branch that moves after review refuses the publish.
+	ReplacesBranchRevision string          `json:"replacesBranchRevision,omitempty"`
+	Module                 string          `json:"module"`
+	Environment            string          `json:"environment"`
+	RenderDigest           string          `json:"renderDigest"`
+	SnapshotRevision       string          `json:"snapshotRevision"`
+	Changed                []string        `json:"changed"`
+	Diff                   string          `json:"diff"`
+	ContractChecks         []ContractCheck `json:"contractChecks,omitempty"` // Delivery is what the publication settled and signed, for the plan's
 	// reader and the result.
 	Delivery *InventoryDelivery `json:"delivery,omitempty"`
 	// StaleConsumers names the modules the delivery base branch holds at
