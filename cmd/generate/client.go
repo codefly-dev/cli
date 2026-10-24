@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"github.com/codefly-dev/core/standards"
 	"os"
 	"path/filepath"
 	"strings"
@@ -333,7 +334,7 @@ func resolveLocalSource(ctx context.Context, workspace *resources.Workspace, fro
 func pickContractEndpoint(ctx context.Context, endpoints []*basev0.Endpoint, hint, moduleName, serviceName string) (*basev0.Endpoint, error) {
 	var candidates []*basev0.Endpoint
 	for _, e := range endpoints {
-		if resources.IsGRPC(ctx, e) != nil || resources.IsRest(ctx, e) != nil {
+		if servesContract(ctx, e) {
 			candidates = append(candidates, e)
 		}
 	}
@@ -343,10 +344,10 @@ func pickContractEndpoint(ctx context.Context, endpoints []*basev0.Endpoint, hin
 				return e, nil
 			}
 		}
-		return nil, fmt.Errorf("service %s/%s has no grpc or rest endpoint named %q", moduleName, serviceName, hint)
+		return nil, fmt.Errorf("service %s/%s has no grpc, connect or rest endpoint named %q", moduleName, serviceName, hint)
 	}
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("service %s/%s has no grpc or rest endpoint", moduleName, serviceName)
+		return nil, fmt.Errorf("service %s/%s has no grpc, connect or rest endpoint", moduleName, serviceName)
 	}
 	if len(candidates) > 1 {
 		var names []string
@@ -364,7 +365,12 @@ func pickContractEndpoint(ctx context.Context, endpoints []*basev0.Endpoint, hin
 // a flat "contract.binpb"/"openapi.json" path (a generated library owns its
 // own contract/ directory, not a module's committed contracts tree).
 func buildLocalContractEndpoint(ctx context.Context, service *resources.Service, endpoint *basev0.Endpoint) ([]byte, *composition.APIContractEndpoint, []coreproto.Source, error) {
-	if grpc := resources.IsGRPC(ctx, endpoint); grpc != nil {
+	// A Connect endpoint serves the service's protobuf contract over the
+	// Connect protocol family; its contract is the gRPC one.
+	if grpc := resources.IsGRPC(ctx, endpoint); grpc != nil || endpoint.GetApi() == standards.CONNECT {
+		if grpc == nil {
+			grpc = &basev0.GrpcAPI{}
+		}
 		protoDir := filepath.Join(service.Dir(), "proto")
 		if ok, _ := shared.FileExists(ctx, filepath.Join(protoDir, "buf.yaml")); !ok {
 			return nil, nil, nil, fmt.Errorf("service %s has no proto/buf.yaml; cannot build a descriptor set for endpoint %s", service.Name, endpoint.Name)
@@ -605,4 +611,11 @@ func defaultLibraryName(source *resolvedContractSource) string {
 func lastPathSegment(s string) string {
 	parts := strings.Split(s, "/")
 	return parts[len(parts)-1]
+}
+
+// servesContract is whether an endpoint has a contract a client is generated
+// from: a protobuf one (grpc, or connect, which serves the same proto over the
+// Connect protocol family) or an OpenAPI one (rest).
+func servesContract(ctx context.Context, e *basev0.Endpoint) bool {
+	return resources.IsGRPC(ctx, e) != nil || resources.IsRest(ctx, e) != nil || e.GetApi() == standards.CONNECT
 }
